@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyzeVbscript, buildVirtualDocuments, getVbscriptCompletions, parseAspDocument } from "../src";
+import { analyzeVbscript, buildVirtualDocuments, collectVbscriptSymbols, getVbscriptCompletions, getVbscriptDefinition, getVbscriptHover, parseAspDocument } from "../src";
 
 describe("parseAspDocument", () => {
   it("detects ASP blocks, directives, includes, style and script regions", () => {
@@ -92,5 +92,59 @@ Response.Write "hello world"
     );
     const result = analyzeVbscript(parsed);
     expect(result.diagnostics).toHaveLength(0);
+  });
+
+  it("tracks VBScript class members and object member completion", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Class Customer
+  Public Name
+  Public Sub Save()
+  End Sub
+End Class
+Dim c
+Set c = New Customer
+c.
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.some((symbol) => symbol.kind === "class" && symbol.name === "Customer")).toBe(true);
+    expect(symbols.some((symbol) => symbol.kind === "field" && symbol.name === "Name" && symbol.memberOf === "Customer")).toBe(true);
+    expect(symbols.some((symbol) => symbol.kind === "method" && symbol.name === "Save" && symbol.memberOf === "Customer")).toBe(true);
+    const completions = getVbscriptCompletions(parsed, { line: 8, character: 2 }, { symbols });
+    expect(completions.some((item) => item.label === "Name")).toBe(true);
+    expect(completions.some((item) => item.label === "Save")).toBe(true);
+  });
+
+  it("keeps local variables scoped to their procedure", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Sub First()
+  Dim firstOnly
+End Sub
+Sub Second()
+
+End Sub
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const completions = getVbscriptCompletions(parsed, { line: 5, character: 2 }, { symbols });
+    expect(completions.some((item) => item.label === "firstOnly")).toBe(false);
+  });
+
+  it("resolves hover and definition for user-defined symbols", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Function BuildName()
+End Function
+Response.Write BuildName()
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(getVbscriptHover(parsed, { line: 3, character: 17 }, { symbols })).toContain("function BuildName");
+    expect(getVbscriptDefinition(parsed, { line: 3, character: 17 }, { symbols })?.name).toBe("BuildName");
   });
 });

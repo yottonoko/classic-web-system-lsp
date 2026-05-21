@@ -20,7 +20,17 @@ pnpm run test
 pnpm run build
 ```
 
-The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions and diagnostics.
+The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, diagnostics, hover, definition, and references.
+
+## VBScript Support
+
+- built-in Classic ASP object hover and member completions
+- user-defined variable, constant, function, sub, class, method, field, and property symbols
+- scope-aware completions for procedure-local variables and parameters
+- `Set value = New ClassName` inference for `value.Member` completions
+- `Me.Member` completions inside classes
+- definition and references for user-defined VBScript symbols
+- include-aware VBScript symbols for completions and definition jumps
 
 ## Standalone Server
 
@@ -46,7 +56,7 @@ The extension registers:
 
 ## Current v1 Limits
 
-- VBScript analysis is intentionally conservative. It supports built-in completions, declarations, document symbols, and simple `Option Explicit` diagnostics.
+- VBScript analysis is intentionally conservative. It is regex/scanner based rather than a full VBScript compiler.
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed or type-checked.

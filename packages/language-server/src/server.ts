@@ -10,7 +10,9 @@ import {
   Hover,
   InitializeParams,
   InitializeResult,
+  Location,
   ProposedFeatures,
+  ReferenceParams,
   TextDocumentPositionParams,
   TextDocuments,
   TextDocumentSyncKind,
@@ -20,12 +22,17 @@ import { TextDocument } from "vscode-languageserver-textdocument";
 import {
   analyzeVbscript,
   buildVirtualDocuments,
+  collectVbscriptSymbols,
   getVbscriptCompletions,
+  getVbscriptDefinition,
   getVbscriptDocumentSymbols,
+  getVbscriptHover,
+  getVbscriptReferences,
   parseAspDocument,
   type AspParsedDocument,
   type AspSettings,
   type VirtualDocument,
+  type VbProjectContext,
 } from "@asp-lsp/core";
 import { getCSSLanguageService } from "vscode-css-languageservice";
 import { getLanguageService as getHtmlLanguageService, TokenType } from "vscode-html-languageservice";
@@ -54,6 +61,8 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => ({
       resolveProvider: false,
     },
     hoverProvider: true,
+    definitionProvider: true,
+    referencesProvider: true,
     documentSymbolProvider: true,
     foldingRangeProvider: true,
     documentLinkProvider: { resolveProvider: false },
@@ -95,7 +104,7 @@ connection.onCompletion((params) => {
     return [];
   }
   if (region.language === "vbscript" || region.language === "jscript") {
-    return getVbscriptCompletions(cached.parsed, params.position);
+    return getVbscriptCompletions(cached.parsed, params.position, buildVbProjectContext(cached, cachedSettings(cached.source.uri)));
   }
   if (region.language === "html") {
     const virtual = cached.virtuals.get("html");
@@ -147,6 +156,33 @@ connection.onHover((params) => {
     return cssService.doHover(doc, virtualPosition, cssService.parseStylesheet(doc));
   }
   return null;
+});
+
+connection.onDefinition((params) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return null;
+  }
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
+  if (!region || (region.language !== "vbscript" && region.language !== "jscript")) {
+    return null;
+  }
+  const symbol = getVbscriptDefinition(cached.parsed, params.position, buildVbProjectContext(cached, cachedSettings(cached.source.uri)));
+  return symbol ? Location.create(symbol.sourceUri, symbol.range) : null;
+});
+
+connection.onReferences((params: ReferenceParams) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
+  if (!region || (region.language !== "vbscript" && region.language !== "jscript")) {
+    return [];
+  }
+  return getVbscriptReferences(cached.parsed, params.position, buildVbProjectContext(cached, cachedSettings(cached.source.uri))).map((reference) =>
+    Location.create(reference.uri, reference.range),
+  );
 });
 
 connection.onDocumentSymbol((params) => {
@@ -218,7 +254,7 @@ async function validate(document: TextDocument): Promise<void> {
   const virtuals = buildVirtualDocuments(parsed);
   const cached = { source: document, parsed, virtuals };
   cache.set(document.uri, cached);
-  const diagnostics: Diagnostic[] = [...parsed.diagnostics, ...analyzeVbscript(parsed).diagnostics, ...includeDiagnostics(cached, settings)];
+  const diagnostics: Diagnostic[] = [...parsed.diagnostics, ...analyzeVbscript(parsed, buildVbProjectContext(cached, settings)).diagnostics, ...includeDiagnostics(cached, settings)];
   if (!isIncDocument(document.uri)) {
     diagnostics.push(...htmlDiagnostics(cached));
   }
@@ -310,21 +346,42 @@ function jsCompletion(cached: CachedDocument, params: TextDocumentPositionParams
 }
 
 function aspHover(cached: CachedDocument, params: TextDocumentPositionParams): Hover | null {
-  const offset = cached.source.offsetAt(params.position);
-  const word = wordAt(cached.source.getText(), offset);
-  if (!word) {
-    return null;
-  }
-  const descriptions: Record<string, string> = {
-    request: "Classic ASP Request object. Reads values sent by the client.",
-    response: "Classic ASP Response object. Writes output and controls the HTTP response.",
-    session: "Classic ASP Session object. Stores per-user state.",
-    application: "Classic ASP Application object. Stores application-wide state.",
-    server: "Classic ASP Server object. Creates COM objects, maps paths, and encodes values.",
-    asperror: "Classic ASP error object returned by Server.GetLastError.",
-  };
-  const value = descriptions[word.toLowerCase()];
+  const value = getVbscriptHover(cached.parsed, params.position, buildVbProjectContext(cached, cachedSettings(cached.source.uri)));
   return value ? { contents: { kind: "markdown", value } } : null;
+}
+
+function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
+  const documents = collectVbProjectDocuments(cached.parsed, settings);
+  return {
+    documents,
+    symbols: documents.flatMap((document) => collectVbscriptSymbols(document)),
+  };
+}
+
+function collectVbProjectDocuments(root: AspParsedDocument, settings: AspSettings): AspParsedDocument[] {
+  const documents: AspParsedDocument[] = [];
+  const visited = new Set<string>();
+  const visit = (document: AspParsedDocument, depth: number): void => {
+    if (depth > 20 || visited.has(document.uri)) {
+      return;
+    }
+    visited.add(document.uri);
+    documents.push(document);
+    for (const include of document.includes) {
+      const resolved = resolveIncludePath(document.uri, include.path, include.mode, settings);
+      if (!fs.existsSync(resolved)) {
+        continue;
+      }
+      const uri = pathToFileUri(resolved);
+      if (visited.has(uri)) {
+        continue;
+      }
+      const text = fs.readFileSync(resolved, "utf8");
+      visit(parseAspDocument(uri, text, settings), depth + 1);
+    }
+  };
+  visit(root, 0);
+  return documents;
 }
 
 function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
@@ -566,12 +623,6 @@ function sameFile(left: string, right: string): boolean {
 
 function isIncDocument(uri: string): boolean {
   return uriToFileName(uri).toLowerCase().endsWith(".inc");
-}
-
-function wordAt(text: string, offset: number): string | undefined {
-  const left = text.slice(0, offset).match(/[A-Za-z][A-Za-z0-9_]*$/)?.[0] ?? "";
-  const right = text.slice(offset).match(/^[A-Za-z0-9_]*/)?.[0] ?? "";
-  return left || right ? `${left}${right}` : undefined;
 }
 
 function tsCompletionKind(kind: string): CompletionItemKind {

@@ -141,6 +141,130 @@ describe("stdio LSP server", () => {
     }
   });
 
+  it("supports VBScript hover, definition, references, scoped symbols and class member completion", async () => {
+    const marked = markedDocument(`<%
+Class Customer
+  Public Name
+  Public Sub Save()
+  End Sub
+End Class
+Dim customer
+Set customer = New Customer
+customer.▮
+Function BuildName()
+End Function
+Response.Write BuildName()
+%>`);
+    const source = marked.text.replace("customer.", "customer.");
+    const callPosition = positionAt(source, source.indexOf("BuildName()") + 2);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/vbscript.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: source,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const memberCompletions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(memberCompletions)).toContain("Save");
+      expect(JSON.stringify(memberCompletions)).toContain("Name");
+
+      const hover = await server.request("textDocument/hover", {
+        textDocument: { uri },
+        position: callPosition,
+      });
+      expect(JSON.stringify(hover)).toContain("function BuildName");
+
+      const definition = await server.request("textDocument/definition", {
+        textDocument: { uri },
+        position: callPosition,
+      });
+      expect(JSON.stringify(definition)).toContain('"line":9');
+
+      const references = await server.request("textDocument/references", {
+        textDocument: { uri },
+        position: callPosition,
+        context: { includeDeclaration: true },
+      });
+      expect(Array.isArray(references) ? references.length : 0).toBeGreaterThan(1);
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("uses included VBScript symbols for completion and definition", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
+    const owner = path.join(tempDir, "default.asp");
+    const include = path.join(tempDir, "common.inc");
+    fs.writeFileSync(
+      include,
+      `<%
+Function SharedTitle()
+End Function
+%>`,
+      "utf8",
+    );
+    const marked = markedDocument(`<!-- #include file="common.inc" -->
+<%
+Response.Write Shared▮Title()
+%>`);
+    fs.writeFileSync(owner, marked.text, "utf8");
+
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: `file://${tempDir}`,
+        capabilities: {},
+      });
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri: `file://${owner}`,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const completions = await server.request("textDocument/completion", {
+        textDocument: { uri: `file://${owner}` },
+        position: marked.position,
+      });
+      expect(JSON.stringify(completions)).toContain("SharedTitle");
+
+      const definition = await server.request("textDocument/definition", {
+        textDocument: { uri: `file://${owner}` },
+        position: marked.position,
+      });
+      expect(JSON.stringify(definition)).toContain("common.inc");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports include cycles through publishDiagnostics", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
     const owner = path.join(tempDir, "default.asp");
