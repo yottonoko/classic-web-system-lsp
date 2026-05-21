@@ -14,7 +14,7 @@ import type {
   SignatureHelp,
 } from "vscode-languageserver-types";
 import { offsetAt, rangeFromOffsets } from "./position";
-import type { AspParsedDocument, AspRegion } from "./types";
+import type { AspCstNode, AspParsedDocument, AspRegion, VbCstNode, VbToken } from "./types";
 
 export type VbSymbolKind =
   | "variable"
@@ -176,6 +176,532 @@ function methodItem(label: string): CompletionItem {
   return { label, kind: CompletionItemKind.Method };
 }
 
+const vbKeywords = new Set([
+  "and",
+  "application",
+  "as",
+  "byref",
+  "byval",
+  "call",
+  "case",
+  "class",
+  "const",
+  "dim",
+  "do",
+  "each",
+  "else",
+  "elseif",
+  "empty",
+  "end",
+  "exit",
+  "explicit",
+  "false",
+  "for",
+  "function",
+  "get",
+  "if",
+  "in",
+  "let",
+  "loop",
+  "me",
+  "mod",
+  "new",
+  "next",
+  "not",
+  "nothing",
+  "null",
+  "option",
+  "or",
+  "preserve",
+  "private",
+  "property",
+  "public",
+  "redim",
+  "request",
+  "response",
+  "select",
+  "server",
+  "session",
+  "set",
+  "step",
+  "sub",
+  "then",
+  "to",
+  "true",
+  "until",
+  "wend",
+  "while",
+  "with",
+]);
+
+export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0): VbCstNode {
+  const tokens = tokenizeVbscript(text, baseOffset);
+  const document: VbCstNode = {
+    kind: "Document",
+    start: baseOffset,
+    end: baseOffset + text.length,
+    contentStart: baseOffset,
+    contentEnd: baseOffset + text.length,
+    tokens,
+    children: [],
+  };
+  const significant = tokens.filter(
+    (token) => token.kind !== "whitespace" && token.kind !== "comment",
+  );
+  const stack: VbCstNode[] = [document];
+  for (let index = 0; index < significant.length; index += 1) {
+    const token = significant[index];
+    if (!isStatementStart(significant, index)) {
+      continue;
+    }
+    const first = lowerToken(token);
+    const second = lowerToken(significant[index + 1]);
+    if (first === "class" && significant[index + 1]?.kind === "identifier") {
+      const node = createBlockNode("Class", token, significant[index + 1], stack);
+      addChild(stack.at(-1) ?? document, node);
+      stack.push(node);
+      continue;
+    }
+    if (first === "end") {
+      closeBlock(stack, second, token);
+      continue;
+    }
+    const declarationStart =
+      first === "public" || first === "private" ? lowerToken(significant[index + 1]) : first;
+    const declarationOffset = first === "public" || first === "private" ? 1 : 0;
+    if (declarationStart === "sub" || declarationStart === "function") {
+      const nameToken = significant[index + declarationOffset + 1];
+      if (nameToken?.kind === "identifier") {
+        const node = createProcedureNode(
+          declarationStart,
+          token,
+          nameToken,
+          collectParameterTokens(significant, index + declarationOffset + 2),
+          stack,
+        );
+        addChild(stack.at(-1) ?? document, node);
+        stack.push(node);
+      }
+      continue;
+    }
+    if (declarationStart === "property") {
+      const accessor = lowerToken(significant[index + declarationOffset + 1]);
+      const nameToken = significant[index + declarationOffset + 2];
+      if (
+        (accessor === "get" || accessor === "let" || accessor === "set") &&
+        nameToken?.kind === "identifier"
+      ) {
+        const node = createProcedureNode(
+          "property",
+          token,
+          nameToken,
+          collectParameterTokens(significant, index + declarationOffset + 3),
+          stack,
+          accessor,
+        );
+        addChild(stack.at(-1) ?? document, node);
+        stack.push(node);
+      }
+      continue;
+    }
+    const current = stack.at(-1) ?? document;
+    if (first === "dim" || first === "redim") {
+      addChild(
+        current,
+        createDeclarationNode(token, "VariableDeclaration", first, significant, index + 1),
+      );
+      continue;
+    }
+    if (
+      (first === "public" || first === "private") &&
+      !["sub", "function", "property"].includes(second ?? "")
+    ) {
+      addChild(
+        current,
+        createDeclarationNode(token, "VariableDeclaration", first, significant, index + 1),
+      );
+      continue;
+    }
+    if (first === "const") {
+      addChild(
+        current,
+        createDeclarationNode(token, "ConstantDeclaration", "const", significant, index + 1),
+      );
+      continue;
+    }
+    if (first === "for" && second === "each" && significant[index + 2]?.kind === "identifier") {
+      const nameToken = significant[index + 2];
+      addChild(current, {
+        kind: "ForEach",
+        start: token.start,
+        end: statementEnd(significant, index),
+        nameToken,
+        tokens: statementTokens(significant, index),
+        children: [],
+        declarationKind: "forEach",
+        identifiers: [nameToken],
+        memberOf: current.kind === "Class" ? current.nameToken?.text : current.memberOf,
+        scopeName:
+          current.kind === "Procedure" || current.kind === "Property"
+            ? current.nameToken?.text
+            : undefined,
+        scopeStart: current.start,
+        scopeEnd: current.end,
+      });
+      continue;
+    }
+    if (first === "with" && significant[index + 1]?.kind === "identifier") {
+      const nameToken = significant[index + 1];
+      const node: VbCstNode = {
+        kind: "With",
+        start: token.start,
+        end: statementEnd(significant, index),
+        nameToken,
+        tokens: statementTokens(significant, index),
+        children: [],
+        scopeStart: token.start,
+        scopeEnd: sourceText.length + baseOffset,
+      };
+      addChild(current, node);
+      stack.push(node);
+      continue;
+    }
+    if (
+      first === "set" &&
+      significant[index + 1]?.kind === "identifier" &&
+      significant[index + 2]?.text === "="
+    ) {
+      const variableToken = significant[index + 1];
+      const newIndex = findKeyword(
+        significant,
+        index + 3,
+        statementEndIndex(significant, index),
+        "new",
+      );
+      const createObjectIndex = findCreateObjectCall(
+        significant,
+        index + 3,
+        statementEndIndex(significant, index),
+      );
+      if (newIndex !== -1 && significant[newIndex + 1]?.kind === "identifier") {
+        addChild(current, {
+          kind: "SetNew",
+          start: token.start,
+          end: statementEnd(significant, index),
+          nameToken: variableToken,
+          tokens: statementTokens(significant, index),
+          children: [],
+          typeName: significant[newIndex + 1].text,
+        });
+      } else if (createObjectIndex !== -1) {
+        const stringToken = significant
+          .slice(createObjectIndex)
+          .find((item) => item.kind === "string");
+        if (stringToken) {
+          addChild(current, {
+            kind: "CreateObject",
+            start: token.start,
+            end: statementEnd(significant, index),
+            nameToken: variableToken,
+            tokens: statementTokens(significant, index),
+            children: [],
+            typeName: stringToken.value ?? unquoteVbString(stringToken.text),
+          });
+        }
+      }
+    }
+  }
+  closeUnclosedBlocks(stack, document.end);
+  return document;
+}
+
+function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
+  const tokens: VbToken[] = [];
+  let index = 0;
+  while (index < text.length) {
+    const start = index;
+    const char = text[index];
+    if (char === "\r" || char === "\n") {
+      if (char === "\r" && text[index + 1] === "\n") {
+        index += 2;
+      } else {
+        index += 1;
+      }
+      tokens.push(token("newline", text, start, index, baseOffset));
+      continue;
+    }
+    if (char === " " || char === "\t") {
+      while (index < text.length && (text[index] === " " || text[index] === "\t")) {
+        index += 1;
+      }
+      tokens.push(token("whitespace", text, start, index, baseOffset));
+      continue;
+    }
+    if (char === "'") {
+      while (index < text.length && text[index] !== "\r" && text[index] !== "\n") {
+        index += 1;
+      }
+      tokens.push(token("comment", text, start, index, baseOffset));
+      continue;
+    }
+    if (char === '"') {
+      index += 1;
+      while (index < text.length) {
+        if (text[index] === '"' && text[index + 1] === '"') {
+          index += 2;
+          continue;
+        }
+        if (text[index] === '"') {
+          index += 1;
+          break;
+        }
+        index += 1;
+      }
+      const result = token("string", text, start, index, baseOffset);
+      result.value = unquoteVbString(result.text);
+      tokens.push(result);
+      continue;
+    }
+    if (isIdentifierStart(char)) {
+      index += 1;
+      while (index < text.length && isIdentifierPart(text[index])) {
+        index += 1;
+      }
+      const result = token("identifier", text, start, index, baseOffset);
+      if (vbKeywords.has(result.text.toLowerCase())) {
+        result.kind = "keyword";
+      }
+      tokens.push(result);
+      continue;
+    }
+    if (/[0-9]/.test(char)) {
+      index += 1;
+      while (index < text.length && /[0-9.]/.test(text[index])) {
+        index += 1;
+      }
+      tokens.push(token("number", text, start, index, baseOffset));
+      continue;
+    }
+    index += 1;
+    tokens.push(token("symbol", text, start, index, baseOffset));
+  }
+  return tokens;
+}
+
+function token(
+  kind: VbToken["kind"],
+  text: string,
+  start: number,
+  end: number,
+  baseOffset: number,
+): VbToken {
+  return { kind, start: baseOffset + start, end: baseOffset + end, text: text.slice(start, end) };
+}
+
+function isIdentifierStart(char: string): boolean {
+  return /[A-Za-z_]/.test(char);
+}
+
+function isIdentifierPart(char: string): boolean {
+  return /[A-Za-z0-9_]/.test(char);
+}
+
+function isTriviaToken(token: VbToken): boolean {
+  return token.kind === "whitespace" || token.kind === "comment" || token.kind === "newline";
+}
+
+function lowerToken(token: VbToken | undefined): string | undefined {
+  return token?.text.toLowerCase();
+}
+
+function isStatementStart(tokens: VbToken[], index: number): boolean {
+  const previous = tokens[index - 1];
+  return !previous || previous.kind === "newline" || previous.text === ":";
+}
+
+function createBlockNode(
+  kind: "Class",
+  startToken: VbToken,
+  nameToken: VbToken,
+  stack: VbCstNode[],
+): VbCstNode {
+  const parent = stack.at(-1);
+  return {
+    kind,
+    start: startToken.start,
+    end: startToken.end,
+    nameToken,
+    tokens: [startToken, nameToken],
+    children: [],
+    memberOf: parent?.kind === "Class" ? parent.nameToken?.text : parent?.memberOf,
+    scopeStart: startToken.start,
+    scopeEnd: startToken.end,
+  };
+}
+
+function createProcedureNode(
+  procedureKind: "sub" | "function" | "property",
+  startToken: VbToken,
+  nameToken: VbToken,
+  parameters: VbToken[],
+  stack: VbCstNode[],
+  propertyAccessor?: "get" | "let" | "set",
+): VbCstNode {
+  const parentClass = [...stack].reverse().find((node) => node.kind === "Class")?.nameToken?.text;
+  return {
+    kind: procedureKind === "property" ? "Property" : "Procedure",
+    start: startToken.start,
+    end: startToken.end,
+    nameToken,
+    tokens: [startToken, nameToken],
+    children: [],
+    procedureKind,
+    propertyAccessor,
+    parameters,
+    memberOf: parentClass,
+    scopeName: nameToken.text,
+    scopeStart: startToken.start,
+    scopeEnd: startToken.end,
+  };
+}
+
+function addChild(parent: VbCstNode, child: VbCstNode): void {
+  parent.children.push(child);
+}
+
+function closeBlock(stack: VbCstNode[], endKind: string | undefined, endToken: VbToken): void {
+  const targetKind =
+    endKind === "class"
+      ? "Class"
+      : endKind === "property"
+        ? "Property"
+        : endKind === "with"
+          ? "With"
+          : "Procedure";
+  const index = findLastIndex(stack, (node) => node.kind === targetKind);
+  if (index <= 0) {
+    return;
+  }
+  const [node] = stack.splice(index, 1);
+  node.end = endToken.end;
+  node.scopeEnd = endToken.end;
+}
+
+function closeUnclosedBlocks(stack: VbCstNode[], end: number): void {
+  for (const node of stack) {
+    node.end = Math.max(node.end, end);
+    node.scopeEnd = Math.max(node.scopeEnd ?? node.end, end);
+  }
+}
+
+function collectParameterTokens(tokens: VbToken[], index: number): VbToken[] {
+  const parameters: VbToken[] = [];
+  if (tokens[index]?.text !== "(") {
+    return parameters;
+  }
+  let cursor = index + 1;
+  while (cursor < tokens.length && tokens[cursor].text !== ")") {
+    if (
+      tokens[cursor].kind === "identifier" &&
+      !["byval", "byref"].includes(tokens[cursor].text.toLowerCase())
+    ) {
+      parameters.push(tokens[cursor]);
+    }
+    cursor += 1;
+  }
+  return parameters;
+}
+
+function createDeclarationNode(
+  startToken: VbToken,
+  kind: "VariableDeclaration" | "ConstantDeclaration",
+  declarationKind: NonNullable<VbCstNode["declarationKind"]>,
+  tokens: VbToken[],
+  startIndex: number,
+): VbCstNode {
+  const endIndex = statementEndIndex(tokens, startIndex - 1);
+  const identifiers: VbToken[] = [];
+  let canReadIdentifier = true;
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    const current = tokens[index];
+    if (!current) {
+      continue;
+    }
+    if (current.text === "(") {
+      canReadIdentifier = false;
+      continue;
+    }
+    if (current.text === ")" || current.text === ",") {
+      canReadIdentifier = current.text === ",";
+      continue;
+    }
+    if (current.text === "=") {
+      break;
+    }
+    if (current.kind === "identifier" && canReadIdentifier) {
+      identifiers.push(current);
+      canReadIdentifier = false;
+    }
+  }
+  return {
+    kind,
+    start: startToken.start,
+    end: statementEnd(tokens, startIndex - 1),
+    tokens: statementTokens(tokens, startIndex - 1),
+    children: [],
+    declarationKind,
+    identifiers,
+  };
+}
+
+function statementEndIndex(tokens: VbToken[], startIndex: number): number {
+  let index = startIndex;
+  while (index + 1 < tokens.length) {
+    const next = tokens[index + 1];
+    if (next.kind === "newline" || next.text === ":") {
+      break;
+    }
+    index += 1;
+  }
+  return index;
+}
+
+function statementEnd(tokens: VbToken[], startIndex: number): number {
+  return tokens[statementEndIndex(tokens, startIndex)]?.end ?? tokens[startIndex]?.end ?? 0;
+}
+
+function statementTokens(tokens: VbToken[], startIndex: number): VbToken[] {
+  return tokens.slice(startIndex, statementEndIndex(tokens, startIndex) + 1);
+}
+
+function findKeyword(tokens: VbToken[], start: number, end: number, keyword: string): number {
+  for (let index = start; index <= end; index += 1) {
+    if (lowerToken(tokens[index]) === keyword) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function findCreateObjectCall(tokens: VbToken[], start: number, end: number): number {
+  for (let index = start; index + 2 <= end; index += 1) {
+    if (
+      lowerToken(tokens[index]) === "server" &&
+      tokens[index + 1]?.text === "." &&
+      lowerToken(tokens[index + 2]) === "createobject"
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function unquoteVbString(value: string): string {
+  return value.startsWith('"') && value.endsWith('"')
+    ? value.slice(1, -1).replaceAll('""', '"')
+    : value;
+}
+
 export function getVbscriptCompletions(
   parsed: AspParsedDocument,
   position: Position,
@@ -250,11 +776,11 @@ export function getVbscriptHover(
   context: VbProjectContext = {},
 ): string | undefined {
   const sourceOffset = offsetAt(parsed.text, position);
-  const word = wordAt(parsed.text, sourceOffset);
-  if (!word) {
+  const token = identifierTokenAt(parsed, sourceOffset);
+  if (!token) {
     return undefined;
   }
-  const builtin = builtinDescriptions[word.toLowerCase()];
+  const builtin = builtinDescriptions[token.text.toLowerCase()];
   if (builtin) {
     return builtin;
   }
@@ -300,16 +826,11 @@ export function getVbscriptReferences(
   const documents = context.documents ?? [parsed];
   const references: VbReference[] = [];
   for (const document of documents) {
-    for (const region of serverRegions(document)) {
-      const text = document.text.slice(region.contentStart, region.contentEnd);
-      const searchable = maskVbscriptStringsAndComments(text);
-      const tokenPattern = new RegExp(`\\b${escapeRegExp(symbol.name)}\\b`, "gi");
-      let match: RegExpExecArray | null;
-      while ((match = tokenPattern.exec(searchable)) !== null) {
-        const start = region.contentStart + match.index;
+    for (const token of identifierTokens(document)) {
+      if (token.text.toLowerCase() === symbol.name.toLowerCase()) {
         const resolved = resolveSymbolAt(
           document,
-          start + Math.floor(match[0].length / 2),
+          token.start + Math.floor(token.text.length / 2),
           symbols,
         );
         if (!resolved || !sameSymbol(resolved, symbol)) {
@@ -317,7 +838,7 @@ export function getVbscriptReferences(
         }
         references.push({
           uri: document.uri,
-          range: rangeFromOffsets(document.text, start, start + match[0].length),
+          range: rangeFromOffsets(document.text, token.start, token.end),
         });
       }
     }
@@ -335,8 +856,10 @@ export function getVbscriptRenameRange(
   if (!symbol || isBuiltinName(symbol.name)) {
     return undefined;
   }
-  const word = wordRangeAt(parsed.text, offset);
-  return word?.text.toLowerCase() === symbol.name.toLowerCase() ? word.range : undefined;
+  const token = identifierTokenAt(parsed, offset);
+  return token?.text.toLowerCase() === symbol.name.toLowerCase()
+    ? rangeFromOffsets(parsed.text, token.start, token.end)
+    : undefined;
 }
 
 export function getVbscriptDocumentHighlights(
@@ -358,11 +881,11 @@ export function getVbscriptSignatureHelp(
   context: VbProjectContext = {},
 ): SignatureHelp | undefined {
   const offset = offsetAt(parsed.text, position);
-  const call = callExpressionAt(parsed.text, offset);
+  const call = callExpressionAt(parsed, offset);
   if (!call) {
     return undefined;
   }
-  const activeParameter = countActiveParameter(parsed.text.slice(call.argumentsStart, offset));
+  const activeParameter = countActiveParameter(parsed, call.argumentsStart, offset);
   const builtin = builtinSignatures[call.name.toLowerCase()];
   const signatureLabels =
     builtin ??
@@ -384,162 +907,87 @@ export function getVbscriptSignatureHelp(
 
 export function collectVbscriptSymbols(parsed: AspParsedDocument): VbSymbol[] {
   const symbols: VbSymbol[] = [];
-  for (const region of serverRegions(parsed)) {
-    const text = parsed.text.slice(region.contentStart, region.contentEnd);
-    addDeclarationSymbols(parsed, region, text, symbols);
+  for (const node of vbDocuments(parsed)) {
+    addSymbolsFromVbNode(parsed, node, symbols);
   }
   inferAssignedTypes(parsed, symbols);
   return symbols;
 }
 
-function addDeclarationSymbols(
+function addSymbolsFromVbNode(
   parsed: AspParsedDocument,
-  region: AspRegion,
-  text: string,
+  node: VbCstNode,
   symbols: VbSymbol[],
 ): void {
-  const sourceText = parsed.text;
-  const searchableText = maskVbscriptStringsAndComments(text);
-  const contexts = buildContexts(sourceText, region.contentStart, searchableText);
-  addClassSymbols(parsed, region.contentStart, searchableText, symbols, contexts);
-  addProcedureSymbols(parsed, region.contentStart, searchableText, symbols, contexts);
-  addVariableSymbols(parsed, region.contentStart, searchableText, symbols, contexts);
-}
-
-function addClassSymbols(
-  parsed: AspParsedDocument,
-  baseOffset: number,
-  text: string,
-  symbols: VbSymbol[],
-  contexts: VbContext[],
-): void {
-  for (const context of contexts.filter((item) => item.kind === "class")) {
-    const start = baseOffset + context.nameStart;
+  if (node.kind === "Class" && node.nameToken) {
     symbols.push({
-      name: context.name,
+      name: node.nameToken.text,
       kind: "class",
-      range: rangeFromOffsets(parsed.text, start, start + context.name.length),
+      range: rangeFromOffsets(parsed.text, node.nameToken.start, node.nameToken.end),
       sourceUri: parsed.uri,
-      scopeRange: rangeFromOffsets(
-        parsed.text,
-        baseOffset + context.start,
-        baseOffset + context.end,
-      ),
+      scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
     });
   }
-}
-
-function addProcedureSymbols(
-  parsed: AspParsedDocument,
-  baseOffset: number,
-  text: string,
-  symbols: VbSymbol[],
-  contexts: VbContext[],
-): void {
-  const procedurePattern =
-    /^\s*(?:(Public|Private)\s+)?(Sub|Function|Property\s+(?:Get|Let|Set))\s+([A-Za-z][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?/gim;
-  let match: RegExpExecArray | null;
-  while ((match = procedurePattern.exec(text)) !== null) {
-    const name = match[3];
-    const absoluteStart = baseOffset + match.index + match[0].indexOf(name);
-    const context = innermostContext(contexts, match.index);
-    const scope =
-      context?.kind === "procedure" && context.name.toLowerCase() === name.toLowerCase()
-        ? context
-        : undefined;
-    const memberOf = context?.kind === "class" ? context.name : context?.parentClass;
-    const keyword = match[2].toLowerCase();
-    const kind: VbSymbolKind = keyword.startsWith("property")
-      ? "property"
-      : memberOf
-        ? "method"
-        : keyword === "sub"
-          ? "sub"
-          : "function";
+  if ((node.kind === "Procedure" || node.kind === "Property") && node.nameToken) {
+    const name = node.nameToken.text;
+    const kind: VbSymbolKind =
+      node.kind === "Property"
+        ? "property"
+        : node.memberOf
+          ? "method"
+          : node.procedureKind === "sub"
+            ? "sub"
+            : "function";
     symbols.push({
       name,
       kind,
-      range: rangeFromOffsets(parsed.text, absoluteStart, absoluteStart + name.length),
+      range: rangeFromOffsets(parsed.text, node.nameToken.start, node.nameToken.end),
       sourceUri: parsed.uri,
-      memberOf,
-      containerName: memberOf,
+      memberOf: node.memberOf,
+      containerName: node.memberOf,
       scopeName: undefined,
-      scopeRange: scope
-        ? rangeFromOffsets(parsed.text, baseOffset + scope.start, baseOffset + scope.end)
-        : undefined,
-      parameters: parseParameters(match[4] ?? ""),
+      scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
+      parameters: node.parameters?.map((token) => token.text) ?? [],
     });
-    for (const parameter of parseParameters(match[4] ?? "")) {
-      const parameterIndex = match[0].indexOf(parameter);
-      if (parameterIndex === -1) {
-        continue;
-      }
-      const parameterStart = baseOffset + match.index + parameterIndex;
+    for (const parameter of node.parameters ?? []) {
       symbols.push({
-        name: parameter,
+        name: parameter.text,
         kind: "variable",
-        range: rangeFromOffsets(parsed.text, parameterStart, parameterStart + parameter.length),
+        range: rangeFromOffsets(parsed.text, parameter.start, parameter.end),
         sourceUri: parsed.uri,
         scopeName: name,
-        scopeRange: scope
-          ? rangeFromOffsets(parsed.text, baseOffset + scope.start, baseOffset + scope.end)
-          : undefined,
+        scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
       });
     }
   }
-}
-
-function addVariableSymbols(
-  parsed: AspParsedDocument,
-  baseOffset: number,
-  text: string,
-  symbols: VbSymbol[],
-  contexts: VbContext[],
-): void {
-  const patterns: Array<[RegExp, "variable" | "constant"]> = [
-    [
-      /^\s*(?:Dim|ReDim(?:\s+Preserve)?|Private(?!\s+(?:Sub|Function|Property)\b)|Public(?!\s+(?:Sub|Function|Property)\b))\s+([A-Za-z][A-Za-z0-9_]*(?:\([^)]*\))?(?:\s*(?:,\s*|$)[A-Za-z][A-Za-z0-9_]*(?:\([^)]*\))?)*)/gim,
-      "variable",
-    ],
-    [/^\s*Const\s+([A-Za-z][A-Za-z0-9_]*)/gim, "constant"],
-    [/^\s*For\s+Each\s+([A-Za-z][A-Za-z0-9_]*)\s+In\b/gim, "variable"],
-  ];
-  for (const [pattern, baseKind] of patterns) {
-    let match: RegExpExecArray | null;
-    pattern.lastIndex = 0;
-    while ((match = pattern.exec(text)) !== null) {
-      const context = innermostContext(contexts, match.index);
-      const declaration = match[1];
-      for (const rawName of declaration.split(/\s*,\s*/)) {
-        const name = rawName.trim().match(/^[A-Za-z][A-Za-z0-9_]*/)?.[0];
-        if (!name) {
-          continue;
-        }
-        const localStart = match.index + match[0].indexOf(rawName);
-        const start = baseOffset + localStart;
-        const memberOf =
-          context?.kind === "class"
-            ? context.name
-            : context?.parentClass && !context.scopeName
-              ? context.parentClass
-              : undefined;
-        const scope = context?.kind === "procedure" ? context : undefined;
-        symbols.push({
-          name,
-          kind: memberOf && baseKind === "variable" ? "field" : baseKind,
-          range: rangeFromOffsets(parsed.text, start, start + name.length),
-          sourceUri: parsed.uri,
-          memberOf,
-          containerName: memberOf,
-          scopeName: scope?.name,
-          scopeRange: scope
-            ? rangeFromOffsets(parsed.text, baseOffset + scope.start, baseOffset + scope.end)
-            : context
-              ? rangeFromOffsets(parsed.text, baseOffset + context.start, baseOffset + context.end)
-              : undefined,
-        });
-      }
+  if (
+    node.kind === "VariableDeclaration" ||
+    node.kind === "ConstantDeclaration" ||
+    node.kind === "ForEach"
+  ) {
+    const baseKind: "variable" | "constant" =
+      node.kind === "ConstantDeclaration" ? "constant" : "variable";
+    const scope = scopeNodeAt(parsed, node.start);
+    const memberOf = scope ? undefined : (node.memberOf ?? parentClassName(parsed, node.start));
+    for (const identifier of node.identifiers ?? (node.nameToken ? [node.nameToken] : [])) {
+      symbols.push({
+        name: identifier.text,
+        kind: memberOf && baseKind === "variable" ? "field" : baseKind,
+        range: rangeFromOffsets(parsed.text, identifier.start, identifier.end),
+        sourceUri: parsed.uri,
+        memberOf,
+        containerName: memberOf,
+        scopeName: scope?.nameToken?.text,
+        scopeRange: scope
+          ? rangeFromOffsets(parsed.text, scope.start, scope.end)
+          : memberOf
+            ? rangeFromOffsets(parsed.text, node.start, node.end)
+            : undefined,
+      });
     }
+  }
+  for (const child of node.children) {
+    addSymbolsFromVbNode(parsed, child, symbols);
   }
 }
 
@@ -550,106 +998,85 @@ function inferAssignedTypes(parsed: AspParsedDocument, symbols: VbSymbol[]): voi
     list.push(symbol);
     byName.set(symbol.name.toLowerCase(), list);
   }
-  for (const region of serverRegions(parsed)) {
-    const rawText = parsed.text.slice(region.contentStart, region.contentEnd);
-    const text = maskVbscriptStringsAndComments(rawText);
-    const assignmentPattern =
-      /\bSet\s+([A-Za-z][A-Za-z0-9_]*)\s*=\s*New\s+([A-Za-z][A-Za-z0-9_]*)/gi;
-    let match: RegExpExecArray | null;
-    while ((match = assignmentPattern.exec(text)) !== null) {
-      const offset = region.contentStart + match.index;
-      const candidates = (byName.get(match[1].toLowerCase()) ?? []).filter(
-        (symbol) => symbol.kind === "variable" || symbol.kind === "field",
-      );
-      const visible =
-        candidates.find((candidate) =>
-          isSymbolVisibleAt(candidate, parsed.uri, parsed.text, offset),
-        ) ?? candidates[0];
-      if (visible) {
-        visible.typeName = match[2];
+  for (const document of vbDocuments(parsed)) {
+    for (const node of flattenVbNodes(document)) {
+      if (
+        (node.kind !== "SetNew" && node.kind !== "CreateObject") ||
+        !node.nameToken ||
+        !node.typeName
+      ) {
+        continue;
       }
-    }
-    const createObjectPattern =
-      /\bSet\s+([A-Za-z][A-Za-z0-9_]*)\s*=\s*Server\.CreateObject\s*\(\s*"([^"]+)"\s*\)/gi;
-    while ((match = createObjectPattern.exec(rawText)) !== null) {
-      const offset = region.contentStart + match.index;
-      const candidates = (byName.get(match[1].toLowerCase()) ?? []).filter(
+      const candidates = (byName.get(node.nameToken.text.toLowerCase()) ?? []).filter(
         (symbol) => symbol.kind === "variable" || symbol.kind === "field",
       );
       const visible =
         candidates.find((candidate) =>
-          isSymbolVisibleAt(candidate, parsed.uri, parsed.text, offset),
+          isSymbolVisibleAt(candidate, parsed.uri, parsed.text, node.start),
         ) ?? candidates[0];
       if (visible) {
-        visible.typeName = match[2];
+        visible.typeName = node.typeName;
       }
     }
   }
 }
 
-interface VbContext {
-  kind: "class" | "procedure";
-  name: string;
-  nameStart: number;
-  start: number;
-  end: number;
-  parentClass?: string;
-  scopeName?: string;
-}
-
-function buildContexts(sourceText: string, baseOffset: number, text: string): VbContext[] {
-  const starts: VbContext[] = [];
-  const contexts: VbContext[] = [];
-  const tokenPattern =
-    /^\s*(End\s+Class|End\s+Sub|End\s+Function|End\s+Property|Class\s+([A-Za-z][A-Za-z0-9_]*)|(?:(?:Public|Private)\s+)?(?:Sub|Function|Property\s+(?:Get|Let|Set))\s+([A-Za-z][A-Za-z0-9_]*))/gim;
-  let match: RegExpExecArray | null;
-  while ((match = tokenPattern.exec(text)) !== null) {
-    const token = match[1].toLowerCase();
-    const className = match[2];
-    const procedureName = match[3];
-    if (token.startsWith("class ") && className) {
-      const name = className;
-      starts.push({
-        kind: "class",
-        name,
-        nameStart: match.index + match[0].indexOf(name),
-        start: match.index,
-        end: text.length,
-      });
-      continue;
+function vbDocuments(parsed: AspParsedDocument): VbCstNode[] {
+  const documents: VbCstNode[] = [];
+  const visit = (node: AspCstNode): void => {
+    if (node.vbscript) {
+      documents.push(node.vbscript);
     }
-    if (!token.startsWith("end ") && procedureName) {
-      const name = procedureName;
-      const parentClass = [...starts].reverse().find((context) => context.kind === "class")?.name;
-      starts.push({
-        kind: "procedure",
-        name,
-        nameStart: match.index + match[0].indexOf(name),
-        start: match.index,
-        end: text.length,
-        parentClass,
-        scopeName: name,
-      });
-      continue;
+    for (const child of node.children ?? []) {
+      visit(child);
     }
-    const endKind = token.includes("class") ? "class" : "procedure";
-    const openIndex = findLastIndex(starts, (context) => context.kind === endKind);
-    if (openIndex !== -1) {
-      const [context] = starts.splice(openIndex, 1);
-      context.end = match.index + match[0].length;
-      contexts.push(context);
+  };
+  visit(parsed.cst);
+  if (documents.length === 0) {
+    for (const region of serverRegions(parsed)) {
+      documents.push(
+        parseVbscriptCst(
+          parsed.text.slice(region.contentStart, region.contentEnd),
+          parsed.text,
+          region.contentStart,
+        ),
+      );
     }
   }
-  contexts.push(...starts.map((context) => ({ ...context, end: text.length })));
-  return contexts.filter(
-    (context) => baseOffset + context.start >= 0 && baseOffset + context.end <= sourceText.length,
-  );
+  return documents;
 }
 
-function innermostContext(contexts: VbContext[], offset: number): VbContext | undefined {
-  return contexts
-    .filter((context) => offset >= context.start && offset <= context.end)
-    .sort((left, right) => right.start - left.start)[0];
+function flattenVbNodes(node: VbCstNode): VbCstNode[] {
+  return [node, ...node.children.flatMap((child) => flattenVbNodes(child))];
+}
+
+function parentClassName(parsed: AspParsedDocument, offset: number): string | undefined {
+  return enclosingVbNodes(parsed, offset)
+    .reverse()
+    .find((node) => node.kind === "Class")?.nameToken?.text;
+}
+
+function scopeNodeAt(parsed: AspParsedDocument, offset: number): VbCstNode | undefined {
+  return enclosingVbNodes(parsed, offset)
+    .reverse()
+    .find((node) => node.kind === "Procedure" || node.kind === "Property");
+}
+
+function enclosingVbNodes(parsed: AspParsedDocument, offset: number): VbCstNode[] {
+  const result: VbCstNode[] = [];
+  const visit = (node: VbCstNode): void => {
+    if (offset < node.start || offset > node.end) {
+      return;
+    }
+    result.push(node);
+    for (const child of node.children) {
+      visit(child);
+    }
+  };
+  for (const document of vbDocuments(parsed)) {
+    visit(document);
+  }
+  return result;
 }
 
 function currentClassName(
@@ -685,28 +1112,12 @@ function currentWithTypeName(
   offset: number,
   symbols: VbSymbol[],
 ): string | undefined {
-  for (const region of serverRegions(parsed)) {
-    if (offset < region.contentStart || offset > region.contentEnd) {
-      continue;
-    }
-    const localOffset = offset - region.contentStart;
-    const text = maskVbscriptStringsAndComments(
-      parsed.text.slice(region.contentStart, region.contentEnd),
-    );
-    const tokenPattern = /^\s*(With\s+([A-Za-z][A-Za-z0-9_]*)|End\s+With)\b/gim;
-    const stack: string[] = [];
-    let match: RegExpExecArray | null;
-    while ((match = tokenPattern.exec(text)) !== null && match.index < localOffset) {
-      if (match[2]) {
-        stack.push(match[2]);
-      } else {
-        stack.pop();
-      }
-    }
-    const ownerName = stack.at(-1);
-    return ownerName ? inferVariableType(ownerName, parsed, offset, symbols) : undefined;
-  }
-  return undefined;
+  const withNode = enclosingVbNodes(parsed, offset)
+    .reverse()
+    .find((node) => node.kind === "With" && node.nameToken);
+  return withNode?.nameToken
+    ? inferVariableType(withNode.nameToken.text, parsed, offset, symbols)
+    : undefined;
 }
 
 function classMemberCompletions(className: string, symbols: VbSymbol[]): CompletionItem[] {
@@ -756,7 +1167,7 @@ function resolveSymbolAt(
   offset: number,
   symbols: VbSymbol[],
 ): VbSymbol | undefined {
-  const member = memberAccessAt(parsed.text, offset);
+  const member = memberAccessAt(parsed, offset);
   if (member) {
     const className =
       member.owner === ""
@@ -772,28 +1183,32 @@ function resolveSymbolAt(
         )
       : undefined;
   }
-  const word = wordAt(parsed.text, offset);
-  if (!word) {
+  const token = identifierTokenAt(parsed, offset);
+  if (!token) {
     return undefined;
   }
   return visibleSymbols(parsed, offset, symbols)
-    .filter((symbol) => symbol.name.toLowerCase() === word.toLowerCase())
+    .filter((symbol) => symbol.name.toLowerCase() === token.text.toLowerCase())
     .sort((left, right) => symbolPriority(right) - symbolPriority(left))[0];
 }
 
 function memberAccessAt(
-  text: string,
+  parsed: AspParsedDocument,
   offset: number,
 ): { owner: string; member: string } | undefined {
-  const before = text.slice(Math.max(0, offset - 128), offset);
-  const after = text.slice(offset, offset + 64);
-  const left = before.match(/(?:([A-Za-z][A-Za-z0-9_]*)|)\.([A-Za-z][A-Za-z0-9_]*)?$/);
-  if (!left) {
+  const token = identifierTokenAt(parsed, offset);
+  if (!token) {
     return undefined;
   }
-  const memberRight = after.match(/^[A-Za-z0-9_]*/)?.[0] ?? "";
-  const member = `${left[2] ?? ""}${memberRight}`;
-  return member ? { owner: left[1] ?? "", member } : undefined;
+  const tokens = significantTokens(parsed);
+  const index = tokens.findIndex((item) => item.start === token.start && item.end === token.end);
+  if (tokens[index - 1]?.text !== ".") {
+    return undefined;
+  }
+  const owner = tokens[index - 2];
+  return owner?.kind === "identifier"
+    ? { owner: owner.text, member: token.text }
+    : { owner: "", member: token.text };
 }
 
 function diagnoseUndeclaredVariables(parsed: AspParsedDocument, symbols: VbSymbol[]): Diagnostic[] {
@@ -812,123 +1227,32 @@ function diagnoseUndeclaredVariables(parsed: AspParsedDocument, symbols: VbSymbo
     "me",
   ]);
   const diagnostics: Diagnostic[] = [];
-  const keywordSet = new Set([
-    "option",
-    "explicit",
-    "dim",
-    "redim",
-    "preserve",
-    "private",
-    "public",
-    "set",
-    "const",
-    "sub",
-    "function",
-    "property",
-    "get",
-    "let",
-    "end",
-    "if",
-    "then",
-    "else",
-    "elseif",
-    "for",
-    "each",
-    "in",
-    "next",
-    "to",
-    "step",
-    "while",
-    "wend",
-    "do",
-    "loop",
-    "until",
-    "select",
-    "case",
-    "class",
-    "new",
-    "with",
-    "call",
-    "and",
-    "or",
-    "not",
-    "mod",
-    "byval",
-    "byref",
-    "exit",
-  ]);
-  for (const region of serverRegions(parsed)) {
-    const text = parsed.text.slice(region.contentStart, region.contentEnd);
-    const searchableText = maskVbscriptStringsAndComments(text);
-    const tokenPattern = /\b[A-Za-z][A-Za-z0-9_]*\b/g;
-    let match: RegExpExecArray | null;
-    while ((match = tokenPattern.exec(searchableText)) !== null) {
-      const name = match[0];
-      const lower = name.toLowerCase();
-      const start = region.contentStart + match.index;
-      const previous = text.slice(Math.max(0, match.index - 24), match.index).toLowerCase();
-      if (
-        declaredBuiltins.has(lower) ||
-        keywordSet.has(lower) ||
-        visibleSymbols(parsed, start, symbols).some(
-          (symbol) => symbol.name.toLowerCase() === lower,
-        ) ||
-        /(?:dim|const|sub|function|class|property\s+(?:get|let|set)|new)\s+$/.test(previous) ||
-        previous.trimEnd().endsWith(".")
-      ) {
-        continue;
-      }
-      const next = searchableText.slice(match.index + name.length, match.index + name.length + 1);
-      if (next === "(" && /^[A-Z]/.test(name)) {
-        continue;
-      }
-      diagnostics.push({
-        severity: DiagnosticSeverity.Warning,
-        range: rangeFromOffsets(parsed.text, start, start + name.length),
-        message: `'${name}' is not declared under Option Explicit.`,
-        source: "asp-lsp-vbscript",
-      });
+  for (const token of identifierTokens(parsed)) {
+    const name = token.text;
+    const lower = name.toLowerCase();
+    const previous = previousSignificantToken(parsed, token.start);
+    const next = nextSignificantToken(parsed, token.end);
+    if (
+      declaredBuiltins.has(lower) ||
+      visibleSymbols(parsed, token.start, symbols).some(
+        (symbol) => symbol.name.toLowerCase() === lower,
+      ) ||
+      isDeclarationNameToken(parsed, token) ||
+      previous?.text === "."
+    ) {
+      continue;
     }
+    if (next?.text === "(" && /^[A-Z]/.test(name)) {
+      continue;
+    }
+    diagnostics.push({
+      severity: DiagnosticSeverity.Warning,
+      range: rangeFromOffsets(parsed.text, token.start, token.end),
+      message: `'${name}' is not declared under Option Explicit.`,
+      source: "asp-lsp-vbscript",
+    });
   }
   return diagnostics;
-}
-
-function parseParameters(text: string): string[] {
-  return text
-    .split(",")
-    .map((part) => part.trim().replace(/^(ByVal|ByRef)\s+/i, ""))
-    .map((part) => part.match(/^[A-Za-z][A-Za-z0-9_]*/)?.[0])
-    .filter((part): part is string => part !== undefined);
-}
-
-function maskVbscriptStringsAndComments(text: string): string {
-  const chars = text.split("");
-  let inString = false;
-  for (let index = 0; index < chars.length; index += 1) {
-    const char = chars[index];
-    if (char === '"') {
-      chars[index] = " ";
-      if (inString && chars[index + 1] === '"') {
-        chars[index + 1] = " ";
-        index += 1;
-        continue;
-      }
-      inString = !inString;
-      continue;
-    }
-    if (!inString && char === "'") {
-      while (index < chars.length && chars[index] !== "\n" && chars[index] !== "\r") {
-        chars[index] = " ";
-        index += 1;
-      }
-      index -= 1;
-      continue;
-    }
-    if (inString && char !== "\n" && char !== "\r") {
-      chars[index] = " ";
-    }
-  }
-  return chars.join("");
 }
 
 function getServerScriptText(parsed: AspParsedDocument): string {
@@ -976,60 +1300,93 @@ function dedupeCompletions(items: CompletionItem[]): CompletionItem[] {
   });
 }
 
-function wordAt(text: string, offset: number): string | undefined {
-  const left = text.slice(0, offset).match(/[A-Za-z][A-Za-z0-9_]*$/)?.[0] ?? "";
-  const right = text.slice(offset).match(/^[A-Za-z0-9_]*/)?.[0] ?? "";
-  return left || right ? `${left}${right}` : undefined;
+function significantTokens(parsed: AspParsedDocument): VbToken[] {
+  return vbDocuments(parsed)
+    .flatMap((document) => document.tokens)
+    .filter((token) => !isTriviaToken(token));
 }
 
-function wordRangeAt(text: string, offset: number): { text: string; range: Range } | undefined {
-  const left = text.slice(0, offset).match(/[A-Za-z][A-Za-z0-9_]*$/)?.[0] ?? "";
-  const right = text.slice(offset).match(/^[A-Za-z0-9_]*/)?.[0] ?? "";
-  const word = `${left}${right}`;
-  if (!word) {
-    return undefined;
-  }
-  const start = offset - left.length;
-  return { text: word, range: rangeFromOffsets(text, start, start + word.length) };
+function identifierTokens(parsed: AspParsedDocument): VbToken[] {
+  return significantTokens(parsed).filter((token) => token.kind === "identifier");
+}
+
+function identifierTokenAt(parsed: AspParsedDocument, offset: number): VbToken | undefined {
+  return identifierTokens(parsed).find((token) => offset >= token.start && offset <= token.end);
+}
+
+function previousSignificantToken(parsed: AspParsedDocument, offset: number): VbToken | undefined {
+  return significantTokens(parsed)
+    .filter((token) => token.end <= offset)
+    .at(-1);
+}
+
+function nextSignificantToken(parsed: AspParsedDocument, offset: number): VbToken | undefined {
+  return significantTokens(parsed).find((token) => token.start >= offset);
+}
+
+function isDeclarationNameToken(parsed: AspParsedDocument, token: VbToken): boolean {
+  return vbDocuments(parsed)
+    .flatMap((document) => flattenVbNodes(document))
+    .some(
+      (node) =>
+        ((node.kind === "Class" || node.kind === "Procedure" || node.kind === "Property") &&
+          node.nameToken === token) ||
+        node.parameters?.includes(token) ||
+        node.identifiers?.includes(token),
+    );
 }
 
 function callExpressionAt(
-  text: string,
+  parsed: AspParsedDocument,
   offset: number,
 ): { name: string; argumentsStart: number } | undefined {
-  const masked = maskVbscriptStringsAndComments(text.slice(0, offset));
+  const tokens = significantTokens(parsed).filter((token) => token.start < offset);
   let depth = 0;
-  for (let index = masked.length - 1; index >= 0; index -= 1) {
-    const char = masked[index];
-    if (char === ")") {
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    const current = tokens[index];
+    if (current.text === ")") {
       depth += 1;
       continue;
     }
-    if (char !== "(") {
+    if (current.text !== "(") {
       continue;
     }
     if (depth > 0) {
       depth -= 1;
       continue;
     }
-    const before = masked
-      .slice(0, index)
-      .match(/([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)?)\s*$/);
-    return before ? { name: before[1], argumentsStart: index + 1 } : undefined;
+    const name = callNameBefore(tokens, index);
+    return name ? { name, argumentsStart: current.end } : undefined;
   }
   return undefined;
 }
 
-function countActiveParameter(text: string): number {
-  const masked = maskVbscriptStringsAndComments(text);
+function callNameBefore(tokens: VbToken[], openParenIndex: number): string | undefined {
+  const before = tokens[openParenIndex - 1];
+  if (!before || before.kind !== "identifier") {
+    return undefined;
+  }
+  if (
+    tokens[openParenIndex - 2]?.text === "." &&
+    tokens[openParenIndex - 3]?.kind === "identifier"
+  ) {
+    return `${tokens[openParenIndex - 3].text}.${before.text}`;
+  }
+  return before.text;
+}
+
+function countActiveParameter(parsed: AspParsedDocument, start: number, offset: number): number {
+  const tokens = significantTokens(parsed).filter(
+    (token) => token.start >= start && token.end <= offset,
+  );
   let depth = 0;
   let count = 0;
-  for (const char of masked) {
-    if (char === "(") {
+  for (const token of tokens) {
+    if (token.text === "(") {
       depth += 1;
-    } else if (char === ")" && depth > 0) {
+    } else if (token.text === ")" && depth > 0) {
       depth -= 1;
-    } else if (char === "," && depth === 0) {
+    } else if (token.text === "," && depth === 0) {
       count += 1;
     }
   }
@@ -1124,8 +1481,4 @@ function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
     }
   }
   return -1;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -25,6 +25,19 @@ export interface AspSettings {
   checkJs?: boolean;
   includePaths?: string[];
   legacyEncoding?: string;
+  format?: AspFormatSettings;
+}
+
+export interface AspFormatSettings {
+  indentSize?: number;
+  indentStyle?: "space" | "tab";
+  uppercaseKeywords?: boolean;
+  alignAssignments?: boolean;
+}
+
+export interface AspFormattingOptions extends AspFormatSettings {
+  tabSize: number;
+  insertSpaces: boolean;
 }
 
 export interface AspRegion {
@@ -54,6 +67,7 @@ export interface AspInclude {
 export interface AspParsedDocument {
   uri: string;
   text: string;
+  cst: AspCstNode;
   regions: AspRegion[];
   directives: AspDirective[];
   includes: AspInclude[];
@@ -81,4 +95,125 @@ export interface VirtualDocument {
   languageId: AspEmbeddedLanguage;
   text: string;
   sourceMap: SourceMap;
+}
+
+export type TriviaKind = "whitespace" | "comment" | "newline";
+
+export interface Trivia {
+  kind: TriviaKind;
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface ParseError {
+  message: string;
+  start: number;
+  end: number;
+}
+
+export type AspTokenKind =
+  | "text"
+  | "aspOpen"
+  | "aspExpressionOpen"
+  | "aspDirectiveOpen"
+  | "aspClose"
+  | "tagOpen"
+  | "tagClose"
+  | "tagName"
+  | "attributeName"
+  | "attributeEquals"
+  | "attributeValue"
+  | "includeDirective";
+
+export interface AspToken {
+  kind: AspTokenKind;
+  start: number;
+  end: number;
+  text: string;
+  leadingTrivia?: Trivia[];
+  trailingTrivia?: Trivia[];
+}
+
+export type AspCstNodeKind =
+  | "Document"
+  | "HtmlText"
+  | "AspBlock"
+  | "AspExpression"
+  | "AspDirective"
+  | "IncludeDirective"
+  | "StyleElement"
+  | "ClientScriptElement"
+  | "ServerScriptElement"
+  | "StyleAttribute";
+
+export interface AspCstNode {
+  kind: AspCstNodeKind;
+  start: number;
+  end: number;
+  contentStart: number;
+  contentEnd: number;
+  language?: AspEmbeddedLanguage;
+  text?: string;
+  tokens: AspToken[];
+  children: AspCstNode[];
+  attributes?: Record<string, string | true>;
+  regionKind?: AspRegionKind;
+  directive?: AspDirective;
+  include?: AspInclude;
+  vbscript?: VbCstNode;
+  errors?: ParseError[];
+}
+
+export type VbTokenKind =
+  | "identifier"
+  | "keyword"
+  | "string"
+  | "number"
+  | "symbol"
+  | "comment"
+  | "whitespace"
+  | "newline"
+  | "unknown";
+
+export interface VbToken {
+  kind: VbTokenKind;
+  start: number;
+  end: number;
+  text: string;
+  value?: string;
+}
+
+export type VbCstNodeKind =
+  | "Document"
+  | "Class"
+  | "Procedure"
+  | "Property"
+  | "VariableDeclaration"
+  | "ConstantDeclaration"
+  | "ForEach"
+  | "With"
+  | "SetNew"
+  | "CreateObject";
+
+export interface VbCstNode {
+  kind: VbCstNodeKind;
+  start: number;
+  end: number;
+  contentStart?: number;
+  contentEnd?: number;
+  nameToken?: VbToken;
+  tokens: VbToken[];
+  children: VbCstNode[];
+  procedureKind?: "sub" | "function" | "property";
+  propertyAccessor?: "get" | "let" | "set";
+  declarationKind?: "dim" | "redim" | "public" | "private" | "const" | "forEach";
+  identifiers?: VbToken[];
+  parameters?: VbToken[];
+  typeName?: string;
+  memberOf?: string;
+  scopeName?: string;
+  scopeStart?: number;
+  scopeEnd?: number;
+  errors?: ParseError[];
 }

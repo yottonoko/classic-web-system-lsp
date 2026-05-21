@@ -8,6 +8,7 @@ The implementation treats `.asp`, `.asa`, and `.inc` files as mixed documents:
 - HTML regions delegated to `vscode-html-languageservice`
 - CSS regions and `style=""` attributes delegated to `vscode-css-languageservice`
 - client JavaScript regions delegated to the TypeScript language service
+- Classic ASP and VBScript boundaries parsed into a lossless CST for editor features and formatting
 - VBScript server regions handled by the built-in v1 analyzer
 
 ## Commands
@@ -22,7 +23,7 @@ pnpm run build
 pnpm run package:vsix
 ```
 
-The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, code actions, and virtual include roots.
+The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, code actions, formatting, and virtual include roots.
 
 ## VBScript Support
 
@@ -75,15 +76,19 @@ The VSIX build copies the standalone language server and its runtime dependencie
 - `aspLsp.virtualRoot`: root directory for `<!-- #include virtual="..." -->`
 - `aspLsp.virtualRoots`: additional virtual include roots
 - `aspLsp.legacyEncoding`: encoding for unopened include files, `utf8`, `shift_jis`, or `cp932`
+- `aspLsp.format.indentSize`: Classic ASP formatter indent size; unset uses editor options
+- `aspLsp.format.indentStyle`: `space` or `tab`; unset uses editor options
+- `aspLsp.format.uppercaseKeywords`: format VBScript keywords as uppercase
+- `aspLsp.format.alignAssignments`: align simple consecutive VBScript assignments
 
 ## Current v1 Limits
 
-- VBScript analysis is intentionally conservative. It is regex/scanner based rather than a full VBScript compiler.
+- VBScript analysis is intentionally conservative. It uses an error-tolerant CST rather than a full VBScript compiler.
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed or type-checked.
 - `Server.CreateObject` support is static stub completion only.
-- Full-document formatting is disabled. Range formatting is returned only for HTML-only ranges so ASP server regions are not erased.
+- Full-document formatting is CST based and conservative. HTML-only ranges still use `vscode-html-languageservice`; ASP/VBScript ranges are formatted by the built-in formatter.
 
 ## Assistant Instructions
 

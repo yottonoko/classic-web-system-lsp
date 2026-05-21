@@ -1,6 +1,15 @@
 import { DiagnosticSeverity } from "vscode-languageserver-types";
-import type { AspDirective, AspInclude, AspParsedDocument, AspRegion, AspSettings } from "./types";
+import type {
+  AspCstNode,
+  AspDirective,
+  AspInclude,
+  AspParsedDocument,
+  AspRegion,
+  AspSettings,
+  AspToken,
+} from "./types";
 import { rangeFromOffsets } from "./position";
+import { parseVbscriptCst } from "./vbscript";
 
 const includePattern =
   /<!--\s*#include\s+(file|virtual)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))\s*-->/gi;
@@ -11,6 +20,45 @@ export function parseAspDocument(
   text: string,
   settings: AspSettings = {},
 ): AspParsedDocument {
+  const cst = parseAspCst(uri, text, settings);
+  const diagnostics =
+    cst.errors?.map((error) => ({
+      severity: DiagnosticSeverity.Error,
+      range: rangeFromOffsets(text, error.start, error.end),
+      message: error.message,
+      source: "asp-lsp",
+    })) ?? [];
+  const inlineRegions = cst.children
+    .filter((node) => node.regionKind)
+    .map(nodeToRegion)
+    .filter((region): region is AspRegion => region !== undefined);
+  const directives = cst.children
+    .map((node) => node.directive)
+    .filter((directive): directive is AspDirective => directive !== undefined);
+  const includes = cst.children
+    .map((node) => node.include)
+    .filter((include): include is AspInclude => include !== undefined);
+  const directiveLanguage = directives
+    .map((directive) => directive.attributes.language ?? directive.attributes.LANGUAGE)
+    .find((value): value is string => typeof value === "string");
+  const defaultLanguage = normalizeScriptLanguage(
+    directiveLanguage ?? settings.defaultLanguage ?? "VBScript",
+  );
+  const regions = buildRegions(text, inlineRegions, defaultLanguage);
+
+  return {
+    uri,
+    text,
+    cst,
+    regions,
+    directives,
+    includes,
+    defaultLanguage,
+    diagnostics,
+  };
+}
+
+export function parseAspCst(uri: string, text: string, settings: AspSettings = {}): AspCstNode {
   const diagnostics: AspParsedDocument["diagnostics"] = [];
   const inlineRegions = parseInlineAspRegions(text, diagnostics);
   const tagRegions = [...parseTagRegions(text), ...parseStyleAttributeRegions(text)];
@@ -52,16 +100,38 @@ export function parseAspDocument(
     };
   });
   const regions = buildRegions(text, [...inlineRegions, ...scriptRegions], defaultLanguage);
-
-  return {
-    uri,
+  const nodes: AspCstNode[] = [
+    ...regions.map((region) => regionToNode(text, region)),
+    ...includes.map((include) => includeToNode(text, include)),
+  ].sort(
+    (left, right) => left.start - right.start || left.end - left.start - (right.end - right.start),
+  );
+  for (const directive of directives) {
+    const node = nodes.find(
+      (item) => item.start === directive.offset && item.kind === "AspDirective",
+    );
+    if (node) {
+      node.directive = directive;
+      node.attributes = directive.attributes;
+    }
+  }
+  const root: AspCstNode = {
+    kind: "Document",
+    start: 0,
+    end: text.length,
+    contentStart: 0,
+    contentEnd: text.length,
     text,
-    regions,
-    directives,
-    includes,
-    defaultLanguage,
-    diagnostics,
+    tokens: nodes.flatMap((node) => node.tokens),
+    children: nodes,
+    errors: diagnostics.map((diagnostic) => ({
+      message: diagnostic.message,
+      start: offsetFromRange(text, diagnostic.range.start),
+      end: offsetFromRange(text, diagnostic.range.end),
+    })),
   };
+  void uri;
+  return root;
 }
 
 function parseInlineAspRegions(
@@ -187,6 +257,165 @@ function parseStyleAttributeRegions(text: string): AspRegion[] {
     }
   }
   return regions;
+}
+
+function regionToNode(text: string, region: AspRegion): AspCstNode {
+  const kind: AspCstNode["kind"] =
+    region.kind === "html"
+      ? "HtmlText"
+      : region.kind === "asp-expression"
+        ? "AspExpression"
+        : region.kind === "asp-directive"
+          ? "AspDirective"
+          : region.kind === "style"
+            ? "StyleElement"
+            : region.kind === "client-script"
+              ? "ClientScriptElement"
+              : region.kind === "server-script"
+                ? "ServerScriptElement"
+                : region.kind === "style-attribute"
+                  ? "StyleAttribute"
+                  : "AspBlock";
+  const node: AspCstNode = {
+    kind,
+    start: region.start,
+    end: region.end,
+    contentStart: region.contentStart,
+    contentEnd: region.contentEnd,
+    language: region.language,
+    text: text.slice(region.start, region.end),
+    tokens: regionTokens(text, region),
+    children: [],
+    attributes: region.attributes,
+    regionKind: region.kind,
+  };
+  if (region.language === "vbscript" || region.language === "jscript") {
+    node.vbscript = parseVbscriptCst(
+      text.slice(region.contentStart, region.contentEnd),
+      text,
+      region.contentStart,
+    );
+  }
+  return node;
+}
+
+function includeToNode(text: string, include: AspInclude): AspCstNode {
+  return {
+    kind: "IncludeDirective",
+    start: include.offset,
+    end: offsetFromRange(text, include.range.end),
+    contentStart: include.offset,
+    contentEnd: offsetFromRange(text, include.range.end),
+    language: "html",
+    text: text.slice(include.offset, offsetFromRange(text, include.range.end)),
+    tokens: [
+      {
+        kind: "includeDirective",
+        start: include.offset,
+        end: offsetFromRange(text, include.range.end),
+        text: text.slice(include.offset, offsetFromRange(text, include.range.end)),
+      },
+    ],
+    children: [],
+    include,
+  };
+}
+
+function nodeToRegion(node: AspCstNode): AspRegion | undefined {
+  if (!node.regionKind || !node.language) {
+    return undefined;
+  }
+  return {
+    kind: node.regionKind,
+    language: node.language,
+    start: node.start,
+    end: node.end,
+    contentStart: node.contentStart,
+    contentEnd: node.contentEnd,
+    attributes: node.attributes,
+  };
+}
+
+function regionTokens(text: string, region: AspRegion): AspToken[] {
+  if (
+    region.kind === "asp-block" ||
+    region.kind === "asp-expression" ||
+    region.kind === "asp-directive"
+  ) {
+    const openKind =
+      region.kind === "asp-expression"
+        ? "aspExpressionOpen"
+        : region.kind === "asp-directive"
+          ? "aspDirectiveOpen"
+          : "aspOpen";
+    return [
+      {
+        kind: openKind,
+        start: region.start,
+        end: region.contentStart,
+        text: text.slice(region.start, region.contentStart),
+      },
+      {
+        kind: "text",
+        start: region.contentStart,
+        end: region.contentEnd,
+        text: text.slice(region.contentStart, region.contentEnd),
+      },
+      {
+        kind: "aspClose",
+        start: region.contentEnd,
+        end: region.end,
+        text: text.slice(region.contentEnd, region.end),
+      },
+    ];
+  }
+  if (region.kind === "html") {
+    return [
+      {
+        kind: "text",
+        start: region.start,
+        end: region.end,
+        text: text.slice(region.start, region.end),
+      },
+    ];
+  }
+  return [
+    {
+      kind: "tagOpen",
+      start: region.start,
+      end: region.contentStart,
+      text: text.slice(region.start, region.contentStart),
+    },
+    {
+      kind: "text",
+      start: region.contentStart,
+      end: region.contentEnd,
+      text: text.slice(region.contentStart, region.contentEnd),
+    },
+    {
+      kind: "tagClose",
+      start: region.contentEnd,
+      end: region.end,
+      text: text.slice(region.contentEnd, region.end),
+    },
+  ];
+}
+
+function offsetFromRange(text: string, position: { line: number; character: number }): number {
+  let line = 0;
+  let character = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (line === position.line && character === position.character) {
+      return index;
+    }
+    if (text[index] === "\n") {
+      line += 1;
+      character = 0;
+    } else {
+      character += 1;
+    }
+  }
+  return text.length;
 }
 
 function buildRegions(

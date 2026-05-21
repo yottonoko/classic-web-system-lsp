@@ -3,11 +3,15 @@ import {
   analyzeVbscript,
   buildVirtualDocuments,
   collectVbscriptSymbols,
+  formatAspDocument,
+  formatAspRange,
   getVbscriptCompletions,
   getVbscriptDefinition,
   getVbscriptHover,
   getVbscriptSignatureHelp,
+  parseAspCst,
   parseAspDocument,
+  parseVbscriptCst,
 } from "../src";
 
 describe("parseAspDocument", () => {
@@ -84,9 +88,42 @@ Response.Write name
     const serverScript = parsed.regions.find((region) => region.kind === "server-script");
     expect(serverScript?.language).toBe("vbscript");
   });
+
+  it("builds a lossless ASP CST with embedded VBScript CST nodes", () => {
+    const source = `<%@ LANGUAGE="VBScript" %>
+<!-- #include file="inc/common.inc" -->
+<script runat="server">
+Sub Save(value)
+End Sub
+</script>
+<style>.x { color: red; }</style>
+<div style="display: block"><%= title %></div>`;
+    const cst = parseAspCst("file:///site/default.asp", source);
+    expect(cst.text).toBe(source);
+    expect(cst.children.some((node) => node.kind === "IncludeDirective")).toBe(true);
+    expect(cst.children.some((node) => node.kind === "StyleAttribute")).toBe(true);
+    const server = cst.children.find((node) => node.kind === "ServerScriptElement");
+    expect(server?.vbscript?.children.some((node) => node.kind === "Procedure")).toBe(true);
+  });
 });
 
 describe("VBScript analysis", () => {
+  it("builds error-tolerant VBScript CST declarations and preserves trivia tokens", () => {
+    const cst = parseVbscriptCst(`Class Broken
+  Public Name
+  Sub Save(value)
+' trailing comment`);
+    expect(cst.tokens.some((token) => token.kind === "comment")).toBe(true);
+    expect(
+      cst.children.some((node) => node.kind === "Class" && node.nameToken?.text === "Broken"),
+    ).toBe(true);
+    expect(
+      cst.children
+        .flatMap((node) => node.children)
+        .some((node) => node.kind === "Procedure" && node.nameToken?.text === "Save"),
+    ).toBe(true);
+  });
+
   it("completes built-ins and declared symbols", () => {
     const source = `<% Option Explicit
 Dim customerName
@@ -220,6 +257,10 @@ Response.Write BuildName("Ada", "Lovelace")
 %>`,
     );
     const symbols = collectVbscriptSymbols(parsed);
+    const withNode = parsed.cst.children
+      .flatMap((node) => node.vbscript?.children ?? [])
+      .find((node) => node.kind === "With");
+    expect(withNode?.end).toBeLessThan(parsed.text.indexOf("ReDim"));
     expect(symbols.some((symbol) => symbol.name === "items" && symbol.kind === "variable")).toBe(
       true,
     );
@@ -235,5 +276,81 @@ Response.Write BuildName("Ada", "Lovelace")
         activeParameter: 1,
       }),
     );
+  });
+});
+
+describe("ASP formatting", () => {
+  it("formats full documents without erasing ASP delimiters", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<html>
+<body>
+<% Option Explicit
+If enabled Then
+Response.Write "ok"
+End If
+%>
+<%= title %>
+</body>
+</html>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits).toHaveLength(1);
+    expect(edits[0].newText).toContain("<%");
+    expect(edits[0].newText).toContain("%>");
+    expect(edits[0].newText).toContain("  Response.Write");
+    expect(edits[0].newText).toContain("<%= title %>");
+  });
+
+  it("formats ASP ranges on CST node boundaries", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<div></div>
+<%
+If enabled Then
+Response.Write "ok"
+End If
+%>`,
+    );
+    const edits = formatAspRange(
+      parsed,
+      {
+        start: { line: 1, character: 0 },
+        end: { line: 5, character: 2 },
+      },
+      { tabSize: 2, insertSpaces: true },
+    );
+    expect(edits[0].newText).toContain("  Response.Write");
+    expect(edits[0].newText).not.toContain("<div>");
+  });
+
+  it("does not duplicate nested ASP expressions inside non-server regions", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<style>.x { color: <%= themeColor %>; }</style>
+<%value=1%>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    const formatted = edits[0].newText;
+    expect(formatted.match(/themeColor/g)).toHaveLength(1);
+    expect(formatted).toContain("<% value = 1 %>");
+  });
+
+  it("aligns simple VBScript assignments when requested", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim first
+Dim longerName
+first=1
+longerName=2
+%>`,
+    );
+    const edits = formatAspDocument(parsed, {
+      tabSize: 2,
+      insertSpaces: true,
+      alignAssignments: true,
+    });
+    expect(edits[0].newText).toContain("first      = 1\nlongerName = 2");
   });
 });

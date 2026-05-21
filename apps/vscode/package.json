@@ -93,6 +93,29 @@
           ],
           "default": "utf8",
           "description": "Encoding used when reading unopened include files."
+        },
+        "aspLsp.format.indentSize": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Indent size used by the Classic ASP formatter. When unset, editor formatting options are used."
+        },
+        "aspLsp.format.indentStyle": {
+          "type": "string",
+          "enum": [
+            "space",
+            "tab"
+          ],
+          "description": "Indent style used by the Classic ASP formatter. When unset, editor formatting options are used."
+        },
+        "aspLsp.format.uppercaseKeywords": {
+          "type": "boolean",
+          "default": false,
+          "description": "Format VBScript keywords using uppercase spelling."
+        },
+        "aspLsp.format.alignAssignments": {
+          "type": "boolean",
+          "default": false,
+          "description": "Align simple consecutive VBScript assignments."
         }
       }
     }

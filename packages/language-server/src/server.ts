@@ -38,6 +38,8 @@ import {
   analyzeVbscript,
   buildVirtualDocuments,
   collectVbscriptSymbols,
+  formatAspDocument,
+  formatAspRange,
   getVbscriptCompletions,
   getVbscriptDefinition,
   getVbscriptDocumentHighlights,
@@ -115,7 +117,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         full: true,
         range: false,
       },
-      documentFormattingProvider: false,
+      documentFormattingProvider: true,
       documentRangeFormattingProvider: true,
     },
   };
@@ -392,6 +394,17 @@ connection.onDocumentLinks((params) => {
   });
 });
 
+connection.onDocumentFormatting((params) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  return formatAspDocument(
+    cached.parsed,
+    formatOptions(params.options, cachedSettings(cached.source.uri)),
+  );
+});
+
 connection.onDocumentRangeFormatting((params) => {
   const cached = getCached(params.textDocument.uri);
   if (!cached) {
@@ -399,14 +412,22 @@ connection.onDocumentRangeFormatting((params) => {
   }
   const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.range.start));
   if (!region || region.language !== "html") {
-    return [];
+    return formatAspRange(
+      cached.parsed,
+      params.range,
+      formatOptions(params.options, cachedSettings(cached.source.uri)),
+    );
   }
   const virtual = cached.virtuals.get("html");
   if (!virtual) {
     return [];
   }
   if (rangeOverlapsNonHtml(cached, params.range)) {
-    return [];
+    return formatAspRange(
+      cached.parsed,
+      params.range,
+      formatOptions(params.options, cachedSettings(cached.source.uri)),
+    );
   }
   return htmlService.format(toTextDocument(virtual), params.range, {
     tabSize: params.options.tabSize,
@@ -883,6 +904,33 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     includePaths,
     legacyEncoding:
       typeof settings.legacyEncoding === "string" ? settings.legacyEncoding : undefined,
+    format: normalizeFormatSettings(settings),
+  };
+}
+
+function normalizeFormatSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["format"] {
+  const raw = settings.format;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const indentStyle =
+    record.indentStyle === "tab" || record.indentStyle === "space" ? record.indentStyle : undefined;
+  return {
+    indentSize:
+      typeof record.indentSize === "number" && record.indentSize > 0
+        ? record.indentSize
+        : undefined,
+    indentStyle,
+    uppercaseKeywords: record.uppercaseKeywords === true,
+    alignAssignments: record.alignAssignments === true,
+  };
+}
+
+function formatOptions(options: { tabSize: number; insertSpaces: boolean }, settings: AspSettings) {
+  return {
+    tabSize: options.tabSize,
+    insertSpaces: options.insertSpaces,
+    ...settings.format,
   };
 }
 

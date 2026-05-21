@@ -375,6 +375,63 @@ Response.Write miss▮ingName
     }
   });
 
+  it("formats full ASP documents and ASP ranges over JSON-RPC", async () => {
+    const source = `<html>
+<body>
+<% Option Explicit
+If enabled Then
+Response.Write "ok"
+End If
+%>
+<div>done</div>
+</body>
+</html>`;
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/format.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: source,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const fullEdits = await server.request("textDocument/formatting", {
+        textDocument: { uri },
+        options: { tabSize: 2, insertSpaces: true },
+      });
+      const fullText = JSON.stringify(fullEdits);
+      expect(fullText).toContain("<%");
+      expect(fullText).toContain("  Response.Write");
+
+      const rangeEdits = await server.request("textDocument/rangeFormatting", {
+        textDocument: { uri },
+        range: {
+          start: { line: 2, character: 0 },
+          end: { line: 6, character: 2 },
+        },
+        options: { tabSize: 2, insertSpaces: true },
+      });
+      const rangeText = JSON.stringify(rangeEdits);
+      expect(rangeText).toContain("  Response.Write");
+      expect(rangeText).not.toContain("<html>");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("resolves virtual includes from configured roots", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
     const pageDir = path.join(tempDir, "pages");

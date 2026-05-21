@@ -4,7 +4,7 @@ This repository contains a Classic ASP language server and a VS Code extension.
 
 ## Project Layout
 
-- `packages/core`: Classic ASP parser, embedded region scanner, virtual documents, source maps, and VBScript helpers.
+- `packages/core`: Classic ASP CST/parser, embedded region scanner, virtual documents, source maps, formatter, and VBScript helpers.
 - `packages/language-server`: LSP server entrypoint, diagnostics, completion, hover, document links, folding, and formatting routing.
 - `apps/vscode`: VS Code extension client, language registration, grammar, and extension package tests.
 
@@ -38,6 +38,7 @@ node packages/language-server/dist/server.js --stdio
 ## Implementation Rules
 
 - Preserve UTF-16 offsets and LSP ranges when adding parser or source-map behavior.
+- Keep Classic ASP and VBScript LSP features based on the CST where practical; do not add new regex-only symbol extraction.
 - Route embedded HTML, CSS, and JavaScript through their language services when practical.
 - Treat `.inc` files as fragments. Do not assume a complete HTML document.
 - Do not let formatting edits erase or rewrite Classic ASP server regions.
