@@ -155,9 +155,56 @@
           "type": "boolean",
           "default": true,
           "description": "Show Classic ASP include CodeLens entries."
+        },
+        "aspLsp.iis.url": {
+          "type": "string",
+          "default": "http://localhost/",
+          "description": "URL opened by the Classic ASP IIS debug helper command."
+        },
+        "aspLsp.iis.webRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Web root used by the Classic ASP IIS debug helper command."
+        },
+        "aspLsp.iis.browser": {
+          "type": "string",
+          "default": "pwa-chrome",
+          "description": "VS Code debug type used by the Classic ASP IIS debug helper command."
         }
       }
-    }
+    },
+    "commands": [
+      {
+        "command": "aspLsp.restartServer",
+        "title": "Classic ASP: Restart Language Server"
+      },
+      {
+        "command": "aspLsp.reindexWorkspace",
+        "title": "Classic ASP: Reindex Workspace"
+      },
+      {
+        "command": "aspLsp.openOutput",
+        "title": "Classic ASP: Open Output"
+      },
+      {
+        "command": "aspLsp.debugIisUrl",
+        "title": "Classic ASP: Debug IIS URL"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "asp-lsp",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "Classic ASP LSP workspace task name."
+          }
+        }
+      }
+    ]
   },
   "activationEvents": [
     "onLanguage:classic-asp"

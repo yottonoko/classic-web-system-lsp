@@ -110,6 +110,77 @@ describe("stdio LSP server", () => {
     }
   });
 
+  it("delegates JavaScript hover, navigation, rename and signature help to TypeScript", async () => {
+    const marked = markedDocument(`<script>
+function greet(name) {
+  return name.toUpperCase();
+}
+const message = gre▮et("Ada");
+</script>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/js-lsp.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const hover = await server.request("textDocument/hover", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(hover)).toContain("greet");
+
+      const definition = await server.request("textDocument/definition", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(definition)).toContain('"line":1');
+
+      const references = await server.request("textDocument/references", {
+        textDocument: { uri },
+        position: marked.position,
+        context: { includeDeclaration: true },
+      });
+      expect(Array.isArray(references) ? references.length : 0).toBeGreaterThan(1);
+
+      const prepareRename = await server.request("textDocument/prepareRename", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(prepareRename)).toContain('"line":4');
+
+      const rename = await server.request("textDocument/rename", {
+        textDocument: { uri },
+        position: marked.position,
+        newName: "formatName",
+      });
+      expect(JSON.stringify(rename)).toContain("formatName");
+
+      const signature = await server.request("textDocument/signatureHelp", {
+        textDocument: { uri },
+        position: positionAt(marked.text, marked.text.indexOf('"Ada"')),
+      });
+      expect(JSON.stringify(signature)).toContain("name");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("publishes CSS and JavaScript diagnostics over JSON-RPC", async () => {
     const server = new RpcServer();
     try {
@@ -475,6 +546,90 @@ End Sub
         textDocument: { uri },
       });
       expect(JSON.stringify(codeLens)).toContain("references");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("indexes unopened workspace ASP files for workspace symbols and supports reindex command", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-index-"));
+    const page = path.join(tempDir, "unopened.asp");
+    fs.writeFileSync(
+      page,
+      `<%
+Function IndexedTitle()
+End Function
+%>`,
+      "utf8",
+    );
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: `file://${tempDir}`,
+        capabilities: {},
+      });
+      const symbols = await server.request("workspace/symbol", { query: "Indexed" });
+      expect(JSON.stringify(symbols)).toContain("IndexedTitle");
+
+      fs.writeFileSync(
+        page,
+        `<%
+Function ReindexedTitle()
+End Function
+%>`,
+        "utf8",
+      );
+      await server.request("workspace/executeCommand", { command: "aspLsp.reindexWorkspace" });
+      const reindexed = await server.request("workspace/symbol", { query: "Reindexed" });
+      expect(JSON.stringify(reindexed)).toContain("ReindexedTitle");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns CSS and JavaScript source code actions", async () => {
+    const source = `<style>.x { color: #ff0000; }</style>
+<script>
+import { z } from "z";
+import { a } from "a";
+console.log(z, a);
+</script>`;
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/code-actions.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: source,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+      const actions = await server.request("textDocument/codeAction", {
+        textDocument: { uri },
+        range: {
+          start: { line: 1, character: 0 },
+          end: { line: 5, character: 0 },
+        },
+        context: { diagnostics: [], only: ["source.organizeImports"] },
+      });
+      expect(JSON.stringify(actions)).toContain("Organize JavaScript imports");
 
       await server.request("shutdown", null);
       server.notify("exit", undefined);

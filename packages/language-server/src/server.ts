@@ -26,6 +26,7 @@ import type {
   CallHierarchyItem,
   CallHierarchyOutgoingCall,
   CodeAction,
+  CodeActionContext,
   CodeLens,
   Color,
   ColorInformation,
@@ -90,8 +91,10 @@ const htmlService = getHtmlLanguageService();
 const cssService = getCSSLanguageService();
 const settingsByUri = new Map<string, AspSettings>();
 const includeDocumentCache = new Map<string, { mtimeMs: number; parsed: AspParsedDocument }>();
+const workspaceIndex = new Map<string, WorkspaceIndexedDocument>();
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
 let workspaceRoots: string[] = [];
+let workspaceIndexDirty = true;
 
 const semanticTokenTypes = [
   "keyword",
@@ -114,6 +117,16 @@ interface OffsetEdit {
   end: number;
   newText: string;
 }
+
+interface WorkspaceIndexedDocument {
+  uri: string;
+  fileName: string;
+  mtimeMs: number;
+  size: number;
+  parsed: AspParsedDocument;
+}
+
+type JavaScriptMode = "definition" | "declaration" | "typeDefinition" | "implementation";
 
 const cache = new Map<string, CachedDocument>();
 
@@ -142,7 +155,18 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       documentSymbolProvider: true,
       foldingRangeProvider: true,
       documentLinkProvider: { resolveProvider: false },
-      codeActionProvider: { codeActionKinds: [CodeActionKind.QuickFix] },
+      codeActionProvider: {
+        codeActionKinds: [
+          CodeActionKind.QuickFix,
+          CodeActionKind.Refactor,
+          CodeActionKind.Source,
+          CodeActionKind.SourceOrganizeImports,
+          "source.organizeImports.aspLsp.javascript",
+        ],
+      },
+      executeCommandProvider: {
+        commands: ["aspLsp.reindexWorkspace", "aspLsp.clearCache"],
+      },
       codeLensProvider: { resolveProvider: false },
       colorProvider: true,
       selectionRangeProvider: true,
@@ -183,14 +207,19 @@ connection.onDidChangeConfiguration((change) => {
   settingsByUri.clear();
   cache.clear();
   includeDocumentCache.clear();
+  invalidateWorkspaceIndex();
   for (const document of documents.all()) {
     validate(document);
   }
 });
 
-connection.onDidChangeWatchedFiles(() => {
+connection.onDidChangeWatchedFiles((change) => {
   includeDocumentCache.clear();
   cache.clear();
+  for (const file of change.changes) {
+    workspaceIndex.delete(normalizeFileName(uriToFileName(file.uri)));
+  }
+  workspaceIndexDirty = true;
   for (const document of documents.all()) {
     validate(document);
   }
@@ -205,7 +234,7 @@ connection.onCompletion((params) => {
   if (!region) {
     return [];
   }
-  if (region.language === "vbscript" || region.language === "jscript") {
+  if (region.language === "vbscript") {
     return withCompletionData(
       getVbscriptCompletions(
         cached.parsed,
@@ -230,7 +259,7 @@ connection.onCompletion((params) => {
   if (region.language === "css") {
     return cssCompletion(cached, params, "css");
   }
-  if (region.language === "javascript") {
+  if (isJavaScriptLikeRegion(region)) {
     return jsCompletion(cached, params);
   }
   return [];
@@ -264,8 +293,11 @@ connection.onHover((params) => {
   if (!region) {
     return null;
   }
-  if (region.language === "vbscript" || region.language === "jscript") {
+  if (region.language === "vbscript") {
     return aspHover(cached, params);
+  }
+  if (isJavaScriptLikeRegion(region)) {
+    return jsHover(cached, params.position);
   }
   if (region.language === "html") {
     const virtual = cached.virtuals.get("html");
@@ -291,20 +323,7 @@ connection.onHover((params) => {
 });
 
 connection.onDefinition((params) => {
-  const cached = getCached(params.textDocument.uri);
-  if (!cached) {
-    return null;
-  }
-  const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
-  if (!region || (region.language !== "vbscript" && region.language !== "jscript")) {
-    return null;
-  }
-  const symbol = getVbscriptDefinition(
-    cached.parsed,
-    params.position,
-    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
-  );
-  return symbol ? Location.create(symbol.sourceUri, symbol.range) : null;
+  return definitionLikeLocation(params.textDocument.uri, params.position, "definition");
 });
 
 connection.onDeclaration((params) => {
@@ -325,7 +344,13 @@ connection.onReferences((params: ReferenceParams) => {
     return [];
   }
   const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
-  if (!region || (region.language !== "vbscript" && region.language !== "jscript")) {
+  if (!region) {
+    return [];
+  }
+  if (isJavaScriptLikeRegion(region)) {
+    return jsReferences(cached, params.position);
+  }
+  if (region.language !== "vbscript") {
     return [];
   }
   return getVbscriptReferences(
@@ -337,7 +362,13 @@ connection.onReferences((params: ReferenceParams) => {
 
 connection.onPrepareRename((params) => {
   const cached = getCached(params.textDocument.uri);
-  if (!cached || !isVbscriptPosition(cached, params.position)) {
+  if (!cached) {
+    return null;
+  }
+  if (isJavaScriptPosition(cached, params.position)) {
+    return jsPrepareRename(cached, params.position);
+  }
+  if (!isVbscriptPosition(cached, params.position)) {
     return null;
   }
   return (
@@ -351,7 +382,13 @@ connection.onPrepareRename((params) => {
 
 connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null => {
   const cached = getCached(params.textDocument.uri);
-  if (!cached || !isVbscriptPosition(cached, params.position)) {
+  if (!cached) {
+    return null;
+  }
+  if (isJavaScriptPosition(cached, params.position)) {
+    return jsRename(cached, params.position, params.newName);
+  }
+  if (!isVbscriptPosition(cached, params.position)) {
     return null;
   }
   const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
@@ -382,7 +419,13 @@ connection.onDocumentHighlight((params): DocumentHighlight[] => {
 
 connection.onSignatureHelp((params): SignatureHelp | null => {
   const cached = getCached(params.textDocument.uri);
-  if (!cached || !isVbscriptPosition(cached, params.position)) {
+  if (!cached) {
+    return null;
+  }
+  if (isJavaScriptPosition(cached, params.position)) {
+    return jsSignatureHelp(cached, params.position);
+  }
+  if (!isVbscriptPosition(cached, params.position)) {
     return null;
   }
   return (
@@ -395,16 +438,24 @@ connection.onSignatureHelp((params): SignatureHelp | null => {
 });
 
 connection.onWorkspaceSymbol((params) => {
+  ensureWorkspaceIndex();
   const query = params.query.toLowerCase();
-  const symbols = documents
-    .all()
-    .flatMap((document) => {
-      const cached = getCached(document.uri);
-      return cached
-        ? (buildVbProjectContext(cached, cachedSettings(document.uri)).symbols ?? [])
-        : [];
-    })
-    .filter((symbol) => query.length === 0 || symbol.name.toLowerCase().includes(query));
+  const openedUris = new Set(documents.all().map((document) => document.uri));
+  const indexedDocuments = [...workspaceIndex.values()]
+    .filter((entry) => !openedUris.has(entry.uri))
+    .map((entry) => entry.parsed);
+  const openSymbols = documents.all().flatMap((document) => {
+    const cached = getCached(document.uri);
+    return cached
+      ? (buildVbProjectContext(cached, cachedSettings(document.uri)).symbols ?? [])
+      : [];
+  });
+  const indexedSymbols = indexedDocuments.flatMap((parsed) =>
+    collectVbscriptSymbols(parsed, { documents: indexedDocuments }),
+  );
+  const symbols = [...openSymbols, ...indexedSymbols].filter(
+    (symbol) => query.length === 0 || symbol.name.toLowerCase().includes(query),
+  );
   return symbols.map((symbol) =>
     SymbolInformation.create(
       symbol.name,
@@ -488,6 +539,19 @@ connection.languages.inlayHint.on((params): InlayHint[] => {
     buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
     cachedSettings(cached.source.uri).inlayHints,
   );
+});
+
+connection.onExecuteCommand((params) => {
+  if (params.command === "aspLsp.reindexWorkspace" || params.command === "aspLsp.clearCache") {
+    invalidateWorkspaceIndex();
+    includeDocumentCache.clear();
+    cache.clear();
+    for (const document of documents.all()) {
+      validate(document);
+    }
+    return { ok: true };
+  }
+  return { ok: false, message: `Unknown command: ${params.command}` };
 });
 
 connection.languages.callHierarchy.onPrepare((params): CallHierarchyItem[] => {
@@ -608,9 +672,13 @@ connection.onCodeAction((params): CodeAction[] => {
   if (!cached) {
     return [];
   }
-  return params.context.diagnostics.flatMap((diagnostic) =>
-    quickFixesForDiagnostic(cached, diagnostic),
-  );
+  return [
+    ...params.context.diagnostics.flatMap((diagnostic) =>
+      quickFixesForDiagnostic(cached, diagnostic),
+    ),
+    ...cssCodeActions(cached, params.range, params.context),
+    ...jsCodeActions(cached, params.range, params.context),
+  ];
 });
 
 connection.onDocumentOnTypeFormatting((params) => {
@@ -703,18 +771,16 @@ function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
 }
 
 function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
-  const virtual = cached.virtuals.get("javascript");
-  if (!virtual) {
-    return [];
-  }
-  const host = createJsLanguageHost(virtual, settings);
-  const service = ts.createLanguageService(host);
-  const fileName = jsVirtualFileName(virtual.uri);
-  const syntactic = service.getSyntacticDiagnostics(fileName);
-  const semantic = settings.checkJs ? service.getSemanticDiagnostics(fileName) : [];
-  return [...syntactic, ...semantic]
-    .map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic))
-    .filter(isDiagnostic);
+  return jsVirtualDocuments(cached).flatMap((virtual) => {
+    const host = createJsLanguageHost(virtual, settings);
+    const service = ts.createLanguageService(host);
+    const fileName = jsVirtualFileName(virtual.uri);
+    const syntactic = service.getSyntacticDiagnostics(fileName);
+    const semantic = settings.checkJs ? service.getSemanticDiagnostics(fileName) : [];
+    return [...syntactic, ...semantic]
+      .map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic))
+      .filter(isDiagnostic);
+  });
 }
 
 function cssCompletion(
@@ -738,19 +804,11 @@ function jsCompletion(
   cached: CachedDocument,
   params: TextDocumentPositionParams,
 ): CompletionItem[] {
-  const virtual = cached.virtuals.get("javascript");
-  if (!virtual) {
+  const context = jsContextAt(cached, params.position);
+  if (!context) {
     return [];
   }
-  const virtualPosition = virtual.sourceMap.toVirtualPosition(params.position);
-  if (!virtualPosition) {
-    return [];
-  }
-  const fileName = jsVirtualFileName(virtual.uri);
-  const service = ts.createLanguageService(
-    createJsLanguageHost(virtual, cachedSettings(cached.source.uri)),
-  );
-  const offset = toTextDocument(virtual).offsetAt(virtualPosition);
+  const { offset, service, fileName } = context;
   return (
     service.getCompletionsAtPosition(fileName, offset, {})?.entries.map((entry) => ({
       label: entry.name,
@@ -759,6 +817,7 @@ function jsCompletion(
       data: {
         kind: "javascript",
         uri: cached.source.uri,
+        language: context.virtual.languageId,
         name: entry.name,
         virtualOffset: offset,
         source: entry.source,
@@ -768,17 +827,122 @@ function jsCompletion(
   );
 }
 
+function jsHover(cached: CachedDocument, position: Position): Hover | null {
+  const context = jsContextAt(cached, position);
+  if (!context) {
+    return null;
+  }
+  const quickInfo = context.service.getQuickInfoAtPosition(context.fileName, context.offset);
+  if (!quickInfo) {
+    return null;
+  }
+  const signature = ts.displayPartsToString(quickInfo.displayParts);
+  const docs = ts.displayPartsToString(quickInfo.documentation);
+  return {
+    contents: {
+      kind: "markdown",
+      value: docs
+        ? `\`\`\`javascript\n${signature}\n\`\`\`\n\n${docs}`
+        : `\`\`\`javascript\n${signature}\n\`\`\``,
+    },
+    range: textSpanToSourceRange(context.virtual, quickInfo.textSpan),
+  };
+}
+
+function jsReferences(cached: CachedDocument, position: Position): Location[] {
+  const context = jsContextAt(cached, position);
+  if (!context) {
+    return [];
+  }
+  return (
+    context.service
+      .getReferencesAtPosition(context.fileName, context.offset)
+      ?.map((reference) => tsReferenceToLocation(context.virtual, reference))
+      .filter((location): location is Location => Boolean(location)) ?? []
+  );
+}
+
+function jsPrepareRename(cached: CachedDocument, position: Position): Range | null {
+  const context = jsContextAt(cached, position);
+  if (!context) {
+    return null;
+  }
+  const info = context.service.getRenameInfo(context.fileName, context.offset, {});
+  if (!info.canRename) {
+    return null;
+  }
+  return textSpanToSourceRange(context.virtual, info.triggerSpan) ?? null;
+}
+
+function jsRename(
+  cached: CachedDocument,
+  position: Position,
+  newName: string,
+): WorkspaceEdit | null {
+  const context = jsContextAt(cached, position);
+  if (!context || !/^[\p{ID_Start}_$][\p{ID_Continue}_$]*$/u.test(newName)) {
+    return null;
+  }
+  const locations = context.service.findRenameLocations(
+    context.fileName,
+    context.offset,
+    false,
+    false,
+    {},
+  );
+  if (!locations) {
+    return null;
+  }
+  const edits = locations
+    .filter((location) => location.fileName === context.fileName)
+    .map((location) => {
+      const range = textSpanToSourceRange(context.virtual, location.textSpan);
+      return range ? { range, newText: newName } : undefined;
+    })
+    .filter((edit): edit is TextEdit => Boolean(edit));
+  return edits.length > 0 ? { changes: { [cached.source.uri]: edits } } : null;
+}
+
+function jsSignatureHelp(cached: CachedDocument, position: Position): SignatureHelp | null {
+  const context = jsContextAt(cached, position);
+  if (!context) {
+    return null;
+  }
+  const help = context.service.getSignatureHelpItems(context.fileName, context.offset, undefined);
+  if (!help) {
+    return null;
+  }
+  return {
+    signatures: help.items.map((item) => ({
+      label:
+        ts.displayPartsToString(item.prefixDisplayParts) +
+        item.parameters
+          .map((parameter) => ts.displayPartsToString(parameter.displayParts))
+          .join(ts.displayPartsToString(item.separatorDisplayParts)) +
+        ts.displayPartsToString(item.suffixDisplayParts),
+      documentation: ts.displayPartsToString(item.documentation),
+      parameters: item.parameters.map((parameter) => ({
+        label: ts.displayPartsToString(parameter.displayParts),
+        documentation: ts.displayPartsToString(parameter.documentation),
+      })),
+    })),
+    activeSignature: help.selectedItemIndex,
+    activeParameter: help.argumentIndex,
+  };
+}
+
 function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem | undefined {
   const cached = getCached(uri);
   const data = item.data as
     | {
         name?: string;
         virtualOffset?: number;
+        language?: string;
         source?: string;
         tsData?: ts.CompletionEntryData;
       }
     | undefined;
-  const virtual = cached?.virtuals.get("javascript");
+  const virtual = cached?.virtuals.get(data?.language === "jscript" ? "jscript" : "javascript");
   if (!cached || !virtual || typeof data?.virtualOffset !== "number" || !data.name) {
     return undefined;
   }
@@ -829,7 +993,7 @@ function callHierarchyRootUri(item: CallHierarchyItem): string {
 function definitionLikeLocation(
   uri: string,
   position: Position,
-  mode: "declaration" | "typeDefinition" | "implementation",
+  mode: JavaScriptMode,
 ): Location | Location[] | null {
   const cached = getCached(uri);
   if (!cached) {
@@ -869,31 +1033,20 @@ function definitionLikeLocation(
   return null;
 }
 
-function jsLocations(
-  cached: CachedDocument,
-  position: Position,
-  mode: "declaration" | "typeDefinition" | "implementation",
-): Location[] {
-  const virtual = cached.virtuals.get("javascript");
-  const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
-  if (!virtual || !virtualPosition) {
+function jsLocations(cached: CachedDocument, position: Position, mode: JavaScriptMode): Location[] {
+  const context = jsContextAt(cached, position);
+  if (!context) {
     return [];
   }
-  const doc = toTextDocument(virtual);
-  const offset = doc.offsetAt(virtualPosition);
-  const fileName = jsVirtualFileName(virtual.uri);
-  const service = ts.createLanguageService(
-    createJsLanguageHost(virtual, cachedSettings(cached.source.uri)),
-  );
   const definitions =
     mode === "typeDefinition"
-      ? service.getTypeDefinitionAtPosition(fileName, offset)
+      ? context.service.getTypeDefinitionAtPosition(context.fileName, context.offset)
       : mode === "implementation"
-        ? service.getImplementationAtPosition(fileName, offset)
-        : service.getDefinitionAtPosition(fileName, offset);
+        ? context.service.getImplementationAtPosition(context.fileName, context.offset)
+        : context.service.getDefinitionAtPosition(context.fileName, context.offset);
   return (
     definitions
-      ?.map((definition) => tsDefinitionToLocation(virtual, definition))
+      ?.map((definition) => tsDefinitionToLocation(context.virtual, definition))
       .filter((location): location is Location => Boolean(location)) ?? []
   );
 }
@@ -911,7 +1064,7 @@ function tsDefinitionToLocation(
   const sourceStart = virtual.sourceMap.toSourcePosition(start);
   const sourceEnd = virtual.sourceMap.toSourcePosition(end);
   return sourceStart && sourceEnd
-    ? Location.create(virtual.uri.replace(/\.javascript\.virtual$/, ""), {
+    ? Location.create(virtualSourceUri(virtual), {
         start: sourceStart,
         end: sourceEnd,
       })
@@ -924,6 +1077,61 @@ function remapLocation(virtual: VirtualDocument, location: Location): Location |
   return start && end
     ? Location.create(virtual.uri.replace(`.${virtual.languageId}.virtual`, ""), { start, end })
     : undefined;
+}
+
+function virtualSourceUri(virtual: VirtualDocument): string {
+  return virtual.uri.replace(`.${virtual.languageId}.virtual`, "");
+}
+
+function jsContextAt(
+  cached: CachedDocument,
+  position: Position,
+):
+  | { virtual: VirtualDocument; service: ts.LanguageService; fileName: string; offset: number }
+  | undefined {
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
+  if (!region || !isJavaScriptLikeRegion(region)) {
+    return undefined;
+  }
+  const virtual = cached.virtuals.get(region.language);
+  const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
+  if (!virtual || !virtualPosition) {
+    return undefined;
+  }
+  const doc = toTextDocument(virtual);
+  const fileName = jsVirtualFileName(virtual.uri);
+  return {
+    virtual,
+    service: ts.createLanguageService(
+      createJsLanguageHost(virtual, cachedSettings(cached.source.uri)),
+    ),
+    fileName,
+    offset: doc.offsetAt(virtualPosition),
+  };
+}
+
+function jsVirtualDocuments(cached: CachedDocument): VirtualDocument[] {
+  return ["javascript", "jscript"]
+    .map((language) => cached.virtuals.get(language))
+    .filter((virtual): virtual is VirtualDocument => Boolean(virtual));
+}
+
+function textSpanToSourceRange(virtual: VirtualDocument, span: ts.TextSpan): Range | undefined {
+  const doc = toTextDocument(virtual);
+  const start = virtual.sourceMap.toSourcePosition(doc.positionAt(span.start));
+  const end = virtual.sourceMap.toSourcePosition(doc.positionAt(span.start + span.length));
+  return start && end ? { start, end } : undefined;
+}
+
+function tsReferenceToLocation(
+  virtual: VirtualDocument,
+  reference: ts.ReferenceEntry,
+): Location | undefined {
+  if (reference.fileName !== jsVirtualFileName(virtual.uri)) {
+    return undefined;
+  }
+  const range = textSpanToSourceRange(virtual, reference.textSpan);
+  return range ? Location.create(virtualSourceUri(virtual), range) : undefined;
 }
 
 function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
@@ -1135,16 +1343,12 @@ function remapSelectionRange(virtual: VirtualDocument, range: SelectionRange): S
 }
 
 function jsSelectionRange(cached: CachedDocument, position: Position): SelectionRange | undefined {
-  const virtual = cached.virtuals.get("javascript");
-  const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
-  if (!virtual || !virtualPosition) {
+  const context = jsContextAt(cached, position);
+  if (!context) {
     return undefined;
   }
-  const doc = toTextDocument(virtual);
-  const selection = ts
-    .createLanguageService(createJsLanguageHost(virtual, cachedSettings(cached.source.uri)))
-    .getSmartSelectionRange(jsVirtualFileName(virtual.uri), doc.offsetAt(virtualPosition));
-  return remapTsSelectionRange(virtual, selection);
+  const selection = context.service.getSmartSelectionRange(context.fileName, context.offset);
+  return remapTsSelectionRange(context.virtual, selection);
 }
 
 function remapTsSelectionRange(virtual: VirtualDocument, range: ts.SelectionRange): SelectionRange {
@@ -1217,6 +1421,30 @@ function sourceRangeFromVirtualRange(virtual: VirtualDocument, range: Range): Ra
   return start && end ? { start, end } : undefined;
 }
 
+function remapWorkspaceEdit(
+  virtual: VirtualDocument,
+  edit: WorkspaceEdit,
+  sourceUri: string,
+): WorkspaceEdit {
+  const changes: NonNullable<WorkspaceEdit["changes"]> = {};
+  for (const [uri, textEdits] of Object.entries(edit.changes ?? {})) {
+    const targetUri = uri === virtual.uri ? sourceUri : uri;
+    changes[targetUri] = [
+      ...(changes[targetUri] ?? []),
+      ...textEdits
+        .map((textEdit) => {
+          const range =
+            uri === virtual.uri
+              ? sourceRangeFromVirtualRange(virtual, textEdit.range)
+              : textEdit.range;
+          return range ? { ...textEdit, range } : undefined;
+        })
+        .filter((textEdit): textEdit is TextEdit => Boolean(textEdit)),
+    ];
+  }
+  return { changes };
+}
+
 function tsDiagnosticToLsp(
   virtual: VirtualDocument,
   diagnostic: ts.Diagnostic,
@@ -1239,6 +1467,7 @@ function tsDiagnosticToLsp(
         : DiagnosticSeverity.Warning,
     range: { start: sourceStart, end: sourceEnd },
     message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+    code: diagnostic.code,
     source: "asp-lsp-typescript",
   };
 }
@@ -1260,6 +1489,74 @@ function getCached(uri: string): CachedDocument | undefined {
   const cached = { source: document, parsed, virtuals: buildVirtualDocuments(parsed) };
   cache.set(uri, cached);
   return cached;
+}
+
+function ensureWorkspaceIndex(): void {
+  if (!workspaceIndexDirty) {
+    return;
+  }
+  for (const root of workspaceRoots) {
+    indexWorkspaceRoot(root);
+  }
+  workspaceIndexDirty = false;
+}
+
+function indexWorkspaceRoot(root: string): void {
+  const stat = fs.statSync(root, { throwIfNoEntry: false });
+  if (!stat?.isDirectory()) {
+    return;
+  }
+  const visit = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!isExcludedWorkspaceDirectory(entry.name, fullPath)) {
+          visit(fullPath);
+        }
+        continue;
+      }
+      if (entry.isFile() && /\.(asp|asa|inc)$/i.test(entry.name)) {
+        indexWorkspaceFile(fullPath);
+      }
+    }
+  };
+  visit(root);
+}
+
+function indexWorkspaceFile(fileName: string): void {
+  const normalized = normalizeFileName(fileName);
+  const stat = fs.statSync(normalized, { throwIfNoEntry: false });
+  if (!stat?.isFile()) {
+    workspaceIndex.delete(normalized);
+    return;
+  }
+  const existing = workspaceIndex.get(normalized);
+  if (existing && existing.mtimeMs === stat.mtimeMs && existing.size === stat.size) {
+    return;
+  }
+  const uri = pathToFileUri(normalized);
+  const text = readTextFile(normalized, globalSettings.legacyEncoding);
+  const parsed = parseAspDocument(uri, text, cachedSettings(uri));
+  workspaceIndex.set(normalized, {
+    uri,
+    fileName: normalized,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    parsed,
+  });
+}
+
+function invalidateWorkspaceIndex(): void {
+  workspaceIndexDirty = true;
+  workspaceIndex.clear();
+}
+
+function isExcludedWorkspaceDirectory(name: string, fullPath: string): boolean {
+  const normalized = fullPath.split(path.sep).join("/");
+  return (
+    [".git", "node_modules", "dist", "out"].includes(name) ||
+    normalized.endsWith("/server/language-server/node_modules")
+  );
 }
 
 function findRegionAt(parsed: AspParsedDocument, offset: number) {
@@ -1744,7 +2041,12 @@ function tsCompletionKind(kind: string): CompletionItemKind {
 
 function isVbscriptPosition(cached: CachedDocument, position: Range["start"]): boolean {
   const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
-  return region?.language === "vbscript" || region?.language === "jscript";
+  return region?.language === "vbscript";
+}
+
+function isJavaScriptPosition(cached: CachedDocument, position: Range["start"]): boolean {
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
+  return Boolean(region && isJavaScriptLikeRegion(region));
 }
 
 function vbWorkspaceSymbolKind(kind: VbSymbolKind): SymbolKind {
@@ -1809,6 +2111,172 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
     ];
   }
   return [];
+}
+
+function cssCodeActions(
+  cached: CachedDocument,
+  range: Range,
+  context: CodeActionContext,
+): CodeAction[] {
+  const virtual = cached.virtuals.get("css");
+  const start = virtual?.sourceMap.toVirtualPosition(range.start);
+  const end = virtual?.sourceMap.toVirtualPosition(range.end);
+  if (!virtual || !start || !end) {
+    return [];
+  }
+  const doc = toTextDocument(virtual);
+  return cssService
+    .doCodeActions2(doc, { start, end }, context, cssService.parseStylesheet(doc))
+    .map((action) => remapCssCodeAction(virtual, action, cached.source.uri))
+    .filter((action): action is CodeAction => Boolean(action));
+}
+
+function remapCssCodeAction(
+  virtual: VirtualDocument,
+  action: CodeAction,
+  sourceUri: string,
+): CodeAction | undefined {
+  if (!action.edit) {
+    return action;
+  }
+  return {
+    ...action,
+    edit: remapWorkspaceEdit(virtual, action.edit, sourceUri),
+  };
+}
+
+function jsCodeActions(
+  cached: CachedDocument,
+  range: Range,
+  context: CodeActionContext,
+): CodeAction[] {
+  const actions: CodeAction[] = [];
+  if (codeActionAllows(context, CodeActionKind.SourceOrganizeImports)) {
+    const edit = organizeJavaScriptImportsEdit(cached);
+    if (edit || jsVirtualDocuments(cached).length > 0) {
+      actions.push({
+        title: "Organize JavaScript imports",
+        kind: "source.organizeImports.aspLsp.javascript",
+        edit: edit ?? { changes: {} },
+      });
+    }
+  }
+  const sourceStart = cached.source.offsetAt(range.start);
+  const sourceEnd = cached.source.offsetAt(range.end);
+  for (const virtual of jsVirtualDocuments(cached)) {
+    const virtualStart = virtual.sourceMap.toVirtualOffset(sourceStart);
+    const virtualEnd = virtual.sourceMap.toVirtualOffset(sourceEnd);
+    if (virtualStart === undefined || virtualEnd === undefined) {
+      continue;
+    }
+    const service = ts.createLanguageService(
+      createJsLanguageHost(virtual, cachedSettings(cached.source.uri)),
+    );
+    const fileName = jsVirtualFileName(virtual.uri);
+    if (codeActionAllows(context, CodeActionKind.QuickFix)) {
+      const errorCodes = context.diagnostics
+        .filter((diagnostic) => diagnostic.source === "asp-lsp-typescript")
+        .map((diagnostic) => Number(diagnostic.code))
+        .filter((code) => Number.isInteger(code));
+      for (const fix of service.getCodeFixesAtPosition(
+        fileName,
+        virtualStart,
+        virtualEnd,
+        errorCodes,
+        {},
+        {},
+      )) {
+        const edit = fileTextChangesToWorkspaceEdit(virtual, fix.changes);
+        if (edit) {
+          actions.push({ title: fix.description, kind: CodeActionKind.QuickFix, edit });
+        }
+      }
+    }
+    if (codeActionAllows(context, CodeActionKind.Refactor)) {
+      for (const refactor of service.getApplicableRefactors(
+        fileName,
+        { pos: virtualStart, end: virtualEnd },
+        {},
+      )) {
+        for (const action of refactor.actions.filter((item) => !item.notApplicableReason)) {
+          const edits = service.getEditsForRefactor(
+            fileName,
+            {},
+            { pos: virtualStart, end: virtualEnd },
+            refactor.name,
+            action.name,
+            {},
+          );
+          const edit = edits ? fileTextChangesToWorkspaceEdit(virtual, edits.edits) : undefined;
+          if (edit) {
+            actions.push({
+              title: action.description,
+              kind: action.kind ?? CodeActionKind.Refactor,
+              edit,
+            });
+          }
+        }
+      }
+    }
+  }
+  return actions;
+}
+
+function codeActionAllows(context: CodeActionContext, kind: string): boolean {
+  if (!context.only || context.only.length === 0) {
+    return true;
+  }
+  return context.only.some(
+    (candidate) =>
+      kind === candidate || kind.startsWith(`${candidate}.`) || candidate.startsWith(`${kind}.`),
+  );
+}
+
+function organizeJavaScriptImportsEdit(cached: CachedDocument): WorkspaceEdit | undefined {
+  const edits = jsVirtualDocuments(cached)
+    .map((virtual) => {
+      const service = ts.createLanguageService(
+        createJsLanguageHost(virtual, cachedSettings(cached.source.uri)),
+      );
+      return fileTextChangesToWorkspaceEdit(
+        virtual,
+        service.organizeImports({ type: "file", fileName: jsVirtualFileName(virtual.uri) }, {}, {}),
+      );
+    })
+    .filter((edit): edit is WorkspaceEdit => Boolean(edit));
+  return mergeWorkspaceEdits(edits);
+}
+
+function fileTextChangesToWorkspaceEdit(
+  virtual: VirtualDocument,
+  changes: readonly ts.FileTextChanges[],
+): WorkspaceEdit | undefined {
+  const sourceUri = virtualSourceUri(virtual);
+  const edits = changes
+    .filter((change) => change.fileName === jsVirtualFileName(virtual.uri))
+    .flatMap((change) =>
+      change.textChanges.map((textChange) => textChangeToSourceTextEdit(virtual, textChange)),
+    )
+    .filter((edit): edit is TextEdit => Boolean(edit));
+  return edits.length > 0 ? { changes: { [sourceUri]: edits } } : undefined;
+}
+
+function textChangeToSourceTextEdit(
+  virtual: VirtualDocument,
+  textChange: ts.TextChange,
+): TextEdit | undefined {
+  const range = textSpanToSourceRange(virtual, textChange.span);
+  return range ? { range, newText: textChange.newText } : undefined;
+}
+
+function mergeWorkspaceEdits(edits: WorkspaceEdit[]): WorkspaceEdit | undefined {
+  const changes: NonNullable<WorkspaceEdit["changes"]> = {};
+  for (const edit of edits) {
+    for (const [uri, textEdits] of Object.entries(edit.changes ?? {})) {
+      changes[uri] = [...(changes[uri] ?? []), ...textEdits];
+    }
+  }
+  return Object.keys(changes).length > 0 ? { changes } : undefined;
 }
 
 function codeLenses(cached: CachedDocument): CodeLens[] {

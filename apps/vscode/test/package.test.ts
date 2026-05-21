@@ -15,6 +15,26 @@ describe("VS Code extension package", () => {
     expect(manifest.devDependencies?.["@asp-lsp/language-server"]).toBeUndefined();
   });
 
+  it("contributes commands, task definition and IIS debug settings", () => {
+    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      contributes?: {
+        commands?: Array<{ command: string }>;
+        taskDefinitions?: Array<{ type: string }>;
+        configuration?: { properties?: Record<string, unknown> };
+      };
+    };
+    const commands = manifest.contributes?.commands?.map((command) => command.command) ?? [];
+    expect(commands).toContain("aspLsp.restartServer");
+    expect(commands).toContain("aspLsp.reindexWorkspace");
+    expect(commands).toContain("aspLsp.openOutput");
+    expect(commands).toContain("aspLsp.debugIisUrl");
+    expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(
+      true,
+    );
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.iis.url"]).toBeTruthy();
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.iis.browser"]).toBeTruthy();
+  });
+
   it("resolves the packaged language server module path", () => {
     const root = process.cwd();
     const serverModule = getServerModulePath({

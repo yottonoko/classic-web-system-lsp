@@ -23,7 +23,7 @@ pnpm run build
 pnpm run package:vsix
 ```
 
-The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, completion resolve, diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, selection ranges, inlay hints, call hierarchy, linked editing, code actions, CodeLens, formatting, and virtual include roots.
+The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, completion resolve, diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, selection ranges, inlay hints, call hierarchy, linked editing, code actions, CodeLens, formatting, workspace indexing, and virtual include roots.
 
 ## VBScript Support
 
@@ -37,6 +37,8 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - rename, document highlights, signature help, workspace symbols, and semantic tokens for VBScript symbols
 - selection ranges, inlay hints, call hierarchy, type definition, implementation, and CodeLens for VBScript symbols
 - conservative support for `ReDim`, `For Each`, `With`, and `Server.CreateObject("ADODB.*")` completions
+- TypeScript-backed hover, navigation, references, rename, and signature help for JavaScript and server-side JScript regions
+- lazy workspace symbol indexing for unopened `.asp`, `.asa`, and `.inc` files
 
 ## Standalone Server
 
@@ -88,6 +90,9 @@ The VSIX build copies the standalone language server and its runtime dependencie
 - `aspLsp.inlayHints.functionReturnTypes`: show inferred VBScript function return types
 - `aspLsp.codeLens.references`: show VBScript reference counts
 - `aspLsp.codeLens.includes`: show include resolution lenses
+- `aspLsp.iis.url`: URL opened by the IIS debug helper command
+- `aspLsp.iis.webRoot`: web root used by the IIS debug helper command
+- `aspLsp.iis.browser`: VS Code debug type used by the IIS debug helper command
 
 ## Current v1 Limits
 
@@ -96,6 +101,7 @@ The VSIX build copies the standalone language server and its runtime dependencie
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed. COM type information comes from built-in stubs or `aspLsp.vbscript.comTypes`.
 - Call hierarchy, CodeLens, type definition, and implementation are static and user-defined-symbol first; runtime COM dispatch is not modeled.
+- IIS debug support opens a configured URL in a browser debug session; it does not attach to IIS, COM, or server-side Classic ASP runtime.
 - Full-document formatting is CST based and conservative. HTML-only ranges still use `vscode-html-languageservice`; ASP/VBScript ranges are formatted by the built-in formatter.
 
 ## Assistant Instructions
