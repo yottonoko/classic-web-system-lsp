@@ -10,6 +10,7 @@
     "lint": "pnpm -r run lint",
     "format": "oxfmt .",
     "format:check": "oxfmt . --check",
+    "package:vsix": "pnpm --filter classic-asp-lsp run package:vsix",
     "test": "pnpm -r run test"
   },
   "devDependencies": {

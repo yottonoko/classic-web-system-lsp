@@ -19,9 +19,10 @@ pnpm run lint
 pnpm run format:check
 pnpm run test
 pnpm run build
+pnpm run package:vsix
 ```
 
-The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, diagnostics, hover, definition, and references.
+The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, code actions, and virtual include roots.
 
 ## VBScript Support
 
@@ -32,6 +33,8 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - `Me.Member` completions inside classes
 - definition and references for user-defined VBScript symbols
 - include-aware VBScript symbols for completions and definition jumps
+- rename, document highlights, signature help, workspace symbols, and semantic tokens for VBScript symbols
+- conservative support for `ReDim`, `For Each`, `With`, and `Server.CreateObject("ADODB.*")` completions
 
 ## Standalone Server
 
@@ -54,6 +57,24 @@ The extension registers:
 - language id: `classic-asp`
 - file extensions: `.asp`, `.asa`, `.inc`
 - packaged server path: `node_modules/@asp-lsp/language-server/dist/server.js`
+- VSIX server path: `server/language-server/dist/server.js`
+
+To build a local VSIX:
+
+```sh
+pnpm run build
+pnpm run package:vsix --out classic-asp-lsp.vsix
+```
+
+The VSIX build copies the standalone language server and its runtime dependencies into `apps/vscode/server/language-server` before packaging.
+
+## Settings
+
+- `aspLsp.defaultLanguage`: default server-side language, `VBScript` or `JScript`
+- `aspLsp.checkJs`: enable semantic checks for client JavaScript regions
+- `aspLsp.virtualRoot`: root directory for `<!-- #include virtual="..." -->`
+- `aspLsp.virtualRoots`: additional virtual include roots
+- `aspLsp.legacyEncoding`: encoding for unopened include files, `utf8`, `shift_jis`, or `cp932`
 
 ## Current v1 Limits
 
@@ -61,6 +82,7 @@ The extension registers:
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed or type-checked.
+- `Server.CreateObject` support is static stub completion only.
 - Full-document formatting is disabled. Range formatting is returned only for HTML-only ranges so ASP server regions are not erased.
 
 ## Assistant Instructions

@@ -11,14 +11,18 @@
   "publisher": "yottonoko",
   "main": "./dist/extension.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-server-runtime.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "oxlint src test --deny-warnings --no-error-on-unmatched-pattern",
-    "test": "pnpm --filter @asp-lsp/language-server run build && vitest run --passWithNoTests"
+    "package:vsix": "pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --allow-missing-repository --no-dependencies --follow-symlinks",
+    "test": "pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
   },
   "dependencies": {
     "@asp-lsp/language-server": "workspace:*",
     "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.9.1"
   },
   "contributes": {
     "languages": [
@@ -71,6 +75,24 @@
           "type": "string",
           "default": "",
           "description": "Root directory used to resolve virtual include paths."
+        },
+        "aspLsp.virtualRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional root directories used to resolve virtual include paths."
+        },
+        "aspLsp.legacyEncoding": {
+          "type": "string",
+          "enum": [
+            "utf8",
+            "shift_jis",
+            "cp932"
+          ],
+          "default": "utf8",
+          "description": "Encoding used when reading unopened include files."
         }
       }
     }

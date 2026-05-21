@@ -21,6 +21,7 @@ export type AspRegionKind =
 export interface AspSettings {
   defaultLanguage?: "VBScript" | "JScript";
   virtualRoot?: string;
+  virtualRoots?: string[];
   checkJs?: boolean;
   includePaths?: string[];
   legacyEncoding?: string;

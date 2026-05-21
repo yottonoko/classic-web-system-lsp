@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { getServerModulePath } from "../src/server-path";
 
@@ -18,9 +20,36 @@ describe("VS Code extension package", () => {
     const serverModule = getServerModulePath({
       asAbsolutePath: (relativePath) => path.join(root, relativePath),
     });
-    expect(serverModule).toBe(
-      path.join(root, "node_modules", "@asp-lsp", "language-server", "dist", "server.js"),
-    );
+    expect(serverModule).toBe(path.join(root, "server", "language-server", "dist", "server.js"));
     expect(fs.existsSync(serverModule)).toBe(true);
+  });
+
+  it("packages a VSIX with the language server entrypoint", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vsix-"));
+    const vsixPath = path.join(tempDir, "classic-asp-lsp.vsix");
+    try {
+      execFileSync(
+        path.join("node_modules", ".bin", "vsce"),
+        [
+          "package",
+          "--allow-missing-repository",
+          "--no-dependencies",
+          "--follow-symlinks",
+          "--out",
+          vsixPath,
+        ],
+        { stdio: "pipe" },
+      );
+      expect(fs.existsSync(vsixPath)).toBe(true);
+      const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
+      expect(listing).toContain("extension/dist/extension.js");
+      expect(listing).toContain("extension/server/language-server/dist/server.js");
+      expect(listing).toContain("extension/server/language-server/node_modules/@asp-lsp/core");
+      expect(listing).toContain(
+        "extension/server/language-server/node_modules/vscode-languageserver",
+      );
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

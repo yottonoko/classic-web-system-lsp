@@ -26,6 +26,7 @@ pnpm run lint
 pnpm run format:check
 pnpm run test
 pnpm run build
+pnpm run package:vsix
 ```
 
 The standalone server is built at `packages/language-server/dist/server.js` and runs with:
@@ -40,7 +41,7 @@ node packages/language-server/dist/server.js --stdio
 - Route embedded HTML, CSS, and JavaScript through their language services when practical.
 - Treat `.inc` files as fragments. Do not assume a complete HTML document.
 - Do not let formatting edits erase or rewrite Classic ASP server regions.
-- Keep `apps/vscode` able to resolve the packaged language server module via `node_modules/@asp-lsp/language-server/dist/server.js`.
+- Keep `apps/vscode` able to resolve the development server module via `node_modules/@asp-lsp/language-server/dist/server.js` and the VSIX-bundled server via `server/language-server/dist/server.js`.
 
 ## Git
 

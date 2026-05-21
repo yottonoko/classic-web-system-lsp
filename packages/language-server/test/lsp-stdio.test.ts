@@ -265,6 +265,166 @@ Response.Write Shared▮Title()
     }
   });
 
+  it("supports VBScript rename, highlights, signature help, workspace symbols and semantic tokens", async () => {
+    const marked = markedDocument(`<%
+Function BuildName(firstName, lastName)
+  BuildName = firstName & " " & lastName
+End Function
+Response.Write Build▮Name("Ada", "Lovelace")
+%>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/vbscript-editing.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const prepareRename = await server.request("textDocument/prepareRename", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(prepareRename)).toContain('"line":4');
+
+      const rename = await server.request("textDocument/rename", {
+        textDocument: { uri },
+        position: marked.position,
+        newName: "FormatName",
+      });
+      expect(JSON.stringify(rename)).toContain("FormatName");
+      expect(JSON.stringify(rename)).toContain('"changes"');
+
+      const highlights = await server.request("textDocument/documentHighlight", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(Array.isArray(highlights) ? highlights.length : 0).toBeGreaterThan(1);
+
+      const signature = await server.request("textDocument/signatureHelp", {
+        textDocument: { uri },
+        position: positionAt(marked.text, marked.text.indexOf('"Ada"')),
+      });
+      expect(JSON.stringify(signature)).toContain("BuildName(firstName, lastName)");
+
+      const workspaceSymbols = await server.request("workspace/symbol", { query: "Build" });
+      expect(JSON.stringify(workspaceSymbols)).toContain("BuildName");
+
+      const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+        textDocument: { uri },
+      });
+      expect(JSON.stringify(semanticTokens)).toContain("data");
+      expect((semanticTokens as { data?: unknown[] }).data?.length ?? 0).toBeGreaterThan(0);
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("returns quick fixes for undeclared VBScript variables", async () => {
+    const marked = markedDocument(`<%
+Option Explicit
+Response.Write miss▮ingName
+%>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/code-action.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+      const actions = await server.request("textDocument/codeAction", {
+        textDocument: { uri },
+        range: {
+          start: marked.position,
+          end: marked.position,
+        },
+        context: {
+          diagnostics: (diagnostics.params as { diagnostics: unknown[] }).diagnostics,
+        },
+      });
+      expect(JSON.stringify(actions)).toContain("Declare missingName with Dim");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("resolves virtual includes from configured roots", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
+    const pageDir = path.join(tempDir, "pages");
+    const sharedDir = path.join(tempDir, "shared");
+    fs.mkdirSync(pageDir);
+    fs.mkdirSync(sharedDir);
+    const owner = path.join(pageDir, "default.asp");
+    const include = path.join(sharedDir, "common.inc");
+    fs.writeFileSync(include, "<%\nFunction SharedTitle()\nEnd Function\n%>", "utf8");
+    const marked = markedDocument(`<!-- #include virtual="/shared/common.inc" -->
+<%
+Response.Write Shared▮Title()
+%>`);
+    fs.writeFileSync(owner, marked.text, "utf8");
+
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: `file://${pageDir}`,
+        capabilities: {},
+      });
+      server.notify("workspace/didChangeConfiguration", {
+        settings: { aspLsp: { virtualRoots: [tempDir], legacyEncoding: "shift_jis" } },
+      });
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri: `file://${owner}`,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const definition = await server.request("textDocument/definition", {
+        textDocument: { uri: `file://${owner}` },
+        position: marked.position,
+      });
+      expect(JSON.stringify(definition)).toContain("common.inc");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports include cycles through publishDiagnostics", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
     const owner = path.join(tempDir, "default.asp");

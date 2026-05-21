@@ -1,10 +1,17 @@
-import { CompletionItemKind, DiagnosticSeverity, SymbolKind } from "vscode-languageserver-types";
+import {
+  CompletionItemKind,
+  DiagnosticSeverity,
+  DocumentHighlightKind,
+  SymbolKind,
+} from "vscode-languageserver-types";
 import type {
   CompletionItem,
   Diagnostic,
+  DocumentHighlight,
   DocumentSymbol,
   Position,
   Range,
+  SignatureHelp,
 } from "vscode-languageserver-types";
 import { offsetAt, rangeFromOffsets } from "./position";
 import type { AspParsedDocument, AspRegion } from "./types";
@@ -29,6 +36,7 @@ export interface VbSymbol {
   scopeName?: string;
   scopeRange?: Range;
   typeName?: string;
+  parameters?: string[];
 }
 
 export interface VbReference {
@@ -80,6 +88,27 @@ const builtinDescriptions: Record<string, string> = {
   asperror: "Classic ASP error object returned by Server.GetLastError.",
 };
 
+const builtinSignatures: Record<string, string[]> = {
+  "response.write": ["Response.Write value"],
+  "response.redirect": ["Response.Redirect url"],
+  "response.end": ["Response.End"],
+  "response.flush": ["Response.Flush"],
+  "response.clear": ["Response.Clear"],
+  "request.querystring": ["Request.QueryString(name)"],
+  "request.form": ["Request.Form(name)"],
+  "request.cookies": ["Request.Cookies(name)"],
+  "request.servervariables": ["Request.ServerVariables(name)"],
+  "request.binaryread": ["Request.BinaryRead(count)"],
+  "server.createobject": ["Server.CreateObject(progId)"],
+  "server.mappath": ["Server.MapPath(path)"],
+  "server.htmlencode": ["Server.HTMLEncode(value)"],
+  "server.urlencode": ["Server.URLEncode(value)"],
+  "server.getlasterror": ["Server.GetLastError"],
+  "session.abandon": ["Session.Abandon"],
+  "application.lock": ["Application.Lock"],
+  "application.unlock": ["Application.Unlock"],
+};
+
 const memberCompletions: Record<string, CompletionItem[]> = {
   request: [
     "QueryString",
@@ -115,6 +144,34 @@ const memberCompletions: Record<string, CompletionItem[]> = {
   ].map(methodItem),
 };
 
+const externalObjectMembers: Record<string, CompletionItem[]> = {
+  "adodb.connection": [
+    "Open",
+    "Close",
+    "Execute",
+    "BeginTrans",
+    "CommitTrans",
+    "RollbackTrans",
+    "ConnectionString",
+    "State",
+  ].map(methodItem),
+  "adodb.recordset": [
+    "Open",
+    "Close",
+    "MoveNext",
+    "MovePrevious",
+    "MoveFirst",
+    "MoveLast",
+    "EOF",
+    "BOF",
+    "Fields",
+    "RecordCount",
+  ].map(methodItem),
+  "adodb.command": ["Execute", "CreateParameter", "Parameters", "CommandText", "CommandType"].map(
+    methodItem,
+  ),
+};
+
 function methodItem(label: string): CompletionItem {
   return { label, kind: CompletionItemKind.Method };
 }
@@ -128,16 +185,19 @@ export function getVbscriptCompletions(
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed);
   const prefix = parsed.text.slice(Math.max(0, sourceOffset - 96), sourceOffset);
   const memberMatch = /([A-Za-z][A-Za-z0-9_]*)\.$/.exec(prefix);
-  if (memberMatch) {
-    const ownerName = memberMatch[1];
-    const builtin = memberCompletions[ownerName.toLowerCase()];
+  const withMemberMatch = !memberMatch && prefix.endsWith(".");
+  if (memberMatch || withMemberMatch) {
+    const ownerName = memberMatch?.[1];
+    const builtin = ownerName ? memberCompletions[ownerName.toLowerCase()] : undefined;
     if (builtin) {
       return builtin;
     }
     const className =
-      ownerName.toLowerCase() === "me"
-        ? currentClassName(parsed, sourceOffset, symbols)
-        : inferVariableType(ownerName, parsed, sourceOffset, symbols);
+      ownerName === undefined
+        ? currentWithTypeName(parsed, sourceOffset, symbols)
+        : ownerName.toLowerCase() === "me"
+          ? currentClassName(parsed, sourceOffset, symbols)
+          : inferVariableType(ownerName, parsed, sourceOffset, symbols);
     return className ? classMemberCompletions(className, symbols) : [];
   }
   return dedupeCompletions([
@@ -236,6 +296,7 @@ export function getVbscriptReferences(
   if (!symbol) {
     return [];
   }
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed);
   const documents = context.documents ?? [parsed];
   const references: VbReference[] = [];
   for (const document of documents) {
@@ -246,6 +307,14 @@ export function getVbscriptReferences(
       let match: RegExpExecArray | null;
       while ((match = tokenPattern.exec(searchable)) !== null) {
         const start = region.contentStart + match.index;
+        const resolved = resolveSymbolAt(
+          document,
+          start + Math.floor(match[0].length / 2),
+          symbols,
+        );
+        if (!resolved || !sameSymbol(resolved, symbol)) {
+          continue;
+        }
         references.push({
           uri: document.uri,
           range: rangeFromOffsets(document.text, start, start + match[0].length),
@@ -254,6 +323,63 @@ export function getVbscriptReferences(
     }
   }
   return references;
+}
+
+export function getVbscriptRenameRange(
+  parsed: AspParsedDocument,
+  position: Position,
+  context: VbProjectContext = {},
+): Range | undefined {
+  const offset = offsetAt(parsed.text, position);
+  const symbol = resolveSymbolAt(parsed, offset, context.symbols ?? collectVbscriptSymbols(parsed));
+  if (!symbol || isBuiltinName(symbol.name)) {
+    return undefined;
+  }
+  const word = wordRangeAt(parsed.text, offset);
+  return word?.text.toLowerCase() === symbol.name.toLowerCase() ? word.range : undefined;
+}
+
+export function getVbscriptDocumentHighlights(
+  parsed: AspParsedDocument,
+  position: Position,
+  context: VbProjectContext = {},
+): DocumentHighlight[] {
+  return getVbscriptReferences(parsed, position, context)
+    .filter((reference) => reference.uri === parsed.uri)
+    .map((reference) => ({
+      range: reference.range,
+      kind: DocumentHighlightKind.Text,
+    }));
+}
+
+export function getVbscriptSignatureHelp(
+  parsed: AspParsedDocument,
+  position: Position,
+  context: VbProjectContext = {},
+): SignatureHelp | undefined {
+  const offset = offsetAt(parsed.text, position);
+  const call = callExpressionAt(parsed.text, offset);
+  if (!call) {
+    return undefined;
+  }
+  const activeParameter = countActiveParameter(parsed.text.slice(call.argumentsStart, offset));
+  const builtin = builtinSignatures[call.name.toLowerCase()];
+  const signatureLabels =
+    builtin ??
+    signatureSymbolsForCall(
+      parsed,
+      call.name,
+      offset,
+      context.symbols ?? collectVbscriptSymbols(parsed),
+    ).map((symbol) => signatureLabel(symbol));
+  if (signatureLabels.length === 0) {
+    return undefined;
+  }
+  return {
+    signatures: signatureLabels.map((label) => ({ label })),
+    activeSignature: 0,
+    activeParameter,
+  };
 }
 
 export function collectVbscriptSymbols(parsed: AspParsedDocument): VbSymbol[] {
@@ -341,6 +467,7 @@ function addProcedureSymbols(
       scopeRange: scope
         ? rangeFromOffsets(parsed.text, baseOffset + scope.start, baseOffset + scope.end)
         : undefined,
+      parameters: parseParameters(match[4] ?? ""),
     });
     for (const parameter of parseParameters(match[4] ?? "")) {
       const parameterIndex = match[0].indexOf(parameter);
@@ -371,10 +498,11 @@ function addVariableSymbols(
 ): void {
   const patterns: Array<[RegExp, "variable" | "constant"]> = [
     [
-      /^\s*(?:Dim|Private(?!\s+(?:Sub|Function|Property)\b)|Public(?!\s+(?:Sub|Function|Property)\b))\s+([A-Za-z][A-Za-z0-9_]*(?:\s*(?:,\s*|$)[A-Za-z][A-Za-z0-9_]*)*)/gim,
+      /^\s*(?:Dim|ReDim(?:\s+Preserve)?|Private(?!\s+(?:Sub|Function|Property)\b)|Public(?!\s+(?:Sub|Function|Property)\b))\s+([A-Za-z][A-Za-z0-9_]*(?:\([^)]*\))?(?:\s*(?:,\s*|$)[A-Za-z][A-Za-z0-9_]*(?:\([^)]*\))?)*)/gim,
       "variable",
     ],
     [/^\s*Const\s+([A-Za-z][A-Za-z0-9_]*)/gim, "constant"],
+    [/^\s*For\s+Each\s+([A-Za-z][A-Za-z0-9_]*)\s+In\b/gim, "variable"],
   ];
   for (const [pattern, baseKind] of patterns) {
     let match: RegExpExecArray | null;
@@ -423,13 +551,27 @@ function inferAssignedTypes(parsed: AspParsedDocument, symbols: VbSymbol[]): voi
     byName.set(symbol.name.toLowerCase(), list);
   }
   for (const region of serverRegions(parsed)) {
-    const text = maskVbscriptStringsAndComments(
-      parsed.text.slice(region.contentStart, region.contentEnd),
-    );
+    const rawText = parsed.text.slice(region.contentStart, region.contentEnd);
+    const text = maskVbscriptStringsAndComments(rawText);
     const assignmentPattern =
       /\bSet\s+([A-Za-z][A-Za-z0-9_]*)\s*=\s*New\s+([A-Za-z][A-Za-z0-9_]*)/gi;
     let match: RegExpExecArray | null;
     while ((match = assignmentPattern.exec(text)) !== null) {
+      const offset = region.contentStart + match.index;
+      const candidates = (byName.get(match[1].toLowerCase()) ?? []).filter(
+        (symbol) => symbol.kind === "variable" || symbol.kind === "field",
+      );
+      const visible =
+        candidates.find((candidate) =>
+          isSymbolVisibleAt(candidate, parsed.uri, parsed.text, offset),
+        ) ?? candidates[0];
+      if (visible) {
+        visible.typeName = match[2];
+      }
+    }
+    const createObjectPattern =
+      /\bSet\s+([A-Za-z][A-Za-z0-9_]*)\s*=\s*Server\.CreateObject\s*\(\s*"([^"]+)"\s*\)/gi;
+    while ((match = createObjectPattern.exec(rawText)) !== null) {
       const offset = region.contentStart + match.index;
       const candidates = (byName.get(match[1].toLowerCase()) ?? []).filter(
         (symbol) => symbol.kind === "variable" || symbol.kind === "field",
@@ -538,16 +680,46 @@ function inferVariableType(
     )[0]?.typeName;
 }
 
+function currentWithTypeName(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): string | undefined {
+  for (const region of serverRegions(parsed)) {
+    if (offset < region.contentStart || offset > region.contentEnd) {
+      continue;
+    }
+    const localOffset = offset - region.contentStart;
+    const text = maskVbscriptStringsAndComments(
+      parsed.text.slice(region.contentStart, region.contentEnd),
+    );
+    const tokenPattern = /^\s*(With\s+([A-Za-z][A-Za-z0-9_]*)|End\s+With)\b/gim;
+    const stack: string[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = tokenPattern.exec(text)) !== null && match.index < localOffset) {
+      if (match[2]) {
+        stack.push(match[2]);
+      } else {
+        stack.pop();
+      }
+    }
+    const ownerName = stack.at(-1);
+    return ownerName ? inferVariableType(ownerName, parsed, offset, symbols) : undefined;
+  }
+  return undefined;
+}
+
 function classMemberCompletions(className: string, symbols: VbSymbol[]): CompletionItem[] {
-  return dedupeCompletions(
-    symbols
+  return dedupeCompletions([
+    ...symbols
       .filter(
         (symbol) =>
           symbol.memberOf?.toLowerCase() === className.toLowerCase() &&
           (symbol.kind === "method" || symbol.kind === "field" || symbol.kind === "property"),
       )
       .map(symbolToCompletion),
-  );
+    ...(externalObjectMembers[className.toLowerCase()] ?? []),
+  ]);
 }
 
 function visibleSymbols(
@@ -587,9 +759,11 @@ function resolveSymbolAt(
   const member = memberAccessAt(parsed.text, offset);
   if (member) {
     const className =
-      member.owner.toLowerCase() === "me"
-        ? currentClassName(parsed, offset, symbols)
-        : inferVariableType(member.owner, parsed, offset, symbols);
+      member.owner === ""
+        ? currentWithTypeName(parsed, offset, symbols)
+        : member.owner.toLowerCase() === "me"
+          ? currentClassName(parsed, offset, symbols)
+          : inferVariableType(member.owner, parsed, offset, symbols);
     return className
       ? symbols.find(
           (symbol) =>
@@ -613,13 +787,13 @@ function memberAccessAt(
 ): { owner: string; member: string } | undefined {
   const before = text.slice(Math.max(0, offset - 128), offset);
   const after = text.slice(offset, offset + 64);
-  const left = before.match(/([A-Za-z][A-Za-z0-9_]*)\.([A-Za-z][A-Za-z0-9_]*)?$/);
+  const left = before.match(/(?:([A-Za-z][A-Za-z0-9_]*)|)\.([A-Za-z][A-Za-z0-9_]*)?$/);
   if (!left) {
     return undefined;
   }
   const memberRight = after.match(/^[A-Za-z0-9_]*/)?.[0] ?? "";
   const member = `${left[2] ?? ""}${memberRight}`;
-  return member ? { owner: left[1], member } : undefined;
+  return member ? { owner: left[1] ?? "", member } : undefined;
 }
 
 function diagnoseUndeclaredVariables(parsed: AspParsedDocument, symbols: VbSymbol[]): Diagnostic[] {
@@ -642,6 +816,8 @@ function diagnoseUndeclaredVariables(parsed: AspParsedDocument, symbols: VbSymbo
     "option",
     "explicit",
     "dim",
+    "redim",
+    "preserve",
     "private",
     "public",
     "set",
@@ -658,6 +834,7 @@ function diagnoseUndeclaredVariables(parsed: AspParsedDocument, symbols: VbSymbo
     "elseif",
     "for",
     "each",
+    "in",
     "next",
     "to",
     "step",
@@ -670,6 +847,7 @@ function diagnoseUndeclaredVariables(parsed: AspParsedDocument, symbols: VbSymbo
     "case",
     "class",
     "new",
+    "with",
     "call",
     "and",
     "or",
@@ -802,6 +980,118 @@ function wordAt(text: string, offset: number): string | undefined {
   const left = text.slice(0, offset).match(/[A-Za-z][A-Za-z0-9_]*$/)?.[0] ?? "";
   const right = text.slice(offset).match(/^[A-Za-z0-9_]*/)?.[0] ?? "";
   return left || right ? `${left}${right}` : undefined;
+}
+
+function wordRangeAt(text: string, offset: number): { text: string; range: Range } | undefined {
+  const left = text.slice(0, offset).match(/[A-Za-z][A-Za-z0-9_]*$/)?.[0] ?? "";
+  const right = text.slice(offset).match(/^[A-Za-z0-9_]*/)?.[0] ?? "";
+  const word = `${left}${right}`;
+  if (!word) {
+    return undefined;
+  }
+  const start = offset - left.length;
+  return { text: word, range: rangeFromOffsets(text, start, start + word.length) };
+}
+
+function callExpressionAt(
+  text: string,
+  offset: number,
+): { name: string; argumentsStart: number } | undefined {
+  const masked = maskVbscriptStringsAndComments(text.slice(0, offset));
+  let depth = 0;
+  for (let index = masked.length - 1; index >= 0; index -= 1) {
+    const char = masked[index];
+    if (char === ")") {
+      depth += 1;
+      continue;
+    }
+    if (char !== "(") {
+      continue;
+    }
+    if (depth > 0) {
+      depth -= 1;
+      continue;
+    }
+    const before = masked
+      .slice(0, index)
+      .match(/([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)?)\s*$/);
+    return before ? { name: before[1], argumentsStart: index + 1 } : undefined;
+  }
+  return undefined;
+}
+
+function countActiveParameter(text: string): number {
+  const masked = maskVbscriptStringsAndComments(text);
+  let depth = 0;
+  let count = 0;
+  for (const char of masked) {
+    if (char === "(") {
+      depth += 1;
+    } else if (char === ")" && depth > 0) {
+      depth -= 1;
+    } else if (char === "," && depth === 0) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function signatureSymbolsForCall(
+  parsed: AspParsedDocument,
+  name: string,
+  offset: number,
+  symbols: VbSymbol[],
+): VbSymbol[] {
+  const [owner, member] = name.includes(".") ? name.split(".", 2) : [undefined, name];
+  if (owner && member) {
+    const className =
+      owner.toLowerCase() === "me"
+        ? currentClassName(parsed, offset, symbols)
+        : inferVariableType(owner, parsed, offset, symbols);
+    if (!className) {
+      return [];
+    }
+    return symbols.filter(
+      (symbol) =>
+        symbol.memberOf?.toLowerCase() === className.toLowerCase() &&
+        symbol.name.toLowerCase() === member.toLowerCase() &&
+        (symbol.kind === "method" || symbol.kind === "property"),
+    );
+  }
+  return visibleSymbols(parsed, offset, symbols).filter(
+    (symbol) =>
+      symbol.name.toLowerCase() === name.toLowerCase() &&
+      (symbol.kind === "function" || symbol.kind === "sub"),
+  );
+}
+
+function signatureLabel(symbol: VbSymbol): string {
+  const keyword = symbol.kind === "sub" || symbol.kind === "method" ? "Sub" : "Function";
+  const owner = symbol.memberOf ? `${symbol.memberOf}.` : "";
+  return `${keyword} ${owner}${symbol.name}(${(symbol.parameters ?? []).join(", ")})`;
+}
+
+function isBuiltinName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    builtins.some((item) => item.label.toLowerCase() === lower) ||
+    Object.values(memberCompletions).some((items) =>
+      items.some((item) => item.label.toLowerCase() === lower),
+    )
+  );
+}
+
+function sameSymbol(left: VbSymbol, right: VbSymbol): boolean {
+  return (
+    left.sourceUri === right.sourceUri &&
+    left.name.toLowerCase() === right.name.toLowerCase() &&
+    left.kind === right.kind &&
+    (left.memberOf ?? "").toLowerCase() === (right.memberOf ?? "").toLowerCase() &&
+    left.range.start.line === right.range.start.line &&
+    left.range.start.character === right.range.start.character &&
+    left.range.end.line === right.range.end.line &&
+    left.range.end.character === right.range.end.character
+  );
 }
 
 function rangeContainsOffset(

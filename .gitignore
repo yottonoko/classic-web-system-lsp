@@ -2,6 +2,7 @@ node_modules/
 dist/
 out/
 coverage/
+apps/vscode/server/
 *.tsbuildinfo
 .DS_Store
 *.vsix

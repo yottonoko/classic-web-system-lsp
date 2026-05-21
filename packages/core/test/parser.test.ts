@@ -6,6 +6,7 @@ import {
   getVbscriptCompletions,
   getVbscriptDefinition,
   getVbscriptHover,
+  getVbscriptSignatureHelp,
   parseAspDocument,
 } from "../src";
 
@@ -192,6 +193,47 @@ Response.Write BuildName()
     );
     expect(getVbscriptDefinition(parsed, { line: 3, character: 17 }, { symbols })?.name).toBe(
       "BuildName",
+    );
+  });
+
+  it("tracks common VBScript statements and conservative external COM members", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Class Customer
+  Public Name
+End Class
+Dim c
+Set c = New Customer
+With c
+  .
+End With
+ReDim items(10)
+For Each item In items
+Next
+Dim rs
+Set rs = Server.CreateObject("ADODB.Recordset")
+rs.
+Function BuildName(firstName, lastName)
+End Function
+Response.Write BuildName("Ada", "Lovelace")
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.some((symbol) => symbol.name === "items" && symbol.kind === "variable")).toBe(
+      true,
+    );
+    expect(symbols.some((symbol) => symbol.name === "item" && symbol.kind === "variable")).toBe(
+      true,
+    );
+    const withCompletions = getVbscriptCompletions(parsed, { line: 7, character: 3 }, { symbols });
+    expect(withCompletions.some((item) => item.label === "Name")).toBe(true);
+    const adoCompletions = getVbscriptCompletions(parsed, { line: 14, character: 3 }, { symbols });
+    expect(adoCompletions.some((item) => item.label === "MoveNext")).toBe(true);
+    expect(getVbscriptSignatureHelp(parsed, { line: 17, character: 33 }, { symbols })).toEqual(
+      expect.objectContaining({
+        activeParameter: 1,
+      }),
     );
   });
 });

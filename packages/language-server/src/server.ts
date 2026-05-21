@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
+  CodeActionKind,
   CompletionItemKind,
   createConnection,
   DiagnosticSeverity,
@@ -13,16 +14,24 @@ import {
   Location,
   ProposedFeatures,
   ReferenceParams,
+  SemanticTokensBuilder,
+  SymbolInformation,
+  SymbolKind,
   TextDocumentPositionParams,
   TextDocuments,
   TextDocumentSyncKind,
 } from "vscode-languageserver/node";
 import type {
+  CodeAction,
   CompletionItem,
   Diagnostic,
   DocumentLink,
+  DocumentHighlight,
   Range,
+  RenameParams,
+  SignatureHelp,
   TextEdit,
+  WorkspaceEdit,
 } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
@@ -31,14 +40,18 @@ import {
   collectVbscriptSymbols,
   getVbscriptCompletions,
   getVbscriptDefinition,
+  getVbscriptDocumentHighlights,
   getVbscriptDocumentSymbols,
   getVbscriptHover,
+  getVbscriptRenameRange,
   getVbscriptReferences,
+  getVbscriptSignatureHelp,
   parseAspDocument,
   type AspParsedDocument,
   type AspSettings,
   type VirtualDocument,
   type VbProjectContext,
+  type VbSymbolKind,
 } from "@asp-lsp/core";
 import { getCSSLanguageService } from "vscode-css-languageservice";
 import {
@@ -52,7 +65,19 @@ const documents = new TextDocuments(TextDocument);
 const htmlService = getHtmlLanguageService();
 const cssService = getCSSLanguageService();
 const settingsByUri = new Map<string, AspSettings>();
+const includeDocumentCache = new Map<string, { mtimeMs: number; parsed: AspParsedDocument }>();
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
+let workspaceRoots: string[] = [];
+
+const semanticTokenTypes = [
+  "keyword",
+  "variable",
+  "function",
+  "class",
+  "method",
+  "property",
+  "comment",
+] as const;
 
 interface CachedDocument {
   source: TextDocument;
@@ -62,25 +87,39 @@ interface CachedDocument {
 
 const cache = new Map<string, CachedDocument>();
 
-connection.onInitialize(
-  (_params: InitializeParams): InitializeResult => ({
+connection.onInitialize((params: InitializeParams): InitializeResult => {
+  workspaceRoots = [
+    ...(params.workspaceFolders?.map((folder) => uriToFileName(folder.uri)) ?? []),
+    ...(params.rootUri ? [uriToFileName(params.rootUri)] : []),
+  ].filter((root, index, roots) => root.length > 0 && roots.indexOf(root) === index);
+  return {
     capabilities: {
       textDocumentSync: TextDocumentSyncKind.Incremental,
       completionProvider: {
-        triggerCharacters: ["<", ".", '"', "'", ":", "#"],
+        triggerCharacters: ["<", ".", '"', "'", ":", "#", "("],
         resolveProvider: false,
       },
+      signatureHelpProvider: { triggerCharacters: ["(", ","] },
       hoverProvider: true,
       definitionProvider: true,
       referencesProvider: true,
+      renameProvider: { prepareProvider: true },
+      documentHighlightProvider: true,
+      workspaceSymbolProvider: true,
       documentSymbolProvider: true,
       foldingRangeProvider: true,
       documentLinkProvider: { resolveProvider: false },
+      codeActionProvider: { codeActionKinds: [CodeActionKind.QuickFix] },
+      semanticTokensProvider: {
+        legend: { tokenTypes: [...semanticTokenTypes], tokenModifiers: [] },
+        full: true,
+        range: false,
+      },
       documentFormattingProvider: false,
       documentRangeFormattingProvider: true,
     },
-  }),
-);
+  };
+});
 
 documents.onDidOpen((event) => validate(event.document));
 documents.onDidChangeContent((event) => validate(event.document));
@@ -99,6 +138,15 @@ connection.onDidChangeConfiguration((change) => {
     globalSettings = normalizeSettings(incoming);
   }
   settingsByUri.clear();
+  cache.clear();
+  includeDocumentCache.clear();
+  for (const document of documents.all()) {
+    validate(document);
+  }
+});
+
+connection.onDidChangeWatchedFiles(() => {
+  includeDocumentCache.clear();
   cache.clear();
   for (const document of documents.all()) {
     validate(document);
@@ -210,6 +258,87 @@ connection.onReferences((params: ReferenceParams) => {
   ).map((reference) => Location.create(reference.uri, reference.range));
 });
 
+connection.onPrepareRename((params) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached || !isVbscriptPosition(cached, params.position)) {
+    return null;
+  }
+  return (
+    getVbscriptRenameRange(
+      cached.parsed,
+      params.position,
+      buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    ) ?? null
+  );
+});
+
+connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached || !isVbscriptPosition(cached, params.position)) {
+    return null;
+  }
+  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const range = getVbscriptRenameRange(cached.parsed, params.position, context);
+  if (!range || !/^[A-Za-z][A-Za-z0-9_]*$/.test(params.newName)) {
+    return null;
+  }
+  const changes: WorkspaceEdit["changes"] = {};
+  for (const reference of getVbscriptReferences(cached.parsed, params.position, context)) {
+    const edits = changes[reference.uri] ?? [];
+    edits.push({ range: reference.range, newText: params.newName });
+    changes[reference.uri] = edits;
+  }
+  return { changes };
+});
+
+connection.onDocumentHighlight((params): DocumentHighlight[] => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached || !isVbscriptPosition(cached, params.position)) {
+    return [];
+  }
+  return getVbscriptDocumentHighlights(
+    cached.parsed,
+    params.position,
+    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+  );
+});
+
+connection.onSignatureHelp((params): SignatureHelp | null => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached || !isVbscriptPosition(cached, params.position)) {
+    return null;
+  }
+  return (
+    getVbscriptSignatureHelp(
+      cached.parsed,
+      params.position,
+      buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    ) ?? null
+  );
+});
+
+connection.onWorkspaceSymbol((params) => {
+  const query = params.query.toLowerCase();
+  const symbols = documents
+    .all()
+    .flatMap((document) => {
+      const cached = getCached(document.uri);
+      return cached
+        ? (buildVbProjectContext(cached, cachedSettings(document.uri)).symbols ?? [])
+        : [];
+    })
+    .filter((symbol) => query.length === 0 || symbol.name.toLowerCase().includes(query));
+  return symbols.map((symbol) =>
+    SymbolInformation.create(
+      symbol.name,
+      vbWorkspaceSymbolKind(symbol.kind),
+      symbol.range,
+      symbol.sourceUri,
+      symbol.memberOf,
+    ),
+  );
+});
+
 connection.onDocumentSymbol((params) => {
   const cached = getCached(params.textDocument.uri);
   if (!cached) {
@@ -283,6 +412,74 @@ connection.onDocumentRangeFormatting((params) => {
     tabSize: params.options.tabSize,
     insertSpaces: params.options.insertSpaces,
   }) as TextEdit[];
+});
+
+connection.onCodeAction((params): CodeAction[] => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  return params.context.diagnostics.flatMap((diagnostic) =>
+    quickFixesForDiagnostic(cached, diagnostic),
+  );
+});
+
+connection.languages.semanticTokens.on((params) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return { data: [] };
+  }
+  const tokens: Array<{ line: number; character: number; length: number; tokenType: string }> = [];
+  for (const region of cached.parsed.regions) {
+    if (region.kind === "asp-block" || region.kind === "asp-expression") {
+      addSemanticToken(tokens, cached.source, region.start, 2, "keyword");
+      if (region.end - region.contentEnd >= 2) {
+        addSemanticToken(tokens, cached.source, region.contentEnd, 2, "keyword");
+      }
+    } else if (region.kind === "asp-directive") {
+      addSemanticToken(
+        tokens,
+        cached.source,
+        region.start,
+        Math.min(region.end - region.start, 3),
+        "keyword",
+      );
+    }
+  }
+  const symbols = collectVbscriptSymbols(cached.parsed);
+  for (const symbol of symbols) {
+    const tokenType =
+      symbol.kind === "class"
+        ? "class"
+        : symbol.kind === "method"
+          ? "method"
+          : symbol.kind === "field" || symbol.kind === "property"
+            ? "property"
+            : symbol.kind === "function" || symbol.kind === "sub"
+              ? "function"
+              : "variable";
+    tokens.push({
+      line: symbol.range.start.line,
+      character: symbol.range.start.character,
+      length: Math.max(1, symbol.range.end.character - symbol.range.start.character),
+      tokenType,
+    });
+  }
+  for (const name of ["Request", "Response", "Session", "Application", "Server", "ASPError"]) {
+    addWordSemanticTokens(tokens, cached.source, cached.parsed, name, "variable");
+  }
+  tokens.sort((left, right) => left.line - right.line || left.character - right.character);
+  const builder = new SemanticTokensBuilder();
+  for (const token of tokens) {
+    builder.push(
+      token.line,
+      token.character,
+      token.length,
+      semanticTokenTypes.indexOf(token.tokenType as (typeof semanticTokenTypes)[number]),
+      0,
+    );
+  }
+  return builder.build();
 });
 
 async function validate(document: TextDocument): Promise<void> {
@@ -438,12 +635,32 @@ function collectVbProjectDocuments(
       if (visited.has(uri)) {
         continue;
       }
-      const text = fs.readFileSync(resolved, "utf8");
-      visit(parseAspDocument(uri, text, settings), depth + 1);
+      visit(readParsedIncludeDocument(resolved, settings), depth + 1);
     }
   };
   visit(root, 0);
   return documents;
+}
+
+function readParsedIncludeDocument(fileName: string, settings: AspSettings): AspParsedDocument {
+  const normalized = normalizeFileName(fileName);
+  const stats = fs.statSync(normalized);
+  const cached = includeDocumentCache.get(normalized);
+  if (cached && cached.mtimeMs === stats.mtimeMs) {
+    return cached.parsed;
+  }
+  const text = readTextFile(normalized, settings.legacyEncoding);
+  const parsed = parseAspDocument(pathToFileUri(normalized), text, settings);
+  includeDocumentCache.set(normalized, { mtimeMs: stats.mtimeMs, parsed });
+  return parsed;
+}
+
+function readTextFile(fileName: string, encoding: string | undefined): string {
+  const normalized = (encoding ?? "utf8").toLowerCase().replace(/[-_]/g, "");
+  if (normalized === "shiftjis" || normalized === "sjis" || normalized === "cp932") {
+    return new TextDecoder("shift_jis").decode(fs.readFileSync(fileName));
+  }
+  return fs.readFileSync(fileName, "utf8");
 }
 
 function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
@@ -510,8 +727,7 @@ function findIncludeCycle(
     visited.add(normalized);
     stackIndexes.set(normalized, stack.length);
     stack.push(normalized);
-    const text = fs.readFileSync(normalized, "utf8");
-    const parsed = parseAspDocument(pathToFileUri(normalized), text, settings);
+    const parsed = readParsedIncludeDocument(normalized, settings);
     for (const include of parsed.includes) {
       const next = resolveIncludePath(
         pathToFileUri(normalized),
@@ -608,7 +824,12 @@ function cachedSettings(uri: string): AspSettings {
   }
   const settings: AspSettings = {
     ...globalSettings,
-    virtualRoot: globalSettings.virtualRoot || workspaceRootFromUri(uri),
+    virtualRoot:
+      globalSettings.virtualRoot || globalSettings.virtualRoots?.[0] || workspaceRootFromUri(uri),
+    virtualRoots:
+      globalSettings.virtualRoots && globalSettings.virtualRoots.length > 0
+        ? globalSettings.virtualRoots
+        : [workspaceRootFromUri(uri), ...workspaceRoots],
   };
   settingsByUri.set(uri, settings);
   return settings;
@@ -638,13 +859,28 @@ function readSettingsFromChange(settings: unknown): Record<string, unknown> | un
 }
 
 function normalizeSettings(settings: Record<string, unknown> | AspSettings): AspSettings {
+  const rawVirtualRoots = Array.isArray(settings.virtualRoots)
+    ? settings.virtualRoots
+    : Array.isArray(settings.includePaths)
+      ? settings.includePaths
+      : undefined;
+  const virtualRoots = rawVirtualRoots
+    ?.filter((value): value is string => typeof value === "string" && value.length > 0)
+    .map((value) => path.resolve(value));
+  const includePaths = Array.isArray(settings.includePaths)
+    ? settings.includePaths
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .map((value) => path.resolve(value))
+    : undefined;
   return {
     defaultLanguage: settings.defaultLanguage === "JScript" ? "JScript" : "VBScript",
     checkJs: settings.checkJs === true,
     virtualRoot:
       typeof settings.virtualRoot === "string" && settings.virtualRoot.length > 0
-        ? settings.virtualRoot
+        ? path.resolve(settings.virtualRoot)
         : undefined,
+    virtualRoots,
+    includePaths,
     legacyEncoding:
       typeof settings.legacyEncoding === "string" ? settings.legacyEncoding : undefined,
   };
@@ -692,12 +928,34 @@ function resolveIncludePath(
   settings: AspSettings,
 ): string {
   if (mode === "virtual") {
-    return path.resolve(
-      settings.virtualRoot ?? workspaceRootFromUri(ownerUri),
-      includePath.replace(/^\/+/, ""),
-    );
+    const normalizedInclude = includePath.replace(/^\/+/, "");
+    for (const root of [
+      ...(settings.virtualRoots ?? []),
+      settings.virtualRoot,
+      ...workspaceRoots,
+      workspaceRootFromUri(ownerUri),
+    ]) {
+      if (!root) {
+        continue;
+      }
+      const candidate = path.resolve(root, normalizedInclude);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return path.resolve(settings.virtualRoot ?? workspaceRootFromUri(ownerUri), normalizedInclude);
   }
-  return path.resolve(path.dirname(uriToFileName(ownerUri)), includePath);
+  const local = path.resolve(path.dirname(uriToFileName(ownerUri)), includePath);
+  if (fs.existsSync(local)) {
+    return local;
+  }
+  for (const root of [...(settings.includePaths ?? []), ...(settings.virtualRoots ?? [])]) {
+    const candidate = path.resolve(root, includePath);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return local;
 }
 
 function workspaceRootFromUri(uri: string): string {
@@ -750,6 +1008,106 @@ function tsCompletionKind(kind: string): CompletionItemKind {
       return CompletionItemKind.Property;
     default:
       return CompletionItemKind.Text;
+  }
+}
+
+function isVbscriptPosition(cached: CachedDocument, position: Range["start"]): boolean {
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
+  return region?.language === "vbscript" || region?.language === "jscript";
+}
+
+function vbWorkspaceSymbolKind(kind: VbSymbolKind): SymbolKind {
+  switch (kind) {
+    case "class":
+      return SymbolKind.Class;
+    case "method":
+    case "sub":
+    case "function":
+      return SymbolKind.Function;
+    case "property":
+      return SymbolKind.Property;
+    case "constant":
+      return SymbolKind.Constant;
+    case "field":
+      return SymbolKind.Field;
+    case "variable":
+      return SymbolKind.Variable;
+  }
+}
+
+function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic): CodeAction[] {
+  if (diagnostic.source === "asp-lsp-vbscript") {
+    const name = /'([^']+)' is not declared/.exec(diagnostic.message)?.[1];
+    if (!name) {
+      return [];
+    }
+    const line = diagnostic.range.start.line;
+    return [
+      {
+        title: `Declare ${name} with Dim`,
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        edit: {
+          changes: {
+            [cached.source.uri]: [
+              {
+                range: {
+                  start: { line, character: 0 },
+                  end: { line, character: 0 },
+                },
+                newText: `Dim ${name}\n`,
+              },
+            ],
+          },
+        },
+      },
+    ];
+  }
+  if (diagnostic.source === "asp-lsp-include") {
+    const includePath = /'([^']+)'/.exec(diagnostic.message)?.[1];
+    if (!includePath) {
+      return [];
+    }
+    return [
+      {
+        title: `Create missing include ${includePath}`,
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        data: { includePath },
+      },
+    ];
+  }
+  return [];
+}
+
+function addSemanticToken(
+  tokens: Array<{ line: number; character: number; length: number; tokenType: string }>,
+  document: TextDocument,
+  offset: number,
+  length: number,
+  tokenType: string,
+): void {
+  const position = document.positionAt(offset);
+  tokens.push({ line: position.line, character: position.character, length, tokenType });
+}
+
+function addWordSemanticTokens(
+  tokens: Array<{ line: number; character: number; length: number; tokenType: string }>,
+  document: TextDocument,
+  parsed: AspParsedDocument,
+  word: string,
+  tokenType: string,
+): void {
+  const pattern = new RegExp(`\\b${word}\\b`, "gi");
+  for (const region of parsed.regions) {
+    if (region.language !== "vbscript" && region.language !== "jscript") {
+      continue;
+    }
+    const text = parsed.text.slice(region.contentStart, region.contentEnd);
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      addSemanticToken(tokens, document, region.contentStart + match.index, word.length, tokenType);
+    }
   }
 }
 
