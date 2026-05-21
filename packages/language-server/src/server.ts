@@ -128,6 +128,22 @@ interface WorkspaceIndexedDocument {
 
 type JavaScriptMode = "definition" | "declaration" | "typeDefinition" | "implementation";
 
+interface JsProjectFile {
+  fileName: string;
+  text: string;
+  version: string;
+  uri: string;
+  virtual?: VirtualDocument;
+}
+
+interface JsProjectContext {
+  virtual: VirtualDocument;
+  service: ts.LanguageService;
+  fileName: string;
+  offset: number;
+  files: Map<string, JsProjectFile>;
+}
+
 const cache = new Map<string, CachedDocument>();
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
@@ -772,8 +788,7 @@ function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
 
 function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
   return jsVirtualDocuments(cached).flatMap((virtual) => {
-    const host = createJsLanguageHost(virtual, settings);
-    const service = ts.createLanguageService(host);
+    const service = createJsLanguageService(virtual, settings).service;
     const fileName = jsVirtualFileName(virtual.uri);
     const syntactic = service.getSyntacticDiagnostics(fileName);
     const semantic = settings.checkJs ? service.getSemanticDiagnostics(fileName) : [];
@@ -857,7 +872,7 @@ function jsReferences(cached: CachedDocument, position: Position): Location[] {
   return (
     context.service
       .getReferencesAtPosition(context.fileName, context.offset)
-      ?.map((reference) => tsReferenceToLocation(context.virtual, reference))
+      ?.map((reference) => tsReferenceToLocation(context, reference))
       .filter((location): location is Location => Boolean(location)) ?? []
   );
 }
@@ -893,14 +908,18 @@ function jsRename(
   if (!locations) {
     return null;
   }
-  const edits = locations
-    .filter((location) => location.fileName === context.fileName)
-    .map((location) => {
-      const range = textSpanToSourceRange(context.virtual, location.textSpan);
-      return range ? { range, newText: newName } : undefined;
-    })
-    .filter((edit): edit is TextEdit => Boolean(edit));
-  return edits.length > 0 ? { changes: { [cached.source.uri]: edits } } : null;
+  const changes: NonNullable<WorkspaceEdit["changes"]> = {};
+  for (const location of locations) {
+    const mapped = textSpanToLocation(context, location.fileName, location.textSpan);
+    if (!mapped) {
+      continue;
+    }
+    changes[mapped.uri] = [
+      ...(changes[mapped.uri] ?? []),
+      { range: mapped.range, newText: newName },
+    ];
+  }
+  return Object.keys(changes).length > 0 ? { changes } : null;
 }
 
 function jsSignatureHelp(cached: CachedDocument, position: Position): SignatureHelp | null {
@@ -946,7 +965,7 @@ function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem 
   if (!cached || !virtual || typeof data?.virtualOffset !== "number" || !data.name) {
     return undefined;
   }
-  const service = ts.createLanguageService(createJsLanguageHost(virtual, cachedSettings(uri)));
+  const service = createJsLanguageService(virtual, cachedSettings(uri)).service;
   const details = service.getCompletionEntryDetails(
     jsVirtualFileName(virtual.uri),
     data.virtualOffset,
@@ -1003,7 +1022,7 @@ function definitionLikeLocation(
   if (!region) {
     return null;
   }
-  if (region.language === "vbscript" || region.language === "jscript") {
+  if (region.language === "vbscript") {
     const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
     const symbol =
       mode === "typeDefinition"
@@ -1013,7 +1032,7 @@ function definitionLikeLocation(
           : getVbscriptDefinition(cached.parsed, position, context);
     return symbol ? Location.create(symbol.sourceUri, symbol.range) : null;
   }
-  if (region.language === "javascript") {
+  if (isJavaScriptLikeRegion(region)) {
     return jsLocations(cached, position, mode);
   }
   if (region.language === "css" && mode !== "implementation") {
@@ -1046,29 +1065,16 @@ function jsLocations(cached: CachedDocument, position: Position, mode: JavaScrip
         : context.service.getDefinitionAtPosition(context.fileName, context.offset);
   return (
     definitions
-      ?.map((definition) => tsDefinitionToLocation(context.virtual, definition))
+      ?.map((definition) => tsDefinitionToLocation(context, definition))
       .filter((location): location is Location => Boolean(location)) ?? []
   );
 }
 
 function tsDefinitionToLocation(
-  virtual: VirtualDocument,
+  context: JsProjectContext,
   definition: ts.DefinitionInfo | ts.ImplementationLocation,
 ): Location | undefined {
-  if (definition.fileName !== jsVirtualFileName(virtual.uri)) {
-    return undefined;
-  }
-  const doc = toTextDocument(virtual);
-  const start = doc.positionAt(definition.textSpan.start);
-  const end = doc.positionAt(definition.textSpan.start + definition.textSpan.length);
-  const sourceStart = virtual.sourceMap.toSourcePosition(start);
-  const sourceEnd = virtual.sourceMap.toSourcePosition(end);
-  return sourceStart && sourceEnd
-    ? Location.create(virtualSourceUri(virtual), {
-        start: sourceStart,
-        end: sourceEnd,
-      })
-    : undefined;
+  return textSpanToLocation(context, definition.fileName, definition.textSpan);
 }
 
 function remapLocation(virtual: VirtualDocument, location: Location): Location | undefined {
@@ -1083,12 +1089,7 @@ function virtualSourceUri(virtual: VirtualDocument): string {
   return virtual.uri.replace(`.${virtual.languageId}.virtual`, "");
 }
 
-function jsContextAt(
-  cached: CachedDocument,
-  position: Position,
-):
-  | { virtual: VirtualDocument; service: ts.LanguageService; fileName: string; offset: number }
-  | undefined {
+function jsContextAt(cached: CachedDocument, position: Position): JsProjectContext | undefined {
   const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
   if (!region || !isJavaScriptLikeRegion(region)) {
     return undefined;
@@ -1100,13 +1101,13 @@ function jsContextAt(
   }
   const doc = toTextDocument(virtual);
   const fileName = jsVirtualFileName(virtual.uri);
+  const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
   return {
     virtual,
-    service: ts.createLanguageService(
-      createJsLanguageHost(virtual, cachedSettings(cached.source.uri)),
-    ),
+    service: project.service,
     fileName,
     offset: doc.offsetAt(virtualPosition),
+    files: project.files,
   };
 }
 
@@ -1123,15 +1124,31 @@ function textSpanToSourceRange(virtual: VirtualDocument, span: ts.TextSpan): Ran
   return start && end ? { start, end } : undefined;
 }
 
-function tsReferenceToLocation(
-  virtual: VirtualDocument,
-  reference: ts.ReferenceEntry,
+function textSpanToLocation(
+  context: JsProjectContext,
+  fileName: string,
+  span: ts.TextSpan,
 ): Location | undefined {
-  if (reference.fileName !== jsVirtualFileName(virtual.uri)) {
+  const file = context.files.get(normalizeFileName(fileName));
+  if (!file) {
     return undefined;
   }
-  const range = textSpanToSourceRange(virtual, reference.textSpan);
-  return range ? Location.create(virtualSourceUri(virtual), range) : undefined;
+  if (file.virtual) {
+    const range = textSpanToSourceRange(file.virtual, span);
+    return range ? Location.create(virtualSourceUri(file.virtual), range) : undefined;
+  }
+  const doc = TextDocument.create(file.uri, "javascript", 0, file.text);
+  return Location.create(file.uri, {
+    start: doc.positionAt(span.start),
+    end: doc.positionAt(span.start + span.length),
+  });
+}
+
+function tsReferenceToLocation(
+  context: JsProjectContext,
+  reference: ts.ReferenceEntry,
+): Location | undefined {
+  return textSpanToLocation(context, reference.fileName, reference.textSpan);
 }
 
 function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
@@ -1922,31 +1939,165 @@ function rangeOverlapsNonHtml(cached: CachedDocument, range: Range): boolean {
   );
 }
 
-function createJsLanguageHost(
+function createJsLanguageService(
   virtual: VirtualDocument,
   settings: AspSettings,
-): ts.LanguageServiceHost {
-  const fileName = jsVirtualFileName(virtual.uri);
-  return {
-    getScriptFileNames: () => [fileName],
-    getScriptVersion: () => "0",
-    getScriptSnapshot: (requested) =>
-      requested === fileName ? ts.ScriptSnapshot.fromString(virtual.text) : undefined,
-    getScriptKind: (requested) =>
-      requested === fileName ? ts.ScriptKind.JS : ts.ScriptKind.Unknown,
-    getCurrentDirectory: () => process.cwd(),
-    getCompilationSettings: () => ({
-      allowJs: true,
-      checkJs: settings.checkJs ?? false,
-      noEmit: true,
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.CommonJS,
-    }),
+): {
+  service: ts.LanguageService;
+  host: ts.LanguageServiceHost;
+  files: Map<string, JsProjectFile>;
+} {
+  const project = collectJsProjectFiles(virtual, settings);
+  const host: ts.LanguageServiceHost = {
+    getScriptFileNames: () => [...project.files.keys()],
+    getScriptVersion: (requested) =>
+      project.files.get(normalizeFileName(requested))?.version ?? "0",
+    getScriptSnapshot: (requested) => {
+      const file = project.files.get(normalizeFileName(requested));
+      if (file) {
+        return ts.ScriptSnapshot.fromString(file.text);
+      }
+      const text = ts.sys.readFile(requested);
+      return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text);
+    },
+    getScriptKind: (requested) => scriptKindForFileName(requested),
+    getCurrentDirectory: () => project.currentDirectory,
+    getCompilationSettings: () => project.options,
     getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-    fileExists: ts.sys.fileExists,
-    readFile: ts.sys.readFile,
+    fileExists: (requested) =>
+      project.files.has(normalizeFileName(requested)) || ts.sys.fileExists(requested),
+    readFile: (requested) =>
+      project.files.get(normalizeFileName(requested))?.text ?? ts.sys.readFile(requested),
     readDirectory: ts.sys.readDirectory,
+    directoryExists: ts.sys.directoryExists,
+    getDirectories: ts.sys.getDirectories,
   };
+  return { service: ts.createLanguageService(host), host, files: project.files };
+}
+
+function collectJsProjectFiles(
+  activeVirtual: VirtualDocument,
+  settings: AspSettings,
+): { files: Map<string, JsProjectFile>; options: ts.CompilerOptions; currentDirectory: string } {
+  const files = new Map<string, JsProjectFile>();
+  const addVirtual = (virtual: VirtualDocument, version: string): void => {
+    const fileName = normalizeFileName(jsVirtualFileName(virtual.uri));
+    files.set(fileName, {
+      fileName,
+      text: virtual.text,
+      version,
+      uri: virtualSourceUri(virtual),
+      virtual,
+    });
+  };
+  addVirtual(activeVirtual, "0");
+  for (const document of documents.all()) {
+    const cached = getCached(document.uri);
+    if (!cached) {
+      continue;
+    }
+    for (const virtual of jsVirtualDocuments(cached)) {
+      addVirtual(virtual, String(document.version));
+    }
+  }
+
+  const ownerFile = uriToFileName(virtualSourceUri(activeVirtual));
+  const config = readJsProjectConfig(ownerFile, settings);
+  for (const fileName of config.fileNames) {
+    const normalized = normalizeFileName(fileName);
+    if (files.has(normalized) || !ts.sys.fileExists(normalized)) {
+      continue;
+    }
+    const text = ts.sys.readFile(normalized);
+    if (text === undefined) {
+      continue;
+    }
+    const stat = fs.statSync(normalized, { throwIfNoEntry: false });
+    files.set(normalized, {
+      fileName: normalized,
+      text,
+      version: stat ? `${stat.mtimeMs}:${stat.size}` : "0",
+      uri: pathToFileUri(normalized),
+    });
+  }
+  return { files, options: config.options, currentDirectory: config.currentDirectory };
+}
+
+function readJsProjectConfig(
+  ownerFile: string,
+  settings: AspSettings,
+): { fileNames: string[]; options: ts.CompilerOptions; currentDirectory: string } {
+  const ownerDirectory = path.dirname(ownerFile);
+  const configPath =
+    ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "tsconfig.json") ??
+    ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "jsconfig.json");
+  const baseOptions: ts.CompilerOptions = {
+    allowJs: true,
+    checkJs: settings.checkJs ?? false,
+    noEmit: true,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.CommonJS,
+    moduleResolution: ts.ModuleResolutionKind.Node10,
+  };
+  if (configPath) {
+    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    const parsed = ts.parseJsonConfigFileContent(
+      config.config ?? {},
+      ts.sys,
+      path.dirname(configPath),
+      baseOptions,
+      configPath,
+    );
+    return {
+      fileNames: parsed.fileNames,
+      options: { ...parsed.options, ...baseOptions, checkJs: settings.checkJs ?? false },
+      currentDirectory: path.dirname(configPath),
+    };
+  }
+  const roots = workspaceRoots.length > 0 ? workspaceRoots : [ownerDirectory];
+  return {
+    fileNames: roots.flatMap((root) => collectWorkspaceScriptFiles(root)),
+    options: baseOptions,
+    currentDirectory: roots[0] ?? ownerDirectory,
+  };
+}
+
+function collectWorkspaceScriptFiles(root: string): string[] {
+  const result: string[] = [];
+  const stat = fs.statSync(root, { throwIfNoEntry: false });
+  if (!stat?.isDirectory()) {
+    return result;
+  }
+  const visit = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!isExcludedWorkspaceDirectory(entry.name, fullPath)) {
+          visit(fullPath);
+        }
+        continue;
+      }
+      if (entry.isFile() && /\.(?:[cm]?js|jsx|[cm]?ts|tsx|d\.ts)$/i.test(entry.name)) {
+        result.push(normalizeFileName(fullPath));
+      }
+    }
+  };
+  visit(root);
+  return result;
+}
+
+function scriptKindForFileName(fileName: string): ts.ScriptKind {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith(".ts") || lower.endsWith(".mts") || lower.endsWith(".cts")) {
+    return ts.ScriptKind.TS;
+  }
+  if (lower.endsWith(".tsx")) {
+    return ts.ScriptKind.TSX;
+  }
+  if (lower.endsWith(".jsx")) {
+    return ts.ScriptKind.JSX;
+  }
+  return ts.ScriptKind.JS;
 }
 
 function resolveIncludePath(
@@ -2169,9 +2320,7 @@ function jsCodeActions(
     if (virtualStart === undefined || virtualEnd === undefined) {
       continue;
     }
-    const service = ts.createLanguageService(
-      createJsLanguageHost(virtual, cachedSettings(cached.source.uri)),
-    );
+    const service = createJsLanguageService(virtual, cachedSettings(cached.source.uri)).service;
     const fileName = jsVirtualFileName(virtual.uri);
     if (codeActionAllows(context, CodeActionKind.QuickFix)) {
       const errorCodes = context.diagnostics
@@ -2235,9 +2384,7 @@ function codeActionAllows(context: CodeActionContext, kind: string): boolean {
 function organizeJavaScriptImportsEdit(cached: CachedDocument): WorkspaceEdit | undefined {
   const edits = jsVirtualDocuments(cached)
     .map((virtual) => {
-      const service = ts.createLanguageService(
-        createJsLanguageHost(virtual, cachedSettings(cached.source.uri)),
-      );
+      const service = createJsLanguageService(virtual, cachedSettings(cached.source.uri)).service;
       return fileTextChangesToWorkspaceEdit(
         virtual,
         service.organizeImports({ type: "file", fileName: jsVirtualFileName(virtual.uri) }, {}, {}),

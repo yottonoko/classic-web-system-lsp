@@ -181,6 +181,98 @@ const message = gre▮et("Ada");
     }
   });
 
+  it("delegates server-side JScript navigation to TypeScript", async () => {
+    const marked = markedDocument(`<%@ LANGUAGE="JScript" %>
+<%
+function serverGreet(name) {
+  return name;
+}
+var message = serverGre▮et("Ada");
+%>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/server-jscript.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const definition = await server.request("textDocument/definition", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(definition)).toContain('"line":2');
+
+      const typeDefinition = await server.request("textDocument/typeDefinition", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(typeDefinition)).toContain('"line":2');
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("uses workspace JavaScript files in the TypeScript project model", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-project-"));
+    fs.writeFileSync(
+      path.join(tempDir, "helper.js"),
+      `export function externalHelper(value) {
+  return value.toUpperCase();
+}
+`,
+      "utf8",
+    );
+    const marked = markedDocument(`<script type="module">
+import { externalHelper } from "./helper.js";
+const value = externalHe▮lper("ada");
+</script>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: `file://${tempDir}`,
+        capabilities: {},
+      });
+      const uri = `file://${path.join(tempDir, "page.asp")}`;
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+      const definition = await server.request("textDocument/definition", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(definition)).toContain("helper.js");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("publishes CSS and JavaScript diagnostics over JSON-RPC", async () => {
     const server = new RpcServer();
     try {
