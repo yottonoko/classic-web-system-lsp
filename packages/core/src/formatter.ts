@@ -91,7 +91,7 @@ function formatRegion(
   if (region.kind === "asp-block") {
     const content = parsed.text.slice(region.contentStart, region.contentEnd);
     if (!content.includes("\n") && !content.includes("\r")) {
-      return `<% ${formatVbscriptLine(oneLine(content), options)} %>`;
+      return `<% ${formatVbscriptLine(content.trim(), options)} %>`;
     }
     return `<%\n${formatVbscriptBlock(content, options, leadingIndent(parsed.text, region.start))}\n%>`;
   }

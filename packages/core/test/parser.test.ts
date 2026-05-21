@@ -372,6 +372,12 @@ value=1
     expect(formatted).toContain(`<%= "x=y" %>`);
   });
 
+  it("preserves string whitespace inside single-line ASP blocks", () => {
+    const parsed = parseAspDocument("file:///site/default.asp", `<%Response.Write "a   b"%>`);
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0]?.newText).toBe(`<% Response.Write "a   b" %>`);
+  });
+
   it("leaves server-side JScript regions unchanged", () => {
     const source = `<%@ LANGUAGE="JScript" %>
 <%
