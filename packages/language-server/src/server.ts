@@ -219,7 +219,9 @@ async function validate(document: TextDocument): Promise<void> {
   const cached = { source: document, parsed, virtuals };
   cache.set(document.uri, cached);
   const diagnostics: Diagnostic[] = [...parsed.diagnostics, ...analyzeVbscript(parsed).diagnostics, ...includeDiagnostics(cached, settings)];
-  diagnostics.push(...htmlDiagnostics(cached));
+  if (!isIncDocument(document.uri)) {
+    diagnostics.push(...htmlDiagnostics(cached));
+  }
   diagnostics.push(...cssDiagnostics(cached));
   diagnostics.push(...jsDiagnostics(cached, settings));
   connection.sendDiagnostics({ uri: document.uri, diagnostics });
@@ -338,16 +340,70 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
         source: "asp-lsp-include",
       });
     }
-    if (resolved === owner) {
+    if (sameFile(resolved, owner)) {
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
         range: include.range,
         message: "Include file references the current document.",
         source: "asp-lsp-include",
       });
+      continue;
+    }
+    const cycle = findIncludeCycle(owner, resolved, settings);
+    if (cycle) {
+      diagnostics.push({
+        severity: DiagnosticSeverity.Warning,
+        range: include.range,
+        message: `Include cycle detected: ${cycle.map((fileName) => path.basename(fileName)).join(" -> ")}.`,
+        source: "asp-lsp-include",
+      });
     }
   }
   return diagnostics;
+}
+
+function findIncludeCycle(owner: string, start: string, settings: AspSettings): string[] | undefined {
+  if (!fs.existsSync(start)) {
+    return undefined;
+  }
+  const visited = new Set<string>();
+  const stack: string[] = [];
+  const stackIndexes = new Map<string, number>();
+  const search = (fileName: string, depth: number): string[] | undefined => {
+    if (depth > 20) {
+      return undefined;
+    }
+    const normalized = normalizeFileName(fileName);
+    if (sameFile(normalized, owner) && stack.length > 0) {
+      return [...stack, owner];
+    }
+    const existingStackIndex = stackIndexes.get(normalized);
+    if (existingStackIndex !== undefined) {
+      return [...stack.slice(existingStackIndex), normalized];
+    }
+    if (visited.has(normalized)) {
+      return undefined;
+    }
+    visited.add(normalized);
+    stackIndexes.set(normalized, stack.length);
+    stack.push(normalized);
+    const text = fs.readFileSync(normalized, "utf8");
+    const parsed = parseAspDocument(pathToFileUri(normalized), text, settings);
+    for (const include of parsed.includes) {
+      const next = resolveIncludePath(pathToFileUri(normalized), include.path, include.mode, settings);
+      if (!fs.existsSync(next)) {
+        continue;
+      }
+      const cycle = search(next, depth + 1);
+      if (cycle) {
+        return cycle;
+      }
+    }
+    stack.pop();
+    stackIndexes.delete(normalized);
+    return undefined;
+  };
+  return search(start, 0);
 }
 
 function remapDiagnostic(virtual: VirtualDocument, diagnostic: Diagnostic, source: string): Diagnostic | undefined {
@@ -492,6 +548,18 @@ function uriToFileName(uri: string): string {
 
 function pathToFileUri(fileName: string): string {
   return new URL(`file://${fileName}`).toString();
+}
+
+function normalizeFileName(fileName: string): string {
+  return path.resolve(fileName);
+}
+
+function sameFile(left: string, right: string): boolean {
+  return normalizeFileName(left) === normalizeFileName(right);
+}
+
+function isIncDocument(uri: string): boolean {
+  return uriToFileName(uri).toLowerCase().endsWith(".inc");
 }
 
 function wordAt(text: string, offset: number): string | undefined {

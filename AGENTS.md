@@ -1,0 +1,52 @@
+# Repository Instructions
+
+This repository contains a Classic ASP language server and a VS Code extension.
+
+## Project Layout
+
+- `packages/core`: Classic ASP parser, embedded region scanner, virtual documents, source maps, and VBScript helpers.
+- `packages/language-server`: LSP server entrypoint, diagnostics, completion, hover, document links, folding, and formatting routing.
+- `apps/vscode`: VS Code extension client, language registration, grammar, and extension package tests.
+
+## Language And Style
+
+- Use TypeScript for implementation.
+- Use English identifiers, public API names, source comments, and technical docs unless a user explicitly requests Japanese.
+- Keep comments sparse. Add comments only for non-obvious mapping, protocol, parsing, or compatibility behavior.
+- Keep Classic ASP handling conservative. Prefer fewer diagnostics over noisy false positives.
+
+## Commands
+
+Use `pnpm`, not `npm`.
+
+```sh
+pnpm install
+pnpm run typecheck
+pnpm run lint
+pnpm run test
+pnpm run build
+```
+
+The standalone server is built at `packages/language-server/dist/server.js` and runs with:
+
+```sh
+node packages/language-server/dist/server.js --stdio
+```
+
+## Implementation Rules
+
+- Preserve UTF-16 offsets and LSP ranges when adding parser or source-map behavior.
+- Route embedded HTML, CSS, and JavaScript through their language services when practical.
+- Treat `.inc` files as fragments. Do not assume a complete HTML document.
+- Do not let formatting edits erase or rewrite Classic ASP server regions.
+- Keep `apps/vscode` able to resolve the packaged language server module via `node_modules/@asp-lsp/language-server/dist/server.js`.
+
+## Git
+
+- Do not stage unrelated files.
+- Commit messages in this repository may be English.
+- Every commit message must end with exactly one trailer:
+
+```text
+Co-authored-by: Codex <noreply@openai.com>
+```

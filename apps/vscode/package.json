@@ -62,7 +62,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "pnpm --filter @asp-lsp/language-server run build && vitest run --passWithNoTests"
   },
   "dependencies": {
     "@asp-lsp/language-server": "workspace:*",

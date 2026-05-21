@@ -20,10 +20,36 @@ pnpm run test
 pnpm run build
 ```
 
-Run the standalone language server:
+## Standalone Server
 
 ```sh
 pnpm --filter @asp-lsp/language-server run start -- --stdio
 ```
 
-Open the VS Code extension from `apps/vscode` during extension development.
+After building, the server entrypoint is:
+
+```sh
+node packages/language-server/dist/server.js --stdio
+```
+
+## VS Code Development
+
+Open this repository in VS Code, run `pnpm install` and `pnpm run build`, then start an Extension Development Host from `apps/vscode`.
+
+The extension registers:
+
+- language id: `classic-asp`
+- file extensions: `.asp`, `.asa`, `.inc`
+- packaged server path: `node_modules/@asp-lsp/language-server/dist/server.js`
+
+## Current v1 Limits
+
+- VBScript analysis is intentionally conservative. It supports built-in completions, declarations, document symbols, and simple `Option Explicit` diagnostics.
+- `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
+- Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
+- COM and IIS runtime behavior are not executed or type-checked.
+- Full-document formatting is disabled. Range formatting is returned only for HTML-only ranges so ASP server regions are not erased.
+
+## Assistant Instructions
+
+`AGENTS.md` is the source instruction file for coding agents. `CLAUDE.md`, `GEMINI.md`, and `.github/copilot-instructions.md` are symlinks to it.
