@@ -269,7 +269,7 @@ function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnosti
   }
   const host = createJsLanguageHost(virtual, settings);
   const service = ts.createLanguageService(host);
-  const fileName = uriToFileName(virtual.uri);
+  const fileName = jsVirtualFileName(virtual.uri);
   const syntactic = service.getSyntacticDiagnostics(fileName);
   const semantic = settings.checkJs ? service.getSemanticDiagnostics(fileName) : [];
   return [...syntactic, ...semantic].map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic)).filter(isDiagnostic);
@@ -297,7 +297,7 @@ function jsCompletion(cached: CachedDocument, params: TextDocumentPositionParams
   if (!virtualPosition) {
     return [];
   }
-  const fileName = uriToFileName(virtual.uri);
+  const fileName = jsVirtualFileName(virtual.uri);
   const service = ts.createLanguageService(createJsLanguageHost(virtual, cachedSettings(cached.source.uri)));
   const offset = toTextDocument(virtual).offsetAt(virtualPosition);
   return (
@@ -507,11 +507,12 @@ function rangeOverlapsNonHtml(cached: CachedDocument, range: Range): boolean {
 }
 
 function createJsLanguageHost(virtual: VirtualDocument, settings: AspSettings): ts.LanguageServiceHost {
-  const fileName = uriToFileName(virtual.uri);
+  const fileName = jsVirtualFileName(virtual.uri);
   return {
     getScriptFileNames: () => [fileName],
     getScriptVersion: () => "0",
     getScriptSnapshot: (requested) => (requested === fileName ? ts.ScriptSnapshot.fromString(virtual.text) : undefined),
+    getScriptKind: (requested) => (requested === fileName ? ts.ScriptKind.JS : ts.ScriptKind.Unknown),
     getCurrentDirectory: () => process.cwd(),
     getCompilationSettings: () => ({
       allowJs: true,
@@ -544,6 +545,11 @@ function uriToFileName(uri: string): string {
     return decodeURIComponent(new URL(uri).pathname);
   }
   return uri.replace(/\.(html|css|javascript|vbscript|jscript)\.virtual$/, "");
+}
+
+function jsVirtualFileName(uri: string): string {
+  const fileName = uri.startsWith("file://") ? decodeURIComponent(new URL(uri).pathname) : uri;
+  return fileName.replace(/\.(javascript|jscript)\.virtual$/, ".$1.js");
 }
 
 function pathToFileUri(fileName: string): string {

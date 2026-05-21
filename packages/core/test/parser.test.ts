@@ -40,6 +40,14 @@ Response.Write name
     expect(parsed.regions.some((region) => region.kind === "asp-expression")).toBe(true);
   });
 
+  it("extracts inline style attributes as CSS virtual documents", () => {
+    const source = `<div style="color: red; display: block"></div>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    expect(parsed.regions.some((region) => region.kind === "style-attribute" && region.language === "css")).toBe(true);
+    expect(docs.get("css")?.text).toContain("__asp_lsp__{color: red; display: block}");
+  });
+
   it("reports missing ASP close delimiter", () => {
     const parsed = parseAspDocument("file:///broken.asp", "<html><% Response.Write 1");
     expect(parsed.diagnostics[0]?.message).toContain("closing %>");

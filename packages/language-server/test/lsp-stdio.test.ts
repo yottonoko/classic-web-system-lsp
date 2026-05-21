@@ -11,6 +11,11 @@ interface JsonRpcMessage {
   result?: unknown;
 }
 
+interface MarkedDocument {
+  text: string;
+  position: { line: number; character: number };
+}
+
 describe("stdio LSP server", () => {
   it("handles initialize, didOpen, diagnostics and completion over JSON-RPC", async () => {
     const server = new RpcServer();
@@ -41,6 +46,93 @@ describe("stdio LSP server", () => {
         position: { line: 1, character: 9 },
       });
       expect(JSON.stringify(completions)).toContain("Write");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("returns HTML, CSS and JavaScript completions over JSON-RPC", async () => {
+    const cases = [
+      {
+        uri: "file:///tmp/html.asp",
+        markedSource: "<▮",
+        expected: "div",
+      },
+      {
+        uri: "file:///tmp/css-block.asp",
+        markedSource: "<style>.x { colo▮ }</style>",
+        expected: "color",
+      },
+      {
+        uri: "file:///tmp/css-attribute.asp",
+        markedSource: '<div style="colo▮"></div>',
+        expected: "color",
+      },
+      {
+        uri: "file:///tmp/client-js.asp",
+        markedSource: "<script>const alphaBeta = 1; alpha▮</script>",
+        expected: "alphaBeta",
+      },
+    ];
+
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      for (const testCase of cases) {
+        const document = markedDocument(testCase.markedSource);
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: testCase.uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: document.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri: testCase.uri },
+          position: document.position,
+        });
+        expect(JSON.stringify(completions)).toContain(testCase.expected);
+      }
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("publishes CSS and JavaScript diagnostics over JSON-RPC", async () => {
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+
+      const uri = "file:///tmp/diagnostics.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: `<style>.x { color: }</style>\n<script>const = ;</script>`,
+        },
+      });
+      const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+      const serialized = JSON.stringify(diagnostics.params);
+      expect(serialized).toContain("asp-lsp-css");
+      expect(serialized).toContain("asp-lsp-typescript");
 
       await server.request("shutdown", null);
       server.notify("exit", undefined);
@@ -129,6 +221,7 @@ class RpcServer {
   private stderr = "";
   private responses = new Map<number, (message: JsonRpcMessage) => void>();
   private notifications = new Map<string, Array<(message: JsonRpcMessage) => void>>();
+  private pendingNotifications = new Map<string, JsonRpcMessage[]>();
 
   async start(): Promise<void> {
     const serverPath = path.join(process.cwd(), "dist", "server.js");
@@ -157,6 +250,11 @@ class RpcServer {
   }
 
   waitForNotification(method: string): Promise<JsonRpcMessage> {
+    const pending = this.pendingNotifications.get(method);
+    const message = pending?.shift();
+    if (message) {
+      return Promise.resolve(message);
+    }
     return new Promise((resolve, reject) => {
       const callbacks = this.notifications.get(method) ?? [];
       callbacks.push(resolve);
@@ -198,8 +296,38 @@ class RpcServer {
         this.responses.delete(message.id);
       } else if (message.method) {
         const callbacks = this.notifications.get(message.method) ?? [];
-        callbacks.shift()?.(message);
+        const callback = callbacks.shift();
+        if (callback) {
+          callback(message);
+        } else {
+          const pending = this.pendingNotifications.get(message.method) ?? [];
+          pending.push(message);
+          this.pendingNotifications.set(message.method, pending);
+        }
       }
     }
   }
+}
+
+function markedDocument(source: string): MarkedDocument {
+  const offset = source.indexOf("▮");
+  if (offset === -1) {
+    throw new Error("Marked source is missing a cursor marker.");
+  }
+  const text = source.slice(0, offset) + source.slice(offset + "▮".length);
+  return { text, position: positionAt(text, offset) };
+}
+
+function positionAt(text: string, offset: number): { line: number; character: number } {
+  let line = 0;
+  let character = 0;
+  for (let index = 0; index < offset; index += 1) {
+    if (text[index] === "\n") {
+      line += 1;
+      character = 0;
+    } else {
+      character += 1;
+    }
+  }
+  return { line, character };
 }

@@ -6,7 +6,7 @@ The implementation treats `.asp`, `.asa`, and `.inc` files as mixed documents:
 
 - Classic ASP server script regions: `<% %>`, `<%= %>`, `<%@ %>`, and `<script runat="server">`
 - HTML regions delegated to `vscode-html-languageservice`
-- CSS regions delegated to `vscode-css-languageservice`
+- CSS regions and `style=""` attributes delegated to `vscode-css-languageservice`
 - client JavaScript regions delegated to the TypeScript language service
 - VBScript server regions handled by the built-in v1 analyzer
 
@@ -19,6 +19,8 @@ pnpm run lint
 pnpm run test
 pnpm run build
 ```
+
+The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions and diagnostics.
 
 ## Standalone Server
 

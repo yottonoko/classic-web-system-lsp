@@ -8,7 +8,7 @@ const attrPattern = /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*(?:=\s*("([^"]*)"|'([^']*)'|
 export function parseAspDocument(uri: string, text: string, settings: AspSettings = {}): AspParsedDocument {
   const diagnostics: AspParsedDocument["diagnostics"] = [];
   const inlineRegions = parseInlineAspRegions(text, diagnostics);
-  const tagRegions = parseTagRegions(text);
+  const tagRegions = [...parseTagRegions(text), ...parseStyleAttributeRegions(text)];
   const includes = parseIncludes(text);
   const directives = inlineRegions
     .filter((region) => region.kind === "asp-directive")
@@ -138,6 +138,38 @@ function parseTagRegions(text: string): AspRegion[] {
       });
     }
     tagPattern.lastIndex = end;
+  }
+  return regions;
+}
+
+function parseStyleAttributeRegions(text: string): AspRegion[] {
+  const regions: AspRegion[] = [];
+  const tagPattern = /<([A-Za-z][A-Za-z0-9:_-]*)([^<>]*)>/g;
+  let tagMatch: RegExpExecArray | null;
+  while ((tagMatch = tagPattern.exec(text)) !== null) {
+    const tagName = tagMatch[1].toLowerCase();
+    if (tagName === "script" || tagName === "style") {
+      continue;
+    }
+    const attributesText = tagMatch[2] ?? "";
+    const attributesStart = tagMatch.index + tagMatch[0].indexOf(attributesText);
+    const stylePattern = /\bstyle\s*=\s*("([^"]*)"|'([^']*)')/gi;
+    let styleMatch: RegExpExecArray | null;
+    while ((styleMatch = stylePattern.exec(attributesText)) !== null) {
+      const quoted = styleMatch[1];
+      const value = styleMatch[2] ?? styleMatch[3] ?? "";
+      const valueStartInMatch = styleMatch[0].indexOf(quoted) + 1;
+      const contentStart = attributesStart + styleMatch.index + valueStartInMatch;
+      regions.push({
+        kind: "style-attribute",
+        language: "css",
+        start: contentStart,
+        end: contentStart + value.length,
+        contentStart,
+        contentEnd: contentStart + value.length,
+        attributes: { tagName },
+      });
+    }
   }
   return regions;
 }

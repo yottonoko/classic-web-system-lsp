@@ -29,10 +29,11 @@ export function buildVirtualDocument(
   let text = "";
   const segments: SourceMapSegment[] = [];
   for (const region of regions) {
-    const prefix = languageId === "css" ? "\n" : "";
+    const prefix = languageId === "css" ? (region.kind === "style-attribute" ? "__asp_lsp__{" : "\n") : "";
+    const suffix = languageId === "css" && region.kind === "style-attribute" ? "}\n" : "\n";
     const start = text.length + prefix.length;
     const content = maskNestedRegions(sourceText, region, allRegions, languageId);
-    text += prefix + content + "\n";
+    text += prefix + content + suffix;
     segments.push({
       virtualStart: start,
       virtualEnd: start + content.length,

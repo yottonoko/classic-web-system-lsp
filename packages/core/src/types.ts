@@ -8,6 +8,7 @@ export type AspRegionKind =
   | "asp-expression"
   | "asp-directive"
   | "style"
+  | "style-attribute"
   | "client-script"
   | "server-script";
 
