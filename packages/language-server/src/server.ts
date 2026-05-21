@@ -626,9 +626,17 @@ function aspHover(cached: CachedDocument, params: TextDocumentPositionParams): H
 
 function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
   const documents = collectVbProjectDocuments(cached.parsed, settings);
+  const contextSettings = {
+    typeChecking: settings.vbscript?.typeChecking,
+    comTypes: settings.vbscript?.comTypes,
+  };
+  const symbols = documents.flatMap((document) =>
+    collectVbscriptSymbols(document, contextSettings),
+  );
   return {
     documents,
-    symbols: documents.flatMap((document) => collectVbscriptSymbols(document)),
+    symbols,
+    ...contextSettings,
   };
 }
 
@@ -902,6 +910,21 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     legacyEncoding:
       typeof settings.legacyEncoding === "string" ? settings.legacyEncoding : undefined,
     format: normalizeFormatSettings(settings),
+    vbscript: normalizeVbscriptSettings(settings),
+  };
+}
+
+function normalizeVbscriptSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["vbscript"] {
+  const raw = settings.vbscript;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    typeChecking: record.typeChecking === "strict" ? "strict" : "basic",
+    comTypes:
+      record.comTypes && typeof record.comTypes === "object"
+        ? (record.comTypes as NonNullable<AspSettings["vbscript"]>["comTypes"])
+        : undefined,
   };
 }
 

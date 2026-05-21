@@ -483,6 +483,71 @@ function greet(name){return "a=b";}
     }
   });
 
+  it("publishes strict VBScript type diagnostics and custom COM completions", async () => {
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      server.notify("workspace/didChangeConfiguration", {
+        settings: {
+          aspLsp: {
+            vbscript: {
+              typeChecking: "strict",
+              comTypes: {
+                "Custom.Widget": {
+                  members: {
+                    Title: "String",
+                    Ping: {
+                      kind: "method",
+                      returnType: "Boolean",
+                      parameters: [{ name: "name", type: "String" }],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+      const uri = "file:///tmp/vb-type.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: `<%
+Dim widget
+Set widget = Server.CreateObject("Custom.Widget")
+widget.
+widget.Missing
+widget.Ping("a", "b")
+%>`,
+        },
+      });
+      const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+      const diagnosticText = JSON.stringify(diagnostics.params);
+      expect(diagnosticText).toContain("no member");
+      expect(diagnosticText).toContain("Argument count");
+
+      const completions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: { line: 3, character: 7 },
+      });
+      const completionText = JSON.stringify(completions);
+      expect(completionText).toContain("Title");
+      expect(completionText).toContain("Ping");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("resolves virtual includes from configured roots", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
     const pageDir = path.join(tempDir, "pages");

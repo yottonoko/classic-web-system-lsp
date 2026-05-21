@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   analyzeVbscript,
+  buildVbTypeEnvironment,
   buildVirtualDocuments,
   collectVbscriptSymbols,
   formatAspDocument,
@@ -294,6 +295,89 @@ Response.Write BuildName("Ada", "Lovelace")
         activeParameter: 1,
       }),
     );
+  });
+
+  it("builds richer VBScript type information from assignments and annotations", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Class Customer
+  Public Name
+End Class
+' @member Customer.Name As String
+' @returns Customer
+Function MakeCustomer()
+  Set MakeCustomer = New Customer
+End Function
+' @type rs As ADODB.Recordset
+Dim rs
+Dim c
+Set c = MakeCustomer()
+Dim d
+Set d = c
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const env = buildVbTypeEnvironment(parsed, { symbols });
+    expect(symbols.find((symbol) => symbol.name === "rs")?.typeName).toBe("ADODB.Recordset");
+    expect(symbols.find((symbol) => symbol.name === "MakeCustomer")?.typeName).toBe("Customer");
+    expect(symbols.find((symbol) => symbol.name === "d")?.typeName).toBe("Customer");
+    expect(
+      env.types
+        .find((type) => type.name === "Customer")
+        ?.members.find((member) => member.name === "Name")?.type?.name,
+    ).toBe("String");
+  });
+
+  it("uses custom COM type settings for completion and strict diagnostics", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim widget
+Set widget = Server.CreateObject("Custom.Widget")
+widget.Title = 1
+widget.Ping("a", "b")
+widget.Missing
+Dim label
+' @type label As String
+Set label = "x"
+%>`,
+    );
+    const context = {
+      typeChecking: "strict" as const,
+      comTypes: {
+        "Custom.Widget": {
+          members: {
+            Title: "String",
+            Ping: {
+              kind: "method" as const,
+              returnType: "Boolean",
+              parameters: [{ name: "name", type: "String" }],
+            },
+          },
+        },
+      },
+    };
+    const symbols = collectVbscriptSymbols(parsed, context);
+    const completions = getVbscriptCompletions(
+      parsed,
+      { line: 3, character: 7 },
+      {
+        ...context,
+        symbols,
+      },
+    );
+    expect(completions.some((item) => item.label === "Title")).toBe(true);
+    const result = analyzeVbscript(parsed, { ...context, symbols });
+    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("no member"))).toBe(
+      true,
+    );
+    expect(
+      result.diagnostics.some((diagnostic) => diagnostic.message.includes("Argument count")),
+    ).toBe(true);
+    expect(
+      result.diagnostics.some((diagnostic) => diagnostic.message.includes("Set assigns")),
+    ).toBe(true);
   });
 });
 

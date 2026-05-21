@@ -116,6 +116,20 @@
           "type": "boolean",
           "default": false,
           "description": "Align simple consecutive VBScript assignments."
+        },
+        "aspLsp.vbscript.typeChecking": {
+          "type": "string",
+          "enum": [
+            "basic",
+            "strict"
+          ],
+          "default": "basic",
+          "description": "Controls VBScript type diagnostics. Strict enables type mismatch, member, and call checks."
+        },
+        "aspLsp.vbscript.comTypes": {
+          "type": "object",
+          "default": {},
+          "description": "Custom COM type catalog keyed by Prog.ID for Server.CreateObject type checking and completion."
         }
       }
     }

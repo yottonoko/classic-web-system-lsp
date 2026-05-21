@@ -26,6 +26,7 @@ export interface AspSettings {
   includePaths?: string[];
   legacyEncoding?: string;
   format?: AspFormatSettings;
+  vbscript?: AspVbscriptSettings;
 }
 
 export interface AspFormatSettings {
@@ -38,6 +39,27 @@ export interface AspFormatSettings {
 export interface AspFormattingOptions extends AspFormatSettings {
   tabSize: number;
   insertSpaces: boolean;
+}
+
+export interface AspVbscriptSettings {
+  typeChecking?: "basic" | "strict";
+  comTypes?: Record<string, AspVbscriptComType>;
+}
+
+export interface AspVbscriptComType {
+  members?: Record<string, string | AspVbscriptComMember>;
+}
+
+export interface AspVbscriptComMember {
+  kind?: "field" | "property" | "method";
+  type?: string;
+  returnType?: string;
+  parameters?: Array<string | AspVbscriptComParameter>;
+}
+
+export interface AspVbscriptComParameter {
+  name: string;
+  type?: string;
 }
 
 export interface AspRegion {

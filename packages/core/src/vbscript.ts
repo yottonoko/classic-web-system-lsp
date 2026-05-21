@@ -14,7 +14,14 @@ import type {
   SignatureHelp,
 } from "vscode-languageserver-types";
 import { offsetAt, rangeFromOffsets } from "./position";
-import type { AspCstNode, AspParsedDocument, AspRegion, VbCstNode, VbToken } from "./types";
+import type {
+  AspCstNode,
+  AspParsedDocument,
+  AspRegion,
+  AspVbscriptComType,
+  VbCstNode,
+  VbToken,
+} from "./types";
 
 export type VbSymbolKind =
   | "variable"
@@ -36,6 +43,7 @@ export interface VbSymbol {
   scopeName?: string;
   scopeRange?: Range;
   typeName?: string;
+  type?: VbTypeRef;
   parameters?: string[];
 }
 
@@ -47,7 +55,45 @@ export interface VbReference {
 export interface VbProjectContext {
   symbols?: VbSymbol[];
   documents?: AspParsedDocument[];
+  typeChecking?: "basic" | "strict";
+  comTypes?: Record<string, AspVbscriptComType>;
+  typeEnvironment?: VbTypeEnvironment;
 }
+
+export interface VbTypeRef {
+  name: string;
+  object?: boolean;
+}
+
+export interface VbSignatureParameter {
+  name: string;
+  type?: VbTypeRef;
+}
+
+export interface VbSignature {
+  parameters: VbSignatureParameter[];
+  returnType?: VbTypeRef;
+}
+
+export interface VbMember {
+  name: string;
+  kind: "field" | "property" | "method";
+  type?: VbTypeRef;
+  signature?: VbSignature;
+}
+
+export interface VbType {
+  name: string;
+  kind: "intrinsic" | "classicAsp" | "class" | "com";
+  members: VbMember[];
+}
+
+export interface VbTypeEnvironment {
+  types: VbType[];
+  symbols: VbSymbol[];
+}
+
+export type VbTypeDiagnostic = Diagnostic;
 
 const builtins: CompletionItem[] = [
   {
@@ -170,6 +216,57 @@ const externalObjectMembers: Record<string, CompletionItem[]> = {
   "adodb.command": ["Execute", "CreateParameter", "Parameters", "CommandText", "CommandType"].map(
     methodItem,
   ),
+};
+
+const intrinsicTypeNames = new Set([
+  "string",
+  "number",
+  "boolean",
+  "date",
+  "variant",
+  "unknown",
+  "nothing",
+]);
+
+const classicAspTypeNames = new Set([
+  "request",
+  "response",
+  "session",
+  "application",
+  "server",
+  "asperror",
+]);
+
+const adoMemberTypes: Record<string, Record<string, string>> = {
+  "adodb.connection": {
+    Open: "Variant",
+    Close: "Variant",
+    Execute: "ADODB.Recordset",
+    BeginTrans: "Number",
+    CommitTrans: "Variant",
+    RollbackTrans: "Variant",
+    ConnectionString: "String",
+    State: "Number",
+  },
+  "adodb.recordset": {
+    Open: "Variant",
+    Close: "Variant",
+    MoveNext: "Variant",
+    MovePrevious: "Variant",
+    MoveFirst: "Variant",
+    MoveLast: "Variant",
+    EOF: "Boolean",
+    BOF: "Boolean",
+    Fields: "Object",
+    RecordCount: "Number",
+  },
+  "adodb.command": {
+    Execute: "ADODB.Recordset",
+    CreateParameter: "Object",
+    Parameters: "Object",
+    CommandText: "String",
+    CommandType: "Number",
+  },
 };
 
 function methodItem(label: string): CompletionItem {
@@ -703,7 +800,9 @@ export function getVbscriptCompletions(
   context: VbProjectContext = {},
 ): CompletionItem[] {
   const sourceOffset = offsetAt(parsed.text, position);
-  const symbols = context.symbols ?? collectVbscriptSymbols(parsed);
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const typeEnvironment =
+    context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
   const prefix = parsed.text.slice(Math.max(0, sourceOffset - 96), sourceOffset);
   const memberMatch = /([A-Za-z][A-Za-z0-9_]*)\.$/.exec(prefix);
   const withMemberMatch = !memberMatch && prefix.endsWith(".");
@@ -719,7 +818,7 @@ export function getVbscriptCompletions(
         : ownerName.toLowerCase() === "me"
           ? currentClassName(parsed, sourceOffset, symbols)
           : inferVariableType(ownerName, parsed, sourceOffset, symbols);
-    return className ? classMemberCompletions(className, symbols) : [];
+    return className ? typeMemberCompletions(className, symbols, typeEnvironment) : [];
   }
   return dedupeCompletions([
     ...builtins,
@@ -731,12 +830,21 @@ export function analyzeVbscript(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
-  const symbols = context.symbols ?? collectVbscriptSymbols(parsed);
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const diagnostics: Diagnostic[] = [];
   const scriptText = getServerScriptText(parsed);
   const optionExplicit = /^\s*Option\s+Explicit\b/im.test(scriptText);
   if (optionExplicit) {
     diagnostics.push(...diagnoseUndeclaredVariables(parsed, symbols));
+  }
+  if (context.typeChecking === "strict") {
+    diagnostics.push(
+      ...diagnoseTypeIssues(
+        parsed,
+        symbols,
+        context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols }),
+      ),
+    );
   }
   return { diagnostics, symbols };
 }
@@ -782,7 +890,7 @@ export function getVbscriptHover(
   const symbol = resolveSymbolAt(
     parsed,
     sourceOffset,
-    context.symbols ?? collectVbscriptSymbols(parsed),
+    context.symbols ?? collectVbscriptSymbols(parsed, context),
   );
   if (!symbol) {
     return undefined;
@@ -804,7 +912,7 @@ export function getVbscriptDefinition(
   return resolveSymbolAt(
     parsed,
     offsetAt(parsed.text, position),
-    context.symbols ?? collectVbscriptSymbols(parsed),
+    context.symbols ?? collectVbscriptSymbols(parsed, context),
   );
 }
 
@@ -817,7 +925,7 @@ export function getVbscriptReferences(
   if (!symbol) {
     return [];
   }
-  const symbols = context.symbols ?? collectVbscriptSymbols(parsed);
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const documents = context.documents ?? [parsed];
   const references: VbReference[] = [];
   for (const document of documents) {
@@ -847,7 +955,11 @@ export function getVbscriptRenameRange(
   context: VbProjectContext = {},
 ): Range | undefined {
   const offset = offsetAt(parsed.text, position);
-  const symbol = resolveSymbolAt(parsed, offset, context.symbols ?? collectVbscriptSymbols(parsed));
+  const symbol = resolveSymbolAt(
+    parsed,
+    offset,
+    context.symbols ?? collectVbscriptSymbols(parsed, context),
+  );
   if (!symbol || isBuiltinName(symbol.name)) {
     return undefined;
   }
@@ -881,15 +993,16 @@ export function getVbscriptSignatureHelp(
     return undefined;
   }
   const activeParameter = countActiveParameter(parsed, call.argumentsStart, offset);
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const typeEnvironment =
+    context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
   const builtin = builtinSignatures[call.name.toLowerCase()];
   const signatureLabels =
+    typeSignatureLabelsForCall(parsed, call.name, offset, symbols, typeEnvironment) ??
     builtin ??
-    signatureSymbolsForCall(
-      parsed,
-      call.name,
-      offset,
-      context.symbols ?? collectVbscriptSymbols(parsed),
-    ).map((symbol) => signatureLabel(symbol));
+    signatureSymbolsForCall(parsed, call.name, offset, symbols).map((symbol) =>
+      signatureLabel(symbol),
+    );
   if (signatureLabels.length === 0) {
     return undefined;
   }
@@ -900,13 +1013,74 @@ export function getVbscriptSignatureHelp(
   };
 }
 
-export function collectVbscriptSymbols(parsed: AspParsedDocument): VbSymbol[] {
+export function collectVbscriptSymbols(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): VbSymbol[] {
   const symbols: VbSymbol[] = [];
   for (const node of vbDocuments(parsed)) {
     addSymbolsFromVbNode(parsed, node, symbols);
   }
-  inferAssignedTypes(parsed, symbols);
+  applyTypeAnnotations(parsed, symbols);
+  inferAssignedTypes(parsed, symbols, context);
+  applyTypeAnnotations(parsed, symbols);
   return symbols;
+}
+
+export function buildVbTypeEnvironment(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): VbTypeEnvironment {
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const typeMap = new Map<string, VbType>();
+  for (const type of builtinTypes()) {
+    addType(typeMap, type);
+  }
+  for (const type of configuredComTypes(context.comTypes ?? {})) {
+    addType(typeMap, type);
+  }
+  for (const symbol of symbols.filter((item) => item.kind === "class")) {
+    addType(typeMap, {
+      name: symbol.name,
+      kind: "class",
+      members: symbols
+        .filter((member) => member.memberOf?.toLowerCase() === symbol.name.toLowerCase())
+        .map(
+          (member): VbMember => ({
+            name: member.name,
+            kind:
+              member.kind === "method" ? "method" : member.kind === "field" ? "field" : "property",
+            type: member.type ?? typeRef(member.typeName ?? "Variant"),
+            signature:
+              member.kind === "method" || member.kind === "property"
+                ? {
+                    parameters: (member.parameters ?? []).map((name) => ({ name })),
+                    returnType: member.type ?? typeRef(member.typeName ?? "Variant"),
+                  }
+                : undefined,
+          }),
+        ),
+    });
+  }
+  for (const annotation of parseTypeAnnotations(parsed).members) {
+    const existing = typeMap.get(annotation.typeName.toLowerCase()) ?? {
+      name: annotation.typeName,
+      kind: "class" as const,
+      members: [],
+    };
+    existing.members = [
+      ...existing.members.filter(
+        (member) => member.name.toLowerCase() !== annotation.memberName.toLowerCase(),
+      ),
+      {
+        name: annotation.memberName,
+        kind: "property",
+        type: typeRef(annotation.memberType),
+      },
+    ];
+    addType(typeMap, existing);
+  }
+  return { types: [...typeMap.values()], symbols };
 }
 
 function addSymbolsFromVbNode(
@@ -986,7 +1160,11 @@ function addSymbolsFromVbNode(
   }
 }
 
-function inferAssignedTypes(parsed: AspParsedDocument, symbols: VbSymbol[]): void {
+function inferAssignedTypes(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+  context: VbProjectContext,
+): void {
   const byName = new Map<string, VbSymbol[]>();
   for (const symbol of symbols) {
     const list = byName.get(symbol.name.toLowerCase()) ?? [];
@@ -1010,8 +1188,271 @@ function inferAssignedTypes(parsed: AspParsedDocument, symbols: VbSymbol[]): voi
           isSymbolVisibleAt(candidate, parsed.uri, parsed.text, node.start),
         ) ?? candidates[0];
       if (visible) {
-        visible.typeName = node.typeName;
+        setSymbolType(visible, node.typeName);
       }
+    }
+  }
+  inferStatementTypes(parsed, symbols, context);
+}
+
+function inferStatementTypes(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+  context: VbProjectContext,
+): void {
+  const env = buildVbTypeEnvironment(parsed, { ...context, symbols });
+  for (const statement of vbStatements(parsed)) {
+    const first = lowerToken(statement[0]);
+    const targetIndex = first === "set" ? 1 : 0;
+    const target = statement[targetIndex];
+    const equalsIndex = statement.findIndex((token) => token.text === "=");
+    if (!target || target.kind !== "identifier" || equalsIndex === -1) {
+      continue;
+    }
+    const symbol = visibleSymbols(parsed, target.start, symbols).find(
+      (item) => item.name.toLowerCase() === target.text.toLowerCase(),
+    );
+    if (!symbol) {
+      continue;
+    }
+    const expressionType = inferExpressionType(
+      parsed,
+      statement.slice(equalsIndex + 1),
+      symbols,
+      env,
+      target.start,
+    );
+    if (expressionType && (!symbol.typeName || symbol.typeName === "Variant")) {
+      setSymbolType(symbol, expressionType.name);
+    }
+  }
+  inferFunctionReturnTypes(parsed, symbols, env);
+}
+
+function inferFunctionReturnTypes(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+): void {
+  for (const node of vbDocuments(parsed).flatMap((document) => flattenVbNodes(document))) {
+    if (node.kind !== "Procedure" || node.procedureKind !== "function" || !node.nameToken) {
+      continue;
+    }
+    const symbol = symbols.find(
+      (candidate) =>
+        candidate.kind === "function" &&
+        candidate.name.toLowerCase() === node.nameToken?.text.toLowerCase() &&
+        candidate.range.start.line ===
+          rangeFromOffsets(parsed.text, node.nameToken.start, node.nameToken.end).start.line,
+    );
+    if (!symbol || symbol.typeName) {
+      continue;
+    }
+    const assignment = vbStatements(parsed)
+      .filter((statement) => statement[0]?.start >= node.start && statement[0]?.end <= node.end)
+      .find(
+        (statement) =>
+          statement[0]?.kind === "identifier" &&
+          statement[0].text.toLowerCase() === node.nameToken?.text.toLowerCase() &&
+          statement[1]?.text === "=",
+      );
+    const expressionType = assignment
+      ? inferExpressionType(parsed, assignment.slice(2), symbols, env, assignment[0].start)
+      : undefined;
+    if (expressionType) {
+      setSymbolType(symbol, expressionType.name);
+    }
+  }
+}
+
+interface TypeAnnotations {
+  types: Array<{ name: string; typeName: string; offset: number }>;
+  params: Array<{ name: string; typeName: string; procedureName?: string }>;
+  returns: Array<{ name: string; typeName: string }>;
+  members: Array<{ typeName: string; memberName: string; memberType: string }>;
+}
+
+function parseTypeAnnotations(parsed: AspParsedDocument): TypeAnnotations {
+  const annotations: TypeAnnotations = { types: [], params: [], returns: [], members: [] };
+  for (const document of vbDocuments(parsed)) {
+    for (const token of document.tokens.filter((item) => item.kind === "comment")) {
+      const text = token.text.replace(/^'\s*/, "").trim();
+      const type = /^@type\s+([A-Za-z_][A-Za-z0-9_]*)\s+As\s+([A-Za-z_][A-Za-z0-9_.]*)/i.exec(text);
+      if (type) {
+        annotations.types.push({ name: type[1], typeName: type[2], offset: token.start });
+        continue;
+      }
+      const param =
+        /^@param\s+([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_]*))?\s+As\s+([A-Za-z_][A-Za-z0-9_.]*)/i.exec(
+          text,
+        );
+      if (param) {
+        annotations.params.push({
+          procedureName: param[2] ? param[1] : undefined,
+          name: param[2] ?? param[1],
+          typeName: param[3],
+        });
+        continue;
+      }
+      const returns = /^@returns(?:\s+([A-Za-z_][A-Za-z0-9_]*))?\s+([A-Za-z_][A-Za-z0-9_.]*)/i.exec(
+        text,
+      );
+      if (returns) {
+        const procedure = returns[1] ?? nextProcedureName(parsed, token.start);
+        if (procedure) {
+          annotations.returns.push({ name: procedure, typeName: returns[2] });
+        }
+        continue;
+      }
+      const member =
+        /^@member\s+([A-Za-z_][A-Za-z0-9_.]*)\.([A-Za-z_][A-Za-z0-9_]*)\s+As\s+([A-Za-z_][A-Za-z0-9_.]*)/i.exec(
+          text,
+        );
+      if (member) {
+        annotations.members.push({
+          typeName: member[1],
+          memberName: member[2],
+          memberType: member[3],
+        });
+      }
+    }
+  }
+  return annotations;
+}
+
+function nextProcedureName(parsed: AspParsedDocument, offset: number): string | undefined {
+  return vbDocuments(parsed)
+    .flatMap((document) => flattenVbNodes(document))
+    .filter(
+      (node) => node.start >= offset && (node.kind === "Procedure" || node.kind === "Property"),
+    )
+    .sort((left, right) => left.start - right.start)[0]?.nameToken?.text;
+}
+
+function vbStatements(parsed: AspParsedDocument): VbToken[][] {
+  const statements: VbToken[][] = [];
+  for (const document of vbDocuments(parsed)) {
+    let current: VbToken[] = [];
+    for (const token of document.tokens.filter(
+      (item) => item.kind !== "whitespace" && item.kind !== "comment",
+    )) {
+      if (token.kind === "newline" || token.text === ":") {
+        if (current.length > 0) {
+          statements.push(current);
+          current = [];
+        }
+        continue;
+      }
+      current.push(token);
+    }
+    if (current.length > 0) {
+      statements.push(current);
+    }
+  }
+  return statements;
+}
+
+function inferExpressionType(
+  parsed: AspParsedDocument,
+  tokens: VbToken[],
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+  offset: number,
+): VbTypeRef | undefined {
+  const significant = tokens.filter((token) => !isTriviaToken(token));
+  const first = significant[0];
+  if (!first) {
+    return undefined;
+  }
+  if (first.kind === "string") {
+    return typeRef("String");
+  }
+  if (first.kind === "number") {
+    return typeRef("Number");
+  }
+  if (first.text === "#" && significant.at(-1)?.text === "#") {
+    return typeRef("Date");
+  }
+  const lower = first.text.toLowerCase();
+  if (lower === "true" || lower === "false") {
+    return typeRef("Boolean");
+  }
+  if (lower === "nothing" || lower === "null" || lower === "empty") {
+    return typeRef(lower === "nothing" ? "Nothing" : "Variant");
+  }
+  if (lower === "new" && significant[1]?.kind === "identifier") {
+    return typeRef(significant[1].text);
+  }
+  const createObjectIndex = findCreateObjectCall(significant, 0, significant.length - 1);
+  if (createObjectIndex !== -1) {
+    const stringToken = significant
+      .slice(createObjectIndex)
+      .find((token) => token.kind === "string");
+    return stringToken
+      ? typeRef(stringToken.value ?? unquoteVbString(stringToken.text))
+      : undefined;
+  }
+  if (
+    first.kind === "identifier" &&
+    significant[1]?.text === "." &&
+    significant[2]?.kind === "identifier"
+  ) {
+    const ownerType = inferVariableType(first.text, parsed, offset, symbols);
+    return ownerType
+      ? (memberReturnType(ownerType, significant[2].text, env) ??
+          memberType(ownerType, significant[2].text, env))
+      : undefined;
+  }
+  if (first.kind === "identifier") {
+    const called = significant[1]?.text === "(";
+    if (called) {
+      const symbol = visibleSymbols(parsed, offset, symbols).find(
+        (candidate) =>
+          candidate.name.toLowerCase() === first.text.toLowerCase() &&
+          (candidate.kind === "function" ||
+            candidate.kind === "method" ||
+            candidate.kind === "property"),
+      );
+      return symbol?.type ?? (symbol?.typeName ? typeRef(symbol.typeName) : undefined);
+    }
+    const typeName = inferVariableType(first.text, parsed, offset, symbols);
+    return typeName ? typeRef(typeName) : undefined;
+  }
+  return undefined;
+}
+
+function applyTypeAnnotations(parsed: AspParsedDocument, symbols: VbSymbol[]): void {
+  const annotations = parseTypeAnnotations(parsed);
+  for (const annotation of annotations.types) {
+    const symbol =
+      visibleSymbols(parsed, annotation.offset, symbols).find(
+        (candidate) => candidate.name.toLowerCase() === annotation.name.toLowerCase(),
+      ) ??
+      symbols.find((candidate) => candidate.name.toLowerCase() === annotation.name.toLowerCase());
+    if (symbol) {
+      setSymbolType(symbol, annotation.typeName);
+    }
+  }
+  for (const annotation of annotations.params) {
+    const symbol = symbols.find(
+      (candidate) =>
+        candidate.kind === "variable" &&
+        candidate.name.toLowerCase() === annotation.name.toLowerCase() &&
+        (!annotation.procedureName ||
+          candidate.scopeName?.toLowerCase() === annotation.procedureName.toLowerCase()),
+    );
+    if (symbol) {
+      setSymbolType(symbol, annotation.typeName);
+    }
+  }
+  for (const annotation of annotations.returns) {
+    const symbol = symbols.find(
+      (candidate) =>
+        (candidate.kind === "function" || candidate.kind === "method") &&
+        candidate.name.toLowerCase() === annotation.name.toLowerCase(),
+    );
+    if (symbol) {
+      setSymbolType(symbol, annotation.typeName);
     }
   }
 }
@@ -1115,17 +1556,36 @@ function currentWithTypeName(
     : undefined;
 }
 
-function classMemberCompletions(className: string, symbols: VbSymbol[]): CompletionItem[] {
+function typeMemberCompletions(
+  typeName: string,
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+): CompletionItem[] {
+  const type = findType(env, typeName);
   return dedupeCompletions([
+    ...(type?.members.map(memberToCompletion) ?? []),
     ...symbols
       .filter(
         (symbol) =>
-          symbol.memberOf?.toLowerCase() === className.toLowerCase() &&
+          symbol.memberOf?.toLowerCase() === typeName.toLowerCase() &&
           (symbol.kind === "method" || symbol.kind === "field" || symbol.kind === "property"),
       )
       .map(symbolToCompletion),
-    ...(externalObjectMembers[className.toLowerCase()] ?? []),
+    ...(externalObjectMembers[typeName.toLowerCase()] ?? []),
   ]);
+}
+
+function memberToCompletion(member: VbMember): CompletionItem {
+  return {
+    label: member.name,
+    kind:
+      member.kind === "method"
+        ? CompletionItemKind.Method
+        : member.kind === "field"
+          ? CompletionItemKind.Field
+          : CompletionItemKind.Property,
+    detail: member.type ? `${member.kind} As ${member.type.name}` : member.kind,
+  };
 }
 
 function visibleSymbols(
@@ -1417,10 +1877,486 @@ function signatureSymbolsForCall(
   );
 }
 
+function typeSignatureLabelsForCall(
+  parsed: AspParsedDocument,
+  name: string,
+  offset: number,
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+): string[] | undefined {
+  const [owner, member] = name.includes(".") ? name.split(".", 2) : [undefined, name];
+  if (owner && member) {
+    const typeName =
+      owner.toLowerCase() === "me"
+        ? currentClassName(parsed, offset, symbols)
+        : inferVariableType(owner, parsed, offset, symbols);
+    const signature = typeName ? memberSignature(typeName, member, env) : undefined;
+    return signature ? [signatureLabelFromMember(owner, member, signature)] : undefined;
+  }
+  const symbol = visibleSymbols(parsed, offset, symbols).find(
+    (candidate) =>
+      candidate.name.toLowerCase() === name.toLowerCase() &&
+      (candidate.kind === "function" || candidate.kind === "sub"),
+  );
+  if (!symbol?.type && !symbol?.typeName) {
+    return undefined;
+  }
+  return [signatureLabel(symbol)];
+}
+
+function signatureLabelFromMember(owner: string, name: string, signature: VbSignature): string {
+  const parameters = signature.parameters.map((parameter) => {
+    return parameter.type ? `${parameter.name} As ${parameter.type.name}` : parameter.name;
+  });
+  return `${owner}.${name}(${parameters.join(", ")})`;
+}
+
 function signatureLabel(symbol: VbSymbol): string {
   const keyword = symbol.kind === "sub" || symbol.kind === "method" ? "Sub" : "Function";
   const owner = symbol.memberOf ? `${symbol.memberOf}.` : "";
-  return `${keyword} ${owner}${symbol.name}(${(symbol.parameters ?? []).join(", ")})`;
+  const returnType = symbol.type ?? (symbol.typeName ? typeRef(symbol.typeName) : undefined);
+  return `${keyword} ${owner}${symbol.name}(${(symbol.parameters ?? []).join(", ")})${
+    returnType && keyword === "Function" ? ` As ${returnType.name}` : ""
+  }`;
+}
+
+function diagnoseTypeIssues(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const statement of vbStatements(parsed)) {
+    diagnostics.push(...diagnoseAssignmentTypes(parsed, statement, symbols, env));
+    diagnostics.push(...diagnoseCallTypes(parsed, statement, symbols, env));
+    diagnostics.push(...diagnoseMemberAccess(parsed, statement, symbols, env));
+  }
+  return diagnostics;
+}
+
+function diagnoseAssignmentTypes(
+  parsed: AspParsedDocument,
+  statement: VbToken[],
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+): Diagnostic[] {
+  const first = lowerToken(statement[0]);
+  const isSet = first === "set";
+  const targetIndex = isSet ? 1 : 0;
+  const target = statement[targetIndex];
+  const equalsIndex = statement.findIndex((token) => token.text === "=");
+  if (!target || target.kind !== "identifier" || equalsIndex === -1) {
+    return [];
+  }
+  const lhsTypeName = inferVariableType(target.text, parsed, target.start, symbols);
+  const rhsType = inferExpressionType(
+    parsed,
+    statement.slice(equalsIndex + 1),
+    symbols,
+    env,
+    target.start,
+  );
+  const diagnostics: Diagnostic[] = [];
+  if (isSet && rhsType && isClearlyScalarType(rhsType)) {
+    diagnostics.push(
+      typeWarning(
+        parsed,
+        target.start,
+        statement.at(-1)?.end ?? target.end,
+        `Set assigns an object reference, but '${target.text}' receives ${rhsType.name}.`,
+      ),
+    );
+  }
+  if (!isSet && rhsType && isClearlyObjectType(rhsType, env)) {
+    diagnostics.push(
+      typeWarning(
+        parsed,
+        target.start,
+        statement.at(-1)?.end ?? target.end,
+        `Object assignment to '${target.text}' should use Set.`,
+      ),
+    );
+  }
+  if (lhsTypeName && rhsType && !isCompatibleType(typeRef(lhsTypeName), rhsType, env)) {
+    diagnostics.push(
+      typeWarning(
+        parsed,
+        target.start,
+        statement.at(-1)?.end ?? target.end,
+        `Type mismatch: '${target.text}' is ${lhsTypeName}, but assigned ${rhsType.name}.`,
+      ),
+    );
+  }
+  return diagnostics;
+}
+
+function diagnoseCallTypes(
+  parsed: AspParsedDocument,
+  statement: VbToken[],
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (let index = 0; index < statement.length; index += 1) {
+    if (statement[index].text !== "(" || statement[index - 1]?.kind !== "identifier") {
+      continue;
+    }
+    const name = callNameBefore(statement, index);
+    if (!name) {
+      continue;
+    }
+    const signature = signatureForCall(parsed, name, statement[index].start, symbols, env);
+    if (!signature) {
+      const callName = name.split(".").at(-1) ?? name;
+      if (!isLikelyDynamicCall(callName)) {
+        diagnostics.push(
+          typeWarning(
+            parsed,
+            statement[index - 1].start,
+            statement[index - 1].end,
+            `Call target '${name}' is not known.`,
+          ),
+        );
+      }
+      continue;
+    }
+    const closeIndex = matchingCloseParen(statement, index);
+    const argumentCount = countArguments(
+      statement.slice(index + 1, closeIndex === -1 ? undefined : closeIndex),
+    );
+    if (argumentCount !== signature.parameters.length) {
+      diagnostics.push(
+        typeWarning(
+          parsed,
+          statement[index - 1].start,
+          statement[index - 1].end,
+          `Argument count mismatch for '${name}': expected ${signature.parameters.length}, got ${argumentCount}.`,
+        ),
+      );
+    }
+  }
+  return diagnostics;
+}
+
+function diagnoseMemberAccess(
+  parsed: AspParsedDocument,
+  statement: VbToken[],
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (let index = 1; index + 1 < statement.length; index += 1) {
+    if (statement[index].text !== "." || statement[index + 1]?.kind !== "identifier") {
+      continue;
+    }
+    const owner = statement[index - 1];
+    const member = statement[index + 1];
+    const ownerTypeName =
+      owner.kind === "identifier"
+        ? inferVariableType(owner.text, parsed, owner.start, symbols)
+        : undefined;
+    if (!ownerTypeName || isLooseType(ownerTypeName)) {
+      continue;
+    }
+    const type = findType(env, ownerTypeName);
+    if (
+      type &&
+      !type.members.some((item) => item.name.toLowerCase() === member.text.toLowerCase())
+    ) {
+      diagnostics.push(
+        typeWarning(
+          parsed,
+          member.start,
+          member.end,
+          `Type '${ownerTypeName}' has no member '${member.text}'.`,
+        ),
+      );
+    }
+  }
+  return diagnostics;
+}
+
+function signatureForCall(
+  parsed: AspParsedDocument,
+  name: string,
+  offset: number,
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+): VbSignature | undefined {
+  const [owner, member] = name.includes(".") ? name.split(".", 2) : [undefined, name];
+  if (owner && member) {
+    const typeName =
+      owner.toLowerCase() === "me"
+        ? currentClassName(parsed, offset, symbols)
+        : inferVariableType(owner, parsed, offset, symbols);
+    return typeName ? memberSignature(typeName, member, env) : undefined;
+  }
+  const symbol = visibleSymbols(parsed, offset, symbols).find(
+    (candidate) =>
+      candidate.name.toLowerCase() === name.toLowerCase() &&
+      (candidate.kind === "function" || candidate.kind === "sub"),
+  );
+  if (!symbol) {
+    return undefined;
+  }
+  return {
+    parameters: (symbol.parameters ?? []).map((parameter) => ({ name: parameter })),
+    returnType: symbol.type ?? (symbol.typeName ? typeRef(symbol.typeName) : undefined),
+  };
+}
+
+function memberSignature(
+  typeName: string,
+  memberName: string,
+  env: VbTypeEnvironment,
+): VbSignature | undefined {
+  return findType(env, typeName)?.members.find(
+    (member) => member.name.toLowerCase() === memberName.toLowerCase(),
+  )?.signature;
+}
+
+function memberType(
+  typeName: string,
+  memberName: string,
+  env: VbTypeEnvironment,
+): VbTypeRef | undefined {
+  return findType(env, typeName)?.members.find(
+    (member) => member.name.toLowerCase() === memberName.toLowerCase(),
+  )?.type;
+}
+
+function memberReturnType(
+  typeName: string,
+  memberName: string,
+  env: VbTypeEnvironment,
+): VbTypeRef | undefined {
+  return memberSignature(typeName, memberName, env)?.returnType;
+}
+
+function builtinTypes(): VbType[] {
+  const intrinsic: VbType[] = [
+    "String",
+    "Number",
+    "Boolean",
+    "Date",
+    "Object",
+    "Variant",
+    "Nothing",
+    "Array",
+    "Unknown",
+  ].map((name) => ({ name, kind: "intrinsic" as const, members: [] }));
+  const classicAsp: VbType[] = Object.entries(memberCompletions).map(([name, members]) => ({
+    name: canonicalBuiltinTypeName(name),
+    kind: "classicAsp",
+    members: members.map((member) => {
+      const signature = builtinSignature(`${name}.${member.label}`);
+      return {
+        name: member.label,
+        kind: signature ? "method" : "property",
+        type: signature?.returnType ?? typeRef("Variant"),
+        signature,
+      };
+    }),
+  }));
+  const ado: VbType[] = Object.entries(externalObjectMembers).map(([name, members]) => ({
+    name,
+    kind: "com",
+    members: members.map((member) => {
+      const returnType = adoMemberTypes[name]?.[member.label] ?? "Variant";
+      return {
+        name: member.label,
+        kind: isMethodLikeMember(member.label) ? "method" : "property",
+        type: typeRef(returnType),
+        signature: isMethodLikeMember(member.label)
+          ? { parameters: [], returnType: typeRef(returnType) }
+          : undefined,
+      };
+    }),
+  }));
+  return [...intrinsic, ...classicAsp, ...ado];
+}
+
+function configuredComTypes(comTypes: Record<string, AspVbscriptComType>): VbType[] {
+  return Object.entries(comTypes).map(([name, config]) => ({
+    name,
+    kind: "com",
+    members: Object.entries(config.members ?? {}).map(([memberName, member]) => {
+      if (typeof member === "string") {
+        return { name: memberName, kind: "property", type: typeRef(member) };
+      }
+      const returnType = member.returnType ?? member.type ?? "Variant";
+      return {
+        name: memberName,
+        kind: member.kind ?? (member.parameters ? "method" : "property"),
+        type: typeRef(returnType),
+        signature: member.parameters
+          ? {
+              parameters: member.parameters.map((parameter, index) =>
+                typeof parameter === "string"
+                  ? { name: `arg${index + 1}`, type: typeRef(parameter) }
+                  : {
+                      name: parameter.name,
+                      type: parameter.type ? typeRef(parameter.type) : undefined,
+                    },
+              ),
+              returnType: typeRef(returnType),
+            }
+          : undefined,
+      };
+    }),
+  }));
+}
+
+function builtinSignature(name: string): VbSignature | undefined {
+  const label = builtinSignatures[name.toLowerCase()]?.[0];
+  if (!label) {
+    return undefined;
+  }
+  const parameterText = /\((.*)\)/.exec(label)?.[1] ?? label.split(/\s+/).slice(1).join(", ");
+  const parameters = parameterText
+    ? parameterText
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((parameter) => ({ name: parameter }))
+    : [];
+  return { parameters, returnType: typeRef(builtinReturnType(name)) };
+}
+
+function builtinReturnType(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.includes("createobject") || lower.includes("getlasterror")) {
+    return "Object";
+  }
+  if (
+    lower.includes("map") ||
+    lower.includes("encode") ||
+    lower.includes("querystring") ||
+    lower.includes("form")
+  ) {
+    return "String";
+  }
+  return "Variant";
+}
+
+function typeRef(name: string): VbTypeRef {
+  return { name, object: isObjectTypeName(name) };
+}
+
+function setSymbolType(symbol: VbSymbol, typeName: string): void {
+  symbol.typeName = typeName;
+  symbol.type = typeRef(typeName);
+}
+
+function addType(typeMap: Map<string, VbType>, type: VbType): void {
+  typeMap.set(type.name.toLowerCase(), type);
+}
+
+function findType(env: VbTypeEnvironment, name: string): VbType | undefined {
+  return env.types.find((type) => type.name.toLowerCase() === name.toLowerCase());
+}
+
+function canonicalBuiltinTypeName(name: string): string {
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function isMethodLikeMember(name: string): boolean {
+  return /^[A-Z]/.test(name) && !["EOF", "BOF", "Fields", "RecordCount", "State"].includes(name);
+}
+
+function isObjectTypeName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower === "object" ||
+    lower === "array" ||
+    classicAspTypeNames.has(lower) ||
+    (!intrinsicTypeNames.has(lower) &&
+      lower !== "string" &&
+      lower !== "number" &&
+      lower !== "boolean" &&
+      lower !== "date")
+  );
+}
+
+function isLooseType(typeName: string): boolean {
+  const lower = typeName.toLowerCase();
+  return lower === "unknown" || lower === "variant";
+}
+
+function isClearlyObjectType(type: VbTypeRef, env: VbTypeEnvironment): boolean {
+  if (isLooseType(type.name) || type.name.toLowerCase() === "nothing") {
+    return false;
+  }
+  return type.object === true || Boolean(findType(env, type.name) && !isClearlyScalarType(type));
+}
+
+function isClearlyScalarType(type: VbTypeRef): boolean {
+  return ["string", "number", "boolean", "date"].includes(type.name.toLowerCase());
+}
+
+function isCompatibleType(left: VbTypeRef, right: VbTypeRef, env: VbTypeEnvironment): boolean {
+  if (isLooseType(left.name) || isLooseType(right.name) || right.name.toLowerCase() === "nothing") {
+    return true;
+  }
+  if (left.name.toLowerCase() === right.name.toLowerCase()) {
+    return true;
+  }
+  if (left.name.toLowerCase() === "object" && isClearlyObjectType(right, env)) {
+    return true;
+  }
+  return false;
+}
+
+function typeWarning(
+  parsed: AspParsedDocument,
+  start: number,
+  end: number,
+  message: string,
+): Diagnostic {
+  return {
+    severity: DiagnosticSeverity.Warning,
+    range: rangeFromOffsets(parsed.text, start, end),
+    message,
+    source: "asp-lsp-vbscript-type",
+  };
+}
+
+function matchingCloseParen(tokens: VbToken[], openIndex: number): number {
+  let depth = 0;
+  for (let index = openIndex; index < tokens.length; index += 1) {
+    if (tokens[index].text === "(") {
+      depth += 1;
+    } else if (tokens[index].text === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
+}
+
+function countArguments(tokens: VbToken[]): number {
+  const meaningful = tokens.filter((token) => token.text !== ")" && !isTriviaToken(token));
+  if (meaningful.length === 0) {
+    return 0;
+  }
+  let depth = 0;
+  let count = 1;
+  for (const token of meaningful) {
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")" && depth > 0) {
+      depth -= 1;
+    } else if (token.text === "," && depth === 0) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function isLikelyDynamicCall(name: string): boolean {
+  return /^[A-Z]/.test(name);
 }
 
 function isBuiltinName(name: string): boolean {

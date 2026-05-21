@@ -80,14 +80,15 @@ The VSIX build copies the standalone language server and its runtime dependencie
 - `aspLsp.format.indentStyle`: `space` or `tab`; unset uses editor options
 - `aspLsp.format.uppercaseKeywords`: format VBScript keywords as uppercase
 - `aspLsp.format.alignAssignments`: align simple consecutive VBScript assignments
+- `aspLsp.vbscript.typeChecking`: `basic` or `strict`; strict enables VBScript type diagnostics
+- `aspLsp.vbscript.comTypes`: custom COM type catalog keyed by `Server.CreateObject` Prog.ID
 
 ## Current v1 Limits
 
-- VBScript analysis is intentionally conservative. It uses an error-tolerant CST rather than a full VBScript compiler.
+- VBScript analysis is intentionally conservative. It uses an error-tolerant CST and opt-in strict type checks rather than a full VBScript compiler.
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
-- COM and IIS runtime behavior are not executed or type-checked.
-- `Server.CreateObject` support is static stub completion only.
+- COM and IIS runtime behavior are not executed. COM type information comes from built-in stubs or `aspLsp.vbscript.comTypes`.
 - Full-document formatting is CST based and conservative. HTML-only ranges still use `vscode-html-languageservice`; ASP/VBScript ranges are formatted by the built-in formatter.
 
 ## Assistant Instructions
