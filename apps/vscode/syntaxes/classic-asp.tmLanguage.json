@@ -1,0 +1,69 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Classic ASP",
+  "scopeName": "text.html.classic-asp",
+  "patterns": [
+    { "include": "#asp-expression" },
+    { "include": "#asp-directive" },
+    { "include": "#asp-block" },
+    { "include": "text.html.basic" }
+  ],
+  "repository": {
+    "asp-expression": {
+      "name": "source.vbscript.embedded.asp.expression",
+      "begin": "<%=",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.embedded.begin.asp" }
+      },
+      "end": "%>",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.embedded.end.asp" }
+      },
+      "patterns": [{ "include": "#vbscript-basic" }]
+    },
+    "asp-directive": {
+      "name": "meta.directive.asp",
+      "begin": "<%@",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.embedded.begin.asp" }
+      },
+      "end": "%>",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.embedded.end.asp" }
+      },
+      "patterns": [{ "include": "#vbscript-basic" }]
+    },
+    "asp-block": {
+      "name": "source.vbscript.embedded.asp",
+      "begin": "<%",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.embedded.begin.asp" }
+      },
+      "end": "%>",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.embedded.end.asp" }
+      },
+      "patterns": [{ "include": "#vbscript-basic" }]
+    },
+    "vbscript-basic": {
+      "patterns": [
+        {
+          "match": "\\b(Option\\s+Explicit|Dim|Set|Const|Sub|Function|Class|End|If|Then|Else|For|Each|Next|Do|Loop|While|Wend|Select|Case|Call|New)\\b",
+          "name": "keyword.control.vbscript.asp"
+        },
+        {
+          "match": "\\b(Request|Response|Session|Application|Server|ASPError)\\b",
+          "name": "support.class.asp"
+        },
+        {
+          "match": "\"[^\"]*\"",
+          "name": "string.quoted.double.vbscript.asp"
+        },
+        {
+          "match": "'[^\\n\\r]*",
+          "name": "comment.line.apostrophe.vbscript.asp"
+        }
+      ]
+    }
+  }
+}

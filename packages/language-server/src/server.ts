@@ -1,0 +1,526 @@
+#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+import {
+  CompletionItemKind,
+  createConnection,
+  DiagnosticSeverity,
+  DocumentSymbol,
+  FoldingRange,
+  Hover,
+  InitializeParams,
+  InitializeResult,
+  ProposedFeatures,
+  TextDocumentPositionParams,
+  TextDocuments,
+  TextDocumentSyncKind,
+} from "vscode-languageserver/node";
+import type { CompletionItem, Diagnostic, DocumentLink, Range, TextEdit } from "vscode-languageserver/node";
+import { TextDocument } from "vscode-languageserver-textdocument";
+import {
+  analyzeVbscript,
+  buildVirtualDocuments,
+  getVbscriptCompletions,
+  getVbscriptDocumentSymbols,
+  parseAspDocument,
+  type AspParsedDocument,
+  type AspSettings,
+  type VirtualDocument,
+} from "@asp-lsp/core";
+import { getCSSLanguageService } from "vscode-css-languageservice";
+import { getLanguageService as getHtmlLanguageService, TokenType } from "vscode-html-languageservice";
+import ts from "typescript";
+
+const connection = createConnection(ProposedFeatures.all);
+const documents = new TextDocuments(TextDocument);
+const htmlService = getHtmlLanguageService();
+const cssService = getCSSLanguageService();
+const settingsByUri = new Map<string, AspSettings>();
+let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
+
+interface CachedDocument {
+  source: TextDocument;
+  parsed: AspParsedDocument;
+  virtuals: Map<string, VirtualDocument>;
+}
+
+const cache = new Map<string, CachedDocument>();
+
+connection.onInitialize((_params: InitializeParams): InitializeResult => ({
+  capabilities: {
+    textDocumentSync: TextDocumentSyncKind.Incremental,
+    completionProvider: {
+      triggerCharacters: ["<", ".", "\"", "'", ":", "#"],
+      resolveProvider: false,
+    },
+    hoverProvider: true,
+    documentSymbolProvider: true,
+    foldingRangeProvider: true,
+    documentLinkProvider: { resolveProvider: false },
+    documentFormattingProvider: false,
+    documentRangeFormattingProvider: true,
+  },
+}));
+
+documents.onDidOpen((event) => validate(event.document));
+documents.onDidChangeContent((event) => validate(event.document));
+documents.onDidClose((event) => {
+  cache.delete(event.document.uri);
+  connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
+});
+
+connection.onInitialized(() => {
+  void refreshConfiguration();
+});
+
+connection.onDidChangeConfiguration((change) => {
+  const incoming = readSettingsFromChange(change.settings);
+  if (incoming) {
+    globalSettings = normalizeSettings(incoming);
+  }
+  settingsByUri.clear();
+  cache.clear();
+  for (const document of documents.all()) {
+    validate(document);
+  }
+});
+
+connection.onCompletion((params) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
+  if (!region) {
+    return [];
+  }
+  if (region.language === "vbscript" || region.language === "jscript") {
+    return getVbscriptCompletions(cached.parsed, params.position);
+  }
+  if (region.language === "html") {
+    const virtual = cached.virtuals.get("html");
+    if (!virtual) {
+      return [];
+    }
+    const virtualDocument = toTextDocument(virtual);
+    return htmlService.doComplete(virtualDocument, params.position, htmlService.parseHTMLDocument(virtualDocument)).items;
+  }
+  if (region.language === "css") {
+    return cssCompletion(cached, params, "css");
+  }
+  if (region.language === "javascript") {
+    return jsCompletion(cached, params);
+  }
+  return [];
+});
+
+connection.onHover((params) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return null;
+  }
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
+  if (!region) {
+    return null;
+  }
+  if (region.language === "vbscript" || region.language === "jscript") {
+    return aspHover(cached, params);
+  }
+  if (region.language === "html") {
+    const virtual = cached.virtuals.get("html");
+    if (!virtual) {
+      return null;
+    }
+    const doc = toTextDocument(virtual);
+    return htmlService.doHover(doc, params.position, htmlService.parseHTMLDocument(doc));
+  }
+  if (region.language === "css") {
+    const virtual = cached.virtuals.get("css");
+    if (!virtual) {
+      return null;
+    }
+    const virtualPosition = virtual.sourceMap.toVirtualPosition(params.position);
+    if (!virtualPosition) {
+      return null;
+    }
+    const doc = toTextDocument(virtual);
+    return cssService.doHover(doc, virtualPosition, cssService.parseStylesheet(doc));
+  }
+  return null;
+});
+
+connection.onDocumentSymbol((params) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  const htmlVirtual = cached.virtuals.get("html");
+  const htmlSymbols: DocumentSymbol[] = htmlVirtual
+    ? htmlService.findDocumentSymbols2(toTextDocument(htmlVirtual), htmlService.parseHTMLDocument(toTextDocument(htmlVirtual)))
+    : [];
+  return [...htmlSymbols, ...getVbscriptDocumentSymbols(cached.parsed)];
+});
+
+connection.onFoldingRanges((params) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  const htmlVirtual = cached.virtuals.get("html");
+  const htmlRanges: FoldingRange[] = htmlVirtual
+    ? htmlService.getFoldingRanges(toTextDocument(htmlVirtual), {})
+    : [];
+  const aspRanges: FoldingRange[] = cached.parsed.regions
+    .filter((region) => region.kind !== "html" && cached.source.positionAt(region.start).line !== cached.source.positionAt(region.end).line)
+    .map((region) => ({
+      startLine: cached.source.positionAt(region.start).line,
+      endLine: cached.source.positionAt(region.end).line,
+    }));
+  return [...htmlRanges, ...aspRanges];
+});
+
+connection.onDocumentLinks((params) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  return cached.parsed.includes.map((include): DocumentLink => {
+    const targetPath = resolveIncludePath(cached.source.uri, include.path, include.mode, cachedSettings(cached.source.uri));
+    return { range: include.range, target: pathToFileUri(targetPath) };
+  });
+});
+
+connection.onDocumentRangeFormatting((params) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.range.start));
+  if (!region || region.language !== "html") {
+    return [];
+  }
+  const virtual = cached.virtuals.get("html");
+  if (!virtual) {
+    return [];
+  }
+  if (rangeOverlapsNonHtml(cached, params.range)) {
+    return [];
+  }
+  return htmlService.format(toTextDocument(virtual), params.range, {
+    tabSize: params.options.tabSize,
+    insertSpaces: params.options.insertSpaces,
+  }) as TextEdit[];
+});
+
+async function validate(document: TextDocument): Promise<void> {
+  const settings = cachedSettings(document.uri);
+  const parsed = parseAspDocument(document.uri, document.getText(), settings);
+  const virtuals = buildVirtualDocuments(parsed);
+  const cached = { source: document, parsed, virtuals };
+  cache.set(document.uri, cached);
+  const diagnostics: Diagnostic[] = [...parsed.diagnostics, ...analyzeVbscript(parsed).diagnostics, ...includeDiagnostics(cached, settings)];
+  diagnostics.push(...htmlDiagnostics(cached));
+  diagnostics.push(...cssDiagnostics(cached));
+  diagnostics.push(...jsDiagnostics(cached, settings));
+  connection.sendDiagnostics({ uri: document.uri, diagnostics });
+}
+
+function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
+  const virtual = cached.virtuals.get("html");
+  if (!virtual) {
+    return [];
+  }
+  const scanner = htmlService.createScanner(virtual.text);
+  const diagnostics: Diagnostic[] = [];
+  let token = scanner.scan();
+  while (token !== TokenType.EOS) {
+    const error = scanner.getTokenError();
+    if (error) {
+      diagnostics.push({
+        severity: DiagnosticSeverity.Warning,
+        range: {
+          start: cached.source.positionAt(scanner.getTokenOffset()),
+          end: cached.source.positionAt(scanner.getTokenEnd()),
+        },
+        message: error,
+        source: "asp-lsp-html",
+      });
+    }
+    token = scanner.scan();
+  }
+  return diagnostics;
+}
+
+function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
+  const virtual = cached.virtuals.get("css");
+  if (!virtual) {
+    return [];
+  }
+  const doc = toTextDocument(virtual);
+  return cssService.doValidation(doc, cssService.parseStylesheet(doc)).map((diagnostic) => remapDiagnostic(virtual, diagnostic, "asp-lsp-css")).filter(isDiagnostic);
+}
+
+function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
+  const virtual = cached.virtuals.get("javascript");
+  if (!virtual) {
+    return [];
+  }
+  const host = createJsLanguageHost(virtual, settings);
+  const service = ts.createLanguageService(host);
+  const fileName = uriToFileName(virtual.uri);
+  const syntactic = service.getSyntacticDiagnostics(fileName);
+  const semantic = settings.checkJs ? service.getSemanticDiagnostics(fileName) : [];
+  return [...syntactic, ...semantic].map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic)).filter(isDiagnostic);
+}
+
+function cssCompletion(cached: CachedDocument, params: TextDocumentPositionParams, language: "css"): CompletionItem[] {
+  const virtual = cached.virtuals.get(language);
+  if (!virtual) {
+    return [];
+  }
+  const position = virtual.sourceMap.toVirtualPosition(params.position);
+  if (!position) {
+    return [];
+  }
+  const doc = toTextDocument(virtual);
+  return cssService.doComplete(doc, position, cssService.parseStylesheet(doc)).items;
+}
+
+function jsCompletion(cached: CachedDocument, params: TextDocumentPositionParams): CompletionItem[] {
+  const virtual = cached.virtuals.get("javascript");
+  if (!virtual) {
+    return [];
+  }
+  const virtualPosition = virtual.sourceMap.toVirtualPosition(params.position);
+  if (!virtualPosition) {
+    return [];
+  }
+  const fileName = uriToFileName(virtual.uri);
+  const service = ts.createLanguageService(createJsLanguageHost(virtual, cachedSettings(cached.source.uri)));
+  const offset = toTextDocument(virtual).offsetAt(virtualPosition);
+  return (
+    service.getCompletionsAtPosition(fileName, offset, {})?.entries.map((entry) => ({
+      label: entry.name,
+      kind: tsCompletionKind(entry.kind),
+      detail: entry.kind,
+    })) ?? []
+  );
+}
+
+function aspHover(cached: CachedDocument, params: TextDocumentPositionParams): Hover | null {
+  const offset = cached.source.offsetAt(params.position);
+  const word = wordAt(cached.source.getText(), offset);
+  if (!word) {
+    return null;
+  }
+  const descriptions: Record<string, string> = {
+    request: "Classic ASP Request object. Reads values sent by the client.",
+    response: "Classic ASP Response object. Writes output and controls the HTTP response.",
+    session: "Classic ASP Session object. Stores per-user state.",
+    application: "Classic ASP Application object. Stores application-wide state.",
+    server: "Classic ASP Server object. Creates COM objects, maps paths, and encodes values.",
+    asperror: "Classic ASP error object returned by Server.GetLastError.",
+  };
+  const value = descriptions[word.toLowerCase()];
+  return value ? { contents: { kind: "markdown", value } } : null;
+}
+
+function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const owner = uriToFileName(cached.source.uri);
+  for (const include of cached.parsed.includes) {
+    const resolved = resolveIncludePath(cached.source.uri, include.path, include.mode, settings);
+    if (!resolved || !fs.existsSync(resolved)) {
+      diagnostics.push({
+        severity: DiagnosticSeverity.Warning,
+        range: include.range,
+        message: `Include file '${include.path}' could not be resolved.`,
+        source: "asp-lsp-include",
+      });
+    }
+    if (resolved === owner) {
+      diagnostics.push({
+        severity: DiagnosticSeverity.Warning,
+        range: include.range,
+        message: "Include file references the current document.",
+        source: "asp-lsp-include",
+      });
+    }
+  }
+  return diagnostics;
+}
+
+function remapDiagnostic(virtual: VirtualDocument, diagnostic: Diagnostic, source: string): Diagnostic | undefined {
+  const start = virtual.sourceMap.toSourcePosition(diagnostic.range.start);
+  const end = virtual.sourceMap.toSourcePosition(diagnostic.range.end);
+  if (!start || !end) {
+    return undefined;
+  }
+  return { ...diagnostic, range: { start, end }, source };
+}
+
+function tsDiagnosticToLsp(virtual: VirtualDocument, diagnostic: ts.Diagnostic): Diagnostic | undefined {
+  if (diagnostic.start === undefined || diagnostic.length === undefined) {
+    return undefined;
+  }
+  const virtualDoc = toTextDocument(virtual);
+  const start = virtualDoc.positionAt(diagnostic.start);
+  const end = virtualDoc.positionAt(diagnostic.start + diagnostic.length);
+  const sourceStart = virtual.sourceMap.toSourcePosition(start);
+  const sourceEnd = virtual.sourceMap.toSourcePosition(end);
+  if (!sourceStart || !sourceEnd) {
+    return undefined;
+  }
+  return {
+    severity: diagnostic.category === ts.DiagnosticCategory.Error ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning,
+    range: { start: sourceStart, end: sourceEnd },
+    message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+    source: "asp-lsp-typescript",
+  };
+}
+
+function toTextDocument(virtual: VirtualDocument): TextDocument {
+  return TextDocument.create(virtual.uri, virtual.languageId, 0, virtual.text);
+}
+
+function getCached(uri: string): CachedDocument | undefined {
+  const existing = cache.get(uri);
+  if (existing) {
+    return existing;
+  }
+  const document = documents.get(uri);
+  if (!document) {
+    return undefined;
+  }
+  const parsed = parseAspDocument(uri, document.getText(), cachedSettings(uri));
+  const cached = { source: document, parsed, virtuals: buildVirtualDocuments(parsed) };
+  cache.set(uri, cached);
+  return cached;
+}
+
+function findRegionAt(parsed: AspParsedDocument, offset: number) {
+  return parsed.regions
+    .filter((region) => offset >= region.contentStart && offset <= region.contentEnd)
+    .sort((left, right) => left.contentEnd - left.contentStart - (right.contentEnd - right.contentStart))[0];
+}
+
+function cachedSettings(uri: string): AspSettings {
+  const existing = settingsByUri.get(uri);
+  if (existing) {
+    return existing;
+  }
+  const settings: AspSettings = { ...globalSettings, virtualRoot: globalSettings.virtualRoot || workspaceRootFromUri(uri) };
+  settingsByUri.set(uri, settings);
+  return settings;
+}
+
+async function refreshConfiguration(): Promise<void> {
+  try {
+    globalSettings = normalizeSettings((await connection.workspace.getConfiguration("aspLsp")) as Record<string, unknown>);
+    settingsByUri.clear();
+    for (const document of documents.all()) {
+      await validate(document);
+    }
+  } catch {
+    globalSettings = normalizeSettings(globalSettings);
+  }
+}
+
+function readSettingsFromChange(settings: unknown): Record<string, unknown> | undefined {
+  if (!settings || typeof settings !== "object") {
+    return undefined;
+  }
+  const record = settings as Record<string, unknown>;
+  const nested = record.aspLsp;
+  return nested && typeof nested === "object" ? (nested as Record<string, unknown>) : record;
+}
+
+function normalizeSettings(settings: Record<string, unknown> | AspSettings): AspSettings {
+  return {
+    defaultLanguage: settings.defaultLanguage === "JScript" ? "JScript" : "VBScript",
+    checkJs: settings.checkJs === true,
+    virtualRoot: typeof settings.virtualRoot === "string" && settings.virtualRoot.length > 0 ? settings.virtualRoot : undefined,
+    legacyEncoding: typeof settings.legacyEncoding === "string" ? settings.legacyEncoding : undefined,
+  };
+}
+
+function rangeOverlapsNonHtml(cached: CachedDocument, range: Range): boolean {
+  const start = cached.source.offsetAt(range.start);
+  const end = cached.source.offsetAt(range.end);
+  return cached.parsed.regions.some((region) => region.kind !== "html" && region.start < end && region.end > start);
+}
+
+function createJsLanguageHost(virtual: VirtualDocument, settings: AspSettings): ts.LanguageServiceHost {
+  const fileName = uriToFileName(virtual.uri);
+  return {
+    getScriptFileNames: () => [fileName],
+    getScriptVersion: () => "0",
+    getScriptSnapshot: (requested) => (requested === fileName ? ts.ScriptSnapshot.fromString(virtual.text) : undefined),
+    getCurrentDirectory: () => process.cwd(),
+    getCompilationSettings: () => ({
+      allowJs: true,
+      checkJs: settings.checkJs ?? false,
+      noEmit: true,
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+    }),
+    getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+    fileExists: ts.sys.fileExists,
+    readFile: ts.sys.readFile,
+    readDirectory: ts.sys.readDirectory,
+  };
+}
+
+function resolveIncludePath(ownerUri: string, includePath: string, mode: "file" | "virtual", settings: AspSettings): string {
+  if (mode === "virtual") {
+    return path.resolve(settings.virtualRoot ?? workspaceRootFromUri(ownerUri), includePath.replace(/^\/+/, ""));
+  }
+  return path.resolve(path.dirname(uriToFileName(ownerUri)), includePath);
+}
+
+function workspaceRootFromUri(uri: string): string {
+  const fileName = uriToFileName(uri);
+  return fs.statSync(fileName, { throwIfNoEntry: false })?.isDirectory() ? fileName : path.dirname(fileName);
+}
+
+function uriToFileName(uri: string): string {
+  if (uri.startsWith("file://")) {
+    return decodeURIComponent(new URL(uri).pathname);
+  }
+  return uri.replace(/\.(html|css|javascript|vbscript|jscript)\.virtual$/, "");
+}
+
+function pathToFileUri(fileName: string): string {
+  return new URL(`file://${fileName}`).toString();
+}
+
+function wordAt(text: string, offset: number): string | undefined {
+  const left = text.slice(0, offset).match(/[A-Za-z][A-Za-z0-9_]*$/)?.[0] ?? "";
+  const right = text.slice(offset).match(/^[A-Za-z0-9_]*/)?.[0] ?? "";
+  return left || right ? `${left}${right}` : undefined;
+}
+
+function tsCompletionKind(kind: string): CompletionItemKind {
+  switch (kind) {
+    case "function":
+    case "method":
+      return CompletionItemKind.Function;
+    case "var":
+    case "let":
+    case "const":
+      return CompletionItemKind.Variable;
+    case "class":
+      return CompletionItemKind.Class;
+    case "property":
+      return CompletionItemKind.Property;
+    default:
+      return CompletionItemKind.Text;
+  }
+}
+
+function isDiagnostic(value: Diagnostic | undefined): value is Diagnostic {
+  return value !== undefined;
+}
+
+documents.listen(connection);
+connection.listen();

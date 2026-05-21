@@ -1,0 +1,71 @@
+{
+  "name": "classic-asp-lsp",
+  "displayName": "Classic ASP LSP",
+  "description": "Classic ASP language support backed by asp-lsp.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "yottonoko",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": ["Programming Languages"],
+  "activationEvents": [
+    "onLanguage:classic-asp"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "classic-asp",
+        "aliases": ["Classic ASP", "classic-asp", "ASP"],
+        "extensions": [".asp", ".asa", ".inc"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "classic-asp",
+        "scopeName": "text.html.classic-asp",
+        "path": "./syntaxes/classic-asp.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.vbscript.embedded.asp": "vbscript",
+          "source.js": "javascript",
+          "source.css": "css",
+          "text.html.basic": "html"
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Classic ASP LSP",
+      "properties": {
+        "aspLsp.defaultLanguage": {
+          "type": "string",
+          "enum": ["VBScript", "JScript"],
+          "default": "VBScript",
+          "description": "Default server-side script language for Classic ASP pages."
+        },
+        "aspLsp.checkJs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable semantic checking for client JavaScript regions."
+        },
+        "aspLsp.virtualRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Root directory used to resolve virtual include paths."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@asp-lsp/language-server": "workspace:*",
+    "vscode-languageclient": "^9.0.1"
+  }
+}
