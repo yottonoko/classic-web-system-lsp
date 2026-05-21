@@ -96,6 +96,16 @@ Response.Write name
     expect(serverScript?.language).toBe("vbscript");
   });
 
+  it("does not parse server-side JScript as VBScript CST", () => {
+    const parsed = parseAspDocument(
+      "file:///server-jscript.asp",
+      `<%@ LANGUAGE="JScript" %><% var missingName = 1; %>`,
+    );
+    const jscriptNode = parsed.cst.children.find((node) => node.language === "jscript");
+    expect(jscriptNode?.vbscript).toBeUndefined();
+    expect(analyzeVbscript(parsed).diagnostics).toHaveLength(0);
+  });
+
   it("builds a lossless ASP CST with embedded VBScript CST nodes", () => {
     const source = `<%@ LANGUAGE="VBScript" %>
 <!-- #include file="inc/common.inc" -->

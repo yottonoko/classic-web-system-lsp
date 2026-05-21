@@ -2121,9 +2121,7 @@ function getServerScriptText(parsed: AspParsedDocument): string {
 }
 
 function serverRegions(parsed: AspParsedDocument): AspRegion[] {
-  return parsed.regions.filter(
-    (region) => region.language === "vbscript" || region.language === "jscript",
-  );
+  return parsed.regions.filter((region) => region.language === "vbscript");
 }
 
 function symbolToCompletion(symbol: VbSymbol): CompletionItem {

@@ -289,7 +289,7 @@ function regionToNode(text: string, region: AspRegion): AspCstNode {
     attributes: region.attributes,
     regionKind: region.kind,
   };
-  if (region.language === "vbscript" || region.language === "jscript") {
+  if (region.language === "vbscript") {
     node.vbscript = parseVbscriptCst(
       text.slice(region.contentStart, region.contentEnd),
       text,
