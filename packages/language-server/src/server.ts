@@ -144,6 +144,25 @@ interface JsProjectContext {
   files: Map<string, JsProjectFile>;
 }
 
+interface JsCallHierarchyData {
+  kind: "javascript";
+  rootUri: string;
+  language: string;
+  fileName: string;
+  position: number;
+}
+
+function aspFileOperationFilter() {
+  return {
+    scheme: "file",
+    pattern: {
+      glob: "**/*.{asp,asa,inc}",
+      matches: "file" as const,
+      options: { ignoreCase: true },
+    },
+  };
+}
+
 const cache = new Map<string, CachedDocument>();
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
@@ -205,6 +224,14 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         firstTriggerCharacter: "\n",
         moreTriggerCharacter: [">"],
       },
+      workspace: {
+        fileOperations: {
+          willRename: { filters: [aspFileOperationFilter()] },
+          didRename: { filters: [aspFileOperationFilter()] },
+          didCreate: { filters: [aspFileOperationFilter()] },
+          didDelete: { filters: [aspFileOperationFilter()] },
+        },
+      },
     },
   };
 });
@@ -246,6 +273,23 @@ connection.onDidChangeWatchedFiles((change) => {
   }
 });
 
+connection.workspace.onWillRenameFiles((params) => includeRenameWorkspaceEdit(params.files));
+
+connection.workspace.onDidRenameFiles(() => {
+  invalidateWorkspaceIndex();
+  includeDocumentCache.clear();
+});
+
+connection.workspace.onDidCreateFiles(() => {
+  invalidateWorkspaceIndex();
+  includeDocumentCache.clear();
+});
+
+connection.workspace.onDidDeleteFiles(() => {
+  invalidateWorkspaceIndex();
+  includeDocumentCache.clear();
+});
+
 connection.onCompletion((params) => {
   const cached = getCached(params.textDocument.uri);
   if (!cached) {
@@ -271,14 +315,20 @@ connection.onCompletion((params) => {
       return [];
     }
     const virtualDocument = toTextDocument(virtual);
-    return htmlService.doComplete(
-      virtualDocument,
-      params.position,
-      htmlService.parseHTMLDocument(virtualDocument),
-    ).items;
+    return withCompletionData(
+      htmlService.doComplete(
+        virtualDocument,
+        params.position,
+        htmlService.parseHTMLDocument(virtualDocument),
+      ).items,
+      { kind: "html", uri: cached.source.uri },
+    );
   }
   if (region.language === "css") {
-    return cssCompletion(cached, params, "css");
+    return withCompletionData(cssCompletion(cached, params, "css"), {
+      kind: "css",
+      uri: cached.source.uri,
+    });
   }
   if (isJavaScriptLikeRegion(region)) {
     return jsCompletion(cached, params);
@@ -301,6 +351,17 @@ connection.onCompletionResolve((item) => {
   if (data?.kind === "javascript" && data.uri) {
     const resolved = resolveJsCompletion(item, data.uri);
     return resolved ?? item;
+  }
+  if ((data?.kind === "html" || data?.kind === "css") && data.uri) {
+    return {
+      ...item,
+      detail: item.detail ?? (data.kind === "html" ? "HTML completion" : "CSS completion"),
+      documentation:
+        item.documentation ??
+        (data.kind === "html"
+          ? "Completion provided by vscode-html-languageservice."
+          : "Completion provided by vscode-css-languageservice."),
+    };
   }
   return item;
 });
@@ -474,10 +535,7 @@ connection.onWorkspaceSymbol((params) => {
   const indexedSymbols = indexedDocuments.flatMap((parsed) =>
     collectVbscriptSymbols(parsed, { documents: indexedDocuments }),
   );
-  const symbols = [...openSymbols, ...indexedSymbols].filter(
-    (symbol) => query.length === 0 || symbol.name.toLowerCase().includes(query),
-  );
-  return symbols.map((symbol) =>
+  const vbSymbols = [...openSymbols, ...indexedSymbols].map((symbol) =>
     SymbolInformation.create(
       symbol.name,
       vbWorkspaceSymbolKind(symbol.kind),
@@ -485,6 +543,18 @@ connection.onWorkspaceSymbol((params) => {
       symbol.sourceUri,
       symbol.memberOf,
     ),
+  );
+  const richSymbols = [
+    ...documents.all().flatMap((document) => {
+      const cached = getCached(document.uri);
+      return cached ? workspaceSymbolsForCached(cached) : [];
+    }),
+    ...[...workspaceIndex.values()]
+      .filter((entry) => !openedUris.has(entry.uri))
+      .flatMap((entry) => workspaceSymbolsForCached(cachedFromIndexed(entry))),
+  ];
+  return [...vbSymbols, ...richSymbols].filter(
+    (symbol) => query.length === 0 || symbol.name.toLowerCase().includes(query),
   );
 });
 
@@ -500,7 +570,12 @@ connection.onDocumentSymbol((params) => {
         htmlService.parseHTMLDocument(toTextDocument(htmlVirtual)),
       )
     : [];
-  return [...htmlSymbols, ...getVbscriptDocumentSymbols(cached.parsed)];
+  return [
+    ...htmlSymbols,
+    ...cssDocumentSymbols(cached),
+    ...jsDocumentSymbols(cached),
+    ...getVbscriptDocumentSymbols(cached.parsed),
+  ];
 });
 
 connection.onFoldingRanges((params) => {
@@ -512,6 +587,9 @@ connection.onFoldingRanges((params) => {
   const htmlRanges: FoldingRange[] = htmlVirtual
     ? htmlService.getFoldingRanges(toTextDocument(htmlVirtual), {})
     : [];
+  const cssRanges = cssFoldingRanges(cached);
+  const jsRanges = jsFoldingRanges(cached);
+  const vbRanges = vbscriptFoldingRanges(cached);
   const aspRanges: FoldingRange[] = cached.parsed.regions
     .filter(
       (region) =>
@@ -522,7 +600,7 @@ connection.onFoldingRanges((params) => {
       startLine: cached.source.positionAt(region.start).line,
       endLine: cached.source.positionAt(region.end).line,
     }));
-  return [...htmlRanges, ...aspRanges];
+  return [...htmlRanges, ...cssRanges, ...jsRanges, ...vbRanges, ...aspRanges];
 });
 
 connection.onDocumentLinks((params) => {
@@ -618,7 +696,13 @@ connection.onExecuteCommand((params) => {
 
 connection.languages.callHierarchy.onPrepare((params): CallHierarchyItem[] => {
   const cached = getCached(params.textDocument.uri);
-  if (!cached || !isVbscriptPosition(cached, params.position)) {
+  if (!cached) {
+    return [];
+  }
+  if (isJavaScriptPosition(cached, params.position)) {
+    return jsPrepareCallHierarchy(cached, params.position);
+  }
+  if (!isVbscriptPosition(cached, params.position)) {
     return [];
   }
   return prepareVbscriptCallHierarchy(
@@ -630,6 +714,9 @@ connection.languages.callHierarchy.onPrepare((params): CallHierarchyItem[] => {
 });
 
 connection.languages.callHierarchy.onIncomingCalls((params): CallHierarchyIncomingCall[] => {
+  if (isJsCallHierarchyItem(params.item)) {
+    return jsIncomingCalls(params.item);
+  }
   const root = callHierarchyRootUri(params.item);
   const cached = getCached(root) ?? getCached(params.item.uri);
   if (!cached) {
@@ -642,6 +729,9 @@ connection.languages.callHierarchy.onIncomingCalls((params): CallHierarchyIncomi
 });
 
 connection.languages.callHierarchy.onOutgoingCalls((params): CallHierarchyOutgoingCall[] => {
+  if (isJsCallHierarchyItem(params.item)) {
+    return jsOutgoingCalls(params.item);
+  }
   const root = callHierarchyRootUri(params.item);
   const cached = getCached(root) ?? getCached(params.item.uri);
   if (!cached) {
@@ -1003,6 +1093,115 @@ function jsSignatureHelp(cached: CachedDocument, position: Position): SignatureH
   };
 }
 
+function jsPrepareCallHierarchy(cached: CachedDocument, position: Position): CallHierarchyItem[] {
+  const context = jsContextAt(cached, position);
+  if (!context) {
+    return [];
+  }
+  const items = context.service.prepareCallHierarchy(context.fileName, context.offset);
+  const list = Array.isArray(items) ? items : items ? [items] : [];
+  return list
+    .map((item) => tsCallHierarchyItemToLsp(context, item, cached.source.uri))
+    .filter((item): item is CallHierarchyItem => Boolean(item));
+}
+
+function jsIncomingCalls(item: CallHierarchyItem): CallHierarchyIncomingCall[] {
+  const context = jsCallHierarchyContext(item);
+  if (!context) {
+    return [];
+  }
+  return context.service
+    .provideCallHierarchyIncomingCalls(context.fileName, context.offset)
+    .map((call) => {
+      const from = tsCallHierarchyItemToLsp(context, call.from, context.rootUri);
+      return from
+        ? {
+            from,
+            fromRanges: call.fromSpans
+              .map((span) => textSpanToLocation(context, call.from.file, span)?.range)
+              .filter((range): range is Range => Boolean(range)),
+          }
+        : undefined;
+    })
+    .filter((call): call is CallHierarchyIncomingCall => Boolean(call));
+}
+
+function jsOutgoingCalls(item: CallHierarchyItem): CallHierarchyOutgoingCall[] {
+  const context = jsCallHierarchyContext(item);
+  if (!context) {
+    return [];
+  }
+  return context.service
+    .provideCallHierarchyOutgoingCalls(context.fileName, context.offset)
+    .map((call) => {
+      const to = tsCallHierarchyItemToLsp(context, call.to, context.rootUri);
+      return to
+        ? {
+            to,
+            fromRanges: call.fromSpans
+              .map((span) => textSpanToLocation(context, context.fileName, span)?.range)
+              .filter((range): range is Range => Boolean(range)),
+          }
+        : undefined;
+    })
+    .filter((call): call is CallHierarchyOutgoingCall => Boolean(call));
+}
+
+function isJsCallHierarchyItem(item: CallHierarchyItem): boolean {
+  return (item.data as Partial<JsCallHierarchyData> | undefined)?.kind === "javascript";
+}
+
+function jsCallHierarchyContext(
+  item: CallHierarchyItem,
+): (JsProjectContext & { rootUri: string }) | undefined {
+  const data = item.data as Partial<JsCallHierarchyData> | undefined;
+  if (data?.kind !== "javascript" || !data.rootUri || !data.language) {
+    return undefined;
+  }
+  const cached = getCached(data.rootUri);
+  const virtual = cached?.virtuals.get(data.language);
+  if (!cached || !virtual || typeof data.position !== "number") {
+    return undefined;
+  }
+  const project = createJsLanguageService(virtual, cachedSettings(data.rootUri));
+  return {
+    virtual,
+    service: project.service,
+    fileName: data.fileName ?? jsVirtualFileName(virtual.uri),
+    offset: data.position,
+    files: project.files,
+    rootUri: data.rootUri,
+  };
+}
+
+function tsCallHierarchyItemToLsp(
+  context: JsProjectContext,
+  item: ts.CallHierarchyItem,
+  rootUri: string,
+): CallHierarchyItem | undefined {
+  const range = textSpanToLocation(context, item.file, item.span)?.range;
+  const selectionRange = textSpanToLocation(context, item.file, item.selectionSpan)?.range;
+  const location = textSpanToLocation(context, item.file, item.selectionSpan);
+  if (!range || !selectionRange || !location) {
+    return undefined;
+  }
+  return {
+    name: item.name,
+    kind: tsSymbolKind(item.kind),
+    detail: item.containerName,
+    uri: location.uri,
+    range,
+    selectionRange,
+    data: {
+      kind: "javascript",
+      rootUri,
+      language: context.virtual.languageId,
+      fileName: item.file,
+      position: item.selectionSpan.start,
+    } satisfies JsCallHierarchyData,
+  };
+}
+
 function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem | undefined {
   const cached = getCached(uri);
   const data = item.data as
@@ -1170,6 +1369,188 @@ function jsVirtualDocuments(cached: CachedDocument): VirtualDocument[] {
     .filter((virtual): virtual is VirtualDocument => Boolean(virtual));
 }
 
+function workspaceSymbolsForCached(cached: CachedDocument): SymbolInformation[] {
+  return [
+    ...includeSymbols(cached),
+    ...htmlWorkspaceSymbols(cached),
+    ...cssWorkspaceSymbols(cached),
+    ...jsWorkspaceSymbols(cached),
+  ];
+}
+
+function includeSymbols(cached: CachedDocument): SymbolInformation[] {
+  return cached.parsed.includes.map((include) =>
+    SymbolInformation.create(
+      include.path,
+      SymbolKind.File,
+      include.range,
+      cached.source.uri,
+      "include",
+    ),
+  );
+}
+
+function htmlWorkspaceSymbols(cached: CachedDocument): SymbolInformation[] {
+  const symbols: SymbolInformation[] = [];
+  const html = cached.virtuals.get("html");
+  if (!html) {
+    return symbols;
+  }
+  const text = html.text;
+  const pattern = /\b(?:id|name)=["']([^"']+)["']/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    const start = match.index + match[0].indexOf(match[1]);
+    const end = start + match[1].length;
+    const range = textSpanToSourceRange(html, { start, length: end - start });
+    if (range) {
+      symbols.push(
+        SymbolInformation.create(match[1], SymbolKind.Key, range, cached.source.uri, "html"),
+      );
+    }
+  }
+  return symbols;
+}
+
+function cssWorkspaceSymbols(cached: CachedDocument): SymbolInformation[] {
+  return cssDocumentSymbols(cached).map((symbol) =>
+    SymbolInformation.create(
+      symbol.name,
+      symbol.kind,
+      symbol.selectionRange,
+      cached.source.uri,
+      "css",
+    ),
+  );
+}
+
+function jsWorkspaceSymbols(cached: CachedDocument): SymbolInformation[] {
+  return jsDocumentSymbols(cached).map((symbol) =>
+    SymbolInformation.create(
+      symbol.name,
+      symbol.kind,
+      symbol.selectionRange,
+      cached.source.uri,
+      "javascript",
+    ),
+  );
+}
+
+function cssDocumentSymbols(cached: CachedDocument): DocumentSymbol[] {
+  const virtual = cached.virtuals.get("css");
+  if (!virtual) {
+    return [];
+  }
+  const doc = toTextDocument(virtual);
+  return cssService
+    .findDocumentSymbols2(doc, cssService.parseStylesheet(doc))
+    .map((symbol) => remapDocumentSymbol(virtual, symbol))
+    .filter((symbol): symbol is DocumentSymbol => Boolean(symbol));
+}
+
+function jsDocumentSymbols(cached: CachedDocument): DocumentSymbol[] {
+  return jsVirtualDocuments(cached).flatMap((virtual) => {
+    const project = createJsLanguageService(virtual, cachedSettings(virtualSourceUri(virtual)));
+    const tree = project.service.getNavigationTree(jsVirtualFileName(virtual.uri));
+    return (tree.childItems ?? [])
+      .map((item) => navigationTreeToDocumentSymbol(virtual, item))
+      .filter((symbol): symbol is DocumentSymbol => Boolean(symbol));
+  });
+}
+
+function navigationTreeToDocumentSymbol(
+  activeVirtual: VirtualDocument,
+  item: ts.NavigationTree,
+): DocumentSymbol | undefined {
+  const primarySpan = item.spans[0];
+  if (!primarySpan) {
+    return undefined;
+  }
+  const range = textSpanToSourceRange(activeVirtual, primarySpan);
+  const selectionRange = textSpanToSourceRange(activeVirtual, item.nameSpan ?? primarySpan);
+  if (!range || !selectionRange) {
+    return undefined;
+  }
+  return {
+    name: item.text,
+    detail: item.kindModifiers,
+    kind: tsSymbolKind(item.kind),
+    range,
+    selectionRange,
+    children: (item.childItems ?? [])
+      .map((child) => navigationTreeToDocumentSymbol(activeVirtual, child))
+      .filter((symbol): symbol is DocumentSymbol => Boolean(symbol)),
+  };
+}
+
+function remapDocumentSymbol(
+  virtual: VirtualDocument,
+  symbol: DocumentSymbol,
+): DocumentSymbol | undefined {
+  const range = sourceRangeFromVirtualRange(virtual, symbol.range);
+  const selectionRange = sourceRangeFromVirtualRange(virtual, symbol.selectionRange);
+  if (!range || !selectionRange) {
+    return undefined;
+  }
+  return {
+    ...symbol,
+    range,
+    selectionRange,
+    children: symbol.children
+      ?.map((child) => remapDocumentSymbol(virtual, child))
+      .filter((child): child is DocumentSymbol => Boolean(child)),
+  };
+}
+
+function cssFoldingRanges(cached: CachedDocument): FoldingRange[] {
+  const virtual = cached.virtuals.get("css");
+  if (!virtual) {
+    return [];
+  }
+  return cssService
+    .getFoldingRanges(toTextDocument(virtual), {})
+    .map((range) => remapFoldingRange(virtual, range))
+    .filter((range): range is FoldingRange => Boolean(range));
+}
+
+function jsFoldingRanges(cached: CachedDocument): FoldingRange[] {
+  return jsVirtualDocuments(cached).flatMap((virtual) => {
+    const project = createJsLanguageService(virtual, cachedSettings(virtualSourceUri(virtual)));
+    return project.service
+      .getOutliningSpans(jsVirtualFileName(virtual.uri))
+      .map((span) => textSpanToSourceRange(virtual, span.textSpan))
+      .filter((range): range is Range => Boolean(range))
+      .map((range) => ({ startLine: range.start.line, endLine: range.end.line }));
+  });
+}
+
+function vbscriptFoldingRanges(cached: CachedDocument): FoldingRange[] {
+  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  return (context.symbols ?? [])
+    .filter((symbol) => symbol.sourceUri === cached.source.uri && symbol.scopeRange)
+    .map((symbol) => symbol.scopeRange)
+    .filter((range): range is Range => Boolean(range))
+    .filter((range) => range.start.line < range.end.line)
+    .map((range) => ({ startLine: range.start.line, endLine: range.end.line }));
+}
+
+function remapFoldingRange(
+  virtual: VirtualDocument,
+  range: FoldingRange,
+): FoldingRange | undefined {
+  const doc = toTextDocument(virtual);
+  const start = virtual.sourceMap.toSourcePosition({
+    line: range.startLine,
+    character: range.startCharacter ?? 0,
+  });
+  const endOffset = doc.offsetAt({
+    line: range.endLine,
+    character: range.endCharacter ?? Number.MAX_SAFE_INTEGER,
+  });
+  const end = virtual.sourceMap.toSourcePosition(doc.positionAt(endOffset));
+  return start && end ? { ...range, startLine: start.line, endLine: end.line } : undefined;
+}
+
 function textSpanToSourceRange(virtual: VirtualDocument, span: ts.TextSpan): Range | undefined {
   const doc = toTextDocument(virtual);
   const start = virtual.sourceMap.toSourcePosition(doc.positionAt(span.start));
@@ -1302,6 +1683,80 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
     }
   }
   return diagnostics;
+}
+
+function includeRenameWorkspaceEdit(
+  files: Array<{ oldUri: string; newUri: string }>,
+): WorkspaceEdit | null {
+  ensureWorkspaceIndex();
+  const changes: NonNullable<WorkspaceEdit["changes"]> = {};
+  const seenEdits = new Set<string>();
+  const renamePairs = files.map((file) => ({
+    oldFile: normalizeFileName(uriToFileName(file.oldUri)),
+    newFile: normalizeFileName(uriToFileName(file.newUri)),
+  }));
+  const candidates = [
+    ...documents.all().flatMap((document) => {
+      const cached = getCached(document.uri);
+      return cached ? [cached] : [];
+    }),
+    ...[...workspaceIndex.values()].map(cachedFromIndexed),
+  ];
+  for (const cached of candidates) {
+    const settings = cachedSettings(cached.source.uri);
+    for (const include of cached.parsed.includes) {
+      const resolved = normalizeFileName(
+        resolveIncludePath(cached.source.uri, include.path, include.mode, settings),
+      );
+      const pair = renamePairs.find((item) => sameFile(item.oldFile, resolved));
+      if (!pair) {
+        continue;
+      }
+      const key = `${cached.source.uri}:${include.range.start.line}:${include.range.start.character}`;
+      if (seenEdits.has(key)) {
+        continue;
+      }
+      seenEdits.add(key);
+      const nextPath = includePathForRenamedTarget(
+        cached.source.uri,
+        include.mode,
+        pair.newFile,
+        settings,
+      );
+      changes[cached.source.uri] = [
+        ...(changes[cached.source.uri] ?? []),
+        {
+          range: include.range,
+          newText: `<!-- #include ${include.mode}="${nextPath}" -->`,
+        },
+      ];
+    }
+  }
+  return Object.keys(changes).length > 0 ? { changes } : null;
+}
+
+function includePathForRenamedTarget(
+  ownerUri: string,
+  mode: "file" | "virtual",
+  targetFile: string,
+  settings: AspSettings,
+): string {
+  if (mode === "file") {
+    return path
+      .relative(path.dirname(uriToFileName(ownerUri)), targetFile)
+      .split(path.sep)
+      .join("/");
+  }
+  for (const root of [...(settings.virtualRoots ?? []), settings.virtualRoot, ...workspaceRoots]) {
+    if (!root) {
+      continue;
+    }
+    const relative = path.relative(root, targetFile);
+    if (!relative.startsWith("..") && !path.isAbsolute(relative)) {
+      return `/${relative.split(path.sep).join("/")}`;
+    }
+  }
+  return `/${path.basename(targetFile)}`;
 }
 
 function findIncludeCycle(
@@ -2283,6 +2738,30 @@ function vbWorkspaceSymbolKind(kind: VbSymbolKind): SymbolKind {
       return SymbolKind.Field;
     case "variable":
       return SymbolKind.Variable;
+  }
+}
+
+function tsSymbolKind(kind: ts.ScriptElementKind): SymbolKind {
+  switch (kind) {
+    case ts.ScriptElementKind.classElement:
+      return SymbolKind.Class;
+    case ts.ScriptElementKind.memberFunctionElement:
+    case ts.ScriptElementKind.functionElement:
+    case ts.ScriptElementKind.localFunctionElement:
+      return SymbolKind.Function;
+    case ts.ScriptElementKind.memberVariableElement:
+    case ts.ScriptElementKind.memberGetAccessorElement:
+    case ts.ScriptElementKind.memberSetAccessorElement:
+      return SymbolKind.Property;
+    case ts.ScriptElementKind.constElement:
+      return SymbolKind.Constant;
+    case ts.ScriptElementKind.letElement:
+    case ts.ScriptElementKind.variableElement:
+      return SymbolKind.Variable;
+    case ts.ScriptElementKind.moduleElement:
+      return SymbolKind.Module;
+    default:
+      return SymbolKind.Object;
   }
 }
 

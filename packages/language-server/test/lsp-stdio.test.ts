@@ -110,6 +110,55 @@ describe("stdio LSP server", () => {
     }
   });
 
+  it("resolves HTML and CSS completion items", async () => {
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/html-css-resolve.asp";
+      const source = "<\n<style>.x { colo }</style>";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: source,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+      const htmlCompletions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: { line: 0, character: 1 },
+      });
+      const htmlItem = (htmlCompletions as Array<Record<string, unknown>>).find(
+        (item) => item.label === "div",
+      );
+      expect(JSON.stringify(await server.request("completionItem/resolve", htmlItem))).toContain(
+        "HTML completion",
+      );
+
+      const cssCompletions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: { line: 1, character: 16 },
+      });
+      const cssItem = (cssCompletions as Array<Record<string, unknown>>).find(
+        (item) => item.label === "color",
+      );
+      expect(JSON.stringify(await server.request("completionItem/resolve", cssItem))).toContain(
+        "CSS",
+      );
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("delegates JavaScript hover, navigation, rename and signature help to TypeScript", async () => {
     const marked = markedDocument(`<script>
 function greet(name) {
@@ -273,6 +322,67 @@ const value = externalHe▮lper("ada");
     }
   });
 
+  it("returns JavaScript call hierarchy plus CSS and JavaScript symbols", async () => {
+    const marked = markedDocument(`<style>
+.panel { color: red; }
+</style>
+<script>
+function renderCard(value) {
+  return value;
+}
+function boot() {
+  return render▮Card("ready");
+}
+</script>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/js-symbols.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+      const symbols = await server.request("textDocument/documentSymbol", {
+        textDocument: { uri },
+      });
+      expect(JSON.stringify(symbols)).toContain("panel");
+      expect(JSON.stringify(symbols)).toContain("renderCard");
+
+      const folding = await server.request("textDocument/foldingRange", {
+        textDocument: { uri },
+      });
+      expect(Array.isArray(folding) ? folding.length : 0).toBeGreaterThan(1);
+
+      const hierarchy = await server.request("textDocument/prepareCallHierarchy", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(hierarchy)).toContain("renderCard");
+      const incoming = await server.request("callHierarchy/incomingCalls", {
+        item: (hierarchy as unknown[])[0],
+      });
+      expect(JSON.stringify(incoming)).toContain("boot");
+
+      const workspaceSymbols = await server.request("workspace/symbol", { query: "render" });
+      expect(JSON.stringify(workspaceSymbols)).toContain("renderCard");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("publishes CSS and JavaScript diagnostics over JSON-RPC", async () => {
     const server = new RpcServer();
     try {
@@ -424,6 +534,44 @@ Response.Write Shared▮Title()
         position: marked.position,
       });
       expect(JSON.stringify(definition)).toContain("common.inc");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("updates include directives for file rename operations", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-rename-"));
+    const owner = path.join(tempDir, "default.asp");
+    const include = path.join(tempDir, "common.inc");
+    const renamed = path.join(tempDir, "renamed.inc");
+    fs.writeFileSync(include, `<% Dim sharedValue %>`, "utf8");
+    const source = `<!-- #include file="common.inc" -->\n<% Response.Write sharedValue %>`;
+    fs.writeFileSync(owner, source, "utf8");
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: `file://${tempDir}`,
+        capabilities: {},
+      });
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri: `file://${owner}`,
+          languageId: "classic-asp",
+          version: 1,
+          text: source,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+      const edit = await server.request("workspace/willRenameFiles", {
+        files: [{ oldUri: `file://${include}`, newUri: `file://${renamed}` }],
+      });
+      expect(JSON.stringify(edit)).toContain("renamed.inc");
 
       await server.request("shutdown", null);
       server.notify("exit", undefined);
