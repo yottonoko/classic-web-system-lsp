@@ -1,0 +1,51 @@
+name: Release VSIX
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-vsix:
+    name: Build and release VSIX
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate workspace
+        run: |
+          pnpm run typecheck
+          pnpm run lint
+          pnpm run test
+
+      - name: Resolve VSIX name
+        id: vsix
+        run: |
+          tag_name="${GITHUB_REF_NAME//\//-}"
+          echo "name=classic-asp-lsp-${tag_name}.vsix" >> "$GITHUB_OUTPUT"
+
+      - name: Package VSIX
+        run: pnpm run package:vsix --out "$GITHUB_WORKSPACE/${{ steps.vsix.outputs.name }}"
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.vsix.outputs.name }}
+          generate_release_notes: true
