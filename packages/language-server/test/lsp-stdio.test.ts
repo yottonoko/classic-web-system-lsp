@@ -530,6 +530,113 @@ Response.Write BuildName()
     }
   });
 
+  it("supports VBScript XML documentation comments over JSON-RPC", async () => {
+    const source = `<%
+''' <summary>Builds a display name.</summary>
+''' <param name="first">First name.</param>
+''' <returns>Display name.</returns>
+Function BuildName(first)
+  BuildName = first
+End Function
+Response.Write BuildName("Ada")
+''' <▮
+''' <param name="▮"></param>
+''' <see ▮/>
+''' <summary>Text</▮
+''' <see cref="▮" />
+%>`;
+    const firstMarker = markedDocument(source);
+    const text = firstMarker.text.replaceAll("▮", "");
+    const tagPosition = firstMarker.position;
+    const paramPosition = positionAt(text, text.indexOf('name=""></param>') + 'name="'.length);
+    const attrPosition = positionAt(text, text.indexOf("<see />") + "<see ".length);
+    const closingPosition = positionAt(
+      text,
+      text.indexOf("<summary>Text</") + "<summary>Text</".length,
+    );
+    const crefPosition = positionAt(text, text.indexOf('cref=""') + 'cref="'.length);
+    const callPosition = positionAt(text, text.indexOf('BuildName("Ada")') + 2);
+    const signaturePosition = positionAt(text, text.indexOf('"Ada"') + 2);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/vbscript-doc-comments.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const hover = await server.request("textDocument/hover", {
+        textDocument: { uri },
+        position: callPosition,
+      });
+      expect(JSON.stringify(hover)).toContain("Builds a display name.");
+      expect(JSON.stringify(hover)).toContain("First name.");
+
+      const completions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: callPosition,
+      });
+      const buildCompletion = (completions as Array<Record<string, unknown>>).find(
+        (item) => item.label === "BuildName",
+      );
+      expect(
+        JSON.stringify(await server.request("completionItem/resolve", buildCompletion)),
+      ).toContain("Builds a display name.");
+
+      const signature = await server.request("textDocument/signatureHelp", {
+        textDocument: { uri },
+        position: signaturePosition,
+      });
+      expect(JSON.stringify(signature)).toContain("First name.");
+
+      const tagCompletions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: tagPosition,
+      });
+      expect(JSON.stringify(tagCompletions)).toContain("summary");
+
+      const paramCompletions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: paramPosition,
+      });
+      expect(JSON.stringify(paramCompletions)).toContain("first");
+
+      const attrCompletions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: attrPosition,
+      });
+      expect(JSON.stringify(attrCompletions)).toContain("cref");
+
+      const closingCompletions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: closingPosition,
+      });
+      expect(JSON.stringify(closingCompletions)).toContain("summary");
+
+      const crefCompletions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: crefPosition,
+      });
+      expect(JSON.stringify(crefCompletions)).toContain("BuildName");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("uses included VBScript symbols for completion and definition", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
     const owner = path.join(tempDir, "default.asp");

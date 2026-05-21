@@ -3,6 +3,7 @@ import {
   DiagnosticSeverity,
   DocumentHighlightKind,
   InlayHintKind,
+  InsertTextFormat,
   SymbolKind,
 } from "vscode-languageserver-types";
 import type {
@@ -53,6 +54,7 @@ export interface VbSymbol {
   type?: VbTypeRef;
   parameters?: string[];
   visibility?: "public" | "private";
+  documentation?: VbDocumentation;
 }
 
 export interface VbReference {
@@ -119,6 +121,43 @@ export interface VbTypeEnvironment {
 }
 
 export type VbTypeDiagnostic = Diagnostic;
+
+export interface VbDocumentation {
+  summary?: string;
+  remarks?: string;
+  params: Record<string, string>;
+  returns?: string;
+  value?: string;
+  exceptions: Array<{ cref?: string; text: string }>;
+  see: Array<{ cref?: string; href?: string; langword?: string; text?: string }>;
+  seealso: Array<{ cref?: string; href?: string; langword?: string; text?: string }>;
+  example?: string;
+  code?: string;
+}
+
+const vbDocCommentTags = [
+  "summary",
+  "remarks",
+  "param",
+  "returns",
+  "value",
+  "exception",
+  "see",
+  "seealso",
+  "example",
+  "code",
+  "c",
+  "list",
+  "para",
+] as const;
+
+const vbDocCommentAttributeCompletions: Record<string, string[]> = {
+  param: ["name"],
+  exception: ["cref"],
+  see: ["cref", "href", "langword"],
+  seealso: ["cref", "href", "langword"],
+  list: ["type"],
+};
 
 const builtins: CompletionItem[] = [
   {
@@ -692,6 +731,14 @@ function isTriviaToken(token: VbToken): boolean {
   return token.kind === "whitespace" || token.kind === "comment" || token.kind === "newline";
 }
 
+function isWhitespaceOrNewline(token: VbToken | undefined): boolean {
+  return token?.kind === "whitespace" || token?.kind === "newline";
+}
+
+function isDocCommentToken(token: VbToken | undefined): token is VbToken {
+  return token?.kind === "comment" && token.text.startsWith("'''");
+}
+
 function lowerToken(token: VbToken | undefined): string | undefined {
   return token?.text.toLowerCase();
 }
@@ -940,6 +987,10 @@ export function getVbscriptCompletions(
 ): CompletionItem[] {
   const sourceOffset = offsetAt(parsed.text, position);
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const docCompletions = getVbDocCommentCompletions(parsed, sourceOffset, symbols);
+  if (docCompletions.length > 0) {
+    return docCompletions;
+  }
   const typeEnvironment =
     context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
   const prefix = parsed.text.slice(Math.max(0, sourceOffset - 96), sourceOffset);
@@ -963,6 +1014,151 @@ export function getVbscriptCompletions(
     ...builtins,
     ...visibleSymbols(parsed, sourceOffset, symbols).map(symbolToCompletion),
   ]);
+}
+
+function getVbDocCommentCompletions(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): CompletionItem[] {
+  const prefix = docCommentLinePrefixAt(parsed.text, offset);
+  if (prefix === undefined) {
+    return [];
+  }
+  const paramValue = /<param\b[^>]*\bname\s*=\s*"([^"]*)$/i.exec(prefix);
+  if (paramValue) {
+    return nextDocumentedProcedureParameters(parsed, offset).map((name) => ({
+      label: name,
+      kind: CompletionItemKind.Variable,
+      detail: "VBScript XML documentation parameter",
+    }));
+  }
+  const crefValue = /\bcref\s*=\s*"([^"]*)$/i.exec(prefix);
+  if (crefValue) {
+    return dedupeCompletions(
+      symbols
+        .filter((symbol) => symbol.kind !== "parameter")
+        .map((symbol) => ({
+          label: symbol.memberOf ? `${symbol.memberOf}.${symbol.name}` : symbol.name,
+          kind: symbolToCompletion(symbol).kind,
+          detail: "VBScript XML documentation cref",
+        })),
+    );
+  }
+  const attribute = /<([A-Za-z][A-Za-z0-9]*)\b([^<>]*)\s+[A-Za-z0-9_-]*$/i.exec(prefix);
+  if (attribute && !isInsideXmlAttributeValue(attribute[2] ?? "")) {
+    const tag = attribute[1].toLowerCase();
+    const used = new Set(
+      [...(attribute[2] ?? "").matchAll(/\b([A-Za-z][A-Za-z0-9_-]*)\s*=/g)].map((match) =>
+        match[1].toLowerCase(),
+      ),
+    );
+    return (vbDocCommentAttributeCompletions[tag] ?? [])
+      .filter((name) => !used.has(name.toLowerCase()))
+      .map((name) => ({
+        label: name,
+        kind: CompletionItemKind.Property,
+        detail: "VBScript XML documentation attribute",
+        insertText: `${name}="$1"`,
+        insertTextFormat: InsertTextFormat.Snippet,
+      }));
+  }
+  const closing = /<\/([A-Za-z0-9_-]*)$/i.exec(prefix);
+  if (closing) {
+    return unclosedDocCommentTags(parsed, offset).map((tag) => ({
+      label: tag,
+      kind: CompletionItemKind.Property,
+      detail: "VBScript XML documentation closing tag",
+      insertText: `${tag}>`,
+    }));
+  }
+  const tag = /<([A-Za-z0-9_-]*)$/i.exec(prefix);
+  if (tag) {
+    return vbDocCommentTags.map((name) => docCommentTagCompletion(name));
+  }
+  return [];
+}
+
+function docCommentLinePrefixAt(text: string, offset: number): string | undefined {
+  const lineStart = text.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
+  const prefix = text.slice(lineStart, offset).replace(/\r$/, "");
+  const match = /^\s*'''\s?(.*)$/.exec(prefix);
+  return match?.[1];
+}
+
+function docCommentTagCompletion(tag: (typeof vbDocCommentTags)[number]): CompletionItem {
+  const snippet =
+    tag === "see" || tag === "seealso"
+      ? `${tag} cref="$1" />`
+      : tag === "param"
+        ? 'param name="$1">$0</param>'
+        : tag === "exception"
+          ? 'exception cref="$1">$0</exception>'
+          : tag === "list"
+            ? 'list type="$1">$0</list>'
+            : `${tag}>$0</${tag}>`;
+  return {
+    label: tag,
+    kind: CompletionItemKind.Property,
+    detail: "VBScript XML documentation tag",
+    insertText: snippet,
+    insertTextFormat: InsertTextFormat.Snippet,
+  };
+}
+
+function isInsideXmlAttributeValue(text: string): boolean {
+  return (text.match(/"/g)?.length ?? 0) % 2 === 1 || (text.match(/'/g)?.length ?? 0) % 2 === 1;
+}
+
+function nextDocumentedProcedureParameters(parsed: AspParsedDocument, offset: number): string[] {
+  const node = vbDocuments(parsed)
+    .flatMap((document) => flattenVbNodes(document))
+    .filter(
+      (candidate) =>
+        candidate.start >= offset &&
+        (candidate.kind === "Procedure" || candidate.kind === "Property"),
+    )
+    .sort((left, right) => left.start - right.start)[0];
+  return node?.parameters?.map((token) => token.text) ?? [];
+}
+
+function unclosedDocCommentTags(parsed: AspParsedDocument, offset: number): string[] {
+  const text = docCommentTextUpToOffset(parsed, offset);
+  const stack: string[] = [];
+  const tagPattern = /<\s*(\/)?\s*([A-Za-z][A-Za-z0-9_-]*)(?:\s[^>]*)?>/g;
+  for (const match of text.matchAll(tagPattern)) {
+    const closing = Boolean(match[1]);
+    const tag = match[2].toLowerCase();
+    const selfClosing = match[0].endsWith("/>") || tag === "see" || tag === "seealso";
+    if (closing) {
+      const index = stack.lastIndexOf(tag);
+      if (index !== -1) {
+        stack.splice(index, 1);
+      }
+    } else if (
+      !selfClosing &&
+      vbDocCommentTags.includes(tag as (typeof vbDocCommentTags)[number])
+    ) {
+      stack.push(tag);
+    }
+  }
+  return [...new Set(stack.reverse())];
+}
+
+function docCommentTextUpToOffset(parsed: AspParsedDocument, offset: number): string {
+  const document = vbDocuments(parsed).find(
+    (candidate) => offset >= candidate.start && offset <= candidate.end,
+  );
+  return (document?.tokens ?? [])
+    .filter((token) => isDocCommentToken(token) && token.start <= offset)
+    .map((token) =>
+      stripDocCommentPrefix(
+        token.start <= offset && offset <= token.end
+          ? token.text.slice(0, offset - token.start)
+          : token.text,
+      ),
+    )
+    .join("\n");
 }
 
 export function analyzeVbscript(
@@ -1043,7 +1239,10 @@ export function getVbscriptHover(
       ? ` in ${symbol.scopeName}`
       : "";
   const type = symbol.typeName ? ` As ${symbol.typeName}` : "";
-  return `${symbol.kind} ${symbol.name}${type}${container}`;
+  return appendDocumentationMarkdown(
+    `${symbol.kind} ${symbol.name}${type}${container}`,
+    symbol.documentation,
+  );
 }
 
 export function getVbscriptDefinition(
@@ -1139,13 +1338,17 @@ export function getVbscriptSignatureHelp(
   const typeEnvironment =
     context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
   const builtin = builtinSignatures[call.name.toLowerCase()];
+  const signatureSymbols = signatureSymbolsForCall(parsed, call.name, offset, symbols);
+  if (signatureSymbols.length > 0) {
+    return {
+      signatures: signatureSymbols.map(symbolToSignatureInformation),
+      activeSignature: 0,
+      activeParameter,
+    };
+  }
   const signatureLabels =
-    typeSignatureLabelsForCall(parsed, call.name, offset, symbols, typeEnvironment) ??
-    builtin ??
-    signatureSymbolsForCall(parsed, call.name, offset, symbols).map((symbol) =>
-      signatureLabel(symbol),
-    );
-  if (signatureLabels.length === 0) {
+    typeSignatureLabelsForCall(parsed, call.name, offset, symbols, typeEnvironment) ?? builtin;
+  if (!signatureLabels || signatureLabels.length === 0) {
     return undefined;
   }
   return {
@@ -1178,7 +1381,10 @@ export function resolveVbscriptCompletionItem(
     return {
       ...item,
       detail: `${symbol.kind}${type}${owner}`,
-      documentation: `${signatureLabelForDocumentation(symbol)}\n\nDefined in ${symbol.sourceUri}.`,
+      documentation: appendDocumentationMarkdown(
+        `${signatureLabelForDocumentation(symbol)}\n\nDefined in ${symbol.sourceUri}.`,
+        symbol.documentation,
+      ),
     };
   }
   const member = env.types
@@ -1514,6 +1720,7 @@ function addSymbolsFromVbNode(
   node: VbCstNode,
   symbols: VbSymbol[],
 ): void {
+  const documentation = documentationForNode(parsed, node);
   if (node.kind === "Class" && node.nameToken) {
     symbols.push({
       name: node.nameToken.text,
@@ -1521,6 +1728,7 @@ function addSymbolsFromVbNode(
       range: rangeFromOffsets(parsed.text, node.nameToken.start, node.nameToken.end),
       sourceUri: parsed.uri,
       scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
+      documentation,
     });
   }
   if ((node.kind === "Procedure" || node.kind === "Property") && node.nameToken) {
@@ -1544,6 +1752,7 @@ function addSymbolsFromVbNode(
       scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
       parameters: node.parameters?.map((token) => token.text) ?? [],
       visibility: node.visibility,
+      documentation,
     });
     for (const parameter of node.parameters ?? []) {
       symbols.push({
@@ -1580,6 +1789,7 @@ function addSymbolsFromVbNode(
             ? rangeFromOffsets(parsed.text, node.start, node.end)
             : undefined,
         visibility: node.visibility,
+        documentation,
       });
     }
   }
@@ -1746,6 +1956,226 @@ function parseTypeAnnotations(parsed: AspParsedDocument): TypeAnnotations {
     }
   }
   return annotations;
+}
+
+function documentationForNode(
+  parsed: AspParsedDocument,
+  node: VbCstNode,
+): VbDocumentation | undefined {
+  if (!node.nameToken && !node.identifiers?.length) {
+    return undefined;
+  }
+  const tokens = docCommentBlockBefore(parsed, node.start);
+  return tokens.length > 0 ? parseVbDocumentation(tokens) : undefined;
+}
+
+function docCommentBlockBefore(parsed: AspParsedDocument, offset: number): VbToken[] {
+  const document = vbDocuments(parsed).find(
+    (candidate) => offset >= candidate.start && offset <= candidate.end,
+  );
+  const tokens = document?.tokens ?? [];
+  let index = tokens.findIndex((token) => token.start >= offset);
+  index = index === -1 ? tokens.length - 1 : index - 1;
+  while (index >= 0 && isWhitespaceOrNewline(tokens[index])) {
+    index -= 1;
+  }
+  const comments: VbToken[] = [];
+  while (index >= 0) {
+    const current = tokens[index];
+    if (!isDocCommentToken(current)) {
+      break;
+    }
+    comments.push(current);
+    index -= 1;
+    while (index >= 0 && isWhitespaceOrNewline(tokens[index])) {
+      index -= 1;
+    }
+  }
+  return comments.reverse();
+}
+
+function parseVbDocumentation(tokens: VbToken[]): VbDocumentation | undefined {
+  const xmlText = tokens.map((token) => stripDocCommentPrefix(token.text)).join("\n");
+  const documentation: VbDocumentation = {
+    params: {},
+    exceptions: [],
+    see: [],
+    seealso: [],
+  };
+  documentation.summary = firstTagText(xmlText, "summary");
+  documentation.remarks = firstTagText(xmlText, "remarks");
+  documentation.returns = firstTagText(xmlText, "returns");
+  documentation.value = firstTagText(xmlText, "value");
+  documentation.example = firstTagText(xmlText, "example");
+  documentation.code = firstTagText(xmlText, "code", true);
+  for (const match of tagMatches(xmlText, "param")) {
+    const name = attributeValue(match.attributes, "name");
+    if (name) {
+      documentation.params[name] = cleanDocText(match.content);
+    }
+  }
+  for (const match of tagMatches(xmlText, "exception")) {
+    documentation.exceptions.push({
+      cref: attributeValue(match.attributes, "cref"),
+      text: cleanDocText(match.content),
+    });
+  }
+  for (const tag of ["see", "seealso"] as const) {
+    for (const match of tagMatches(xmlText, tag)) {
+      documentation[tag].push({
+        cref: attributeValue(match.attributes, "cref"),
+        href: attributeValue(match.attributes, "href"),
+        langword: attributeValue(match.attributes, "langword"),
+        text: cleanDocText(match.content),
+      });
+    }
+  }
+  return hasDocumentationContent(documentation) ? documentation : undefined;
+}
+
+function stripDocCommentPrefix(text: string): string {
+  return text.replace(/^'''\s?/, "");
+}
+
+function firstTagText(text: string, tag: string, preserveTags = false): string | undefined {
+  const match = tagMatches(text, tag)[0];
+  if (!match) {
+    return undefined;
+  }
+  return preserveTags ? decodeXmlEntities(match.content.trim()) : cleanDocText(match.content);
+}
+
+function tagMatches(text: string, tag: string): Array<{ attributes: string; content: string }> {
+  const matches: Array<{ attributes: string; content: string }> = [];
+  const paired = new RegExp(`<${tag}\\b([^>]*)>([\\s\\S]*?)<\\/${tag}>`, "gi");
+  for (const match of text.matchAll(paired)) {
+    matches.push({ attributes: match[1] ?? "", content: match[2] ?? "" });
+  }
+  if (matches.length === 0) {
+    const unclosed = new RegExp(`<${tag}\\b([^>]*)>([\\s\\S]*)`, "i").exec(text);
+    if (unclosed) {
+      matches.push({ attributes: unclosed[1] ?? "", content: unclosed[2] ?? "" });
+    }
+  }
+  const selfClosing = new RegExp(`<${tag}\\b([^>]*)\\s*\\/>`, "gi");
+  for (const match of text.matchAll(selfClosing)) {
+    matches.push({ attributes: match[1] ?? "", content: "" });
+  }
+  return matches;
+}
+
+function attributeValue(attributes: string, name: string): string | undefined {
+  return new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`, "i").exec(attributes)?.[1];
+}
+
+function cleanDocText(text: string): string {
+  return decodeXmlEntities(
+    text
+      .replace(/<c\b[^>]*>([\s\S]*?)<\/c>/gi, "`$1`")
+      .replace(/<see\b([^>]*)\/?>/gi, (_match, attributes: string) =>
+        inlineDocReference(attributes),
+      )
+      .replace(/<seealso\b([^>]*)\/?>/gi, (_match, attributes: string) =>
+        inlineDocReference(attributes),
+      )
+      .replace(/<[^>]+>/g, "")
+      .replace(/[ \t]+\n/g, "\n")
+      .trim(),
+  );
+}
+
+function inlineDocReference(attributes: string): string {
+  return (
+    attributeValue(attributes, "langword") ??
+    attributeValue(attributes, "cref") ??
+    attributeValue(attributes, "href") ??
+    ""
+  );
+}
+
+function decodeXmlEntities(text: string): string {
+  return text
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&amp;", "&");
+}
+
+function hasDocumentationContent(documentation: VbDocumentation): boolean {
+  return Boolean(
+    documentation.summary ||
+    documentation.remarks ||
+    Object.keys(documentation.params).length > 0 ||
+    documentation.returns ||
+    documentation.value ||
+    documentation.exceptions.length > 0 ||
+    documentation.see.length > 0 ||
+    documentation.seealso.length > 0 ||
+    documentation.example ||
+    documentation.code,
+  );
+}
+
+function documentationMarkdown(documentation: VbDocumentation | undefined): string | undefined {
+  if (!documentation) {
+    return undefined;
+  }
+  const lines: string[] = [];
+  if (documentation.summary) {
+    lines.push(documentation.summary);
+  }
+  if (documentation.remarks) {
+    lines.push(`**Remarks**\n\n${documentation.remarks}`);
+  }
+  const params = Object.entries(documentation.params);
+  if (params.length > 0) {
+    lines.push(
+      ["**Parameters**", ...params.map(([name, text]) => `- \`${name}\`: ${text}`)].join("\n"),
+    );
+  }
+  if (documentation.returns) {
+    lines.push(`**Returns**\n\n${documentation.returns}`);
+  }
+  if (documentation.value) {
+    lines.push(`**Value**\n\n${documentation.value}`);
+  }
+  if (documentation.exceptions.length > 0) {
+    lines.push(
+      [
+        "**Exceptions**",
+        ...documentation.exceptions.map((item) =>
+          item.cref ? `- \`${item.cref}\`: ${item.text}` : `- ${item.text}`,
+        ),
+      ].join("\n"),
+    );
+  }
+  if (documentation.see.length > 0 || documentation.seealso.length > 0) {
+    lines.push(
+      [
+        "**See also**",
+        ...[...documentation.see, ...documentation.seealso].map((item) => {
+          const target = item.text || item.cref || item.href || item.langword || "";
+          return target.startsWith("http") ? `- ${target}` : `- \`${target}\``;
+        }),
+      ].join("\n"),
+    );
+  }
+  if (documentation.example) {
+    lines.push(`**Example**\n\n${documentation.example}`);
+  }
+  if (documentation.code) {
+    lines.push(`\`\`\`vbscript\n${documentation.code}\n\`\`\``);
+  }
+  return lines.filter(Boolean).join("\n\n");
+}
+
+function appendDocumentationMarkdown(
+  base: string,
+  documentation: VbDocumentation | undefined,
+): string {
+  const markdown = documentationMarkdown(documentation);
+  return markdown ? `${base}\n\n${markdown}` : base;
 }
 
 function nextProcedureName(parsed: AspParsedDocument, offset: number): string | undefined {
@@ -2228,7 +2658,12 @@ function symbolToCompletion(symbol: VbSymbol): CompletionItem {
     : symbol.typeName
       ? `${symbol.kind} As ${symbol.typeName}`
       : symbol.kind;
-  return { label: symbol.name, kind, detail };
+  return {
+    label: symbol.name,
+    kind,
+    detail,
+    documentation: documentationMarkdown(symbol.documentation),
+  };
 }
 
 function dedupeCompletions(items: CompletionItem[]): CompletionItem[] {
@@ -2406,6 +2841,17 @@ function signatureLabel(symbol: VbSymbol): string {
   return `${keyword} ${owner}${symbol.name}(${(symbol.parameters ?? []).join(", ")})${
     returnType && keyword === "Function" ? ` As ${returnType.name}` : ""
   }`;
+}
+
+function symbolToSignatureInformation(symbol: VbSymbol) {
+  return {
+    label: signatureLabel(symbol),
+    documentation: documentationMarkdown(symbol.documentation),
+    parameters: (symbol.parameters ?? []).map((parameter) => ({
+      label: parameter,
+      documentation: symbol.documentation?.params[parameter],
+    })),
+  };
 }
 
 function diagnoseTypeIssues(

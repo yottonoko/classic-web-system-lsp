@@ -342,6 +342,128 @@ Server.MapPath("/tmp")
     );
   });
 
+  it("uses triple-quote XML documentation comments for hover, resolve and signature help", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+''' <summary>Builds a display name.</summary>
+''' <param name="first">First name.</param>
+''' <returns>Display name.</returns>
+Function BuildName(first)
+  BuildName = first
+End Function
+Response.Write BuildName("Ada")
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const hover = getVbscriptHover(parsed, { line: 7, character: 17 }, { symbols });
+    expect(hover).toContain("Builds a display name.");
+    expect(hover).toContain("First name.");
+    expect(hover).toContain("Display name.");
+    const completion = getVbscriptCompletions(parsed, { line: 7, character: 16 }, { symbols }).find(
+      (item) => item.label === "BuildName",
+    );
+    expect(
+      String(resolveVbscriptCompletionItem(completion!, parsed, { symbols }).documentation),
+    ).toContain("Builds a display name.");
+    expect(getVbscriptSignatureHelp(parsed, { line: 7, character: 26 }, { symbols })).toEqual(
+      expect.objectContaining({
+        signatures: [
+          expect.objectContaining({
+            documentation: expect.stringContaining("Builds a display name."),
+            parameters: [expect.objectContaining({ documentation: "First name." })],
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("ignores single-quote XML comments and tolerates broken XML documentation", () => {
+    const single = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+' <summary>Not documentation.</summary>
+Function BuildName()
+End Function
+%>`,
+    );
+    expect(getVbscriptHover(single, { line: 2, character: 10 })).not.toContain("Not documentation");
+
+    const broken = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+''' <summary>Broken but useful
+Function BuildName()
+End Function
+%>`,
+    );
+    expect(getVbscriptHover(broken, { line: 2, character: 10 })).toContain("Broken but useful");
+  });
+
+  it("completes VBScript XML documentation tags, attributes and symbol references", () => {
+    const tag = markedDocument(`<%
+''' <▮
+Function BuildName(first)
+End Function
+%>`);
+    expect(
+      getVbscriptCompletions(parseAspDocument("file:///site/default.asp", tag.text), tag.position)
+        .map((item) => item.label)
+        .slice(0, 4),
+    ).toContain("summary");
+
+    const param = markedDocument(`<%
+''' <param name="▮"></param>
+Function BuildName(first)
+End Function
+%>`);
+    expect(
+      getVbscriptCompletions(
+        parseAspDocument("file:///site/default.asp", param.text),
+        param.position,
+      ).some((item) => item.label === "first"),
+    ).toBe(true);
+
+    const attribute = markedDocument(`<%
+''' <see ▮/>
+Function BuildName(first)
+End Function
+%>`);
+    expect(
+      getVbscriptCompletions(
+        parseAspDocument("file:///site/default.asp", attribute.text),
+        attribute.position,
+      ).some((item) => item.label === "cref"),
+    ).toBe(true);
+
+    const closing = markedDocument(`<%
+''' <summary>Text</▮
+Function BuildName(first)
+End Function
+%>`);
+    expect(
+      getVbscriptCompletions(
+        parseAspDocument("file:///site/default.asp", closing.text),
+        closing.position,
+      ).some((item) => item.label === "summary"),
+    ).toBe(true);
+
+    const cref = markedDocument(`<%
+Function BuildName(first)
+End Function
+''' <see cref="▮" />
+Sub Save()
+End Sub
+%>`);
+    const crefParsed = parseAspDocument("file:///site/default.asp", cref.text);
+    const symbols = collectVbscriptSymbols(crefParsed);
+    expect(
+      getVbscriptCompletions(crefParsed, cref.position, { symbols }).some(
+        (item) => item.label === "BuildName",
+      ),
+    ).toBe(true);
+  });
+
   it("tracks common VBScript statements and conservative external COM members", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -650,6 +772,18 @@ function positionAt(text: string, offset: number): { line: number; character: nu
     }
   }
   return { line, character };
+}
+
+function markedDocument(source: string): {
+  text: string;
+  position: { line: number; character: number };
+} {
+  const offset = source.indexOf("▮");
+  if (offset === -1) {
+    throw new Error("Marked source is missing a cursor marker.");
+  }
+  const text = source.slice(0, offset) + source.slice(offset + "▮".length);
+  return { text, position: positionAt(text, offset) };
 }
 
 function flattenVbNodes(node: VbCstNode): VbCstNode[] {

@@ -36,6 +36,8 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - include-aware VBScript symbols for completions and definition jumps
 - rename, document highlights, signature help, workspace symbols, and semantic tokens for VBScript symbols
 - selection ranges, inlay hints, call hierarchy, type definition, implementation, and CodeLens for VBScript symbols
+- VB.NET-style `'''` XML documentation comments for VBScript hover, completion resolve, and signature help
+- XML documentation tag completion for `summary`, `remarks`, `param`, `returns`, `value`, `exception`, `see`, `seealso`, `example`, `code`, `c`, `list`, and `para`
 - conservative support for `ReDim`, `For Each`, `With`, and `Server.CreateObject("ADODB.*")` completions
 - TypeScript-backed hover, navigation, references, rename, signature help, call hierarchy, and project-model-aware module resolution for JavaScript and server-side JScript regions
 - lazy workspace symbol and diagnostic indexing for unopened `.asp`, `.asa`, and `.inc` files
@@ -105,6 +107,8 @@ The VSIX build copies the standalone language server and its runtime dependencie
 ## Current v1 Limits
 
 - VBScript analysis is intentionally conservative. It uses an error-tolerant CST and opt-in strict type checks rather than a full VBScript compiler.
+- VBScript XML documentation comments must use VB.NET-style triple quotes (`'''`). Single-quote XML comments are treated as ordinary comments.
+- XML documentation comments are editor documentation only. Existing `' @type`, `' @param ... As ...`, and `' @returns ...` annotations remain the source for explicit type metadata.
 - Unused diagnostics are hints. Classic ASP runtime entry points such as `Application_OnStart`, public class members, include-cross references, and names inside strings/comments are excluded from VBScript unused checks.
 - JavaScript/JScript auto imports use TypeScript language service results. Import edits are only applied inside the same ASP JavaScript/JScript region.
 - VBScript has no import syntax, so auto import support is exposed as include suggestions for undeclared symbols that exist in indexed `.asp`, `.asa`, or `.inc` workspace files.
