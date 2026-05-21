@@ -9,17 +9,28 @@ import { getServerModulePath } from "./server-path";
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
+let statusBarItem: vscode.StatusBarItem | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   outputChannel = vscode.window.createOutputChannel("Classic ASP LSP");
+  statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  statusBarItem.text = "$(code) ASP LSP";
+  statusBarItem.tooltip = "Classic ASP Language Server";
+  statusBarItem.command = "aspLsp.openOutput";
+  statusBarItem.show();
   context.subscriptions.push(
     outputChannel,
+    statusBarItem,
     vscode.commands.registerCommand("aspLsp.restartServer", async () => restartServer(context)),
     vscode.commands.registerCommand("aspLsp.reindexWorkspace", async () =>
       client?.sendRequest("workspace/executeCommand", { command: "aspLsp.reindexWorkspace" }),
     ),
     vscode.commands.registerCommand("aspLsp.openOutput", () => outputChannel?.show()),
     vscode.commands.registerCommand("aspLsp.debugIisUrl", async () => debugIisUrl()),
+    vscode.commands.registerCommand("aspLsp.debugIisExpressUrl", async () =>
+      debugBrowserUrl("iisExpress", "Debug Classic ASP IIS Express URL"),
+    ),
+    vscode.commands.registerCommand("aspLsp.createLaunchConfig", async () => createLaunchConfig()),
     vscode.tasks.registerTaskProvider("asp-lsp", new AspLspTaskProvider()),
   );
   await startClient(context);
@@ -59,6 +70,8 @@ export async function deactivate(): Promise<void> {
   client = undefined;
   outputChannel?.dispose();
   outputChannel = undefined;
+  statusBarItem?.dispose();
+  statusBarItem = undefined;
 }
 
 async function restartServer(context: vscode.ExtensionContext): Promise<void> {
@@ -68,20 +81,63 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
 }
 
 async function debugIisUrl(): Promise<void> {
+  await debugBrowserUrl("iis", "Debug Classic ASP URL");
+}
+
+async function debugBrowserUrl(configPrefix: "iis" | "iisExpress", name: string): Promise<void> {
   const config = vscode.workspace.getConfiguration("aspLsp");
-  const url = config.get<string>("iis.url") || "http://localhost/";
+  const url =
+    config.get<string>(`${configPrefix}.url`) ||
+    (configPrefix === "iisExpress" ? "http://localhost:8080/" : "http://localhost/");
   const webRoot =
-    config.get<string>("iis.webRoot") ||
+    config.get<string>(`${configPrefix}.webRoot`) ||
     vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ||
     "${workspaceFolder}";
-  const browser = config.get<string>("iis.browser") || "pwa-chrome";
+  const browser = config.get<string>(`${configPrefix}.browser`) || "pwa-chrome";
   await vscode.debug.startDebugging(undefined, {
     type: browser,
     request: "launch",
-    name: "Debug Classic ASP URL",
+    name,
     url,
     webRoot,
   });
+}
+
+async function createLaunchConfig(): Promise<void> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    void vscode.window.showWarningMessage("Open a workspace before creating launch.json.");
+    return;
+  }
+  const vscodeDir = vscode.Uri.joinPath(folder.uri, ".vscode");
+  const launchUri = vscode.Uri.joinPath(vscodeDir, "launch.json");
+  await vscode.workspace.fs.createDirectory(vscodeDir);
+  let launch: { version: string; configurations: Array<Record<string, unknown>> } = {
+    version: "0.2.0",
+    configurations: [],
+  };
+  try {
+    const existing = new TextDecoder().decode(await vscode.workspace.fs.readFile(launchUri));
+    launch = JSON.parse(existing) as typeof launch;
+    launch.configurations = Array.isArray(launch.configurations) ? launch.configurations : [];
+  } catch {
+    // Missing or invalid launch.json is replaced with a minimal browser debug config.
+  }
+  const config = vscode.workspace.getConfiguration("aspLsp");
+  const name = "Debug Classic ASP URL";
+  const next = {
+    type: config.get<string>("iis.browser") || "pwa-chrome",
+    request: "launch",
+    name,
+    url: config.get<string>("iis.url") || "http://localhost/",
+    webRoot: config.get<string>("iis.webRoot") || "${workspaceFolder}",
+  };
+  launch.configurations = [...launch.configurations.filter((item) => item.name !== name), next];
+  await vscode.workspace.fs.writeFile(
+    launchUri,
+    new TextEncoder().encode(`${JSON.stringify(launch, null, 2)}\n`),
+  );
+  void vscode.window.showInformationMessage("Classic ASP launch.json snippet created.");
 }
 
 class AspLspTaskProvider implements vscode.TaskProvider {
@@ -106,7 +162,7 @@ class AspLspTaskProvider implements vscode.TaskProvider {
       `asp-lsp: ${name}`,
       "asp-lsp",
       new vscode.ShellExecution(command, args),
-      "$tsc",
+      "$asp-lsp",
     );
     task.group = name === "build" ? vscode.TaskGroup.Build : undefined;
     return task;

@@ -19,20 +19,29 @@ describe("VS Code extension package", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       contributes?: {
         commands?: Array<{ command: string }>;
+        problemMatchers?: Array<{ name: string }>;
         taskDefinitions?: Array<{ type: string }>;
         configuration?: { properties?: Record<string, unknown> };
       };
+      capabilities?: { untrustedWorkspaces?: { supported?: boolean } };
     };
     const commands = manifest.contributes?.commands?.map((command) => command.command) ?? [];
     expect(commands).toContain("aspLsp.restartServer");
     expect(commands).toContain("aspLsp.reindexWorkspace");
     expect(commands).toContain("aspLsp.openOutput");
     expect(commands).toContain("aspLsp.debugIisUrl");
+    expect(commands).toContain("aspLsp.debugIisExpressUrl");
+    expect(commands).toContain("aspLsp.createLaunchConfig");
     expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(
       true,
     );
+    expect(
+      manifest.contributes?.problemMatchers?.some((matcher) => matcher.name === "asp-lsp"),
+    ).toBe(true);
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.iis.url"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.iis.browser"]).toBeTruthy();
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.iisExpress.url"]).toBeTruthy();
+    expect(manifest.capabilities?.untrustedWorkspaces?.supported).toBe(true);
   });
 
   it("resolves the packaged language server module path", () => {

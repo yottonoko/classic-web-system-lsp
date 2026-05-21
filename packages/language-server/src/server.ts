@@ -450,6 +450,12 @@ connection.onPrepareRename((params) => {
   if (isJavaScriptPosition(cached, params.position)) {
     return jsPrepareRename(cached, params.position);
   }
+  if (isHtmlPosition(cached, params.position)) {
+    return htmlPrepareRename(cached, params.position);
+  }
+  if (isCssPosition(cached, params.position)) {
+    return cssPrepareRename(cached, params.position);
+  }
   if (!isVbscriptPosition(cached, params.position)) {
     return null;
   }
@@ -469,6 +475,12 @@ connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null => {
   }
   if (isJavaScriptPosition(cached, params.position)) {
     return jsRename(cached, params.position, params.newName);
+  }
+  if (isHtmlPosition(cached, params.position)) {
+    return htmlRename(cached, params.position, params.newName);
+  }
+  if (isCssPosition(cached, params.position)) {
+    return cssRename(cached, params.position, params.newName);
   }
   if (!isVbscriptPosition(cached, params.position)) {
     return null;
@@ -748,7 +760,12 @@ connection.languages.onLinkedEditingRange((params): LinkedEditingRanges | null =
   if (!cached) {
     return null;
   }
-  const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
+  const ranges = htmlLinkedRanges(cached, params.position);
+  return ranges ? { ranges } : null;
+});
+
+function htmlLinkedRanges(cached: CachedDocument, position: Position): Range[] | null {
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
   if (!region || region.language !== "html") {
     return null;
   }
@@ -757,13 +774,8 @@ connection.languages.onLinkedEditingRange((params): LinkedEditingRanges | null =
     return null;
   }
   const doc = toTextDocument(virtual);
-  const ranges = htmlService.findLinkedEditingRanges(
-    doc,
-    params.position,
-    htmlService.parseHTMLDocument(doc),
-  );
-  return ranges ? { ranges } : null;
-});
+  return htmlService.findLinkedEditingRanges(doc, position, htmlService.parseHTMLDocument(doc));
+}
 
 connection.onDocumentColor((params): ColorInformation[] => {
   const cached = getCached(params.textDocument.uri);
@@ -1063,6 +1075,54 @@ function jsRename(
     ];
   }
   return Object.keys(changes).length > 0 ? { changes } : null;
+}
+
+function htmlPrepareRename(cached: CachedDocument, position: Position): Range | null {
+  const ranges = htmlLinkedRanges(cached, position);
+  return ranges?.[0] ?? wordRangeAt(cached.source, position);
+}
+
+function htmlRename(
+  cached: CachedDocument,
+  position: Position,
+  newName: string,
+): WorkspaceEdit | null {
+  const virtual = cached.virtuals.get("html");
+  if (!virtual) {
+    return null;
+  }
+  const doc = toTextDocument(virtual);
+  const edit = htmlService.doRename(doc, position, newName, htmlService.parseHTMLDocument(doc));
+  return edit ? remapWorkspaceEdit(virtual, edit, cached.source.uri) : null;
+}
+
+function cssPrepareRename(cached: CachedDocument, position: Position): Range | null {
+  const virtual = cached.virtuals.get("css");
+  const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
+  if (!virtual || !virtualPosition) {
+    return null;
+  }
+  const doc = toTextDocument(virtual);
+  const range = cssService.prepareRename(doc, virtualPosition, cssService.parseStylesheet(doc));
+  return range ? (sourceRangeFromVirtualRange(virtual, range) ?? null) : null;
+}
+
+function cssRename(
+  cached: CachedDocument,
+  position: Position,
+  newName: string,
+): WorkspaceEdit | null {
+  const virtual = cached.virtuals.get("css");
+  const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
+  if (!virtual || !virtualPosition) {
+    return null;
+  }
+  const doc = toTextDocument(virtual);
+  return remapWorkspaceEdit(
+    virtual,
+    cssService.doRename(doc, virtualPosition, newName, cssService.parseStylesheet(doc)),
+    cached.source.uri,
+  );
 }
 
 function jsSignatureHelp(cached: CachedDocument, position: Position): SignatureHelp | null {
@@ -2722,6 +2782,16 @@ function isJavaScriptPosition(cached: CachedDocument, position: Range["start"]):
   return Boolean(region && isJavaScriptLikeRegion(region));
 }
 
+function isHtmlPosition(cached: CachedDocument, position: Range["start"]): boolean {
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
+  return region?.language === "html";
+}
+
+function isCssPosition(cached: CachedDocument, position: Range["start"]): boolean {
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
+  return region?.language === "css";
+}
+
 function vbWorkspaceSymbolKind(kind: VbSymbolKind): SymbolKind {
   switch (kind) {
     case "class":
@@ -3076,6 +3146,23 @@ function lineText(document: TextDocument, line: number): string {
     .replace(/\r?\n$/, "");
 }
 
+function wordRangeAt(document: TextDocument, position: Position): Range | null {
+  const line = lineText(document, position.line);
+  const pattern = /[A-Za-z_][A-Za-z0-9_-]*/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(line))) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (position.character >= start && position.character <= end) {
+      return {
+        start: { line: position.line, character: start },
+        end: { line: position.line, character: end },
+      };
+    }
+  }
+  return null;
+}
+
 function previousNonEmptyLine(
   document: TextDocument,
   line: number,
@@ -3146,6 +3233,7 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
       rangeEnd,
     );
   }
+  addEmbeddedSemanticTokens(tokens, cached, rangeStart, rangeEnd);
   tokens.sort((left, right) => left.line - right.line || left.character - right.character);
   const builder = new SemanticTokensBuilder();
   for (const token of tokens) {
@@ -3158,6 +3246,98 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
     );
   }
   return builder.build();
+}
+
+function addEmbeddedSemanticTokens(
+  tokens: Array<{ line: number; character: number; length: number; tokenType: string }>,
+  cached: CachedDocument,
+  rangeStart: number,
+  rangeEnd: number,
+): void {
+  const html = cached.virtuals.get("html");
+  if (html) {
+    const pattern = /<\/?\s*([A-Za-z][A-Za-z0-9:-]*)/g;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(html.text))) {
+      addVirtualWordToken(
+        tokens,
+        cached.source,
+        html,
+        match.index + match[0].lastIndexOf(match[1]),
+        match[1].length,
+        "keyword",
+        rangeStart,
+        rangeEnd,
+      );
+    }
+  }
+  const css = cached.virtuals.get("css");
+  if (css) {
+    for (const match of css.text.matchAll(/\b([A-Za-z-]+)\s*:/g)) {
+      if (match.index !== undefined) {
+        addVirtualWordToken(
+          tokens,
+          cached.source,
+          css,
+          match.index,
+          match[1].length,
+          "property",
+          rangeStart,
+          rangeEnd,
+        );
+      }
+    }
+  }
+  for (const virtual of jsVirtualDocuments(cached)) {
+    const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
+    const tree = project.service.getNavigationTree(jsVirtualFileName(virtual.uri));
+    for (const item of flattenNavigationTree(tree)) {
+      const span = item.nameSpan ?? item.spans[0];
+      if (!span) {
+        continue;
+      }
+      const type =
+        item.kind === ts.ScriptElementKind.classElement
+          ? "class"
+          : item.kind === ts.ScriptElementKind.memberFunctionElement ||
+              item.kind === ts.ScriptElementKind.functionElement
+            ? "function"
+            : item.kind === ts.ScriptElementKind.memberVariableElement
+              ? "property"
+              : "variable";
+      addVirtualWordToken(
+        tokens,
+        cached.source,
+        virtual,
+        span.start,
+        span.length,
+        type,
+        rangeStart,
+        rangeEnd,
+      );
+    }
+  }
+}
+
+function flattenNavigationTree(tree: ts.NavigationTree): ts.NavigationTree[] {
+  return [tree, ...(tree.childItems ?? []).flatMap(flattenNavigationTree)];
+}
+
+function addVirtualWordToken(
+  tokens: Array<{ line: number; character: number; length: number; tokenType: string }>,
+  document: TextDocument,
+  virtual: VirtualDocument,
+  virtualOffset: number,
+  length: number,
+  tokenType: string,
+  rangeStart: number,
+  rangeEnd: number,
+): void {
+  const sourceOffset = virtual.sourceMap.toSourceOffset(virtualOffset);
+  if (sourceOffset === undefined || sourceOffset < rangeStart || sourceOffset > rangeEnd) {
+    return;
+  }
+  addSemanticToken(tokens, document, sourceOffset, length, tokenType);
 }
 
 function addSemanticToken(

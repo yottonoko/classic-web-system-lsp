@@ -170,6 +170,21 @@
           "type": "string",
           "default": "pwa-chrome",
           "description": "VS Code debug type used by the Classic ASP IIS debug helper command."
+        },
+        "aspLsp.iisExpress.url": {
+          "type": "string",
+          "default": "http://localhost:8080/",
+          "description": "URL opened by the Classic ASP IIS Express debug helper command."
+        },
+        "aspLsp.iisExpress.webRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Web root used by the Classic ASP IIS Express debug helper command."
+        },
+        "aspLsp.iisExpress.browser": {
+          "type": "string",
+          "default": "pwa-chrome",
+          "description": "VS Code debug type used by the Classic ASP IIS Express debug helper command."
         }
       }
     },
@@ -189,6 +204,33 @@
       {
         "command": "aspLsp.debugIisUrl",
         "title": "Classic ASP: Debug IIS URL"
+      },
+      {
+        "command": "aspLsp.debugIisExpressUrl",
+        "title": "Classic ASP: Debug IIS Express URL"
+      },
+      {
+        "command": "aspLsp.createLaunchConfig",
+        "title": "Classic ASP: Create Browser Launch Config"
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "asp-lsp",
+        "owner": "asp-lsp",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(.*)\\((\\d+),(\\d+)\\):\\s+(error|warning|info)\\s+([^:]+):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "code": 5,
+          "message": 6
+        }
       }
     ],
     "taskDefinitions": [
@@ -211,5 +253,11 @@
   ],
   "engines": {
     "vscode": "^1.96.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "Classic ASP LSP runs local analysis and does not require workspace trust for language features."
+    }
   }
 }

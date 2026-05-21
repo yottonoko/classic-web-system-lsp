@@ -159,6 +159,49 @@ describe("stdio LSP server", () => {
     }
   });
 
+  it("renames HTML tags and CSS selectors through embedded language services", async () => {
+    const source = `<div><span>name</span></div>
+<style>.oldName { color: red; }</style>`;
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/html-css-rename.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: source,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const htmlRename = await server.request("textDocument/rename", {
+        textDocument: { uri },
+        position: { line: 0, character: 7 },
+        newName: "strong",
+      });
+      expect(JSON.stringify(htmlRename)).toContain("strong");
+
+      const cssRename = await server.request("textDocument/rename", {
+        textDocument: { uri },
+        position: { line: 1, character: 9 },
+        newName: "newName",
+      });
+      expect(JSON.stringify(cssRename)).toContain("newName");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("delegates JavaScript hover, navigation, rename and signature help to TypeScript", async () => {
     const marked = markedDocument(`<script>
 function greet(name) {
