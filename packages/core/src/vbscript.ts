@@ -419,6 +419,44 @@ export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0
       continue;
     }
     const current = stack.at(-1) ?? document;
+    if (first === "loop") {
+      closeBlock(stack, "loop", token);
+      continue;
+    }
+    if (first === "wend") {
+      closeBlock(stack, "wend", token);
+      continue;
+    }
+    if (first === "next") {
+      closeBlock(stack, "next", token);
+      continue;
+    }
+    if (first === "if") {
+      const node = createStatementNode("If", token, significant, index);
+      addChild(current, node);
+      if (isMultilineIf(significant, index)) {
+        stack.push(node);
+      }
+      continue;
+    }
+    if (first === "select" && second === "case") {
+      const node = createStatementNode("Select", token, significant, index);
+      addChild(current, node);
+      stack.push(node);
+      continue;
+    }
+    if (first === "do") {
+      const node = createStatementNode("DoLoop", token, significant, index);
+      addChild(current, node);
+      stack.push(node);
+      continue;
+    }
+    if (first === "while") {
+      const node = createStatementNode("While", token, significant, index);
+      addChild(current, node);
+      stack.push(node);
+      continue;
+    }
     if (first === "dim" || first === "redim") {
       addChild(
         current,
@@ -445,7 +483,7 @@ export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0
     }
     if (first === "for" && second === "each" && significant[index + 2]?.kind === "identifier") {
       const nameToken = significant[index + 2];
-      addChild(current, {
+      const node: VbCstNode = {
         kind: "ForEach",
         start: token.start,
         end: statementEnd(significant, index),
@@ -459,9 +497,11 @@ export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0
           current.kind === "Procedure" || current.kind === "Property"
             ? current.nameToken?.text
             : undefined,
-        scopeStart: current.start,
-        scopeEnd: current.end,
-      });
+        scopeStart: token.start,
+        scopeEnd: statementEnd(significant, index),
+      };
+      addChild(current, node);
+      stack.push(node);
       continue;
     }
     if (first === "with" && significant[index + 1]?.kind === "identifier") {
@@ -523,7 +563,20 @@ export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0
           });
         }
       }
+      continue;
     }
+    if (first === "call") {
+      const nameToken = significant
+        .slice(index + 1, statementEndIndex(significant, index))
+        .find((item) => item.kind === "identifier");
+      addChild(current, createStatementNode("Call", token, significant, index, nameToken));
+      continue;
+    }
+    if (token.kind === "identifier" && statementHasSymbol(significant, index, "=")) {
+      addChild(current, createStatementNode("Assignment", token, significant, index, token));
+      continue;
+    }
+    addChild(current, createStatementNode("Expression", token, significant, index));
   }
   closeUnclosedBlocks(stack, document.end);
   return document;
@@ -691,7 +744,17 @@ function closeBlock(stack: VbCstNode[], endKind: string | undefined, endToken: V
         ? "Property"
         : endKind === "with"
           ? "With"
-          : "Procedure";
+          : endKind === "if"
+            ? "If"
+            : endKind === "select"
+              ? "Select"
+              : endKind === "loop"
+                ? "DoLoop"
+                : endKind === "wend"
+                  ? "While"
+                  : endKind === "next"
+                    ? "ForEach"
+                    : "Procedure";
   const index = findLastIndex(stack, (node) => node.kind === targetKind);
   if (index <= 0) {
     return;
@@ -768,11 +831,30 @@ function createDeclarationNode(
   };
 }
 
+function createStatementNode(
+  kind: "If" | "Select" | "DoLoop" | "While" | "Call" | "Assignment" | "Expression",
+  startToken: VbToken,
+  tokens: VbToken[],
+  startIndex: number,
+  nameToken?: VbToken,
+): VbCstNode {
+  return {
+    kind,
+    start: startToken.start,
+    end: statementEnd(tokens, startIndex),
+    nameToken,
+    tokens: statementTokens(tokens, startIndex),
+    children: [],
+    scopeStart: startToken.start,
+    scopeEnd: statementEnd(tokens, startIndex),
+  };
+}
+
 function statementEndIndex(tokens: VbToken[], startIndex: number): number {
   let index = startIndex;
   while (index + 1 < tokens.length) {
     const next = tokens[index + 1];
-    if (next.kind === "newline" || next.text === ":") {
+    if ((next.kind === "newline" && tokens[index]?.text !== "_") || next.text === ":") {
       break;
     }
     index += 1;
@@ -786,6 +868,22 @@ function statementEnd(tokens: VbToken[], startIndex: number): number {
 
 function statementTokens(tokens: VbToken[], startIndex: number): VbToken[] {
   return tokens.slice(startIndex, statementEndIndex(tokens, startIndex) + 1);
+}
+
+function isMultilineIf(tokens: VbToken[], startIndex: number): boolean {
+  const endIndex = statementEndIndex(tokens, startIndex);
+  const thenIndex = findKeyword(tokens, startIndex, endIndex, "then");
+  return thenIndex !== -1 && thenIndex === endIndex;
+}
+
+function statementHasSymbol(tokens: VbToken[], startIndex: number, symbol: string): boolean {
+  const endIndex = statementEndIndex(tokens, startIndex);
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    if (tokens[index]?.text === symbol) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function findKeyword(tokens: VbToken[], start: number, end: number, keyword: string): number {

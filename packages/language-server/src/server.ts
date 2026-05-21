@@ -185,6 +185,11 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       },
       codeLensProvider: { resolveProvider: false },
       colorProvider: true,
+      diagnosticProvider: {
+        identifier: "asp-lsp",
+        interFileDependencies: true,
+        workspaceDiagnostics: true,
+      },
       selectionRangeProvider: true,
       linkedEditingRangeProvider: true,
       inlayHintProvider: { resolveProvider: false },
@@ -557,6 +562,47 @@ connection.languages.inlayHint.on((params): InlayHint[] => {
   );
 });
 
+connection.languages.diagnostics.on((params) => {
+  const cached = getCached(params.textDocument.uri) ?? getIndexedCached(params.textDocument.uri);
+  return {
+    kind: "full" as const,
+    items: cached ? diagnosticsForCached(cached, cachedSettings(cached.source.uri)) : [],
+  };
+});
+
+connection.languages.diagnostics.onWorkspace(() => {
+  ensureWorkspaceIndex();
+  const openedUris = new Set(documents.all().map((document) => document.uri));
+  return {
+    items: [
+      ...documents.all().flatMap((document) => {
+        const cached = getCached(document.uri);
+        return cached
+          ? [
+              {
+                kind: "full" as const,
+                uri: document.uri,
+                version: document.version,
+                items: diagnosticsForCached(cached, cachedSettings(document.uri)),
+              },
+            ]
+          : [];
+      }),
+      ...[...workspaceIndex.values()]
+        .filter((entry) => !openedUris.has(entry.uri))
+        .map((entry) => {
+          const cached = cachedFromIndexed(entry);
+          return {
+            kind: "full" as const,
+            uri: entry.uri,
+            version: null,
+            items: diagnosticsForCached(cached, cachedSettings(entry.uri)),
+          };
+        }),
+    ],
+  };
+});
+
 connection.onExecuteCommand((params) => {
   if (params.command === "aspLsp.reindexWorkspace" || params.command === "aspLsp.clearCache") {
     invalidateWorkspaceIndex();
@@ -735,17 +781,24 @@ async function validate(document: TextDocument): Promise<void> {
   const virtuals = buildVirtualDocuments(parsed);
   const cached = { source: document, parsed, virtuals };
   cache.set(document.uri, cached);
+  connection.sendDiagnostics({
+    uri: document.uri,
+    diagnostics: diagnosticsForCached(cached, settings),
+  });
+}
+
+function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
   const diagnostics: Diagnostic[] = [
-    ...parsed.diagnostics,
-    ...analyzeVbscript(parsed, buildVbProjectContext(cached, settings)).diagnostics,
+    ...cached.parsed.diagnostics,
+    ...analyzeVbscript(cached.parsed, buildVbProjectContext(cached, settings)).diagnostics,
     ...includeDiagnostics(cached, settings),
   ];
-  if (!isIncDocument(document.uri)) {
+  if (!isIncDocument(cached.source.uri)) {
     diagnostics.push(...htmlDiagnostics(cached));
   }
   diagnostics.push(...cssDiagnostics(cached));
   diagnostics.push(...jsDiagnostics(cached, settings));
-  connection.sendDiagnostics({ uri: document.uri, diagnostics });
+  return diagnostics;
 }
 
 function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
@@ -1506,6 +1559,20 @@ function getCached(uri: string): CachedDocument | undefined {
   const cached = { source: document, parsed, virtuals: buildVirtualDocuments(parsed) };
   cache.set(uri, cached);
   return cached;
+}
+
+function getIndexedCached(uri: string): CachedDocument | undefined {
+  ensureWorkspaceIndex();
+  const entry = workspaceIndex.get(normalizeFileName(uriToFileName(uri)));
+  return entry ? cachedFromIndexed(entry) : undefined;
+}
+
+function cachedFromIndexed(entry: WorkspaceIndexedDocument): CachedDocument {
+  return {
+    source: TextDocument.create(entry.uri, "classic-asp", 0, entry.parsed.text),
+    parsed: entry.parsed,
+    virtuals: buildVirtualDocuments(entry.parsed),
+  };
 }
 
 function ensureWorkspaceIndex(): void {

@@ -228,6 +228,13 @@ export type VbCstNodeKind =
   | "ConstantDeclaration"
   | "ForEach"
   | "With"
+  | "If"
+  | "Select"
+  | "DoLoop"
+  | "While"
+  | "Call"
+  | "Assignment"
+  | "Expression"
   | "SetNew"
   | "CreateObject";
 

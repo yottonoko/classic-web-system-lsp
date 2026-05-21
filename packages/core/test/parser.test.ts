@@ -19,6 +19,7 @@ import {
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
 } from "../src";
+import type { VbCstNode } from "../src";
 
 describe("parseAspDocument", () => {
   it("detects ASP blocks, directives, includes, style and script regions", () => {
@@ -128,6 +129,30 @@ describe("VBScript analysis", () => {
         .flatMap((node) => node.children)
         .some((node) => node.kind === "Procedure" && node.nameToken?.text === "Save"),
     ).toBe(true);
+  });
+
+  it("builds VBScript statement CST nodes for blocks, calls and assignments", () => {
+    const cst = parseVbscriptCst(`If ready Then
+  Call Save(name)
+End If
+Select Case kind
+End Select
+Do While ready
+Loop
+While ready
+Wend
+For Each item In items
+Next
+value = _
+  other`);
+    const allNodes = flattenVbNodes(cst).map((node) => node.kind);
+    expect(allNodes).toContain("If");
+    expect(allNodes).toContain("Call");
+    expect(allNodes).toContain("Select");
+    expect(allNodes).toContain("DoLoop");
+    expect(allNodes).toContain("While");
+    expect(allNodes).toContain("ForEach");
+    expect(allNodes).toContain("Assignment");
   });
 
   it("completes built-ins and declared symbols", () => {
@@ -565,4 +590,8 @@ function positionAt(text: string, offset: number): { line: number; character: nu
     }
   }
   return { line, character };
+}
+
+function flattenVbNodes(node: VbCstNode): VbCstNode[] {
+  return [node, ...node.children.flatMap(flattenVbNodes)];
 }

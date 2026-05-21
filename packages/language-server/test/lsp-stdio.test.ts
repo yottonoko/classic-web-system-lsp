@@ -297,6 +297,11 @@ const value = externalHe▮lper("ada");
       expect(serialized).toContain("asp-lsp-css");
       expect(serialized).toContain("asp-lsp-typescript");
 
+      const pulled = await server.request("textDocument/diagnostic", {
+        textDocument: { uri },
+      });
+      expect(JSON.stringify(pulled)).toContain("asp-lsp-typescript");
+
       await server.request("shutdown", null);
       server.notify("exit", undefined);
     } finally {
@@ -679,6 +684,31 @@ End Function
       await server.request("workspace/executeCommand", { command: "aspLsp.reindexWorkspace" });
       const reindexed = await server.request("workspace/symbol", { query: "Reindexed" });
       expect(JSON.stringify(reindexed)).toContain("ReindexedTitle");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns workspace diagnostics for unopened ASP files", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-diag-"));
+    fs.writeFileSync(path.join(tempDir, "broken.asp"), `<style>.x { color: }</style>`, "utf8");
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: `file://${tempDir}`,
+        capabilities: {},
+      });
+      const diagnostics = await server.request("workspace/diagnostic", {
+        previousResultIds: [],
+      });
+      expect(JSON.stringify(diagnostics)).toContain("broken.asp");
+      expect(JSON.stringify(diagnostics)).toContain("asp-lsp-css");
 
       await server.request("shutdown", null);
       server.notify("exit", undefined);
