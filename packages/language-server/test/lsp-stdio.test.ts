@@ -333,6 +333,156 @@ Response.Write Build▮Name("Ada", "Lovelace")
     }
   });
 
+  it("supports extended LSP features over JSON-RPC", async () => {
+    const marked = markedDocument(`<%
+Class Customer
+  Public Name
+End Class
+Function BuildName(firstName)
+Dim c
+  Set c = New Customer
+  BuildName = c.Name
+End Function
+Sub Save()
+  Response.Write Build▮Name("Ada")
+End Sub
+%>
+<div><span>linked</span></div>
+<style>.x { color: #ff0000; }</style>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      const initialize = await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const initializeText = JSON.stringify(initialize);
+      expect(initializeText).toContain("selectionRangeProvider");
+      expect(initializeText).toContain("inlayHintProvider");
+      expect(initializeText).toContain("callHierarchyProvider");
+
+      const uri = "file:///tmp/extended-lsp.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const completions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      const buildCompletion = (completions as { items?: Array<Record<string, unknown>> }).items
+        ? (completions as { items: Array<Record<string, unknown>> }).items.find(
+            (item) => item.label === "BuildName",
+          )
+        : (completions as Array<Record<string, unknown>>).find(
+            (item) => item.label === "BuildName",
+          );
+      const resolved = await server.request("completionItem/resolve", buildCompletion);
+      expect(JSON.stringify(resolved)).toContain("Defined in file:///tmp/extended-lsp.asp");
+
+      const selection = await server.request("textDocument/selectionRange", {
+        textDocument: { uri },
+        positions: [marked.position],
+      });
+      expect(JSON.stringify(selection)).toContain("parent");
+
+      const inlayHints = await server.request("textDocument/inlayHint", {
+        textDocument: { uri },
+        range: { start: { line: 0, character: 0 }, end: { line: 12, character: 0 } },
+      });
+      expect(JSON.stringify(inlayHints)).toContain("As Customer");
+      expect(JSON.stringify(inlayHints)).toContain("firstName:");
+
+      const hierarchyItems = await server.request("textDocument/prepareCallHierarchy", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(hierarchyItems)).toContain("BuildName");
+      const hierarchyItem = (hierarchyItems as unknown[])[0];
+      const incoming = await server.request("callHierarchy/incomingCalls", { item: hierarchyItem });
+      expect(JSON.stringify(incoming)).toContain("Save");
+      const saveHierarchyItems = await server.request("textDocument/prepareCallHierarchy", {
+        textDocument: { uri },
+        position: positionAt(marked.text, marked.text.indexOf("Save()") + 2),
+      });
+      const outgoing = await server.request("callHierarchy/outgoingCalls", {
+        item: (saveHierarchyItems as unknown[])[0],
+      });
+      expect(JSON.stringify(outgoing)).toContain("BuildName");
+
+      const declaration = await server.request("textDocument/declaration", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(declaration)).toContain('"line":4');
+
+      const typeDefinition = await server.request("textDocument/typeDefinition", {
+        textDocument: { uri },
+        position: positionAt(marked.text, marked.text.indexOf("c.Name")),
+      });
+      expect(JSON.stringify(typeDefinition)).toContain('"line":1');
+
+      const implementation = await server.request("textDocument/implementation", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(JSON.stringify(implementation)).toContain('"line":4');
+
+      const linked = await server.request("textDocument/linkedEditingRange", {
+        textDocument: { uri },
+        position: positionAt(marked.text, marked.text.indexOf("span") + 1),
+      });
+      expect(JSON.stringify(linked)).toContain("ranges");
+
+      const colors = await server.request("textDocument/documentColor", {
+        textDocument: { uri },
+      });
+      expect(JSON.stringify(colors)).toContain("red");
+      const colorPresentation = await server.request("textDocument/colorPresentation", {
+        textDocument: { uri },
+        color: { red: 1, green: 0, blue: 0, alpha: 1 },
+        range: (colors as Array<{ range: unknown }>)[0].range,
+      });
+      expect(JSON.stringify(colorPresentation)).toContain("#ff0000");
+
+      const onType = await server.request("textDocument/onTypeFormatting", {
+        textDocument: { uri },
+        position: { line: 5, character: 0 },
+        ch: "\n",
+        options: { tabSize: 2, insertSpaces: true },
+      });
+      expect(JSON.stringify(onType)).toContain("newText");
+
+      const rangeTokens = await server.request("textDocument/semanticTokens/range", {
+        textDocument: { uri },
+        range: { start: { line: 0, character: 0 }, end: { line: 12, character: 0 } },
+      });
+      expect((rangeTokens as { data?: unknown[] }).data?.length ?? 0).toBeGreaterThan(0);
+      const deltaTokens = await server.request("textDocument/semanticTokens/full/delta", {
+        textDocument: { uri },
+        previousResultId: "missing",
+      });
+      expect((deltaTokens as { data?: unknown[] }).data?.length ?? 0).toBeGreaterThan(0);
+
+      const codeLens = await server.request("textDocument/codeLens", {
+        textDocument: { uri },
+      });
+      expect(JSON.stringify(codeLens)).toContain("references");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("returns quick fixes for undeclared VBScript variables", async () => {
     const marked = markedDocument(`<%
 Option Explicit

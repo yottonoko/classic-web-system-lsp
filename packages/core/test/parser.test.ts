@@ -9,10 +9,15 @@ import {
   getVbscriptCompletions,
   getVbscriptDefinition,
   getVbscriptHover,
+  getVbscriptInlayHints,
+  getVbscriptSelectionRanges,
   getVbscriptSignatureHelp,
+  getVbscriptTypeDefinition,
   parseAspCst,
   parseAspDocument,
   parseVbscriptCst,
+  prepareVbscriptCallHierarchy,
+  resolveVbscriptCompletionItem,
 } from "../src";
 
 describe("parseAspDocument", () => {
@@ -379,6 +384,63 @@ Set label = "x"
       result.diagnostics.some((diagnostic) => diagnostic.message.includes("Set assigns")),
     ).toBe(true);
   });
+
+  it("builds LSP helper data for resolve, selection, inlay hints and type definitions", () => {
+    const source = `<%
+Class Customer
+  Public Name
+End Class
+Function BuildName(firstName)
+  Dim c
+  Set c = New Customer
+  BuildName = c.Name
+End Function
+Response.Write BuildName("Ada")
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const typeDefinition = getVbscriptTypeDefinition(
+      parsed,
+      positionAt(source, source.indexOf("c.Name")),
+      { symbols },
+    );
+    expect(typeDefinition?.name).toBe("Customer");
+
+    const hints = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 10, character: 0 } },
+      { symbols },
+    );
+    expect(JSON.stringify(hints)).toContain("As Customer");
+    expect(JSON.stringify(hints)).toContain("firstName:");
+
+    const selection = getVbscriptSelectionRanges(parsed, [
+      positionAt(source, source.indexOf("BuildName =") + 2),
+    ])[0];
+    expect(selection.parent).toBeTruthy();
+
+    const resolved = resolveVbscriptCompletionItem({ label: "BuildName" }, parsed, { symbols });
+    expect(String(resolved.documentation)).toContain("Defined in file:///site/default.asp");
+  });
+
+  it("builds VBScript call hierarchy items from user-defined procedures", () => {
+    const source = `<%
+Sub Save()
+  BuildName("Ada")
+End Sub
+Function BuildName(firstName)
+  BuildName = firstName
+End Function
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const items = prepareVbscriptCallHierarchy(
+      parsed,
+      positionAt(source, source.indexOf("BuildName(firstName)") + 2),
+      { symbols },
+    );
+    expect(items[0]?.name).toBe("BuildName");
+  });
 });
 
 describe("ASP formatting", () => {
@@ -490,3 +552,17 @@ longerName=2
     expect(edits[0].newText).toContain("first      = 1\nlongerName = 2");
   });
 });
+
+function positionAt(text: string, offset: number): { line: number; character: number } {
+  let line = 0;
+  let character = 0;
+  for (let index = 0; index < offset; index += 1) {
+    if (text[index] === "\n") {
+      line += 1;
+      character = 0;
+    } else {
+      character += 1;
+    }
+  }
+  return { line, character };
+}

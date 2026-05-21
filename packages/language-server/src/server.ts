@@ -22,13 +22,25 @@ import {
   TextDocumentSyncKind,
 } from "vscode-languageserver/node";
 import type {
+  CallHierarchyIncomingCall,
+  CallHierarchyItem,
+  CallHierarchyOutgoingCall,
   CodeAction,
+  CodeLens,
+  Color,
+  ColorInformation,
+  ColorPresentation,
   CompletionItem,
   Diagnostic,
   DocumentLink,
   DocumentHighlight,
+  InlayHint,
+  LinkedEditingRanges,
+  Position,
   Range,
   RenameParams,
+  SemanticTokens,
+  SelectionRange,
   SignatureHelp,
   TextEdit,
   WorkspaceEdit,
@@ -45,10 +57,18 @@ import {
   getVbscriptDocumentHighlights,
   getVbscriptDocumentSymbols,
   getVbscriptHover,
+  getVbscriptImplementation,
+  getVbscriptIncomingCalls,
+  getVbscriptInlayHints,
+  getVbscriptOutgoingCalls,
   getVbscriptRenameRange,
   getVbscriptReferences,
+  getVbscriptSelectionRanges,
   getVbscriptSignatureHelp,
+  getVbscriptTypeDefinition,
   parseAspDocument,
+  prepareVbscriptCallHierarchy,
+  resolveVbscriptCompletionItem,
   type AspFormattingOptions,
   type AspParsedDocument,
   type AspSettings,
@@ -107,11 +127,14 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       textDocumentSync: TextDocumentSyncKind.Incremental,
       completionProvider: {
         triggerCharacters: ["<", ".", '"', "'", ":", "#", "("],
-        resolveProvider: false,
+        resolveProvider: true,
       },
       signatureHelpProvider: { triggerCharacters: ["(", ","] },
       hoverProvider: true,
+      declarationProvider: true,
       definitionProvider: true,
+      typeDefinitionProvider: true,
+      implementationProvider: true,
       referencesProvider: true,
       renameProvider: { prepareProvider: true },
       documentHighlightProvider: true,
@@ -120,13 +143,23 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       foldingRangeProvider: true,
       documentLinkProvider: { resolveProvider: false },
       codeActionProvider: { codeActionKinds: [CodeActionKind.QuickFix] },
+      codeLensProvider: { resolveProvider: false },
+      colorProvider: true,
+      selectionRangeProvider: true,
+      linkedEditingRangeProvider: true,
+      inlayHintProvider: { resolveProvider: false },
+      callHierarchyProvider: true,
       semanticTokensProvider: {
         legend: { tokenTypes: [...semanticTokenTypes], tokenModifiers: [] },
-        full: true,
-        range: false,
+        full: { delta: true },
+        range: true,
       },
       documentFormattingProvider: true,
       documentRangeFormattingProvider: true,
+      documentOnTypeFormattingProvider: {
+        firstTriggerCharacter: "\n",
+        moreTriggerCharacter: [">"],
+      },
     },
   };
 });
@@ -173,10 +206,13 @@ connection.onCompletion((params) => {
     return [];
   }
   if (region.language === "vbscript" || region.language === "jscript") {
-    return getVbscriptCompletions(
-      cached.parsed,
-      params.position,
-      buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    return withCompletionData(
+      getVbscriptCompletions(
+        cached.parsed,
+        params.position,
+        buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+      ),
+      { kind: "vbscript", uri: cached.source.uri },
     );
   }
   if (region.language === "html") {
@@ -198,6 +234,25 @@ connection.onCompletion((params) => {
     return jsCompletion(cached, params);
   }
   return [];
+});
+
+connection.onCompletionResolve((item) => {
+  const data = item.data as { kind?: string; uri?: string } | undefined;
+  if (data?.kind === "vbscript" && data.uri) {
+    const cached = getCached(data.uri);
+    return cached
+      ? resolveVbscriptCompletionItem(
+          item,
+          cached.parsed,
+          buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+        )
+      : item;
+  }
+  if (data?.kind === "javascript" && data.uri) {
+    const resolved = resolveJsCompletion(item, data.uri);
+    return resolved ?? item;
+  }
+  return item;
 });
 
 connection.onHover((params) => {
@@ -250,6 +305,18 @@ connection.onDefinition((params) => {
     buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
   );
   return symbol ? Location.create(symbol.sourceUri, symbol.range) : null;
+});
+
+connection.onDeclaration((params) => {
+  return definitionLikeLocation(params.textDocument.uri, params.position, "declaration");
+});
+
+connection.onTypeDefinition((params) => {
+  return definitionLikeLocation(params.textDocument.uri, params.position, "typeDefinition");
+});
+
+connection.onImplementation((params) => {
+  return definitionLikeLocation(params.textDocument.uri, params.position, "implementation");
 });
 
 connection.onReferences((params: ReferenceParams) => {
@@ -402,6 +469,110 @@ connection.onDocumentLinks((params) => {
   });
 });
 
+connection.onSelectionRanges((params): SelectionRange[] => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  return params.positions.map((position) => selectionRangeAt(cached, position));
+});
+
+connection.languages.inlayHint.on((params): InlayHint[] => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  return getVbscriptInlayHints(
+    cached.parsed,
+    params.range,
+    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    cachedSettings(cached.source.uri).inlayHints,
+  );
+});
+
+connection.languages.callHierarchy.onPrepare((params): CallHierarchyItem[] => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached || !isVbscriptPosition(cached, params.position)) {
+    return [];
+  }
+  return prepareVbscriptCallHierarchy(
+    cached.parsed,
+    params.position,
+    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    cached.source.uri,
+  );
+});
+
+connection.languages.callHierarchy.onIncomingCalls((params): CallHierarchyIncomingCall[] => {
+  const root = callHierarchyRootUri(params.item);
+  const cached = getCached(root) ?? getCached(params.item.uri);
+  if (!cached) {
+    return [];
+  }
+  return getVbscriptIncomingCalls(
+    params.item,
+    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+  );
+});
+
+connection.languages.callHierarchy.onOutgoingCalls((params): CallHierarchyOutgoingCall[] => {
+  const root = callHierarchyRootUri(params.item);
+  const cached = getCached(root) ?? getCached(params.item.uri);
+  if (!cached) {
+    return [];
+  }
+  return getVbscriptOutgoingCalls(
+    params.item,
+    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+  );
+});
+
+connection.languages.onLinkedEditingRange((params): LinkedEditingRanges | null => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return null;
+  }
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
+  if (!region || region.language !== "html") {
+    return null;
+  }
+  const virtual = cached.virtuals.get("html");
+  if (!virtual) {
+    return null;
+  }
+  const doc = toTextDocument(virtual);
+  const ranges = htmlService.findLinkedEditingRanges(
+    doc,
+    params.position,
+    htmlService.parseHTMLDocument(doc),
+  );
+  return ranges ? { ranges } : null;
+});
+
+connection.onDocumentColor((params): ColorInformation[] => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  return cssDocumentColors(cached);
+});
+
+connection.onColorPresentation((params): ColorPresentation[] => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  return cssColorPresentations(cached, params.color, params.range);
+});
+
+connection.onCodeLens((params): CodeLens[] => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  return codeLenses(cached);
+});
+
 connection.onDocumentFormatting((params) => {
   const cached = getCached(params.textDocument.uri);
   if (!cached) {
@@ -442,62 +613,36 @@ connection.onCodeAction((params): CodeAction[] => {
   );
 });
 
+connection.onDocumentOnTypeFormatting((params) => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  return onTypeFormatting(cached, params.position, params.ch);
+});
+
 connection.languages.semanticTokens.on((params) => {
   const cached = getCached(params.textDocument.uri);
   if (!cached) {
     return { data: [] };
   }
-  const tokens: Array<{ line: number; character: number; length: number; tokenType: string }> = [];
-  for (const region of cached.parsed.regions) {
-    if (region.kind === "asp-block" || region.kind === "asp-expression") {
-      addSemanticToken(tokens, cached.source, region.start, 2, "keyword");
-      if (region.end - region.contentEnd >= 2) {
-        addSemanticToken(tokens, cached.source, region.contentEnd, 2, "keyword");
-      }
-    } else if (region.kind === "asp-directive") {
-      addSemanticToken(
-        tokens,
-        cached.source,
-        region.start,
-        Math.min(region.end - region.start, 3),
-        "keyword",
-      );
-    }
+  return buildSemanticTokens(cached);
+});
+
+connection.languages.semanticTokens.onRange((params): SemanticTokens => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return { data: [] };
   }
-  const symbols = collectVbscriptSymbols(cached.parsed);
-  for (const symbol of symbols) {
-    const tokenType =
-      symbol.kind === "class"
-        ? "class"
-        : symbol.kind === "method"
-          ? "method"
-          : symbol.kind === "field" || symbol.kind === "property"
-            ? "property"
-            : symbol.kind === "function" || symbol.kind === "sub"
-              ? "function"
-              : "variable";
-    tokens.push({
-      line: symbol.range.start.line,
-      character: symbol.range.start.character,
-      length: Math.max(1, symbol.range.end.character - symbol.range.start.character),
-      tokenType,
-    });
+  return buildSemanticTokens(cached, params.range);
+});
+
+connection.languages.semanticTokens.onDelta((params): SemanticTokens => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return { data: [] };
   }
-  for (const name of ["Request", "Response", "Session", "Application", "Server", "ASPError"]) {
-    addWordSemanticTokens(tokens, cached.source, cached.parsed, name, "variable");
-  }
-  tokens.sort((left, right) => left.line - right.line || left.character - right.character);
-  const builder = new SemanticTokensBuilder();
-  for (const token of tokens) {
-    builder.push(
-      token.line,
-      token.character,
-      token.length,
-      semanticTokenTypes.indexOf(token.tokenType as (typeof semanticTokenTypes)[number]),
-      0,
-    );
-  }
-  return builder.build();
+  return buildSemanticTokens(cached);
 });
 
 async function validate(document: TextDocument): Promise<void> {
@@ -611,8 +756,50 @@ function jsCompletion(
       label: entry.name,
       kind: tsCompletionKind(entry.kind),
       detail: entry.kind,
+      data: {
+        kind: "javascript",
+        uri: cached.source.uri,
+        name: entry.name,
+        virtualOffset: offset,
+        source: entry.source,
+        tsData: entry.data,
+      },
     })) ?? []
   );
+}
+
+function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem | undefined {
+  const cached = getCached(uri);
+  const data = item.data as
+    | {
+        name?: string;
+        virtualOffset?: number;
+        source?: string;
+        tsData?: ts.CompletionEntryData;
+      }
+    | undefined;
+  const virtual = cached?.virtuals.get("javascript");
+  if (!cached || !virtual || typeof data?.virtualOffset !== "number" || !data.name) {
+    return undefined;
+  }
+  const service = ts.createLanguageService(createJsLanguageHost(virtual, cachedSettings(uri)));
+  const details = service.getCompletionEntryDetails(
+    jsVirtualFileName(virtual.uri),
+    data.virtualOffset,
+    data.name,
+    undefined,
+    data.source,
+    undefined,
+    data.tsData,
+  );
+  if (!details) {
+    return item;
+  }
+  return {
+    ...item,
+    detail: ts.displayPartsToString(details.displayParts),
+    documentation: ts.displayPartsToString(details.documentation),
+  };
 }
 
 function aspHover(cached: CachedDocument, params: TextDocumentPositionParams): Hover | null {
@@ -622,6 +809,121 @@ function aspHover(cached: CachedDocument, params: TextDocumentPositionParams): H
     buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
   );
   return value ? { contents: { kind: "markdown", value } } : null;
+}
+
+function withCompletionData(
+  items: CompletionItem[],
+  data: Record<string, unknown>,
+): CompletionItem[] {
+  return items.map((item) => ({
+    ...item,
+    data: { ...data, ...(item.data as object | undefined) },
+  }));
+}
+
+function callHierarchyRootUri(item: CallHierarchyItem): string {
+  const data = item.data as { rootUri?: string } | undefined;
+  return data?.rootUri ?? item.uri;
+}
+
+function definitionLikeLocation(
+  uri: string,
+  position: Position,
+  mode: "declaration" | "typeDefinition" | "implementation",
+): Location | Location[] | null {
+  const cached = getCached(uri);
+  if (!cached) {
+    return null;
+  }
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
+  if (!region) {
+    return null;
+  }
+  if (region.language === "vbscript" || region.language === "jscript") {
+    const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+    const symbol =
+      mode === "typeDefinition"
+        ? getVbscriptTypeDefinition(cached.parsed, position, context)
+        : mode === "implementation"
+          ? getVbscriptImplementation(cached.parsed, position, context)
+          : getVbscriptDefinition(cached.parsed, position, context);
+    return symbol ? Location.create(symbol.sourceUri, symbol.range) : null;
+  }
+  if (region.language === "javascript") {
+    return jsLocations(cached, position, mode);
+  }
+  if (region.language === "css" && mode !== "implementation") {
+    const virtual = cached.virtuals.get("css");
+    const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
+    if (!virtual || !virtualPosition) {
+      return null;
+    }
+    const doc = toTextDocument(virtual);
+    const location = cssService.findDefinition(
+      doc,
+      virtualPosition,
+      cssService.parseStylesheet(doc),
+    );
+    return location ? (remapLocation(virtual, location) ?? null) : null;
+  }
+  return null;
+}
+
+function jsLocations(
+  cached: CachedDocument,
+  position: Position,
+  mode: "declaration" | "typeDefinition" | "implementation",
+): Location[] {
+  const virtual = cached.virtuals.get("javascript");
+  const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
+  if (!virtual || !virtualPosition) {
+    return [];
+  }
+  const doc = toTextDocument(virtual);
+  const offset = doc.offsetAt(virtualPosition);
+  const fileName = jsVirtualFileName(virtual.uri);
+  const service = ts.createLanguageService(
+    createJsLanguageHost(virtual, cachedSettings(cached.source.uri)),
+  );
+  const definitions =
+    mode === "typeDefinition"
+      ? service.getTypeDefinitionAtPosition(fileName, offset)
+      : mode === "implementation"
+        ? service.getImplementationAtPosition(fileName, offset)
+        : service.getDefinitionAtPosition(fileName, offset);
+  return (
+    definitions
+      ?.map((definition) => tsDefinitionToLocation(virtual, definition))
+      .filter((location): location is Location => Boolean(location)) ?? []
+  );
+}
+
+function tsDefinitionToLocation(
+  virtual: VirtualDocument,
+  definition: ts.DefinitionInfo | ts.ImplementationLocation,
+): Location | undefined {
+  if (definition.fileName !== jsVirtualFileName(virtual.uri)) {
+    return undefined;
+  }
+  const doc = toTextDocument(virtual);
+  const start = doc.positionAt(definition.textSpan.start);
+  const end = doc.positionAt(definition.textSpan.start + definition.textSpan.length);
+  const sourceStart = virtual.sourceMap.toSourcePosition(start);
+  const sourceEnd = virtual.sourceMap.toSourcePosition(end);
+  return sourceStart && sourceEnd
+    ? Location.create(virtual.uri.replace(/\.javascript\.virtual$/, ""), {
+        start: sourceStart,
+        end: sourceEnd,
+      })
+    : undefined;
+}
+
+function remapLocation(virtual: VirtualDocument, location: Location): Location | undefined {
+  const start = virtual.sourceMap.toSourcePosition(location.range.start);
+  const end = virtual.sourceMap.toSourcePosition(location.range.end);
+  return start && end
+    ? Location.create(virtual.uri.replace(`.${virtual.languageId}.virtual`, ""), { start, end })
+    : undefined;
 }
 
 function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
@@ -789,6 +1091,132 @@ function remapDiagnostic(
   return { ...diagnostic, range: { start, end }, source };
 }
 
+function selectionRangeAt(cached: CachedDocument, position: Position): SelectionRange {
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
+  if (region?.language === "html") {
+    const virtual = cached.virtuals.get("html");
+    if (virtual) {
+      return remapSelectionRange(
+        virtual,
+        htmlService.getSelectionRanges(toTextDocument(virtual), [position])[0],
+      );
+    }
+  }
+  if (region?.language === "css") {
+    const virtual = cached.virtuals.get("css");
+    const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
+    if (virtual && virtualPosition) {
+      const doc = toTextDocument(virtual);
+      return remapSelectionRange(
+        virtual,
+        cssService.getSelectionRanges(doc, [virtualPosition], cssService.parseStylesheet(doc))[0],
+      );
+    }
+  }
+  if (region?.language === "javascript") {
+    const range = jsSelectionRange(cached, position);
+    if (range) {
+      return range;
+    }
+  }
+  if (region?.language === "vbscript" || region?.language === "jscript") {
+    return getVbscriptSelectionRanges(cached.parsed, [position])[0];
+  }
+  return { range: { start: position, end: position } };
+}
+
+function remapSelectionRange(virtual: VirtualDocument, range: SelectionRange): SelectionRange {
+  const start = virtual.sourceMap.toSourcePosition(range.range.start) ?? range.range.start;
+  const end = virtual.sourceMap.toSourcePosition(range.range.end) ?? range.range.end;
+  return {
+    range: { start, end },
+    parent: range.parent ? remapSelectionRange(virtual, range.parent) : undefined,
+  };
+}
+
+function jsSelectionRange(cached: CachedDocument, position: Position): SelectionRange | undefined {
+  const virtual = cached.virtuals.get("javascript");
+  const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
+  if (!virtual || !virtualPosition) {
+    return undefined;
+  }
+  const doc = toTextDocument(virtual);
+  const selection = ts
+    .createLanguageService(createJsLanguageHost(virtual, cachedSettings(cached.source.uri)))
+    .getSmartSelectionRange(jsVirtualFileName(virtual.uri), doc.offsetAt(virtualPosition));
+  return remapTsSelectionRange(virtual, selection);
+}
+
+function remapTsSelectionRange(virtual: VirtualDocument, range: ts.SelectionRange): SelectionRange {
+  const doc = toTextDocument(virtual);
+  const start = virtual.sourceMap.toSourcePosition(doc.positionAt(range.textSpan.start));
+  const end = virtual.sourceMap.toSourcePosition(
+    doc.positionAt(range.textSpan.start + range.textSpan.length),
+  );
+  return {
+    range: {
+      start: start ?? { line: 0, character: 0 },
+      end: end ?? start ?? { line: 0, character: 0 },
+    },
+    parent: range.parent ? remapTsSelectionRange(virtual, range.parent) : undefined,
+  };
+}
+
+function cssDocumentColors(cached: CachedDocument): ColorInformation[] {
+  const virtual = cached.virtuals.get("css");
+  if (!virtual) {
+    return [];
+  }
+  const doc = toTextDocument(virtual);
+  return cssService
+    .findDocumentColors(doc, cssService.parseStylesheet(doc))
+    .map((color) => {
+      const range = sourceRangeFromVirtualRange(virtual, color.range);
+      return range ? { ...color, range } : undefined;
+    })
+    .filter((color): color is ColorInformation => Boolean(color));
+}
+
+function cssColorPresentations(
+  cached: CachedDocument,
+  color: Color,
+  range: Range,
+): ColorPresentation[] {
+  const virtual = cached.virtuals.get("css");
+  if (!virtual) {
+    return [];
+  }
+  const start = virtual.sourceMap.toVirtualPosition(range.start);
+  const end = virtual.sourceMap.toVirtualPosition(range.end);
+  if (!start || !end) {
+    return [];
+  }
+  const doc = toTextDocument(virtual);
+  return cssService
+    .getColorPresentations(doc, cssService.parseStylesheet(doc), color, { start, end })
+    .map((presentation) => ({
+      ...presentation,
+      textEdit: presentation.textEdit
+        ? {
+            ...presentation.textEdit,
+            range: sourceRangeFromVirtualRange(virtual, presentation.textEdit.range) ?? range,
+          }
+        : undefined,
+      additionalTextEdits: presentation.additionalTextEdits
+        ?.map((edit) => {
+          const editRange = sourceRangeFromVirtualRange(virtual, edit.range);
+          return editRange ? { ...edit, range: editRange } : undefined;
+        })
+        .filter((edit): edit is TextEdit => Boolean(edit)),
+    }));
+}
+
+function sourceRangeFromVirtualRange(virtual: VirtualDocument, range: Range): Range | undefined {
+  const start = virtual.sourceMap.toSourcePosition(range.start);
+  const end = virtual.sourceMap.toSourcePosition(range.end);
+  return start && end ? { start, end } : undefined;
+}
+
 function tsDiagnosticToLsp(
   virtual: VirtualDocument,
   diagnostic: ts.Diagnostic,
@@ -911,6 +1339,31 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
       typeof settings.legacyEncoding === "string" ? settings.legacyEncoding : undefined,
     format: normalizeFormatSettings(settings),
     vbscript: normalizeVbscriptSettings(settings),
+    inlayHints: normalizeInlayHintSettings(settings),
+    codeLens: normalizeCodeLensSettings(settings),
+  };
+}
+
+function normalizeInlayHintSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["inlayHints"] {
+  const raw = settings.inlayHints;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    variableTypes: record.variableTypes !== false,
+    parameterNames: record.parameterNames !== false,
+    functionReturnTypes: record.functionReturnTypes !== false,
+  };
+}
+
+function normalizeCodeLensSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["codeLens"] {
+  const raw = settings.codeLens;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    references: record.references !== false,
+    includes: record.includes !== false,
   };
 }
 
@@ -1358,6 +1811,194 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
   return [];
 }
 
+function codeLenses(cached: CachedDocument): CodeLens[] {
+  const settings = cachedSettings(cached.source.uri).codeLens;
+  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const lenses: CodeLens[] = [];
+  if (settings?.references !== false) {
+    for (const symbol of (context.symbols ?? []).filter(
+      (item) =>
+        item.sourceUri === cached.source.uri &&
+        ["function", "sub", "class", "method", "property"].includes(item.kind),
+    )) {
+      const references = getVbscriptReferences(cached.parsed, symbol.range.start, context);
+      lenses.push({
+        range: symbol.range,
+        command: {
+          title: `${references.length} reference${references.length === 1 ? "" : "s"}`,
+          command: "",
+        },
+      });
+    }
+  }
+  if (settings?.includes !== false) {
+    for (const include of cached.parsed.includes) {
+      const target = resolveIncludePath(
+        cached.source.uri,
+        include.path,
+        include.mode,
+        cachedSettings(cached.source.uri),
+      );
+      lenses.push({
+        range: include.range,
+        command: {
+          title: `include ${path.basename(target)}`,
+          command: "vscode.open",
+          arguments: [pathToFileUri(target)],
+        },
+      });
+    }
+  }
+  return lenses;
+}
+
+function onTypeFormatting(
+  cached: CachedDocument,
+  position: Position,
+  character: string,
+): TextEdit[] {
+  if (character === ">") {
+    return [];
+  }
+  if (!isVbscriptPosition(cached, position)) {
+    return [];
+  }
+  const line = position.line;
+  if (line <= 0) {
+    return [];
+  }
+  const current = lineText(cached.source, line);
+  const previous = previousNonEmptyLine(cached.source, line - 1);
+  if (!previous) {
+    return [];
+  }
+  const options = formatOptions(
+    { tabSize: 2, insertSpaces: true },
+    cachedSettings(cached.source.uri),
+  );
+  const unit =
+    options.indentStyle === "tab" || options.insertSpaces === false
+      ? "\t"
+      : " ".repeat(options.indentSize ?? options.tabSize);
+  const baseIndent = /^\s*/.exec(previous.text)?.[0] ?? "";
+  const trimmedPrevious = previous.text.trim();
+  const trimmedCurrent = current.trim();
+  const shouldIndent =
+    /^(If|For|For\s+Each|Do|While|With|Sub|Function|Class|Property)\b/i.test(trimmedPrevious) &&
+    !/^End\b/i.test(trimmedPrevious);
+  const shouldOutdent = /^(End|Else|ElseIf|Next|Loop|Wend)\b/i.test(trimmedCurrent);
+  const desired = shouldOutdent
+    ? baseIndent.slice(0, Math.max(0, baseIndent.length - unit.length))
+    : shouldIndent
+      ? `${baseIndent}${unit}`
+      : baseIndent;
+  const existing = /^\s*/.exec(current)?.[0] ?? "";
+  return existing === desired
+    ? []
+    : [
+        {
+          range: {
+            start: { line, character: 0 },
+            end: { line, character: existing.length },
+          },
+          newText: desired,
+        },
+      ];
+}
+
+function lineText(document: TextDocument, line: number): string {
+  return document
+    .getText({
+      start: { line, character: 0 },
+      end: { line: line + 1, character: 0 },
+    })
+    .replace(/\r?\n$/, "");
+}
+
+function previousNonEmptyLine(
+  document: TextDocument,
+  line: number,
+): { line: number; text: string } | undefined {
+  for (let current = line; current >= 0; current -= 1) {
+    const text = lineText(document, current);
+    if (text.trim().length > 0) {
+      return { line: current, text };
+    }
+  }
+  return undefined;
+}
+
+function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTokens {
+  const rangeStart = range ? cached.source.offsetAt(range.start) : 0;
+  const rangeEnd = range ? cached.source.offsetAt(range.end) : cached.source.getText().length;
+  const tokens: Array<{ line: number; character: number; length: number; tokenType: string }> = [];
+  for (const region of cached.parsed.regions) {
+    if (region.end < rangeStart || region.start > rangeEnd) {
+      continue;
+    }
+    if (region.kind === "asp-block" || region.kind === "asp-expression") {
+      addSemanticToken(tokens, cached.source, region.start, 2, "keyword");
+      if (region.end - region.contentEnd >= 2) {
+        addSemanticToken(tokens, cached.source, region.contentEnd, 2, "keyword");
+      }
+    } else if (region.kind === "asp-directive") {
+      addSemanticToken(
+        tokens,
+        cached.source,
+        region.start,
+        Math.min(region.end - region.start, 3),
+        "keyword",
+      );
+    }
+  }
+  const symbols = collectVbscriptSymbols(cached.parsed);
+  for (const symbol of symbols) {
+    const offset = cached.source.offsetAt(symbol.range.start);
+    if (offset < rangeStart || offset > rangeEnd) {
+      continue;
+    }
+    const tokenType =
+      symbol.kind === "class"
+        ? "class"
+        : symbol.kind === "method"
+          ? "method"
+          : symbol.kind === "field" || symbol.kind === "property"
+            ? "property"
+            : symbol.kind === "function" || symbol.kind === "sub"
+              ? "function"
+              : "variable";
+    tokens.push({
+      line: symbol.range.start.line,
+      character: symbol.range.start.character,
+      length: Math.max(1, symbol.range.end.character - symbol.range.start.character),
+      tokenType,
+    });
+  }
+  for (const name of ["Request", "Response", "Session", "Application", "Server", "ASPError"]) {
+    addWordSemanticTokens(
+      tokens,
+      cached.source,
+      cached.parsed,
+      name,
+      "variable",
+      rangeStart,
+      rangeEnd,
+    );
+  }
+  tokens.sort((left, right) => left.line - right.line || left.character - right.character);
+  const builder = new SemanticTokensBuilder();
+  for (const token of tokens) {
+    builder.push(
+      token.line,
+      token.character,
+      token.length,
+      semanticTokenTypes.indexOf(token.tokenType as (typeof semanticTokenTypes)[number]),
+      0,
+    );
+  }
+  return builder.build();
+}
+
 function addSemanticToken(
   tokens: Array<{ line: number; character: number; length: number; tokenType: string }>,
   document: TextDocument,
@@ -1375,6 +2016,8 @@ function addWordSemanticTokens(
   parsed: AspParsedDocument,
   word: string,
   tokenType: string,
+  rangeStart = 0,
+  rangeEnd = parsed.text.length,
 ): void {
   const pattern = new RegExp(`\\b${word}\\b`, "gi");
   for (const region of parsed.regions) {
@@ -1384,7 +2027,10 @@ function addWordSemanticTokens(
     const text = parsed.text.slice(region.contentStart, region.contentEnd);
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text)) !== null) {
-      addSemanticToken(tokens, document, region.contentStart + match.index, word.length, tokenType);
+      const offset = region.contentStart + match.index;
+      if (offset >= rangeStart && offset <= rangeEnd) {
+        addSemanticToken(tokens, document, offset, word.length, tokenType);
+      }
     }
   }
 }

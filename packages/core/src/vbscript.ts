@@ -2,15 +2,21 @@ import {
   CompletionItemKind,
   DiagnosticSeverity,
   DocumentHighlightKind,
+  InlayHintKind,
   SymbolKind,
 } from "vscode-languageserver-types";
 import type {
+  CallHierarchyIncomingCall,
+  CallHierarchyItem,
+  CallHierarchyOutgoingCall,
   CompletionItem,
   Diagnostic,
   DocumentHighlight,
   DocumentSymbol,
+  InlayHint,
   Position,
   Range,
+  SelectionRange,
   SignatureHelp,
 } from "vscode-languageserver-types";
 import { offsetAt, rangeFromOffsets } from "./position";
@@ -58,6 +64,22 @@ export interface VbProjectContext {
   typeChecking?: "basic" | "strict";
   comTypes?: Record<string, AspVbscriptComType>;
   typeEnvironment?: VbTypeEnvironment;
+}
+
+export interface VbInlayHintOptions {
+  variableTypes?: boolean;
+  parameterNames?: boolean;
+  functionReturnTypes?: boolean;
+}
+
+export interface VbCallHierarchyData {
+  uri: string;
+  name: string;
+  kind: VbSymbolKind;
+  memberOf?: string;
+  rootUri?: string;
+  line: number;
+  character: number;
 }
 
 export interface VbTypeRef {
@@ -1011,6 +1033,290 @@ export function getVbscriptSignatureHelp(
     activeSignature: 0,
     activeParameter,
   };
+}
+
+export function resolveVbscriptCompletionItem(
+  item: CompletionItem,
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): CompletionItem {
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const env = context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
+  const label = item.label.toLowerCase();
+  const builtin = builtins.find((candidate) => candidate.label.toLowerCase() === label);
+  if (builtin) {
+    return {
+      ...item,
+      detail: item.detail ?? builtin.detail,
+      documentation: item.documentation ?? builtin.documentation,
+    };
+  }
+  const symbol = symbols.find((candidate) => candidate.name.toLowerCase() === label);
+  if (symbol) {
+    const type = symbol.typeName ? ` As ${symbol.typeName}` : "";
+    const owner = symbol.memberOf ? ` of ${symbol.memberOf}` : "";
+    return {
+      ...item,
+      detail: `${symbol.kind}${type}${owner}`,
+      documentation: `${signatureLabelForDocumentation(symbol)}\n\nDefined in ${symbol.sourceUri}.`,
+    };
+  }
+  const member = env.types
+    .flatMap((type) => type.members.map((candidate) => ({ type, member: candidate })))
+    .find((candidate) => candidate.member.name.toLowerCase() === label);
+  if (member) {
+    const signature = member.member.signature
+      ? signatureLabelFromMember(member.type.name, member.member.name, member.member.signature)
+      : undefined;
+    const type = member.member.type ? ` As ${member.member.type.name}` : "";
+    return {
+      ...item,
+      detail: signature ?? `${member.member.kind}${type}`,
+      documentation: `${member.member.kind} ${member.type.name}.${member.member.name}${type}`,
+    };
+  }
+  return item;
+}
+
+export function getVbscriptSelectionRanges(
+  parsed: AspParsedDocument,
+  positions: Position[],
+): SelectionRange[] {
+  return positions.map((position) => {
+    const offset = offsetAt(parsed.text, position);
+    const ranges = uniqueRanges(
+      [
+        tokenRangeAt(parsed, offset),
+        statementRangeAt(parsed, offset),
+        ...enclosingVbNodes(parsed, offset).map((node) =>
+          rangeFromOffsets(parsed.text, node.start, node.end),
+        ),
+        regionRangeAt(parsed, offset),
+        rangeFromOffsets(parsed.text, 0, parsed.text.length),
+      ].filter(isRange),
+    );
+    return buildSelectionRangeChain(ranges);
+  });
+}
+
+export function getVbscriptInlayHints(
+  parsed: AspParsedDocument,
+  range: Range,
+  context: VbProjectContext = {},
+  options: VbInlayHintOptions = {},
+): InlayHint[] {
+  const settings = {
+    variableTypes: options.variableTypes !== false,
+    parameterNames: options.parameterNames !== false,
+    functionReturnTypes: options.functionReturnTypes !== false,
+  };
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const env = context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
+  const hints: InlayHint[] = [];
+  const rangeStart = offsetAt(parsed.text, range.start);
+  const rangeEnd = offsetAt(parsed.text, range.end);
+  if (settings.variableTypes) {
+    for (const symbol of symbols) {
+      if (
+        symbol.sourceUri !== parsed.uri ||
+        !["variable", "constant", "field"].includes(symbol.kind) ||
+        !symbol.typeName ||
+        isLooseType(symbol.typeName) ||
+        !rangeOverlapsOffsets(parsed.text, symbol.range, rangeStart, rangeEnd)
+      ) {
+        continue;
+      }
+      hints.push({
+        position: symbol.range.end,
+        label: ` As ${symbol.typeName}`,
+        kind: InlayHintKind.Type,
+        paddingLeft: true,
+        tooltip: "Inferred VBScript type",
+      });
+    }
+  }
+  if (settings.functionReturnTypes) {
+    for (const symbol of symbols) {
+      if (
+        symbol.sourceUri !== parsed.uri ||
+        !["function", "property"].includes(symbol.kind) ||
+        !symbol.typeName ||
+        isLooseType(symbol.typeName) ||
+        !rangeOverlapsOffsets(parsed.text, symbol.range, rangeStart, rangeEnd)
+      ) {
+        continue;
+      }
+      hints.push({
+        position: symbol.range.end,
+        label: ` As ${symbol.typeName}`,
+        kind: InlayHintKind.Type,
+        paddingLeft: true,
+        tooltip: "Inferred VBScript return type",
+      });
+    }
+  }
+  if (settings.parameterNames) {
+    for (const statement of vbStatements(parsed)) {
+      for (let index = 0; index < statement.length; index += 1) {
+        if (statement[index].text !== "(" || statement[index - 1]?.kind !== "identifier") {
+          continue;
+        }
+        const name = callNameBefore(statement, index);
+        const signature = name
+          ? signatureForCall(parsed, name, statement[index].start, symbols, env)
+          : undefined;
+        if (!signature) {
+          continue;
+        }
+        const closeIndex = matchingCloseParen(statement, index);
+        const argumentTokens = topLevelArgumentStarts(
+          statement.slice(index + 1, closeIndex === -1 ? undefined : closeIndex),
+        );
+        for (const [argumentIndex, token] of argumentTokens.entries()) {
+          const parameter = signature.parameters[argumentIndex];
+          if (
+            !parameter ||
+            token.start < rangeStart ||
+            token.start > rangeEnd ||
+            isNamedArgument(statement, token)
+          ) {
+            continue;
+          }
+          hints.push({
+            position: rangeFromOffsets(parsed.text, token.start, token.end).start,
+            label: `${parameter.name}:`,
+            kind: InlayHintKind.Parameter,
+            paddingRight: true,
+            tooltip: "VBScript parameter name",
+          });
+        }
+      }
+    }
+  }
+  return hints.sort(
+    (left, right) =>
+      left.position.line - right.position.line ||
+      left.position.character - right.position.character,
+  );
+}
+
+export function getVbscriptTypeDefinition(
+  parsed: AspParsedDocument,
+  position: Position,
+  context: VbProjectContext = {},
+): VbSymbol | undefined {
+  const offset = offsetAt(parsed.text, position);
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const symbol = resolveSymbolAt(parsed, offset, symbols);
+  const typeName = symbol?.typeName ?? typeNameAtOffset(parsed, offset, symbols);
+  if (!typeName || isLooseType(typeName)) {
+    return undefined;
+  }
+  return symbols.find(
+    (candidate) =>
+      candidate.kind === "class" && candidate.name.toLowerCase() === typeName.toLowerCase(),
+  );
+}
+
+export function getVbscriptImplementation(
+  parsed: AspParsedDocument,
+  position: Position,
+  context: VbProjectContext = {},
+): VbSymbol | undefined {
+  const symbol = getVbscriptDefinition(parsed, position, context);
+  return symbol && !isBuiltinName(symbol.name) ? symbol : undefined;
+}
+
+export function prepareVbscriptCallHierarchy(
+  parsed: AspParsedDocument,
+  position: Position,
+  context: VbProjectContext = {},
+  rootUri = parsed.uri,
+): CallHierarchyItem[] {
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const symbol = resolveSymbolAt(parsed, offsetAt(parsed.text, position), symbols);
+  if (!symbol || !isCallableHierarchySymbol(symbol)) {
+    return [];
+  }
+  return [symbolToCallHierarchyItem(symbol, rootUri)];
+}
+
+export function getVbscriptIncomingCalls(
+  item: CallHierarchyItem,
+  context: VbProjectContext = {},
+): CallHierarchyIncomingCall[] {
+  const symbols = context.symbols ?? [];
+  const documents = context.documents ?? [];
+  const target = callHierarchyTargetSymbol(item, symbols);
+  if (!target) {
+    return [];
+  }
+  const callers = new Map<string, { item: CallHierarchyItem; ranges: Range[] }>();
+  for (const document of documents) {
+    for (const call of callSitesInDocument(document)) {
+      const resolved = resolveCallTargetSymbol(document, call.name, call.offset, symbols);
+      if (!resolved || !sameSymbol(resolved, target)) {
+        continue;
+      }
+      const caller = enclosingCallableSymbol(document, call.offset, symbols);
+      if (!caller) {
+        continue;
+      }
+      const key = symbolKey(caller);
+      const existing =
+        callers.get(key) ??
+        ({
+          item: symbolToCallHierarchyItem(caller, callHierarchyRootUri(item)),
+          ranges: [],
+        } satisfies { item: CallHierarchyItem; ranges: Range[] });
+      existing.ranges.push(call.range);
+      callers.set(key, existing);
+    }
+  }
+  return [...callers.values()].map((caller) => ({
+    from: caller.item,
+    fromRanges: caller.ranges,
+  }));
+}
+
+export function getVbscriptOutgoingCalls(
+  item: CallHierarchyItem,
+  context: VbProjectContext = {},
+): CallHierarchyOutgoingCall[] {
+  const symbols = context.symbols ?? [];
+  const documents = context.documents ?? [];
+  const source = callHierarchyTargetSymbol(item, symbols);
+  if (!source?.scopeRange) {
+    return [];
+  }
+  const document = documents.find((candidate) => candidate.uri === source.sourceUri);
+  if (!document) {
+    return [];
+  }
+  const start = offsetAt(document.text, source.scopeRange.start);
+  const end = offsetAt(document.text, source.scopeRange.end);
+  const callees = new Map<string, { item: CallHierarchyItem; ranges: Range[] }>();
+  for (const call of callSitesInDocument(document).filter(
+    (candidate) => candidate.offset >= start && candidate.offset <= end,
+  )) {
+    const resolved = resolveCallTargetSymbol(document, call.name, call.offset, symbols);
+    if (!resolved || sameSymbol(resolved, source) || !isCallableHierarchySymbol(resolved)) {
+      continue;
+    }
+    const key = symbolKey(resolved);
+    const existing =
+      callees.get(key) ??
+      ({
+        item: symbolToCallHierarchyItem(resolved, callHierarchyRootUri(item)),
+        ranges: [],
+      } satisfies { item: CallHierarchyItem; ranges: Range[] });
+    existing.ranges.push(call.range);
+    callees.set(key, existing);
+  }
+  return [...callees.values()].map((callee) => ({
+    to: callee.item,
+    fromRanges: callee.ranges,
+  }));
 }
 
 export function collectVbscriptSymbols(
@@ -2353,6 +2659,283 @@ function countArguments(tokens: VbToken[]): number {
     }
   }
   return count;
+}
+
+function signatureLabelForDocumentation(symbol: VbSymbol): string {
+  if (symbol.kind === "function" || symbol.kind === "sub" || symbol.kind === "method") {
+    return signatureLabel(symbol);
+  }
+  return `${symbol.kind} ${symbol.name}${symbol.typeName ? ` As ${symbol.typeName}` : ""}`;
+}
+
+function tokenRangeAt(parsed: AspParsedDocument, offset: number): Range | undefined {
+  const token = significantTokens(parsed).find(
+    (item) => offset >= item.start && offset <= item.end,
+  );
+  return token ? rangeFromOffsets(parsed.text, token.start, token.end) : undefined;
+}
+
+function statementRangeAt(parsed: AspParsedDocument, offset: number): Range | undefined {
+  const statement = vbStatements(parsed).find(
+    (tokens) => offset >= (tokens[0]?.start ?? 0) && offset <= (tokens.at(-1)?.end ?? 0),
+  );
+  return statement
+    ? rangeFromOffsets(parsed.text, statement[0].start, statement.at(-1)?.end ?? statement[0].end)
+    : undefined;
+}
+
+function regionRangeAt(parsed: AspParsedDocument, offset: number): Range | undefined {
+  const region = parsed.regions.find(
+    (candidate) =>
+      (candidate.language === "vbscript" || candidate.language === "jscript") &&
+      offset >= candidate.start &&
+      offset <= candidate.end,
+  );
+  return region ? rangeFromOffsets(parsed.text, region.start, region.end) : undefined;
+}
+
+function uniqueRanges(ranges: Range[]): Range[] {
+  const keys = new Set<string>();
+  return ranges
+    .filter((range) => {
+      const key = `${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`;
+      if (keys.has(key)) {
+        return false;
+      }
+      keys.add(key);
+      return true;
+    })
+    .sort(
+      (left, right) =>
+        rangeSize(left) - rangeSize(right) ||
+        left.start.line - right.start.line ||
+        left.start.character - right.start.character,
+    );
+}
+
+function buildSelectionRangeChain(ranges: Range[]): SelectionRange {
+  let parent: SelectionRange | undefined;
+  for (const range of [...ranges].reverse()) {
+    parent = { range, parent };
+  }
+  return (
+    parent ?? {
+      range: {
+        start: { line: 0, character: 0 },
+        end: { line: 0, character: 0 },
+      },
+    }
+  );
+}
+
+function rangeSize(range: Range): number {
+  return (
+    (range.end.line - range.start.line) * 100_000 + range.end.character - range.start.character
+  );
+}
+
+function isRange(value: Range | undefined): value is Range {
+  return Boolean(value);
+}
+
+function rangeOverlapsOffsets(
+  sourceText: string,
+  range: Range,
+  startOffset: number,
+  endOffset: number,
+): boolean {
+  const start = offsetAt(sourceText, range.start);
+  const end = offsetAt(sourceText, range.end);
+  return start < endOffset && end > startOffset;
+}
+
+function topLevelArgumentStarts(tokens: VbToken[]): VbToken[] {
+  const starts: VbToken[] = [];
+  let depth = 0;
+  let expectingArgument = true;
+  for (const token of tokens.filter((item) => !isTriviaToken(item))) {
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")" && depth > 0) {
+      depth -= 1;
+    } else if (token.text === "," && depth === 0) {
+      expectingArgument = true;
+      continue;
+    }
+    if (expectingArgument && token.text !== "," && token.text !== ")") {
+      starts.push(token);
+      expectingArgument = false;
+    }
+  }
+  return starts;
+}
+
+function isNamedArgument(statement: VbToken[], token: VbToken): boolean {
+  const index = statement.findIndex((item) => item.start === token.start && item.end === token.end);
+  return statement[index + 1]?.text === ":=";
+}
+
+function typeNameAtOffset(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): string | undefined {
+  const member = memberAccessAt(parsed, offset);
+  if (member) {
+    return member.owner === ""
+      ? currentWithTypeName(parsed, offset, symbols)
+      : member.owner.toLowerCase() === "me"
+        ? currentClassName(parsed, offset, symbols)
+        : inferVariableType(member.owner, parsed, offset, symbols);
+  }
+  const token = identifierTokenAt(parsed, offset);
+  return token ? inferVariableType(token.text, parsed, offset, symbols) : undefined;
+}
+
+function isCallableHierarchySymbol(symbol: VbSymbol): boolean {
+  return ["function", "sub", "method", "property", "class"].includes(symbol.kind);
+}
+
+function symbolToCallHierarchyItem(
+  symbol: VbSymbol,
+  rootUri = symbol.sourceUri,
+): CallHierarchyItem {
+  const data: VbCallHierarchyData = {
+    uri: symbol.sourceUri,
+    name: symbol.name,
+    kind: symbol.kind,
+    memberOf: symbol.memberOf,
+    rootUri,
+    line: symbol.range.start.line,
+    character: symbol.range.start.character,
+  };
+  return {
+    name: symbol.memberOf ? `${symbol.memberOf}.${symbol.name}` : symbol.name,
+    kind: vbCallHierarchySymbolKind(symbol.kind),
+    detail: symbol.typeName ? `As ${symbol.typeName}` : symbol.kind,
+    uri: symbol.sourceUri,
+    range: symbol.scopeRange ?? symbol.range,
+    selectionRange: symbol.range,
+    data,
+  };
+}
+
+function vbCallHierarchySymbolKind(kind: VbSymbolKind): SymbolKind {
+  if (kind === "class") {
+    return SymbolKind.Class;
+  }
+  if (kind === "method" || kind === "sub") {
+    return SymbolKind.Method;
+  }
+  if (kind === "property" || kind === "field") {
+    return SymbolKind.Property;
+  }
+  return SymbolKind.Function;
+}
+
+function callHierarchyTargetSymbol(
+  item: CallHierarchyItem,
+  symbols: VbSymbol[],
+): VbSymbol | undefined {
+  const data = item.data as Partial<VbCallHierarchyData> | undefined;
+  return symbols.find(
+    (symbol) =>
+      symbol.sourceUri === (data?.uri ?? item.uri) &&
+      symbol.name.toLowerCase() ===
+        (data?.name ?? item.name.split(".").at(-1) ?? "").toLowerCase() &&
+      symbol.kind === (data?.kind ?? symbol.kind) &&
+      (symbol.memberOf ?? "").toLowerCase() === (data?.memberOf ?? "").toLowerCase() &&
+      symbol.range.start.line === (data?.line ?? item.selectionRange.start.line) &&
+      symbol.range.start.character === (data?.character ?? item.selectionRange.start.character),
+  );
+}
+
+function callHierarchyRootUri(item: CallHierarchyItem): string {
+  const data = item.data as Partial<VbCallHierarchyData> | undefined;
+  return data?.rootUri ?? item.uri;
+}
+
+function callSitesInDocument(
+  parsed: AspParsedDocument,
+): Array<{ name: string; offset: number; range: Range }> {
+  const calls: Array<{ name: string; offset: number; range: Range }> = [];
+  for (const statement of vbStatements(parsed)) {
+    for (let index = 0; index < statement.length; index += 1) {
+      if (statement[index].text !== "(" || statement[index - 1]?.kind !== "identifier") {
+        continue;
+      }
+      const name = callNameBefore(statement, index);
+      if (!name) {
+        continue;
+      }
+      const start = name.includes(".")
+        ? (statement[index - 3]?.start ?? statement[index - 1].start)
+        : statement[index - 1].start;
+      calls.push({
+        name,
+        offset: statement[index].start,
+        range: rangeFromOffsets(parsed.text, start, statement[index - 1].end),
+      });
+    }
+  }
+  return calls;
+}
+
+function resolveCallTargetSymbol(
+  parsed: AspParsedDocument,
+  name: string,
+  offset: number,
+  symbols: VbSymbol[],
+): VbSymbol | undefined {
+  const [owner, member] = name.includes(".") ? name.split(".", 2) : [undefined, name];
+  if (owner && member) {
+    const typeName =
+      owner.toLowerCase() === "me"
+        ? currentClassName(parsed, offset, symbols)
+        : inferVariableType(owner, parsed, offset, symbols);
+    if (!typeName) {
+      return undefined;
+    }
+    return symbols.find(
+      (symbol) =>
+        symbol.memberOf?.toLowerCase() === typeName.toLowerCase() &&
+        symbol.name.toLowerCase() === member.toLowerCase() &&
+        isCallableHierarchySymbol(symbol),
+    );
+  }
+  return visibleSymbols(parsed, offset, symbols).find(
+    (symbol) =>
+      symbol.name.toLowerCase() === name.toLowerCase() && isCallableHierarchySymbol(symbol),
+  );
+}
+
+function enclosingCallableSymbol(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): VbSymbol | undefined {
+  return symbols
+    .filter(
+      (symbol) =>
+        symbol.sourceUri === parsed.uri &&
+        isCallableHierarchySymbol(symbol) &&
+        rangeContainsOffset(parsed.text, symbol.scopeRange, offset),
+    )
+    .sort(
+      (left, right) =>
+        rangeSize(left.scopeRange ?? left.range) - rangeSize(right.scopeRange ?? right.range),
+    )[0];
+}
+
+function symbolKey(symbol: VbSymbol): string {
+  return [
+    symbol.sourceUri,
+    symbol.kind,
+    symbol.memberOf ?? "",
+    symbol.name.toLowerCase(),
+    symbol.range.start.line,
+    symbol.range.start.character,
+  ].join("|");
 }
 
 function isLikelyDynamicCall(name: string): boolean {

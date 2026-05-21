@@ -27,6 +27,8 @@ export interface AspSettings {
   legacyEncoding?: string;
   format?: AspFormatSettings;
   vbscript?: AspVbscriptSettings;
+  inlayHints?: AspInlayHintSettings;
+  codeLens?: AspCodeLensSettings;
 }
 
 export interface AspFormatSettings {
@@ -44,6 +46,17 @@ export interface AspFormattingOptions extends AspFormatSettings {
 export interface AspVbscriptSettings {
   typeChecking?: "basic" | "strict";
   comTypes?: Record<string, AspVbscriptComType>;
+}
+
+export interface AspInlayHintSettings {
+  variableTypes?: boolean;
+  parameterNames?: boolean;
+  functionReturnTypes?: boolean;
+}
+
+export interface AspCodeLensSettings {
+  references?: boolean;
+  includes?: boolean;
 }
 
 export interface AspVbscriptComType {

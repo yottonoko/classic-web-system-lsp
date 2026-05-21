@@ -130,6 +130,31 @@
           "type": "object",
           "default": {},
           "description": "Custom COM type catalog keyed by Prog.ID for Server.CreateObject type checking and completion."
+        },
+        "aspLsp.inlayHints.variableTypes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred VBScript variable type inlay hints."
+        },
+        "aspLsp.inlayHints.parameterNames": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show VBScript procedure parameter name inlay hints."
+        },
+        "aspLsp.inlayHints.functionReturnTypes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred VBScript function return type inlay hints."
+        },
+        "aspLsp.codeLens.references": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show VBScript reference count CodeLens entries."
+        },
+        "aspLsp.codeLens.includes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Classic ASP include CodeLens entries."
         }
       }
     }

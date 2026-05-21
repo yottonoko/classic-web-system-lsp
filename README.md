@@ -23,7 +23,7 @@ pnpm run build
 pnpm run package:vsix
 ```
 
-The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, code actions, formatting, and virtual include roots.
+The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, completion resolve, diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, selection ranges, inlay hints, call hierarchy, linked editing, code actions, CodeLens, formatting, and virtual include roots.
 
 ## VBScript Support
 
@@ -35,6 +35,7 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - definition and references for user-defined VBScript symbols
 - include-aware VBScript symbols for completions and definition jumps
 - rename, document highlights, signature help, workspace symbols, and semantic tokens for VBScript symbols
+- selection ranges, inlay hints, call hierarchy, type definition, implementation, and CodeLens for VBScript symbols
 - conservative support for `ReDim`, `For Each`, `With`, and `Server.CreateObject("ADODB.*")` completions
 
 ## Standalone Server
@@ -82,6 +83,11 @@ The VSIX build copies the standalone language server and its runtime dependencie
 - `aspLsp.format.alignAssignments`: align simple consecutive VBScript assignments
 - `aspLsp.vbscript.typeChecking`: `basic` or `strict`; strict enables VBScript type diagnostics
 - `aspLsp.vbscript.comTypes`: custom COM type catalog keyed by `Server.CreateObject` Prog.ID
+- `aspLsp.inlayHints.variableTypes`: show inferred VBScript variable types
+- `aspLsp.inlayHints.parameterNames`: show VBScript procedure parameter names at call sites
+- `aspLsp.inlayHints.functionReturnTypes`: show inferred VBScript function return types
+- `aspLsp.codeLens.references`: show VBScript reference counts
+- `aspLsp.codeLens.includes`: show include resolution lenses
 
 ## Current v1 Limits
 
@@ -89,6 +95,7 @@ The VSIX build copies the standalone language server and its runtime dependencie
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed. COM type information comes from built-in stubs or `aspLsp.vbscript.comTypes`.
+- Call hierarchy, CodeLens, type definition, and implementation are static and user-defined-symbol first; runtime COM dispatch is not modeled.
 - Full-document formatting is CST based and conservative. HTML-only ranges still use `vscode-html-languageservice`; ASP/VBScript ranges are formatted by the built-in formatter.
 
 ## Assistant Instructions
