@@ -413,7 +413,9 @@ class RpcServer {
       if (this.buffer.length < bodyEnd) {
         return;
       }
-      const message = JSON.parse(this.buffer.slice(bodyStart, bodyEnd).toString("utf8")) as JsonRpcMessage;
+      const message = JSON.parse(
+        this.buffer.slice(bodyStart, bodyEnd).toString("utf8"),
+      ) as JsonRpcMessage;
       this.buffer = this.buffer.slice(bodyEnd);
       if (message.id !== undefined) {
         this.responses.get(message.id)?.(message);

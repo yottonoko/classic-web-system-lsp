@@ -1,16 +1,35 @@
 import type { Position } from "vscode-languageserver-types";
 import { offsetAt, positionAt } from "./position";
-import type { AspEmbeddedLanguage, AspParsedDocument, AspRegion, SourceMap, SourceMapSegment, VirtualDocument } from "./types";
+import type {
+  AspEmbeddedLanguage,
+  AspParsedDocument,
+  AspRegion,
+  SourceMap,
+  SourceMapSegment,
+  VirtualDocument,
+} from "./types";
 
-export function buildVirtualDocuments(parsed: AspParsedDocument): Map<AspEmbeddedLanguage, VirtualDocument> {
-  const languages: AspEmbeddedLanguage[] = ["html", "css", "javascript", "vbscript", "jscript", "asp-directive"];
+export function buildVirtualDocuments(
+  parsed: AspParsedDocument,
+): Map<AspEmbeddedLanguage, VirtualDocument> {
+  const languages: AspEmbeddedLanguage[] = [
+    "html",
+    "css",
+    "javascript",
+    "vbscript",
+    "jscript",
+    "asp-directive",
+  ];
   const result = new Map<AspEmbeddedLanguage, VirtualDocument>();
   for (const language of languages) {
     const regions = parsed.regions.filter((region) => region.language === language);
     if (regions.length === 0 && language !== "html") {
       continue;
     }
-    result.set(language, buildVirtualDocument(parsed.uri, parsed.text, language, regions, parsed.regions));
+    result.set(
+      language,
+      buildVirtualDocument(parsed.uri, parsed.text, language, regions, parsed.regions),
+    );
   }
   return result;
 }
@@ -29,7 +48,8 @@ export function buildVirtualDocument(
   let text = "";
   const segments: SourceMapSegment[] = [];
   for (const region of regions) {
-    const prefix = languageId === "css" ? (region.kind === "style-attribute" ? "__asp_lsp__{" : "\n") : "";
+    const prefix =
+      languageId === "css" ? (region.kind === "style-attribute" ? "__asp_lsp__{" : "\n") : "";
     const suffix = languageId === "css" && region.kind === "style-attribute" ? "}\n" : "\n";
     const start = text.length + prefix.length;
     const content = maskNestedRegions(sourceText, region, allRegions, languageId);
@@ -49,10 +69,20 @@ export function buildVirtualDocument(
   };
 }
 
-function maskNestedRegions(sourceText: string, owner: AspRegion, allRegions: AspRegion[], languageId: AspEmbeddedLanguage): string {
+function maskNestedRegions(
+  sourceText: string,
+  owner: AspRegion,
+  allRegions: AspRegion[],
+  languageId: AspEmbeddedLanguage,
+): string {
   const chars = sourceText.slice(owner.contentStart, owner.contentEnd).split("");
   for (const nested of allRegions) {
-    if (nested === owner || nested.language === languageId || nested.start < owner.contentStart || nested.end > owner.contentEnd) {
+    if (
+      nested === owner ||
+      nested.language === languageId ||
+      nested.start < owner.contentStart ||
+      nested.end > owner.contentEnd
+    ) {
       continue;
     }
     const start = Math.max(0, nested.start - owner.contentStart);
@@ -66,7 +96,12 @@ function maskNestedRegions(sourceText: string, owner: AspRegion, allRegions: Asp
   return chars.join("");
 }
 
-function buildMaskedDocument(uri: string, sourceText: string, languageId: AspEmbeddedLanguage, regions: AspRegion[]): VirtualDocument {
+function buildMaskedDocument(
+  uri: string,
+  sourceText: string,
+  languageId: AspEmbeddedLanguage,
+  regions: AspRegion[],
+): VirtualDocument {
   const htmlRanges = regions.map((region) => [region.contentStart, region.contentEnd] as const);
   const chars = Array.from(sourceText);
   const segments: SourceMapSegment[] = [];
@@ -78,7 +113,8 @@ function buildMaskedDocument(uri: string, sourceText: string, languageId: AspEmb
       current = htmlRanges[rangeIndex];
     }
     if (!current || index < current[0] || index >= current[1]) {
-      chars[index] = sourceText[index] === "\n" || sourceText[index] === "\r" ? sourceText[index] : " ";
+      chars[index] =
+        sourceText[index] === "\n" || sourceText[index] === "\r" ? sourceText[index] : " ";
     }
   }
   for (const [start, end] of htmlRanges) {
@@ -93,18 +129,26 @@ function buildMaskedDocument(uri: string, sourceText: string, languageId: AspEmb
   };
 }
 
-export function createSourceMap(sourceText: string, virtualText: string, segments: SourceMapSegment[]): SourceMap {
+export function createSourceMap(
+  sourceText: string,
+  virtualText: string,
+  segments: SourceMapSegment[],
+): SourceMap {
   const map = {
     segments,
     toSourceOffset(offset: number): number | undefined {
-      const segment = segments.find((candidate) => offset >= candidate.virtualStart && offset <= candidate.virtualEnd);
+      const segment = segments.find(
+        (candidate) => offset >= candidate.virtualStart && offset <= candidate.virtualEnd,
+      );
       if (!segment) {
         return undefined;
       }
       return segment.sourceStart + (offset - segment.virtualStart);
     },
     toVirtualOffset(offset: number): number | undefined {
-      const segment = segments.find((candidate) => offset >= candidate.sourceStart && offset <= candidate.sourceEnd);
+      const segment = segments.find(
+        (candidate) => offset >= candidate.sourceStart && offset <= candidate.sourceEnd,
+      );
       if (!segment) {
         return undefined;
       }

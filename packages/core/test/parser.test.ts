@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { analyzeVbscript, buildVirtualDocuments, collectVbscriptSymbols, getVbscriptCompletions, getVbscriptDefinition, getVbscriptHover, parseAspDocument } from "../src";
+import {
+  analyzeVbscript,
+  buildVirtualDocuments,
+  collectVbscriptSymbols,
+  getVbscriptCompletions,
+  getVbscriptDefinition,
+  getVbscriptHover,
+  parseAspDocument,
+} from "../src";
 
 describe("parseAspDocument", () => {
   it("detects ASP blocks, directives, includes, style and script regions", () => {
@@ -17,9 +25,19 @@ Response.Write name
     expect(parsed.defaultLanguage).toBe("VBScript");
     expect(parsed.includes).toHaveLength(1);
     expect(parsed.directives[0].attributes.language).toBe("VBScript");
-    expect(parsed.regions.some((region) => region.kind === "style" && region.language === "css")).toBe(true);
-    expect(parsed.regions.some((region) => region.kind === "client-script" && region.language === "javascript")).toBe(true);
-    expect(parsed.regions.some((region) => region.kind === "asp-block" && region.language === "vbscript")).toBe(true);
+    expect(
+      parsed.regions.some((region) => region.kind === "style" && region.language === "css"),
+    ).toBe(true);
+    expect(
+      parsed.regions.some(
+        (region) => region.kind === "client-script" && region.language === "javascript",
+      ),
+    ).toBe(true);
+    expect(
+      parsed.regions.some(
+        (region) => region.kind === "asp-block" && region.language === "vbscript",
+      ),
+    ).toBe(true);
   });
 
   it("builds virtual documents with source maps", () => {
@@ -44,7 +62,11 @@ Response.Write name
     const source = `<div style="color: red; display: block"></div>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
     const docs = buildVirtualDocuments(parsed);
-    expect(parsed.regions.some((region) => region.kind === "style-attribute" && region.language === "css")).toBe(true);
+    expect(
+      parsed.regions.some(
+        (region) => region.kind === "style-attribute" && region.language === "css",
+      ),
+    ).toBe(true);
     expect(docs.get("css")?.text).toContain("__asp_lsp__{color: red; display: block}");
   });
 
@@ -71,15 +93,24 @@ Response. %>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
     const completions = getVbscriptCompletions(parsed, { line: 2, character: 9 });
     expect(completions.some((item) => item.label === "Write")).toBe(true);
-    expect(getVbscriptCompletions(parsed, { line: 1, character: 4 }).some((item) => item.label === "customerName")).toBe(true);
+    expect(
+      getVbscriptCompletions(parsed, { line: 1, character: 4 }).some(
+        (item) => item.label === "customerName",
+      ),
+    ).toBe(true);
   });
 
   it("warns about undeclared variables under Option Explicit", () => {
-    const parsed = parseAspDocument("file:///site/default.asp", `<% Option Explicit
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<% Option Explicit
 Response.Write missingName
-%>`);
+%>`,
+    );
     const result = analyzeVbscript(parsed);
-    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("missingName"))).toBe(true);
+    expect(
+      result.diagnostics.some((diagnostic) => diagnostic.message.includes("missingName")),
+    ).toBe(true);
   });
 
   it("does not treat strings or comments as undeclared variables", () => {
@@ -109,9 +140,21 @@ c.
 %>`,
     );
     const symbols = collectVbscriptSymbols(parsed);
-    expect(symbols.some((symbol) => symbol.kind === "class" && symbol.name === "Customer")).toBe(true);
-    expect(symbols.some((symbol) => symbol.kind === "field" && symbol.name === "Name" && symbol.memberOf === "Customer")).toBe(true);
-    expect(symbols.some((symbol) => symbol.kind === "method" && symbol.name === "Save" && symbol.memberOf === "Customer")).toBe(true);
+    expect(symbols.some((symbol) => symbol.kind === "class" && symbol.name === "Customer")).toBe(
+      true,
+    );
+    expect(
+      symbols.some(
+        (symbol) =>
+          symbol.kind === "field" && symbol.name === "Name" && symbol.memberOf === "Customer",
+      ),
+    ).toBe(true);
+    expect(
+      symbols.some(
+        (symbol) =>
+          symbol.kind === "method" && symbol.name === "Save" && symbol.memberOf === "Customer",
+      ),
+    ).toBe(true);
     const completions = getVbscriptCompletions(parsed, { line: 8, character: 2 }, { symbols });
     expect(completions.some((item) => item.label === "Name")).toBe(true);
     expect(completions.some((item) => item.label === "Save")).toBe(true);
@@ -144,7 +187,11 @@ Response.Write BuildName()
 %>`,
     );
     const symbols = collectVbscriptSymbols(parsed);
-    expect(getVbscriptHover(parsed, { line: 3, character: 17 }, { symbols })).toContain("function BuildName");
-    expect(getVbscriptDefinition(parsed, { line: 3, character: 17 }, { symbols })?.name).toBe("BuildName");
+    expect(getVbscriptHover(parsed, { line: 3, character: 17 }, { symbols })).toContain(
+      "function BuildName",
+    );
+    expect(getVbscriptDefinition(parsed, { line: 3, character: 17 }, { symbols })?.name).toBe(
+      "BuildName",
+    );
   });
 });

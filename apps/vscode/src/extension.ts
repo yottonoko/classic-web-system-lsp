@@ -1,5 +1,10 @@
 import * as vscode from "vscode";
-import { LanguageClient, TransportKind, type LanguageClientOptions, type ServerOptions } from "vscode-languageclient/node";
+import {
+  LanguageClient,
+  TransportKind,
+  type LanguageClientOptions,
+  type ServerOptions,
+} from "vscode-languageclient/node";
 import { getServerModulePath } from "./server-path";
 
 let client: LanguageClient | undefined;
@@ -22,7 +27,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
   };
 
-  client = new LanguageClient("asp-lsp", "Classic ASP Language Server", serverOptions, clientOptions);
+  client = new LanguageClient(
+    "asp-lsp",
+    "Classic ASP Language Server",
+    serverOptions,
+    clientOptions,
+  );
   context.subscriptions.push(client);
   await client.start();
 }

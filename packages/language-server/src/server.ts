@@ -17,7 +17,13 @@ import {
   TextDocuments,
   TextDocumentSyncKind,
 } from "vscode-languageserver/node";
-import type { CompletionItem, Diagnostic, DocumentLink, Range, TextEdit } from "vscode-languageserver/node";
+import type {
+  CompletionItem,
+  Diagnostic,
+  DocumentLink,
+  Range,
+  TextEdit,
+} from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
   analyzeVbscript,
@@ -35,7 +41,10 @@ import {
   type VbProjectContext,
 } from "@asp-lsp/core";
 import { getCSSLanguageService } from "vscode-css-languageservice";
-import { getLanguageService as getHtmlLanguageService, TokenType } from "vscode-html-languageservice";
+import {
+  getLanguageService as getHtmlLanguageService,
+  TokenType,
+} from "vscode-html-languageservice";
 import ts from "typescript";
 
 const connection = createConnection(ProposedFeatures.all);
@@ -53,23 +62,25 @@ interface CachedDocument {
 
 const cache = new Map<string, CachedDocument>();
 
-connection.onInitialize((_params: InitializeParams): InitializeResult => ({
-  capabilities: {
-    textDocumentSync: TextDocumentSyncKind.Incremental,
-    completionProvider: {
-      triggerCharacters: ["<", ".", "\"", "'", ":", "#"],
-      resolveProvider: false,
+connection.onInitialize(
+  (_params: InitializeParams): InitializeResult => ({
+    capabilities: {
+      textDocumentSync: TextDocumentSyncKind.Incremental,
+      completionProvider: {
+        triggerCharacters: ["<", ".", '"', "'", ":", "#"],
+        resolveProvider: false,
+      },
+      hoverProvider: true,
+      definitionProvider: true,
+      referencesProvider: true,
+      documentSymbolProvider: true,
+      foldingRangeProvider: true,
+      documentLinkProvider: { resolveProvider: false },
+      documentFormattingProvider: false,
+      documentRangeFormattingProvider: true,
     },
-    hoverProvider: true,
-    definitionProvider: true,
-    referencesProvider: true,
-    documentSymbolProvider: true,
-    foldingRangeProvider: true,
-    documentLinkProvider: { resolveProvider: false },
-    documentFormattingProvider: false,
-    documentRangeFormattingProvider: true,
-  },
-}));
+  }),
+);
 
 documents.onDidOpen((event) => validate(event.document));
 documents.onDidChangeContent((event) => validate(event.document));
@@ -104,7 +115,11 @@ connection.onCompletion((params) => {
     return [];
   }
   if (region.language === "vbscript" || region.language === "jscript") {
-    return getVbscriptCompletions(cached.parsed, params.position, buildVbProjectContext(cached, cachedSettings(cached.source.uri)));
+    return getVbscriptCompletions(
+      cached.parsed,
+      params.position,
+      buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    );
   }
   if (region.language === "html") {
     const virtual = cached.virtuals.get("html");
@@ -112,7 +127,11 @@ connection.onCompletion((params) => {
       return [];
     }
     const virtualDocument = toTextDocument(virtual);
-    return htmlService.doComplete(virtualDocument, params.position, htmlService.parseHTMLDocument(virtualDocument)).items;
+    return htmlService.doComplete(
+      virtualDocument,
+      params.position,
+      htmlService.parseHTMLDocument(virtualDocument),
+    ).items;
   }
   if (region.language === "css") {
     return cssCompletion(cached, params, "css");
@@ -167,7 +186,11 @@ connection.onDefinition((params) => {
   if (!region || (region.language !== "vbscript" && region.language !== "jscript")) {
     return null;
   }
-  const symbol = getVbscriptDefinition(cached.parsed, params.position, buildVbProjectContext(cached, cachedSettings(cached.source.uri)));
+  const symbol = getVbscriptDefinition(
+    cached.parsed,
+    params.position,
+    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+  );
   return symbol ? Location.create(symbol.sourceUri, symbol.range) : null;
 });
 
@@ -180,9 +203,11 @@ connection.onReferences((params: ReferenceParams) => {
   if (!region || (region.language !== "vbscript" && region.language !== "jscript")) {
     return [];
   }
-  return getVbscriptReferences(cached.parsed, params.position, buildVbProjectContext(cached, cachedSettings(cached.source.uri))).map((reference) =>
-    Location.create(reference.uri, reference.range),
-  );
+  return getVbscriptReferences(
+    cached.parsed,
+    params.position,
+    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+  ).map((reference) => Location.create(reference.uri, reference.range));
 });
 
 connection.onDocumentSymbol((params) => {
@@ -192,7 +217,10 @@ connection.onDocumentSymbol((params) => {
   }
   const htmlVirtual = cached.virtuals.get("html");
   const htmlSymbols: DocumentSymbol[] = htmlVirtual
-    ? htmlService.findDocumentSymbols2(toTextDocument(htmlVirtual), htmlService.parseHTMLDocument(toTextDocument(htmlVirtual)))
+    ? htmlService.findDocumentSymbols2(
+        toTextDocument(htmlVirtual),
+        htmlService.parseHTMLDocument(toTextDocument(htmlVirtual)),
+      )
     : [];
   return [...htmlSymbols, ...getVbscriptDocumentSymbols(cached.parsed)];
 });
@@ -207,7 +235,11 @@ connection.onFoldingRanges((params) => {
     ? htmlService.getFoldingRanges(toTextDocument(htmlVirtual), {})
     : [];
   const aspRanges: FoldingRange[] = cached.parsed.regions
-    .filter((region) => region.kind !== "html" && cached.source.positionAt(region.start).line !== cached.source.positionAt(region.end).line)
+    .filter(
+      (region) =>
+        region.kind !== "html" &&
+        cached.source.positionAt(region.start).line !== cached.source.positionAt(region.end).line,
+    )
     .map((region) => ({
       startLine: cached.source.positionAt(region.start).line,
       endLine: cached.source.positionAt(region.end).line,
@@ -221,7 +253,12 @@ connection.onDocumentLinks((params) => {
     return [];
   }
   return cached.parsed.includes.map((include): DocumentLink => {
-    const targetPath = resolveIncludePath(cached.source.uri, include.path, include.mode, cachedSettings(cached.source.uri));
+    const targetPath = resolveIncludePath(
+      cached.source.uri,
+      include.path,
+      include.mode,
+      cachedSettings(cached.source.uri),
+    );
     return { range: include.range, target: pathToFileUri(targetPath) };
   });
 });
@@ -254,7 +291,11 @@ async function validate(document: TextDocument): Promise<void> {
   const virtuals = buildVirtualDocuments(parsed);
   const cached = { source: document, parsed, virtuals };
   cache.set(document.uri, cached);
-  const diagnostics: Diagnostic[] = [...parsed.diagnostics, ...analyzeVbscript(parsed, buildVbProjectContext(cached, settings)).diagnostics, ...includeDiagnostics(cached, settings)];
+  const diagnostics: Diagnostic[] = [
+    ...parsed.diagnostics,
+    ...analyzeVbscript(parsed, buildVbProjectContext(cached, settings)).diagnostics,
+    ...includeDiagnostics(cached, settings),
+  ];
   if (!isIncDocument(document.uri)) {
     diagnostics.push(...htmlDiagnostics(cached));
   }
@@ -295,7 +336,10 @@ function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
     return [];
   }
   const doc = toTextDocument(virtual);
-  return cssService.doValidation(doc, cssService.parseStylesheet(doc)).map((diagnostic) => remapDiagnostic(virtual, diagnostic, "asp-lsp-css")).filter(isDiagnostic);
+  return cssService
+    .doValidation(doc, cssService.parseStylesheet(doc))
+    .map((diagnostic) => remapDiagnostic(virtual, diagnostic, "asp-lsp-css"))
+    .filter(isDiagnostic);
 }
 
 function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
@@ -308,10 +352,16 @@ function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnosti
   const fileName = jsVirtualFileName(virtual.uri);
   const syntactic = service.getSyntacticDiagnostics(fileName);
   const semantic = settings.checkJs ? service.getSemanticDiagnostics(fileName) : [];
-  return [...syntactic, ...semantic].map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic)).filter(isDiagnostic);
+  return [...syntactic, ...semantic]
+    .map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic))
+    .filter(isDiagnostic);
 }
 
-function cssCompletion(cached: CachedDocument, params: TextDocumentPositionParams, language: "css"): CompletionItem[] {
+function cssCompletion(
+  cached: CachedDocument,
+  params: TextDocumentPositionParams,
+  language: "css",
+): CompletionItem[] {
   const virtual = cached.virtuals.get(language);
   if (!virtual) {
     return [];
@@ -324,7 +374,10 @@ function cssCompletion(cached: CachedDocument, params: TextDocumentPositionParam
   return cssService.doComplete(doc, position, cssService.parseStylesheet(doc)).items;
 }
 
-function jsCompletion(cached: CachedDocument, params: TextDocumentPositionParams): CompletionItem[] {
+function jsCompletion(
+  cached: CachedDocument,
+  params: TextDocumentPositionParams,
+): CompletionItem[] {
   const virtual = cached.virtuals.get("javascript");
   if (!virtual) {
     return [];
@@ -334,7 +387,9 @@ function jsCompletion(cached: CachedDocument, params: TextDocumentPositionParams
     return [];
   }
   const fileName = jsVirtualFileName(virtual.uri);
-  const service = ts.createLanguageService(createJsLanguageHost(virtual, cachedSettings(cached.source.uri)));
+  const service = ts.createLanguageService(
+    createJsLanguageHost(virtual, cachedSettings(cached.source.uri)),
+  );
   const offset = toTextDocument(virtual).offsetAt(virtualPosition);
   return (
     service.getCompletionsAtPosition(fileName, offset, {})?.entries.map((entry) => ({
@@ -346,7 +401,11 @@ function jsCompletion(cached: CachedDocument, params: TextDocumentPositionParams
 }
 
 function aspHover(cached: CachedDocument, params: TextDocumentPositionParams): Hover | null {
-  const value = getVbscriptHover(cached.parsed, params.position, buildVbProjectContext(cached, cachedSettings(cached.source.uri)));
+  const value = getVbscriptHover(
+    cached.parsed,
+    params.position,
+    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+  );
   return value ? { contents: { kind: "markdown", value } } : null;
 }
 
@@ -358,7 +417,10 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
   };
 }
 
-function collectVbProjectDocuments(root: AspParsedDocument, settings: AspSettings): AspParsedDocument[] {
+function collectVbProjectDocuments(
+  root: AspParsedDocument,
+  settings: AspSettings,
+): AspParsedDocument[] {
   const documents: AspParsedDocument[] = [];
   const visited = new Set<string>();
   const visit = (document: AspParsedDocument, depth: number): void => {
@@ -419,7 +481,11 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
   return diagnostics;
 }
 
-function findIncludeCycle(owner: string, start: string, settings: AspSettings): string[] | undefined {
+function findIncludeCycle(
+  owner: string,
+  start: string,
+  settings: AspSettings,
+): string[] | undefined {
   if (!fs.existsSync(start)) {
     return undefined;
   }
@@ -447,7 +513,12 @@ function findIncludeCycle(owner: string, start: string, settings: AspSettings): 
     const text = fs.readFileSync(normalized, "utf8");
     const parsed = parseAspDocument(pathToFileUri(normalized), text, settings);
     for (const include of parsed.includes) {
-      const next = resolveIncludePath(pathToFileUri(normalized), include.path, include.mode, settings);
+      const next = resolveIncludePath(
+        pathToFileUri(normalized),
+        include.path,
+        include.mode,
+        settings,
+      );
       if (!fs.existsSync(next)) {
         continue;
       }
@@ -463,7 +534,11 @@ function findIncludeCycle(owner: string, start: string, settings: AspSettings): 
   return search(start, 0);
 }
 
-function remapDiagnostic(virtual: VirtualDocument, diagnostic: Diagnostic, source: string): Diagnostic | undefined {
+function remapDiagnostic(
+  virtual: VirtualDocument,
+  diagnostic: Diagnostic,
+  source: string,
+): Diagnostic | undefined {
   const start = virtual.sourceMap.toSourcePosition(diagnostic.range.start);
   const end = virtual.sourceMap.toSourcePosition(diagnostic.range.end);
   if (!start || !end) {
@@ -472,7 +547,10 @@ function remapDiagnostic(virtual: VirtualDocument, diagnostic: Diagnostic, sourc
   return { ...diagnostic, range: { start, end }, source };
 }
 
-function tsDiagnosticToLsp(virtual: VirtualDocument, diagnostic: ts.Diagnostic): Diagnostic | undefined {
+function tsDiagnosticToLsp(
+  virtual: VirtualDocument,
+  diagnostic: ts.Diagnostic,
+): Diagnostic | undefined {
   if (diagnostic.start === undefined || diagnostic.length === undefined) {
     return undefined;
   }
@@ -485,7 +563,10 @@ function tsDiagnosticToLsp(virtual: VirtualDocument, diagnostic: ts.Diagnostic):
     return undefined;
   }
   return {
-    severity: diagnostic.category === ts.DiagnosticCategory.Error ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning,
+    severity:
+      diagnostic.category === ts.DiagnosticCategory.Error
+        ? DiagnosticSeverity.Error
+        : DiagnosticSeverity.Warning,
     range: { start: sourceStart, end: sourceEnd },
     message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
     source: "asp-lsp-typescript",
@@ -514,7 +595,10 @@ function getCached(uri: string): CachedDocument | undefined {
 function findRegionAt(parsed: AspParsedDocument, offset: number) {
   return parsed.regions
     .filter((region) => offset >= region.contentStart && offset <= region.contentEnd)
-    .sort((left, right) => left.contentEnd - left.contentStart - (right.contentEnd - right.contentStart))[0];
+    .sort(
+      (left, right) =>
+        left.contentEnd - left.contentStart - (right.contentEnd - right.contentStart),
+    )[0];
 }
 
 function cachedSettings(uri: string): AspSettings {
@@ -522,14 +606,19 @@ function cachedSettings(uri: string): AspSettings {
   if (existing) {
     return existing;
   }
-  const settings: AspSettings = { ...globalSettings, virtualRoot: globalSettings.virtualRoot || workspaceRootFromUri(uri) };
+  const settings: AspSettings = {
+    ...globalSettings,
+    virtualRoot: globalSettings.virtualRoot || workspaceRootFromUri(uri),
+  };
   settingsByUri.set(uri, settings);
   return settings;
 }
 
 async function refreshConfiguration(): Promise<void> {
   try {
-    globalSettings = normalizeSettings((await connection.workspace.getConfiguration("aspLsp")) as Record<string, unknown>);
+    globalSettings = normalizeSettings(
+      (await connection.workspace.getConfiguration("aspLsp")) as Record<string, unknown>,
+    );
     settingsByUri.clear();
     for (const document of documents.all()) {
       await validate(document);
@@ -552,24 +641,35 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
   return {
     defaultLanguage: settings.defaultLanguage === "JScript" ? "JScript" : "VBScript",
     checkJs: settings.checkJs === true,
-    virtualRoot: typeof settings.virtualRoot === "string" && settings.virtualRoot.length > 0 ? settings.virtualRoot : undefined,
-    legacyEncoding: typeof settings.legacyEncoding === "string" ? settings.legacyEncoding : undefined,
+    virtualRoot:
+      typeof settings.virtualRoot === "string" && settings.virtualRoot.length > 0
+        ? settings.virtualRoot
+        : undefined,
+    legacyEncoding:
+      typeof settings.legacyEncoding === "string" ? settings.legacyEncoding : undefined,
   };
 }
 
 function rangeOverlapsNonHtml(cached: CachedDocument, range: Range): boolean {
   const start = cached.source.offsetAt(range.start);
   const end = cached.source.offsetAt(range.end);
-  return cached.parsed.regions.some((region) => region.kind !== "html" && region.start < end && region.end > start);
+  return cached.parsed.regions.some(
+    (region) => region.kind !== "html" && region.start < end && region.end > start,
+  );
 }
 
-function createJsLanguageHost(virtual: VirtualDocument, settings: AspSettings): ts.LanguageServiceHost {
+function createJsLanguageHost(
+  virtual: VirtualDocument,
+  settings: AspSettings,
+): ts.LanguageServiceHost {
   const fileName = jsVirtualFileName(virtual.uri);
   return {
     getScriptFileNames: () => [fileName],
     getScriptVersion: () => "0",
-    getScriptSnapshot: (requested) => (requested === fileName ? ts.ScriptSnapshot.fromString(virtual.text) : undefined),
-    getScriptKind: (requested) => (requested === fileName ? ts.ScriptKind.JS : ts.ScriptKind.Unknown),
+    getScriptSnapshot: (requested) =>
+      requested === fileName ? ts.ScriptSnapshot.fromString(virtual.text) : undefined,
+    getScriptKind: (requested) =>
+      requested === fileName ? ts.ScriptKind.JS : ts.ScriptKind.Unknown,
     getCurrentDirectory: () => process.cwd(),
     getCompilationSettings: () => ({
       allowJs: true,
@@ -585,16 +685,26 @@ function createJsLanguageHost(virtual: VirtualDocument, settings: AspSettings): 
   };
 }
 
-function resolveIncludePath(ownerUri: string, includePath: string, mode: "file" | "virtual", settings: AspSettings): string {
+function resolveIncludePath(
+  ownerUri: string,
+  includePath: string,
+  mode: "file" | "virtual",
+  settings: AspSettings,
+): string {
   if (mode === "virtual") {
-    return path.resolve(settings.virtualRoot ?? workspaceRootFromUri(ownerUri), includePath.replace(/^\/+/, ""));
+    return path.resolve(
+      settings.virtualRoot ?? workspaceRootFromUri(ownerUri),
+      includePath.replace(/^\/+/, ""),
+    );
   }
   return path.resolve(path.dirname(uriToFileName(ownerUri)), includePath);
 }
 
 function workspaceRootFromUri(uri: string): string {
   const fileName = uriToFileName(uri);
-  return fs.statSync(fileName, { throwIfNoEntry: false })?.isDirectory() ? fileName : path.dirname(fileName);
+  return fs.statSync(fileName, { throwIfNoEntry: false })?.isDirectory()
+    ? fileName
+    : path.dirname(fileName);
 }
 
 function uriToFileName(uri: string): string {

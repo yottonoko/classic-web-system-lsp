@@ -23,6 +23,7 @@ Use `pnpm`, not `npm`.
 pnpm install
 pnpm run typecheck
 pnpm run lint
+pnpm run format:check
 pnpm run test
 pnpm run build
 ```

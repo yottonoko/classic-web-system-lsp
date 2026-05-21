@@ -1,9 +1,23 @@
 import { CompletionItemKind, DiagnosticSeverity, SymbolKind } from "vscode-languageserver-types";
-import type { CompletionItem, Diagnostic, DocumentSymbol, Position, Range } from "vscode-languageserver-types";
+import type {
+  CompletionItem,
+  Diagnostic,
+  DocumentSymbol,
+  Position,
+  Range,
+} from "vscode-languageserver-types";
 import { offsetAt, rangeFromOffsets } from "./position";
 import type { AspParsedDocument, AspRegion } from "./types";
 
-export type VbSymbolKind = "variable" | "constant" | "function" | "sub" | "class" | "method" | "field" | "property";
+export type VbSymbolKind =
+  | "variable"
+  | "constant"
+  | "function"
+  | "sub"
+  | "class"
+  | "method"
+  | "field"
+  | "property";
 
 export interface VbSymbol {
   name: string;
@@ -32,14 +46,23 @@ const builtins: CompletionItem[] = [
     label: "Request",
     kind: CompletionItemKind.Variable,
     detail: "Classic ASP Request object",
-    documentation: "Reads client request values such as QueryString, Form, Cookies, and ServerVariables.",
+    documentation:
+      "Reads client request values such as QueryString, Form, Cookies, and ServerVariables.",
   },
   { label: "Response", kind: CompletionItemKind.Variable, detail: "Classic ASP Response object" },
   { label: "Session", kind: CompletionItemKind.Variable, detail: "Classic ASP Session object" },
-  { label: "Application", kind: CompletionItemKind.Variable, detail: "Classic ASP Application object" },
+  {
+    label: "Application",
+    kind: CompletionItemKind.Variable,
+    detail: "Classic ASP Application object",
+  },
   { label: "Server", kind: CompletionItemKind.Variable, detail: "Classic ASP Server object" },
   { label: "ASPError", kind: CompletionItemKind.Class, detail: "Classic ASP error object" },
-  { label: "Option Explicit", kind: CompletionItemKind.Keyword, detail: "Require explicit variable declarations" },
+  {
+    label: "Option Explicit",
+    kind: CompletionItemKind.Keyword,
+    detail: "Require explicit variable declarations",
+  },
   { label: "Dim", kind: CompletionItemKind.Keyword },
   { label: "Set", kind: CompletionItemKind.Keyword },
   { label: "Const", kind: CompletionItemKind.Keyword },
@@ -58,18 +81,49 @@ const builtinDescriptions: Record<string, string> = {
 };
 
 const memberCompletions: Record<string, CompletionItem[]> = {
-  request: ["QueryString", "Form", "Cookies", "ServerVariables", "ClientCertificate", "TotalBytes", "BinaryRead"].map(methodItem),
-  response: ["Write", "Redirect", "End", "Flush", "Clear", "Cookies", "Status", "ContentType", "Charset"].map(methodItem),
-  session: ["Abandon", "Contents", "StaticObjects", "SessionID", "Timeout", "CodePage", "LCID"].map(methodItem),
+  request: [
+    "QueryString",
+    "Form",
+    "Cookies",
+    "ServerVariables",
+    "ClientCertificate",
+    "TotalBytes",
+    "BinaryRead",
+  ].map(methodItem),
+  response: [
+    "Write",
+    "Redirect",
+    "End",
+    "Flush",
+    "Clear",
+    "Cookies",
+    "Status",
+    "ContentType",
+    "Charset",
+  ].map(methodItem),
+  session: ["Abandon", "Contents", "StaticObjects", "SessionID", "Timeout", "CodePage", "LCID"].map(
+    methodItem,
+  ),
   application: ["Lock", "Unlock", "Contents", "StaticObjects"].map(methodItem),
-  server: ["CreateObject", "MapPath", "HTMLEncode", "URLEncode", "ScriptTimeout", "GetLastError"].map(methodItem),
+  server: [
+    "CreateObject",
+    "MapPath",
+    "HTMLEncode",
+    "URLEncode",
+    "ScriptTimeout",
+    "GetLastError",
+  ].map(methodItem),
 };
 
 function methodItem(label: string): CompletionItem {
   return { label, kind: CompletionItemKind.Method };
 }
 
-export function getVbscriptCompletions(parsed: AspParsedDocument, position: Position, context: VbProjectContext = {}): CompletionItem[] {
+export function getVbscriptCompletions(
+  parsed: AspParsedDocument,
+  position: Position,
+  context: VbProjectContext = {},
+): CompletionItem[] {
   const sourceOffset = offsetAt(parsed.text, position);
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed);
   const prefix = parsed.text.slice(Math.max(0, sourceOffset - 96), sourceOffset);
@@ -80,13 +134,22 @@ export function getVbscriptCompletions(parsed: AspParsedDocument, position: Posi
     if (builtin) {
       return builtin;
     }
-    const className = ownerName.toLowerCase() === "me" ? currentClassName(parsed, sourceOffset, symbols) : inferVariableType(ownerName, parsed, sourceOffset, symbols);
+    const className =
+      ownerName.toLowerCase() === "me"
+        ? currentClassName(parsed, sourceOffset, symbols)
+        : inferVariableType(ownerName, parsed, sourceOffset, symbols);
     return className ? classMemberCompletions(className, symbols) : [];
   }
-  return dedupeCompletions([...builtins, ...visibleSymbols(parsed, sourceOffset, symbols).map(symbolToCompletion)]);
+  return dedupeCompletions([
+    ...builtins,
+    ...visibleSymbols(parsed, sourceOffset, symbols).map(symbolToCompletion),
+  ]);
 }
 
-export function analyzeVbscript(parsed: AspParsedDocument, context: VbProjectContext = {}): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
+export function analyzeVbscript(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed);
   const diagnostics: Diagnostic[] = [];
   const scriptText = getServerScriptText(parsed);
@@ -99,16 +162,33 @@ export function analyzeVbscript(parsed: AspParsedDocument, context: VbProjectCon
 
 export function getVbscriptDocumentSymbols(parsed: AspParsedDocument): DocumentSymbol[] {
   return collectVbscriptSymbols(parsed)
-    .filter((symbol) => symbol.sourceUri === parsed.uri && (symbol.kind === "function" || symbol.kind === "sub" || symbol.kind === "class" || symbol.kind === "method" || symbol.kind === "property"))
+    .filter(
+      (symbol) =>
+        symbol.sourceUri === parsed.uri &&
+        (symbol.kind === "function" ||
+          symbol.kind === "sub" ||
+          symbol.kind === "class" ||
+          symbol.kind === "method" ||
+          symbol.kind === "property"),
+    )
     .map((symbol) => ({
       name: symbol.memberOf ? `${symbol.memberOf}.${symbol.name}` : symbol.name,
-      kind: symbol.kind === "class" ? SymbolKind.Class : symbol.kind === "property" ? SymbolKind.Property : SymbolKind.Function,
+      kind:
+        symbol.kind === "class"
+          ? SymbolKind.Class
+          : symbol.kind === "property"
+            ? SymbolKind.Property
+            : SymbolKind.Function,
       range: symbol.range,
       selectionRange: symbol.range,
     }));
 }
 
-export function getVbscriptHover(parsed: AspParsedDocument, position: Position, context: VbProjectContext = {}): string | undefined {
+export function getVbscriptHover(
+  parsed: AspParsedDocument,
+  position: Position,
+  context: VbProjectContext = {},
+): string | undefined {
   const sourceOffset = offsetAt(parsed.text, position);
   const word = wordAt(parsed.text, sourceOffset);
   if (!word) {
@@ -118,20 +198,40 @@ export function getVbscriptHover(parsed: AspParsedDocument, position: Position, 
   if (builtin) {
     return builtin;
   }
-  const symbol = resolveSymbolAt(parsed, sourceOffset, context.symbols ?? collectVbscriptSymbols(parsed));
+  const symbol = resolveSymbolAt(
+    parsed,
+    sourceOffset,
+    context.symbols ?? collectVbscriptSymbols(parsed),
+  );
   if (!symbol) {
     return undefined;
   }
-  const container = symbol.memberOf ? ` of ${symbol.memberOf}` : symbol.scopeName ? ` in ${symbol.scopeName}` : "";
+  const container = symbol.memberOf
+    ? ` of ${symbol.memberOf}`
+    : symbol.scopeName
+      ? ` in ${symbol.scopeName}`
+      : "";
   const type = symbol.typeName ? ` As ${symbol.typeName}` : "";
   return `${symbol.kind} ${symbol.name}${type}${container}`;
 }
 
-export function getVbscriptDefinition(parsed: AspParsedDocument, position: Position, context: VbProjectContext = {}): VbSymbol | undefined {
-  return resolveSymbolAt(parsed, offsetAt(parsed.text, position), context.symbols ?? collectVbscriptSymbols(parsed));
+export function getVbscriptDefinition(
+  parsed: AspParsedDocument,
+  position: Position,
+  context: VbProjectContext = {},
+): VbSymbol | undefined {
+  return resolveSymbolAt(
+    parsed,
+    offsetAt(parsed.text, position),
+    context.symbols ?? collectVbscriptSymbols(parsed),
+  );
 }
 
-export function getVbscriptReferences(parsed: AspParsedDocument, position: Position, context: VbProjectContext = {}): VbReference[] {
+export function getVbscriptReferences(
+  parsed: AspParsedDocument,
+  position: Position,
+  context: VbProjectContext = {},
+): VbReference[] {
   const symbol = getVbscriptDefinition(parsed, position, context);
   if (!symbol) {
     return [];
@@ -146,7 +246,10 @@ export function getVbscriptReferences(parsed: AspParsedDocument, position: Posit
       let match: RegExpExecArray | null;
       while ((match = tokenPattern.exec(searchable)) !== null) {
         const start = region.contentStart + match.index;
-        references.push({ uri: document.uri, range: rangeFromOffsets(document.text, start, start + match[0].length) });
+        references.push({
+          uri: document.uri,
+          range: rangeFromOffsets(document.text, start, start + match[0].length),
+        });
       }
     }
   }
@@ -163,7 +266,12 @@ export function collectVbscriptSymbols(parsed: AspParsedDocument): VbSymbol[] {
   return symbols;
 }
 
-function addDeclarationSymbols(parsed: AspParsedDocument, region: AspRegion, text: string, symbols: VbSymbol[]): void {
+function addDeclarationSymbols(
+  parsed: AspParsedDocument,
+  region: AspRegion,
+  text: string,
+  symbols: VbSymbol[],
+): void {
   const sourceText = parsed.text;
   const searchableText = maskVbscriptStringsAndComments(text);
   const contexts = buildContexts(sourceText, region.contentStart, searchableText);
@@ -172,7 +280,13 @@ function addDeclarationSymbols(parsed: AspParsedDocument, region: AspRegion, tex
   addVariableSymbols(parsed, region.contentStart, searchableText, symbols, contexts);
 }
 
-function addClassSymbols(parsed: AspParsedDocument, baseOffset: number, text: string, symbols: VbSymbol[], contexts: VbContext[]): void {
+function addClassSymbols(
+  parsed: AspParsedDocument,
+  baseOffset: number,
+  text: string,
+  symbols: VbSymbol[],
+  contexts: VbContext[],
+): void {
   for (const context of contexts.filter((item) => item.kind === "class")) {
     const start = baseOffset + context.nameStart;
     symbols.push({
@@ -180,22 +294,42 @@ function addClassSymbols(parsed: AspParsedDocument, baseOffset: number, text: st
       kind: "class",
       range: rangeFromOffsets(parsed.text, start, start + context.name.length),
       sourceUri: parsed.uri,
-      scopeRange: rangeFromOffsets(parsed.text, baseOffset + context.start, baseOffset + context.end),
+      scopeRange: rangeFromOffsets(
+        parsed.text,
+        baseOffset + context.start,
+        baseOffset + context.end,
+      ),
     });
   }
 }
 
-function addProcedureSymbols(parsed: AspParsedDocument, baseOffset: number, text: string, symbols: VbSymbol[], contexts: VbContext[]): void {
-  const procedurePattern = /^\s*(?:(Public|Private)\s+)?(Sub|Function|Property\s+(?:Get|Let|Set))\s+([A-Za-z][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?/gim;
+function addProcedureSymbols(
+  parsed: AspParsedDocument,
+  baseOffset: number,
+  text: string,
+  symbols: VbSymbol[],
+  contexts: VbContext[],
+): void {
+  const procedurePattern =
+    /^\s*(?:(Public|Private)\s+)?(Sub|Function|Property\s+(?:Get|Let|Set))\s+([A-Za-z][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?/gim;
   let match: RegExpExecArray | null;
   while ((match = procedurePattern.exec(text)) !== null) {
     const name = match[3];
     const absoluteStart = baseOffset + match.index + match[0].indexOf(name);
     const context = innermostContext(contexts, match.index);
-    const scope = context?.kind === "procedure" && context.name.toLowerCase() === name.toLowerCase() ? context : undefined;
+    const scope =
+      context?.kind === "procedure" && context.name.toLowerCase() === name.toLowerCase()
+        ? context
+        : undefined;
     const memberOf = context?.kind === "class" ? context.name : context?.parentClass;
     const keyword = match[2].toLowerCase();
-    const kind: VbSymbolKind = keyword.startsWith("property") ? "property" : memberOf ? "method" : keyword === "sub" ? "sub" : "function";
+    const kind: VbSymbolKind = keyword.startsWith("property")
+      ? "property"
+      : memberOf
+        ? "method"
+        : keyword === "sub"
+          ? "sub"
+          : "function";
     symbols.push({
       name,
       kind,
@@ -204,7 +338,9 @@ function addProcedureSymbols(parsed: AspParsedDocument, baseOffset: number, text
       memberOf,
       containerName: memberOf,
       scopeName: undefined,
-      scopeRange: scope ? rangeFromOffsets(parsed.text, baseOffset + scope.start, baseOffset + scope.end) : undefined,
+      scopeRange: scope
+        ? rangeFromOffsets(parsed.text, baseOffset + scope.start, baseOffset + scope.end)
+        : undefined,
     });
     for (const parameter of parseParameters(match[4] ?? "")) {
       const parameterIndex = match[0].indexOf(parameter);
@@ -218,15 +354,26 @@ function addProcedureSymbols(parsed: AspParsedDocument, baseOffset: number, text
         range: rangeFromOffsets(parsed.text, parameterStart, parameterStart + parameter.length),
         sourceUri: parsed.uri,
         scopeName: name,
-        scopeRange: scope ? rangeFromOffsets(parsed.text, baseOffset + scope.start, baseOffset + scope.end) : undefined,
+        scopeRange: scope
+          ? rangeFromOffsets(parsed.text, baseOffset + scope.start, baseOffset + scope.end)
+          : undefined,
       });
     }
   }
 }
 
-function addVariableSymbols(parsed: AspParsedDocument, baseOffset: number, text: string, symbols: VbSymbol[], contexts: VbContext[]): void {
+function addVariableSymbols(
+  parsed: AspParsedDocument,
+  baseOffset: number,
+  text: string,
+  symbols: VbSymbol[],
+  contexts: VbContext[],
+): void {
   const patterns: Array<[RegExp, "variable" | "constant"]> = [
-    [/^\s*(?:Dim|Private(?!\s+(?:Sub|Function|Property)\b)|Public(?!\s+(?:Sub|Function|Property)\b))\s+([A-Za-z][A-Za-z0-9_]*(?:\s*(?:,\s*|$)[A-Za-z][A-Za-z0-9_]*)*)/gim, "variable"],
+    [
+      /^\s*(?:Dim|Private(?!\s+(?:Sub|Function|Property)\b)|Public(?!\s+(?:Sub|Function|Property)\b))\s+([A-Za-z][A-Za-z0-9_]*(?:\s*(?:,\s*|$)[A-Za-z][A-Za-z0-9_]*)*)/gim,
+      "variable",
+    ],
     [/^\s*Const\s+([A-Za-z][A-Za-z0-9_]*)/gim, "constant"],
   ];
   for (const [pattern, baseKind] of patterns) {
@@ -242,7 +389,12 @@ function addVariableSymbols(parsed: AspParsedDocument, baseOffset: number, text:
         }
         const localStart = match.index + match[0].indexOf(rawName);
         const start = baseOffset + localStart;
-        const memberOf = context?.kind === "class" ? context.name : context?.parentClass && !context.scopeName ? context.parentClass : undefined;
+        const memberOf =
+          context?.kind === "class"
+            ? context.name
+            : context?.parentClass && !context.scopeName
+              ? context.parentClass
+              : undefined;
         const scope = context?.kind === "procedure" ? context : undefined;
         symbols.push({
           name,
@@ -252,7 +404,11 @@ function addVariableSymbols(parsed: AspParsedDocument, baseOffset: number, text:
           memberOf,
           containerName: memberOf,
           scopeName: scope?.name,
-          scopeRange: scope ? rangeFromOffsets(parsed.text, baseOffset + scope.start, baseOffset + scope.end) : context ? rangeFromOffsets(parsed.text, baseOffset + context.start, baseOffset + context.end) : undefined,
+          scopeRange: scope
+            ? rangeFromOffsets(parsed.text, baseOffset + scope.start, baseOffset + scope.end)
+            : context
+              ? rangeFromOffsets(parsed.text, baseOffset + context.start, baseOffset + context.end)
+              : undefined,
         });
       }
     }
@@ -267,13 +423,21 @@ function inferAssignedTypes(parsed: AspParsedDocument, symbols: VbSymbol[]): voi
     byName.set(symbol.name.toLowerCase(), list);
   }
   for (const region of serverRegions(parsed)) {
-    const text = maskVbscriptStringsAndComments(parsed.text.slice(region.contentStart, region.contentEnd));
-    const assignmentPattern = /\bSet\s+([A-Za-z][A-Za-z0-9_]*)\s*=\s*New\s+([A-Za-z][A-Za-z0-9_]*)/gi;
+    const text = maskVbscriptStringsAndComments(
+      parsed.text.slice(region.contentStart, region.contentEnd),
+    );
+    const assignmentPattern =
+      /\bSet\s+([A-Za-z][A-Za-z0-9_]*)\s*=\s*New\s+([A-Za-z][A-Za-z0-9_]*)/gi;
     let match: RegExpExecArray | null;
     while ((match = assignmentPattern.exec(text)) !== null) {
       const offset = region.contentStart + match.index;
-      const candidates = (byName.get(match[1].toLowerCase()) ?? []).filter((symbol) => symbol.kind === "variable" || symbol.kind === "field");
-      const visible = candidates.find((candidate) => isSymbolVisibleAt(candidate, parsed.uri, parsed.text, offset)) ?? candidates[0];
+      const candidates = (byName.get(match[1].toLowerCase()) ?? []).filter(
+        (symbol) => symbol.kind === "variable" || symbol.kind === "field",
+      );
+      const visible =
+        candidates.find((candidate) =>
+          isSymbolVisibleAt(candidate, parsed.uri, parsed.text, offset),
+        ) ?? candidates[0];
       if (visible) {
         visible.typeName = match[2];
       }
@@ -303,13 +467,27 @@ function buildContexts(sourceText: string, baseOffset: number, text: string): Vb
     const procedureName = match[3];
     if (token.startsWith("class ") && className) {
       const name = className;
-      starts.push({ kind: "class", name, nameStart: match.index + match[0].indexOf(name), start: match.index, end: text.length });
+      starts.push({
+        kind: "class",
+        name,
+        nameStart: match.index + match[0].indexOf(name),
+        start: match.index,
+        end: text.length,
+      });
       continue;
     }
     if (!token.startsWith("end ") && procedureName) {
       const name = procedureName;
       const parentClass = [...starts].reverse().find((context) => context.kind === "class")?.name;
-      starts.push({ kind: "procedure", name, nameStart: match.index + match[0].indexOf(name), start: match.index, end: text.length, parentClass, scopeName: name });
+      starts.push({
+        kind: "procedure",
+        name,
+        nameStart: match.index + match[0].indexOf(name),
+        start: match.index,
+        end: text.length,
+        parentClass,
+        scopeName: name,
+      });
       continue;
     }
     const endKind = token.includes("class") ? "class" : "procedure";
@@ -321,7 +499,9 @@ function buildContexts(sourceText: string, baseOffset: number, text: string): Vb
     }
   }
   contexts.push(...starts.map((context) => ({ ...context, end: text.length })));
-  return contexts.filter((context) => baseOffset + context.start >= 0 && baseOffset + context.end <= sourceText.length);
+  return contexts.filter(
+    (context) => baseOffset + context.start >= 0 && baseOffset + context.end <= sourceText.length,
+  );
 }
 
 function innermostContext(contexts: VbContext[], offset: number): VbContext | undefined {
@@ -330,33 +510,67 @@ function innermostContext(contexts: VbContext[], offset: number): VbContext | un
     .sort((left, right) => right.start - left.start)[0];
 }
 
-function currentClassName(parsed: AspParsedDocument, offset: number, symbols: VbSymbol[]): string | undefined {
-  return symbols.find((symbol) => symbol.kind === "class" && symbol.sourceUri === parsed.uri && rangeContainsOffset(parsed.text, symbol.scopeRange, offset))?.name;
+function currentClassName(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): string | undefined {
+  return symbols.find(
+    (symbol) =>
+      symbol.kind === "class" &&
+      symbol.sourceUri === parsed.uri &&
+      rangeContainsOffset(parsed.text, symbol.scopeRange, offset),
+  )?.name;
 }
 
-function inferVariableType(name: string, parsed: AspParsedDocument, offset: number, symbols: VbSymbol[]): string | undefined {
+function inferVariableType(
+  name: string,
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): string | undefined {
   return visibleSymbols(parsed, offset, symbols)
     .filter((symbol) => symbol.name.toLowerCase() === name.toLowerCase())
-    .sort((left, right) => Number(Boolean(right.typeName)) - Number(Boolean(left.typeName)) || symbolPriority(right) - symbolPriority(left))[0]?.typeName;
+    .sort(
+      (left, right) =>
+        Number(Boolean(right.typeName)) - Number(Boolean(left.typeName)) ||
+        symbolPriority(right) - symbolPriority(left),
+    )[0]?.typeName;
 }
 
 function classMemberCompletions(className: string, symbols: VbSymbol[]): CompletionItem[] {
   return dedupeCompletions(
     symbols
-      .filter((symbol) => symbol.memberOf?.toLowerCase() === className.toLowerCase() && (symbol.kind === "method" || symbol.kind === "field" || symbol.kind === "property"))
+      .filter(
+        (symbol) =>
+          symbol.memberOf?.toLowerCase() === className.toLowerCase() &&
+          (symbol.kind === "method" || symbol.kind === "field" || symbol.kind === "property"),
+      )
       .map(symbolToCompletion),
   );
 }
 
-function visibleSymbols(parsed: AspParsedDocument, offset: number, symbols: VbSymbol[]): VbSymbol[] {
+function visibleSymbols(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): VbSymbol[] {
   return symbols.filter((symbol) => isSymbolVisibleAt(symbol, parsed.uri, parsed.text, offset));
 }
 
-function isSymbolVisibleAt(symbol: VbSymbol, uri: string, sourceText: string, offset: number): boolean {
+function isSymbolVisibleAt(
+  symbol: VbSymbol,
+  uri: string,
+  sourceText: string,
+  offset: number,
+): boolean {
   if (symbol.sourceUri !== uri) {
     return !symbol.scopeName && !symbol.memberOf;
   }
-  if ((symbol.kind === "class" || symbol.kind === "function" || symbol.kind === "sub") && !symbol.memberOf) {
+  if (
+    (symbol.kind === "class" || symbol.kind === "function" || symbol.kind === "sub") &&
+    !symbol.memberOf
+  ) {
     return true;
   }
   if (!symbol.scopeRange) {
@@ -365,12 +579,23 @@ function isSymbolVisibleAt(symbol: VbSymbol, uri: string, sourceText: string, of
   return rangeContainsOffset(sourceText, symbol.scopeRange, offset);
 }
 
-function resolveSymbolAt(parsed: AspParsedDocument, offset: number, symbols: VbSymbol[]): VbSymbol | undefined {
+function resolveSymbolAt(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): VbSymbol | undefined {
   const member = memberAccessAt(parsed.text, offset);
   if (member) {
-    const className = member.owner.toLowerCase() === "me" ? currentClassName(parsed, offset, symbols) : inferVariableType(member.owner, parsed, offset, symbols);
+    const className =
+      member.owner.toLowerCase() === "me"
+        ? currentClassName(parsed, offset, symbols)
+        : inferVariableType(member.owner, parsed, offset, symbols);
     return className
-      ? symbols.find((symbol) => symbol.memberOf?.toLowerCase() === className.toLowerCase() && symbol.name.toLowerCase() === member.member.toLowerCase())
+      ? symbols.find(
+          (symbol) =>
+            symbol.memberOf?.toLowerCase() === className.toLowerCase() &&
+            symbol.name.toLowerCase() === member.member.toLowerCase(),
+        )
       : undefined;
   }
   const word = wordAt(parsed.text, offset);
@@ -382,7 +607,10 @@ function resolveSymbolAt(parsed: AspParsedDocument, offset: number, symbols: VbS
     .sort((left, right) => symbolPriority(right) - symbolPriority(left))[0];
 }
 
-function memberAccessAt(text: string, offset: number): { owner: string; member: string } | undefined {
+function memberAccessAt(
+  text: string,
+  offset: number,
+): { owner: string; member: string } | undefined {
   const before = text.slice(Math.max(0, offset - 128), offset);
   const after = text.slice(offset, offset + 64);
   const left = before.match(/([A-Za-z][A-Za-z0-9_]*)\.([A-Za-z][A-Za-z0-9_]*)?$/);
@@ -395,7 +623,20 @@ function memberAccessAt(text: string, offset: number): { owner: string; member: 
 }
 
 function diagnoseUndeclaredVariables(parsed: AspParsedDocument, symbols: VbSymbol[]): Diagnostic[] {
-  const declaredBuiltins = new Set(["request", "response", "session", "application", "server", "asperror", "true", "false", "nothing", "empty", "null", "me"]);
+  const declaredBuiltins = new Set([
+    "request",
+    "response",
+    "session",
+    "application",
+    "server",
+    "asperror",
+    "true",
+    "false",
+    "nothing",
+    "empty",
+    "null",
+    "me",
+  ]);
   const diagnostics: Diagnostic[] = [];
   const keywordSet = new Set([
     "option",
@@ -451,9 +692,11 @@ function diagnoseUndeclaredVariables(parsed: AspParsedDocument, symbols: VbSymbo
       if (
         declaredBuiltins.has(lower) ||
         keywordSet.has(lower) ||
-        visibleSymbols(parsed, start, symbols).some((symbol) => symbol.name.toLowerCase() === lower) ||
+        visibleSymbols(parsed, start, symbols).some(
+          (symbol) => symbol.name.toLowerCase() === lower,
+        ) ||
         /(?:dim|const|sub|function|class|property\s+(?:get|let|set)|new)\s+$/.test(previous) ||
-        /\.$/.test(previous.trimEnd())
+        previous.trimEnd().endsWith(".")
       ) {
         continue;
       }
@@ -485,9 +728,9 @@ function maskVbscriptStringsAndComments(text: string): string {
   let inString = false;
   for (let index = 0; index < chars.length; index += 1) {
     const char = chars[index];
-    if (char === "\"") {
+    if (char === '"') {
       chars[index] = " ";
-      if (inString && chars[index + 1] === "\"") {
+      if (inString && chars[index + 1] === '"') {
         chars[index + 1] = " ";
         index += 1;
         continue;
@@ -517,7 +760,9 @@ function getServerScriptText(parsed: AspParsedDocument): string {
 }
 
 function serverRegions(parsed: AspParsedDocument): AspRegion[] {
-  return parsed.regions.filter((region) => region.language === "vbscript" || region.language === "jscript");
+  return parsed.regions.filter(
+    (region) => region.language === "vbscript" || region.language === "jscript",
+  );
 }
 
 function symbolToCompletion(symbol: VbSymbol): CompletionItem {
@@ -533,7 +778,11 @@ function symbolToCompletion(symbol: VbSymbol): CompletionItem {
             : symbol.kind === "property"
               ? CompletionItemKind.Property
               : CompletionItemKind.Function;
-  const detail = symbol.memberOf ? `${symbol.kind} of ${symbol.memberOf}` : symbol.typeName ? `${symbol.kind} As ${symbol.typeName}` : symbol.kind;
+  const detail = symbol.memberOf
+    ? `${symbol.kind} of ${symbol.memberOf}`
+    : symbol.typeName
+      ? `${symbol.kind} As ${symbol.typeName}`
+      : symbol.kind;
   return { label: symbol.name, kind, detail };
 }
 
@@ -555,7 +804,11 @@ function wordAt(text: string, offset: number): string | undefined {
   return left || right ? `${left}${right}` : undefined;
 }
 
-function rangeContainsOffset(sourceText: string, range: Range | undefined, offset: number): boolean {
+function rangeContainsOffset(
+  sourceText: string,
+  range: Range | undefined,
+  offset: number,
+): boolean {
   if (!range) {
     return false;
   }

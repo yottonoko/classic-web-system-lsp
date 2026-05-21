@@ -1,6 +1,12 @@
 import type { Diagnostic, Position, Range } from "vscode-languageserver-types";
 
-export type AspEmbeddedLanguage = "html" | "css" | "javascript" | "vbscript" | "jscript" | "asp-directive";
+export type AspEmbeddedLanguage =
+  | "html"
+  | "css"
+  | "javascript"
+  | "vbscript"
+  | "jscript"
+  | "asp-directive";
 
 export type AspRegionKind =
   | "html"

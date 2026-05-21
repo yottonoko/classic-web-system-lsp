@@ -2,10 +2,15 @@ import { DiagnosticSeverity } from "vscode-languageserver-types";
 import type { AspDirective, AspInclude, AspParsedDocument, AspRegion, AspSettings } from "./types";
 import { rangeFromOffsets } from "./position";
 
-const includePattern = /<!--\s*#include\s+(file|virtual)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))\s*-->/gi;
+const includePattern =
+  /<!--\s*#include\s+(file|virtual)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))\s*-->/gi;
 const attrPattern = /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*(?:=\s*("([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
 
-export function parseAspDocument(uri: string, text: string, settings: AspSettings = {}): AspParsedDocument {
+export function parseAspDocument(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): AspParsedDocument {
   const diagnostics: AspParsedDocument["diagnostics"] = [];
   const inlineRegions = parseInlineAspRegions(text, diagnostics);
   const tagRegions = [...parseTagRegions(text), ...parseStyleAttributeRegions(text)];
@@ -29,14 +34,21 @@ export function parseAspDocument(uri: string, text: string, settings: AspSetting
   const directiveLanguage = directives
     .map((directive) => directive.attributes.language ?? directive.attributes.LANGUAGE)
     .find((value): value is string => typeof value === "string");
-  const defaultLanguage = normalizeScriptLanguage(directiveLanguage ?? settings.defaultLanguage ?? "VBScript");
+  const defaultLanguage = normalizeScriptLanguage(
+    directiveLanguage ?? settings.defaultLanguage ?? "VBScript",
+  );
   const scriptRegions = tagRegions.map((region): AspRegion => {
     if (region.kind !== "server-script") {
       return region;
     }
     return {
       ...region,
-      language: normalizeScriptLanguage(String(region.attributes?.language ?? defaultLanguage)).toLowerCase() === "jscript" ? "jscript" : "vbscript",
+      language:
+        normalizeScriptLanguage(
+          String(region.attributes?.language ?? defaultLanguage),
+        ).toLowerCase() === "jscript"
+          ? "jscript"
+          : "vbscript",
     };
   });
   const regions = buildRegions(text, [...inlineRegions, ...scriptRegions], defaultLanguage);
@@ -52,7 +64,10 @@ export function parseAspDocument(uri: string, text: string, settings: AspSetting
   };
 }
 
-function parseInlineAspRegions(text: string, diagnostics: AspParsedDocument["diagnostics"]): AspRegion[] {
+function parseInlineAspRegions(
+  text: string,
+  diagnostics: AspParsedDocument["diagnostics"],
+): AspRegion[] {
   const regions: AspRegion[] = [];
   let cursor = 0;
   while (cursor < text.length) {
@@ -174,7 +189,11 @@ function parseStyleAttributeRegions(text: string): AspRegion[] {
   return regions;
 }
 
-function buildRegions(text: string, embeddedRegions: AspRegion[], defaultLanguage: "VBScript" | "JScript"): AspRegion[] {
+function buildRegions(
+  text: string,
+  embeddedRegions: AspRegion[],
+  defaultLanguage: "VBScript" | "JScript",
+): AspRegion[] {
   const sorted = embeddedRegions
     .filter((region) => region.end > region.start)
     .sort((left, right) => left.start - right.start || right.end - left.end);
@@ -183,12 +202,18 @@ function buildRegions(text: string, embeddedRegions: AspRegion[], defaultLanguag
   let coveredEnd = -1;
   for (const region of sorted) {
     const language =
-      region.language === "vbscript" && defaultLanguage === "JScript" && (region.kind === "asp-block" || region.kind === "asp-expression")
+      region.language === "vbscript" &&
+      defaultLanguage === "JScript" &&
+      (region.kind === "asp-block" || region.kind === "asp-expression")
         ? "jscript"
         : region.language;
     const normalized = { ...region, language };
     if (region.start < coveredEnd) {
-      if (region.kind === "asp-block" || region.kind === "asp-expression" || region.kind === "asp-directive") {
+      if (
+        region.kind === "asp-block" ||
+        region.kind === "asp-expression" ||
+        region.kind === "asp-directive"
+      ) {
         accepted.push(normalized);
       }
       continue;

@@ -18,7 +18,9 @@ describe("VS Code extension package", () => {
     const serverModule = getServerModulePath({
       asAbsolutePath: (relativePath) => path.join(root, relativePath),
     });
-    expect(serverModule).toBe(path.join(root, "node_modules", "@asp-lsp", "language-server", "dist", "server.js"));
+    expect(serverModule).toBe(
+      path.join(root, "node_modules", "@asp-lsp", "language-server", "dist", "server.js"),
+    );
     expect(fs.existsSync(serverModule)).toBe(true);
   });
 });
