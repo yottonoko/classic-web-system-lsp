@@ -77,6 +77,8 @@ The VSIX build copies the standalone language server and its runtime dependencie
 
 - `aspLsp.defaultLanguage`: default server-side language, `VBScript` or `JScript`
 - `aspLsp.checkJs`: enable semantic checks for client JavaScript regions
+- `aspLsp.javascript.unusedDiagnostics`: report unused JavaScript/JScript locals and parameters as hints
+- `aspLsp.javascript.autoImports`: enable TypeScript-powered JavaScript/JScript auto import completions and quick fixes
 - `aspLsp.virtualRoot`: root directory for `<!-- #include virtual="..." -->`
 - `aspLsp.virtualRoots`: additional virtual include roots
 - `aspLsp.legacyEncoding`: encoding for unopened include files, `utf8`, `shift_jis`, or `cp932`
@@ -86,6 +88,8 @@ The VSIX build copies the standalone language server and its runtime dependencie
 - `aspLsp.format.alignAssignments`: align simple consecutive VBScript assignments
 - `aspLsp.vbscript.typeChecking`: `basic` or `strict`; strict enables VBScript type diagnostics
 - `aspLsp.vbscript.comTypes`: custom COM type catalog keyed by `Server.CreateObject` Prog.ID
+- `aspLsp.vbscript.unusedDiagnostics`: report unused VBScript declarations as hints
+- `aspLsp.vbscript.includeSuggestions`: suggest `<!-- #include ... -->` fixes for undeclared symbols found in workspace files
 - `aspLsp.inlayHints.variableTypes`: show inferred VBScript variable types
 - `aspLsp.inlayHints.parameterNames`: show VBScript procedure parameter names at call sites
 - `aspLsp.inlayHints.functionReturnTypes`: show inferred VBScript function return types
@@ -101,6 +105,9 @@ The VSIX build copies the standalone language server and its runtime dependencie
 ## Current v1 Limits
 
 - VBScript analysis is intentionally conservative. It uses an error-tolerant CST and opt-in strict type checks rather than a full VBScript compiler.
+- Unused diagnostics are hints. Classic ASP runtime entry points such as `Application_OnStart`, public class members, include-cross references, and names inside strings/comments are excluded from VBScript unused checks.
+- JavaScript/JScript auto imports use TypeScript language service results. Import edits are only applied inside the same ASP JavaScript/JScript region.
+- VBScript has no import syntax, so auto import support is exposed as include suggestions for undeclared symbols that exist in indexed `.asp`, `.asa`, or `.inc` workspace files.
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed. COM type information comes from built-in stubs or `aspLsp.vbscript.comTypes`.

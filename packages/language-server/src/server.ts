@@ -95,6 +95,7 @@ const workspaceIndex = new Map<string, WorkspaceIndexedDocument>();
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
 let workspaceRoots: string[] = [];
 let workspaceIndexDirty = true;
+const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
 
 const semanticTokenTypes = [
   "keyword",
@@ -947,9 +948,30 @@ function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnosti
     const fileName = jsVirtualFileName(virtual.uri);
     const syntactic = service.getSyntacticDiagnostics(fileName);
     const semantic = settings.checkJs ? service.getSemanticDiagnostics(fileName) : [];
-    return [...syntactic, ...semantic]
-      .map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic))
-      .filter(isDiagnostic);
+    const unused =
+      settings.javascript?.unusedDiagnostics === false
+        ? []
+        : createJsLanguageService(virtual, settings, {
+            checkJs: true,
+            noUnusedLocals: true,
+            noUnusedParameters: true,
+          })
+            .service.getSemanticDiagnostics(fileName)
+            .filter((diagnostic) => tsUnusedDiagnosticCodes.has(diagnostic.code));
+    const semanticKeys = new Set(semantic.map(tsDiagnosticKey));
+    const unusedOnly = unused.filter(
+      (diagnostic) => !semanticKeys.has(tsDiagnosticKey(diagnostic)),
+    );
+    return [
+      ...syntactic.map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic)),
+      ...semantic.map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic)),
+      ...unusedOnly.map((diagnostic) =>
+        tsDiagnosticToLsp(virtual, diagnostic, {
+          severity: DiagnosticSeverity.Hint,
+          source: "asp-lsp-typescript-unused",
+        }),
+      ),
+    ].filter(isDiagnostic);
   });
 }
 
@@ -979,22 +1001,72 @@ function jsCompletion(
     return [];
   }
   const { offset, service, fileName } = context;
+  const preferences = jsCompletionPreferences(cachedSettings(cached.source.uri));
   return (
-    service.getCompletionsAtPosition(fileName, offset, {})?.entries.map((entry) => ({
-      label: entry.name,
-      kind: tsCompletionKind(entry.kind),
-      detail: entry.kind,
-      data: {
-        kind: "javascript",
-        uri: cached.source.uri,
-        language: context.virtual.languageId,
-        name: entry.name,
-        virtualOffset: offset,
-        source: entry.source,
-        tsData: entry.data,
-      },
-    })) ?? []
+    service.getCompletionsAtPosition(fileName, offset, preferences)?.entries.map((entry) => {
+      const details =
+        entry.hasAction || entry.source
+          ? safeGetCompletionEntryDetails(
+              service,
+              fileName,
+              offset,
+              entry.name,
+              entry.source,
+              preferences,
+              entry.data,
+            )
+          : undefined;
+      return {
+        label: entry.name,
+        kind: tsCompletionKind(entry.kind),
+        detail: entry.kind,
+        data: {
+          kind: "javascript",
+          uri: cached.source.uri,
+          language: context.virtual.languageId,
+          name: entry.name,
+          virtualOffset: offset,
+          source: entry.source,
+          tsData: entry.data,
+          importTextChanges: details?.codeActions?.flatMap((action) => action.changes),
+        },
+      };
+    }) ?? []
   );
+}
+
+function jsCompletionPreferences(settings: AspSettings): ts.GetCompletionsAtPositionOptions {
+  if (settings.javascript?.autoImports === false) {
+    return {};
+  }
+  return {
+    includeCompletionsForModuleExports: true,
+    includeCompletionsForImportStatements: true,
+  };
+}
+
+function safeGetCompletionEntryDetails(
+  service: ts.LanguageService,
+  fileName: string,
+  position: number,
+  name: string,
+  source: string | undefined,
+  preferences: ts.UserPreferences,
+  data: ts.CompletionEntryData | undefined,
+): ts.CompletionEntryDetails | undefined {
+  try {
+    return service.getCompletionEntryDetails(
+      fileName,
+      position,
+      name,
+      {},
+      source,
+      preferences,
+      data,
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 function jsHover(cached: CachedDocument, position: Position): Hover | null {
@@ -1271,6 +1343,7 @@ function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem 
         language?: string;
         source?: string;
         tsData?: ts.CompletionEntryData;
+        importTextChanges?: ts.FileTextChanges[];
       }
     | undefined;
   const virtual = cached?.virtuals.get(data?.language === "jscript" ? "jscript" : "javascript");
@@ -1278,22 +1351,25 @@ function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem 
     return undefined;
   }
   const service = createJsLanguageService(virtual, cachedSettings(uri)).service;
-  const details = service.getCompletionEntryDetails(
+  const preferences = jsCompletionPreferences(cachedSettings(uri));
+  const details = safeGetCompletionEntryDetails(
+    service,
     jsVirtualFileName(virtual.uri),
     data.virtualOffset,
     data.name,
-    undefined,
     data.source,
-    undefined,
+    preferences,
     data.tsData,
   );
-  if (!details) {
-    return item;
-  }
+  const importEdit = fileTextChangesToWorkspaceEdit(
+    virtual,
+    details?.codeActions?.flatMap((action) => action.changes) ?? data.importTextChanges ?? [],
+  );
   return {
     ...item,
-    detail: ts.displayPartsToString(details.displayParts),
-    documentation: ts.displayPartsToString(details.documentation),
+    detail: details ? ts.displayPartsToString(details.displayParts) : item.detail,
+    documentation: details ? ts.displayPartsToString(details.documentation) : item.documentation,
+    additionalTextEdits: importEdit?.changes?.[cached.source.uri],
   };
 }
 
@@ -1650,6 +1726,7 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
   const contextSettings = {
     typeChecking: settings.vbscript?.typeChecking,
     comTypes: settings.vbscript?.comTypes,
+    unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
   };
   const symbols = documents.flatMap((document) =>
     collectVbscriptSymbols(document, contextSettings),
@@ -2033,6 +2110,7 @@ function remapWorkspaceEdit(
 function tsDiagnosticToLsp(
   virtual: VirtualDocument,
   diagnostic: ts.Diagnostic,
+  override: { severity?: DiagnosticSeverity; source?: string } = {},
 ): Diagnostic | undefined {
   if (diagnostic.start === undefined || diagnostic.length === undefined) {
     return undefined;
@@ -2047,14 +2125,19 @@ function tsDiagnosticToLsp(
   }
   return {
     severity:
-      diagnostic.category === ts.DiagnosticCategory.Error
+      override.severity ??
+      (diagnostic.category === ts.DiagnosticCategory.Error
         ? DiagnosticSeverity.Error
-        : DiagnosticSeverity.Warning,
+        : DiagnosticSeverity.Warning),
     range: { start: sourceStart, end: sourceEnd },
     message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
     code: diagnostic.code,
-    source: "asp-lsp-typescript",
+    source: override.source ?? "asp-lsp-typescript",
   };
+}
+
+function tsDiagnosticKey(diagnostic: ts.Diagnostic): string {
+  return [diagnostic.code, diagnostic.start ?? -1, diagnostic.length ?? -1].join(":");
 }
 
 function toTextDocument(virtual: VirtualDocument): TextDocument {
@@ -2234,6 +2317,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     legacyEncoding:
       typeof settings.legacyEncoding === "string" ? settings.legacyEncoding : undefined,
     format: normalizeFormatSettings(settings),
+    javascript: normalizeJavascriptSettings(settings),
     vbscript: normalizeVbscriptSettings(settings),
     inlayHints: normalizeInlayHintSettings(settings),
     codeLens: normalizeCodeLensSettings(settings),
@@ -2274,6 +2358,19 @@ function normalizeVbscriptSettings(
       record.comTypes && typeof record.comTypes === "object"
         ? (record.comTypes as NonNullable<AspSettings["vbscript"]>["comTypes"])
         : undefined,
+    unusedDiagnostics: record.unusedDiagnostics !== false,
+    includeSuggestions: record.includeSuggestions !== false,
+  };
+}
+
+function normalizeJavascriptSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["javascript"] {
+  const raw = settings.javascript;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    unusedDiagnostics: record.unusedDiagnostics !== false,
+    autoImports: record.autoImports !== false,
   };
 }
 
@@ -2524,12 +2621,13 @@ function rangeOverlapsNonHtml(cached: CachedDocument, range: Range): boolean {
 function createJsLanguageService(
   virtual: VirtualDocument,
   settings: AspSettings,
+  optionOverrides: Partial<ts.CompilerOptions> = {},
 ): {
   service: ts.LanguageService;
   host: ts.LanguageServiceHost;
   files: Map<string, JsProjectFile>;
 } {
-  const project = collectJsProjectFiles(virtual, settings);
+  const project = collectJsProjectFiles(virtual, settings, optionOverrides);
   const host: ts.LanguageServiceHost = {
     getScriptFileNames: () => [...project.files.keys()],
     getScriptVersion: (requested) =>
@@ -2560,6 +2658,7 @@ function createJsLanguageService(
 function collectJsProjectFiles(
   activeVirtual: VirtualDocument,
   settings: AspSettings,
+  optionOverrides: Partial<ts.CompilerOptions> = {},
 ): { files: Map<string, JsProjectFile>; options: ts.CompilerOptions; currentDirectory: string } {
   const files = new Map<string, JsProjectFile>();
   const addVirtual = (virtual: VirtualDocument, version: string): void => {
@@ -2584,7 +2683,7 @@ function collectJsProjectFiles(
   }
 
   const ownerFile = uriToFileName(virtualSourceUri(activeVirtual));
-  const config = readJsProjectConfig(ownerFile, settings);
+  const config = readJsProjectConfig(ownerFile, settings, optionOverrides);
   for (const fileName of config.fileNames) {
     const normalized = normalizeFileName(fileName);
     if (files.has(normalized) || !ts.sys.fileExists(normalized)) {
@@ -2608,6 +2707,7 @@ function collectJsProjectFiles(
 function readJsProjectConfig(
   ownerFile: string,
   settings: AspSettings,
+  optionOverrides: Partial<ts.CompilerOptions> = {},
 ): { fileNames: string[]; options: ts.CompilerOptions; currentDirectory: string } {
   const ownerDirectory = path.dirname(ownerFile);
   const configPath =
@@ -2620,6 +2720,7 @@ function readJsProjectConfig(
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.CommonJS,
     moduleResolution: ts.ModuleResolutionKind.Node10,
+    ...optionOverrides,
   };
   if (configPath) {
     const config = ts.readConfigFile(configPath, ts.sys.readFile);
@@ -2632,7 +2733,11 @@ function readJsProjectConfig(
     );
     return {
       fileNames: parsed.fileNames,
-      options: { ...parsed.options, ...baseOptions, checkJs: settings.checkJs ?? false },
+      options: {
+        ...parsed.options,
+        ...baseOptions,
+        checkJs: optionOverrides.checkJs ?? settings.checkJs ?? false,
+      },
       currentDirectory: path.dirname(configPath),
     };
   }
@@ -2806,6 +2911,7 @@ function vbWorkspaceSymbolKind(kind: VbSymbolKind): SymbolKind {
       return SymbolKind.Constant;
     case "field":
       return SymbolKind.Field;
+    case "parameter":
     case "variable":
       return SymbolKind.Variable;
   }
@@ -2861,6 +2967,7 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
           },
         },
       },
+      ...vbscriptIncludeSuggestionActions(cached, diagnostic, name),
     ];
   }
   if (diagnostic.source === "asp-lsp-include") {
@@ -2878,6 +2985,114 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
     ];
   }
   return [];
+}
+
+function vbscriptIncludeSuggestionActions(
+  cached: CachedDocument,
+  diagnostic: Diagnostic,
+  symbolName: string,
+): CodeAction[] {
+  const settings = cachedSettings(cached.source.uri);
+  if (settings.vbscript?.includeSuggestions === false) {
+    return [];
+  }
+  ensureWorkspaceIndex();
+  const ownerFile = normalizeFileName(uriToFileName(cached.source.uri));
+  const includedFiles = new Set(
+    cached.parsed.includes.map((include) =>
+      normalizeFileName(
+        resolveIncludePath(cached.source.uri, include.path, include.mode, settings),
+      ),
+    ),
+  );
+  const candidates = new Map<string, CachedDocument>();
+  for (const entry of workspaceIndex.values()) {
+    if (normalizeFileName(entry.fileName) !== ownerFile) {
+      candidates.set(normalizeFileName(entry.fileName), cachedFromIndexed(entry));
+    }
+  }
+  for (const document of documents.all()) {
+    const fileName = normalizeFileName(uriToFileName(document.uri));
+    if (fileName !== ownerFile) {
+      const opened = getCached(document.uri);
+      if (opened) {
+        candidates.set(fileName, opened);
+      }
+    }
+  }
+  const matches = [...candidates.entries()]
+    .filter(([fileName]) => !includedFiles.has(fileName))
+    .map(([fileName, candidate]) => {
+      const hasSymbol = collectVbscriptSymbols(candidate.parsed).some(
+        (symbol) =>
+          symbol.sourceUri === candidate.source.uri &&
+          !symbol.memberOf &&
+          symbol.name.toLowerCase() === symbolName.toLowerCase(),
+      );
+      return hasSymbol ? { fileName, candidate } : undefined;
+    })
+    .filter((item): item is { fileName: string; candidate: CachedDocument } => Boolean(item))
+    .sort(
+      (left, right) => includeCandidateRank(left.fileName) - includeCandidateRank(right.fileName),
+    )
+    .slice(0, 5);
+  const insert = includeInsertionPoint(cached);
+  return matches.map(({ fileName }) => {
+    const include = includeSuggestionPath(cached.source.uri, fileName, settings);
+    return {
+      title: `Include ${include.path} for ${symbolName}`,
+      kind: CodeActionKind.QuickFix,
+      diagnostics: [diagnostic],
+      edit: {
+        changes: {
+          [cached.source.uri]: [
+            {
+              range: { start: insert, end: insert },
+              newText: `<!-- #include ${include.mode}="${include.path}" -->\n`,
+            },
+          ],
+        },
+      },
+    } satisfies CodeAction;
+  });
+}
+
+function includeCandidateRank(fileName: string): number {
+  const lower = fileName.toLowerCase();
+  return (lower.endsWith(".inc") ? 0 : lower.endsWith(".asa") ? 1 : 2) * 100_000 + lower.length;
+}
+
+function includeInsertionPoint(cached: CachedDocument): Position {
+  if (cached.parsed.includes.length === 0) {
+    return { line: 0, character: 0 };
+  }
+  const last = cached.parsed.includes.reduce((current, include) =>
+    include.range.end.line > current.range.end.line ? include : current,
+  );
+  return { line: last.range.end.line + 1, character: 0 };
+}
+
+function includeSuggestionPath(
+  ownerUri: string,
+  targetFile: string,
+  settings: AspSettings,
+): { mode: "file" | "virtual"; path: string } {
+  for (const root of [...(settings.virtualRoots ?? []), settings.virtualRoot]) {
+    if (!root) {
+      continue;
+    }
+    const relative = path.relative(root, targetFile);
+    if (!relative.startsWith("..") && !path.isAbsolute(relative)) {
+      return { mode: "virtual", path: `/${relative.split(path.sep).join("/")}` };
+    }
+  }
+  return {
+    mode: "file",
+    path: path
+      .relative(path.dirname(uriToFileName(ownerUri)), targetFile)
+      .split(path.sep)
+      .join("/"),
+  };
 }
 
 function cssCodeActions(
@@ -2940,7 +3155,11 @@ function jsCodeActions(
     const fileName = jsVirtualFileName(virtual.uri);
     if (codeActionAllows(context, CodeActionKind.QuickFix)) {
       const errorCodes = context.diagnostics
-        .filter((diagnostic) => diagnostic.source === "asp-lsp-typescript")
+        .filter(
+          (diagnostic) =>
+            diagnostic.source === "asp-lsp-typescript" ||
+            diagnostic.source === "asp-lsp-typescript-unused",
+        )
         .map((diagnostic) => Number(diagnostic.code))
         .filter((code) => Number.isInteger(code));
       for (const fix of service.getCodeFixesAtPosition(
@@ -2949,7 +3168,7 @@ function jsCodeActions(
         virtualEnd,
         errorCodes,
         {},
-        {},
+        jsCompletionPreferences(cachedSettings(cached.source.uri)),
       )) {
         const edit = fileTextChangesToWorkspaceEdit(virtual, fix.changes);
         if (edit) {

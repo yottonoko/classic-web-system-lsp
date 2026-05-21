@@ -71,6 +71,16 @@
           "default": false,
           "description": "Enable semantic checking for client JavaScript regions."
         },
+        "aspLsp.javascript.unusedDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report unused JavaScript and JScript locals and parameters as hint diagnostics."
+        },
+        "aspLsp.javascript.autoImports": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable TypeScript-powered JavaScript and JScript auto import completions and quick fixes."
+        },
         "aspLsp.virtualRoot": {
           "type": "string",
           "default": "",
@@ -130,6 +140,16 @@
           "type": "object",
           "default": {},
           "description": "Custom COM type catalog keyed by Prog.ID for Server.CreateObject type checking and completion."
+        },
+        "aspLsp.vbscript.unusedDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report unused VBScript declarations as hint diagnostics."
+        },
+        "aspLsp.vbscript.includeSuggestions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Suggest Classic ASP include directives for undeclared VBScript symbols found in workspace files."
         },
         "aspLsp.inlayHints.variableTypes": {
           "type": "boolean",

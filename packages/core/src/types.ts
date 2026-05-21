@@ -23,6 +23,7 @@ export interface AspSettings {
   virtualRoot?: string;
   virtualRoots?: string[];
   checkJs?: boolean;
+  javascript?: AspJavascriptSettings;
   includePaths?: string[];
   legacyEncoding?: string;
   format?: AspFormatSettings;
@@ -46,6 +47,13 @@ export interface AspFormattingOptions extends AspFormatSettings {
 export interface AspVbscriptSettings {
   typeChecking?: "basic" | "strict";
   comTypes?: Record<string, AspVbscriptComType>;
+  unusedDiagnostics?: boolean;
+  includeSuggestions?: boolean;
+}
+
+export interface AspJavascriptSettings {
+  unusedDiagnostics?: boolean;
+  autoImports?: boolean;
 }
 
 export interface AspInlayHintSettings {
@@ -250,6 +258,7 @@ export interface VbCstNode {
   procedureKind?: "sub" | "function" | "property";
   propertyAccessor?: "get" | "let" | "set";
   declarationKind?: "dim" | "redim" | "public" | "private" | "const" | "forEach";
+  visibility?: "public" | "private";
   identifiers?: VbToken[];
   parameters?: VbToken[];
   typeName?: string;

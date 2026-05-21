@@ -993,6 +993,167 @@ Response.Write miss▮ingName
     }
   });
 
+  it("suggests VBScript includes for undeclared symbols found in workspace files", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-suggest-"));
+    const incDir = path.join(tempDir, "inc");
+    fs.mkdirSync(incDir);
+    fs.writeFileSync(
+      path.join(incDir, "helpers.inc"),
+      `<%
+Function SharedHelper()
+End Function
+%>`,
+      "utf8",
+    );
+    const marked = markedDocument(`<%
+Option Explicit
+Response.Write Shared▮Helper
+%>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: `file://${tempDir}`,
+        capabilities: {},
+      });
+      const uri = `file://${path.join(tempDir, "default.asp")}`;
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+      const actions = await server.request("textDocument/codeAction", {
+        textDocument: { uri },
+        range: { start: marked.position, end: marked.position },
+        context: {
+          diagnostics: (diagnostics.params as { diagnostics: unknown[] }).diagnostics,
+        },
+      });
+      const serialized = JSON.stringify(actions);
+      expect(serialized).toContain("Include /inc/helpers.inc for SharedHelper");
+      expect(serialized).toContain('<!-- #include virtual=\\"/inc/helpers.inc\\" -->');
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports JavaScript unused diagnostics as hints even when checkJs is off", async () => {
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/js-unused.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: `<script>
+function demo(unusedParam) {
+  const unusedLocal = 1;
+  return 1;
+}
+</script>`,
+        },
+      });
+      const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+      const serialized = JSON.stringify(diagnostics.params);
+      expect(serialized).toContain("asp-lsp-typescript-unused");
+      expect(serialized).toContain("unusedLocal");
+      expect(serialized).toContain('"severity":4');
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("returns JavaScript auto import completion edits and add import quick fixes", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-auto-import-"));
+    fs.writeFileSync(
+      path.join(tempDir, "helpers.js"),
+      `export function helperThing() {
+  return "ok";
+}
+`,
+      "utf8",
+    );
+    const marked = markedDocument(`<script type="module">
+help▮
+</script>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: `file://${tempDir}`,
+        capabilities: {},
+      });
+      server.notify("workspace/didChangeConfiguration", {
+        settings: { aspLsp: { checkJs: true, javascript: { autoImports: true } } },
+      });
+      const uri = `file://${path.join(tempDir, "default.asp")}`;
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+      const completions = await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      const items = (completions as { items?: Array<Record<string, unknown>> }).items
+        ? (completions as { items: Array<Record<string, unknown>> }).items
+        : (completions as Array<Record<string, unknown>>);
+      const helperItem = items.find((item) => item.label === "helperThing");
+      expect(helperItem).toBeTruthy();
+      const resolved = await server.request("completionItem/resolve", helperItem);
+      expect(JSON.stringify(resolved)).toContain("additionalTextEdits");
+      expect(JSON.stringify(resolved)).toContain("./helpers");
+
+      const callDocument = markedDocument(`<script type="module">
+helper▮Thing();
+</script>`);
+      server.notify("textDocument/didChange", {
+        textDocument: { uri, version: 2 },
+        contentChanges: [{ text: callDocument.text }],
+      });
+      const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+      const actions = await server.request("textDocument/codeAction", {
+        textDocument: { uri },
+        range: { start: callDocument.position, end: callDocument.position },
+        context: {
+          diagnostics: (diagnostics.params as { diagnostics: unknown[] }).diagnostics,
+        },
+      });
+      expect(JSON.stringify(actions)).toContain("Add import");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("formats full ASP documents and ASP ranges over JSON-RPC", async () => {
     const source = `<html>
 <body>

@@ -41,6 +41,18 @@ describe("VS Code extension package", () => {
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.iis.url"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.iis.browser"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.iisExpress.url"]).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.unusedDiagnostics"],
+    ).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.includeSuggestions"],
+    ).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.javascript.unusedDiagnostics"],
+    ).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.javascript.autoImports"],
+    ).toBeTruthy();
     expect(manifest.capabilities?.untrustedWorkspaces?.supported).toBe(true);
   });
 

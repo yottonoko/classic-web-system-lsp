@@ -204,6 +204,56 @@ Response.Write "hello world"
     expect(result.diagnostics).toHaveLength(0);
   });
 
+  it("reports unused VBScript declarations as hints", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim unusedValue
+Const unusedConst = 1
+Sub Save(usedArg, unusedArg)
+  Response.Write usedArg
+End Sub
+Class Lonely
+End Class
+%>`,
+    );
+    const diagnostics = analyzeVbscript(parsed).diagnostics;
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("unusedValue"))).toBe(true);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("unusedConst"))).toBe(true);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("unusedArg"))).toBe(true);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("Lonely"))).toBe(true);
+    expect(diagnostics.every((diagnostic) => diagnostic.severity === 4)).toBe(true);
+  });
+
+  it("keeps include references and Global.asa event handlers out of unused diagnostics", () => {
+    const include = parseAspDocument(
+      "file:///site/inc/shared.inc",
+      `<%
+Function SharedName()
+End Function
+%>`,
+    );
+    const page = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Response.Write SharedName()
+%>`,
+    );
+    const symbols = [include, page].flatMap((document) => collectVbscriptSymbols(document));
+    expect(
+      analyzeVbscript(include, { documents: [include, page], symbols }).diagnostics,
+    ).toHaveLength(0);
+
+    const global = parseAspDocument(
+      "file:///site/Global.asa",
+      `<script runat="server" language="VBScript">
+Sub Application_OnStart()
+End Sub
+</script>`,
+    );
+    expect(analyzeVbscript(global).diagnostics).toHaveLength(0);
+  });
+
   it("tracks VBScript class members and object member completion", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

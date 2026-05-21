@@ -31,6 +31,7 @@ import type {
 
 export type VbSymbolKind =
   | "variable"
+  | "parameter"
   | "constant"
   | "function"
   | "sub"
@@ -51,6 +52,7 @@ export interface VbSymbol {
   typeName?: string;
   type?: VbTypeRef;
   parameters?: string[];
+  visibility?: "public" | "private";
 }
 
 export interface VbReference {
@@ -64,6 +66,7 @@ export interface VbProjectContext {
   typeChecking?: "basic" | "strict";
   comTypes?: Record<string, AspVbscriptComType>;
   typeEnvironment?: VbTypeEnvironment;
+  unusedDiagnostics?: boolean;
 }
 
 export interface VbInlayHintOptions {
@@ -383,6 +386,8 @@ export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0
     const declarationStart =
       first === "public" || first === "private" ? lowerToken(significant[index + 1]) : first;
     const declarationOffset = first === "public" || first === "private" ? 1 : 0;
+    const visibility =
+      first === "public" || first === "private" ? (first as "public" | "private") : undefined;
     if (declarationStart === "sub" || declarationStart === "function") {
       const nameToken = significant[index + declarationOffset + 1];
       if (nameToken?.kind === "identifier") {
@@ -392,6 +397,8 @@ export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0
           nameToken,
           collectParameterTokens(significant, index + declarationOffset + 2),
           stack,
+          undefined,
+          visibility,
         );
         addChild(stack.at(-1) ?? document, node);
         stack.push(node);
@@ -412,6 +419,7 @@ export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0
           collectParameterTokens(significant, index + declarationOffset + 3),
           stack,
           accessor,
+          visibility,
         );
         addChild(stack.at(-1) ?? document, node);
         stack.push(node);
@@ -470,7 +478,14 @@ export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0
     ) {
       addChild(
         current,
-        createDeclarationNode(token, "VariableDeclaration", first, significant, index + 1),
+        createDeclarationNode(
+          token,
+          "VariableDeclaration",
+          first,
+          significant,
+          index + 1,
+          visibility,
+        ),
       );
       continue;
     }
@@ -713,6 +728,7 @@ function createProcedureNode(
   parameters: VbToken[],
   stack: VbCstNode[],
   propertyAccessor?: "get" | "let" | "set",
+  visibility?: "public" | "private",
 ): VbCstNode {
   const parentClass = [...stack].reverse().find((node) => node.kind === "Class")?.nameToken?.text;
   return {
@@ -724,6 +740,7 @@ function createProcedureNode(
     children: [],
     procedureKind,
     propertyAccessor,
+    visibility,
     parameters,
     memberOf: parentClass,
     scopeName: nameToken.text,
@@ -795,6 +812,7 @@ function createDeclarationNode(
   declarationKind: NonNullable<VbCstNode["declarationKind"]>,
   tokens: VbToken[],
   startIndex: number,
+  visibility?: "public" | "private",
 ): VbCstNode {
   const endIndex = statementEndIndex(tokens, startIndex - 1);
   const identifiers: VbToken[] = [];
@@ -827,6 +845,7 @@ function createDeclarationNode(
     tokens: statementTokens(tokens, startIndex - 1),
     children: [],
     declarationKind,
+    visibility,
     identifiers,
   };
 }
@@ -956,6 +975,9 @@ export function analyzeVbscript(
   const optionExplicit = /^\s*Option\s+Explicit\b/im.test(scriptText);
   if (optionExplicit) {
     diagnostics.push(...diagnoseUndeclaredVariables(parsed, symbols));
+  }
+  if (context.unusedDiagnostics !== false) {
+    diagnostics.push(...diagnoseUnusedSymbols(parsed, symbols, context));
   }
   if (context.typeChecking === "strict") {
     diagnostics.push(
@@ -1217,7 +1239,7 @@ export function getVbscriptInlayHints(
     for (const symbol of symbols) {
       if (
         symbol.sourceUri !== parsed.uri ||
-        !["variable", "constant", "field"].includes(symbol.kind) ||
+        !["variable", "parameter", "constant", "field"].includes(symbol.kind) ||
         !symbol.typeName ||
         isLooseType(symbol.typeName) ||
         !rangeOverlapsOffsets(parsed.text, symbol.range, rangeStart, rangeEnd)
@@ -1521,11 +1543,12 @@ function addSymbolsFromVbNode(
       scopeName: undefined,
       scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
       parameters: node.parameters?.map((token) => token.text) ?? [],
+      visibility: node.visibility,
     });
     for (const parameter of node.parameters ?? []) {
       symbols.push({
         name: parameter.text,
-        kind: "variable",
+        kind: "parameter",
         range: rangeFromOffsets(parsed.text, parameter.start, parameter.end),
         sourceUri: parsed.uri,
         scopeName: name,
@@ -1556,6 +1579,7 @@ function addSymbolsFromVbNode(
           : memberOf
             ? rangeFromOffsets(parsed.text, node.start, node.end)
             : undefined,
+        visibility: node.visibility,
       });
     }
   }
@@ -1840,7 +1864,7 @@ function applyTypeAnnotations(parsed: AspParsedDocument, symbols: VbSymbol[]): v
   for (const annotation of annotations.params) {
     const symbol = symbols.find(
       (candidate) =>
-        candidate.kind === "variable" &&
+        (candidate.kind === "variable" || candidate.kind === "parameter") &&
         candidate.name.toLowerCase() === annotation.name.toLowerCase() &&
         (!annotation.procedureName ||
           candidate.scopeName?.toLowerCase() === annotation.procedureName.toLowerCase()),
@@ -2114,6 +2138,68 @@ function diagnoseUndeclaredVariables(parsed: AspParsedDocument, symbols: VbSymbo
   return diagnostics;
 }
 
+function diagnoseUnusedSymbols(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+  context: VbProjectContext,
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const symbol of symbols) {
+    if (
+      symbol.sourceUri !== parsed.uri ||
+      isBuiltinName(symbol.name) ||
+      isRuntimeEntryPoint(parsed, symbol) ||
+      !isUnusedDiagnosticCandidate(symbol)
+    ) {
+      continue;
+    }
+    const references = getVbscriptReferences(parsed, symbol.range.start, {
+      ...context,
+      symbols,
+    }).filter((reference) => !sameRange(reference.range, symbol.range));
+    if (references.length > 0) {
+      continue;
+    }
+    diagnostics.push({
+      severity: DiagnosticSeverity.Hint,
+      range: symbol.range,
+      message: unusedDiagnosticMessage(symbol),
+      source: "asp-lsp-vbscript-unused",
+    });
+  }
+  return diagnostics;
+}
+
+function isUnusedDiagnosticCandidate(symbol: VbSymbol): boolean {
+  if (symbol.memberOf) {
+    return symbol.visibility === "private";
+  }
+  return ["variable", "parameter", "constant", "function", "sub", "class"].includes(symbol.kind);
+}
+
+function unusedDiagnosticMessage(symbol: VbSymbol): string {
+  if (symbol.kind === "parameter") {
+    return `Parameter '${symbol.name}' is never used.`;
+  }
+  return `'${symbol.name}' is declared but never used.`;
+}
+
+function isRuntimeEntryPoint(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
+  if (symbol.memberOf || (symbol.kind !== "sub" && symbol.kind !== "function")) {
+    return false;
+  }
+  const normalizedUri = parsed.uri.toLowerCase();
+  if (!normalizedUri.endsWith("/global.asa") && !normalizedUri.endsWith("\\global.asa")) {
+    return false;
+  }
+  return new Set([
+    "application_onstart",
+    "application_onend",
+    "session_onstart",
+    "session_onend",
+  ]).has(symbol.name.toLowerCase());
+}
+
 function getServerScriptText(parsed: AspParsedDocument): string {
   return serverRegions(parsed)
     .map((region) => parsed.text.slice(region.contentStart, region.contentEnd))
@@ -2126,7 +2212,7 @@ function serverRegions(parsed: AspParsedDocument): AspRegion[] {
 
 function symbolToCompletion(symbol: VbSymbol): CompletionItem {
   const kind =
-    symbol.kind === "variable"
+    symbol.kind === "variable" || symbol.kind === "parameter"
       ? CompletionItemKind.Variable
       : symbol.kind === "constant"
         ? CompletionItemKind.Constant
@@ -3058,6 +3144,15 @@ function sameSymbol(left: VbSymbol, right: VbSymbol): boolean {
     left.range.start.character === right.range.start.character &&
     left.range.end.line === right.range.end.line &&
     left.range.end.character === right.range.end.character
+  );
+}
+
+function sameRange(left: Range, right: Range): boolean {
+  return (
+    left.start.line === right.start.line &&
+    left.start.character === right.start.character &&
+    left.end.line === right.end.line &&
+    left.end.character === right.end.character
   );
 }
 
