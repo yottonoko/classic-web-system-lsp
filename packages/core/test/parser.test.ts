@@ -233,6 +233,24 @@ Response.Write BuildName()
     );
   });
 
+  it("resolves built-in hover and signature help from CST tokens", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Response.Write "ok"
+Server.MapPath("/tmp")
+%>`,
+    );
+    expect(getVbscriptHover(parsed, { line: 1, character: 2 })).toContain(
+      "Classic ASP Response object",
+    );
+    expect(getVbscriptSignatureHelp(parsed, { line: 2, character: 18 })).toEqual(
+      expect.objectContaining({
+        signatures: [expect.objectContaining({ label: "Server.MapPath(path)" })],
+      }),
+    );
+  });
+
   it("tracks common VBScript statements and conservative external COM members", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -334,6 +352,34 @@ End If
     const formatted = edits[0].newText;
     expect(formatted.match(/themeColor/g)).toHaveLength(1);
     expect(formatted).toContain("<% value = 1 %>");
+  });
+
+  it("preserves VBScript strings and comments while formatting operators", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Response.Write "a=b"
+' keep x=y
+value=1
+%>
+<%= "x=y" %>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    const formatted = edits[0].newText;
+    expect(formatted).toContain(`Response.Write "a=b"`);
+    expect(formatted).toContain(`' keep x=y`);
+    expect(formatted).toContain(`value = 1`);
+    expect(formatted).toContain(`<%= "x=y" %>`);
+  });
+
+  it("leaves server-side JScript regions unchanged", () => {
+    const source = `<%@ LANGUAGE="JScript" %>
+<%
+var s = "a=b";
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0]?.newText ?? source).toBe(source);
   });
 
   it("aligns simple VBScript assignments when requested", () => {

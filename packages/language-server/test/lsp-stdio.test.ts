@@ -432,6 +432,57 @@ End If
     }
   });
 
+  it("delegates server-side JScript formatting to the TypeScript formatter", async () => {
+    const source = `<%@ LANGUAGE="JScript" %>
+<%
+function greet(name){return "a=b";}
+%>`;
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/jscript-format.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: source,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const fullEdits = await server.request("textDocument/formatting", {
+        textDocument: { uri },
+        options: { tabSize: 2, insertSpaces: true },
+      });
+      const fullText = (fullEdits as Array<{ newText: string }>)[0]?.newText ?? "";
+      expect(fullText).toContain("function greet(name) {");
+      expect(fullText).toContain(`"a=b"`);
+
+      const rangeEdits = await server.request("textDocument/rangeFormatting", {
+        textDocument: { uri },
+        range: {
+          start: { line: 2, character: 0 },
+          end: { line: 2, character: 36 },
+        },
+        options: { tabSize: 2, insertSpaces: true },
+      });
+      const rangeText = (rangeEdits as Array<{ newText: string }>)[0]?.newText ?? "";
+      expect(rangeText).toContain("function greet(name) {");
+      expect(rangeText).not.toContain("<%@");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("resolves virtual includes from configured roots", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
     const pageDir = path.join(tempDir, "pages");

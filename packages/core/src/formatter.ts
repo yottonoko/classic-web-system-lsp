@@ -1,6 +1,7 @@
 import type { Range, TextEdit } from "vscode-languageserver-types";
-import type { AspFormattingOptions, AspParsedDocument, AspRegion } from "./types";
+import type { AspFormattingOptions, AspParsedDocument, AspRegion, VbToken } from "./types";
 import { offsetAt, rangeFromOffsets } from "./position";
+import { parseVbscriptCst } from "./vbscript";
 
 export function formatAspDocument(
   parsed: AspParsedDocument,
@@ -69,14 +70,17 @@ function formatRegion(
   start: number,
   end: number,
 ): string {
-  if (region.language !== "vbscript" && region.language !== "jscript") {
+  if (region.language !== "vbscript") {
     return parsed.text.slice(start, end);
   }
   if (start !== region.start || end !== region.end) {
     return formatVbscriptBlock(parsed.text.slice(start, end), options, 0);
   }
   if (region.kind === "asp-expression") {
-    const expression = oneLine(parsed.text.slice(region.contentStart, region.contentEnd));
+    const expression = formatVbscriptLine(
+      parsed.text.slice(region.contentStart, region.contentEnd).trim(),
+      options,
+    );
     return `<%= ${expression} %>`;
   }
   if (region.kind === "asp-directive") {
@@ -130,40 +134,58 @@ function formatVbscriptBlock(
 }
 
 function formatVbscriptLine(line: string, options: AspFormattingOptions): string {
-  let result = line
-    .replace(/\s+/g, " ")
-    .replace(/\s*=\s*/g, " = ")
-    .trim();
-  if (options.uppercaseKeywords) {
-    for (const keyword of [
-      "Option",
-      "Explicit",
-      "Dim",
-      "ReDim",
-      "Preserve",
-      "Set",
-      "Const",
-      "Sub",
-      "Function",
-      "Class",
-      "Property",
-      "Get",
-      "Let",
-      "End",
-      "If",
-      "Then",
-      "Else",
-      "For",
-      "Each",
-      "In",
-      "Next",
-      "With",
-      "New",
-    ]) {
-      result = result.replace(new RegExp(`\\b${keyword}\\b`, "gi"), keyword.toUpperCase());
+  const tokens = parseVbscriptCst(line).tokens.filter(
+    (token) => token.kind !== "whitespace" && token.kind !== "newline",
+  );
+  let result = "";
+  let previous: VbToken | undefined;
+  for (const token of tokens) {
+    const text = formatToken(token, options);
+    if (result.length === 0) {
+      result = text;
+      previous = token;
+      continue;
     }
+    if (token.kind === "comment") {
+      result += ` ${text}`;
+      previous = token;
+      continue;
+    }
+    if (previous && needsSpaceBetween(previous, token)) {
+      result += " ";
+    }
+    result += text;
+    previous = token;
   }
   return result;
+}
+
+function formatToken(token: VbToken, options: AspFormattingOptions): string {
+  return token.kind === "keyword" && options.uppercaseKeywords
+    ? token.text.toUpperCase()
+    : token.text;
+}
+
+function needsSpaceBetween(left: VbToken, right: VbToken): boolean {
+  if (left.text === "." || right.text === ".") {
+    return false;
+  }
+  if (left.text === "(" || left.text === "[") {
+    return false;
+  }
+  if (right.text === ")" || right.text === "]" || right.text === ",") {
+    return false;
+  }
+  if (left.text === "," || left.text === "=" || right.text === "=" || left.text === ":") {
+    return true;
+  }
+  if (right.text === ":") {
+    return true;
+  }
+  if (right.text === "(") {
+    return false;
+  }
+  return true;
 }
 
 function dedentsBeforeLine(line: string): boolean {

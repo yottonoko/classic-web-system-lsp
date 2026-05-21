@@ -178,7 +178,6 @@ function methodItem(label: string): CompletionItem {
 
 const vbKeywords = new Set([
   "and",
-  "application",
   "as",
   "byref",
   "byval",
@@ -217,11 +216,7 @@ const vbKeywords = new Set([
   "property",
   "public",
   "redim",
-  "request",
-  "response",
   "select",
-  "server",
-  "session",
   "set",
   "step",
   "sub",

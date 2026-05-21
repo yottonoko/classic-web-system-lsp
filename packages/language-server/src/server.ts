@@ -49,8 +49,10 @@ import {
   getVbscriptReferences,
   getVbscriptSignatureHelp,
   parseAspDocument,
+  type AspFormattingOptions,
   type AspParsedDocument,
   type AspSettings,
+  type AspRegion,
   type VirtualDocument,
   type VbProjectContext,
   type VbSymbolKind,
@@ -85,6 +87,12 @@ interface CachedDocument {
   source: TextDocument;
   parsed: AspParsedDocument;
   virtuals: Map<string, VirtualDocument>;
+}
+
+interface OffsetEdit {
+  start: number;
+  end: number;
+  newText: string;
 }
 
 const cache = new Map<string, CachedDocument>();
@@ -399,10 +407,7 @@ connection.onDocumentFormatting((params) => {
   if (!cached) {
     return [];
   }
-  return formatAspDocument(
-    cached.parsed,
-    formatOptions(params.options, cachedSettings(cached.source.uri)),
-  );
+  return formatAspDocumentWithDelegates(cached, params.options);
 });
 
 connection.onDocumentRangeFormatting((params) => {
@@ -412,22 +417,14 @@ connection.onDocumentRangeFormatting((params) => {
   }
   const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.range.start));
   if (!region || region.language !== "html") {
-    return formatAspRange(
-      cached.parsed,
-      params.range,
-      formatOptions(params.options, cachedSettings(cached.source.uri)),
-    );
+    return formatAspRangeWithDelegates(cached, params.range, params.options);
   }
   const virtual = cached.virtuals.get("html");
   if (!virtual) {
     return [];
   }
   if (rangeOverlapsNonHtml(cached, params.range)) {
-    return formatAspRange(
-      cached.parsed,
-      params.range,
-      formatOptions(params.options, cachedSettings(cached.source.uri)),
-    );
+    return formatAspRangeWithDelegates(cached, params.range, params.options);
   }
   return htmlService.format(toTextDocument(virtual), params.range, {
     tabSize: params.options.tabSize,
@@ -932,6 +929,216 @@ function formatOptions(options: { tabSize: number; insertSpaces: boolean }, sett
     insertSpaces: options.insertSpaces,
     ...settings.format,
   };
+}
+
+function formatAspDocumentWithDelegates(
+  cached: CachedDocument,
+  options: { tabSize: number; insertSpaces: boolean },
+): TextEdit[] {
+  const settings = cachedSettings(cached.source.uri);
+  const formattingOptions = formatOptions(options, settings);
+  const original = cached.source.getText();
+  let formatted = applyTextEdits(original, formatAspDocument(cached.parsed, formattingOptions));
+  const parsed = parseAspDocument(cached.source.uri, formatted, settings);
+  formatted = applyOffsetEdits(
+    formatted,
+    javaScriptFormattingEdits(parsed, formatted, formattingOptions),
+  );
+  return formatted === original
+    ? []
+    : [
+        {
+          range: {
+            start: cached.source.positionAt(0),
+            end: cached.source.positionAt(original.length),
+          },
+          newText: formatted,
+        },
+      ];
+}
+
+function formatAspRangeWithDelegates(
+  cached: CachedDocument,
+  range: Range,
+  options: { tabSize: number; insertSpaces: boolean },
+): TextEdit[] {
+  const settings = cachedSettings(cached.source.uri);
+  const formattingOptions = formatOptions(options, settings);
+  const original = cached.source.getText();
+  const rangeStart = lineStartOffset(original, cached.source.offsetAt(range.start));
+  const rangeEnd = lineEndOffset(original, cached.source.offsetAt(range.end));
+  const coreEdits = formatAspRange(cached.parsed, range, formattingOptions);
+  let formatted = applyTextEdits(original, coreEdits);
+  let formattedRangeEnd =
+    coreEdits.length === 1
+      ? rangeStart + coreEdits[0].newText.length
+      : rangeEnd + offsetEditsDelta(original, coreEdits);
+  const parsed = parseAspDocument(cached.source.uri, formatted, settings);
+  const jsEdits = javaScriptFormattingEdits(
+    parsed,
+    formatted,
+    formattingOptions,
+    rangeStart,
+    formattedRangeEnd,
+  );
+  formattedRangeEnd += offsetEditsDelta(formatted, jsEdits);
+  formatted = applyOffsetEdits(formatted, jsEdits);
+  const newText = formatted.slice(rangeStart, formattedRangeEnd);
+  const originalText = original.slice(rangeStart, rangeEnd);
+  return newText === originalText
+    ? []
+    : [
+        {
+          range: {
+            start: cached.source.positionAt(rangeStart),
+            end: cached.source.positionAt(rangeEnd),
+          },
+          newText,
+        },
+      ];
+}
+
+function javaScriptFormattingEdits(
+  parsed: AspParsedDocument,
+  text: string,
+  options: AspFormattingOptions,
+  spanStart = 0,
+  spanEnd = text.length,
+): OffsetEdit[] {
+  return parsed.regions
+    .filter(
+      (region) =>
+        isJavaScriptLikeRegion(region) &&
+        region.contentEnd > spanStart &&
+        region.contentStart < spanEnd,
+    )
+    .flatMap((region) => formatJavaScriptRegion(text, region, options, spanStart, spanEnd));
+}
+
+function formatJavaScriptRegion(
+  text: string,
+  region: AspRegion,
+  options: AspFormattingOptions,
+  spanStart: number,
+  spanEnd: number,
+): OffsetEdit[] {
+  const content = text.slice(region.contentStart, region.contentEnd);
+  const localStart = Math.max(0, spanStart - region.contentStart);
+  const localEnd = Math.min(content.length, spanEnd - region.contentStart);
+  if (localStart >= localEnd) {
+    return [];
+  }
+  const changes =
+    localStart === 0 && localEnd === content.length
+      ? getJavaScriptFormattingService(content).getFormattingEditsForDocument(
+          "__asp_lsp_format.js",
+          tsFormatOptions(options),
+        )
+      : getJavaScriptFormattingService(content).getFormattingEditsForRange(
+          "__asp_lsp_format.js",
+          localStart,
+          localEnd,
+          tsFormatOptions(options),
+        );
+  return changes.map((change) => ({
+    start: region.contentStart + change.span.start,
+    end: region.contentStart + change.span.start + change.span.length,
+    newText: change.newText,
+  }));
+}
+
+function getJavaScriptFormattingService(text: string): ts.LanguageService {
+  const fileName = "__asp_lsp_format.js";
+  return ts.createLanguageService({
+    getScriptFileNames: () => [fileName],
+    getScriptVersion: () => "0",
+    getScriptSnapshot: (requested) =>
+      requested === fileName ? ts.ScriptSnapshot.fromString(text) : undefined,
+    getCurrentDirectory: () => process.cwd(),
+    getCompilationSettings: () => ({
+      allowJs: true,
+      checkJs: false,
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+    }),
+    getDefaultLibFileName: (compilerOptions) => ts.getDefaultLibFilePath(compilerOptions),
+    fileExists: ts.sys.fileExists,
+    readFile: ts.sys.readFile,
+    readDirectory: ts.sys.readDirectory,
+  });
+}
+
+function tsFormatOptions(options: AspFormattingOptions): ts.FormatCodeSettings {
+  const indentStyle = options.indentStyle ?? (options.insertSpaces ? "space" : "tab");
+  return {
+    indentSize: options.indentSize ?? options.tabSize,
+    tabSize: options.tabSize,
+    convertTabsToSpaces: indentStyle !== "tab",
+    newLineCharacter: "\n",
+  };
+}
+
+function isJavaScriptLikeRegion(region: AspRegion): boolean {
+  return region.language === "javascript" || region.language === "jscript";
+}
+
+function applyTextEdits(text: string, edits: TextEdit[]): string {
+  return applyOffsetEdits(
+    text,
+    edits.map((edit) => ({
+      start: offsetAtText(text, edit.range.start),
+      end: offsetAtText(text, edit.range.end),
+      newText: edit.newText,
+    })),
+  );
+}
+
+function applyOffsetEdits(text: string, edits: OffsetEdit[]): string {
+  return [...edits]
+    .sort((left, right) => right.start - left.start || right.end - left.end)
+    .reduce(
+      (current, edit) => `${current.slice(0, edit.start)}${edit.newText}${current.slice(edit.end)}`,
+      text,
+    );
+}
+
+function offsetEditsDelta(text: string, edits: TextEdit[] | OffsetEdit[]): number {
+  return edits.reduce((delta, edit) => {
+    if ("range" in edit) {
+      return (
+        delta +
+        edit.newText.length -
+        (offsetAtText(text, edit.range.end) - offsetAtText(text, edit.range.start))
+      );
+    }
+    return delta + edit.newText.length - (edit.end - edit.start);
+  }, 0);
+}
+
+function offsetAtText(text: string, position: Range["start"]): number {
+  let line = 0;
+  let character = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (line === position.line && character === position.character) {
+      return index;
+    }
+    if (text[index] === "\n") {
+      line += 1;
+      character = 0;
+    } else {
+      character += 1;
+    }
+  }
+  return text.length;
+}
+
+function lineStartOffset(text: string, offset: number): number {
+  return text.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
+}
+
+function lineEndOffset(text: string, offset: number): number {
+  const end = text.indexOf("\n", offset);
+  return end === -1 ? text.length : end;
 }
 
 function rangeOverlapsNonHtml(cached: CachedDocument, range: Range): boolean {
