@@ -954,6 +954,52 @@ End Sub
     }
   });
 
+  it("delegates JavaScript highlights and inlay hints", async () => {
+    const marked = markedDocument(`<script>
+function add(first, second) {
+  return first + second;
+}
+const result = ad▮d(1, 2);
+</script>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/js-highlight-inlay.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const highlights = await server.request("textDocument/documentHighlight", {
+        textDocument: { uri },
+        position: marked.position,
+      });
+      expect(Array.isArray(highlights) ? highlights.length : 0).toBeGreaterThan(1);
+
+      const hints = await server.request("textDocument/inlayHint", {
+        textDocument: { uri },
+        range: { start: { line: 0, character: 0 }, end: { line: 6, character: 0 } },
+      });
+      expect(JSON.stringify(hints)).toContain("first:");
+      expect(JSON.stringify(hints)).toContain("second:");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("indexes unopened workspace ASP files for workspace symbols and supports reindex command", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-index-"));
     const page = path.join(tempDir, "unopened.asp");
@@ -1097,6 +1143,44 @@ Response.Write miss▮ingName
         },
       });
       expect(JSON.stringify(actions)).toContain("Declare missingName with Dim");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("returns an executable create-file edit for missing includes", async () => {
+    const source = `<!-- #include file="missing.inc" -->\n<% Response.Write "x" %>`;
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/missing-include.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: source,
+        },
+      });
+      const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+      const actions = await server.request("textDocument/codeAction", {
+        textDocument: { uri },
+        range: { start: { line: 0, character: 5 }, end: { line: 0, character: 15 } },
+        context: {
+          diagnostics: (diagnostics.params as { diagnostics: unknown[] }).diagnostics,
+        },
+      });
+      expect(JSON.stringify(actions)).toContain("Create missing include missing.inc");
+      expect(JSON.stringify(actions)).toContain('"kind":"create"');
+      expect(JSON.stringify(actions)).toContain("missing.inc");
 
       await server.request("shutdown", null);
       server.notify("exit", undefined);

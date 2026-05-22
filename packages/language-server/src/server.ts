@@ -6,6 +6,7 @@ import {
   CompletionItemKind,
   createConnection,
   DiagnosticSeverity,
+  DocumentHighlightKind,
   DocumentSymbol,
   FileChangeType,
   FoldingRange,
@@ -36,6 +37,7 @@ import type {
   Diagnostic,
   DocumentLink,
   DocumentHighlight,
+  FormattingOptions,
   InlayHint,
   LinkedEditingRanges,
   Position,
@@ -251,6 +253,10 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         moreTriggerCharacter: [">"],
       },
       workspace: {
+        workspaceFolders: {
+          supported: true,
+          changeNotifications: true,
+        },
         fileOperations: {
           willRename: { filters: [aspFileOperationFilter()] },
           didRename: { filters: [aspFileOperationFilter()] },
@@ -282,6 +288,32 @@ documents.onDidClose((event) => {
 connection.onInitialized(() => {
   void refreshConfiguration();
 });
+
+connection.onNotification(
+  "workspace/didChangeWorkspaceFolders",
+  (event: {
+    event?: {
+      added?: Array<{ uri: string }>;
+      removed?: Array<{ uri: string }>;
+    };
+  }) => {
+    const added = event.event?.added ?? [];
+    const removedFolders = event.event?.removed ?? [];
+    const removed = new Set(
+      removedFolders.map((folder) => normalizeFileName(uriToFileName(folder.uri))),
+    );
+    workspaceRoots = [
+      ...workspaceRoots.filter((root) => !removed.has(normalizeFileName(root))),
+      ...added.map((folder) => uriToFileName(folder.uri)).filter((root) => root.length > 0),
+    ].filter((root, index, roots) => roots.indexOf(root) === index);
+    invalidateWorkspaceIndex();
+    includeDocumentCache.clear();
+    clearJsProjectCaches();
+    for (const document of documents.all()) {
+      validate(document);
+    }
+  },
+);
 
 connection.onDidChangeConfiguration((change) => {
   const incoming = readSettingsFromChange(change.settings);
@@ -389,7 +421,7 @@ connection.onCompletion((params) => {
       uri: cached.source.uri,
     });
   }
-  if (isJavaScriptLikeRegion(region)) {
+  if (region && isJavaScriptLikeRegion(region)) {
     return jsCompletion(cached, params);
   }
   return [];
@@ -412,15 +444,7 @@ connection.onCompletionResolve((item) => {
     return resolved ?? item;
   }
   if ((data?.kind === "html" || data?.kind === "css") && data.uri) {
-    return {
-      ...item,
-      detail: item.detail ?? (data.kind === "html" ? "HTML completion" : "CSS completion"),
-      documentation:
-        item.documentation ??
-        (data.kind === "html"
-          ? "Completion provided by vscode-html-languageservice."
-          : "Completion provided by vscode-css-languageservice."),
-    };
+    return resolveEmbeddedCompletion(item, data.kind);
   }
   return item;
 });
@@ -560,14 +584,27 @@ connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null => {
 
 connection.onDocumentHighlight((params): DocumentHighlight[] => {
   const cached = getCached(params.textDocument.uri);
-  if (!cached || !isVbscriptPosition(cached, params.position)) {
+  if (!cached) {
     return [];
   }
-  return getVbscriptDocumentHighlights(
-    cached.parsed,
-    params.position,
-    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
-  );
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
+  if (region?.language === "vbscript") {
+    return getVbscriptDocumentHighlights(
+      cached.parsed,
+      params.position,
+      buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    );
+  }
+  if (isJavaScriptLikeRegion(region)) {
+    return jsDocumentHighlights(cached, params.position);
+  }
+  if (region?.language === "html") {
+    return htmlDocumentHighlights(cached, params.position);
+  }
+  if (region?.language === "css") {
+    return cssDocumentHighlights(cached, params.position);
+  }
+  return [];
 });
 
 connection.onSignatureHelp((params): SignatureHelp | null => {
@@ -703,12 +740,15 @@ connection.languages.inlayHint.on((params): InlayHint[] => {
   if (!cached) {
     return [];
   }
-  return getVbscriptInlayHints(
-    cached.parsed,
-    params.range,
-    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
-    cachedSettings(cached.source.uri).inlayHints,
-  );
+  return [
+    ...getVbscriptInlayHints(
+      cached.parsed,
+      params.range,
+      buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+      cachedSettings(cached.source.uri).inlayHints,
+    ),
+    ...jsInlayHints(cached, params.range),
+  ];
 });
 
 connection.languages.diagnostics.on((params) => {
@@ -910,7 +950,7 @@ connection.onDocumentOnTypeFormatting((params) => {
   if (!cached) {
     return [];
   }
-  return onTypeFormatting(cached, params.position, params.ch);
+  return onTypeFormatting(cached, params.position, params.ch, params.options);
 });
 
 connection.languages.semanticTokens.on((params) => {
@@ -1295,6 +1335,126 @@ function jsSignatureHelp(cached: CachedDocument, position: Position): SignatureH
   };
 }
 
+function jsDocumentHighlights(cached: CachedDocument, position: Position): DocumentHighlight[] {
+  const context = jsContextAt(cached, position);
+  if (!context) {
+    return [];
+  }
+  return (
+    context.service
+      .getDocumentHighlights(context.fileName, context.offset, [context.fileName])
+      ?.flatMap((fileHighlights) =>
+        fileHighlights.highlightSpans
+          .map((span): DocumentHighlight | undefined => {
+            const range = textSpanToSourceRange(context.virtual, span.textSpan);
+            return range
+              ? {
+                  range,
+                  kind:
+                    span.kind === "writtenReference"
+                      ? DocumentHighlightKind.Write
+                      : DocumentHighlightKind.Read,
+                }
+              : undefined;
+          })
+          .filter((highlight): highlight is DocumentHighlight => Boolean(highlight)),
+      ) ?? []
+  );
+}
+
+function htmlDocumentHighlights(cached: CachedDocument, position: Position): DocumentHighlight[] {
+  const virtual = cached.virtuals.get("html");
+  if (!virtual) {
+    return [];
+  }
+  const doc = toTextDocument(virtual);
+  const service = htmlService as {
+    findDocumentHighlights?: (
+      document: TextDocument,
+      position: Position,
+      htmlDocument: unknown,
+    ) => DocumentHighlight[];
+  };
+  return service.findDocumentHighlights?.(doc, position, htmlService.parseHTMLDocument(doc)) ?? [];
+}
+
+function cssDocumentHighlights(cached: CachedDocument, position: Position): DocumentHighlight[] {
+  const virtual = cached.virtuals.get("css");
+  const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
+  if (!virtual || !virtualPosition) {
+    return [];
+  }
+  const doc = toTextDocument(virtual);
+  const service = cssService as {
+    findDocumentHighlights?: (
+      document: TextDocument,
+      position: Position,
+      stylesheet: unknown,
+    ) => DocumentHighlight[];
+  };
+  return (
+    service
+      .findDocumentHighlights?.(doc, virtualPosition, cssService.parseStylesheet(doc))
+      .map((highlight) => {
+        const range = sourceRangeFromVirtualRange(virtual, highlight.range);
+        return range ? { ...highlight, range } : undefined;
+      })
+      .filter((highlight): highlight is DocumentHighlight => Boolean(highlight)) ?? []
+  );
+}
+
+function jsInlayHints(cached: CachedDocument, range: Range): InlayHint[] {
+  const settings = cachedSettings(cached.source.uri);
+  const hints = settings.inlayHints;
+  if (
+    hints?.parameterNames === false &&
+    hints.variableTypes === false &&
+    hints.functionReturnTypes === false
+  ) {
+    return [];
+  }
+  return jsVirtualDocuments(cached).flatMap((virtual) => {
+    const sourceStart = cached.source.offsetAt(range.start);
+    const sourceEnd = cached.source.offsetAt(range.end);
+    const segment = virtual.sourceMap.segments.find(
+      (candidate) => candidate.sourceStart < sourceEnd && candidate.sourceEnd > sourceStart,
+    );
+    if (!segment) {
+      return [];
+    }
+    const start = segment.virtualStart + Math.max(0, sourceStart - segment.sourceStart);
+    const end = segment.virtualStart + Math.min(segment.sourceEnd, sourceEnd) - segment.sourceStart;
+    if (start === undefined || end === undefined || start >= end) {
+      return [];
+    }
+    const project = createJsLanguageService(virtual, settings);
+    return project.service
+      .provideInlayHints(
+        jsVirtualFileName(virtual.uri),
+        { start, length: end - start },
+        {
+          includeInlayParameterNameHints: hints?.parameterNames === false ? "none" : "all",
+          includeInlayVariableTypeHints: hints?.variableTypes !== false,
+          includeInlayFunctionLikeReturnTypeHints: hints?.functionReturnTypes !== false,
+          includeInlayPropertyDeclarationTypeHints: hints?.variableTypes !== false,
+        },
+      )
+      .map((hint): InlayHint | undefined => {
+        const sourcePosition = virtual.sourceMap.toSourcePosition(
+          toTextDocument(virtual).positionAt(hint.position),
+        );
+        const label =
+          hint.text ||
+          hint.displayParts
+            ?.map((part) => part.text)
+            .join("")
+            .trim();
+        return sourcePosition && label ? { position: sourcePosition, label } : undefined;
+      })
+      .filter((hint): hint is InlayHint => Boolean(hint));
+  });
+}
+
 function jsPrepareCallHierarchy(cached: CachedDocument, position: Position): CallHierarchyItem[] {
   const context = jsContextAt(cached, position);
   if (!context) {
@@ -1465,6 +1625,25 @@ function withCompletionData(
 function callHierarchyRootUri(item: CallHierarchyItem): string {
   const data = item.data as { rootUri?: string } | undefined;
   return data?.rootUri ?? item.uri;
+}
+
+function resolveEmbeddedCompletion(item: CompletionItem, kind: "html" | "css"): CompletionItem {
+  const service = (kind === "html" ? htmlService : cssService) as {
+    doResolve?: (completion: CompletionItem) => CompletionItem | Promise<CompletionItem>;
+  };
+  const resolved = service.doResolve?.(item);
+  if (resolved && typeof (resolved as Promise<CompletionItem>).then !== "function") {
+    return resolved as CompletionItem;
+  }
+  return {
+    ...item,
+    detail: item.detail ?? (kind === "html" ? "HTML completion" : "CSS completion"),
+    documentation:
+      item.documentation ??
+      (kind === "html"
+        ? "Completion provided by vscode-html-languageservice."
+        : "Completion provided by vscode-css-languageservice."),
+  };
 }
 
 function definitionLikeLocation(
@@ -3260,12 +3439,36 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
     if (!includePath) {
       return [];
     }
+    const include = cached.parsed.includes.find(
+      (candidate) =>
+        candidate.path === includePath &&
+        candidate.range.start.line === diagnostic.range.start.line &&
+        candidate.range.start.character === diagnostic.range.start.character,
+    );
+    const targetPath = include
+      ? resolveIncludePath(
+          cached.source.uri,
+          include.path,
+          include.mode,
+          cachedSettings(cached.source.uri),
+        )
+      : undefined;
     return [
       {
         title: `Create missing include ${includePath}`,
         kind: CodeActionKind.QuickFix,
         diagnostics: [diagnostic],
-        data: { includePath },
+        edit: targetPath
+          ? ({
+              documentChanges: [
+                {
+                  kind: "create",
+                  uri: pathToFileUri(targetPath),
+                  options: { ignoreIfExists: true },
+                },
+              ],
+            } satisfies WorkspaceEdit)
+          : undefined,
       },
     ];
   }
@@ -3599,9 +3802,19 @@ function onTypeFormatting(
   cached: CachedDocument,
   position: Position,
   character: string,
+  formattingOptions: FormattingOptions,
 ): TextEdit[] {
   if (character === ">") {
-    return [];
+    return (
+      jsOnTypeFormatting(cached, position, character, formattingOptions) ??
+      htmlOnTypeFormatting(cached, position, formattingOptions) ??
+      aspCloseOnTypeFormatting(cached, position, formattingOptions) ??
+      []
+    );
+  }
+  const jsEdits = jsOnTypeFormatting(cached, position, character, formattingOptions);
+  if (jsEdits) {
+    return jsEdits;
   }
   if (!isVbscriptPosition(cached, position)) {
     return [];
@@ -3615,10 +3828,7 @@ function onTypeFormatting(
   if (!previous) {
     return [];
   }
-  const options = formatOptions(
-    { tabSize: 2, insertSpaces: true },
-    cachedSettings(cached.source.uri),
-  );
+  const options = formatOptions(formattingOptions, cachedSettings(cached.source.uri));
   const unit =
     options.indentStyle === "tab" || options.insertSpaces === false
       ? "\t"
@@ -3643,6 +3853,96 @@ function onTypeFormatting(
           range: {
             start: { line, character: 0 },
             end: { line, character: existing.length },
+          },
+          newText: desired,
+        },
+      ];
+}
+
+function jsOnTypeFormatting(
+  cached: CachedDocument,
+  position: Position,
+  character: string,
+  formattingOptions: FormattingOptions,
+): TextEdit[] | undefined {
+  const context = jsContextAt(cached, position);
+  if (!context) {
+    return undefined;
+  }
+  return context.service
+    .getFormattingEditsAfterKeystroke(
+      context.fileName,
+      context.offset,
+      character,
+      tsFormatOptions(formatOptions(formattingOptions, cachedSettings(cached.source.uri))),
+    )
+    .map((change) => textChangeToSourceTextEdit(context.virtual, change))
+    .filter((edit): edit is TextEdit => Boolean(edit));
+}
+
+function htmlOnTypeFormatting(
+  cached: CachedDocument,
+  position: Position,
+  formattingOptions: FormattingOptions,
+): TextEdit[] | undefined {
+  const offset = Math.max(0, cached.source.offsetAt(position) - 1);
+  const region = findRegionAt(cached.parsed, offset);
+  if (!region || region.language !== "html") {
+    return undefined;
+  }
+  const lineRange = {
+    start: { line: position.line, character: 0 },
+    end: { line: position.line + 1, character: 0 },
+  };
+  if (rangeOverlapsNonHtml(cached, lineRange)) {
+    return undefined;
+  }
+  const virtual = cached.virtuals.get("html");
+  if (!virtual) {
+    return undefined;
+  }
+  return htmlService
+    .format(toTextDocument(virtual), lineRange, {
+      tabSize: formattingOptions.tabSize,
+      insertSpaces: formattingOptions.insertSpaces,
+    })
+    .map((edit) => {
+      const range = sourceRangeFromVirtualRange(virtual, edit.range);
+      return range ? { ...edit, range } : undefined;
+    })
+    .filter((edit): edit is TextEdit => Boolean(edit));
+}
+
+function aspCloseOnTypeFormatting(
+  cached: CachedDocument,
+  position: Position,
+  formattingOptions: FormattingOptions,
+): TextEdit[] | undefined {
+  const current = lineText(cached.source, position.line);
+  if (!current.slice(0, position.character).trimEnd().endsWith("%>")) {
+    return undefined;
+  }
+  const previous = previousNonEmptyLine(cached.source, position.line - 1);
+  if (!previous) {
+    return undefined;
+  }
+  const options = formatOptions(formattingOptions, cachedSettings(cached.source.uri));
+  const unit =
+    options.indentStyle === "tab" || options.insertSpaces === false
+      ? "\t"
+      : " ".repeat(options.indentSize ?? options.tabSize);
+  const previousIndent = /^\s*/.exec(previous.text)?.[0] ?? "";
+  const desired = /^End\b/i.test(previous.text.trim())
+    ? previousIndent.slice(0, Math.max(0, previousIndent.length - unit.length))
+    : previousIndent;
+  const existing = /^\s*/.exec(current)?.[0] ?? "";
+  return existing === desired
+    ? []
+    : [
+        {
+          range: {
+            start: { line: position.line, character: 0 },
+            end: { line: position.line, character: existing.length },
           },
           newText: desired,
         },
