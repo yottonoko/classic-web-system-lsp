@@ -168,6 +168,18 @@
           "default": "basic",
           "description": "%configuration.vbscript.typeChecking.description%"
         },
+        "aspLsp.vbscript.identifierCase": {
+          "type": "string",
+          "enum": [
+            "pascal",
+            "upper",
+            "camel",
+            "lower",
+            "ignore"
+          ],
+          "default": "pascal",
+          "description": "%configuration.vbscript.identifierCase.description%"
+        },
         "aspLsp.vbscript.comTypes": {
           "type": "object",
           "default": {},

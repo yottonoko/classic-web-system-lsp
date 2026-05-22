@@ -28,6 +28,7 @@ import type {
   AspParsedDocument,
   AspRegion,
   AspVbscriptComType,
+  AspVbscriptIdentifierCase,
   VbCstNode,
   VbToken,
 } from "./types";
@@ -68,6 +69,7 @@ export interface VbProjectContext {
   symbols?: VbSymbol[];
   documents?: AspParsedDocument[];
   typeChecking?: "basic" | "strict";
+  identifierCase?: AspVbscriptIdentifierCase;
   comTypes?: Record<string, AspVbscriptComType>;
   typeEnvironment?: VbTypeEnvironment;
   unusedDiagnostics?: boolean;
@@ -1269,6 +1271,7 @@ export function analyzeVbscript(
   if (context.unusedDiagnostics !== false) {
     diagnostics.push(...diagnoseUnusedSymbols(parsed, symbols, context));
   }
+  diagnostics.push(...diagnoseIdentifierCase(parsed, symbols, context));
   if (context.typeChecking === "strict") {
     diagnostics.push(
       ...diagnoseTypeIssues(
@@ -2974,6 +2977,81 @@ function unusedDiagnosticMessage(symbol: VbSymbol, locale: AspLocale | undefined
     return localizer.t("vb.diagnostic.unusedParameter", { name: symbol.name });
   }
   return localizer.t("vb.diagnostic.unusedSymbol", { name: symbol.name });
+}
+
+function diagnoseIdentifierCase(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+  context: VbProjectContext,
+): Diagnostic[] {
+  const style = context.identifierCase ?? "pascal";
+  if (style === "ignore") {
+    return [];
+  }
+  const localizer = createLocalizer(context.locale);
+  return symbols
+    .filter(
+      (symbol) =>
+        symbol.sourceUri === parsed.uri &&
+        /^[A-Za-z][A-Za-z0-9_]*$/.test(symbol.name) &&
+        !isRuntimeEntryPoint(parsed, symbol) &&
+        !isBuiltinName(symbol.name),
+    )
+    .flatMap((symbol): Diagnostic[] => {
+      const expectedName = formatIdentifierCase(symbol.name, style);
+      return expectedName && expectedName !== symbol.name
+        ? [
+            {
+              severity: DiagnosticSeverity.Hint,
+              range: symbol.range,
+              message: localizer.t("vb.diagnostic.identifierCase", {
+                name: symbol.name,
+                expectedName,
+                style,
+              }),
+              source: "asp-lsp-vbscript-naming",
+              code: "identifierCase",
+              data: {
+                name: symbol.name,
+                expectedName,
+                style,
+              },
+            },
+          ]
+        : [];
+    });
+}
+
+function formatIdentifierCase(
+  name: string,
+  style: Exclude<AspVbscriptIdentifierCase, "ignore">,
+): string | undefined {
+  const words = identifierWords(name);
+  if (words.length === 0) {
+    return undefined;
+  }
+  switch (style) {
+    case "upper":
+      return words.join("").toUpperCase();
+    case "lower":
+      return words.join("").toLowerCase();
+    case "camel":
+      return [words[0]?.toLowerCase(), ...words.slice(1).map(capitalizeWord)].join("");
+    case "pascal":
+      return words.map(capitalizeWord).join("");
+  }
+}
+
+function identifierWords(name: string): string[] {
+  return name
+    .split("_")
+    .flatMap((part) => part.match(/[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+/g) ?? [])
+    .map((word) => word.toLowerCase())
+    .filter(Boolean);
+}
+
+function capitalizeWord(word: string): string {
+  return word.length === 0 ? word : `${word[0]?.toUpperCase()}${word.slice(1).toLowerCase()}`;
 }
 
 function isRuntimeEntryPoint(parsed: AspParsedDocument, symbol: VbSymbol): boolean {

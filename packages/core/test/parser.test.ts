@@ -10,6 +10,7 @@ import {
   getVbscriptDefinition,
   getVbscriptHover,
   getVbscriptInlayHints,
+  getVbscriptReferences,
   getVbscriptSelectionRanges,
   getVbscriptSignatureHelp,
   getVbscriptTypeDefinition,
@@ -224,6 +225,22 @@ Response. %>`;
     ).toBe(true);
   });
 
+  it("keeps VBScript lookup and completions case-insensitive", () => {
+    const source = `<%
+Dim CustomerName
+response.
+Response.Write customername
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const completions = getVbscriptCompletions(parsed, { line: 2, character: 9 }, { symbols });
+    expect(completions.some((item) => item.label === "Write")).toBe(true);
+    const definition = getVbscriptDefinition(parsed, { line: 3, character: 18 }, { symbols });
+    expect(definition?.name).toBe("CustomerName");
+    const references = getVbscriptReferences(parsed, { line: 3, character: 18 }, { symbols });
+    expect(references).toHaveLength(2);
+  });
+
   it("warns about undeclared variables under Option Explicit", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -296,6 +313,68 @@ End Class
     expect(diagnostics.some((diagnostic) => diagnostic.message.includes("unusedArg"))).toBe(true);
     expect(diagnostics.some((diagnostic) => diagnostic.message.includes("Lonely"))).toBe(true);
     expect(diagnostics.every((diagnostic) => diagnostic.severity === 4)).toBe(true);
+  });
+
+  it("reports VBScript identifier casing hints", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim foo, do_work, CUSTOMER_NAME
+Response.Write foo
+%>`,
+    );
+    const diagnostics = analyzeVbscript(parsed).diagnostics.filter(
+      (diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming",
+    );
+    expect(diagnostics.map((diagnostic) => diagnostic.data)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "foo", expectedName: "Foo", style: "pascal" }),
+        expect.objectContaining({ name: "do_work", expectedName: "DoWork", style: "pascal" }),
+        expect.objectContaining({
+          name: "CUSTOMER_NAME",
+          expectedName: "CustomerName",
+          style: "pascal",
+        }),
+      ]),
+    );
+    expect(diagnostics.every((diagnostic) => diagnostic.severity === 4)).toBe(true);
+  });
+
+  it("supports configurable VBScript identifier casing styles", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim user_name
+%>`,
+    );
+    const expectedByStyle = [
+      ["upper", "USERNAME"],
+      ["camel", "userName"],
+      ["lower", "username"],
+    ] as const;
+    for (const [identifierCase, expectedName] of expectedByStyle) {
+      const diagnostics = analyzeVbscript(parsed, { identifierCase }).diagnostics.filter(
+        (diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming",
+      );
+      expect(
+        diagnostics.some((diagnostic) => JSON.stringify(diagnostic.data).includes(expectedName)),
+      ).toBe(true);
+    }
+    expect(
+      analyzeVbscript(parsed, { identifierCase: "ignore" }).diagnostics.some(
+        (diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming",
+      ),
+    ).toBe(false);
+    expect(
+      analyzeVbscript(
+        parseAspDocument(
+          "file:///site/default.asp",
+          `<%
+Dim UserName
+%>`,
+        ),
+      ).diagnostics.some((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming"),
+    ).toBe(false);
   });
 
   it("keeps include references and Global.asa event handlers out of unused diagnostics", () => {

@@ -14,8 +14,8 @@ describe("language server building blocks", () => {
 <body>
 <script>const value = document.title;</script>
 <% Option Explicit
-Dim userName
-Response.Write userName
+Dim UserName
+Response.Write UserName
 %>
 </body>
 </html>`;

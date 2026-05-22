@@ -49,6 +49,7 @@ export type LocalizeKey =
   | "vb.diagnostic.unknownCall"
   | "vb.diagnostic.argumentCountMismatch"
   | "vb.diagnostic.missingMember"
+  | "vb.diagnostic.identifierCase"
   | "server.unknownCommand"
   | "server.include.unresolved"
   | "server.include.currentDocument"
@@ -63,6 +64,7 @@ export type LocalizeKey =
   | "server.quickfix.addSet"
   | "server.quickfix.removeSet"
   | "server.quickfix.annotateType"
+  | "server.quickfix.renameIdentifierCase"
   | "server.quickfix.createMissingInclude"
   | "server.quickfix.includeSymbol"
   | "server.refactor.extractVbscriptVariable"
@@ -118,6 +120,8 @@ const en: Record<LocalizeKey, string> = {
   "vb.diagnostic.argumentCountMismatch":
     "Argument count mismatch for '{name}': expected {expected}, got {actual}.",
   "vb.diagnostic.missingMember": "Type '{type}' has no member '{member}'.",
+  "vb.diagnostic.identifierCase":
+    "Identifier '{name}' should be '{expectedName}' for {style} casing.",
   "server.unknownCommand": "Unknown command: {command}",
   "server.include.unresolved": "Include file '{path}' could not be resolved.",
   "server.include.currentDocument": "Include file references the current document.",
@@ -133,6 +137,7 @@ const en: Record<LocalizeKey, string> = {
   "server.quickfix.addSet": "Use Set for object assignment to {name}",
   "server.quickfix.removeSet": "Remove Set from scalar assignment to {name}",
   "server.quickfix.annotateType": "Annotate {name} as {type}",
+  "server.quickfix.renameIdentifierCase": "Rename {name} to {expectedName}",
   "server.quickfix.createMissingInclude": "Create missing include {path}",
   "server.quickfix.includeSymbol": "Include {path} for {symbol}",
   "server.refactor.extractVbscriptVariable": "Extract VBScript variable",
@@ -193,6 +198,8 @@ const ja: Record<LocalizeKey, string> = {
   "vb.diagnostic.argumentCountMismatch":
     "'{name}' の引数の数が一致しません: 期待値 {expected}、実際 {actual}。",
   "vb.diagnostic.missingMember": "型 '{type}' にメンバー '{member}' はありません。",
+  "vb.diagnostic.identifierCase":
+    "識別子 '{name}' は {style} casing の '{expectedName}' にしてください。",
   "server.unknownCommand": "不明なコマンドです: {command}",
   "server.include.unresolved": "include file '{path}' を解決できません。",
   "server.include.currentDocument": "include file が現在のドキュメントを参照しています。",
@@ -208,6 +215,7 @@ const ja: Record<LocalizeKey, string> = {
   "server.quickfix.addSet": "{name} への object assignment に Set を使う",
   "server.quickfix.removeSet": "{name} への scalar assignment から Set を削除",
   "server.quickfix.annotateType": "{name} に {type} の型注釈を追加",
+  "server.quickfix.renameIdentifierCase": "{name} を {expectedName} に変更",
   "server.quickfix.createMissingInclude": "不足している include {path} を作成",
   "server.quickfix.includeSymbol": "{symbol} のために {path} を include",
   "server.refactor.extractVbscriptVariable": "VBScript 変数に抽出",

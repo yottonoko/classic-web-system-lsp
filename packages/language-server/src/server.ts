@@ -2656,6 +2656,7 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
   const documents = collectVbProjectDocuments(cached.parsed, settings);
   const contextSettings = {
     typeChecking: settings.vbscript?.typeChecking,
+    identifierCase: settings.vbscript?.identifierCase,
     comTypes: settings.vbscript?.comTypes,
     unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
     locale: settings.resolvedLocale,
@@ -3483,6 +3484,7 @@ function normalizeVbscriptSettings(
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
     typeChecking: record.typeChecking === "strict" ? "strict" : "basic",
+    identifierCase: normalizeVbscriptIdentifierCase(record.identifierCase),
     comTypes:
       record.comTypes && typeof record.comTypes === "object"
         ? (record.comTypes as NonNullable<AspSettings["vbscript"]>["comTypes"])
@@ -3494,6 +3496,18 @@ function normalizeVbscriptSettings(
     unusedDiagnostics: record.unusedDiagnostics !== false,
     includeSuggestions: record.includeSuggestions !== false,
   };
+}
+
+function normalizeVbscriptIdentifierCase(
+  value: unknown,
+): NonNullable<NonNullable<AspSettings["vbscript"]>["identifierCase"]> {
+  return value === "upper" ||
+    value === "camel" ||
+    value === "lower" ||
+    value === "ignore" ||
+    value === "pascal"
+    ? value
+    : "pascal";
 }
 
 function normalizeJavascriptSettings(
@@ -4262,6 +4276,9 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
   if (diagnostic.source === "asp-lsp-vbscript-type") {
     return vbscriptTypeDiagnosticActions(cached, diagnostic);
   }
+  if (diagnostic.source === "asp-lsp-vbscript-naming") {
+    return vbscriptNamingDiagnosticActions(cached, diagnostic);
+  }
   if (diagnostic.source === "asp-lsp-include") {
     const include = cached.parsed.includes.find(
       (candidate) =>
@@ -4301,6 +4318,93 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
     ];
   }
   return [];
+}
+
+function vbscriptNamingDiagnosticActions(
+  cached: CachedDocument,
+  diagnostic: Diagnostic,
+): CodeAction[] {
+  const data = diagnostic.data as
+    | {
+        name?: string;
+        expectedName?: string;
+      }
+    | undefined;
+  const name = data?.name ?? textInRange(cached.source, diagnostic.range).trim();
+  const expectedName = data?.expectedName;
+  if (
+    !name ||
+    !expectedName ||
+    name === expectedName ||
+    !/^[A-Za-z][A-Za-z0-9_]*$/.test(expectedName)
+  ) {
+    return [];
+  }
+  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const symbol = context.symbols?.find(
+    (candidate) =>
+      candidate.sourceUri === cached.source.uri && sameRange(candidate.range, diagnostic.range),
+  );
+  if (!symbol || hasVbscriptIdentifierCollision(symbol, expectedName, context.symbols ?? [])) {
+    return [];
+  }
+  const changes: WorkspaceEdit["changes"] = {};
+  for (const reference of getVbscriptReferences(cached.parsed, diagnostic.range.start, context)) {
+    const edits = changes[reference.uri] ?? [];
+    edits.push({ range: reference.range, newText: expectedName });
+    changes[reference.uri] = edits;
+  }
+  if (Object.keys(changes).length === 0) {
+    return [];
+  }
+  return [
+    {
+      title: localizerForUri(cached.source.uri).t("server.quickfix.renameIdentifierCase", {
+        name,
+        expectedName,
+      }),
+      kind: CodeActionKind.QuickFix,
+      diagnostics: [diagnostic],
+      edit: { changes },
+    },
+  ];
+}
+
+function hasVbscriptIdentifierCollision(
+  symbol: VbSymbol,
+  expectedName: string,
+  symbols: VbSymbol[],
+): boolean {
+  const lower = expectedName.toLowerCase();
+  return symbols.some(
+    (candidate) =>
+      candidate.name.toLowerCase() === lower &&
+      !sameVbscriptSymbol(candidate, symbol) &&
+      sameVbscriptNamingScope(candidate, symbol),
+  );
+}
+
+function sameVbscriptSymbol(left: VbSymbol, right: VbSymbol): boolean {
+  return (
+    left.sourceUri === right.sourceUri &&
+    left.kind === right.kind &&
+    (left.memberOf ?? "").toLowerCase() === (right.memberOf ?? "").toLowerCase() &&
+    (left.scopeName ?? "").toLowerCase() === (right.scopeName ?? "").toLowerCase() &&
+    sameRange(left.range, right.range)
+  );
+}
+
+function sameVbscriptNamingScope(left: VbSymbol, right: VbSymbol): boolean {
+  if (left.memberOf || right.memberOf) {
+    return (left.memberOf ?? "").toLowerCase() === (right.memberOf ?? "").toLowerCase();
+  }
+  if (left.scopeName || right.scopeName) {
+    return (
+      left.sourceUri === right.sourceUri &&
+      (left.scopeName ?? "").toLowerCase() === (right.scopeName ?? "").toLowerCase()
+    );
+  }
+  return true;
 }
 
 function vbscriptTypeDiagnosticActions(

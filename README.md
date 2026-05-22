@@ -93,6 +93,7 @@ The VSIX build bundles the standalone language server into `apps/vscode/server/l
 - `aspLsp.format.alignAssignments`: align simple consecutive VBScript assignments
 - `aspLsp.format.onSave`: return full-document formatting edits from `textDocument/willSaveWaitUntil`
 - `aspLsp.vbscript.typeChecking`: `basic` or `strict`; strict enables VBScript type diagnostics
+- `aspLsp.vbscript.identifierCase`: `pascal`, `upper`, `camel`, `lower`, or `ignore`; reports declaration casing hints and quick fixes
 - `aspLsp.vbscript.comTypes`: custom COM type catalog keyed by `Server.CreateObject` Prog.ID
 - `aspLsp.vbscript.globals`: runtime or framework-provided VBScript globals keyed by identifier
 - `aspLsp.vbscript.unusedDiagnostics`: report unused VBScript declarations as hints

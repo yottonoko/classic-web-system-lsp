@@ -1506,6 +1506,186 @@ Response.Write miss▮ingName
       }
     });
 
+    it("returns VBScript naming hints and reference rename quick fixes", async () => {
+      const source = `<%
+Dim foo
+foo = 1
+Response.Write FOO
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-naming.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const namingDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
+        expect(JSON.stringify(namingDiagnostics)).toContain("Foo");
+
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: { line: 1, character: 4 },
+            end: { line: 1, character: 7 },
+          },
+          context: { diagnostics: namingDiagnostics },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Rename foo to Foo");
+        expect(serialized.match(/"newText":"Foo"/g)).toHaveLength(3);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("renames included VBScript references from naming quick fixes", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "common.inc");
+      fs.writeFileSync(include, `<%\nResponse.Write FOO\n%>`, "utf8");
+      const source = `<!-- #include file="common.inc" -->
+<%
+Dim foo
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        const uri = `file://${owner}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const namingDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: { line: 2, character: 4 },
+            end: { line: 2, character: 7 },
+          },
+          context: { diagnostics: namingDiagnostics },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Rename foo to Foo");
+        expect(serialized).toContain("common.inc");
+        expect(serialized.match(/"newText":"Foo"/g)).toHaveLength(2);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("does not return VBScript naming quick fixes when the expected name collides", async () => {
+      const source = `<%
+Dim foo
+Dim Foo
+Response.Write foo
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-naming-collision.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const namingDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
+        expect(JSON.stringify(namingDiagnostics)).toContain("Foo");
+
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: { line: 1, character: 4 },
+            end: { line: 1, character: 7 },
+          },
+          context: { diagnostics: namingDiagnostics },
+        });
+        expect(JSON.stringify(actions)).not.toContain("Rename foo to Foo");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("does not report VBScript naming hints when identifier casing is ignored", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { vbscript: { identifierCase: "ignore" } } },
+        });
+        const uri = "file:///tmp/vb-naming-ignore.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<%\nDim foo\n%>`,
+          },
+        });
+        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        expect(
+          (diagnostics.params as { diagnostics: Array<Record<string, unknown>> }).diagnostics.some(
+            (diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming",
+          ),
+        ).toBe(false);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("localizes asp-lsp diagnostics, code actions and CodeLens", async () => {
       const marked = markedDocument(`<!-- #include file="missing.inc" -->
 <%

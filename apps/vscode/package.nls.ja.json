@@ -15,6 +15,7 @@
   "configuration.format.alignAssignments.description": "単純な連続 VBScript assignment を align します。",
   "configuration.format.onSave.description": "textDocument/willSaveWaitUntil で document 全体の formatting edit を返します。既定では無効です。",
   "configuration.vbscript.typeChecking.description": "VBScript type diagnostic を制御します。strict は type mismatch、member、call check を有効にします。",
+  "configuration.vbscript.identifierCase.description": "選択した identifier casing に合わない VBScript declaration name を報告します。ignore で naming hint を無効にします。",
   "configuration.vbscript.comTypes.description": "Server.CreateObject の type checking と completion に使う、Prog.ID keyed の custom COM type catalog です。",
   "configuration.vbscript.comTypes.members.description": "この COM object が公開する member です。",
   "configuration.vbscript.comTypes.memberString.description": "property type の省略表記です。例: String または ADODB.Recordset。",
