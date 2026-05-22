@@ -87,6 +87,44 @@ Response.Write name
     expect(parsed.diagnostics[0]?.message).toContain("closing %>");
   });
 
+  it("keeps ASP delimiters inside script strings and comments from ending regions", () => {
+    const source = `<%
+Response.Write "%>"
+' comment with %>
+Response.Write "done"
+%>
+<%@ LANGUAGE="JScript" %><% var text = '%>'; Response.Write(text); %>`;
+    const parsed = parseAspDocument("file:///site/delimiters.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    const blocks = parsed.regions.filter(
+      (region) => region.kind === "asp-block" || region.kind === "asp-directive",
+    );
+    expect(blocks).toHaveLength(3);
+    expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).toContain(
+      'Response.Write "done"',
+    );
+  });
+
+  it("keeps script and style closing tags inside strings or comments from ending regions", () => {
+    const source = `<script>
+const literal = "</script>";
+// </script>
+const ok = true;
+</script>
+<style>
+.x::before { content: "</style>"; }
+/* </style> */
+.x { color: red; }
+</style>`;
+    const parsed = parseAspDocument("file:///site/tags.asp", source);
+    const script = parsed.regions.find((region) => region.kind === "client-script");
+    const style = parsed.regions.find((region) => region.kind === "style");
+    expect(script && source.slice(script.contentStart, script.contentEnd)).toContain(
+      "const ok = true;",
+    );
+    expect(style && source.slice(style.contentStart, style.contentEnd)).toContain("color: red");
+  });
+
   it("keeps explicit server script language even when page default is different", () => {
     const parsed = parseAspDocument(
       "file:///mixed.asp",
