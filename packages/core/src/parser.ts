@@ -10,6 +10,7 @@ import type {
 } from "./types";
 import { rangeFromOffsets } from "./position";
 import { parseVbscriptCst } from "./vbscript";
+import { createLocalizer } from "./localize";
 
 const attrPattern = /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*(?:=\s*("([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
 
@@ -83,7 +84,7 @@ export function parseAspDocument(
 
 export function parseAspCst(uri: string, text: string, settings: AspSettings = {}): AspCstNode {
   const diagnostics: AspParsedDocument["diagnostics"] = [];
-  const scan = scanHtmlAndAsp(text, diagnostics);
+  const scan = scanHtmlAndAsp(text, diagnostics, settings);
   const { inlineRegions, tagRegions, includes } = scan;
   const directives = inlineRegions
     .filter((region) => region.kind === "asp-directive")
@@ -159,6 +160,7 @@ export function parseAspCst(uri: string, text: string, settings: AspSettings = {
 function scanHtmlAndAsp(
   text: string,
   diagnostics: AspParsedDocument["diagnostics"],
+  settings: AspSettings,
 ): ParsedHtmlScan {
   const inlineRegions: AspRegion[] = [];
   const tagRegions: AspRegion[] = [];
@@ -166,7 +168,7 @@ function scanHtmlAndAsp(
   let cursor = 0;
   while (cursor < text.length) {
     if (text.startsWith("<%", cursor)) {
-      const region = parseAspRegionAt(text, cursor, diagnostics);
+      const region = parseAspRegionAt(text, cursor, diagnostics, text.length, settings);
       inlineRegions.push(region);
       cursor = region.end;
       continue;
@@ -198,7 +200,9 @@ function scanHtmlAndAsp(
       if (close) {
         const region = elementRegionFromTag(tag, close);
         tagRegions.push(region);
-        inlineRegions.push(...scanAspRegionsInRange(text, tag.end, close.start, diagnostics));
+        inlineRegions.push(
+          ...scanAspRegionsInRange(text, tag.end, close.start, diagnostics, settings),
+        );
         cursor = close.end;
         continue;
       }
@@ -213,6 +217,7 @@ function scanAspRegionsInRange(
   start: number,
   end: number,
   diagnostics: AspParsedDocument["diagnostics"],
+  settings: AspSettings = {},
 ): AspRegion[] {
   const regions: AspRegion[] = [];
   let cursor = start;
@@ -221,7 +226,7 @@ function scanAspRegionsInRange(
     if (next === -1 || next >= end) {
       break;
     }
-    const region = parseAspRegionAt(text, next, diagnostics, end);
+    const region = parseAspRegionAt(text, next, diagnostics, end, settings);
     regions.push(region);
     cursor = Math.max(region.end, next + 2);
   }
@@ -233,13 +238,14 @@ function parseAspRegionAt(
   start: number,
   diagnostics: AspParsedDocument["diagnostics"],
   maxEnd = text.length,
+  settings: AspSettings = {},
 ): AspRegion {
   const close = findAspClose(text, start + 2, maxEnd);
   if (close === -1) {
     diagnostics.push({
       severity: DiagnosticSeverity.Error,
       range: rangeFromOffsets(text, start, maxEnd),
-      message: "Classic ASP block is missing a closing %> delimiter.",
+      message: createLocalizer(settings.resolvedLocale).t("parser.missingAspClose"),
       source: "asp-lsp",
     });
   }

@@ -21,8 +21,10 @@ import type {
   SignatureHelp,
 } from "vscode-languageserver-types";
 import { offsetAt, rangeFromOffsets } from "./position";
+import { createLocalizer } from "./localize";
 import type {
   AspCstNode,
+  AspLocale,
   AspParsedDocument,
   AspRegion,
   AspVbscriptComType,
@@ -69,6 +71,7 @@ export interface VbProjectContext {
   comTypes?: Record<string, AspVbscriptComType>;
   typeEnvironment?: VbTypeEnvironment;
   unusedDiagnostics?: boolean;
+  locale?: AspLocale;
 }
 
 export interface VbInlayHintOptions {
@@ -195,44 +198,68 @@ const vbDocCommentAttributeCompletions: Record<string, string[]> = {
   list: ["type"],
 };
 
-const builtins: CompletionItem[] = [
-  {
-    label: "Request",
-    kind: CompletionItemKind.Variable,
-    detail: "Classic ASP Request object",
-    documentation:
-      "Reads client request values such as QueryString, Form, Cookies, and ServerVariables.",
-  },
-  { label: "Response", kind: CompletionItemKind.Variable, detail: "Classic ASP Response object" },
-  { label: "Session", kind: CompletionItemKind.Variable, detail: "Classic ASP Session object" },
-  {
-    label: "Application",
-    kind: CompletionItemKind.Variable,
-    detail: "Classic ASP Application object",
-  },
-  { label: "Server", kind: CompletionItemKind.Variable, detail: "Classic ASP Server object" },
-  { label: "ASPError", kind: CompletionItemKind.Class, detail: "Classic ASP error object" },
-  {
-    label: "Option Explicit",
-    kind: CompletionItemKind.Keyword,
-    detail: "Require explicit variable declarations",
-  },
-  { label: "Dim", kind: CompletionItemKind.Keyword },
-  { label: "Set", kind: CompletionItemKind.Keyword },
-  { label: "Const", kind: CompletionItemKind.Keyword },
-  { label: "Sub", kind: CompletionItemKind.Keyword },
-  { label: "Function", kind: CompletionItemKind.Keyword },
-  { label: "Class", kind: CompletionItemKind.Keyword },
-];
+function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
+  const localizer = createLocalizer(locale);
+  return [
+    {
+      label: "Request",
+      kind: CompletionItemKind.Variable,
+      detail: localizer.t("vb.builtin.request.detail"),
+      documentation: localizer.t("vb.builtin.request.documentation"),
+    },
+    {
+      label: "Response",
+      kind: CompletionItemKind.Variable,
+      detail: localizer.t("vb.builtin.response.detail"),
+    },
+    {
+      label: "Session",
+      kind: CompletionItemKind.Variable,
+      detail: localizer.t("vb.builtin.session.detail"),
+    },
+    {
+      label: "Application",
+      kind: CompletionItemKind.Variable,
+      detail: localizer.t("vb.builtin.application.detail"),
+    },
+    {
+      label: "Server",
+      kind: CompletionItemKind.Variable,
+      detail: localizer.t("vb.builtin.server.detail"),
+    },
+    {
+      label: "ASPError",
+      kind: CompletionItemKind.Class,
+      detail: localizer.t("vb.builtin.asperror.detail"),
+    },
+    {
+      label: "Option Explicit",
+      kind: CompletionItemKind.Keyword,
+      detail: localizer.t("vb.builtin.optionExplicit.detail"),
+    },
+    { label: "Dim", kind: CompletionItemKind.Keyword },
+    { label: "Set", kind: CompletionItemKind.Keyword },
+    { label: "Const", kind: CompletionItemKind.Keyword },
+    { label: "Sub", kind: CompletionItemKind.Keyword },
+    { label: "Function", kind: CompletionItemKind.Keyword },
+    { label: "Class", kind: CompletionItemKind.Keyword },
+  ];
+}
 
-const builtinDescriptions: Record<string, string> = {
-  request: "Classic ASP Request object. Reads values sent by the client.",
-  response: "Classic ASP Response object. Writes output and controls the HTTP response.",
-  session: "Classic ASP Session object. Stores per-user state.",
-  application: "Classic ASP Application object. Stores application-wide state.",
-  server: "Classic ASP Server object. Creates COM objects, maps paths, and encodes values.",
-  asperror: "Classic ASP error object returned by Server.GetLastError.",
-};
+function builtinDescription(name: string, locale: AspLocale | undefined): string | undefined {
+  const key = `vb.hover.builtin.${name.toLowerCase()}` as const;
+  if (
+    key === "vb.hover.builtin.request" ||
+    key === "vb.hover.builtin.response" ||
+    key === "vb.hover.builtin.session" ||
+    key === "vb.hover.builtin.application" ||
+    key === "vb.hover.builtin.server" ||
+    key === "vb.hover.builtin.asperror"
+  ) {
+    return createLocalizer(locale).t(key);
+  }
+  return undefined;
+}
 
 const builtinSignatures: Record<string, string[]> = {
   "response.write": ["Response.Write value"],
@@ -1023,7 +1050,7 @@ export function getVbscriptCompletions(
 ): CompletionItem[] {
   const sourceOffset = offsetAt(parsed.text, position);
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
-  const docCompletions = getVbDocCommentCompletions(parsed, sourceOffset, symbols);
+  const docCompletions = getVbDocCommentCompletions(parsed, sourceOffset, symbols, context.locale);
   if (docCompletions.length > 0) {
     return docCompletions;
   }
@@ -1047,8 +1074,10 @@ export function getVbscriptCompletions(
     return className ? typeMemberCompletions(className, symbols, typeEnvironment) : [];
   }
   return dedupeCompletions([
-    ...builtins,
-    ...visibleSymbols(parsed, sourceOffset, symbols).map(symbolToCompletion),
+    ...builtinCompletions(context.locale),
+    ...visibleSymbols(parsed, sourceOffset, symbols).map((symbol) =>
+      symbolToCompletion(symbol, context.locale),
+    ),
   ]);
 }
 
@@ -1056,7 +1085,9 @@ function getVbDocCommentCompletions(
   parsed: AspParsedDocument,
   offset: number,
   symbols: VbSymbol[],
+  locale: AspLocale | undefined,
 ): CompletionItem[] {
+  const localizer = createLocalizer(locale);
   const prefix = docCommentLinePrefixAt(parsed.text, offset);
   if (prefix === undefined) {
     return [];
@@ -1066,7 +1097,7 @@ function getVbDocCommentCompletions(
     return nextDocumentedProcedureParameters(parsed, offset).map((name) => ({
       label: name,
       kind: CompletionItemKind.Variable,
-      detail: "VBScript XML documentation parameter",
+      detail: localizer.t("vb.doc.detail.parameter"),
     }));
   }
   const crefValue = /\bcref\s*=\s*"([^"]*)$/i.exec(prefix);
@@ -1076,8 +1107,8 @@ function getVbDocCommentCompletions(
         .filter((symbol) => symbol.kind !== "parameter")
         .map((symbol) => ({
           label: symbol.memberOf ? `${symbol.memberOf}.${symbol.name}` : symbol.name,
-          kind: symbolToCompletion(symbol).kind,
-          detail: "VBScript XML documentation cref",
+          kind: symbolToCompletion(symbol, locale).kind,
+          detail: localizer.t("vb.doc.detail.cref"),
         })),
     );
   }
@@ -1094,7 +1125,7 @@ function getVbDocCommentCompletions(
       .map((name) => ({
         label: name,
         kind: CompletionItemKind.Property,
-        detail: "VBScript XML documentation attribute",
+        detail: localizer.t("vb.doc.detail.attribute"),
         insertText: `${name}="$1"`,
         insertTextFormat: InsertTextFormat.Snippet,
       }));
@@ -1104,13 +1135,13 @@ function getVbDocCommentCompletions(
     return unclosedDocCommentTags(parsed, offset).map((tag) => ({
       label: tag,
       kind: CompletionItemKind.Property,
-      detail: "VBScript XML documentation closing tag",
+      detail: localizer.t("vb.doc.detail.closingTag"),
       insertText: `${tag}>`,
     }));
   }
   const tag = /<([A-Za-z0-9_-]*)$/i.exec(prefix);
   if (tag) {
-    return vbDocCommentTags.map((name) => docCommentTagCompletion(name));
+    return vbDocCommentTags.map((name) => docCommentTagCompletion(name, locale));
   }
   return [];
 }
@@ -1122,7 +1153,10 @@ function docCommentLinePrefixAt(text: string, offset: number): string | undefine
   return match?.[1];
 }
 
-function docCommentTagCompletion(tag: (typeof vbDocCommentTags)[number]): CompletionItem {
+function docCommentTagCompletion(
+  tag: (typeof vbDocCommentTags)[number],
+  locale: AspLocale | undefined,
+): CompletionItem {
   const snippet =
     tag === "see" || tag === "seealso"
       ? `${tag} cref="$1" />`
@@ -1136,7 +1170,7 @@ function docCommentTagCompletion(tag: (typeof vbDocCommentTags)[number]): Comple
   return {
     label: tag,
     kind: CompletionItemKind.Property,
-    detail: "VBScript XML documentation tag",
+    detail: createLocalizer(locale).t("vb.doc.detail.tag"),
     insertText: snippet,
     insertTextFormat: InsertTextFormat.Snippet,
   };
@@ -1230,7 +1264,7 @@ export function analyzeVbscript(
   const scriptText = getServerScriptText(parsed);
   const optionExplicit = /^\s*Option\s+Explicit\b/im.test(scriptText);
   if (optionExplicit) {
-    diagnostics.push(...diagnoseUndeclaredVariables(parsed, symbols));
+    diagnostics.push(...diagnoseUndeclaredVariables(parsed, symbols, context.locale));
   }
   if (context.unusedDiagnostics !== false) {
     diagnostics.push(...diagnoseUnusedSymbols(parsed, symbols, context));
@@ -1241,6 +1275,7 @@ export function analyzeVbscript(
         parsed,
         symbols,
         context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols }),
+        context.locale,
       ),
     );
   }
@@ -1281,7 +1316,7 @@ export function getVbscriptHover(
   if (!token) {
     return undefined;
   }
-  const builtin = builtinDescriptions[token.text.toLowerCase()];
+  const builtin = builtinDescription(token.text, context.locale);
   if (builtin) {
     return builtin;
   }
@@ -1293,15 +1328,17 @@ export function getVbscriptHover(
   if (!symbol) {
     return undefined;
   }
+  const localizer = createLocalizer(context.locale);
   const container = symbol.memberOf
-    ? ` of ${symbol.memberOf}`
+    ? localizer.t("vb.symbol.owner", { owner: symbol.memberOf })
     : symbol.scopeName
-      ? ` in ${symbol.scopeName}`
+      ? localizer.t("vb.symbol.scope", { scope: symbol.scopeName })
       : "";
   const type = symbol.typeName ? ` As ${symbol.typeName}` : "";
   return appendDocumentationMarkdown(
     `${symbol.kind} ${symbol.name}${type}${container}`,
     symbol.documentation,
+    context.locale,
   );
 }
 
@@ -1401,7 +1438,9 @@ export function getVbscriptSignatureHelp(
   const signatureSymbols = signatureSymbolsForCall(parsed, call.name, offset, symbols);
   if (signatureSymbols.length > 0) {
     return {
-      signatures: signatureSymbols.map(symbolToSignatureInformation),
+      signatures: signatureSymbols.map((symbol) =>
+        symbolToSignatureInformation(symbol, context.locale),
+      ),
       activeSignature: 0,
       activeParameter,
     };
@@ -1426,7 +1465,9 @@ export function resolveVbscriptCompletionItem(
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const env = context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
   const label = item.label.toLowerCase();
-  const builtin = builtins.find((candidate) => candidate.label.toLowerCase() === label);
+  const builtin = builtinCompletions(context.locale).find(
+    (candidate) => candidate.label.toLowerCase() === label,
+  );
   if (builtin) {
     return {
       ...item,
@@ -1437,13 +1478,19 @@ export function resolveVbscriptCompletionItem(
   const symbol = symbols.find((candidate) => candidate.name.toLowerCase() === label);
   if (symbol) {
     const type = symbol.typeName ? ` As ${symbol.typeName}` : "";
-    const owner = symbol.memberOf ? ` of ${symbol.memberOf}` : "";
+    const owner = symbol.memberOf
+      ? createLocalizer(context.locale).t("vb.symbol.owner", { owner: symbol.memberOf })
+      : "";
     return {
       ...item,
       detail: `${symbol.kind}${type}${owner}`,
       documentation: appendDocumentationMarkdown(
-        `${signatureLabelForDocumentation(symbol)}\n\nDefined in ${symbol.sourceUri}.`,
+        `${signatureLabelForDocumentation(symbol)}\n\n${createLocalizer(context.locale).t(
+          "vb.completion.definedIn",
+          { uri: symbol.sourceUri },
+        )}`,
         symbol.documentation,
+        context.locale,
       ),
     };
   }
@@ -1458,7 +1505,12 @@ export function resolveVbscriptCompletionItem(
     return {
       ...item,
       detail: signature ?? `${member.member.kind}${type}`,
-      documentation: `${member.member.kind} ${member.type.name}.${member.member.name}${type}`,
+      documentation: createLocalizer(context.locale).t("vb.completion.memberDocumentation", {
+        kind: member.member.kind,
+        type: member.type.name,
+        member: member.member.name,
+        suffix: type,
+      }),
     };
   }
   return item;
@@ -2311,33 +2363,40 @@ function hasDocumentationContent(documentation: VbDocumentation): boolean {
   );
 }
 
-function documentationMarkdown(documentation: VbDocumentation | undefined): string | undefined {
+function documentationMarkdown(
+  documentation: VbDocumentation | undefined,
+  locale: AspLocale | undefined = undefined,
+): string | undefined {
   if (!documentation) {
     return undefined;
   }
+  const localizer = createLocalizer(locale);
   const lines: string[] = [];
   if (documentation.summary) {
     lines.push(documentation.summary);
   }
   if (documentation.remarks) {
-    lines.push(`**Remarks**\n\n${documentation.remarks}`);
+    lines.push(`**${localizer.t("vb.doc.heading.remarks")}**\n\n${documentation.remarks}`);
   }
   const params = Object.entries(documentation.params);
   if (params.length > 0) {
     lines.push(
-      ["**Parameters**", ...params.map(([name, text]) => `- \`${name}\`: ${text}`)].join("\n"),
+      [
+        `**${localizer.t("vb.doc.heading.parameters")}**`,
+        ...params.map(([name, text]) => `- \`${name}\`: ${text}`),
+      ].join("\n"),
     );
   }
   if (documentation.returns) {
-    lines.push(`**Returns**\n\n${documentation.returns}`);
+    lines.push(`**${localizer.t("vb.doc.heading.returns")}**\n\n${documentation.returns}`);
   }
   if (documentation.value) {
-    lines.push(`**Value**\n\n${documentation.value}`);
+    lines.push(`**${localizer.t("vb.doc.heading.value")}**\n\n${documentation.value}`);
   }
   if (documentation.exceptions.length > 0) {
     lines.push(
       [
-        "**Exceptions**",
+        `**${localizer.t("vb.doc.heading.exceptions")}**`,
         ...documentation.exceptions.map((item) =>
           item.cref ? `- \`${item.cref}\`: ${item.text}` : `- ${item.text}`,
         ),
@@ -2347,7 +2406,7 @@ function documentationMarkdown(documentation: VbDocumentation | undefined): stri
   if (documentation.see.length > 0 || documentation.seealso.length > 0) {
     lines.push(
       [
-        "**See also**",
+        `**${localizer.t("vb.doc.heading.seeAlso")}**`,
         ...[...documentation.see, ...documentation.seealso].map((item) => {
           const target = item.text || item.cref || item.href || item.langword || "";
           return target.startsWith("http") ? `- ${target}` : `- \`${target}\``;
@@ -2356,15 +2415,13 @@ function documentationMarkdown(documentation: VbDocumentation | undefined): stri
     );
   }
   if (documentation.example) {
-    lines.push(`**Example**\n\n${documentation.example}`);
+    lines.push(`**${localizer.t("vb.doc.heading.example")}**\n\n${documentation.example}`);
   }
   if (documentation.code) {
     lines.push(`\`\`\`vbscript\n${documentation.code}\n\`\`\``);
   }
   if (hasDocumentationTypeLikeContent(documentation)) {
-    lines.push(
-      "_XML documentation is descriptive only. Use `' @type`, `' @param ... As ...`, or `' @returns ...` annotations for VBScript type metadata._",
-    );
+    lines.push(`_${localizer.t("vb.doc.typeNote")}_`);
   }
   return lines.filter(Boolean).join("\n\n");
 }
@@ -2378,8 +2435,9 @@ function hasDocumentationTypeLikeContent(documentation: VbDocumentation): boolea
 function appendDocumentationMarkdown(
   base: string,
   documentation: VbDocumentation | undefined,
+  locale: AspLocale | undefined = undefined,
 ): string {
-  const markdown = documentationMarkdown(documentation);
+  const markdown = documentationMarkdown(documentation, locale);
   return markdown ? `${base}\n\n${markdown}` : base;
 }
 
@@ -2726,7 +2784,7 @@ function typeMemberCompletions(
           symbol.memberOf?.toLowerCase() === typeName.toLowerCase() &&
           (symbol.kind === "method" || symbol.kind === "field" || symbol.kind === "property"),
       )
-      .map(symbolToCompletion),
+      .map((symbol) => symbolToCompletion(symbol)),
     ...(externalObjectMembers[typeName.toLowerCase()] ?? []),
   ]);
 }
@@ -2822,7 +2880,12 @@ function memberAccessAt(
     : { owner: "", member: token.text };
 }
 
-function diagnoseUndeclaredVariables(parsed: AspParsedDocument, symbols: VbSymbol[]): Diagnostic[] {
+function diagnoseUndeclaredVariables(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+  locale: AspLocale | undefined,
+): Diagnostic[] {
+  const localizer = createLocalizer(locale);
   const declaredBuiltins = new Set([
     "request",
     "response",
@@ -2859,7 +2922,7 @@ function diagnoseUndeclaredVariables(parsed: AspParsedDocument, symbols: VbSymbo
     diagnostics.push({
       severity: DiagnosticSeverity.Warning,
       range: rangeFromOffsets(parsed.text, token.start, token.end),
-      message: `'${name}' is not declared under Option Explicit.`,
+      message: localizer.t("vb.diagnostic.undeclared", { name }),
       source: "asp-lsp-vbscript",
     });
   }
@@ -2891,7 +2954,7 @@ function diagnoseUnusedSymbols(
     diagnostics.push({
       severity: DiagnosticSeverity.Hint,
       range: symbol.range,
-      message: unusedDiagnosticMessage(symbol),
+      message: unusedDiagnosticMessage(symbol, context.locale),
       source: "asp-lsp-vbscript-unused",
     });
   }
@@ -2905,11 +2968,12 @@ function isUnusedDiagnosticCandidate(symbol: VbSymbol): boolean {
   return ["variable", "parameter", "constant", "function", "sub", "class"].includes(symbol.kind);
 }
 
-function unusedDiagnosticMessage(symbol: VbSymbol): string {
+function unusedDiagnosticMessage(symbol: VbSymbol, locale: AspLocale | undefined): string {
+  const localizer = createLocalizer(locale);
   if (symbol.kind === "parameter") {
-    return `Parameter '${symbol.name}' is never used.`;
+    return localizer.t("vb.diagnostic.unusedParameter", { name: symbol.name });
   }
-  return `'${symbol.name}' is declared but never used.`;
+  return localizer.t("vb.diagnostic.unusedSymbol", { name: symbol.name });
 }
 
 function isRuntimeEntryPoint(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
@@ -2938,7 +3002,10 @@ function serverRegions(parsed: AspParsedDocument): AspRegion[] {
   return parsed.regions.filter((region) => region.language === "vbscript");
 }
 
-function symbolToCompletion(symbol: VbSymbol): CompletionItem {
+function symbolToCompletion(
+  symbol: VbSymbol,
+  locale: AspLocale | undefined = undefined,
+): CompletionItem {
   const kind =
     symbol.kind === "variable" || symbol.kind === "parameter"
       ? CompletionItemKind.Variable
@@ -2952,7 +3019,7 @@ function symbolToCompletion(symbol: VbSymbol): CompletionItem {
               ? CompletionItemKind.Property
               : CompletionItemKind.Function;
   const detail = symbol.memberOf
-    ? `${symbol.kind} of ${symbol.memberOf}`
+    ? `${symbol.kind}${createLocalizer(locale).t("vb.symbol.owner", { owner: symbol.memberOf })}`
     : symbol.typeName
       ? `${symbol.kind} As ${symbol.typeName}`
       : symbol.kind;
@@ -2960,7 +3027,7 @@ function symbolToCompletion(symbol: VbSymbol): CompletionItem {
     label: symbol.name,
     kind,
     detail,
-    documentation: documentationMarkdown(symbol.documentation),
+    documentation: documentationMarkdown(symbol.documentation, locale),
   };
 }
 
@@ -3141,10 +3208,10 @@ function signatureLabel(symbol: VbSymbol): string {
   }`;
 }
 
-function symbolToSignatureInformation(symbol: VbSymbol) {
+function symbolToSignatureInformation(symbol: VbSymbol, locale: AspLocale | undefined) {
   return {
     label: signatureLabel(symbol),
-    documentation: documentationMarkdown(symbol.documentation),
+    documentation: documentationMarkdown(symbol.documentation, locale),
     parameters: (symbol.parameters ?? []).map((parameter) => ({
       label: parameter,
       documentation: symbol.documentation?.params[parameter],
@@ -3156,12 +3223,13 @@ function diagnoseTypeIssues(
   parsed: AspParsedDocument,
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
+  locale: AspLocale | undefined,
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   for (const statement of vbStatements(parsed)) {
-    diagnostics.push(...diagnoseAssignmentTypes(parsed, statement, symbols, env));
-    diagnostics.push(...diagnoseCallTypes(parsed, statement, symbols, env));
-    diagnostics.push(...diagnoseMemberAccess(parsed, statement, symbols, env));
+    diagnostics.push(...diagnoseAssignmentTypes(parsed, statement, symbols, env, locale));
+    diagnostics.push(...diagnoseCallTypes(parsed, statement, symbols, env, locale));
+    diagnostics.push(...diagnoseMemberAccess(parsed, statement, symbols, env, locale));
   }
   return diagnostics;
 }
@@ -3171,7 +3239,9 @@ function diagnoseAssignmentTypes(
   statement: VbToken[],
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
+  locale: AspLocale | undefined,
 ): Diagnostic[] {
+  const localizer = createLocalizer(locale);
   const first = lowerToken(statement[0]);
   const isSet = first === "set";
   const targetIndex = isSet ? 1 : 0;
@@ -3195,7 +3265,7 @@ function diagnoseAssignmentTypes(
         parsed,
         target.start,
         statement.at(-1)?.end ?? target.end,
-        `Set assigns an object reference, but '${target.text}' receives ${rhsType.name}.`,
+        localizer.t("vb.diagnostic.setScalar", { name: target.text, type: rhsType.name }),
       ),
     );
   }
@@ -3205,7 +3275,7 @@ function diagnoseAssignmentTypes(
         parsed,
         target.start,
         statement.at(-1)?.end ?? target.end,
-        `Object assignment to '${target.text}' should use Set.`,
+        localizer.t("vb.diagnostic.objectNeedsSet", { name: target.text }),
       ),
     );
   }
@@ -3215,7 +3285,11 @@ function diagnoseAssignmentTypes(
         parsed,
         target.start,
         statement.at(-1)?.end ?? target.end,
-        `Type mismatch: '${target.text}' is ${lhsTypeName}, but assigned ${rhsType.name}.`,
+        localizer.t("vb.diagnostic.typeMismatch", {
+          name: target.text,
+          expected: lhsTypeName,
+          actual: rhsType.name,
+        }),
       ),
     );
   }
@@ -3227,8 +3301,10 @@ function diagnoseCallTypes(
   statement: VbToken[],
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
+  locale: AspLocale | undefined,
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
+  const localizer = createLocalizer(locale);
   for (let index = 0; index < statement.length; index += 1) {
     if (statement[index].text !== "(" || statement[index - 1]?.kind !== "identifier") {
       continue;
@@ -3246,7 +3322,7 @@ function diagnoseCallTypes(
             parsed,
             statement[index - 1].start,
             statement[index - 1].end,
-            `Call target '${name}' is not known.`,
+            localizer.t("vb.diagnostic.unknownCall", { name }),
           ),
         );
       }
@@ -3262,7 +3338,11 @@ function diagnoseCallTypes(
           parsed,
           statement[index - 1].start,
           statement[index - 1].end,
-          `Argument count mismatch for '${name}': expected ${signature.parameters.length}, got ${argumentCount}.`,
+          localizer.t("vb.diagnostic.argumentCountMismatch", {
+            name,
+            expected: signature.parameters.length,
+            actual: argumentCount,
+          }),
         ),
       );
     }
@@ -3275,8 +3355,10 @@ function diagnoseMemberAccess(
   statement: VbToken[],
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
+  locale: AspLocale | undefined,
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
+  const localizer = createLocalizer(locale);
   for (let index = 1; index + 1 < statement.length; index += 1) {
     if (statement[index].text !== "." || statement[index + 1]?.kind !== "identifier") {
       continue;
@@ -3300,7 +3382,10 @@ function diagnoseMemberAccess(
           parsed,
           member.start,
           member.end,
-          `Type '${ownerTypeName}' has no member '${member.text}'.`,
+          localizer.t("vb.diagnostic.missingMember", {
+            type: ownerTypeName,
+            member: member.text,
+          }),
         ),
       );
     }
@@ -3871,7 +3956,7 @@ function isLikelyDynamicCall(name: string): boolean {
 function isBuiltinName(name: string): boolean {
   const lower = name.toLowerCase();
   return (
-    builtins.some((item) => item.label.toLowerCase() === lower) ||
+    builtinCompletions(undefined).some((item) => item.label.toLowerCase() === lower) ||
     Object.values(memberCompletions).some((items) =>
       items.some((item) => item.label.toLowerCase() === lower),
     )

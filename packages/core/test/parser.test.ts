@@ -87,6 +87,13 @@ Response.Write name
     expect(parsed.diagnostics[0]?.message).toContain("closing %>");
   });
 
+  it("localizes ASP parser diagnostics", () => {
+    const parsed = parseAspDocument("file:///broken.asp", "<html><% Response.Write 1", {
+      resolvedLocale: "ja",
+    });
+    expect(parsed.diagnostics[0]?.message).toContain("閉じ区切り");
+  });
+
   it("keeps ASP delimiters inside script strings and comments from ending regions", () => {
     const source = `<%
 Response.Write "%>"
@@ -228,6 +235,34 @@ Response.Write missingName
     expect(
       result.diagnostics.some((diagnostic) => diagnostic.message.includes("missingName")),
     ).toBe(true);
+  });
+
+  it("localizes VBScript diagnostics, XML docs and completion details", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<% Option Explicit
+''' <summary>名前を作ります。</summary>
+''' <param name="first">名。</param>
+''' <returns>表示名。</returns>
+Function BuildName(first)
+  BuildName = missingName
+End Function
+%>`,
+      { resolvedLocale: "ja" },
+    );
+    const context = { locale: "ja" as const };
+    const result = analyzeVbscript(parsed, context);
+    expect(
+      result.diagnostics.some((diagnostic) => diagnostic.message.includes("宣言されていません")),
+    ).toBe(true);
+    expect(
+      result.diagnostics.some((diagnostic) => diagnostic.message.includes("使われていません")),
+    ).toBe(true);
+    const hover = getVbscriptHover(parsed, { line: 4, character: 10 }, context);
+    expect(hover).toContain("戻り値");
+    expect(hover).toContain("説明用です");
+    const completions = getVbscriptCompletions(parsed, { line: 5, character: 2 }, context);
+    expect(completions.some((item) => String(item.detail).includes("オブジェクト"))).toBe(true);
   });
 
   it("does not treat strings or comments as undeclared variables", () => {

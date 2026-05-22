@@ -19,6 +19,8 @@ export type AspRegionKind =
   | "server-script";
 
 export interface AspSettings {
+  locale?: AspLocaleSetting;
+  resolvedLocale?: AspLocale;
   defaultLanguage?: "VBScript" | "JScript";
   virtualRoot?: string;
   virtualRoots?: string[];
@@ -32,6 +34,10 @@ export interface AspSettings {
   codeLens?: AspCodeLensSettings;
   workspace?: AspWorkspaceSettings;
 }
+
+export type AspLocaleSetting = "auto" | AspLocale;
+
+export type AspLocale = "en" | "ja";
 
 export interface AspFormatSettings {
   indentSize?: number;
