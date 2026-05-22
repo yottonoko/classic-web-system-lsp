@@ -44,6 +44,7 @@ export interface AspFormatSettings {
   indentStyle?: "space" | "tab";
   uppercaseKeywords?: boolean;
   alignAssignments?: boolean;
+  onSave?: boolean;
 }
 
 export interface AspFormattingOptions extends AspFormatSettings {
@@ -54,6 +55,7 @@ export interface AspFormattingOptions extends AspFormatSettings {
 export interface AspVbscriptSettings {
   typeChecking?: "basic" | "strict";
   comTypes?: Record<string, AspVbscriptComType>;
+  globals?: Record<string, string | AspVbscriptGlobal>;
   unusedDiagnostics?: boolean;
   includeSuggestions?: boolean;
 }
@@ -88,6 +90,11 @@ export interface AspVbscriptComMember {
   type?: string;
   returnType?: string;
   parameters?: Array<string | AspVbscriptComParameter>;
+}
+
+export interface AspVbscriptGlobal {
+  type?: string;
+  kind?: "variable" | "constant";
 }
 
 export interface AspVbscriptComParameter {

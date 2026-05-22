@@ -91,8 +91,10 @@ The VSIX build bundles the standalone language server into `apps/vscode/server/l
 - `aspLsp.format.indentStyle`: `space` or `tab`; unset uses editor options
 - `aspLsp.format.uppercaseKeywords`: format VBScript keywords as uppercase
 - `aspLsp.format.alignAssignments`: align simple consecutive VBScript assignments
+- `aspLsp.format.onSave`: return full-document formatting edits from `textDocument/willSaveWaitUntil`
 - `aspLsp.vbscript.typeChecking`: `basic` or `strict`; strict enables VBScript type diagnostics
 - `aspLsp.vbscript.comTypes`: custom COM type catalog keyed by `Server.CreateObject` Prog.ID
+- `aspLsp.vbscript.globals`: runtime or framework-provided VBScript globals keyed by identifier
 - `aspLsp.vbscript.unusedDiagnostics`: report unused VBScript declarations as hints
 - `aspLsp.vbscript.includeSuggestions`: suggest `<!-- #include ... -->` fixes for undeclared symbols found in workspace files
 - `aspLsp.inlayHints.variableTypes`: show inferred VBScript variable types
@@ -109,17 +111,22 @@ The VSIX build bundles the standalone language server into `apps/vscode/server/l
 - `aspLsp.iisExpress.webRoot`: web root used by the IIS Express debug helper command
 - `aspLsp.iisExpress.browser`: VS Code debug type used by the IIS Express debug helper command
 
-Example `aspLsp.vbscript.comTypes` entry:
+Example `aspLsp.vbscript.comTypes` and `aspLsp.vbscript.globals` entries:
 
 ```json
 {
-  "MyCompany.CustomerRepository": {
-    "members": {
-      "ConnectionString": "String",
-      "FindById": {
-        "kind": "method",
-        "returnType": "Customer",
-        "parameters": [{ "name": "id", "type": "Number" }]
+  "aspLsp.vbscript.globals": {
+    "CustomerRepository": "MyCompany.CustomerRepository"
+  },
+  "aspLsp.vbscript.comTypes": {
+    "MyCompany.CustomerRepository": {
+      "members": {
+        "ConnectionString": "String",
+        "FindById": {
+          "kind": "method",
+          "returnType": "Customer",
+          "parameters": [{ "name": "id", "type": "Number" }]
+        }
       }
     }
   }
@@ -139,7 +146,7 @@ Example `aspLsp.vbscript.comTypes` entry:
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed. COM type information comes from built-in stubs or `aspLsp.vbscript.comTypes`.
 - Call hierarchy, type hierarchy, CodeLens, type definition, implementation, monikers, and inline values are static and user-defined-symbol first; runtime COM dispatch is not modeled.
-- Save and will-save hooks refresh diagnostics and caches. `willSaveWaitUntil` is intentionally non-mutating so clients can opt into formatting or organize-imports through their normal code-action/format-on-save flows.
+- Save and will-save hooks refresh diagnostics and caches. `willSaveWaitUntil` is non-mutating by default and returns full-document formatting edits only when `aspLsp.format.onSave` is enabled.
 - IIS debug support opens a configured URL in a browser debug session; it does not attach to IIS, COM, or server-side Classic ASP runtime.
 - IIS Express support is a browser launch helper; it does not start or configure IIS Express by itself.
 - Full-document formatting is CST based and conservative. HTML-only ranges still use `vscode-html-languageservice`; ASP/VBScript ranges are formatted by the built-in formatter.

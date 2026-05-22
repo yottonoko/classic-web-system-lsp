@@ -1609,6 +1609,7 @@ helper▮Thing();
     it("formats full ASP documents and ASP ranges over JSON-RPC", async () => {
       const source = `<html>
 <body>
+<style>.x{color:red}</style>
 <% Option Explicit
 If enabled Then
 Response.Write "ok"
@@ -1643,6 +1644,8 @@ End If
         const fullText = JSON.stringify(fullEdits);
         expect(fullText).toContain("<%");
         expect(fullText).toContain("  Response.Write");
+        expect(fullText).toContain(".x {");
+        expect(fullText).toContain("color: red");
 
         const rangeEdits = await server.request("textDocument/rangeFormatting", {
           textDocument: { uri },
@@ -1655,6 +1658,50 @@ End If
         const rangeText = JSON.stringify(rangeEdits);
         expect(rangeText).toContain("  Response.Write");
         expect(rangeText).not.toContain("<html>");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("returns format edits from willSaveWaitUntil when format-on-save is enabled", async () => {
+      const source = `<style>.x{color:red}</style>
+<%
+If enabled Then
+Response.Write "ok"
+End If
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { format: { onSave: true, indentSize: 2 } } },
+        });
+        const uri = "file:///tmp/will-save-format.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const edits = await server.request("textDocument/willSaveWaitUntil", {
+          textDocument: { uri },
+          reason: 1,
+        });
+        const serialized = JSON.stringify(edits);
+        expect(serialized).toContain("color: red");
+        expect(serialized).toContain("  Response.Write");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -1746,6 +1793,9 @@ function greet(name){return "a=b";}
                     },
                   },
                 },
+                globals: {
+                  Repository: "Custom.Widget",
+                },
               },
             },
           },
@@ -1757,6 +1807,7 @@ Set widget = Server.CreateObject("Custom.Widget")
 widget.
 widget.Missing
 widget.Ping("a", "b")
+Repository.
 %>`;
         server.notify("textDocument/didOpen", {
           textDocument: {
@@ -1778,6 +1829,13 @@ widget.Ping("a", "b")
         const completionText = JSON.stringify(completions);
         expect(completionText).toContain("Title");
         expect(completionText).toContain("Ping");
+
+        const globalCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: { line: 6, character: 11 },
+        });
+        expect(JSON.stringify(globalCompletions)).toContain("Title");
+        expect(diagnosticText).not.toContain("Repository");
 
         const typeHierarchy = await server.request("textDocument/prepareTypeHierarchy", {
           textDocument: { uri },

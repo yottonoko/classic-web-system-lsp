@@ -325,19 +325,17 @@ documents.onDidClose((event) => {
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
 });
 
-connection.onWillSaveTextDocument((params) => {
-  const document = documents.get(params.textDocument.uri);
-  if (document) {
-    validate(document);
-  }
+documents.onWillSave((event) => {
+  validate(event.document);
 });
 
-connection.onWillSaveTextDocumentWaitUntil((params) => {
-  const document = documents.get(params.textDocument.uri);
-  if (document) {
-    validate(document);
-  }
-  return [];
+documents.onWillSaveWaitUntil((event) => {
+  validate(event.document);
+  const cached = getCached(event.document.uri);
+  const settings = cached ? cachedSettings(cached.source.uri) : undefined;
+  return cached && settings?.format?.onSave === true
+    ? formatAspDocumentWithDelegates(cached, defaultFormattingOptions(settings))
+    : [];
 });
 
 connection.onInitialized(() => {
@@ -2664,6 +2662,7 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
   const symbols = documents.flatMap((document) =>
     collectVbscriptSymbols(document, contextSettings),
   );
+  symbols.push(...configuredVbscriptGlobals(cached, settings));
   const typeEnvironment = buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols });
   return {
     documents,
@@ -2671,6 +2670,33 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     typeEnvironment,
     ...contextSettings,
   };
+}
+
+function configuredVbscriptGlobals(cached: CachedDocument, settings: AspSettings): VbSymbol[] {
+  const globals = settings.vbscript?.globals;
+  if (!globals) {
+    return [];
+  }
+  const range = {
+    start: { line: 0, character: 0 },
+    end: { line: 0, character: 0 },
+  };
+  return Object.entries(globals).flatMap(([name, value]) => {
+    const typeName = typeof value === "string" ? value : value.type;
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name) || !typeName) {
+      return [];
+    }
+    return [
+      {
+        name,
+        kind: typeof value === "object" && value.kind === "constant" ? "constant" : "variable",
+        range,
+        sourceUri: `${cached.source.uri}#runtime-global`,
+        typeName,
+        type: { name: typeName, object: true },
+      } satisfies VbSymbol,
+    ];
+  });
 }
 
 function collectVbProjectDocuments(
@@ -3460,6 +3486,10 @@ function normalizeVbscriptSettings(
       record.comTypes && typeof record.comTypes === "object"
         ? (record.comTypes as NonNullable<AspSettings["vbscript"]>["comTypes"])
         : undefined,
+    globals:
+      record.globals && typeof record.globals === "object"
+        ? (record.globals as NonNullable<AspSettings["vbscript"]>["globals"])
+        : undefined,
     unusedDiagnostics: record.unusedDiagnostics !== false,
     includeSuggestions: record.includeSuggestions !== false,
   };
@@ -3491,6 +3521,7 @@ function normalizeFormatSettings(
     indentStyle,
     uppercaseKeywords: record.uppercaseKeywords === true,
     alignAssignments: record.alignAssignments === true,
+    onSave: record.onSave === true,
   };
 }
 
@@ -3499,6 +3530,16 @@ function formatOptions(options: { tabSize: number; insertSpaces: boolean }, sett
     tabSize: options.tabSize,
     insertSpaces: options.insertSpaces,
     ...settings.format,
+  };
+}
+
+function defaultFormattingOptions(settings: AspSettings): {
+  tabSize: number;
+  insertSpaces: boolean;
+} {
+  return {
+    tabSize: settings.format?.indentSize ?? 2,
+    insertSpaces: settings.format?.indentStyle !== "tab",
   };
 }
 
@@ -3513,7 +3554,7 @@ function formatAspDocumentWithDelegates(
   const parsed = parseAspDocument(cached.source.uri, formatted, settings);
   formatted = applyOffsetEdits(
     formatted,
-    javaScriptFormattingEdits(parsed, formatted, formattingOptions),
+    embeddedFormattingEdits(parsed, formatted, formattingOptions),
   );
   return formatted === original
     ? []
@@ -3545,15 +3586,15 @@ function formatAspRangeWithDelegates(
       ? rangeStart + coreEdits[0].newText.length
       : rangeEnd + offsetEditsDelta(original, coreEdits);
   const parsed = parseAspDocument(cached.source.uri, formatted, settings);
-  const jsEdits = javaScriptFormattingEdits(
+  const embeddedEdits = embeddedFormattingEdits(
     parsed,
     formatted,
     formattingOptions,
     rangeStart,
     formattedRangeEnd,
   );
-  formattedRangeEnd += offsetEditsDelta(formatted, jsEdits);
-  formatted = applyOffsetEdits(formatted, jsEdits);
+  formattedRangeEnd += offsetEditsDelta(formatted, embeddedEdits);
+  formatted = applyOffsetEdits(formatted, embeddedEdits);
   const newText = formatted.slice(rangeStart, formattedRangeEnd);
   const originalText = original.slice(rangeStart, rangeEnd);
   return newText === originalText
@@ -3567,6 +3608,72 @@ function formatAspRangeWithDelegates(
           newText,
         },
       ];
+}
+
+function embeddedFormattingEdits(
+  parsed: AspParsedDocument,
+  text: string,
+  options: AspFormattingOptions,
+  spanStart = 0,
+  spanEnd = text.length,
+): OffsetEdit[] {
+  return [
+    ...cssFormattingEdits(parsed, text, options, spanStart, spanEnd),
+    ...javaScriptFormattingEdits(parsed, text, options, spanStart, spanEnd),
+  ];
+}
+
+function cssFormattingEdits(
+  parsed: AspParsedDocument,
+  text: string,
+  options: AspFormattingOptions,
+  spanStart: number,
+  spanEnd: number,
+): OffsetEdit[] {
+  if (
+    !parsed.regions.some(
+      (region) =>
+        region.language === "css" && region.contentEnd > spanStart && region.contentStart < spanEnd,
+    )
+  ) {
+    return [];
+  }
+  return parsed.regions
+    .filter(
+      (region) =>
+        region.language === "css" && region.contentEnd > spanStart && region.contentStart < spanEnd,
+    )
+    .flatMap((region) => formatCssRegion(text, region, options, spanStart, spanEnd));
+}
+
+function formatCssRegion(
+  text: string,
+  region: AspRegion,
+  options: AspFormattingOptions,
+  spanStart: number,
+  spanEnd: number,
+): OffsetEdit[] {
+  const content = text.slice(region.contentStart, region.contentEnd);
+  const doc = TextDocument.create("__asp_lsp_format.css", "css", 0, content);
+  const localStart = Math.max(0, spanStart - region.contentStart);
+  const localEnd = Math.min(content.length, spanEnd - region.contentStart);
+  if (localStart >= localEnd) {
+    return [];
+  }
+  return cssService
+    .format(
+      doc,
+      { start: doc.positionAt(localStart), end: doc.positionAt(localEnd) },
+      {
+        tabSize: options.indentSize ?? options.tabSize,
+        insertSpaces: (options.indentStyle ?? (options.insertSpaces ? "space" : "tab")) !== "tab",
+      },
+    )
+    .map((edit) => ({
+      start: region.contentStart + offsetAtText(content, edit.range.start),
+      end: region.contentStart + offsetAtText(content, edit.range.end),
+      newText: edit.newText,
+    }));
 }
 
 function javaScriptFormattingEdits(

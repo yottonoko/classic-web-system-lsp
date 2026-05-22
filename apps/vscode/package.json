@@ -154,6 +154,11 @@
           "default": false,
           "description": "%configuration.format.alignAssignments.description%"
         },
+        "aspLsp.format.onSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.format.onSave.description%"
+        },
         "aspLsp.vbscript.typeChecking": {
           "type": "string",
           "enum": [
@@ -234,6 +239,37 @@
               }
             },
             "additionalProperties": false
+          }
+        },
+        "aspLsp.vbscript.globals": {
+          "type": "object",
+          "default": {},
+          "description": "%configuration.vbscript.globals.description%",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "%configuration.vbscript.globals.string.description%"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "description": "%configuration.vbscript.globals.type.description%"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "variable",
+                      "constant"
+                    ],
+                    "default": "variable"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
           }
         },
         "aspLsp.vbscript.unusedDiagnostics": {
