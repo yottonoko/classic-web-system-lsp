@@ -882,6 +882,7 @@ End Sub
         expect(initializeText).toContain("typeHierarchyProvider");
         expect(initializeText).toContain("monikerProvider");
         expect(initializeText).toContain("inlineValueProvider");
+        expect(initializeText).toContain("willSaveWaitUntil");
 
         const uri = "file:///tmp/extended-lsp.asp";
         server.notify("textDocument/didOpen", {
@@ -893,6 +894,11 @@ End Sub
           },
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
+        const willSaveEdits = await server.request("textDocument/willSaveWaitUntil", {
+          textDocument: { uri },
+          reason: 1,
+        });
+        expect(willSaveEdits).toEqual([]);
 
         const completions = await server.request("textDocument/completion", {
           textDocument: { uri },
@@ -1189,6 +1195,53 @@ console.log(z, a);
           context: { diagnostics: [], only: ["source.organizeImports"] },
         });
         expect(JSON.stringify(actions)).toContain("Organize JavaScript imports");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("returns VBScript quick fixes for unused declarations", async () => {
+      const source = `<%
+Dim unusedValue
+Const usedValue = 1
+Response.Write usedValue
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-unused-code-actions.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const vbDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics;
+        expect(JSON.stringify(vbDiagnostics)).toContain("unusedValue");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: { line: 1, character: 4 },
+            end: { line: 1, character: 15 },
+          },
+          context: { diagnostics: vbDiagnostics },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Remove unused declaration unusedValue");
+        expect(serialized).toContain('"newText":""');
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -1631,6 +1684,7 @@ function greet(name){return "a=b";}
                 comTypes: {
                   "Custom.Widget": {
                     members: {
+                      Child: "Custom.Child",
                       Title: "String",
                       Ping: {
                         kind: "method",
@@ -1639,24 +1693,30 @@ function greet(name){return "a=b";}
                       },
                     },
                   },
+                  "Custom.Child": {
+                    members: {
+                      Name: "String",
+                    },
+                  },
                 },
               },
             },
           },
         });
         const uri = "file:///tmp/vb-type.asp";
-        server.notify("textDocument/didOpen", {
-          textDocument: {
-            uri,
-            languageId: "classic-asp",
-            version: 1,
-            text: `<%
+        const source = `<%
 Dim widget
 Set widget = Server.CreateObject("Custom.Widget")
 widget.
 widget.Missing
 widget.Ping("a", "b")
-%>`,
+%>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
           },
         });
         const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
@@ -1671,6 +1731,16 @@ widget.Ping("a", "b")
         const completionText = JSON.stringify(completions);
         expect(completionText).toContain("Title");
         expect(completionText).toContain("Ping");
+
+        const typeHierarchy = await server.request("textDocument/prepareTypeHierarchy", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("widget") + 2),
+        });
+        expect(JSON.stringify(typeHierarchy)).toContain("Custom.Widget");
+        const subtypes = await server.request("typeHierarchy/subtypes", {
+          item: (typeHierarchy as unknown[])[0],
+        });
+        expect(JSON.stringify(subtypes)).toContain("Custom.Child");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

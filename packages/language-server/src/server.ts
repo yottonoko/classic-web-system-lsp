@@ -60,6 +60,7 @@ import type {
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
   analyzeVbscript,
+  buildVbTypeEnvironment,
   buildVirtualDocuments,
   collectVbscriptSymbols,
   createLocalizer,
@@ -92,6 +93,7 @@ import {
   type VbProjectContext,
   type VbSymbol,
   type VbSymbolKind,
+  type VbType,
 } from "@asp-lsp/core";
 import { getCSSLanguageService } from "vscode-css-languageservice";
 import {
@@ -194,8 +196,9 @@ interface JsCallHierarchyData {
 
 interface VbTypeHierarchyData {
   kind: "vbscript";
+  rootUri: string;
   uri: string;
-  name: string;
+  typeName: string;
   line: number;
   character: number;
 }
@@ -225,6 +228,8 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       textDocumentSync: {
         openClose: true,
         change: TextDocumentSyncKind.Incremental,
+        willSave: true,
+        willSaveWaitUntil: true,
         save: { includeText: false },
       },
       completionProvider: {
@@ -318,6 +323,21 @@ documents.onDidClose((event) => {
   clearJsLanguageServiceCache();
   clearSemanticTokensForUri(event.document.uri);
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
+});
+
+connection.onWillSaveTextDocument((params) => {
+  const document = documents.get(params.textDocument.uri);
+  if (document) {
+    validate(document);
+  }
+});
+
+connection.onWillSaveTextDocumentWaitUntil((params) => {
+  const document = documents.get(params.textDocument.uri);
+  if (document) {
+    validate(document);
+  }
+  return [];
 });
 
 connection.onInitialized(() => {
@@ -935,7 +955,9 @@ connection.languages.typeHierarchy.onPrepare((params): TypeHierarchyItem[] => {
 
 connection.languages.typeHierarchy.onSupertypes((): TypeHierarchyItem[] => []);
 
-connection.languages.typeHierarchy.onSubtypes((): TypeHierarchyItem[] => []);
+connection.languages.typeHierarchy.onSubtypes((params): TypeHierarchyItem[] =>
+  vbTypeHierarchyRelatedItems(params.item),
+);
 
 connection.languages.moniker.on((params): Moniker[] => {
   const cached = getCached(params.textDocument.uri);
@@ -1966,31 +1988,87 @@ function vbTypeHierarchyItemAt(
     return undefined;
   }
   const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
-  const definition =
+  const symbol =
     getVbscriptDefinition(cached.parsed, position, context) ??
     getVbscriptTypeDefinition(cached.parsed, position, context);
-  if (!definition || definition.kind !== "class") {
+  if (!symbol) {
     return undefined;
   }
-  return vbTypeHierarchyItem(definition);
+  const typeName =
+    symbol.kind === "class" ? symbol.name : (symbol.type?.name ?? symbol.typeName ?? symbol.name);
+  const type = vbTypeByName(context, typeName);
+  if (!type || type.kind === "intrinsic") {
+    return undefined;
+  }
+  return vbTypeHierarchyItem(type, cached.source.uri, symbol.range, context);
 }
 
-function vbTypeHierarchyItem(symbol: VbSymbol): TypeHierarchyItem {
+function vbTypeHierarchyItem(
+  type: VbType,
+  rootUri: string,
+  fallbackRange: Range,
+  context: VbProjectContext,
+): TypeHierarchyItem {
+  const symbol = context.symbols?.find(
+    (candidate) =>
+      candidate.kind === "class" &&
+      candidate.name.toLowerCase() === type.name.toLowerCase() &&
+      candidate.sourceUri,
+  );
+  const range = symbol?.range ?? fallbackRange;
+  const uri = symbol?.sourceUri ?? rootUri;
   return {
-    name: symbol.name,
-    kind: SymbolKind.Class,
-    detail: symbol.sourceUri,
-    uri: symbol.sourceUri,
-    range: symbol.range,
-    selectionRange: symbol.range,
+    name: type.name,
+    kind: type.kind === "com" ? SymbolKind.Interface : SymbolKind.Class,
+    detail: type.kind === "com" ? "COM type catalog" : uri,
+    uri,
+    range,
+    selectionRange: range,
     data: {
       kind: "vbscript",
-      uri: symbol.sourceUri,
-      name: symbol.name,
-      line: symbol.range.start.line,
-      character: symbol.range.start.character,
+      rootUri,
+      uri,
+      typeName: type.name,
+      line: range.start.line,
+      character: range.start.character,
     } satisfies VbTypeHierarchyData,
   };
+}
+
+function vbTypeHierarchyRelatedItems(item: TypeHierarchyItem): TypeHierarchyItem[] {
+  const data = item.data as Partial<VbTypeHierarchyData> | undefined;
+  if (data?.kind !== "vbscript" || !data.typeName) {
+    return [];
+  }
+  const cached = getCached(data.rootUri ?? item.uri) ?? getCached(item.uri);
+  if (!cached) {
+    return [];
+  }
+  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const type = vbTypeByName(context, data.typeName);
+  if (!type) {
+    return [];
+  }
+  const seen = new Set<string>();
+  return type.members.flatMap((member) => {
+    const typeName = member.type?.name ?? member.signature?.returnType?.name;
+    const related = typeName ? vbTypeByName(context, typeName) : undefined;
+    if (!related || related.kind === "intrinsic" || related.name === type.name) {
+      return [];
+    }
+    const key = related.name.toLowerCase();
+    if (seen.has(key)) {
+      return [];
+    }
+    seen.add(key);
+    return [vbTypeHierarchyItem(related, cached.source.uri, item.selectionRange, context)];
+  });
+}
+
+function vbTypeByName(context: VbProjectContext, name: string): VbType | undefined {
+  return context.typeEnvironment?.types.find(
+    (type) => type.name.toLowerCase() === name.toLowerCase(),
+  );
 }
 
 function monikersAt(cached: CachedDocument, position: Position): Moniker[] {
@@ -2555,9 +2633,11 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
   const symbols = documents.flatMap((document) =>
     collectVbscriptSymbols(document, contextSettings),
   );
+  const typeEnvironment = buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols });
   return {
     documents,
     symbols,
+    typeEnvironment,
     ...contextSettings,
   };
 }
@@ -4037,6 +4117,9 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
       ...vbscriptIncludeSuggestionActions(cached, diagnostic, name),
     ];
   }
+  if (diagnostic.source === "asp-lsp-vbscript-unused") {
+    return removeUnusedVbscriptDeclarationActions(cached, diagnostic);
+  }
   if (diagnostic.source === "asp-lsp-include") {
     const include = cached.parsed.includes.find(
       (candidate) =>
@@ -4076,6 +4159,78 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
     ];
   }
   return [];
+}
+
+function removeUnusedVbscriptDeclarationActions(
+  cached: CachedDocument,
+  diagnostic: Diagnostic,
+): CodeAction[] {
+  const symbol = buildVbProjectContext(cached, cachedSettings(cached.source.uri)).symbols?.find(
+    (candidate) =>
+      candidate.sourceUri === cached.source.uri && sameRange(candidate.range, diagnostic.range),
+  );
+  if (!symbol || symbol.kind === "class" || symbol.kind === "function" || symbol.kind === "sub") {
+    return [];
+  }
+  const edit =
+    symbol.kind === "parameter"
+      ? removeVbscriptParameterEdit(cached, symbol)
+      : removeLineEdit(cached.source, symbol.range.start.line);
+  if (!edit) {
+    return [];
+  }
+  return [
+    {
+      title: localizerForUri(cached.source.uri).t("server.quickfix.removeUnusedDeclaration", {
+        name: symbol.name,
+      }),
+      kind: CodeActionKind.QuickFix,
+      diagnostics: [diagnostic],
+      edit: {
+        changes: {
+          [cached.source.uri]: [edit],
+        },
+      },
+    },
+  ];
+}
+
+function removeVbscriptParameterEdit(
+  cached: CachedDocument,
+  symbol: VbSymbol,
+): TextEdit | undefined {
+  const line = lineText(cached.source, symbol.range.start.line);
+  const startOffset = cached.source.offsetAt(symbol.range.start);
+  const endOffset = cached.source.offsetAt(symbol.range.end);
+  const lineStart = cached.source.offsetAt({ line: symbol.range.start.line, character: 0 });
+  const lineEnd = lineStart + line.length;
+  let removeStart = startOffset;
+  let removeEnd = endOffset;
+  const after = cached.source.getText({
+    start: symbol.range.end,
+    end: cached.source.positionAt(lineEnd),
+  });
+  const before = cached.source.getText({
+    start: cached.source.positionAt(lineStart),
+    end: symbol.range.start,
+  });
+  const afterComma = /^\s*,\s*/.exec(after);
+  const beforeComma = /,\s*$/.exec(before);
+  if (afterComma) {
+    removeEnd += afterComma[0].length;
+  } else if (beforeComma) {
+    removeStart -= beforeComma[0].length;
+  }
+  if (removeStart < lineStart || removeEnd > lineEnd || removeStart >= removeEnd) {
+    return undefined;
+  }
+  return {
+    range: {
+      start: cached.source.positionAt(removeStart),
+      end: cached.source.positionAt(removeEnd),
+    },
+    newText: "",
+  };
 }
 
 function vbscriptIncludeSuggestionActions(
@@ -4576,6 +4731,29 @@ function lineText(document: TextDocument, line: number): string {
 
 function textInRange(document: TextDocument, range: Range): string {
   return document.getText(range);
+}
+
+function removeLineEdit(document: TextDocument, line: number): TextEdit {
+  const end =
+    line + 1 < document.lineCount
+      ? { line: line + 1, character: 0 }
+      : { line, character: lineText(document, line).length };
+  return {
+    range: {
+      start: { line, character: 0 },
+      end,
+    },
+    newText: "",
+  };
+}
+
+function sameRange(left: Range, right: Range): boolean {
+  return (
+    left.start.line === right.start.line &&
+    left.start.character === right.start.character &&
+    left.end.line === right.end.line &&
+    left.end.character === right.end.character
+  );
 }
 
 function rangesOverlap(left: Range, right: Range): boolean {

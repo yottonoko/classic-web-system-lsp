@@ -59,6 +59,7 @@ export type LocalizeKey =
   | "server.completion.css.detail"
   | "server.completion.css.documentation"
   | "server.quickfix.declareDim"
+  | "server.quickfix.removeUnusedDeclaration"
   | "server.quickfix.createMissingInclude"
   | "server.quickfix.includeSymbol"
   | "server.codeAction.organizeJavascriptImports"
@@ -124,6 +125,7 @@ const en: Record<LocalizeKey, string> = {
   "server.completion.css.detail": "CSS completion",
   "server.completion.css.documentation": "Completion provided by vscode-css-languageservice.",
   "server.quickfix.declareDim": "Declare {name} with Dim",
+  "server.quickfix.removeUnusedDeclaration": "Remove unused declaration {name}",
   "server.quickfix.createMissingInclude": "Create missing include {path}",
   "server.quickfix.includeSymbol": "Include {path} for {symbol}",
   "server.codeAction.organizeJavascriptImports": "Organize JavaScript imports",
@@ -194,6 +196,7 @@ const ja: Record<LocalizeKey, string> = {
   "server.completion.css.detail": "CSS 補完",
   "server.completion.css.documentation": "vscode-css-languageservice による補完です。",
   "server.quickfix.declareDim": "{name} を Dim で宣言",
+  "server.quickfix.removeUnusedDeclaration": "未使用の宣言 {name} を削除",
   "server.quickfix.createMissingInclude": "不足している include {path} を作成",
   "server.quickfix.includeSymbol": "{symbol} のために {path} を include",
   "server.codeAction.organizeJavascriptImports": "JavaScript import を整理",

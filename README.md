@@ -23,7 +23,7 @@ pnpm run build
 pnpm run package:vsix
 ```
 
-The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, completion resolve, pull/workspace diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, selection ranges, inlay hints, call hierarchy, type hierarchy, monikers, inline values, linked editing, file operations, code actions, CodeLens, formatting, workspace indexing, and virtual include roots.
+The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, completion resolve, pull/workspace diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, selection ranges, inlay hints, call hierarchy, type hierarchy, monikers, inline values, linked editing, will-save/save hooks, file operations, code actions, CodeLens, formatting, workspace indexing, and virtual include roots.
 
 ## VBScript Support
 
@@ -31,11 +31,13 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - user-defined variable, constant, function, sub, class, method, field, and property symbols
 - scope-aware completions for procedure-local variables and parameters
 - `Set value = New ClassName` inference for `value.Member` completions
+- `Server.CreateObject("Prog.ID")` inference for configured COM type completions and type hierarchy exploration
 - `Me.Member` completions inside classes
 - definition and references for user-defined VBScript symbols
 - include-aware VBScript symbols for completions and definition jumps
 - rename, document highlights, signature help, workspace symbols, and semantic tokens for VBScript symbols
 - selection ranges, inlay hints, call hierarchy, type hierarchy, type definition, implementation, monikers, inline values, and CodeLens for VBScript symbols
+- quick fixes for undeclared variables, missing includes, include suggestions, and removable unused VBScript declarations
 - VB.NET-style `'''` XML documentation comments for VBScript hover, completion resolve, and signature help
 - XML documentation tag completion for `summary`, `remarks`, `param`, `returns`, `value`, `exception`, `see`, `seealso`, `example`, `code`, `c`, `list`, and `para`
 - conservative support for `ReDim`, `For Each`, `With`, and `Server.CreateObject("ADODB.*")` completions
@@ -137,6 +139,7 @@ Example `aspLsp.vbscript.comTypes` entry:
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed. COM type information comes from built-in stubs or `aspLsp.vbscript.comTypes`.
 - Call hierarchy, type hierarchy, CodeLens, type definition, implementation, monikers, and inline values are static and user-defined-symbol first; runtime COM dispatch is not modeled.
+- Save and will-save hooks refresh diagnostics and caches. `willSaveWaitUntil` is intentionally non-mutating so clients can opt into formatting or organize-imports through their normal code-action/format-on-save flows.
 - IIS debug support opens a configured URL in a browser debug session; it does not attach to IIS, COM, or server-side Classic ASP runtime.
 - IIS Express support is a browser launch helper; it does not start or configure IIS Express by itself.
 - Full-document formatting is CST based and conservative. HTML-only ranges still use `vscode-html-languageservice`; ASP/VBScript ranges are formatted by the built-in formatter.
