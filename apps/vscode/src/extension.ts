@@ -12,10 +12,11 @@ let outputChannel: vscode.OutputChannel | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  const localizer = extensionLocalizer();
   outputChannel = vscode.window.createOutputChannel("Classic ASP LSP");
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.text = "$(code) ASP LSP";
-  statusBarItem.tooltip = "Classic ASP Language Server";
+  statusBarItem.tooltip = localizer("status.tooltip");
   statusBarItem.command = "aspLsp.openOutput";
   statusBarItem.show();
   context.subscriptions.push(
@@ -28,7 +29,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("aspLsp.openOutput", () => outputChannel?.show()),
     vscode.commands.registerCommand("aspLsp.debugIisUrl", async () => debugIisUrl()),
     vscode.commands.registerCommand("aspLsp.debugIisExpressUrl", async () =>
-      debugBrowserUrl("iisExpress", "Debug Classic ASP IIS Express URL"),
+      debugBrowserUrl("iisExpress", extensionLocalizer()("debug.iisExpress.name")),
     ),
     vscode.commands.registerCommand("aspLsp.createLaunchConfig", async () => createLaunchConfig()),
     vscode.tasks.registerTaskProvider("asp-lsp", new AspLspTaskProvider()),
@@ -83,7 +84,7 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
 }
 
 async function debugIisUrl(): Promise<void> {
-  await debugBrowserUrl("iis", "Debug Classic ASP URL");
+  await debugBrowserUrl("iis", extensionLocalizer()("debug.iis.name"));
 }
 
 async function debugBrowserUrl(configPrefix: "iis" | "iisExpress", name: string): Promise<void> {
@@ -108,7 +109,7 @@ async function debugBrowserUrl(configPrefix: "iis" | "iisExpress", name: string)
 async function createLaunchConfig(): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
-    void vscode.window.showWarningMessage("Open a workspace before creating launch.json.");
+    void vscode.window.showWarningMessage(extensionLocalizer()("launch.noWorkspace"));
     return;
   }
   const vscodeDir = vscode.Uri.joinPath(folder.uri, ".vscode");
@@ -126,7 +127,7 @@ async function createLaunchConfig(): Promise<void> {
     // Missing or invalid launch.json is replaced with a minimal browser debug config.
   }
   const config = vscode.workspace.getConfiguration("aspLsp");
-  const name = "Debug Classic ASP URL";
+  const name = extensionLocalizer()("debug.iis.name");
   const next = {
     type: config.get<string>("iis.browser") || "pwa-chrome",
     request: "launch",
@@ -139,7 +140,40 @@ async function createLaunchConfig(): Promise<void> {
     launchUri,
     new TextEncoder().encode(`${JSON.stringify(launch, null, 2)}\n`),
   );
-  void vscode.window.showInformationMessage("Classic ASP launch.json snippet created.");
+  void vscode.window.showInformationMessage(extensionLocalizer()("launch.created"));
+}
+
+type ExtensionMessageKey =
+  | "status.tooltip"
+  | "debug.iis.name"
+  | "debug.iisExpress.name"
+  | "launch.noWorkspace"
+  | "launch.created";
+
+const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>> = {
+  en: {
+    "status.tooltip": "Classic ASP Language Server",
+    "debug.iis.name": "Debug Classic ASP URL",
+    "debug.iisExpress.name": "Debug Classic ASP IIS Express URL",
+    "launch.noWorkspace": "Open a workspace before creating launch.json.",
+    "launch.created": "Classic ASP launch.json snippet created.",
+  },
+  ja: {
+    "status.tooltip": "Classic ASP Language Server",
+    "debug.iis.name": "Classic ASP URL をデバッグ",
+    "debug.iisExpress.name": "Classic ASP IIS Express URL をデバッグ",
+    "launch.noWorkspace": "launch.json を作成する前に workspace を開いてください。",
+    "launch.created": "Classic ASP の launch.json snippet を作成しました。",
+  },
+};
+
+function extensionLocalizer(): (key: ExtensionMessageKey) => string {
+  const configLocale = vscode.workspace.getConfiguration("aspLsp").get<string>("locale") ?? "auto";
+  const locale =
+    configLocale === "ja" || (configLocale !== "en" && vscode.env.language.startsWith("ja"))
+      ? "ja"
+      : "en";
+  return (key) => extensionMessages[locale][key] ?? extensionMessages.en[key];
 }
 
 class AspLspTaskProvider implements vscode.TaskProvider {

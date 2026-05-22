@@ -3,7 +3,7 @@
   "displayName": "Classic ASP LSP",
   "version": "0.1.0",
   "private": true,
-  "description": "Classic ASP language support backed by asp-lsp.",
+  "description": "%extension.description%",
   "categories": [
     "Programming Languages"
   ],
@@ -72,8 +72,18 @@
       }
     ],
     "configuration": {
-      "title": "Classic ASP LSP",
+      "title": "%configuration.title%",
       "properties": {
+        "aspLsp.locale": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "en",
+            "ja"
+          ],
+          "default": "auto",
+          "description": "%configuration.locale.description%"
+        },
         "aspLsp.defaultLanguage": {
           "type": "string",
           "enum": [
@@ -81,27 +91,27 @@
             "JScript"
           ],
           "default": "VBScript",
-          "description": "Default server-side script language for Classic ASP pages."
+          "description": "%configuration.defaultLanguage.description%"
         },
         "aspLsp.checkJs": {
           "type": "boolean",
           "default": false,
-          "description": "Enable semantic checking for client JavaScript regions."
+          "description": "%configuration.checkJs.description%"
         },
         "aspLsp.javascript.unusedDiagnostics": {
           "type": "boolean",
           "default": true,
-          "description": "Report unused JavaScript and JScript locals and parameters as hint diagnostics."
+          "description": "%configuration.javascript.unusedDiagnostics.description%"
         },
         "aspLsp.javascript.autoImports": {
           "type": "boolean",
           "default": true,
-          "description": "Enable TypeScript-powered JavaScript and JScript auto import completions and quick fixes."
+          "description": "%configuration.javascript.autoImports.description%"
         },
         "aspLsp.virtualRoot": {
           "type": "string",
           "default": "",
-          "description": "Root directory used to resolve virtual include paths."
+          "description": "%configuration.virtualRoot.description%"
         },
         "aspLsp.virtualRoots": {
           "type": "array",
@@ -109,7 +119,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Additional root directories used to resolve virtual include paths."
+          "description": "%configuration.virtualRoots.description%"
         },
         "aspLsp.legacyEncoding": {
           "type": "string",
@@ -119,12 +129,12 @@
             "cp932"
           ],
           "default": "utf8",
-          "description": "Encoding used when reading unopened include files."
+          "description": "%configuration.legacyEncoding.description%"
         },
         "aspLsp.format.indentSize": {
           "type": "number",
           "minimum": 1,
-          "description": "Indent size used by the Classic ASP formatter. When unset, editor formatting options are used."
+          "description": "%configuration.format.indentSize.description%"
         },
         "aspLsp.format.indentStyle": {
           "type": "string",
@@ -132,17 +142,17 @@
             "space",
             "tab"
           ],
-          "description": "Indent style used by the Classic ASP formatter. When unset, editor formatting options are used."
+          "description": "%configuration.format.indentStyle.description%"
         },
         "aspLsp.format.uppercaseKeywords": {
           "type": "boolean",
           "default": false,
-          "description": "Format VBScript keywords using uppercase spelling."
+          "description": "%configuration.format.uppercaseKeywords.description%"
         },
         "aspLsp.format.alignAssignments": {
           "type": "boolean",
           "default": false,
-          "description": "Align simple consecutive VBScript assignments."
+          "description": "%configuration.format.alignAssignments.description%"
         },
         "aspLsp.vbscript.typeChecking": {
           "type": "string",
@@ -151,23 +161,23 @@
             "strict"
           ],
           "default": "basic",
-          "description": "Controls VBScript type diagnostics. Strict enables type mismatch, member, and call checks."
+          "description": "%configuration.vbscript.typeChecking.description%"
         },
         "aspLsp.vbscript.comTypes": {
           "type": "object",
           "default": {},
-          "description": "Custom COM type catalog keyed by Prog.ID for Server.CreateObject type checking and completion.",
+          "description": "%configuration.vbscript.comTypes.description%",
           "additionalProperties": {
             "type": "object",
             "properties": {
               "members": {
                 "type": "object",
-                "description": "Members exposed by this COM object.",
+                "description": "%configuration.vbscript.comTypes.members.description%",
                 "additionalProperties": {
                   "oneOf": [
                     {
                       "type": "string",
-                      "description": "Property type shorthand, for example String or ADODB.Recordset."
+                      "description": "%configuration.vbscript.comTypes.memberString.description%"
                     },
                     {
                       "type": "object",
@@ -183,20 +193,20 @@
                         },
                         "type": {
                           "type": "string",
-                          "description": "Property or return type."
+                          "description": "%configuration.vbscript.comTypes.type.description%"
                         },
                         "returnType": {
                           "type": "string",
-                          "description": "Method return type. Overrides type when present."
+                          "description": "%configuration.vbscript.comTypes.returnType.description%"
                         },
                         "parameters": {
                           "type": "array",
-                          "description": "Method parameters in order.",
+                          "description": "%configuration.vbscript.comTypes.parameters.description%",
                           "items": {
                             "oneOf": [
                               {
                                 "type": "string",
-                                "description": "Parameter type shorthand."
+                                "description": "%configuration.vbscript.comTypes.parameterString.description%"
                               },
                               {
                                 "type": "object",
@@ -229,106 +239,106 @@
         "aspLsp.vbscript.unusedDiagnostics": {
           "type": "boolean",
           "default": true,
-          "description": "Report unused VBScript declarations as hint diagnostics."
+          "description": "%configuration.vbscript.unusedDiagnostics.description%"
         },
         "aspLsp.vbscript.includeSuggestions": {
           "type": "boolean",
           "default": true,
-          "description": "Suggest Classic ASP include directives for undeclared VBScript symbols found in workspace files."
+          "description": "%configuration.vbscript.includeSuggestions.description%"
         },
         "aspLsp.inlayHints.variableTypes": {
           "type": "boolean",
           "default": true,
-          "description": "Show inferred VBScript variable type inlay hints."
+          "description": "%configuration.inlayHints.variableTypes.description%"
         },
         "aspLsp.inlayHints.parameterNames": {
           "type": "boolean",
           "default": true,
-          "description": "Show VBScript procedure parameter name inlay hints."
+          "description": "%configuration.inlayHints.parameterNames.description%"
         },
         "aspLsp.inlayHints.functionReturnTypes": {
           "type": "boolean",
           "default": true,
-          "description": "Show inferred VBScript function return type inlay hints."
+          "description": "%configuration.inlayHints.functionReturnTypes.description%"
         },
         "aspLsp.codeLens.references": {
           "type": "boolean",
           "default": true,
-          "description": "Show VBScript reference count CodeLens entries."
+          "description": "%configuration.codeLens.references.description%"
         },
         "aspLsp.codeLens.includes": {
           "type": "boolean",
           "default": true,
-          "description": "Show Classic ASP include CodeLens entries."
+          "description": "%configuration.codeLens.includes.description%"
         },
         "aspLsp.workspace.maxIndexFiles": {
           "type": "number",
           "minimum": 1,
           "default": 5000,
-          "description": "Maximum number of unopened Classic ASP workspace files indexed per scan."
+          "description": "%configuration.workspace.maxIndexFiles.description%"
         },
         "aspLsp.workspace.scanChunkSize": {
           "type": "number",
           "minimum": 1,
           "default": 200,
-          "description": "Number of filesystem entries processed before yielding during workspace indexing."
+          "description": "%configuration.workspace.scanChunkSize.description%"
         },
         "aspLsp.iis.url": {
           "type": "string",
           "default": "http://localhost/",
-          "description": "URL opened by the Classic ASP IIS debug helper command."
+          "description": "%configuration.iis.url.description%"
         },
         "aspLsp.iis.webRoot": {
           "type": "string",
           "default": "",
-          "description": "Web root used by the Classic ASP IIS debug helper command."
+          "description": "%configuration.iis.webRoot.description%"
         },
         "aspLsp.iis.browser": {
           "type": "string",
           "default": "pwa-chrome",
-          "description": "VS Code debug type used by the Classic ASP IIS debug helper command."
+          "description": "%configuration.iis.browser.description%"
         },
         "aspLsp.iisExpress.url": {
           "type": "string",
           "default": "http://localhost:8080/",
-          "description": "URL opened by the Classic ASP IIS Express debug helper command."
+          "description": "%configuration.iisExpress.url.description%"
         },
         "aspLsp.iisExpress.webRoot": {
           "type": "string",
           "default": "",
-          "description": "Web root used by the Classic ASP IIS Express debug helper command."
+          "description": "%configuration.iisExpress.webRoot.description%"
         },
         "aspLsp.iisExpress.browser": {
           "type": "string",
           "default": "pwa-chrome",
-          "description": "VS Code debug type used by the Classic ASP IIS Express debug helper command."
+          "description": "%configuration.iisExpress.browser.description%"
         }
       }
     },
     "commands": [
       {
         "command": "aspLsp.restartServer",
-        "title": "Classic ASP: Restart Language Server"
+        "title": "%command.restartServer.title%"
       },
       {
         "command": "aspLsp.reindexWorkspace",
-        "title": "Classic ASP: Reindex Workspace"
+        "title": "%command.reindexWorkspace.title%"
       },
       {
         "command": "aspLsp.openOutput",
-        "title": "Classic ASP: Open Output"
+        "title": "%command.openOutput.title%"
       },
       {
         "command": "aspLsp.debugIisUrl",
-        "title": "Classic ASP: Debug IIS URL"
+        "title": "%command.debugIisUrl.title%"
       },
       {
         "command": "aspLsp.debugIisExpressUrl",
-        "title": "Classic ASP: Debug IIS Express URL"
+        "title": "%command.debugIisExpressUrl.title%"
       },
       {
         "command": "aspLsp.createLaunchConfig",
-        "title": "Classic ASP: Create Browser Launch Config"
+        "title": "%command.createLaunchConfig.title%"
       }
     ],
     "problemMatchers": [
@@ -359,7 +369,7 @@
         "properties": {
           "task": {
             "type": "string",
-            "description": "Classic ASP LSP workspace task name."
+            "description": "%taskDefinition.task.description%"
           }
         }
       }
@@ -379,7 +389,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": true,
-      "description": "Classic ASP LSP runs local analysis and does not require workspace trust for language features."
+      "description": "%capability.untrustedWorkspaces.description%"
     }
   }
 }

@@ -56,11 +56,29 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.javascript.autoImports"],
     ).toBeTruthy();
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
     expect(manifest.repository?.url).toContain("github.com/yottonoko/asp-lsp");
     expect(manifest.icon).toBe("assets/icon.png");
     expect(fs.existsSync(manifest.icon ?? "")).toBe(true);
     expect(manifest.galleryBanner?.color).toBeTruthy();
     expect(manifest.capabilities?.untrustedWorkspaces?.supported).toBe(true);
+  });
+
+  it("keeps package localization keys resolved", () => {
+    const manifestText = fs.readFileSync("package.json", "utf8");
+    const nls = JSON.parse(fs.readFileSync("package.nls.json", "utf8")) as Record<string, string>;
+    const nlsJa = JSON.parse(fs.readFileSync("package.nls.ja.json", "utf8")) as Record<
+      string,
+      string
+    >;
+    const keys = [...manifestText.matchAll(/%([A-Za-z0-9_.]+)%/g)].map((match) => match[1]);
+    expect(keys).toContain("extension.description");
+    expect(keys).toContain("command.restartServer.title");
+    expect(keys).toContain("configuration.locale.description");
+    for (const key of keys) {
+      expect(nls[key], key).toBeTruthy();
+      expect(nlsJa[key], key).toBeTruthy();
+    }
   });
 
   it("describes the COM type catalog schema for settings UI", () => {
@@ -109,6 +127,8 @@ describe("VS Code extension package", () => {
       expect(fs.existsSync(vsixPath)).toBe(true);
       const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
       expect(listing).toContain("extension/dist/extension.js");
+      expect(listing).toContain("extension/package.nls.json");
+      expect(listing).toContain("extension/package.nls.ja.json");
       expect(listing).toContain("extension/assets/icon.png");
       expect(listing).toContain("extension/server/language-server/dist/server.js");
       expect(listing).not.toContain("extension/server/language-server/node_modules/");
