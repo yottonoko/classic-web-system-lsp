@@ -98,9 +98,12 @@ const workspaceScriptFilesCache = new Map<
   { mtimeMs: number; size: number; files: string[] }
 >();
 const jsLanguageServiceCache = new Map<string, JsLanguageServiceCacheEntry>();
+const defaultMaxIndexFiles = 5000;
+const defaultScanChunkSize = 200;
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
 let workspaceRoots: string[] = [];
 let workspaceIndexDirty = true;
+let workspaceIndexTruncated = false;
 let jsLanguageServiceCacheTick = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
 
@@ -580,8 +583,8 @@ connection.onSignatureHelp((params): SignatureHelp | null => {
   );
 });
 
-connection.onWorkspaceSymbol((params) => {
-  ensureWorkspaceIndex();
+connection.onWorkspaceSymbol(async (params, token) => {
+  await ensureWorkspaceIndexAsync(globalSettings, token);
   const query = params.query.toLowerCase();
   const openedUris = new Set(documents.all().map((document) => document.uri));
   const indexedDocuments = [...workspaceIndex.values()]
@@ -709,8 +712,8 @@ connection.languages.diagnostics.on((params) => {
   };
 });
 
-connection.languages.diagnostics.onWorkspace(() => {
-  ensureWorkspaceIndex();
+connection.languages.diagnostics.onWorkspace(async (_params, token) => {
+  await ensureWorkspaceIndexAsync(globalSettings, token);
   const openedUris = new Set(documents.all().map((document) => document.uri));
   return {
     items: [
@@ -2232,6 +2235,119 @@ function ensureWorkspaceIndex(): void {
   workspaceIndexDirty = false;
 }
 
+async function ensureWorkspaceIndexAsync(
+  settings: AspSettings,
+  token?: { isCancellationRequested?: boolean },
+): Promise<void> {
+  if (!workspaceIndexDirty) {
+    return;
+  }
+  workspaceIndex.clear();
+  workspaceIndexTruncated = false;
+  let scannedFiles = 0;
+  const maxFiles = settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles;
+  const chunkSize = settings.workspace?.scanChunkSize ?? defaultScanChunkSize;
+  for (const root of workspaceRoots) {
+    if (token?.isCancellationRequested || scannedFiles >= maxFiles) {
+      break;
+    }
+    scannedFiles = await indexWorkspaceRootAsync(root, settings, {
+      scannedFiles,
+      maxFiles,
+      chunkSize,
+      token,
+    });
+  }
+  workspaceIndexTruncated = scannedFiles >= maxFiles;
+  workspaceIndexDirty = Boolean(token?.isCancellationRequested);
+  if (workspaceIndexTruncated) {
+    connection.console.warn(
+      `Classic ASP workspace index stopped at ${maxFiles} files. Increase aspLsp.workspace.maxIndexFiles to index more files.`,
+    );
+  }
+}
+
+async function indexWorkspaceRootAsync(
+  root: string,
+  settings: AspSettings,
+  state: {
+    scannedFiles: number;
+    maxFiles: number;
+    chunkSize: number;
+    token?: { isCancellationRequested?: boolean };
+  },
+): Promise<number> {
+  const stat = await fs.promises.stat(root).catch(() => undefined);
+  if (!stat?.isDirectory()) {
+    return state.scannedFiles;
+  }
+  const directories = [root];
+  let scannedFiles = state.scannedFiles;
+  let operations = 0;
+  while (directories.length > 0 && scannedFiles < state.maxFiles) {
+    if (state.token?.isCancellationRequested) {
+      return scannedFiles;
+    }
+    const directory = directories.pop() ?? root;
+    const entries = await fs.promises.readdir(directory, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (state.token?.isCancellationRequested || scannedFiles >= state.maxFiles) {
+        return scannedFiles;
+      }
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!isExcludedWorkspaceDirectory(entry.name, fullPath)) {
+          directories.push(fullPath);
+        }
+      } else if (entry.isFile() && isAspWorkspaceFile(entry.name)) {
+        await indexWorkspaceFileAsync(fullPath, settings);
+        scannedFiles += 1;
+      }
+      operations += 1;
+      if (operations % state.chunkSize === 0) {
+        await yieldToEventLoop();
+      }
+    }
+  }
+  return scannedFiles;
+}
+
+async function indexWorkspaceFileAsync(fileName: string, settings: AspSettings): Promise<void> {
+  const normalized = normalizeFileName(fileName);
+  const stat = await fs.promises.stat(normalized).catch(() => undefined);
+  if (!stat?.isFile()) {
+    workspaceIndex.delete(normalized);
+    return;
+  }
+  const existing = workspaceIndex.get(normalized);
+  if (existing && existing.mtimeMs === stat.mtimeMs && existing.size === stat.size) {
+    return;
+  }
+  const uri = pathToFileUri(normalized);
+  const text = await readTextFileAsync(normalized, settings.legacyEncoding);
+  const parsed = parseAspDocument(uri, text, cachedSettings(uri));
+  workspaceIndex.set(normalized, {
+    uri,
+    fileName: normalized,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    parsed,
+  });
+}
+
+async function readTextFileAsync(fileName: string, encoding: string | undefined): Promise<string> {
+  const buffer = await fs.promises.readFile(fileName);
+  const normalized = (encoding ?? "utf8").toLowerCase().replace(/[-_]/g, "");
+  if (normalized === "shiftjis" || normalized === "sjis" || normalized === "cp932") {
+    return new TextDecoder("shift_jis").decode(buffer);
+  }
+  return new TextDecoder("utf-8").decode(buffer);
+}
+
+async function yieldToEventLoop(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 function indexWorkspaceRoot(root: string): void {
   const stat = fs.statSync(root, { throwIfNoEntry: false });
   if (!stat?.isDirectory()) {
@@ -2279,6 +2395,7 @@ function indexWorkspaceFile(fileName: string): void {
 
 function invalidateWorkspaceIndex(): void {
   workspaceIndexDirty = true;
+  workspaceIndexTruncated = false;
   workspaceIndex.clear();
 }
 
@@ -2378,6 +2495,24 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     vbscript: normalizeVbscriptSettings(settings),
     inlayHints: normalizeInlayHintSettings(settings),
     codeLens: normalizeCodeLensSettings(settings),
+    workspace: normalizeWorkspaceSettings(settings),
+  };
+}
+
+function normalizeWorkspaceSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["workspace"] {
+  const raw = settings.workspace;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    maxIndexFiles:
+      typeof record.maxIndexFiles === "number" && record.maxIndexFiles > 0
+        ? Math.floor(record.maxIndexFiles)
+        : defaultMaxIndexFiles,
+    scanChunkSize:
+      typeof record.scanChunkSize === "number" && record.scanChunkSize > 0
+        ? Math.floor(record.scanChunkSize)
+        : defaultScanChunkSize,
   };
 }
 

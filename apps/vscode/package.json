@@ -177,6 +177,18 @@
           "default": true,
           "description": "Show Classic ASP include CodeLens entries."
         },
+        "aspLsp.workspace.maxIndexFiles": {
+          "type": "number",
+          "minimum": 1,
+          "default": 5000,
+          "description": "Maximum number of unopened Classic ASP workspace files indexed per scan."
+        },
+        "aspLsp.workspace.scanChunkSize": {
+          "type": "number",
+          "minimum": 1,
+          "default": 200,
+          "description": "Number of filesystem entries processed before yielding during workspace indexing."
+        },
         "aspLsp.iis.url": {
           "type": "string",
           "default": "http://localhost/",

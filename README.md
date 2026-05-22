@@ -97,6 +97,8 @@ The VSIX build bundles the standalone language server into `apps/vscode/server/l
 - `aspLsp.inlayHints.functionReturnTypes`: show inferred VBScript function return types
 - `aspLsp.codeLens.references`: show VBScript reference counts
 - `aspLsp.codeLens.includes`: show include resolution lenses
+- `aspLsp.workspace.maxIndexFiles`: maximum unopened Classic ASP files indexed in one workspace scan
+- `aspLsp.workspace.scanChunkSize`: filesystem entries processed before yielding during workspace indexing
 - `aspLsp.iis.url`: URL opened by the IIS debug helper command
 - `aspLsp.iis.webRoot`: web root used by the IIS debug helper command
 - `aspLsp.iis.browser`: VS Code debug type used by the IIS debug helper command

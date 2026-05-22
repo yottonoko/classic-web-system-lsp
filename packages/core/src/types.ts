@@ -30,6 +30,7 @@ export interface AspSettings {
   vbscript?: AspVbscriptSettings;
   inlayHints?: AspInlayHintSettings;
   codeLens?: AspCodeLensSettings;
+  workspace?: AspWorkspaceSettings;
 }
 
 export interface AspFormatSettings {
@@ -65,6 +66,11 @@ export interface AspInlayHintSettings {
 export interface AspCodeLensSettings {
   references?: boolean;
   includes?: boolean;
+}
+
+export interface AspWorkspaceSettings {
+  maxIndexFiles?: number;
+  scanChunkSize?: number;
 }
 
 export interface AspVbscriptComType {
