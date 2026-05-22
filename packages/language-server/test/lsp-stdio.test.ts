@@ -1295,6 +1295,128 @@ Response.Write Request.QueryString("name")
       }
     });
 
+    it("avoids existing VBScript extract variable names", async () => {
+      const source = `<%
+Dim extractedValue
+Response.Write Request.QueryString("name")
+%>`;
+      const selectionStart = source.indexOf('Request.QueryString("name")');
+      const selectionEnd = selectionStart + 'Request.QueryString("name")'.length;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-refactor-collision.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, selectionStart),
+            end: positionAt(source, selectionEnd),
+          },
+          context: { diagnostics: [], only: ["refactor.extract"] },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Dim extractedValue1");
+        expect(serialized).toContain('extractedValue1 = Request.QueryString(\\"name\\")');
+        expect(serialized).toContain('"newText":"extractedValue1"');
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("does not return VBScript extract refactors for unsupported selections", async () => {
+      const source = `<div>Request.QueryString("name")</div>
+<%
+Response.Write Request.QueryString("name")
+Response.Write Request.Form("name")
+%>`;
+      const htmlStart = source.indexOf('Request.QueryString("name")');
+      const htmlEnd = htmlStart + 'Request.QueryString("name")'.length;
+      const vbStart = source.lastIndexOf('Request.QueryString("name")');
+      const vbEnd = vbStart + 'Request.QueryString("name")'.length;
+      const multilineEnd = source.indexOf('Request.Form("name")') + 'Request.Form("name")'.length;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-refactor-unsupported.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const htmlActions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, htmlStart),
+            end: positionAt(source, htmlEnd),
+          },
+          context: { diagnostics: [], only: ["refactor.extract"] },
+        });
+        expect(htmlActions).toEqual([]);
+
+        const emptyActions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, vbStart),
+            end: positionAt(source, vbStart),
+          },
+          context: { diagnostics: [], only: ["refactor.extract"] },
+        });
+        expect(emptyActions).toEqual([]);
+
+        const whitespaceActions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, vbStart - 1),
+            end: positionAt(source, vbEnd),
+          },
+          context: { diagnostics: [], only: ["refactor.extract"] },
+        });
+        expect(whitespaceActions).toEqual([]);
+
+        const multilineActions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, vbStart),
+            end: positionAt(source, multilineEnd),
+          },
+          context: { diagnostics: [], only: ["refactor.extract"] },
+        });
+        expect(multilineActions).toEqual([]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns VBScript quick fixes for unused declarations", async () => {
       const source = `<%
 Dim unusedValue
