@@ -1250,6 +1250,51 @@ console.log(z, a);
       }
     });
 
+    it("returns VBScript extract variable refactors", async () => {
+      const source = `<%
+Response.Write Request.QueryString("name")
+%>`;
+      const selectionStart = source.indexOf('Request.QueryString("name")');
+      const selectionEnd = selectionStart + 'Request.QueryString("name")'.length;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-refactor.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, selectionStart),
+            end: positionAt(source, selectionEnd),
+          },
+          context: { diagnostics: [], only: ["refactor.extract"] },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Extract VBScript variable");
+        expect(serialized).toContain("Dim extractedValue");
+        expect(serialized).toContain('extractedValue = Request.QueryString(\\"name\\")');
+        expect(serialized).toContain('"newText":"extractedValue"');
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns VBScript quick fixes for unused declarations", async () => {
       const source = `<%
 Dim unusedValue

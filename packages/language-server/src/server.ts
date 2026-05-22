@@ -1058,6 +1058,7 @@ connection.onCodeAction((params): CodeAction[] => {
     ...params.context.diagnostics.flatMap((diagnostic) =>
       quickFixesForDiagnostic(cached, diagnostic),
     ),
+    ...vbscriptCodeActions(cached, params.range, params.context),
     ...cssCodeActions(cached, params.range, params.context),
     ...jsCodeActions(cached, params.range, params.context),
   ];
@@ -4574,6 +4575,88 @@ function includeSuggestionPath(
       .split(path.sep)
       .join("/"),
   };
+}
+
+const vbscriptExtractVariableKind = `${CodeActionKind.Refactor}.extract`;
+
+function vbscriptCodeActions(
+  cached: CachedDocument,
+  range: Range,
+  context: CodeActionContext,
+): CodeAction[] {
+  if (!codeActionAllows(context, vbscriptExtractVariableKind)) {
+    return [];
+  }
+  const edit = extractVbscriptVariableEdit(cached, range);
+  if (!edit) {
+    return [];
+  }
+  return [
+    {
+      title: localizerForUri(cached.source.uri).t("server.refactor.extractVbscriptVariable"),
+      kind: vbscriptExtractVariableKind,
+      edit,
+    },
+  ];
+}
+
+function extractVbscriptVariableEdit(
+  cached: CachedDocument,
+  range: Range,
+): WorkspaceEdit | undefined {
+  if (!isVbscriptRange(cached, range) || range.start.line !== range.end.line) {
+    return undefined;
+  }
+  const selected = textInRange(cached.source, range);
+  if (!selected.trim() || selected !== selected.trim() || /[\r\n]/.test(selected)) {
+    return undefined;
+  }
+  const line = lineText(cached.source, range.start.line);
+  const indent = /^\s*/.exec(line)?.[0] ?? "";
+  const name = nextVbscriptExtractVariableName(cached);
+  const insertPosition = { line: range.start.line, character: 0 };
+  return {
+    changes: {
+      [cached.source.uri]: [
+        {
+          range: { start: insertPosition, end: insertPosition },
+          newText: `${indent}Dim ${name}\n${indent}${name} = ${selected}\n`,
+        },
+        {
+          range,
+          newText: name,
+        },
+      ],
+    },
+  };
+}
+
+function nextVbscriptExtractVariableName(cached: CachedDocument): string {
+  const used = new Set(
+    collectVbscriptSymbols(cached.parsed).map((symbol) => symbol.name.toLowerCase()),
+  );
+  if (!used.has("extractedvalue")) {
+    return "extractedValue";
+  }
+  for (let index = 1; index < 1000; index += 1) {
+    const name = `extractedValue${index}`;
+    if (!used.has(name.toLowerCase())) {
+      return name;
+    }
+  }
+  return "extractedValue";
+}
+
+function isVbscriptRange(cached: CachedDocument, range: Range): boolean {
+  const start = cached.source.offsetAt(range.start);
+  const end = cached.source.offsetAt(range.end);
+  if (start >= end) {
+    return false;
+  }
+  return (
+    findRegionAt(cached.parsed, start)?.language === "vbscript" &&
+    findRegionAt(cached.parsed, Math.max(start, end - 1))?.language === "vbscript"
+  );
 }
 
 function cssCodeActions(
