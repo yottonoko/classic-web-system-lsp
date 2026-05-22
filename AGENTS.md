@@ -40,6 +40,7 @@ node packages/language-server/dist/server.js --stdio
 - Preserve UTF-16 offsets and LSP ranges when adding parser or source-map behavior.
 - Keep Classic ASP and VBScript LSP features based on the CST where practical; do not add new regex-only symbol extraction.
 - Route embedded HTML, CSS, and JavaScript through their language services when practical.
+- Route new user-facing diagnostics, code action titles, CodeLens titles, completion fallback docs, and extension messages through the localizer/NLS keys. Keep upstream TypeScript/HTML/CSS service messages unchanged.
 - Treat `.inc` files as fragments. Do not assume a complete HTML document.
 - Do not let formatting edits erase or rewrite Classic ASP server regions.
 - Keep `apps/vscode` able to resolve the development server module via `node_modules/@asp-lsp/language-server/dist/server.js` and the VSIX-bundled server via `server/language-server/dist/server.js`.

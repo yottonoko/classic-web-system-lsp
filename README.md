@@ -77,6 +77,7 @@ The VSIX build bundles the standalone language server into `apps/vscode/server/l
 
 ## Settings
 
+- `aspLsp.locale`: `auto`, `en`, or `ja`; `auto` uses Japanese for `ja*` VS Code/LSP client locales and English otherwise
 - `aspLsp.defaultLanguage`: default server-side language, `VBScript` or `JScript`
 - `aspLsp.checkJs`: enable semantic checks for client JavaScript regions
 - `aspLsp.javascript.unusedDiagnostics`: report unused JavaScript/JScript locals and parameters as hints
@@ -139,6 +140,8 @@ Example `aspLsp.vbscript.comTypes` entry:
 - IIS debug support opens a configured URL in a browser debug session; it does not attach to IIS, COM, or server-side Classic ASP runtime.
 - IIS Express support is a browser launch helper; it does not start or configure IIS Express by itself.
 - Full-document formatting is CST based and conservative. HTML-only ranges still use `vscode-html-languageservice`; ASP/VBScript ranges are formatted by the built-in formatter.
+- Localization applies to asp-lsp generated diagnostics, code actions, CodeLens, and extension messages. TypeScript, HTML, CSS, VS Code, and Node.js upstream messages are left unchanged.
+- VS Code manifest text uses `package.nls.json` / `package.nls.ja.json` and follows the VS Code UI locale. Changing `aspLsp.locale` affects runtime messages and LSP output, but it does not immediately relocalize manifest titles or setting descriptions.
 
 ## Assistant Instructions
 
