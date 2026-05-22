@@ -23,7 +23,7 @@ pnpm run build
 pnpm run package:vsix
 ```
 
-The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, completion resolve, pull/workspace diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, selection ranges, inlay hints, call hierarchy, linked editing, file operations, code actions, CodeLens, formatting, workspace indexing, and virtual include roots.
+The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, completion resolve, pull/workspace diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, selection ranges, inlay hints, call hierarchy, type hierarchy, monikers, inline values, linked editing, file operations, code actions, CodeLens, formatting, workspace indexing, and virtual include roots.
 
 ## VBScript Support
 
@@ -35,11 +35,11 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - definition and references for user-defined VBScript symbols
 - include-aware VBScript symbols for completions and definition jumps
 - rename, document highlights, signature help, workspace symbols, and semantic tokens for VBScript symbols
-- selection ranges, inlay hints, call hierarchy, type definition, implementation, and CodeLens for VBScript symbols
+- selection ranges, inlay hints, call hierarchy, type hierarchy, type definition, implementation, monikers, inline values, and CodeLens for VBScript symbols
 - VB.NET-style `'''` XML documentation comments for VBScript hover, completion resolve, and signature help
 - XML documentation tag completion for `summary`, `remarks`, `param`, `returns`, `value`, `exception`, `see`, `seealso`, `example`, `code`, `c`, `list`, and `para`
 - conservative support for `ReDim`, `For Each`, `With`, and `Server.CreateObject("ADODB.*")` completions
-- TypeScript-backed hover, navigation, references, rename, signature help, call hierarchy, and project-model-aware module resolution for JavaScript and server-side JScript regions
+- TypeScript-backed hover, navigation, references, rename, signature help, call hierarchy, monikers, inline values, and project-model-aware module resolution for JavaScript and server-side JScript regions
 - lazy workspace symbol and diagnostic indexing for unopened `.asp`, `.asa`, and `.inc` files
 - HTML/CSS rename, CSS/JS document symbols, richer folding, CSS colors, and include file-operation updates
 
@@ -136,7 +136,7 @@ Example `aspLsp.vbscript.comTypes` entry:
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed. COM type information comes from built-in stubs or `aspLsp.vbscript.comTypes`.
-- Call hierarchy, CodeLens, type definition, and implementation are static and user-defined-symbol first; runtime COM dispatch is not modeled.
+- Call hierarchy, type hierarchy, CodeLens, type definition, implementation, monikers, and inline values are static and user-defined-symbol first; runtime COM dispatch is not modeled.
 - IIS debug support opens a configured URL in a browser debug session; it does not attach to IIS, COM, or server-side Classic ASP runtime.
 - IIS Express support is a browser launch helper; it does not start or configure IIS Express by itself.
 - Full-document formatting is CST based and conservative. HTML-only ranges still use `vscode-html-languageservice`; ASP/VBScript ranges are formatted by the built-in formatter.

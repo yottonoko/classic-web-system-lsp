@@ -11,9 +11,11 @@ import {
   FileChangeType,
   FoldingRange,
   Hover,
+  InlineValueVariableLookup,
   InitializeParams,
   InitializeResult,
   Location,
+  MonikerKind,
   ProposedFeatures,
   ReferenceParams,
   SemanticTokensBuilder,
@@ -22,6 +24,7 @@ import {
   TextDocumentPositionParams,
   TextDocuments,
   TextDocumentSyncKind,
+  UniquenessLevel,
 } from "vscode-languageserver/node";
 import type {
   CallHierarchyIncomingCall,
@@ -38,8 +41,11 @@ import type {
   DocumentLink,
   DocumentHighlight,
   FormattingOptions,
+  InlineValue,
+  InlineValueParams,
   InlayHint,
   LinkedEditingRanges,
+  Moniker,
   Position,
   Range,
   RenameParams,
@@ -48,6 +54,7 @@ import type {
   SelectionRange,
   SignatureHelp,
   TextEdit,
+  TypeHierarchyItem,
   WorkspaceEdit,
 } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
@@ -83,6 +90,7 @@ import {
   type AspRegion,
   type VirtualDocument,
   type VbProjectContext,
+  type VbSymbol,
   type VbSymbolKind,
 } from "@asp-lsp/core";
 import { getCSSLanguageService } from "vscode-css-languageservice";
@@ -184,6 +192,14 @@ interface JsCallHierarchyData {
   position: number;
 }
 
+interface VbTypeHierarchyData {
+  kind: "vbscript";
+  uri: string;
+  name: string;
+  line: number;
+  character: number;
+}
+
 function aspFileOperationFilter() {
   return {
     scheme: "file",
@@ -206,7 +222,11 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
   ].filter((root, index, roots) => root.length > 0 && roots.indexOf(root) === index);
   return {
     capabilities: {
-      textDocumentSync: TextDocumentSyncKind.Incremental,
+      textDocumentSync: {
+        openClose: true,
+        change: TextDocumentSyncKind.Incremental,
+        save: { includeText: false },
+      },
       completionProvider: {
         triggerCharacters: ["<", ".", '"', "'", ":", "#", "("],
         resolveProvider: true,
@@ -223,8 +243,9 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       workspaceSymbolProvider: true,
       documentSymbolProvider: true,
       foldingRangeProvider: true,
-      documentLinkProvider: { resolveProvider: false },
+      documentLinkProvider: { resolveProvider: true },
       codeActionProvider: {
+        resolveProvider: true,
         codeActionKinds: [
           CodeActionKind.QuickFix,
           CodeActionKind.Refactor,
@@ -236,7 +257,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       executeCommandProvider: {
         commands: ["aspLsp.reindexWorkspace", "aspLsp.clearCache"],
       },
-      codeLensProvider: { resolveProvider: false },
+      codeLensProvider: { resolveProvider: true },
       colorProvider: true,
       diagnosticProvider: {
         identifier: "asp-lsp",
@@ -245,8 +266,11 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       },
       selectionRangeProvider: true,
       linkedEditingRangeProvider: true,
-      inlayHintProvider: { resolveProvider: false },
+      inlayHintProvider: { resolveProvider: true },
       callHierarchyProvider: true,
+      typeHierarchyProvider: true,
+      monikerProvider: true,
+      inlineValueProvider: true,
       semanticTokensProvider: {
         legend: { tokenTypes: [...semanticTokenTypes], tokenModifiers: [] },
         full: { delta: true },
@@ -280,6 +304,11 @@ documents.onDidOpen((event) => {
   validate(event.document);
 });
 documents.onDidChangeContent((event) => {
+  cache.delete(event.document.uri);
+  clearJsLanguageServiceCache();
+  validate(event.document);
+});
+documents.onDidSave((event) => {
   cache.delete(event.document.uri);
   clearJsLanguageServiceCache();
   validate(event.document);
@@ -895,6 +924,35 @@ connection.languages.callHierarchy.onOutgoingCalls((params): CallHierarchyOutgoi
   );
 });
 
+connection.languages.typeHierarchy.onPrepare((params): TypeHierarchyItem[] => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  const item = vbTypeHierarchyItemAt(cached, params.position);
+  return item ? [item] : [];
+});
+
+connection.languages.typeHierarchy.onSupertypes((): TypeHierarchyItem[] => []);
+
+connection.languages.typeHierarchy.onSubtypes((): TypeHierarchyItem[] => []);
+
+connection.languages.moniker.on((params): Moniker[] => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  return monikersAt(cached, params.position);
+});
+
+connection.languages.inlineValue.on((params: InlineValueParams): InlineValue[] => {
+  const cached = getCached(params.textDocument.uri);
+  if (!cached) {
+    return [];
+  }
+  return inlineValues(cached, params.range);
+});
+
 connection.languages.onLinkedEditingRange((params): LinkedEditingRanges | null => {
   const cached = getCached(params.textDocument.uri);
   if (!cached) {
@@ -984,6 +1042,14 @@ connection.onCodeAction((params): CodeAction[] => {
     ...jsCodeActions(cached, params.range, params.context),
   ];
 });
+
+connection.onCodeActionResolve((action) => action);
+
+connection.onCodeLensResolve((lens) => lens);
+
+connection.onDocumentLinkResolve((link) => link);
+
+connection.languages.inlayHint.resolve((hint) => hint);
 
 connection.onDocumentOnTypeFormatting((params) => {
   const cached = getCached(params.textDocument.uri);
@@ -1890,6 +1956,179 @@ function tsCallHierarchyItemToLsp(
       position: item.selectionSpan.start,
     } satisfies JsCallHierarchyData,
   };
+}
+
+function vbTypeHierarchyItemAt(
+  cached: CachedDocument,
+  position: Position,
+): TypeHierarchyItem | undefined {
+  if (!isVbscriptPosition(cached, position)) {
+    return undefined;
+  }
+  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const definition =
+    getVbscriptDefinition(cached.parsed, position, context) ??
+    getVbscriptTypeDefinition(cached.parsed, position, context);
+  if (!definition || definition.kind !== "class") {
+    return undefined;
+  }
+  return vbTypeHierarchyItem(definition);
+}
+
+function vbTypeHierarchyItem(symbol: VbSymbol): TypeHierarchyItem {
+  return {
+    name: symbol.name,
+    kind: SymbolKind.Class,
+    detail: symbol.sourceUri,
+    uri: symbol.sourceUri,
+    range: symbol.range,
+    selectionRange: symbol.range,
+    data: {
+      kind: "vbscript",
+      uri: symbol.sourceUri,
+      name: symbol.name,
+      line: symbol.range.start.line,
+      character: symbol.range.start.character,
+    } satisfies VbTypeHierarchyData,
+  };
+}
+
+function monikersAt(cached: CachedDocument, position: Position): Moniker[] {
+  if (isVbscriptPosition(cached, position)) {
+    return vbMonikersAt(cached, position);
+  }
+  if (isJavaScriptPosition(cached, position)) {
+    return jsMonikersAt(cached, position);
+  }
+  return [];
+}
+
+function vbMonikersAt(cached: CachedDocument, position: Position): Moniker[] {
+  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const symbol =
+    getVbscriptDefinition(cached.parsed, position, context) ??
+    getVbscriptTypeDefinition(cached.parsed, position, context);
+  if (!symbol) {
+    return [];
+  }
+  return [
+    {
+      scheme: "asp-lsp",
+      identifier: [
+        symbol.sourceUri,
+        symbol.containerName,
+        symbol.memberOf,
+        symbol.scopeName,
+        symbol.name,
+        symbol.range.start.line,
+        symbol.range.start.character,
+      ]
+        .filter((part) => part !== undefined && part !== "")
+        .join("#"),
+      unique: UniquenessLevel.project,
+      kind: symbol.scopeName ? MonikerKind.local : MonikerKind.$export,
+    },
+  ];
+}
+
+function jsMonikersAt(cached: CachedDocument, position: Position): Moniker[] {
+  const context = jsContextAt(cached, position);
+  const quickInfo = context?.service.getQuickInfoAtPosition(context.fileName, context.offset);
+  if (!context || !quickInfo) {
+    return [];
+  }
+  const sourceRange = textSpanToSourceRange(context.virtual, quickInfo.textSpan);
+  const name = sourceRange ? textInRange(cached.source, sourceRange).trim() : "";
+  if (!name) {
+    return [];
+  }
+  return [
+    {
+      scheme: "asp-lsp-js",
+      identifier: [
+        cached.source.uri,
+        context.virtual.languageId,
+        name,
+        quickInfo.textSpan.start,
+        quickInfo.textSpan.length,
+      ].join("#"),
+      unique: UniquenessLevel.project,
+      kind:
+        quickInfo.kind === "class" || quickInfo.kind === "function"
+          ? MonikerKind.$export
+          : MonikerKind.local,
+    },
+  ];
+}
+
+function inlineValues(cached: CachedDocument, range: Range): InlineValue[] {
+  return [...vbInlineValues(cached, range), ...jsInlineValues(cached, range)];
+}
+
+function vbInlineValues(cached: CachedDocument, range: Range): InlineValue[] {
+  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const seen = new Set<string>();
+  return (context.symbols ?? [])
+    .filter(
+      (symbol) =>
+        symbol.sourceUri === cached.source.uri &&
+        isInlineValueSymbol(symbol.kind) &&
+        rangesOverlap(symbol.range, range),
+    )
+    .flatMap((symbol) => {
+      const key = `${symbol.name}:${symbol.range.start.line}:${symbol.range.start.character}`;
+      if (seen.has(key)) {
+        return [];
+      }
+      seen.add(key);
+      return [InlineValueVariableLookup.create(symbol.range, symbol.name, false)];
+    });
+}
+
+function jsInlineValues(cached: CachedDocument, range: Range): InlineValue[] {
+  const sourceStart = cached.source.offsetAt(range.start);
+  const sourceEnd = cached.source.offsetAt(range.end);
+  const seen = new Set<string>();
+  return jsVirtualDocuments(cached).flatMap((virtual) => {
+    const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
+    const fileName = jsVirtualFileName(virtual.uri);
+    const file = project.files.get(fileName);
+    if (!file) {
+      return [];
+    }
+    const sourceFile = ts.createSourceFile(fileName, file.text, ts.ScriptTarget.Latest, true);
+    const values: InlineValue[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node)) {
+        const start = node.getStart(sourceFile);
+        const end = node.getEnd();
+        const segment = virtual.sourceMap.segments.find(
+          (candidate) =>
+            candidate.virtualStart <= start &&
+            candidate.virtualStart + (candidate.sourceEnd - candidate.sourceStart) >= end &&
+            candidate.sourceStart < sourceEnd &&
+            candidate.sourceEnd > sourceStart,
+        );
+        const sourceRange = segment
+          ? textSpanToSourceRange(virtual, { start, length: end - start })
+          : undefined;
+        const key = sourceRange
+          ? `${node.text}:${sourceRange.start.line}:${sourceRange.start.character}`
+          : undefined;
+        if (sourceRange && rangesOverlap(sourceRange, range) && key && !seen.has(key)) {
+          seen.add(key);
+          values.push(InlineValueVariableLookup.create(sourceRange, node.text, true));
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return values;
+  });
+}
+
+function isInlineValueSymbol(kind: VbSymbolKind): boolean {
+  return ["variable", "parameter", "constant", "field", "property"].includes(kind);
 }
 
 function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem | undefined {
@@ -4337,6 +4576,17 @@ function lineText(document: TextDocument, line: number): string {
 
 function textInRange(document: TextDocument, range: Range): string {
   return document.getText(range);
+}
+
+function rangesOverlap(left: Range, right: Range): boolean {
+  return comparePositions(left.start, right.end) < 0 && comparePositions(left.end, right.start) > 0;
+}
+
+function comparePositions(left: Position, right: Position): number {
+  if (left.line !== right.line) {
+    return left.line - right.line;
+  }
+  return left.character - right.character;
 }
 
 function wordRangeAt(document: TextDocument, position: Position): Range | null {
