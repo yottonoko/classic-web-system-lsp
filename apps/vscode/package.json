@@ -7,14 +7,30 @@
   "categories": [
     "Programming Languages"
   ],
+  "keywords": [
+    "asp",
+    "classic asp",
+    "jscript",
+    "language server",
+    "vbscript"
+  ],
+  "homepage": "https://github.com/yottonoko/asp-lsp#readme",
+  "bugs": {
+    "url": "https://github.com/yottonoko/asp-lsp/issues"
+  },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yottonoko/asp-lsp.git"
+  },
+  "qna": false,
   "publisher": "yottonoko",
   "main": "./dist/extension.js",
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/bundle-extension.mjs && node scripts/copy-server-runtime.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "oxlint src test --deny-warnings --no-error-on-unmatched-pattern",
-    "package:vsix": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --allow-missing-repository --no-dependencies --follow-symlinks",
+    "package:vsix": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --no-dependencies --follow-symlinks",
     "test": "pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
   },
   "dependencies": {
@@ -140,7 +156,75 @@
         "aspLsp.vbscript.comTypes": {
           "type": "object",
           "default": {},
-          "description": "Custom COM type catalog keyed by Prog.ID for Server.CreateObject type checking and completion."
+          "description": "Custom COM type catalog keyed by Prog.ID for Server.CreateObject type checking and completion.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "members": {
+                "type": "object",
+                "description": "Members exposed by this COM object.",
+                "additionalProperties": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "description": "Property type shorthand, for example String or ADODB.Recordset."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "field",
+                            "property",
+                            "method"
+                          ],
+                          "default": "property"
+                        },
+                        "type": {
+                          "type": "string",
+                          "description": "Property or return type."
+                        },
+                        "returnType": {
+                          "type": "string",
+                          "description": "Method return type. Overrides type when present."
+                        },
+                        "parameters": {
+                          "type": "array",
+                          "description": "Method parameters in order.",
+                          "items": {
+                            "oneOf": [
+                              {
+                                "type": "string",
+                                "description": "Parameter type shorthand."
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "name"
+                                ],
+                                "properties": {
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "type": {
+                                    "type": "string"
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            },
+            "additionalProperties": false
+          }
         },
         "aspLsp.vbscript.unusedDiagnostics": {
           "type": "boolean",
@@ -284,6 +368,11 @@
   "activationEvents": [
     "onLanguage:classic-asp"
   ],
+  "icon": "assets/icon.png",
+  "galleryBanner": {
+    "color": "#6f5bd5",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.96.0"
   },

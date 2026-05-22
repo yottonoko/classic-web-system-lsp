@@ -202,6 +202,49 @@ describe("stdio LSP server", () => {
     }
   });
 
+  it("renames HTML class selectors across CSS and JavaScript selector strings", async () => {
+    const marked = markedDocument(`<div class="card ol▮dName"></div>
+<style>.oldName { color: red; }</style>
+<script>
+document.querySelector(".oldName");
+</script>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        capabilities: {},
+      });
+      const uri = "file:///tmp/cross-rename.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      await server.waitForNotification("textDocument/publishDiagnostics");
+
+      const rename = await server.request("textDocument/rename", {
+        textDocument: { uri },
+        position: marked.position,
+        newName: "newName",
+      });
+      const serialized = JSON.stringify(rename);
+      expect(serialized.match(/newName/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+      expect(serialized).toContain('"line":0');
+      expect(serialized).toContain('"line":1');
+      expect(serialized).toContain('"line":3');
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("delegates JavaScript hover, navigation, rename and signature help to TypeScript", async () => {
     const marked = markedDocument(`<script>
 function greet(name) {

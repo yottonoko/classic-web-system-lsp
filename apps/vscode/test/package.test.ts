@@ -17,6 +17,9 @@ describe("VS Code extension package", () => {
 
   it("contributes commands, task definition and IIS debug settings", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      repository?: { url?: string };
+      icon?: string;
+      galleryBanner?: { color?: string };
       contributes?: {
         commands?: Array<{ command: string }>;
         problemMatchers?: Array<{ name: string }>;
@@ -53,7 +56,36 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.javascript.autoImports"],
     ).toBeTruthy();
+    expect(manifest.repository?.url).toContain("github.com/yottonoko/asp-lsp");
+    expect(manifest.icon).toBe("assets/icon.png");
+    expect(fs.existsSync(manifest.icon ?? "")).toBe(true);
+    expect(manifest.galleryBanner?.color).toBeTruthy();
     expect(manifest.capabilities?.untrustedWorkspaces?.supported).toBe(true);
+  });
+
+  it("describes the COM type catalog schema for settings UI", () => {
+    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      contributes?: {
+        configuration?: {
+          properties?: Record<
+            string,
+            {
+              additionalProperties?: {
+                properties?: {
+                  members?: {
+                    additionalProperties?: unknown;
+                  };
+                };
+              };
+            }
+          >;
+        };
+      };
+    };
+    const comTypes = manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.comTypes"];
+    expect(comTypes?.additionalProperties?.properties?.members?.additionalProperties).toBeTruthy();
+    expect(JSON.stringify(comTypes)).toContain("returnType");
+    expect(JSON.stringify(comTypes)).toContain("parameters");
   });
 
   it("resolves the packaged language server module path", () => {
@@ -71,19 +103,13 @@ describe("VS Code extension package", () => {
     try {
       execFileSync(
         path.join("node_modules", ".bin", "vsce"),
-        [
-          "package",
-          "--allow-missing-repository",
-          "--no-dependencies",
-          "--follow-symlinks",
-          "--out",
-          vsixPath,
-        ],
+        ["package", "--no-dependencies", "--follow-symlinks", "--out", vsixPath],
         { stdio: "pipe" },
       );
       expect(fs.existsSync(vsixPath)).toBe(true);
       const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
       expect(listing).toContain("extension/dist/extension.js");
+      expect(listing).toContain("extension/assets/icon.png");
       expect(listing).toContain("extension/server/language-server/dist/server.js");
       expect(listing).not.toContain("extension/server/language-server/node_modules/");
       expect(listing).not.toContain("extension/node_modules/");

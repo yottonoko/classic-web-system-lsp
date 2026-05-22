@@ -106,6 +106,23 @@ The VSIX build bundles the standalone language server into `apps/vscode/server/l
 - `aspLsp.iisExpress.webRoot`: web root used by the IIS Express debug helper command
 - `aspLsp.iisExpress.browser`: VS Code debug type used by the IIS Express debug helper command
 
+Example `aspLsp.vbscript.comTypes` entry:
+
+```json
+{
+  "MyCompany.CustomerRepository": {
+    "members": {
+      "ConnectionString": "String",
+      "FindById": {
+        "kind": "method",
+        "returnType": "Customer",
+        "parameters": [{ "name": "id", "type": "Number" }]
+      }
+    }
+  }
+}
+```
+
 ## Current v1 Limits
 
 - VBScript analysis is intentionally conservative. It uses an error-tolerant CST and opt-in strict type checks rather than a full VBScript compiler. `Execute`/`Eval`, dynamic includes, COM late binding, and unusual line continuations are modeled only when they can be inferred statically.
@@ -113,6 +130,7 @@ The VSIX build bundles the standalone language server into `apps/vscode/server/l
 - XML documentation comments are editor documentation only and hover labels them that way. Existing `' @type`, `' @param ... As ...`, and `' @returns ...` annotations remain the source for explicit type metadata.
 - Unused diagnostics are hints. Classic ASP runtime entry points such as `Application_OnStart`, public class members, include-cross references, and names inside strings/comments are excluded from VBScript unused checks.
 - JavaScript/JScript auto imports use TypeScript language service results. Import edits are applied only when every edit maps safely back into the same ASP JavaScript/JScript virtual document; cross-file or unmappable edits are skipped instead of partially applying.
+- Cross-language rename is conservative and same-document only. It links HTML `id`/`class`, CSS `#id`/`.class`, and common JavaScript DOM selector strings such as `querySelector`, `querySelectorAll`, `getElementById`, and `classList`.
 - VBScript has no import syntax, so auto import support is exposed as include suggestions for undeclared symbols that exist in indexed `.asp`, `.asa`, or `.inc` workspace files.
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.

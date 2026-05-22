@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Classic ASP LSP">
+  <rect width="128" height="128" rx="24" fill="#27243f"/>
+  <path d="M28 38h72v52H28z" fill="#f9fafb"/>
+  <path d="M28 38h72v12H28z" fill="#6f5bd5"/>
+  <path d="M43 66 32 76l11 10" fill="none" stroke="#6f5bd5" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M85 66 96 76 85 86" fill="none" stroke="#6f5bd5" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M58 91 70 61" fill="none" stroke="#18a999" stroke-width="7" stroke-linecap="round"/>
+  <path d="M52 24h24v14H52z" fill="#18a999"/>
+</svg>

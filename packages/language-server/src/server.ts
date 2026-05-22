@@ -531,13 +531,22 @@ connection.onPrepareRename((params) => {
     return null;
   }
   if (isJavaScriptPosition(cached, params.position)) {
-    return jsPrepareRename(cached, params.position);
+    return (
+      jsPrepareRename(cached, params.position) ??
+      crossLanguagePrepareRename(cached, params.position)
+    );
   }
   if (isHtmlPosition(cached, params.position)) {
-    return htmlPrepareRename(cached, params.position);
+    return (
+      crossLanguagePrepareRename(cached, params.position) ??
+      htmlPrepareRename(cached, params.position)
+    );
   }
   if (isCssPosition(cached, params.position)) {
-    return cssPrepareRename(cached, params.position);
+    return (
+      crossLanguagePrepareRename(cached, params.position) ??
+      cssPrepareRename(cached, params.position)
+    );
   }
   if (!isVbscriptPosition(cached, params.position)) {
     return null;
@@ -557,13 +566,28 @@ connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null => {
     return null;
   }
   if (isJavaScriptPosition(cached, params.position)) {
-    return jsRename(cached, params.position, params.newName);
+    return (
+      mergeWorkspaceEdits([
+        jsRename(cached, params.position, params.newName),
+        crossLanguageRename(cached, params.position, params.newName),
+      ]) ?? null
+    );
   }
   if (isHtmlPosition(cached, params.position)) {
-    return htmlRename(cached, params.position, params.newName);
+    return (
+      mergeWorkspaceEdits([
+        htmlRename(cached, params.position, params.newName),
+        crossLanguageRename(cached, params.position, params.newName),
+      ]) ?? null
+    );
   }
   if (isCssPosition(cached, params.position)) {
-    return cssRename(cached, params.position, params.newName);
+    return (
+      mergeWorkspaceEdits([
+        cssRename(cached, params.position, params.newName),
+        crossLanguageRename(cached, params.position, params.newName),
+      ]) ?? null
+    );
   }
   if (!isVbscriptPosition(cached, params.position)) {
     return null;
@@ -1305,6 +1329,294 @@ function cssRename(
     cssService.doRename(doc, virtualPosition, newName, cssService.parseStylesheet(doc)),
     cached.source.uri,
   );
+}
+
+function crossLanguageRename(
+  cached: CachedDocument,
+  position: Position,
+  newName: string,
+): WorkspaceEdit | undefined {
+  const target = crossLanguageRenameTarget(cached, position);
+  if (!target || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(newName)) {
+    return undefined;
+  }
+  const text = cached.source.getText();
+  const edits = [
+    ...htmlAttributeRenameEdits(cached, target, newName),
+    ...cssSelectorRenameEdits(cached, target, newName),
+    ...jsSelectorRenameEdits(cached, target, newName),
+  ];
+  const unique = new Map<string, TextEdit>();
+  for (const edit of edits) {
+    const key = `${offsetAtText(text, edit.range.start)}:${offsetAtText(text, edit.range.end)}`;
+    unique.set(key, edit);
+  }
+  return unique.size > 0 ? { changes: { [cached.source.uri]: [...unique.values()] } } : undefined;
+}
+
+function crossLanguagePrepareRename(cached: CachedDocument, position: Position): Range | null {
+  return crossLanguageRenameTarget(cached, position) ? wordRangeAt(cached.source, position) : null;
+}
+
+function crossLanguageRenameTarget(
+  cached: CachedDocument,
+  position: Position,
+): { kind: "id" | "class"; name: string } | undefined {
+  const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
+  if (region?.language === "html") {
+    return htmlAttributeRenameTarget(cached, position);
+  }
+  if (region?.language === "css") {
+    return cssSelectorRenameTarget(cached, position);
+  }
+  if (region && isJavaScriptLikeRegion(region)) {
+    return jsSelectorRenameTarget(cached, position);
+  }
+  return undefined;
+}
+
+function htmlAttributeRenameTarget(
+  cached: CachedDocument,
+  position: Position,
+): { kind: "id" | "class"; name: string } | undefined {
+  const offset = cached.source.offsetAt(position);
+  const text = cached.source.getText();
+  for (const match of text.matchAll(/\b(id|class)\s*=\s*(["'])([^"']*)\2/gi)) {
+    const value = match[3] ?? "";
+    const valueStart = (match.index ?? 0) + match[0].indexOf(value);
+    const valueEnd = valueStart + value.length;
+    if (offset < valueStart || offset > valueEnd) {
+      continue;
+    }
+    const kind = (match[1]?.toLowerCase() === "id" ? "id" : "class") as "id" | "class";
+    if (kind === "id") {
+      return { kind, name: value };
+    }
+    return classTokenAt(value, valueStart, offset);
+  }
+  return undefined;
+}
+
+function cssSelectorRenameTarget(
+  cached: CachedDocument,
+  position: Position,
+): { kind: "id" | "class"; name: string } | undefined {
+  const text = cached.source.getText();
+  const offset = cached.source.offsetAt(position);
+  let start = offset;
+  while (start > 0 && /[A-Za-z0-9_-]/.test(text[start - 1] ?? "")) {
+    start -= 1;
+  }
+  let end = offset;
+  while (end < text.length && /[A-Za-z0-9_-]/.test(text[end] ?? "")) {
+    end += 1;
+  }
+  const prefix = text[start - 1];
+  if ((prefix !== "." && prefix !== "#") || start === end) {
+    return undefined;
+  }
+  return { kind: prefix === "#" ? "id" : "class", name: text.slice(start, end) };
+}
+
+function jsSelectorRenameTarget(
+  cached: CachedDocument,
+  position: Position,
+): { kind: "id" | "class"; name: string } | undefined {
+  const offset = cached.source.offsetAt(position);
+  for (const match of cached.source.getText().matchAll(/(["'])([^"']*)\1/g)) {
+    const value = match[2] ?? "";
+    const valueStart = (match.index ?? 0) + 1;
+    const valueEnd = valueStart + value.length;
+    if (offset < valueStart || offset > valueEnd) {
+      continue;
+    }
+    if (isSelectorStringContext(cached.source.getText(), match.index ?? 0, "getElementById")) {
+      return { kind: "id", name: value };
+    }
+    if (isSelectorStringContext(cached.source.getText(), match.index ?? 0, "classList")) {
+      return { kind: "class", name: value };
+    }
+    const selector = selectorTokenAt(value, valueStart, offset);
+    if (
+      selector &&
+      (isSelectorStringContext(cached.source.getText(), match.index ?? 0, "querySelector") ||
+        isSelectorStringContext(cached.source.getText(), match.index ?? 0, "querySelectorAll"))
+    ) {
+      return selector;
+    }
+  }
+  return undefined;
+}
+
+function htmlAttributeRenameEdits(
+  cached: CachedDocument,
+  target: { kind: "id" | "class"; name: string },
+  newName: string,
+): TextEdit[] {
+  const edits: TextEdit[] = [];
+  const text = cached.source.getText();
+  for (const match of text.matchAll(/\b(id|class)\s*=\s*(["'])([^"']*)\2/gi)) {
+    const kind = match[1]?.toLowerCase() === "id" ? "id" : "class";
+    const value = match[3] ?? "";
+    const valueStart = (match.index ?? 0) + match[0].indexOf(value);
+    if (kind === "id" && target.kind === "id" && value === target.name) {
+      edits.push(offsetTextEdit(cached.source, valueStart, valueStart + value.length, newName));
+    }
+    if (kind === "class" && target.kind === "class") {
+      edits.push(...classTokenEdits(cached.source, value, valueStart, target.name, newName));
+    }
+  }
+  return edits;
+}
+
+function cssSelectorRenameEdits(
+  cached: CachedDocument,
+  target: { kind: "id" | "class"; name: string },
+  newName: string,
+): TextEdit[] {
+  const edits: TextEdit[] = [];
+  const text = cached.source.getText();
+  const prefix = target.kind === "id" ? "#" : ".";
+  const pattern = new RegExp(`\\${prefix}${escapeRegExp(target.name)}\\b`, "g");
+  for (const match of text.matchAll(pattern)) {
+    const start = (match.index ?? 0) + 1;
+    if (findRegionAt(cached.parsed, start)?.language === "css") {
+      edits.push(offsetTextEdit(cached.source, start, start + target.name.length, newName));
+    }
+  }
+  return edits;
+}
+
+function jsSelectorRenameEdits(
+  cached: CachedDocument,
+  target: { kind: "id" | "class"; name: string },
+  newName: string,
+): TextEdit[] {
+  const edits: TextEdit[] = [];
+  const text = cached.source.getText();
+  for (const match of text.matchAll(/(["'])([^"']*)\1/g)) {
+    const quoteStart = match.index ?? 0;
+    const region = findRegionAt(cached.parsed, quoteStart);
+    if (!region || !isJavaScriptLikeRegion(region)) {
+      continue;
+    }
+    const value = match[2] ?? "";
+    const valueStart = quoteStart + 1;
+    if (
+      target.kind === "id" &&
+      value === target.name &&
+      isSelectorStringContext(text, quoteStart, "getElementById")
+    ) {
+      edits.push(offsetTextEdit(cached.source, valueStart, valueStart + value.length, newName));
+    }
+    if (
+      target.kind === "class" &&
+      value === target.name &&
+      isSelectorStringContext(text, quoteStart, "classList")
+    ) {
+      edits.push(offsetTextEdit(cached.source, valueStart, valueStart + value.length, newName));
+    }
+    if (
+      isSelectorStringContext(text, quoteStart, "querySelector") ||
+      isSelectorStringContext(text, quoteStart, "querySelectorAll")
+    ) {
+      edits.push(
+        ...selectorTokenEdits(cached.source, value, valueStart, target.kind, target.name, newName),
+      );
+    }
+  }
+  return edits;
+}
+
+function classTokenAt(
+  value: string,
+  valueStart: number,
+  offset: number,
+): { kind: "class"; name: string } | undefined {
+  for (const match of value.matchAll(/[A-Za-z_][A-Za-z0-9_-]*/g)) {
+    const start = valueStart + (match.index ?? 0);
+    const end = start + match[0].length;
+    if (offset >= start && offset <= end) {
+      return { kind: "class", name: match[0] };
+    }
+  }
+  return undefined;
+}
+
+function selectorTokenAt(
+  value: string,
+  valueStart: number,
+  offset: number,
+): { kind: "id" | "class"; name: string } | undefined {
+  for (const match of value.matchAll(/([#.])([A-Za-z_][A-Za-z0-9_-]*)/g)) {
+    const nameStart = valueStart + (match.index ?? 0) + 1;
+    const nameEnd = nameStart + (match[2]?.length ?? 0);
+    if (offset >= nameStart && offset <= nameEnd) {
+      return { kind: match[1] === "#" ? "id" : "class", name: match[2] ?? "" };
+    }
+  }
+  return undefined;
+}
+
+function classTokenEdits(
+  document: TextDocument,
+  value: string,
+  valueStart: number,
+  oldName: string,
+  newName: string,
+): TextEdit[] {
+  return [...value.matchAll(/[A-Za-z_][A-Za-z0-9_-]*/g)]
+    .filter((match) => match[0] === oldName)
+    .map((match) =>
+      offsetTextEdit(
+        document,
+        valueStart + (match.index ?? 0),
+        valueStart + (match.index ?? 0) + match[0].length,
+        newName,
+      ),
+    );
+}
+
+function selectorTokenEdits(
+  document: TextDocument,
+  value: string,
+  valueStart: number,
+  kind: "id" | "class",
+  oldName: string,
+  newName: string,
+): TextEdit[] {
+  return [...value.matchAll(/([#.])([A-Za-z_][A-Za-z0-9_-]*)/g)]
+    .filter((match) => (kind === "id" ? match[1] === "#" : match[1] === "."))
+    .filter((match) => match[2] === oldName)
+    .map((match) =>
+      offsetTextEdit(
+        document,
+        valueStart + (match.index ?? 0) + 1,
+        valueStart + (match.index ?? 0) + 1 + oldName.length,
+        newName,
+      ),
+    );
+}
+
+function isSelectorStringContext(text: string, quoteStart: number, callName: string): boolean {
+  const prefix = text.slice(Math.max(0, quoteStart - 80), quoteStart);
+  return new RegExp(`${callName.replace(".", "\\.")}\\s*\\([^)]*$`).test(prefix);
+}
+
+function offsetTextEdit(
+  document: TextDocument,
+  start: number,
+  end: number,
+  newText: string,
+): TextEdit {
+  return {
+    range: { start: document.positionAt(start), end: document.positionAt(end) },
+    newText,
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function jsSignatureHelp(cached: CachedDocument, position: Position): SignatureHelp | null {
@@ -3747,9 +4059,14 @@ function textChangeToSourceTextEdit(
   return range ? { range, newText: textChange.newText } : undefined;
 }
 
-function mergeWorkspaceEdits(edits: WorkspaceEdit[]): WorkspaceEdit | undefined {
+function mergeWorkspaceEdits(
+  edits: Array<WorkspaceEdit | null | undefined>,
+): WorkspaceEdit | undefined {
   const changes: NonNullable<WorkspaceEdit["changes"]> = {};
   for (const edit of edits) {
+    if (!edit) {
+      continue;
+    }
     for (const [uri, textEdits] of Object.entries(edit.changes ?? {})) {
       changes[uri] = [...(changes[uri] ?? []), ...textEdits];
     }
