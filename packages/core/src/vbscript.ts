@@ -3266,6 +3266,8 @@ function diagnoseAssignmentTypes(
         target.start,
         statement.at(-1)?.end ?? target.end,
         localizer.t("vb.diagnostic.setScalar", { name: target.text, type: rhsType.name }),
+        "setScalar",
+        { name: target.text, type: rhsType.name },
       ),
     );
   }
@@ -3276,6 +3278,8 @@ function diagnoseAssignmentTypes(
         target.start,
         statement.at(-1)?.end ?? target.end,
         localizer.t("vb.diagnostic.objectNeedsSet", { name: target.text }),
+        "objectNeedsSet",
+        { name: target.text, type: rhsType.name },
       ),
     );
   }
@@ -3290,6 +3294,8 @@ function diagnoseAssignmentTypes(
           expected: lhsTypeName,
           actual: rhsType.name,
         }),
+        "typeMismatch",
+        { name: target.text, expected: lhsTypeName, actual: rhsType.name },
       ),
     );
   }
@@ -3323,6 +3329,8 @@ function diagnoseCallTypes(
             statement[index - 1].start,
             statement[index - 1].end,
             localizer.t("vb.diagnostic.unknownCall", { name }),
+            "unknownCall",
+            { name },
           ),
         );
       }
@@ -3343,6 +3351,8 @@ function diagnoseCallTypes(
             expected: signature.parameters.length,
             actual: argumentCount,
           }),
+          "argumentCountMismatch",
+          { name, expected: signature.parameters.length, actual: argumentCount },
         ),
       );
     }
@@ -3386,6 +3396,8 @@ function diagnoseMemberAccess(
             type: ownerTypeName,
             member: member.text,
           }),
+          "missingMember",
+          { type: ownerTypeName, member: member.text },
         ),
       );
     }
@@ -3629,11 +3641,15 @@ function typeWarning(
   start: number,
   end: number,
   message: string,
+  code: string,
+  data?: Record<string, string | number>,
 ): Diagnostic {
   return {
     severity: DiagnosticSeverity.Warning,
     range: rangeFromOffsets(parsed.text, start, end),
     message,
+    code,
+    data,
     source: "asp-lsp-vbscript-type",
   };
 }

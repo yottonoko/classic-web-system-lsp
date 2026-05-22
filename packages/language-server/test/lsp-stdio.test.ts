@@ -1854,6 +1854,68 @@ Repository.
       }
     });
 
+    it("returns VBScript type diagnostic quick fixes", async () => {
+      const source = `<%
+Dim widget
+Dim title
+' @type typedValue As Number
+Dim typedValue
+widget = Server.CreateObject("Custom.Widget")
+Set title = "hello"
+typedValue = "hello"
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              vbscript: {
+                typeChecking: "strict",
+                comTypes: { "Custom.Widget": { members: {} } },
+              },
+            },
+          },
+        });
+        const uri = "file:///tmp/vb-type-fixes.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const typeDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-type");
+        expect(JSON.stringify(typeDiagnostics)).toContain("objectNeedsSet");
+        expect(JSON.stringify(typeDiagnostics)).toContain("setScalar");
+        expect(JSON.stringify(typeDiagnostics)).toContain("typeMismatch");
+
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: { start: { line: 5, character: 0 }, end: { line: 7, character: 20 } },
+          context: { diagnostics: typeDiagnostics },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Use Set for object assignment to widget");
+        expect(serialized).toContain("Remove Set from scalar assignment to title");
+        expect(serialized).toContain("Annotate typedValue as String");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("resolves virtual includes from configured roots", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
       const pageDir = path.join(tempDir, "pages");

@@ -60,6 +60,9 @@ export type LocalizeKey =
   | "server.completion.css.documentation"
   | "server.quickfix.declareDim"
   | "server.quickfix.removeUnusedDeclaration"
+  | "server.quickfix.addSet"
+  | "server.quickfix.removeSet"
+  | "server.quickfix.annotateType"
   | "server.quickfix.createMissingInclude"
   | "server.quickfix.includeSymbol"
   | "server.codeAction.organizeJavascriptImports"
@@ -126,6 +129,9 @@ const en: Record<LocalizeKey, string> = {
   "server.completion.css.documentation": "Completion provided by vscode-css-languageservice.",
   "server.quickfix.declareDim": "Declare {name} with Dim",
   "server.quickfix.removeUnusedDeclaration": "Remove unused declaration {name}",
+  "server.quickfix.addSet": "Use Set for object assignment to {name}",
+  "server.quickfix.removeSet": "Remove Set from scalar assignment to {name}",
+  "server.quickfix.annotateType": "Annotate {name} as {type}",
   "server.quickfix.createMissingInclude": "Create missing include {path}",
   "server.quickfix.includeSymbol": "Include {path} for {symbol}",
   "server.codeAction.organizeJavascriptImports": "Organize JavaScript imports",
@@ -197,6 +203,9 @@ const ja: Record<LocalizeKey, string> = {
   "server.completion.css.documentation": "vscode-css-languageservice による補完です。",
   "server.quickfix.declareDim": "{name} を Dim で宣言",
   "server.quickfix.removeUnusedDeclaration": "未使用の宣言 {name} を削除",
+  "server.quickfix.addSet": "{name} への object assignment に Set を使う",
+  "server.quickfix.removeSet": "{name} への scalar assignment から Set を削除",
+  "server.quickfix.annotateType": "{name} に {type} の型注釈を追加",
   "server.quickfix.createMissingInclude": "不足している include {path} を作成",
   "server.quickfix.includeSymbol": "{symbol} のために {path} を include",
   "server.codeAction.organizeJavascriptImports": "JavaScript import を整理",

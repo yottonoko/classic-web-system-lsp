@@ -37,7 +37,7 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - include-aware VBScript symbols for completions and definition jumps
 - rename, document highlights, signature help, workspace symbols, and semantic tokens for VBScript symbols
 - selection ranges, inlay hints, call hierarchy, type hierarchy, type definition, implementation, monikers, inline values, and CodeLens for VBScript symbols
-- quick fixes for undeclared variables, missing includes, include suggestions, and removable unused VBScript declarations
+- quick fixes for undeclared variables, missing includes, include suggestions, removable unused VBScript declarations, and strict type diagnostics such as missing `Set`, unnecessary `Set`, and type annotations
 - VB.NET-style `'''` XML documentation comments for VBScript hover, completion resolve, and signature help
 - XML documentation tag completion for `summary`, `remarks`, `param`, `returns`, `value`, `exception`, `see`, `seealso`, `example`, `code`, `c`, `list`, and `para`
 - conservative support for `ReDim`, `For Each`, `With`, and `Server.CreateObject("ADODB.*")` completions

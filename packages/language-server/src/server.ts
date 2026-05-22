@@ -4258,6 +4258,9 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
   if (diagnostic.source === "asp-lsp-vbscript-unused") {
     return removeUnusedVbscriptDeclarationActions(cached, diagnostic);
   }
+  if (diagnostic.source === "asp-lsp-vbscript-type") {
+    return vbscriptTypeDiagnosticActions(cached, diagnostic);
+  }
   if (diagnostic.source === "asp-lsp-include") {
     const include = cached.parsed.includes.find(
       (candidate) =>
@@ -4299,6 +4302,80 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
   return [];
 }
 
+function vbscriptTypeDiagnosticActions(
+  cached: CachedDocument,
+  diagnostic: Diagnostic,
+): CodeAction[] {
+  const code = String(diagnostic.code ?? "");
+  const data = diagnostic.data as
+    | {
+        name?: string;
+        type?: string;
+        actual?: string;
+      }
+    | undefined;
+  const name = data?.name ?? textInRange(cached.source, diagnostic.range).trim();
+  if (!name) {
+    return [];
+  }
+  const localizer = localizerForUri(cached.source.uri);
+  if (code === "objectNeedsSet") {
+    return [
+      {
+        title: localizer.t("server.quickfix.addSet", { name }),
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        edit: {
+          changes: {
+            [cached.source.uri]: [
+              {
+                range: { start: diagnostic.range.start, end: diagnostic.range.start },
+                newText: "Set ",
+              },
+            ],
+          },
+        },
+      },
+    ];
+  }
+  if (code === "setScalar") {
+    const edit = removeLeadingSetEdit(cached.source, diagnostic.range.start.line);
+    return edit
+      ? [
+          {
+            title: localizer.t("server.quickfix.removeSet", { name }),
+            kind: CodeActionKind.QuickFix,
+            diagnostics: [diagnostic],
+            edit: { changes: { [cached.source.uri]: [edit] } },
+          },
+        ]
+      : [];
+  }
+  if (code === "typeMismatch" && data?.actual) {
+    return [
+      {
+        title: localizer.t("server.quickfix.annotateType", { name, type: data.actual }),
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        edit: {
+          changes: {
+            [cached.source.uri]: [
+              {
+                range: {
+                  start: { line: diagnostic.range.start.line, character: 0 },
+                  end: { line: diagnostic.range.start.line, character: 0 },
+                },
+                newText: `' @type ${name} As ${data.actual}\n`,
+              },
+            ],
+          },
+        },
+      },
+    ];
+  }
+  return [];
+}
+
 function removeUnusedVbscriptDeclarationActions(
   cached: CachedDocument,
   diagnostic: Diagnostic,
@@ -4331,6 +4408,22 @@ function removeUnusedVbscriptDeclarationActions(
       },
     },
   ];
+}
+
+function removeLeadingSetEdit(document: TextDocument, line: number): TextEdit | undefined {
+  const text = lineText(document, line);
+  const match = /^(\s*)Set\s+/i.exec(text);
+  if (!match) {
+    return undefined;
+  }
+  const start = match[1]?.length ?? 0;
+  return {
+    range: {
+      start: { line, character: start },
+      end: { line, character: match[0].length },
+    },
+    newText: "",
+  };
 }
 
 function removeVbscriptParameterEdit(
