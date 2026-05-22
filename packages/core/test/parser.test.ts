@@ -241,6 +241,28 @@ Response.Write customername
     expect(references).toHaveLength(2);
   });
 
+  it("keeps user-defined completion candidates for mixed-case prefixes", () => {
+    const source = `<%
+Dim CustomerName
+cust
+CUST
+CuSt
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    for (const position of [
+      { line: 2, character: 4 },
+      { line: 3, character: 4 },
+      { line: 4, character: 4 },
+    ]) {
+      expect(
+        getVbscriptCompletions(parsed, position, { symbols }).some(
+          (item) => item.label === "CustomerName",
+        ),
+      ).toBe(true);
+    }
+  });
+
   it("warns about undeclared variables under Option Explicit", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -375,6 +397,37 @@ Dim UserName
         ),
       ).diagnostics.some((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming"),
     ).toBe(false);
+  });
+
+  it("reports VBScript identifier casing hints for declaration kinds", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Class customer_record
+  Public customer_name
+  Public Property Get display_name()
+    display_name = customer_name
+  End Property
+End Class
+Sub save_order(item_name)
+End Sub
+Function build_total()
+End Function
+%>`,
+    );
+    const diagnostics = analyzeVbscript(parsed).diagnostics.filter(
+      (diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming",
+    );
+    expect(diagnostics.map((diagnostic) => diagnostic.data)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "customer_record", expectedName: "CustomerRecord" }),
+        expect.objectContaining({ name: "customer_name", expectedName: "CustomerName" }),
+        expect.objectContaining({ name: "display_name", expectedName: "DisplayName" }),
+        expect.objectContaining({ name: "save_order", expectedName: "SaveOrder" }),
+        expect.objectContaining({ name: "item_name", expectedName: "ItemName" }),
+        expect.objectContaining({ name: "build_total", expectedName: "BuildTotal" }),
+      ]),
+    );
   });
 
   it("keeps include references and Global.asa event handlers out of unused diagnostics", () => {

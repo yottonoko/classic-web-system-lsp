@@ -2878,7 +2878,7 @@ function memberAccessAt(
     return undefined;
   }
   const owner = tokens[index - 2];
-  return owner?.kind === "identifier"
+  return owner?.kind === "identifier" || owner?.text.toLowerCase() === "me"
     ? { owner: owner.text, member: token.text }
     : { owner: "", member: token.text };
 }
