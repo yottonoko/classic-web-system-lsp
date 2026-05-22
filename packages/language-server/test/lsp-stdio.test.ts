@@ -1194,6 +1194,74 @@ Response.Write miss▮ingName
     }
   });
 
+  it("localizes asp-lsp diagnostics, code actions and CodeLens", async () => {
+    const marked = markedDocument(`<!-- #include file="missing.inc" -->
+<%
+Option Explicit
+Function Save()
+End Function
+Response.Write miss▮ingName
+%>`);
+    const server = new RpcServer();
+    try {
+      await server.start();
+      const initialize = await server.request("initialize", {
+        processId: process.pid,
+        rootUri: "file:///tmp",
+        locale: "ja-JP",
+        capabilities: {},
+      });
+      expect(JSON.stringify(initialize)).toContain("codeLensProvider");
+      const uri = "file:///tmp/localized.asp";
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "classic-asp",
+          version: 1,
+          text: marked.text,
+        },
+      });
+      const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+      const serializedDiagnostics = JSON.stringify(diagnostics.params);
+      expect(serializedDiagnostics).toContain("解決できません");
+      expect(serializedDiagnostics).toContain("宣言されていません");
+
+      const actions = await server.request("textDocument/codeAction", {
+        textDocument: { uri },
+        range: { start: marked.position, end: marked.position },
+        context: {
+          diagnostics: (diagnostics.params as { diagnostics: unknown[] }).diagnostics,
+        },
+      });
+      const serializedActions = JSON.stringify(actions);
+      expect(serializedActions).toContain("missingName を Dim で宣言");
+      expect(serializedActions).toContain("不足している include missing.inc を作成");
+
+      const codeLens = await server.request("textDocument/codeLens", {
+        textDocument: { uri },
+      });
+      expect(JSON.stringify(codeLens)).toContain("件の参照");
+
+      const unknown = await server.request("workspace/executeCommand", {
+        command: "aspLsp.unknown",
+      });
+      expect(JSON.stringify(unknown)).toContain("不明なコマンド");
+
+      server.notify("workspace/didChangeConfiguration", {
+        settings: { aspLsp: { locale: "en" } },
+      });
+      const englishDiagnostics = await server.request("textDocument/diagnostic", {
+        textDocument: { uri },
+      });
+      expect(JSON.stringify(englishDiagnostics)).toContain("could not be resolved");
+
+      await server.request("shutdown", null);
+      server.notify("exit", undefined);
+    } finally {
+      server.stop();
+    }
+  });
+
   it("returns an executable create-file edit for missing includes", async () => {
     const source = `<!-- #include file="missing.inc" -->\n<% Response.Write "x" %>`;
     const server = new RpcServer();

@@ -55,6 +55,7 @@ import {
   analyzeVbscript,
   buildVirtualDocuments,
   collectVbscriptSymbols,
+  createLocalizer,
   formatAspDocument,
   formatAspRange,
   getVbscriptCompletions,
@@ -75,6 +76,8 @@ import {
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
   type AspFormattingOptions,
+  type AspLocale,
+  type AspLocaleSetting,
   type AspParsedDocument,
   type AspSettings,
   type AspRegion,
@@ -107,6 +110,7 @@ const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
 let workspaceRoots: string[] = [];
+let clientLocale = "en";
 let workspaceIndexDirty = true;
 let workspaceIndexTruncated = false;
 let jsLanguageServiceCacheTick = 0;
@@ -194,6 +198,8 @@ function aspFileOperationFilter() {
 const cache = new Map<string, CachedDocument>();
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
+  clientLocale = typeof params.locale === "string" ? params.locale : "en";
+  globalSettings = normalizeSettings(globalSettings);
   workspaceRoots = [
     ...(params.workspaceFolders?.map((folder) => uriToFileName(folder.uri)) ?? []),
     ...(params.rootUri ? [uriToFileName(params.rootUri)] : []),
@@ -412,13 +418,18 @@ connection.onCompletion((params) => {
         params.position,
         htmlService.parseHTMLDocument(virtualDocument),
       ).items,
-      { kind: "html", uri: cached.source.uri },
+      {
+        kind: "html",
+        uri: cached.source.uri,
+        locale: cachedSettings(cached.source.uri).resolvedLocale,
+      },
     );
   }
   if (region.language === "css") {
     return withCompletionData(cssCompletion(cached, params, "css"), {
       kind: "css",
       uri: cached.source.uri,
+      locale: cachedSettings(cached.source.uri).resolvedLocale,
     });
   }
   if (region && isJavaScriptLikeRegion(region)) {
@@ -827,7 +838,12 @@ connection.onExecuteCommand((params) => {
     }
     return { ok: true };
   }
-  return { ok: false, message: `Unknown command: ${params.command}` };
+  return {
+    ok: false,
+    message: createLocalizer(globalSettings.resolvedLocale).t("server.unknownCommand", {
+      command: params.command,
+    }),
+  };
 });
 
 connection.languages.callHierarchy.onPrepare((params): CallHierarchyItem[] => {
@@ -1947,14 +1963,21 @@ function resolveEmbeddedCompletion(item: CompletionItem, kind: "html" | "css"): 
   if (resolved && typeof (resolved as Promise<CompletionItem>).then !== "function") {
     return resolved as CompletionItem;
   }
+  const localizer = createLocalizer((item.data as { locale?: AspLocale } | undefined)?.locale);
   return {
     ...item,
-    detail: item.detail ?? (kind === "html" ? "HTML completion" : "CSS completion"),
+    detail:
+      item.detail ??
+      localizer.t(
+        kind === "html" ? "server.completion.html.detail" : "server.completion.css.detail",
+      ),
     documentation:
       item.documentation ??
-      (kind === "html"
-        ? "Completion provided by vscode-html-languageservice."
-        : "Completion provided by vscode-css-languageservice."),
+      localizer.t(
+        kind === "html"
+          ? "server.completion.html.documentation"
+          : "server.completion.css.documentation",
+      ),
   };
 }
 
@@ -2288,6 +2311,7 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     typeChecking: settings.vbscript?.typeChecking,
     comTypes: settings.vbscript?.comTypes,
     unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+    locale: settings.resolvedLocale,
   };
   const symbols = documents.flatMap((document) =>
     collectVbscriptSymbols(document, contextSettings),
@@ -2351,13 +2375,15 @@ function readTextFile(fileName: string, encoding: string | undefined): string {
 function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const owner = uriToFileName(cached.source.uri);
+  const localizer = localizerForSettings(settings);
   for (const include of cached.parsed.includes) {
     const resolved = resolveIncludePath(cached.source.uri, include.path, include.mode, settings);
     if (!resolved || !fs.existsSync(resolved)) {
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
         range: include.range,
-        message: `Include file '${include.path}' could not be resolved.`,
+        message: localizer.t("server.include.unresolved", { path: include.path }),
+        code: "include.missing",
         source: "asp-lsp-include",
       });
     }
@@ -2365,7 +2391,8 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
         range: include.range,
-        message: "Include file references the current document.",
+        message: localizer.t("server.include.currentDocument"),
+        code: "include.currentDocument",
         source: "asp-lsp-include",
       });
       continue;
@@ -2375,7 +2402,10 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
         range: include.range,
-        message: `Include cycle detected: ${cycle.map((fileName) => path.basename(fileName)).join(" -> ")}.`,
+        message: localizer.t("server.include.cycle", {
+          cycle: cycle.map((fileName) => path.basename(fileName)).join(" -> "),
+        }),
+        code: "include.cycle",
         source: "asp-lsp-include",
       });
     }
@@ -2771,7 +2801,7 @@ async function ensureWorkspaceIndexAsync(
   workspaceIndexDirty = Boolean(token?.isCancellationRequested);
   if (workspaceIndexTruncated) {
     connection.console.warn(
-      `Classic ASP workspace index stopped at ${maxFiles} files. Increase aspLsp.workspace.maxIndexFiles to index more files.`,
+      createLocalizer(settings.resolvedLocale).t("server.workspaceIndex.truncated", { maxFiles }),
     );
   }
 }
@@ -2951,6 +2981,14 @@ function cachedSettings(uri: string): AspSettings {
   return settings;
 }
 
+function localizerForSettings(settings: AspSettings) {
+  return createLocalizer(settings.resolvedLocale);
+}
+
+function localizerForUri(uri: string) {
+  return localizerForSettings(cachedSettings(uri));
+}
+
 async function refreshConfiguration(): Promise<void> {
   try {
     globalSettings = normalizeSettings(
@@ -2989,6 +3027,8 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
         .map((value) => path.resolve(value))
     : undefined;
   return {
+    locale: normalizeLocaleSetting(settings.locale),
+    resolvedLocale: resolveLocale(normalizeLocaleSetting(settings.locale)),
     defaultLanguage: settings.defaultLanguage === "JScript" ? "JScript" : "VBScript",
     checkJs: settings.checkJs === true,
     virtualRoot:
@@ -3006,6 +3046,17 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     codeLens: normalizeCodeLensSettings(settings),
     workspace: normalizeWorkspaceSettings(settings),
   };
+}
+
+function normalizeLocaleSetting(value: unknown): AspLocaleSetting {
+  return value === "en" || value === "ja" || value === "auto" ? value : "auto";
+}
+
+function resolveLocale(setting: AspLocaleSetting): AspLocale {
+  if (setting === "en" || setting === "ja") {
+    return setting;
+  }
+  return clientLocale.toLowerCase().startsWith("ja") ? "ja" : "en";
 }
 
 function normalizeWorkspaceSettings(
@@ -3719,14 +3770,15 @@ function tsSymbolKind(kind: ts.ScriptElementKind): SymbolKind {
 
 function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic): CodeAction[] {
   if (diagnostic.source === "asp-lsp-vbscript") {
-    const name = /'([^']+)' is not declared/.exec(diagnostic.message)?.[1];
+    const name = textInRange(cached.source, diagnostic.range).trim();
     if (!name) {
       return [];
     }
     const line = diagnostic.range.start.line;
+    const localizer = localizerForUri(cached.source.uri);
     return [
       {
-        title: `Declare ${name} with Dim`,
+        title: localizer.t("server.quickfix.declareDim", { name }),
         kind: CodeActionKind.QuickFix,
         diagnostics: [diagnostic],
         edit: {
@@ -3747,16 +3799,16 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
     ];
   }
   if (diagnostic.source === "asp-lsp-include") {
-    const includePath = /'([^']+)'/.exec(diagnostic.message)?.[1];
-    if (!includePath) {
-      return [];
-    }
     const include = cached.parsed.includes.find(
       (candidate) =>
-        candidate.path === includePath &&
         candidate.range.start.line === diagnostic.range.start.line &&
         candidate.range.start.character === diagnostic.range.start.character,
     );
+    const includePath = include?.path;
+    if (!includePath) {
+      return [];
+    }
+    const localizer = localizerForUri(cached.source.uri);
     const targetPath = include
       ? resolveIncludePath(
           cached.source.uri,
@@ -3767,7 +3819,7 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
       : undefined;
     return [
       {
-        title: `Create missing include ${includePath}`,
+        title: localizer.t("server.quickfix.createMissingInclude", { path: includePath }),
         kind: CodeActionKind.QuickFix,
         diagnostics: [diagnostic],
         edit: targetPath
@@ -3837,10 +3889,14 @@ function vbscriptIncludeSuggestionActions(
     )
     .slice(0, 5);
   const insert = includeInsertionPoint(cached);
+  const localizer = localizerForUri(cached.source.uri);
   return matches.map(({ fileName }) => {
     const include = includeSuggestionPath(cached.source.uri, fileName, settings);
     return {
-      title: `Include ${include.path} for ${symbolName}`,
+      title: localizer.t("server.quickfix.includeSymbol", {
+        path: include.path,
+        symbol: symbolName,
+      }),
       kind: CodeActionKind.QuickFix,
       diagnostics: [diagnostic],
       edit: {
@@ -3937,7 +3993,7 @@ function jsCodeActions(
     const edit = organizeJavaScriptImportsEdit(cached);
     if (edit || jsVirtualDocuments(cached).length > 0) {
       actions.push({
-        title: "Organize JavaScript imports",
+        title: localizerForUri(cached.source.uri).t("server.codeAction.organizeJavascriptImports"),
         kind: "source.organizeImports.aspLsp.javascript",
         edit: edit ?? { changes: {} },
       });
@@ -4077,6 +4133,7 @@ function mergeWorkspaceEdits(
 function codeLenses(cached: CachedDocument): CodeLens[] {
   const settings = cachedSettings(cached.source.uri).codeLens;
   const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const localizer = localizerForUri(cached.source.uri);
   const lenses: CodeLens[] = [];
   if (settings?.references !== false) {
     for (const symbol of (context.symbols ?? []).filter(
@@ -4088,7 +4145,10 @@ function codeLenses(cached: CachedDocument): CodeLens[] {
       lenses.push({
         range: symbol.range,
         command: {
-          title: `${references.length} reference${references.length === 1 ? "" : "s"}`,
+          title: localizer.t(
+            references.length === 1 ? "server.codeLens.reference" : "server.codeLens.references",
+            { count: references.length },
+          ),
           command: "",
         },
       });
@@ -4105,7 +4165,7 @@ function codeLenses(cached: CachedDocument): CodeLens[] {
       lenses.push({
         range: include.range,
         command: {
-          title: `include ${path.basename(target)}`,
+          title: localizer.t("server.codeLens.include", { name: path.basename(target) }),
           command: "vscode.open",
           arguments: [pathToFileUri(target)],
         },
@@ -4273,6 +4333,10 @@ function lineText(document: TextDocument, line: number): string {
       end: { line: line + 1, character: 0 },
     })
     .replace(/\r?\n$/, "");
+}
+
+function textInRange(document: TextDocument, range: Range): string {
+  return document.getText(range);
 }
 
 function wordRangeAt(document: TextDocument, position: Position): Range | null {

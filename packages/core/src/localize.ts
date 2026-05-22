@@ -48,7 +48,23 @@ export type LocalizeKey =
   | "vb.diagnostic.typeMismatch"
   | "vb.diagnostic.unknownCall"
   | "vb.diagnostic.argumentCountMismatch"
-  | "vb.diagnostic.missingMember";
+  | "vb.diagnostic.missingMember"
+  | "server.unknownCommand"
+  | "server.include.unresolved"
+  | "server.include.currentDocument"
+  | "server.include.cycle"
+  | "server.workspaceIndex.truncated"
+  | "server.completion.html.detail"
+  | "server.completion.html.documentation"
+  | "server.completion.css.detail"
+  | "server.completion.css.documentation"
+  | "server.quickfix.declareDim"
+  | "server.quickfix.createMissingInclude"
+  | "server.quickfix.includeSymbol"
+  | "server.codeAction.organizeJavascriptImports"
+  | "server.codeLens.reference"
+  | "server.codeLens.references"
+  | "server.codeLens.include";
 
 const en: Record<LocalizeKey, string> = {
   "parser.missingAspClose": "Classic ASP block is missing a closing %> delimiter.",
@@ -97,6 +113,23 @@ const en: Record<LocalizeKey, string> = {
   "vb.diagnostic.argumentCountMismatch":
     "Argument count mismatch for '{name}': expected {expected}, got {actual}.",
   "vb.diagnostic.missingMember": "Type '{type}' has no member '{member}'.",
+  "server.unknownCommand": "Unknown command: {command}",
+  "server.include.unresolved": "Include file '{path}' could not be resolved.",
+  "server.include.currentDocument": "Include file references the current document.",
+  "server.include.cycle": "Include cycle detected: {cycle}.",
+  "server.workspaceIndex.truncated":
+    "Classic ASP workspace index stopped at {maxFiles} files. Increase aspLsp.workspace.maxIndexFiles to index more files.",
+  "server.completion.html.detail": "HTML completion",
+  "server.completion.html.documentation": "Completion provided by vscode-html-languageservice.",
+  "server.completion.css.detail": "CSS completion",
+  "server.completion.css.documentation": "Completion provided by vscode-css-languageservice.",
+  "server.quickfix.declareDim": "Declare {name} with Dim",
+  "server.quickfix.createMissingInclude": "Create missing include {path}",
+  "server.quickfix.includeSymbol": "Include {path} for {symbol}",
+  "server.codeAction.organizeJavascriptImports": "Organize JavaScript imports",
+  "server.codeLens.reference": "{count} reference",
+  "server.codeLens.references": "{count} references",
+  "server.codeLens.include": "include {name}",
 };
 
 const ja: Record<LocalizeKey, string> = {
@@ -150,6 +183,23 @@ const ja: Record<LocalizeKey, string> = {
   "vb.diagnostic.argumentCountMismatch":
     "'{name}' の引数の数が一致しません: 期待値 {expected}、実際 {actual}。",
   "vb.diagnostic.missingMember": "型 '{type}' にメンバー '{member}' はありません。",
+  "server.unknownCommand": "不明なコマンドです: {command}",
+  "server.include.unresolved": "include file '{path}' を解決できません。",
+  "server.include.currentDocument": "include file が現在のドキュメントを参照しています。",
+  "server.include.cycle": "include の循環を検出しました: {cycle}。",
+  "server.workspaceIndex.truncated":
+    "Classic ASP workspace index は {maxFiles} ファイルで停止しました。さらに index するには aspLsp.workspace.maxIndexFiles を増やしてください。",
+  "server.completion.html.detail": "HTML 補完",
+  "server.completion.html.documentation": "vscode-html-languageservice による補完です。",
+  "server.completion.css.detail": "CSS 補完",
+  "server.completion.css.documentation": "vscode-css-languageservice による補完です。",
+  "server.quickfix.declareDim": "{name} を Dim で宣言",
+  "server.quickfix.createMissingInclude": "不足している include {path} を作成",
+  "server.quickfix.includeSymbol": "{symbol} のために {path} を include",
+  "server.codeAction.organizeJavascriptImports": "JavaScript import を整理",
+  "server.codeLens.reference": "{count} 件の参照",
+  "server.codeLens.references": "{count} 件の参照",
+  "server.codeLens.include": "{name} を include",
 };
 
 export function createLocalizer(locale: AspLocale | undefined): AspLocalizer {
