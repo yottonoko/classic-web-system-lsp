@@ -85,10 +85,8 @@ describe("VS Code extension package", () => {
       const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
       expect(listing).toContain("extension/dist/extension.js");
       expect(listing).toContain("extension/server/language-server/dist/server.js");
-      expect(listing).toContain("extension/server/language-server/node_modules/@asp-lsp/core");
-      expect(listing).toContain(
-        "extension/server/language-server/node_modules/vscode-languageserver",
-      );
+      expect(listing).not.toContain("extension/server/language-server/node_modules/");
+      expect(listing).not.toContain("extension/node_modules/");
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

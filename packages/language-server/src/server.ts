@@ -7,6 +7,7 @@ import {
   createConnection,
   DiagnosticSeverity,
   DocumentSymbol,
+  FileChangeType,
   FoldingRange,
   Hover,
   InitializeParams,
@@ -92,9 +93,15 @@ const cssService = getCSSLanguageService();
 const settingsByUri = new Map<string, AspSettings>();
 const includeDocumentCache = new Map<string, { mtimeMs: number; parsed: AspParsedDocument }>();
 const workspaceIndex = new Map<string, WorkspaceIndexedDocument>();
+const workspaceScriptFilesCache = new Map<
+  string,
+  { mtimeMs: number; size: number; files: string[] }
+>();
+const jsLanguageServiceCache = new Map<string, JsLanguageServiceCacheEntry>();
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
 let workspaceRoots: string[] = [];
 let workspaceIndexDirty = true;
+let jsLanguageServiceCacheTick = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
 
 const semanticTokenTypes = [
@@ -143,6 +150,17 @@ interface JsProjectContext {
   fileName: string;
   offset: number;
   files: Map<string, JsProjectFile>;
+}
+
+interface JsLanguageServiceProject {
+  service: ts.LanguageService;
+  host: ts.LanguageServiceHost;
+  files: Map<string, JsProjectFile>;
+}
+
+interface JsLanguageServiceCacheEntry {
+  project: JsLanguageServiceProject;
+  lastUsed: number;
 }
 
 interface JsCallHierarchyData {
@@ -237,10 +255,19 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
   };
 });
 
-documents.onDidOpen((event) => validate(event.document));
-documents.onDidChangeContent((event) => validate(event.document));
+documents.onDidOpen((event) => {
+  cache.delete(event.document.uri);
+  clearJsLanguageServiceCache();
+  validate(event.document);
+});
+documents.onDidChangeContent((event) => {
+  cache.delete(event.document.uri);
+  clearJsLanguageServiceCache();
+  validate(event.document);
+});
 documents.onDidClose((event) => {
   cache.delete(event.document.uri);
+  clearJsLanguageServiceCache();
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
 });
 
@@ -256,6 +283,7 @@ connection.onDidChangeConfiguration((change) => {
   settingsByUri.clear();
   cache.clear();
   includeDocumentCache.clear();
+  clearJsLanguageServiceCache();
   invalidateWorkspaceIndex();
   for (const document of documents.all()) {
     validate(document);
@@ -263,12 +291,29 @@ connection.onDidChangeConfiguration((change) => {
 });
 
 connection.onDidChangeWatchedFiles((change) => {
-  includeDocumentCache.clear();
+  let aspChanged = false;
+  let scriptChanged = false;
   cache.clear();
   for (const file of change.changes) {
-    workspaceIndex.delete(normalizeFileName(uriToFileName(file.uri)));
+    const fileName = normalizeFileName(uriToFileName(file.uri));
+    if (isAspWorkspaceFile(fileName)) {
+      aspChanged = true;
+      if (file.type === FileChangeType.Deleted) {
+        workspaceIndex.delete(fileName);
+      } else {
+        indexWorkspaceFile(fileName);
+      }
+    }
+    if (isScriptWorkspaceFile(fileName)) {
+      scriptChanged = true;
+    }
   }
-  workspaceIndexDirty = true;
+  if (aspChanged) {
+    includeDocumentCache.clear();
+  }
+  if (aspChanged || scriptChanged) {
+    clearJsProjectCaches();
+  }
   for (const document of documents.all()) {
     validate(document);
   }
@@ -279,16 +324,19 @@ connection.workspace.onWillRenameFiles((params) => includeRenameWorkspaceEdit(pa
 connection.workspace.onDidRenameFiles(() => {
   invalidateWorkspaceIndex();
   includeDocumentCache.clear();
+  clearJsProjectCaches();
 });
 
 connection.workspace.onDidCreateFiles(() => {
   invalidateWorkspaceIndex();
   includeDocumentCache.clear();
+  clearJsProjectCaches();
 });
 
 connection.workspace.onDidDeleteFiles(() => {
   invalidateWorkspaceIndex();
   includeDocumentCache.clear();
+  clearJsProjectCaches();
 });
 
 connection.onCompletion((params) => {
@@ -699,6 +747,7 @@ connection.onExecuteCommand((params) => {
     invalidateWorkspaceIndex();
     includeDocumentCache.clear();
     cache.clear();
+    clearJsProjectCaches();
     for (const document of documents.all()) {
       validate(document);
     }
@@ -2197,7 +2246,7 @@ function indexWorkspaceRoot(root: string): void {
         }
         continue;
       }
-      if (entry.isFile() && /\.(asp|asa|inc)$/i.test(entry.name)) {
+      if (entry.isFile() && isAspWorkspaceFile(entry.name)) {
         indexWorkspaceFile(fullPath);
       }
     }
@@ -2239,6 +2288,14 @@ function isExcludedWorkspaceDirectory(name: string, fullPath: string): boolean {
     [".git", "node_modules", "dist", "out"].includes(name) ||
     normalized.endsWith("/server/language-server/node_modules")
   );
+}
+
+function isAspWorkspaceFile(fileName: string): boolean {
+  return /\.(?:asp|asa|inc)$/i.test(fileName);
+}
+
+function isScriptWorkspaceFile(fileName: string): boolean {
+  return /\.(?:[cm]?js|jsx|[cm]?ts|tsx|d\.ts)$/i.test(fileName);
 }
 
 function findRegionAt(parsed: AspParsedDocument, offset: number) {
@@ -2622,11 +2679,13 @@ function createJsLanguageService(
   virtual: VirtualDocument,
   settings: AspSettings,
   optionOverrides: Partial<ts.CompilerOptions> = {},
-): {
-  service: ts.LanguageService;
-  host: ts.LanguageServiceHost;
-  files: Map<string, JsProjectFile>;
-} {
+): JsLanguageServiceProject {
+  const cacheKey = jsLanguageServiceCacheKey(virtual, settings, optionOverrides);
+  const cached = jsLanguageServiceCache.get(cacheKey);
+  if (cached) {
+    cached.lastUsed = ++jsLanguageServiceCacheTick;
+    return cached.project;
+  }
   const project = collectJsProjectFiles(virtual, settings, optionOverrides);
   const host: ts.LanguageServiceHost = {
     getScriptFileNames: () => [...project.files.keys()],
@@ -2652,7 +2711,70 @@ function createJsLanguageService(
     directoryExists: ts.sys.directoryExists,
     getDirectories: ts.sys.getDirectories,
   };
-  return { service: ts.createLanguageService(host), host, files: project.files };
+  const result = { service: ts.createLanguageService(host), host, files: project.files };
+  jsLanguageServiceCache.set(cacheKey, {
+    project: result,
+    lastUsed: ++jsLanguageServiceCacheTick,
+  });
+  pruneJsLanguageServiceCache();
+  return result;
+}
+
+function jsLanguageServiceCacheKey(
+  virtual: VirtualDocument,
+  settings: AspSettings,
+  optionOverrides: Partial<ts.CompilerOptions>,
+): string {
+  return JSON.stringify({
+    uri: virtual.uri,
+    language: virtual.languageId,
+    text: textFingerprint(virtual.text),
+    settings: {
+      checkJs: settings.checkJs ?? false,
+      autoImports: settings.javascript?.autoImports !== false,
+      unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
+    },
+    optionOverrides,
+    roots: workspaceRoots.map(normalizeFileName).sort(),
+    documents: documents
+      .all()
+      .map((document) => `${document.uri}:${document.version}`)
+      .sort(),
+  });
+}
+
+function pruneJsLanguageServiceCache(): void {
+  while (jsLanguageServiceCache.size > 16) {
+    const oldest = [...jsLanguageServiceCache.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0];
+    if (!oldest) {
+      return;
+    }
+    oldest[1].project.service.dispose();
+    jsLanguageServiceCache.delete(oldest[0]);
+  }
+}
+
+function clearJsLanguageServiceCache(): void {
+  for (const entry of jsLanguageServiceCache.values()) {
+    entry.project.service.dispose();
+  }
+  jsLanguageServiceCache.clear();
+}
+
+function clearJsProjectCaches(): void {
+  clearJsLanguageServiceCache();
+  workspaceScriptFilesCache.clear();
+}
+
+function textFingerprint(text: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${text.length}:${hash >>> 0}`;
 }
 
 function collectJsProjectFiles(
@@ -2751,9 +2873,14 @@ function readJsProjectConfig(
 
 function collectWorkspaceScriptFiles(root: string): string[] {
   const result: string[] = [];
-  const stat = fs.statSync(root, { throwIfNoEntry: false });
+  const normalizedRoot = normalizeFileName(root);
+  const stat = fs.statSync(normalizedRoot, { throwIfNoEntry: false });
   if (!stat?.isDirectory()) {
     return result;
+  }
+  const cached = workspaceScriptFilesCache.get(normalizedRoot);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.files;
   }
   const visit = (dir: string): void => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -2764,12 +2891,17 @@ function collectWorkspaceScriptFiles(root: string): string[] {
         }
         continue;
       }
-      if (entry.isFile() && /\.(?:[cm]?js|jsx|[cm]?ts|tsx|d\.ts)$/i.test(entry.name)) {
+      if (entry.isFile() && isScriptWorkspaceFile(entry.name)) {
         result.push(normalizeFileName(fullPath));
       }
     }
   };
-  visit(root);
+  visit(normalizedRoot);
+  workspaceScriptFilesCache.set(normalizedRoot, {
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    files: result,
+  });
   return result;
 }
 
@@ -3234,12 +3366,20 @@ function fileTextChangesToWorkspaceEdit(
   changes: readonly ts.FileTextChanges[],
 ): WorkspaceEdit | undefined {
   const sourceUri = virtualSourceUri(virtual);
-  const edits = changes
-    .filter((change) => change.fileName === jsVirtualFileName(virtual.uri))
-    .flatMap((change) =>
-      change.textChanges.map((textChange) => textChangeToSourceTextEdit(virtual, textChange)),
-    )
-    .filter((edit): edit is TextEdit => Boolean(edit));
+  const currentFileName = normalizeFileName(jsVirtualFileName(virtual.uri));
+  const edits: TextEdit[] = [];
+  for (const change of changes) {
+    if (normalizeFileName(change.fileName) !== currentFileName) {
+      return undefined;
+    }
+    for (const textChange of change.textChanges) {
+      const edit = textChangeToSourceTextEdit(virtual, textChange);
+      if (!edit) {
+        return undefined;
+      }
+      edits.push(edit);
+    }
+  }
   return edits.length > 0 ? { changes: { [sourceUri]: edits } } : undefined;
 }
 

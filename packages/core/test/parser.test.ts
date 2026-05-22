@@ -378,6 +378,26 @@ Response.Write BuildName("Ada")
     );
   });
 
+  it("parses XML documentation with a tokenizer and keeps variable docs unambiguous", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+''' <summary>Outer <summary>inner</summary> tail</summary>
+Function BuildName()
+End Function
+
+''' <summary>One value.</summary>
+Dim oneValue
+
+''' <summary>Ambiguous values.</summary>
+Dim firstValue, secondValue
+%>`,
+    );
+    expect(getVbscriptHover(parsed, { line: 2, character: 10 })).toContain("Outer inner tail");
+    expect(getVbscriptHover(parsed, { line: 6, character: 5 })).toContain("One value.");
+    expect(getVbscriptHover(parsed, { line: 9, character: 5 })).not.toContain("Ambiguous values.");
+  });
+
   it("ignores single-quote XML comments and tolerates broken XML documentation", () => {
     const single = parseAspDocument(
       "file:///site/default.asp",
@@ -437,16 +457,20 @@ End Function
     ).toBe(true);
 
     const closing = markedDocument(`<%
+''' <remarks>Old unclosed docs.
+Function OldName()
+End Function
+
 ''' <summary>Text</▮
 Function BuildName(first)
 End Function
 %>`);
-    expect(
-      getVbscriptCompletions(
-        parseAspDocument("file:///site/default.asp", closing.text),
-        closing.position,
-      ).some((item) => item.label === "summary"),
-    ).toBe(true);
+    const closingLabels = getVbscriptCompletions(
+      parseAspDocument("file:///site/default.asp", closing.text),
+      closing.position,
+    ).map((item) => item.label);
+    expect(closingLabels).toContain("summary");
+    expect(closingLabels).not.toContain("remarks");
 
     const cref = markedDocument(`<%
 Function BuildName(first)

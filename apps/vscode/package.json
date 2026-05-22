@@ -11,10 +11,10 @@
   "publisher": "yottonoko",
   "main": "./dist/extension.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-server-runtime.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/bundle-extension.mjs && node scripts/copy-server-runtime.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "oxlint src test --deny-warnings --no-error-on-unmatched-pattern",
-    "package:vsix": "pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --allow-missing-repository --no-dependencies --follow-symlinks",
+    "package:vsix": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --allow-missing-repository --no-dependencies --follow-symlinks",
     "test": "pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
   },
   "dependencies": {
@@ -22,7 +22,8 @@
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
-    "@vscode/vsce": "^3.9.1"
+    "@vscode/vsce": "^3.9.1",
+    "rolldown": "^1.0.1"
   },
   "contributes": {
     "languages": [
