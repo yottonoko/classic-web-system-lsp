@@ -42,6 +42,7 @@ import type {
   Range,
   RenameParams,
   SemanticTokens,
+  SemanticTokensDelta,
   SelectionRange,
   SignatureHelp,
   TextEdit,
@@ -98,6 +99,8 @@ const workspaceScriptFilesCache = new Map<
   { mtimeMs: number; size: number; files: string[] }
 >();
 const jsLanguageServiceCache = new Map<string, JsLanguageServiceCacheEntry>();
+const semanticTokenResults = new Map<string, { uri: string; data: number[] }>();
+const latestSemanticTokenResultByUri = new Map<string, string>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
@@ -105,6 +108,7 @@ let workspaceRoots: string[] = [];
 let workspaceIndexDirty = true;
 let workspaceIndexTruncated = false;
 let jsLanguageServiceCacheTick = 0;
+let semanticTokenResultCounter = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
 
 const semanticTokenTypes = [
@@ -271,6 +275,7 @@ documents.onDidChangeContent((event) => {
 documents.onDidClose((event) => {
   cache.delete(event.document.uri);
   clearJsLanguageServiceCache();
+  clearSemanticTokensForUri(event.document.uri);
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
 });
 
@@ -287,6 +292,7 @@ connection.onDidChangeConfiguration((change) => {
   cache.clear();
   includeDocumentCache.clear();
   clearJsLanguageServiceCache();
+  clearSemanticTokens();
   invalidateWorkspaceIndex();
   for (const document of documents.all()) {
     validate(document);
@@ -297,6 +303,7 @@ connection.onDidChangeWatchedFiles((change) => {
   let aspChanged = false;
   let scriptChanged = false;
   cache.clear();
+  clearSemanticTokens();
   for (const file of change.changes) {
     const fileName = normalizeFileName(uriToFileName(file.uri));
     if (isAspWorkspaceFile(fileName)) {
@@ -911,7 +918,7 @@ connection.languages.semanticTokens.on((params) => {
   if (!cached) {
     return { data: [] };
   }
-  return buildSemanticTokens(cached);
+  return cacheSemanticTokens(cached.source.uri, buildSemanticTokens(cached).data);
 });
 
 connection.languages.semanticTokens.onRange((params): SemanticTokens => {
@@ -922,12 +929,23 @@ connection.languages.semanticTokens.onRange((params): SemanticTokens => {
   return buildSemanticTokens(cached, params.range);
 });
 
-connection.languages.semanticTokens.onDelta((params): SemanticTokens => {
+connection.languages.semanticTokens.onDelta((params): SemanticTokens | SemanticTokensDelta => {
   const cached = getCached(params.textDocument.uri);
   if (!cached) {
     return { data: [] };
   }
-  return buildSemanticTokens(cached);
+  const previous = semanticTokenResults.get(params.previousResultId);
+  const next = buildSemanticTokens(cached).data;
+  if (!previous || previous.uri !== cached.source.uri) {
+    return cacheSemanticTokens(cached.source.uri, next);
+  }
+  const resultId = nextSemanticTokenResultId();
+  semanticTokenResults.set(resultId, { uri: cached.source.uri, data: next });
+  latestSemanticTokenResultByUri.set(cached.source.uri, resultId);
+  return {
+    resultId,
+    edits: [semanticTokenDeltaEdit(previous.data, next)],
+  };
 });
 
 async function validate(document: TextDocument): Promise<void> {
@@ -3740,6 +3758,57 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
     );
   }
   return builder.build();
+}
+
+function cacheSemanticTokens(uri: string, data: number[]): SemanticTokens {
+  const previous = latestSemanticTokenResultByUri.get(uri);
+  if (previous) {
+    semanticTokenResults.delete(previous);
+  }
+  const resultId = nextSemanticTokenResultId();
+  semanticTokenResults.set(resultId, { uri, data });
+  latestSemanticTokenResultByUri.set(uri, resultId);
+  return { data, resultId };
+}
+
+function nextSemanticTokenResultId(): string {
+  semanticTokenResultCounter += 1;
+  return String(semanticTokenResultCounter);
+}
+
+function semanticTokenDeltaEdit(previous: number[], next: number[]) {
+  let prefix = 0;
+  while (prefix < previous.length && prefix < next.length && previous[prefix] === next[prefix]) {
+    prefix += 1;
+  }
+  let previousSuffix = previous.length;
+  let nextSuffix = next.length;
+  while (
+    previousSuffix > prefix &&
+    nextSuffix > prefix &&
+    previous[previousSuffix - 1] === next[nextSuffix - 1]
+  ) {
+    previousSuffix -= 1;
+    nextSuffix -= 1;
+  }
+  return {
+    start: prefix,
+    deleteCount: previousSuffix - prefix,
+    data: next.slice(prefix, nextSuffix),
+  };
+}
+
+function clearSemanticTokensForUri(uri: string): void {
+  const resultId = latestSemanticTokenResultByUri.get(uri);
+  if (resultId) {
+    semanticTokenResults.delete(resultId);
+    latestSemanticTokenResultByUri.delete(uri);
+  }
+}
+
+function clearSemanticTokens(): void {
+  semanticTokenResults.clear();
+  latestSemanticTokenResultByUri.clear();
 }
 
 function addEmbeddedSemanticTokens(

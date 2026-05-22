@@ -880,7 +880,7 @@ function collectParameterTokens(tokens: VbToken[], index: number): VbToken[] {
   while (cursor < tokens.length && tokens[cursor].text !== ")") {
     if (
       tokens[cursor].kind === "identifier" &&
-      !["byval", "byref"].includes(tokens[cursor].text.toLowerCase())
+      !["byval", "byref", "optional"].includes(tokens[cursor].text.toLowerCase())
     ) {
       parameters.push(tokens[cursor]);
     }
@@ -2423,7 +2423,24 @@ function inferExpressionType(
   offset: number,
 ): VbTypeRef | undefined {
   const significant = tokens.filter((token) => !isTriviaToken(token));
-  const first = significant[0];
+  return inferSignificantExpressionType(parsed, significant, symbols, env, offset);
+}
+
+function inferSignificantExpressionType(
+  parsed: AspParsedDocument,
+  significant: VbToken[],
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+  offset: number,
+): VbTypeRef | undefined {
+  const expression = trimOuterParens(significant);
+  const binary = splitByLowestPrecedenceOperator(expression);
+  if (binary) {
+    const left = inferSignificantExpressionType(parsed, binary.left, symbols, env, offset);
+    const right = inferSignificantExpressionType(parsed, binary.right, symbols, env, offset);
+    return inferBinaryExpressionType(binary.operator, left, right);
+  }
+  const first = expression[0];
   if (!first) {
     return undefined;
   }
@@ -2433,7 +2450,7 @@ function inferExpressionType(
   if (first.kind === "number") {
     return typeRef("Number");
   }
-  if (first.text === "#" && significant.at(-1)?.text === "#") {
+  if (first.text === "#" && expression.at(-1)?.text === "#") {
     return typeRef("Date");
   }
   const lower = first.text.toLowerCase();
@@ -2443,12 +2460,15 @@ function inferExpressionType(
   if (lower === "nothing" || lower === "null" || lower === "empty") {
     return typeRef(lower === "nothing" ? "Nothing" : "Variant");
   }
-  if (lower === "new" && significant[1]?.kind === "identifier") {
-    return typeRef(significant[1].text);
+  if (lower === "array" && expression[1]?.text === "(") {
+    return typeRef("Array");
   }
-  const createObjectIndex = findCreateObjectCall(significant, 0, significant.length - 1);
+  if (lower === "new" && expression[1]?.kind === "identifier") {
+    return typeRef(expression[1].text);
+  }
+  const createObjectIndex = findCreateObjectCall(expression, 0, expression.length - 1);
   if (createObjectIndex !== -1) {
-    const stringToken = significant
+    const stringToken = expression
       .slice(createObjectIndex)
       .find((token) => token.kind === "string");
     return stringToken
@@ -2457,17 +2477,17 @@ function inferExpressionType(
   }
   if (
     first.kind === "identifier" &&
-    significant[1]?.text === "." &&
-    significant[2]?.kind === "identifier"
+    expression[1]?.text === "." &&
+    expression[2]?.kind === "identifier"
   ) {
     const ownerType = inferVariableType(first.text, parsed, offset, symbols);
     return ownerType
-      ? (memberReturnType(ownerType, significant[2].text, env) ??
-          memberType(ownerType, significant[2].text, env))
+      ? (memberReturnType(ownerType, expression[2].text, env) ??
+          memberType(ownerType, expression[2].text, env))
       : undefined;
   }
   if (first.kind === "identifier") {
-    const called = significant[1]?.text === "(";
+    const called = expression[1]?.text === "(";
     if (called) {
       const symbol = visibleSymbols(parsed, offset, symbols).find(
         (candidate) =>
@@ -2482,6 +2502,79 @@ function inferExpressionType(
     return typeName ? typeRef(typeName) : undefined;
   }
   return undefined;
+}
+
+function trimOuterParens(tokens: VbToken[]): VbToken[] {
+  let result = tokens;
+  while (result[0]?.text === "(" && result.at(-1)?.text === ")") {
+    const closeIndex = matchingCloseParen(result, 0);
+    if (closeIndex !== result.length - 1) {
+      break;
+    }
+    result = result.slice(1, -1);
+  }
+  return result;
+}
+
+function splitByLowestPrecedenceOperator(
+  tokens: VbToken[],
+): { left: VbToken[]; operator: string; right: VbToken[] } | undefined {
+  const operators = [
+    ["or", "xor", "eqv", "imp"],
+    ["and"],
+    ["=", "<>", "<", ">", "<=", ">=", "is"],
+    ["&"],
+    ["+", "-"],
+    ["mod"],
+    ["*", "/"],
+    ["\\"],
+    ["^"],
+  ];
+  for (const group of operators) {
+    let depth = 0;
+    for (let index = tokens.length - 1; index >= 0; index -= 1) {
+      const token = tokens[index];
+      if (token.text === ")") {
+        depth += 1;
+        continue;
+      }
+      if (token.text === "(") {
+        depth -= 1;
+        continue;
+      }
+      const operator = token.text.toLowerCase();
+      if (depth === 0 && group.includes(operator) && index > 0 && index < tokens.length - 1) {
+        return {
+          left: tokens.slice(0, index),
+          operator,
+          right: tokens.slice(index + 1),
+        };
+      }
+    }
+  }
+  return undefined;
+}
+
+function inferBinaryExpressionType(
+  operator: string,
+  left: VbTypeRef | undefined,
+  right: VbTypeRef | undefined,
+): VbTypeRef | undefined {
+  if (
+    ["=", "<>", "<", ">", "<=", ">=", "is", "and", "or", "xor", "eqv", "imp"].includes(operator)
+  ) {
+    return typeRef("Boolean");
+  }
+  if (operator === "&") {
+    return typeRef("String");
+  }
+  if (operator === "+" && (left?.name === "String" || right?.name === "String")) {
+    return typeRef("String");
+  }
+  if (["+", "-", "*", "/", "\\", "mod", "^"].includes(operator)) {
+    return typeRef("Number");
+  }
+  return left ?? right;
 }
 
 function applyTypeAnnotations(parsed: AspParsedDocument, symbols: VbSymbol[]): void {

@@ -791,6 +791,11 @@ Response.Write Build▮Name("Ada", "Lovelace")
       });
       expect(JSON.stringify(semanticTokens)).toContain("data");
       expect((semanticTokens as { data?: unknown[] }).data?.length ?? 0).toBeGreaterThan(0);
+      const semanticDelta = await server.request("textDocument/semanticTokens/full/delta", {
+        textDocument: { uri },
+        previousResultId: (semanticTokens as { resultId?: string }).resultId,
+      });
+      expect(JSON.stringify(semanticDelta)).toContain("edits");
 
       await server.request("shutdown", null);
       server.notify("exit", undefined);

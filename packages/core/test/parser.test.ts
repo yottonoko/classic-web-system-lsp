@@ -654,6 +654,37 @@ Set label = "x"
     ).toBe(true);
   });
 
+  it("infers VBScript expression types across operators, arrays and optional parameters", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+' @type label As String
+Dim label
+label = "a" & "b"
+' @type count As Number
+Dim count
+count = (1 + 2) * 3
+' @type flags As Boolean
+Dim flags
+flags = count > 1 And True
+' @type items As Array
+Dim items
+items = Array("a", "b")
+Sub Save(Optional ByVal firstName, ByRef lastName)
+End Sub
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.find((symbol) => symbol.name === "label")?.typeName).toBe("String");
+    expect(symbols.find((symbol) => symbol.name === "count")?.typeName).toBe("Number");
+    expect(symbols.find((symbol) => symbol.name === "flags")?.typeName).toBe("Boolean");
+    expect(symbols.find((symbol) => symbol.name === "items")?.typeName).toBe("Array");
+    expect(symbols.find((symbol) => symbol.name === "Save")?.parameters).toEqual([
+      "firstName",
+      "lastName",
+    ]);
+  });
+
   it("builds LSP helper data for resolve, selection, inlay hints and type definitions", () => {
     const source = `<%
 Class Customer
