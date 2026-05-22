@@ -1444,18 +1444,49 @@ function crossLanguageRename(
   if (!target || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(newName)) {
     return undefined;
   }
-  const text = cached.source.getText();
-  const edits = [
-    ...htmlAttributeRenameEdits(cached, target, newName),
-    ...cssSelectorRenameEdits(cached, target, newName),
-    ...jsSelectorRenameEdits(cached, target, newName),
-  ];
-  const unique = new Map<string, TextEdit>();
-  for (const edit of edits) {
-    const key = `${offsetAtText(text, edit.range.start)}:${offsetAtText(text, edit.range.end)}`;
-    unique.set(key, edit);
+  const changes: NonNullable<WorkspaceEdit["changes"]> = {};
+  const seen = new Set<string>();
+  for (const candidate of crossLanguageRenameCandidates(cached)) {
+    const text = candidate.source.getText();
+    const edits = [
+      ...htmlAttributeRenameEdits(candidate, target, newName),
+      ...cssSelectorRenameEdits(candidate, target, newName),
+      ...jsSelectorRenameEdits(candidate, target, newName),
+    ];
+    for (const edit of edits) {
+      const key = `${candidate.source.uri}:${offsetAtText(text, edit.range.start)}:${offsetAtText(text, edit.range.end)}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      changes[candidate.source.uri] = [...(changes[candidate.source.uri] ?? []), edit];
+    }
   }
-  return unique.size > 0 ? { changes: { [cached.source.uri]: [...unique.values()] } } : undefined;
+  return Object.keys(changes).length > 0 ? { changes } : undefined;
+}
+
+function crossLanguageRenameCandidates(active: CachedDocument): CachedDocument[] {
+  ensureWorkspaceIndex();
+  const candidates: CachedDocument[] = [active];
+  const seen = new Set([active.source.uri]);
+  for (const document of documents.all()) {
+    if (seen.has(document.uri)) {
+      continue;
+    }
+    const cached = getCached(document.uri);
+    if (cached) {
+      seen.add(cached.source.uri);
+      candidates.push(cached);
+    }
+  }
+  for (const entry of workspaceIndex.values()) {
+    if (seen.has(entry.uri)) {
+      continue;
+    }
+    seen.add(entry.uri);
+    candidates.push(cachedFromIndexed(entry));
+  }
+  return candidates;
 }
 
 function crossLanguagePrepareRename(cached: CachedDocument, position: Position): Range | null {

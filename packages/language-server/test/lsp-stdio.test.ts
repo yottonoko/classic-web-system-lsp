@@ -249,6 +249,53 @@ document.querySelector(".oldName");
       }
     });
 
+    it("renames HTML class selectors across indexed workspace files", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
+      const owner = path.join(tempDir, "default.asp");
+      const style = path.join(tempDir, "style.inc");
+      const script = path.join(tempDir, "script.asp");
+      const marked = markedDocument(`<div class="card ol▮dName"></div>`);
+      fs.writeFileSync(owner, marked.text, "utf8");
+      fs.writeFileSync(style, "<style>.oldName { color: red; }</style>", "utf8");
+      fs.writeFileSync(script, '<script>document.querySelector(".oldName");</script>', "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${owner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const rename = await server.request("textDocument/rename", {
+          textDocument: { uri: `file://${owner}` },
+          position: marked.position,
+          newName: "newName",
+        });
+        const serialized = JSON.stringify(rename);
+        expect(serialized).toContain("default.asp");
+        expect(serialized).toContain("style.inc");
+        expect(serialized).toContain("script.asp");
+        expect(serialized.match(/newName/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("delegates JavaScript hover, navigation, rename and signature help to TypeScript", async () => {
       const marked = markedDocument(`<script>
 function greet(name) {
