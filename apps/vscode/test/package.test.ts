@@ -38,6 +38,10 @@ describe("VS Code extension package", () => {
     expect(manifest.license).toBe("MIT OR Apache-2.0");
     expect(fs.existsSync("../../LICENSE-MIT")).toBe(true);
     expect(fs.existsSync("../../LICENSE-APACHE")).toBe(true);
+    const readme = fs.readFileSync("README.md", "utf8");
+    expect(readme).toContain("## License");
+    expect(readme).toContain("MIT License");
+    expect(readme).toContain("Apache License, Version 2.0");
     expect(commands).toContain("aspLsp.restartServer");
     expect(commands).toContain("aspLsp.reindexWorkspace");
     expect(commands).toContain("aspLsp.openOutput");
