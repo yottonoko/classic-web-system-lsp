@@ -128,7 +128,7 @@ let jsLanguageServiceCacheTick = 0;
 let semanticTokenResultCounter = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
 const hiddenJavaScriptGlobalCompletions = new Set(["__dirname", "__filename"]);
-const browserJavaScriptLibs = ["lib.es2022.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"];
+const browserJavaScriptLibs = ["lib.esnext.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"];
 
 const semanticTokenTypes = [
   "keyword",
@@ -3862,7 +3862,7 @@ function getJavaScriptFormattingService(text: string): ts.LanguageService {
     getCompilationSettings: () => ({
       allowJs: true,
       checkJs: false,
-      target: ts.ScriptTarget.ES2022,
+      target: ts.ScriptTarget.ESNext,
       module: ts.ModuleKind.CommonJS,
     }),
     getDefaultLibFileName: (compilerOptions) => ts.getDefaultLibFilePath(compilerOptions),
@@ -4133,7 +4133,7 @@ function readJsProjectConfig(
     allowJs: true,
     checkJs: settings.checkJs ?? false,
     noEmit: true,
-    target: ts.ScriptTarget.ES2022,
+    target: ts.ScriptTarget.ESNext,
     module: ts.ModuleKind.CommonJS,
     moduleResolution: ts.ModuleResolutionKind.Node10,
     lib: browserJavaScriptLibs,
