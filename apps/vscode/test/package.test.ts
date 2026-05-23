@@ -128,20 +128,62 @@ describe("VS Code extension package", () => {
       ),
     ).toBe(true);
     expect(fs.existsSync("syntaxes/asp-lsp-output.tmLanguage.json")).toBe(true);
+    const outputGrammarText = fs.readFileSync("syntaxes/asp-lsp-output.tmLanguage.json", "utf8");
+    const outputGrammar = JSON.parse(outputGrammarText) as {
+      repository?: {
+        duration?: {
+          patterns?: Array<{ match?: string; name?: string }>;
+        };
+      };
+    };
+    expect(outputGrammarText).toContain("markup.underline.link.uri.asp-lsp-output");
+    expect(outputGrammarText).toContain("constant.numeric.duration.asp-lsp-output.fast");
+    expect(outputGrammarText).toContain("constant.numeric.duration.asp-lsp-output.medium");
+    expect(outputGrammarText).toContain("constant.numeric.duration.asp-lsp-output.slow");
+    expect(outputGrammarText).toContain("constant.numeric.duration.asp-lsp-output.hot");
+    expect(outputGrammarText).not.toContain("heat=");
+    expect(outputGrammarText).not.toContain("duration-00");
+    const durationScope = (text: string) =>
+      outputGrammar.repository?.duration?.patterns?.find(
+        (pattern) => pattern.match && new RegExp(pattern.match).test(text),
+      )?.name;
+    expect(durationScope("in 50.0 ms")).toBe("constant.numeric.duration.asp-lsp-output.fast");
+    expect(durationScope("in 50.1 ms")).toBe("constant.numeric.duration.asp-lsp-output.medium");
+    expect(durationScope("in 100.0 ms")).toBe("constant.numeric.duration.asp-lsp-output.medium");
+    expect(durationScope("in 100.1 ms")).toBe("constant.numeric.duration.asp-lsp-output.slow");
+    expect(durationScope("in 200.0 ms")).toBe("constant.numeric.duration.asp-lsp-output.slow");
+    expect(durationScope("in 200.1 ms")).toBe("constant.numeric.duration.asp-lsp-output.hot");
     const outputRules =
       manifest.contributes?.configurationDefaults?.["editor.tokenColorCustomizations"]
         ?.textMateRules ?? [];
-    const heatRules = outputRules.filter((rule) =>
-      rule.scope?.startsWith("constant.numeric.duration.heat.duration-"),
+    expect(outputRules).toContainEqual(
+      expect.objectContaining({ scope: "markup.underline.link.uri.asp-lsp-output" }),
     );
-    expect(heatRules).toHaveLength(12);
-    expect(heatRules.map((rule) => rule.scope)).toEqual(
-      Array.from(
-        { length: 12 },
-        (_, index) =>
-          `constant.numeric.duration.heat.duration-${index.toString().padStart(2, "0")}.asp-lsp-output`,
+    expect(outputRules).toContainEqual(
+      expect.objectContaining({ scope: "constant.numeric.duration.asp-lsp-output" }),
+    );
+    const colorByScope = new Map(
+      outputRules.map((rule) => [rule.scope, rule.settings?.foreground]),
+    );
+    expect(colorByScope.get("markup.underline.link.uri.asp-lsp-output")).toBe("#40D86A");
+    expect(colorByScope.get("constant.numeric.duration.asp-lsp-output")).toBe("#8A8A8A");
+    expect(colorByScope.get("constant.numeric.duration.asp-lsp-output.fast")).toBe("#40D86A");
+    expect(colorByScope.get("constant.numeric.duration.asp-lsp-output.medium")).toBe("#F0C33A");
+    expect(colorByScope.get("constant.numeric.duration.asp-lsp-output.slow")).toBe("#F79333");
+    expect(colorByScope.get("constant.numeric.duration.asp-lsp-output.hot")).toBe("#E84545");
+    expect(outputRules.map((rule) => rule.scope)).toEqual(
+      expect.arrayContaining([
+        "constant.numeric.duration.asp-lsp-output.fast",
+        "constant.numeric.duration.asp-lsp-output.medium",
+        "constant.numeric.duration.asp-lsp-output.slow",
+        "constant.numeric.duration.asp-lsp-output.hot",
+      ]),
+    );
+    expect(
+      outputRules.some((rule) =>
+        rule.scope?.startsWith("constant.numeric.duration.heat.duration-"),
       ),
-    );
+    ).toBe(false);
   });
 
   it("keeps package localization keys resolved", () => {

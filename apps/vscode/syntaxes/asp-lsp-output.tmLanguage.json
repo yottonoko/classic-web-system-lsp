@@ -13,10 +13,10 @@
       "include": "#step"
     },
     {
-      "include": "#duration"
+      "include": "#uri"
     },
     {
-      "include": "#heat"
+      "include": "#duration"
     }
   ],
   "repository": {
@@ -44,111 +44,31 @@
         }
       ]
     },
-    "duration": {
+    "uri": {
       "patterns": [
         {
-          "match": "\\bin\\s+\\d+(?:\\.\\d+)?\\s+ms\\b",
-          "name": "constant.numeric.duration.asp-lsp-output"
+          "match": "\\bfile://[^\\s,)]*",
+          "name": "markup.underline.link.uri.asp-lsp-output"
         }
       ]
     },
-    "heat": {
+    "duration": {
       "patterns": [
         {
-          "match": "\\bheat=(duration-00)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-00.asp-lsp-output"
-            }
-          }
+          "match": "\\bin\\s+(?:(?:[0-9]|[1-4][0-9])(?:\\.\\d+)?|50(?:\\.0+)?)\\s+ms\\b",
+          "name": "constant.numeric.duration.asp-lsp-output.fast"
         },
         {
-          "match": "\\bheat=(duration-01)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-01.asp-lsp-output"
-            }
-          }
+          "match": "\\bin\\s+(?:50\\.(?:[1-9]\\d*)|(?:5[1-9]|[6-9][0-9])(?:\\.\\d+)?|100(?:\\.0+)?)\\s+ms\\b",
+          "name": "constant.numeric.duration.asp-lsp-output.medium"
         },
         {
-          "match": "\\bheat=(duration-02)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-02.asp-lsp-output"
-            }
-          }
+          "match": "\\bin\\s+(?:100\\.(?:[1-9]\\d*)|(?:10[1-9]|1[1-9][0-9])(?:\\.\\d+)?|200(?:\\.0+)?)\\s+ms\\b",
+          "name": "constant.numeric.duration.asp-lsp-output.slow"
         },
         {
-          "match": "\\bheat=(duration-03)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-03.asp-lsp-output"
-            }
-          }
-        },
-        {
-          "match": "\\bheat=(duration-04)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-04.asp-lsp-output"
-            }
-          }
-        },
-        {
-          "match": "\\bheat=(duration-05)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-05.asp-lsp-output"
-            }
-          }
-        },
-        {
-          "match": "\\bheat=(duration-06)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-06.asp-lsp-output"
-            }
-          }
-        },
-        {
-          "match": "\\bheat=(duration-07)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-07.asp-lsp-output"
-            }
-          }
-        },
-        {
-          "match": "\\bheat=(duration-08)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-08.asp-lsp-output"
-            }
-          }
-        },
-        {
-          "match": "\\bheat=(duration-09)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-09.asp-lsp-output"
-            }
-          }
-        },
-        {
-          "match": "\\bheat=(duration-10)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-10.asp-lsp-output"
-            }
-          }
-        },
-        {
-          "match": "\\bheat=(duration-11)\\b",
-          "captures": {
-            "1": {
-              "name": "constant.numeric.duration.heat.duration-11.asp-lsp-output"
-            }
-          }
+          "match": "\\bin\\s+(?:200\\.(?:[1-9]\\d*)|20[1-9](?:\\.\\d+)?|2[1-9][0-9](?:\\.\\d+)?|[3-9][0-9]{2,}(?:\\.\\d+)?|[1-9][0-9]{3,}(?:\\.\\d+)?)\\s+ms\\b",
+          "name": "constant.numeric.duration.asp-lsp-output.hot"
         }
       ]
     }

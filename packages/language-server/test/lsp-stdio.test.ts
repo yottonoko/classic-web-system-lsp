@@ -3135,14 +3135,10 @@ End If
         await server.waitForNotification("textDocument/publishDiagnostics");
         await waitForLogContaining(server, "LSP analysis started");
         const analysisCompletedLog = await waitForLogContaining(server, "LSP analysis completed");
-        expect(JSON.stringify(analysisCompletedLog.params)).toMatch(
-          /in \d+\.\d ms heat=duration-\d{2}/,
-        );
+        expectElapsedLogWithoutHeat(analysisCompletedLog);
         await waitForLogContaining(server, "LSP check started");
         const checkCompletedLog = await waitForLogContaining(server, "LSP check completed");
-        expect(JSON.stringify(checkCompletedLog.params)).toMatch(
-          /in \d+\.\d ms heat=duration-\d{2}/,
-        );
+        expectElapsedLogWithoutHeat(checkCompletedLog);
 
         const fullEdits = await server.request("textDocument/formatting", {
           textDocument: { uri },
@@ -3153,9 +3149,7 @@ End If
           server,
           "Formatting conversion completed (document)",
         );
-        expect(JSON.stringify(fullCompletedLog.params)).toMatch(
-          /in \d+\.\d ms heat=duration-\d{2}/,
-        );
+        expectElapsedLogWithoutHeat(fullCompletedLog);
         const fullText = JSON.stringify(fullEdits);
         expect(fullText).toContain("<%");
         expect(fullText).toContain("  Response.Write");
@@ -3175,9 +3169,7 @@ End If
           server,
           "Formatting conversion completed (range)",
         );
-        expect(JSON.stringify(rangeCompletedLog.params)).toMatch(
-          /in \d+\.\d ms heat=duration-\d{2}/,
-        );
+        expectElapsedLogWithoutHeat(rangeCompletedLog);
         const rangeText = JSON.stringify(rangeEdits);
         expect(rangeText).toContain("  Response.Write");
         expect(rangeText).not.toContain("<html>");
@@ -3235,7 +3227,7 @@ Response.Write enabled
           "check.javascriptDiagnostics",
         ]) {
           const log = await waitForLogContaining(server, expected);
-          expect(JSON.stringify(log.params)).toMatch(/in \d+\.\d ms heat=duration-\d{2}/);
+          expectElapsedLogWithoutHeat(log);
         }
 
         await server.request("textDocument/formatting", {
@@ -3243,7 +3235,7 @@ Response.Write enabled
           options: { tabSize: 2, insertSpaces: true },
         });
         const embeddedLog = await waitForLogContaining(server, "format.embedded");
-        expect(JSON.stringify(embeddedLog.params)).toMatch(/in \d+\.\d ms heat=duration-\d{2}/);
+        expectElapsedLogWithoutHeat(embeddedLog);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -3853,6 +3845,12 @@ async function waitForLogContaining(server: RpcServer, expected: string): Promis
     }
   }
   throw new Error(`Timed out waiting for log containing ${expected}.`);
+}
+
+function expectElapsedLogWithoutHeat(message: JsonRpcMessage): void {
+  const text = JSON.stringify(message.params);
+  expect(text).toMatch(/in \d+\.\d ms/);
+  expect(text).not.toContain("heat=duration-");
 }
 
 function notifyRangedReplacement(

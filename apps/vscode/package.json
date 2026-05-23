@@ -118,82 +118,40 @@
             }
           },
           {
-            "scope": "constant.numeric.duration.asp-lsp-output",
-            "settings": {
-              "fontStyle": "bold"
-            }
-          },
-          {
-            "scope": "constant.numeric.duration.heat.duration-00.asp-lsp-output",
+            "scope": "markup.underline.link.uri.asp-lsp-output",
             "settings": {
               "foreground": "#40D86A"
             }
           },
           {
-            "scope": "constant.numeric.duration.heat.duration-01.asp-lsp-output",
+            "scope": "constant.numeric.duration.asp-lsp-output",
             "settings": {
-              "foreground": "#64D95C"
+              "foreground": "#8A8A8A",
+              "fontStyle": "bold"
             }
           },
           {
-            "scope": "constant.numeric.duration.heat.duration-02.asp-lsp-output",
+            "scope": "constant.numeric.duration.asp-lsp-output.fast",
             "settings": {
-              "foreground": "#8BDB4E"
+              "foreground": "#40D86A"
             }
           },
           {
-            "scope": "constant.numeric.duration.heat.duration-03.asp-lsp-output",
-            "settings": {
-              "foreground": "#B0DC43"
-            }
-          },
-          {
-            "scope": "constant.numeric.duration.heat.duration-04.asp-lsp-output",
-            "settings": {
-              "foreground": "#D7D63E"
-            }
-          },
-          {
-            "scope": "constant.numeric.duration.heat.duration-05.asp-lsp-output",
+            "scope": "constant.numeric.duration.asp-lsp-output.medium",
             "settings": {
               "foreground": "#F0C33A"
             }
           },
           {
-            "scope": "constant.numeric.duration.heat.duration-06.asp-lsp-output",
-            "settings": {
-              "foreground": "#F5AA36"
-            }
-          },
-          {
-            "scope": "constant.numeric.duration.heat.duration-07.asp-lsp-output",
+            "scope": "constant.numeric.duration.asp-lsp-output.slow",
             "settings": {
               "foreground": "#F79333"
             }
           },
           {
-            "scope": "constant.numeric.duration.heat.duration-08.asp-lsp-output",
-            "settings": {
-              "foreground": "#F27936"
-            }
-          },
-          {
-            "scope": "constant.numeric.duration.heat.duration-09.asp-lsp-output",
-            "settings": {
-              "foreground": "#ED5F3B"
-            }
-          },
-          {
-            "scope": "constant.numeric.duration.heat.duration-10.asp-lsp-output",
+            "scope": "constant.numeric.duration.asp-lsp-output.hot",
             "settings": {
               "foreground": "#E84545"
-            }
-          },
-          {
-            "scope": "constant.numeric.duration.heat.duration-11.asp-lsp-output",
-            "settings": {
-              "foreground": "#D92F45",
-              "fontStyle": "bold"
             }
           }
         ]

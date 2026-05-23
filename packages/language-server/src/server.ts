@@ -1426,44 +1426,7 @@ function isDebugVerboseEnabled(settings: AspSettings): boolean {
 }
 
 function formatElapsedMs(elapsedMs: number): string {
-  return `in ${elapsedMs.toFixed(1)} ms heat=${durationHeatBucket(elapsedMs)}`;
-}
-
-function durationHeatBucket(elapsedMs: number): string {
-  if (elapsedMs < 2) {
-    return "duration-00";
-  }
-  if (elapsedMs < 5) {
-    return "duration-01";
-  }
-  if (elapsedMs < 10) {
-    return "duration-02";
-  }
-  if (elapsedMs < 20) {
-    return "duration-03";
-  }
-  if (elapsedMs < 35) {
-    return "duration-04";
-  }
-  if (elapsedMs < 50) {
-    return "duration-05";
-  }
-  if (elapsedMs < 75) {
-    return "duration-06";
-  }
-  if (elapsedMs < 100) {
-    return "duration-07";
-  }
-  if (elapsedMs < 150) {
-    return "duration-08";
-  }
-  if (elapsedMs < 250) {
-    return "duration-09";
-  }
-  if (elapsedMs < 500) {
-    return "duration-10";
-  }
-  return "duration-11";
+  return `in ${elapsedMs.toFixed(1)} ms`;
 }
 
 function dedupeDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
