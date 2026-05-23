@@ -3,12 +3,31 @@
   "name": "Classic ASP",
   "scopeName": "text.html.classic-asp",
   "patterns": [
+    { "include": "#asp-include" },
     { "include": "#asp-expression" },
     { "include": "#asp-directive" },
     { "include": "#asp-block" },
     { "include": "text.html.basic" }
   ],
   "repository": {
+    "asp-include": {
+      "name": "comment.block.html meta.include.asp",
+      "begin": "<!--\\s*(#include)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.directive.include.asp" }
+      },
+      "end": "-->",
+      "patterns": [
+        {
+          "match": "\\b(file|virtual)\\b\\s*(=)\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)",
+          "captures": {
+            "1": { "name": "entity.other.attribute-name.include.asp" },
+            "2": { "name": "punctuation.separator.key-value.include.asp" },
+            "3": { "name": "string.quoted.include.asp" }
+          }
+        }
+      ]
+    },
     "asp-expression": {
       "name": "source.vbscript.embedded.asp.expression",
       "begin": "<%=",

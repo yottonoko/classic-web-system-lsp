@@ -137,8 +137,16 @@ const semanticTokenTypes = [
   "method",
   "property",
   "comment",
+  "string",
 ] as const;
-const semanticTokenModifiers = ["public", "private", "readonly", "library"] as const;
+const semanticTokenModifiers = [
+  "public",
+  "private",
+  "readonly",
+  "library",
+  "byref",
+  "byval",
+] as const;
 
 interface SemanticTokenData {
   line: number;
@@ -5268,6 +5276,7 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
       tokenModifiers: semanticToken.tokenModifiers,
     });
   }
+  addIncludeSemanticTokens(tokens, cached, rangeStart, rangeEnd);
   addEmbeddedSemanticTokens(tokens, cached, rangeStart, rangeEnd);
   const uniqueTokens = dedupeSemanticTokens(tokens).sort(
     (left, right) => left.line - right.line || left.character - right.character,
@@ -5283,6 +5292,48 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
     );
   }
   return builder.build();
+}
+
+function addIncludeSemanticTokens(
+  tokens: SemanticTokenData[],
+  cached: CachedDocument,
+  rangeStart: number,
+  rangeEnd: number,
+): void {
+  for (const include of cached.parsed.includes) {
+    addRangeSemanticToken(
+      tokens,
+      cached.source,
+      include.directiveRange,
+      "keyword",
+      rangeStart,
+      rangeEnd,
+    );
+    addRangeSemanticToken(
+      tokens,
+      cached.source,
+      include.modeRange,
+      "property",
+      rangeStart,
+      rangeEnd,
+    );
+    addRangeSemanticToken(tokens, cached.source, include.pathRange, "string", rangeStart, rangeEnd);
+  }
+}
+
+function addRangeSemanticToken(
+  tokens: SemanticTokenData[],
+  document: TextDocument,
+  range: Range,
+  tokenType: string,
+  rangeStart: number,
+  rangeEnd: number,
+): void {
+  const offset = document.offsetAt(range.start);
+  if (offset < rangeStart || offset > rangeEnd || range.start.line !== range.end.line) {
+    return;
+  }
+  addSemanticToken(tokens, document, offset, document.offsetAt(range.end) - offset, tokenType);
 }
 
 function dedupeSemanticTokens(tokens: SemanticTokenData[]): SemanticTokenData[] {

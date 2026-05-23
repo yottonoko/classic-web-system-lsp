@@ -38,6 +38,13 @@ Response.Write name
     const parsed = parseAspDocument("file:///site/default.asp", source);
     expect(parsed.defaultLanguage).toBe("VBScript");
     expect(parsed.includes).toHaveLength(1);
+    expect(parsed.includes[0].directiveRange.start).toEqual(
+      positionAt(source, source.indexOf("#include")),
+    );
+    expect(parsed.includes[0].modeRange.start).toEqual(positionAt(source, source.indexOf("file")));
+    expect(parsed.includes[0].pathRange.start).toEqual(
+      positionAt(source, source.indexOf('"inc/common.inc"')),
+    );
     expect(parsed.directives[0].attributes.language).toBe("VBScript");
     expect(
       parsed.regions.some((region) => region.kind === "style" && region.language === "css"),
@@ -587,7 +594,7 @@ Response.Write BuildName("Ada")
     const symbols = collectVbscriptSymbols(parsed);
     const hover = getVbscriptHover(parsed, { line: 7, character: 17 }, { symbols });
     expect(hover).toContain("```vbscript");
-    expect(hover).toContain("Function BuildName(first)");
+    expect(hover).toContain("Function BuildName(ByRef first)");
     expect(hover).toContain("Builds a display name.");
     expect(hover).toContain("First name.");
     expect(hover).toContain("Display name.");
@@ -602,7 +609,12 @@ Response.Write BuildName("Ada")
         signatures: [
           expect.objectContaining({
             documentation: expect.stringContaining("Builds a display name."),
-            parameters: [expect.objectContaining({ documentation: "First name." })],
+            parameters: [
+              expect.objectContaining({
+                label: "ByRef first",
+                documentation: "First name.",
+              }),
+            ],
           }),
         ],
       }),
@@ -863,7 +875,7 @@ flags = count > 1 And True
 ' @type items As Array
 Dim items
 items = Array("a", "b")
-Sub Save(Optional ByVal firstName, ByRef lastName)
+Sub Save(Optional ByVal firstName, ByRef lastName, defaultName)
 End Sub
 %>`,
     );
@@ -875,7 +887,19 @@ End Sub
     expect(symbols.find((symbol) => symbol.name === "Save")?.parameters).toEqual([
       "firstName",
       "lastName",
+      "defaultName",
     ]);
+    expect(symbols.find((symbol) => symbol.name === "Save")?.parameterDetails).toEqual([
+      { name: "firstName", mode: "byval", optional: true },
+      { name: "lastName", mode: "byref", optional: undefined },
+      { name: "defaultName", mode: "byref", optional: undefined },
+    ]);
+    expect(symbols.find((symbol) => symbol.name === "firstName")).toEqual(
+      expect.objectContaining({ parameterMode: "byval", optional: true }),
+    );
+    expect(symbols.find((symbol) => symbol.name === "defaultName")).toEqual(
+      expect.objectContaining({ parameterMode: "byref" }),
+    );
     const labelDefinition = getVbscriptDefinition(parsed, { line: 2, character: 4 }, { symbols });
     const labelUse = getVbscriptDefinition(parsed, { line: 3, character: 2 }, { symbols });
     expect(labelUse?.range).toEqual(labelDefinition?.range);
@@ -927,7 +951,7 @@ Class Customer
   End Property
 End Class
 Const MaxCount = 10
-Sub Render(ByVal metricMap)
+Sub Render(ByVal metricMap, output)
   Response.Write MaxCount
 End Sub
 %>`;
@@ -942,7 +966,12 @@ End Sub
           token.range.start.character === position.character,
       );
     };
-    expect(tokenAt("metricMap")).toEqual(expect.objectContaining({ tokenType: "parameter" }));
+    expect(tokenAt("metricMap")).toEqual(
+      expect.objectContaining({ tokenType: "parameter", tokenModifiers: ["byval"] }),
+    );
+    expect(tokenAt("output")).toEqual(
+      expect.objectContaining({ tokenType: "parameter", tokenModifiers: ["byref"] }),
+    );
     expect(tokenAt("MaxCount")).toEqual(
       expect.objectContaining({ tokenType: "variable", tokenModifiers: ["readonly"] }),
     );

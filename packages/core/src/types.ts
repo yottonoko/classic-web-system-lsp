@@ -127,6 +127,9 @@ export interface AspInclude {
   offset: number;
   path: string;
   mode: "file" | "virtual";
+  directiveRange: Range;
+  modeRange: Range;
+  pathRange: Range;
 }
 
 export interface AspParsedDocument {
@@ -249,6 +252,14 @@ export interface VbToken {
   value?: string;
 }
 
+export type VbParameterMode = "byref" | "byval";
+
+export interface VbParameterMetadata {
+  token: VbToken;
+  mode: VbParameterMode;
+  optional: boolean;
+}
+
 export type VbCstNodeKind =
   | "Document"
   | "Class"
@@ -283,6 +294,7 @@ export interface VbCstNode {
   visibility?: "public" | "private";
   identifiers?: VbToken[];
   parameters?: VbToken[];
+  parameterMetadata?: VbParameterMetadata[];
   typeName?: string;
   memberOf?: string;
   scopeName?: string;

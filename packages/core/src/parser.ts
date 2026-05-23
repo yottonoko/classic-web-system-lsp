@@ -626,19 +626,57 @@ function isClosingTagAt(text: string, index: number, tagName: string): boolean {
 }
 
 function parseIncludeComment(text: string, start: number, end: number): AspInclude | undefined {
-  const body = text.slice(start + 4, Math.max(start + 4, end - 3)).trim();
+  const contentStart = start + 4;
+  const contentEnd = Math.max(contentStart, end - 3);
+  const commentBody = text.slice(contentStart, contentEnd);
+  const leadingWhitespace = commentBody.match(/^\s*/)?.[0].length ?? 0;
+  const bodyStart = contentStart + leadingWhitespace;
+  const body = commentBody.slice(leadingWhitespace).trimEnd();
   if (!body.toLowerCase().startsWith("#include")) {
     return undefined;
   }
-  const attributes = parseAttributes(body.slice("#include".length));
-  const mode = attributes.virtual ? "virtual" : attributes.file ? "file" : undefined;
-  const includePath = mode ? attributes[mode] : undefined;
-  return mode && typeof includePath === "string"
+  const directiveStart = bodyStart;
+  const directiveEnd = directiveStart + "#include".length;
+  const attributeTextStart = directiveEnd;
+  const attributeText = text.slice(attributeTextStart, contentEnd);
+  let file: Pick<AspInclude, "path" | "modeRange" | "pathRange"> | undefined;
+  let virtual: Pick<AspInclude, "path" | "modeRange" | "pathRange"> | undefined;
+  let match: RegExpExecArray | null;
+  attrPattern.lastIndex = 0;
+  while ((match = attrPattern.exec(attributeText)) !== null) {
+    const mode = match[1].toLowerCase();
+    if (mode !== "file" && mode !== "virtual") {
+      continue;
+    }
+    const value = match[3] ?? match[4] ?? match[5];
+    const rawValue = match[2];
+    if (!value || !rawValue) {
+      continue;
+    }
+    const nameStart = attributeTextStart + match.index;
+    const rawValueStart = attributeTextStart + match.index + match[0].indexOf(rawValue);
+    const candidate = {
+      path: value,
+      modeRange: rangeFromOffsets(text, nameStart, nameStart + match[1].length),
+      pathRange: rangeFromOffsets(text, rawValueStart, rawValueStart + rawValue.length),
+    };
+    if (mode === "file") {
+      file = candidate;
+    } else {
+      virtual = candidate;
+    }
+  }
+  const chosenMode = virtual ? "virtual" : file ? "file" : undefined;
+  const chosen = chosenMode === "virtual" ? virtual : file;
+  return chosenMode && chosen
     ? {
         offset: start,
         range: rangeFromOffsets(text, start, end),
-        mode,
-        path: includePath,
+        mode: chosenMode,
+        path: chosen.path,
+        directiveRange: rangeFromOffsets(text, directiveStart, directiveEnd),
+        modeRange: chosen.modeRange,
+        pathRange: chosen.pathRange,
       }
     : undefined;
 }

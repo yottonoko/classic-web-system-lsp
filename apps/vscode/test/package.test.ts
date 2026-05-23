@@ -118,8 +118,21 @@ describe("VS Code extension package", () => {
     const classicAspGrammar = JSON.parse(
       fs.readFileSync("syntaxes/classic-asp.tmLanguage.json", "utf8"),
     ) as {
-      repository?: Record<string, { patterns?: Array<{ include?: string }> }>;
+      patterns?: Array<{ include?: string }>;
+      repository?: Record<
+        string,
+        { begin?: string; patterns?: Array<{ include?: string; match?: string }> }
+      >;
     };
+    expect(classicAspGrammar.patterns?.some((pattern) => pattern.include === "#asp-include")).toBe(
+      true,
+    );
+    expect(classicAspGrammar.repository?.["asp-include"]?.begin).toContain("#include");
+    expect(
+      classicAspGrammar.repository?.["asp-include"]?.patterns?.some((pattern) =>
+        pattern.match?.includes("file|virtual"),
+      ),
+    ).toBe(true);
     expect(
       classicAspGrammar.repository?.["asp-block"]?.patterns?.some(
         (pattern) => pattern.include === "source.vbscript",

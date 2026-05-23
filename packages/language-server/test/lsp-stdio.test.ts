@@ -34,12 +34,15 @@ const semanticTokenType = {
   method: 5,
   property: 6,
   comment: 7,
+  string: 8,
 } as const;
 const semanticTokenModifier = {
   public: 1 << 0,
   private: 1 << 1,
   readonly: 1 << 2,
   library: 1 << 3,
+  byref: 1 << 4,
+  byval: 1 << 5,
 } as const;
 
 describe(
@@ -893,6 +896,55 @@ Response.Write a
       }
     });
 
+    it("returns semantic tokens for Classic ASP include directives", async () => {
+      const source = `<!-- #include file="includes/data.inc" -->
+<% Response.Write "ok" %>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/include-semantic.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        const tokenAt = (text: string) => {
+          const position = positionAt(source, source.indexOf(text));
+          return decoded.find(
+            (token) => token.line === position.line && token.character === position.character,
+          );
+        };
+        expect(tokenAt("#include")).toEqual(
+          expect.objectContaining({ tokenType: semanticTokenType.keyword }),
+        );
+        expect(tokenAt("file")).toEqual(
+          expect.objectContaining({ tokenType: semanticTokenType.property }),
+        );
+        expect(tokenAt('"includes/data.inc"')).toEqual(
+          expect.objectContaining({ tokenType: semanticTokenType.string }),
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("updates include directives for file rename operations", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-rename-"));
       const owner = path.join(tempDir, "default.asp");
@@ -933,7 +985,7 @@ Response.Write a
 
     it("supports VBScript rename, highlights, signature help, workspace symbols and semantic tokens", async () => {
       const marked = markedDocument(`<%
-Function BuildName(firstName, lastName)
+Function BuildName(ByVal firstName, lastName)
   BuildName = firstName & " " & lastName
 End Function
 Response.Write Build▮Name("Ada", "Lovelace")
@@ -952,6 +1004,9 @@ Response.Write Build▮Name("Ada", "Lovelace")
         expect(initializeText).toContain('"private"');
         expect(initializeText).toContain('"readonly"');
         expect(initializeText).toContain('"library"');
+        expect(initializeText).toContain('"byref"');
+        expect(initializeText).toContain('"byval"');
+        expect(initializeText).toContain('"string"');
         const uri = "file:///tmp/vbscript-editing.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
@@ -987,7 +1042,7 @@ Response.Write Build▮Name("Ada", "Lovelace")
           textDocument: { uri },
           position: positionAt(marked.text, marked.text.indexOf('"Ada"')),
         });
-        expect(JSON.stringify(signature)).toContain("BuildName(firstName, lastName)");
+        expect(JSON.stringify(signature)).toContain("BuildName(ByVal firstName, ByRef lastName)");
 
         const workspaceSymbols = await server.request("workspace/symbol", { query: "Build" });
         expect(JSON.stringify(workspaceSymbols)).toContain("BuildName");
@@ -1013,15 +1068,26 @@ Response.Write Build▮Name("Ada", "Lovelace")
             (token) =>
               token.line === 2 &&
               token.character === 14 &&
-              token.tokenType === semanticTokenType.parameter,
+              token.tokenType === semanticTokenType.parameter &&
+              token.tokenModifiers === semanticTokenModifier.byval,
           ),
         ).toBe(true);
         expect(
           decodedSemanticTokens.some(
             (token) =>
               token.line === 1 &&
-              token.character === "Function BuildName(".length &&
-              token.tokenType === semanticTokenType.parameter,
+              token.character === "Function BuildName(ByVal ".length &&
+              token.tokenType === semanticTokenType.parameter &&
+              token.tokenModifiers === semanticTokenModifier.byval,
+          ),
+        ).toBe(true);
+        expect(
+          decodedSemanticTokens.some(
+            (token) =>
+              token.line === 1 &&
+              token.character === "Function BuildName(ByVal firstName, ".length &&
+              token.tokenType === semanticTokenType.parameter &&
+              token.tokenModifiers === semanticTokenModifier.byref,
           ),
         ).toBe(true);
         const semanticDelta = await server.request("textDocument/semanticTokens/full/delta", {

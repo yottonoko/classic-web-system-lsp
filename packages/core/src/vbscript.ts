@@ -30,6 +30,8 @@ import type {
   AspVbscriptComType,
   AspVbscriptIdentifierCase,
   VbCstNode,
+  VbParameterMetadata,
+  VbParameterMode,
   VbToken,
 } from "./types";
 
@@ -56,9 +58,12 @@ export interface VbSymbol {
   typeName?: string;
   type?: VbTypeRef;
   parameters?: string[];
+  parameterDetails?: VbParameterInfo[];
   visibility?: "public" | "private";
   procedureKind?: "sub" | "function";
   propertyAccessor?: "get" | "let" | "set";
+  parameterMode?: VbParameterMode;
+  optional?: boolean;
   implicit?: boolean;
   documentation?: VbDocumentation;
 }
@@ -66,7 +71,7 @@ export interface VbSymbol {
 export interface VbSemanticToken {
   range: Range;
   tokenType: "variable" | "parameter" | "function" | "class" | "method" | "property";
-  tokenModifiers?: Array<"public" | "private" | "readonly" | "library">;
+  tokenModifiers?: Array<"public" | "private" | "readonly" | "library" | "byref" | "byval">;
 }
 
 export interface VbReference {
@@ -106,9 +111,17 @@ export interface VbTypeRef {
   object?: boolean;
 }
 
+export interface VbParameterInfo {
+  name: string;
+  mode: VbParameterMode;
+  optional?: boolean;
+}
+
 export interface VbSignatureParameter {
   name: string;
   type?: VbTypeRef;
+  mode?: VbParameterMode;
+  optional?: boolean;
 }
 
 export interface VbSignature {
@@ -508,7 +521,7 @@ export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0
           declarationStart,
           token,
           nameToken,
-          collectParameterTokens(significant, index + declarationOffset + 2),
+          collectParameterMetadata(significant, index + declarationOffset + 2),
           stack,
           undefined,
           visibility,
@@ -529,7 +542,7 @@ export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0
           "property",
           token,
           nameToken,
-          collectParameterTokens(significant, index + declarationOffset + 3),
+          collectParameterMetadata(significant, index + declarationOffset + 3),
           stack,
           accessor,
           visibility,
@@ -846,7 +859,7 @@ function createProcedureNode(
   procedureKind: "sub" | "function" | "property",
   startToken: VbToken,
   nameToken: VbToken,
-  parameters: VbToken[],
+  parameterMetadata: VbParameterMetadata[],
   stack: VbCstNode[],
   propertyAccessor?: "get" | "let" | "set",
   visibility?: "public" | "private",
@@ -862,7 +875,8 @@ function createProcedureNode(
     procedureKind,
     propertyAccessor,
     visibility,
-    parameters,
+    parameters: parameterMetadata.map((parameter) => parameter.token),
+    parameterMetadata,
     memberOf: parentClass,
     scopeName: nameToken.text,
     scopeStart: startToken.start,
@@ -909,18 +923,31 @@ function closeUnclosedBlocks(stack: VbCstNode[], end: number): void {
   }
 }
 
-function collectParameterTokens(tokens: VbToken[], index: number): VbToken[] {
-  const parameters: VbToken[] = [];
+function collectParameterMetadata(tokens: VbToken[], index: number): VbParameterMetadata[] {
+  const parameters: VbParameterMetadata[] = [];
   if (tokens[index]?.text !== "(") {
     return parameters;
   }
   let cursor = index + 1;
+  let mode: VbParameterMode | undefined;
+  let optional = false;
+  let canReadName = true;
   while (cursor < tokens.length && tokens[cursor].text !== ")") {
-    if (
-      tokens[cursor].kind === "identifier" &&
-      !["byval", "byref", "optional"].includes(tokens[cursor].text.toLowerCase())
-    ) {
-      parameters.push(tokens[cursor]);
+    const token = tokens[cursor];
+    const lower = token.text.toLowerCase();
+    if (token.text === ",") {
+      mode = undefined;
+      optional = false;
+      canReadName = true;
+    } else if (lower === "optional") {
+      optional = true;
+    } else if (lower === "byval") {
+      mode = "byval";
+    } else if (lower === "byref") {
+      mode = "byref";
+    } else if (canReadName && token.kind === "identifier") {
+      parameters.push({ token, mode: mode ?? "byref", optional });
+      canReadName = false;
     }
     cursor += 1;
   }
@@ -1354,7 +1381,7 @@ function markdownHover(signature: string, description?: string): string {
 function vbscriptHoverSignature(symbol: VbSymbol): string {
   const typeSuffix = symbol.typeName ? ` As ${symbol.typeName}` : "";
   const visibility = symbol.visibility ? `${titleCaseKeyword(symbol.visibility)} ` : "";
-  const parameters = `(${(symbol.parameters ?? []).join(", ")})`;
+  const parameters = `(${parameterLabels(symbol).join(", ")})`;
   if (symbol.kind === "class") {
     return `Class ${symbol.name}`;
   }
@@ -1381,9 +1408,32 @@ function vbscriptHoverSignature(symbol: VbSymbol): string {
     return `Const ${symbol.name}${typeSuffix}`;
   }
   if (symbol.kind === "parameter") {
-    return `ByVal ${symbol.name}${typeSuffix}`;
+    return `${parameterLabel({
+      name: symbol.name,
+      mode: symbol.parameterMode ?? "byref",
+      optional: symbol.optional,
+    })}${typeSuffix}`;
   }
   return `Dim ${symbol.name}${typeSuffix}`;
+}
+
+function parameterLabels(symbol: VbSymbol): string[] {
+  return parameterDetails(symbol).map(parameterLabel);
+}
+
+function parameterDetails(symbol: VbSymbol): VbParameterInfo[] {
+  return symbol.parameterDetails && symbol.parameterDetails.length > 0
+    ? symbol.parameterDetails
+    : (symbol.parameters ?? []).map((name): VbParameterInfo => ({ name, mode: "byref" }));
+}
+
+function parameterLabel(parameter: VbParameterInfo): string {
+  const optional = parameter.optional ? "Optional " : "";
+  return `${optional}${parameterModeKeyword(parameter.mode)} ${parameter.name}`;
+}
+
+function parameterModeKeyword(mode: VbParameterMode): "ByRef" | "ByVal" {
+  return mode === "byval" ? "ByVal" : "ByRef";
 }
 
 function vbscriptHoverDescription(symbol: VbSymbol): string {
@@ -1531,6 +1581,9 @@ function semanticTokenModifiersForSymbol(
   }
   if (symbol.kind === "constant") {
     modifiers.push("readonly");
+  }
+  if (symbol.kind === "parameter") {
+    modifiers.push(symbol.parameterMode ?? "byref");
   }
   return modifiers;
 }
@@ -1949,7 +2002,11 @@ export function buildVbTypeEnvironment(
             signature:
               member.kind === "method" || member.kind === "property"
                 ? {
-                    parameters: (member.parameters ?? []).map((name) => ({ name })),
+                    parameters: parameterDetails(member).map((parameter) => ({
+                      name: parameter.name,
+                      mode: parameter.mode,
+                      optional: parameter.optional,
+                    })),
                     returnType: member.type ?? typeRef(member.typeName ?? "Variant"),
                   }
                 : undefined,
@@ -2014,6 +2071,12 @@ function addSymbolsFromVbNode(
       scopeName: undefined,
       scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
       parameters: node.parameters?.map((token) => token.text) ?? [],
+      parameterDetails:
+        node.parameterMetadata?.map((parameter) => ({
+          name: parameter.token.text,
+          mode: parameter.mode,
+          optional: parameter.optional || undefined,
+        })) ?? [],
       visibility: node.visibility,
       procedureKind:
         node.procedureKind === "function" || node.procedureKind === "sub"
@@ -2022,14 +2085,16 @@ function addSymbolsFromVbNode(
       propertyAccessor: node.propertyAccessor,
       documentation,
     });
-    for (const parameter of node.parameters ?? []) {
+    for (const parameter of node.parameterMetadata ?? []) {
       symbols.push({
-        name: parameter.text,
+        name: parameter.token.text,
         kind: "parameter",
-        range: rangeFromOffsets(parsed.text, parameter.start, parameter.end),
+        range: rangeFromOffsets(parsed.text, parameter.token.start, parameter.token.end),
         sourceUri: parsed.uri,
         scopeName: name,
         scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
+        parameterMode: parameter.mode,
+        optional: parameter.optional || undefined,
       });
     }
   }
@@ -3492,7 +3557,12 @@ function typeSignatureLabelsForCall(
 
 function signatureLabelFromMember(owner: string, name: string, signature: VbSignature): string {
   const parameters = signature.parameters.map((parameter) => {
-    return parameter.type ? `${parameter.name} As ${parameter.type.name}` : parameter.name;
+    const prefix = parameter.mode
+      ? `${parameter.optional ? "Optional " : ""}${parameterModeKeyword(parameter.mode)} `
+      : "";
+    return parameter.type
+      ? `${prefix}${parameter.name} As ${parameter.type.name}`
+      : `${prefix}${parameter.name}`;
   });
   return `${owner}.${name}(${parameters.join(", ")})`;
 }
@@ -3501,7 +3571,7 @@ function signatureLabel(symbol: VbSymbol): string {
   const keyword = symbol.kind === "sub" || symbol.kind === "method" ? "Sub" : "Function";
   const owner = symbol.memberOf ? `${symbol.memberOf}.` : "";
   const returnType = symbol.type ?? (symbol.typeName ? typeRef(symbol.typeName) : undefined);
-  return `${keyword} ${owner}${symbol.name}(${(symbol.parameters ?? []).join(", ")})${
+  return `${keyword} ${owner}${symbol.name}(${parameterLabels(symbol).join(", ")})${
     returnType && keyword === "Function" ? ` As ${returnType.name}` : ""
   }`;
 }
@@ -3510,9 +3580,9 @@ function symbolToSignatureInformation(symbol: VbSymbol, locale: AspLocale | unde
   return {
     label: signatureLabel(symbol),
     documentation: documentationMarkdown(symbol.documentation, locale),
-    parameters: (symbol.parameters ?? []).map((parameter) => ({
-      label: parameter,
-      documentation: symbol.documentation?.params[parameter],
+    parameters: parameterDetails(symbol).map((parameter) => ({
+      label: parameterLabel(parameter),
+      documentation: symbol.documentation?.params[parameter.name],
     })),
   };
 }
@@ -3727,7 +3797,11 @@ function signatureForCall(
     return undefined;
   }
   return {
-    parameters: (symbol.parameters ?? []).map((parameter) => ({ name: parameter })),
+    parameters: parameterDetails(symbol).map((parameter) => ({
+      name: parameter.name,
+      mode: parameter.mode,
+      optional: parameter.optional,
+    })),
     returnType: symbol.type ?? (symbol.typeName ? typeRef(symbol.typeName) : undefined),
   };
 }
