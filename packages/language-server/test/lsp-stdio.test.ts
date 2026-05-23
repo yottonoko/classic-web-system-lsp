@@ -867,6 +867,92 @@ Response.Write known
       }
     });
 
+    it("keeps language features current after ranged incremental ASP edits", async () => {
+      const source = `<%
+Option Explicit
+Dim known
+Response.Write missingName
+%>
+<style>.x { color: }</style>
+<script>const = ;</script>`;
+      let current = source;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
+        });
+        const uri = "file:///tmp/ranged-incremental.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: current,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        current = notifyRangedReplacement(server, uri, current, 2, "missingName", "known");
+        current = notifyRangedReplacement(server, uri, current, 3, "color:", "color: red");
+        current = notifyRangedReplacement(server, uri, current, 4, "const = ;", "const ok = 1;");
+        await waitForDiagnosticsWithout(server, [
+          "missingName",
+          "asp-lsp-css",
+          "asp-lsp-typescript",
+        ]);
+
+        const pulled = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        expect(JSON.stringify(pulled)).not.toContain("missingName");
+        expect(JSON.stringify(pulled)).not.toContain("asp-lsp-css");
+        expect(JSON.stringify(pulled)).not.toContain("asp-lsp-typescript");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(current, current.indexOf("Response.") + "Response.".length),
+        });
+        expect(JSON.stringify(completions)).toContain("Write");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(
+            current,
+            current.indexOf("known", current.indexOf("Response.Write")),
+          ),
+        });
+        expect(JSON.stringify(hover)).toContain("Dim known");
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        const knownPosition = positionAt(
+          current,
+          current.indexOf("known", current.indexOf("Response.Write")),
+        );
+        expect(
+          decoded.some(
+            (token) =>
+              token.line === knownPosition.line &&
+              token.character === knownPosition.character &&
+              token.tokenType === semanticTokenType.variable,
+          ),
+        ).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("supports VBScript hover, definition, references, scoped symbols and class member completion", async () => {
       const marked = markedDocument(`<%
 Class Customer
@@ -3619,6 +3705,45 @@ async function waitForDiagnosticsContaining(
     }
   }
   throw new Error(`Timed out waiting for diagnostics containing ${expected}.`);
+}
+
+async function waitForDiagnosticsWithout(
+  server: RpcServer,
+  unexpected: string[],
+): Promise<JsonRpcMessage> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+    const serialized = JSON.stringify(diagnostics.params);
+    if (unexpected.every((value) => !serialized.includes(value))) {
+      return diagnostics;
+    }
+  }
+  throw new Error(`Timed out waiting for diagnostics without ${unexpected.join(", ")}.`);
+}
+
+function notifyRangedReplacement(
+  server: RpcServer,
+  uri: string,
+  current: string,
+  version: number,
+  needle: string,
+  replacement: string,
+): string {
+  const start = current.indexOf(needle);
+  if (start === -1) {
+    throw new Error(`Missing text: ${needle}`);
+  }
+  const end = start + needle.length;
+  server.notify("textDocument/didChange", {
+    textDocument: { uri, version },
+    contentChanges: [
+      {
+        range: { start: positionAt(current, start), end: positionAt(current, end) },
+        text: replacement,
+      },
+    ],
+  });
+  return current.slice(0, start) + replacement + current.slice(end);
 }
 
 function positionAt(text: string, offset: number): { line: number; character: number } {

@@ -54,6 +54,7 @@ import type {
   SelectionRange,
   SignatureHelp,
   TextEdit,
+  TextDocumentContentChangeEvent,
   TypeHierarchyItem,
   WorkspaceEdit,
 } from "vscode-languageserver/node";
@@ -84,6 +85,7 @@ import {
   parseAspDocument,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
+  updateAspParsedDocument,
   type AspFormattingOptions,
   type AspLocale,
   type AspLocaleSetting,
@@ -104,7 +106,18 @@ import {
 import ts from "typescript";
 
 const connection = createConnection(ProposedFeatures.all);
-const documents = new TextDocuments(TextDocument);
+const pendingDocumentChanges = new Map<string, PendingDocumentChange>();
+const documents = new TextDocuments({
+  create: TextDocument.create,
+  update(document, changes, version) {
+    pendingDocumentChanges.set(document.uri, {
+      previousText: document.getText(),
+      changes,
+      version,
+    });
+    return TextDocument.update(document, changes, version);
+  },
+});
 const htmlService = getHtmlLanguageService();
 const cssService = getCSSLanguageService();
 const settingsByUri = new Map<string, AspSettings>();
@@ -170,6 +183,21 @@ interface CachedDocument {
   source: TextDocument;
   parsed: AspParsedDocument;
   virtuals: Map<string, VirtualDocument>;
+  analysis?: CachedAnalysis;
+}
+
+interface CachedAnalysis {
+  diagnostics?: { key: string; items: Diagnostic[] };
+  htmlDiagnostics?: { key: string; items: Diagnostic[] };
+  cssDiagnostics?: { key: string; items: Diagnostic[] };
+  jsDiagnostics?: { key: string; items: Diagnostic[] };
+  vbProjectContext?: { key: string; context: VbProjectContext };
+}
+
+interface PendingDocumentChange {
+  previousText: string;
+  changes: TextDocumentContentChangeEvent[];
+  version: number;
 }
 
 interface OffsetEdit {
@@ -352,6 +380,7 @@ documents.onDidSave((event) => {
 });
 documents.onDidClose((event) => {
   cancelScheduledDiagnostics(event.document.uri);
+  pendingDocumentChanges.delete(event.document.uri);
   cache.delete(event.document.uri);
   clearJsLanguageServiceCache();
   clearSemanticTokensForUri(event.document.uri);
@@ -1156,10 +1185,23 @@ function validate(document: TextDocument): void {
 
 function refreshCachedDocument(document: TextDocument): CachedDocument {
   const settings = cachedSettings(document.uri);
-  const parsed = parseAspDocument(document.uri, document.getText(), settings);
+  const previous = cache.get(document.uri);
+  const pending = pendingDocumentChanges.get(document.uri);
+  const parsed =
+    previous && pending?.version === document.version
+      ? updateAspParsedDocument(
+          { ...previous.parsed, text: pending.previousText },
+          document.getText(),
+          pending.changes,
+          settings,
+        ).parsed
+      : parseAspDocument(document.uri, document.getText(), settings);
   const virtuals = buildVirtualDocuments(parsed);
-  const cached = { source: document, parsed, virtuals };
+  const cached = { source: document, parsed, virtuals, analysis: previous?.analysis };
   cache.set(document.uri, cached);
+  if (pending?.version === document.version) {
+    pendingDocumentChanges.delete(document.uri);
+  }
   return cached;
 }
 
@@ -1209,6 +1251,10 @@ function publishDiagnosticsForCached(cached: CachedDocument, settings: AspSettin
 }
 
 function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
+  const key = diagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.diagnostics?.key === key) {
+    return cached.analysis.diagnostics.items;
+  }
   const diagnostics: Diagnostic[] = [
     ...cached.parsed.diagnostics,
     ...analyzeVbscript(cached.parsed, buildVbProjectContext(cached, settings)).diagnostics,
@@ -1219,7 +1265,9 @@ function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Di
   }
   diagnostics.push(...cssDiagnostics(cached));
   diagnostics.push(...jsDiagnostics(cached, settings));
-  return dedupeDiagnostics(diagnostics);
+  const items = dedupeDiagnostics(diagnostics);
+  analysisFor(cached).diagnostics = { key, items };
+  return items;
 }
 
 function dedupeDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
@@ -1244,10 +1292,57 @@ function diagnosticKey(diagnostic: Diagnostic): string {
   });
 }
 
+function diagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    text: textFingerprint(cached.parsed.text),
+    parsedDiagnostics: cached.parsed.diagnostics.map(diagnosticKey),
+    settings: diagnosticsSettingsKey(settings),
+  });
+}
+
+function diagnosticsSettingsKey(settings: AspSettings): unknown {
+  return {
+    checkJs: settings.checkJs ?? false,
+    javascript: {
+      unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
+    },
+    vbscript: {
+      typeChecking: settings.vbscript?.typeChecking,
+      identifierCase: settings.vbscript?.identifierCase,
+      identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
+      comTypes: settings.vbscript?.comTypes,
+      globals: settings.vbscript?.globals,
+      unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+    },
+    locale: settings.resolvedLocale,
+    virtualRoot: settings.virtualRoot,
+    virtualRoots: settings.virtualRoots,
+    legacyEncoding: settings.legacyEncoding,
+  };
+}
+
+function virtualCacheKey(virtual: VirtualDocument): string {
+  return JSON.stringify({
+    uri: virtual.uri,
+    languageId: virtual.languageId,
+    text: textFingerprint(virtual.text),
+    segments: virtual.sourceMap.segments,
+  });
+}
+
+function analysisFor(cached: CachedDocument): CachedAnalysis {
+  cached.analysis ??= {};
+  return cached.analysis;
+}
+
 function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
   const virtual = cached.virtuals.get("html");
   if (!virtual) {
     return [];
+  }
+  const key = virtualCacheKey(virtual);
+  if (cached.analysis?.htmlDiagnostics?.key === key) {
+    return cached.analysis.htmlDiagnostics.items;
   }
   const scanner = htmlService.createScanner(virtual.text);
   const diagnostics: Diagnostic[] = [];
@@ -1267,6 +1362,7 @@ function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
     }
     token = scanner.scan();
   }
+  analysisFor(cached).htmlDiagnostics = { key, items: diagnostics };
   return diagnostics;
 }
 
@@ -1275,15 +1371,31 @@ function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
   if (!virtual) {
     return [];
   }
+  const key = virtualCacheKey(virtual);
+  if (cached.analysis?.cssDiagnostics?.key === key) {
+    return cached.analysis.cssDiagnostics.items;
+  }
   const doc = toTextDocument(virtual);
-  return cssService
+  const items = cssService
     .doValidation(doc, cssService.parseStylesheet(doc))
     .map((diagnostic) => remapDiagnostic(virtual, diagnostic, "asp-lsp-css"))
     .filter(isDiagnostic);
+  analysisFor(cached).cssDiagnostics = { key, items };
+  return items;
 }
 
 function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
-  return jsVirtualDocuments(cached).flatMap((virtual) => {
+  const key = JSON.stringify({
+    virtuals: jsVirtualDocuments(cached).map(virtualCacheKey),
+    settings: {
+      checkJs: settings.checkJs ?? false,
+      unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
+    },
+  });
+  if (cached.analysis?.jsDiagnostics?.key === key) {
+    return cached.analysis.jsDiagnostics.items;
+  }
+  const items = jsVirtualDocuments(cached).flatMap((virtual) => {
     const service = createJsLanguageService(virtual, settings).service;
     const fileName = jsVirtualFileName(virtual.uri);
     const syntactic = service.getSyntacticDiagnostics(fileName);
@@ -1313,6 +1425,8 @@ function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnosti
       ),
     ].filter(isDiagnostic);
   });
+  analysisFor(cached).jsDiagnostics = { key, items };
+  return items;
 }
 
 function cssCompletion(
@@ -2768,17 +2882,30 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
     locale: settings.resolvedLocale,
   };
+  const key = JSON.stringify({
+    documents: documents.map((document) => ({
+      uri: document.uri,
+      text: textFingerprint(document.text),
+    })),
+    contextSettings,
+    globals: settings.vbscript?.globals,
+  });
+  if (cached.analysis?.vbProjectContext?.key === key) {
+    return cached.analysis.vbProjectContext.context;
+  }
   const symbols = documents.flatMap((document) =>
     collectVbscriptSymbols(document, contextSettings),
   );
   symbols.push(...configuredVbscriptGlobals(cached, settings));
   const typeEnvironment = buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols });
-  return {
+  const context = {
     documents,
     symbols,
     typeEnvironment,
     ...contextSettings,
   };
+  analysisFor(cached).vbProjectContext = { key, context };
+  return context;
 }
 
 function configuredVbscriptGlobals(cached: CachedDocument, settings: AspSettings): VbSymbol[] {

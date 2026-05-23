@@ -21,6 +21,7 @@ import {
   parseVbscriptCst,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
+  updateAspParsedDocument,
 } from "../src";
 import type { VbCstNode } from "../src";
 
@@ -69,6 +70,68 @@ Response.Write name
     expect(docs.get("html")?.text).toContain("<div>");
     expect(docs.get("html")?.text).not.toContain("title");
     expect(docs.get("css")?.text).toContain("color");
+  });
+
+  it("updates ASP documents incrementally for safe region content edits", () => {
+    const source = `<html>
+<div>Hello</div>
+<style>.x { color: red; }</style>
+<script>const answer = 42;</script>
+<% Option Explicit
+Dim name
+Response.Write name
+%>
+</html>`;
+    const cases = [
+      { needle: "Hello", insert: " there", label: "html text" },
+      { needle: "Dim name", insert: "\nDim title", label: "vbscript" },
+      { needle: "color: red", insert: "; background: white", label: "css" },
+      { needle: "answer = 42", insert: " + 1", label: "javascript" },
+    ];
+    for (const testCase of cases) {
+      const previous = parseAspDocument("file:///site/incremental.asp", source);
+      const start = source.indexOf(testCase.needle) + testCase.needle.length;
+      const nextText = source.slice(0, start) + testCase.insert + source.slice(start);
+      const result = updateAspParsedDocument(previous, nextText, [
+        {
+          range: { start: positionAt(source, start), end: positionAt(source, start) },
+          text: testCase.insert,
+        },
+      ]);
+      const full = parseAspDocument("file:///site/incremental.asp", nextText);
+      expect(result.incremental, testCase.label).toBe(true);
+      expect(parsedShape(result.parsed), testCase.label).toEqual(parsedShape(full));
+    }
+  });
+
+  it("falls back to full ASP parsing when structure may change", () => {
+    const source = `<html>
+<!-- #include file="inc/common.inc" -->
+<script>const answer = 42;</script>
+<% Response.Write answer %>
+</html>`;
+    const cases = [
+      { needle: "answer %>", insert: "%>", label: "asp close delimiter" },
+      { needle: "const answer", insert: "</script>", label: "script close tag" },
+      { needle: "inc/common.inc", insert: "/shared", label: "include path" },
+      { needle: "</script>\n<%", insert: "<style>", label: "cross region" },
+    ];
+    for (const testCase of cases) {
+      const previous = parseAspDocument("file:///site/fallback.asp", source);
+      const start = source.indexOf(testCase.needle);
+      const end = start + testCase.needle.length;
+      const nextText = source.slice(0, start) + testCase.insert + source.slice(end);
+      const result = updateAspParsedDocument(previous, nextText, [
+        {
+          range: { start: positionAt(source, start), end: positionAt(source, end) },
+          text: testCase.insert,
+        },
+      ]);
+      expect(result.incremental, testCase.label).toBe(false);
+      expect(parsedShape(result.parsed), testCase.label).toEqual(
+        parsedShape(parseAspDocument("file:///site/fallback.asp", nextText)),
+      );
+    }
   });
 
   it("masks inline ASP inside CSS regions while keeping ASP completions routable", () => {
@@ -1449,6 +1512,32 @@ function markedDocument(source: string): {
   }
   const text = source.slice(0, offset) + source.slice(offset + "▮".length);
   return { text, position: positionAt(text, offset) };
+}
+
+function parsedShape(parsed: ReturnType<typeof parseAspDocument>) {
+  return {
+    defaultLanguage: parsed.defaultLanguage,
+    diagnostics: parsed.diagnostics.map((diagnostic) => ({
+      range: diagnostic.range,
+      message: diagnostic.message,
+      source: diagnostic.source,
+    })),
+    includes: parsed.includes,
+    directives: parsed.directives,
+    regions: parsed.regions,
+    children: parsed.cst.children.map((node) => ({
+      kind: node.kind,
+      start: node.start,
+      end: node.end,
+      contentStart: node.contentStart,
+      contentEnd: node.contentEnd,
+      language: node.language,
+      regionKind: node.regionKind,
+      text: node.text,
+      include: node.include,
+      directive: node.directive,
+    })),
+  };
 }
 
 function flattenVbNodes(node: VbCstNode): VbCstNode[] {

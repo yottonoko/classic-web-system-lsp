@@ -167,6 +167,17 @@ export interface AspParsedDocument {
   diagnostics: Diagnostic[];
 }
 
+export interface AspDocumentChange {
+  range?: Range;
+  text: string;
+}
+
+export interface AspParsedDocumentUpdate {
+  parsed: AspParsedDocument;
+  incremental: boolean;
+  fallbackReason?: string;
+}
+
 export interface SourceMapSegment {
   virtualStart: number;
   virtualEnd: number;
