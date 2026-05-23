@@ -632,9 +632,27 @@ upperBound = UBound(items)
 %>`,
     );
     const result = analyzeVbscript(parsed);
+    const tokens = getVbscriptSemanticTokens(parsed, { symbols: result.symbols });
+    const tokenAt = (text: string) => {
+      const position = positionAt(parsed.text, parsed.text.indexOf(text));
+      return tokens.find(
+        (token) =>
+          token.range.start.line === position.line &&
+          token.range.start.character === position.character,
+      );
+    };
     expect(result.symbols.find((symbol) => symbol.name === "textValue")?.typeName).toBe("String");
     expect(result.symbols.find((symbol) => symbol.name === "items")?.typeName).toBe("Array");
     expect(result.symbols.find((symbol) => symbol.name === "upperBound")?.typeName).toBe("Number");
+    expect(tokenAt("CStr")).toEqual(
+      expect.objectContaining({ tokenType: "function", tokenModifiers: ["library"] }),
+    );
+    expect(tokenAt("Array")).toEqual(
+      expect.objectContaining({ tokenType: "function", tokenModifiers: ["library"] }),
+    );
+    expect(tokenAt("UBound")).toEqual(
+      expect.objectContaining({ tokenType: "function", tokenModifiers: ["library"] }),
+    );
     expect(getVbscriptHover(parsed, { line: 2, character: 13 })).toContain(
       "Function CStr(value) As String",
     );
@@ -1050,6 +1068,9 @@ End Sub
     );
     expect(tokenAt("Response")).toEqual(
       expect.objectContaining({ tokenType: "variable", tokenModifiers: ["library"] }),
+    );
+    expect(tokenAt("Write")).toEqual(
+      expect.objectContaining({ tokenType: "method", tokenModifiers: ["library"] }),
     );
     expect(tokenAt("+")).toEqual(expect.objectContaining({ tokenType: "operator" }));
   });

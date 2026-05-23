@@ -1763,20 +1763,62 @@ export function getVbscriptSemanticTokens(
       token.start + Math.floor(token.text.length / 2),
       symbols,
     );
-    if (!symbol || isBuiltinName(symbol.name)) {
+    if (symbol && !isBuiltinName(symbol.name)) {
+      const tokenType = semanticTokenTypeForSymbol(symbol);
+      if (!tokenType) {
+        continue;
+      }
+      tokens.push({
+        range: rangeFromOffsets(parsed.text, token.start, token.end),
+        tokenType,
+        tokenModifiers: semanticTokenModifiersForSymbol(symbol),
+      });
       continue;
     }
-    const tokenType = semanticTokenTypeForSymbol(symbol);
-    if (!tokenType) {
-      continue;
+    const builtinToken = builtinSemanticTokenForIdentifier(parsed, token);
+    if (builtinToken) {
+      tokens.push(builtinToken);
     }
-    tokens.push({
-      range: rangeFromOffsets(parsed.text, token.start, token.end),
-      tokenType,
-      tokenModifiers: semanticTokenModifiersForSymbol(symbol),
-    });
   }
   return tokens;
+}
+
+function builtinSemanticTokenForIdentifier(
+  parsed: AspParsedDocument,
+  token: VbToken,
+): VbSemanticToken | undefined {
+  const previous = previousSignificantToken(parsed, token.start);
+  if (previous?.text === ".") {
+    const owner = previousSignificantToken(parsed, previous.start);
+    if (
+      !owner ||
+      !isClassicAspObjectName(owner.text) ||
+      !builtinMemberName(owner.text, token.text)
+    ) {
+      return undefined;
+    }
+    return {
+      range: rangeFromOffsets(parsed.text, token.start, token.end),
+      tokenType: builtinSignature(`${owner.text}.${token.text}`) ? "method" : "property",
+      tokenModifiers: ["library"],
+    };
+  }
+  if (!builtinFunction(token.text)) {
+    return undefined;
+  }
+  return {
+    range: rangeFromOffsets(parsed.text, token.start, token.end),
+    tokenType: "function",
+    tokenModifiers: ["library"],
+  };
+}
+
+function builtinMemberName(owner: string, member: string): boolean {
+  return (
+    memberCompletions[owner.toLowerCase()]?.some(
+      (item) => item.label.toLowerCase() === member.toLowerCase(),
+    ) ?? false
+  );
 }
 
 function operatorSemanticTokens(parsed: AspParsedDocument): VbSemanticToken[] {

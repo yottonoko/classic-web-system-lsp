@@ -1021,6 +1021,41 @@ Response.Write UBound(Array("a", "b"))
         });
         expect(JSON.stringify(signature)).toContain("Array(values)");
 
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        const tokenAt = (text: string) => {
+          const position = positionAt(source, source.indexOf(text));
+          return decoded.find(
+            (token) => token.line === position.line && token.character === position.character,
+          );
+        };
+        expect(tokenAt("CStr")).toEqual(
+          expect.objectContaining({
+            tokenType: semanticTokenType.function,
+            tokenModifiers: semanticTokenModifier.library,
+          }),
+        );
+        expect(tokenAt("UBound")).toEqual(
+          expect.objectContaining({
+            tokenType: semanticTokenType.function,
+            tokenModifiers: semanticTokenModifier.library,
+          }),
+        );
+        expect(tokenAt("Array")).toEqual(
+          expect.objectContaining({
+            tokenType: semanticTokenType.function,
+            tokenModifiers: semanticTokenModifier.library,
+          }),
+        );
+        expect(tokenAt("Write")).toEqual(
+          expect.objectContaining({
+            tokenType: semanticTokenType.method,
+            tokenModifiers: semanticTokenModifier.library,
+          }),
+        );
+
         await server.request("shutdown", null);
         server.notify("exit", undefined);
       } finally {
