@@ -55,13 +55,32 @@ export interface AspFormattingOptions extends AspFormatSettings {
 export interface AspVbscriptSettings {
   typeChecking?: "basic" | "strict";
   identifierCase?: AspVbscriptIdentifierCase;
+  identifierCaseByKind?: Partial<Record<AspVbscriptIdentifierKind, AspVbscriptIdentifierCase>>;
   comTypes?: Record<string, AspVbscriptComType>;
   globals?: Record<string, string | AspVbscriptGlobal>;
   unusedDiagnostics?: boolean;
   includeSuggestions?: boolean;
 }
 
-export type AspVbscriptIdentifierCase = "pascal" | "upper" | "camel" | "lower" | "ignore";
+export type AspVbscriptIdentifierCase =
+  | "pascal"
+  | "upper"
+  | "camel"
+  | "lower"
+  | "snake"
+  | "upperSnake"
+  | "ignore";
+
+export type AspVbscriptIdentifierKind =
+  | "variable"
+  | "parameter"
+  | "class"
+  | "function"
+  | "sub"
+  | "constant"
+  | "field"
+  | "property"
+  | "method";
 
 export interface AspJavascriptSettings {
   unusedDiagnostics?: boolean;

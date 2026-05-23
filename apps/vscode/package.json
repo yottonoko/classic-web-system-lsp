@@ -187,10 +187,46 @@
             "upper",
             "camel",
             "lower",
+            "snake",
+            "upperSnake",
             "ignore"
           ],
-          "default": "pascal",
           "description": "%configuration.vbscript.identifierCase.description%"
+        },
+        "aspLsp.vbscript.identifierCaseByKind": {
+          "type": "object",
+          "default": {},
+          "description": "%configuration.vbscript.identifierCaseByKind.description%",
+          "properties": {
+            "variable": {
+              "$ref": "#/contributes/configuration/properties/aspLsp.vbscript.identifierCase"
+            },
+            "parameter": {
+              "$ref": "#/contributes/configuration/properties/aspLsp.vbscript.identifierCase"
+            },
+            "class": {
+              "$ref": "#/contributes/configuration/properties/aspLsp.vbscript.identifierCase"
+            },
+            "function": {
+              "$ref": "#/contributes/configuration/properties/aspLsp.vbscript.identifierCase"
+            },
+            "sub": {
+              "$ref": "#/contributes/configuration/properties/aspLsp.vbscript.identifierCase"
+            },
+            "constant": {
+              "$ref": "#/contributes/configuration/properties/aspLsp.vbscript.identifierCase"
+            },
+            "field": {
+              "$ref": "#/contributes/configuration/properties/aspLsp.vbscript.identifierCase"
+            },
+            "property": {
+              "$ref": "#/contributes/configuration/properties/aspLsp.vbscript.identifierCase"
+            },
+            "method": {
+              "$ref": "#/contributes/configuration/properties/aspLsp.vbscript.identifierCase"
+            }
+          },
+          "additionalProperties": false
         },
         "aspLsp.vbscript.comTypes": {
           "type": "object",

@@ -16,6 +16,7 @@
   "configuration.format.onSave.description": "Return full-document formatting edits from textDocument/willSaveWaitUntil. Disabled by default.",
   "configuration.vbscript.typeChecking.description": "Controls VBScript type diagnostics. Strict enables type mismatch, member, and call checks.",
   "configuration.vbscript.identifierCase.description": "Reports VBScript declaration names that do not match the selected identifier casing. Use ignore to disable naming hints.",
+  "configuration.vbscript.identifierCaseByKind.description": "Overrides VBScript identifier casing per declaration kind.",
   "configuration.vbscript.comTypes.description": "Custom COM type catalog keyed by Prog.ID for Server.CreateObject type checking and completion.",
   "configuration.vbscript.comTypes.members.description": "Members exposed by this COM object.",
   "configuration.vbscript.comTypes.memberString.description": "Property type shorthand, for example String or ADODB.Recordset.",

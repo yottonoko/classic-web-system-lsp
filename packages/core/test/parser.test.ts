@@ -284,6 +284,19 @@ Response.Write missingName
     ).toBe(true);
   });
 
+  it("does not report VBScript line continuation as undeclared", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<% Option Explicit
+Dim message
+message = "hello" & _
+  " world"
+%>`,
+    );
+    const result = analyzeVbscript(parsed);
+    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("'_'"))).toBe(false);
+  });
+
   it("localizes VBScript diagnostics, XML docs and completion details", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -349,8 +362,9 @@ End Class
     const parsed = parseAspDocument(
       "file:///site/default.asp",
       `<%
-Dim foo, do_work, CUSTOMER_NAME
-Response.Write foo
+Dim do_work, CUSTOMER_NAME
+Class customer_record
+End Class
 %>`,
     );
     const diagnostics = analyzeVbscript(parsed).diagnostics.filter(
@@ -358,31 +372,38 @@ Response.Write foo
     );
     expect(diagnostics.map((diagnostic) => diagnostic.data)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: "foo", expectedName: "Foo", style: "pascal" }),
-        expect.objectContaining({ name: "do_work", expectedName: "DoWork", style: "pascal" }),
+        expect.objectContaining({ name: "do_work", expectedName: "doWork", style: "camel" }),
         expect.objectContaining({
           name: "CUSTOMER_NAME",
-          expectedName: "CustomerName",
-          style: "pascal",
+          expectedName: "customerName",
+          style: "camel",
         }),
+        expect.objectContaining({ name: "customer_record", expectedName: "CustomerRecord" }),
       ]),
     );
+    const workDiagnostic = diagnostics.find((diagnostic) => diagnostic.data?.name === "do_work");
+    expect(workDiagnostic?.range).toEqual({
+      start: { line: 1, character: 4 },
+      end: { line: 1, character: 11 },
+    });
     expect(diagnostics.every((diagnostic) => diagnostic.severity === 4)).toBe(true);
   });
 
   it("supports configurable VBScript identifier casing styles", () => {
-    const parsed = parseAspDocument(
-      "file:///site/default.asp",
-      `<%
-Dim user_name
-%>`,
-    );
     const expectedByStyle = [
-      ["upper", "USERNAME"],
-      ["camel", "userName"],
-      ["lower", "username"],
+      ["upper", "user_name", "USERNAME"],
+      ["camel", "user_name", "userName"],
+      ["lower", "user_name", "username"],
+      ["snake", "userName", "user_name"],
+      ["upperSnake", "user_name", "USER_NAME"],
     ] as const;
-    for (const [identifierCase, expectedName] of expectedByStyle) {
+    for (const [identifierCase, sourceName, expectedName] of expectedByStyle) {
+      const parsed = parseAspDocument(
+        "file:///site/default.asp",
+        `<%
+Dim ${sourceName}
+%>`,
+      );
       const diagnostics = analyzeVbscript(parsed, { identifierCase }).diagnostics.filter(
         (diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming",
       );
@@ -391,16 +412,16 @@ Dim user_name
       ).toBe(true);
     }
     expect(
-      analyzeVbscript(parsed, { identifierCase: "ignore" }).diagnostics.some(
-        (diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming",
-      ),
+      analyzeVbscript(parseAspDocument("file:///site/default.asp", `<%\nDim user_name\n%>`), {
+        identifierCase: "ignore",
+      }).diagnostics.some((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming"),
     ).toBe(false);
     expect(
       analyzeVbscript(
         parseAspDocument(
           "file:///site/default.asp",
           `<%
-Dim UserName
+Dim userName
 %>`,
         ),
       ).diagnostics.some((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming"),
@@ -423,9 +444,17 @@ Function build_total()
 End Function
 %>`,
     );
-    const diagnostics = analyzeVbscript(parsed).diagnostics.filter(
-      (diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming",
-    );
+    const diagnostics = analyzeVbscript(parsed, {
+      identifierCaseByKind: {
+        variable: "pascal",
+        parameter: "pascal",
+        field: "pascal",
+        property: "pascal",
+        function: "pascal",
+        sub: "pascal",
+        class: "pascal",
+      },
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
     expect(diagnostics.map((diagnostic) => diagnostic.data)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "customer_record", expectedName: "CustomerRecord" }),
@@ -436,6 +465,20 @@ End Function
         expect.objectContaining({ name: "build_total", expectedName: "BuildTotal" }),
       ]),
     );
+  });
+
+  it("deduplicates exact VBScript diagnostics", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim unusedValue
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const diagnostics = analyzeVbscript(parsed, { symbols: [...symbols, ...symbols] }).diagnostics;
+    expect(
+      diagnostics.filter((diagnostic) => diagnostic.message.includes("unusedValue")),
+    ).toHaveLength(1);
   });
 
   it("keeps include references and Global.asa event handlers out of unused diagnostics", () => {
@@ -574,6 +617,30 @@ Server.MapPath("/tmp")
     expect(getVbscriptSignatureHelp(parsed, { line: 2, character: 18 })).toEqual(
       expect.objectContaining({
         signatures: [expect.objectContaining({ label: "Server.MapPath(path)" })],
+      }),
+    );
+  });
+
+  it("resolves VBScript built-in function hover, signature help and types", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim textValue, items, upperBound
+textValue = CStr(42)
+items = Array("a", "b")
+upperBound = UBound(items)
+%>`,
+    );
+    const result = analyzeVbscript(parsed);
+    expect(result.symbols.find((symbol) => symbol.name === "textValue")?.typeName).toBe("String");
+    expect(result.symbols.find((symbol) => symbol.name === "items")?.typeName).toBe("Array");
+    expect(result.symbols.find((symbol) => symbol.name === "upperBound")?.typeName).toBe("Number");
+    expect(getVbscriptHover(parsed, { line: 2, character: 13 })).toContain(
+      "Function CStr(value) As String",
+    );
+    expect(getVbscriptSignatureHelp(parsed, { line: 4, character: 21 })).toEqual(
+      expect.objectContaining({
+        signatures: [expect.objectContaining({ label: "UBound(array, dimension)" })],
       }),
     );
   });
@@ -952,7 +1019,7 @@ Class Customer
 End Class
 Const MaxCount = 10
 Sub Render(ByVal metricMap, output)
-  Response.Write MaxCount
+  Response.Write MaxCount + 1
 End Sub
 %>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
@@ -984,6 +1051,7 @@ End Sub
     expect(tokenAt("Response")).toEqual(
       expect.objectContaining({ tokenType: "variable", tokenModifiers: ["library"] }),
     );
+    expect(tokenAt("+")).toEqual(expect.objectContaining({ tokenType: "operator" }));
   });
 
   it("keeps undeclared assignments undeclared under Option Explicit", () => {

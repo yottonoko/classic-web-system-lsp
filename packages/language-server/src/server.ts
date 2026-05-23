@@ -138,6 +138,7 @@ const semanticTokenTypes = [
   "property",
   "comment",
   "string",
+  "operator",
 ] as const;
 const semanticTokenModifiers = [
   "public",
@@ -1160,7 +1161,29 @@ function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Di
   }
   diagnostics.push(...cssDiagnostics(cached));
   diagnostics.push(...jsDiagnostics(cached, settings));
-  return diagnostics;
+  return dedupeDiagnostics(diagnostics);
+}
+
+function dedupeDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
+  const seen = new Set<string>();
+  return diagnostics.filter((diagnostic) => {
+    const key = diagnosticKey(diagnostic);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function diagnosticKey(diagnostic: Diagnostic): string {
+  return JSON.stringify({
+    source: diagnostic.source ?? "",
+    code: diagnostic.code ?? "",
+    severity: diagnostic.severity ?? "",
+    range: diagnostic.range,
+    message: diagnostic.message,
+  });
 }
 
 function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
@@ -2679,6 +2702,7 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
   const contextSettings = {
     typeChecking: settings.vbscript?.typeChecking,
     identifierCase: settings.vbscript?.identifierCase,
+    identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
     comTypes: settings.vbscript?.comTypes,
     unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
     locale: settings.resolvedLocale,
@@ -3507,6 +3531,7 @@ function normalizeVbscriptSettings(
   return {
     typeChecking: record.typeChecking === "strict" ? "strict" : "basic",
     identifierCase: normalizeVbscriptIdentifierCase(record.identifierCase),
+    identifierCaseByKind: normalizeVbscriptIdentifierCaseByKind(record.identifierCaseByKind),
     comTypes:
       record.comTypes && typeof record.comTypes === "object"
         ? (record.comTypes as NonNullable<AspSettings["vbscript"]>["comTypes"])
@@ -3522,14 +3547,43 @@ function normalizeVbscriptSettings(
 
 function normalizeVbscriptIdentifierCase(
   value: unknown,
-): NonNullable<NonNullable<AspSettings["vbscript"]>["identifierCase"]> {
+): NonNullable<NonNullable<AspSettings["vbscript"]>["identifierCase"]> | undefined {
   return value === "upper" ||
     value === "camel" ||
     value === "lower" ||
+    value === "snake" ||
+    value === "upperSnake" ||
     value === "ignore" ||
     value === "pascal"
     ? value
-    : "pascal";
+    : undefined;
+}
+
+function normalizeVbscriptIdentifierCaseByKind(
+  value: unknown,
+): NonNullable<NonNullable<AspSettings["vbscript"]>["identifierCaseByKind"]> | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const result: NonNullable<NonNullable<AspSettings["vbscript"]>["identifierCaseByKind"]> = {};
+  for (const key of [
+    "variable",
+    "parameter",
+    "class",
+    "function",
+    "sub",
+    "constant",
+    "field",
+    "property",
+    "method",
+  ] as const) {
+    const normalized = normalizeVbscriptIdentifierCase(record[key]);
+    if (normalized) {
+      result[key] = normalized;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function normalizeJavascriptSettings(

@@ -35,6 +35,7 @@ const semanticTokenType = {
   property: 6,
   comment: 7,
   string: 8,
+  operator: 9,
 } as const;
 const semanticTokenModifier = {
   public: 1 << 0,
@@ -983,6 +984,50 @@ Response.Write a
       }
     });
 
+    it("returns hover and signature help for VBScript built-in functions", async () => {
+      const source = `<%
+Dim textValue
+textValue = CStr(42)
+Response.Write UBound(Array("a", "b"))
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vbscript-builtins.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("CStr") + 1),
+        });
+        expect(JSON.stringify(hover)).toContain("Function CStr(value) As String");
+
+        const signature = await server.request("textDocument/signatureHelp", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf('Array("a"') + 'Array("'.length),
+        });
+        expect(JSON.stringify(signature)).toContain("Array(values)");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("supports VBScript rename, highlights, signature help, workspace symbols and semantic tokens", async () => {
       const marked = markedDocument(`<%
 Function BuildName(ByVal firstName, lastName)
@@ -1007,6 +1052,7 @@ Response.Write Build▮Name("Ada", "Lovelace")
         expect(initializeText).toContain('"byref"');
         expect(initializeText).toContain('"byval"');
         expect(initializeText).toContain('"string"');
+        expect(initializeText).toContain('"operator"');
         const uri = "file:///tmp/vbscript-editing.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
@@ -1088,6 +1134,15 @@ Response.Write Build▮Name("Ada", "Lovelace")
               token.character === "Function BuildName(ByVal firstName, ".length &&
               token.tokenType === semanticTokenType.parameter &&
               token.tokenModifiers === semanticTokenModifier.byref,
+          ),
+        ).toBe(true);
+        const ampersand = positionAt(marked.text, marked.text.indexOf("&"));
+        expect(
+          decodedSemanticTokens.some(
+            (token) =>
+              token.line === ampersand.line &&
+              token.character === ampersand.character &&
+              token.tokenType === semanticTokenType.operator,
           ),
         ).toBe(true);
         const semanticDelta = await server.request("textDocument/semanticTokens/full/delta", {
@@ -1711,6 +1766,54 @@ Response.Write miss▮ingName
       }
     });
 
+    it("deduplicates published diagnostics and ignores line continuation underscores", async () => {
+      const source = `<%
+Option Explicit
+Dim message
+message = "hello" & _
+  missingName
+Response.Write missingName
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-diagnostic-dedupe.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const vbDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript");
+        expect(JSON.stringify(vbDiagnostics)).not.toContain("'_'");
+        const keys = vbDiagnostics.map((diagnostic) =>
+          JSON.stringify({
+            source: diagnostic.source,
+            code: diagnostic.code,
+            severity: diagnostic.severity,
+            range: diagnostic.range,
+            message: diagnostic.message,
+          }),
+        );
+        expect(new Set(keys).size).toBe(keys.length);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns VBScript naming hints and reference rename quick fixes", async () => {
       const source = `<%
 Dim foo
@@ -1724,6 +1827,9 @@ Response.Write FOO
           processId: process.pid,
           rootUri: "file:///tmp",
           capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
         });
         const uri = "file:///tmp/vb-naming.asp";
         server.notify("textDocument/didOpen", {
@@ -1761,14 +1867,41 @@ Response.Write FOO
 
     it("returns VBScript naming quick fixes for configured casing styles", async () => {
       const cases = [
-        { identifierCase: "upper", expectedName: "USERNAME" },
-        { identifierCase: "camel", expectedName: "userName" },
-        { identifierCase: "lower", expectedName: "username" },
+        {
+          identifierCase: "upper",
+          sourceName: "user_name",
+          referenceName: "USER_NAME",
+          expectedName: "USERNAME",
+        },
+        {
+          identifierCase: "camel",
+          sourceName: "user_name",
+          referenceName: "USER_NAME",
+          expectedName: "userName",
+        },
+        {
+          identifierCase: "lower",
+          sourceName: "user_name",
+          referenceName: "USER_NAME",
+          expectedName: "username",
+        },
+        {
+          identifierCase: "snake",
+          sourceName: "userName",
+          referenceName: "userName",
+          expectedName: "user_name",
+        },
+        {
+          identifierCase: "upperSnake",
+          sourceName: "user_name",
+          referenceName: "USER_NAME",
+          expectedName: "USER_NAME",
+        },
       ] as const;
       for (const testCase of cases) {
         const source = `<%
-Dim user_name
-Response.Write USER_NAME
+Dim ${testCase.sourceName}
+Response.Write ${testCase.referenceName}
 %>`;
         const server = new RpcServer();
         try {
@@ -1805,7 +1938,7 @@ Response.Write USER_NAME
             context: { diagnostics: namingDiagnostics },
           });
           const serialized = JSON.stringify(actions);
-          expect(serialized).toContain(`Rename user_name to ${testCase.expectedName}`);
+          expect(serialized).toContain(`Rename ${testCase.sourceName} to ${testCase.expectedName}`);
           expect(
             serialized.match(new RegExp(`"newText":"${testCase.expectedName}"`, "g")),
           ).toHaveLength(2);
@@ -1815,6 +1948,52 @@ Response.Write USER_NAME
         } finally {
           server.stop();
         }
+      }
+    });
+
+    it("uses VBScript identifier casing settings per declaration kind", async () => {
+      const source = `<%
+Dim selected_customer
+Class customer_record
+End Class
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              vbscript: {
+                identifierCaseByKind: { variable: "snake", class: "pascal" },
+              },
+            },
+          },
+        });
+        const uri = "file:///tmp/vb-naming-by-kind.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const namingDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
+        expect(JSON.stringify(namingDiagnostics)).not.toContain("selected_customer");
+        expect(JSON.stringify(namingDiagnostics)).toContain("CustomerRecord");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
       }
     });
 
@@ -1853,6 +2032,9 @@ Response.Write record.display_name
           processId: process.pid,
           rootUri: "file:///tmp",
           capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
         });
         const uri = "file:///tmp/vb-naming-declaration-kinds.asp";
         server.notify("textDocument/didOpen", {
@@ -1915,6 +2097,9 @@ Response.Write record.customer_name
           rootUri: "file:///tmp",
           capabilities: {},
         });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
+        });
         const uri = "file:///tmp/vb-naming-member-references.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
@@ -1973,6 +2158,9 @@ Dim foo
           rootUri: `file://${tempDir}`,
           capabilities: {},
         });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
+        });
         const uri = `file://${owner}`;
         server.notify("textDocument/didOpen", {
           textDocument: {
@@ -2020,6 +2208,9 @@ Response.Write foo
           processId: process.pid,
           rootUri: "file:///tmp",
           capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
         });
         const uri = "file:///tmp/vb-naming-collision.asp";
         server.notify("textDocument/didOpen", {
@@ -2072,6 +2263,9 @@ End Sub
           rootUri: "file:///tmp",
           capabilities: {},
         });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
+        });
         const uri = "file:///tmp/vb-naming-scope-collision.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
@@ -2118,6 +2312,9 @@ Response.Write foo
           processId: process.pid,
           rootUri: "file:///tmp",
           capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
         });
         const uri = "file:///tmp/vb-naming-string-comment.asp";
         server.notify("textDocument/didOpen", {

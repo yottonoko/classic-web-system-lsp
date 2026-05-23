@@ -29,6 +29,7 @@ import type {
   AspRegion,
   AspVbscriptComType,
   AspVbscriptIdentifierCase,
+  AspVbscriptIdentifierKind,
   VbCstNode,
   VbParameterMetadata,
   VbParameterMode,
@@ -70,7 +71,7 @@ export interface VbSymbol {
 
 export interface VbSemanticToken {
   range: Range;
-  tokenType: "variable" | "parameter" | "function" | "class" | "method" | "property";
+  tokenType: "variable" | "parameter" | "function" | "class" | "method" | "property" | "operator";
   tokenModifiers?: Array<"public" | "private" | "readonly" | "library" | "byref" | "byval">;
 }
 
@@ -84,6 +85,7 @@ export interface VbProjectContext {
   documents?: AspParsedDocument[];
   typeChecking?: "basic" | "strict";
   identifierCase?: AspVbscriptIdentifierCase;
+  identifierCaseByKind?: Partial<Record<AspVbscriptIdentifierKind, AspVbscriptIdentifierCase>>;
   comTypes?: Record<string, AspVbscriptComType>;
   typeEnvironment?: VbTypeEnvironment;
   unusedDiagnostics?: boolean;
@@ -267,6 +269,14 @@ function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
     { label: "Sub", kind: CompletionItemKind.Keyword },
     { label: "Function", kind: CompletionItemKind.Keyword },
     { label: "Class", kind: CompletionItemKind.Keyword },
+    ...builtinFunctions.map(
+      (item): CompletionItem => ({
+        label: item.label,
+        kind: CompletionItemKind.Function,
+        detail: `Function ${item.signature} As ${item.returnType}`,
+        documentation: item.documentation,
+      }),
+    ),
   ];
 }
 
@@ -282,10 +292,17 @@ function builtinDescription(name: string, locale: AspLocale | undefined): string
   ) {
     return markdownHover(`Dim ${name} As ${name}`, createLocalizer(locale).t(key));
   }
+  const builtin = builtinFunction(name);
+  if (builtin) {
+    return markdownHover(
+      `Function ${builtin.signature} As ${builtin.returnType}`,
+      `VBScript built-in function. ${builtin.documentation}`,
+    );
+  }
   return undefined;
 }
 
-const builtinSignatures: Record<string, string[]> = {
+const classicAspBuiltinSignatures: Record<string, string[]> = {
   "response.write": ["Response.Write value"],
   "response.redirect": ["Response.Redirect url"],
   "response.end": ["Response.End"],
@@ -423,6 +440,196 @@ const adoMemberTypes: Record<string, Record<string, string>> = {
 function methodItem(label: string): CompletionItem {
   return { label, kind: CompletionItemKind.Method };
 }
+
+interface BuiltinFunction {
+  label: string;
+  signature: string;
+  returnType: string;
+  documentation: string;
+}
+
+const builtinFunctions: BuiltinFunction[] = [
+  {
+    label: "CStr",
+    signature: "CStr(value)",
+    returnType: "String",
+    documentation: "Converts a value to String.",
+  },
+  {
+    label: "CInt",
+    signature: "CInt(value)",
+    returnType: "Number",
+    documentation: "Converts a value to Integer.",
+  },
+  {
+    label: "CLng",
+    signature: "CLng(value)",
+    returnType: "Number",
+    documentation: "Converts a value to Long.",
+  },
+  {
+    label: "CDbl",
+    signature: "CDbl(value)",
+    returnType: "Number",
+    documentation: "Converts a value to Double.",
+  },
+  {
+    label: "CBool",
+    signature: "CBool(value)",
+    returnType: "Boolean",
+    documentation: "Converts a value to Boolean.",
+  },
+  {
+    label: "CDate",
+    signature: "CDate(value)",
+    returnType: "Date",
+    documentation: "Converts a value to Date.",
+  },
+  {
+    label: "Array",
+    signature: "Array(values)",
+    returnType: "Array",
+    documentation: "Creates a Variant array.",
+  },
+  {
+    label: "UBound",
+    signature: "UBound(array, dimension)",
+    returnType: "Number",
+    documentation: "Returns the largest available subscript for an array dimension.",
+  },
+  {
+    label: "LBound",
+    signature: "LBound(array, dimension)",
+    returnType: "Number",
+    documentation: "Returns the smallest available subscript for an array dimension.",
+  },
+  {
+    label: "LCase",
+    signature: "LCase(value)",
+    returnType: "String",
+    documentation: "Converts a string to lowercase.",
+  },
+  {
+    label: "UCase",
+    signature: "UCase(value)",
+    returnType: "String",
+    documentation: "Converts a string to uppercase.",
+  },
+  {
+    label: "Trim",
+    signature: "Trim(value)",
+    returnType: "String",
+    documentation: "Removes leading and trailing spaces.",
+  },
+  {
+    label: "Len",
+    signature: "Len(value)",
+    returnType: "Number",
+    documentation: "Returns the number of characters in a string.",
+  },
+  {
+    label: "InStr",
+    signature: "InStr(start, string1, string2, compare)",
+    returnType: "Number",
+    documentation: "Returns the position of one string within another.",
+  },
+  {
+    label: "Replace",
+    signature: "Replace(expression, find, replaceWith)",
+    returnType: "String",
+    documentation: "Returns a string with replacements applied.",
+  },
+  {
+    label: "Left",
+    signature: "Left(value, length)",
+    returnType: "String",
+    documentation: "Returns the left part of a string.",
+  },
+  {
+    label: "Right",
+    signature: "Right(value, length)",
+    returnType: "String",
+    documentation: "Returns the right part of a string.",
+  },
+  {
+    label: "Mid",
+    signature: "Mid(value, start, length)",
+    returnType: "String",
+    documentation: "Returns part of a string.",
+  },
+  {
+    label: "Date",
+    signature: "Date()",
+    returnType: "Date",
+    documentation: "Returns the current system date.",
+  },
+  {
+    label: "Now",
+    signature: "Now()",
+    returnType: "Date",
+    documentation: "Returns the current date and time.",
+  },
+  {
+    label: "DateAdd",
+    signature: "DateAdd(interval, number, date)",
+    returnType: "Date",
+    documentation: "Returns a date with an interval added.",
+  },
+  {
+    label: "DateDiff",
+    signature: "DateDiff(interval, date1, date2)",
+    returnType: "Number",
+    documentation: "Returns the number of intervals between two dates.",
+  },
+  {
+    label: "Abs",
+    signature: "Abs(number)",
+    returnType: "Number",
+    documentation: "Returns the absolute value of a number.",
+  },
+  {
+    label: "Int",
+    signature: "Int(number)",
+    returnType: "Number",
+    documentation: "Returns the integer part of a number.",
+  },
+  {
+    label: "Round",
+    signature: "Round(number, decimalPlaces)",
+    returnType: "Number",
+    documentation: "Rounds a number.",
+  },
+  {
+    label: "IsArray",
+    signature: "IsArray(value)",
+    returnType: "Boolean",
+    documentation: "Returns whether a value is an array.",
+  },
+  {
+    label: "IsNull",
+    signature: "IsNull(value)",
+    returnType: "Boolean",
+    documentation: "Returns whether a value is Null.",
+  },
+  {
+    label: "IsEmpty",
+    signature: "IsEmpty(value)",
+    returnType: "Boolean",
+    documentation: "Returns whether a variable is Empty.",
+  },
+  {
+    label: "IsNumeric",
+    signature: "IsNumeric(value)",
+    returnType: "Boolean",
+    documentation: "Returns whether a value can be evaluated as a number.",
+  },
+  {
+    label: "TypeName",
+    signature: "TypeName(value)",
+    returnType: "String",
+    documentation: "Returns the subtype name for a variable.",
+  },
+];
 
 const vbKeywords = new Set([
   "and",
@@ -807,7 +1014,7 @@ function token(
 }
 
 function isIdentifierStart(char: string): boolean {
-  return /[A-Za-z_]/.test(char);
+  return /[A-Za-z]/.test(char);
 }
 
 function isIdentifierPart(char: string): boolean {
@@ -1317,7 +1524,29 @@ export function analyzeVbscript(
       ),
     );
   }
-  return { diagnostics, symbols };
+  return { diagnostics: dedupeDiagnostics(diagnostics), symbols };
+}
+
+function dedupeDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
+  const seen = new Set<string>();
+  return diagnostics.filter((diagnostic) => {
+    const key = diagnosticKey(diagnostic);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function diagnosticKey(diagnostic: Diagnostic): string {
+  return JSON.stringify({
+    source: diagnostic.source ?? "",
+    code: diagnostic.code ?? "",
+    severity: diagnostic.severity ?? "",
+    range: diagnostic.range,
+    message: diagnostic.message,
+  });
 }
 
 export function getVbscriptDocumentSymbols(parsed: AspParsedDocument): DocumentSymbol[] {
@@ -1519,7 +1748,7 @@ export function getVbscriptSemanticTokens(
   context: VbProjectContext = {},
 ): VbSemanticToken[] {
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
-  const tokens: VbSemanticToken[] = [];
+  const tokens: VbSemanticToken[] = operatorSemanticTokens(parsed);
   for (const token of identifierTokens(parsed)) {
     if (isClassicAspObjectName(token.text)) {
       tokens.push({
@@ -1548,6 +1777,62 @@ export function getVbscriptSemanticTokens(
     });
   }
   return tokens;
+}
+
+function operatorSemanticTokens(parsed: AspParsedDocument): VbSemanticToken[] {
+  const operators: VbSemanticToken[] = [];
+  const documents = vbDocuments(parsed);
+  for (const document of documents) {
+    const tokens = document.tokens.filter((token) => !isTriviaToken(token));
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      const next = tokens[index + 1];
+      const multiChar =
+        token.text === "<" && (next?.text === ">" || next?.text === "=")
+          ? next
+          : token.text === ">" && next?.text === "="
+            ? next
+            : undefined;
+      if (multiChar) {
+        operators.push({
+          range: rangeFromOffsets(parsed.text, token.start, multiChar.end),
+          tokenType: "operator",
+        });
+        index += 1;
+        continue;
+      }
+      if (isVbscriptOperator(token.text)) {
+        operators.push({
+          range: rangeFromOffsets(parsed.text, token.start, token.end),
+          tokenType: "operator",
+        });
+      }
+    }
+  }
+  return operators;
+}
+
+function isVbscriptOperator(text: string): boolean {
+  return [
+    "&",
+    "+",
+    "-",
+    "*",
+    "/",
+    "\\",
+    "^",
+    "=",
+    "<",
+    ">",
+    "and",
+    "or",
+    "not",
+    "mod",
+    "is",
+    "xor",
+    "eqv",
+    "imp",
+  ].includes(text.toLowerCase());
 }
 
 function semanticTokenTypeForSymbol(symbol: VbSymbol): VbSemanticToken["tokenType"] | undefined {
@@ -1635,7 +1920,7 @@ export function getVbscriptSignatureHelp(
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const typeEnvironment =
     context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
-  const builtin = builtinSignatures[call.name.toLowerCase()];
+  const builtin = builtinSignatureLabels(call.name);
   const signatureSymbols = signatureSymbolsForCall(parsed, call.name, offset, symbols);
   if (signatureSymbols.length > 0) {
     return {
@@ -2831,6 +3116,10 @@ function inferSignificantExpressionType(
   if (first.kind === "identifier") {
     const called = expression[1]?.text === "(";
     if (called) {
+      const builtin = builtinSignature(first.text);
+      if (builtin) {
+        return builtin.returnType;
+      }
       const symbol = visibleSymbols(parsed, offset, symbols).find(
         (candidate) =>
           candidate.name.toLowerCase() === first.text.toLowerCase() &&
@@ -3195,6 +3484,7 @@ function diagnoseUndeclaredVariables(
       visibleSymbols(parsed, token.start, symbols).some(
         (symbol) => symbol.name.toLowerCase() === lower,
       ) ||
+      isBuiltinName(name) ||
       isDeclarationNameToken(parsed, token) ||
       previous?.text === "."
     ) {
@@ -3268,10 +3558,6 @@ function diagnoseIdentifierCase(
   symbols: VbSymbol[],
   context: VbProjectContext,
 ): Diagnostic[] {
-  const style = context.identifierCase ?? "pascal";
-  if (style === "ignore") {
-    return [];
-  }
   const localizer = createLocalizer(context.locale);
   return symbols
     .filter(
@@ -3283,6 +3569,10 @@ function diagnoseIdentifierCase(
         !isBuiltinName(symbol.name),
     )
     .flatMap((symbol): Diagnostic[] => {
+      const style = identifierCaseForSymbol(symbol, context);
+      if (style === "ignore") {
+        return [];
+      }
       const expectedName = formatIdentifierCase(symbol.name, style);
       return expectedName && expectedName !== symbol.name
         ? [
@@ -3307,6 +3597,26 @@ function diagnoseIdentifierCase(
     });
 }
 
+function identifierCaseForSymbol(
+  symbol: VbSymbol,
+  context: VbProjectContext,
+): AspVbscriptIdentifierCase {
+  const kind = identifierKindForSymbol(symbol);
+  return (
+    context.identifierCaseByKind?.[kind] ??
+    context.identifierCase ??
+    defaultIdentifierCaseForKind(kind)
+  );
+}
+
+function identifierKindForSymbol(symbol: VbSymbol): AspVbscriptIdentifierKind {
+  return symbol.kind === "sub" ? "sub" : symbol.kind;
+}
+
+function defaultIdentifierCaseForKind(kind: AspVbscriptIdentifierKind): AspVbscriptIdentifierCase {
+  return kind === "variable" || kind === "parameter" ? "camel" : "pascal";
+}
+
 function formatIdentifierCase(
   name: string,
   style: Exclude<AspVbscriptIdentifierCase, "ignore">,
@@ -3324,6 +3634,10 @@ function formatIdentifierCase(
       return [words[0]?.toLowerCase(), ...words.slice(1).map(capitalizeWord)].join("");
     case "pascal":
       return words.map(capitalizeWord).join("");
+    case "snake":
+      return words.join("_");
+    case "upperSnake":
+      return words.join("_").toUpperCase();
   }
 }
 
@@ -3909,7 +4223,7 @@ function configuredComTypes(comTypes: Record<string, AspVbscriptComType>): VbTyp
 }
 
 function builtinSignature(name: string): VbSignature | undefined {
-  const label = builtinSignatures[name.toLowerCase()]?.[0];
+  const label = builtinSignatureLabels(name)?.[0];
   if (!label) {
     return undefined;
   }
@@ -3924,8 +4238,22 @@ function builtinSignature(name: string): VbSignature | undefined {
   return { parameters, returnType: typeRef(builtinReturnType(name)) };
 }
 
+function builtinSignatureLabels(name: string): string[] | undefined {
+  const lower = name.toLowerCase();
+  const classicAsp = classicAspBuiltinSignatures[lower];
+  if (classicAsp) {
+    return classicAsp;
+  }
+  const builtin = builtinFunction(lower);
+  return builtin ? [builtin.signature] : undefined;
+}
+
 function builtinReturnType(name: string): string {
   const lower = name.toLowerCase();
+  const builtin = builtinFunction(lower);
+  if (builtin) {
+    return builtin.returnType;
+  }
   if (lower.includes("createobject") || lower.includes("getlasterror")) {
     return "Object";
   }
@@ -3938,6 +4266,10 @@ function builtinReturnType(name: string): string {
     return "String";
   }
   return "Variant";
+}
+
+function builtinFunction(name: string): BuiltinFunction | undefined {
+  return builtinFunctions.find((item) => item.label.toLowerCase() === name.toLowerCase());
 }
 
 function typeRef(name: string): VbTypeRef {

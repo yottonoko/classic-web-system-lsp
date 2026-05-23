@@ -165,6 +165,29 @@ describe("VS Code extension package", () => {
     expect(JSON.stringify(comTypes)).toContain("parameters");
   });
 
+  it("describes VBScript identifier casing settings", () => {
+    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      contributes?: {
+        configuration?: {
+          properties?: Record<string, { enum?: string[]; properties?: Record<string, unknown> }>;
+        };
+      };
+    };
+    const properties = manifest.contributes?.configuration?.properties;
+    const identifierCase = properties?.["aspLsp.vbscript.identifierCase"];
+    const byKind = properties?.["aspLsp.vbscript.identifierCaseByKind"];
+    expect(identifierCase?.enum).toEqual(
+      expect.arrayContaining(["pascal", "camel", "snake", "upperSnake", "ignore"]),
+    );
+    expect(byKind?.properties).toEqual(
+      expect.objectContaining({
+        variable: expect.anything(),
+        class: expect.anything(),
+        property: expect.anything(),
+      }),
+    );
+  });
+
   it("resolves the packaged language server module path", () => {
     const root = process.cwd();
     const serverModule = getServerModulePath({
