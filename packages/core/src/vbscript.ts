@@ -2211,6 +2211,9 @@ export function getVbscriptInlayHints(
         if (statement[index].text !== "(" || statement[index - 1]?.kind !== "identifier") {
           continue;
         }
+        if (isProcedureDeclarationOpenParen(parsed, statement, index)) {
+          continue;
+        }
         const name = callNameBefore(statement, index);
         const signature = name
           ? signatureForCall(parsed, name, statement[index].start, symbols, env)
@@ -2264,6 +2267,20 @@ function functionReturnHintPosition(parsed: AspParsedDocument, symbol: VbSymbol)
   return closeParenEnd
     ? rangeFromOffsets(parsed.text, closeParenEnd, closeParenEnd).start
     : symbol.range.end;
+}
+
+function isProcedureDeclarationOpenParen(
+  parsed: AspParsedDocument,
+  statement: VbToken[],
+  openParenIndex: number,
+): boolean {
+  const nameToken = statement[openParenIndex - 1];
+  return Boolean(
+    nameToken?.kind === "identifier" &&
+    vbProcedureNodes(parsed).some(
+      (node) => node.nameToken?.start === nameToken.start && node.nameToken.end === nameToken.end,
+    ),
+  );
 }
 
 function declarationCloseParenEnd(text: string, nameEnd: number): number | undefined {

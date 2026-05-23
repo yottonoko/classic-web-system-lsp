@@ -1246,6 +1246,11 @@ Response.Write BuildName("Ada")
     );
     expect(JSON.stringify(hints)).toContain("As Customer");
     expect(JSON.stringify(hints)).toContain("firstName:");
+    expect(hints.filter((hint) => hint.label === "firstName:")).toEqual([
+      expect.objectContaining({
+        position: positionAt(source, source.indexOf('"Ada"')),
+      }),
+    ]);
     const customerSymbol = symbols.find((symbol) => symbol.name === "c");
     const customerHint = hints.find((hint) => hint.label === " As Customer");
     expect(customerHint).toEqual(
@@ -1297,6 +1302,45 @@ Response.Write BuildDisplayName("Ada", "Lovelace", value)
     );
     expect(JSON.stringify(disabledByRefHints)).not.toContain("ByRef");
     expect(JSON.stringify(disabledByRefHints)).toContain("first:");
+
+    const declarationParameterSource = `<%
+Public Function RenderCustomerRows(ByVal customerList, activeCustomerId)
+End Function
+Private Sub SaveCustomer(customer)
+End Sub
+Property Get SelectedCustomer(activeCustomerId)
+End Property
+Property Let SelectedCustomer(activeCustomerId, value)
+End Property
+Property Set CurrentCustomer(value)
+End Property
+Response.Write RenderCustomerRows(customers, activeId)
+Call SaveCustomer(currentCustomer)
+Response.Write SelectedCustomer(activeId)
+SelectedCustomer(activeId) = currentCustomer
+%>`;
+    const declarationParameterParsed = parseAspDocument(
+      "file:///site/declaration-parameters.asp",
+      declarationParameterSource,
+    );
+    const declarationParameterHints = getVbscriptInlayHints(
+      declarationParameterParsed,
+      { start: { line: 0, character: 0 }, end: { line: 16, character: 0 } },
+      { symbols: collectVbscriptSymbols(declarationParameterParsed) },
+    );
+    const labelPositions = (label: string) =>
+      declarationParameterHints.filter((hint) => hint.label === label).map((hint) => hint.position);
+    expect(labelPositions("customerList:").length).toBe(1);
+    expect(labelPositions("activeCustomerId:").length).toBe(1);
+    expect(labelPositions("customer:").length).toBe(1);
+    expect(
+      declarationParameterHints
+        .filter((hint) => typeof hint.label === "string" && hint.label.endsWith(":"))
+        .some((hint) => hint.position.line >= 1 && hint.position.line <= 9),
+    ).toBe(false);
+    expect(
+      declarationParameterHints.filter((hint) => hint.label === "ByRef").length,
+    ).toBeGreaterThan(0);
 
     const selection = getVbscriptSelectionRanges(parsed, [
       positionAt(source, source.indexOf("BuildName =") + 2),

@@ -1980,6 +1980,98 @@ Response.Write BuildName("Ada")
       }
     });
 
+    it("does not show call-site parameter name hints on VBScript declarations", async () => {
+      const source = `<%
+Function RenderCustomerRows(ByVal customerList, activeCustomerId)
+End Function
+Response.Write RenderCustomerRows(customers, activeId)
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/formal-parameter-inlay.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const declarationHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 1, character: 0 }, end: { line: 2, character: 0 } },
+        });
+        const serializedDeclarationHints = JSON.stringify(declarationHints);
+        expect(serializedDeclarationHints).not.toContain("customerList:");
+        expect(serializedDeclarationHints).not.toContain("activeCustomerId:");
+        expect(serializedDeclarationHints).toContain("ByRef");
+
+        const callHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 3, character: 0 }, end: { line: 4, character: 0 } },
+        });
+        const serializedCallHints = JSON.stringify(callHints);
+        expect(serializedCallHints).toContain("customerList:");
+        expect(serializedCallHints).toContain("activeCustomerId:");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("honors the VBScript parameter name inlay hint setting", async () => {
+      const source = `<%
+Function BuildName(firstName)
+End Function
+Response.Write BuildName("Ada")
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { inlayHints: { parameterNames: false } } },
+        });
+        const uri = "file:///tmp/parameter-name-inlay-disabled.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+        });
+        const serialized = JSON.stringify(inlayHints);
+        expect(serialized).not.toContain("firstName:");
+        expect(serialized).toContain("ByRef");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("delegates JavaScript highlights and inlay hints", async () => {
       const marked = markedDocument(`<script>
 function add(first, second) {
