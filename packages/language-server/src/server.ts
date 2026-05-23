@@ -191,9 +191,13 @@ interface CachedDocument {
 
 interface CachedAnalysis {
   diagnostics?: DiagnosticCacheEntry;
+  fastDiagnostics?: DiagnosticCacheEntry;
+  slowDiagnostics?: DiagnosticCacheEntry;
   htmlDiagnostics?: DiagnosticCacheEntry;
   cssDiagnostics?: DiagnosticCacheEntry;
-  jsDiagnostics?: DiagnosticCacheEntry;
+  vbDiagnostics?: DiagnosticCacheEntry;
+  jsSyntaxDiagnostics?: DiagnosticCacheEntry;
+  jsSlowDiagnostics?: DiagnosticCacheEntry;
   vbProjectContext?: { key: string; context: VbProjectContext };
 }
 
@@ -207,6 +211,12 @@ interface PendingDocumentChange {
   previousText: string;
   changes: TextDocumentContentChangeEvent[];
   version: number;
+}
+
+interface SlowDiagnosticsJob {
+  version: number;
+  sequence: number;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface OffsetEdit {
@@ -282,6 +292,8 @@ function aspFileOperationFilter() {
 
 const cache = new Map<string, CachedDocument>();
 const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const slowDiagnosticsJobs = new Map<string, SlowDiagnosticsJob>();
+let slowDiagnosticsSequence = 0;
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
   clientLocale = typeof params.locale === "string" ? params.locale : "en";
@@ -379,6 +391,7 @@ documents.onDidOpen((event) => {
   validate(event.document);
 });
 documents.onDidChangeContent((event) => {
+  cancelSlowDiagnostics(event.document.uri);
   refreshCachedDocument(event.document);
   scheduleDiagnostics(event.document);
 });
@@ -389,6 +402,7 @@ documents.onDidSave((event) => {
 });
 documents.onDidClose((event) => {
   cancelScheduledDiagnostics(event.document.uri);
+  cancelSlowDiagnostics(event.document.uri);
   pendingDocumentChanges.delete(event.document.uri);
   cache.delete(event.document.uri);
   clearJsLanguageServiceCache();
@@ -433,6 +447,7 @@ connection.onNotification(
     invalidateWorkspaceIndex();
     includeDocumentCache.clear();
     clearJsProjectCaches();
+    cancelAllSlowDiagnostics();
     for (const document of documents.all()) {
       validate(document);
     }
@@ -450,6 +465,7 @@ connection.onDidChangeConfiguration((change) => {
   clearJsLanguageServiceCache();
   clearSemanticTokens();
   invalidateWorkspaceIndex();
+  cancelAllSlowDiagnostics();
   for (const document of documents.all()) {
     validate(document);
   }
@@ -460,6 +476,7 @@ connection.onDidChangeWatchedFiles((change) => {
   let scriptChanged = false;
   cache.clear();
   clearSemanticTokens();
+  cancelAllSlowDiagnostics();
   for (const file of change.changes) {
     const fileName = normalizeFileName(uriToFileName(file.uri));
     if (isAspWorkspaceFile(fileName)) {
@@ -1189,7 +1206,7 @@ connection.languages.semanticTokens.onDelta((params): SemanticTokens | SemanticT
 
 function validate(document: TextDocument): void {
   cancelScheduledDiagnostics(document.uri);
-  publishDiagnosticsForCached(refreshCachedDocument(document), cachedSettings(document.uri));
+  publishStagedDiagnosticsForCached(refreshCachedDocument(document), cachedSettings(document.uri));
 }
 
 function refreshCachedDocument(document: TextDocument): CachedDocument {
@@ -1288,7 +1305,7 @@ function publishDiagnosticsForVersion(uri: string, version: number): void {
   if (!document || document.version !== version) {
     return;
   }
-  publishDiagnosticsForCached(
+  publishStagedDiagnosticsForCached(
     getCached(uri) ?? refreshCachedDocument(document),
     cachedSettings(uri),
   );
@@ -1303,11 +1320,76 @@ function cancelScheduledDiagnostics(uri: string): void {
   diagnosticsTimers.delete(uri);
 }
 
-function publishDiagnosticsForCached(cached: CachedDocument, settings: AspSettings): void {
+function publishStagedDiagnosticsForCached(cached: CachedDocument, settings: AspSettings): void {
+  cancelSlowDiagnostics(cached.source.uri);
+  const diagnostics = fastDiagnosticsForCached(cached, settings);
   connection.sendDiagnostics({
     uri: cached.source.uri,
-    diagnostics: diagnosticsForCached(cached, settings),
+    diagnostics,
   });
+  enqueueSlowDiagnostics(cached, settings);
+}
+
+function enqueueSlowDiagnostics(cached: CachedDocument, settings: AspSettings): void {
+  const uri = cached.source.uri;
+  const version = cached.source.version;
+  const sequence = ++slowDiagnosticsSequence;
+  const timer = setTimeout(() => {
+    const current = slowDiagnosticsJobs.get(uri);
+    if (!current || current.sequence !== sequence) {
+      return;
+    }
+    slowDiagnosticsJobs.delete(uri);
+    publishSlowDiagnosticsForVersion(uri, version, settings, sequence);
+  }, 0);
+  slowDiagnosticsJobs.set(uri, { version, sequence, timer });
+}
+
+function publishSlowDiagnosticsForVersion(
+  uri: string,
+  version: number,
+  settings: AspSettings,
+  sequence: number,
+): void {
+  const document = documents.get(uri);
+  const cached = getCached(uri);
+  if (!document || !cached || document.version !== version || cached.source.version !== version) {
+    return;
+  }
+  const startedAt = startSlowCheckLog(cached, settings);
+  const slowItems = slowDiagnosticsForCached(cached, settings, "check.slow");
+  if (documents.get(uri)?.version !== version || getCached(uri)?.source.version !== version) {
+    return;
+  }
+  const fastItems =
+    cached.analysis?.fastDiagnostics?.items ?? fastDiagnosticsForCached(cached, settings);
+  const items = measureDebugStep(settings, uri, "check.slow.merge", () =>
+    dedupeDiagnostics([...fastItems, ...slowItems]),
+  );
+  analysisFor(cached).diagnostics = {
+    key: diagnosticsCacheKey(cached, settings),
+    items,
+    text: cached.parsed.text,
+  };
+  cached.changes = undefined;
+  cached.dirtyLanguages = undefined;
+  connection.sendDiagnostics({ uri, diagnostics: items });
+  finishSlowCheckLog(cached, settings, startedAt, items.length, sequence);
+}
+
+function cancelSlowDiagnostics(uri: string): void {
+  const job = slowDiagnosticsJobs.get(uri);
+  if (!job) {
+    return;
+  }
+  clearTimeout(job.timer);
+  slowDiagnosticsJobs.delete(uri);
+}
+
+function cancelAllSlowDiagnostics(): void {
+  for (const uri of slowDiagnosticsJobs.keys()) {
+    cancelSlowDiagnostics(uri);
+  }
 }
 
 function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
@@ -1318,49 +1400,96 @@ function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Di
     finishCheckLog(cached, settings, startedAt, cached.analysis.diagnostics.items.length, true);
     return cached.analysis.diagnostics.items;
   }
-  const parserDiagnostics = measureDebugStep(
-    settings,
-    cached.source.uri,
-    "check.parserDiagnostics",
-    () => cached.parsed.diagnostics,
-  );
-  const vbDiagnostics = measureDebugStep(
-    settings,
-    cached.source.uri,
-    "check.vbscript.diagnostics",
-    () => analyzeVbscript(cached.parsed, buildVbProjectContext(cached, settings)).diagnostics,
-  );
-  const includeItems = measureDebugStep(
-    settings,
-    cached.source.uri,
-    "check.includeDiagnostics",
-    () => includeDiagnostics(cached, settings),
-  );
-  const diagnostics: Diagnostic[] = [...parserDiagnostics, ...vbDiagnostics, ...includeItems];
-  if (!isIncDocument(cached.source.uri)) {
-    diagnostics.push(
-      ...measureDebugStep(settings, cached.source.uri, "check.htmlDiagnostics", () =>
-        htmlDiagnostics(cached),
-      ),
-    );
-  }
-  diagnostics.push(
-    ...measureDebugStep(settings, cached.source.uri, "check.cssDiagnostics", () =>
-      cssDiagnostics(cached),
-    ),
-  );
-  diagnostics.push(
-    ...measureDebugStep(settings, cached.source.uri, "check.javascriptDiagnostics", () =>
-      jsDiagnostics(cached, settings),
-    ),
-  );
+  const fastItems = fastDiagnosticsForCached(cached, settings, "check");
+  const slowItems = slowDiagnosticsForCached(cached, settings, "check");
   const items = measureDebugStep(settings, cached.source.uri, "check.dedupe", () =>
-    dedupeDiagnostics(diagnostics),
+    dedupeDiagnostics([...fastItems, ...slowItems]),
   );
   analysisFor(cached).diagnostics = { key, items, text: cached.parsed.text };
   cached.changes = undefined;
   cached.dirtyLanguages = undefined;
   finishCheckLog(cached, settings, startedAt, items.length, false);
+  return items;
+}
+
+function fastDiagnosticsForCached(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix = "check.fast",
+): Diagnostic[] {
+  const shouldLogFastSummary = stepPrefix === "check.fast";
+  const startedAt = shouldLogFastSummary
+    ? startFastCheckLog(cached, settings)
+    : process.hrtime.bigint();
+  const key = fastDiagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.fastDiagnostics?.key === key) {
+    finishDebugStep(settings, cached.source.uri, `${stepPrefix}.cacheReuse`, startedAt);
+    if (shouldLogFastSummary) {
+      finishFastCheckLog(cached, settings, startedAt, cached.analysis.fastDiagnostics.items.length);
+    }
+    return cached.analysis.fastDiagnostics.items;
+  }
+  const parserDiagnostics = measureDebugStep(
+    settings,
+    cached.source.uri,
+    `${stepPrefix}.parserDiagnostics`,
+    () => cached.parsed.diagnostics,
+  );
+  const includeItems = measureDebugStep(
+    settings,
+    cached.source.uri,
+    `${stepPrefix}.includeDiagnostics`,
+    () => includeDiagnostics(cached, settings),
+  );
+  const diagnostics: Diagnostic[] = [...parserDiagnostics, ...includeItems];
+  if (!isIncDocument(cached.source.uri)) {
+    diagnostics.push(
+      ...measureDebugStep(settings, cached.source.uri, `${stepPrefix}.htmlDiagnostics`, () =>
+        htmlDiagnostics(cached),
+      ),
+    );
+  }
+  diagnostics.push(
+    ...measureDebugStep(settings, cached.source.uri, `${stepPrefix}.cssDiagnostics`, () =>
+      cssDiagnostics(cached),
+    ),
+  );
+  diagnostics.push(
+    ...measureDebugStep(settings, cached.source.uri, `${stepPrefix}.javascriptSyntax`, () =>
+      jsSyntaxDiagnostics(cached),
+    ),
+  );
+  const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
+    dedupeDiagnostics(diagnostics),
+  );
+  analysisFor(cached).fastDiagnostics = { key, items, text: cached.parsed.text };
+  if (shouldLogFastSummary) {
+    finishFastCheckLog(cached, settings, startedAt, items.length);
+  }
+  return items;
+}
+
+function slowDiagnosticsForCached(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix = "check.slow",
+): Diagnostic[] {
+  const key = slowDiagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.slowDiagnostics?.key === key) {
+    finishDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.cacheReuse`,
+      process.hrtime.bigint(),
+    );
+    return cached.analysis.slowDiagnostics.items;
+  }
+  const vbItems = vbDiagnostics(cached, settings, stepPrefix);
+  const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
+  const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
+    dedupeDiagnostics([...vbItems, ...jsItems]),
+  );
+  analysisFor(cached).slowDiagnostics = { key, items, text: cached.parsed.text };
   return items;
 }
 
@@ -1381,6 +1510,43 @@ function finishCheckLog(
   logDebugSummary(
     settings,
     `[asp-lsp] LSP check completed: ${cached.source.uri} ${formatElapsedMs(elapsedMs)}, diagnostics=${diagnosticCount}${cacheText}`,
+  );
+}
+
+function startFastCheckLog(cached: CachedDocument, settings: AspSettings): bigint {
+  logDebugSummary(settings, `[asp-lsp] LSP check fast started: ${cached.source.uri}`);
+  return process.hrtime.bigint();
+}
+
+function finishFastCheckLog(
+  cached: CachedDocument,
+  settings: AspSettings,
+  startedAt: bigint,
+  diagnosticCount: number,
+): void {
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  logDebugSummary(
+    settings,
+    `[asp-lsp] LSP check fast completed: ${cached.source.uri} ${formatElapsedMs(elapsedMs)}, diagnostics=${diagnosticCount}`,
+  );
+}
+
+function startSlowCheckLog(cached: CachedDocument, settings: AspSettings): bigint {
+  logDebugSummary(settings, `[asp-lsp] LSP check slow started: ${cached.source.uri}`);
+  return process.hrtime.bigint();
+}
+
+function finishSlowCheckLog(
+  cached: CachedDocument,
+  settings: AspSettings,
+  startedAt: bigint,
+  diagnosticCount: number,
+  sequence: number,
+): void {
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  logDebugSummary(
+    settings,
+    `[asp-lsp] LSP check slow completed: ${cached.source.uri} ${formatElapsedMs(elapsedMs)}, diagnostics=${diagnosticCount}, sequence=${sequence}`,
   );
 }
 
@@ -1453,9 +1619,23 @@ function diagnosticKey(diagnostic: Diagnostic): string {
 
 function diagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
   return JSON.stringify({
+    fast: fastDiagnosticsCacheKey(cached, settings),
+    slow: slowDiagnosticsCacheKey(cached, settings),
+  });
+}
+
+function fastDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
     text: textFingerprint(cached.parsed.text),
     parsedDiagnostics: cached.parsed.diagnostics.map(diagnosticKey),
     settings: diagnosticsSettingsKey(settings),
+  });
+}
+
+function slowDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    vbscript: vbDiagnosticsCacheKey(cached, settings),
+    javascript: jsSlowDiagnosticsCacheKey(cached, settings),
   });
 }
 
@@ -1478,6 +1658,37 @@ function diagnosticsSettingsKey(settings: AspSettings): unknown {
     virtualRoots: settings.virtualRoots,
     legacyEncoding: settings.legacyEncoding,
   };
+}
+
+function vbDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    project: vbProjectContextCacheKey(collectVbProjectDocuments(cached.parsed, settings), settings),
+    settings: {
+      typeChecking: settings.vbscript?.typeChecking,
+      identifierCase: settings.vbscript?.identifierCase,
+      identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
+      comTypes: settings.vbscript?.comTypes,
+      globals: settings.vbscript?.globals,
+      unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+      locale: settings.resolvedLocale,
+    },
+  });
+}
+
+function jsSlowDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    virtuals: jsVirtualDocuments(cached).map(virtualCacheKey),
+    settings: {
+      checkJs: settings.checkJs ?? false,
+      unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
+    },
+    project:
+      settings.checkJs === true
+        ? jsVirtualDocuments(cached).map((virtual) =>
+            jsLanguageServiceCacheKey(virtual, settings, {}),
+          )
+        : undefined,
+  });
 }
 
 function virtualCacheKey(virtual: VirtualDocument): string {
@@ -1619,44 +1830,80 @@ function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
   return items;
 }
 
-function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
+function jsSyntaxDiagnostics(cached: CachedDocument): Diagnostic[] {
   const reused =
-    reuseUnchangedDiagnostics(cached, "javascript", cached.analysis?.jsDiagnostics) ??
-    reuseUnchangedDiagnostics(cached, "jscript", cached.analysis?.jsDiagnostics);
+    reuseUnchangedDiagnostics(cached, "javascript", cached.analysis?.jsSyntaxDiagnostics) ??
+    reuseUnchangedDiagnostics(cached, "jscript", cached.analysis?.jsSyntaxDiagnostics);
   if (reused) {
     return reused;
   }
   const key = JSON.stringify({
     virtuals: jsVirtualDocuments(cached).map(virtualCacheKey),
-    settings: {
-      checkJs: settings.checkJs ?? false,
-      unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
-    },
   });
-  if (cached.analysis?.jsDiagnostics?.key === key) {
-    return cached.analysis.jsDiagnostics.items;
+  if (cached.analysis?.jsSyntaxDiagnostics?.key === key) {
+    return cached.analysis.jsSyntaxDiagnostics.items;
   }
   const items = jsVirtualDocuments(cached).flatMap((virtual) => {
-    const service = createJsLanguageService(virtual, settings).service;
-    const fileName = jsVirtualFileName(virtual.uri);
-    const syntactic = service.getSyntacticDiagnostics(fileName);
-    const semantic = settings.checkJs ? service.getSemanticDiagnostics(fileName) : [];
-    const unused =
-      settings.javascript?.unusedDiagnostics === false
-        ? []
-        : createJsLanguageService(virtual, settings, {
-            checkJs: true,
-            noUnusedLocals: true,
-            noUnusedParameters: true,
-          })
-            .service.getSemanticDiagnostics(fileName)
-            .filter((diagnostic) => tsUnusedDiagnosticCodes.has(diagnostic.code));
+    const sourceFile = ts.createSourceFile(
+      jsVirtualFileName(virtual.uri),
+      virtual.text,
+      ts.ScriptTarget.ESNext,
+      true,
+      ts.ScriptKind.JS,
+    );
+    const parseDiagnostics =
+      (sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] })
+        .parseDiagnostics ?? [];
+    return parseDiagnostics
+      .map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic))
+      .filter(isDiagnostic);
+  });
+  analysisFor(cached).jsSyntaxDiagnostics = { key, items, text: cached.parsed.text };
+  return items;
+}
+
+function jsSlowDiagnostics(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix: string,
+): Diagnostic[] {
+  const reused =
+    reuseUnchangedDiagnostics(cached, "javascript", cached.analysis?.jsSlowDiagnostics) ??
+    reuseUnchangedDiagnostics(cached, "jscript", cached.analysis?.jsSlowDiagnostics);
+  if (reused) {
+    return reused;
+  }
+  const key = jsSlowDiagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.jsSlowDiagnostics?.key === key) {
+    return cached.analysis.jsSlowDiagnostics.items;
+  }
+  const items = jsVirtualDocuments(cached).flatMap((virtual) => {
+    const semantic = measureDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.javascriptSemantic`,
+      () => {
+        if (settings.checkJs !== true) {
+          return [];
+        }
+        const service = createJsLanguageService(virtual, settings).service;
+        return service.getSemanticDiagnostics(jsVirtualFileName(virtual.uri));
+      },
+    );
+    const unused = measureDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.javascriptUnused`,
+      () =>
+        settings.javascript?.unusedDiagnostics === false
+          ? []
+          : lightweightJsUnusedDiagnostics(virtual),
+    );
     const semanticKeys = new Set(semantic.map(tsDiagnosticKey));
     const unusedOnly = unused.filter(
       (diagnostic) => !semanticKeys.has(tsDiagnosticKey(diagnostic)),
     );
     return [
-      ...syntactic.map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic)),
       ...semantic.map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic)),
       ...unusedOnly.map((diagnostic) =>
         tsDiagnosticToLsp(virtual, diagnostic, {
@@ -1666,8 +1913,77 @@ function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnosti
       ),
     ].filter(isDiagnostic);
   });
-  analysisFor(cached).jsDiagnostics = { key, items, text: cached.parsed.text };
+  analysisFor(cached).jsSlowDiagnostics = { key, items, text: cached.parsed.text };
   return items;
+}
+
+function vbDiagnostics(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix: string,
+): Diagnostic[] {
+  const reused = reuseUnchangedDiagnostics(cached, "vbscript", cached.analysis?.vbDiagnostics);
+  if (reused) {
+    return reused;
+  }
+  const key = vbDiagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.vbDiagnostics?.key === key) {
+    return cached.analysis.vbDiagnostics.items;
+  }
+  const context = measureDebugStep(
+    settings,
+    cached.source.uri,
+    `${stepPrefix}.vbscript.projectContext`,
+    () => buildVbProjectContext(cached, settings),
+  );
+  const items = measureDebugStep(
+    settings,
+    cached.source.uri,
+    `${stepPrefix}.vbscript.diagnostics`,
+    () => analyzeVbscript(cached.parsed, context).diagnostics,
+  );
+  analysisFor(cached).vbDiagnostics = { key, items, text: cached.parsed.text };
+  return items;
+}
+
+function lightweightJsUnusedDiagnostics(virtual: VirtualDocument): ts.Diagnostic[] {
+  const fileName = jsVirtualFileName(virtual.uri);
+  const files = new Map([[normalizeFileName(fileName), virtual.text]]);
+  const host: ts.LanguageServiceHost = {
+    getScriptFileNames: () => [fileName],
+    getScriptVersion: () => "0",
+    getScriptSnapshot: (requested) => {
+      const text = files.get(normalizeFileName(requested));
+      return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text);
+    },
+    getScriptKind: () => ts.ScriptKind.JS,
+    getCurrentDirectory: () => path.dirname(uriToFileName(virtualSourceUri(virtual))),
+    getCompilationSettings: () => ({
+      allowJs: true,
+      checkJs: true,
+      noEmit: true,
+      noLib: true,
+      noUnusedLocals: true,
+      noUnusedParameters: true,
+      target: ts.ScriptTarget.ESNext,
+      module: ts.ModuleKind.CommonJS,
+      types: [],
+    }),
+    getDefaultLibFileName: () => "",
+    fileExists: (requested) => files.has(normalizeFileName(requested)),
+    readFile: (requested) => files.get(normalizeFileName(requested)),
+    readDirectory: () => [],
+    directoryExists: () => true,
+    getDirectories: () => [],
+  };
+  const service = ts.createLanguageService(host);
+  try {
+    return service
+      .getSemanticDiagnostics(fileName)
+      .filter((diagnostic) => tsUnusedDiagnosticCodes.has(diagnostic.code));
+  } finally {
+    service.dispose();
+  }
 }
 
 function cssCompletion(
@@ -3114,7 +3430,6 @@ function tsReferenceToLocation(
 }
 
 function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
-  const startedAt = process.hrtime.bigint();
   const documents = collectVbProjectDocuments(cached.parsed, settings);
   const contextSettings = {
     typeChecking: settings.vbscript?.typeChecking,
@@ -3124,16 +3439,8 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
     locale: settings.resolvedLocale,
   };
-  const key = JSON.stringify({
-    documents: documents.map((document) => ({
-      uri: document.uri,
-      text: textFingerprint(document.text),
-    })),
-    contextSettings,
-    globals: settings.vbscript?.globals,
-  });
+  const key = vbProjectContextCacheKey(documents, settings);
   if (cached.analysis?.vbProjectContext?.key === key) {
-    finishDebugStep(settings, cached.source.uri, "vbscript.projectContext", startedAt);
     return cached.analysis.vbProjectContext.context;
   }
   const symbols = documents.flatMap((document) =>
@@ -3148,8 +3455,46 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     ...contextSettings,
   };
   analysisFor(cached).vbProjectContext = { key, context };
-  finishDebugStep(settings, cached.source.uri, "vbscript.projectContext", startedAt);
   return context;
+}
+
+function vbProjectContextCacheKey(documents: AspParsedDocument[], settings: AspSettings): string {
+  return JSON.stringify({
+    documents: documents.map((document) => ({
+      uri: document.uri,
+      vbscript: vbProjectDocumentFingerprint(document),
+    })),
+    settings: {
+      typeChecking: settings.vbscript?.typeChecking,
+      identifierCase: settings.vbscript?.identifierCase,
+      identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
+      comTypes: settings.vbscript?.comTypes,
+      unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+      locale: settings.resolvedLocale,
+    },
+    globals: settings.vbscript?.globals,
+  });
+}
+
+function vbProjectDocumentFingerprint(document: AspParsedDocument): unknown {
+  return {
+    defaultLanguage: document.defaultLanguage,
+    includes: document.includes.map((include) => ({
+      offset: include.offset,
+      path: include.path,
+      mode: include.mode,
+    })),
+    regions: document.regions
+      .filter((region) => region.language === "vbscript")
+      .map((region) => ({
+        kind: region.kind,
+        start: region.start,
+        end: region.end,
+        contentStart: region.contentStart,
+        contentEnd: region.contentEnd,
+        text: textFingerprint(document.text.slice(region.contentStart, region.contentEnd)),
+      })),
+  };
 }
 
 function configuredVbscriptGlobals(cached: CachedDocument, settings: AspSettings): VbSymbol[] {

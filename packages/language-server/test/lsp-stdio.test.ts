@@ -76,7 +76,7 @@ describe(
           },
         });
 
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "missingName");
         expect(JSON.stringify(diagnostics.params)).toContain("missingName");
 
         const completions = await server.request("textDocument/completion", {
@@ -761,7 +761,7 @@ function boot() {
             text: `<style>.x { color: }</style>\n<script>const = ;</script>`,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "asp-lsp-css");
         const serialized = JSON.stringify(diagnostics.params);
         expect(serialized).toContain("asp-lsp-css");
         expect(serialized).toContain("asp-lsp-typescript");
@@ -814,7 +814,7 @@ Response.Write known
           contentChanges: [{ text: `<% Option Explicit\nResponse.Write finalName\n%>` }],
         });
 
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "finalName");
         const serialized = JSON.stringify(diagnostics.params);
         expect(serialized).toContain("finalName");
         expect(serialized).not.toContain("staleName");
@@ -859,6 +859,137 @@ Response.Write known
         });
 
         await waitForDiagnosticsContaining(server, "immediateName");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("publishes fast diagnostics before slow diagnostics for push diagnostics", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+
+        const uri = "file:///tmp/staged-diagnostics.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<!-- #include file="missing.inc" -->
+<% Option Explicit
+Response.Write missingName
+%>`,
+          },
+        });
+
+        const fastDiagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const fastText = JSON.stringify(fastDiagnostics.params);
+        expect(fastText).toContain("missing.inc");
+        expect(fastText).not.toContain("missingName");
+
+        const slowDiagnostics = await waitForDiagnosticsContaining(server, "missingName");
+        const slowText = JSON.stringify(slowDiagnostics.params);
+        expect(slowText).toContain("missing.inc");
+        expect(slowText).toContain("missingName");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("does not publish stale slow diagnostics after rapid immediate changes", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
+        });
+
+        const uri = "file:///tmp/stale-slow-diagnostics.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<% Option Explicit
+Dim known
+Response.Write known
+%>`,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: `<% Option Explicit\nResponse.Write staleName\n%>` }],
+        });
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 3 },
+          contentChanges: [{ text: `<% Option Explicit\nResponse.Write finalName\n%>` }],
+        });
+
+        const diagnostics = await waitForDiagnosticsContaining(server, "finalName");
+        expect(JSON.stringify(diagnostics.params)).not.toContain("staleName");
+        await delay(30);
+        const pendingText = JSON.stringify(
+          server
+            .takePendingNotifications("textDocument/publishDiagnostics")
+            .map((item) => item.params),
+        );
+        expect(pendingText).not.toContain("staleName");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("does not publish pending slow diagnostics after a document closes", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+
+        const uri = "file:///tmp/closed-slow-diagnostics.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<% Option Explicit\nResponse.Write closedName\n%>`,
+          },
+        });
+        server.notify("textDocument/didClose", {
+          textDocument: { uri },
+        });
+
+        await delay(30);
+        const pendingText = JSON.stringify(
+          server
+            .takePendingNotifications("textDocument/publishDiagnostics")
+            .map((item) => item.params),
+        );
+        expect(pendingText).not.toContain("closedName");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -2150,7 +2281,7 @@ Response.Write usedValue
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "unusedValue");
         const vbDiagnostics = (
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics;
@@ -2196,7 +2327,7 @@ Response.Write miss▮ingName
             text: marked.text,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "missingName");
         const actions = await server.request("textDocument/codeAction", {
           textDocument: { uri },
           range: {
@@ -2241,7 +2372,7 @@ Response.Write missingName
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "missingName");
         const vbDiagnostics = (
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript");
@@ -2290,7 +2421,7 @@ Response.Write FOO
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "Foo");
         const namingDiagnostics = (
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
@@ -2373,7 +2504,7 @@ Response.Write ${testCase.referenceName}
               text: source,
             },
           });
-          const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+          const diagnostics = await waitForDiagnosticsContaining(server, testCase.expectedName);
           const namingDiagnostics = (
             diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
           ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
@@ -2433,7 +2564,7 @@ End Class
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "CustomerRecord");
         const namingDiagnostics = (
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
@@ -2495,7 +2626,7 @@ Response.Write record.display_name
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "CustomerRecord");
         const namingDiagnostics = (
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
@@ -2559,7 +2690,7 @@ Response.Write record.customer_name
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "DisplayName");
         const namingDiagnostics = (
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
@@ -2620,7 +2751,7 @@ Dim foo
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "Foo");
         const namingDiagnostics = (
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
@@ -2671,7 +2802,7 @@ Response.Write foo
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "Foo");
         const namingDiagnostics = (
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
@@ -2725,7 +2856,7 @@ End Sub
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "Foo");
         const namingDiagnostics = (
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
@@ -2775,7 +2906,7 @@ Response.Write foo
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "Foo");
         const namingDiagnostics = (
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
@@ -2860,7 +2991,7 @@ Response.Write miss▮ingName
             text: marked.text,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "宣言されていません");
         const serializedDiagnostics = JSON.stringify(diagnostics.params);
         expect(serializedDiagnostics).toContain("解決できません");
         expect(serializedDiagnostics).toContain("宣言されていません");
@@ -2920,7 +3051,7 @@ Response.Write miss▮ingName
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "missing.inc");
         const actions = await server.request("textDocument/codeAction", {
           textDocument: { uri },
           range: { start: { line: 0, character: 5 }, end: { line: 0, character: 15 } },
@@ -2972,7 +3103,7 @@ Response.Write Shared▮Helper
             text: marked.text,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "SharedHelper");
         const actions = await server.request("textDocument/codeAction", {
           textDocument: { uri },
           range: { start: marked.position, end: marked.position },
@@ -3015,7 +3146,7 @@ function demo(unusedParam) {
 </script>`,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "asp-lsp-typescript-unused");
         const serialized = JSON.stringify(diagnostics.params);
         expect(serialized).toContain("asp-lsp-typescript-unused");
         expect(serialized).toContain("unusedLocal");
@@ -3082,7 +3213,7 @@ helper▮Thing();
           textDocument: { uri, version: 2 },
           contentChanges: [{ text: callDocument.text }],
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "helperThing");
         const actions = await server.request("textDocument/codeAction", {
           textDocument: { uri },
           range: { start: callDocument.position, end: callDocument.position },
@@ -3136,9 +3267,18 @@ End If
         await waitForLogContaining(server, "LSP analysis started");
         const analysisCompletedLog = await waitForLogContaining(server, "LSP analysis completed");
         expectElapsedLogWithoutHeat(analysisCompletedLog);
-        await waitForLogContaining(server, "LSP check started");
-        const checkCompletedLog = await waitForLogContaining(server, "LSP check completed");
-        expectElapsedLogWithoutHeat(checkCompletedLog);
+        await waitForLogContaining(server, "LSP check fast started");
+        const fastCheckCompletedLog = await waitForLogContaining(
+          server,
+          "LSP check fast completed",
+        );
+        expectElapsedLogWithoutHeat(fastCheckCompletedLog);
+        await waitForLogContaining(server, "LSP check slow started");
+        const slowCheckCompletedLog = await waitForLogContaining(
+          server,
+          "LSP check slow completed",
+        );
+        expectElapsedLogWithoutHeat(slowCheckCompletedLog);
 
         const fullEdits = await server.request("textDocument/formatting", {
           textDocument: { uri },
@@ -3222,9 +3362,11 @@ Response.Write enabled
         for (const expected of [
           "analysis.parse",
           "analysis.virtualDocuments",
-          "vbscript.projectContext",
-          "check.cssDiagnostics",
-          "check.javascriptDiagnostics",
+          "check.fast.cssDiagnostics",
+          "check.fast.javascriptSyntax",
+          "check.slow.vbscript.projectContext",
+          "check.slow.vbscript.diagnostics",
+          "check.slow.javascriptUnused",
         ]) {
           const log = await waitForLogContaining(server, expected);
           expectElapsedLogWithoutHeat(log);
@@ -3236,6 +3378,47 @@ Response.Write enabled
         });
         const embeddedLog = await waitForLogContaining(server, "format.embedded");
         expectElapsedLogWithoutHeat(embeddedLog);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("separates fast and slow diagnostics in the classic ASP dashboard smoke scenario", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${path.resolve(process.cwd(), "../..")}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { debug: { output: "verbose" } } },
+        });
+
+        const samplePath = path.resolve(
+          process.cwd(),
+          "../../samples/classic-asp-dashboard/customers.asp",
+        );
+        const uri = `file://${samplePath}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(samplePath, "utf8"),
+          },
+        });
+
+        await waitForLogContaining(server, "check.fast.javascriptSyntax");
+        const fastLog = await waitForLogContaining(server, "LSP check fast completed");
+        expectElapsedLogWithoutHeat(fastLog);
+        await waitForLogContaining(server, "check.slow.javascriptUnused");
+        const slowLog = await waitForLogContaining(server, "LSP check slow completed");
+        expectElapsedLogWithoutHeat(slowLog);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -3440,7 +3623,7 @@ Repository.
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "no member");
         const diagnosticText = JSON.stringify(diagnostics.params);
         expect(diagnosticText).toContain("no member");
         expect(diagnosticText).toContain("Argument count");
@@ -3514,7 +3697,7 @@ typedValue = "hello"
             text: source,
           },
         });
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "objectNeedsSet");
         const typeDiagnostics = (
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-type");
@@ -3828,7 +4011,7 @@ async function waitForDiagnosticsContaining(
   server: RpcServer,
   expected: string,
 ): Promise<JsonRpcMessage> {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
     if (JSON.stringify(diagnostics.params).includes(expected)) {
       return diagnostics;
@@ -3845,6 +4028,10 @@ async function waitForLogContaining(server: RpcServer, expected: string): Promis
     }
   }
   throw new Error(`Timed out waiting for log containing ${expected}.`);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function expectElapsedLogWithoutHeat(message: JsonRpcMessage): void {
