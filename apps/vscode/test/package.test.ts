@@ -30,7 +30,14 @@ describe("VS Code extension package", () => {
       };
       capabilities?: { untrustedWorkspaces?: { supported?: boolean } };
     };
+    const rootManifest = JSON.parse(fs.readFileSync("../../package.json", "utf8")) as {
+      license?: string;
+    };
     const commands = manifest.contributes?.commands?.map((command) => command.command) ?? [];
+    expect(rootManifest.license).toBe("MIT OR Apache-2.0");
+    expect(manifest.license).toBe("MIT OR Apache-2.0");
+    expect(fs.existsSync("../../LICENSE-MIT")).toBe(true);
+    expect(fs.existsSync("../../LICENSE-APACHE")).toBe(true);
     expect(commands).toContain("aspLsp.restartServer");
     expect(commands).toContain("aspLsp.reindexWorkspace");
     expect(commands).toContain("aspLsp.openOutput");

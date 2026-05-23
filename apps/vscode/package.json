@@ -18,7 +18,7 @@
   "bugs": {
     "url": "https://github.com/yottonoko/asp-lsp/issues"
   },
-  "license": "MIT",
+  "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/yottonoko/asp-lsp.git"
