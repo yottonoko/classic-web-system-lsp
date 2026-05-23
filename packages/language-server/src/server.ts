@@ -1193,10 +1193,14 @@ function validate(document: TextDocument): void {
 }
 
 function refreshCachedDocument(document: TextDocument): CachedDocument {
-  const startedAt = startAnalysisLog(document.uri);
+  const startedAt = process.hrtime.bigint();
+  const settingsStartedAt = startedAt;
   const settings = cachedSettings(document.uri);
+  startAnalysisLog(settings, document.uri);
+  finishDebugStep(settings, document.uri, "analysis.settings", settingsStartedAt);
   const previous = cache.get(document.uri);
   const pending = pendingDocumentChanges.get(document.uri);
+  const parseStartedAt = process.hrtime.bigint();
   const update =
     previous && pending?.version === document.version
       ? updateAspParsedDocument(
@@ -1207,7 +1211,15 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
         )
       : undefined;
   const parsed = update?.parsed ?? parseAspDocument(document.uri, document.getText(), settings);
+  finishDebugStep(
+    settings,
+    document.uri,
+    update?.incremental === true ? "analysis.parse.incremental" : "analysis.parse.full",
+    parseStartedAt,
+  );
+  const virtualStartedAt = process.hrtime.bigint();
   const virtuals = buildVirtualDocuments(parsed);
+  finishDebugStep(settings, document.uri, "analysis.virtualDocuments", virtualStartedAt);
   const changes = update?.incremental
     ? [...(previous?.changes ?? []), ...(update.change ? [update.change] : [])]
     : undefined;
@@ -1217,6 +1229,7 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
         ...(update.change ? [update.change.language] : []),
       ])
     : undefined;
+  const cacheStartedAt = process.hrtime.bigint();
   const cached = {
     source: document,
     parsed,
@@ -1229,19 +1242,25 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
   if (pending?.version === document.version) {
     pendingDocumentChanges.delete(document.uri);
   }
-  finishAnalysisLog(document.uri, startedAt, update?.incremental === true);
+  finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
+  finishAnalysisLog(settings, document.uri, startedAt, update?.incremental === true);
   return cached;
 }
 
-function startAnalysisLog(uri: string): bigint {
-  connection.console.info(`[asp-lsp] LSP analysis started: ${uri}`);
-  return process.hrtime.bigint();
+function startAnalysisLog(settings: AspSettings, uri: string): void {
+  logDebugSummary(settings, `[asp-lsp] LSP analysis started: ${uri}`);
 }
 
-function finishAnalysisLog(uri: string, startedAt: bigint, incremental: boolean): void {
+function finishAnalysisLog(
+  settings: AspSettings,
+  uri: string,
+  startedAt: bigint,
+  incremental: boolean,
+): void {
   const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
   const mode = incremental ? "incremental" : "full";
-  connection.console.info(
+  logDebugSummary(
+    settings,
     `[asp-lsp] LSP analysis completed: ${uri} in ${elapsedMs.toFixed(1)} ms, mode=${mode}`,
   );
 }
@@ -1292,46 +1311,118 @@ function publishDiagnosticsForCached(cached: CachedDocument, settings: AspSettin
 }
 
 function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
-  const startedAt = startCheckLog(cached);
+  const startedAt = startCheckLog(cached, settings);
   const key = diagnosticsCacheKey(cached, settings);
   if (cached.analysis?.diagnostics?.key === key) {
-    finishCheckLog(cached, startedAt, cached.analysis.diagnostics.items.length, true);
+    finishDebugStep(settings, cached.source.uri, "check.cacheReuse", startedAt);
+    finishCheckLog(cached, settings, startedAt, cached.analysis.diagnostics.items.length, true);
     return cached.analysis.diagnostics.items;
   }
-  const diagnostics: Diagnostic[] = [
-    ...cached.parsed.diagnostics,
-    ...analyzeVbscript(cached.parsed, buildVbProjectContext(cached, settings)).diagnostics,
-    ...includeDiagnostics(cached, settings),
-  ];
+  const parserDiagnostics = measureDebugStep(
+    settings,
+    cached.source.uri,
+    "check.parserDiagnostics",
+    () => cached.parsed.diagnostics,
+  );
+  const vbDiagnostics = measureDebugStep(
+    settings,
+    cached.source.uri,
+    "check.vbscript.diagnostics",
+    () => analyzeVbscript(cached.parsed, buildVbProjectContext(cached, settings)).diagnostics,
+  );
+  const includeItems = measureDebugStep(
+    settings,
+    cached.source.uri,
+    "check.includeDiagnostics",
+    () => includeDiagnostics(cached, settings),
+  );
+  const diagnostics: Diagnostic[] = [...parserDiagnostics, ...vbDiagnostics, ...includeItems];
   if (!isIncDocument(cached.source.uri)) {
-    diagnostics.push(...htmlDiagnostics(cached));
+    diagnostics.push(
+      ...measureDebugStep(settings, cached.source.uri, "check.htmlDiagnostics", () =>
+        htmlDiagnostics(cached),
+      ),
+    );
   }
-  diagnostics.push(...cssDiagnostics(cached));
-  diagnostics.push(...jsDiagnostics(cached, settings));
-  const items = dedupeDiagnostics(diagnostics);
+  diagnostics.push(
+    ...measureDebugStep(settings, cached.source.uri, "check.cssDiagnostics", () =>
+      cssDiagnostics(cached),
+    ),
+  );
+  diagnostics.push(
+    ...measureDebugStep(settings, cached.source.uri, "check.javascriptDiagnostics", () =>
+      jsDiagnostics(cached, settings),
+    ),
+  );
+  const items = measureDebugStep(settings, cached.source.uri, "check.dedupe", () =>
+    dedupeDiagnostics(diagnostics),
+  );
   analysisFor(cached).diagnostics = { key, items, text: cached.parsed.text };
   cached.changes = undefined;
   cached.dirtyLanguages = undefined;
-  finishCheckLog(cached, startedAt, items.length, false);
+  finishCheckLog(cached, settings, startedAt, items.length, false);
   return items;
 }
 
-function startCheckLog(cached: CachedDocument): bigint {
-  connection.console.info(`[asp-lsp] LSP check started: ${cached.source.uri}`);
+function startCheckLog(cached: CachedDocument, settings: AspSettings): bigint {
+  logDebugSummary(settings, `[asp-lsp] LSP check started: ${cached.source.uri}`);
   return process.hrtime.bigint();
 }
 
 function finishCheckLog(
   cached: CachedDocument,
+  settings: AspSettings,
   startedAt: bigint,
   diagnosticCount: number,
   cachedResult: boolean,
 ): void {
   const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
   const cacheText = cachedResult ? ", cached=true" : "";
-  connection.console.info(
+  logDebugSummary(
+    settings,
     `[asp-lsp] LSP check completed: ${cached.source.uri} in ${elapsedMs.toFixed(1)} ms, diagnostics=${diagnosticCount}${cacheText}`,
   );
+}
+
+function logDebugSummary(settings: AspSettings, message: string): void {
+  if (isDebugSummaryEnabled(settings)) {
+    connection.console.info(message);
+  }
+}
+
+function finishDebugStep(
+  settings: AspSettings,
+  uri: string,
+  step: string,
+  startedAt: bigint,
+): void {
+  if (!isDebugVerboseEnabled(settings)) {
+    return;
+  }
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  connection.console.info(`[asp-lsp] ${step}: ${uri} in ${elapsedMs.toFixed(1)} ms`);
+}
+
+function measureDebugStep<T>(
+  settings: AspSettings,
+  uri: string,
+  step: string,
+  callback: () => T,
+): T {
+  const startedAt = process.hrtime.bigint();
+  try {
+    return callback();
+  } finally {
+    finishDebugStep(settings, uri, step, startedAt);
+  }
+}
+
+function isDebugSummaryEnabled(settings: AspSettings): boolean {
+  return settings.debug?.output === "summary" || settings.debug?.output === "verbose";
+}
+
+function isDebugVerboseEnabled(settings: AspSettings): boolean {
+  return settings.debug?.output === "verbose";
 }
 
 function dedupeDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
@@ -3019,6 +3110,7 @@ function tsReferenceToLocation(
 }
 
 function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
+  const startedAt = process.hrtime.bigint();
   const documents = collectVbProjectDocuments(cached.parsed, settings);
   const contextSettings = {
     typeChecking: settings.vbscript?.typeChecking,
@@ -3037,6 +3129,7 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     globals: settings.vbscript?.globals,
   });
   if (cached.analysis?.vbProjectContext?.key === key) {
+    finishDebugStep(settings, cached.source.uri, "vbscript.projectContext", startedAt);
     return cached.analysis.vbProjectContext.context;
   }
   const symbols = documents.flatMap((document) =>
@@ -3051,6 +3144,7 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     ...contextSettings,
   };
   analysisFor(cached).vbProjectContext = { key, context };
+  finishDebugStep(settings, cached.source.uri, "vbscript.projectContext", startedAt);
   return context;
 }
 
@@ -3821,6 +3915,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     legacyEncoding:
       typeof settings.legacyEncoding === "string" ? settings.legacyEncoding : undefined,
     diagnostics: normalizeDiagnosticsSettings(settings),
+    debug: normalizeDebugSettings(settings),
     format: normalizeFormatSettings(settings),
     javascript: normalizeJavascriptSettings(settings),
     vbscript: normalizeVbscriptSettings(settings),
@@ -3869,6 +3964,20 @@ function normalizeDiagnosticsSettings(
         ? Math.floor(record.debounceMs)
         : defaultDiagnosticsDebounceMs,
   };
+}
+
+function normalizeDebugSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["debug"] {
+  const raw = settings.debug;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    output: normalizeDebugOutputLevel(record.output),
+  };
+}
+
+function normalizeDebugOutputLevel(value: unknown): NonNullable<AspSettings["debug"]>["output"] {
+  return value === "summary" || value === "verbose" ? value : "off";
 }
 
 function normalizeInlayHintSettings(
@@ -4009,17 +4118,23 @@ function formatAspDocumentWithDelegates(
   cached: CachedDocument,
   options: { tabSize: number; insertSpaces: boolean },
 ): TextEdit[] {
-  const startedAt = startFormattingLog(cached, "document");
   const settings = cachedSettings(cached.source.uri);
-  const formattingOptions = formatOptions(options, settings);
+  const startedAt = startFormattingLog(cached, settings, "document");
+  const formattingOptions = measureDebugStep(settings, cached.source.uri, "format.options", () =>
+    formatOptions(options, settings),
+  );
   const original = cached.source.getText();
-  let formatted = applyTextEdits(original, formatAspDocument(cached.parsed, formattingOptions));
-  const parsed = parseAspDocument(cached.source.uri, formatted, settings);
+  let formatted = measureDebugStep(settings, cached.source.uri, "format.core", () =>
+    applyTextEdits(original, formatAspDocument(cached.parsed, formattingOptions)),
+  );
+  const parsed = measureDebugStep(settings, cached.source.uri, "format.reparse", () =>
+    parseAspDocument(cached.source.uri, formatted, settings),
+  );
   formatted = applyOffsetEdits(
     formatted,
-    embeddedFormattingEdits(parsed, formatted, formattingOptions),
+    embeddedFormattingEdits(parsed, formatted, formattingOptions, settings, cached.source.uri),
   );
-  const edits =
+  const edits = measureDebugStep(settings, cached.source.uri, "format.editAssembly", () =>
     formatted === original
       ? []
       : [
@@ -4030,8 +4145,9 @@ function formatAspDocumentWithDelegates(
             },
             newText: formatted,
           },
-        ];
-  finishFormattingLog(cached, "document", startedAt, edits.length);
+        ],
+  );
+  finishFormattingLog(cached, settings, "document", startedAt, edits.length);
   return edits;
 }
 
@@ -4040,23 +4156,33 @@ function formatAspRangeWithDelegates(
   range: Range,
   options: { tabSize: number; insertSpaces: boolean },
 ): TextEdit[] {
-  const startedAt = startFormattingLog(cached, "range");
   const settings = cachedSettings(cached.source.uri);
-  const formattingOptions = formatOptions(options, settings);
+  const startedAt = startFormattingLog(cached, settings, "range");
+  const formattingOptions = measureDebugStep(settings, cached.source.uri, "format.options", () =>
+    formatOptions(options, settings),
+  );
   const original = cached.source.getText();
   const rangeStart = lineStartOffset(original, cached.source.offsetAt(range.start));
   const rangeEnd = lineEndOffset(original, cached.source.offsetAt(range.end));
-  const coreEdits = formatAspRange(cached.parsed, range, formattingOptions);
-  let formatted = applyTextEdits(original, coreEdits);
+  const coreEdits = measureDebugStep(settings, cached.source.uri, "format.core", () =>
+    formatAspRange(cached.parsed, range, formattingOptions),
+  );
+  let formatted = measureDebugStep(settings, cached.source.uri, "format.core.apply", () =>
+    applyTextEdits(original, coreEdits),
+  );
   let formattedRangeEnd =
     coreEdits.length === 1
       ? rangeStart + coreEdits[0].newText.length
       : rangeEnd + offsetEditsDelta(original, coreEdits);
-  const parsed = parseAspDocument(cached.source.uri, formatted, settings);
+  const parsed = measureDebugStep(settings, cached.source.uri, "format.reparse", () =>
+    parseAspDocument(cached.source.uri, formatted, settings),
+  );
   const embeddedEdits = embeddedFormattingEdits(
     parsed,
     formatted,
     formattingOptions,
+    settings,
+    cached.source.uri,
     rangeStart,
     formattedRangeEnd,
   );
@@ -4064,7 +4190,7 @@ function formatAspRangeWithDelegates(
   formatted = applyOffsetEdits(formatted, embeddedEdits);
   const newText = formatted.slice(rangeStart, formattedRangeEnd);
   const originalText = original.slice(rangeStart, rangeEnd);
-  const edits =
+  const edits = measureDebugStep(settings, cached.source.uri, "format.editAssembly", () =>
     newText === originalText
       ? []
       : [
@@ -4075,13 +4201,19 @@ function formatAspRangeWithDelegates(
             },
             newText,
           },
-        ];
-  finishFormattingLog(cached, "range", startedAt, edits.length);
+        ],
+  );
+  finishFormattingLog(cached, settings, "range", startedAt, edits.length);
   return edits;
 }
 
-function startFormattingLog(cached: CachedDocument, scope: "document" | "range"): bigint {
-  connection.console.info(
+function startFormattingLog(
+  cached: CachedDocument,
+  settings: AspSettings,
+  scope: "document" | "range",
+): bigint {
+  logDebugSummary(
+    settings,
     `[asp-lsp] Formatting conversion started (${scope}): ${cached.source.uri}`,
   );
   return process.hrtime.bigint();
@@ -4089,12 +4221,14 @@ function startFormattingLog(cached: CachedDocument, scope: "document" | "range")
 
 function finishFormattingLog(
   cached: CachedDocument,
+  settings: AspSettings,
   scope: "document" | "range",
   startedAt: bigint,
   editCount: number,
 ): void {
   const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
-  connection.console.info(
+  logDebugSummary(
+    settings,
     `[asp-lsp] Formatting conversion completed (${scope}): ${cached.source.uri} in ${elapsedMs.toFixed(1)} ms, edits=${editCount}`,
   );
 }
@@ -4103,13 +4237,22 @@ function embeddedFormattingEdits(
   parsed: AspParsedDocument,
   text: string,
   options: AspFormattingOptions,
+  settings: AspSettings,
+  uri: string,
   spanStart = 0,
   spanEnd = text.length,
 ): OffsetEdit[] {
-  return [
-    ...cssFormattingEdits(parsed, text, options, spanStart, spanEnd),
-    ...javaScriptFormattingEdits(parsed, text, options, spanStart, spanEnd),
+  const startedAt = process.hrtime.bigint();
+  const edits = [
+    ...measureDebugStep(settings, uri, "format.embedded.css", () =>
+      cssFormattingEdits(parsed, text, options, spanStart, spanEnd),
+    ),
+    ...measureDebugStep(settings, uri, "format.embedded.javascript", () =>
+      javaScriptFormattingEdits(parsed, text, options, spanStart, spanEnd),
+    ),
   ];
+  finishDebugStep(settings, uri, "format.embedded", startedAt);
+  return edits;
 }
 
 function cssFormattingEdits(

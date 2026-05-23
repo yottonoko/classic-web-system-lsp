@@ -29,6 +29,7 @@ export interface AspSettings {
   includePaths?: string[];
   legacyEncoding?: string;
   diagnostics?: AspDiagnosticsSettings;
+  debug?: AspDebugSettings;
   format?: AspFormatSettings;
   vbscript?: AspVbscriptSettings;
   inlayHints?: AspInlayHintSettings;
@@ -50,6 +51,12 @@ export interface AspFormatSettings {
 
 export interface AspDiagnosticsSettings {
   debounceMs?: number;
+}
+
+export type AspDebugOutputLevel = "off" | "summary" | "verbose";
+
+export interface AspDebugSettings {
+  output?: AspDebugOutputLevel;
 }
 
 export interface AspFormattingOptions extends AspFormatSettings {

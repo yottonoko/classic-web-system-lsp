@@ -90,6 +90,7 @@ JavaScript.
 - `aspLsp.defaultLanguage`: default server-side language, `VBScript` or `JScript`
 - `aspLsp.checkJs`: enable semantic checks for client JavaScript regions
 - `aspLsp.diagnostics.debounceMs`: delay diagnostics after text changes in milliseconds; `0` publishes immediately
+- `aspLsp.debug.output`: debug timing output, `off`, `summary`, or `verbose`
 - `aspLsp.javascript.unusedDiagnostics`: report unused JavaScript/JScript locals and parameters as hints
 - `aspLsp.javascript.autoImports`: enable TypeScript-powered JavaScript/JScript auto import completions and quick fixes
 - `aspLsp.virtualRoot`: root directory for `<!-- #include virtual="..." -->`

@@ -3120,6 +3120,9 @@ End If
           rootUri: "file:///tmp",
           capabilities: {},
         });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { debug: { output: "summary" } } },
+        });
         const uri = "file:///tmp/format.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
@@ -3170,6 +3173,114 @@ End If
         const rangeText = JSON.stringify(rangeEdits);
         expect(rangeText).toContain("  Response.Write");
         expect(rangeText).not.toContain("<html>");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("emits verbose LSP timing breakdowns when debug output is verbose", async () => {
+      const source = `<html>
+<head>
+<style>.x{color:red}</style>
+<script>
+const value = 1;
+</script>
+</head>
+<body>
+<% Option Explicit
+Dim enabled
+enabled = True
+Response.Write enabled
+%>
+</body>
+</html>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { debug: { output: "verbose" } } },
+        });
+        const uri = "file:///tmp/debug-verbose.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        for (const expected of [
+          "analysis.parse",
+          "analysis.virtualDocuments",
+          "vbscript.projectContext",
+          "check.cssDiagnostics",
+          "check.javascriptDiagnostics",
+        ]) {
+          const log = await waitForLogContaining(server, expected);
+          expect(JSON.stringify(log.params)).toMatch(/in \d+\.\d ms/);
+        }
+
+        await server.request("textDocument/formatting", {
+          textDocument: { uri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const embeddedLog = await waitForLogContaining(server, "format.embedded");
+        expect(JSON.stringify(embeddedLog.params)).toMatch(/in \d+\.\d ms/);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("does not emit LSP timing logs when debug output is off", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { debug: { output: "off" } } },
+        });
+        const uri = "file:///tmp/debug-off.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<style>.x{color:red}</style>
+<script>const value = 1;</script>
+<% Response.Write value %>`,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await server.request("textDocument/formatting", {
+          textDocument: { uri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+
+        const debugLogs = server
+          .takePendingNotifications("window/logMessage")
+          .filter((message) =>
+            JSON.stringify(message.params).match(
+              /LSP analysis|LSP check|Formatting conversion|analysis\.|check\.|format\./,
+            ),
+          );
+        expect(debugLogs).toHaveLength(0);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -3606,6 +3717,12 @@ class RpcServer {
         rpcTimeoutMs,
       );
     });
+  }
+
+  takePendingNotifications(method: string): JsonRpcMessage[] {
+    const pending = this.pendingNotifications.get(method) ?? [];
+    this.pendingNotifications.set(method, []);
+    return pending;
   }
 
   stop(): void {

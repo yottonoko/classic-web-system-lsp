@@ -117,6 +117,16 @@
           "default": 250,
           "description": "%configuration.diagnostics.debounceMs.description%"
         },
+        "aspLsp.debug.output": {
+          "type": "string",
+          "enum": [
+            "off",
+            "summary",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "%configuration.debug.output.description%"
+        },
         "aspLsp.javascript.unusedDiagnostics": {
           "type": "boolean",
           "default": true,
