@@ -1572,6 +1572,7 @@ export function getVbscriptInlayHints(
         label: ` As ${symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: true,
+        paddingRight: true,
         tooltip: "Inferred VBScript type",
       });
     }
@@ -1592,6 +1593,7 @@ export function getVbscriptInlayHints(
         label: ` As ${symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: true,
+        paddingRight: true,
         tooltip: "Inferred VBScript return type",
       });
     }

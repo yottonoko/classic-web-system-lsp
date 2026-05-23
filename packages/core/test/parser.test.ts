@@ -880,6 +880,7 @@ Response.Write BuildName("Ada")
     );
     expect(JSON.stringify(hints)).toContain("As Customer");
     expect(JSON.stringify(hints)).toContain("firstName:");
+    expect(hints.find((hint) => hint.label === " As Customer")?.paddingRight).toBe(true);
 
     const selection = getVbscriptSelectionRanges(parsed, [
       positionAt(source, source.indexOf("BuildName =") + 2),

@@ -81,6 +81,28 @@ describe("VS Code extension package", () => {
     }
   });
 
+  it("highlights common VBScript declaration keywords", () => {
+    const grammar = JSON.parse(
+      fs.readFileSync("syntaxes/classic-asp.tmLanguage.json", "utf8"),
+    ) as {
+      repository?: {
+        "vbscript-basic"?: {
+          patterns?: Array<{ match?: string; name?: string }>;
+        };
+      };
+    };
+    const keywordPattern = grammar.repository?.["vbscript-basic"]?.patterns?.find(
+      (pattern) => pattern.name === "keyword.control.vbscript.asp",
+    )?.match;
+    expect(keywordPattern).toBeTruthy();
+    expect(keywordPattern).toContain("(?i)");
+    expect(keywordPattern).toContain("Public");
+    expect(keywordPattern).toContain("Property");
+    expect(keywordPattern).toContain("Get");
+    expect(keywordPattern).toContain("As");
+    expect(keywordPattern).toContain("ElseIf");
+  });
+
   it("describes the COM type catalog schema for settings UI", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       contributes?: {

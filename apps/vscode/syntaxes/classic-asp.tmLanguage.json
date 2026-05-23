@@ -48,7 +48,7 @@
     "vbscript-basic": {
       "patterns": [
         {
-          "match": "\\b(Option\\s+Explicit|Dim|Set|Const|Sub|Function|Class|End|If|Then|Else|For|Each|Next|Do|Loop|While|Wend|Select|Case|Call|New)\\b",
+          "match": "(?i)\\b(Option\\s+Explicit|And|As|ByRef|ByVal|Call|Case|Class|Const|Dim|Do|Each|Else|ElseIf|Empty|End|Exit|Explicit|False|For|Function|Get|If|In|Let|Loop|Me|Mod|New|Next|Not|Nothing|Null|Option|Or|Preserve|Private|Property|Public|ReDim|Select|Set|Step|Sub|Then|To|True|Until|Wend|While|With)\\b",
           "name": "keyword.control.vbscript.asp"
         },
         {
