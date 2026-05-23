@@ -89,6 +89,7 @@ JavaScript.
 - `aspLsp.locale`: `auto`, `en`, or `ja`; `auto` uses Japanese for `ja*` VS Code/LSP client locales and English otherwise
 - `aspLsp.defaultLanguage`: default server-side language, `VBScript` or `JScript`
 - `aspLsp.checkJs`: enable semantic checks for client JavaScript regions
+- `aspLsp.diagnostics.debounceMs`: delay diagnostics after text changes in milliseconds; `0` publishes immediately
 - `aspLsp.javascript.unusedDiagnostics`: report unused JavaScript/JScript locals and parameters as hints
 - `aspLsp.javascript.autoImports`: enable TypeScript-powered JavaScript/JScript auto import completions and quick fixes
 - `aspLsp.virtualRoot`: root directory for `<!-- #include virtual="..." -->`

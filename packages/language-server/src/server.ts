@@ -119,6 +119,7 @@ const semanticTokenResults = new Map<string, { uri: string; data: number[] }>();
 const latestSemanticTokenResultByUri = new Map<string, string>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
+const defaultDiagnosticsDebounceMs = 250;
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
 let workspaceRoots: string[] = [];
 let clientLocale = "en";
@@ -243,6 +244,7 @@ function aspFileOperationFilter() {
 }
 
 const cache = new Map<string, CachedDocument>();
+const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
   clientLocale = typeof params.locale === "string" ? params.locale : "en";
@@ -340,9 +342,8 @@ documents.onDidOpen((event) => {
   validate(event.document);
 });
 documents.onDidChangeContent((event) => {
-  cache.delete(event.document.uri);
-  clearJsLanguageServiceCache();
-  validate(event.document);
+  refreshCachedDocument(event.document);
+  scheduleDiagnostics(event.document);
 });
 documents.onDidSave((event) => {
   cache.delete(event.document.uri);
@@ -350,6 +351,7 @@ documents.onDidSave((event) => {
   validate(event.document);
 });
 documents.onDidClose((event) => {
+  cancelScheduledDiagnostics(event.document.uri);
   cache.delete(event.document.uri);
   clearJsLanguageServiceCache();
   clearSemanticTokensForUri(event.document.uri);
@@ -1147,14 +1149,61 @@ connection.languages.semanticTokens.onDelta((params): SemanticTokens | SemanticT
   };
 });
 
-async function validate(document: TextDocument): Promise<void> {
+function validate(document: TextDocument): void {
+  cancelScheduledDiagnostics(document.uri);
+  publishDiagnosticsForCached(refreshCachedDocument(document), cachedSettings(document.uri));
+}
+
+function refreshCachedDocument(document: TextDocument): CachedDocument {
   const settings = cachedSettings(document.uri);
   const parsed = parseAspDocument(document.uri, document.getText(), settings);
   const virtuals = buildVirtualDocuments(parsed);
   const cached = { source: document, parsed, virtuals };
   cache.set(document.uri, cached);
+  return cached;
+}
+
+function scheduleDiagnostics(document: TextDocument): void {
+  cancelScheduledDiagnostics(document.uri);
+  const delay =
+    cachedSettings(document.uri).diagnostics?.debounceMs ?? defaultDiagnosticsDebounceMs;
+  if (delay <= 0) {
+    publishDiagnosticsForVersion(document.uri, document.version);
+    return;
+  }
+  const version = document.version;
+  diagnosticsTimers.set(
+    document.uri,
+    setTimeout(() => {
+      diagnosticsTimers.delete(document.uri);
+      publishDiagnosticsForVersion(document.uri, version);
+    }, delay),
+  );
+}
+
+function publishDiagnosticsForVersion(uri: string, version: number): void {
+  const document = documents.get(uri);
+  if (!document || document.version !== version) {
+    return;
+  }
+  publishDiagnosticsForCached(
+    getCached(uri) ?? refreshCachedDocument(document),
+    cachedSettings(uri),
+  );
+}
+
+function cancelScheduledDiagnostics(uri: string): void {
+  const timer = diagnosticsTimers.get(uri);
+  if (!timer) {
+    return;
+  }
+  clearTimeout(timer);
+  diagnosticsTimers.delete(uri);
+}
+
+function publishDiagnosticsForCached(cached: CachedDocument, settings: AspSettings): void {
   connection.sendDiagnostics({
-    uri: document.uri,
+    uri: cached.source.uri,
     diagnostics: diagnosticsForCached(cached, settings),
   });
 }
@@ -3498,6 +3547,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     includePaths,
     legacyEncoding:
       typeof settings.legacyEncoding === "string" ? settings.legacyEncoding : undefined,
+    diagnostics: normalizeDiagnosticsSettings(settings),
     format: normalizeFormatSettings(settings),
     javascript: normalizeJavascriptSettings(settings),
     vbscript: normalizeVbscriptSettings(settings),
@@ -3532,6 +3582,19 @@ function normalizeWorkspaceSettings(
       typeof record.scanChunkSize === "number" && record.scanChunkSize > 0
         ? Math.floor(record.scanChunkSize)
         : defaultScanChunkSize,
+  };
+}
+
+function normalizeDiagnosticsSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["diagnostics"] {
+  const raw = settings.diagnostics;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    debounceMs:
+      typeof record.debounceMs === "number" && record.debounceMs >= 0
+        ? Math.floor(record.debounceMs)
+        : defaultDiagnosticsDebounceMs,
   };
 }
 

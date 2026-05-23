@@ -111,6 +111,12 @@
           "default": false,
           "description": "%configuration.checkJs.description%"
         },
+        "aspLsp.diagnostics.debounceMs": {
+          "type": "number",
+          "minimum": 0,
+          "default": 250,
+          "description": "%configuration.diagnostics.debounceMs.description%"
+        },
         "aspLsp.javascript.unusedDiagnostics": {
           "type": "boolean",
           "default": true,

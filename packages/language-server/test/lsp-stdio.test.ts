@@ -778,6 +778,95 @@ function boot() {
       }
     });
 
+    it("debounces diagnostics after rapid text changes and publishes only the latest version", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { diagnostics: { debounceMs: 80 } } },
+        });
+
+        const uri = "file:///tmp/debounced-diagnostics.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<% Option Explicit
+Dim known
+Response.Write known
+%>`,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: `<% Option Explicit\nResponse.Write staleName\n%>` }],
+        });
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 3 },
+          contentChanges: [{ text: `<% Option Explicit\nResponse.Write finalName\n%>` }],
+        });
+
+        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const serialized = JSON.stringify(diagnostics.params);
+        expect(serialized).toContain("finalName");
+        expect(serialized).not.toContain("staleName");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("publishes diagnostics immediately when debounce is disabled", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
+        });
+
+        const uri = "file:///tmp/immediate-diagnostics.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<% Option Explicit
+Dim known
+Response.Write known
+%>`,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: `<% Option Explicit\nResponse.Write immediateName\n%>` }],
+        });
+
+        await waitForDiagnosticsContaining(server, "immediateName");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("supports VBScript hover, definition, references, scoped symbols and class member completion", async () => {
       const marked = markedDocument(`<%
 Class Customer
@@ -3517,6 +3606,19 @@ function completionLabels(completions: unknown): string[] {
   return items
     .map((item) => (item as { label?: unknown }).label)
     .filter((label): label is string => typeof label === "string");
+}
+
+async function waitForDiagnosticsContaining(
+  server: RpcServer,
+  expected: string,
+): Promise<JsonRpcMessage> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+    if (JSON.stringify(diagnostics.params).includes(expected)) {
+      return diagnostics;
+    }
+  }
+  throw new Error(`Timed out waiting for diagnostics containing ${expected}.`);
 }
 
 function positionAt(text: string, offset: number): { line: number; character: number } {

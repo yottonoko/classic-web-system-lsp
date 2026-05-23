@@ -28,6 +28,7 @@ export interface AspSettings {
   javascript?: AspJavascriptSettings;
   includePaths?: string[];
   legacyEncoding?: string;
+  diagnostics?: AspDiagnosticsSettings;
   format?: AspFormatSettings;
   vbscript?: AspVbscriptSettings;
   inlayHints?: AspInlayHintSettings;
@@ -45,6 +46,10 @@ export interface AspFormatSettings {
   uppercaseKeywords?: boolean;
   alignAssignments?: boolean;
   onSave?: boolean;
+}
+
+export interface AspDiagnosticsSettings {
+  debounceMs?: number;
 }
 
 export interface AspFormattingOptions extends AspFormatSettings {
