@@ -1011,7 +1011,7 @@ Response.Write a
         { symbols },
       ).some(
         (hint) =>
-          hint.label === " As Number " && hint.paddingLeft === false && hint.paddingRight === false,
+          hint.label === " As Number" && hint.paddingLeft === false && hint.paddingRight === true,
       ),
     ).toBe(true);
     expect(
@@ -1122,11 +1122,11 @@ Response.Write BuildName("Ada")
     expect(JSON.stringify(hints)).toContain("As Customer");
     expect(JSON.stringify(hints)).toContain("firstName:");
     const customerSymbol = symbols.find((symbol) => symbol.name === "c");
-    const customerHint = hints.find((hint) => hint.label === " As Customer ");
+    const customerHint = hints.find((hint) => hint.label === " As Customer");
     expect(customerHint).toEqual(
       expect.objectContaining({ position: customerSymbol?.range.end, paddingLeft: false }),
     );
-    expect(customerHint?.paddingRight).toBe(false);
+    expect(customerHint?.paddingRight).toBe(true);
 
     const returnHint = getVbscriptInlayHints(
       parseAspDocument(
@@ -1138,9 +1138,9 @@ End Function
 %>`,
       ),
       { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
-    ).find((hint) => hint.label === " As String ");
+    ).find((hint) => hint.label === " As String");
     expect(returnHint).toEqual(
-      expect.objectContaining({ label: " As String ", paddingLeft: false, paddingRight: false }),
+      expect.objectContaining({ label: " As String", paddingLeft: false, paddingRight: true }),
     );
 
     const selection = getVbscriptSelectionRanges(parsed, [

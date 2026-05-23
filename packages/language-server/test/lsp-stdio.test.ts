@@ -1280,9 +1280,9 @@ End Sub
         });
         const typeHint = (
           inlayHints as Array<{ label?: unknown; paddingLeft?: unknown; paddingRight?: unknown }>
-        ).find((hint) => hint.label === " As Customer ");
+        ).find((hint) => hint.label === " As Customer");
         expect(typeHint).toEqual(
-          expect.objectContaining({ paddingLeft: false, paddingRight: false }),
+          expect.objectContaining({ paddingLeft: false, paddingRight: true }),
         );
         expect(JSON.stringify(inlayHints)).toContain("firstName:");
         const resolvedHint = await server.request(
