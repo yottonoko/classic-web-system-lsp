@@ -2094,9 +2094,9 @@ export function getVbscriptInlayHints(
       }
       hints.push({
         position: symbol.range.end,
-        label: `As ${symbol.typeName}`,
+        label: `  As ${symbol.typeName}`,
         kind: InlayHintKind.Type,
-        paddingLeft: true,
+        paddingLeft: false,
         paddingRight: true,
         tooltip: "Inferred VBScript type",
       });
@@ -2115,9 +2115,9 @@ export function getVbscriptInlayHints(
       }
       hints.push({
         position: symbol.range.end,
-        label: `As ${symbol.typeName}`,
+        label: `  As ${symbol.typeName}`,
         kind: InlayHintKind.Type,
-        paddingLeft: true,
+        paddingLeft: false,
         paddingRight: true,
         tooltip: "Inferred VBScript return type",
       });

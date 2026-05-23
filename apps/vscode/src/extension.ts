@@ -24,6 +24,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     statusBarItem,
     vscode.commands.registerCommand("aspLsp.restartServer", async () => restartServer(context)),
     vscode.commands.registerCommand("aspLsp.openOutput", () => outputChannel?.show()),
+    vscode.commands.registerCommand("aspLsp.showReferences", async (uri, position, locations) =>
+      showReferences(uri, position, locations),
+    ),
     vscode.commands.registerCommand("aspLsp.debugIisUrl", async () => debugIisUrl()),
     vscode.commands.registerCommand("aspLsp.debugIisExpressUrl", async () =>
       debugBrowserUrl("iisExpress", extensionLocalizer()("debug.iisExpress.name")),
@@ -72,6 +75,69 @@ export async function deactivate(): Promise<void> {
   outputChannel = undefined;
   statusBarItem?.dispose();
   statusBarItem = undefined;
+}
+
+async function showReferences(uri: unknown, position: unknown, locations: unknown): Promise<void> {
+  const targetUri = toUri(uri);
+  const targetPosition = toPosition(position);
+  const targetLocations = Array.isArray(locations)
+    ? locations.map(toLocation).filter((location): location is vscode.Location => Boolean(location))
+    : [];
+  if (!targetUri || !targetPosition) {
+    return;
+  }
+  await vscode.commands.executeCommand(
+    "editor.action.showReferences",
+    targetUri,
+    targetPosition,
+    targetLocations,
+  );
+}
+
+function toUri(value: unknown): vscode.Uri | undefined {
+  if (value instanceof vscode.Uri) {
+    return value;
+  }
+  return typeof value === "string" ? vscode.Uri.parse(value) : undefined;
+}
+
+function toPosition(value: unknown): vscode.Position | undefined {
+  if (value instanceof vscode.Position) {
+    return value;
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const candidate = value as { line?: unknown; character?: unknown };
+  return typeof candidate.line === "number" && typeof candidate.character === "number"
+    ? new vscode.Position(candidate.line, candidate.character)
+    : undefined;
+}
+
+function toRange(value: unknown): vscode.Range | undefined {
+  if (value instanceof vscode.Range) {
+    return value;
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const candidate = value as { start?: unknown; end?: unknown };
+  const start = toPosition(candidate.start);
+  const end = toPosition(candidate.end);
+  return start && end ? new vscode.Range(start, end) : undefined;
+}
+
+function toLocation(value: unknown): vscode.Location | undefined {
+  if (value instanceof vscode.Location) {
+    return value;
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const candidate = value as { uri?: unknown; range?: unknown };
+  const uri = toUri(candidate.uri);
+  const range = toRange(candidate.range);
+  return uri && range ? new vscode.Location(uri, range) : undefined;
 }
 
 async function restartServer(context: vscode.ExtensionContext): Promise<void> {

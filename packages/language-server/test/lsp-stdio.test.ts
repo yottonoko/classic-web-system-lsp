@@ -1278,11 +1278,12 @@ End Sub
           textDocument: { uri },
           range: { start: { line: 0, character: 0 }, end: { line: 12, character: 0 } },
         });
-        const typeHint = (inlayHints as Array<{ label?: unknown }>).find(
-          (hint) => hint.label === "As Customer",
+        const typeHint = (
+          inlayHints as Array<{ label?: unknown; paddingLeft?: unknown; paddingRight?: unknown }>
+        ).find((hint) => hint.label === "  As Customer");
+        expect(typeHint).toEqual(
+          expect.objectContaining({ paddingLeft: false, paddingRight: true }),
         );
-        expect(typeHint).toBeTruthy();
-        expect(JSON.stringify(inlayHints)).not.toContain('"label":" As Customer"');
         expect(JSON.stringify(inlayHints)).toContain("firstName:");
         const resolvedHint = await server.request(
           "inlayHint/resolve",
@@ -1393,11 +1394,31 @@ End Sub
           textDocument: { uri },
         });
         expect(JSON.stringify(codeLens)).toContain("references");
-        const resolvedCodeLens = await server.request(
-          "codeLens/resolve",
-          (codeLens as Array<Record<string, unknown>>)[0],
+        const referencesCommandAtLine = (lens: Record<string, unknown>, line: number) => {
+          const command = lens.command as { command?: unknown; arguments?: unknown[] } | undefined;
+          const position = command?.arguments?.[1] as { line?: unknown } | undefined;
+          return command?.command === "aspLsp.showReferences" && position?.line === line;
+        };
+        const referencesCodeLens = (codeLens as Array<Record<string, unknown>>).find((lens) =>
+          referencesCommandAtLine(lens, 4),
         );
-        expect(JSON.stringify(resolvedCodeLens)).toContain("command");
+        const referencesArguments = (
+          referencesCodeLens?.command as { arguments?: unknown[] } | undefined
+        )?.arguments;
+        expect(referencesCodeLens).toEqual(
+          expect.objectContaining({
+            command: expect.objectContaining({
+              command: "aspLsp.showReferences",
+              arguments: expect.arrayContaining([
+                uri,
+                expect.objectContaining({ line: 4, character: 9 }),
+              ]),
+            }),
+          }),
+        );
+        expect(JSON.stringify(referencesArguments?.[2])).toContain(uri);
+        const resolvedCodeLens = await server.request("codeLens/resolve", referencesCodeLens);
+        expect(JSON.stringify(resolvedCodeLens)).toContain("aspLsp.showReferences");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

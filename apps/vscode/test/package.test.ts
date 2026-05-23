@@ -64,6 +64,9 @@ describe("VS Code extension package", () => {
     expect(fs.existsSync(manifest.icon ?? "")).toBe(true);
     expect(manifest.galleryBanner?.color).toBeTruthy();
     expect(manifest.capabilities?.untrustedWorkspaces?.supported).toBe(true);
+    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    expect(extensionSource).toContain('registerCommand("aspLsp.showReferences"');
+    expect(extensionSource).toContain('"editor.action.showReferences"');
     const vbscriptLanguage = manifest.contributes?.languages?.find(
       (language) => language.id === "vbscript",
     );

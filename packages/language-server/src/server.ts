@@ -5037,7 +5037,12 @@ function codeLenses(cached: CachedDocument): CodeLens[] {
             references.length === 1 ? "server.codeLens.reference" : "server.codeLens.references",
             { count: references.length },
           ),
-          command: "",
+          command: "aspLsp.showReferences",
+          arguments: [
+            cached.source.uri,
+            symbol.range.start,
+            references.map((reference) => Location.create(reference.uri, reference.range)),
+          ],
         },
       });
     }
