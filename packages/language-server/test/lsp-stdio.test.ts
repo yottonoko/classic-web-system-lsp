@@ -65,6 +65,7 @@ describe(
           capabilities: {},
         });
         expect(JSON.stringify(initialize)).toContain("completionProvider");
+        expect(JSON.stringify(initialize)).not.toContain("diagnosticProvider");
 
         const uri = "file:///tmp/default.asp";
         server.notify("textDocument/didOpen", {
@@ -77,6 +78,7 @@ describe(
         });
 
         const diagnostics = await waitForDiagnosticsContaining(server, "missingName");
+        expect(diagnostics.method).toBe("textDocument/publishDiagnostics");
         expect(JSON.stringify(diagnostics.params)).toContain("missingName");
 
         const completions = await server.request("textDocument/completion", {

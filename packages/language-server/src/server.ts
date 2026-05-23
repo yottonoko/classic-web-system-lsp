@@ -343,11 +343,6 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       },
       codeLensProvider: { resolveProvider: true },
       colorProvider: true,
-      diagnosticProvider: {
-        identifier: "asp-lsp",
-        interFileDependencies: true,
-        workspaceDiagnostics: true,
-      },
       selectionRangeProvider: true,
       linkedEditingRangeProvider: true,
       inlayHintProvider: { resolveProvider: true },
