@@ -3130,11 +3130,23 @@ End If
           },
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "LSP analysis started");
+        const analysisCompletedLog = await waitForLogContaining(server, "LSP analysis completed");
+        expect(JSON.stringify(analysisCompletedLog.params)).toMatch(/in \d+\.\d ms/);
+        await waitForLogContaining(server, "LSP check started");
+        const checkCompletedLog = await waitForLogContaining(server, "LSP check completed");
+        expect(JSON.stringify(checkCompletedLog.params)).toMatch(/in \d+\.\d ms/);
 
         const fullEdits = await server.request("textDocument/formatting", {
           textDocument: { uri },
           options: { tabSize: 2, insertSpaces: true },
         });
+        await waitForLogContaining(server, "Formatting conversion started (document)");
+        const fullCompletedLog = await waitForLogContaining(
+          server,
+          "Formatting conversion completed (document)",
+        );
+        expect(JSON.stringify(fullCompletedLog.params)).toMatch(/in \d+\.\d ms/);
         const fullText = JSON.stringify(fullEdits);
         expect(fullText).toContain("<%");
         expect(fullText).toContain("  Response.Write");
@@ -3149,6 +3161,12 @@ End If
           },
           options: { tabSize: 2, insertSpaces: true },
         });
+        await waitForLogContaining(server, "Formatting conversion started (range)");
+        const rangeCompletedLog = await waitForLogContaining(
+          server,
+          "Formatting conversion completed (range)",
+        );
+        expect(JSON.stringify(rangeCompletedLog.params)).toMatch(/in \d+\.\d ms/);
         const rangeText = JSON.stringify(rangeEdits);
         expect(rangeText).toContain("  Response.Write");
         expect(rangeText).not.toContain("<html>");
@@ -3700,6 +3718,16 @@ async function waitForDiagnosticsContaining(
     }
   }
   throw new Error(`Timed out waiting for diagnostics containing ${expected}.`);
+}
+
+async function waitForLogContaining(server: RpcServer, expected: string): Promise<JsonRpcMessage> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const message = await server.waitForNotification("window/logMessage");
+    if (JSON.stringify(message.params).includes(expected)) {
+      return message;
+    }
+  }
+  throw new Error(`Timed out waiting for log containing ${expected}.`);
 }
 
 function notifyRangedReplacement(

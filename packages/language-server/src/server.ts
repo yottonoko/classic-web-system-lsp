@@ -1193,6 +1193,7 @@ function validate(document: TextDocument): void {
 }
 
 function refreshCachedDocument(document: TextDocument): CachedDocument {
+  const startedAt = startAnalysisLog(document.uri);
   const settings = cachedSettings(document.uri);
   const previous = cache.get(document.uri);
   const pending = pendingDocumentChanges.get(document.uri);
@@ -1228,7 +1229,21 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
   if (pending?.version === document.version) {
     pendingDocumentChanges.delete(document.uri);
   }
+  finishAnalysisLog(document.uri, startedAt, update?.incremental === true);
   return cached;
+}
+
+function startAnalysisLog(uri: string): bigint {
+  connection.console.info(`[asp-lsp] LSP analysis started: ${uri}`);
+  return process.hrtime.bigint();
+}
+
+function finishAnalysisLog(uri: string, startedAt: bigint, incremental: boolean): void {
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  const mode = incremental ? "incremental" : "full";
+  connection.console.info(
+    `[asp-lsp] LSP analysis completed: ${uri} in ${elapsedMs.toFixed(1)} ms, mode=${mode}`,
+  );
 }
 
 function scheduleDiagnostics(document: TextDocument): void {
@@ -1277,8 +1292,10 @@ function publishDiagnosticsForCached(cached: CachedDocument, settings: AspSettin
 }
 
 function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
+  const startedAt = startCheckLog(cached);
   const key = diagnosticsCacheKey(cached, settings);
   if (cached.analysis?.diagnostics?.key === key) {
+    finishCheckLog(cached, startedAt, cached.analysis.diagnostics.items.length, true);
     return cached.analysis.diagnostics.items;
   }
   const diagnostics: Diagnostic[] = [
@@ -1295,7 +1312,26 @@ function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Di
   analysisFor(cached).diagnostics = { key, items, text: cached.parsed.text };
   cached.changes = undefined;
   cached.dirtyLanguages = undefined;
+  finishCheckLog(cached, startedAt, items.length, false);
   return items;
+}
+
+function startCheckLog(cached: CachedDocument): bigint {
+  connection.console.info(`[asp-lsp] LSP check started: ${cached.source.uri}`);
+  return process.hrtime.bigint();
+}
+
+function finishCheckLog(
+  cached: CachedDocument,
+  startedAt: bigint,
+  diagnosticCount: number,
+  cachedResult: boolean,
+): void {
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  const cacheText = cachedResult ? ", cached=true" : "";
+  connection.console.info(
+    `[asp-lsp] LSP check completed: ${cached.source.uri} in ${elapsedMs.toFixed(1)} ms, diagnostics=${diagnosticCount}${cacheText}`,
+  );
 }
 
 function dedupeDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
@@ -3973,6 +4009,7 @@ function formatAspDocumentWithDelegates(
   cached: CachedDocument,
   options: { tabSize: number; insertSpaces: boolean },
 ): TextEdit[] {
+  const startedAt = startFormattingLog(cached, "document");
   const settings = cachedSettings(cached.source.uri);
   const formattingOptions = formatOptions(options, settings);
   const original = cached.source.getText();
@@ -3982,17 +4019,20 @@ function formatAspDocumentWithDelegates(
     formatted,
     embeddedFormattingEdits(parsed, formatted, formattingOptions),
   );
-  return formatted === original
-    ? []
-    : [
-        {
-          range: {
-            start: cached.source.positionAt(0),
-            end: cached.source.positionAt(original.length),
+  const edits =
+    formatted === original
+      ? []
+      : [
+          {
+            range: {
+              start: cached.source.positionAt(0),
+              end: cached.source.positionAt(original.length),
+            },
+            newText: formatted,
           },
-          newText: formatted,
-        },
-      ];
+        ];
+  finishFormattingLog(cached, "document", startedAt, edits.length);
+  return edits;
 }
 
 function formatAspRangeWithDelegates(
@@ -4000,6 +4040,7 @@ function formatAspRangeWithDelegates(
   range: Range,
   options: { tabSize: number; insertSpaces: boolean },
 ): TextEdit[] {
+  const startedAt = startFormattingLog(cached, "range");
   const settings = cachedSettings(cached.source.uri);
   const formattingOptions = formatOptions(options, settings);
   const original = cached.source.getText();
@@ -4023,17 +4064,39 @@ function formatAspRangeWithDelegates(
   formatted = applyOffsetEdits(formatted, embeddedEdits);
   const newText = formatted.slice(rangeStart, formattedRangeEnd);
   const originalText = original.slice(rangeStart, rangeEnd);
-  return newText === originalText
-    ? []
-    : [
-        {
-          range: {
-            start: cached.source.positionAt(rangeStart),
-            end: cached.source.positionAt(rangeEnd),
+  const edits =
+    newText === originalText
+      ? []
+      : [
+          {
+            range: {
+              start: cached.source.positionAt(rangeStart),
+              end: cached.source.positionAt(rangeEnd),
+            },
+            newText,
           },
-          newText,
-        },
-      ];
+        ];
+  finishFormattingLog(cached, "range", startedAt, edits.length);
+  return edits;
+}
+
+function startFormattingLog(cached: CachedDocument, scope: "document" | "range"): bigint {
+  connection.console.info(
+    `[asp-lsp] Formatting conversion started (${scope}): ${cached.source.uri}`,
+  );
+  return process.hrtime.bigint();
+}
+
+function finishFormattingLog(
+  cached: CachedDocument,
+  scope: "document" | "range",
+  startedAt: bigint,
+  editCount: number,
+): void {
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  connection.console.info(
+    `[asp-lsp] Formatting conversion completed (${scope}): ${cached.source.uri} in ${elapsedMs.toFixed(1)} ms, edits=${editCount}`,
+  );
 }
 
 function embeddedFormattingEdits(
