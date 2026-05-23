@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { getClassicAspLineCommentEdits } from "@asp-lsp/core";
 import {
   LanguageClient,
   TransportKind,
@@ -27,6 +28,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("aspLsp.showReferences", async (uri, position, locations) =>
       showReferences(uri, position, locations),
     ),
+    vscode.commands.registerCommand("aspLsp.toggleLineComment", async () => toggleLineComment()),
     vscode.commands.registerCommand("aspLsp.debugIisUrl", async () => debugIisUrl()),
     vscode.commands.registerCommand("aspLsp.debugIisExpressUrl", async () =>
       debugBrowserUrl("iisExpress", extensionLocalizer()("debug.iisExpress.name")),
@@ -75,6 +77,42 @@ export async function deactivate(): Promise<void> {
   outputChannel = undefined;
   statusBarItem?.dispose();
   statusBarItem = undefined;
+}
+
+async function toggleLineComment(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || editor.document.languageId !== "classic-asp") {
+    await vscode.commands.executeCommand("editor.action.commentLine");
+    return;
+  }
+  const edits = getClassicAspLineCommentEdits(
+    editor.document.uri.toString(),
+    editor.document.getText(),
+    editor.selections.map((selection) => ({
+      start: { line: selection.start.line, character: selection.start.character },
+      end: { line: selection.end.line, character: selection.end.character },
+    })),
+  );
+  if (edits.length === 0) {
+    return;
+  }
+  await editor.edit((builder) => {
+    for (const edit of edits) {
+      builder.replace(toVscodeRange(edit.range), edit.newText);
+    }
+  });
+}
+
+function toVscodeRange(range: {
+  start: { line: number; character: number };
+  end: { line: number; character: number };
+}): vscode.Range {
+  return new vscode.Range(
+    range.start.line,
+    range.start.character,
+    range.end.line,
+    range.end.character,
+  );
 }
 
 async function showReferences(uri: unknown, position: unknown, locations: unknown): Promise<void> {

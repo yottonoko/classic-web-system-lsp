@@ -34,6 +34,7 @@
     "test": "pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@asp-lsp/core": "workspace:*",
     "@asp-lsp/language-server": "workspace:*",
     "vscode-languageclient": "^9.0.1"
   },
@@ -435,6 +436,14 @@
       {
         "command": "aspLsp.createLaunchConfig",
         "title": "%command.createLaunchConfig.title%"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "aspLsp.toggleLineComment",
+        "key": "ctrl+/",
+        "mac": "cmd+/",
+        "when": "editorTextFocus && editorLangId == classic-asp"
       }
     ],
     "problemMatchers": [

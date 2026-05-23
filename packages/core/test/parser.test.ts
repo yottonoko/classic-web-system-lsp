@@ -6,6 +6,7 @@ import {
   collectVbscriptSymbols,
   formatAspDocument,
   formatAspRange,
+  getClassicAspLineCommentEdits,
   getVbscriptCompletions,
   getVbscriptDefinition,
   getVbscriptHover,
@@ -1280,6 +1281,59 @@ longerName=2
     });
     expect(edits[0].newText).toContain("first      = 1\nlongerName = 2");
   });
+
+  it("toggles line comments by embedded Classic ASP region", () => {
+    const source = `<div>hello</div>
+<script>
+  const value = 1;
+</script>
+<style>
+  .x { color: red; }
+</style>
+<%
+  Response.Write value
+%>`;
+    const selections = [
+      rangeAt(source, "hello"),
+      rangeAt(source, "const value"),
+      rangeAt(source, ".x {"),
+      rangeAt(source, "Response.Write"),
+    ];
+    const commented = applyTextEdits(
+      source,
+      getClassicAspLineCommentEdits("file:///site/default.asp", source, selections),
+    );
+    expect(commented).toContain("<!-- <div>hello</div> -->");
+    expect(commented).toContain("  // const value = 1;");
+    expect(commented).toContain("  /* .x { color: red; } */");
+    expect(commented).toContain("  ' Response.Write value");
+
+    const uncommented = applyTextEdits(
+      commented,
+      getClassicAspLineCommentEdits("file:///site/default.asp", commented, selections),
+    );
+    expect(uncommented).toBe(source);
+  });
+
+  it("toggles whole selected non-empty lines once", () => {
+    const source = `<script>
+  const first = 1;
+
+  const second = 2;
+</script>`;
+    const commented = applyTextEdits(
+      source,
+      getClassicAspLineCommentEdits("file:///site/default.asp", source, [
+        {
+          start: positionAt(source, source.indexOf("const first")),
+          end: positionAt(source, source.indexOf("</script>")),
+        },
+      ]),
+    );
+    expect(commented).toContain("  // const first = 1;");
+    expect(commented).toContain("\n\n");
+    expect(commented).toContain("  // const second = 2;");
+  });
 });
 
 function positionAt(text: string, offset: number): { line: number; character: number } {
@@ -1294,6 +1348,51 @@ function positionAt(text: string, offset: number): { line: number; character: nu
     }
   }
   return { line, character };
+}
+
+function offsetAt(text: string, position: { line: number; character: number }): number {
+  let line = 0;
+  let character = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (line === position.line && character === position.character) {
+      return index;
+    }
+    if (text[index] === "\n") {
+      if (line === position.line) {
+        return index;
+      }
+      line += 1;
+      character = 0;
+    } else {
+      character += 1;
+    }
+  }
+  return text.length;
+}
+
+function rangeAt(text: string, needle: string) {
+  const offset = text.indexOf(needle);
+  if (offset === -1) {
+    throw new Error(`Missing text: ${needle}`);
+  }
+  const position = positionAt(text, offset);
+  return { start: position, end: position };
+}
+
+function applyTextEdits(
+  text: string,
+  edits: Array<{
+    range: { start: { line: number; character: number }; end: { line: number; character: number } };
+    newText: string;
+  }>,
+): string {
+  return [...edits]
+    .sort((left, right) => offsetAt(text, right.range.start) - offsetAt(text, left.range.start))
+    .reduce((current, edit) => {
+      const start = offsetAt(current, edit.range.start);
+      const end = offsetAt(current, edit.range.end);
+      return current.slice(0, start) + edit.newText + current.slice(end);
+    }, text);
 }
 
 function markedDocument(source: string): {

@@ -36,6 +36,12 @@ const semanticTokenType = {
   comment: 7,
   string: 8,
   operator: 9,
+  namespace: 10,
+  interface: 11,
+  enum: 12,
+  enumMember: 13,
+  typeAlias: 14,
+  typeParameter: 15,
 } as const;
 const semanticTokenModifier = {
   public: 1 << 0,
@@ -387,6 +393,93 @@ const message = gre▮et("Ada");
           position: positionAt(marked.text, marked.text.indexOf('"Ada"')),
         });
         expect(JSON.stringify(signature)).toContain("name");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("returns rich JavaScript type info and semantic tokens for script tags", async () => {
+      const source = `<script>
+/** @param {HTMLElement} element */
+function activate(element) {
+  element.dataset.active = "true";
+}
+class DashboardWidget {
+  render(row) {
+    return row.textContent;
+  }
+}
+const formatter = new Intl.DateTimeFormat("en");
+const clock = document.querySelector("#clientClock");
+document.querySelectorAll(".customer-row").forEach((row) => {
+  activate(row);
+});
+</script>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/js-rich-types.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const formatterHover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("formatter")),
+        });
+        expect(JSON.stringify(formatterHover)).toContain("Intl.DateTimeFormat");
+        const clockHover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("clock")),
+        });
+        expect(JSON.stringify(clockHover)).toContain("Element");
+        const rowHover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("forEach((row)") + "forEach((".length),
+        });
+        expect(JSON.stringify(rowHover)).toContain("Element");
+        const elementHover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("element)")),
+        });
+        expect(JSON.stringify(elementHover)).toContain("HTMLElement");
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        expect(
+          decoded.some((token) =>
+            tokenMatches(source, token, "DashboardWidget", semanticTokenType.class),
+          ),
+        ).toBe(true);
+        expect(
+          decoded.some((token) => tokenMatches(source, token, "render", semanticTokenType.method)),
+        ).toBe(true);
+        expect(
+          decoded.some((token) =>
+            tokenMatches(source, token, "(row)", semanticTokenType.parameter, 1),
+          ),
+        ).toBe(true);
+        expect(
+          decoded.some((token) =>
+            tokenMatches(source, token, "dataset", semanticTokenType.property),
+          ),
+        ).toBe(true);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -3285,6 +3378,21 @@ function decodeSemanticTokens(data: number[] | undefined): DecodedSemanticToken[
     });
   }
   return result;
+}
+
+function tokenMatches(
+  text: string,
+  token: DecodedSemanticToken,
+  needle: string,
+  tokenType: number,
+  offset = 0,
+): boolean {
+  const position = positionAt(text, text.indexOf(needle) + offset);
+  return (
+    token.line === position.line &&
+    token.character === position.character &&
+    token.tokenType === tokenType
+  );
 }
 
 function positionAt(text: string, offset: number): { line: number; character: number } {

@@ -139,6 +139,12 @@ const semanticTokenTypes = [
   "comment",
   "string",
   "operator",
+  "namespace",
+  "interface",
+  "enum",
+  "enumMember",
+  "typeAlias",
+  "typeParameter",
 ] as const;
 const semanticTokenModifiers = [
   "public",
@@ -5513,37 +5519,95 @@ function addEmbeddedSemanticTokens(
   }
   for (const virtual of jsVirtualDocuments(cached)) {
     const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
-    const tree = project.service.getNavigationTree(jsVirtualFileName(virtual.uri));
-    for (const item of flattenNavigationTree(tree)) {
-      const span = item.nameSpan ?? item.spans[0];
-      if (!span) {
-        continue;
-      }
-      const type =
-        item.kind === ts.ScriptElementKind.classElement
-          ? "class"
-          : item.kind === ts.ScriptElementKind.memberFunctionElement ||
-              item.kind === ts.ScriptElementKind.functionElement
-            ? "function"
-            : item.kind === ts.ScriptElementKind.memberVariableElement
-              ? "property"
-              : "variable";
-      addVirtualWordToken(
-        tokens,
-        cached.source,
-        virtual,
-        span.start,
-        span.length,
-        type,
-        rangeStart,
-        rangeEnd,
-      );
-    }
+    addJavaScriptSemanticTokens(tokens, cached, virtual, project.service, rangeStart, rangeEnd);
   }
 }
 
-function flattenNavigationTree(tree: ts.NavigationTree): ts.NavigationTree[] {
-  return [tree, ...(tree.childItems ?? []).flatMap(flattenNavigationTree)];
+function addJavaScriptSemanticTokens(
+  tokens: SemanticTokenData[],
+  cached: CachedDocument,
+  virtual: VirtualDocument,
+  service: ts.LanguageService,
+  rangeStart: number,
+  rangeEnd: number,
+): void {
+  const spans = service.getEncodedSemanticClassifications(
+    jsVirtualFileName(virtual.uri),
+    { start: 0, length: virtual.text.length },
+    ts.SemanticClassificationFormat.TwentyTwenty,
+  ).spans;
+  for (let index = 0; index + 2 < spans.length; index += 3) {
+    const token = jsSemanticTokenFromClassification(spans[index + 2]);
+    if (!token) {
+      continue;
+    }
+    addVirtualWordToken(
+      tokens,
+      cached.source,
+      virtual,
+      spans[index],
+      spans[index + 1],
+      token.tokenType,
+      rangeStart,
+      rangeEnd,
+      token.tokenModifiers,
+    );
+  }
+}
+
+function jsSemanticTokenFromClassification(
+  classification: number,
+): { tokenType: string; tokenModifiers?: readonly string[] } | undefined {
+  const typeIndex = (classification >> 8) - 1;
+  const modifierSet = classification & 255;
+  const tokenType = jsSemanticTokenType(typeIndex);
+  if (!tokenType) {
+    return undefined;
+  }
+  const tokenModifiers = jsSemanticTokenModifiers(modifierSet);
+  return { tokenType, tokenModifiers };
+}
+
+function jsSemanticTokenType(typeIndex: number): string | undefined {
+  switch (typeIndex) {
+    case 0:
+      return "class";
+    case 1:
+      return "enum";
+    case 2:
+      return "interface";
+    case 3:
+      return "namespace";
+    case 4:
+      return "typeParameter";
+    case 5:
+      return "typeAlias";
+    case 6:
+      return "parameter";
+    case 7:
+      return "variable";
+    case 8:
+      return "enumMember";
+    case 9:
+      return "property";
+    case 10:
+      return "function";
+    case 11:
+      return "method";
+    default:
+      return undefined;
+  }
+}
+
+function jsSemanticTokenModifiers(modifierSet: number): string[] | undefined {
+  const modifiers: string[] = [];
+  if (modifierSet & (1 << 3)) {
+    modifiers.push("readonly");
+  }
+  if (modifierSet & (1 << 4)) {
+    modifiers.push("library");
+  }
+  return modifiers.length > 0 ? modifiers : undefined;
 }
 
 function addVirtualWordToken(
@@ -5555,12 +5619,13 @@ function addVirtualWordToken(
   tokenType: string,
   rangeStart: number,
   rangeEnd: number,
+  tokenModifiers?: readonly string[],
 ): void {
   const sourceOffset = virtual.sourceMap.toSourceOffset(virtualOffset);
   if (sourceOffset === undefined || sourceOffset < rangeStart || sourceOffset > rangeEnd) {
     return;
   }
-  addSemanticToken(tokens, document, sourceOffset, length, tokenType);
+  addSemanticToken(tokens, document, sourceOffset, length, tokenType, tokenModifiers);
 }
 
 function addSemanticToken(
@@ -5569,9 +5634,16 @@ function addSemanticToken(
   offset: number,
   length: number,
   tokenType: string,
+  tokenModifiers?: readonly string[],
 ): void {
   const position = document.positionAt(offset);
-  tokens.push({ line: position.line, character: position.character, length, tokenType });
+  tokens.push({
+    line: position.line,
+    character: position.character,
+    length,
+    tokenType,
+    tokenModifiers,
+  });
 }
 
 function isDiagnostic(value: Diagnostic | undefined): value is Diagnostic {

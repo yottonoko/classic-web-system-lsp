@@ -20,10 +20,12 @@ describe("VS Code extension package", () => {
       repository?: { url?: string };
       icon?: string;
       galleryBanner?: { color?: string };
+      dependencies?: Record<string, string>;
       contributes?: {
         languages?: Array<{ id: string; extensions?: string[] }>;
         grammars?: Array<{ language?: string; scopeName?: string; path?: string }>;
         commands?: Array<{ command: string }>;
+        keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
         problemMatchers?: Array<{ name: string }>;
         taskDefinitions?: Array<{ type: string }>;
         configuration?: { properties?: Record<string, unknown> };
@@ -34,10 +36,12 @@ describe("VS Code extension package", () => {
       license?: string;
     };
     const commands = manifest.contributes?.commands?.map((command) => command.command) ?? [];
+    const keybindings = manifest.contributes?.keybindings ?? [];
     expect(rootManifest.license).toBe("MIT OR Apache-2.0");
     expect(manifest.license).toBe("MIT OR Apache-2.0");
     expect(fs.existsSync("../../LICENSE-MIT")).toBe(true);
     expect(fs.existsSync("../../LICENSE-APACHE")).toBe(true);
+    expect(manifest.dependencies?.["@asp-lsp/core"]).toBe("workspace:*");
     const readme = fs.readFileSync("README.md", "utf8");
     expect(readme).toContain("## License");
     expect(readme).toContain("MIT License");
@@ -78,6 +82,20 @@ describe("VS Code extension package", () => {
     const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
     expect(extensionSource).toContain('registerCommand("aspLsp.showReferences"');
     expect(extensionSource).toContain('"editor.action.showReferences"');
+    expect(extensionSource).toContain('registerCommand("aspLsp.toggleLineComment"');
+    expect(keybindings).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.toggleLineComment",
+        key: "ctrl+/",
+        mac: "cmd+/",
+        when: "editorTextFocus && editorLangId == classic-asp",
+      }),
+    );
+    const languageConfiguration = JSON.parse(
+      fs.readFileSync("language-configuration.json", "utf8"),
+    ) as { comments?: { blockComment?: string[]; lineComment?: string } };
+    expect(languageConfiguration.comments?.blockComment).toEqual(["<!--", "-->"]);
+    expect(languageConfiguration.comments?.lineComment).toBeUndefined();
     const vbscriptLanguage = manifest.contributes?.languages?.find(
       (language) => language.id === "vbscript",
     );
