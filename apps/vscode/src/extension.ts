@@ -23,9 +23,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     outputChannel,
     statusBarItem,
     vscode.commands.registerCommand("aspLsp.restartServer", async () => restartServer(context)),
-    vscode.commands.registerCommand("aspLsp.reindexWorkspace", async () =>
-      client?.sendRequest("workspace/executeCommand", { command: "aspLsp.reindexWorkspace" }),
-    ),
     vscode.commands.registerCommand("aspLsp.openOutput", () => outputChannel?.show()),
     vscode.commands.registerCommand("aspLsp.debugIisUrl", async () => debugIisUrl()),
     vscode.commands.registerCommand("aspLsp.debugIisExpressUrl", async () =>
