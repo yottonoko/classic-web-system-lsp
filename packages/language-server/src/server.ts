@@ -78,6 +78,7 @@ import {
   getVbscriptRenameRange,
   getVbscriptReferences,
   getVbscriptSelectionRanges,
+  getVbscriptSemanticTokens,
   getVbscriptSignatureHelp,
   getVbscriptTypeDefinition,
   parseAspDocument,
@@ -5238,27 +5239,19 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
       );
     }
   }
-  const symbols = collectVbscriptSymbols(cached.parsed);
-  for (const symbol of symbols) {
-    const offset = cached.source.offsetAt(symbol.range.start);
+  for (const semanticToken of getVbscriptSemanticTokens(
+    cached.parsed,
+    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+  )) {
+    const offset = cached.source.offsetAt(semanticToken.range.start);
     if (offset < rangeStart || offset > rangeEnd) {
       continue;
     }
-    const tokenType =
-      symbol.kind === "class"
-        ? "class"
-        : symbol.kind === "method"
-          ? "method"
-          : symbol.kind === "field" || symbol.kind === "property"
-            ? "property"
-            : symbol.kind === "function" || symbol.kind === "sub"
-              ? "function"
-              : "variable";
     tokens.push({
-      line: symbol.range.start.line,
-      character: symbol.range.start.character,
-      length: Math.max(1, symbol.range.end.character - symbol.range.start.character),
-      tokenType,
+      line: semanticToken.range.start.line,
+      character: semanticToken.range.start.character,
+      length: Math.max(1, semanticToken.range.end.character - semanticToken.range.start.character),
+      tokenType: semanticToken.tokenType,
     });
   }
   for (const name of ["Request", "Response", "Session", "Application", "Server", "ASPError"]) {
@@ -5273,9 +5266,11 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
     );
   }
   addEmbeddedSemanticTokens(tokens, cached, rangeStart, rangeEnd);
-  tokens.sort((left, right) => left.line - right.line || left.character - right.character);
+  const uniqueTokens = dedupeSemanticTokens(tokens).sort(
+    (left, right) => left.line - right.line || left.character - right.character,
+  );
   const builder = new SemanticTokensBuilder();
-  for (const token of tokens) {
+  for (const token of uniqueTokens) {
     builder.push(
       token.line,
       token.character,
@@ -5285,6 +5280,20 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
     );
   }
   return builder.build();
+}
+
+function dedupeSemanticTokens(
+  tokens: Array<{ line: number; character: number; length: number; tokenType: string }>,
+): Array<{ line: number; character: number; length: number; tokenType: string }> {
+  const seen = new Set<string>();
+  return tokens.filter((token) => {
+    const key = `${token.line}:${token.character}:${token.length}:${token.tokenType}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function cacheSemanticTokens(uri: string, data: number[]): SemanticTokens {

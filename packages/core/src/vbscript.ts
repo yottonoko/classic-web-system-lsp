@@ -59,7 +59,13 @@ export interface VbSymbol {
   visibility?: "public" | "private";
   procedureKind?: "sub" | "function";
   propertyAccessor?: "get" | "let" | "set";
+  implicit?: boolean;
   documentation?: VbDocumentation;
+}
+
+export interface VbSemanticToken {
+  range: Range;
+  tokenType: "variable" | "function" | "class" | "method" | "property";
 }
 
 export interface VbReference {
@@ -1266,8 +1272,7 @@ export function analyzeVbscript(
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const diagnostics: Diagnostic[] = [];
   const scriptText = getServerScriptText(parsed);
-  const optionExplicit = /^\s*Option\s+Explicit\b/im.test(scriptText);
-  if (optionExplicit) {
+  if (/^\s*Option\s+Explicit\b/im.test(scriptText)) {
     diagnostics.push(...diagnoseUndeclaredVariables(parsed, symbols, context.locale));
   }
   if (context.unusedDiagnostics !== false) {
@@ -1381,6 +1386,9 @@ function vbscriptHoverSignature(symbol: VbSymbol): string {
 }
 
 function vbscriptHoverDescription(symbol: VbSymbol): string {
+  if (symbol.implicit) {
+    return "Implicit VBScript variable.";
+  }
   const kindDescription =
     symbol.kind === "class"
       ? "VBScript class."
@@ -1453,6 +1461,52 @@ export function getVbscriptReferences(
     }
   }
   return references;
+}
+
+export function getVbscriptSemanticTokens(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): VbSemanticToken[] {
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const tokens: VbSemanticToken[] = [];
+  for (const token of identifierTokens(parsed)) {
+    const symbol = resolveSymbolAt(
+      parsed,
+      token.start + Math.floor(token.text.length / 2),
+      symbols,
+    );
+    if (!symbol || isBuiltinName(symbol.name)) {
+      continue;
+    }
+    const tokenType = semanticTokenTypeForSymbol(symbol);
+    if (!tokenType) {
+      continue;
+    }
+    tokens.push({
+      range: rangeFromOffsets(parsed.text, token.start, token.end),
+      tokenType,
+    });
+  }
+  return tokens;
+}
+
+function semanticTokenTypeForSymbol(symbol: VbSymbol): VbSemanticToken["tokenType"] | undefined {
+  if (symbol.kind === "class") {
+    return "class";
+  }
+  if (symbol.kind === "method") {
+    return "method";
+  }
+  if (symbol.kind === "field" || symbol.kind === "property") {
+    return "property";
+  }
+  if (symbol.kind === "function" || symbol.kind === "sub") {
+    return "function";
+  }
+  if (symbol.kind === "variable" || symbol.kind === "parameter" || symbol.kind === "constant") {
+    return "variable";
+  }
+  return undefined;
 }
 
 export function getVbscriptRenameRange(
@@ -1835,6 +1889,7 @@ export function collectVbscriptSymbols(
   for (const node of vbDocuments(parsed)) {
     addSymbolsFromVbNode(parsed, node, symbols);
   }
+  addImplicitAssignmentSymbols(parsed, symbols);
   applyTypeAnnotations(parsed, symbols);
   inferAssignedTypes(parsed, symbols, context);
   applyTypeAnnotations(parsed, symbols);
@@ -1985,6 +2040,69 @@ function addSymbolsFromVbNode(
   for (const child of node.children) {
     addSymbolsFromVbNode(parsed, child, symbols);
   }
+}
+
+function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymbol[]): void {
+  if (hasOptionExplicit(parsed)) {
+    return;
+  }
+  for (const statement of vbStatements(parsed)) {
+    const first = lowerToken(statement[0]);
+    const targetIndex = first === "set" ? 1 : 0;
+    const target = statement[targetIndex];
+    const equalsIndex = statement.findIndex((token) => token.text === "=");
+    if (
+      !target ||
+      target.kind !== "identifier" ||
+      equalsIndex === -1 ||
+      equalsIndex <= targetIndex ||
+      statement[targetIndex + 1]?.text === "." ||
+      isBuiltinName(target.text) ||
+      isImplicitKeywordName(target.text)
+    ) {
+      continue;
+    }
+    const scope = scopeNodeAt(parsed, target.start);
+    const memberOf = scope ? undefined : parentClassName(parsed, target.start);
+    if (scope?.nameToken?.text.toLowerCase() === target.text.toLowerCase()) {
+      continue;
+    }
+    if (
+      symbols.some(
+        (symbol) =>
+          symbol.name.toLowerCase() === target.text.toLowerCase() &&
+          symbol.sourceUri === parsed.uri &&
+          (symbol.scopeName ?? "") === (scope?.nameToken?.text ?? "") &&
+          (symbol.memberOf ?? "") === (memberOf ?? "") &&
+          isSymbolVisibleAt(symbol, parsed.uri, parsed.text, target.start),
+      )
+    ) {
+      continue;
+    }
+    symbols.push({
+      name: target.text,
+      kind: "variable",
+      range: rangeFromOffsets(parsed.text, target.start, target.end),
+      sourceUri: parsed.uri,
+      memberOf,
+      containerName: memberOf,
+      scopeName: scope?.nameToken?.text,
+      scopeRange: scope
+        ? rangeFromOffsets(parsed.text, scope.start, scope.end)
+        : memberOf
+          ? rangeFromOffsets(parsed.text, target.start, statement.at(-1)?.end ?? target.end)
+          : undefined,
+      implicit: true,
+    });
+  }
+}
+
+function hasOptionExplicit(parsed: AspParsedDocument): boolean {
+  return /^\s*Option\s+Explicit\b/im.test(getServerScriptText(parsed));
+}
+
+function isImplicitKeywordName(name: string): boolean {
+  return ["true", "false", "nothing", "empty", "null", "me"].includes(name.toLowerCase());
 }
 
 function inferAssignedTypes(
@@ -3037,6 +3155,9 @@ function diagnoseUnusedSymbols(
 }
 
 function isUnusedDiagnosticCandidate(symbol: VbSymbol): boolean {
+  if (symbol.implicit) {
+    return false;
+  }
   if (symbol.memberOf) {
     return symbol.visibility === "private";
   }
@@ -3066,6 +3187,7 @@ function diagnoseIdentifierCase(
       (symbol) =>
         symbol.sourceUri === parsed.uri &&
         /^[A-Za-z][A-Za-z0-9_]*$/.test(symbol.name) &&
+        !symbol.implicit &&
         !isRuntimeEntryPoint(parsed, symbol) &&
         !isBuiltinName(symbol.name),
     )

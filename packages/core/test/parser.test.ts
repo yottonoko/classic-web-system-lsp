@@ -12,6 +12,7 @@ import {
   getVbscriptInlayHints,
   getVbscriptReferences,
   getVbscriptSelectionRanges,
+  getVbscriptSemanticTokens,
   getVbscriptSignatureHelp,
   getVbscriptTypeDefinition,
   parseAspCst,
@@ -875,6 +876,52 @@ End Sub
       "firstName",
       "lastName",
     ]);
+    const labelDefinition = getVbscriptDefinition(parsed, { line: 2, character: 4 }, { symbols });
+    const labelUse = getVbscriptDefinition(parsed, { line: 3, character: 2 }, { symbols });
+    expect(labelUse?.range).toEqual(labelDefinition?.range);
+  });
+
+  it("creates implicit variables without Option Explicit for hover, inlay and semantic tokens", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+a = 1
+Response.Write a
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const implicit = symbols.find((symbol) => symbol.name === "a");
+    expect(implicit).toEqual(expect.objectContaining({ implicit: true, typeName: "Number" }));
+    expect(getVbscriptHover(parsed, { line: 1, character: 0 }, { symbols })).toContain(
+      "Implicit VBScript variable.",
+    );
+    expect(
+      getVbscriptInlayHints(
+        parsed,
+        { start: { line: 0, character: 0 }, end: { line: 4, character: 0 } },
+        { symbols },
+      ).some((hint) => hint.label === " As Number"),
+    ).toBe(true);
+    expect(
+      getVbscriptSemanticTokens(parsed, { symbols }).some(
+        (token) => token.range.start.line === 2 && token.tokenType === "variable",
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps undeclared assignments undeclared under Option Explicit", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Option Explicit
+a = 1
+%>`,
+    );
+    const result = analyzeVbscript(parsed);
+    expect(result.symbols.some((symbol) => symbol.name === "a" && symbol.implicit)).toBe(false);
+    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("not declared"))).toBe(
+      true,
+    );
   });
 
   it("builds LSP helper data for resolve, selection, inlay hints and type definitions", () => {

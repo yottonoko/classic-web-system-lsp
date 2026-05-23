@@ -16,7 +16,23 @@ interface MarkedDocument {
   position: { line: number; character: number };
 }
 
+interface DecodedSemanticToken {
+  line: number;
+  character: number;
+  length: number;
+  tokenType: number;
+}
+
 const rpcTimeoutMs = 30_000;
+const semanticTokenType = {
+  keyword: 0,
+  variable: 1,
+  function: 2,
+  class: 3,
+  method: 4,
+  property: 5,
+  comment: 6,
+} as const;
 
 describe(
   "stdio LSP server",
@@ -783,11 +799,80 @@ Response.Write Shared▮Title()
         });
         expect(JSON.stringify(definition)).toContain("common.inc");
 
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri: `file://${owner}` },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        expect(
+          decoded.some(
+            (token) =>
+              token.line === marked.position.line &&
+              token.character === marked.position.character - "Shared".length &&
+              token.tokenType === semanticTokenType.function,
+          ),
+        ).toBe(true);
+
         await server.request("shutdown", null);
         server.notify("exit", undefined);
       } finally {
         server.stop();
         fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("returns hover, inlay hints and semantic tokens for implicit VBScript variables", async () => {
+      const source = `<%
+a = 1
+Response.Write a
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/implicit-vbscript.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: { line: 1, character: 0 },
+        });
+        expect(JSON.stringify(hover)).toContain("Implicit VBScript variable.");
+
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 4, character: 0 } },
+        });
+        expect(JSON.stringify(inlayHints)).toContain("As Number");
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        expect(
+          decoded.some(
+            (token) =>
+              token.line === 2 &&
+              token.character === "Response.Write ".length &&
+              token.tokenType === semanticTokenType.variable,
+          ),
+        ).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
       }
     });
 
@@ -888,7 +973,23 @@ Response.Write Build▮Name("Ada", "Lovelace")
           textDocument: { uri },
         });
         expect(JSON.stringify(semanticTokens)).toContain("data");
-        expect((semanticTokens as { data?: unknown[] }).data?.length ?? 0).toBeGreaterThan(0);
+        const decodedSemanticTokens = decodeSemanticTokens(
+          (semanticTokens as { data?: number[] }).data,
+        );
+        expect(decodedSemanticTokens.length).toBeGreaterThan(6);
+        expect(
+          decodedSemanticTokens.some(
+            (token) =>
+              token.line === marked.position.line &&
+              token.character === marked.position.character - "Build".length &&
+              token.tokenType === semanticTokenType.function,
+          ),
+        ).toBe(true);
+        expect(
+          decodedSemanticTokens.some(
+            (token) => token.line === 2 && token.character === 14 && token.tokenType === semanticTokenType.variable,
+          ),
+        ).toBe(true);
         const semanticDelta = await server.request("textDocument/semanticTokens/full/delta", {
           textDocument: { uri },
           previousResultId: (semanticTokens as { resultId?: string }).resultId,
@@ -2797,6 +2898,23 @@ function markedDocument(source: string): MarkedDocument {
   }
   const text = source.slice(0, offset) + source.slice(offset + "▮".length);
   return { text, position: positionAt(text, offset) };
+}
+
+function decodeSemanticTokens(data: number[] | undefined): DecodedSemanticToken[] {
+  const result: DecodedSemanticToken[] = [];
+  let line = 0;
+  let character = 0;
+  for (let index = 0; data && index + 4 < data.length; index += 5) {
+    line += data[index];
+    character = data[index] === 0 ? character + data[index + 1] : data[index + 1];
+    result.push({
+      line,
+      character,
+      length: data[index + 2],
+      tokenType: data[index + 3],
+    });
+  }
+  return result;
 }
 
 function positionAt(text: string, offset: number): { line: number; character: number } {
