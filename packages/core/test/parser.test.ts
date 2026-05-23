@@ -497,11 +497,11 @@ End Class
     );
     expect(diagnostics.map((diagnostic) => diagnostic.data)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: "do_work", expectedName: "doWork", style: "camel" }),
+        expect.objectContaining({ name: "do_work", expectedName: "doWork", style: "camelCase" }),
         expect.objectContaining({
           name: "CUSTOMER_NAME",
           expectedName: "customerName",
-          style: "camel",
+          style: "camelCase",
         }),
         expect.objectContaining({ name: "customer_record", expectedName: "CustomerRecord" }),
       ]),
@@ -516,11 +516,11 @@ End Class
 
   it("supports configurable VBScript identifier casing styles", () => {
     const expectedByStyle = [
-      ["upper", "user_name", "USERNAME"],
-      ["camel", "user_name", "userName"],
-      ["lower", "user_name", "username"],
-      ["snake", "userName", "user_name"],
-      ["upperSnake", "user_name", "USER_NAME"],
+      ["UPPERCASE", "user_name", "USERNAME"],
+      ["camelCase", "user_name", "userName"],
+      ["lowercase", "user_name", "username"],
+      ["snake_case", "userName", "user_name"],
+      ["UPPER_SNAKE", "user_name", "USER_NAME"],
     ] as const;
     for (const [identifierCase, sourceName, expectedName] of expectedByStyle) {
       const parsed = parseAspDocument(
@@ -571,13 +571,13 @@ End Function
     );
     const diagnostics = analyzeVbscript(parsed, {
       identifierCaseByKind: {
-        variable: "pascal",
-        parameter: "pascal",
-        field: "pascal",
-        property: "pascal",
-        function: "pascal",
-        sub: "pascal",
-        class: "pascal",
+        variable: "PascalCase",
+        parameter: "PascalCase",
+        field: "PascalCase",
+        property: "PascalCase",
+        function: "PascalCase",
+        sub: "PascalCase",
+        class: "PascalCase",
       },
     }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-naming");
     expect(diagnostics.map((diagnostic) => diagnostic.data)).toEqual(

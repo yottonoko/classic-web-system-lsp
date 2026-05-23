@@ -210,6 +210,11 @@
           "default": true,
           "description": "%configuration.javascript.autoImports.description%"
         },
+        "aspLsp.javascript.ignoreProjectConfig": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.javascript.ignoreProjectConfig.description%"
+        },
         "aspLsp.virtualRoot": {
           "type": "string",
           "default": "",
@@ -273,12 +278,12 @@
         "aspLsp.vbscript.identifierCase": {
           "type": "string",
           "enum": [
-            "pascal",
-            "upper",
-            "camel",
-            "lower",
-            "snake",
-            "upperSnake",
+            "PascalCase",
+            "UPPERCASE",
+            "camelCase",
+            "lowercase",
+            "snake_case",
+            "UPPER_SNAKE",
             "ignore"
           ],
           "description": "%configuration.vbscript.identifierCase.description%"

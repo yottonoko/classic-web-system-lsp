@@ -75,12 +75,12 @@ export interface AspVbscriptSettings {
 }
 
 export type AspVbscriptIdentifierCase =
-  | "pascal"
-  | "upper"
-  | "camel"
-  | "lower"
-  | "snake"
-  | "upperSnake"
+  | "PascalCase"
+  | "UPPERCASE"
+  | "camelCase"
+  | "lowercase"
+  | "snake_case"
+  | "UPPER_SNAKE"
   | "ignore";
 
 export type AspVbscriptIdentifierKind =
@@ -97,6 +97,7 @@ export type AspVbscriptIdentifierKind =
 export interface AspJavascriptSettings {
   unusedDiagnostics?: boolean;
   autoImports?: boolean;
+  ignoreProjectConfig?: boolean;
 }
 
 export interface AspInlayHintSettings {

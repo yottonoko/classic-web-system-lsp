@@ -93,6 +93,7 @@ JavaScript.
 - `aspLsp.debug.output`: debug timing output, `off`, `summary`, or `verbose`; VS Code highlights elapsed duration as green, yellow, orange, or red
 - `aspLsp.javascript.unusedDiagnostics`: report unused JavaScript/JScript locals and parameters as hints
 - `aspLsp.javascript.autoImports`: enable TypeScript-powered JavaScript/JScript auto import completions and quick fixes
+- `aspLsp.javascript.ignoreProjectConfig`: ignore nearest `tsconfig.json` or `jsconfig.json` for embedded JavaScript/JScript language service projects
 - `aspLsp.virtualRoot`: root directory for `<!-- #include virtual="..." -->`
 - `aspLsp.virtualRoots`: additional virtual include roots
 - `aspLsp.legacyEncoding`: encoding for unopened include files, `utf8`, `shift_jis`, or `cp932`
@@ -102,7 +103,7 @@ JavaScript.
 - `aspLsp.format.alignAssignments`: align simple consecutive VBScript assignments
 - `aspLsp.format.onSave`: return full-document formatting edits from `textDocument/willSaveWaitUntil`
 - `aspLsp.vbscript.typeChecking`: `basic` or `strict`; strict enables VBScript type diagnostics
-- `aspLsp.vbscript.identifierCase`: `pascal`, `upper`, `camel`, `lower`, or `ignore`; reports declaration casing hints and quick fixes
+- `aspLsp.vbscript.identifierCase`: `PascalCase`, `UPPERCASE`, `camelCase`, `lowercase`, `snake_case`, `UPPER_SNAKE`, or `ignore`; reports declaration casing hints and quick fixes
 - `aspLsp.vbscript.comTypes`: custom COM type catalog keyed by `Server.CreateObject` Prog.ID
 - `aspLsp.vbscript.globals`: runtime or framework-provided VBScript globals keyed by identifier
 - `aspLsp.vbscript.unusedDiagnostics`: report unused VBScript declarations as hints

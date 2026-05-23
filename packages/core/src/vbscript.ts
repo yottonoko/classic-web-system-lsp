@@ -3792,7 +3792,7 @@ function identifierKindForSymbol(symbol: VbSymbol): AspVbscriptIdentifierKind {
 }
 
 function defaultIdentifierCaseForKind(kind: AspVbscriptIdentifierKind): AspVbscriptIdentifierCase {
-  return kind === "variable" || kind === "parameter" ? "camel" : "pascal";
+  return kind === "variable" || kind === "parameter" ? "camelCase" : "PascalCase";
 }
 
 function formatIdentifierCase(
@@ -3804,17 +3804,17 @@ function formatIdentifierCase(
     return undefined;
   }
   switch (style) {
-    case "upper":
+    case "UPPERCASE":
       return words.join("").toUpperCase();
-    case "lower":
+    case "lowercase":
       return words.join("").toLowerCase();
-    case "camel":
+    case "camelCase":
       return [words[0]?.toLowerCase(), ...words.slice(1).map(capitalizeWord)].join("");
-    case "pascal":
+    case "PascalCase":
       return words.map(capitalizeWord).join("");
-    case "snake":
+    case "snake_case":
       return words.join("_");
-    case "upperSnake":
+    case "UPPER_SNAKE":
       return words.join("_").toUpperCase();
   }
 }

@@ -1639,6 +1639,7 @@ function diagnosticsSettingsKey(settings: AspSettings): unknown {
     checkJs: settings.checkJs ?? false,
     javascript: {
       unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
+      ignoreProjectConfig: settings.javascript?.ignoreProjectConfig === true,
     },
     vbscript: {
       typeChecking: settings.vbscript?.typeChecking,
@@ -1676,6 +1677,7 @@ function jsSlowDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings
     settings: {
       checkJs: settings.checkJs ?? false,
       unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
+      ignoreProjectConfig: settings.javascript?.ignoreProjectConfig === true,
     },
     project:
       settings.checkJs === true
@@ -4373,15 +4375,30 @@ function normalizeVbscriptSettings(
 function normalizeVbscriptIdentifierCase(
   value: unknown,
 ): NonNullable<NonNullable<AspSettings["vbscript"]>["identifierCase"]> | undefined {
-  return value === "upper" ||
-    value === "camel" ||
-    value === "lower" ||
-    value === "snake" ||
-    value === "upperSnake" ||
-    value === "ignore" ||
-    value === "pascal"
-    ? value
-    : undefined;
+  switch (value) {
+    case "PascalCase":
+    case "UPPERCASE":
+    case "camelCase":
+    case "lowercase":
+    case "snake_case":
+    case "UPPER_SNAKE":
+    case "ignore":
+      return value;
+    case "pascal":
+      return "PascalCase";
+    case "upper":
+      return "UPPERCASE";
+    case "camel":
+      return "camelCase";
+    case "lower":
+      return "lowercase";
+    case "snake":
+      return "snake_case";
+    case "upperSnake":
+      return "UPPER_SNAKE";
+    default:
+      return undefined;
+  }
 }
 
 function normalizeVbscriptIdentifierCaseByKind(
@@ -4419,6 +4436,7 @@ function normalizeJavascriptSettings(
   return {
     unusedDiagnostics: record.unusedDiagnostics !== false,
     autoImports: record.autoImports !== false,
+    ignoreProjectConfig: record.ignoreProjectConfig === true,
   };
 }
 
@@ -4862,9 +4880,10 @@ function jsLanguageServiceCacheKey(
       checkJs: settings.checkJs ?? false,
       autoImports: settings.javascript?.autoImports !== false,
       unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
+      ignoreProjectConfig: settings.javascript?.ignoreProjectConfig === true,
     },
     optionOverrides,
-    projectEnvironment: jsProjectEnvironmentFingerprint(virtualSourceUri(virtual)),
+    projectEnvironment: jsProjectEnvironmentFingerprint(virtualSourceUri(virtual), settings),
     roots: workspaceRoots.map(normalizeFileName).sort(),
     documents: documents
       .all()
@@ -4873,12 +4892,14 @@ function jsLanguageServiceCacheKey(
   });
 }
 
-function jsProjectEnvironmentFingerprint(ownerUri: string): string {
+function jsProjectEnvironmentFingerprint(ownerUri: string, settings: AspSettings): string {
   const ownerFile = uriToFileName(ownerUri);
   const ownerDirectory = path.dirname(ownerFile);
   const configPath =
-    ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "tsconfig.json") ??
-    ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "jsconfig.json");
+    settings.javascript?.ignoreProjectConfig === true
+      ? undefined
+      : (ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "tsconfig.json") ??
+        ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "jsconfig.json"));
   return [configPath, nearestPackageJson(ownerDirectory)]
     .filter((fileName): fileName is string => Boolean(fileName))
     .map((fileName) => {
@@ -4978,8 +4999,10 @@ function readJsProjectConfig(
 ): { fileNames: string[]; options: ts.CompilerOptions; currentDirectory: string } {
   const ownerDirectory = path.dirname(ownerFile);
   const configPath =
-    ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "tsconfig.json") ??
-    ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "jsconfig.json");
+    settings.javascript?.ignoreProjectConfig === true
+      ? undefined
+      : (ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "tsconfig.json") ??
+        ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "jsconfig.json"));
   const defaultOptions: ts.CompilerOptions = {
     allowJs: true,
     checkJs: settings.checkJs ?? false,
@@ -5035,6 +5058,7 @@ function browserJavaScriptCompilerOptions(
     ...optionOverrides,
     allowJs: true,
     noEmit: true,
+    noLib: false,
     checkJs: optionOverrides.checkJs ?? settings.checkJs ?? false,
   };
   next.lib = ensureBrowserJavaScriptLibs(next.lib);
@@ -6266,6 +6290,9 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
     }
     if (region.kind === "asp-block" || region.kind === "asp-expression") {
       addSemanticToken(tokens, cached.source, region.start, 2, "keyword");
+      if (region.kind === "asp-expression") {
+        addSemanticToken(tokens, cached.source, region.start + 2, 1, "keyword");
+      }
       if (region.end - region.contentEnd >= 2) {
         addSemanticToken(tokens, cached.source, region.contentEnd, 2, "keyword");
       }

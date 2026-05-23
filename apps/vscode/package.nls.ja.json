@@ -8,6 +8,7 @@
   "configuration.debug.output.description": "VS Code Output channel に出す asp-lsp debug timing log を制御します。off は出力なし、summary は処理の開始/完了、verbose は step ごとの時間も出力します。",
   "configuration.javascript.unusedDiagnostics.description": "未使用の JavaScript / JScript local variable と parameter を hint diagnostic として報告します。",
   "configuration.javascript.autoImports.description": "TypeScript による JavaScript / JScript auto import completion と quick fix を有効にします。",
+  "configuration.javascript.ignoreProjectConfig.description": "embedded JavaScript / JScript language service project を作るときに、nearest tsconfig.json / jsconfig.json を無視します。",
   "configuration.virtualRoot.description": "virtual include path を解決する root directory です。",
   "configuration.virtualRoots.description": "virtual include path を解決する追加 root directory です。",
   "configuration.legacyEncoding.description": "開いていない include file を読むときの encoding です。",

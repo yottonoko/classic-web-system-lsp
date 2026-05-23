@@ -490,6 +490,97 @@ document.querySelectorAll(".customer-row").forEach((row) => {
       }
     });
 
+    it("keeps browser JavaScript globals available without a project config", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-empty-js-"));
+      const source = `<script>
+const clock = document.querySelector("#clientClock");
+const formatter = new Intl.DateTimeFormat("en");
+</script>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { checkJs: true, diagnostics: { debounceMs: 0 } } },
+        });
+        const uri = `file://${path.join(tempDir, "default.asp")}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const pulled = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        const serialized = JSON.stringify(pulled);
+        expect(serialized).not.toContain("Cannot find name 'document'");
+        expect(serialized).not.toContain("Cannot find name 'Intl'");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps browser JavaScript libs when project config disables default libs", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-nolib-"));
+      fs.writeFileSync(
+        path.join(tempDir, "jsconfig.json"),
+        JSON.stringify({ compilerOptions: { checkJs: true, noLib: true, lib: [] } }),
+        "utf8",
+      );
+      const source = `<script>
+document.querySelector("#clientClock");
+new Intl.DateTimeFormat("en");
+</script>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { checkJs: true, diagnostics: { debounceMs: 0 } } },
+        });
+        const uri = `file://${path.join(tempDir, "default.asp")}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const pulled = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        const serialized = JSON.stringify(pulled);
+        expect(serialized).not.toContain("Cannot find name 'document'");
+        expect(serialized).not.toContain("Cannot find name 'Intl'");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("keeps embedded JavaScript browser-focused when Node ambient types exist", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-browser-"));
       const nodeTypes = path.join(tempDir, "node_modules", "@types", "node");
@@ -582,6 +673,59 @@ $▮
           position: jqueryMarked.position,
         });
         expect(completionLabels(jqueryCompletions)).toContain("$");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("can ignore JavaScript project config files", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-ignore-config-"));
+      fs.writeFileSync(path.join(tempDir, "only.js"), "const OnlyGlobal = 1;\n", "utf8");
+      fs.writeFileSync(path.join(tempDir, "helper.js"), "const ConfigGlobal = 1;\n", "utf8");
+      fs.writeFileSync(
+        path.join(tempDir, "jsconfig.json"),
+        JSON.stringify({ files: ["only.js"], compilerOptions: { checkJs: true } }),
+        "utf8",
+      );
+      const marked = markedDocument(`<script>
+Config▮
+</script>`);
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              javascript: { ignoreProjectConfig: true },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = `file://${path.join(tempDir, "default.asp")}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+        });
+        expect(completionLabels(completions)).toContain("ConfigGlobal");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -1453,6 +1597,67 @@ Response.Write a
         expect(tokenAt('"includes/data.inc"')).toEqual(
           expect.objectContaining({ tokenType: semanticTokenType.string }),
         );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("marks the ASP expression equals delimiter as a keyword semantic token", async () => {
+      const source = `<%= title %>`;
+      const equalsPosition = positionAt(source, source.indexOf("="));
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/asp-expression-semantic.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        expect(decoded).toContainEqual(
+          expect.objectContaining({
+            line: equalsPosition.line,
+            character: equalsPosition.character,
+            length: 1,
+            tokenType: semanticTokenType.keyword,
+          }),
+        );
+
+        const rangeTokens = await server.request("textDocument/semanticTokens/range", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: source.length } },
+        });
+        expect(decodeSemanticTokens((rangeTokens as { data?: number[] }).data)).toContainEqual(
+          expect.objectContaining({
+            line: equalsPosition.line,
+            character: equalsPosition.character,
+            length: 1,
+            tokenType: semanticTokenType.keyword,
+          }),
+        );
+
+        const deltaTokens = await server.request("textDocument/semanticTokens/full/delta", {
+          textDocument: { uri },
+          previousResultId: (semanticTokens as { resultId?: string }).resultId,
+        });
+        expect(JSON.stringify(deltaTokens)).toContain("edits");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -2550,7 +2755,7 @@ Response.Write FOO
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
+          settings: { aspLsp: { vbscript: { identifierCase: "PascalCase" } } },
         });
         const uri = "file:///tmp/vb-naming.asp";
         server.notify("textDocument/didOpen", {
@@ -2589,31 +2794,31 @@ Response.Write FOO
     it("returns VBScript naming quick fixes for configured casing styles", async () => {
       const cases = [
         {
-          identifierCase: "upper",
+          identifierCase: "UPPERCASE",
           sourceName: "user_name",
           referenceName: "USER_NAME",
           expectedName: "USERNAME",
         },
         {
-          identifierCase: "camel",
+          identifierCase: "camelCase",
           sourceName: "user_name",
           referenceName: "USER_NAME",
           expectedName: "userName",
         },
         {
-          identifierCase: "lower",
+          identifierCase: "lowercase",
           sourceName: "user_name",
           referenceName: "USER_NAME",
           expectedName: "username",
         },
         {
-          identifierCase: "snake",
+          identifierCase: "snake_case",
           sourceName: "userName",
           referenceName: "userName",
           expectedName: "user_name",
         },
         {
-          identifierCase: "upperSnake",
+          identifierCase: "UPPER_SNAKE",
           sourceName: "user_name",
           referenceName: "USER_NAME",
           expectedName: "USER_NAME",
@@ -2672,6 +2877,48 @@ Response.Write ${testCase.referenceName}
       }
     });
 
+    it("accepts legacy VBScript identifier casing setting aliases", async () => {
+      const source = `<%
+Dim user_name
+Response.Write USER_NAME
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              vbscript: {
+                identifierCase: "camel",
+                identifierCaseByKind: { variable: "upperSnake" },
+              },
+            },
+          },
+        });
+        const uri = "file:///tmp/vb-naming-legacy-alias.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await waitForDiagnosticsContaining(server, "USER_NAME");
+        expect(JSON.stringify(diagnostics.params)).toContain("USER_NAME");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("uses VBScript identifier casing settings per declaration kind", async () => {
       const source = `<%
 Dim selected_customer
@@ -2690,7 +2937,7 @@ End Class
           settings: {
             aspLsp: {
               vbscript: {
-                identifierCaseByKind: { variable: "snake", class: "pascal" },
+                identifierCaseByKind: { variable: "snake_case", class: "PascalCase" },
               },
             },
           },
@@ -2755,7 +3002,7 @@ Response.Write record.display_name
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
+          settings: { aspLsp: { vbscript: { identifierCase: "PascalCase" } } },
         });
         const uri = "file:///tmp/vb-naming-declaration-kinds.asp";
         server.notify("textDocument/didOpen", {
@@ -2819,7 +3066,7 @@ Response.Write record.customer_name
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
+          settings: { aspLsp: { vbscript: { identifierCase: "PascalCase" } } },
         });
         const uri = "file:///tmp/vb-naming-member-references.asp";
         server.notify("textDocument/didOpen", {
@@ -2880,7 +3127,7 @@ Dim foo
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
+          settings: { aspLsp: { vbscript: { identifierCase: "PascalCase" } } },
         });
         const uri = `file://${owner}`;
         server.notify("textDocument/didOpen", {
@@ -2931,7 +3178,7 @@ Response.Write foo
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
+          settings: { aspLsp: { vbscript: { identifierCase: "PascalCase" } } },
         });
         const uri = "file:///tmp/vb-naming-collision.asp";
         server.notify("textDocument/didOpen", {
@@ -2985,7 +3232,7 @@ End Sub
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
+          settings: { aspLsp: { vbscript: { identifierCase: "PascalCase" } } },
         });
         const uri = "file:///tmp/vb-naming-scope-collision.asp";
         server.notify("textDocument/didOpen", {
@@ -3035,7 +3282,7 @@ Response.Write foo
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { vbscript: { identifierCase: "pascal" } } },
+          settings: { aspLsp: { vbscript: { identifierCase: "PascalCase" } } },
         });
         const uri = "file:///tmp/vb-naming-string-comment.asp";
         server.notify("textDocument/didOpen", {

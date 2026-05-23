@@ -79,6 +79,9 @@ describe("VS Code extension package", () => {
       manifest.contributes?.configuration?.properties?.["aspLsp.javascript.autoImports"],
     ).toBeTruthy();
     expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.javascript.ignoreProjectConfig"],
+    ).toBeTruthy();
+    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.implicitByRef"],
     ).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
@@ -288,8 +291,17 @@ describe("VS Code extension package", () => {
     const identifierCase = properties?.["aspLsp.vbscript.identifierCase"];
     const byKind = properties?.["aspLsp.vbscript.identifierCaseByKind"];
     expect(identifierCase?.enum).toEqual(
-      expect.arrayContaining(["pascal", "camel", "snake", "upperSnake", "ignore"]),
+      expect.arrayContaining([
+        "PascalCase",
+        "UPPERCASE",
+        "camelCase",
+        "lowercase",
+        "snake_case",
+        "UPPER_SNAKE",
+        "ignore",
+      ]),
     );
+    expect(identifierCase?.enum).not.toEqual(expect.arrayContaining(["lower", "upper"]));
     expect(byKind?.properties).toEqual(
       expect.objectContaining({
         variable: expect.anything(),
