@@ -97,9 +97,7 @@ describe("VS Code extension package", () => {
   });
 
   it("highlights common VBScript declaration keywords", () => {
-    const grammar = JSON.parse(
-      fs.readFileSync("syntaxes/vbscript.tmLanguage.json", "utf8"),
-    ) as {
+    const grammar = JSON.parse(fs.readFileSync("syntaxes/vbscript.tmLanguage.json", "utf8")) as {
       repository?: {
         "vbscript-basic"?: {
           patterns?: Array<{ match?: string; name?: string }>;

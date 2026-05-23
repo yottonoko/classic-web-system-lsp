@@ -131,12 +131,22 @@ const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
 const semanticTokenTypes = [
   "keyword",
   "variable",
+  "parameter",
   "function",
   "class",
   "method",
   "property",
   "comment",
 ] as const;
+const semanticTokenModifiers = ["public", "private", "readonly", "library"] as const;
+
+interface SemanticTokenData {
+  line: number;
+  character: number;
+  length: number;
+  tokenType: string;
+  tokenModifiers?: readonly string[];
+}
 
 interface CachedDocument {
   source: TextDocument;
@@ -278,7 +288,10 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       monikerProvider: true,
       inlineValueProvider: true,
       semanticTokensProvider: {
-        legend: { tokenTypes: [...semanticTokenTypes], tokenModifiers: [] },
+        legend: {
+          tokenTypes: [...semanticTokenTypes],
+          tokenModifiers: [...semanticTokenModifiers],
+        },
         full: { delta: true },
         range: true,
       },
@@ -5219,7 +5232,7 @@ function previousNonEmptyLine(
 function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTokens {
   const rangeStart = range ? cached.source.offsetAt(range.start) : 0;
   const rangeEnd = range ? cached.source.offsetAt(range.end) : cached.source.getText().length;
-  const tokens: Array<{ line: number; character: number; length: number; tokenType: string }> = [];
+  const tokens: SemanticTokenData[] = [];
   for (const region of cached.parsed.regions) {
     if (region.end < rangeStart || region.start > rangeEnd) {
       continue;
@@ -5252,18 +5265,8 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
       character: semanticToken.range.start.character,
       length: Math.max(1, semanticToken.range.end.character - semanticToken.range.start.character),
       tokenType: semanticToken.tokenType,
+      tokenModifiers: semanticToken.tokenModifiers,
     });
-  }
-  for (const name of ["Request", "Response", "Session", "Application", "Server", "ASPError"]) {
-    addWordSemanticTokens(
-      tokens,
-      cached.source,
-      cached.parsed,
-      name,
-      "variable",
-      rangeStart,
-      rangeEnd,
-    );
   }
   addEmbeddedSemanticTokens(tokens, cached, rangeStart, rangeEnd);
   const uniqueTokens = dedupeSemanticTokens(tokens).sort(
@@ -5276,24 +5279,35 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
       token.character,
       token.length,
       semanticTokenTypes.indexOf(token.tokenType as (typeof semanticTokenTypes)[number]),
-      0,
+      semanticTokenModifierBitset(token.tokenModifiers),
     );
   }
   return builder.build();
 }
 
-function dedupeSemanticTokens(
-  tokens: Array<{ line: number; character: number; length: number; tokenType: string }>,
-): Array<{ line: number; character: number; length: number; tokenType: string }> {
+function dedupeSemanticTokens(tokens: SemanticTokenData[]): SemanticTokenData[] {
   const seen = new Set<string>();
   return tokens.filter((token) => {
-    const key = `${token.line}:${token.character}:${token.length}:${token.tokenType}`;
+    const key = `${token.line}:${token.character}:${token.length}:${token.tokenType}:${semanticTokenModifierBitset(token.tokenModifiers)}`;
     if (seen.has(key)) {
       return false;
     }
     seen.add(key);
     return true;
   });
+}
+
+function semanticTokenModifierBitset(modifiers: readonly string[] | undefined): number {
+  let bitset = 0;
+  for (const modifier of modifiers ?? []) {
+    const index = semanticTokenModifiers.indexOf(
+      modifier as (typeof semanticTokenModifiers)[number],
+    );
+    if (index !== -1) {
+      bitset |= 1 << index;
+    }
+  }
+  return bitset;
 }
 
 function cacheSemanticTokens(uri: string, data: number[]): SemanticTokens {
@@ -5348,7 +5362,7 @@ function clearSemanticTokens(): void {
 }
 
 function addEmbeddedSemanticTokens(
-  tokens: Array<{ line: number; character: number; length: number; tokenType: string }>,
+  tokens: SemanticTokenData[],
   cached: CachedDocument,
   rangeStart: number,
   rangeEnd: number,
@@ -5423,7 +5437,7 @@ function flattenNavigationTree(tree: ts.NavigationTree): ts.NavigationTree[] {
 }
 
 function addVirtualWordToken(
-  tokens: Array<{ line: number; character: number; length: number; tokenType: string }>,
+  tokens: SemanticTokenData[],
   document: TextDocument,
   virtual: VirtualDocument,
   virtualOffset: number,
@@ -5440,7 +5454,7 @@ function addVirtualWordToken(
 }
 
 function addSemanticToken(
-  tokens: Array<{ line: number; character: number; length: number; tokenType: string }>,
+  tokens: SemanticTokenData[],
   document: TextDocument,
   offset: number,
   length: number,
@@ -5448,31 +5462,6 @@ function addSemanticToken(
 ): void {
   const position = document.positionAt(offset);
   tokens.push({ line: position.line, character: position.character, length, tokenType });
-}
-
-function addWordSemanticTokens(
-  tokens: Array<{ line: number; character: number; length: number; tokenType: string }>,
-  document: TextDocument,
-  parsed: AspParsedDocument,
-  word: string,
-  tokenType: string,
-  rangeStart = 0,
-  rangeEnd = parsed.text.length,
-): void {
-  const pattern = new RegExp(`\\b${word}\\b`, "gi");
-  for (const region of parsed.regions) {
-    if (region.language !== "vbscript" && region.language !== "jscript") {
-      continue;
-    }
-    const text = parsed.text.slice(region.contentStart, region.contentEnd);
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
-      const offset = region.contentStart + match.index;
-      if (offset >= rangeStart && offset <= rangeEnd) {
-        addSemanticToken(tokens, document, offset, word.length, tokenType);
-      }
-    }
-  }
 }
 
 function isDiagnostic(value: Diagnostic | undefined): value is Diagnostic {

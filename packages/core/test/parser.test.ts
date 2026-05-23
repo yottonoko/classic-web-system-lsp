@@ -907,6 +907,54 @@ Response.Write a
         (token) => token.range.start.line === 2 && token.tokenType === "variable",
       ),
     ).toBe(true);
+    expect(
+      getVbscriptSemanticTokens(parsed, { symbols }).some(
+        (token) =>
+          token.range.start.line === 2 &&
+          token.range.start.character === 0 &&
+          token.tokenType === "variable" &&
+          token.tokenModifiers?.includes("library"),
+      ),
+    ).toBe(true);
+  });
+
+  it("adds semantic token types and modifiers for VBScript symbols", () => {
+    const source = `<%
+Class Customer
+  Public Name
+  Public Property Get DisplayName()
+    DisplayName = Name
+  End Property
+End Class
+Const MaxCount = 10
+Sub Render(ByVal metricMap)
+  Response.Write MaxCount
+End Sub
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const tokens = getVbscriptSemanticTokens(parsed, { symbols });
+    const tokenAt = (text: string) => {
+      const position = positionAt(source, source.indexOf(text));
+      return tokens.find(
+        (token) =>
+          token.range.start.line === position.line &&
+          token.range.start.character === position.character,
+      );
+    };
+    expect(tokenAt("metricMap")).toEqual(expect.objectContaining({ tokenType: "parameter" }));
+    expect(tokenAt("MaxCount")).toEqual(
+      expect.objectContaining({ tokenType: "variable", tokenModifiers: ["readonly"] }),
+    );
+    expect(tokenAt("Name")).toEqual(
+      expect.objectContaining({ tokenType: "property", tokenModifiers: ["public"] }),
+    );
+    expect(tokenAt("DisplayName")).toEqual(
+      expect.objectContaining({ tokenType: "property", tokenModifiers: ["public"] }),
+    );
+    expect(tokenAt("Response")).toEqual(
+      expect.objectContaining({ tokenType: "variable", tokenModifiers: ["library"] }),
+    );
   });
 
   it("keeps undeclared assignments undeclared under Option Explicit", () => {
@@ -919,9 +967,9 @@ a = 1
     );
     const result = analyzeVbscript(parsed);
     expect(result.symbols.some((symbol) => symbol.name === "a" && symbol.implicit)).toBe(false);
-    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("not declared"))).toBe(
-      true,
-    );
+    expect(
+      result.diagnostics.some((diagnostic) => diagnostic.message.includes("not declared")),
+    ).toBe(true);
   });
 
   it("builds LSP helper data for resolve, selection, inlay hints and type definitions", () => {

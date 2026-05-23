@@ -21,17 +21,25 @@ interface DecodedSemanticToken {
   character: number;
   length: number;
   tokenType: number;
+  tokenModifiers: number;
 }
 
 const rpcTimeoutMs = 30_000;
 const semanticTokenType = {
   keyword: 0,
   variable: 1,
-  function: 2,
-  class: 3,
-  method: 4,
-  property: 5,
-  comment: 6,
+  parameter: 2,
+  function: 3,
+  class: 4,
+  method: 5,
+  property: 6,
+  comment: 7,
+} as const;
+const semanticTokenModifier = {
+  public: 1 << 0,
+  private: 1 << 1,
+  readonly: 1 << 2,
+  library: 1 << 3,
 } as const;
 
 describe(
@@ -868,6 +876,15 @@ Response.Write a
               token.tokenType === semanticTokenType.variable,
           ),
         ).toBe(true);
+        expect(
+          decoded.some(
+            (token) =>
+              token.line === 2 &&
+              token.character === 0 &&
+              token.tokenType === semanticTokenType.variable &&
+              token.tokenModifiers === semanticTokenModifier.library,
+          ),
+        ).toBe(true);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -924,11 +941,17 @@ Response.Write Build▮Name("Ada", "Lovelace")
       const server = new RpcServer();
       try {
         await server.start();
-        await server.request("initialize", {
+        const initialize = await server.request("initialize", {
           processId: process.pid,
           rootUri: "file:///tmp",
           capabilities: {},
         });
+        const initializeText = JSON.stringify(initialize);
+        expect(initializeText).toContain('"parameter"');
+        expect(initializeText).toContain('"public"');
+        expect(initializeText).toContain('"private"');
+        expect(initializeText).toContain('"readonly"');
+        expect(initializeText).toContain('"library"');
         const uri = "file:///tmp/vbscript-editing.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
@@ -987,7 +1010,18 @@ Response.Write Build▮Name("Ada", "Lovelace")
         ).toBe(true);
         expect(
           decodedSemanticTokens.some(
-            (token) => token.line === 2 && token.character === 14 && token.tokenType === semanticTokenType.variable,
+            (token) =>
+              token.line === 2 &&
+              token.character === 14 &&
+              token.tokenType === semanticTokenType.parameter,
+          ),
+        ).toBe(true);
+        expect(
+          decodedSemanticTokens.some(
+            (token) =>
+              token.line === 1 &&
+              token.character === "Function BuildName(".length &&
+              token.tokenType === semanticTokenType.parameter,
           ),
         ).toBe(true);
         const semanticDelta = await server.request("textDocument/semanticTokens/full/delta", {
@@ -2912,6 +2946,7 @@ function decodeSemanticTokens(data: number[] | undefined): DecodedSemanticToken[
       character,
       length: data[index + 2],
       tokenType: data[index + 3],
+      tokenModifiers: data[index + 4],
     });
   }
   return result;

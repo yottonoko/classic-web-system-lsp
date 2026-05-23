@@ -65,7 +65,8 @@ export interface VbSymbol {
 
 export interface VbSemanticToken {
   range: Range;
-  tokenType: "variable" | "function" | "class" | "method" | "property";
+  tokenType: "variable" | "parameter" | "function" | "class" | "method" | "property";
+  tokenModifiers?: Array<"public" | "private" | "readonly" | "library">;
 }
 
 export interface VbReference {
@@ -1470,6 +1471,14 @@ export function getVbscriptSemanticTokens(
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const tokens: VbSemanticToken[] = [];
   for (const token of identifierTokens(parsed)) {
+    if (isClassicAspObjectName(token.text)) {
+      tokens.push({
+        range: rangeFromOffsets(parsed.text, token.start, token.end),
+        tokenType: "variable",
+        tokenModifiers: ["library"],
+      });
+      continue;
+    }
     const symbol = resolveSymbolAt(
       parsed,
       token.start + Math.floor(token.text.length / 2),
@@ -1485,6 +1494,7 @@ export function getVbscriptSemanticTokens(
     tokens.push({
       range: rangeFromOffsets(parsed.text, token.start, token.end),
       tokenType,
+      tokenModifiers: semanticTokenModifiersForSymbol(symbol),
     });
   }
   return tokens;
@@ -1503,10 +1513,26 @@ function semanticTokenTypeForSymbol(symbol: VbSymbol): VbSemanticToken["tokenTyp
   if (symbol.kind === "function" || symbol.kind === "sub") {
     return "function";
   }
-  if (symbol.kind === "variable" || symbol.kind === "parameter" || symbol.kind === "constant") {
+  if (symbol.kind === "parameter") {
+    return "parameter";
+  }
+  if (symbol.kind === "variable" || symbol.kind === "constant") {
     return "variable";
   }
   return undefined;
+}
+
+function semanticTokenModifiersForSymbol(
+  symbol: VbSymbol,
+): NonNullable<VbSemanticToken["tokenModifiers"]> {
+  const modifiers: NonNullable<VbSemanticToken["tokenModifiers"]> = [];
+  if (symbol.visibility) {
+    modifiers.push(symbol.visibility);
+  }
+  if (symbol.kind === "constant") {
+    modifiers.push("readonly");
+  }
+  return modifiers;
 }
 
 export function getVbscriptRenameRange(
@@ -4248,6 +4274,12 @@ function isBuiltinName(name: string): boolean {
     Object.values(memberCompletions).some((items) =>
       items.some((item) => item.label.toLowerCase() === lower),
     )
+  );
+}
+
+function isClassicAspObjectName(name: string): boolean {
+  return ["request", "response", "session", "application", "server", "asperror"].includes(
+    name.toLowerCase(),
   );
 }
 
