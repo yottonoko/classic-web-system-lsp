@@ -127,6 +127,8 @@ let workspaceIndexTruncated = false;
 let jsLanguageServiceCacheTick = 0;
 let semanticTokenResultCounter = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
+const hiddenJavaScriptGlobalCompletions = new Set(["__dirname", "__filename"]);
+const browserJavaScriptLibs = ["lib.es2022.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"];
 
 const semanticTokenTypes = [
   "keyword",
@@ -428,7 +430,7 @@ connection.onDidChangeWatchedFiles((change) => {
         indexWorkspaceFile(fileName);
       }
     }
-    if (isScriptWorkspaceFile(fileName)) {
+    if (isScriptWorkspaceFile(fileName) || isJavaScriptProjectEnvironmentFile(fileName)) {
       scriptChanged = true;
     }
   }
@@ -609,6 +611,7 @@ connection.onReferences((params: ReferenceParams) => {
     cached.parsed,
     params.position,
     buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    { includeDeclaration: params.context.includeDeclaration },
   ).map((reference) => Location.create(reference.uri, reference.range));
 });
 
@@ -1291,35 +1294,38 @@ function jsCompletion(
   const { offset, service, fileName } = context;
   const preferences = jsCompletionPreferences(cachedSettings(cached.source.uri));
   return (
-    service.getCompletionsAtPosition(fileName, offset, preferences)?.entries.map((entry) => {
-      const details =
-        entry.hasAction || entry.source
-          ? safeGetCompletionEntryDetails(
-              service,
-              fileName,
-              offset,
-              entry.name,
-              entry.source,
-              preferences,
-              entry.data,
-            )
-          : undefined;
-      return {
-        label: entry.name,
-        kind: tsCompletionKind(entry.kind),
-        detail: entry.kind,
-        data: {
-          kind: "javascript",
-          uri: cached.source.uri,
-          language: context.virtual.languageId,
-          name: entry.name,
-          virtualOffset: offset,
-          source: entry.source,
-          tsData: entry.data,
-          importTextChanges: details?.codeActions?.flatMap((action) => action.changes),
-        },
-      };
-    }) ?? []
+    service
+      .getCompletionsAtPosition(fileName, offset, preferences)
+      ?.entries.filter((entry) => !hiddenJavaScriptGlobalCompletions.has(entry.name))
+      .map((entry) => {
+        const details =
+          entry.hasAction || entry.source
+            ? safeGetCompletionEntryDetails(
+                service,
+                fileName,
+                offset,
+                entry.name,
+                entry.source,
+                preferences,
+                entry.data,
+              )
+            : undefined;
+        return {
+          label: entry.name,
+          kind: tsCompletionKind(entry.kind),
+          detail: entry.kind,
+          data: {
+            kind: "javascript",
+            uri: cached.source.uri,
+            language: context.virtual.languageId,
+            name: entry.name,
+            virtualOffset: offset,
+            source: entry.source,
+            tsData: entry.data,
+            importTextChanges: details?.codeActions?.flatMap((action) => action.changes),
+          },
+        };
+      }) ?? []
   );
 }
 
@@ -3384,6 +3390,29 @@ function isScriptWorkspaceFile(fileName: string): boolean {
   return /\.(?:[cm]?js|jsx|[cm]?ts|tsx|d\.ts)$/i.test(fileName);
 }
 
+function isJavaScriptProjectEnvironmentFile(fileName: string): boolean {
+  const normalized = normalizeFileName(fileName).split(path.sep).join("/");
+  return (
+    /\/(?:tsconfig|jsconfig|package)\.json$/i.test(normalized) ||
+    normalized.includes("/node_modules/@types/")
+  );
+}
+
+function nearestPackageJson(directory: string): string | undefined {
+  let current = normalizeFileName(directory);
+  for (;;) {
+    const candidate = path.join(current, "package.json");
+    if (ts.sys.fileExists(candidate)) {
+      return candidate;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
 function findRegionAt(parsed: AspParsedDocument, offset: number) {
   return parsed.regions
     .filter((region) => offset >= region.contentStart && offset <= region.contentEnd)
@@ -3984,12 +4013,28 @@ function jsLanguageServiceCacheKey(
       unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
     },
     optionOverrides,
+    projectEnvironment: jsProjectEnvironmentFingerprint(virtualSourceUri(virtual)),
     roots: workspaceRoots.map(normalizeFileName).sort(),
     documents: documents
       .all()
       .map((document) => `${document.uri}:${document.version}`)
       .sort(),
   });
+}
+
+function jsProjectEnvironmentFingerprint(ownerUri: string): string {
+  const ownerFile = uriToFileName(ownerUri);
+  const ownerDirectory = path.dirname(ownerFile);
+  const configPath =
+    ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "tsconfig.json") ??
+    ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "jsconfig.json");
+  return [configPath, nearestPackageJson(ownerDirectory)]
+    .filter((fileName): fileName is string => Boolean(fileName))
+    .map((fileName) => {
+      const stat = fs.statSync(fileName, { throwIfNoEntry: false });
+      return stat ? `${normalizeFileName(fileName)}:${stat.mtimeMs}:${stat.size}` : fileName;
+    })
+    .join("|");
 }
 
 function pruneJsLanguageServiceCache(): void {
@@ -4084,14 +4129,14 @@ function readJsProjectConfig(
   const configPath =
     ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "tsconfig.json") ??
     ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "jsconfig.json");
-  const baseOptions: ts.CompilerOptions = {
+  const defaultOptions: ts.CompilerOptions = {
     allowJs: true,
     checkJs: settings.checkJs ?? false,
     noEmit: true,
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.CommonJS,
     moduleResolution: ts.ModuleResolutionKind.Node10,
-    ...optionOverrides,
+    lib: browserJavaScriptLibs,
   };
   if (configPath) {
     const config = ts.readConfigFile(configPath, ts.sys.readFile);
@@ -4099,25 +4144,80 @@ function readJsProjectConfig(
       config.config ?? {},
       ts.sys,
       path.dirname(configPath),
-      baseOptions,
+      defaultOptions,
       configPath,
     );
+    const currentDirectory = path.dirname(configPath);
     return {
       fileNames: parsed.fileNames,
-      options: {
-        ...parsed.options,
-        ...baseOptions,
-        checkJs: optionOverrides.checkJs ?? settings.checkJs ?? false,
-      },
-      currentDirectory: path.dirname(configPath),
+      options: browserJavaScriptCompilerOptions(
+        parsed.options,
+        currentDirectory,
+        settings,
+        optionOverrides,
+      ),
+      currentDirectory,
     };
   }
   const roots = workspaceRoots.length > 0 ? workspaceRoots : [ownerDirectory];
+  const currentDirectory = roots[0] ?? ownerDirectory;
   return {
     fileNames: roots.flatMap((root) => collectWorkspaceScriptFiles(root)),
-    options: baseOptions,
-    currentDirectory: roots[0] ?? ownerDirectory,
+    options: browserJavaScriptCompilerOptions(
+      defaultOptions,
+      currentDirectory,
+      settings,
+      optionOverrides,
+    ),
+    currentDirectory,
   };
+}
+
+function browserJavaScriptCompilerOptions(
+  options: ts.CompilerOptions,
+  currentDirectory: string,
+  settings: AspSettings,
+  optionOverrides: Partial<ts.CompilerOptions>,
+): ts.CompilerOptions {
+  const next: ts.CompilerOptions = {
+    ...options,
+    ...optionOverrides,
+    allowJs: true,
+    noEmit: true,
+    checkJs: optionOverrides.checkJs ?? settings.checkJs ?? false,
+  };
+  next.lib = ensureBrowserJavaScriptLibs(next.lib);
+  next.types = browserJavaScriptTypes(next, currentDirectory);
+  return next;
+}
+
+function ensureBrowserJavaScriptLibs(libs: string[] | undefined): string[] {
+  const existing = new Set((libs ?? browserJavaScriptLibs).map((lib) => lib.toLowerCase()));
+  return [
+    ...(libs ?? []),
+    ...browserJavaScriptLibs.filter((lib) => !existing.has(lib.toLowerCase())),
+  ];
+}
+
+function browserJavaScriptTypes(
+  options: ts.CompilerOptions,
+  currentDirectory: string,
+): string[] | undefined {
+  if (options.types) {
+    return options.types.filter((type) => type.toLowerCase() !== "node");
+  }
+  const host: ts.ModuleResolutionHost = {
+    fileExists: ts.sys.fileExists,
+    readFile: ts.sys.readFile,
+    directoryExists: ts.sys.directoryExists,
+    getDirectories: ts.sys.getDirectories,
+    realpath: ts.sys.realpath,
+    getCurrentDirectory: () => currentDirectory,
+  };
+  const types = ts
+    .getAutomaticTypeDirectiveNames(options, host)
+    .filter((type) => type.toLowerCase() !== "node");
+  return types;
 }
 
 function collectWorkspaceScriptFiles(root: string): string[] {
@@ -5035,7 +5135,10 @@ function codeLenses(cached: CachedDocument): CodeLens[] {
         item.sourceUri === cached.source.uri &&
         ["function", "sub", "class", "method", "property"].includes(item.kind),
     )) {
-      const references = getVbscriptReferences(cached.parsed, symbol.range.start, context);
+      const references = getVbscriptReferences(cached.parsed, symbol.range.start, context, {
+        includeDeclaration: false,
+        includeFunctionReturnAssignments: false,
+      });
       lenses.push({
         range: symbol.range,
         command: {

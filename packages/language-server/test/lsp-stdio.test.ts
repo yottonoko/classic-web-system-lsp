@@ -488,6 +488,107 @@ document.querySelectorAll(".customer-row").forEach((row) => {
       }
     });
 
+    it("keeps embedded JavaScript browser-focused when Node ambient types exist", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-browser-"));
+      const nodeTypes = path.join(tempDir, "node_modules", "@types", "node");
+      const jqueryTypes = path.join(tempDir, "node_modules", "@types", "jquery");
+      fs.mkdirSync(nodeTypes, { recursive: true });
+      fs.mkdirSync(jqueryTypes, { recursive: true });
+      fs.writeFileSync(
+        path.join(nodeTypes, "package.json"),
+        JSON.stringify({ name: "@types/node", version: "1.0.0", types: "index.d.ts" }),
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(nodeTypes, "index.d.ts"),
+        "declare var __dirname: string;\ndeclare var __filename: string;\n",
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(jqueryTypes, "package.json"),
+        JSON.stringify({ name: "@types/jquery", version: "1.0.0", types: "index.d.ts" }),
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(jqueryTypes, "index.d.ts"),
+        "declare const $: { ready(callback: () => void): void };\n",
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "jsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            types: ["node", "jquery"],
+            module: "ESNext",
+            moduleResolution: "Bundler",
+          },
+        }),
+        "utf8",
+      );
+      const nodeMarked = markedDocument(`<script>
+__▮
+</script>`);
+      const domMarked = markedDocument(`<script>
+docu▮
+</script>`);
+      const jqueryMarked = markedDocument(`<script>
+$▮
+</script>`);
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        const uri = `file://${path.join(tempDir, "default.asp")}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: nodeMarked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const nodeCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: nodeMarked.position,
+        });
+        expect(completionLabels(nodeCompletions)).not.toContain("__dirname");
+        expect(completionLabels(nodeCompletions)).not.toContain("__filename");
+
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: domMarked.text }],
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const domCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: domMarked.position,
+        });
+        expect(completionLabels(domCompletions)).toContain("document");
+
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 3 },
+          contentChanges: [{ text: jqueryMarked.text }],
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const jqueryCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: jqueryMarked.position,
+        });
+        expect(completionLabels(jqueryCompletions)).toContain("$");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("delegates server-side JScript navigation to TypeScript", async () => {
       const marked = markedDocument(`<%@ LANGUAGE="JScript" %>
 <%
@@ -741,6 +842,12 @@ Response.Write BuildName()
           context: { includeDeclaration: true },
         });
         expect(Array.isArray(references) ? references.length : 0).toBeGreaterThan(1);
+        const usageReferences = await server.request("textDocument/references", {
+          textDocument: { uri },
+          position: callPosition,
+          context: { includeDeclaration: false },
+        });
+        expect(Array.isArray(usageReferences) ? usageReferences.length : 0).toBe(1);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -1509,7 +1616,15 @@ End Sub
             }),
           }),
         );
-        expect(JSON.stringify(referencesArguments?.[2])).toContain(uri);
+        expect(JSON.stringify(referencesCodeLens?.command)).toContain("1 reference");
+        expect(referencesArguments?.[2]).toEqual([
+          expect.objectContaining({
+            uri,
+            range: expect.objectContaining({
+              start: expect.objectContaining({ line: 10, character: 17 }),
+            }),
+          }),
+        ]);
         const resolvedCodeLens = await server.request("codeLens/resolve", referencesCodeLens);
         expect(JSON.stringify(resolvedCodeLens)).toContain("aspLsp.showReferences");
 
@@ -3393,6 +3508,15 @@ function tokenMatches(
     token.character === position.character &&
     token.tokenType === tokenType
   );
+}
+
+function completionLabels(completions: unknown): string[] {
+  const items = Array.isArray(completions)
+    ? completions
+    : ((completions as { items?: unknown[] }).items ?? []);
+  return items
+    .map((item) => (item as { label?: unknown }).label)
+    .filter((label): label is string => typeof label === "string");
 }
 
 function positionAt(text: string, offset: number): { line: number; character: number } {

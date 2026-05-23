@@ -80,6 +80,11 @@ export interface VbReference {
   range: Range;
 }
 
+export interface VbReferenceOptions {
+  includeDeclaration?: boolean;
+  includeFunctionReturnAssignments?: boolean;
+}
+
 export interface VbProjectContext {
   symbols?: VbSymbol[];
   documents?: AspParsedDocument[];
@@ -1714,6 +1719,7 @@ export function getVbscriptReferences(
   parsed: AspParsedDocument,
   position: Position,
   context: VbProjectContext = {},
+  options: VbReferenceOptions = {},
 ): VbReference[] {
   const symbol = getVbscriptDefinition(parsed, position, context);
   if (!symbol) {
@@ -1733,6 +1739,15 @@ export function getVbscriptReferences(
         if (!resolved || !sameSymbol(resolved, symbol)) {
           continue;
         }
+        if (options.includeDeclaration === false && isDeclarationNameToken(document, token)) {
+          continue;
+        }
+        if (
+          options.includeFunctionReturnAssignments === false &&
+          isFunctionReturnAssignmentToken(document, symbol, token)
+        ) {
+          continue;
+        }
         references.push({
           uri: document.uri,
           range: rangeFromOffsets(document.text, token.start, token.end),
@@ -1741,6 +1756,45 @@ export function getVbscriptReferences(
     }
   }
   return references;
+}
+
+function isFunctionReturnAssignmentToken(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  token: VbToken,
+): boolean {
+  if (
+    !["function", "method"].includes(symbol.kind) ||
+    (symbol.procedureKind && symbol.procedureKind !== "function")
+  ) {
+    return false;
+  }
+  const scope = scopeNodeAt(parsed, token.start);
+  if (
+    scope?.kind !== "Procedure" ||
+    scope.procedureKind !== "function" ||
+    !scope.nameToken ||
+    !sameRange(
+      rangeFromOffsets(parsed.text, scope.nameToken.start, scope.nameToken.end),
+      symbol.range,
+    )
+  ) {
+    return false;
+  }
+  const statement = vbStatements(parsed).find((candidate) =>
+    candidate.some((item) => item.start === token.start && item.end === token.end),
+  );
+  if (!statement) {
+    return false;
+  }
+  const targetIndex =
+    lowerToken(statement[0]) === "set" || lowerToken(statement[0]) === "let" ? 1 : 0;
+  const target = statement[targetIndex];
+  return (
+    target?.start === token.start &&
+    target.end === token.end &&
+    statement.some((item, index) => index > targetIndex && item.text === "=")
+  );
 }
 
 export function getVbscriptSemanticTokens(

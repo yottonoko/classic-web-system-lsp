@@ -250,6 +250,50 @@ Response.Write customername
     expect(references).toHaveLength(2);
   });
 
+  it("can count only VBScript usage references for functions", () => {
+    const source = `<%
+Function MakeCustomer()
+  Set MakeCustomer = New Customer
+End Function
+
+Function Factorial(ByVal n)
+  If n <= 1 Then
+    Factorial = 1
+  Else
+    Factorial = n * Factorial(n - 1)
+  End If
+End Function
+
+Set c = MakeCustomer()
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const allMakeCustomerReferences = getVbscriptReferences(
+      parsed,
+      { line: 13, character: "Set c = Make".length },
+      { symbols },
+    );
+    expect(allMakeCustomerReferences).toHaveLength(3);
+    const makeCustomerUsages = getVbscriptReferences(
+      parsed,
+      { line: 13, character: "Set c = Make".length },
+      { symbols },
+      { includeDeclaration: false, includeFunctionReturnAssignments: false },
+    );
+    expect(makeCustomerUsages).toHaveLength(1);
+    expect(makeCustomerUsages[0].range.start.line).toBe(13);
+
+    const factorialUsages = getVbscriptReferences(
+      parsed,
+      { line: 9, character: "    Factorial = n * Fact".length },
+      { symbols },
+      { includeDeclaration: false, includeFunctionReturnAssignments: false },
+    );
+    expect(factorialUsages).toHaveLength(1);
+    expect(factorialUsages[0].range.start.line).toBe(9);
+    expect(factorialUsages[0].range.start.character).toBe("    Factorial = n * ".length);
+  });
+
   it("keeps user-defined completion candidates for mixed-case prefixes", () => {
     const source = `<%
 Dim CustomerName
