@@ -3135,10 +3135,14 @@ End If
         await server.waitForNotification("textDocument/publishDiagnostics");
         await waitForLogContaining(server, "LSP analysis started");
         const analysisCompletedLog = await waitForLogContaining(server, "LSP analysis completed");
-        expect(JSON.stringify(analysisCompletedLog.params)).toMatch(/in \d+\.\d ms/);
+        expect(JSON.stringify(analysisCompletedLog.params)).toMatch(
+          /in \d+\.\d ms heat=duration-\d{2}/,
+        );
         await waitForLogContaining(server, "LSP check started");
         const checkCompletedLog = await waitForLogContaining(server, "LSP check completed");
-        expect(JSON.stringify(checkCompletedLog.params)).toMatch(/in \d+\.\d ms/);
+        expect(JSON.stringify(checkCompletedLog.params)).toMatch(
+          /in \d+\.\d ms heat=duration-\d{2}/,
+        );
 
         const fullEdits = await server.request("textDocument/formatting", {
           textDocument: { uri },
@@ -3149,7 +3153,9 @@ End If
           server,
           "Formatting conversion completed (document)",
         );
-        expect(JSON.stringify(fullCompletedLog.params)).toMatch(/in \d+\.\d ms/);
+        expect(JSON.stringify(fullCompletedLog.params)).toMatch(
+          /in \d+\.\d ms heat=duration-\d{2}/,
+        );
         const fullText = JSON.stringify(fullEdits);
         expect(fullText).toContain("<%");
         expect(fullText).toContain("  Response.Write");
@@ -3169,7 +3175,9 @@ End If
           server,
           "Formatting conversion completed (range)",
         );
-        expect(JSON.stringify(rangeCompletedLog.params)).toMatch(/in \d+\.\d ms/);
+        expect(JSON.stringify(rangeCompletedLog.params)).toMatch(
+          /in \d+\.\d ms heat=duration-\d{2}/,
+        );
         const rangeText = JSON.stringify(rangeEdits);
         expect(rangeText).toContain("  Response.Write");
         expect(rangeText).not.toContain("<html>");
@@ -3227,7 +3235,7 @@ Response.Write enabled
           "check.javascriptDiagnostics",
         ]) {
           const log = await waitForLogContaining(server, expected);
-          expect(JSON.stringify(log.params)).toMatch(/in \d+\.\d ms/);
+          expect(JSON.stringify(log.params)).toMatch(/in \d+\.\d ms heat=duration-\d{2}/);
         }
 
         await server.request("textDocument/formatting", {
@@ -3235,7 +3243,7 @@ Response.Write enabled
           options: { tabSize: 2, insertSpaces: true },
         });
         const embeddedLog = await waitForLogContaining(server, "format.embedded");
-        expect(JSON.stringify(embeddedLog.params)).toMatch(/in \d+\.\d ms/);
+        expect(JSON.stringify(embeddedLog.params)).toMatch(/in \d+\.\d ms heat=duration-\d{2}/);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -3277,7 +3285,7 @@ Response.Write enabled
           .takePendingNotifications("window/logMessage")
           .filter((message) =>
             JSON.stringify(message.params).match(
-              /LSP analysis|LSP check|Formatting conversion|analysis\.|check\.|format\./,
+              /LSP analysis|LSP check|Formatting conversion|analysis\.|check\.|format\.|heat=duration-/,
             ),
           );
         expect(debugLogs).toHaveLength(0);

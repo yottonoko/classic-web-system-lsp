@@ -1,0 +1,156 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Classic ASP LSP Output",
+  "scopeName": "source.asp-lsp-output",
+  "patterns": [
+    {
+      "include": "#operation"
+    },
+    {
+      "include": "#state"
+    },
+    {
+      "include": "#step"
+    },
+    {
+      "include": "#duration"
+    },
+    {
+      "include": "#heat"
+    }
+  ],
+  "repository": {
+    "operation": {
+      "patterns": [
+        {
+          "match": "\\b(?:LSP analysis|LSP check|Formatting conversion)\\b",
+          "name": "support.function.operation.asp-lsp-output"
+        }
+      ]
+    },
+    "state": {
+      "patterns": [
+        {
+          "match": "\\b(?:started|completed)\\b",
+          "name": "keyword.control.state.asp-lsp-output"
+        }
+      ]
+    },
+    "step": {
+      "patterns": [
+        {
+          "match": "\\b(?:analysis|check|vbscript|format)(?:\\.[A-Za-z0-9_-]+)+\\b",
+          "name": "entity.name.function.step.asp-lsp-output"
+        }
+      ]
+    },
+    "duration": {
+      "patterns": [
+        {
+          "match": "\\bin\\s+\\d+(?:\\.\\d+)?\\s+ms\\b",
+          "name": "constant.numeric.duration.asp-lsp-output"
+        }
+      ]
+    },
+    "heat": {
+      "patterns": [
+        {
+          "match": "\\bheat=(duration-00)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-00.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\bheat=(duration-01)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-01.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\bheat=(duration-02)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-02.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\bheat=(duration-03)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-03.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\bheat=(duration-04)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-04.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\bheat=(duration-05)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-05.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\bheat=(duration-06)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-06.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\bheat=(duration-07)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-07.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\bheat=(duration-08)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-08.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\bheat=(duration-09)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-09.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\bheat=(duration-10)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-10.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\bheat=(duration-11)\\b",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.duration.heat.duration-11.asp-lsp-output"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

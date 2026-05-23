@@ -14,7 +14,7 @@ let statusBarItem: vscode.StatusBarItem | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const localizer = extensionLocalizer();
-  outputChannel = vscode.window.createOutputChannel("Classic ASP LSP");
+  outputChannel = vscode.window.createOutputChannel("Classic ASP LSP", "asp-lsp-output");
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.text = "$(code) ASP LSP";
   statusBarItem.tooltip = localizer("status.tooltip");

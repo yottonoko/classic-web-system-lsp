@@ -24,6 +24,11 @@ describe("VS Code extension package", () => {
       contributes?: {
         languages?: Array<{ id: string; extensions?: string[] }>;
         grammars?: Array<{ language?: string; scopeName?: string; path?: string }>;
+        configurationDefaults?: {
+          "editor.tokenColorCustomizations"?: {
+            textMateRules?: Array<{ scope?: string; settings?: Record<string, unknown> }>;
+          };
+        };
         commands?: Array<{ command: string }>;
         keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
         problemMatchers?: Array<{ name: string }>;
@@ -109,6 +114,34 @@ describe("VS Code extension package", () => {
           grammar.path === "./syntaxes/vbscript.tmLanguage.json",
       ),
     ).toBe(true);
+    const outputLanguage = manifest.contributes?.languages?.find(
+      (language) => language.id === "asp-lsp-output",
+    );
+    expect(outputLanguage).toBeTruthy();
+    expect(outputLanguage?.extensions).toBeUndefined();
+    expect(
+      manifest.contributes?.grammars?.some(
+        (grammar) =>
+          grammar.language === "asp-lsp-output" &&
+          grammar.scopeName === "source.asp-lsp-output" &&
+          grammar.path === "./syntaxes/asp-lsp-output.tmLanguage.json",
+      ),
+    ).toBe(true);
+    expect(fs.existsSync("syntaxes/asp-lsp-output.tmLanguage.json")).toBe(true);
+    const outputRules =
+      manifest.contributes?.configurationDefaults?.["editor.tokenColorCustomizations"]
+        ?.textMateRules ?? [];
+    const heatRules = outputRules.filter((rule) =>
+      rule.scope?.startsWith("constant.numeric.duration.heat.duration-"),
+    );
+    expect(heatRules).toHaveLength(12);
+    expect(heatRules.map((rule) => rule.scope)).toEqual(
+      Array.from(
+        { length: 12 },
+        (_, index) =>
+          `constant.numeric.duration.heat.duration-${index.toString().padStart(2, "0")}.asp-lsp-output`,
+      ),
+    );
   });
 
   it("keeps package localization keys resolved", () => {

@@ -64,6 +64,12 @@
           "VBScript",
           "vbscript"
         ]
+      },
+      {
+        "id": "asp-lsp-output",
+        "aliases": [
+          "Classic ASP LSP Output"
+        ]
       }
     ],
     "grammars": [
@@ -82,8 +88,117 @@
         "language": "vbscript",
         "scopeName": "source.vbscript",
         "path": "./syntaxes/vbscript.tmLanguage.json"
+      },
+      {
+        "language": "asp-lsp-output",
+        "scopeName": "source.asp-lsp-output",
+        "path": "./syntaxes/asp-lsp-output.tmLanguage.json"
       }
     ],
+    "configurationDefaults": {
+      "editor.tokenColorCustomizations": {
+        "textMateRules": [
+          {
+            "scope": "support.function.operation.asp-lsp-output",
+            "settings": {
+              "foreground": "#4FC1FF",
+              "fontStyle": "bold"
+            }
+          },
+          {
+            "scope": "keyword.control.state.asp-lsp-output",
+            "settings": {
+              "foreground": "#C586C0"
+            }
+          },
+          {
+            "scope": "entity.name.function.step.asp-lsp-output",
+            "settings": {
+              "foreground": "#DCDCAA"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.asp-lsp-output",
+            "settings": {
+              "fontStyle": "bold"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-00.asp-lsp-output",
+            "settings": {
+              "foreground": "#40D86A"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-01.asp-lsp-output",
+            "settings": {
+              "foreground": "#64D95C"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-02.asp-lsp-output",
+            "settings": {
+              "foreground": "#8BDB4E"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-03.asp-lsp-output",
+            "settings": {
+              "foreground": "#B0DC43"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-04.asp-lsp-output",
+            "settings": {
+              "foreground": "#D7D63E"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-05.asp-lsp-output",
+            "settings": {
+              "foreground": "#F0C33A"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-06.asp-lsp-output",
+            "settings": {
+              "foreground": "#F5AA36"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-07.asp-lsp-output",
+            "settings": {
+              "foreground": "#F79333"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-08.asp-lsp-output",
+            "settings": {
+              "foreground": "#F27936"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-09.asp-lsp-output",
+            "settings": {
+              "foreground": "#ED5F3B"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-10.asp-lsp-output",
+            "settings": {
+              "foreground": "#E84545"
+            }
+          },
+          {
+            "scope": "constant.numeric.duration.heat.duration-11.asp-lsp-output",
+            "settings": {
+              "foreground": "#D92F45",
+              "fontStyle": "bold"
+            }
+          }
+        ]
+      }
+    },
     "configuration": {
       "title": "%configuration.title%",
       "properties": {
