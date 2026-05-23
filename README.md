@@ -77,6 +77,13 @@ pnpm run package:vsix --out classic-asp-lsp.vsix
 
 The VSIX build bundles the standalone language server into `apps/vscode/server/language-server/dist/server.js` before packaging, so the extension does not ship a nested `node_modules` tree.
 
+## Samples
+
+The `samples/classic-asp-dashboard` directory contains a multi-page Classic ASP
+sample for manual language-server checks. It mixes `.asp` pages, `.inc` includes,
+VBScript server regions, a server-side JScript block, HTML, CSS, and client
+JavaScript.
+
 ## Settings
 
 - `aspLsp.locale`: `auto`, `en`, or `ja`; `auto` uses Japanese for `ja*` VS Code/LSP client locales and English otherwise
