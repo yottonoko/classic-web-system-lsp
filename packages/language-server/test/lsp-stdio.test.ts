@@ -919,6 +919,18 @@ Response.Write a
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
 
+        const links = await server.request("textDocument/documentLink", {
+          textDocument: { uri },
+        });
+        const link = (links as Array<{ range?: unknown }>)[0] as { range?: unknown };
+        expect(link.range).toEqual({
+          start: positionAt(source, source.indexOf('"includes/data.inc"')),
+          end: positionAt(
+            source,
+            source.indexOf('"includes/data.inc"') + '"includes/data.inc"'.length,
+          ),
+        });
+
         const semanticTokens = await server.request("textDocument/semanticTokens/full", {
           textDocument: { uri },
         });
@@ -1266,7 +1278,11 @@ End Sub
           textDocument: { uri },
           range: { start: { line: 0, character: 0 }, end: { line: 12, character: 0 } },
         });
-        expect(JSON.stringify(inlayHints)).toContain("As Customer");
+        const typeHint = (inlayHints as Array<{ label?: unknown }>).find(
+          (hint) => hint.label === "As Customer",
+        );
+        expect(typeHint).toBeTruthy();
+        expect(JSON.stringify(inlayHints)).not.toContain('"label":" As Customer"');
         expect(JSON.stringify(inlayHints)).toContain("firstName:");
         const resolvedHint = await server.request(
           "inlayHint/resolve",

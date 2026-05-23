@@ -828,7 +828,7 @@ connection.onDocumentLinks((params) => {
       include.mode,
       cachedSettings(cached.source.uri),
     );
-    return { range: include.range, target: pathToFileUri(targetPath) };
+    return { range: include.pathRange, target: pathToFileUri(targetPath) };
   });
 });
 
