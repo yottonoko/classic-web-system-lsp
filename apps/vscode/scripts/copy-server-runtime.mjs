@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { builtinModules } from "node:module";
+import { builtinModules, createRequire } from "node:module";
 import path from "node:path";
 import { rolldown } from "rolldown";
 
@@ -8,6 +8,7 @@ const repoRoot = path.resolve(extensionRoot, "..", "..");
 const serverRoot = path.join(extensionRoot, "server", "language-server");
 const serverEntry = path.join(repoRoot, "packages", "language-server", "dist", "server.js");
 const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
+const require = createRequire(import.meta.url);
 
 if (!fs.existsSync(serverEntry)) {
   throw new Error(`Build @asp-lsp/language-server before packaging: ${serverEntry}`);
@@ -37,6 +38,7 @@ try {
 }
 
 fs.chmodSync(path.join(serverRoot, "dist", "server.js"), 0o755);
+copyTypeScriptLibs(path.join(serverRoot, "dist"));
 fs.writeFileSync(
   path.join(serverRoot, "package.json"),
   `${JSON.stringify(
@@ -50,3 +52,13 @@ fs.writeFileSync(
     2,
   )}\n`,
 );
+
+function copyTypeScriptLibs(targetDirectory) {
+  const typescriptPackage = require.resolve("typescript/package.json", { paths: [repoRoot] });
+  const sourceDirectory = path.join(path.dirname(typescriptPackage), "lib");
+  for (const entry of fs.readdirSync(sourceDirectory)) {
+    if (/^lib\..*\.d\.ts$/.test(entry)) {
+      fs.copyFileSync(path.join(sourceDirectory, entry), path.join(targetDirectory, entry));
+    }
+  }
+}
