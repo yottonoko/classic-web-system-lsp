@@ -2094,7 +2094,7 @@ export function getVbscriptInlayHints(
       }
       hints.push({
         position: symbol.range.end,
-        label: `  As ${symbol.typeName}`,
+        label: ` As ${symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: false,
         paddingRight: true,
@@ -2115,7 +2115,7 @@ export function getVbscriptInlayHints(
       }
       hints.push({
         position: symbol.range.end,
-        label: `  As ${symbol.typeName}`,
+        label: ` As ${symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: false,
         paddingRight: true,
