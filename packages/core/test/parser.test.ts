@@ -1288,10 +1288,10 @@ Response.Write BuildDisplayName("Ada", "Lovelace", value)
       { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
       { symbols: collectVbscriptSymbols(implicitByRefParsed) },
     );
-    expect(implicitByRefHints.filter((hint) => hint.label === "ByRef")).toEqual([
+    expect(implicitByRefHints.filter((hint) => hint.label === "ByRef ")).toEqual([
       expect.objectContaining({
         position: positionAt(implicitByRefSource, implicitByRefSource.indexOf("first")),
-        paddingRight: true,
+        paddingRight: false,
       }),
     ]);
     const disabledByRefHints = getVbscriptInlayHints(
@@ -1339,7 +1339,7 @@ SelectedCustomer(activeId) = currentCustomer
         .some((hint) => hint.position.line >= 1 && hint.position.line <= 9),
     ).toBe(false);
     expect(
-      declarationParameterHints.filter((hint) => hint.label === "ByRef").length,
+      declarationParameterHints.filter((hint) => hint.label === "ByRef ").length,
     ).toBeGreaterThan(0);
 
     const selection = getVbscriptSelectionRanges(parsed, [

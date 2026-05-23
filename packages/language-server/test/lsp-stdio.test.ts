@@ -2012,7 +2012,8 @@ Response.Write RenderCustomerRows(customers, activeId)
         const serializedDeclarationHints = JSON.stringify(declarationHints);
         expect(serializedDeclarationHints).not.toContain("customerList:");
         expect(serializedDeclarationHints).not.toContain("activeCustomerId:");
-        expect(serializedDeclarationHints).toContain("ByRef");
+        expect(serializedDeclarationHints).toContain('"label":"ByRef "');
+        expect(serializedDeclarationHints).toContain('"paddingRight":false');
 
         const callHints = await server.request("textDocument/inlayHint", {
           textDocument: { uri },
@@ -2063,7 +2064,8 @@ Response.Write BuildName("Ada")
         });
         const serialized = JSON.stringify(inlayHints);
         expect(serialized).not.toContain("firstName:");
-        expect(serialized).toContain("ByRef");
+        expect(serialized).toContain('"label":"ByRef "');
+        expect(serialized).toContain('"paddingRight":false');
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

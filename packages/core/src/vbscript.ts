@@ -2197,9 +2197,9 @@ export function getVbscriptInlayHints(
         }
         hints.push({
           position: rangeFromOffsets(parsed.text, parameter.token.start, parameter.token.end).start,
-          label: "ByRef",
+          label: "ByRef ",
           kind: InlayHintKind.Parameter,
-          paddingRight: true,
+          paddingRight: false,
           tooltip: "Implicit VBScript ByRef parameter",
         });
       }
