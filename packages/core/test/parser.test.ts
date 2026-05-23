@@ -405,6 +405,23 @@ message = "hello" & _
     expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("'_'"))).toBe(false);
   });
 
+  it("does not report the Is operator as undeclared under Option Explicit", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<% Option Explicit
+Dim value
+Set value = Nothing
+If value Is Nothing Then
+  Response.Write "empty"
+End If
+%>`,
+    );
+    const result = analyzeVbscript(parsed);
+    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("'Is'"))).toBe(
+      false,
+    );
+  });
+
   it("localizes VBScript diagnostics, XML docs and completion details", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -1250,6 +1267,36 @@ End Function
     expect(returnHint).toEqual(
       expect.objectContaining({ label: " As String", paddingLeft: false, paddingRight: true }),
     );
+    expect(returnHint?.position).toEqual({ line: 2, character: "Function BuildHtml()".length });
+
+    const implicitByRefSource = `<%
+Function BuildDisplayName(first, ByVal last, ByRef explicitRef)
+End Function
+Response.Write BuildDisplayName("Ada", "Lovelace", value)
+%>`;
+    const implicitByRefParsed = parseAspDocument(
+      "file:///site/implicit-byref.asp",
+      implicitByRefSource,
+    );
+    const implicitByRefHints = getVbscriptInlayHints(
+      implicitByRefParsed,
+      { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+      { symbols: collectVbscriptSymbols(implicitByRefParsed) },
+    );
+    expect(implicitByRefHints.filter((hint) => hint.label === "ByRef")).toEqual([
+      expect.objectContaining({
+        position: positionAt(implicitByRefSource, implicitByRefSource.indexOf("first")),
+        paddingRight: true,
+      }),
+    ]);
+    const disabledByRefHints = getVbscriptInlayHints(
+      implicitByRefParsed,
+      { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+      { symbols: collectVbscriptSymbols(implicitByRefParsed) },
+      { implicitByRef: false },
+    );
+    expect(JSON.stringify(disabledByRefHints)).not.toContain("ByRef");
+    expect(JSON.stringify(disabledByRefHints)).toContain("first:");
 
     const selection = getVbscriptSelectionRanges(parsed, [
       positionAt(source, source.indexOf("BuildName =") + 2),

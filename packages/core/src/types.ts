@@ -103,6 +103,7 @@ export interface AspInlayHintSettings {
   variableTypes?: boolean;
   parameterNames?: boolean;
   functionReturnTypes?: boolean;
+  implicitByRef?: boolean;
 }
 
 export interface AspCodeLensSettings {
@@ -308,6 +309,7 @@ export type VbParameterMode = "byref" | "byval";
 export interface VbParameterMetadata {
   token: VbToken;
   mode: VbParameterMode;
+  modeExplicit: boolean;
   optional: boolean;
 }
 

@@ -1785,6 +1785,7 @@ End Sub
         expect(typeHint).toEqual(
           expect.objectContaining({ paddingLeft: false, paddingRight: true }),
         );
+        expect(JSON.stringify(inlayHints)).toContain("ByRef");
         expect(JSON.stringify(inlayHints)).toContain("firstName:");
         const resolvedHint = await server.request(
           "inlayHint/resolve",
@@ -1928,6 +1929,49 @@ End Sub
         ]);
         const resolvedCodeLens = await server.request("codeLens/resolve", referencesCodeLens);
         expect(JSON.stringify(resolvedCodeLens)).toContain("aspLsp.showReferences");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("honors the implicit ByRef inlay hint setting", async () => {
+      const source = `<%
+Function BuildName(firstName)
+End Function
+Response.Write BuildName("Ada")
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { inlayHints: { implicitByRef: false } } },
+        });
+        const uri = "file:///tmp/implicit-byref-disabled.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+        });
+        const serialized = JSON.stringify(inlayHints);
+        expect(serialized).not.toContain("ByRef");
+        expect(serialized).toContain("firstName:");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

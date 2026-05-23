@@ -101,6 +101,7 @@ export interface VbInlayHintOptions {
   variableTypes?: boolean;
   parameterNames?: boolean;
   functionReturnTypes?: boolean;
+  implicitByRef?: boolean;
 }
 
 export interface VbCallHierarchyData {
@@ -660,6 +661,7 @@ const vbKeywords = new Set([
   "get",
   "if",
   "in",
+  "is",
   "let",
   "loop",
   "me",
@@ -1142,6 +1144,7 @@ function collectParameterMetadata(tokens: VbToken[], index: number): VbParameter
   }
   let cursor = index + 1;
   let mode: VbParameterMode | undefined;
+  let modeExplicit = false;
   let optional = false;
   let canReadName = true;
   while (cursor < tokens.length && tokens[cursor].text !== ")") {
@@ -1149,16 +1152,19 @@ function collectParameterMetadata(tokens: VbToken[], index: number): VbParameter
     const lower = token.text.toLowerCase();
     if (token.text === ",") {
       mode = undefined;
+      modeExplicit = false;
       optional = false;
       canReadName = true;
     } else if (lower === "optional") {
       optional = true;
     } else if (lower === "byval") {
       mode = "byval";
+      modeExplicit = true;
     } else if (lower === "byref") {
       mode = "byref";
+      modeExplicit = true;
     } else if (canReadName && token.kind === "identifier") {
-      parameters.push({ token, mode: mode ?? "byref", optional });
+      parameters.push({ token, mode: mode ?? "byref", modeExplicit, optional });
       canReadName = false;
     }
     cursor += 1;
@@ -2129,6 +2135,7 @@ export function getVbscriptInlayHints(
     variableTypes: options.variableTypes !== false,
     parameterNames: options.parameterNames !== false,
     functionReturnTypes: options.functionReturnTypes !== false,
+    implicitByRef: options.implicitByRef !== false,
   };
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const env = context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
@@ -2168,13 +2175,34 @@ export function getVbscriptInlayHints(
         continue;
       }
       hints.push({
-        position: symbol.range.end,
+        position: functionReturnHintPosition(parsed, symbol),
         label: ` As ${symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: false,
         paddingRight: true,
         tooltip: "Inferred VBScript return type",
       });
+    }
+  }
+  if (settings.implicitByRef) {
+    for (const node of vbProcedureNodes(parsed)) {
+      for (const parameter of node.parameterMetadata ?? []) {
+        if (
+          parameter.modeExplicit ||
+          parameter.mode !== "byref" ||
+          parameter.token.start < rangeStart ||
+          parameter.token.start > rangeEnd
+        ) {
+          continue;
+        }
+        hints.push({
+          position: rangeFromOffsets(parsed.text, parameter.token.start, parameter.token.end).start,
+          label: "ByRef",
+          kind: InlayHintKind.Parameter,
+          paddingRight: true,
+          tooltip: "Implicit VBScript ByRef parameter",
+        });
+      }
     }
   }
   if (settings.parameterNames) {
@@ -2220,6 +2248,43 @@ export function getVbscriptInlayHints(
       left.position.line - right.position.line ||
       left.position.character - right.position.character,
   );
+}
+
+function vbProcedureNodes(parsed: AspParsedDocument): VbCstNode[] {
+  return vbDocuments(parsed).flatMap((document) =>
+    flattenVbNodes(document).filter(
+      (node) => node.kind === "Procedure" || node.kind === "Property",
+    ),
+  );
+}
+
+function functionReturnHintPosition(parsed: AspParsedDocument, symbol: VbSymbol): Position {
+  const nameEnd = offsetAt(parsed.text, symbol.range.end);
+  const closeParenEnd = declarationCloseParenEnd(parsed.text, nameEnd);
+  return closeParenEnd
+    ? rangeFromOffsets(parsed.text, closeParenEnd, closeParenEnd).start
+    : symbol.range.end;
+}
+
+function declarationCloseParenEnd(text: string, nameEnd: number): number | undefined {
+  const lineEnd = text.slice(nameEnd).search(/\r|\n/);
+  const end = lineEnd === -1 ? text.length : nameEnd + lineEnd;
+  const open = text.indexOf("(", nameEnd);
+  if (open === -1 || open > end) {
+    return undefined;
+  }
+  let depth = 0;
+  for (let offset = open; offset < end; offset += 1) {
+    if (text[offset] === "(") {
+      depth += 1;
+    } else if (text[offset] === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return offset + 1;
+      }
+    }
+  }
+  return undefined;
 }
 
 export function getVbscriptTypeDefinition(

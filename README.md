@@ -110,6 +110,7 @@ JavaScript.
 - `aspLsp.inlayHints.variableTypes`: show inferred VBScript variable types
 - `aspLsp.inlayHints.parameterNames`: show VBScript procedure parameter names at call sites
 - `aspLsp.inlayHints.functionReturnTypes`: show inferred VBScript function return types
+- `aspLsp.inlayHints.implicitByRef`: show `ByRef` for VBScript parameters whose passing mode is omitted
 - `aspLsp.codeLens.references`: show VBScript reference counts
 - `aspLsp.codeLens.includes`: show include resolution lenses
 - `aspLsp.workspace.maxIndexFiles`: maximum unopened Classic ASP files indexed in one workspace scan

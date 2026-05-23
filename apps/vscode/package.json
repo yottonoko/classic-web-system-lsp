@@ -447,6 +447,11 @@
           "default": true,
           "description": "%configuration.inlayHints.functionReturnTypes.description%"
         },
+        "aspLsp.inlayHints.implicitByRef": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.inlayHints.implicitByRef.description%"
+        },
         "aspLsp.codeLens.references": {
           "type": "boolean",
           "default": true,

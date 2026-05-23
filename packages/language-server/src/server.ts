@@ -4338,6 +4338,7 @@ function normalizeInlayHintSettings(
     variableTypes: record.variableTypes !== false,
     parameterNames: record.parameterNames !== false,
     functionReturnTypes: record.functionReturnTypes !== false,
+    implicitByRef: record.implicitByRef !== false,
   };
 }
 

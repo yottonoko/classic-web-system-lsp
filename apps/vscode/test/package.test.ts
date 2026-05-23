@@ -78,6 +78,9 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.javascript.autoImports"],
     ).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.implicitByRef"],
+    ).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
     expect(manifest.repository?.url).toContain("github.com/yottonoko/asp-lsp");
     expect(manifest.icon).toBe("assets/icon.png");
@@ -221,6 +224,7 @@ describe("VS Code extension package", () => {
     expect(keywordPattern).toContain("Get");
     expect(keywordPattern).toContain("As");
     expect(keywordPattern).toContain("ElseIf");
+    expect(keywordPattern).toContain("Is");
 
     const classicAspGrammar = JSON.parse(
       fs.readFileSync("syntaxes/classic-asp.tmLanguage.json", "utf8"),
