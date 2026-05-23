@@ -19,7 +19,7 @@
       "endCaptures": {
         "0": { "name": "punctuation.section.embedded.end.asp" }
       },
-      "patterns": [{ "include": "#vbscript-basic" }]
+      "patterns": [{ "include": "source.vbscript" }]
     },
     "asp-directive": {
       "name": "meta.directive.asp",
@@ -31,7 +31,7 @@
       "endCaptures": {
         "0": { "name": "punctuation.section.embedded.end.asp" }
       },
-      "patterns": [{ "include": "#vbscript-basic" }]
+      "patterns": [{ "include": "source.vbscript" }]
     },
     "asp-block": {
       "name": "source.vbscript.embedded.asp",
@@ -43,27 +43,7 @@
       "endCaptures": {
         "0": { "name": "punctuation.section.embedded.end.asp" }
       },
-      "patterns": [{ "include": "#vbscript-basic" }]
-    },
-    "vbscript-basic": {
-      "patterns": [
-        {
-          "match": "(?i)\\b(Option\\s+Explicit|And|As|ByRef|ByVal|Call|Case|Class|Const|Dim|Do|Each|Else|ElseIf|Empty|End|Exit|Explicit|False|For|Function|Get|If|In|Let|Loop|Me|Mod|New|Next|Not|Nothing|Null|Option|Or|Preserve|Private|Property|Public|ReDim|Select|Set|Step|Sub|Then|To|True|Until|Wend|While|With)\\b",
-          "name": "keyword.control.vbscript.asp"
-        },
-        {
-          "match": "\\b(Request|Response|Session|Application|Server|ASPError)\\b",
-          "name": "support.class.asp"
-        },
-        {
-          "match": "\"[^\"]*\"",
-          "name": "string.quoted.double.vbscript.asp"
-        },
-        {
-          "match": "'[^\\n\\r]*",
-          "name": "comment.line.apostrophe.vbscript.asp"
-        }
-      ]
+      "patterns": [{ "include": "source.vbscript" }]
     }
   }
 }

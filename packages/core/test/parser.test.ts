@@ -521,12 +521,32 @@ Response.Write BuildName()
 %>`,
     );
     const symbols = collectVbscriptSymbols(parsed);
-    expect(getVbscriptHover(parsed, { line: 3, character: 17 }, { symbols })).toContain(
-      "function BuildName",
-    );
+    const hover = getVbscriptHover(parsed, { line: 3, character: 17 }, { symbols });
+    expect(hover).toContain("```vbscript");
+    expect(hover).toContain("Function BuildName()");
+    expect(hover).toContain("VBScript function.");
     expect(getVbscriptDefinition(parsed, { line: 3, character: 17 }, { symbols })?.name).toBe(
       "BuildName",
     );
+  });
+
+  it("builds rich hover signatures for class properties", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Class DashboardCustomer
+  Public Property Get HasItems()
+    HasItems = True
+  End Property
+End Class
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const property = symbols.find((symbol) => symbol.name === "HasItems");
+    expect(property?.propertyAccessor).toBe("get");
+    const hover = getVbscriptHover(parsed, { line: 3, character: 5 }, { symbols });
+    expect(hover).toContain("Public Property Get HasItems() As Boolean");
+    expect(hover).toContain("VBScript property. Member of `DashboardCustomer`.");
   });
 
   it("resolves built-in hover and signature help from CST tokens", () => {
@@ -539,6 +559,9 @@ Server.MapPath("/tmp")
     );
     expect(getVbscriptHover(parsed, { line: 1, character: 2 })).toContain(
       "Classic ASP Response object",
+    );
+    expect(getVbscriptHover(parsed, { line: 1, character: 2 })).toContain(
+      "```vbscript\nDim Response As Response\n```",
     );
     expect(getVbscriptSignatureHelp(parsed, { line: 2, character: 18 })).toEqual(
       expect.objectContaining({
@@ -562,6 +585,8 @@ Response.Write BuildName("Ada")
     );
     const symbols = collectVbscriptSymbols(parsed);
     const hover = getVbscriptHover(parsed, { line: 7, character: 17 }, { symbols });
+    expect(hover).toContain("```vbscript");
+    expect(hover).toContain("Function BuildName(first)");
     expect(hover).toContain("Builds a display name.");
     expect(hover).toContain("First name.");
     expect(hover).toContain("Display name.");

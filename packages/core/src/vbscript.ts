@@ -57,6 +57,8 @@ export interface VbSymbol {
   type?: VbTypeRef;
   parameters?: string[];
   visibility?: "public" | "private";
+  procedureKind?: "sub" | "function";
+  propertyAccessor?: "get" | "let" | "set";
   documentation?: VbDocumentation;
 }
 
@@ -258,7 +260,7 @@ function builtinDescription(name: string, locale: AspLocale | undefined): string
     key === "vb.hover.builtin.server" ||
     key === "vb.hover.builtin.asperror"
   ) {
-    return createLocalizer(locale).t(key);
+    return markdownHover(`Dim ${name} As ${name}`, createLocalizer(locale).t(key));
   }
   return undefined;
 }
@@ -1331,18 +1333,81 @@ export function getVbscriptHover(
   if (!symbol) {
     return undefined;
   }
-  const localizer = createLocalizer(context.locale);
-  const container = symbol.memberOf
-    ? localizer.t("vb.symbol.owner", { owner: symbol.memberOf })
-    : symbol.scopeName
-      ? localizer.t("vb.symbol.scope", { scope: symbol.scopeName })
-      : "";
-  const type = symbol.typeName ? ` As ${symbol.typeName}` : "";
   return appendDocumentationMarkdown(
-    `${symbol.kind} ${symbol.name}${type}${container}`,
+    markdownHover(vbscriptHoverSignature(symbol), vbscriptHoverDescription(symbol)),
     symbol.documentation,
     context.locale,
   );
+}
+
+function markdownHover(signature: string, description?: string): string {
+  const base = `\`\`\`vbscript\n${signature}\n\`\`\``;
+  return description ? `${base}\n\n${description}` : base;
+}
+
+function vbscriptHoverSignature(symbol: VbSymbol): string {
+  const typeSuffix = symbol.typeName ? ` As ${symbol.typeName}` : "";
+  const visibility = symbol.visibility ? `${titleCaseKeyword(symbol.visibility)} ` : "";
+  const parameters = `(${(symbol.parameters ?? []).join(", ")})`;
+  if (symbol.kind === "class") {
+    return `Class ${symbol.name}`;
+  }
+  if (symbol.kind === "property") {
+    const accessor = titleCaseKeyword(symbol.propertyAccessor ?? "get");
+    return `${visibility}Property ${accessor} ${symbol.name}${parameters}${typeSuffix}`;
+  }
+  if (symbol.kind === "sub") {
+    return `${visibility}Sub ${symbol.name}${parameters}`;
+  }
+  if (symbol.kind === "function") {
+    return `${visibility}Function ${symbol.name}${parameters}${typeSuffix}`;
+  }
+  if (symbol.kind === "method") {
+    const keyword = symbol.procedureKind === "sub" ? "Sub" : "Function";
+    return keyword === "Sub"
+      ? `${visibility}${keyword} ${symbol.name}${parameters}`
+      : `${visibility}${keyword} ${symbol.name}${parameters}${typeSuffix}`;
+  }
+  if (symbol.kind === "field") {
+    return `${visibility || "Public "}${symbol.name}${typeSuffix}`;
+  }
+  if (symbol.kind === "constant") {
+    return `Const ${symbol.name}${typeSuffix}`;
+  }
+  if (symbol.kind === "parameter") {
+    return `ByVal ${symbol.name}${typeSuffix}`;
+  }
+  return `Dim ${symbol.name}${typeSuffix}`;
+}
+
+function vbscriptHoverDescription(symbol: VbSymbol): string {
+  const kindDescription =
+    symbol.kind === "class"
+      ? "VBScript class."
+      : symbol.kind === "property"
+        ? "VBScript property."
+        : symbol.kind === "field"
+          ? "VBScript field."
+          : symbol.kind === "constant"
+            ? "VBScript constant."
+            : symbol.kind === "parameter"
+              ? "VBScript parameter."
+              : symbol.kind === "sub"
+                ? "VBScript subroutine."
+                : "VBScript function.";
+  if (symbol.memberOf) {
+    return `${kindDescription} Member of \`${symbol.memberOf}\`.`;
+  }
+  if (symbol.scopeName) {
+    return symbol.kind === "parameter"
+      ? `${kindDescription} Parameter of \`${symbol.scopeName}\`.`
+      : `${kindDescription} Declared in \`${symbol.scopeName}\`.`;
+  }
+  return kindDescription;
+}
+
+function titleCaseKeyword(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
 }
 
 export function getVbscriptDefinition(
@@ -1869,6 +1934,11 @@ function addSymbolsFromVbNode(
       scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
       parameters: node.parameters?.map((token) => token.text) ?? [],
       visibility: node.visibility,
+      procedureKind:
+        node.procedureKind === "function" || node.procedureKind === "sub"
+          ? node.procedureKind
+          : undefined,
+      propertyAccessor: node.propertyAccessor,
       documentation,
     });
     for (const parameter of node.parameters ?? []) {

@@ -602,7 +602,11 @@ Response.Write BuildName()
           textDocument: { uri },
           position: callPosition,
         });
-        expect(JSON.stringify(hover)).toContain("function BuildName");
+        const serializedHover = JSON.stringify(hover);
+        expect(serializedHover).toContain('"kind":"markdown"');
+        expect(serializedHover).toContain("```vbscript");
+        expect(serializedHover).toContain("Function BuildName()");
+        expect(serializedHover).toContain("VBScript function.");
 
         const definition = await server.request("textDocument/definition", {
           textDocument: { uri },

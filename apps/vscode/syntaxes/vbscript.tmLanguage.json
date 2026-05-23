@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "VBScript",
+  "scopeName": "source.vbscript",
+  "patterns": [{ "include": "#vbscript-basic" }],
+  "repository": {
+    "vbscript-basic": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(Option\\s+Explicit|And|As|ByRef|ByVal|Call|Case|Class|Const|Dim|Do|Each|Else|ElseIf|Empty|End|Exit|Explicit|False|For|Function|Get|If|In|Let|Loop|Me|Mod|New|Next|Not|Nothing|Null|Option|Or|Preserve|Private|Property|Public|ReDim|Select|Set|Step|Sub|Then|To|True|Until|Wend|While|With)\\b",
+          "name": "keyword.control.vbscript"
+        },
+        {
+          "match": "\\b(Request|Response|Session|Application|Server|ASPError)\\b",
+          "name": "support.class.asp"
+        },
+        {
+          "match": "\"[^\"]*\"",
+          "name": "string.quoted.double.vbscript"
+        },
+        {
+          "match": "'[^\\n\\r]*",
+          "name": "comment.line.apostrophe.vbscript"
+        },
+        {
+          "match": "\\b\\d+(?:\\.\\d+)?\\b",
+          "name": "constant.numeric.vbscript"
+        }
+      ]
+    }
+  }
+}

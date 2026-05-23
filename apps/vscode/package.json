@@ -56,6 +56,13 @@
           ".inc"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "vbscript",
+        "aliases": [
+          "VBScript",
+          "vbscript"
+        ]
       }
     ],
     "grammars": [
@@ -69,6 +76,11 @@
           "source.css": "css",
           "text.html.basic": "html"
         }
+      },
+      {
+        "language": "vbscript",
+        "scopeName": "source.vbscript",
+        "path": "./syntaxes/vbscript.tmLanguage.json"
       }
     ],
     "configuration": {

@@ -21,6 +21,8 @@ describe("VS Code extension package", () => {
       icon?: string;
       galleryBanner?: { color?: string };
       contributes?: {
+        languages?: Array<{ id: string; extensions?: string[] }>;
+        grammars?: Array<{ language?: string; scopeName?: string; path?: string }>;
         commands?: Array<{ command: string }>;
         problemMatchers?: Array<{ name: string }>;
         taskDefinitions?: Array<{ type: string }>;
@@ -62,6 +64,19 @@ describe("VS Code extension package", () => {
     expect(fs.existsSync(manifest.icon ?? "")).toBe(true);
     expect(manifest.galleryBanner?.color).toBeTruthy();
     expect(manifest.capabilities?.untrustedWorkspaces?.supported).toBe(true);
+    const vbscriptLanguage = manifest.contributes?.languages?.find(
+      (language) => language.id === "vbscript",
+    );
+    expect(vbscriptLanguage).toBeTruthy();
+    expect(vbscriptLanguage?.extensions).toBeUndefined();
+    expect(
+      manifest.contributes?.grammars?.some(
+        (grammar) =>
+          grammar.language === "vbscript" &&
+          grammar.scopeName === "source.vbscript" &&
+          grammar.path === "./syntaxes/vbscript.tmLanguage.json",
+      ),
+    ).toBe(true);
   });
 
   it("keeps package localization keys resolved", () => {
@@ -83,7 +98,7 @@ describe("VS Code extension package", () => {
 
   it("highlights common VBScript declaration keywords", () => {
     const grammar = JSON.parse(
-      fs.readFileSync("syntaxes/classic-asp.tmLanguage.json", "utf8"),
+      fs.readFileSync("syntaxes/vbscript.tmLanguage.json", "utf8"),
     ) as {
       repository?: {
         "vbscript-basic"?: {
@@ -92,7 +107,7 @@ describe("VS Code extension package", () => {
       };
     };
     const keywordPattern = grammar.repository?.["vbscript-basic"]?.patterns?.find(
-      (pattern) => pattern.name === "keyword.control.vbscript.asp",
+      (pattern) => pattern.name === "keyword.control.vbscript",
     )?.match;
     expect(keywordPattern).toBeTruthy();
     expect(keywordPattern).toContain("(?i)");
@@ -101,6 +116,17 @@ describe("VS Code extension package", () => {
     expect(keywordPattern).toContain("Get");
     expect(keywordPattern).toContain("As");
     expect(keywordPattern).toContain("ElseIf");
+
+    const classicAspGrammar = JSON.parse(
+      fs.readFileSync("syntaxes/classic-asp.tmLanguage.json", "utf8"),
+    ) as {
+      repository?: Record<string, { patterns?: Array<{ include?: string }> }>;
+    };
+    expect(
+      classicAspGrammar.repository?.["asp-block"]?.patterns?.some(
+        (pattern) => pattern.include === "source.vbscript",
+      ),
+    ).toBe(true);
   });
 
   it("describes the COM type catalog schema for settings UI", () => {
