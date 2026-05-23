@@ -158,6 +158,13 @@ export function updateAspParsedDocument(
       diagnostics: shiftDiagnostics(previous, nextText, end, delta),
     },
     incremental: true,
+    change: {
+      start,
+      end,
+      delta,
+      language: owner.language,
+      regionKind: owner.kind,
+    },
   };
 }
 

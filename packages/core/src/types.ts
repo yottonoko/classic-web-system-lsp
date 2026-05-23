@@ -176,6 +176,15 @@ export interface AspParsedDocumentUpdate {
   parsed: AspParsedDocument;
   incremental: boolean;
   fallbackReason?: string;
+  change?: AspIncrementalChange;
+}
+
+export interface AspIncrementalChange {
+  start: number;
+  end: number;
+  delta: number;
+  language: AspEmbeddedLanguage;
+  regionKind: AspRegionKind;
 }
 
 export interface SourceMapSegment {

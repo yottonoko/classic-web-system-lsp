@@ -87,6 +87,7 @@ import {
   resolveVbscriptCompletionItem,
   updateAspParsedDocument,
   type AspFormattingOptions,
+  type AspIncrementalChange,
   type AspLocale,
   type AspLocaleSetting,
   type AspParsedDocument,
@@ -184,14 +185,22 @@ interface CachedDocument {
   parsed: AspParsedDocument;
   virtuals: Map<string, VirtualDocument>;
   analysis?: CachedAnalysis;
+  changes?: AspIncrementalChange[];
+  dirtyLanguages?: Set<AspIncrementalChange["language"]>;
 }
 
 interface CachedAnalysis {
-  diagnostics?: { key: string; items: Diagnostic[] };
-  htmlDiagnostics?: { key: string; items: Diagnostic[] };
-  cssDiagnostics?: { key: string; items: Diagnostic[] };
-  jsDiagnostics?: { key: string; items: Diagnostic[] };
+  diagnostics?: DiagnosticCacheEntry;
+  htmlDiagnostics?: DiagnosticCacheEntry;
+  cssDiagnostics?: DiagnosticCacheEntry;
+  jsDiagnostics?: DiagnosticCacheEntry;
   vbProjectContext?: { key: string; context: VbProjectContext };
+}
+
+interface DiagnosticCacheEntry {
+  key: string;
+  items: Diagnostic[];
+  text: string;
 }
 
 interface PendingDocumentChange {
@@ -1187,17 +1196,34 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
   const settings = cachedSettings(document.uri);
   const previous = cache.get(document.uri);
   const pending = pendingDocumentChanges.get(document.uri);
-  const parsed =
+  const update =
     previous && pending?.version === document.version
       ? updateAspParsedDocument(
           { ...previous.parsed, text: pending.previousText },
           document.getText(),
           pending.changes,
           settings,
-        ).parsed
-      : parseAspDocument(document.uri, document.getText(), settings);
+        )
+      : undefined;
+  const parsed = update?.parsed ?? parseAspDocument(document.uri, document.getText(), settings);
   const virtuals = buildVirtualDocuments(parsed);
-  const cached = { source: document, parsed, virtuals, analysis: previous?.analysis };
+  const changes = update?.incremental
+    ? [...(previous?.changes ?? []), ...(update.change ? [update.change] : [])]
+    : undefined;
+  const dirtyLanguages = update?.incremental
+    ? new Set([
+        ...(previous?.dirtyLanguages ?? []),
+        ...(update.change ? [update.change.language] : []),
+      ])
+    : undefined;
+  const cached = {
+    source: document,
+    parsed,
+    virtuals,
+    analysis: previous?.analysis,
+    changes,
+    dirtyLanguages,
+  };
   cache.set(document.uri, cached);
   if (pending?.version === document.version) {
     pendingDocumentChanges.delete(document.uri);
@@ -1266,7 +1292,9 @@ function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Di
   diagnostics.push(...cssDiagnostics(cached));
   diagnostics.push(...jsDiagnostics(cached, settings));
   const items = dedupeDiagnostics(diagnostics);
-  analysisFor(cached).diagnostics = { key, items };
+  analysisFor(cached).diagnostics = { key, items, text: cached.parsed.text };
+  cached.changes = undefined;
+  cached.dirtyLanguages = undefined;
   return items;
 }
 
@@ -1335,10 +1363,82 @@ function analysisFor(cached: CachedDocument): CachedAnalysis {
   return cached.analysis;
 }
 
+function reuseUnchangedDiagnostics(
+  cached: CachedDocument,
+  language: AspIncrementalChange["language"],
+  entry: DiagnosticCacheEntry | undefined,
+): Diagnostic[] | undefined {
+  const changes = cached.changes;
+  if (!changes || changes.length === 0 || !entry || isDiagnosticLanguageDirty(cached, language)) {
+    return undefined;
+  }
+  const items = shiftDiagnosticsAfterChanges(entry.items, entry.text, cached.source, changes);
+  entry.items = items;
+  entry.text = cached.parsed.text;
+  entry.key = `${entry.key}|shift:${changes
+    .map((change) => `${change.start}:${change.end}:${change.delta}`)
+    .join(",")}`;
+  return items;
+}
+
+function isDiagnosticLanguageDirty(
+  cached: CachedDocument,
+  language: AspIncrementalChange["language"],
+): boolean {
+  if (!cached.dirtyLanguages) {
+    return false;
+  }
+  if (language === "javascript" || language === "jscript") {
+    return cached.dirtyLanguages.has("javascript") || cached.dirtyLanguages.has("jscript");
+  }
+  return cached.dirtyLanguages.has(language);
+}
+
+function shiftDiagnosticsAfterChanges(
+  diagnostics: Diagnostic[],
+  previousText: string,
+  document: TextDocument,
+  changes: AspIncrementalChange[],
+): Diagnostic[] {
+  const previousDocument = TextDocument.create(document.uri, document.languageId, 0, previousText);
+  return diagnostics.map((diagnostic) => ({
+    ...diagnostic,
+    range: shiftDiagnosticRange(previousDocument, document, diagnostic.range, changes),
+  }));
+}
+
+function shiftDiagnosticRange(
+  previousDocument: TextDocument,
+  nextDocument: TextDocument,
+  range: Range,
+  changes: AspIncrementalChange[],
+): Range {
+  const start = changes.reduce(
+    (offset, change) => shiftDiagnosticOffset(offset, change),
+    previousDocument.offsetAt(range.start),
+  );
+  const end = changes.reduce(
+    (offset, change) => shiftDiagnosticOffset(offset, change),
+    previousDocument.offsetAt(range.end),
+  );
+  return { start: nextDocument.positionAt(start), end: nextDocument.positionAt(end) };
+}
+
+function shiftDiagnosticOffset(offset: number, change: AspIncrementalChange): number {
+  if (offset >= change.end) {
+    return offset + change.delta;
+  }
+  return offset;
+}
+
 function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
   const virtual = cached.virtuals.get("html");
   if (!virtual) {
     return [];
+  }
+  const reused = reuseUnchangedDiagnostics(cached, "html", cached.analysis?.htmlDiagnostics);
+  if (reused) {
+    return reused;
   }
   const key = virtualCacheKey(virtual);
   if (cached.analysis?.htmlDiagnostics?.key === key) {
@@ -1362,7 +1462,7 @@ function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
     }
     token = scanner.scan();
   }
-  analysisFor(cached).htmlDiagnostics = { key, items: diagnostics };
+  analysisFor(cached).htmlDiagnostics = { key, items: diagnostics, text: cached.parsed.text };
   return diagnostics;
 }
 
@@ -1370,6 +1470,10 @@ function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
   const virtual = cached.virtuals.get("css");
   if (!virtual) {
     return [];
+  }
+  const reused = reuseUnchangedDiagnostics(cached, "css", cached.analysis?.cssDiagnostics);
+  if (reused) {
+    return reused;
   }
   const key = virtualCacheKey(virtual);
   if (cached.analysis?.cssDiagnostics?.key === key) {
@@ -1380,11 +1484,17 @@ function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
     .doValidation(doc, cssService.parseStylesheet(doc))
     .map((diagnostic) => remapDiagnostic(virtual, diagnostic, "asp-lsp-css"))
     .filter(isDiagnostic);
-  analysisFor(cached).cssDiagnostics = { key, items };
+  analysisFor(cached).cssDiagnostics = { key, items, text: cached.parsed.text };
   return items;
 }
 
 function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
+  const reused =
+    reuseUnchangedDiagnostics(cached, "javascript", cached.analysis?.jsDiagnostics) ??
+    reuseUnchangedDiagnostics(cached, "jscript", cached.analysis?.jsDiagnostics);
+  if (reused) {
+    return reused;
+  }
   const key = JSON.stringify({
     virtuals: jsVirtualDocuments(cached).map(virtualCacheKey),
     settings: {
@@ -1425,7 +1535,7 @@ function jsDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnosti
       ),
     ].filter(isDiagnostic);
   });
-  analysisFor(cached).jsDiagnostics = { key, items };
+  analysisFor(cached).jsDiagnostics = { key, items, text: cached.parsed.text };
   return items;
 }
 

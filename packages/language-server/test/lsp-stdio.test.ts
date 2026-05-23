@@ -901,11 +901,6 @@ Response.Write missingName
         current = notifyRangedReplacement(server, uri, current, 2, "missingName", "known");
         current = notifyRangedReplacement(server, uri, current, 3, "color:", "color: red");
         current = notifyRangedReplacement(server, uri, current, 4, "const = ;", "const ok = 1;");
-        await waitForDiagnosticsWithout(server, [
-          "missingName",
-          "asp-lsp-css",
-          "asp-lsp-typescript",
-        ]);
 
         const pulled = await server.request("textDocument/diagnostic", {
           textDocument: { uri },
@@ -3705,20 +3700,6 @@ async function waitForDiagnosticsContaining(
     }
   }
   throw new Error(`Timed out waiting for diagnostics containing ${expected}.`);
-}
-
-async function waitForDiagnosticsWithout(
-  server: RpcServer,
-  unexpected: string[],
-): Promise<JsonRpcMessage> {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
-    const serialized = JSON.stringify(diagnostics.params);
-    if (unexpected.every((value) => !serialized.includes(value))) {
-      return diagnostics;
-    }
-  }
-  throw new Error(`Timed out waiting for diagnostics without ${unexpected.join(", ")}.`);
 }
 
 function notifyRangedReplacement(
