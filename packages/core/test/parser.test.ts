@@ -895,7 +895,7 @@ Response.Write BuildName()
     const hover = getVbscriptHover(parsed, { line: 3, character: 17 }, { symbols });
     expect(hover).toContain("```vbscript");
     expect(hover).toContain("Function BuildName()");
-    expect(hover).toContain("VBScript function.");
+    expect(hover).not.toContain("VBScript function.");
     expect(getVbscriptDefinition(parsed, { line: 3, character: 17 }, { symbols })?.name).toBe(
       "BuildName",
     );
@@ -917,7 +917,8 @@ End Class
     expect(property?.propertyAccessor).toBe("get");
     const hover = getVbscriptHover(parsed, { line: 3, character: 5 }, { symbols });
     expect(hover).toContain("Public Property Get HasItems() As Boolean");
-    expect(hover).toContain("VBScript property. Member of `DashboardCustomer`.");
+    expect(hover).not.toContain("VBScript property.");
+    expect(hover).not.toContain("Member of `DashboardCustomer`.");
   });
 
   it("resolves built-in hover and signature help from CST tokens", () => {
@@ -1004,6 +1005,12 @@ errorValue = CVErr(1)
     expect(
       getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("CStr"))),
     ).toContain("Function CStr(value) As String");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("CStr"))),
+    ).toContain("Converts a value to String.");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("CStr"))),
+    ).not.toContain("VBScript built-in function.");
     expect(
       getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("CCur"))),
     ).toContain("Function CCur(value) As Currency");
@@ -1493,10 +1500,10 @@ End Sub
 
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
-    ).toContain("VBScript variable (global).");
+    ).toContain("Dim unknownGlobal As Variant");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("UnknownConst")), { symbols }),
-    ).toContain("VBScript constant (global).");
+    ).toContain("Const UnknownConst As Variant");
     expect(
       analyzeVbscript(parsed, { symbols, typeChecking: "strict" }).diagnostics.some(
         (diagnostic) => diagnostic.source === "asp-lsp-vbscript-type",
@@ -1516,7 +1523,7 @@ Response.Write a
     const implicit = symbols.find((symbol) => symbol.name === "a");
     expect(implicit).toEqual(expect.objectContaining({ implicit: true, typeName: "Number" }));
     expect(getVbscriptHover(parsed, { line: 1, character: 0 }, { symbols })).toContain(
-      "Implicit VBScript variable (global).",
+      "Dim a As Number",
     );
     expect(
       getVbscriptInlayHints(

@@ -1424,7 +1424,7 @@ Response.Write BuildName()
         expect(serializedHover).toContain('"kind":"markdown"');
         expect(serializedHover).toContain("```vbscript");
         expect(serializedHover).toContain("Function BuildName()");
-        expect(serializedHover).toContain("VBScript function.");
+        expect(serializedHover).not.toContain("VBScript function.");
 
         const definition = await server.request("textDocument/definition", {
           textDocument: { uri },
@@ -1659,7 +1659,7 @@ Response.Write a
           textDocument: { uri },
           position: { line: 1, character: 0 },
         });
-        expect(JSON.stringify(hover)).toContain("Implicit VBScript variable (global).");
+        expect(JSON.stringify(hover)).toContain("Dim a As Number");
         const currencyHover = await server.request("textDocument/hover", {
           textDocument: { uri },
           position: positionAt(source, source.indexOf("CCur")),
@@ -1748,7 +1748,7 @@ both.SharedName
           position: positionAt(source, source.indexOf("x = 1")),
         });
         expect(JSON.stringify(hover)).toContain("Number | String");
-        expect(JSON.stringify(hover)).toContain("variable (global)");
+        expect(JSON.stringify(hover)).not.toContain("variable (global)");
 
         const inlayHints = await server.request("textDocument/inlayHint", {
           textDocument: { uri },
@@ -1964,6 +1964,8 @@ Response.Write UBound(Array("a", "b"))
           position: positionAt(source, source.indexOf("CStr") + 1),
         });
         expect(JSON.stringify(hover)).toContain("Function CStr(value) As String");
+        expect(JSON.stringify(hover)).toContain("Converts a value to String.");
+        expect(JSON.stringify(hover)).not.toContain("VBScript built-in function.");
 
         const signature = await server.request("textDocument/signatureHelp", {
           textDocument: { uri },

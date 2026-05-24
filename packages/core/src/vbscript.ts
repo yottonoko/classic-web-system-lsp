@@ -309,7 +309,7 @@ function builtinDescription(name: string, locale: AspLocale | undefined): string
   if (builtin) {
     return markdownHover(
       `Function ${builtin.signature} As ${builtin.returnType}`,
-      `VBScript built-in function. ${builtin.documentation}`,
+      builtin.documentation,
     );
   }
   return undefined;
@@ -1760,7 +1760,7 @@ export function getVbscriptHover(
     return undefined;
   }
   return appendDocumentationMarkdown(
-    markdownHover(vbscriptHoverSignature(symbol), vbscriptHoverDescription(parsed, symbol)),
+    markdownHover(vbscriptHoverSignature(symbol)),
     symbol.documentation,
     context.locale,
   );
@@ -1836,42 +1836,6 @@ function parameterLabel(parameter: VbParameterInfo): string {
 
 function parameterModeKeyword(mode: VbParameterMode): "ByRef" | "ByVal" {
   return mode === "byval" ? "ByVal" : "ByRef";
-}
-
-function vbscriptHoverDescription(parsed: AspParsedDocument, symbol: VbSymbol): string {
-  if (symbol.implicit) {
-    return isGlobalVariableLikeSymbol(parsed, symbol)
-      ? "Implicit VBScript variable (global)."
-      : "Implicit VBScript variable.";
-  }
-  if (isGlobalVariableLikeSymbol(parsed, symbol)) {
-    return symbol.kind === "constant"
-      ? "VBScript constant (global)."
-      : "VBScript variable (global).";
-  }
-  const kindDescription =
-    symbol.kind === "class"
-      ? "VBScript class."
-      : symbol.kind === "property"
-        ? "VBScript property."
-        : symbol.kind === "field"
-          ? "VBScript field."
-          : symbol.kind === "constant"
-            ? "VBScript constant."
-            : symbol.kind === "parameter"
-              ? "VBScript parameter."
-              : symbol.kind === "sub"
-                ? "VBScript subroutine."
-                : "VBScript function.";
-  if (symbol.memberOf) {
-    return `${kindDescription} Member of \`${symbol.memberOf}\`.`;
-  }
-  if (symbol.scopeName) {
-    return symbol.kind === "parameter"
-      ? `${kindDescription} Parameter of \`${symbol.scopeName}\`.`
-      : `${kindDescription} Declared in \`${symbol.scopeName}\`.`;
-  }
-  return kindDescription;
 }
 
 function titleCaseKeyword(value: string): string {
