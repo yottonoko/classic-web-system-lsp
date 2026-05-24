@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CompletionItemKind, InsertTextFormat } from "vscode-languageserver-types";
 import {
   analyzeVbscript,
   buildVbTypeEnvironment,
@@ -411,6 +412,52 @@ Response. %>`;
       topLevelCompletions.find((item) => item.label === "customerName")?.labelDetails,
     ).toBeUndefined();
     expect(topLevelCompletions.some((item) => item.label === "customerName")).toBe(true);
+  });
+
+  it("completes VBScript syntax snippets when enabled", () => {
+    const source = `<% Option Explicit
+
+Response.
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const completions = getVbscriptCompletions(parsed, { line: 1, character: 0 });
+    const snippetLabels = [
+      "If Then",
+      "If Then Else",
+      "For Next",
+      "For Each Next",
+      "Select Case",
+      "With",
+      "Sub",
+      "Function",
+      "Class",
+      "Property Get",
+      "Property Let",
+      "Property Set",
+    ];
+    expect(completions.map((item) => item.label)).toEqual(expect.arrayContaining(snippetLabels));
+    const ifSnippet = completions.find((item) => item.label === "If Then");
+    expect(ifSnippet).toMatchObject({
+      kind: CompletionItemKind.Snippet,
+      insertTextFormat: InsertTextFormat.Snippet,
+      detail: "VBScript syntax snippet",
+    });
+    expect(ifSnippet?.insertText).toContain("End If");
+
+    const disabled = getVbscriptCompletions(
+      parsed,
+      { line: 1, character: 0 },
+      {
+        syntaxSnippets: false,
+      },
+    );
+    expect(disabled.some((item) => item.label === "If Then")).toBe(false);
+    expect(disabled.some((item) => item.label === "Response")).toBe(true);
+    expect(disabled.some((item) => item.label === "Dim")).toBe(true);
+
+    const memberCompletions = getVbscriptCompletions(parsed, { line: 2, character: 9 });
+    expect(memberCompletions.some((item) => item.label === "Write")).toBe(true);
+    expect(memberCompletions.some((item) => item.label === "If Then")).toBe(false);
   });
 
   it("identifies fixed and dynamic VBScript arrays as Array symbols", () => {

@@ -77,6 +77,7 @@ export interface AspVbscriptSettings {
   globals?: Record<string, string | AspVbscriptGlobal>;
   unusedDiagnostics?: boolean;
   includeSuggestions?: boolean;
+  syntaxSnippets?: boolean;
 }
 
 export type AspVbscriptIdentifierCase =

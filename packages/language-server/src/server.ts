@@ -3459,6 +3459,7 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
     comTypes: settings.vbscript?.comTypes,
     unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+    syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
     locale: settings.resolvedLocale,
   };
   const key = vbProjectContextCacheKey(documents, settings);
@@ -3492,6 +3493,7 @@ function vbProjectContextCacheKey(documents: AspParsedDocument[], settings: AspS
       identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
       comTypes: settings.vbscript?.comTypes,
       unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+      syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
       locale: settings.resolvedLocale,
     },
     globals: settings.vbscript?.globals,
@@ -4473,6 +4475,7 @@ function normalizeVbscriptSettings(
         : undefined,
     unusedDiagnostics: record.unusedDiagnostics !== false,
     includeSuggestions: record.includeSuggestions !== false,
+    syntaxSnippets: record.syntaxSnippets !== false,
   };
 }
 
