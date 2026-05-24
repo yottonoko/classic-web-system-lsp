@@ -233,37 +233,55 @@ const vbDocCommentAttributeCompletions: Record<string, string[]> = {
 function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
   const localizer = createLocalizer(locale);
   return [
-    {
-      label: "Request",
-      kind: CompletionItemKind.Variable,
-      detail: localizer.t("vb.builtin.request.detail"),
-      documentation: localizer.t("vb.builtin.request.documentation"),
-    },
-    {
-      label: "Response",
-      kind: CompletionItemKind.Variable,
-      detail: localizer.t("vb.builtin.response.detail"),
-    },
-    {
-      label: "Session",
-      kind: CompletionItemKind.Variable,
-      detail: localizer.t("vb.builtin.session.detail"),
-    },
-    {
-      label: "Application",
-      kind: CompletionItemKind.Variable,
-      detail: localizer.t("vb.builtin.application.detail"),
-    },
-    {
-      label: "Server",
-      kind: CompletionItemKind.Variable,
-      detail: localizer.t("vb.builtin.server.detail"),
-    },
-    {
-      label: "ASPError",
-      kind: CompletionItemKind.Class,
-      detail: localizer.t("vb.builtin.asperror.detail"),
-    },
+    withBuiltinCompletionLabel(
+      {
+        label: "Request",
+        kind: CompletionItemKind.Variable,
+        detail: localizer.t("vb.builtin.request.detail"),
+        documentation: localizer.t("vb.builtin.request.documentation"),
+      },
+      locale,
+    ),
+    withBuiltinCompletionLabel(
+      {
+        label: "Response",
+        kind: CompletionItemKind.Variable,
+        detail: localizer.t("vb.builtin.response.detail"),
+      },
+      locale,
+    ),
+    withBuiltinCompletionLabel(
+      {
+        label: "Session",
+        kind: CompletionItemKind.Variable,
+        detail: localizer.t("vb.builtin.session.detail"),
+      },
+      locale,
+    ),
+    withBuiltinCompletionLabel(
+      {
+        label: "Application",
+        kind: CompletionItemKind.Variable,
+        detail: localizer.t("vb.builtin.application.detail"),
+      },
+      locale,
+    ),
+    withBuiltinCompletionLabel(
+      {
+        label: "Server",
+        kind: CompletionItemKind.Variable,
+        detail: localizer.t("vb.builtin.server.detail"),
+      },
+      locale,
+    ),
+    withBuiltinCompletionLabel(
+      {
+        label: "ASPError",
+        kind: CompletionItemKind.Class,
+        detail: localizer.t("vb.builtin.asperror.detail"),
+      },
+      locale,
+    ),
     {
       label: "Option Explicit",
       kind: CompletionItemKind.Keyword,
@@ -276,14 +294,30 @@ function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
     { label: "Function", kind: CompletionItemKind.Keyword },
     { label: "Class", kind: CompletionItemKind.Keyword },
     ...builtinFunctions.map(
-      (item): CompletionItem => ({
-        label: item.label,
-        kind: CompletionItemKind.Function,
-        detail: `Function ${item.signature} As ${item.returnType}`,
-        documentation: item.documentation,
-      }),
+      (item): CompletionItem =>
+        withBuiltinCompletionLabel(
+          {
+            label: item.label,
+            kind: CompletionItemKind.Function,
+            detail: `Function ${item.signature} As ${item.returnType}`,
+            documentation: item.documentation,
+          },
+          locale,
+        ),
     ),
   ];
+}
+
+function withBuiltinCompletionLabel(
+  item: CompletionItem,
+  locale: AspLocale | undefined,
+): CompletionItem {
+  return {
+    ...item,
+    labelDetails: item.labelDetails ?? {
+      detail: createLocalizer(locale).t("vb.completion.builtinLabel"),
+    },
+  };
 }
 
 function builtinDescription(name: string, locale: AspLocale | undefined): string | undefined {
@@ -338,7 +372,7 @@ const memberCompletions: Record<string, CompletionItem[]> = {
     "ClientCertificate",
     "TotalBytes",
     "BinaryRead",
-  ].map(methodItem),
+  ].map(builtinMethodItem),
   response: [
     "Write",
     "Redirect",
@@ -349,11 +383,11 @@ const memberCompletions: Record<string, CompletionItem[]> = {
     "Status",
     "ContentType",
     "Charset",
-  ].map(methodItem),
+  ].map(builtinMethodItem),
   session: ["Abandon", "Contents", "StaticObjects", "SessionID", "Timeout", "CodePage", "LCID"].map(
-    methodItem,
+    builtinMethodItem,
   ),
-  application: ["Lock", "Unlock", "Contents", "StaticObjects"].map(methodItem),
+  application: ["Lock", "Unlock", "Contents", "StaticObjects"].map(builtinMethodItem),
   server: [
     "CreateObject",
     "MapPath",
@@ -361,7 +395,7 @@ const memberCompletions: Record<string, CompletionItem[]> = {
     "URLEncode",
     "ScriptTimeout",
     "GetLastError",
-  ].map(methodItem),
+  ].map(builtinMethodItem),
 };
 
 const externalObjectMembers: Record<string, CompletionItem[]> = {
@@ -442,6 +476,10 @@ const adoMemberTypes: Record<string, Record<string, string>> = {
     CommandType: "Number",
   },
 };
+
+function builtinMethodItem(label: string): CompletionItem {
+  return withBuiltinCompletionLabel(methodItem(label), undefined);
+}
 
 function methodItem(label: string): CompletionItem {
   return { label, kind: CompletionItemKind.Method };
@@ -2060,6 +2098,7 @@ export function resolveVbscriptCompletionItem(
     return {
       ...item,
       detail: item.detail ?? builtin.detail,
+      labelDetails: item.labelDetails ?? builtin.labelDetails,
       documentation: item.documentation ?? builtin.documentation,
     };
   }

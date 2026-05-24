@@ -290,11 +290,24 @@ Response. %>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
     const completions = getVbscriptCompletions(parsed, { line: 2, character: 9 });
     expect(completions.some((item) => item.label === "Write")).toBe(true);
+    expect(completions.find((item) => item.label === "Write")?.labelDetails?.detail).toBe(
+      "built-in",
+    );
+    const topLevelCompletions = getVbscriptCompletions(parsed, { line: 1, character: 4 });
     expect(
-      getVbscriptCompletions(parsed, { line: 1, character: 4 }).some(
-        (item) => item.label === "customerName",
-      ),
-    ).toBe(true);
+      topLevelCompletions.find((item) => item.label === "Response")?.labelDetails?.detail,
+    ).toBe("built-in");
+    expect(topLevelCompletions.find((item) => item.label === "CStr")?.labelDetails?.detail).toBe(
+      "built-in",
+    );
+    expect(resolveVbscriptCompletionItem({ label: "CStr" }, parsed).labelDetails?.detail).toBe(
+      "built-in",
+    );
+    expect(topLevelCompletions.find((item) => item.label === "Dim")?.labelDetails).toBeUndefined();
+    expect(
+      topLevelCompletions.find((item) => item.label === "customerName")?.labelDetails,
+    ).toBeUndefined();
+    expect(topLevelCompletions.some((item) => item.label === "customerName")).toBe(true);
   });
 
   it("keeps VBScript lookup and completions case-insensitive", () => {
@@ -811,6 +824,7 @@ Response.Write BuildName("Ada")
     const completion = getVbscriptCompletions(parsed, { line: 7, character: 16 }, { symbols }).find(
       (item) => item.label === "BuildName",
     );
+    expect(completion?.labelDetails).toBeUndefined();
     expect(
       String(resolveVbscriptCompletionItem(completion!, parsed, { symbols }).documentation),
     ).toContain("Builds a display name.");
