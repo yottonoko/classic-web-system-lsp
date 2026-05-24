@@ -96,7 +96,7 @@ JavaScript.
 - `aspLsp.javascript.ignoreProjectConfig`: ignore nearest `tsconfig.json` or `jsconfig.json` for embedded JavaScript/JScript language service projects
 - `aspLsp.virtualRoot`: root directory for `<!-- #include virtual="..." -->`
 - `aspLsp.virtualRoots`: additional virtual include roots
-- `aspLsp.legacyEncoding`: encoding for unopened include files, `utf8`, `shift_jis`, or `cp932`
+- `aspLsp.legacyEncoding`: encoding for unopened include files, `auto` (default), `utf8`, `shift_jis`, or `cp932`
 - `aspLsp.format.indentSize`: Classic ASP formatter indent size; unset uses editor options
 - `aspLsp.format.indentStyle`: `space` or `tab`; unset uses editor options
 - `aspLsp.format.uppercaseKeywords`: format VBScript keywords as uppercase

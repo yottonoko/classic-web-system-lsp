@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { analyse, detect } from "chardet";
 import {
   CodeActionKind,
   CompletionItemKind,
@@ -88,6 +89,7 @@ import {
   updateAspParsedDocument,
   type AspFormattingOptions,
   type AspIncrementalChange,
+  type AspLegacyEncoding,
   type AspLocale,
   type AspLocaleSetting,
   type AspParsedDocument,
@@ -3562,12 +3564,8 @@ function readParsedIncludeDocument(fileName: string, settings: AspSettings): Asp
   return parsed;
 }
 
-function readTextFile(fileName: string, encoding: string | undefined): string {
-  const normalized = (encoding ?? "utf8").toLowerCase().replace(/[-_]/g, "");
-  if (normalized === "shiftjis" || normalized === "sjis" || normalized === "cp932") {
-    return new TextDecoder("shift_jis").decode(fs.readFileSync(fileName));
-  }
-  return fs.readFileSync(fileName, "utf8");
+function readTextFile(fileName: string, encoding: AspLegacyEncoding | undefined): string {
+  return decodeLegacyText(fs.readFileSync(fileName), encoding);
 }
 
 function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
@@ -4072,13 +4070,75 @@ async function indexWorkspaceFileAsync(fileName: string, settings: AspSettings):
   });
 }
 
-async function readTextFileAsync(fileName: string, encoding: string | undefined): Promise<string> {
-  const buffer = await fs.promises.readFile(fileName);
-  const normalized = (encoding ?? "utf8").toLowerCase().replace(/[-_]/g, "");
-  if (normalized === "shiftjis" || normalized === "sjis" || normalized === "cp932") {
-    return new TextDecoder("shift_jis").decode(buffer);
+async function readTextFileAsync(
+  fileName: string,
+  encoding: AspLegacyEncoding | undefined,
+): Promise<string> {
+  return decodeLegacyText(await fs.promises.readFile(fileName), encoding);
+}
+
+function decodeLegacyText(buffer: Uint8Array, encoding: AspLegacyEncoding | undefined): string {
+  return new TextDecoder(textDecoderLabel(buffer, encoding)).decode(buffer);
+}
+
+function textDecoderLabel(buffer: Uint8Array, encoding: AspLegacyEncoding | undefined): string {
+  switch (encoding ?? "auto") {
+    case "utf8":
+      return "utf-8";
+    case "shift_jis":
+    case "cp932":
+      return "shift_jis";
+    case "auto":
+      return autoTextDecoderLabel(buffer);
   }
-  return new TextDecoder("utf-8").decode(buffer);
+}
+
+function autoTextDecoderLabel(buffer: Uint8Array): string {
+  if (isValidUtf8(buffer)) {
+    return "utf-8";
+  }
+  const detected = supportedTextDecoderLabel(detect(buffer));
+  if (detected && detected !== "utf-8") {
+    return detected;
+  }
+  return (
+    analyse(buffer)
+      .map((match) => supportedTextDecoderLabel(match.name))
+      .find((label) => label && label !== "utf-8") ?? "utf-8"
+  );
+}
+
+function supportedTextDecoderLabel(name: string | null): string | undefined {
+  const normalized = name?.toLowerCase().replace(/[-_\s]/g, "");
+  if (!normalized || normalized === "ascii" || normalized === "utf8") {
+    return "utf-8";
+  }
+  if (
+    normalized === "shiftjis" ||
+    normalized === "sjis" ||
+    normalized === "cp932" ||
+    normalized === "windows31j" ||
+    normalized === "windows932" ||
+    normalized === "mskanji"
+  ) {
+    return "shift_jis";
+  }
+  if (normalized === "eucjp") {
+    return "euc-jp";
+  }
+  if (normalized === "iso2022jp") {
+    return "iso-2022-jp";
+  }
+  return undefined;
+}
+
+function isValidUtf8(buffer: Uint8Array): boolean {
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function yieldToEventLoop(): Promise<void> {
@@ -4258,8 +4318,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
         : undefined,
     virtualRoots,
     includePaths,
-    legacyEncoding:
-      typeof settings.legacyEncoding === "string" ? settings.legacyEncoding : undefined,
+    legacyEncoding: normalizeLegacyEncoding(settings.legacyEncoding),
     diagnostics: normalizeDiagnosticsSettings(settings),
     debug: normalizeDebugSettings(settings),
     format: normalizeFormatSettings(settings),
@@ -4297,6 +4356,12 @@ function normalizeWorkspaceSettings(
         ? Math.floor(record.scanChunkSize)
         : defaultScanChunkSize,
   };
+}
+
+function normalizeLegacyEncoding(value: unknown): AspLegacyEncoding {
+  return value === "auto" || value === "utf8" || value === "shift_jis" || value === "cp932"
+    ? value
+    : "auto";
 }
 
 function normalizeDiagnosticsSettings(

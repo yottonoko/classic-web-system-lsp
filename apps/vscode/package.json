@@ -231,11 +231,12 @@
         "aspLsp.legacyEncoding": {
           "type": "string",
           "enum": [
+            "auto",
             "utf8",
             "shift_jis",
             "cp932"
           ],
-          "default": "utf8",
+          "default": "auto",
           "description": "%configuration.legacyEncoding.description%"
         },
         "aspLsp.format.indentSize": {

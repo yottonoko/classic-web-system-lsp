@@ -27,7 +27,7 @@ export interface AspSettings {
   checkJs?: boolean;
   javascript?: AspJavascriptSettings;
   includePaths?: string[];
-  legacyEncoding?: string;
+  legacyEncoding?: AspLegacyEncoding;
   diagnostics?: AspDiagnosticsSettings;
   debug?: AspDebugSettings;
   format?: AspFormatSettings;
@@ -40,6 +40,8 @@ export interface AspSettings {
 export type AspLocaleSetting = "auto" | AspLocale;
 
 export type AspLocale = "en" | "ja";
+
+export type AspLegacyEncoding = "auto" | "utf8" | "shift_jis" | "cp932";
 
 export interface AspFormatSettings {
   indentSize?: number;

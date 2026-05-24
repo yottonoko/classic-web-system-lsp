@@ -4159,6 +4159,151 @@ Response.Write Shared▮Title()
       }
     });
 
+    it("auto-detects Shift_JIS include directives in unopened include files", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-auto-include-"));
+      const owner = path.join(tempDir, "default.asp");
+      const first = path.join(tempDir, "first.inc");
+      const next = path.join(tempDir, "次.inc");
+      const marked = markedDocument(`<!-- #include file="first.inc" -->
+<%
+Response.Write Shared▮Thing()
+%>`);
+      fs.writeFileSync(owner, marked.text, "utf8");
+      fs.writeFileSync(
+        first,
+        Buffer.concat([
+          Buffer.from('<!-- #include file="', "ascii"),
+          Buffer.from([0x8e, 0x9f]),
+          Buffer.from('.inc" -->', "ascii"),
+        ]),
+      );
+      fs.writeFileSync(next, "<%\nFunction SharedThing()\nEnd Function\n%>", "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { legacyEncoding: "auto" } },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${owner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri: `file://${owner}` },
+          position: marked.position,
+        });
+        expect(completionLabels(completions)).toContain("SharedThing");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps explicit utf8 include decoding deterministic", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-utf8-include-"));
+      const owner = path.join(tempDir, "default.asp");
+      const first = path.join(tempDir, "first.inc");
+      const next = path.join(tempDir, "次.inc");
+      const marked = markedDocument(`<!-- #include file="first.inc" -->
+<%
+Response.Write Shared▮Thing()
+%>`);
+      fs.writeFileSync(owner, marked.text, "utf8");
+      fs.writeFileSync(
+        first,
+        Buffer.concat([
+          Buffer.from('<!-- #include file="', "ascii"),
+          Buffer.from([0x8e, 0x9f]),
+          Buffer.from('.inc" -->', "ascii"),
+        ]),
+      );
+      fs.writeFileSync(next, "<%\nFunction SharedThing()\nEnd Function\n%>", "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { legacyEncoding: "utf8" } },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${owner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri: `file://${owner}` },
+          position: marked.position,
+        });
+        expect(completionLabels(completions)).not.toContain("SharedThing");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("auto-detects Shift_JIS unopened workspace files for workspace symbols", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-auto-index-"));
+      fs.writeFileSync(
+        path.join(tempDir, "unopened.asp"),
+        Buffer.concat([
+          Buffer.from('<div id="', "ascii"),
+          Buffer.from([0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea]),
+          Buffer.from('"></div>', "ascii"),
+        ]),
+      );
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { legacyEncoding: "auto" } },
+        });
+
+        const symbols = await server.request("workspace/symbol", { query: "日本語" });
+        expect(JSON.stringify(symbols)).toContain("日本語");
+        expect(JSON.stringify(symbols)).toContain("unopened.asp");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("reports include cycles through publishDiagnostics", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-"));
       const owner = path.join(tempDir, "default.asp");

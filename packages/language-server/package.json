@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@asp-lsp/core": "workspace:*",
+    "chardet": "^2.1.1",
     "typescript": "^6.0.3",
     "vscode-css-languageservice": "^6.3.10",
     "vscode-html-languageservice": "^5.6.2",
