@@ -101,6 +101,7 @@ export interface VbProjectContext {
   comTypes?: Record<string, AspVbscriptComType>;
   typeEnvironment?: VbTypeEnvironment;
   unusedDiagnostics?: boolean;
+  syntaxSnippets?: boolean;
   locale?: AspLocale;
 }
 
@@ -319,6 +320,54 @@ function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
         ),
     ),
   ];
+}
+
+function vbscriptSyntaxSnippetCompletions(locale: AspLocale | undefined): CompletionItem[] {
+  const detail = createLocalizer(locale).t("vb.completion.syntaxSnippet");
+  return [
+    snippetCompletion("If Then", "If ${1:condition} Then\n  $0\nEnd If", detail),
+    snippetCompletion(
+      "If Then Else",
+      "If ${1:condition} Then\n  ${2:statement}\nElse\n  $0\nEnd If",
+      detail,
+    ),
+    snippetCompletion("For Next", "For ${1:index} = ${2:start} To ${3:end}\n  $0\nNext", detail),
+    snippetCompletion("For Each Next", "For Each ${1:item} In ${2:items}\n  $0\nNext", detail),
+    snippetCompletion(
+      "Select Case",
+      "Select Case ${1:expression}\nCase ${2:value}\n  $0\nEnd Select",
+      detail,
+    ),
+    snippetCompletion("With", "With ${1:object}\n  $0\nEnd With", detail),
+    snippetCompletion("Sub", "Sub ${1:Name}(${2:parameters})\n  $0\nEnd Sub", detail),
+    snippetCompletion(
+      "Function",
+      "Function ${1:Name}(${2:parameters})\n  $0\nEnd Function",
+      detail,
+    ),
+    snippetCompletion("Class", "Class ${1:Name}\n  $0\nEnd Class", detail),
+    snippetCompletion("Property Get", "Property Get ${1:Name}()\n  $0\nEnd Property", detail),
+    snippetCompletion(
+      "Property Let",
+      "Property Let ${1:Name}(${2:value})\n  $0\nEnd Property",
+      detail,
+    ),
+    snippetCompletion(
+      "Property Set",
+      "Property Set ${1:Name}(${2:value})\n  $0\nEnd Property",
+      detail,
+    ),
+  ];
+}
+
+function snippetCompletion(label: string, insertText: string, detail: string): CompletionItem {
+  return {
+    label,
+    kind: CompletionItemKind.Snippet,
+    detail,
+    insertText,
+    insertTextFormat: InsertTextFormat.Snippet,
+  };
 }
 
 function withBuiltinCompletionLabel(
@@ -1526,6 +1575,7 @@ export function getVbscriptCompletions(
     return ownerType ? typeMemberCompletions(ownerType, symbols, typeEnvironment) : [];
   }
   return dedupeCompletions([
+    ...(context.syntaxSnippets === false ? [] : vbscriptSyntaxSnippetCompletions(context.locale)),
     ...builtinCompletions(context.locale),
     ...visibleSymbols(parsed, sourceOffset, symbols).map((symbol) =>
       symbolToCompletion(symbol, context.locale),

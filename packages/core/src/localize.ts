@@ -39,6 +39,7 @@ export type LocalizeKey =
   | "vb.symbol.owner"
   | "vb.symbol.scope"
   | "vb.completion.builtinLabel"
+  | "vb.completion.syntaxSnippet"
   | "vb.completion.definedIn"
   | "vb.completion.memberDocumentation"
   | "vb.diagnostic.undeclared"
@@ -114,6 +115,7 @@ const en: Record<LocalizeKey, string> = {
   "vb.symbol.owner": " of {owner}",
   "vb.symbol.scope": " in {scope}",
   "vb.completion.builtinLabel": "built-in",
+  "vb.completion.syntaxSnippet": "VBScript syntax snippet",
   "vb.completion.definedIn": "Defined in {uri}.",
   "vb.completion.memberDocumentation": "{kind} {type}.{member}{suffix}",
   "vb.diagnostic.undeclared": "'{name}' is not declared under Option Explicit.",
@@ -196,6 +198,7 @@ const ja: Record<LocalizeKey, string> = {
   "vb.symbol.owner": " ({owner} のメンバー)",
   "vb.symbol.scope": " ({scope} 内)",
   "vb.completion.builtinLabel": "built-in",
+  "vb.completion.syntaxSnippet": "VBScript 構文スニペット",
   "vb.completion.definedIn": "{uri} で定義されています。",
   "vb.completion.memberDocumentation": "{type}.{member}{suffix} の {kind}",
   "vb.diagnostic.undeclared": "'{name}' は Option Explicit のもとで宣言されていません。",

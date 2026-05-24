@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { CompletionItemKind, InsertTextFormat } from "vscode-languageserver-types";
 
 interface JsonRpcMessage {
   id?: number;
@@ -86,6 +87,59 @@ describe(
           position: { line: 1, character: 9 },
         });
         expect(JSON.stringify(completions)).toContain("Write");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("returns configurable VBScript syntax snippet completions over JSON-RPC", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+
+        const uri = "file:///tmp/vbscript-syntax-snippets.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<% Option Explicit
+
+%>`,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: { line: 1, character: 0 },
+        });
+        const ifSnippet = completionItems(completions).find((item) => item.label === "If Then");
+        expect(ifSnippet).toMatchObject({
+          kind: CompletionItemKind.Snippet,
+          insertTextFormat: InsertTextFormat.Snippet,
+        });
+        expect(String(ifSnippet?.insertText)).toContain("End If");
+
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { vbscript: { syntaxSnippets: false } } },
+        });
+        const disabledCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: { line: 1, character: 0 },
+        });
+        const disabledLabels = completionLabels(disabledCompletions);
+        expect(disabledLabels).not.toContain("If Then");
+        expect(disabledLabels).toContain("Response");
+        expect(disabledLabels).toContain("Dim");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -5111,12 +5165,18 @@ function tokenMatches(
 }
 
 function completionLabels(completions: unknown): string[] {
+  return completionItems(completions)
+    .map((item) => (item as { label?: unknown }).label)
+    .filter((label): label is string => typeof label === "string");
+}
+
+function completionItems(completions: unknown): Array<Record<string, unknown>> {
   const items = Array.isArray(completions)
     ? completions
     : ((completions as { items?: unknown[] }).items ?? []);
-  return items
-    .map((item) => (item as { label?: unknown }).label)
-    .filter((label): label is string => typeof label === "string");
+  return items.filter(
+    (item): item is Record<string, unknown> => item !== null && typeof item === "object",
+  );
 }
 
 async function waitForDiagnosticsContaining(
