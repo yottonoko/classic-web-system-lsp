@@ -357,6 +357,103 @@ describe("VS Code extension package", () => {
     );
   });
 
+  it("highlights VBScript documentation comments and type annotations", () => {
+    type GrammarPattern = {
+      begin?: string;
+      beginCaptures?: Record<string, { name?: string }>;
+      captures?: Record<string, { name?: string }>;
+      end?: string;
+      endCaptures?: Record<string, { name?: string }>;
+      include?: string;
+      match?: string;
+      name?: string;
+      patterns?: GrammarPattern[];
+    };
+    const grammar = JSON.parse(fs.readFileSync("syntaxes/vbscript.tmLanguage.json", "utf8")) as {
+      repository?: Record<string, { patterns?: GrammarPattern[] } & GrammarPattern>;
+    };
+    const vbPatterns = grammar.repository?.["vbscript-basic"]?.patterns ?? [];
+    const documentationIndex = vbPatterns.findIndex(
+      (pattern) => pattern.include === "#documentation-comment",
+    );
+    const annotationIndex = vbPatterns.findIndex(
+      (pattern) => pattern.include === "#annotation-comment",
+    );
+    const apostropheIndex = vbPatterns.findIndex(
+      (pattern) => pattern.name === "comment.line.apostrophe.vbscript",
+    );
+    expect(documentationIndex).toBeGreaterThan(-1);
+    expect(annotationIndex).toBeGreaterThan(-1);
+    expect(documentationIndex).toBeLessThan(apostropheIndex);
+    expect(annotationIndex).toBeLessThan(apostropheIndex);
+
+    const documentation = grammar.repository?.["documentation-comment"];
+    expect(documentation?.begin).toContain("'''");
+    expect(documentation?.beginCaptures?.["1"]?.name).toBe("comment.line.documentation.vbscript");
+    expect(documentation?.patterns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ include: "#documentation-tag" }),
+        expect.objectContaining({ include: "#documentation-entity" }),
+        expect.objectContaining({ name: "string.unquoted.documentation.vbscript" }),
+      ]),
+    );
+
+    const tag = grammar.repository?.["documentation-tag"];
+    expect(new RegExp(tag?.begin ?? "").test("<summary")).toBe(true);
+    expect(new RegExp(tag?.begin ?? "").test("</summary")).toBe(true);
+    expect(tag?.beginCaptures?.["2"]?.name).toBe("entity.name.tag.documentation.vbscript");
+    expect(tag?.endCaptures?.["1"]?.name).toBe("punctuation.definition.tag.documentation.vbscript");
+    const attribute = tag?.patterns?.find((pattern) =>
+      pattern.captures?.["1"]?.name?.includes("attribute-name"),
+    );
+    expect(new RegExp(attribute?.match ?? "").test('name="first"')).toBe(true);
+    expect(new RegExp(attribute?.match ?? "").test('cref="BuildName"')).toBe(true);
+    expect(attribute?.captures?.["1"]?.name).toBe(
+      "entity.other.attribute-name.documentation.vbscript",
+    );
+    expect(attribute?.captures?.["3"]?.name).toBe("string.quoted.documentation.vbscript");
+    expect(
+      new RegExp(grammar.repository?.["documentation-entity"]?.match ?? "").test("&amp;"),
+    ).toBe(true);
+
+    const annotation = grammar.repository?.["annotation-comment"];
+    expect(annotation?.beginCaptures?.["1"]?.name).toBe("comment.line.annotation.vbscript");
+    const annotationPatterns = annotation?.patterns ?? [];
+    const caseInsensitivePattern = (match: string | undefined) =>
+      new RegExp((match ?? "").replace("(?i)", ""), "i");
+    const typePattern = annotationPatterns.find((pattern) => pattern.match?.includes("@type"));
+    const paramPattern = annotationPatterns.find((pattern) => pattern.match?.includes("@param"));
+    const returnsWithProcedurePattern = annotationPatterns.find((pattern) =>
+      pattern.match?.includes("@returns"),
+    );
+    const returnsTypePattern = annotationPatterns.find(
+      (pattern) =>
+        pattern.match?.includes("@returns") && pattern.captures?.["2"]?.name?.includes("type"),
+    );
+    const memberPattern = annotationPatterns.find((pattern) => pattern.match?.includes("@member"));
+    expect(caseInsensitivePattern(typePattern?.match).test("@type customerId As Long")).toBe(true);
+    expect(
+      caseInsensitivePattern(paramPattern?.match).test("@param BuildName.first As String"),
+    ).toBe(true);
+    expect(
+      caseInsensitivePattern(returnsWithProcedurePattern?.match).test("@returns BuildName String"),
+    ).toBe(true);
+    expect(caseInsensitivePattern(returnsTypePattern?.match).test("@returns String")).toBe(true);
+    expect(
+      caseInsensitivePattern(memberPattern?.match).test("@member Customer.Name As String"),
+    ).toBe(true);
+    for (const pattern of [
+      typePattern,
+      paramPattern,
+      returnsWithProcedurePattern,
+      returnsTypePattern,
+      memberPattern,
+    ]) {
+      expect(pattern?.captures?.["1"]?.name).toBe("keyword.other.annotation.vbscript");
+      expect(JSON.stringify(pattern?.captures)).not.toContain("comment.line");
+    }
+  });
+
   it("describes the COM type catalog schema for settings UI", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       contributes?: {
