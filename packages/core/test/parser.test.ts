@@ -1312,6 +1312,188 @@ Name = "Ada"
     ).toBe(true);
   });
 
+  it("localizes built-in function documentation and parameter help", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim datePartValue
+datePartValue = DatePart("yyyy", Date())
+%>`,
+    );
+    const datePartOffset = parsed.text.indexOf("DatePart");
+    const hoverEn = getVbscriptHover(parsed, positionAt(parsed.text, datePartOffset), {
+      locale: "en",
+    });
+    const hoverJa = getVbscriptHover(parsed, positionAt(parsed.text, datePartOffset), {
+      locale: "ja",
+    });
+    expect(hoverEn).toContain("Returns the requested interval part");
+    expect(hoverEn).toContain("**Parameters**");
+    expect(hoverEn).toContain("`interval`: Interval code");
+    expect(hoverEn).toContain("**Returns**");
+    expect(hoverJa).toContain("date expression から指定した interval part");
+    expect(hoverJa).toContain("**パラメーター**");
+    expect(hoverJa).toContain("`interval`: 返す interval code");
+    expect(hoverJa).toContain("date の指定部分");
+
+    const signature = getVbscriptSignatureHelp(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf('DatePart("yyyy"') + 'DatePart("yyyy"'.length),
+      { locale: "en" },
+    );
+    expect(signature).toEqual(
+      expect.objectContaining({
+        signatures: [
+          expect.objectContaining({
+            documentation: expect.stringContaining("Returns the requested interval part"),
+            parameters: [
+              expect.objectContaining({ documentation: expect.stringContaining("Interval code") }),
+              expect.objectContaining({ documentation: "Date expression to evaluate." }),
+              expect.objectContaining({
+                documentation: expect.stringContaining("first day of the week"),
+              }),
+              expect.objectContaining({
+                documentation: expect.stringContaining("first week of the year"),
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+
+    const completion = getVbscriptCompletions(
+      parsed,
+      { line: 1, character: 0 },
+      { locale: "ja" },
+    ).find((item) => item.label === "DatePart");
+    const resolved = resolveVbscriptCompletionItem(completion!, parsed, { locale: "ja" });
+    expect(String(resolved.documentation)).toContain("**パラメーター**");
+    expect(String(resolved.documentation)).toContain("date の指定部分");
+  });
+
+  it("localizes ASP and ADO member documentation and parameter help", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim rs, rows, fieldType
+Set rs = Server.CreateObject("ADODB.Recordset")
+Response.Buffer = True
+Server.Execute("next.asp")
+rows = rs.GetRows(10, 0)
+fieldType = adInteger
+Response.
+Server.
+rs.
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const bufferHover = getVbscriptHover(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("Buffer")),
+      { symbols, locale: "ja" },
+    );
+    expect(bufferHover).toContain("page output を buffer");
+    expect(bufferHover).toContain("**値**");
+    expect(bufferHover).toContain("html tag より前");
+
+    const responseCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("Response.") + "Response.".length),
+      { symbols },
+    );
+    const bufferCompletion = responseCompletions.find((item) => item.label === "Buffer");
+    expect(
+      String(
+        resolveVbscriptCompletionItem(bufferCompletion!, parsed, {
+          symbols,
+          locale: "en",
+        }).documentation,
+      ),
+    ).toContain("Controls whether ASP buffers page output");
+
+    const serverCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("Server.") + "Server.".length),
+      { symbols },
+    );
+    const executeCompletion = serverCompletions.find((item) => item.label === "Execute");
+    expect(
+      String(
+        resolveVbscriptCompletionItem(executeCompletion!, parsed, {
+          symbols,
+          locale: "ja",
+        }).documentation,
+      ),
+    ).toContain("別の ASP page を実行");
+
+    const executeSignature = getVbscriptSignatureHelp(
+      parsed,
+      positionAt(
+        parsed.text,
+        parsed.text.indexOf('Server.Execute("next.asp"') + "Server.Execute(".length,
+      ),
+      { symbols, locale: "en" },
+    );
+    expect(executeSignature?.signatures[0]).toEqual(
+      expect.objectContaining({
+        documentation: expect.stringContaining("Runs another ASP page"),
+        parameters: [
+          expect.objectContaining({
+            label: "path",
+            documentation: "Relative or absolute path of the ASP page to execute.",
+          }),
+        ],
+      }),
+    );
+
+    const getRowsSignature = getVbscriptSignatureHelp(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("rs.GetRows(10,") + "rs.GetRows(10,".length),
+      { symbols, locale: "ja" },
+    );
+    expect(getRowsSignature?.signatures[0]).toEqual(
+      expect.objectContaining({
+        documentation: expect.stringContaining("2 次元 array"),
+        parameters: [
+          expect.objectContaining({
+            label: "rows",
+            documentation: "取得する records 数です。省略すると Recordset の残りを取得します。",
+          }),
+          expect.objectContaining({
+            label: "start",
+            documentation: "copy を開始する record number または bookmark です。",
+          }),
+          expect.objectContaining({
+            label: "fields",
+            documentation: "含める field name/number、または field names/numbers の array です。",
+          }),
+        ],
+      }),
+    );
+
+    const adIntegerHover = getVbscriptHover(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("adInteger")),
+      { symbols, locale: "ja" },
+    );
+    expect(adIntegerHover).toContain("32-bit signed integer value");
+    expect(adIntegerHover).toContain("**値**");
+    const adIntegerCompletion = getVbscriptCompletions(
+      parsed,
+      { line: 1, character: 0 },
+      {
+        symbols,
+        locale: "en",
+      },
+    ).find((item) => item.label === "adInteger");
+    expect(
+      String(
+        resolveVbscriptCompletionItem(adIntegerCompletion!, parsed, { symbols, locale: "en" })
+          .documentation,
+      ),
+    ).toContain("ADO data type constant for a 32-bit signed integer value.");
+  });
+
   it("uses triple-quote XML documentation comments for hover, resolve and signature help", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
