@@ -4195,7 +4195,7 @@ function indexWorkspaceRoot(root: string): void {
     return;
   }
   const visit = (dir: string): void => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of readDirectoryEntries(dir)) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!isExcludedWorkspaceDirectory(entry.name, fullPath)) {
@@ -5352,7 +5352,7 @@ function collectWorkspaceScriptFiles(root: string): string[] {
     return cached.files;
   }
   const visit = (dir: string): void => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of readDirectoryEntries(dir)) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!isExcludedWorkspaceDirectory(entry.name, fullPath)) {
@@ -5372,6 +5372,14 @@ function collectWorkspaceScriptFiles(root: string): string[] {
     files: result,
   });
   return result;
+}
+
+function readDirectoryEntries(dir: string): fs.Dirent[] {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
 }
 
 function scriptKindForFileName(fileName: string): ts.ScriptKind {
