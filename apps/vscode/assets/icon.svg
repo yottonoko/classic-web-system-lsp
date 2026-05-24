@@ -1,9 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Classic ASP LSP">
-  <rect width="128" height="128" rx="24" fill="#27243f"/>
-  <path d="M28 38h72v52H28z" fill="#f9fafb"/>
-  <path d="M28 38h72v12H28z" fill="#6f5bd5"/>
-  <path d="M43 66 32 76l11 10" fill="none" stroke="#6f5bd5" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M85 66 96 76 85 86" fill="none" stroke="#6f5bd5" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M58 91 70 61" fill="none" stroke="#18a999" stroke-width="7" stroke-linecap="round"/>
-  <path d="M52 24h24v14H52z" fill="#18a999"/>
+  <defs>
+    <linearGradient id="background" x1="18" y1="10" x2="112" y2="121" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#101827"/>
+      <stop offset="1" stop-color="#242153"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="30" y1="26" x2="102" y2="103" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#background)"/>
+  <path d="M96 8h24v52L70 120H44L96 8z" fill="#8b5cf6" opacity=".18"/>
+  <path d="M26 90 46 108h54c8 0 14-6 14-14V63L92 90H26z" fill="#22d3ee" opacity=".12"/>
+  <path d="M22 36c0-8 6-14 14-14h56c8 0 14 6 14 14v56c0 8-6 14-14 14H36c-8 0-14-6-14-14V36z" fill="#111a2e" stroke="url(#accent)" stroke-width="4"/>
+  <path d="M38 38 29 47l9 9" fill="none" stroke="#22d3ee" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M90 38 99 47 90 56" fill="none" stroke="#a78bfa" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="27" y="56" width="74" height="34" rx="10" fill="#f8fafc"/>
+  <text x="64" y="82" fill="#111827" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="900" letter-spacing="0" text-anchor="middle">ASP</text>
+  <text x="64" y="103" fill="#67e8f9" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="800" letter-spacing="0" text-anchor="middle">&lt;% %&gt;</text>
 </svg>
