@@ -1748,6 +1748,50 @@ currencyValue = 1
     ).toBe(false);
   });
 
+  it("keeps VBScript object inference after Set Nothing assignments", () => {
+    const source = `<%
+Class Customer
+  Public Name
+End Class
+Sub Demo()
+  Dim a
+  Set a = New Customer
+  Set a = Nothing
+  a.Name
+End Sub
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const variable = symbols.find((symbol) => symbol.name === "a" && symbol.scopeName === "Demo");
+
+    expect(variable?.typeName).toBe("Customer | Nothing");
+
+    expect(
+      getVbscriptCompletions(parsed, positionAt(source, source.indexOf("a.Name") + "a.".length), {
+        symbols,
+      }).some((item) => item.label === "Name"),
+    ).toBe(true);
+    expect(
+      getVbscriptTypeDefinition(parsed, positionAt(source, source.indexOf("a.Name")), {
+        symbols,
+      })?.name,
+    ).toBe("Customer");
+
+    const hints = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      { symbols },
+    );
+    expect(hints.some((hint) => hint.label === " As Customer | Nothing")).toBe(true);
+
+    const typeCodes = analyzeVbscript(parsed, { symbols, typeChecking: "strict" })
+      .diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-type")
+      .map((diagnostic) => diagnostic.code);
+    expect(typeCodes).not.toContain("setScalar");
+    expect(typeCodes).not.toContain("typeMismatch");
+    expect(typeCodes).not.toContain("missingMember");
+  });
+
   it("infers and checks VBScript union types", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
