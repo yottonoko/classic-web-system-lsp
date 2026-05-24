@@ -143,6 +143,45 @@ Response.Write name
     expect(parsed.regions.some((region) => region.kind === "asp-expression")).toBe(true);
   });
 
+  it("masks inline ASP inside JavaScript regions with source-map stable placeholders", () => {
+    const source = `<script>const value = <%= serverValue %>;
+const label = "<%= serverLabel %>";
+const dynamic = <% Response.Write clientValue %>;</script>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    const javascript = docs.get("javascript");
+    expect(javascript?.text).toContain("const value = 0");
+    expect(javascript?.text).toContain('const label = "0');
+    expect(javascript?.text).toContain("const dynamic = 0");
+    expect(javascript?.text).not.toContain("serverValue");
+    expect(javascript?.text).not.toContain("Response.Write");
+    expect(javascript?.text).toHaveLength(
+      source.slice(source.indexOf(">") + 1, source.lastIndexOf("</script>")).length + 1,
+    );
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(2);
+    expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(1);
+  });
+
+  it("masks inline ASP inside CSS values and style attributes", () => {
+    const source = `<style>.x { color: <%= themeColor %>; width: <% Response.Write width %>px; }</style>
+<div style="color: <%= themeColor %>; background: red"></div>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    const css = docs.get("css")?.text ?? "";
+    expect(css).toContain(".x { color: x");
+    expect(css).toContain("width: x");
+    expect(css).toContain("__asp_lsp__{color: x");
+    expect(css).not.toContain("themeColor");
+    expect(css).not.toContain("Response.Write");
+    expect(
+      parsed.regions.some(
+        (region) => region.kind === "style-attribute" && region.language === "css",
+      ),
+    ).toBe(true);
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(2);
+    expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(1);
+  });
+
   it("extracts inline style attributes as CSS virtual documents", () => {
     const source = `<div style="color: red; display: block"></div>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);

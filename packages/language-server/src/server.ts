@@ -4703,6 +4703,7 @@ function cssFormattingEdits(
       (region) =>
         region.language === "css" && region.contentEnd > spanStart && region.contentStart < spanEnd,
     )
+    .filter((region) => !regionHasNestedAsp(parsed, region))
     .flatMap((region) => formatCssRegion(text, region, options, spanStart, spanEnd));
 }
 
@@ -4750,7 +4751,20 @@ function javaScriptFormattingEdits(
         region.contentEnd > spanStart &&
         region.contentStart < spanEnd,
     )
+    .filter((region) => !regionHasNestedAsp(parsed, region))
     .flatMap((region) => formatJavaScriptRegion(text, region, options, spanStart, spanEnd));
+}
+
+function regionHasNestedAsp(parsed: AspParsedDocument, owner: AspRegion): boolean {
+  return parsed.regions.some(
+    (region) =>
+      region !== owner &&
+      (region.kind === "asp-block" ||
+        region.kind === "asp-expression" ||
+        region.kind === "asp-directive") &&
+      region.start >= owner.contentStart &&
+      region.end <= owner.contentEnd,
+  );
 }
 
 function formatJavaScriptRegion(

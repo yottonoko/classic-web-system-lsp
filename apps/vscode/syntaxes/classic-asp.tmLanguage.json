@@ -9,6 +9,15 @@
     { "include": "#asp-block" },
     { "include": "text.html.basic" }
   ],
+  "injections": {
+    "source.css, source.js": {
+      "patterns": [
+        { "include": "#asp-expression" },
+        { "include": "#asp-directive" },
+        { "include": "#asp-block" }
+      ]
+    }
+  },
   "repository": {
     "asp-include": {
       "name": "comment.block.html meta.include.asp",

@@ -87,13 +87,89 @@ function maskNestedRegions(
     }
     const start = Math.max(0, nested.start - owner.contentStart);
     const end = Math.min(chars.length, nested.end - owner.contentStart);
-    for (let index = start; index < end; index += 1) {
-      if (chars[index] !== "\n" && chars[index] !== "\r") {
-        chars[index] = " ";
-      }
-    }
+    const mask = nestedRegionMask(sourceText, owner, nested, languageId).split("");
+    chars.splice(start, end - start, ...mask);
   }
   return chars.join("");
+}
+
+function nestedRegionMask(
+  sourceText: string,
+  owner: AspRegion,
+  nested: AspRegion,
+  languageId: AspEmbeddedLanguage,
+): string {
+  if (
+    nested.kind !== "asp-block" &&
+    nested.kind !== "asp-expression" &&
+    nested.kind !== "asp-directive"
+  ) {
+    return preserveLineEndings(sourceText.slice(nested.start, nested.end), " ");
+  }
+  if (languageId === "css") {
+    return preserveLineEndings(sourceText.slice(nested.start, nested.end), "x");
+  }
+  if (languageId === "javascript" || languageId === "jscript") {
+    return javascriptAspMask(sourceText, owner, nested);
+  }
+  return preserveLineEndings(sourceText.slice(nested.start, nested.end), " ");
+}
+
+function javascriptAspMask(sourceText: string, owner: AspRegion, nested: AspRegion): string {
+  if (
+    nested.kind === "asp-block" &&
+    !javascriptBlockNeedsValuePlaceholder(sourceText, owner, nested)
+  ) {
+    return preserveLineEndings(sourceText.slice(nested.start, nested.end), " ");
+  }
+  return firstValuePlaceholder(sourceText.slice(nested.start, nested.end), "0");
+}
+
+function javascriptBlockNeedsValuePlaceholder(
+  sourceText: string,
+  owner: AspRegion,
+  nested: AspRegion,
+): boolean {
+  const previous = previousSignificantChar(sourceText, owner.contentStart, nested.start);
+  return previous !== undefined && /=|\(|\[|,|:|\?|!|~|\+|-|\*|\/|%|&|\||\^|<|>/.test(previous);
+}
+
+function previousSignificantChar(
+  sourceText: string,
+  start: number,
+  end: number,
+): string | undefined {
+  for (let index = end - 1; index >= start; index -= 1) {
+    const char = sourceText[index];
+    if (char && !/\s/.test(char)) {
+      return char;
+    }
+  }
+  return undefined;
+}
+
+function firstValuePlaceholder(text: string, valueChar: string): string {
+  let placed = false;
+  return text
+    .split("")
+    .map((char) => {
+      if (char === "\n" || char === "\r") {
+        return char;
+      }
+      if (!placed) {
+        placed = true;
+        return valueChar;
+      }
+      return " ";
+    })
+    .join("");
+}
+
+function preserveLineEndings(text: string, fill: string): string {
+  return text
+    .split("")
+    .map((char) => (char === "\n" || char === "\r" ? char : fill))
+    .join("");
 }
 
 function buildMaskedDocument(

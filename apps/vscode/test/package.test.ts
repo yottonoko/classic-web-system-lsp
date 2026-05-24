@@ -258,6 +258,7 @@ describe("VS Code extension package", () => {
       fs.readFileSync("syntaxes/classic-asp.tmLanguage.json", "utf8"),
     ) as {
       patterns?: Array<{ include?: string }>;
+      injections?: Record<string, { patterns?: Array<{ include?: string }> }>;
       repository?: Record<
         string,
         { begin?: string; patterns?: Array<{ include?: string; match?: string }> }
@@ -277,6 +278,12 @@ describe("VS Code extension package", () => {
         (pattern) => pattern.include === "source.vbscript",
       ),
     ).toBe(true);
+    expect(classicAspGrammar.injections?.["source.css, source.js"]?.patterns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ include: "#asp-expression" }),
+        expect.objectContaining({ include: "#asp-block" }),
+      ]),
+    );
   });
 
   it("describes the COM type catalog schema for settings UI", () => {

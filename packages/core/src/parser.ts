@@ -492,7 +492,19 @@ function scanHtmlAndAsp(
       continue;
     }
     if (!tag.closing) {
-      tagRegions.push(...styleAttributeRegionsFromTag(tag));
+      const styleAttributeRegions = styleAttributeRegionsFromTag(tag);
+      tagRegions.push(...styleAttributeRegions);
+      for (const region of styleAttributeRegions) {
+        inlineRegions.push(
+          ...scanAspRegionsInRange(
+            text,
+            region.contentStart,
+            region.contentEnd,
+            diagnostics,
+            settings,
+          ),
+        );
+      }
     }
     if ((tag.name === "script" || tag.name === "style") && !tag.closing && !tag.selfClosing) {
       const close = findElementClose(text, tag.name, tag.end);

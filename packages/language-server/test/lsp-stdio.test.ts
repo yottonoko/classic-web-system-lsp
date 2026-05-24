@@ -924,6 +924,75 @@ function boot() {
       }
     });
 
+    it("keeps ASP delimiters inside CSS and JavaScript from producing embedded diagnostics", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
+        });
+
+        const uri = "file:///tmp/embedded-asp-islands.asp";
+        const source = `<style>
+.card-<%= className %> { color: <%= themeColor %>; width: <% Response.Write width %>px; }
+</style>
+<div style="color: <%= themeColor %>; background: red"></div>
+<script>
+const clientValue = <%= serverValue %>;
+const label = "<%= serverLabel %>";
+const fromServer = <% Response.Write clientValue %>;
+console.log(label, fromServer, client, document.querySelector(".card"));
+</script>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const pulled = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        const serialized = JSON.stringify(pulled);
+        expect(serialized).not.toContain("asp-lsp-css");
+        expect(serialized).not.toContain("asp-lsp-typescript");
+
+        const cssCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("backg") + "backg".length),
+        });
+        expect(completionLabels(cssCompletions)).toContain("background");
+
+        const jsCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(
+            source,
+            source.indexOf("client", source.indexOf("console.log")) + "client".length,
+          ),
+        });
+        expect(completionLabels(jsCompletions)).toContain("clientValue");
+
+        const aspCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("Response.") + "Response.".length),
+        });
+        expect(completionLabels(aspCompletions)).toContain("Write");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("debounces diagnostics after rapid text changes and publishes only the latest version", async () => {
       const server = new RpcServer();
       try {
@@ -3682,6 +3751,28 @@ End If
         expect(fullText).toContain("  Response.Write");
         expect(fullText).toContain(".x {");
         expect(fullText).toContain("color: red");
+
+        const islandUri = "file:///tmp/format-embedded-asp-islands.asp";
+        const islandSource = `<style>.x{color:<%= themeColor %>;width:<% Response.Write width %>px}</style>
+<div style="color:<%= themeColor %>;background:red"></div>
+<script>const value=<%= serverValue %>;const dynamic=<% Response.Write clientValue %>;</script>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: islandUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: islandSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const islandEdits = await server.request("textDocument/formatting", {
+          textDocument: { uri: islandUri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const islandText = (islandEdits as Array<{ newText?: string }>)[0]?.newText ?? islandSource;
+        expect(islandText).toContain("<%= themeColor %>");
+        expect(islandText).toContain("<% Response.Write width %>");
+        expect(islandText).toContain("<% Response.Write clientValue %>");
 
         const rangeEdits = await server.request("textDocument/rangeFormatting", {
           textDocument: { uri },
