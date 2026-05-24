@@ -1285,6 +1285,58 @@ both.OnlyFirst
     ).toBe(false);
   });
 
+  it("falls back unknown VBScript types to Variant and marks global variables", () => {
+    const source = `<%
+Dim rowClass
+rowClass = "customer-row"
+rowClass = 1
+Dim unknownGlobal
+Const UnknownConst = MissingValue
+Function UnknownReturn()
+End Function
+Sub Render()
+  Dim localValue
+End Sub
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.find((symbol) => symbol.name === "rowClass")?.typeName).toBe("String | Number");
+    expect(symbols.find((symbol) => symbol.name === "unknownGlobal")?.typeName).toBe("Variant");
+    expect(symbols.find((symbol) => symbol.name === "UnknownConst")?.typeName).toBe("Variant");
+    expect(symbols.find((symbol) => symbol.name === "UnknownReturn")?.typeName).toBe("Variant");
+    expect(
+      symbols.find((symbol) => symbol.name === "localValue" && symbol.scopeName === "Render")
+        ?.typeName,
+    ).toBe("Variant");
+
+    const hints = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      { symbols },
+    );
+    expect(hints.some((hint) => hint.label === " (global) As String | Number")).toBe(true);
+    expect(hints.some((hint) => hint.label === " (global) As Variant")).toBe(true);
+    expect(
+      hints.some(
+        (hint) =>
+          hint.label === " As Variant" &&
+          hint.position.line === positionAt(source, source.indexOf("localValue")).line,
+      ),
+    ).toBe(true);
+
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
+    ).toContain("VBScript variable (global).");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("UnknownConst")), { symbols }),
+    ).toContain("VBScript constant (global).");
+    expect(
+      analyzeVbscript(parsed, { symbols, typeChecking: "strict" }).diagnostics.some(
+        (diagnostic) => diagnostic.source === "asp-lsp-vbscript-type",
+      ),
+    ).toBe(false);
+  });
+
   it("creates implicit variables without Option Explicit for hover, inlay and semantic tokens", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -1297,7 +1349,7 @@ Response.Write a
     const implicit = symbols.find((symbol) => symbol.name === "a");
     expect(implicit).toEqual(expect.objectContaining({ implicit: true, typeName: "Number" }));
     expect(getVbscriptHover(parsed, { line: 1, character: 0 }, { symbols })).toContain(
-      "Implicit VBScript variable.",
+      "Implicit VBScript variable (global).",
     );
     expect(
       getVbscriptInlayHints(
@@ -1306,7 +1358,9 @@ Response.Write a
         { symbols },
       ).some(
         (hint) =>
-          hint.label === " As Number" && hint.paddingLeft === false && hint.paddingRight === true,
+          hint.label === " (global) As Number" &&
+          hint.paddingLeft === false &&
+          hint.paddingRight === true,
       ),
     ).toBe(true);
     expect(

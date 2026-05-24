@@ -1609,7 +1609,7 @@ export function getVbscriptHover(
     return undefined;
   }
   return appendDocumentationMarkdown(
-    markdownHover(vbscriptHoverSignature(symbol), vbscriptHoverDescription(symbol)),
+    markdownHover(vbscriptHoverSignature(symbol), vbscriptHoverDescription(parsed, symbol)),
     symbol.documentation,
     context.locale,
   );
@@ -1679,9 +1679,16 @@ function parameterModeKeyword(mode: VbParameterMode): "ByRef" | "ByVal" {
   return mode === "byval" ? "ByVal" : "ByRef";
 }
 
-function vbscriptHoverDescription(symbol: VbSymbol): string {
+function vbscriptHoverDescription(parsed: AspParsedDocument, symbol: VbSymbol): string {
   if (symbol.implicit) {
-    return "Implicit VBScript variable.";
+    return isGlobalVariableLikeSymbol(parsed, symbol)
+      ? "Implicit VBScript variable (global)."
+      : "Implicit VBScript variable.";
+  }
+  if (isGlobalVariableLikeSymbol(parsed, symbol)) {
+    return symbol.kind === "constant"
+      ? "VBScript constant (global)."
+      : "VBScript variable (global).";
   }
   const kindDescription =
     symbol.kind === "class"
@@ -2152,14 +2159,14 @@ export function getVbscriptInlayHints(
         symbol.sourceUri !== parsed.uri ||
         !["variable", "parameter", "constant", "field"].includes(symbol.kind) ||
         !symbol.typeName ||
-        isLooseType(symbol.typeName) ||
+        isHiddenInlayType(symbol.typeName) ||
         !rangeOverlapsOffsets(parsed.text, symbol.range, rangeStart, rangeEnd)
       ) {
         continue;
       }
       hints.push({
         position: symbol.range.end,
-        label: ` As ${symbol.typeName}`,
+        label: `${globalInlayPrefix(parsed, symbol)} As ${symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: false,
         paddingRight: true,
@@ -2173,7 +2180,7 @@ export function getVbscriptInlayHints(
         symbol.sourceUri !== parsed.uri ||
         !["function", "property"].includes(symbol.kind) ||
         !symbol.typeName ||
-        isLooseType(symbol.typeName) ||
+        isHiddenInlayType(symbol.typeName) ||
         !rangeOverlapsOffsets(parsed.text, symbol.range, rangeStart, rangeEnd)
       ) {
         continue;
@@ -2308,6 +2315,23 @@ function declarationCloseParenEnd(text: string, nameEnd: number): number | undef
   return undefined;
 }
 
+function globalInlayPrefix(parsed: AspParsedDocument, symbol: VbSymbol): string {
+  return isGlobalVariableLikeSymbol(parsed, symbol) ? " (global)" : "";
+}
+
+function isGlobalVariableLikeSymbol(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
+  return (
+    symbol.sourceUri === parsed.uri &&
+    (symbol.kind === "variable" || symbol.kind === "constant") &&
+    !symbol.scopeName &&
+    !symbol.memberOf
+  );
+}
+
+function isHiddenInlayType(typeName: string): boolean {
+  return typeName.toLowerCase() === "unknown";
+}
+
 export function getVbscriptTypeDefinition(
   parsed: AspParsedDocument,
   position: Position,
@@ -2439,6 +2463,7 @@ export function collectVbscriptSymbols(
   applyTypeAnnotations(parsed, symbols);
   inferAssignedTypes(parsed, symbols, context);
   applyTypeAnnotations(parsed, symbols);
+  applyVariantFallbackTypes(symbols);
   return symbols;
 }
 
@@ -3455,6 +3480,25 @@ function applyTypeAnnotations(parsed: AspParsedDocument, symbols: VbSymbol[]): v
     );
     if (symbol) {
       setSymbolType(symbol, annotation.typeName, true);
+    }
+  }
+}
+
+function applyVariantFallbackTypes(symbols: VbSymbol[]): void {
+  for (const symbol of symbols) {
+    if (symbolTypeRef(symbol)) {
+      continue;
+    }
+    if (
+      symbol.kind === "variable" ||
+      symbol.kind === "constant" ||
+      symbol.kind === "field" ||
+      symbol.kind === "parameter" ||
+      symbol.kind === "function" ||
+      symbol.kind === "property" ||
+      (symbol.kind === "method" && symbol.procedureKind !== "sub")
+    ) {
+      setSymbolType(symbol, "Variant");
     }
   }
 }

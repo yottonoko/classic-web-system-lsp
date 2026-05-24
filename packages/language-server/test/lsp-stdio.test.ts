@@ -1656,7 +1656,7 @@ Response.Write a
           textDocument: { uri },
           position: { line: 1, character: 0 },
         });
-        expect(JSON.stringify(hover)).toContain("Implicit VBScript variable.");
+        expect(JSON.stringify(hover)).toContain("Implicit VBScript variable (global).");
 
         const inlayHints = await server.request("textDocument/inlayHint", {
           textDocument: { uri },
@@ -1704,6 +1704,9 @@ Class SecondThing
 End Class
 x = 1
 x = "a"
+Dim unknownGlobal
+Function UnknownReturn()
+End Function
 Dim both
 Set both = New FirstThing
 Set both = New SecondThing
@@ -1733,12 +1736,16 @@ both.SharedName
           position: positionAt(source, source.indexOf("x = 1")),
         });
         expect(JSON.stringify(hover)).toContain("Number | String");
+        expect(JSON.stringify(hover)).toContain("variable (global)");
 
         const inlayHints = await server.request("textDocument/inlayHint", {
           textDocument: { uri },
-          range: { start: { line: 0, character: 0 }, end: { line: 15, character: 0 } },
+          range: { start: { line: 0, character: 0 }, end: { line: 20, character: 0 } },
         });
-        expect(JSON.stringify(inlayHints)).toContain("As Number | String");
+        const serializedInlayHints = JSON.stringify(inlayHints);
+        expect(serializedInlayHints).toContain("(global) As Number | String");
+        expect(serializedInlayHints).toContain("(global) As Variant");
+        expect(serializedInlayHints).toContain("As Variant");
 
         const completions = await server.request("textDocument/completion", {
           textDocument: { uri },
