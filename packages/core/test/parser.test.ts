@@ -587,6 +587,69 @@ Const knownValue = 1
     ).toBe(false);
   });
 
+  it("reports invalid VBScript procedure call syntax as errors", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Function Func1(hoge)
+  Func1 = hoge
+End Function
+Sub Func2(hoge, fuga)
+End Sub
+Call Func1 hoge
+Z = Func1 hoge
+Func2(hoge, fuga)
+Call Func2 hoge, fuga
+Z = Func2 hoge, fuga
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const syntaxDiagnostics = analyzeVbscript(parsed, {
+      symbols,
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+    expect(syntaxDiagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "callStatementRequiresParentheses",
+      "expressionCallRequiresParentheses",
+      "statementCallDisallowsParenthesizedArguments",
+      "callStatementRequiresParentheses",
+      "expressionCallRequiresParentheses",
+    ]);
+    expect(syntaxDiagnostics.map((diagnostic) => diagnostic.data?.newText)).toEqual([
+      "Call Func1(hoge)",
+      "Z = Func1(hoge)",
+      "Func2 hoge, fuga",
+      "Call Func2(hoge, fuga)",
+      "Z = Func2(hoge, fuga)",
+    ]);
+    expect(syntaxDiagnostics.every((diagnostic) => diagnostic.severity === 1)).toBe(true);
+  });
+
+  it("keeps valid VBScript procedure call syntax out of syntax diagnostics", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Function Func1(hoge)
+  Func1 = hoge
+End Function
+Sub Func2(hoge, fuga)
+End Sub
+Call Func1(hoge)
+Func1 hoge
+Z = Func1(hoge)
+Func2 hoge, fuga
+Call Func2(hoge, fuga)
+Response.Write("x")
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const syntaxDiagnostics = analyzeVbscript(parsed, {
+      symbols,
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+    expect(syntaxDiagnostics).toHaveLength(0);
+  });
+
   it("localizes VBScript declaration syntax diagnostics", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -598,6 +661,23 @@ Dim typed As Integer
     expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("As 型指定"))).toBe(
       true,
     );
+  });
+
+  it("localizes VBScript procedure call syntax diagnostics", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Function Func1(hoge)
+  Func1 = hoge
+End Function
+Call Func1 hoge
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const result = analyzeVbscript(parsed, { symbols, locale: "ja", unusedDiagnostics: false });
+    expect(
+      result.diagnostics.some((diagnostic) => diagnostic.message.includes("呼び出し構文")),
+    ).toBe(true);
   });
 
   it("does not report VBScript line continuation as undeclared", () => {

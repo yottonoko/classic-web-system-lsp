@@ -144,6 +144,11 @@ export interface VbSignature {
   returnType?: VbTypeRef;
 }
 
+type VbCallSyntaxDiagnosticCode =
+  | "callStatementRequiresParentheses"
+  | "expressionCallRequiresParentheses"
+  | "statementCallDisallowsParenthesizedArguments";
+
 export interface VbMember {
   name: string;
   kind: "field" | "property" | "method";
@@ -1708,6 +1713,7 @@ export function analyzeVbscript(
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const diagnostics: Diagnostic[] = [];
   diagnostics.push(...diagnoseDeclarationSyntax(parsed, context.locale));
+  diagnostics.push(...diagnoseCallSyntax(parsed, symbols, context.locale));
   const scriptText = getServerScriptText(parsed);
   if (/^\s*Option\s+Explicit\b/im.test(scriptText)) {
     diagnostics.push(...diagnoseUndeclaredVariables(parsed, symbols, context.locale));
@@ -4093,6 +4099,179 @@ function diagnoseDeclarationSyntax(
     }
   }
   return diagnostics;
+}
+
+function diagnoseCallSyntax(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+  locale: AspLocale | undefined,
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const statement of vbStatements(parsed)) {
+    const diagnostic = callSyntaxDiagnosticForStatement(parsed, statement, symbols, locale);
+    if (diagnostic) {
+      diagnostics.push(diagnostic);
+    }
+  }
+  return diagnostics;
+}
+
+function callSyntaxDiagnosticForStatement(
+  parsed: AspParsedDocument,
+  statement: VbToken[],
+  symbols: VbSymbol[],
+  locale: AspLocale | undefined,
+): Diagnostic | undefined {
+  if (lowerToken(statement[0]) === "call") {
+    return callKeywordSyntaxDiagnostic(parsed, statement, symbols, locale);
+  }
+  const assignment = assignmentCallWithoutParentheses(parsed, statement, symbols, locale);
+  if (assignment) {
+    return assignment;
+  }
+  return parenthesizedStatementCallDiagnostic(parsed, statement, symbols, locale);
+}
+
+function callKeywordSyntaxDiagnostic(
+  parsed: AspParsedDocument,
+  statement: VbToken[],
+  symbols: VbSymbol[],
+  locale: AspLocale | undefined,
+): Diagnostic | undefined {
+  const name = statement[1];
+  if (!name || name.kind !== "identifier" || statement[2]?.text === "(" || !statement[2]) {
+    return undefined;
+  }
+  const symbol = userDefinedProcedureSymbol(parsed, name.text, name.start, symbols);
+  if (!symbol) {
+    return undefined;
+  }
+  return callSyntaxDiagnostic(
+    parsed,
+    statement,
+    symbol.name,
+    "callStatementRequiresParentheses",
+    `${parsed.text.slice(statement[0].start, name.end)}(${callArgumentText(parsed, statement, 2)})`,
+    locale,
+  );
+}
+
+function assignmentCallWithoutParentheses(
+  parsed: AspParsedDocument,
+  statement: VbToken[],
+  symbols: VbSymbol[],
+  locale: AspLocale | undefined,
+): Diagnostic | undefined {
+  const equalsIndex = statement.findIndex((token) => token.text === "=");
+  const name = statement[equalsIndex + 1];
+  if (
+    equalsIndex < 1 ||
+    statement[0]?.kind !== "identifier" ||
+    !name ||
+    name.kind !== "identifier" ||
+    statement[equalsIndex + 2]?.text === "(" ||
+    !statement[equalsIndex + 2]
+  ) {
+    return undefined;
+  }
+  const symbol = userDefinedProcedureSymbol(parsed, name.text, name.start, symbols);
+  if (!symbol) {
+    return undefined;
+  }
+  return callSyntaxDiagnostic(
+    parsed,
+    statement,
+    symbol.name,
+    "expressionCallRequiresParentheses",
+    `${parsed.text.slice(statement[0].start, name.end)}(${callArgumentText(
+      parsed,
+      statement,
+      equalsIndex + 2,
+    )})`,
+    locale,
+  );
+}
+
+function parenthesizedStatementCallDiagnostic(
+  parsed: AspParsedDocument,
+  statement: VbToken[],
+  symbols: VbSymbol[],
+  locale: AspLocale | undefined,
+): Diagnostic | undefined {
+  const name = statement[0];
+  if (
+    !name ||
+    name.kind !== "identifier" ||
+    statement[1]?.text !== "(" ||
+    isNonCallStatementStart(name)
+  ) {
+    return undefined;
+  }
+  const closeIndex = matchingCloseParen(statement, 1);
+  if (closeIndex !== statement.length - 1) {
+    return undefined;
+  }
+  const argumentCount = countArguments(statement.slice(2, closeIndex));
+  if (argumentCount < 2) {
+    return undefined;
+  }
+  const symbol = userDefinedProcedureSymbol(parsed, name.text, name.start, symbols);
+  if (!symbol) {
+    return undefined;
+  }
+  return callSyntaxDiagnostic(
+    parsed,
+    statement,
+    symbol.name,
+    "statementCallDisallowsParenthesizedArguments",
+    `${parsed.text.slice(statement[0].start, statement[1].start)} ${parsed.text
+      .slice(statement[1].end, statement[closeIndex].start)
+      .trim()}`,
+    locale,
+  );
+}
+
+function callSyntaxDiagnostic(
+  parsed: AspParsedDocument,
+  statement: VbToken[],
+  name: string,
+  code: VbCallSyntaxDiagnosticCode,
+  newText: string,
+  locale: AspLocale | undefined,
+): Diagnostic {
+  const start = statement[0].start;
+  const end = statement.at(-1)?.end ?? statement[0].end;
+  return {
+    severity: DiagnosticSeverity.Error,
+    range: rangeFromOffsets(parsed.text, start, end),
+    message: createLocalizer(locale).t("vb.diagnostic.invalidCallSyntax", { name }),
+    code,
+    data: {
+      fixKind: "vbscriptCallSyntax",
+      name,
+      newText,
+    },
+    source: "asp-lsp-vbscript-syntax",
+  };
+}
+
+function callArgumentText(parsed: AspParsedDocument, statement: VbToken[], startIndex: number) {
+  return parsed.text
+    .slice(statement[startIndex].start, statement.at(-1)?.end ?? statement[startIndex].end)
+    .trim();
+}
+
+function userDefinedProcedureSymbol(
+  parsed: AspParsedDocument,
+  name: string,
+  offset: number,
+  symbols: VbSymbol[],
+): VbSymbol | undefined {
+  return visibleSymbols(parsed, offset, symbols).find(
+    (candidate) =>
+      candidate.name.toLowerCase() === name.toLowerCase() &&
+      (candidate.kind === "function" || candidate.kind === "sub"),
+  );
 }
 
 function topLevelToken(tokens: VbToken[], text: string): VbToken | undefined {
