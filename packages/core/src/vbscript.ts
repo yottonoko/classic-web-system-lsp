@@ -137,11 +137,13 @@ export interface VbSignatureParameter {
   type?: VbTypeRef;
   mode?: VbParameterMode;
   optional?: boolean;
+  documentation?: string;
 }
 
 export interface VbSignature {
   parameters: VbSignatureParameter[];
   returnType?: VbTypeRef;
+  documentation?: string;
 }
 
 export interface VbMember {
@@ -149,6 +151,7 @@ export interface VbMember {
   kind: "field" | "property" | "method" | "event";
   type?: VbTypeRef;
   signature?: VbSignature;
+  documentation?: string;
 }
 
 export interface VbType {
@@ -307,7 +310,7 @@ function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
             label: item.label,
             kind: CompletionItemKind.Function,
             detail: `Function ${item.signature} As ${item.returnType}`,
-            documentation: item.documentation,
+            documentation: builtinDocumentationMarkdown(item.documentation, locale),
           },
           locale,
         ),
@@ -319,19 +322,19 @@ function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
             label: item.label,
             kind: CompletionItemKind.Constant,
             detail: `Const ${item.label} As ${item.type}`,
-            documentation: item.documentation,
+            documentation: builtinDocumentationMarkdown(item.documentation, locale),
           },
           locale,
         ),
     ),
     ...classicAspRuntimeEvents.map(
-      (label): CompletionItem =>
+      (eventSpec): CompletionItem =>
         withBuiltinCompletionLabel(
           {
-            label,
+            label: eventSpec.label,
             kind: CompletionItemKind.Event,
-            detail: `Sub ${label}()`,
-            documentation: "Classic ASP global.asa runtime event.",
+            detail: `Sub ${eventSpec.label}()`,
+            documentation: builtinDocumentationMarkdown(eventSpec.documentation, locale),
           },
           locale,
         ),
@@ -365,31 +368,62 @@ function builtinDescription(name: string, locale: AspLocale | undefined): string
   }
   const builtin = builtinFunction(name);
   if (builtin) {
-    return markdownHover(
-      `Function ${builtin.signature} As ${builtin.returnType}`,
+    return appendBuiltinDocumentation(
+      markdownHover(`Function ${builtin.signature} As ${builtin.returnType}`),
       builtin.documentation,
+      locale,
     );
   }
   const constant = builtinConstant(name);
   if (constant) {
-    return markdownHover(`Const ${constant.label} As ${constant.type}`, constant.documentation);
+    return appendBuiltinDocumentation(
+      markdownHover(`Const ${constant.label} As ${constant.type}`),
+      constant.documentation,
+      locale,
+    );
   }
   const runtimeEvent = classicAspRuntimeEvents.find(
-    (item) => item.toLowerCase() === name.toLowerCase(),
+    (item) => item.label.toLowerCase() === name.toLowerCase(),
   );
   if (runtimeEvent) {
-    return markdownHover(`Sub ${runtimeEvent}()`, "Classic ASP global.asa runtime event.");
+    return appendBuiltinDocumentation(
+      markdownHover(`Sub ${runtimeEvent.label}()`),
+      runtimeEvent.documentation,
+      locale,
+    );
   }
   return undefined;
 }
 
 type VbBuiltinMemberKind = VbMember["kind"];
 
+type LocalizedText = {
+  en: string;
+  ja: string;
+};
+
+interface BuiltinParameterSpec {
+  name: string;
+  type?: string;
+  optional?: boolean;
+  documentation?: LocalizedText;
+}
+
+interface BuiltinDocumentationSpec {
+  summary?: LocalizedText;
+  remarks?: LocalizedText;
+  parameters?: Record<string, LocalizedText>;
+  returns?: LocalizedText;
+  value?: LocalizedText;
+}
+
 interface BuiltinMemberSpec {
   name: string;
   kind: VbBuiltinMemberKind;
   type?: string;
   signature?: string;
+  parameters?: BuiltinParameterSpec[];
+  documentation?: BuiltinDocumentationSpec;
 }
 
 interface BuiltinObjectSpec {
@@ -400,7 +434,7 @@ interface BuiltinObjectSpec {
 interface BuiltinConstant {
   label: string;
   type: string;
-  documentation: string;
+  documentation: BuiltinDocumentationSpec;
 }
 
 const classicAspObjectCatalog: Record<string, BuiltinObjectSpec> = {
@@ -1034,26 +1068,637 @@ const builtinConstants: BuiltinConstant[] = [
 ].map((label) => ({
   label,
   type: "Number",
-  documentation: "ADO data type constant.",
+  documentation: builtinConstantDocumentation(label),
 }));
 
 const classicAspRuntimeEvents = [
-  "Application_OnStart",
-  "Application_OnEnd",
-  "Session_OnStart",
-  "Session_OnEnd",
+  {
+    label: "Application_OnStart",
+    documentation: documentation(
+      "Runs when the ASP application starts before the first session is created.",
+      "ASP application が開始し、最初の session が作られる前に実行されます。",
+      {
+        remarks: text(
+          "Define this event in Global.asa for application-wide initialization.",
+          "Global.asa に定義し、application 全体の初期化に使います。",
+        ),
+      },
+    ),
+  },
+  {
+    label: "Application_OnEnd",
+    documentation: documentation(
+      "Runs when the ASP application ends.",
+      "ASP application が終了するときに実行されます。",
+      {
+        remarks: text(
+          "Use this event for application-wide cleanup that does not depend on an active response.",
+          "有効な response に依存しない application 全体の後始末に使います。",
+        ),
+      },
+    ),
+  },
+  {
+    label: "Session_OnStart",
+    documentation: documentation(
+      "Runs when a new user session starts.",
+      "新しい user session が開始するときに実行されます。",
+      {
+        remarks: text(
+          "Define this event in Global.asa to initialize per-user session state.",
+          "Global.asa に定義し、user ごとの session state を初期化します。",
+        ),
+      },
+    ),
+  },
+  {
+    label: "Session_OnEnd",
+    documentation: documentation(
+      "Runs when a user session ends or times out.",
+      "user session が終了するか timeout したときに実行されます。",
+      {
+        remarks: text(
+          "Use this event for session cleanup; response output is not available.",
+          "session の後始末に使います。response output は利用できません。",
+        ),
+      },
+    ),
+  },
 ];
 
 function property(name: string, type = "Variant", signature?: string): BuiltinMemberSpec {
-  return { name, kind: "property", type, signature };
+  return builtinMember("property", name, type, signature);
 }
 
 function method(name: string, type = "Variant", signature?: string): BuiltinMemberSpec {
-  return { name, kind: "method", type, signature };
+  return builtinMember("method", name, type, signature);
 }
 
 function event(name: string): BuiltinMemberSpec {
-  return { name, kind: "event", type: "Variant" };
+  return builtinMember("event", name, "Variant");
+}
+
+function builtinMember(
+  kind: VbBuiltinMemberKind,
+  name: string,
+  type = "Variant",
+  signature?: string,
+): BuiltinMemberSpec {
+  return {
+    name,
+    kind,
+    type,
+    signature,
+    parameters: signature ? parametersFromSignature(signature).map(completeParameterSpec) : [],
+    documentation: builtinMemberDocumentation(kind, name, type, signature),
+  };
+}
+
+function text(en: string, ja: string): LocalizedText {
+  return { en, ja };
+}
+
+function documentation(
+  en: string,
+  ja: string,
+  extra: Omit<BuiltinDocumentationSpec, "summary"> = {},
+): BuiltinDocumentationSpec {
+  return { summary: text(en, ja), ...extra };
+}
+
+function localizedText(value: LocalizedText | undefined, locale: AspLocale | undefined): string {
+  if (!value) {
+    return "";
+  }
+  return createLocalizer(locale).locale === "ja" ? value.ja : value.en;
+}
+
+function parametersFromSignature(signature: string): BuiltinParameterSpec[] {
+  const parameterText =
+    /\((.*)\)/.exec(signature)?.[1] ?? signature.split(/\s+/).slice(1).join(", ");
+  return parameterText
+    ? parameterText
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((parameter) => ({ name: parameter.replace(/^\[|\]$/g, "") }))
+    : [];
+}
+
+function completeParameterSpec(parameter: BuiltinParameterSpec): BuiltinParameterSpec {
+  return {
+    ...parameter,
+    documentation: parameter.documentation ?? genericParameterDocumentation(parameter.name),
+  };
+}
+
+function genericParameterDocumentation(name: string): LocalizedText {
+  const normalized = name.toLowerCase();
+  const docs: Record<string, LocalizedText> = {
+    activeconnection: text(
+      "Connection object or connection string used by the operation.",
+      "操作に使う Connection object または connection string です。",
+    ),
+    affectrecords: text(
+      "Affects which records are included in the operation.",
+      "操作の対象にする records の範囲を指定します。",
+    ),
+    array: text("Array value to inspect.", "調べる array value です。"),
+    async: text(
+      "Controls whether the operation is asynchronous.",
+      "操作を asynchronous にするかを指定します。",
+    ),
+    buffer: text(
+      "Binary data buffer passed to the stream.",
+      "stream に渡す binary data buffer です。",
+    ),
+    characters: text(
+      "Number of characters to read or skip.",
+      "読み取る、または skip する文字数です。",
+    ),
+    charnumber: text("Number of characters to copy.", "copy する文字数です。"),
+    commandtext: text(
+      "Command text or query to execute.",
+      "実行する command text または query です。",
+    ),
+    compare: text(
+      "Optional comparison mode for string matching.",
+      "文字列比較に使う任意の comparison mode です。",
+    ),
+    connectionstring: text(
+      "Connection string used to open the connection.",
+      "connection を開く connection string です。",
+    ),
+    contentschedule: text(
+      "Path to the content schedule file.",
+      "content schedule file への path です。",
+    ),
+    count: text("Maximum number of items to process.", "処理する item の最大数です。"),
+    criteria: text("Search criteria used by the operation.", "検索に使う criteria です。"),
+    cursoroptions: text(
+      "Cursor feature to test for support.",
+      "support を確認する cursor feature です。",
+    ),
+    cursortype: text(
+      "Cursor type used when opening the recordset.",
+      "recordset を開く cursor type です。",
+    ),
+    data: text("Data value passed to the method.", "method に渡す data value です。"),
+    date: text("Date expression to evaluate.", "評価する date expression です。"),
+    date1: text(
+      "First date expression in the comparison.",
+      "比較する 1 つ目の date expression です。",
+    ),
+    date2: text(
+      "Second date expression in the comparison.",
+      "比較する 2 つ目の date expression です。",
+    ),
+    decimalplaces: text("Number of decimal places to keep.", "保持する小数点以下の桁数です。"),
+    delimiter: text(
+      "String used to separate or join values.",
+      "値の分割または結合に使う区切り文字列です。",
+    ),
+    destination: text(
+      "Destination path or object for the operation.",
+      "操作先の path または object です。",
+    ),
+    digitsafterdecimal: text(
+      "Number of digits to display after the decimal point.",
+      "小数点以下に表示する桁数です。",
+    ),
+    dimension: text("Array dimension to inspect.", "調べる array dimension です。"),
+    direction: text("ADO parameter direction value.", "ADO parameter の direction value です。"),
+    expression: text(
+      "Expression to evaluate or format.",
+      "評価または format する expression です。",
+    ),
+    fieldlist: text(
+      "Field name, field number, or list of fields.",
+      "field name、field number、または fields の list です。",
+    ),
+    fields: text(
+      "Field name, field number, or list of fields.",
+      "field name、field number、または fields の list です。",
+    ),
+    filename: text(
+      "File name or path used by the operation.",
+      "操作に使う file name または path です。",
+    ),
+    filespec: text(
+      "File specification or path pattern.",
+      "file specification または path pattern です。",
+    ),
+    find: text("Text to search for.", "検索する text です。"),
+    firstdayofweek: text(
+      "Optional first-day-of-week setting for date calculations.",
+      "date calculation に使う任意の first-day-of-week 設定です。",
+    ),
+    firstweekofyear: text(
+      "Optional first-week-of-year setting for date calculations.",
+      "date calculation に使う任意の first-week-of-year 設定です。",
+    ),
+    flag: text(
+      "Boolean flag that controls the property.",
+      "property を制御する Boolean flag です。",
+    ),
+    folderspec: text(
+      "Folder specification or path pattern.",
+      "folder specification または path pattern です。",
+    ),
+    force: text(
+      "Boolean value that allows read-only items to be changed or deleted.",
+      "read-only item の変更や削除を許可する Boolean value です。",
+    ),
+    format: text("Format option used by the method.", "method に使う format option です。"),
+    groupdigits: text("Controls whether digits are grouped.", "桁区切りを使うかを指定します。"),
+    include: text(
+      "Controls whether matching entries are included or excluded.",
+      "一致した entry を含めるか除外するかを指定します。",
+    ),
+    includeleadingdigit: text(
+      "Controls whether a leading zero is displayed for fractional values.",
+      "1 未満の値に先頭の 0 を表示するかを指定します。",
+    ),
+    index: text(
+      "One-based or zero-based index used by the component.",
+      "component が使う index です。",
+    ),
+    inputstrings: text("Array of strings to filter.", "filter する string array です。"),
+    interval: text(
+      "Date interval code such as yyyy, q, m, d, h, n, or s.",
+      "yyyy、q、m、d、h、n、s などの date interval code です。",
+    ),
+    iomode: text("File input/output mode.", "file の input/output mode です。"),
+    key: text("Dictionary key or lookup key.", "Dictionary key または lookup key です。"),
+    keyvalues: text(
+      "Key value or array of key values for the seek operation.",
+      "seek operation に使う key value または key values の array です。",
+    ),
+    length: text(
+      "Number of characters, bytes, or items to use.",
+      "使う文字数、bytes、または items 数です。",
+    ),
+    list: text("Array or list value to process.", "処理する array または list value です。"),
+    listfile: text(
+      "Path to the list file used by the component.",
+      "component が使う list file への path です。",
+    ),
+    locktype: text("Lock type used by the recordset.", "recordset に使う lock type です。"),
+    name: text("Name to read, create, or update.", "読み取り、作成、または更新する name です。"),
+    namedformat: text("Named date/time format value.", "date/time の named format value です。"),
+    number: text("Numeric value used by the function.", "function に使う numeric value です。"),
+    numbytes: text("Number of bytes to read.", "読み取る bytes 数です。"),
+    numchars: text("Number of characters to read.", "読み取る文字数です。"),
+    numrecords: text("Number of records to move.", "移動する records 数です。"),
+    numrows: text("Number of rows to process.", "処理する rows 数です。"),
+    options: text(
+      "Provider-specific options for the operation.",
+      "operation に使う provider-specific options です。",
+    ),
+    overwrite: text(
+      "Boolean value that allows an existing item to be overwritten.",
+      "既存 item の上書きを許可する Boolean value です。",
+    ),
+    parameter: text(
+      "Parameter value passed to the method.",
+      "method に渡す parameter value です。",
+    ),
+    parameters: text(
+      "ADO parameters passed to the command.",
+      "command に渡す ADO parameters です。",
+    ),
+    password: text("Password used to open the resource.", "resource を開く password です。"),
+    path: text(
+      "Path to resolve, execute, or transfer to.",
+      "解決、実行、または transfer する path です。",
+    ),
+    pathspec: text("Path specification to convert.", "変換する path specification です。"),
+    persistformat: text(
+      "Persistence format used when saving data.",
+      "data 保存時に使う persistence format です。",
+    ),
+    recordsaffected: text(
+      "Variable that receives the number of affected records.",
+      "affected records 数を受け取る variable です。",
+    ),
+    replacewith: text("Replacement text to insert.", "挿入する replacement text です。"),
+    restrictions: text(
+      "Schema restrictions for the query.",
+      "schema query に使う restrictions です。",
+    ),
+    rows: text("Number of records to retrieve.", "取得する records 数です。"),
+    saveoptions: text("Options used when saving the stream.", "stream 保存時に使う options です。"),
+    schedulefile: text(
+      "Path to the advertisement schedule file.",
+      "advertisement schedule file への path です。",
+    ),
+    schema: text("Schema query type.", "schema query type です。"),
+    schemaid: text("Provider schema identifier.", "provider schema identifier です。"),
+    searchdirection: text(
+      "Direction used when searching records.",
+      "records 検索時の direction です。",
+    ),
+    seekoption: text("Seek option used by the recordset.", "recordset が使う seek option です。"),
+    size: text(
+      "Size assigned to the parameter or field.",
+      "parameter または field に設定する size です。",
+    ),
+    source: text(
+      "Source path, command, record, or data object.",
+      "source path、command、record、または data object です。",
+    ),
+    specialfolder: text(
+      "Special folder constant to resolve.",
+      "解決する special folder constant です。",
+    ),
+    start: text("Start position, record, or bookmark.", "開始位置、record、または bookmark です。"),
+    string1: text("First string expression.", "1 つ目の string expression です。"),
+    string2: text("Second string expression.", "2 つ目の string expression です。"),
+    stringformat: text(
+      "Format used when converting the recordset to text.",
+      "recordset を text に変換するときの format です。",
+    ),
+    text: text("Text value passed to the method.", "method に渡す text value です。"),
+    type: text("ADO data type value.", "ADO data type value です。"),
+    unicode: text(
+      "Boolean value that controls Unicode file output.",
+      "Unicode file output を使うかを指定する Boolean value です。",
+    ),
+    userid: text("User ID used to open the connection.", "connection を開く user ID です。"),
+    username: text("User name used to open the resource.", "resource を開く user name です。"),
+    useparensfornegativenumbers: text(
+      "Controls whether negative numbers are wrapped in parentheses.",
+      "negative numbers を parentheses で囲むかを指定します。",
+    ),
+    value: text(
+      "Value to convert, evaluate, assign, or write.",
+      "変換、評価、代入、または書き込みする value です。",
+    ),
+    values: text(
+      "Values to place in the array or fields.",
+      "array または fields に入れる values です。",
+    ),
+  };
+  return (
+    docs[normalized] ??
+    text(`Value supplied for the ${name} argument.`, `${name} argument に渡す value です。`)
+  );
+}
+
+function builtinMemberDocumentation(
+  kind: VbBuiltinMemberKind,
+  name: string,
+  type: string,
+  signature: string | undefined,
+): BuiltinDocumentationSpec {
+  const key = signature?.toLowerCase() ?? name.toLowerCase();
+  const overrides: Record<string, BuiltinDocumentationSpec> = {
+    buffer: documentation(
+      "Controls whether ASP buffers page output before sending it to the browser.",
+      "ASP が browser へ送る前に page output を buffer するかを制御します。",
+      {
+        value: text(
+          "Boolean. True holds output until scripts finish or Response.Flush/Response.End is called; False streams output as it is processed.",
+          "Boolean です。True は scripts の完了または Response.Flush / Response.End まで output を保持し、False は処理に合わせて output を送ります。",
+        ),
+        remarks: text(
+          "Set this before the html tag when the page needs explicit buffering behavior.",
+          "page の buffering behavior を明示するときは html tag より前で設定します。",
+        ),
+      },
+    ),
+    "server.execute(path)": documentation(
+      "Runs another ASP page and returns control to the current script when it completes.",
+      "別の ASP page を実行し、完了後に現在の script へ制御を戻します。",
+      {
+        parameters: {
+          path: text(
+            "Relative or absolute path of the ASP page to execute.",
+            "実行する ASP page の relative または absolute path です。",
+          ),
+        },
+        returns: text(
+          "No meaningful value is returned; the executed page can write to the response.",
+          "意味のある値は返しません。実行された page は response に書き込めます。",
+        ),
+      },
+    ),
+    "server.createobject(progid)": documentation(
+      "Creates an instance of a registered COM component by Prog.ID.",
+      "Prog.ID で登録済み COM component の instance を作成します。",
+      {
+        parameters: {
+          progid: text(
+            "Programmatic identifier such as Scripting.FileSystemObject or ADODB.Recordset.",
+            "Scripting.FileSystemObject や ADODB.Recordset などの programmatic identifier です。",
+          ),
+        },
+        returns: text("The created COM object.", "作成された COM object です。"),
+      },
+    ),
+    "adodb.recordset.getrows(rows, start, fields)": documentation(
+      "Copies records from a Recordset into a two-dimensional array.",
+      "Recordset から records を 2 次元 array へ copy します。",
+      {
+        parameters: {
+          rows: text(
+            "Optional count of records to retrieve. Omitting it retrieves the rest of the Recordset.",
+            "取得する records 数です。省略すると Recordset の残りを取得します。",
+          ),
+          start: text(
+            "Optional record number or bookmark where copying starts.",
+            "copy を開始する record number または bookmark です。",
+          ),
+          fields: text(
+            "Optional single field name/number or array of field names/numbers to include.",
+            "含める field name/number、または field names/numbers の array です。",
+          ),
+        },
+        returns: text(
+          "A two-dimensional array indexed by field and row.",
+          "field と row で参照する 2 次元 array を返します。",
+        ),
+      },
+    ),
+  };
+  const generic =
+    kind === "event"
+      ? documentation(
+          `${name} event on the ${type} object.`,
+          `${type} object の ${name} event です。`,
+        )
+      : kind === "method"
+        ? documentation(`Calls the ${name} method.`, `${name} method を呼び出します。`, {
+            parameters: parametersForDocumentation(signature),
+            returns: text(`Returns ${type}.`, `${type} を返します。`),
+          })
+        : documentation(
+            `Represents the ${name} ${kind} on this object.`,
+            `この object の ${name} ${kind} を表します。`,
+            { value: text(`Value type: ${type}.`, `値の型は ${type} です。`) },
+          );
+  return overrides[key] ?? generic;
+}
+
+function parametersForDocumentation(
+  signature: string | undefined,
+): Record<string, LocalizedText> | undefined {
+  if (!signature) {
+    return undefined;
+  }
+  const parameters = parametersFromSignature(signature);
+  return parameters.length > 0
+    ? Object.fromEntries(
+        parameters.map((parameter) => [
+          parameter.name.toLowerCase(),
+          genericParameterDocumentation(parameter.name),
+        ]),
+      )
+    : undefined;
+}
+
+function builtinConstantDocumentation(label: string): BuiltinDocumentationSpec {
+  const lower = label.toLowerCase();
+  const descriptions: Record<string, LocalizedText> = {
+    adinteger: text(
+      "ADO data type constant for a 32-bit signed integer value.",
+      "32-bit signed integer value を表す ADO data type constant です。",
+    ),
+    advarchar: text(
+      "ADO data type constant for a variable-length non-Unicode string.",
+      "variable-length non-Unicode string を表す ADO data type constant です。",
+    ),
+    advarwchar: text(
+      "ADO data type constant for a variable-length Unicode string.",
+      "variable-length Unicode string を表す ADO data type constant です。",
+    ),
+    adboolean: text(
+      "ADO data type constant for a Boolean value.",
+      "Boolean value を表す ADO data type constant です。",
+    ),
+    addate: text(
+      "ADO data type constant for a date value.",
+      "date value を表す ADO data type constant です。",
+    ),
+  };
+  const summary =
+    descriptions[lower] ??
+    text(
+      `ADO data type constant used when declaring fields or parameters as ${label}.`,
+      `fields や parameters を ${label} として扱う ADO data type constant です。`,
+    );
+  return {
+    summary,
+    value: text(
+      "Numeric ADO DataTypeEnum constant.",
+      "numeric な ADO DataTypeEnum constant です。",
+    ),
+  };
+}
+
+function builtinFunctionDocumentation(
+  label: string,
+  summary: string,
+  returnType: string,
+  signature: string,
+): BuiltinDocumentationSpec {
+  const override = builtinFunctionDocumentationOverride(label);
+  return {
+    summary: override.summary ?? text(summary, `${label} 関数です。${returnType} を返します。`),
+    remarks: override.remarks,
+    parameters: Object.fromEntries(
+      parametersFromSignature(signature).map((parameter) => [
+        parameter.name.toLowerCase(),
+        override.parameters?.[parameter.name.toLowerCase()] ??
+          genericParameterDocumentation(parameter.name),
+      ]),
+    ),
+    returns: override.returns ?? text(`Returns ${returnType}.`, `${returnType} を返します。`),
+    value: override.value,
+  };
+}
+
+function builtinFunctionDocumentationOverride(label: string): BuiltinDocumentationSpec {
+  const overrides: Record<string, BuiltinDocumentationSpec> = {
+    createobject: documentation(
+      "Creates an instance of a registered automation object by Prog.ID.",
+      "Prog.ID で登録済み automation object の instance を作成します。",
+      {
+        parameters: {
+          progid: text(
+            "Programmatic identifier such as Scripting.Dictionary or ADODB.Stream.",
+            "Scripting.Dictionary や ADODB.Stream などの programmatic identifier です。",
+          ),
+        },
+        returns: text("The created automation object.", "作成された automation object です。"),
+      },
+    ),
+    datepart: documentation(
+      "Returns the requested interval part from a date expression.",
+      "date expression から指定した interval part を返します。",
+      {
+        parameters: {
+          interval: text(
+            "Interval code to return, such as yyyy, q, m, d, w, ww, h, n, or s.",
+            "返す interval code です。yyyy、q、m、d、w、ww、h、n、s などを指定します。",
+          ),
+          date: text("Date expression to evaluate.", "評価する date expression です。"),
+          firstdayofweek: text(
+            "Optional first day of the week used for weekday and week calculations.",
+            "weekday や week calculation に使う任意の first day of week です。",
+          ),
+          firstweekofyear: text(
+            "Optional rule that chooses which week counts as the first week of the year.",
+            "year の first week を決める任意の rule です。",
+          ),
+        },
+        returns: text(
+          "Number containing the selected part of the date.",
+          "date の指定部分を表す Number を返します。",
+        ),
+        remarks: text(
+          "Week-related intervals use firstDayOfWeek and firstWeekOfYear when supplied.",
+          "week 関連の interval では、指定された firstDayOfWeek と firstWeekOfYear を使います。",
+        ),
+      },
+    ),
+    formatcurrency: documentation(
+      "Formats a numeric expression as a currency string.",
+      "numeric expression を currency string として format します。",
+      {
+        returns: text("Formatted currency string.", "format 済み currency string を返します。"),
+      },
+    ),
+    split: documentation(
+      "Splits a string into a zero-based array of substrings.",
+      "string を 0-based の substring array に分割します。",
+      {
+        returns: text("Array of substrings.", "substrings の array を返します。"),
+      },
+    ),
+    join: documentation(
+      "Combines array items into one string using a delimiter.",
+      "array items を delimiter で 1 つの string に結合します。",
+      {
+        returns: text("Joined string.", "結合された string を返します。"),
+      },
+    ),
+    isobject: documentation(
+      "Returns whether an expression references an automation object.",
+      "expression が automation object を参照しているかを返します。",
+      {
+        returns: text("Boolean result.", "Boolean result を返します。"),
+      },
+    ),
+    vartype: documentation(
+      "Returns a numeric code for the VBScript subtype of an expression.",
+      "expression の VBScript subtype を表す numeric code を返します。",
+      {
+        returns: text("Numeric subtype code.", "numeric subtype code を返します。"),
+      },
+    ),
+  };
+  return overrides[label.toLowerCase()] ?? {};
 }
 
 function objectSignatures(catalog: Record<string, BuiltinObjectSpec>): Record<string, string[]> {
@@ -1107,7 +1752,8 @@ interface BuiltinFunction {
   label: string;
   signature: string;
   returnType: string;
-  documentation: string;
+  parameters: BuiltinParameterSpec[];
+  documentation: BuiltinDocumentationSpec;
 }
 
 const builtinFunctions: BuiltinFunction[] = (
@@ -1312,7 +1958,15 @@ const builtinFunctions: BuiltinFunction[] = (
   label,
   signature,
   returnType,
-  documentation,
+  parameters: parametersFromSignature(signature).map((parameter) =>
+    completeParameterSpec({
+      ...parameter,
+      documentation:
+        builtinFunctionDocumentationOverride(label).parameters?.[parameter.name.toLowerCase()] ??
+        genericParameterDocumentation(parameter.name),
+    }),
+  ),
+  documentation: builtinFunctionDocumentation(label, documentation, returnType, signature),
 }));
 
 const vbKeywords = new Set([
@@ -2384,7 +3038,7 @@ export function getVbscriptHover(
   if (!symbol) {
     const typeEnvironment =
       context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
-    return builtinMemberDescription(parsed, sourceOffset, symbols, typeEnvironment);
+    return builtinMemberDescription(parsed, sourceOffset, symbols, typeEnvironment, context.locale);
   }
   const hover = appendDocumentationMarkdown(
     markdownHover(vbscriptHoverSignature(parsed, symbol)),
@@ -2404,6 +3058,15 @@ export function getVbscriptHover(
 function markdownHover(signature: string, description?: string): string {
   const base = `\`\`\`vbscript\n${signature}\n\`\`\``;
   return description ? `${base}\n\n${description}` : base;
+}
+
+function appendBuiltinDocumentation(
+  base: string,
+  documentationSpec: BuiltinDocumentationSpec | undefined,
+  locale: AspLocale | undefined,
+): string {
+  const markdown = builtinDocumentationMarkdown(documentationSpec, locale);
+  return markdown ? `${base}\n\n${markdown}` : base;
 }
 
 function vbscriptHoverSignature(parsed: AspParsedDocument, symbol: VbSymbol): string {
@@ -2798,7 +3461,6 @@ export function getVbscriptSignatureHelp(
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const typeEnvironment =
     context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
-  const builtin = builtinSignatureLabels(call.name);
   const signatureSymbols = signatureSymbolsForCall(parsed, call.name, offset, symbols);
   if (signatureSymbols.length > 0) {
     return {
@@ -2809,8 +3471,24 @@ export function getVbscriptSignatureHelp(
       activeParameter,
     };
   }
+  const builtinSignatureInfo = builtinSignatureInformationForCall(
+    parsed,
+    call.name,
+    offset,
+    symbols,
+    typeEnvironment,
+    context.locale,
+  );
+  if (builtinSignatureInfo && builtinSignatureInfo.length > 0) {
+    return {
+      signatures: builtinSignatureInfo,
+      activeSignature: 0,
+      activeParameter,
+    };
+  }
   const signatureLabels =
-    typeSignatureLabelsForCall(parsed, call.name, offset, symbols, typeEnvironment) ?? builtin;
+    typeSignatureLabelsForCall(parsed, call.name, offset, symbols, typeEnvironment) ??
+    builtinSignatureLabels(call.name);
   if (!signatureLabels || signatureLabels.length === 0) {
     return undefined;
   }
@@ -2868,15 +3546,21 @@ export function resolveVbscriptCompletionItem(
       ? signatureLabelFromMember(member.type.name, member.member.name, member.member.signature)
       : undefined;
     const type = member.member.type ? ` As ${formatTypeRef(member.member.type)}` : "";
+    const documentationSpec = builtinMemberSpecForType(
+      member.type.name,
+      member.member.name,
+    )?.documentation;
     return {
       ...item,
       detail: signature ?? `${member.member.kind}${type}`,
-      documentation: createLocalizer(context.locale).t("vb.completion.memberDocumentation", {
-        kind: member.member.kind,
-        type: member.type.name,
-        member: member.member.name,
-        suffix: type,
-      }),
+      documentation:
+        builtinDocumentationMarkdown(documentationSpec, context.locale) ??
+        createLocalizer(context.locale).t("vb.completion.memberDocumentation", {
+          kind: member.member.kind,
+          type: member.type.name,
+          member: member.member.name,
+          suffix: type,
+        }),
     };
   }
   return item;
@@ -4021,6 +4705,39 @@ function documentationMarkdown(
   return lines.filter(Boolean).join("\n\n");
 }
 
+function builtinDocumentationMarkdown(
+  documentationSpec: BuiltinDocumentationSpec | undefined,
+  locale: AspLocale | undefined = undefined,
+): string | undefined {
+  const documentation = localizedBuiltinDocumentation(documentationSpec, locale);
+  return documentationMarkdown(documentation, locale);
+}
+
+function localizedBuiltinDocumentation(
+  documentationSpec: BuiltinDocumentationSpec | undefined,
+  locale: AspLocale | undefined = undefined,
+): VbDocumentation | undefined {
+  if (!documentationSpec) {
+    return undefined;
+  }
+  const params = Object.fromEntries(
+    Object.entries(documentationSpec.parameters ?? {})
+      .map(([name, value]) => [name, localizedText(value, locale)])
+      .filter(([, value]) => value),
+  );
+  const documentation: VbDocumentation = {
+    summary: localizedText(documentationSpec.summary, locale) || undefined,
+    remarks: localizedText(documentationSpec.remarks, locale) || undefined,
+    returns: localizedText(documentationSpec.returns, locale) || undefined,
+    value: localizedText(documentationSpec.value, locale) || undefined,
+    params,
+    exceptions: [],
+    see: [],
+    seealso: [],
+  };
+  return hasDocumentationContent(documentation) ? documentation : undefined;
+}
+
 function appendDocumentationMarkdown(
   base: string,
   documentation: VbDocumentation | undefined,
@@ -4557,6 +5274,7 @@ function builtinMemberDescription(
   offset: number,
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
+  locale: AspLocale | undefined,
 ): string | undefined {
   const access = memberAccessAt(parsed, offset);
   if (!access) {
@@ -4584,7 +5302,11 @@ function builtinMemberDescription(
       ? signatureLabelFromMember(type.name, member.name, member.signature)
       : undefined;
     const typeSuffix = member.type ? ` As ${formatTypeRef(member.type)}` : "";
-    return markdownHover(signature ?? `${member.kind} ${type.name}.${member.name}${typeSuffix}`);
+    return appendBuiltinDocumentation(
+      markdownHover(signature ?? `${member.kind} ${type.name}.${member.name}${typeSuffix}`),
+      builtinMemberSpecForType(type.name, member.name)?.documentation,
+      locale,
+    );
   }
   return undefined;
 }
@@ -5239,6 +5961,107 @@ function typeSignatureLabelsForCall(
   return [signatureLabel(symbol)];
 }
 
+function builtinSignatureInformationForCall(
+  parsed: AspParsedDocument,
+  name: string,
+  offset: number,
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+  locale: AspLocale | undefined,
+) {
+  const [owner, memberName] = name.includes(".") ? name.split(".", 2) : [undefined, name];
+  if (owner && memberName) {
+    const type =
+      owner.toLowerCase() === "me"
+        ? currentClassTypeRef(parsed, offset, symbols)
+        : (inferVariableTypeRef(owner, parsed, offset, symbols) ?? classicAspObjectTypeRef(owner));
+    const member = type ? builtinMemberSpecForType(type.name, memberName) : undefined;
+    if (!member?.signature) {
+      return undefined;
+    }
+    return [
+      builtinSignatureInformation(
+        signatureLabelFromBuiltinParameters(owner, member.name, member.parameters ?? []),
+        member.documentation,
+        member.parameters ?? [],
+        locale,
+      ),
+    ];
+  }
+  const builtin = builtinFunction(name);
+  if (!builtin) {
+    return undefined;
+  }
+  return [
+    builtinSignatureInformation(
+      signatureLabelFromBuiltinParameters(builtin.label, undefined, builtin.parameters),
+      builtin.documentation,
+      builtin.parameters,
+      locale,
+    ),
+  ];
+}
+
+function builtinSignatureInformation(
+  label: string,
+  documentationSpec: BuiltinDocumentationSpec | undefined,
+  parameters: BuiltinParameterSpec[],
+  locale: AspLocale | undefined,
+) {
+  return {
+    label,
+    documentation: builtinDocumentationMarkdown(documentationSpec, locale),
+    parameters: parameters.map((parameter) => ({
+      label: parameterLabelFromBuiltinSpec(parameter),
+      documentation: builtinParameterDocumentation(parameter, documentationSpec, locale),
+    })),
+  };
+}
+
+function builtinParameterDocumentation(
+  parameter: BuiltinParameterSpec,
+  documentationSpec: BuiltinDocumentationSpec | undefined,
+  locale: AspLocale | undefined,
+): string | undefined {
+  return (
+    localizedText(documentationSpec?.parameters?.[parameter.name.toLowerCase()], locale) ||
+    localizedText(parameter.documentation, locale) ||
+    undefined
+  );
+}
+
+function signatureLabelFromBuiltinParameters(
+  ownerOrFunction: string,
+  memberName: string | undefined,
+  parameters: BuiltinParameterSpec[],
+): string {
+  const name = memberName ? `${ownerOrFunction}.${memberName}` : ownerOrFunction;
+  return `${name}(${parameters.map(parameterLabelFromBuiltinSpec).join(", ")})`;
+}
+
+function parameterLabelFromBuiltinSpec(parameter: BuiltinParameterSpec): string {
+  const prefix = parameter.optional ? "Optional " : "";
+  return parameter.type
+    ? `${prefix}${parameter.name} As ${parameter.type}`
+    : `${prefix}${parameter.name}`;
+}
+
+function builtinMemberSpecForType(
+  typeName: string,
+  memberName: string,
+): BuiltinMemberSpec | undefined {
+  return builtinObjectSpecForType(typeName)?.members.find(
+    (member) => member.name.toLowerCase() === memberName.toLowerCase(),
+  );
+}
+
+function builtinObjectSpecForType(typeName: string): BuiltinObjectSpec | undefined {
+  const lower = typeName.toLowerCase();
+  return [...Object.values(classicAspObjectCatalog), ...Object.values(externalObjectCatalog)].find(
+    (objectSpec) => objectSpec.typeName.toLowerCase() === lower,
+  );
+}
+
 function signatureLabelFromMember(owner: string, name: string, signature: VbSignature): string {
   const parameters = signature.parameters.map((parameter) => {
     const prefix = parameter.mode
@@ -5584,6 +6407,7 @@ function builtinTypes(): VbType[] {
         kind: member.kind,
         type: signature?.returnType ?? typeRef(member.type ?? "Variant"),
         signature,
+        documentation: builtinDocumentationMarkdown(member.documentation),
       };
     }),
   }));
@@ -5597,6 +6421,7 @@ function builtinTypes(): VbType[] {
       signature: member.signature
         ? signatureFromLabel(member.signature, member.type ?? "Variant")
         : undefined,
+      documentation: builtinDocumentationMarkdown(member.documentation),
     })),
   }));
   return [...intrinsic, ...classicAsp, ...external];
@@ -5642,14 +6467,15 @@ function builtinSignature(name: string): VbSignature | undefined {
 }
 
 function signatureFromLabel(label: string, returnType: string): VbSignature {
-  const parameterText = /\((.*)\)/.exec(label)?.[1] ?? label.split(/\s+/).slice(1).join(", ");
-  const parameters = parameterText
-    ? parameterText
-        .split(",")
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .map((parameter) => ({ name: parameter }))
-    : [];
+  const parameters = parametersFromSignature(label).map((parameter) => ({
+    name: parameter.name,
+    type: parameter.type ? typeRef(parameter.type) : undefined,
+    optional: parameter.optional,
+    documentation: localizedText(
+      parameter.documentation ?? genericParameterDocumentation(parameter.name),
+      undefined,
+    ),
+  }));
   return { parameters, returnType: typeRef(returnType) };
 }
 
