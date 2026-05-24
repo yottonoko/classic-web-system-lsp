@@ -18,6 +18,7 @@ import {
   getVbscriptTypeDefinition,
   parseAspCst,
   parseAspDocument,
+  parseVbscriptTypeRef,
   parseVbscriptCst,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
@@ -944,10 +945,20 @@ Server.MapPath("/tmp")
     const parsed = parseAspDocument(
       "file:///site/default.asp",
       `<%
-Dim textValue, items, upperBound
+Dim textValue, items, upperBound, byteValue, intValue, longValue, singleValue, doubleValue
+Dim currencyValue, decimalValue, variantValue, errorValue
 textValue = CStr(42)
 items = Array("a", "b")
 upperBound = UBound(items)
+byteValue = CByte(1)
+intValue = CInt(1)
+longValue = CLng(1)
+singleValue = CSng(1)
+doubleValue = CDbl(1)
+currencyValue = CCur(1)
+decimalValue = CDec(1)
+variantValue = CVar(1)
+errorValue = CVErr(1)
 %>`,
     );
     const result = analyzeVbscript(parsed);
@@ -963,6 +974,21 @@ upperBound = UBound(items)
     expect(result.symbols.find((symbol) => symbol.name === "textValue")?.typeName).toBe("String");
     expect(result.symbols.find((symbol) => symbol.name === "items")?.typeName).toBe("Array");
     expect(result.symbols.find((symbol) => symbol.name === "upperBound")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "byteValue")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "intValue")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "longValue")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "singleValue")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "doubleValue")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "currencyValue")?.typeName).toBe(
+      "Currency",
+    );
+    expect(result.symbols.find((symbol) => symbol.name === "decimalValue")?.typeName).toBe(
+      "Decimal",
+    );
+    expect(result.symbols.find((symbol) => symbol.name === "variantValue")?.typeName).toBe(
+      "Variant",
+    );
+    expect(result.symbols.find((symbol) => symbol.name === "errorValue")?.typeName).toBe("Error");
     expect(tokenAt("CStr")).toEqual(
       expect.objectContaining({ tokenType: "function", tokenModifiers: ["library"] }),
     );
@@ -972,10 +998,16 @@ upperBound = UBound(items)
     expect(tokenAt("UBound")).toEqual(
       expect.objectContaining({ tokenType: "function", tokenModifiers: ["library"] }),
     );
-    expect(getVbscriptHover(parsed, { line: 2, character: 13 })).toContain(
-      "Function CStr(value) As String",
+    expect(tokenAt("CCur")).toEqual(
+      expect.objectContaining({ tokenType: "function", tokenModifiers: ["library"] }),
     );
-    expect(getVbscriptSignatureHelp(parsed, { line: 4, character: 21 })).toEqual(
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("CStr"))),
+    ).toContain("Function CStr(value) As String");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("CCur"))),
+    ).toContain("Function CCur(value) As Currency");
+    expect(getVbscriptSignatureHelp(parsed, { line: 5, character: 21 })).toEqual(
       expect.objectContaining({
         signatures: [expect.objectContaining({ label: "UBound(array, dimension)" })],
       }),
@@ -1307,6 +1339,34 @@ End Sub
     const labelDefinition = getVbscriptDefinition(parsed, { line: 2, character: 4 }, { symbols });
     const labelUse = getVbscriptDefinition(parsed, { line: 3, character: 2 }, { symbols });
     expect(labelUse?.range).toEqual(labelDefinition?.range);
+  });
+
+  it("uses TypeName-style VBScript literal and numeric family types", () => {
+    const source = `<%
+Dim emptyValue, nullValue, objectValue, numericValue, currencyValue
+emptyValue = Empty
+nullValue = Null
+Set objectValue = Nothing
+' @type numericValue As Number
+numericValue = CCur(1)
+' @type currencyValue As Currency
+currencyValue = 1
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.find((symbol) => symbol.name === "emptyValue")?.typeName).toBe("Empty");
+    expect(symbols.find((symbol) => symbol.name === "nullValue")?.typeName).toBe("Null");
+    expect(symbols.find((symbol) => symbol.name === "objectValue")?.typeName).toBe("Nothing");
+    expect(symbols.find((symbol) => symbol.name === "numericValue")?.typeName).toBe("Number");
+    expect(symbols.find((symbol) => symbol.name === "currencyValue")?.typeName).toBe("Currency");
+    expect(parseVbscriptTypeRef("Integer").object).toBe(false);
+    expect(parseVbscriptTypeRef("Decimal").object).toBe(false);
+    expect(parseVbscriptTypeRef("Error").object).toBe(false);
+    expect(
+      analyzeVbscript(parsed, { symbols, typeChecking: "strict" }).diagnostics.some(
+        (diagnostic) => diagnostic.source === "asp-lsp-vbscript-type",
+      ),
+    ).toBe(false);
   });
 
   it("infers and checks VBScript union types", () => {

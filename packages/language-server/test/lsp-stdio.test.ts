@@ -1631,6 +1631,9 @@ Response.Write Shared▮Title()
     it("returns hover, inlay hints and semantic tokens for implicit VBScript variables", async () => {
       const source = `<%
 a = 1
+currencyValue = CCur(1)
+nullValue = Null
+emptyValue = Empty
 Response.Write a
 %>`;
       const server = new RpcServer();
@@ -1657,12 +1660,21 @@ Response.Write a
           position: { line: 1, character: 0 },
         });
         expect(JSON.stringify(hover)).toContain("Implicit VBScript variable (global).");
+        const currencyHover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("CCur")),
+        });
+        expect(JSON.stringify(currencyHover)).toContain("Function CCur(value) As Currency");
 
         const inlayHints = await server.request("textDocument/inlayHint", {
           textDocument: { uri },
-          range: { start: { line: 0, character: 0 }, end: { line: 4, character: 0 } },
+          range: { start: { line: 0, character: 0 }, end: { line: 7, character: 0 } },
         });
-        expect(JSON.stringify(inlayHints)).toContain("As Number");
+        const serializedInlayHints = JSON.stringify(inlayHints);
+        expect(serializedInlayHints).toContain("As Number");
+        expect(serializedInlayHints).toContain("As Currency");
+        expect(serializedInlayHints).toContain("As Null");
+        expect(serializedInlayHints).toContain("As Empty");
 
         const semanticTokens = await server.request("textDocument/semanticTokens/full", {
           textDocument: { uri },
@@ -1671,7 +1683,7 @@ Response.Write a
         expect(
           decoded.some(
             (token) =>
-              token.line === 2 &&
+              token.line === 5 &&
               token.character === "Response.Write ".length &&
               token.tokenType === semanticTokenType.variable,
           ),
@@ -1679,7 +1691,7 @@ Response.Write a
         expect(
           decoded.some(
             (token) =>
-              token.line === 2 &&
+              token.line === 5 &&
               token.character === 0 &&
               token.tokenType === semanticTokenType.variable &&
               token.tokenModifiers === semanticTokenModifier.library,

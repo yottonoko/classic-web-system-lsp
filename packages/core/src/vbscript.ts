@@ -401,13 +401,23 @@ const externalObjectMembers: Record<string, CompletionItem[]> = {
 
 const intrinsicTypeNames = new Set([
   "array",
+  "byte",
   "string",
+  "integer",
+  "long",
+  "single",
+  "double",
+  "currency",
+  "decimal",
   "number",
   "boolean",
   "date",
+  "empty",
+  "null",
   "variant",
   "unknown",
   "nothing",
+  "error",
 ]);
 
 const classicAspTypeNames = new Set([
@@ -470,6 +480,12 @@ const builtinFunctions: BuiltinFunction[] = [
     documentation: "Converts a value to String.",
   },
   {
+    label: "CByte",
+    signature: "CByte(value)",
+    returnType: "Number",
+    documentation: "Converts a value to Byte.",
+  },
+  {
     label: "CInt",
     signature: "CInt(value)",
     returnType: "Number",
@@ -482,10 +498,28 @@ const builtinFunctions: BuiltinFunction[] = [
     documentation: "Converts a value to Long.",
   },
   {
+    label: "CSng",
+    signature: "CSng(value)",
+    returnType: "Number",
+    documentation: "Converts a value to Single.",
+  },
+  {
     label: "CDbl",
     signature: "CDbl(value)",
     returnType: "Number",
     documentation: "Converts a value to Double.",
+  },
+  {
+    label: "CCur",
+    signature: "CCur(value)",
+    returnType: "Currency",
+    documentation: "Converts a value to Currency.",
+  },
+  {
+    label: "CDec",
+    signature: "CDec(value)",
+    returnType: "Decimal",
+    documentation: "Converts a value to Decimal.",
   },
   {
     label: "CBool",
@@ -498,6 +532,18 @@ const builtinFunctions: BuiltinFunction[] = [
     signature: "CDate(value)",
     returnType: "Date",
     documentation: "Converts a value to Date.",
+  },
+  {
+    label: "CVar",
+    signature: "CVar(value)",
+    returnType: "Variant",
+    documentation: "Converts a value to Variant.",
+  },
+  {
+    label: "CVErr",
+    signature: "CVErr(errorNumber)",
+    returnType: "Error",
+    documentation: "Converts an error number to an Error subtype.",
   },
   {
     label: "Array",
@@ -3443,7 +3489,7 @@ function inferSignificantExpressionType(
     return typeRef("Boolean");
   }
   if (lower === "nothing" || lower === "null" || lower === "empty") {
-    return typeRef(lower === "nothing" ? "Nothing" : "Variant");
+    return typeRef(canonicalBuiltinTypeName(lower));
   }
   if (lower === "array" && expression[1]?.text === "(") {
     return typeRef("Array");
@@ -4695,14 +4741,24 @@ function typeHasMember(type: VbTypeRef, memberName: string, env: VbTypeEnvironme
 function builtinTypes(): VbType[] {
   const intrinsic: VbType[] = [
     "String",
+    "Byte",
+    "Integer",
+    "Long",
+    "Single",
+    "Double",
+    "Currency",
+    "Decimal",
     "Number",
     "Boolean",
     "Date",
+    "Empty",
+    "Null",
     "Object",
     "Variant",
     "Nothing",
     "Array",
     "Unknown",
+    "Error",
   ].map((name) => ({ name, kind: "intrinsic" as const, members: [] }));
   const classicAsp: VbType[] = Object.entries(memberCompletions).map(([name, members]) => ({
     name: canonicalBuiltinTypeName(name),
@@ -4951,7 +5007,22 @@ function isClearlyObjectType(type: VbTypeRef, env: VbTypeEnvironment): boolean {
 
 function isClearlyScalarType(type: VbTypeRef): boolean {
   return expandUnionType(type).every((item) =>
-    ["string", "number", "boolean", "date"].includes(item.name.toLowerCase()),
+    [
+      "string",
+      "byte",
+      "integer",
+      "long",
+      "single",
+      "double",
+      "currency",
+      "decimal",
+      "number",
+      "boolean",
+      "date",
+      "empty",
+      "null",
+      "error",
+    ].includes(item.name.toLowerCase()),
   );
 }
 
@@ -4975,10 +5046,19 @@ function isCompatibleSingleType(
   if (left.name.toLowerCase() === right.name.toLowerCase()) {
     return true;
   }
+  if (isNumericTypeName(left.name) && isNumericTypeName(right.name)) {
+    return true;
+  }
   if (left.name.toLowerCase() === "object" && isClearlyObjectType(right, env)) {
     return true;
   }
   return false;
+}
+
+function isNumericTypeName(name: string): boolean {
+  return ["byte", "integer", "long", "single", "double", "currency", "decimal", "number"].includes(
+    name.toLowerCase(),
+  );
 }
 
 function typeWarning(
