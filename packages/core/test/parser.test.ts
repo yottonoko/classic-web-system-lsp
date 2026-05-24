@@ -1648,6 +1648,16 @@ Response.Write BuildName("Ada")
       expect.objectContaining({ position: customerSymbol?.range.end, paddingLeft: false }),
     );
     expect(customerHint?.paddingRight).toBe(true);
+    const firstNameOffset = source.indexOf("firstName");
+    expect(
+      hints.some(
+        (hint) =>
+          hint.label === " As Variant" &&
+          hint.position.line === positionAt(source, firstNameOffset).line &&
+          hint.position.character ===
+            positionAt(source, firstNameOffset + "firstName".length).character,
+      ),
+    ).toBe(false);
 
     const returnHint = getVbscriptInlayHints(
       parseAspDocument(

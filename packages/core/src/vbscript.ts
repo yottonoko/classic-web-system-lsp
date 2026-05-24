@@ -2316,7 +2316,7 @@ export function getVbscriptInlayHints(
     for (const symbol of symbols) {
       if (
         symbol.sourceUri !== parsed.uri ||
-        !["variable", "parameter", "constant", "field"].includes(symbol.kind) ||
+        !["variable", "constant", "field"].includes(symbol.kind) ||
         !symbol.typeName ||
         isHiddenInlayType(symbol.typeName) ||
         !rangeOverlapsOffsets(parsed.text, symbol.range, rangeStart, rangeEnd)

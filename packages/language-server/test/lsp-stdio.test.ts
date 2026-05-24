@@ -2224,6 +2224,23 @@ End Sub
         );
         expect(JSON.stringify(inlayHints)).toContain("ByRef");
         expect(JSON.stringify(inlayHints)).toContain("firstName:");
+        const firstNameTypeHintPosition = positionAt(
+          marked.text,
+          marked.text.indexOf("firstName") + "firstName".length,
+        );
+        expect(
+          (
+            inlayHints as Array<{
+              label?: unknown;
+              position?: { line?: unknown; character?: unknown };
+            }>
+          ).some(
+            (hint) =>
+              hint.label === " As Variant" &&
+              hint.position?.line === firstNameTypeHintPosition.line &&
+              hint.position?.character === firstNameTypeHintPosition.character,
+          ),
+        ).toBe(false);
         const resolvedHint = await server.request(
           "inlayHint/resolve",
           (inlayHints as Array<Record<string, unknown>>)[0],
