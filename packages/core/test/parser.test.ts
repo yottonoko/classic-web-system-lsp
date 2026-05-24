@@ -1006,6 +1006,41 @@ c.
     expect(completions.some((item) => item.label === "Save")).toBe(true);
   });
 
+  it("completes VBScript object members from partial member names", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Class Customer
+  Public Name
+  Public Sub Save()
+  End Sub
+End Class
+Dim c
+Set c = New Customer
+Server.HTMLEe
+Server.
+c.Na
+With c
+  .Sa
+End With
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const completionLabelsAt = (text: string): string[] =>
+      getVbscriptCompletions(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf(text) + text.length),
+        { symbols },
+      ).map((item) => item.label);
+
+    const partialServerCompletions = completionLabelsAt("Server.HTMLEe");
+    expect(partialServerCompletions).toContain("HTMLEncode");
+    expect(partialServerCompletions).not.toContain("If Then");
+    expect(completionLabelsAt("Server.")).toContain("HTMLEncode");
+    expect(completionLabelsAt("c.Na")).toEqual(expect.arrayContaining(["Name", "Save"]));
+    expect(completionLabelsAt(".Sa")).toContain("Save");
+  });
+
   it("keeps local variables scoped to their procedure", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

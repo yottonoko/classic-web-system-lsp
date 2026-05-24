@@ -2806,11 +2806,9 @@ export function getVbscriptCompletions(
   }
   const typeEnvironment =
     context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
-  const prefix = parsed.text.slice(Math.max(0, sourceOffset - 96), sourceOffset);
-  const memberMatch = /([A-Za-z][A-Za-z0-9_]*)\.$/.exec(prefix);
-  const withMemberMatch = !memberMatch && prefix.endsWith(".");
-  if (memberMatch || withMemberMatch) {
-    const ownerName = memberMatch?.[1];
+  const memberTarget = memberCompletionTargetAt(parsed, sourceOffset);
+  if (memberTarget) {
+    const ownerName = memberTarget.ownerName;
     const builtin = ownerName ? memberCompletions[ownerName.toLowerCase()] : undefined;
     if (builtin) {
       return builtin;
@@ -2830,6 +2828,29 @@ export function getVbscriptCompletions(
       symbolToCompletion(symbol, context.locale),
     ),
   ]);
+}
+
+function memberCompletionTargetAt(
+  parsed: AspParsedDocument,
+  offset: number,
+): { ownerName?: string } | undefined {
+  const current = identifierTokenAt(parsed, offset);
+  if (current) {
+    const dot = previousSignificantToken(parsed, current.start);
+    if (dot?.text === ".") {
+      return memberCompletionTargetFromDot(parsed, dot);
+    }
+  }
+  const previous = previousSignificantToken(parsed, offset);
+  return previous?.text === "." ? memberCompletionTargetFromDot(parsed, previous) : undefined;
+}
+
+function memberCompletionTargetFromDot(
+  parsed: AspParsedDocument,
+  dot: VbToken,
+): { ownerName?: string } {
+  const owner = previousSignificantToken(parsed, dot.start);
+  return owner?.kind === "identifier" ? { ownerName: owner.text } : {};
 }
 
 function getVbDocCommentCompletions(

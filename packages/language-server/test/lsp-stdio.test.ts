@@ -95,6 +95,44 @@ describe(
       }
     });
 
+    it("returns VBScript member completions for partial member names over JSON-RPC", async () => {
+      const document = markedDocument(`<%
+Server.HTMLEe▮
+%>`);
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/partial-member.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: document.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: document.position,
+        });
+        const serialized = JSON.stringify(completions);
+        expect(serialized).toContain("HTMLEncode");
+        expect(serialized).not.toContain("If Then");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns configurable VBScript syntax snippet completions over JSON-RPC", async () => {
       const server = new RpcServer();
       try {
