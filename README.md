@@ -40,7 +40,7 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - quick fixes for undeclared variables, missing includes, include suggestions, removable unused VBScript declarations, strict type diagnostics such as missing `Set`, unnecessary `Set`, and type annotations, and extract-variable refactors for selected VBScript expressions
 - VB.NET-style `'''` XML documentation comments for VBScript hover, completion resolve, and signature help
 - XML documentation tag completion for `summary`, `remarks`, `param`, `returns`, `value`, `exception`, `see`, `seealso`, `example`, `code`, `c`, `list`, and `para`
-- conservative support for `ReDim`, `For Each`, `With`, W3Schools ASP Reference built-ins, FileSystem/Dictionary/MSWC components, and ADO object completions
+- conservative support for `ReDim`, `For Each`, `With`, ASP Reference built-ins, FileSystem/Dictionary/MSWC components, and ADO object completions
 - TypeScript-backed hover, navigation, references, rename, signature help, call hierarchy, monikers, inline values, and project-model-aware module resolution for JavaScript and server-side JScript regions
 - lazy workspace symbol and diagnostic indexing for unopened `.asp`, `.asa`, and `.inc` files
 - HTML/CSS rename, CSS/JS document symbols, richer folding, CSS colors, and include file-operation updates
