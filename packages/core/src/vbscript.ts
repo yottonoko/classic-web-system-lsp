@@ -2515,12 +2515,13 @@ export function getVbscriptTypeDefinition(
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const symbol = resolveSymbolAt(parsed, offset, symbols);
   const type = symbolTypeRef(symbol) ?? typeRefAtOffset(parsed, offset, symbols);
-  if (!type || type.unionTypes || isLooseType(type)) {
+  const targetType = type ? typeWithoutNothing(type) : undefined;
+  if (!targetType || targetType.unionTypes || isLooseType(targetType)) {
     return undefined;
   }
   return symbols.find(
     (candidate) =>
-      candidate.kind === "class" && candidate.name.toLowerCase() === type.name.toLowerCase(),
+      candidate.kind === "class" && candidate.name.toLowerCase() === targetType.name.toLowerCase(),
   );
 }
 
@@ -4262,7 +4263,7 @@ function typeMemberCompletions(
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
 ): CompletionItem[] {
-  const memberSets = expandUnionType(type).map((candidate) =>
+  const memberSets = expandUnionType(typeWithoutNothing(type) ?? type).map((candidate) =>
     dedupeCompletions(typeMemberCompletionsForName(candidate.name, symbols, env)),
   );
   if (memberSets.length === 0) {
@@ -5219,7 +5220,7 @@ function memberSignature(
   memberName: string,
   env: VbTypeEnvironment,
 ): VbSignature | undefined {
-  const signatures = expandUnionType(type).map(
+  const signatures = expandUnionType(typeWithoutNothing(type) ?? type).map(
     (candidate) =>
       findType(env, candidate.name)?.members.find(
         (member) => member.name.toLowerCase() === memberName.toLowerCase(),
@@ -5233,7 +5234,7 @@ function memberType(
   memberName: string,
   env: VbTypeEnvironment,
 ): VbTypeRef | undefined {
-  const types = expandUnionType(type).map(
+  const types = expandUnionType(typeWithoutNothing(type) ?? type).map(
     (candidate) =>
       findType(env, candidate.name)?.members.find(
         (member) => member.name.toLowerCase() === memberName.toLowerCase(),
@@ -5249,7 +5250,7 @@ function memberReturnType(
   memberName: string,
   env: VbTypeEnvironment,
 ): VbTypeRef | undefined {
-  const returnTypes = expandUnionType(type).map(
+  const returnTypes = expandUnionType(typeWithoutNothing(type) ?? type).map(
     (candidate) => memberSignature(candidate, memberName, env)?.returnType,
   );
   return returnTypes.every(Boolean)
@@ -5261,7 +5262,7 @@ function memberReturnType(
 }
 
 function typeHasMember(type: VbTypeRef, memberName: string, env: VbTypeEnvironment): boolean {
-  return expandUnionType(type).every((candidate) => {
+  return expandUnionType(typeWithoutNothing(type) ?? type).every((candidate) => {
     const resolved = findType(env, candidate.name);
     return resolved
       ? resolved.members.some((member) => member.name.toLowerCase() === memberName.toLowerCase())
@@ -5454,6 +5455,11 @@ function formatTypeRef(type: VbTypeRef): string {
 
 function expandUnionType(type: VbTypeRef): VbTypeRef[] {
   return type.unionTypes ?? [type];
+}
+
+function typeWithoutNothing(type: VbTypeRef): VbTypeRef | undefined {
+  const types = expandUnionType(type).filter((item) => item.name.toLowerCase() !== "nothing");
+  return types.length === 0 ? undefined : unionTypeRef(types);
 }
 
 function mergeTypeRefs(
