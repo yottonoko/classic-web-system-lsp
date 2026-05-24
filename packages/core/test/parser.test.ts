@@ -185,6 +185,18 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     ).toBeDefined();
   });
 
+  it("masks ASP expressions inside HTML tag attributes", () => {
+    const source =
+      '<input type="checkbox" name="inactive" value="1" <%= CheckedAttribute(filter.IncludeInactive) %>>';
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    const html = docs.get("html");
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(1);
+    expect(html?.text).not.toContain("CheckedAttribute");
+    expect(html?.sourceMap.toVirtualOffset(source.indexOf("CheckedAttribute"))).toBeUndefined();
+    expect(html?.sourceMap.toVirtualOffset(source.lastIndexOf(">"))).toBeDefined();
+  });
+
   it("masks inline ASP inside CSS values and style attributes", () => {
     const source = `<style>.x { color: <%= themeColor %>; width: <% Response.Write width %>px; }</style>
 <div style="color: <%= themeColor %>; background: red"></div>`;

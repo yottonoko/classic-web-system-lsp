@@ -1785,18 +1785,28 @@ function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
   if (cached.analysis?.htmlDiagnostics?.key === key) {
     return cached.analysis.htmlDiagnostics.items;
   }
+  const htmlDoc = toTextDocument(virtual);
   const scanner = htmlService.createScanner(virtual.text);
   const diagnostics: Diagnostic[] = [];
   let token = scanner.scan();
   while (token !== TokenType.EOS) {
     const error = scanner.getTokenError();
     if (error) {
+      const startOffset = scanner.getTokenOffset();
+      const endOffset = scanner.getTokenEnd();
+      const range = virtualRangeStaysWithinSegment(virtual, startOffset, endOffset)
+        ? sourceRangeFromVirtualRange(virtual, {
+            start: htmlDoc.positionAt(startOffset),
+            end: htmlDoc.positionAt(endOffset),
+          })
+        : undefined;
+      if (!range) {
+        token = scanner.scan();
+        continue;
+      }
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
-        range: {
-          start: cached.source.positionAt(scanner.getTokenOffset()),
-          end: cached.source.positionAt(scanner.getTokenEnd()),
-        },
+        range,
         message: error,
         source: "asp-lsp-html",
       });
@@ -2638,32 +2648,37 @@ function jsInlayHints(cached: CachedDocument, range: Range): InlayHint[] {
   return jsVirtualDocuments(cached).flatMap((virtual) => {
     const sourceStart = cached.source.offsetAt(range.start);
     const sourceEnd = cached.source.offsetAt(range.end);
-    const segment = virtual.sourceMap.segments.find(
+    const segments = virtual.sourceMap.segments.filter(
       (candidate) => candidate.sourceStart < sourceEnd && candidate.sourceEnd > sourceStart,
     );
-    if (!segment) {
-      return [];
-    }
-    const start = segment.virtualStart + Math.max(0, sourceStart - segment.sourceStart);
-    const end = segment.virtualStart + Math.min(segment.sourceEnd, sourceEnd) - segment.sourceStart;
-    if (start === undefined || end === undefined || start >= end) {
+    if (segments.length === 0) {
       return [];
     }
     const project = createJsLanguageService(virtual, settings);
-    return project.service
-      .provideInlayHints(
-        jsVirtualFileName(virtual.uri),
-        { start, length: end - start },
-        {
-          includeInlayParameterNameHints: hints?.parameterNames === false ? "none" : "all",
-          includeInlayVariableTypeHints: hints?.variableTypes !== false,
-          includeInlayFunctionLikeReturnTypeHints: hints?.functionReturnTypes !== false,
-          includeInlayPropertyDeclarationTypeHints: hints?.variableTypes !== false,
-        },
-      )
+    const virtualDoc = toTextDocument(virtual);
+    const seen = new Set<string>();
+    return segments
+      .flatMap((segment) => {
+        const start = segment.virtualStart + Math.max(0, sourceStart - segment.sourceStart);
+        const end =
+          segment.virtualStart + Math.min(segment.sourceEnd, sourceEnd) - segment.sourceStart;
+        if (start >= end) {
+          return [];
+        }
+        return project.service.provideInlayHints(
+          jsVirtualFileName(virtual.uri),
+          { start, length: end - start },
+          {
+            includeInlayParameterNameHints: hints?.parameterNames === false ? "none" : "all",
+            includeInlayVariableTypeHints: hints?.variableTypes !== false,
+            includeInlayFunctionLikeReturnTypeHints: hints?.functionReturnTypes !== false,
+            includeInlayPropertyDeclarationTypeHints: hints?.variableTypes !== false,
+          },
+        );
+      })
       .map((hint): InlayHint | undefined => {
         const sourcePosition = virtual.sourceMap.toSourcePosition(
-          toTextDocument(virtual).positionAt(hint.position),
+          virtualDoc.positionAt(hint.position),
         );
         if (!sourcePosition || !isJavaScriptPosition(cached, sourcePosition)) {
           return undefined;
@@ -2674,7 +2689,12 @@ function jsInlayHints(cached: CachedDocument, range: Range): InlayHint[] {
             ?.map((part) => part.text)
             .join("")
             .trim();
-        return label ? { position: sourcePosition, label } : undefined;
+        const key = `${sourcePosition.line}:${sourcePosition.character}:${label}`;
+        if (!label || seen.has(key)) {
+          return undefined;
+        }
+        seen.add(key);
+        return { position: sourcePosition, label };
       })
       .filter((hint): hint is InlayHint => Boolean(hint));
   });

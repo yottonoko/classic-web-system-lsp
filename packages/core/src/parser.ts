@@ -494,17 +494,15 @@ function scanHtmlAndAsp(
     if (!tag.closing) {
       const styleAttributeRegions = styleAttributeRegionsFromTag(tag);
       tagRegions.push(...styleAttributeRegions);
-      for (const region of styleAttributeRegions) {
-        inlineRegions.push(
-          ...scanAspRegionsInRange(
-            text,
-            region.contentStart,
-            region.contentEnd,
-            diagnostics,
-            settings,
-          ),
-        );
-      }
+      inlineRegions.push(
+        ...scanAspRegionsInRange(
+          text,
+          tag.attributesStart,
+          tag.attributesEnd,
+          diagnostics,
+          settings,
+        ),
+      );
     }
     if ((tag.name === "script" || tag.name === "style") && !tag.closing && !tag.selfClosing) {
       const close = findElementClose(text, tag.name, tag.end);
@@ -716,6 +714,14 @@ function findTagEnd(text: string, offset: number): number {
       quote = char;
       continue;
     }
+    if (text.startsWith("<%", index)) {
+      const close = findAspClose(text, index + 2, text.length);
+      if (close === -1) {
+        return -1;
+      }
+      index = close + 1;
+      continue;
+    }
     if (char === ">") {
       return index;
     }
@@ -729,6 +735,11 @@ function parseAttributeSpans(text: string, start: number, end: number): Attribut
   while (cursor < end) {
     while (cursor < end && /[\s/]/.test(text[cursor])) {
       cursor += 1;
+    }
+    if (text.startsWith("<%", cursor)) {
+      const close = findAspClose(text, cursor + 2, end);
+      cursor = close === -1 ? end : close + 2;
+      continue;
     }
     const nameStart = cursor;
     if (!/[A-Za-z_:]/.test(text[cursor] ?? "")) {

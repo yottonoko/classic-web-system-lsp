@@ -942,11 +942,16 @@ function boot() {
 .card-<%= className %> { color: <%= themeColor %>; width: <% Response.Write width %>px; }
 </style>
 <div style="color: <%= themeColor %>; background: red"></div>
+<input type="checkbox" name="inactive" value="1" <%= CheckedAttribute(filter.IncludeInactive) %>>
+<input title='<%= Response.Write("x") %>'>
 <script>
 const clientValue = <%= serverValue %>;
 const label = "<%= serverLabel %>";
 const fromServer = <% Response.Write clientValue %>;
 const n = "<%= RenderTierOptions(selectedTier: filter.Tier) %>";
+const selectedTierValue = "gold";
+function markTier(tier) { return tier; }
+markTier(selectedTierValue);
 console.log(label, fromServer, client, document.querySelector(".card"));
 </script>`;
         server.notify("textDocument/didOpen", {
@@ -965,6 +970,7 @@ console.log(label, fromServer, client, document.querySelector(".card"));
         const serialized = JSON.stringify(pulled);
         expect(serialized).not.toContain("asp-lsp-css");
         expect(serialized).not.toContain("asp-lsp-typescript");
+        expect(serialized).not.toContain("asp-lsp-html");
 
         const cssCompletions = await server.request("textDocument/completion", {
           textDocument: { uri },
@@ -987,11 +993,21 @@ console.log(label, fromServer, client, document.querySelector(".card"));
         });
         expect(completionLabels(aspCompletions)).toContain("Write");
 
+        const tagAspCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(
+            source,
+            source.indexOf("Response.", source.indexOf("<input title")) + "Response.".length,
+          ),
+        });
+        expect(completionLabels(tagAspCompletions)).toContain("Write");
+
         const inlayHints = await server.request("textDocument/inlayHint", {
           textDocument: { uri },
           range: { start: { line: 0, character: 0 }, end: positionAt(source, source.length) },
         });
         expect(JSON.stringify(inlayHints)).not.toContain("selectedTier:");
+        expect(JSON.stringify(inlayHints)).toContain("tier:");
 
         const semanticTokens = await server.request("textDocument/semanticTokens/full", {
           textDocument: { uri },
