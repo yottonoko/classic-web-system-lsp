@@ -406,7 +406,7 @@ function withBuiltinCompletionLabel(
   return {
     ...item,
     labelDetails: item.labelDetails ?? {
-      detail: createLocalizer(locale).t("vb.completion.builtinLabel"),
+      description: createLocalizer(locale).t("vb.completion.builtinLabel"),
     },
   };
 }
