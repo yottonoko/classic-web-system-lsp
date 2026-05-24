@@ -1760,7 +1760,7 @@ export function getVbscriptHover(
     return undefined;
   }
   return appendDocumentationMarkdown(
-    markdownHover(vbscriptHoverSignature(symbol)),
+    markdownHover(vbscriptHoverSignature(parsed, symbol)),
     symbol.documentation,
     context.locale,
   );
@@ -1771,12 +1771,13 @@ function markdownHover(signature: string, description?: string): string {
   return description ? `${base}\n\n${description}` : base;
 }
 
-function vbscriptHoverSignature(symbol: VbSymbol): string {
+function vbscriptHoverSignature(parsed: AspParsedDocument, symbol: VbSymbol): string {
   const type = symbolTypeRef(symbol);
   const typeSuffix = type ? ` As ${formatTypeRef(type)}` : "";
   const arraySuffix = symbolArraySuffix(symbol);
   const visibility = symbol.visibility ? `${titleCaseKeyword(symbol.visibility)} ` : "";
   const parameters = `(${parameterLabels(symbol).join(", ")})`;
+  const globalPrefix = isGlobalVariableLikeSymbol(parsed, symbol) ? "(global) " : "";
   if (symbol.kind === "class") {
     return `Class ${symbol.name}`;
   }
@@ -1800,7 +1801,7 @@ function vbscriptHoverSignature(symbol: VbSymbol): string {
     return `${visibility || "Public "}${symbol.name}${arraySuffix}${typeSuffix}`;
   }
   if (symbol.kind === "constant") {
-    return `Const ${symbol.name}${typeSuffix}`;
+    return `${globalPrefix}Const ${symbol.name}${typeSuffix}`;
   }
   if (symbol.kind === "parameter") {
     return `${parameterLabel({
@@ -1809,7 +1810,7 @@ function vbscriptHoverSignature(symbol: VbSymbol): string {
       optional: symbol.optional,
     })}${typeSuffix}`;
   }
-  return `Dim ${symbol.name}${arraySuffix}${typeSuffix}`;
+  return `${globalPrefix}Dim ${symbol.name}${arraySuffix}${typeSuffix}`;
 }
 
 function symbolArraySuffix(symbol: VbSymbol): string {

@@ -1500,10 +1500,13 @@ End Sub
 
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
-    ).toContain("Dim unknownGlobal As Variant");
+    ).toContain("(global) Dim unknownGlobal As Variant");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("UnknownConst")), { symbols }),
-    ).toContain("Const UnknownConst As Variant");
+    ).toContain("(global) Const UnknownConst As Variant");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
+    ).not.toContain("VBScript variable");
     expect(
       analyzeVbscript(parsed, { symbols, typeChecking: "strict" }).diagnostics.some(
         (diagnostic) => diagnostic.source === "asp-lsp-vbscript-type",
@@ -1523,7 +1526,10 @@ Response.Write a
     const implicit = symbols.find((symbol) => symbol.name === "a");
     expect(implicit).toEqual(expect.objectContaining({ implicit: true, typeName: "Number" }));
     expect(getVbscriptHover(parsed, { line: 1, character: 0 }, { symbols })).toContain(
-      "Dim a As Number",
+      "(global) Dim a As Number",
+    );
+    expect(getVbscriptHover(parsed, { line: 1, character: 0 }, { symbols })).not.toContain(
+      "Implicit VBScript variable",
     );
     expect(
       getVbscriptInlayHints(

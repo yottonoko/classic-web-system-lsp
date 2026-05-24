@@ -1659,7 +1659,8 @@ Response.Write a
           textDocument: { uri },
           position: { line: 1, character: 0 },
         });
-        expect(JSON.stringify(hover)).toContain("Dim a As Number");
+        expect(JSON.stringify(hover)).toContain("(global) Dim a As Number");
+        expect(JSON.stringify(hover)).not.toContain("Implicit VBScript variable");
         const currencyHover = await server.request("textDocument/hover", {
           textDocument: { uri },
           position: positionAt(source, source.indexOf("CCur")),
@@ -1747,7 +1748,7 @@ both.SharedName
           textDocument: { uri },
           position: positionAt(source, source.indexOf("x = 1")),
         });
-        expect(JSON.stringify(hover)).toContain("Number | String");
+        expect(JSON.stringify(hover)).toContain("(global) Dim x As Number | String");
         expect(JSON.stringify(hover)).not.toContain("variable (global)");
 
         const inlayHints = await server.request("textDocument/inlayHint", {

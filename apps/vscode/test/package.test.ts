@@ -263,10 +263,15 @@ describe("VS Code extension package", () => {
     const grammar = JSON.parse(fs.readFileSync("syntaxes/vbscript.tmLanguage.json", "utf8")) as {
       repository?: {
         "vbscript-basic"?: {
-          patterns?: Array<{ match?: string; name?: string }>;
+          patterns?: Array<{
+            captures?: Record<string, { name?: string }>;
+            match?: string;
+            name?: string;
+          }>;
         };
       };
     };
+    const patterns = grammar.repository?.["vbscript-basic"]?.patterns ?? [];
     const keywordPattern = grammar.repository?.["vbscript-basic"]?.patterns?.find(
       (pattern) => pattern.name === "keyword.control.vbscript",
     )?.match;
@@ -282,6 +287,23 @@ describe("VS Code extension package", () => {
       (pattern) => pattern.name === "comment.line.rem.vbscript",
     )?.match;
     expect(remCommentPattern).toContain("Rem");
+    const functionDeclarationPattern = patterns.find(
+      (pattern) => pattern.captures?.["3"]?.name === "entity.name.function.vbscript",
+    );
+    expect(functionDeclarationPattern?.match).toContain("Function|Sub");
+    const propertyDeclarationPattern = patterns.find(
+      (pattern) => pattern.captures?.["4"]?.name === "entity.name.function.vbscript",
+    );
+    expect(propertyDeclarationPattern?.match).toContain("Property");
+    const typePattern = patterns.find(
+      (pattern) => pattern.captures?.["2"]?.name === "support.type.vbscript",
+    );
+    expect(typePattern?.match).toContain("String");
+    expect(typePattern?.match).toContain("Variant");
+    expect(typePattern?.match).toContain("Number");
+    expect(patterns.indexOf(functionDeclarationPattern!)).toBeLessThan(
+      patterns.findIndex((pattern) => pattern.name === "keyword.control.vbscript"),
+    );
 
     const classicAspGrammar = JSON.parse(
       fs.readFileSync("syntaxes/classic-asp.tmLanguage.json", "utf8"),
