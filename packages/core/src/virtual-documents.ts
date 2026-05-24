@@ -54,12 +54,7 @@ export function buildVirtualDocument(
     const start = text.length + prefix.length;
     const content = maskNestedRegions(sourceText, region, allRegions, languageId);
     text += prefix + content + suffix;
-    segments.push({
-      virtualStart: start,
-      virtualEnd: start + content.length,
-      sourceStart: region.contentStart,
-      sourceEnd: region.contentEnd,
-    });
+    segments.push(...sourceMapSegmentsForRegion(region, allRegions, start));
   }
   return {
     uri: `${uri}.${languageId}.virtual`,
@@ -67,6 +62,54 @@ export function buildVirtualDocument(
     text,
     sourceMap: createSourceMap(sourceText, text, segments),
   };
+}
+
+function sourceMapSegmentsForRegion(
+  owner: AspRegion,
+  allRegions: AspRegion[],
+  virtualStart: number,
+): SourceMapSegment[] {
+  const holes = allRegions
+    .filter((nested) => isNestedAspRegion(owner, nested))
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const segments: SourceMapSegment[] = [];
+  let cursor = owner.contentStart;
+  for (const hole of holes) {
+    if (cursor < hole.start) {
+      segments.push(sourceMapSegment(owner, virtualStart, cursor, hole.start));
+    }
+    cursor = Math.max(cursor, hole.end);
+  }
+  if (cursor < owner.contentEnd) {
+    segments.push(sourceMapSegment(owner, virtualStart, cursor, owner.contentEnd));
+  }
+  return segments;
+}
+
+function sourceMapSegment(
+  owner: AspRegion,
+  virtualStart: number,
+  sourceStart: number,
+  sourceEnd: number,
+): SourceMapSegment {
+  const offset = sourceStart - owner.contentStart;
+  return {
+    virtualStart: virtualStart + offset,
+    virtualEnd: virtualStart + offset + (sourceEnd - sourceStart),
+    sourceStart,
+    sourceEnd,
+  };
+}
+
+function isNestedAspRegion(owner: AspRegion, nested: AspRegion): boolean {
+  return (
+    nested !== owner &&
+    (nested.kind === "asp-block" ||
+      nested.kind === "asp-expression" ||
+      nested.kind === "asp-directive") &&
+    nested.start >= owner.contentStart &&
+    nested.end <= owner.contentEnd
+  );
 }
 
 function maskNestedRegions(

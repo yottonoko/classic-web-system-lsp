@@ -946,6 +946,7 @@ function boot() {
 const clientValue = <%= serverValue %>;
 const label = "<%= serverLabel %>";
 const fromServer = <% Response.Write clientValue %>;
+const n = "<%= RenderTierOptions(selectedTier: filter.Tier) %>";
 console.log(label, fromServer, client, document.querySelector(".card"));
 </script>`;
         server.notify("textDocument/didOpen", {
@@ -985,6 +986,31 @@ console.log(label, fromServer, client, document.querySelector(".card"));
           position: positionAt(source, source.indexOf("Response.") + "Response.".length),
         });
         expect(completionLabels(aspCompletions)).toContain("Write");
+
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: positionAt(source, source.length) },
+        });
+        expect(JSON.stringify(inlayHints)).not.toContain("selectedTier:");
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        const selectedTier = positionAt(source, source.indexOf("selectedTier"));
+        expect(
+          decoded.some(
+            (token) =>
+              token.line === selectedTier.line &&
+              token.character === selectedTier.character &&
+              token.tokenType === semanticTokenType.parameter,
+          ),
+        ).toBe(false);
+        expect(
+          decoded.some((token) =>
+            tokenMatches(source, token, "querySelector", semanticTokenType.method),
+          ),
+        ).toBe(true);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

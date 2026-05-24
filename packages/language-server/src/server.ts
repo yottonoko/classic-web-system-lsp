@@ -2665,13 +2665,16 @@ function jsInlayHints(cached: CachedDocument, range: Range): InlayHint[] {
         const sourcePosition = virtual.sourceMap.toSourcePosition(
           toTextDocument(virtual).positionAt(hint.position),
         );
+        if (!sourcePosition || !isJavaScriptPosition(cached, sourcePosition)) {
+          return undefined;
+        }
         const label =
           hint.text ||
           hint.displayParts
             ?.map((part) => part.text)
             .join("")
             .trim();
-        return sourcePosition && label ? { position: sourcePosition, label } : undefined;
+        return label ? { position: sourcePosition, label } : undefined;
       })
       .filter((hint): hint is InlayHint => Boolean(hint));
   });
@@ -3907,7 +3910,11 @@ function tsDiagnosticToLsp(
   const end = virtualDoc.positionAt(diagnostic.start + diagnostic.length);
   const sourceStart = virtual.sourceMap.toSourcePosition(start);
   const sourceEnd = virtual.sourceMap.toSourcePosition(end);
-  if (!sourceStart || !sourceEnd) {
+  if (
+    !sourceStart ||
+    !sourceEnd ||
+    !virtualRangeStaysWithinSegment(virtual, diagnostic.start, diagnostic.start + diagnostic.length)
+  ) {
     return undefined;
   }
   return {
@@ -3921,6 +3928,17 @@ function tsDiagnosticToLsp(
     code: diagnostic.code,
     source: override.source ?? "asp-lsp-typescript",
   };
+}
+
+function virtualRangeStaysWithinSegment(
+  virtual: VirtualDocument,
+  start: number,
+  end: number,
+): boolean {
+  const lastOffset = Math.max(start, end - 1);
+  return virtual.sourceMap.segments.some(
+    (segment) => start >= segment.virtualStart && lastOffset < segment.virtualEnd,
+  );
 }
 
 function tsDiagnosticKey(diagnostic: ts.Diagnostic): string {
@@ -6551,6 +6569,7 @@ function addEmbeddedSemanticTokens(
       addVirtualWordToken(
         tokens,
         cached.source,
+        cached,
         html,
         match.index + match[0].lastIndexOf(match[1]),
         match[1].length,
@@ -6567,6 +6586,7 @@ function addEmbeddedSemanticTokens(
         addVirtualWordToken(
           tokens,
           cached.source,
+          cached,
           css,
           match.index,
           match[1].length,
@@ -6604,6 +6624,7 @@ function addJavaScriptSemanticTokens(
     addVirtualWordToken(
       tokens,
       cached.source,
+      cached,
       virtual,
       spans[index],
       spans[index + 1],
@@ -6673,6 +6694,7 @@ function jsSemanticTokenModifiers(modifierSet: number): string[] | undefined {
 function addVirtualWordToken(
   tokens: SemanticTokenData[],
   document: TextDocument,
+  cached: CachedDocument,
   virtual: VirtualDocument,
   virtualOffset: number,
   length: number,
@@ -6682,10 +6704,37 @@ function addVirtualWordToken(
   tokenModifiers?: readonly string[],
 ): void {
   const sourceOffset = virtual.sourceMap.toSourceOffset(virtualOffset);
-  if (sourceOffset === undefined || sourceOffset < rangeStart || sourceOffset > rangeEnd) {
+  const sourceEndOffset = virtual.sourceMap.toSourceOffset(virtualOffset + length - 1);
+  if (
+    sourceOffset === undefined ||
+    sourceEndOffset === undefined ||
+    sourceOffset < rangeStart ||
+    sourceOffset > rangeEnd ||
+    !isVirtualTokenSourceRegion(cached, sourceOffset, sourceEndOffset, virtual.languageId)
+  ) {
     return;
   }
-  addSemanticToken(tokens, document, sourceOffset, length, tokenType, tokenModifiers);
+  addSemanticToken(
+    tokens,
+    document,
+    sourceOffset,
+    sourceEndOffset - sourceOffset + 1,
+    tokenType,
+    tokenModifiers,
+  );
+}
+
+function isVirtualTokenSourceRegion(
+  cached: CachedDocument,
+  sourceStart: number,
+  sourceEnd: number,
+  languageId: VirtualDocument["languageId"],
+): boolean {
+  const startRegion = findRegionAt(cached.parsed, sourceStart);
+  const endRegion = findRegionAt(cached.parsed, sourceEnd);
+  return Boolean(
+    startRegion && endRegion && startRegion === endRegion && startRegion.language === languageId,
+  );
 }
 
 function addSemanticToken(

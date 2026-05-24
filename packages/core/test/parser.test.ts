@@ -162,6 +162,29 @@ const dynamic = <% Response.Write clientValue %>;</script>`;
     expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(1);
   });
 
+  it("leaves inline ASP islands unmapped inside JavaScript virtual documents", () => {
+    const source = `<script>
+const n = "<%= RenderTierOptions(selectedTier: filter.Tier) %>";
+document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("is-hovered"));
+</script>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const javascript = buildVirtualDocuments(parsed).get("javascript");
+    expect(javascript).toBeTruthy();
+    const expression = parsed.regions.find((region) => region.kind === "asp-expression");
+    expect(expression).toBeTruthy();
+    expect(
+      javascript!.sourceMap.toVirtualOffset(source.indexOf("RenderTierOptions")),
+    ).toBeUndefined();
+    expect(javascript!.sourceMap.toVirtualOffset(source.indexOf("selectedTier"))).toBeUndefined();
+    expect(
+      javascript!.sourceMap.toSourceOffset(source.indexOf("<%=") - source.indexOf("<script>") - 7),
+    ).toBeUndefined();
+    expect(javascript!.sourceMap.toVirtualOffset(source.indexOf("const n"))).toBeDefined();
+    expect(
+      javascript!.sourceMap.toVirtualOffset(source.indexOf("document.querySelectorAll")),
+    ).toBeDefined();
+  });
+
   it("masks inline ASP inside CSS values and style attributes", () => {
     const source = `<style>.x { color: <%= themeColor %>; width: <% Response.Write width %>px; }</style>
 <div style="color: <%= themeColor %>; background: red"></div>`;
