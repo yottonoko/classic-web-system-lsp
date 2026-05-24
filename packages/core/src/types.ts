@@ -316,6 +316,12 @@ export interface VbParameterMetadata {
   optional: boolean;
 }
 
+export interface VbArrayDeclaration {
+  name: VbToken;
+  kind: "fixed" | "dynamic";
+  dimensions: string[];
+}
+
 export type VbCstNodeKind =
   | "Document"
   | "Class"
@@ -349,6 +355,7 @@ export interface VbCstNode {
   declarationKind?: "dim" | "redim" | "public" | "private" | "const" | "forEach";
   visibility?: "public" | "private";
   identifiers?: VbToken[];
+  arrayDeclarations?: VbArrayDeclaration[];
   parameters?: VbToken[];
   parameterMetadata?: VbParameterMetadata[];
   typeName?: string;

@@ -5863,20 +5863,59 @@ function vbscriptCodeActions(
   range: Range,
   context: CodeActionContext,
 ): CodeAction[] {
+  const actions: CodeAction[] = [];
+  if (codeActionAllows(context, CodeActionKind.QuickFix)) {
+    const splitDim = splitInitializedDimDeclarationAction(cached, range);
+    if (splitDim) {
+      actions.push(splitDim);
+    }
+  }
   if (!codeActionAllows(context, vbscriptExtractVariableKind)) {
-    return [];
+    return actions;
   }
   const edit = extractVbscriptVariableEdit(cached, range);
   if (!edit) {
-    return [];
+    return actions;
   }
-  return [
-    {
-      title: localizerForUri(cached.source.uri).t("server.refactor.extractVbscriptVariable"),
-      kind: vbscriptExtractVariableKind,
-      edit,
+  actions.push({
+    title: localizerForUri(cached.source.uri).t("server.refactor.extractVbscriptVariable"),
+    kind: vbscriptExtractVariableKind,
+    edit,
+  });
+  return actions;
+}
+
+function splitInitializedDimDeclarationAction(
+  cached: CachedDocument,
+  range: Range,
+): CodeAction | undefined {
+  const line = range.start.line;
+  if (range.end.line !== line) {
+    return undefined;
+  }
+  const text = lineText(cached.source, line);
+  const match = /^(\s*)Dim\s+([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/i.exec(text);
+  if (!match || /[_:]/.test(text) || !isVbscriptRange(cached, lineRange(cached.source, line))) {
+    return undefined;
+  }
+  const [, indent, name, value] = match;
+  if (!name || !value.trim()) {
+    return undefined;
+  }
+  return {
+    title: localizerForUri(cached.source.uri).t("server.quickfix.splitInitializedDim"),
+    kind: CodeActionKind.QuickFix,
+    edit: {
+      changes: {
+        [cached.source.uri]: [
+          {
+            range: lineRange(cached.source, line),
+            newText: `${indent}Dim ${name}\n${indent}${name} = ${value.trim()}`,
+          },
+        ],
+      },
     },
-  ];
+  };
 }
 
 function extractVbscriptVariableEdit(
@@ -6328,6 +6367,13 @@ function lineText(document: TextDocument, line: number): string {
       end: { line: line + 1, character: 0 },
     })
     .replace(/\r?\n$/, "");
+}
+
+function lineRange(document: TextDocument, line: number): Range {
+  return {
+    start: { line, character: 0 },
+    end: { line, character: lineText(document, line).length },
+  };
 }
 
 function textInRange(document: TextDocument, range: Range): string {

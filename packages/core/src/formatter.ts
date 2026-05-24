@@ -116,19 +116,36 @@ function formatVbscriptBlock(
     .split(/\r?\n/);
   let indentLevel = baseIndentLevel;
   const formatted: string[] = [];
+  const selectIndentStack: number[] = [];
+  let previousSignificantLine: string | undefined;
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.length === 0) {
       formatted.push("");
       continue;
     }
-    if (dedentsBeforeLine(trimmed)) {
+    if (/^End\s+Select\b/i.test(trimmed)) {
+      indentLevel = selectIndentStack.pop() ?? Math.max(baseIndentLevel, indentLevel - 1);
+    } else if (isCaseLine(trimmed)) {
+      const selectIndent = selectIndentStack.at(-1);
+      if (selectIndent !== undefined) {
+        indentLevel = previousSignificantLine
+          ? selectIndent + 1
+          : Math.max(baseIndentLevel, indentLevel);
+      }
+    } else if (dedentsBeforeLine(trimmed)) {
       indentLevel = Math.max(baseIndentLevel, indentLevel - 1);
     }
     formatted.push(`${unit.repeat(indentLevel)}${formatVbscriptLine(trimmed, options)}`);
-    if (indentsAfterLine(trimmed)) {
+    if (/^Select\b/i.test(trimmed)) {
+      selectIndentStack.push(indentLevel);
+      indentLevel += 1;
+    } else if (isCaseLine(trimmed)) {
+      indentLevel += 1;
+    } else if (indentsAfterLine(trimmed)) {
       indentLevel += 1;
     }
+    previousSignificantLine = trimmed;
   }
   return options.alignAssignments ? alignAssignments(formatted).join("\n") : formatted.join("\n");
 }
@@ -194,12 +211,14 @@ function dedentsBeforeLine(line: string): boolean {
 
 function indentsAfterLine(line: string): boolean {
   return (
-    (/^(Class|Sub|Function|Property\b.*\b(Get|Let|Set)|With|For\b|Do\b|While\b|Select\b)/i.test(
-      line,
-    ) ||
+    (/^(Class|Sub|Function|Property\b.*\b(Get|Let|Set)|With|For\b|Do\b|While\b)/i.test(line) ||
       /\bThen$/i.test(line)) &&
     !/^End\b/i.test(line)
   );
+}
+
+function isCaseLine(line: string): boolean {
+  return /^Case\b/i.test(line);
 }
 
 function oneLine(text: string): string {

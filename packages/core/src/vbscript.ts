@@ -30,6 +30,7 @@ import type {
   AspVbscriptComType,
   AspVbscriptIdentifierCase,
   AspVbscriptIdentifierKind,
+  VbArrayDeclaration,
   VbCstNode,
   VbParameterMetadata,
   VbParameterMode,
@@ -67,6 +68,10 @@ export interface VbSymbol {
   parameterMode?: VbParameterMode;
   optional?: boolean;
   implicit?: boolean;
+  array?: {
+    kind: "fixed" | "dynamic";
+    dimensions: string[];
+  };
   documentation?: VbDocumentation;
 }
 
@@ -395,6 +400,7 @@ const externalObjectMembers: Record<string, CompletionItem[]> = {
 };
 
 const intrinsicTypeNames = new Set([
+  "array",
   "string",
   "number",
   "boolean",
@@ -680,6 +686,7 @@ const vbKeywords = new Set([
   "property",
   "public",
   "redim",
+  "rem",
   "select",
   "set",
   "step",
@@ -968,6 +975,14 @@ function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
       tokens.push(token("comment", text, start, index, baseOffset));
       continue;
     }
+    if (isRemCommentStart(text, index)) {
+      index += 3;
+      while (index < text.length && text[index] !== "\r" && text[index] !== "\n") {
+        index += 1;
+      }
+      tokens.push(token("comment", text, start, index, baseOffset));
+      continue;
+    }
     if (char === '"') {
       index += 1;
       while (index < text.length) {
@@ -1028,6 +1043,21 @@ function isIdentifierStart(char: string): boolean {
 
 function isIdentifierPart(char: string): boolean {
   return /[A-Za-z0-9_]/.test(char);
+}
+
+function isRemCommentStart(text: string, index: number): boolean {
+  if (text.slice(index, index + 3).toLowerCase() !== "rem") {
+    return false;
+  }
+  const after = text[index + 3];
+  if (after && isIdentifierPart(after)) {
+    return false;
+  }
+  let cursor = index - 1;
+  while (cursor >= 0 && (text[cursor] === " " || text[cursor] === "\t")) {
+    cursor -= 1;
+  }
+  return cursor < 0 || text[cursor] === "\n" || text[cursor] === "\r" || text[cursor] === ":";
 }
 
 function isTriviaToken(token: VbToken): boolean {
@@ -1184,6 +1214,7 @@ function createDeclarationNode(
 ): VbCstNode {
   const endIndex = statementEndIndex(tokens, startIndex - 1);
   const identifiers: VbToken[] = [];
+  const arrayDeclarations: VbArrayDeclaration[] = [];
   let canReadIdentifier = true;
   for (let index = startIndex; index <= endIndex; index += 1) {
     const current = tokens[index];
@@ -1203,6 +1234,10 @@ function createDeclarationNode(
     }
     if (current.kind === "identifier" && canReadIdentifier) {
       identifiers.push(current);
+      const array = readArrayDeclaration(tokens, index, endIndex, declarationKind);
+      if (array) {
+        arrayDeclarations.push(array);
+      }
       canReadIdentifier = false;
     }
   }
@@ -1215,7 +1250,76 @@ function createDeclarationNode(
     declarationKind,
     visibility,
     identifiers,
+    arrayDeclarations,
   };
+}
+
+function readArrayDeclaration(
+  tokens: VbToken[],
+  identifierIndex: number,
+  endIndex: number,
+  declarationKind: NonNullable<VbCstNode["declarationKind"]>,
+): VbArrayDeclaration | undefined {
+  let openIndex = identifierIndex + 1;
+  while (openIndex <= endIndex && isWhitespaceOrNewline(tokens[openIndex])) {
+    openIndex += 1;
+  }
+  if (tokens[openIndex]?.text !== "(") {
+    return undefined;
+  }
+  let depth = 0;
+  let closeIndex = -1;
+  for (let index = openIndex; index <= endIndex; index += 1) {
+    if (tokens[index]?.text === "(") {
+      depth += 1;
+    } else if (tokens[index]?.text === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        closeIndex = index;
+        break;
+      }
+    }
+  }
+  if (closeIndex === -1) {
+    return undefined;
+  }
+  const dimensions = arrayDimensionTexts(tokens.slice(openIndex + 1, closeIndex));
+  return {
+    name: tokens[identifierIndex],
+    kind: declarationKind === "redim" || dimensions.length === 0 ? "dynamic" : "fixed",
+    dimensions,
+  };
+}
+
+function arrayDimensionTexts(tokens: VbToken[]): string[] {
+  const dimensions: string[] = [];
+  let current: VbToken[] = [];
+  let depth = 0;
+  const flush = (): void => {
+    const text = current
+      .filter((token) => !isWhitespaceOrNewline(token))
+      .map((token) => token.text)
+      .join("")
+      .trim();
+    if (text) {
+      dimensions.push(text);
+    }
+    current = [];
+  };
+  for (const token of tokens) {
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")") {
+      depth = Math.max(0, depth - 1);
+    }
+    if (token.text === "," && depth === 0) {
+      flush();
+      continue;
+    }
+    current.push(token);
+  }
+  flush();
+  return dimensions;
 }
 
 function createStatementNode(
@@ -1623,6 +1727,7 @@ function markdownHover(signature: string, description?: string): string {
 function vbscriptHoverSignature(symbol: VbSymbol): string {
   const type = symbolTypeRef(symbol);
   const typeSuffix = type ? ` As ${formatTypeRef(type)}` : "";
+  const arraySuffix = symbolArraySuffix(symbol);
   const visibility = symbol.visibility ? `${titleCaseKeyword(symbol.visibility)} ` : "";
   const parameters = `(${parameterLabels(symbol).join(", ")})`;
   if (symbol.kind === "class") {
@@ -1645,7 +1750,7 @@ function vbscriptHoverSignature(symbol: VbSymbol): string {
       : `${visibility}${keyword} ${symbol.name}${parameters}${typeSuffix}`;
   }
   if (symbol.kind === "field") {
-    return `${visibility || "Public "}${symbol.name}${typeSuffix}`;
+    return `${visibility || "Public "}${symbol.name}${arraySuffix}${typeSuffix}`;
   }
   if (symbol.kind === "constant") {
     return `Const ${symbol.name}${typeSuffix}`;
@@ -1657,7 +1762,14 @@ function vbscriptHoverSignature(symbol: VbSymbol): string {
       optional: symbol.optional,
     })}${typeSuffix}`;
   }
-  return `Dim ${symbol.name}${typeSuffix}`;
+  return `Dim ${symbol.name}${arraySuffix}${typeSuffix}`;
+}
+
+function symbolArraySuffix(symbol: VbSymbol): string {
+  if (!symbol.array) {
+    return "";
+  }
+  return `(${symbol.array.dimensions.join(", ")})`;
 }
 
 function parameterLabels(symbol: VbSymbol): string[] {
@@ -2602,6 +2714,7 @@ function addSymbolsFromVbNode(
     const identifiers = node.identifiers ?? (node.nameToken ? [node.nameToken] : []);
     const variableDocumentation = identifiers.length === 1 ? documentation : undefined;
     for (const identifier of identifiers) {
+      const array = node.arrayDeclarations?.find((item) => item.name === identifier);
       symbols.push({
         name: identifier.text,
         kind: memberOf && baseKind === "variable" ? "field" : baseKind,
@@ -2615,6 +2728,15 @@ function addSymbolsFromVbNode(
           : memberOf
             ? rangeFromOffsets(parsed.text, node.start, node.end)
             : undefined,
+        type: array ? typeRef("Array") : undefined,
+        typeName: array ? "Array" : undefined,
+        explicitType: Boolean(array),
+        array: array
+          ? {
+              kind: array.kind,
+              dimensions: array.dimensions,
+            }
+          : undefined,
         visibility: node.visibility,
         documentation: variableDocumentation,
       });
@@ -4719,7 +4841,6 @@ function isObjectTypeName(name: string): boolean {
   const lower = name.toLowerCase();
   return (
     lower === "object" ||
-    lower === "array" ||
     classicAspTypeNames.has(lower) ||
     (!intrinsicTypeNames.has(lower) &&
       lower !== "string" &&

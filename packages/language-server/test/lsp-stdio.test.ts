@@ -2699,6 +2699,48 @@ Response.Write Request.QueryString("name")
       }
     });
 
+    it("returns a VBScript quick fix for initialized Dim declarations", async () => {
+      const source = `<%
+Dim value = 1
+Response.Write value
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-split-dim.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, source.indexOf("value")),
+            end: positionAt(source, source.indexOf("value") + "value".length),
+          },
+          context: { diagnostics: [], only: ["quickfix"] },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Split initialized Dim declaration");
+        expect(serialized).toContain("Dim value\\nvalue = 1");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("avoids existing VBScript extract variable names", async () => {
       const source = `<%
 Dim extractedValue
@@ -3573,6 +3615,7 @@ Response.Write foo
       const marked = markedDocument(`<!-- #include file="missing.inc" -->
 <%
 Option Explicit
+Dim initialized = 1
 Function Save()
 End Function
 Response.Write miss▮ingName
@@ -3611,6 +3654,15 @@ Response.Write miss▮ingName
         const serializedActions = JSON.stringify(actions);
         expect(serializedActions).toContain("missingName を Dim で宣言");
         expect(serializedActions).toContain("不足している include missing.inc を作成");
+        const splitDimActions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(marked.text, marked.text.indexOf("initialized")),
+            end: positionAt(marked.text, marked.text.indexOf("initialized") + "initialized".length),
+          },
+          context: { diagnostics: [], only: ["quickfix"] },
+        });
+        expect(JSON.stringify(splitDimActions)).toContain("初期化つき Dim 宣言を分割");
 
         const codeLens = await server.request("textDocument/codeLens", {
           textDocument: { uri },

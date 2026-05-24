@@ -266,6 +266,10 @@ describe("VS Code extension package", () => {
     expect(keywordPattern).toContain("As");
     expect(keywordPattern).toContain("ElseIf");
     expect(keywordPattern).toContain("Is");
+    const remCommentPattern = grammar.repository?.["vbscript-basic"]?.patterns?.find(
+      (pattern) => pattern.name === "comment.line.rem.vbscript",
+    )?.match;
+    expect(remCommentPattern).toContain("Rem");
 
     const classicAspGrammar = JSON.parse(
       fs.readFileSync("syntaxes/classic-asp.tmLanguage.json", "utf8"),

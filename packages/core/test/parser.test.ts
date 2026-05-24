@@ -346,6 +346,21 @@ describe("VBScript analysis", () => {
     ).toBe(true);
   });
 
+  it("treats Rem as a VBScript line comment only at statement starts", () => {
+    const cst = parseVbscriptCst(`Rem leading comment
+value = 1 : Rem trailing comment
+Reminder = 2
+value = Rem`);
+    const comments = cst.tokens
+      .filter((token) => token.kind === "comment")
+      .map((token) => token.text);
+    expect(comments).toEqual(["Rem leading comment", "Rem trailing comment"]);
+    expect(
+      cst.tokens.some((token) => token.kind === "identifier" && token.text === "Reminder"),
+    ).toBe(true);
+    expect(cst.tokens.some((token) => token.kind === "keyword" && token.text === "Rem")).toBe(true);
+  });
+
   it("builds VBScript statement CST nodes for blocks, calls and assignments", () => {
     const cst = parseVbscriptCst(`If ready Then
   Call Save(name)
@@ -382,6 +397,39 @@ Response. %>`;
         (item) => item.label === "customerName",
       ),
     ).toBe(true);
+  });
+
+  it("identifies fixed and dynamic VBScript arrays as Array symbols", () => {
+    const source = `<%
+Dim fixedItems(10)
+Dim dynamicItems()
+ReDim resizedItems(5)
+%>`;
+    const parsed = parseAspDocument("file:///site/arrays.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const fixed = symbols.find((symbol) => symbol.name === "fixedItems");
+    const dynamic = symbols.find((symbol) => symbol.name === "dynamicItems");
+    const resized = symbols.find((symbol) => symbol.name === "resizedItems");
+    expect(fixed).toMatchObject({
+      typeName: "Array",
+      array: { kind: "fixed", dimensions: ["10"] },
+    });
+    expect(dynamic).toMatchObject({
+      typeName: "Array",
+      array: { kind: "dynamic", dimensions: [] },
+    });
+    expect(resized).toMatchObject({
+      typeName: "Array",
+      array: { kind: "dynamic", dimensions: ["5"] },
+    });
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("fixedItems") + 2), { symbols }),
+    ).toContain("Dim fixedItems(10) As Array");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("dynamicItems") + 2), {
+        symbols,
+      }),
+    ).toContain("Dim dynamicItems() As Array");
   });
 
   it("keeps VBScript lookup and completions case-insensitive", () => {
@@ -1702,6 +1750,27 @@ longerName=2
       alignAssignments: true,
     });
     expect(edits[0].newText).toContain("first      = 1\nlongerName = 2");
+  });
+
+  it("formats Select Case blocks with case bodies indented", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Select Case kind
+Case "a"
+Response.Write "a"
+Case Else
+Response.Write "else"
+End Select
+%>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toContain(`Select Case kind
+  Case "a"
+    Response.Write "a"
+  Case Else
+    Response.Write "else"
+End Select`);
   });
 
   it("toggles line comments by embedded Classic ASP region", () => {
