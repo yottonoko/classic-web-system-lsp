@@ -4082,6 +4082,166 @@ End If
       }
     });
 
+    it("formats embedded languages relative to tag indentation by default", async () => {
+      const source = `<html>
+<body>
+  <style>.x{color:red}</style>
+  <script>
+function greet(){
+console.log("x");
+}
+  </script>
+  <%
+If enabled Then
+Response.Write "ok"
+End If
+  %>
+</body>
+</html>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { format: { indentSize: 2 } } },
+        });
+        const uri = "file:///tmp/format-tag-indent.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const fullEdits = await server.request("textDocument/formatting", {
+          textDocument: { uri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const fullText = (fullEdits as Array<{ newText?: string }>)[0]?.newText ?? source;
+        expect(fullText).toContain(`  <style>
+    .x {
+      color: red
+    }
+  </style>`);
+        expect(fullText).toContain(`  <script>
+    function greet() {
+      console.log("x");
+    }
+  </script>`);
+        expect(fullText).toContain(`  <%
+  If enabled Then
+    Response.Write "ok"
+  End If
+  %>`);
+
+        const rangeEdits = await server.request("textDocument/rangeFormatting", {
+          textDocument: { uri },
+          range: {
+            start: { line: 2, character: 0 },
+            end: { line: 3, character: 0 },
+          },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const rangeText = JSON.stringify(rangeEdits);
+        expect(rangeText).toContain(".x {");
+        expect(rangeText).not.toContain("<html>");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("can ignore embedded tag indentation per language", async () => {
+      const source = `<html>
+<body>
+  <style>.x{color:red}</style>
+  <script>
+function greet(){
+console.log("x");
+}
+  </script>
+  <%
+If enabled Then
+Response.Write "ok"
+End If
+  %>
+</body>
+</html>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+
+        const formatWithSettings = async (uri: string, format: Record<string, unknown>) => {
+          server.notify("workspace/didChangeConfiguration", {
+            settings: { aspLsp: { format: { indentSize: 2, ...format } } },
+          });
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri,
+              languageId: "classic-asp",
+              version: 1,
+              text: source,
+            },
+          });
+          await server.waitForNotification("textDocument/publishDiagnostics");
+          const edits = await server.request("textDocument/formatting", {
+            textDocument: { uri },
+            options: { tabSize: 2, insertSpaces: true },
+          });
+          return (edits as Array<{ newText?: string }>)[0]?.newText ?? source;
+        };
+
+        const cssIgnored = await formatWithSettings("file:///tmp/format-ignore-css.asp", {
+          ignoreCssTagIndent: true,
+        });
+        expect(cssIgnored).toContain(`  <style>
+.x {`);
+        expect(cssIgnored).toContain(`  <script>
+    function greet() {`);
+        expect(cssIgnored).toContain(`  <%
+  If enabled Then`);
+
+        const jsIgnored = await formatWithSettings("file:///tmp/format-ignore-js.asp", {
+          ignoreJavaScriptTagIndent: true,
+        });
+        expect(jsIgnored).toContain(`  <style>
+    .x {`);
+        expect(jsIgnored).toContain(`  <script>
+function greet() {`);
+        expect(jsIgnored).toContain(`  <%
+  If enabled Then`);
+
+        const vbscriptIgnored = await formatWithSettings("file:///tmp/format-ignore-vbs.asp", {
+          ignoreVbscriptTagIndent: true,
+        });
+        expect(vbscriptIgnored).toContain(`  <style>
+    .x {`);
+        expect(vbscriptIgnored).toContain(`  <script>
+    function greet() {`);
+        expect(vbscriptIgnored).toContain(`  <%
+If enabled Then`);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("emits verbose LSP timing breakdowns when debug output is verbose", async () => {
       const source = `<html>
 <head>

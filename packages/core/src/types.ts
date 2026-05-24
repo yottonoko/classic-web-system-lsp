@@ -49,6 +49,9 @@ export interface AspFormatSettings {
   uppercaseKeywords?: boolean;
   alignAssignments?: boolean;
   onSave?: boolean;
+  ignoreVbscriptTagIndent?: boolean;
+  ignoreCssTagIndent?: boolean;
+  ignoreJavaScriptTagIndent?: boolean;
 }
 
 export interface AspDiagnosticsSettings {

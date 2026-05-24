@@ -4560,6 +4560,9 @@ function normalizeFormatSettings(
     uppercaseKeywords: record.uppercaseKeywords === true,
     alignAssignments: record.alignAssignments === true,
     onSave: record.onSave === true,
+    ignoreVbscriptTagIndent: record.ignoreVbscriptTagIndent === true,
+    ignoreCssTagIndent: record.ignoreCssTagIndent === true,
+    ignoreJavaScriptTagIndent: record.ignoreJavaScriptTagIndent === true,
   };
 }
 
@@ -4760,20 +4763,40 @@ function formatCssRegion(
   if (localStart >= localEnd) {
     return [];
   }
-  return cssService
-    .format(
-      doc,
-      { start: doc.positionAt(localStart), end: doc.positionAt(localEnd) },
+  const edits = cssService.format(
+    doc,
+    { start: doc.positionAt(localStart), end: doc.positionAt(localEnd) },
+    {
+      tabSize: options.indentSize ?? options.tabSize,
+      insertSpaces: (options.indentStyle ?? (options.insertSpaces ? "space" : "tab")) !== "tab",
+    },
+  );
+  const offsetEdits = edits.map((edit) => ({
+    start: offsetAtText(content, edit.range.start),
+    end: offsetAtText(content, edit.range.end),
+    newText: edit.newText,
+  }));
+  if (region.kind === "style" && localStart === 0 && localEnd === content.length) {
+    return [
       {
-        tabSize: options.indentSize ?? options.tabSize,
-        insertSpaces: (options.indentStyle ?? (options.insertSpaces ? "space" : "tab")) !== "tab",
+        start: region.contentStart,
+        end: region.contentEnd,
+        newText: wrapEmbeddedElementContent(
+          text,
+          region,
+          options,
+          applyOffsetEdits(content, offsetEdits),
+          options.ignoreCssTagIndent === true,
+          false,
+        ),
       },
-    )
-    .map((edit) => ({
-      start: region.contentStart + offsetAtText(content, edit.range.start),
-      end: region.contentStart + offsetAtText(content, edit.range.end),
-      newText: edit.newText,
-    }));
+    ];
+  }
+  return offsetEdits.map((edit) => ({
+    start: region.contentStart + edit.start,
+    end: region.contentStart + edit.end,
+    newText: edit.newText,
+  }));
 }
 
 function javaScriptFormattingEdits(
@@ -4819,18 +4842,48 @@ function formatJavaScriptRegion(
   if (localStart >= localEnd) {
     return [];
   }
-  const changes =
-    localStart === 0 && localEnd === content.length
-      ? getJavaScriptFormattingService(content).getFormattingEditsForDocument(
-          "__asp_lsp_format.js",
-          tsFormatOptions(options),
-        )
-      : getJavaScriptFormattingService(content).getFormattingEditsForRange(
-          "__asp_lsp_format.js",
-          localStart,
-          localEnd,
-          tsFormatOptions(options),
-        );
+  const formatOptions = tsFormatOptions(
+    options,
+    embeddedBodyBaseIndentSize(text, region, options, options.ignoreJavaScriptTagIndent === true),
+  );
+  if (localStart === 0 && localEnd === content.length) {
+    const trimmedContent = content.trim();
+    if (trimmedContent.length === 0) {
+      return [];
+    }
+    const changes = getJavaScriptFormattingService(trimmedContent).getFormattingEditsForDocument(
+      "__asp_lsp_format.js",
+      formatOptions,
+    );
+    const formatted = applyOffsetEdits(
+      trimmedContent,
+      changes.map((change) => ({
+        start: change.span.start,
+        end: change.span.start + change.span.length,
+        newText: change.newText,
+      })),
+    );
+    return [
+      {
+        start: region.contentStart,
+        end: region.contentEnd,
+        newText: wrapEmbeddedElementContent(
+          text,
+          region,
+          options,
+          formatted,
+          options.ignoreJavaScriptTagIndent === true,
+          true,
+        ),
+      },
+    ];
+  }
+  const changes = getJavaScriptFormattingService(content).getFormattingEditsForRange(
+    "__asp_lsp_format.js",
+    localStart,
+    localEnd,
+    formatOptions,
+  );
   return changes.map((change) => ({
     start: region.contentStart + change.span.start,
     end: region.contentStart + change.span.start + change.span.length,
@@ -4859,9 +4912,13 @@ function getJavaScriptFormattingService(text: string): ts.LanguageService {
   });
 }
 
-function tsFormatOptions(options: AspFormattingOptions): ts.FormatCodeSettings {
+function tsFormatOptions(
+  options: AspFormattingOptions,
+  baseIndentSize?: number,
+): ts.FormatCodeSettings {
   const indentStyle = options.indentStyle ?? (options.insertSpaces ? "space" : "tab");
   return {
+    baseIndentSize,
     indentSize: options.indentSize ?? options.tabSize,
     tabSize: options.tabSize,
     convertTabsToSpaces: indentStyle !== "tab",
@@ -4871,6 +4928,70 @@ function tsFormatOptions(options: AspFormattingOptions): ts.FormatCodeSettings {
 
 function isJavaScriptLikeRegion(region: AspRegion): boolean {
   return region.language === "javascript" || region.language === "jscript";
+}
+
+function wrapEmbeddedElementContent(
+  text: string,
+  region: AspRegion,
+  options: AspFormattingOptions,
+  content: string,
+  ignoreTagIndent: boolean,
+  contentAlreadyIndented: boolean,
+): string {
+  const trimmed = contentAlreadyIndented ? trimOuterBlankLines(content) : content.trim();
+  if (trimmed.length === 0) {
+    return "";
+  }
+  const tagLevel = ignoreTagIndent ? 0 : leadingIndentLevel(text, region.start, options);
+  const tagIndent = indentUnit(options).repeat(tagLevel);
+  const body =
+    contentAlreadyIndented || ignoreTagIndent
+      ? trimmed
+      : indentLines(trimmed, indentUnit(options).repeat(tagLevel + 1));
+  return `\n${body}\n${tagIndent}`;
+}
+
+function trimOuterBlankLines(text: string): string {
+  return text
+    .replace(/^\s*\r?\n/, "")
+    .replace(/\r?\n\s*$/, "")
+    .trimEnd();
+}
+
+function embeddedBodyBaseIndentSize(
+  text: string,
+  region: AspRegion,
+  options: AspFormattingOptions,
+  ignoreTagIndent: boolean,
+): number {
+  if (ignoreTagIndent) {
+    return 0;
+  }
+  return leadingIndentWidth(text, region.start, options) + (options.indentSize ?? options.tabSize);
+}
+
+function indentLines(text: string, indent: string): string {
+  return text
+    .split("\n")
+    .map((line) => (line.length === 0 ? "" : `${indent}${line}`))
+    .join("\n");
+}
+
+function leadingIndentLevel(text: string, offset: number, options: AspFormattingOptions): number {
+  return Math.floor(
+    leadingIndentWidth(text, offset, options) / (options.indentSize ?? options.tabSize),
+  );
+}
+
+function leadingIndentWidth(text: string, offset: number, options: AspFormattingOptions): number {
+  const lineStart = lineStartOffset(text, offset);
+  const indent = text.slice(lineStart, offset).match(/^[\t ]*/)?.[0] ?? "";
+  return [...indent].reduce((width, char) => width + (char === "\t" ? options.tabSize : 1), 0);
+}
+
+function indentUnit(options: AspFormattingOptions): string {
+  const style = options.indentStyle ?? (options.insertSpaces ? "space" : "tab");
+  return style === "tab" ? "\t" : " ".repeat(options.indentSize ?? options.tabSize);
 }
 
 function applyTextEdits(text: string, edits: TextEdit[]): string {

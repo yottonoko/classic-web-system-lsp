@@ -1903,6 +1903,67 @@ a = _
     "bbb"`);
   });
 
+  it("formats indented ASP blocks relative to their tag indentation", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<div>
+    <%
+If enabled Then
+Response.Write "ok"
+End If
+    %>
+</div>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toContain(`    <%
+    If enabled Then
+      Response.Write "ok"
+    End If
+    %>`);
+  });
+
+  it("can ignore tag indentation when formatting ASP blocks", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<div>
+    <%
+If enabled Then
+Response.Write "ok"
+End If
+    %>
+</div>`,
+    );
+    const edits = formatAspDocument(parsed, {
+      tabSize: 2,
+      insertSpaces: true,
+      ignoreVbscriptTagIndent: true,
+    });
+    expect(edits[0].newText).toContain(`    <%
+If enabled Then
+  Response.Write "ok"
+End If
+%>`);
+  });
+
+  it("formats server-side VBScript tags relative to their tag indentation", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<div>
+  <script runat="server">
+If enabled Then
+Response.Write "ok"
+End If
+  </script>
+</div>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toContain(`  <script runat="server">
+    If enabled Then
+      Response.Write "ok"
+    End If
+  </script>`);
+  });
+
   it("formats Select Case blocks with case bodies indented", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

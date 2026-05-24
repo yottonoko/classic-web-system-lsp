@@ -106,6 +106,9 @@ describe("VS Code extension package", () => {
     for (const setting of [
       "aspLsp.format.indentSize",
       "aspLsp.format.indentStyle",
+      "aspLsp.format.ignoreVbscriptTagIndent",
+      "aspLsp.format.ignoreCssTagIndent",
+      "aspLsp.format.ignoreJavaScriptTagIndent",
       "aspLsp.format.onSave",
     ]) {
       expect(manifest.contributes?.configuration?.properties?.[setting]).toEqual(
@@ -115,6 +118,15 @@ describe("VS Code extension package", () => {
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.format.indentSize"]).toEqual(
       expect.objectContaining({ type: ["number", "null"], default: null, minimum: 1 }),
     );
+    for (const setting of [
+      "aspLsp.format.ignoreVbscriptTagIndent",
+      "aspLsp.format.ignoreCssTagIndent",
+      "aspLsp.format.ignoreJavaScriptTagIndent",
+    ]) {
+      expect(manifest.contributes?.configuration?.properties?.[setting]).toEqual(
+        expect.objectContaining({ type: "boolean", default: false }),
+      );
+    }
     expect(manifest.repository?.url).toContain("github.com/yottonoko/asp-lsp");
     expect(manifest.icon).toBe("assets/icon.png");
     expect(fs.existsSync(manifest.icon ?? "")).toBe(true);

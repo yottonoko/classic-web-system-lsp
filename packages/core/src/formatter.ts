@@ -93,15 +93,21 @@ function formatRegion(
     if (!content.includes("\n") && !content.includes("\r")) {
       return `<% ${formatVbscriptLine(content.trim(), options)} %>`;
     }
-    return `<%\n${formatVbscriptBlock(content, options, leadingIndent(parsed.text, region.start))}\n%>`;
+    const baseIndentLevel = vbscriptTagIndentLevel(parsed.text, region, options);
+    return `<%\n${formatVbscriptBlock(content, options, baseIndentLevel)}\n${indentUnit(options).repeat(baseIndentLevel)}%>`;
   }
   const before = parsed.text.slice(region.start, region.contentStart);
   const after = parsed.text.slice(region.contentEnd, region.end);
-  return `${before}${formatVbscriptBlock(
-    parsed.text.slice(region.contentStart, region.contentEnd),
+  const content = parsed.text.slice(region.contentStart, region.contentEnd);
+  if (!content.includes("\n") && !content.includes("\r")) {
+    return `${before}${formatVbscriptLine(content.trim(), options)}${after}`;
+  }
+  const baseIndentLevel = vbscriptTagIndentLevel(parsed.text, region, options);
+  return `${before}\n${formatVbscriptBlock(
+    content,
     options,
-    leadingIndent(parsed.text, region.start) + 1,
-  )}${after}`;
+    baseIndentLevel + (options.ignoreVbscriptTagIndent === true ? 0 : 1),
+  )}\n${indentUnit(options).repeat(baseIndentLevel)}${after}`;
 }
 
 function formatVbscriptBlock(
@@ -277,14 +283,33 @@ function alignAssignments(lines: string[]): string[] {
   return result;
 }
 
-function leadingIndent(text: string, offset: number): number {
+function vbscriptTagIndentLevel(
+  text: string,
+  region: AspRegion,
+  options: AspFormattingOptions,
+): number {
+  return options.ignoreVbscriptTagIndent === true
+    ? 0
+    : leadingIndentLevel(text, region.start, options);
+}
+
+function leadingIndentLevel(text: string, offset: number, options: AspFormattingOptions): number {
   const lineStart = lineStartOffset(text, offset);
-  return Math.floor(
-    (text
-      .slice(lineStart, offset)
-      .match(/^[\t ]*/)?.[0]
-      .replaceAll("\t", "  ").length ?? 0) / 2,
-  );
+  const indent = text.slice(lineStart, offset).match(/^[\t ]*/)?.[0] ?? "";
+  return Math.floor(indentWidth(indent, options) / indentSize(options));
+}
+
+function indentSize(options: AspFormattingOptions): number {
+  return options.indentSize ?? options.tabSize;
+}
+
+function indentWidth(indent: string, options: AspFormattingOptions): number {
+  const tabSize = options.tabSize;
+  let width = 0;
+  for (const char of indent) {
+    width += char === "\t" ? tabSize : 1;
+  }
+  return width;
 }
 
 function lineStartOffset(text: string, offset: number): number {

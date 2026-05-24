@@ -283,6 +283,30 @@
           "default": false,
           "description": "%configuration.format.alignAssignments.description%"
         },
+        "aspLsp.format.ignoreVbscriptTagIndent": {
+          "type": "boolean",
+          "default": false,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.ignoreVbscriptTagIndent.description%"
+        },
+        "aspLsp.format.ignoreCssTagIndent": {
+          "type": "boolean",
+          "default": false,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.ignoreCssTagIndent.description%"
+        },
+        "aspLsp.format.ignoreJavaScriptTagIndent": {
+          "type": "boolean",
+          "default": false,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.ignoreJavaScriptTagIndent.description%"
+        },
         "aspLsp.format.onSave": {
           "type": "boolean",
           "default": false,
