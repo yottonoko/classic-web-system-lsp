@@ -3127,6 +3127,42 @@ Z = Func2 hoge, fuga
       }
     });
 
+    it("does not report statement call syntax diagnostics for ASP expression output", async () => {
+      const source = `<%
+Function RenderCustomerRows(ByVal customerList, ByVal activeCustomerId)
+  RenderCustomerRows = ""
+End Function
+%>
+<%= RenderCustomerRows(filteredCustomers, selectedCustomerId) %>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/asp-expression-call.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const serialized = JSON.stringify(diagnostics.params);
+        expect(serialized).not.toContain("statementCallDisallowsParenthesizedArguments");
+        expect(serialized).not.toContain("VBScript call syntax is invalid");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("avoids existing VBScript extract variable names", async () => {
       const source = `<%
 Dim extractedValue

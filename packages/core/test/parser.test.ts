@@ -673,6 +673,29 @@ Z = Func2 hoge, fuga
     expect(syntaxDiagnostics.every((diagnostic) => diagnostic.severity === 1)).toBe(true);
   });
 
+  it("allows parenthesized function calls in ASP expression output", () => {
+    const source = `<%
+Function RenderCustomerRows(ByVal customerList, ByVal activeCustomerId)
+  RenderCustomerRows = ""
+End Function
+%>
+<%= RenderCustomerRows(filteredCustomers, selectedCustomerId) %>
+<% RenderCustomerRows(filteredCustomers, selectedCustomerId) %>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const syntaxDiagnostics = analyzeVbscript(parsed, {
+      symbols,
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+
+    expect(syntaxDiagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "statementCallDisallowsParenthesizedArguments",
+    ]);
+    expect(syntaxDiagnostics[0]?.range.start).toEqual(
+      positionAt(source, source.lastIndexOf("RenderCustomerRows")),
+    );
+  });
+
   it("keeps valid VBScript procedure call syntax out of syntax diagnostics", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

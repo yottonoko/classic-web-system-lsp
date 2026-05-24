@@ -5966,7 +5966,8 @@ function parenthesizedStatementCallDiagnostic(
     !name ||
     name.kind !== "identifier" ||
     statement[1]?.text !== "(" ||
-    isNonCallStatementStart(name)
+    isNonCallStatementStart(name) ||
+    vbRegionAt(parsed, name.start)?.kind === "asp-expression"
   ) {
     return undefined;
   }
@@ -6294,6 +6295,20 @@ function getServerScriptText(parsed: AspParsedDocument): string {
 
 function serverRegions(parsed: AspParsedDocument): AspRegion[] {
   return parsed.regions.filter((region) => region.language === "vbscript");
+}
+
+function vbRegionAt(parsed: AspParsedDocument, offset: number): AspRegion | undefined {
+  return parsed.regions
+    .filter(
+      (region) =>
+        region.language === "vbscript" &&
+        offset >= region.contentStart &&
+        offset < region.contentEnd,
+    )
+    .sort(
+      (left, right) =>
+        left.contentEnd - left.contentStart - (right.contentEnd - right.contentStart),
+    )[0];
 }
 
 function symbolToCompletion(
