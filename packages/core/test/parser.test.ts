@@ -197,6 +197,19 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(html?.sourceMap.toVirtualOffset(source.lastIndexOf(">"))).toBeDefined();
   });
 
+  it("masks quoted and generated ASP tag attributes with delimiter-like content", () => {
+    const source = `<input <%= AttributeWithText("data-end=>") %> data-state="<%= StateName() %>" <% Response.Write "disabled" %>>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const html = buildVirtualDocuments(parsed).get("html");
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(2);
+    expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(1);
+    expect(html?.text).not.toContain("AttributeWithText");
+    expect(html?.text).not.toContain("StateName");
+    expect(html?.text).not.toContain("Response.Write");
+    expect(html?.sourceMap.toVirtualOffset(source.indexOf("data-state"))).toBeDefined();
+    expect(html?.sourceMap.toVirtualOffset(source.lastIndexOf(">"))).toBeDefined();
+  });
+
   it("masks inline ASP inside CSS values and style attributes", () => {
     const source = `<style>.x { color: <%= themeColor %>; width: <% Response.Write width %>px; }</style>
 <div style="color: <%= themeColor %>; background: red"></div>`;

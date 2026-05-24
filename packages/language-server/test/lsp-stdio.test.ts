@@ -944,6 +944,7 @@ function boot() {
 <div style="color: <%= themeColor %>; background: red"></div>
 <input type="checkbox" name="inactive" value="1" <%= CheckedAttribute(filter.IncludeInactive) %>>
 <input title='<%= Response.Write("x") %>'>
+<input <%= Response.Write("disabled") %> data-state="<%= Response.Write("active") %>">
 <script>
 const clientValue = <%= serverValue %>;
 const label = "<%= serverLabel %>";
@@ -1001,6 +1002,15 @@ console.log(label, fromServer, client, document.querySelector(".card"));
           ),
         });
         expect(completionLabels(tagAspCompletions)).toContain("Write");
+
+        const bareTagAspCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(
+            source,
+            source.indexOf("Response.", source.indexOf("<input <%=")) + "Response.".length,
+          ),
+        });
+        expect(completionLabels(bareTagAspCompletions)).toContain("Write");
 
         const inlayHints = await server.request("textDocument/inlayHint", {
           textDocument: { uri },
