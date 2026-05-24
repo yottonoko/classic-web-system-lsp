@@ -31,7 +31,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "oxlint src test --deny-warnings --no-error-on-unmatched-pattern",
     "package:vsix": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --no-dependencies --follow-symlinks",
-    "test": "pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
+    "test": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
   },
   "dependencies": {
     "@asp-lsp/core": "workspace:*",
