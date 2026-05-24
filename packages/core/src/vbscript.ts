@@ -19,8 +19,9 @@ import type {
   Range,
   SelectionRange,
   SignatureHelp,
+  TextEdit,
 } from "vscode-languageserver-types";
-import { offsetAt, rangeFromOffsets } from "./position";
+import { offsetAt, positionAt, rangeFromOffsets } from "./position";
 import { createLocalizer } from "./localize";
 import type {
   AspCstNode,
@@ -176,6 +177,11 @@ export interface VbDocumentation {
   example?: string;
   code?: string;
   ambiguousTarget?: boolean;
+}
+
+export interface VbDocumentationQuickAction {
+  symbol: VbSymbol;
+  edits: TextEdit[];
 }
 
 interface VbDocElement {
@@ -3525,6 +3531,344 @@ function hasMissingReturnTypeAnnotation(symbol: VbSymbol, annotations: TypeAnnot
   return !annotations.returns.some(
     (annotation) => annotation.name.toLowerCase() === symbol.name.toLowerCase(),
   );
+}
+
+export function getVbscriptDocumentationQuickAction(
+  parsed: AspParsedDocument,
+  position: Position,
+  context: VbProjectContext = {},
+): VbDocumentationQuickAction | undefined {
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const symbol = documentationActionSymbolAt(parsed, position, symbols);
+  if (!symbol) {
+    return undefined;
+  }
+  const owner = symbol.kind === "parameter" ? callableOwnerForParameter(symbol, symbols) : symbol;
+  if (!owner) {
+    return undefined;
+  }
+  const ownerNode = nodeForSymbol(parsed, owner);
+  const targetNode = symbol.kind === "parameter" ? ownerNode : nodeForSymbol(parsed, symbol);
+  if (!ownerNode || !targetNode) {
+    return undefined;
+  }
+  const docs = docCommentBlockBefore(parsed, ownerNode.start);
+  const annotations = parseTypeAnnotations(parsed);
+  const xmlLines = missingDocumentationXmlLines(symbol, owner, targetNode, docs);
+  const annotationLines = missingDocumentationAnnotationLines(
+    parsed,
+    symbol,
+    owner,
+    symbols,
+    annotations,
+  );
+  const edits = documentationInsertEdits(
+    parsed.text,
+    ownerNode.start,
+    docs,
+    annotationLines,
+    xmlLines,
+  );
+  return edits.length > 0 ? { symbol, edits } : undefined;
+}
+
+function documentationActionSymbolAt(
+  parsed: AspParsedDocument,
+  position: Position,
+  symbols: VbSymbol[],
+): VbSymbol | undefined {
+  const offset = offsetAt(parsed.text, position);
+  return symbols
+    .filter(
+      (symbol) =>
+        symbol.sourceUri === parsed.uri &&
+        !symbol.implicit &&
+        isDocumentationActionSymbol(symbol) &&
+        rangeContainsOffset(parsed.text, symbol.range, offset),
+    )
+    .sort((left, right) => rangeSize(left.range) - rangeSize(right.range))[0];
+}
+
+function isDocumentationActionSymbol(symbol: VbSymbol): boolean {
+  return [
+    "class",
+    "function",
+    "sub",
+    "method",
+    "property",
+    "variable",
+    "field",
+    "constant",
+    "parameter",
+  ].includes(symbol.kind);
+}
+
+function callableOwnerForParameter(parameter: VbSymbol, symbols: VbSymbol[]): VbSymbol | undefined {
+  return symbols.find(
+    (candidate) =>
+      candidate.sourceUri === parameter.sourceUri &&
+      candidate.scopeRange &&
+      parameter.scopeRange &&
+      sameRange(candidate.scopeRange, parameter.scopeRange) &&
+      (candidate.kind === "function" ||
+        candidate.kind === "sub" ||
+        candidate.kind === "method" ||
+        candidate.kind === "property"),
+  );
+}
+
+function nodeForSymbol(parsed: AspParsedDocument, symbol: VbSymbol): VbCstNode | undefined {
+  for (const document of vbDocuments(parsed)) {
+    for (const node of flattenVbNodes(document)) {
+      if (
+        node.nameToken &&
+        sameRange(
+          rangeFromOffsets(parsed.text, node.nameToken.start, node.nameToken.end),
+          symbol.range,
+        )
+      ) {
+        return node;
+      }
+      if (
+        node.identifiers?.some((identifier) =>
+          sameRange(rangeFromOffsets(parsed.text, identifier.start, identifier.end), symbol.range),
+        )
+      ) {
+        return node;
+      }
+      if (
+        symbol.kind === "parameter" &&
+        node.parameterMetadata?.some((parameter) =>
+          sameRange(
+            rangeFromOffsets(parsed.text, parameter.token.start, parameter.token.end),
+            symbol.range,
+          ),
+        )
+      ) {
+        return node;
+      }
+    }
+  }
+  return undefined;
+}
+
+function missingDocumentationXmlLines(
+  symbol: VbSymbol,
+  owner: VbSymbol,
+  targetNode: VbCstNode,
+  docs: VbToken[],
+): string[] {
+  const documentation = owner.documentation;
+  const lines: string[] = [];
+  if (symbol.kind === "parameter") {
+    if (!documentationParameterText(documentation, symbol.name)) {
+      lines.push(`''' <param name="${symbol.name}">TODO: Describe ${symbol.name}.</param>`);
+    }
+    return lines;
+  }
+  if (canGenerateOwnXmlDocumentation(symbol, targetNode) && !documentation?.summary) {
+    lines.push(`''' <summary>TODO: Describe ${symbol.name}.</summary>`);
+  }
+  if (isCallableDocumentationSymbol(symbol)) {
+    for (const parameter of parameterDetails(symbol)) {
+      if (!documentationParameterText(documentation, parameter.name)) {
+        lines.push(`''' <param name="${parameter.name}">TODO: Describe ${parameter.name}.</param>`);
+      }
+    }
+    if (callableHasReturnValue(symbol) && !documentation?.returns) {
+      lines.push("''' <returns>TODO: Describe return value.</returns>");
+    }
+  }
+  if (symbolHasDocumentedValue(symbol) && !documentation?.value) {
+    lines.push(`''' <value>TODO: Describe ${symbol.name}.</value>`);
+  }
+  return docs.length > 0 || canGenerateOwnXmlDocumentation(symbol, targetNode) ? lines : [];
+}
+
+function canGenerateOwnXmlDocumentation(symbol: VbSymbol, node: VbCstNode): boolean {
+  if (symbol.kind === "variable" || symbol.kind === "field" || symbol.kind === "constant") {
+    return (node.identifiers?.length ?? 0) === 1;
+  }
+  return symbol.kind !== "parameter";
+}
+
+function isCallableDocumentationSymbol(symbol: VbSymbol): boolean {
+  return (
+    symbol.kind === "function" ||
+    symbol.kind === "sub" ||
+    symbol.kind === "method" ||
+    symbol.kind === "property"
+  );
+}
+
+function callableHasReturnValue(symbol: VbSymbol): boolean {
+  return (
+    symbol.kind === "function" ||
+    (symbol.kind === "method" && symbol.procedureKind === "function") ||
+    (symbol.kind === "property" && symbol.propertyAccessor === "get")
+  );
+}
+
+function symbolHasDocumentedValue(symbol: VbSymbol): boolean {
+  return (
+    symbol.kind === "variable" ||
+    symbol.kind === "field" ||
+    symbol.kind === "constant" ||
+    symbol.kind === "property"
+  );
+}
+
+function missingDocumentationAnnotationLines(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  owner: VbSymbol,
+  symbols: VbSymbol[],
+  annotations: TypeAnnotations,
+): string[] {
+  const lines: string[] = [];
+  if (symbol.kind === "parameter") {
+    if (!hasParameterTypeAnnotation(owner, symbol.name, annotations)) {
+      lines.push(`' @param ${owner.name}.${symbol.name} As ${symbolTypeName(symbol)}`);
+    }
+    return lines;
+  }
+  if (symbol.kind === "variable" || symbol.kind === "field" || symbol.kind === "constant") {
+    if (!hasTypeAnnotation(parsed, symbol, symbols, annotations)) {
+      lines.push(`' @type ${symbol.name} As ${symbolTypeName(symbol)}`);
+    }
+    return lines;
+  }
+  if (isCallableDocumentationSymbol(symbol)) {
+    for (const parameter of parameterDetails(symbol)) {
+      if (!hasParameterTypeAnnotation(symbol, parameter.name, annotations)) {
+        const parameterSymbol = parameterSymbolForCallable(symbol, parameter.name, symbols);
+        lines.push(
+          `' @param ${symbol.name}.${parameter.name} As ${symbolTypeName(parameterSymbol)}`,
+        );
+      }
+    }
+    if (callableHasReturnValue(symbol) && !hasReturnTypeAnnotation(symbol, annotations)) {
+      lines.push(`' @returns ${symbol.name} ${symbolTypeName(symbol)}`);
+    }
+  }
+  return lines;
+}
+
+function hasParameterTypeAnnotation(
+  callable: VbSymbol,
+  parameterName: string,
+  annotations: TypeAnnotations,
+): boolean {
+  return annotations.params.some(
+    (annotation) =>
+      annotation.name.toLowerCase() === parameterName.toLowerCase() &&
+      (!annotation.procedureName ||
+        annotation.procedureName.toLowerCase() === callable.name.toLowerCase()),
+  );
+}
+
+function hasReturnTypeAnnotation(symbol: VbSymbol, annotations: TypeAnnotations): boolean {
+  return annotations.returns.some(
+    (annotation) => annotation.name.toLowerCase() === symbol.name.toLowerCase(),
+  );
+}
+
+function parameterSymbolForCallable(
+  callable: VbSymbol,
+  parameterName: string,
+  symbols: VbSymbol[],
+): VbSymbol | undefined {
+  return symbols.find(
+    (candidate) =>
+      candidate.kind === "parameter" &&
+      candidate.name.toLowerCase() === parameterName.toLowerCase() &&
+      candidate.sourceUri === callable.sourceUri &&
+      candidate.scopeRange &&
+      callable.scopeRange &&
+      sameRange(candidate.scopeRange, callable.scopeRange),
+  );
+}
+
+function symbolTypeName(symbol: VbSymbol | undefined): string {
+  if (!symbol) {
+    return "Variant";
+  }
+  if (symbol.type) {
+    return formatTypeRef(symbol.type);
+  }
+  return symbol.typeName ?? "Variant";
+}
+
+function documentationInsertEdits(
+  text: string,
+  declarationOffset: number,
+  docs: VbToken[],
+  annotationLines: string[],
+  xmlLines: string[],
+): TextEdit[] {
+  if (annotationLines.length === 0 && xmlLines.length === 0) {
+    return [];
+  }
+  const newLine = preferredNewLine(text);
+  const declarationLine = positionAt(text, declarationOffset).line;
+  const indent = lineIndent(text, declarationLine);
+  if (docs.length === 0) {
+    const insertPosition = { line: declarationLine, character: 0 };
+    return [
+      {
+        range: { start: insertPosition, end: insertPosition },
+        newText:
+          [...annotationLines, ...xmlLines].map((line) => `${indent}${line}`).join(newLine) +
+          newLine,
+      },
+    ];
+  }
+  const firstDocLine = positionAt(text, docs[0].start).line;
+  const replaceStart = lineStartOffset(text, firstDocLine);
+  const replaceEnd = docs.at(-1)!.end;
+  const existingDocText = text.slice(replaceStart, replaceEnd);
+  const replacement = [
+    ...annotationLines.map((line) => `${indent}${line}`),
+    existingDocText,
+    ...xmlLines.map((line) => `${indent}${line}`),
+  ].join(newLine);
+  return [
+    {
+      range: {
+        start: positionAt(text, replaceStart),
+        end: positionAt(text, replaceEnd),
+      },
+      newText: replacement,
+    },
+  ];
+}
+
+function preferredNewLine(text: string): string {
+  return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function lineIndent(text: string, line: number): string {
+  const start = lineStartOffset(text, line);
+  const end = lineEndOffset(text, start);
+  return /^[ \t]*/.exec(text.slice(start, end))?.[0] ?? "";
+}
+
+function lineStartOffset(text: string, line: number): number {
+  let currentLine = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (currentLine === line) {
+      return index;
+    }
+    if (text.charCodeAt(index) === 10) {
+      currentLine += 1;
+    }
+  }
+  return text.length;
+}
+
+function lineEndOffset(text: string, start: number): number {
+  const end = text.indexOf("\n", start);
+  return end === -1 ? text.length : end;
 }
 
 function nextProcedureName(parsed: AspParsedDocument, offset: number): string | undefined {

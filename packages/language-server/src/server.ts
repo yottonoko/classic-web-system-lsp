@@ -70,6 +70,7 @@ import {
   formatAspRange,
   getVbscriptCompletions,
   getVbscriptDefinition,
+  getVbscriptDocumentationQuickAction,
   getVbscriptDocumentHighlights,
   getVbscriptDocumentSymbols,
   getVbscriptHover,
@@ -5993,6 +5994,26 @@ function vbscriptCodeActions(
 ): CodeAction[] {
   const actions: CodeAction[] = [];
   if (codeActionAllows(context, CodeActionKind.QuickFix)) {
+    if (context.diagnostics.length === 0) {
+      const documentation = getVbscriptDocumentationQuickAction(
+        cached.parsed,
+        range.start,
+        buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+      );
+      if (documentation) {
+        actions.push({
+          title: localizerForUri(cached.source.uri).t(
+            "server.quickfix.generateVbscriptDocumentation",
+          ),
+          kind: CodeActionKind.QuickFix,
+          edit: {
+            changes: {
+              [cached.source.uri]: documentation.edits,
+            },
+          },
+        });
+      }
+    }
     const hasInitializedDimDiagnostic = context.diagnostics.some(
       (diagnostic) =>
         diagnostic.source === "asp-lsp-vbscript-syntax" &&

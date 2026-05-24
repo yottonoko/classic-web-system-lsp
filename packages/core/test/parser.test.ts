@@ -9,6 +9,7 @@ import {
   getClassicAspLineCommentEdits,
   getVbscriptCompletions,
   getVbscriptDefinition,
+  getVbscriptDocumentationQuickAction,
   getVbscriptHover,
   getVbscriptInlayHints,
   getVbscriptReferences,
@@ -1078,6 +1079,120 @@ Response.Write BuildName("Ada")
         ],
       }),
     );
+  });
+
+  it("generates VBScript documentation and type annotations for undocumented functions", () => {
+    const source = `<%
+Function BuildName(first)
+  BuildName = first
+End Function
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const action = getVbscriptDocumentationQuickAction(
+      parsed,
+      positionAt(source, source.indexOf("BuildName")),
+    );
+    expect(action?.edits).toHaveLength(1);
+    const updated = applyTextEdits(source, action?.edits ?? []);
+    expect(updated).toContain("' @param BuildName.first As Variant");
+    expect(updated).toContain("' @returns BuildName Variant");
+    expect(updated).toContain("''' <summary>TODO: Describe BuildName.</summary>");
+    expect(updated).toContain("''' <param name=\"first\">TODO: Describe first.</param>");
+    expect(updated).toContain("''' <returns>TODO: Describe return value.</returns>");
+  });
+
+  it("adds only missing VBScript documentation items to an existing summary block", () => {
+    const source = `<%
+''' <summary>Builds a display name.</summary>
+Function BuildName(first)
+  BuildName = first
+End Function
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const action = getVbscriptDocumentationQuickAction(
+      parsed,
+      positionAt(source, source.indexOf("BuildName(first)")),
+    );
+    const updated = applyTextEdits(source, action?.edits ?? []);
+    expect(updated.match(/<summary>/g)).toHaveLength(1);
+    expect(updated).toContain("''' <summary>Builds a display name.</summary>");
+    expect(updated).toContain("''' <param name=\"first\">TODO: Describe first.</param>");
+    expect(updated).toContain("''' <returns>TODO: Describe return value.</returns>");
+    const updatedSymbols = collectVbscriptSymbols(
+      parseAspDocument("file:///site/default.asp", updated),
+    );
+    expect(
+      updatedSymbols.find((symbol) => symbol.name === "BuildName")?.documentation?.summary,
+    ).toBe("Builds a display name.");
+  });
+
+  it("generates VBScript documentation for broad declaration symbol kinds", () => {
+    const cases = [
+      {
+        source: `<%
+Dim ▮customerName
+%>`,
+        expected: ["' @type customerName As Variant", "TODO: Describe customerName.", "<value>"],
+      },
+      {
+        source: `<%
+Const ▮MaxItems = 10
+%>`,
+        expected: ["' @type MaxItems As Variant", "TODO: Describe MaxItems.", "<value>"],
+      },
+      {
+        source: `<%
+Class ▮Customer
+End Class
+%>`,
+        expected: ["<summary>TODO: Describe Customer.</summary>"],
+      },
+      {
+        source: `<%
+Class Customer
+  Public ▮Name
+End Class
+%>`,
+        expected: ["' @type Name As Variant", "TODO: Describe Name.", "<value>"],
+      },
+      {
+        source: `<%
+Class Customer
+  Public Property Get ▮Name()
+    Name = mName
+  End Property
+End Class
+%>`,
+        expected: ["' @returns Name Variant", "TODO: Describe Name.", "<returns>", "<value>"],
+      },
+      {
+        source: `<%
+Sub Save(▮force)
+End Sub
+%>`,
+        expected: ["' @param Save.force As Variant", '<param name="force">'],
+      },
+    ];
+    for (const item of cases) {
+      const marked = markedDocument(item.source);
+      const parsed = parseAspDocument("file:///site/default.asp", marked.text);
+      const action = getVbscriptDocumentationQuickAction(parsed, marked.position);
+      const updated = applyTextEdits(marked.text, action?.edits ?? []);
+      for (const expected of item.expected) {
+        expect(updated).toContain(expected);
+      }
+    }
+  });
+
+  it("avoids ambiguous XML documentation for multi-name VBScript declarations", () => {
+    const marked = markedDocument(`<%
+Dim ▮first, second
+%>`);
+    const parsed = parseAspDocument("file:///site/default.asp", marked.text);
+    const action = getVbscriptDocumentationQuickAction(parsed, marked.position);
+    const updated = applyTextEdits(marked.text, action?.edits ?? []);
+    expect(updated).toContain("' @type first As Variant");
+    expect(updated).not.toContain("''' <summary>");
   });
 
   it("uses XML parameter documentation for declaration hover and no-paren signature help", () => {

@@ -2778,6 +2778,51 @@ Response.Write value
       }
     });
 
+    it("returns a VBScript documentation generation quick fix without diagnostics", async () => {
+      const source = `<%
+Function BuildName(first)
+  BuildName = first
+End Function
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-doc-action.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, source.indexOf("BuildName")),
+            end: positionAt(source, source.indexOf("BuildName")),
+          },
+          context: { diagnostics: [], only: ["quickfix"] },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Generate VBScript documentation");
+        expect(serialized).toContain("' @param BuildName.first As Variant");
+        expect(serialized).toContain("''' <summary>TODO: Describe BuildName.</summary>");
+        expect(serialized).toContain("''' <returns>TODO: Describe return value.</returns>");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("does not return split quick fixes for unsupported declaration syntax errors", async () => {
       const source = `<%
 Public value = 1
