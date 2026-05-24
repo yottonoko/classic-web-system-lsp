@@ -1016,8 +1016,36 @@ console.log(label, fromServer, client, document.querySelector(".card"));
           textDocument: { uri },
           range: { start: { line: 0, character: 0 }, end: positionAt(source, source.length) },
         });
-        expect(JSON.stringify(inlayHints)).not.toContain("selectedTier:");
-        expect(JSON.stringify(inlayHints)).toContain("tier:");
+        const serializedInlayHints = JSON.stringify(inlayHints);
+        expect(serializedInlayHints).not.toContain("selectedTier");
+        expect(serializedInlayHints).toContain("tier:");
+
+        let editedSource = notifyRangedReplacement(
+          server,
+          uri,
+          source,
+          2,
+          'const n = "<%=',
+          "const n = <%=",
+        );
+        editedSource = notifyRangedReplacement(
+          server,
+          uri,
+          editedSource,
+          3,
+          "const n = <%=",
+          'const n = "<%=',
+        );
+        const editedInlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: {
+            start: { line: 0, character: 0 },
+            end: positionAt(editedSource, editedSource.length),
+          },
+        });
+        const serializedEditedInlayHints = JSON.stringify(editedInlayHints);
+        expect(serializedEditedInlayHints).not.toContain("selectedTier");
+        expect(serializedEditedInlayHints).toContain("tier:");
 
         const semanticTokens = await server.request("textDocument/semanticTokens/full", {
           textDocument: { uri },

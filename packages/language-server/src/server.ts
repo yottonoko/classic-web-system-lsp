@@ -2655,7 +2655,6 @@ function jsInlayHints(cached: CachedDocument, range: Range): InlayHint[] {
       return [];
     }
     const project = createJsLanguageService(virtual, settings);
-    const virtualDoc = toTextDocument(virtual);
     const seen = new Set<string>();
     return segments
       .flatMap((segment) => {
@@ -2677,9 +2676,9 @@ function jsInlayHints(cached: CachedDocument, range: Range): InlayHint[] {
         );
       })
       .map((hint): InlayHint | undefined => {
-        const sourcePosition = virtual.sourceMap.toSourcePosition(
-          virtualDoc.positionAt(hint.position),
-        );
+        const sourceOffset = sourceOffsetFromVirtualPoint(virtual, hint.position);
+        const sourcePosition =
+          sourceOffset === undefined ? undefined : cached.source.positionAt(sourceOffset);
         if (!sourcePosition || !isJavaScriptPosition(cached, sourcePosition)) {
           return undefined;
         }
@@ -6726,6 +6725,7 @@ function addVirtualWordToken(
   const sourceOffset = virtual.sourceMap.toSourceOffset(virtualOffset);
   const sourceEndOffset = virtual.sourceMap.toSourceOffset(virtualOffset + length - 1);
   if (
+    !virtualRangeStaysWithinSegment(virtual, virtualOffset, virtualOffset + length) ||
     sourceOffset === undefined ||
     sourceEndOffset === undefined ||
     sourceOffset < rangeStart ||
@@ -6755,6 +6755,16 @@ function isVirtualTokenSourceRegion(
   return Boolean(
     startRegion && endRegion && startRegion === endRegion && startRegion.language === languageId,
   );
+}
+
+function sourceOffsetFromVirtualPoint(
+  virtual: VirtualDocument,
+  virtualOffset: number,
+): number | undefined {
+  const segment = virtual.sourceMap.segments.find(
+    (candidate) => virtualOffset >= candidate.virtualStart && virtualOffset < candidate.virtualEnd,
+  );
+  return segment ? segment.sourceStart + (virtualOffset - segment.virtualStart) : undefined;
 }
 
 function addSemanticToken(
