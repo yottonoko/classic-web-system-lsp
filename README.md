@@ -31,7 +31,7 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - user-defined variable, constant, function, sub, class, method, field, and property symbols
 - scope-aware completions for procedure-local variables and parameters
 - `Set value = New ClassName` inference for `value.Member` completions
-- `Server.CreateObject("Prog.ID")` inference for configured COM type completions and type hierarchy exploration
+- `CreateObject("Prog.ID")` and `Server.CreateObject("Prog.ID")` inference for built-in and configured COM type completions and type hierarchy exploration
 - `Me.Member` completions inside classes
 - definition and references for user-defined VBScript symbols
 - include-aware VBScript symbols for completions and definition jumps
@@ -40,7 +40,7 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - quick fixes for undeclared variables, missing includes, include suggestions, removable unused VBScript declarations, strict type diagnostics such as missing `Set`, unnecessary `Set`, and type annotations, and extract-variable refactors for selected VBScript expressions
 - VB.NET-style `'''` XML documentation comments for VBScript hover, completion resolve, and signature help
 - XML documentation tag completion for `summary`, `remarks`, `param`, `returns`, `value`, `exception`, `see`, `seealso`, `example`, `code`, `c`, `list`, and `para`
-- conservative support for `ReDim`, `For Each`, `With`, and `Server.CreateObject("ADODB.*")` completions
+- conservative support for `ReDim`, `For Each`, `With`, W3Schools ASP Reference built-ins, FileSystem/Dictionary/MSWC components, and ADO object completions
 - TypeScript-backed hover, navigation, references, rename, signature help, call hierarchy, monikers, inline values, and project-model-aware module resolution for JavaScript and server-side JScript regions
 - lazy workspace symbol and diagnostic indexing for unopened `.asp`, `.asa`, and `.inc` files
 - HTML/CSS rename, CSS/JS document symbols, richer folding, CSS colors, and include file-operation updates
@@ -156,7 +156,7 @@ Example `aspLsp.vbscript.comTypes` and `aspLsp.vbscript.globals` entries:
 - VBScript has no import syntax, so auto import support is exposed as include suggestions for undeclared symbols that exist in indexed `.asp`, `.asa`, or `.inc` workspace files.
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
 - Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
-- COM and IIS runtime behavior are not executed. COM type information comes from built-in stubs or `aspLsp.vbscript.comTypes`.
+- COM and IIS runtime behavior are not executed. COM type information comes from built-in ASP/COM/ADO stubs or `aspLsp.vbscript.comTypes`.
 - Call hierarchy, type hierarchy, CodeLens, type definition, implementation, monikers, and inline values are static and user-defined-symbol first; runtime COM dispatch is not modeled.
 - Save and will-save hooks refresh diagnostics and caches. `willSaveWaitUntil` is non-mutating by default and returns full-document formatting edits only when `aspLsp.format.onSave` is enabled.
 - IIS debug support opens a configured URL in a browser debug session; it does not attach to IIS, COM, or server-side Classic ASP runtime.

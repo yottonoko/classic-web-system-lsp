@@ -146,7 +146,7 @@ export interface VbSignature {
 
 export interface VbMember {
   name: string;
-  kind: "field" | "property" | "method";
+  kind: "field" | "property" | "method" | "event";
   type?: VbTypeRef;
   signature?: VbSignature;
 }
@@ -312,6 +312,30 @@ function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
           locale,
         ),
     ),
+    ...builtinConstants.map(
+      (item): CompletionItem =>
+        withBuiltinCompletionLabel(
+          {
+            label: item.label,
+            kind: CompletionItemKind.Constant,
+            detail: `Const ${item.label} As ${item.type}`,
+            documentation: item.documentation,
+          },
+          locale,
+        ),
+    ),
+    ...classicAspRuntimeEvents.map(
+      (label): CompletionItem =>
+        withBuiltinCompletionLabel(
+          {
+            label,
+            kind: CompletionItemKind.Event,
+            detail: `Sub ${label}()`,
+            documentation: "Classic ASP global.asa runtime event.",
+          },
+          locale,
+        ),
+    ),
   ];
 }
 
@@ -346,92 +370,611 @@ function builtinDescription(name: string, locale: AspLocale | undefined): string
       builtin.documentation,
     );
   }
+  const constant = builtinConstant(name);
+  if (constant) {
+    return markdownHover(`Const ${constant.label} As ${constant.type}`, constant.documentation);
+  }
+  const runtimeEvent = classicAspRuntimeEvents.find(
+    (item) => item.toLowerCase() === name.toLowerCase(),
+  );
+  if (runtimeEvent) {
+    return markdownHover(`Sub ${runtimeEvent}()`, "Classic ASP global.asa runtime event.");
+  }
   return undefined;
 }
 
-const classicAspBuiltinSignatures: Record<string, string[]> = {
-  "response.write": ["Response.Write value"],
-  "response.redirect": ["Response.Redirect url"],
-  "response.end": ["Response.End"],
-  "response.flush": ["Response.Flush"],
-  "response.clear": ["Response.Clear"],
-  "request.querystring": ["Request.QueryString(name)"],
-  "request.form": ["Request.Form(name)"],
-  "request.cookies": ["Request.Cookies(name)"],
-  "request.servervariables": ["Request.ServerVariables(name)"],
-  "request.binaryread": ["Request.BinaryRead(count)"],
-  "server.createobject": ["Server.CreateObject(progId)"],
-  "server.mappath": ["Server.MapPath(path)"],
-  "server.htmlencode": ["Server.HTMLEncode(value)"],
-  "server.urlencode": ["Server.URLEncode(value)"],
-  "server.getlasterror": ["Server.GetLastError"],
-  "session.abandon": ["Session.Abandon"],
-  "application.lock": ["Application.Lock"],
-  "application.unlock": ["Application.Unlock"],
+type VbBuiltinMemberKind = VbMember["kind"];
+
+interface BuiltinMemberSpec {
+  name: string;
+  kind: VbBuiltinMemberKind;
+  type?: string;
+  signature?: string;
+}
+
+interface BuiltinObjectSpec {
+  typeName: string;
+  members: BuiltinMemberSpec[];
+}
+
+interface BuiltinConstant {
+  label: string;
+  type: string;
+  documentation: string;
+}
+
+const classicAspObjectCatalog: Record<string, BuiltinObjectSpec> = {
+  request: {
+    typeName: "Request",
+    members: [
+      property("QueryString", "String", "Request.QueryString(name)"),
+      property("Form", "String", "Request.Form(name)"),
+      property("Cookies", "Variant", "Request.Cookies(name)"),
+      property("ServerVariables", "String", "Request.ServerVariables(name)"),
+      property("ClientCertificate", "Variant"),
+      property("TotalBytes", "Number"),
+      method("BinaryRead", "Array", "Request.BinaryRead(count)"),
+    ],
+  },
+  response: {
+    typeName: "Response",
+    members: [
+      property("Cookies"),
+      property("Buffer", "Boolean"),
+      property("CacheControl", "String"),
+      property("Charset", "String"),
+      property("ContentType", "String"),
+      property("Expires", "Number"),
+      property("ExpiresAbsolute", "Date"),
+      property("IsClientConnected", "Boolean"),
+      property("Pics", "String"),
+      property("Status", "String"),
+      method("AddHeader", "Variant", "Response.AddHeader(name, value)"),
+      method("AppendToLog", "Variant", "Response.AppendToLog string"),
+      method("BinaryWrite", "Variant", "Response.BinaryWrite(data)"),
+      method("Clear", "Variant", "Response.Clear"),
+      method("End", "Variant", "Response.End"),
+      method("Flush", "Variant", "Response.Flush"),
+      method("Redirect", "Variant", "Response.Redirect url"),
+      method("Write", "Variant", "Response.Write value"),
+    ],
+  },
+  application: {
+    typeName: "Application",
+    members: [
+      property("Contents"),
+      property("StaticObjects"),
+      method("Contents.Remove", "Variant", "Application.Contents.Remove(name)"),
+      method("Contents.RemoveAll", "Variant", "Application.Contents.RemoveAll()"),
+      method("Lock", "Variant", "Application.Lock"),
+      method("Unlock", "Variant", "Application.Unlock"),
+    ],
+  },
+  session: {
+    typeName: "Session",
+    members: [
+      property("Contents"),
+      property("StaticObjects"),
+      property("CodePage", "Number"),
+      property("LCID", "Number"),
+      property("SessionID", "String"),
+      property("Timeout", "Number"),
+      method("Abandon", "Variant", "Session.Abandon"),
+      method("Contents.Remove", "Variant", "Session.Contents.Remove(name)"),
+      method("Contents.RemoveAll", "Variant", "Session.Contents.RemoveAll()"),
+    ],
+  },
+  server: {
+    typeName: "Server",
+    members: [
+      property("ScriptTimeout", "Number"),
+      method("CreateObject", "Object", "Server.CreateObject(progId)"),
+      method("Execute", "Variant", "Server.Execute(path)"),
+      method("GetLastError", "ASPError", "Server.GetLastError()"),
+      method("HTMLEncode", "String", "Server.HTMLEncode(value)"),
+      method("MapPath", "String", "Server.MapPath(path)"),
+      method("Transfer", "Variant", "Server.Transfer(path)"),
+      method("URLEncode", "String", "Server.URLEncode(value)"),
+    ],
+  },
+  asperror: {
+    typeName: "ASPError",
+    members: [
+      property("ASPCode", "String"),
+      property("ASPDescription", "String"),
+      property("Category", "String"),
+      property("Column", "Number"),
+      property("Description", "String"),
+      property("File", "String"),
+      property("Line", "Number"),
+      property("Number", "Number"),
+      property("Source", "String"),
+    ],
+  },
 };
 
-const memberCompletions: Record<string, CompletionItem[]> = {
-  request: [
-    "QueryString",
-    "Form",
-    "Cookies",
-    "ServerVariables",
-    "ClientCertificate",
-    "TotalBytes",
-    "BinaryRead",
-  ].map(builtinMethodItem),
-  response: [
-    "Write",
-    "Redirect",
-    "End",
-    "Flush",
-    "Clear",
-    "Cookies",
-    "Status",
-    "ContentType",
-    "Charset",
-  ].map(builtinMethodItem),
-  session: ["Abandon", "Contents", "StaticObjects", "SessionID", "Timeout", "CodePage", "LCID"].map(
-    builtinMethodItem,
-  ),
-  application: ["Lock", "Unlock", "Contents", "StaticObjects"].map(builtinMethodItem),
-  server: [
-    "CreateObject",
-    "MapPath",
-    "HTMLEncode",
-    "URLEncode",
-    "ScriptTimeout",
-    "GetLastError",
-  ].map(builtinMethodItem),
+const externalObjectCatalog: Record<string, BuiltinObjectSpec> = {
+  "scripting.filesystemobject": {
+    typeName: "Scripting.FileSystemObject",
+    members: [
+      property("Drives", "Variant"),
+      method("BuildPath", "String", "Scripting.FileSystemObject.BuildPath(path, name)"),
+      method("CopyFile", "Variant", "Scripting.FileSystemObject.CopyFile(source, destination)"),
+      method("CopyFolder", "Variant", "Scripting.FileSystemObject.CopyFolder(source, destination)"),
+      method("CreateFolder", "Scripting.Folder", "Scripting.FileSystemObject.CreateFolder(path)"),
+      method(
+        "CreateTextFile",
+        "Scripting.TextStream",
+        "Scripting.FileSystemObject.CreateTextFile(filename, overwrite, unicode)",
+      ),
+      method("DeleteFile", "Variant", "Scripting.FileSystemObject.DeleteFile(fileSpec, force)"),
+      method(
+        "DeleteFolder",
+        "Variant",
+        "Scripting.FileSystemObject.DeleteFolder(folderSpec, force)",
+      ),
+      method("DriveExists", "Boolean", "Scripting.FileSystemObject.DriveExists(driveSpec)"),
+      method("FileExists", "Boolean", "Scripting.FileSystemObject.FileExists(fileSpec)"),
+      method("FolderExists", "Boolean", "Scripting.FileSystemObject.FolderExists(folderSpec)"),
+      method(
+        "GetAbsolutePathName",
+        "String",
+        "Scripting.FileSystemObject.GetAbsolutePathName(pathSpec)",
+      ),
+      method("GetBaseName", "String", "Scripting.FileSystemObject.GetBaseName(path)"),
+      method("GetDrive", "Scripting.Drive", "Scripting.FileSystemObject.GetDrive(driveSpec)"),
+      method("GetDriveName", "String", "Scripting.FileSystemObject.GetDriveName(path)"),
+      method("GetExtensionName", "String", "Scripting.FileSystemObject.GetExtensionName(path)"),
+      method("GetFile", "Scripting.File", "Scripting.FileSystemObject.GetFile(filePath)"),
+      method("GetFileName", "String", "Scripting.FileSystemObject.GetFileName(path)"),
+      method("GetFolder", "Scripting.Folder", "Scripting.FileSystemObject.GetFolder(path)"),
+      method(
+        "GetParentFolderName",
+        "String",
+        "Scripting.FileSystemObject.GetParentFolderName(path)",
+      ),
+      method(
+        "GetSpecialFolder",
+        "Scripting.Folder",
+        "Scripting.FileSystemObject.GetSpecialFolder(specialFolder)",
+      ),
+      method("GetTempName", "String", "Scripting.FileSystemObject.GetTempName()"),
+      method("MoveFile", "Variant", "Scripting.FileSystemObject.MoveFile(source, destination)"),
+      method("MoveFolder", "Variant", "Scripting.FileSystemObject.MoveFolder(source, destination)"),
+      method(
+        "OpenTextFile",
+        "Scripting.TextStream",
+        "Scripting.FileSystemObject.OpenTextFile(filename, iomode, create, format)",
+      ),
+    ],
+  },
+  "scripting.textstream": {
+    typeName: "Scripting.TextStream",
+    members: [
+      property("AtEndOfLine", "Boolean"),
+      property("AtEndOfStream", "Boolean"),
+      property("Column", "Number"),
+      property("Line", "Number"),
+      method("Close", "Variant", "Scripting.TextStream.Close"),
+      method("Read", "String", "Scripting.TextStream.Read(characters)"),
+      method("ReadAll", "String", "Scripting.TextStream.ReadAll()"),
+      method("ReadLine", "String", "Scripting.TextStream.ReadLine()"),
+      method("Skip", "Variant", "Scripting.TextStream.Skip(characters)"),
+      method("SkipLine", "Variant", "Scripting.TextStream.SkipLine()"),
+      method("Write", "Variant", "Scripting.TextStream.Write(text)"),
+      method("WriteBlankLines", "Variant", "Scripting.TextStream.WriteBlankLines(lines)"),
+      method("WriteLine", "Variant", "Scripting.TextStream.WriteLine(text)"),
+    ],
+  },
+  "scripting.drive": {
+    typeName: "Scripting.Drive",
+    members: [
+      property("AvailableSpace", "Number"),
+      property("DriveLetter", "String"),
+      property("DriveType", "Number"),
+      property("FileSystem", "String"),
+      property("FreeSpace", "Number"),
+      property("IsReady", "Boolean"),
+      property("Path", "String"),
+      property("RootFolder", "Scripting.Folder"),
+      property("SerialNumber", "Number"),
+      property("ShareName", "String"),
+      property("TotalSize", "Number"),
+      property("VolumeName", "String"),
+    ],
+  },
+  "scripting.file": {
+    typeName: "Scripting.File",
+    members: [
+      property("Attributes", "Number"),
+      property("DateCreated", "Date"),
+      property("DateLastAccessed", "Date"),
+      property("DateLastModified", "Date"),
+      property("Drive", "Scripting.Drive"),
+      property("Name", "String"),
+      property("ParentFolder", "Scripting.Folder"),
+      property("Path", "String"),
+      property("ShortName", "String"),
+      property("ShortPath", "String"),
+      property("Size", "Number"),
+      property("Type", "String"),
+      method("Copy", "Variant", "Scripting.File.Copy(destination, overwrite)"),
+      method("Delete", "Variant", "Scripting.File.Delete(force)"),
+      method("Move", "Variant", "Scripting.File.Move(destination)"),
+      method(
+        "OpenAsTextStream",
+        "Scripting.TextStream",
+        "Scripting.File.OpenAsTextStream(iomode, format)",
+      ),
+    ],
+  },
+  "scripting.folder": {
+    typeName: "Scripting.Folder",
+    members: [
+      property("Files", "Variant"),
+      property("SubFolders", "Variant"),
+      property("Attributes", "Number"),
+      property("DateCreated", "Date"),
+      property("DateLastAccessed", "Date"),
+      property("DateLastModified", "Date"),
+      property("Drive", "Scripting.Drive"),
+      property("IsRootFolder", "Boolean"),
+      property("Name", "String"),
+      property("ParentFolder", "Scripting.Folder"),
+      property("Path", "String"),
+      property("ShortName", "String"),
+      property("ShortPath", "String"),
+      property("Size", "Number"),
+      property("Type", "String"),
+      method("Copy", "Variant", "Scripting.Folder.Copy(destination, overwrite)"),
+      method(
+        "CreateTextFile",
+        "Scripting.TextStream",
+        "Scripting.Folder.CreateTextFile(filename, overwrite, unicode)",
+      ),
+      method("Delete", "Variant", "Scripting.Folder.Delete(force)"),
+      method("Move", "Variant", "Scripting.Folder.Move(destination)"),
+    ],
+  },
+  "scripting.dictionary": {
+    typeName: "Scripting.Dictionary",
+    members: [
+      property("CompareMode", "Number"),
+      property("Count", "Number"),
+      property("Item", "Variant"),
+      property("Key", "Variant"),
+      method("Add", "Variant", "Scripting.Dictionary.Add(key, item)"),
+      method("Exists", "Boolean", "Scripting.Dictionary.Exists(key)"),
+      method("Items", "Array", "Scripting.Dictionary.Items()"),
+      method("Keys", "Array", "Scripting.Dictionary.Keys()"),
+      method("Remove", "Variant", "Scripting.Dictionary.Remove(key)"),
+      method("RemoveAll", "Variant", "Scripting.Dictionary.RemoveAll()"),
+    ],
+  },
+  "mswc.adrotator": {
+    typeName: "MSWC.AdRotator",
+    members: [
+      property("Border", "Number"),
+      property("Clickable", "Boolean"),
+      property("TargetFrame", "String"),
+      method("GetAdvertisement", "String", "MSWC.AdRotator.GetAdvertisement(scheduleFile)"),
+    ],
+  },
+  "mswc.browsertype": {
+    typeName: "MSWC.BrowserType",
+    members: [
+      property("ActiveXControls", "Boolean"),
+      property("Backgroundsounds", "Boolean"),
+      property("Beta", "Boolean"),
+      property("Browser", "String"),
+      property("Cdf", "Boolean"),
+      property("Cookies", "Boolean"),
+      property("Frames", "Boolean"),
+      property("Javaapplets", "Boolean"),
+      property("Javascript", "Boolean"),
+      property("MajorVer", "Number"),
+      property("MinorVer", "Number"),
+      property("Platform", "String"),
+      property("Tables", "Boolean"),
+      property("Vbscript", "Boolean"),
+      property("Version", "String"),
+    ],
+  },
+  "mswc.nextlink": {
+    typeName: "MSWC.NextLink",
+    members: [
+      method("GetListCount", "Number", "MSWC.NextLink.GetListCount(listFile)"),
+      method("GetListIndex", "Number", "MSWC.NextLink.GetListIndex(listFile)"),
+      method("GetNextDescription", "String", "MSWC.NextLink.GetNextDescription(listFile)"),
+      method("GetNextURL", "String", "MSWC.NextLink.GetNextURL(listFile)"),
+      method("GetNthDescription", "String", "MSWC.NextLink.GetNthDescription(listFile, index)"),
+      method("GetNthURL", "String", "MSWC.NextLink.GetNthURL(listFile, index)"),
+      method("GetPreviousDescription", "String", "MSWC.NextLink.GetPreviousDescription(listFile)"),
+      method("GetPreviousURL", "String", "MSWC.NextLink.GetPreviousURL(listFile)"),
+    ],
+  },
+  "mswc.contentrotator": {
+    typeName: "MSWC.ContentRotator",
+    members: [
+      method("ChooseContent", "String", "MSWC.ContentRotator.ChooseContent(contentSchedule)"),
+      method("GetAllContent", "String", "MSWC.ContentRotator.GetAllContent(contentSchedule)"),
+    ],
+  },
+  "adodb.command": {
+    typeName: "ADODB.Command",
+    members: [
+      property("ActiveConnection", "Object"),
+      property("CommandText", "String"),
+      property("CommandTimeout", "Number"),
+      property("CommandType", "Number"),
+      property("Name", "String"),
+      property("Prepared", "Boolean"),
+      property("State", "Number"),
+      method("Cancel", "Variant", "ADODB.Command.Cancel()"),
+      method(
+        "CreateParameter",
+        "ADODB.Parameter",
+        "ADODB.Command.CreateParameter(name, type, direction, size, value)",
+      ),
+      method(
+        "Execute",
+        "ADODB.Recordset",
+        "ADODB.Command.Execute(recordsAffected, parameters, options)",
+      ),
+      property("Parameters", "Object"),
+      property("Properties", "Object"),
+    ],
+  },
+  "adodb.connection": {
+    typeName: "ADODB.Connection",
+    members: [
+      property("Attributes", "Number"),
+      property("CommandTimeout", "Number"),
+      property("ConnectionString", "String"),
+      property("ConnectionTimeout", "Number"),
+      property("CursorLocation", "Number"),
+      property("DefaultDatabase", "String"),
+      property("IsolationLevel", "Number"),
+      property("Mode", "Number"),
+      property("Provider", "String"),
+      property("State", "Number"),
+      property("Version", "String"),
+      method("BeginTrans", "Number", "ADODB.Connection.BeginTrans()"),
+      method("Cancel", "Variant", "ADODB.Connection.Cancel()"),
+      method("Close", "Variant", "ADODB.Connection.Close()"),
+      method("CommitTrans", "Variant", "ADODB.Connection.CommitTrans()"),
+      method(
+        "Execute",
+        "ADODB.Recordset",
+        "ADODB.Connection.Execute(commandText, recordsAffected, options)",
+      ),
+      method(
+        "Open",
+        "Variant",
+        "ADODB.Connection.Open(connectionString, userId, password, options)",
+      ),
+      method(
+        "OpenSchema",
+        "ADODB.Recordset",
+        "ADODB.Connection.OpenSchema(schema, restrictions, schemaId)",
+      ),
+      method("RollbackTrans", "Variant", "ADODB.Connection.RollbackTrans()"),
+      event("BeginTransComplete"),
+      event("CommitTransComplete"),
+      event("ConnectComplete"),
+      event("Disconnect"),
+      event("ExecuteComplete"),
+      event("InfoMessage"),
+      event("RollbackTransComplete"),
+      event("WillConnect"),
+      event("WillExecute"),
+      property("Errors", "Object"),
+      property("Properties", "Object"),
+    ],
+  },
+  "adodb.error": {
+    typeName: "ADODB.Error",
+    members: [
+      property("Description", "String"),
+      property("HelpContext", "Number"),
+      property("HelpFile", "String"),
+      property("NativeError", "Number"),
+      property("Number", "Number"),
+      property("Source", "String"),
+      property("SQLState", "String"),
+    ],
+  },
+  "adodb.field": {
+    typeName: "ADODB.Field",
+    members: [
+      property("ActualSize", "Number"),
+      property("Attributes", "Number"),
+      property("DefinedSize", "Number"),
+      property("Name", "String"),
+      property("NumericScale", "Number"),
+      property("OriginalValue", "Variant"),
+      property("Precision", "Number"),
+      property("Status", "Number"),
+      property("Type", "Number"),
+      property("UnderlyingValue", "Variant"),
+      property("Value", "Variant"),
+      method("AppendChunk", "Variant", "ADODB.Field.AppendChunk(data)"),
+      method("GetChunk", "Variant", "ADODB.Field.GetChunk(length)"),
+      property("Properties", "Object"),
+    ],
+  },
+  "adodb.parameter": {
+    typeName: "ADODB.Parameter",
+    members: [
+      property("Attributes", "Number"),
+      property("Direction", "Number"),
+      property("Name", "String"),
+      property("NumericScale", "Number"),
+      property("Precision", "Number"),
+      property("Size", "Number"),
+      property("Type", "Number"),
+      property("Value", "Variant"),
+      method("AppendChunk", "Variant", "ADODB.Parameter.AppendChunk(value)"),
+      method("Delete", "Variant", "ADODB.Parameter.Delete()"),
+    ],
+  },
+  "adodb.property": {
+    typeName: "ADODB.Property",
+    members: [
+      property("Attributes", "Number"),
+      property("Name", "String"),
+      property("Type", "Number"),
+      property("Value", "Variant"),
+    ],
+  },
+  "adodb.record": {
+    typeName: "ADODB.Record",
+    members: [
+      property("ActiveConnection", "Object"),
+      property("Mode", "Number"),
+      property("ParentURL", "String"),
+      property("RecordType", "Number"),
+      property("Source", "Variant"),
+      property("State", "Number"),
+      method("Cancel", "Variant", "ADODB.Record.Cancel()"),
+      method("Close", "Variant", "ADODB.Record.Close()"),
+      method(
+        "CopyRecord",
+        "String",
+        "ADODB.Record.CopyRecord(source, destination, userName, password, options, async)",
+      ),
+      method("DeleteRecord", "Variant", "ADODB.Record.DeleteRecord(source, async)"),
+      method("GetChildren", "ADODB.Recordset", "ADODB.Record.GetChildren()"),
+      method(
+        "MoveRecord",
+        "String",
+        "ADODB.Record.MoveRecord(source, destination, userName, password, options, async)",
+      ),
+      method(
+        "Open",
+        "Variant",
+        "ADODB.Record.Open(source, activeConnection, mode, createOptions, options, userName, password)",
+      ),
+      property("Properties", "Object"),
+      property("Fields", "Object"),
+    ],
+  },
+  "adodb.recordset": {
+    typeName: "ADODB.Recordset",
+    members: [
+      property("AbsolutePage", "Number"),
+      property("AbsolutePosition", "Number"),
+      property("ActiveCommand", "ADODB.Command"),
+      property("ActiveConnection", "Object"),
+      property("BOF", "Boolean"),
+      property("Bookmark", "Variant"),
+      property("CacheSize", "Number"),
+      property("CursorLocation", "Number"),
+      property("CursorType", "Number"),
+      property("DataMember", "String"),
+      property("DataSource", "Object"),
+      property("EditMode", "Number"),
+      property("EOF", "Boolean"),
+      property("Filter", "Variant"),
+      property("Index", "String"),
+      property("LockType", "Number"),
+      property("MarshalOptions", "Number"),
+      property("MaxRecords", "Number"),
+      property("PageCount", "Number"),
+      property("PageSize", "Number"),
+      property("RecordCount", "Number"),
+      property("Sort", "String"),
+      property("Source", "Variant"),
+      property("State", "Number"),
+      property("Status", "Number"),
+      property("StayInSync", "Boolean"),
+      method("AddNew", "Variant", "ADODB.Recordset.AddNew(fieldList, values)"),
+      method("Cancel", "Variant", "ADODB.Recordset.Cancel()"),
+      method("CancelBatch", "Variant", "ADODB.Recordset.CancelBatch(affectRecords)"),
+      method("CancelUpdate", "Variant", "ADODB.Recordset.CancelUpdate()"),
+      method("Clone", "ADODB.Recordset", "ADODB.Recordset.Clone(lockType)"),
+      method("Close", "Variant", "ADODB.Recordset.Close()"),
+      method(
+        "CompareBookmarks",
+        "Number",
+        "ADODB.Recordset.CompareBookmarks(bookmark1, bookmark2)",
+      ),
+      method("Delete", "Variant", "ADODB.Recordset.Delete(affectRecords)"),
+      method(
+        "Find",
+        "Variant",
+        "ADODB.Recordset.Find(criteria, skipRecords, searchDirection, start)",
+      ),
+      method("GetRows", "Array", "ADODB.Recordset.GetRows(rows, start, fields)"),
+      method(
+        "GetString",
+        "String",
+        "ADODB.Recordset.GetString(stringFormat, numRows, columnDelimiter, rowDelimiter, nullExpr)",
+      ),
+      method("Move", "Variant", "ADODB.Recordset.Move(numRecords, start)"),
+      method("MoveFirst", "Variant", "ADODB.Recordset.MoveFirst()"),
+      method("MoveLast", "Variant", "ADODB.Recordset.MoveLast()"),
+      method("MoveNext", "Variant", "ADODB.Recordset.MoveNext()"),
+      method("MovePrevious", "Variant", "ADODB.Recordset.MovePrevious()"),
+      method("NextRecordset", "ADODB.Recordset", "ADODB.Recordset.NextRecordset(recordsAffected)"),
+      method(
+        "Open",
+        "Variant",
+        "ADODB.Recordset.Open(source, activeConnection, cursorType, lockType, options)",
+      ),
+      method("Requery", "Variant", "ADODB.Recordset.Requery(options)"),
+      method("Resync", "Variant", "ADODB.Recordset.Resync(affectRecords, resyncValues)"),
+      method("Save", "Variant", "ADODB.Recordset.Save(destination, persistFormat)"),
+      method("Seek", "Variant", "ADODB.Recordset.Seek(keyValues, seekOption)"),
+      method("Supports", "Boolean", "ADODB.Recordset.Supports(cursorOptions)"),
+      method("Update", "Variant", "ADODB.Recordset.Update(fields, values)"),
+      method("UpdateBatch", "Variant", "ADODB.Recordset.UpdateBatch(affectRecords)"),
+      event("EndOfRecordset"),
+      event("FetchComplete"),
+      event("FetchProgress"),
+      event("FieldChangeComplete"),
+      event("MoveComplete"),
+      event("RecordChangeComplete"),
+      event("RecordsetChangeComplete"),
+      event("WillChangeField"),
+      event("WillChangeRecord"),
+      event("WillChangeRecordset"),
+      event("WillMove"),
+      property("Fields", "Object"),
+      property("Properties", "Object"),
+    ],
+  },
+  "adodb.stream": {
+    typeName: "ADODB.Stream",
+    members: [
+      property("CharSet", "String"),
+      property("EOS", "Boolean"),
+      property("LineSeparator", "Number"),
+      property("Mode", "Number"),
+      property("Position", "Number"),
+      property("Size", "Number"),
+      property("State", "Number"),
+      property("Type", "Number"),
+      method("Cancel", "Variant", "ADODB.Stream.Cancel()"),
+      method("Close", "Variant", "ADODB.Stream.Close()"),
+      method("CopyTo", "Variant", "ADODB.Stream.CopyTo(destination, charNumber)"),
+      method("Flush", "Variant", "ADODB.Stream.Flush()"),
+      method("LoadFromFile", "Variant", "ADODB.Stream.LoadFromFile(filename)"),
+      method("Open", "Variant", "ADODB.Stream.Open(source, mode, openOptions, userName, password)"),
+      method("Read", "Variant", "ADODB.Stream.Read(numBytes)"),
+      method("ReadText", "String", "ADODB.Stream.ReadText(numChars)"),
+      method("SaveToFile", "Variant", "ADODB.Stream.SaveToFile(filename, saveOptions)"),
+      method("SetEOS", "Variant", "ADODB.Stream.SetEOS()"),
+      method("SkipLine", "Variant", "ADODB.Stream.SkipLine()"),
+      method("Write", "Variant", "ADODB.Stream.Write(buffer)"),
+      method("WriteText", "Variant", "ADODB.Stream.WriteText(data, options)"),
+    ],
+  },
 };
 
-const externalObjectMembers: Record<string, CompletionItem[]> = {
-  "adodb.connection": [
-    "Open",
-    "Close",
-    "Execute",
-    "BeginTrans",
-    "CommitTrans",
-    "RollbackTrans",
-    "ConnectionString",
-    "State",
-  ].map(methodItem),
-  "adodb.recordset": [
-    "Open",
-    "Close",
-    "MoveNext",
-    "MovePrevious",
-    "MoveFirst",
-    "MoveLast",
-    "EOF",
-    "BOF",
-    "Fields",
-    "RecordCount",
-  ].map(methodItem),
-  "adodb.command": ["Execute", "CreateParameter", "Parameters", "CommandText", "CommandType"].map(
-    methodItem,
-  ),
-};
+const classicAspBuiltinSignatures = objectSignatures(classicAspObjectCatalog);
+const memberCompletions = objectCompletions(classicAspObjectCatalog);
+const externalObjectMembers = objectCompletions(externalObjectCatalog);
 
 const intrinsicTypeNames = new Set([
   "array",
@@ -463,44 +1006,101 @@ const classicAspTypeNames = new Set([
   "asperror",
 ]);
 
-const adoMemberTypes: Record<string, Record<string, string>> = {
-  "adodb.connection": {
-    Open: "Variant",
-    Close: "Variant",
-    Execute: "ADODB.Recordset",
-    BeginTrans: "Number",
-    CommitTrans: "Variant",
-    RollbackTrans: "Variant",
-    ConnectionString: "String",
-    State: "Number",
-  },
-  "adodb.recordset": {
-    Open: "Variant",
-    Close: "Variant",
-    MoveNext: "Variant",
-    MovePrevious: "Variant",
-    MoveFirst: "Variant",
-    MoveLast: "Variant",
-    EOF: "Boolean",
-    BOF: "Boolean",
-    Fields: "Object",
-    RecordCount: "Number",
-  },
-  "adodb.command": {
-    Execute: "ADODB.Recordset",
-    CreateParameter: "Object",
-    Parameters: "Object",
-    CommandText: "String",
-    CommandType: "Number",
-  },
-};
+const builtinConstants: BuiltinConstant[] = [
+  "adBigInt",
+  "adBinary",
+  "adBoolean",
+  "adChar",
+  "adCurrency",
+  "adDate",
+  "adDBTimeStamp",
+  "adDecimal",
+  "adDouble",
+  "adGUID",
+  "adIDispatch",
+  "adInteger",
+  "adLongVarBinary",
+  "adLongVarChar",
+  "adLongVarWChar",
+  "adNumeric",
+  "adSingle",
+  "adSmallInt",
+  "adUnsignedTinyInt",
+  "adVarBinary",
+  "adVarChar",
+  "adVariant",
+  "adVarWChar",
+  "adWChar",
+].map((label) => ({
+  label,
+  type: "Number",
+  documentation: "ADO data type constant.",
+}));
 
-function builtinMethodItem(label: string): CompletionItem {
-  return withBuiltinCompletionLabel(methodItem(label), undefined);
+const classicAspRuntimeEvents = [
+  "Application_OnStart",
+  "Application_OnEnd",
+  "Session_OnStart",
+  "Session_OnEnd",
+];
+
+function property(name: string, type = "Variant", signature?: string): BuiltinMemberSpec {
+  return { name, kind: "property", type, signature };
 }
 
-function methodItem(label: string): CompletionItem {
-  return { label, kind: CompletionItemKind.Method };
+function method(name: string, type = "Variant", signature?: string): BuiltinMemberSpec {
+  return { name, kind: "method", type, signature };
+}
+
+function event(name: string): BuiltinMemberSpec {
+  return { name, kind: "event", type: "Variant" };
+}
+
+function objectSignatures(catalog: Record<string, BuiltinObjectSpec>): Record<string, string[]> {
+  return Object.fromEntries(
+    Object.entries(catalog).flatMap(([objectName, objectSpec]) =>
+      objectSpec.members.flatMap((member) =>
+        member.signature
+          ? [[`${objectName}.${member.name}`.toLowerCase(), [member.signature]]]
+          : [],
+      ),
+    ),
+  );
+}
+
+function objectCompletions(
+  catalog: Record<string, BuiltinObjectSpec>,
+): Record<string, CompletionItem[]> {
+  return Object.fromEntries(
+    Object.entries(catalog).map(([objectName, objectSpec]) => [
+      objectName,
+      objectSpec.members.map(memberCompletionItem),
+    ]),
+  );
+}
+
+function memberCompletionItem(member: BuiltinMemberSpec): CompletionItem {
+  return withBuiltinCompletionLabel(
+    {
+      label: member.name,
+      kind: completionKindForMember(member.kind),
+      detail: member.type ? `${member.kind} As ${member.type}` : member.kind,
+    },
+    undefined,
+  );
+}
+
+function completionKindForMember(kind: VbBuiltinMemberKind): CompletionItemKind {
+  switch (kind) {
+    case "event":
+      return CompletionItemKind.Event;
+    case "field":
+      return CompletionItemKind.Field;
+    case "method":
+      return CompletionItemKind.Method;
+    case "property":
+      return CompletionItemKind.Property;
+  }
 }
 
 interface BuiltinFunction {
@@ -510,224 +1110,210 @@ interface BuiltinFunction {
   documentation: string;
 }
 
-const builtinFunctions: BuiltinFunction[] = [
-  {
-    label: "CStr",
-    signature: "CStr(value)",
-    returnType: "String",
-    documentation: "Converts a value to String.",
-  },
-  {
-    label: "CByte",
-    signature: "CByte(value)",
-    returnType: "Number",
-    documentation: "Converts a value to Byte.",
-  },
-  {
-    label: "CInt",
-    signature: "CInt(value)",
-    returnType: "Number",
-    documentation: "Converts a value to Integer.",
-  },
-  {
-    label: "CLng",
-    signature: "CLng(value)",
-    returnType: "Number",
-    documentation: "Converts a value to Long.",
-  },
-  {
-    label: "CSng",
-    signature: "CSng(value)",
-    returnType: "Number",
-    documentation: "Converts a value to Single.",
-  },
-  {
-    label: "CDbl",
-    signature: "CDbl(value)",
-    returnType: "Number",
-    documentation: "Converts a value to Double.",
-  },
-  {
-    label: "CCur",
-    signature: "CCur(value)",
-    returnType: "Currency",
-    documentation: "Converts a value to Currency.",
-  },
-  {
-    label: "CDec",
-    signature: "CDec(value)",
-    returnType: "Decimal",
-    documentation: "Converts a value to Decimal.",
-  },
-  {
-    label: "CBool",
-    signature: "CBool(value)",
-    returnType: "Boolean",
-    documentation: "Converts a value to Boolean.",
-  },
-  {
-    label: "CDate",
-    signature: "CDate(value)",
-    returnType: "Date",
-    documentation: "Converts a value to Date.",
-  },
-  {
-    label: "CVar",
-    signature: "CVar(value)",
-    returnType: "Variant",
-    documentation: "Converts a value to Variant.",
-  },
-  {
-    label: "CVErr",
-    signature: "CVErr(errorNumber)",
-    returnType: "Error",
-    documentation: "Converts an error number to an Error subtype.",
-  },
-  {
-    label: "Array",
-    signature: "Array(values)",
-    returnType: "Array",
-    documentation: "Creates a Variant array.",
-  },
-  {
-    label: "UBound",
-    signature: "UBound(array, dimension)",
-    returnType: "Number",
-    documentation: "Returns the largest available subscript for an array dimension.",
-  },
-  {
-    label: "LBound",
-    signature: "LBound(array, dimension)",
-    returnType: "Number",
-    documentation: "Returns the smallest available subscript for an array dimension.",
-  },
-  {
-    label: "LCase",
-    signature: "LCase(value)",
-    returnType: "String",
-    documentation: "Converts a string to lowercase.",
-  },
-  {
-    label: "UCase",
-    signature: "UCase(value)",
-    returnType: "String",
-    documentation: "Converts a string to uppercase.",
-  },
-  {
-    label: "Trim",
-    signature: "Trim(value)",
-    returnType: "String",
-    documentation: "Removes leading and trailing spaces.",
-  },
-  {
-    label: "Len",
-    signature: "Len(value)",
-    returnType: "Number",
-    documentation: "Returns the number of characters in a string.",
-  },
-  {
-    label: "InStr",
-    signature: "InStr(start, string1, string2, compare)",
-    returnType: "Number",
-    documentation: "Returns the position of one string within another.",
-  },
-  {
-    label: "Replace",
-    signature: "Replace(expression, find, replaceWith)",
-    returnType: "String",
-    documentation: "Returns a string with replacements applied.",
-  },
-  {
-    label: "Left",
-    signature: "Left(value, length)",
-    returnType: "String",
-    documentation: "Returns the left part of a string.",
-  },
-  {
-    label: "Right",
-    signature: "Right(value, length)",
-    returnType: "String",
-    documentation: "Returns the right part of a string.",
-  },
-  {
-    label: "Mid",
-    signature: "Mid(value, start, length)",
-    returnType: "String",
-    documentation: "Returns part of a string.",
-  },
-  {
-    label: "Date",
-    signature: "Date()",
-    returnType: "Date",
-    documentation: "Returns the current system date.",
-  },
-  {
-    label: "Now",
-    signature: "Now()",
-    returnType: "Date",
-    documentation: "Returns the current date and time.",
-  },
-  {
-    label: "DateAdd",
-    signature: "DateAdd(interval, number, date)",
-    returnType: "Date",
-    documentation: "Returns a date with an interval added.",
-  },
-  {
-    label: "DateDiff",
-    signature: "DateDiff(interval, date1, date2)",
-    returnType: "Number",
-    documentation: "Returns the number of intervals between two dates.",
-  },
-  {
-    label: "Abs",
-    signature: "Abs(number)",
-    returnType: "Number",
-    documentation: "Returns the absolute value of a number.",
-  },
-  {
-    label: "Int",
-    signature: "Int(number)",
-    returnType: "Number",
-    documentation: "Returns the integer part of a number.",
-  },
-  {
-    label: "Round",
-    signature: "Round(number, decimalPlaces)",
-    returnType: "Number",
-    documentation: "Rounds a number.",
-  },
-  {
-    label: "IsArray",
-    signature: "IsArray(value)",
-    returnType: "Boolean",
-    documentation: "Returns whether a value is an array.",
-  },
-  {
-    label: "IsNull",
-    signature: "IsNull(value)",
-    returnType: "Boolean",
-    documentation: "Returns whether a value is Null.",
-  },
-  {
-    label: "IsEmpty",
-    signature: "IsEmpty(value)",
-    returnType: "Boolean",
-    documentation: "Returns whether a variable is Empty.",
-  },
-  {
-    label: "IsNumeric",
-    signature: "IsNumeric(value)",
-    returnType: "Boolean",
-    documentation: "Returns whether a value can be evaluated as a number.",
-  },
-  {
-    label: "TypeName",
-    signature: "TypeName(value)",
-    returnType: "String",
-    documentation: "Returns the subtype name for a variable.",
-  },
-];
+const builtinFunctions: BuiltinFunction[] = (
+  [
+    ["CStr", "CStr(value)", "String", "Converts a value to String."],
+    ["CByte", "CByte(value)", "Number", "Converts a value to Byte."],
+    ["CInt", "CInt(value)", "Number", "Converts a value to Integer."],
+    ["CLng", "CLng(value)", "Number", "Converts a value to Long."],
+    ["CSng", "CSng(value)", "Number", "Converts a value to Single."],
+    ["CDbl", "CDbl(value)", "Number", "Converts a value to Double."],
+    ["CCur", "CCur(value)", "Currency", "Converts a value to Currency."],
+    ["CDec", "CDec(value)", "Decimal", "Converts a value to Decimal."],
+    ["CBool", "CBool(value)", "Boolean", "Converts a value to Boolean."],
+    ["CDate", "CDate(value)", "Date", "Converts a value to Date."],
+    ["CVar", "CVar(value)", "Variant", "Converts a value to Variant."],
+    ["CVErr", "CVErr(errorNumber)", "Error", "Converts an error number to an Error subtype."],
+    ["Asc", "Asc(string)", "Number", "Returns the ANSI character code for a string."],
+    ["Chr", "Chr(charCode)", "String", "Returns the character for an ANSI code."],
+    ["Hex", "Hex(number)", "String", "Returns the hexadecimal value of a number."],
+    ["Oct", "Oct(number)", "String", "Returns the octal value of a number."],
+    ["Array", "Array(values)", "Array", "Creates a Variant array."],
+    [
+      "Filter",
+      "Filter(inputStrings, value, include, compare)",
+      "Array",
+      "Returns matching entries from a string array.",
+    ],
+    ["Join", "Join(list, delimiter)", "String", "Joins array entries into a string."],
+    [
+      "LBound",
+      "LBound(array, dimension)",
+      "Number",
+      "Returns the smallest available subscript for an array dimension.",
+    ],
+    [
+      "Split",
+      "Split(expression, delimiter, count, compare)",
+      "Array",
+      "Splits a string into an array.",
+    ],
+    [
+      "UBound",
+      "UBound(array, dimension)",
+      "Number",
+      "Returns the largest available subscript for an array dimension.",
+    ],
+    ["LCase", "LCase(value)", "String", "Converts a string to lowercase."],
+    ["UCase", "UCase(value)", "String", "Converts a string to uppercase."],
+    ["Trim", "Trim(value)", "String", "Removes leading and trailing spaces."],
+    ["LTrim", "LTrim(value)", "String", "Removes leading spaces."],
+    ["RTrim", "RTrim(value)", "String", "Removes trailing spaces."],
+    ["Len", "Len(value)", "Number", "Returns the number of characters in a string."],
+    [
+      "InStr",
+      "InStr(start, string1, string2, compare)",
+      "Number",
+      "Returns the position of one string within another.",
+    ],
+    [
+      "InStrRev",
+      "InStrRev(string1, string2, start, compare)",
+      "Number",
+      "Returns the position of one string within another from the end.",
+    ],
+    [
+      "Replace",
+      "Replace(expression, find, replaceWith, start, count, compare)",
+      "String",
+      "Returns a string with replacements applied.",
+    ],
+    ["Left", "Left(value, length)", "String", "Returns the left part of a string."],
+    ["Right", "Right(value, length)", "String", "Returns the right part of a string."],
+    ["Mid", "Mid(value, start, length)", "String", "Returns part of a string."],
+    ["Space", "Space(number)", "String", "Returns a string of spaces."],
+    ["StrComp", "StrComp(string1, string2, compare)", "Number", "Compares two strings."],
+    ["String", "String(number, character)", "String", "Returns a repeated character string."],
+    ["StrReverse", "StrReverse(value)", "String", "Reverses a string."],
+    ["Date", "Date()", "Date", "Returns the current system date."],
+    ["Now", "Now()", "Date", "Returns the current date and time."],
+    ["Time", "Time()", "Date", "Returns the current system time."],
+    ["Timer", "Timer()", "Number", "Returns the number of seconds since midnight."],
+    [
+      "DateAdd",
+      "DateAdd(interval, number, date)",
+      "Date",
+      "Returns a date with an interval added.",
+    ],
+    [
+      "DateDiff",
+      "DateDiff(interval, date1, date2, firstDayOfWeek, firstWeekOfYear)",
+      "Number",
+      "Returns the number of intervals between two dates.",
+    ],
+    [
+      "DatePart",
+      "DatePart(interval, date, firstDayOfWeek, firstWeekOfYear)",
+      "Number",
+      "Returns part of a date.",
+    ],
+    [
+      "DateSerial",
+      "DateSerial(year, month, day)",
+      "Date",
+      "Returns a date from year, month, and day values.",
+    ],
+    ["DateValue", "DateValue(date)", "Date", "Returns a date value."],
+    ["Day", "Day(date)", "Number", "Returns the day of the month."],
+    [
+      "FormatDateTime",
+      "FormatDateTime(date, namedFormat)",
+      "String",
+      "Formats a date or time expression.",
+    ],
+    ["Hour", "Hour(time)", "Number", "Returns the hour of the day."],
+    ["IsDate", "IsDate(value)", "Boolean", "Returns whether a value can be converted to a date."],
+    ["Minute", "Minute(time)", "Number", "Returns the minute of the hour."],
+    ["Month", "Month(date)", "Number", "Returns the month of the year."],
+    ["MonthName", "MonthName(month, abbreviate)", "String", "Returns the name of a month."],
+    ["Second", "Second(time)", "Number", "Returns the second of the minute."],
+    [
+      "TimeSerial",
+      "TimeSerial(hour, minute, second)",
+      "Date",
+      "Returns a time from hour, minute, and second values.",
+    ],
+    ["TimeValue", "TimeValue(time)", "Date", "Returns a time value."],
+    ["Weekday", "Weekday(date, firstDayOfWeek)", "Number", "Returns the weekday number."],
+    [
+      "WeekdayName",
+      "WeekdayName(weekday, abbreviate, firstDayOfWeek)",
+      "String",
+      "Returns the name of a weekday.",
+    ],
+    ["Year", "Year(date)", "Number", "Returns the year."],
+    [
+      "FormatCurrency",
+      "FormatCurrency(expression, digitsAfterDecimal, includeLeadingDigit, useParensForNegativeNumbers, groupDigits)",
+      "String",
+      "Formats an expression as currency.",
+    ],
+    [
+      "FormatNumber",
+      "FormatNumber(expression, digitsAfterDecimal, includeLeadingDigit, useParensForNegativeNumbers, groupDigits)",
+      "String",
+      "Formats an expression as a number.",
+    ],
+    [
+      "FormatPercent",
+      "FormatPercent(expression, digitsAfterDecimal, includeLeadingDigit, useParensForNegativeNumbers, groupDigits)",
+      "String",
+      "Formats an expression as a percentage.",
+    ],
+    ["Abs", "Abs(number)", "Number", "Returns the absolute value of a number."],
+    ["Atn", "Atn(number)", "Number", "Returns the arctangent of a number."],
+    ["Cos", "Cos(number)", "Number", "Returns the cosine of an angle."],
+    ["Exp", "Exp(number)", "Number", "Returns e raised to a power."],
+    ["Fix", "Fix(number)", "Number", "Returns the integer part of a number."],
+    ["Int", "Int(number)", "Number", "Returns the integer part of a number."],
+    ["Log", "Log(number)", "Number", "Returns the natural logarithm of a number."],
+    ["Rnd", "Rnd(number)", "Number", "Returns a random number."],
+    ["Round", "Round(number, decimalPlaces)", "Number", "Rounds a number."],
+    ["Sgn", "Sgn(number)", "Number", "Returns the sign of a number."],
+    ["Sin", "Sin(number)", "Number", "Returns the sine of an angle."],
+    ["Sqr", "Sqr(number)", "Number", "Returns the square root of a number."],
+    ["Tan", "Tan(number)", "Number", "Returns the tangent of an angle."],
+    ["CreateObject", "CreateObject(progId)", "Object", "Creates an automation object."],
+    ["Eval", "Eval(expression)", "Variant", "Evaluates an expression."],
+    ["IsArray", "IsArray(value)", "Boolean", "Returns whether a value is an array."],
+    ["IsNull", "IsNull(value)", "Boolean", "Returns whether a value is Null."],
+    ["IsEmpty", "IsEmpty(value)", "Boolean", "Returns whether a variable is Empty."],
+    [
+      "IsNumeric",
+      "IsNumeric(value)",
+      "Boolean",
+      "Returns whether a value can be evaluated as a number.",
+    ],
+    ["IsObject", "IsObject(value)", "Boolean", "Returns whether a value is an automation object."],
+    ["RGB", "RGB(red, green, blue)", "Number", "Returns an RGB color value."],
+    ["ScriptEngine", "ScriptEngine()", "String", "Returns the script engine name."],
+    [
+      "ScriptEngineBuildVersion",
+      "ScriptEngineBuildVersion()",
+      "Number",
+      "Returns the script engine build version.",
+    ],
+    [
+      "ScriptEngineMajorVersion",
+      "ScriptEngineMajorVersion()",
+      "Number",
+      "Returns the script engine major version.",
+    ],
+    [
+      "ScriptEngineMinorVersion",
+      "ScriptEngineMinorVersion()",
+      "Number",
+      "Returns the script engine minor version.",
+    ],
+    ["TypeName", "TypeName(value)", "String", "Returns the subtype name for a variable."],
+    ["VarType", "VarType(value)", "Number", "Returns the subtype code for a variable."],
+  ] satisfies Array<readonly [string, string, string, string]>
+).map(([label, signature, returnType, documentation]) => ({
+  label,
+  signature,
+  returnType,
+  documentation,
+}));
 
 const vbKeywords = new Set([
   "and",
@@ -1471,8 +2057,12 @@ function findKeyword(tokens: VbToken[], start: number, end: number, keyword: str
 }
 
 function findCreateObjectCall(tokens: VbToken[], start: number, end: number): number {
-  for (let index = start; index + 2 <= end; index += 1) {
+  for (let index = start; index <= end; index += 1) {
+    if (lowerToken(tokens[index]) === "createobject") {
+      return index;
+    }
     if (
+      index + 2 <= end &&
       lowerToken(tokens[index]) === "server" &&
       tokens[index + 1]?.text === "." &&
       lowerToken(tokens[index + 2]) === "createobject"
@@ -1792,7 +2382,9 @@ export function getVbscriptHover(
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const symbol = resolveSymbolAt(parsed, sourceOffset, symbols);
   if (!symbol) {
-    return undefined;
+    const typeEnvironment =
+      context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
+    return builtinMemberDescription(parsed, sourceOffset, symbols, typeEnvironment);
   }
   const hover = appendDocumentationMarkdown(
     markdownHover(vbscriptHoverSignature(parsed, symbol)),
@@ -2040,14 +2632,21 @@ function builtinSemanticTokenForIdentifier(
       tokenModifiers: ["library"],
     };
   }
-  if (!builtinFunction(token.text)) {
-    return undefined;
+  if (builtinFunction(token.text)) {
+    return {
+      range: rangeFromOffsets(parsed.text, token.start, token.end),
+      tokenType: "function",
+      tokenModifiers: ["library"],
+    };
   }
-  return {
-    range: rangeFromOffsets(parsed.text, token.start, token.end),
-    tokenType: "function",
-    tokenModifiers: ["library"],
-  };
+  if (builtinConstant(token.text)) {
+    return {
+      range: rangeFromOffsets(parsed.text, token.start, token.end),
+      tokenType: "variable",
+      tokenModifiers: ["readonly", "library"],
+    };
+  }
+  return undefined;
 }
 
 function builtinMemberName(owner: string, member: string): boolean {
@@ -3611,7 +4210,7 @@ function inferSignificantExpressionType(
     return typeRef(expression[1].text);
   }
   const createObjectIndex = findCreateObjectCall(expression, 0, expression.length - 1);
-  if (createObjectIndex !== -1) {
+  if (createObjectIndex === 0) {
     const stringToken = expression
       .slice(createObjectIndex)
       .find((token) => token.kind === "string");
@@ -3624,7 +4223,9 @@ function inferSignificantExpressionType(
     expression[1]?.text === "." &&
     expression[2]?.kind === "identifier"
   ) {
-    const ownerType = inferVariableTypeRef(first.text, parsed, offset, symbols);
+    const ownerType =
+      inferVariableTypeRef(first.text, parsed, offset, symbols) ??
+      classicAspObjectTypeRef(first.text);
     return ownerType
       ? (memberReturnType(ownerType, expression[2].text, env) ??
           memberType(ownerType, expression[2].text, env))
@@ -3645,6 +4246,10 @@ function inferSignificantExpressionType(
             candidate.kind === "property"),
       );
       return symbol?.type ?? (symbol?.typeName ? typeRef(symbol.typeName) : undefined);
+    }
+    const constant = builtinConstant(first.text);
+    if (constant) {
+      return typeRef(constant.type);
     }
     return inferVariableTypeRef(first.text, parsed, offset, symbols);
   }
@@ -3856,16 +4461,6 @@ function currentClassName(
   )?.name;
 }
 
-function inferVariableType(
-  name: string,
-  parsed: AspParsedDocument,
-  offset: number,
-  symbols: VbSymbol[],
-): string | undefined {
-  const type = inferVariableTypeRef(name, parsed, offset, symbols);
-  return type ? formatTypeRef(type) : undefined;
-}
-
 function inferVariableTypeRef(
   name: string,
   parsed: AspParsedDocument,
@@ -3880,15 +4475,6 @@ function inferVariableTypeRef(
         symbolPriority(right) - symbolPriority(left),
     )
     .map(symbolTypeRef)[0];
-}
-
-function currentWithTypeName(
-  parsed: AspParsedDocument,
-  offset: number,
-  symbols: VbSymbol[],
-): string | undefined {
-  const type = currentWithTypeRef(parsed, offset, symbols);
-  return type ? formatTypeRef(type) : undefined;
 }
 
 function currentWithTypeRef(
@@ -3957,11 +4543,50 @@ function memberToCompletion(member: VbMember): CompletionItem {
     kind:
       member.kind === "method"
         ? CompletionItemKind.Method
-        : member.kind === "field"
-          ? CompletionItemKind.Field
-          : CompletionItemKind.Property,
+        : member.kind === "event"
+          ? CompletionItemKind.Event
+          : member.kind === "field"
+            ? CompletionItemKind.Field
+            : CompletionItemKind.Property,
     detail: member.type ? `${member.kind} As ${formatTypeRef(member.type)}` : member.kind,
   };
+}
+
+function builtinMemberDescription(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+): string | undefined {
+  const access = memberAccessAt(parsed, offset);
+  if (!access) {
+    return undefined;
+  }
+  const ownerType =
+    access.owner === ""
+      ? currentWithTypeRef(parsed, offset, symbols)
+      : access.owner.toLowerCase() === "me"
+        ? currentClassTypeRef(parsed, offset, symbols)
+        : (inferVariableTypeRef(access.owner, parsed, offset, symbols) ??
+          classicAspObjectTypeRef(access.owner));
+  if (!ownerType) {
+    return undefined;
+  }
+  for (const candidate of expandUnionType(ownerType)) {
+    const type = findType(env, candidate.name);
+    const member = type?.members.find(
+      (item) => item.name.toLowerCase() === access.member.toLowerCase(),
+    );
+    if (!type || !member) {
+      continue;
+    }
+    const signature = member.signature
+      ? signatureLabelFromMember(type.name, member.name, member.signature)
+      : undefined;
+    const typeSuffix = member.type ? ` As ${formatTypeRef(member.type)}` : "";
+    return markdownHover(signature ?? `${member.kind} ${type.name}.${member.name}${typeSuffix}`);
+  }
+  return undefined;
 }
 
 function visibleSymbols(
@@ -4947,35 +5572,34 @@ function builtinTypes(): VbType[] {
     "Unknown",
     "Error",
   ].map((name) => ({ name, kind: "intrinsic" as const, members: [] }));
-  const classicAsp: VbType[] = Object.entries(memberCompletions).map(([name, members]) => ({
-    name: canonicalBuiltinTypeName(name),
+  const classicAsp: VbType[] = Object.values(classicAspObjectCatalog).map((objectSpec) => ({
+    name: objectSpec.typeName,
     kind: "classicAsp",
-    members: members.map((member) => {
-      const signature = builtinSignature(`${name}.${member.label}`);
+    members: objectSpec.members.map((member) => {
+      const signature = member.signature
+        ? signatureFromLabel(member.signature, member.type ?? "Variant")
+        : undefined;
       return {
-        name: member.label,
-        kind: signature ? "method" : "property",
-        type: signature?.returnType ?? typeRef("Variant"),
+        name: member.name,
+        kind: member.kind,
+        type: signature?.returnType ?? typeRef(member.type ?? "Variant"),
         signature,
       };
     }),
   }));
-  const ado: VbType[] = Object.entries(externalObjectMembers).map(([name, members]) => ({
-    name,
+  const external: VbType[] = Object.values(externalObjectCatalog).map((objectSpec) => ({
+    name: objectSpec.typeName,
     kind: "com",
-    members: members.map((member) => {
-      const returnType = adoMemberTypes[name]?.[member.label] ?? "Variant";
-      return {
-        name: member.label,
-        kind: isMethodLikeMember(member.label) ? "method" : "property",
-        type: typeRef(returnType),
-        signature: isMethodLikeMember(member.label)
-          ? { parameters: [], returnType: typeRef(returnType) }
-          : undefined,
-      };
-    }),
+    members: objectSpec.members.map((member) => ({
+      name: member.name,
+      kind: member.kind,
+      type: typeRef(member.type ?? "Variant"),
+      signature: member.signature
+        ? signatureFromLabel(member.signature, member.type ?? "Variant")
+        : undefined,
+    })),
   }));
-  return [...intrinsic, ...classicAsp, ...ado];
+  return [...intrinsic, ...classicAsp, ...external];
 }
 
 function configuredComTypes(comTypes: Record<string, AspVbscriptComType>): VbType[] {
@@ -5014,6 +5638,10 @@ function builtinSignature(name: string): VbSignature | undefined {
   if (!label) {
     return undefined;
   }
+  return signatureFromLabel(label, builtinReturnType(name));
+}
+
+function signatureFromLabel(label: string, returnType: string): VbSignature {
   const parameterText = /\((.*)\)/.exec(label)?.[1] ?? label.split(/\s+/).slice(1).join(", ");
   const parameters = parameterText
     ? parameterText
@@ -5022,7 +5650,7 @@ function builtinSignature(name: string): VbSignature | undefined {
         .filter(Boolean)
         .map((parameter) => ({ name: parameter }))
     : [];
-  return { parameters, returnType: typeRef(builtinReturnType(name)) };
+  return { parameters, returnType: typeRef(returnType) };
 }
 
 function builtinSignatureLabels(name: string): string[] | undefined {
@@ -5041,22 +5669,24 @@ function builtinReturnType(name: string): string {
   if (builtin) {
     return builtin.returnType;
   }
-  if (lower.includes("createobject") || lower.includes("getlasterror")) {
-    return "Object";
-  }
-  if (
-    lower.includes("map") ||
-    lower.includes("encode") ||
-    lower.includes("querystring") ||
-    lower.includes("form")
-  ) {
-    return "String";
+  const [ownerName, memberName] = lower.split(".", 2);
+  const member = ownerName
+    ? classicAspObjectCatalog[ownerName]?.members.find(
+        (item) => item.name.toLowerCase() === memberName,
+      )
+    : undefined;
+  if (member?.type) {
+    return member.type;
   }
   return "Variant";
 }
 
 function builtinFunction(name: string): BuiltinFunction | undefined {
   return builtinFunctions.find((item) => item.label.toLowerCase() === name.toLowerCase());
+}
+
+function builtinConstant(name: string): BuiltinConstant | undefined {
+  return builtinConstants.find((item) => item.label.toLowerCase() === name.toLowerCase());
 }
 
 function typeRef(name: string): VbTypeRef {
@@ -5154,8 +5784,9 @@ function canonicalBuiltinTypeName(name: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-function isMethodLikeMember(name: string): boolean {
-  return /^[A-Z]/.test(name) && !["EOF", "BOF", "Fields", "RecordCount", "State"].includes(name);
+function classicAspObjectTypeRef(name: string): VbTypeRef | undefined {
+  const objectSpec = classicAspObjectCatalog[name.toLowerCase()];
+  return objectSpec ? typeRef(objectSpec.typeName) : undefined;
 }
 
 function isObjectTypeName(name: string): boolean {
@@ -5415,15 +6046,6 @@ function isNamedArgument(statement: VbToken[], token: VbToken): boolean {
   return statement[index + 1]?.text === ":=";
 }
 
-function typeNameAtOffset(
-  parsed: AspParsedDocument,
-  offset: number,
-  symbols: VbSymbol[],
-): string | undefined {
-  const type = typeRefAtOffset(parsed, offset, symbols);
-  return type ? formatTypeRef(type) : undefined;
-}
-
 function typeRefAtOffset(
   parsed: AspParsedDocument,
   offset: number,
@@ -5590,12 +6212,7 @@ function isLikelyDynamicCall(name: string): boolean {
 
 function isBuiltinName(name: string): boolean {
   const lower = name.toLowerCase();
-  return (
-    builtinCompletions(undefined).some((item) => item.label.toLowerCase() === lower) ||
-    Object.values(memberCompletions).some((items) =>
-      items.some((item) => item.label.toLowerCase() === lower),
-    )
-  );
+  return builtinCompletions(undefined).some((item) => item.label.toLowerCase() === lower);
 }
 
 function isClassicAspObjectName(name: string): boolean {

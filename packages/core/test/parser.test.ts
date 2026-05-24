@@ -973,6 +973,12 @@ currencyValue = CCur(1)
 decimalValue = CDec(1)
 variantValue = CVar(1)
 errorValue = CVErr(1)
+datePartValue = DatePart("yyyy", Date())
+splitItems = Split("a,b", ",")
+joinedText = Join(splitItems, ",")
+formatText = FormatCurrency(12)
+isObjectValue = IsObject(CreateObject("Scripting.Dictionary"))
+typeCode = VarType(joinedText)
 %>`,
     );
     const result = analyzeVbscript(parsed);
@@ -1003,6 +1009,16 @@ errorValue = CVErr(1)
       "Variant",
     );
     expect(result.symbols.find((symbol) => symbol.name === "errorValue")?.typeName).toBe("Error");
+    expect(result.symbols.find((symbol) => symbol.name === "datePartValue")?.typeName).toBe(
+      "Number",
+    );
+    expect(result.symbols.find((symbol) => symbol.name === "splitItems")?.typeName).toBe("Array");
+    expect(result.symbols.find((symbol) => symbol.name === "joinedText")?.typeName).toBe("String");
+    expect(result.symbols.find((symbol) => symbol.name === "formatText")?.typeName).toBe("String");
+    expect(result.symbols.find((symbol) => symbol.name === "isObjectValue")?.typeName).toBe(
+      "Boolean",
+    );
+    expect(result.symbols.find((symbol) => symbol.name === "typeCode")?.typeName).toBe("Number");
     expect(tokenAt("CStr")).toEqual(
       expect.objectContaining({ tokenType: "function", tokenModifiers: ["library"] }),
     );
@@ -1027,11 +1043,145 @@ errorValue = CVErr(1)
     expect(
       getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("CCur"))),
     ).toContain("Function CCur(value) As Currency");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("Split"))),
+    ).toContain("Function Split(expression, delimiter, count, compare) As Array");
     expect(getVbscriptSignatureHelp(parsed, { line: 5, character: 21 })).toEqual(
       expect.objectContaining({
         signatures: [expect.objectContaining({ label: "UBound(array, dimension)" })],
       }),
     );
+    expect(
+      getVbscriptSignatureHelp(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf('DatePart("yyyy"') + 'DatePart("yyyy"'.length),
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        signatures: [
+          expect.objectContaining({
+            label: "DatePart(interval, date, firstDayOfWeek, firstWeekOfYear)",
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("covers W3Schools ASP object members, runtime events and member hover", () => {
+    const parsed = parseAspDocument(
+      "file:///site/Global.asa",
+      `<script runat="server" language="VBScript">
+Sub Application_OnStart()
+End Sub
+Dim lastError
+Set lastError = Server.GetLastError()
+Response.
+Server.
+lastError.
+Response.Buffer = True
+Response.Write lastError.Description
+</script>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const responseCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("Response.") + "Response.".length),
+      { symbols },
+    );
+    const serverCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("Server.") + "Server.".length),
+      { symbols },
+    );
+    const errorCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("lastError.") + "lastError.".length),
+      { symbols },
+    );
+    const topLevelCompletions = getVbscriptCompletions(
+      parsed,
+      { line: 1, character: 0 },
+      { symbols },
+    );
+    expect(responseCompletions.some((item) => item.label === "Buffer")).toBe(true);
+    expect(serverCompletions.some((item) => item.label === "Execute")).toBe(true);
+    expect(errorCompletions.some((item) => item.label === "Description")).toBe(true);
+    expect(topLevelCompletions.some((item) => item.label === "Application_OnStart")).toBe(true);
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("Buffer"))),
+    ).toContain("property Response.Buffer As Boolean");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.lastIndexOf("Description"))),
+    ).toContain("property ASPError.Description As String");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("Application_OnStart"))),
+    ).toContain("Sub Application_OnStart()");
+    expect(symbols.find((symbol) => symbol.name === "lastError")?.typeName).toBe("ASPError");
+  });
+
+  it("covers W3Schools COM and ADO catalog completions and return types", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim fso, file, dict, stream, rs, command, rows, textRows, parameter
+Set fso = Server.CreateObject("Scripting.FileSystemObject")
+Set file = fso.GetFile("default.asp")
+Set dict = CreateObject("Scripting.Dictionary")
+Set stream = Server.CreateObject("ADODB.Stream")
+Set rs = Server.CreateObject("ADODB.Recordset")
+Set command = Server.CreateObject("ADODB.Command")
+rows = rs.GetRows()
+textRows = rs.GetString()
+Set parameter = command.CreateParameter("id", adInteger)
+fso.
+file.
+dict.
+stream.
+rs.
+command.
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const completionLabelsAt = (text: string): string[] =>
+      getVbscriptCompletions(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf(text) + text.length),
+        { symbols },
+      ).map((item) => item.label);
+    expect(completionLabelsAt("fso.")).toContain("OpenTextFile");
+    expect(completionLabelsAt("file.")).toContain("OpenAsTextStream");
+    expect(completionLabelsAt("dict.")).toContain("Exists");
+    expect(completionLabelsAt("stream.")).toContain("ReadText");
+    expect(completionLabelsAt("rs.")).toContain("GetRows");
+    expect(completionLabelsAt("command.")).toContain("CreateParameter");
+    expect(symbols.find((symbol) => symbol.name === "file")?.typeName).toBe("Scripting.File");
+    expect(symbols.find((symbol) => symbol.name === "rows")?.typeName).toBe("Array");
+    expect(symbols.find((symbol) => symbol.name === "textRows")?.typeName).toBe("String");
+    expect(symbols.find((symbol) => symbol.name === "parameter")?.typeName).toBe("ADODB.Parameter");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("adInteger"))),
+    ).toContain("Const adInteger As Number");
+  });
+
+  it("keeps ADO constants built-in without treating member names as globals", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<% Option Explicit
+Dim fieldType
+fieldType = adInteger
+Name = "Ada"
+%>`,
+    );
+    const diagnostics = analyzeVbscript(parsed).diagnostics.filter(
+      (diagnostic) => diagnostic.source === "asp-lsp-vbscript",
+    );
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("adInteger"))).toBe(false);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("Name"))).toBe(true);
+    expect(
+      getVbscriptCompletions(parsed, { line: 2, character: 12 }).some(
+        (item) => item.label === "adInteger",
+      ),
+    ).toBe(true);
   });
 
   it("uses triple-quote XML documentation comments for hover, resolve and signature help", () => {
