@@ -2832,6 +2832,110 @@ Response.Write value
       }
     });
 
+    it("returns a VBScript quick fix for multi-name Dim declarations", async () => {
+      const source = `<%
+Dim first, second
+Response.Write first
+%>`;
+      const arraySource = `<%
+Dim first, items(1, 2), dynamicItems()
+Response.Write first
+%>`;
+      const unsupportedSource = `<%
+Dim single
+ReDim first, second
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-split-multi-dim.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, source.indexOf("first")),
+            end: positionAt(source, source.indexOf("first") + "first".length),
+          },
+          context: { diagnostics: [], only: ["quickfix"] },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Split Dim declarations");
+        expect(serialized).toContain("Dim first\\nDim second");
+
+        const arrayUri = "file:///tmp/vb-split-multi-array-dim.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: arrayUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: arraySource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const arrayActions = await server.request("textDocument/codeAction", {
+          textDocument: { uri: arrayUri },
+          range: {
+            start: positionAt(arraySource, arraySource.indexOf("items")),
+            end: positionAt(arraySource, arraySource.indexOf("items") + "items".length),
+          },
+          context: { diagnostics: [], only: ["quickfix"] },
+        });
+        expect(JSON.stringify(arrayActions)).toContain(
+          "Dim first\\nDim items(1, 2)\\nDim dynamicItems()",
+        );
+
+        const unsupportedUri = "file:///tmp/vb-split-multi-dim-unsupported.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: unsupportedUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: unsupportedSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const singleActions = await server.request("textDocument/codeAction", {
+          textDocument: { uri: unsupportedUri },
+          range: {
+            start: positionAt(unsupportedSource, unsupportedSource.indexOf("single")),
+            end: positionAt(
+              unsupportedSource,
+              unsupportedSource.indexOf("single") + "single".length,
+            ),
+          },
+          context: { diagnostics: [], only: ["quickfix"] },
+        });
+        const redimActions = await server.request("textDocument/codeAction", {
+          textDocument: { uri: unsupportedUri },
+          range: {
+            start: positionAt(unsupportedSource, unsupportedSource.indexOf("first")),
+            end: positionAt(unsupportedSource, unsupportedSource.indexOf("first") + "first".length),
+          },
+          context: { diagnostics: [], only: ["quickfix"] },
+        });
+        expect(JSON.stringify(singleActions)).not.toContain("Split Dim declarations");
+        expect(JSON.stringify(redimActions)).not.toContain("Split Dim declarations");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns a VBScript documentation generation quick fix without diagnostics", async () => {
       const source = `<%
 Function BuildName(first)

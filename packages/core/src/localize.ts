@@ -67,6 +67,7 @@ export type LocalizeKey =
   | "server.quickfix.declareDim"
   | "server.quickfix.splitInitializedDim"
   | "server.quickfix.fixVbscriptCallSyntax"
+  | "server.quickfix.splitMultiDim"
   | "server.quickfix.removeUnusedDeclaration"
   | "server.quickfix.addSet"
   | "server.quickfix.removeSet"
@@ -149,6 +150,7 @@ const en: Record<LocalizeKey, string> = {
   "server.quickfix.declareDim": "Declare {name} with Dim",
   "server.quickfix.splitInitializedDim": "Split initialized Dim declaration",
   "server.quickfix.fixVbscriptCallSyntax": "Fix VBScript call syntax",
+  "server.quickfix.splitMultiDim": "Split Dim declarations",
   "server.quickfix.removeUnusedDeclaration": "Remove unused declaration {name}",
   "server.quickfix.addSet": "Use Set for object assignment to {name}",
   "server.quickfix.removeSet": "Remove Set from scalar assignment to {name}",
@@ -235,6 +237,7 @@ const ja: Record<LocalizeKey, string> = {
   "server.quickfix.declareDim": "{name} を Dim で宣言",
   "server.quickfix.splitInitializedDim": "初期化つき Dim 宣言を分割",
   "server.quickfix.fixVbscriptCallSyntax": "VBScript の呼び出し構文を修正",
+  "server.quickfix.splitMultiDim": "Dim 宣言を分割",
   "server.quickfix.removeUnusedDeclaration": "未使用の宣言 {name} を削除",
   "server.quickfix.addSet": "{name} への object assignment に Set を使う",
   "server.quickfix.removeSet": "{name} への scalar assignment から Set を削除",

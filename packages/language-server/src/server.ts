@@ -94,10 +94,12 @@ import {
   type AspLegacyEncoding,
   type AspLocale,
   type AspLocaleSetting,
+  type AspCstNode,
   type AspParsedDocument,
   type AspSettings,
   type AspRegion,
   type VirtualDocument,
+  type VbCstNode,
   type VbProjectContext,
   type VbSymbol,
   type VbSymbolKind,
@@ -6063,6 +6065,10 @@ function vbscriptCodeActions(
         actions.push(splitDim);
       }
     }
+    const splitMultiDim = splitMultiDimDeclarationAction(cached, range);
+    if (splitMultiDim) {
+      actions.push(splitMultiDim);
+    }
   }
   if (!codeActionAllows(context, vbscriptExtractVariableKind)) {
     return actions;
@@ -6112,6 +6118,170 @@ function splitInitializedDimDeclarationAction(
       },
     },
   };
+}
+
+function splitMultiDimDeclarationAction(
+  cached: CachedDocument,
+  range: Range,
+): CodeAction | undefined {
+  const node = findMultiDimDeclarationNode(cached, range);
+  if (!node) {
+    return undefined;
+  }
+  const segments = splitDimDeclarationSegments(cached.source.getText(), node);
+  if (!segments || segments.length < 2) {
+    return undefined;
+  }
+  const start = cached.source.positionAt(node.start);
+  const end = cached.source.positionAt(node.end);
+  const line = lineText(cached.source, start.line);
+  const lineStart = cached.source.offsetAt({ line: start.line, character: 0 });
+  const prefix = cached.source.getText().slice(lineStart, node.start);
+  const indent = /^\s*$/.test(prefix) ? prefix : "";
+  const newText = segments
+    .map((segment, index) => `${index === 0 ? "" : indent}Dim ${segment}`)
+    .join("\n");
+  if (!line.slice(start.character, end.character).trim()) {
+    return undefined;
+  }
+  return {
+    title: localizerForUri(cached.source.uri).t("server.quickfix.splitMultiDim"),
+    kind: CodeActionKind.QuickFix,
+    edit: {
+      changes: {
+        [cached.source.uri]: [
+          {
+            range: { start, end },
+            newText,
+          },
+        ],
+      },
+    },
+  };
+}
+
+function findMultiDimDeclarationNode(cached: CachedDocument, range: Range): VbCstNode | undefined {
+  const rangeStart = cached.source.offsetAt(range.start);
+  const rangeEnd = cached.source.offsetAt(range.end);
+  return vbscriptNodes(cached.parsed).find((node) => {
+    if (
+      node.kind !== "VariableDeclaration" ||
+      node.declarationKind !== "dim" ||
+      (node.identifiers?.length ?? 0) < 2
+    ) {
+      return false;
+    }
+    const start = cached.source.positionAt(node.start);
+    const end = cached.source.positionAt(node.end);
+    if (
+      start.line !== end.line ||
+      !isVbscriptRange(cached, { start, end }) ||
+      !rangeTouchesOffsets(rangeStart, rangeEnd, node.start, node.end)
+    ) {
+      return false;
+    }
+    const tokens = node.tokens.filter((token) => !isVbscriptTriviaToken(token));
+    return (
+      !topLevelVbscriptToken(tokens, "=") &&
+      !topLevelVbscriptToken(tokens, ":") &&
+      !topLevelVbscriptKeyword(tokens, "as")
+    );
+  });
+}
+
+function vbscriptNodes(parsed: AspParsedDocument): VbCstNode[] {
+  const nodes: VbCstNode[] = [];
+  const visit = (node: AspCstNode): void => {
+    if (node.vbscript) {
+      nodes.push(...flattenVbscriptNode(node.vbscript));
+    }
+    for (const child of node.children) {
+      visit(child);
+    }
+  };
+  visit(parsed.cst);
+  return nodes;
+}
+
+function flattenVbscriptNode(node: VbCstNode): VbCstNode[] {
+  return [node, ...node.children.flatMap((child) => flattenVbscriptNode(child))];
+}
+
+function rangeTouchesOffsets(
+  rangeStart: number,
+  rangeEnd: number,
+  nodeStart: number,
+  nodeEnd: number,
+): boolean {
+  return rangeStart === rangeEnd
+    ? rangeStart >= nodeStart && rangeStart <= nodeEnd
+    : rangeStart < nodeEnd && rangeEnd > nodeStart;
+}
+
+function splitDimDeclarationSegments(text: string, node: VbCstNode): string[] | undefined {
+  const tokens = node.tokens.filter((token) => token.kind !== "comment");
+  const keyword = tokens.find((token) => !isVbscriptTriviaToken(token));
+  if (keyword?.text.toLowerCase() !== "dim") {
+    return undefined;
+  }
+  const segments: string[] = [];
+  let depth = 0;
+  let segmentStart = keyword.end;
+  for (const token of tokens) {
+    if (token.end <= keyword.end || isVbscriptTriviaToken(token)) {
+      continue;
+    }
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")") {
+      depth = Math.max(0, depth - 1);
+    } else if (token.text === "," && depth === 0) {
+      const segment = text.slice(segmentStart, token.start).trim();
+      if (!segment) {
+        return undefined;
+      }
+      segments.push(segment);
+      segmentStart = token.end;
+    }
+  }
+  const lastSegment = text.slice(segmentStart, node.end).trim();
+  if (!lastSegment) {
+    return undefined;
+  }
+  segments.push(lastSegment);
+  return segments.length === (node.identifiers?.length ?? 0) ? segments : undefined;
+}
+
+function topLevelVbscriptToken(tokens: VbCstNode["tokens"], text: string): boolean {
+  let depth = 0;
+  for (const token of tokens) {
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")") {
+      depth = Math.max(0, depth - 1);
+    } else if (token.text === text && depth === 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function topLevelVbscriptKeyword(tokens: VbCstNode["tokens"], keyword: string): boolean {
+  let depth = 0;
+  for (const token of tokens) {
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")") {
+      depth = Math.max(0, depth - 1);
+    } else if (token.text.toLowerCase() === keyword && depth === 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isVbscriptTriviaToken(token: VbCstNode["tokens"][number]): boolean {
+  return token.kind === "whitespace" || token.kind === "newline" || token.kind === "comment";
 }
 
 function extractVbscriptVariableEdit(
