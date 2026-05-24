@@ -124,19 +124,23 @@ function formatVbscriptBlock(
       formatted.push("");
       continue;
     }
-    if (/^End\s+Select\b/i.test(trimmed)) {
+    const continuesPreviousLine =
+      previousSignificantLine !== undefined && isLineContinuation(previousSignificantLine);
+    if (!continuesPreviousLine && /^End\s+Select\b/i.test(trimmed)) {
       indentLevel = selectIndentStack.pop() ?? Math.max(baseIndentLevel, indentLevel - 1);
-    } else if (isCaseLine(trimmed)) {
+    } else if (!continuesPreviousLine && isCaseLine(trimmed)) {
       const selectIndent = selectIndentStack.at(-1);
       if (selectIndent !== undefined) {
         indentLevel = previousSignificantLine
           ? selectIndent + 1
           : Math.max(baseIndentLevel, indentLevel);
       }
-    } else if (dedentsBeforeLine(trimmed)) {
+    } else if (!continuesPreviousLine && dedentsBeforeLine(trimmed)) {
       indentLevel = Math.max(baseIndentLevel, indentLevel - 1);
     }
-    formatted.push(`${unit.repeat(indentLevel)}${formatVbscriptLine(trimmed, options)}`);
+    const lineIndentLevel = indentLevel + (continuesPreviousLine ? 1 : 0);
+    const formattedLine = formatVbscriptLine(trimmed, options);
+    formatted.push(`${unit.repeat(lineIndentLevel)}${formattedLine}`);
     if (/^Select\b/i.test(trimmed)) {
       selectIndentStack.push(indentLevel);
       indentLevel += 1;
@@ -145,7 +149,7 @@ function formatVbscriptBlock(
     } else if (indentsAfterLine(trimmed)) {
       indentLevel += 1;
     }
-    previousSignificantLine = trimmed;
+    previousSignificantLine = formattedLine;
   }
   return options.alignAssignments ? alignAssignments(formatted).join("\n") : formatted.join("\n");
 }
@@ -219,6 +223,10 @@ function indentsAfterLine(line: string): boolean {
 
 function isCaseLine(line: string): boolean {
   return /^Case\b/i.test(line);
+}
+
+function isLineContinuation(line: string): boolean {
+  return /(?:^|\s)_\s*(?:'.*)?$/.test(line);
 }
 
 function oneLine(text: string): string {

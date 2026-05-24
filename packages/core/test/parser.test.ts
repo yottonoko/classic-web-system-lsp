@@ -1881,6 +1881,21 @@ longerName=2
     expect(edits[0].newText).toContain("first      = 1\nlongerName = 2");
   });
 
+  it("indents VBScript line continuations one level deeper", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+a = _
+"aaa" & _
+"bbb"
+%>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 4, insertSpaces: true });
+    expect(edits[0].newText).toContain(`a = _
+    "aaa" & _
+    "bbb"`);
+  });
+
   it("formats Select Case blocks with case bodies indented", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
