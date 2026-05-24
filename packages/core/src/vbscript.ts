@@ -30,6 +30,7 @@ import type {
   AspVbscriptComType,
   AspVbscriptIdentifierCase,
   AspVbscriptIdentifierKind,
+  VbArrayDeclaration,
   VbCstNode,
   VbParameterMetadata,
   VbParameterMode,
@@ -58,6 +59,7 @@ export interface VbSymbol {
   scopeRange?: Range;
   typeName?: string;
   type?: VbTypeRef;
+  explicitType?: boolean;
   parameters?: string[];
   parameterDetails?: VbParameterInfo[];
   visibility?: "public" | "private";
@@ -66,6 +68,10 @@ export interface VbSymbol {
   parameterMode?: VbParameterMode;
   optional?: boolean;
   implicit?: boolean;
+  array?: {
+    kind: "fixed" | "dynamic";
+    dimensions: string[];
+  };
   documentation?: VbDocumentation;
 }
 
@@ -117,6 +123,7 @@ export interface VbCallHierarchyData {
 export interface VbTypeRef {
   name: string;
   object?: boolean;
+  unionTypes?: VbTypeRef[];
 }
 
 export interface VbParameterInfo {
@@ -302,7 +309,7 @@ function builtinDescription(name: string, locale: AspLocale | undefined): string
   if (builtin) {
     return markdownHover(
       `Function ${builtin.signature} As ${builtin.returnType}`,
-      `VBScript built-in function. ${builtin.documentation}`,
+      builtin.documentation,
     );
   }
   return undefined;
@@ -393,13 +400,24 @@ const externalObjectMembers: Record<string, CompletionItem[]> = {
 };
 
 const intrinsicTypeNames = new Set([
+  "array",
+  "byte",
   "string",
+  "integer",
+  "long",
+  "single",
+  "double",
+  "currency",
+  "decimal",
   "number",
   "boolean",
   "date",
+  "empty",
+  "null",
   "variant",
   "unknown",
   "nothing",
+  "error",
 ]);
 
 const classicAspTypeNames = new Set([
@@ -462,6 +480,12 @@ const builtinFunctions: BuiltinFunction[] = [
     documentation: "Converts a value to String.",
   },
   {
+    label: "CByte",
+    signature: "CByte(value)",
+    returnType: "Number",
+    documentation: "Converts a value to Byte.",
+  },
+  {
     label: "CInt",
     signature: "CInt(value)",
     returnType: "Number",
@@ -474,10 +498,28 @@ const builtinFunctions: BuiltinFunction[] = [
     documentation: "Converts a value to Long.",
   },
   {
+    label: "CSng",
+    signature: "CSng(value)",
+    returnType: "Number",
+    documentation: "Converts a value to Single.",
+  },
+  {
     label: "CDbl",
     signature: "CDbl(value)",
     returnType: "Number",
     documentation: "Converts a value to Double.",
+  },
+  {
+    label: "CCur",
+    signature: "CCur(value)",
+    returnType: "Currency",
+    documentation: "Converts a value to Currency.",
+  },
+  {
+    label: "CDec",
+    signature: "CDec(value)",
+    returnType: "Decimal",
+    documentation: "Converts a value to Decimal.",
   },
   {
     label: "CBool",
@@ -490,6 +532,18 @@ const builtinFunctions: BuiltinFunction[] = [
     signature: "CDate(value)",
     returnType: "Date",
     documentation: "Converts a value to Date.",
+  },
+  {
+    label: "CVar",
+    signature: "CVar(value)",
+    returnType: "Variant",
+    documentation: "Converts a value to Variant.",
+  },
+  {
+    label: "CVErr",
+    signature: "CVErr(errorNumber)",
+    returnType: "Error",
+    documentation: "Converts an error number to an Error subtype.",
   },
   {
     label: "Array",
@@ -678,6 +732,7 @@ const vbKeywords = new Set([
   "property",
   "public",
   "redim",
+  "rem",
   "select",
   "set",
   "step",
@@ -966,6 +1021,14 @@ function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
       tokens.push(token("comment", text, start, index, baseOffset));
       continue;
     }
+    if (isRemCommentStart(text, index)) {
+      index += 3;
+      while (index < text.length && text[index] !== "\r" && text[index] !== "\n") {
+        index += 1;
+      }
+      tokens.push(token("comment", text, start, index, baseOffset));
+      continue;
+    }
     if (char === '"') {
       index += 1;
       while (index < text.length) {
@@ -1026,6 +1089,21 @@ function isIdentifierStart(char: string): boolean {
 
 function isIdentifierPart(char: string): boolean {
   return /[A-Za-z0-9_]/.test(char);
+}
+
+function isRemCommentStart(text: string, index: number): boolean {
+  if (text.slice(index, index + 3).toLowerCase() !== "rem") {
+    return false;
+  }
+  const after = text[index + 3];
+  if (after && isIdentifierPart(after)) {
+    return false;
+  }
+  let cursor = index - 1;
+  while (cursor >= 0 && (text[cursor] === " " || text[cursor] === "\t")) {
+    cursor -= 1;
+  }
+  return cursor < 0 || text[cursor] === "\n" || text[cursor] === "\r" || text[cursor] === ":";
 }
 
 function isTriviaToken(token: VbToken): boolean {
@@ -1182,6 +1260,7 @@ function createDeclarationNode(
 ): VbCstNode {
   const endIndex = statementEndIndex(tokens, startIndex - 1);
   const identifiers: VbToken[] = [];
+  const arrayDeclarations: VbArrayDeclaration[] = [];
   let canReadIdentifier = true;
   for (let index = startIndex; index <= endIndex; index += 1) {
     const current = tokens[index];
@@ -1201,6 +1280,10 @@ function createDeclarationNode(
     }
     if (current.kind === "identifier" && canReadIdentifier) {
       identifiers.push(current);
+      const array = readArrayDeclaration(tokens, index, endIndex, declarationKind);
+      if (array) {
+        arrayDeclarations.push(array);
+      }
       canReadIdentifier = false;
     }
   }
@@ -1213,7 +1296,76 @@ function createDeclarationNode(
     declarationKind,
     visibility,
     identifiers,
+    arrayDeclarations,
   };
+}
+
+function readArrayDeclaration(
+  tokens: VbToken[],
+  identifierIndex: number,
+  endIndex: number,
+  declarationKind: NonNullable<VbCstNode["declarationKind"]>,
+): VbArrayDeclaration | undefined {
+  let openIndex = identifierIndex + 1;
+  while (openIndex <= endIndex && isWhitespaceOrNewline(tokens[openIndex])) {
+    openIndex += 1;
+  }
+  if (tokens[openIndex]?.text !== "(") {
+    return undefined;
+  }
+  let depth = 0;
+  let closeIndex = -1;
+  for (let index = openIndex; index <= endIndex; index += 1) {
+    if (tokens[index]?.text === "(") {
+      depth += 1;
+    } else if (tokens[index]?.text === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        closeIndex = index;
+        break;
+      }
+    }
+  }
+  if (closeIndex === -1) {
+    return undefined;
+  }
+  const dimensions = arrayDimensionTexts(tokens.slice(openIndex + 1, closeIndex));
+  return {
+    name: tokens[identifierIndex],
+    kind: declarationKind === "redim" || dimensions.length === 0 ? "dynamic" : "fixed",
+    dimensions,
+  };
+}
+
+function arrayDimensionTexts(tokens: VbToken[]): string[] {
+  const dimensions: string[] = [];
+  let current: VbToken[] = [];
+  let depth = 0;
+  const flush = (): void => {
+    const text = current
+      .filter((token) => !isWhitespaceOrNewline(token))
+      .map((token) => token.text)
+      .join("")
+      .trim();
+    if (text) {
+      dimensions.push(text);
+    }
+    current = [];
+  };
+  for (const token of tokens) {
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")") {
+      depth = Math.max(0, depth - 1);
+    }
+    if (token.text === "," && depth === 0) {
+      flush();
+      continue;
+    }
+    current.push(token);
+  }
+  flush();
+  return dimensions;
 }
 
 function createStatementNode(
@@ -1321,13 +1473,13 @@ export function getVbscriptCompletions(
     if (builtin) {
       return builtin;
     }
-    const className =
+    const ownerType =
       ownerName === undefined
-        ? currentWithTypeName(parsed, sourceOffset, symbols)
+        ? currentWithTypeRef(parsed, sourceOffset, symbols)
         : ownerName.toLowerCase() === "me"
-          ? currentClassName(parsed, sourceOffset, symbols)
-          : inferVariableType(ownerName, parsed, sourceOffset, symbols);
-    return className ? typeMemberCompletions(className, symbols, typeEnvironment) : [];
+          ? currentClassTypeRef(parsed, sourceOffset, symbols)
+          : inferVariableTypeRef(ownerName, parsed, sourceOffset, symbols);
+    return ownerType ? typeMemberCompletions(ownerType, symbols, typeEnvironment) : [];
   }
   return dedupeCompletions([
     ...builtinCompletions(context.locale),
@@ -1517,6 +1669,7 @@ export function analyzeVbscript(
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const diagnostics: Diagnostic[] = [];
+  diagnostics.push(...diagnoseDeclarationSyntax(parsed, context.locale));
   const scriptText = getServerScriptText(parsed);
   if (/^\s*Option\s+Explicit\b/im.test(scriptText)) {
     diagnostics.push(...diagnoseUndeclaredVariables(parsed, symbols, context.locale));
@@ -1607,7 +1760,7 @@ export function getVbscriptHover(
     return undefined;
   }
   return appendDocumentationMarkdown(
-    markdownHover(vbscriptHoverSignature(symbol), vbscriptHoverDescription(symbol)),
+    markdownHover(vbscriptHoverSignature(parsed, symbol)),
     symbol.documentation,
     context.locale,
   );
@@ -1618,10 +1771,13 @@ function markdownHover(signature: string, description?: string): string {
   return description ? `${base}\n\n${description}` : base;
 }
 
-function vbscriptHoverSignature(symbol: VbSymbol): string {
-  const typeSuffix = symbol.typeName ? ` As ${symbol.typeName}` : "";
+function vbscriptHoverSignature(parsed: AspParsedDocument, symbol: VbSymbol): string {
+  const type = symbolTypeRef(symbol);
+  const typeSuffix = type ? ` As ${formatTypeRef(type)}` : "";
+  const arraySuffix = symbolArraySuffix(symbol);
   const visibility = symbol.visibility ? `${titleCaseKeyword(symbol.visibility)} ` : "";
   const parameters = `(${parameterLabels(symbol).join(", ")})`;
+  const globalPrefix = isGlobalVariableLikeSymbol(parsed, symbol) ? "(global) " : "";
   if (symbol.kind === "class") {
     return `Class ${symbol.name}`;
   }
@@ -1642,10 +1798,10 @@ function vbscriptHoverSignature(symbol: VbSymbol): string {
       : `${visibility}${keyword} ${symbol.name}${parameters}${typeSuffix}`;
   }
   if (symbol.kind === "field") {
-    return `${visibility || "Public "}${symbol.name}${typeSuffix}`;
+    return `${visibility || "Public "}${symbol.name}${arraySuffix}${typeSuffix}`;
   }
   if (symbol.kind === "constant") {
-    return `Const ${symbol.name}${typeSuffix}`;
+    return `${globalPrefix}Const ${symbol.name}${typeSuffix}`;
   }
   if (symbol.kind === "parameter") {
     return `${parameterLabel({
@@ -1654,7 +1810,14 @@ function vbscriptHoverSignature(symbol: VbSymbol): string {
       optional: symbol.optional,
     })}${typeSuffix}`;
   }
-  return `Dim ${symbol.name}${typeSuffix}`;
+  return `${globalPrefix}Dim ${symbol.name}${arraySuffix}${typeSuffix}`;
+}
+
+function symbolArraySuffix(symbol: VbSymbol): string {
+  if (!symbol.array) {
+    return "";
+  }
+  return `(${symbol.array.dimensions.join(", ")})`;
 }
 
 function parameterLabels(symbol: VbSymbol): string[] {
@@ -1674,35 +1837,6 @@ function parameterLabel(parameter: VbParameterInfo): string {
 
 function parameterModeKeyword(mode: VbParameterMode): "ByRef" | "ByVal" {
   return mode === "byval" ? "ByVal" : "ByRef";
-}
-
-function vbscriptHoverDescription(symbol: VbSymbol): string {
-  if (symbol.implicit) {
-    return "Implicit VBScript variable.";
-  }
-  const kindDescription =
-    symbol.kind === "class"
-      ? "VBScript class."
-      : symbol.kind === "property"
-        ? "VBScript property."
-        : symbol.kind === "field"
-          ? "VBScript field."
-          : symbol.kind === "constant"
-            ? "VBScript constant."
-            : symbol.kind === "parameter"
-              ? "VBScript parameter."
-              : symbol.kind === "sub"
-                ? "VBScript subroutine."
-                : "VBScript function.";
-  if (symbol.memberOf) {
-    return `${kindDescription} Member of \`${symbol.memberOf}\`.`;
-  }
-  if (symbol.scopeName) {
-    return symbol.kind === "parameter"
-      ? `${kindDescription} Parameter of \`${symbol.scopeName}\`.`
-      : `${kindDescription} Declared in \`${symbol.scopeName}\`.`;
-  }
-  return kindDescription;
 }
 
 function titleCaseKeyword(value: string): string {
@@ -2065,7 +2199,8 @@ export function resolveVbscriptCompletionItem(
   }
   const symbol = symbols.find((candidate) => candidate.name.toLowerCase() === label);
   if (symbol) {
-    const type = symbol.typeName ? ` As ${symbol.typeName}` : "";
+    const symbolType = symbolTypeRef(symbol);
+    const type = symbolType ? ` As ${formatTypeRef(symbolType)}` : "";
     const owner = symbol.memberOf
       ? createLocalizer(context.locale).t("vb.symbol.owner", { owner: symbol.memberOf })
       : "";
@@ -2089,7 +2224,7 @@ export function resolveVbscriptCompletionItem(
     const signature = member.member.signature
       ? signatureLabelFromMember(member.type.name, member.member.name, member.member.signature)
       : undefined;
-    const type = member.member.type ? ` As ${member.member.type.name}` : "";
+    const type = member.member.type ? ` As ${formatTypeRef(member.member.type)}` : "";
     return {
       ...item,
       detail: signature ?? `${member.member.kind}${type}`,
@@ -2146,16 +2281,16 @@ export function getVbscriptInlayHints(
     for (const symbol of symbols) {
       if (
         symbol.sourceUri !== parsed.uri ||
-        !["variable", "parameter", "constant", "field"].includes(symbol.kind) ||
+        !["variable", "constant", "field"].includes(symbol.kind) ||
         !symbol.typeName ||
-        isLooseType(symbol.typeName) ||
+        isHiddenInlayType(symbol.typeName) ||
         !rangeOverlapsOffsets(parsed.text, symbol.range, rangeStart, rangeEnd)
       ) {
         continue;
       }
       hints.push({
         position: symbol.range.end,
-        label: ` As ${symbol.typeName}`,
+        label: `${globalInlayPrefix(parsed, symbol)} As ${symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: false,
         paddingRight: true,
@@ -2169,7 +2304,7 @@ export function getVbscriptInlayHints(
         symbol.sourceUri !== parsed.uri ||
         !["function", "property"].includes(symbol.kind) ||
         !symbol.typeName ||
-        isLooseType(symbol.typeName) ||
+        isHiddenInlayType(symbol.typeName) ||
         !rangeOverlapsOffsets(parsed.text, symbol.range, rangeStart, rangeEnd)
       ) {
         continue;
@@ -2304,6 +2439,23 @@ function declarationCloseParenEnd(text: string, nameEnd: number): number | undef
   return undefined;
 }
 
+function globalInlayPrefix(parsed: AspParsedDocument, symbol: VbSymbol): string {
+  return isGlobalVariableLikeSymbol(parsed, symbol) ? " (global)" : "";
+}
+
+function isGlobalVariableLikeSymbol(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
+  return (
+    symbol.sourceUri === parsed.uri &&
+    (symbol.kind === "variable" || symbol.kind === "constant") &&
+    !symbol.scopeName &&
+    !symbol.memberOf
+  );
+}
+
+function isHiddenInlayType(typeName: string): boolean {
+  return typeName.toLowerCase() === "unknown";
+}
+
 export function getVbscriptTypeDefinition(
   parsed: AspParsedDocument,
   position: Position,
@@ -2312,13 +2464,13 @@ export function getVbscriptTypeDefinition(
   const offset = offsetAt(parsed.text, position);
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const symbol = resolveSymbolAt(parsed, offset, symbols);
-  const typeName = symbol?.typeName ?? typeNameAtOffset(parsed, offset, symbols);
-  if (!typeName || isLooseType(typeName)) {
+  const type = symbolTypeRef(symbol) ?? typeRefAtOffset(parsed, offset, symbols);
+  if (!type || type.unionTypes || isLooseType(type)) {
     return undefined;
   }
   return symbols.find(
     (candidate) =>
-      candidate.kind === "class" && candidate.name.toLowerCase() === typeName.toLowerCase(),
+      candidate.kind === "class" && candidate.name.toLowerCase() === type.name.toLowerCase(),
   );
 }
 
@@ -2435,6 +2587,7 @@ export function collectVbscriptSymbols(
   applyTypeAnnotations(parsed, symbols);
   inferAssignedTypes(parsed, symbols, context);
   applyTypeAnnotations(parsed, symbols);
+  applyVariantFallbackTypes(symbols);
   return symbols;
 }
 
@@ -2573,6 +2726,7 @@ function addSymbolsFromVbNode(
     const identifiers = node.identifiers ?? (node.nameToken ? [node.nameToken] : []);
     const variableDocumentation = identifiers.length === 1 ? documentation : undefined;
     for (const identifier of identifiers) {
+      const array = node.arrayDeclarations?.find((item) => item.name === identifier);
       symbols.push({
         name: identifier.text,
         kind: memberOf && baseKind === "variable" ? "field" : baseKind,
@@ -2586,6 +2740,15 @@ function addSymbolsFromVbNode(
           : memberOf
             ? rangeFromOffsets(parsed.text, node.start, node.end)
             : undefined,
+        type: array ? typeRef("Array") : undefined,
+        typeName: array ? "Array" : undefined,
+        explicitType: Boolean(array),
+        array: array
+          ? {
+              kind: array.kind,
+              dimensions: array.dimensions,
+            }
+          : undefined,
         visibility: node.visibility,
         documentation: variableDocumentation,
       });
@@ -2686,8 +2849,12 @@ function inferAssignedTypes(
         candidates.find((candidate) =>
           isSymbolVisibleAt(candidate, parsed.uri, parsed.text, node.start),
         ) ?? candidates[0];
-      if (visible) {
-        setSymbolType(visible, node.typeName);
+      if (visible && !visible.explicitType) {
+        const assignedType = typeRef(node.typeName);
+        setSymbolTypeRef(
+          visible,
+          mergeTypeRefs(symbolTypeRef(visible), assignedType) ?? assignedType,
+        );
       }
     }
   }
@@ -2705,7 +2872,12 @@ function inferStatementTypes(
     const targetIndex = first === "set" ? 1 : 0;
     const target = statement[targetIndex];
     const equalsIndex = statement.findIndex((token) => token.text === "=");
-    if (!target || target.kind !== "identifier" || equalsIndex === -1) {
+    if (
+      !target ||
+      target.kind !== "identifier" ||
+      equalsIndex === -1 ||
+      statement[targetIndex + 1]?.text === "."
+    ) {
       continue;
     }
     const symbol = visibleSymbols(parsed, target.start, symbols).find(
@@ -2721,8 +2893,14 @@ function inferStatementTypes(
       env,
       target.start,
     );
-    if (expressionType && (!symbol.typeName || symbol.typeName === "Variant")) {
-      setSymbolType(symbol, expressionType.name);
+    if (!expressionType || symbol.explicitType) {
+      continue;
+    }
+    const existingType = symbolTypeRef(symbol);
+    if (!existingType || isLooseType(existingType)) {
+      setSymbolTypeRef(symbol, expressionType);
+    } else {
+      setSymbolTypeRef(symbol, mergeTypeRefs(existingType, expressionType) ?? expressionType);
     }
   }
   inferFunctionReturnTypes(parsed, symbols, env);
@@ -2744,22 +2922,23 @@ function inferFunctionReturnTypes(
         candidate.range.start.line ===
           rangeFromOffsets(parsed.text, node.nameToken.start, node.nameToken.end).start.line,
     );
-    if (!symbol || symbol.typeName) {
+    if (!symbol || symbol.explicitType) {
       continue;
     }
-    const assignment = vbStatements(parsed)
+    const returnType = vbStatements(parsed)
       .filter((statement) => statement[0]?.start >= node.start && statement[0]?.end <= node.end)
-      .find(
+      .filter(
         (statement) =>
           statement[0]?.kind === "identifier" &&
           statement[0].text.toLowerCase() === node.nameToken?.text.toLowerCase() &&
           statement[1]?.text === "=",
-      );
-    const expressionType = assignment
-      ? inferExpressionType(parsed, assignment.slice(2), symbols, env, assignment[0].start)
-      : undefined;
-    if (expressionType) {
-      setSymbolType(symbol, expressionType.name);
+      )
+      .map((statement) =>
+        inferExpressionType(parsed, statement.slice(2), symbols, env, statement[0].start),
+      )
+      .reduce<VbTypeRef | undefined>((merged, type) => mergeTypeRefs(merged, type), undefined);
+    if (returnType) {
+      setSymbolTypeRef(symbol, returnType);
     }
   }
 }
@@ -2776,13 +2955,13 @@ function parseTypeAnnotations(parsed: AspParsedDocument): TypeAnnotations {
   for (const document of vbDocuments(parsed)) {
     for (const token of document.tokens.filter((item) => item.kind === "comment")) {
       const text = token.text.replace(/^'\s*/, "").trim();
-      const type = /^@type\s+([A-Za-z_][A-Za-z0-9_]*)\s+As\s+([A-Za-z_][A-Za-z0-9_.]*)/i.exec(text);
+      const type = /^@type\s+([A-Za-z_][A-Za-z0-9_]*)\s+As\s+(.+)$/i.exec(text);
       if (type) {
         annotations.types.push({ name: type[1], typeName: type[2], offset: token.start });
         continue;
       }
       const param =
-        /^@param\s+([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_]*))?\s+As\s+([A-Za-z_][A-Za-z0-9_.]*)/i.exec(
+        /^@param\s+([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_]*))?\s+As\s+(.+)$/i.exec(
           text,
         );
       if (param) {
@@ -2793,20 +2972,18 @@ function parseTypeAnnotations(parsed: AspParsedDocument): TypeAnnotations {
         });
         continue;
       }
-      const returns = /^@returns(?:\s+([A-Za-z_][A-Za-z0-9_]*))?\s+([A-Za-z_][A-Za-z0-9_.]*)/i.exec(
-        text,
-      );
+      const returns = /^@returns(?:\s+(.+))?$/i.exec(text);
       if (returns) {
-        const procedure = returns[1] ?? nextProcedureName(parsed, token.start);
+        const returnsBody = returns[1]?.trim();
+        const [procedureName, returnType] = parseReturnsTypeAnnotation(returnsBody);
+        const procedure = procedureName ?? nextProcedureName(parsed, token.start);
         if (procedure) {
-          annotations.returns.push({ name: procedure, typeName: returns[2] });
+          annotations.returns.push({ name: procedure, typeName: returnType });
         }
         continue;
       }
       const member =
-        /^@member\s+([A-Za-z_][A-Za-z0-9_.]*)\.([A-Za-z_][A-Za-z0-9_]*)\s+As\s+([A-Za-z_][A-Za-z0-9_.]*)/i.exec(
-          text,
-        );
+        /^@member\s+([A-Za-z_][A-Za-z0-9_.]*)\.([A-Za-z_][A-Za-z0-9_]*)\s+As\s+(.+)$/i.exec(text);
       if (member) {
         annotations.members.push({
           typeName: member[1],
@@ -2817,6 +2994,20 @@ function parseTypeAnnotations(parsed: AspParsedDocument): TypeAnnotations {
     }
   }
   return annotations;
+}
+
+function parseReturnsTypeAnnotation(
+  body: string | undefined,
+): [procedureName: string | undefined, typeName: string] {
+  if (!body) {
+    return [undefined, "Variant"];
+  }
+  const firstSpace = body.search(/\s/);
+  if (firstSpace === -1) {
+    return [undefined, body];
+  }
+  const rest = body.slice(firstSpace).trim();
+  return rest.startsWith("|") ? [undefined, body] : [body.slice(0, firstSpace), rest];
 }
 
 function documentationForNode(
@@ -3263,7 +3454,7 @@ function inferSignificantExpressionType(
     return typeRef("Boolean");
   }
   if (lower === "nothing" || lower === "null" || lower === "empty") {
-    return typeRef(lower === "nothing" ? "Nothing" : "Variant");
+    return typeRef(canonicalBuiltinTypeName(lower));
   }
   if (lower === "array" && expression[1]?.text === "(") {
     return typeRef("Array");
@@ -3285,7 +3476,7 @@ function inferSignificantExpressionType(
     expression[1]?.text === "." &&
     expression[2]?.kind === "identifier"
   ) {
-    const ownerType = inferVariableType(first.text, parsed, offset, symbols);
+    const ownerType = inferVariableTypeRef(first.text, parsed, offset, symbols);
     return ownerType
       ? (memberReturnType(ownerType, expression[2].text, env) ??
           memberType(ownerType, expression[2].text, env))
@@ -3307,8 +3498,7 @@ function inferSignificantExpressionType(
       );
       return symbol?.type ?? (symbol?.typeName ? typeRef(symbol.typeName) : undefined);
     }
-    const typeName = inferVariableType(first.text, parsed, offset, symbols);
-    return typeName ? typeRef(typeName) : undefined;
+    return inferVariableTypeRef(first.text, parsed, offset, symbols);
   }
   return undefined;
 }
@@ -3377,13 +3567,19 @@ function inferBinaryExpressionType(
   if (operator === "&") {
     return typeRef("String");
   }
-  if (operator === "+" && (left?.name === "String" || right?.name === "String")) {
+  if (operator === "+" && (typeIncludesName(left, "String") || typeIncludesName(right, "String"))) {
     return typeRef("String");
   }
   if (["+", "-", "*", "/", "\\", "mod", "^"].includes(operator)) {
     return typeRef("Number");
   }
   return left ?? right;
+}
+
+function typeIncludesName(type: VbTypeRef | undefined, name: string): boolean {
+  return Boolean(
+    type && expandUnionType(type).some((item) => item.name.toLowerCase() === name.toLowerCase()),
+  );
 }
 
 function applyTypeAnnotations(parsed: AspParsedDocument, symbols: VbSymbol[]): void {
@@ -3395,7 +3591,7 @@ function applyTypeAnnotations(parsed: AspParsedDocument, symbols: VbSymbol[]): v
       ) ??
       symbols.find((candidate) => candidate.name.toLowerCase() === annotation.name.toLowerCase());
     if (symbol) {
-      setSymbolType(symbol, annotation.typeName);
+      setSymbolType(symbol, annotation.typeName, true);
     }
   }
   for (const annotation of annotations.params) {
@@ -3407,7 +3603,7 @@ function applyTypeAnnotations(parsed: AspParsedDocument, symbols: VbSymbol[]): v
           candidate.scopeName?.toLowerCase() === annotation.procedureName.toLowerCase()),
     );
     if (symbol) {
-      setSymbolType(symbol, annotation.typeName);
+      setSymbolType(symbol, annotation.typeName, true);
     }
   }
   for (const annotation of annotations.returns) {
@@ -3417,7 +3613,26 @@ function applyTypeAnnotations(parsed: AspParsedDocument, symbols: VbSymbol[]): v
         candidate.name.toLowerCase() === annotation.name.toLowerCase(),
     );
     if (symbol) {
-      setSymbolType(symbol, annotation.typeName);
+      setSymbolType(symbol, annotation.typeName, true);
+    }
+  }
+}
+
+function applyVariantFallbackTypes(symbols: VbSymbol[]): void {
+  for (const symbol of symbols) {
+    if (symbolTypeRef(symbol)) {
+      continue;
+    }
+    if (
+      symbol.kind === "variable" ||
+      symbol.kind === "constant" ||
+      symbol.kind === "field" ||
+      symbol.kind === "parameter" ||
+      symbol.kind === "function" ||
+      symbol.kind === "property" ||
+      (symbol.kind === "method" && symbol.procedureKind !== "sub")
+    ) {
+      setSymbolType(symbol, "Variant");
     }
   }
 }
@@ -3499,13 +3714,24 @@ function inferVariableType(
   offset: number,
   symbols: VbSymbol[],
 ): string | undefined {
+  const type = inferVariableTypeRef(name, parsed, offset, symbols);
+  return type ? formatTypeRef(type) : undefined;
+}
+
+function inferVariableTypeRef(
+  name: string,
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): VbTypeRef | undefined {
   return visibleSymbols(parsed, offset, symbols)
     .filter((symbol) => symbol.name.toLowerCase() === name.toLowerCase())
     .sort(
       (left, right) =>
-        Number(Boolean(right.typeName)) - Number(Boolean(left.typeName)) ||
+        Number(Boolean(symbolTypeRef(right))) - Number(Boolean(symbolTypeRef(left))) ||
         symbolPriority(right) - symbolPriority(left),
-    )[0]?.typeName;
+    )
+    .map(symbolTypeRef)[0];
 }
 
 function currentWithTypeName(
@@ -3513,21 +3739,58 @@ function currentWithTypeName(
   offset: number,
   symbols: VbSymbol[],
 ): string | undefined {
+  const type = currentWithTypeRef(parsed, offset, symbols);
+  return type ? formatTypeRef(type) : undefined;
+}
+
+function currentWithTypeRef(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): VbTypeRef | undefined {
   const withNode = enclosingVbNodes(parsed, offset)
     .reverse()
     .find((node) => node.kind === "With" && node.nameToken);
   return withNode?.nameToken
-    ? inferVariableType(withNode.nameToken.text, parsed, offset, symbols)
+    ? inferVariableTypeRef(withNode.nameToken.text, parsed, offset, symbols)
     : undefined;
 }
 
+function currentClassTypeRef(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): VbTypeRef | undefined {
+  const name = currentClassName(parsed, offset, symbols);
+  return name ? typeRef(name) : undefined;
+}
+
 function typeMemberCompletions(
+  type: VbTypeRef,
+  symbols: VbSymbol[],
+  env: VbTypeEnvironment,
+): CompletionItem[] {
+  const memberSets = expandUnionType(type).map((candidate) =>
+    dedupeCompletions(typeMemberCompletionsForName(candidate.name, symbols, env)),
+  );
+  if (memberSets.length === 0) {
+    return [];
+  }
+  const [first, ...rest] = memberSets;
+  return first.filter((item) =>
+    rest.every((set) =>
+      set.some((candidate) => candidate.label.toLowerCase() === item.label.toLowerCase()),
+    ),
+  );
+}
+
+function typeMemberCompletionsForName(
   typeName: string,
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
 ): CompletionItem[] {
   const type = findType(env, typeName);
-  return dedupeCompletions([
+  return [
     ...(type?.members.map(memberToCompletion) ?? []),
     ...symbols
       .filter(
@@ -3537,7 +3800,7 @@ function typeMemberCompletions(
       )
       .map((symbol) => symbolToCompletion(symbol)),
     ...(externalObjectMembers[typeName.toLowerCase()] ?? []),
-  ]);
+  ];
 }
 
 function memberToCompletion(member: VbMember): CompletionItem {
@@ -3549,7 +3812,7 @@ function memberToCompletion(member: VbMember): CompletionItem {
         : member.kind === "field"
           ? CompletionItemKind.Field
           : CompletionItemKind.Property,
-    detail: member.type ? `${member.kind} As ${member.type.name}` : member.kind,
+    detail: member.type ? `${member.kind} As ${formatTypeRef(member.type)}` : member.kind,
   };
 }
 
@@ -3589,19 +3852,13 @@ function resolveSymbolAt(
 ): VbSymbol | undefined {
   const member = memberAccessAt(parsed, offset);
   if (member) {
-    const className =
+    const type =
       member.owner === ""
-        ? currentWithTypeName(parsed, offset, symbols)
+        ? currentWithTypeRef(parsed, offset, symbols)
         : member.owner.toLowerCase() === "me"
-          ? currentClassName(parsed, offset, symbols)
-          : inferVariableType(member.owner, parsed, offset, symbols);
-    return className
-      ? symbols.find(
-          (symbol) =>
-            symbol.memberOf?.toLowerCase() === className.toLowerCase() &&
-            symbol.name.toLowerCase() === member.member.toLowerCase(),
-        )
-      : undefined;
+          ? currentClassTypeRef(parsed, offset, symbols)
+          : inferVariableTypeRef(member.owner, parsed, offset, symbols);
+    return type ? resolveMemberSymbolForType(type, member.member, symbols) : undefined;
   }
   const token = identifierTokenAt(parsed, offset);
   if (!token) {
@@ -3610,6 +3867,21 @@ function resolveSymbolAt(
   return visibleSymbols(parsed, offset, symbols)
     .filter((symbol) => symbol.name.toLowerCase() === token.text.toLowerCase())
     .sort((left, right) => symbolPriority(right) - symbolPriority(left))[0];
+}
+
+function resolveMemberSymbolForType(
+  type: VbTypeRef,
+  memberName: string,
+  symbols: VbSymbol[],
+): VbSymbol | undefined {
+  const members = expandUnionType(type).map((candidate) =>
+    symbols.find(
+      (symbol) =>
+        symbol.memberOf?.toLowerCase() === candidate.name.toLowerCase() &&
+        symbol.name.toLowerCase() === memberName.toLowerCase(),
+    ),
+  );
+  return members.every(Boolean) ? members[0] : undefined;
 }
 
 function memberAccessAt(
@@ -3629,6 +3901,83 @@ function memberAccessAt(
   return owner?.kind === "identifier" || owner?.text.toLowerCase() === "me"
     ? { owner: owner.text, member: token.text }
     : { owner: "", member: token.text };
+}
+
+function diagnoseDeclarationSyntax(
+  parsed: AspParsedDocument,
+  locale: AspLocale | undefined,
+): Diagnostic[] {
+  const localizer = createLocalizer(locale);
+  const diagnostics: Diagnostic[] = [];
+  for (const node of vbDocuments(parsed).flatMap((document) => flattenVbNodes(document))) {
+    if (node.kind !== "VariableDeclaration" || !node.declarationKind) {
+      continue;
+    }
+    const tokens = node.tokens.filter((token) => !isTriviaToken(token));
+    if (topLevelToken(tokens, "=")) {
+      diagnostics.push(
+        declarationSyntaxDiagnostic(
+          parsed,
+          node,
+          localizer.t("vb.diagnostic.initializedDeclaration", {
+            keyword: titleCaseKeyword(node.declarationKind),
+          }),
+          "initializedDeclaration",
+        ),
+      );
+    }
+    if (
+      (node.declarationKind === "dim" ||
+        node.declarationKind === "public" ||
+        node.declarationKind === "private") &&
+      tokens.some((token) => lowerToken(token) === "as")
+    ) {
+      diagnostics.push(
+        declarationSyntaxDiagnostic(
+          parsed,
+          node,
+          localizer.t("vb.diagnostic.typedDeclaration", {
+            keyword: titleCaseKeyword(node.declarationKind),
+          }),
+          "typedDeclaration",
+        ),
+      );
+    }
+  }
+  return diagnostics;
+}
+
+function topLevelToken(tokens: VbToken[], text: string): VbToken | undefined {
+  let depth = 0;
+  for (const token of tokens) {
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")") {
+      depth = Math.max(0, depth - 1);
+    } else if (depth === 0 && token.text === text) {
+      return token;
+    }
+  }
+  return undefined;
+}
+
+function declarationSyntaxDiagnostic(
+  parsed: AspParsedDocument,
+  node: VbCstNode,
+  message: string,
+  code: "initializedDeclaration" | "typedDeclaration",
+): Diagnostic {
+  return {
+    severity: DiagnosticSeverity.Error,
+    range: rangeFromOffsets(parsed.text, node.start, node.end),
+    message,
+    code,
+    data: {
+      declarationKind: node.declarationKind ?? "",
+      name: node.identifiers?.[0]?.text ?? "",
+    },
+    source: "asp-lsp-vbscript-syntax",
+  };
 }
 
 function diagnoseUndeclaredVariables(
@@ -3999,19 +4348,15 @@ function signatureSymbolsForCall(
 ): VbSymbol[] {
   const [owner, member] = name.includes(".") ? name.split(".", 2) : [undefined, name];
   if (owner && member) {
-    const className =
+    const type =
       owner.toLowerCase() === "me"
-        ? currentClassName(parsed, offset, symbols)
-        : inferVariableType(owner, parsed, offset, symbols);
-    if (!className) {
+        ? currentClassTypeRef(parsed, offset, symbols)
+        : inferVariableTypeRef(owner, parsed, offset, symbols);
+    if (!type) {
       return [];
     }
-    return symbols.filter(
-      (symbol) =>
-        symbol.memberOf?.toLowerCase() === className.toLowerCase() &&
-        symbol.name.toLowerCase() === member.toLowerCase() &&
-        (symbol.kind === "method" || symbol.kind === "property"),
-    );
+    const symbol = resolveMemberSymbolForType(type, member, symbols);
+    return symbol && (symbol.kind === "method" || symbol.kind === "property") ? [symbol] : [];
   }
   return visibleSymbols(parsed, offset, symbols).filter(
     (symbol) =>
@@ -4029,11 +4374,11 @@ function typeSignatureLabelsForCall(
 ): string[] | undefined {
   const [owner, member] = name.includes(".") ? name.split(".", 2) : [undefined, name];
   if (owner && member) {
-    const typeName =
+    const type =
       owner.toLowerCase() === "me"
-        ? currentClassName(parsed, offset, symbols)
-        : inferVariableType(owner, parsed, offset, symbols);
-    const signature = typeName ? memberSignature(typeName, member, env) : undefined;
+        ? currentClassTypeRef(parsed, offset, symbols)
+        : inferVariableTypeRef(owner, parsed, offset, symbols);
+    const signature = type ? memberSignature(type, member, env) : undefined;
     return signature ? [signatureLabelFromMember(owner, member, signature)] : undefined;
   }
   const symbol = visibleSymbols(parsed, offset, symbols).find(
@@ -4053,7 +4398,7 @@ function signatureLabelFromMember(owner: string, name: string, signature: VbSign
       ? `${parameter.optional ? "Optional " : ""}${parameterModeKeyword(parameter.mode)} `
       : "";
     return parameter.type
-      ? `${prefix}${parameter.name} As ${parameter.type.name}`
+      ? `${prefix}${parameter.name} As ${formatTypeRef(parameter.type)}`
       : `${prefix}${parameter.name}`;
   });
   return `${owner}.${name}(${parameters.join(", ")})`;
@@ -4062,9 +4407,9 @@ function signatureLabelFromMember(owner: string, name: string, signature: VbSign
 function signatureLabel(symbol: VbSymbol): string {
   const keyword = symbol.kind === "sub" || symbol.kind === "method" ? "Sub" : "Function";
   const owner = symbol.memberOf ? `${symbol.memberOf}.` : "";
-  const returnType = symbol.type ?? (symbol.typeName ? typeRef(symbol.typeName) : undefined);
+  const returnType = symbolTypeRef(symbol);
   return `${keyword} ${owner}${symbol.name}(${parameterLabels(symbol).join(", ")})${
-    returnType && keyword === "Function" ? ` As ${returnType.name}` : ""
+    returnType && keyword === "Function" ? ` As ${formatTypeRef(returnType)}` : ""
   }`;
 }
 
@@ -4107,10 +4452,15 @@ function diagnoseAssignmentTypes(
   const targetIndex = isSet ? 1 : 0;
   const target = statement[targetIndex];
   const equalsIndex = statement.findIndex((token) => token.text === "=");
-  if (!target || target.kind !== "identifier" || equalsIndex === -1) {
+  if (
+    !target ||
+    target.kind !== "identifier" ||
+    equalsIndex === -1 ||
+    statement[targetIndex + 1]?.text === "."
+  ) {
     return [];
   }
-  const lhsTypeName = inferVariableType(target.text, parsed, target.start, symbols);
+  const lhsType = inferVariableTypeRef(target.text, parsed, target.start, symbols);
   const rhsType = inferExpressionType(
     parsed,
     statement.slice(equalsIndex + 1),
@@ -4120,14 +4470,15 @@ function diagnoseAssignmentTypes(
   );
   const diagnostics: Diagnostic[] = [];
   if (isSet && rhsType && isClearlyScalarType(rhsType)) {
+    const rhsTypeName = formatTypeRef(rhsType);
     diagnostics.push(
       typeWarning(
         parsed,
         target.start,
         statement.at(-1)?.end ?? target.end,
-        localizer.t("vb.diagnostic.setScalar", { name: target.text, type: rhsType.name }),
+        localizer.t("vb.diagnostic.setScalar", { name: target.text, type: rhsTypeName }),
         "setScalar",
-        { name: target.text, type: rhsType.name },
+        { name: target.text, type: rhsTypeName },
       ),
     );
   }
@@ -4139,11 +4490,13 @@ function diagnoseAssignmentTypes(
         statement.at(-1)?.end ?? target.end,
         localizer.t("vb.diagnostic.objectNeedsSet", { name: target.text }),
         "objectNeedsSet",
-        { name: target.text, type: rhsType.name },
+        { name: target.text, type: formatTypeRef(rhsType) },
       ),
     );
   }
-  if (lhsTypeName && rhsType && !isCompatibleType(typeRef(lhsTypeName), rhsType, env)) {
+  if (lhsType && rhsType && !isCompatibleType(lhsType, rhsType, env)) {
+    const lhsTypeName = formatTypeRef(lhsType);
+    const rhsTypeName = formatTypeRef(rhsType);
     diagnostics.push(
       typeWarning(
         parsed,
@@ -4152,10 +4505,10 @@ function diagnoseAssignmentTypes(
         localizer.t("vb.diagnostic.typeMismatch", {
           name: target.text,
           expected: lhsTypeName,
-          actual: rhsType.name,
+          actual: rhsTypeName,
         }),
         "typeMismatch",
-        { name: target.text, expected: lhsTypeName, actual: rhsType.name },
+        { name: target.text, expected: lhsTypeName, actual: rhsTypeName },
       ),
     );
   }
@@ -4235,18 +4588,15 @@ function diagnoseMemberAccess(
     }
     const owner = statement[index - 1];
     const member = statement[index + 1];
-    const ownerTypeName =
+    const ownerType =
       owner.kind === "identifier"
-        ? inferVariableType(owner.text, parsed, owner.start, symbols)
+        ? inferVariableTypeRef(owner.text, parsed, owner.start, symbols)
         : undefined;
-    if (!ownerTypeName || isLooseType(ownerTypeName)) {
+    if (!ownerType || isLooseType(ownerType)) {
       continue;
     }
-    const type = findType(env, ownerTypeName);
-    if (
-      type &&
-      !type.members.some((item) => item.name.toLowerCase() === member.text.toLowerCase())
-    ) {
+    if (!typeHasMember(ownerType, member.text, env)) {
+      const ownerTypeName = formatTypeRef(ownerType);
       diagnostics.push(
         typeWarning(
           parsed,
@@ -4274,11 +4624,11 @@ function signatureForCall(
 ): VbSignature | undefined {
   const [owner, member] = name.includes(".") ? name.split(".", 2) : [undefined, name];
   if (owner && member) {
-    const typeName =
+    const type =
       owner.toLowerCase() === "me"
-        ? currentClassName(parsed, offset, symbols)
-        : inferVariableType(owner, parsed, offset, symbols);
-    return typeName ? memberSignature(typeName, member, env) : undefined;
+        ? currentClassTypeRef(parsed, offset, symbols)
+        : inferVariableTypeRef(owner, parsed, offset, symbols);
+    return type ? memberSignature(type, member, env) : undefined;
   }
   const symbol = visibleSymbols(parsed, offset, symbols).find(
     (candidate) =>
@@ -4294,49 +4644,86 @@ function signatureForCall(
       mode: parameter.mode,
       optional: parameter.optional,
     })),
-    returnType: symbol.type ?? (symbol.typeName ? typeRef(symbol.typeName) : undefined),
+    returnType: symbolTypeRef(symbol),
   };
 }
 
 function memberSignature(
-  typeName: string,
+  type: VbTypeRef,
   memberName: string,
   env: VbTypeEnvironment,
 ): VbSignature | undefined {
-  return findType(env, typeName)?.members.find(
-    (member) => member.name.toLowerCase() === memberName.toLowerCase(),
-  )?.signature;
+  const signatures = expandUnionType(type).map(
+    (candidate) =>
+      findType(env, candidate.name)?.members.find(
+        (member) => member.name.toLowerCase() === memberName.toLowerCase(),
+      )?.signature,
+  );
+  return signatures.every(Boolean) ? signatures[0] : undefined;
 }
 
 function memberType(
-  typeName: string,
+  type: VbTypeRef,
   memberName: string,
   env: VbTypeEnvironment,
 ): VbTypeRef | undefined {
-  return findType(env, typeName)?.members.find(
-    (member) => member.name.toLowerCase() === memberName.toLowerCase(),
-  )?.type;
+  const types = expandUnionType(type).map(
+    (candidate) =>
+      findType(env, candidate.name)?.members.find(
+        (member) => member.name.toLowerCase() === memberName.toLowerCase(),
+      )?.type,
+  );
+  return types.every(Boolean)
+    ? types.reduce<VbTypeRef | undefined>((merged, item) => mergeTypeRefs(merged, item), undefined)
+    : undefined;
 }
 
 function memberReturnType(
-  typeName: string,
+  type: VbTypeRef,
   memberName: string,
   env: VbTypeEnvironment,
 ): VbTypeRef | undefined {
-  return memberSignature(typeName, memberName, env)?.returnType;
+  const returnTypes = expandUnionType(type).map(
+    (candidate) => memberSignature(candidate, memberName, env)?.returnType,
+  );
+  return returnTypes.every(Boolean)
+    ? returnTypes.reduce<VbTypeRef | undefined>(
+        (merged, item) => mergeTypeRefs(merged, item),
+        undefined,
+      )
+    : undefined;
+}
+
+function typeHasMember(type: VbTypeRef, memberName: string, env: VbTypeEnvironment): boolean {
+  return expandUnionType(type).every((candidate) => {
+    const resolved = findType(env, candidate.name);
+    return resolved
+      ? resolved.members.some((member) => member.name.toLowerCase() === memberName.toLowerCase())
+      : true;
+  });
 }
 
 function builtinTypes(): VbType[] {
   const intrinsic: VbType[] = [
     "String",
+    "Byte",
+    "Integer",
+    "Long",
+    "Single",
+    "Double",
+    "Currency",
+    "Decimal",
     "Number",
     "Boolean",
     "Date",
+    "Empty",
+    "Null",
     "Object",
     "Variant",
     "Nothing",
     "Array",
     "Unknown",
+    "Error",
   ].map((name) => ({ name, kind: "intrinsic" as const, members: [] }));
   const classicAsp: VbType[] = Object.entries(memberCompletions).map(([name, members]) => ({
     name: canonicalBuiltinTypeName(name),
@@ -4451,12 +4838,86 @@ function builtinFunction(name: string): BuiltinFunction | undefined {
 }
 
 function typeRef(name: string): VbTypeRef {
-  return { name, object: isObjectTypeName(name) };
+  return parseTypeRef(name);
 }
 
-function setSymbolType(symbol: VbSymbol, typeName: string): void {
-  symbol.typeName = typeName;
-  symbol.type = typeRef(typeName);
+export function parseVbscriptTypeRef(text: string): VbTypeRef {
+  return parseTypeRef(text);
+}
+
+function parseTypeRef(text: string): VbTypeRef {
+  const parts = text
+    .split("|")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length > 1) {
+    return unionTypeRef(parts.map(singleTypeRef));
+  }
+  return singleTypeRef(parts[0] ?? "Variant");
+}
+
+function singleTypeRef(name: string): VbTypeRef {
+  const normalized = name.trim() || "Variant";
+  return { name: normalized, object: isObjectTypeName(normalized) };
+}
+
+function unionTypeRef(types: VbTypeRef[]): VbTypeRef {
+  const flattened = types.flatMap((type) => type.unionTypes ?? [type]);
+  const unique = new Map<string, VbTypeRef>();
+  for (const type of flattened) {
+    unique.set(formatTypeRef(type).toLowerCase(), type);
+  }
+  const unionTypes = [...unique.values()];
+  if (unionTypes.length === 0) {
+    return typeRef("Variant");
+  }
+  if (unionTypes.length === 1) {
+    return unionTypes[0];
+  }
+  const name = unionTypes.map(formatTypeRef).join(" | ");
+  return {
+    name,
+    object: unionTypes.every((type) => type.object === true),
+    unionTypes,
+  };
+}
+
+function formatTypeRef(type: VbTypeRef): string {
+  return type.unionTypes ? type.unionTypes.map(formatTypeRef).join(" | ") : type.name;
+}
+
+function expandUnionType(type: VbTypeRef): VbTypeRef[] {
+  return type.unionTypes ?? [type];
+}
+
+function mergeTypeRefs(
+  left: VbTypeRef | undefined,
+  right: VbTypeRef | undefined,
+): VbTypeRef | undefined {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  if (formatTypeRef(left).toLowerCase() === formatTypeRef(right).toLowerCase()) {
+    return left;
+  }
+  return unionTypeRef([left, right]);
+}
+
+function symbolTypeRef(symbol: VbSymbol | undefined): VbTypeRef | undefined {
+  return symbol?.type ?? (symbol?.typeName ? typeRef(symbol.typeName) : undefined);
+}
+
+function setSymbolType(symbol: VbSymbol, typeName: string, explicitType = false): void {
+  setSymbolTypeRef(symbol, typeRef(typeName), explicitType);
+}
+
+function setSymbolTypeRef(symbol: VbSymbol, type: VbTypeRef, explicitType = false): void {
+  symbol.type = type;
+  symbol.typeName = formatTypeRef(type);
+  symbol.explicitType ||= explicitType;
 }
 
 function addType(typeMap: Map<string, VbType>, type: VbType): void {
@@ -4479,7 +4940,6 @@ function isObjectTypeName(name: string): boolean {
   const lower = name.toLowerCase();
   return (
     lower === "object" ||
-    lower === "array" ||
     classicAspTypeNames.has(lower) ||
     (!intrinsicTypeNames.has(lower) &&
       lower !== "string" &&
@@ -4489,33 +4949,81 @@ function isObjectTypeName(name: string): boolean {
   );
 }
 
-function isLooseType(typeName: string): boolean {
-  const lower = typeName.toLowerCase();
-  return lower === "unknown" || lower === "variant";
+function isLooseType(type: string | VbTypeRef): boolean {
+  const types = typeof type === "string" ? expandUnionType(typeRef(type)) : expandUnionType(type);
+  return types.some((item) => {
+    const lower = item.name.toLowerCase();
+    return lower === "unknown" || lower === "variant";
+  });
 }
 
 function isClearlyObjectType(type: VbTypeRef, env: VbTypeEnvironment): boolean {
-  if (isLooseType(type.name) || type.name.toLowerCase() === "nothing") {
+  if (
+    isLooseType(type) ||
+    expandUnionType(type).some((item) => item.name.toLowerCase() === "nothing")
+  ) {
     return false;
   }
-  return type.object === true || Boolean(findType(env, type.name) && !isClearlyScalarType(type));
+  return expandUnionType(type).every(
+    (item) =>
+      item.object === true || Boolean(findType(env, item.name) && !isClearlyScalarType(item)),
+  );
 }
 
 function isClearlyScalarType(type: VbTypeRef): boolean {
-  return ["string", "number", "boolean", "date"].includes(type.name.toLowerCase());
+  return expandUnionType(type).every((item) =>
+    [
+      "string",
+      "byte",
+      "integer",
+      "long",
+      "single",
+      "double",
+      "currency",
+      "decimal",
+      "number",
+      "boolean",
+      "date",
+      "empty",
+      "null",
+      "error",
+    ].includes(item.name.toLowerCase()),
+  );
 }
 
 function isCompatibleType(left: VbTypeRef, right: VbTypeRef, env: VbTypeEnvironment): boolean {
-  if (isLooseType(left.name) || isLooseType(right.name) || right.name.toLowerCase() === "nothing") {
+  if (isLooseType(left) || isLooseType(right)) {
+    return true;
+  }
+  return expandUnionType(right).every((rightType) =>
+    expandUnionType(left).some((leftType) => isCompatibleSingleType(leftType, rightType, env)),
+  );
+}
+
+function isCompatibleSingleType(
+  left: VbTypeRef,
+  right: VbTypeRef,
+  env: VbTypeEnvironment,
+): boolean {
+  if (right.name.toLowerCase() === "nothing") {
     return true;
   }
   if (left.name.toLowerCase() === right.name.toLowerCase()) {
+    return true;
+  }
+  if (isNumericTypeName(left.name) && isNumericTypeName(right.name)) {
     return true;
   }
   if (left.name.toLowerCase() === "object" && isClearlyObjectType(right, env)) {
     return true;
   }
   return false;
+}
+
+function isNumericTypeName(name: string): boolean {
+  return ["byte", "integer", "long", "single", "double", "currency", "decimal", "number"].includes(
+    name.toLowerCase(),
+  );
 }
 
 function typeWarning(
@@ -4574,7 +5082,8 @@ function signatureLabelForDocumentation(symbol: VbSymbol): string {
   if (symbol.kind === "function" || symbol.kind === "sub" || symbol.kind === "method") {
     return signatureLabel(symbol);
   }
-  return `${symbol.kind} ${symbol.name}${symbol.typeName ? ` As ${symbol.typeName}` : ""}`;
+  const type = symbolTypeRef(symbol);
+  return `${symbol.kind} ${symbol.name}${type ? ` As ${formatTypeRef(type)}` : ""}`;
 }
 
 function tokenRangeAt(parsed: AspParsedDocument, offset: number): Range | undefined {
@@ -4689,16 +5198,25 @@ function typeNameAtOffset(
   offset: number,
   symbols: VbSymbol[],
 ): string | undefined {
+  const type = typeRefAtOffset(parsed, offset, symbols);
+  return type ? formatTypeRef(type) : undefined;
+}
+
+function typeRefAtOffset(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): VbTypeRef | undefined {
   const member = memberAccessAt(parsed, offset);
   if (member) {
     return member.owner === ""
-      ? currentWithTypeName(parsed, offset, symbols)
+      ? currentWithTypeRef(parsed, offset, symbols)
       : member.owner.toLowerCase() === "me"
-        ? currentClassName(parsed, offset, symbols)
-        : inferVariableType(member.owner, parsed, offset, symbols);
+        ? currentClassTypeRef(parsed, offset, symbols)
+        : inferVariableTypeRef(member.owner, parsed, offset, symbols);
   }
   const token = identifierTokenAt(parsed, offset);
-  return token ? inferVariableType(token.text, parsed, offset, symbols) : undefined;
+  return token ? inferVariableTypeRef(token.text, parsed, offset, symbols) : undefined;
 }
 
 function isCallableHierarchySymbol(symbol: VbSymbol): boolean {
@@ -4709,6 +5227,7 @@ function symbolToCallHierarchyItem(
   symbol: VbSymbol,
   rootUri = symbol.sourceUri,
 ): CallHierarchyItem {
+  const type = symbolTypeRef(symbol);
   const data: VbCallHierarchyData = {
     uri: symbol.sourceUri,
     name: symbol.name,
@@ -4721,7 +5240,7 @@ function symbolToCallHierarchyItem(
   return {
     name: symbol.memberOf ? `${symbol.memberOf}.${symbol.name}` : symbol.name,
     kind: vbCallHierarchySymbolKind(symbol.kind),
-    detail: symbol.typeName ? `As ${symbol.typeName}` : symbol.kind,
+    detail: type ? `As ${formatTypeRef(type)}` : symbol.kind,
     uri: symbol.sourceUri,
     range: symbol.scopeRange ?? symbol.range,
     selectionRange: symbol.range,
@@ -4798,19 +5317,15 @@ function resolveCallTargetSymbol(
 ): VbSymbol | undefined {
   const [owner, member] = name.includes(".") ? name.split(".", 2) : [undefined, name];
   if (owner && member) {
-    const typeName =
+    const type =
       owner.toLowerCase() === "me"
-        ? currentClassName(parsed, offset, symbols)
-        : inferVariableType(owner, parsed, offset, symbols);
-    if (!typeName) {
+        ? currentClassTypeRef(parsed, offset, symbols)
+        : inferVariableTypeRef(owner, parsed, offset, symbols);
+    if (!type) {
       return undefined;
     }
-    return symbols.find(
-      (symbol) =>
-        symbol.memberOf?.toLowerCase() === typeName.toLowerCase() &&
-        symbol.name.toLowerCase() === member.toLowerCase() &&
-        isCallableHierarchySymbol(symbol),
-    );
+    const symbol = resolveMemberSymbolForType(type, member, symbols);
+    return symbol && isCallableHierarchySymbol(symbol) ? symbol : undefined;
   }
   return visibleSymbols(parsed, offset, symbols).find(
     (symbol) =>

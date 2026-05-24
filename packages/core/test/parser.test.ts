@@ -18,6 +18,7 @@ import {
   getVbscriptTypeDefinition,
   parseAspCst,
   parseAspDocument,
+  parseVbscriptTypeRef,
   parseVbscriptCst,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
@@ -143,6 +144,93 @@ Response.Write name
     expect(parsed.regions.some((region) => region.kind === "asp-expression")).toBe(true);
   });
 
+  it("masks inline ASP inside JavaScript regions with source-map stable placeholders", () => {
+    const source = `<script>const value = <%= serverValue %>;
+const label = "<%= serverLabel %>";
+const dynamic = <% Response.Write clientValue %>;</script>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    const javascript = docs.get("javascript");
+    expect(javascript?.text).toContain("const value = 0");
+    expect(javascript?.text).toContain('const label = "0');
+    expect(javascript?.text).toContain("const dynamic = 0");
+    expect(javascript?.text).not.toContain("serverValue");
+    expect(javascript?.text).not.toContain("Response.Write");
+    expect(javascript?.text).toHaveLength(
+      source.slice(source.indexOf(">") + 1, source.lastIndexOf("</script>")).length + 1,
+    );
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(2);
+    expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(1);
+  });
+
+  it("leaves inline ASP islands unmapped inside JavaScript virtual documents", () => {
+    const source = `<script>
+const n = "<%= RenderTierOptions(selectedTier: filter.Tier) %>";
+document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("is-hovered"));
+</script>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const javascript = buildVirtualDocuments(parsed).get("javascript");
+    expect(javascript).toBeTruthy();
+    const expression = parsed.regions.find((region) => region.kind === "asp-expression");
+    expect(expression).toBeTruthy();
+    expect(
+      javascript!.sourceMap.toVirtualOffset(source.indexOf("RenderTierOptions")),
+    ).toBeUndefined();
+    expect(javascript!.sourceMap.toVirtualOffset(source.indexOf("selectedTier"))).toBeUndefined();
+    expect(
+      javascript!.sourceMap.toSourceOffset(source.indexOf("<%=") - source.indexOf("<script>") - 7),
+    ).toBeUndefined();
+    expect(javascript!.sourceMap.toVirtualOffset(source.indexOf("const n"))).toBeDefined();
+    expect(
+      javascript!.sourceMap.toVirtualOffset(source.indexOf("document.querySelectorAll")),
+    ).toBeDefined();
+  });
+
+  it("masks ASP expressions inside HTML tag attributes", () => {
+    const source =
+      '<input type="checkbox" name="inactive" value="1" <%= CheckedAttribute(filter.IncludeInactive) %>>';
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    const html = docs.get("html");
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(1);
+    expect(html?.text).not.toContain("CheckedAttribute");
+    expect(html?.sourceMap.toVirtualOffset(source.indexOf("CheckedAttribute"))).toBeUndefined();
+    expect(html?.sourceMap.toVirtualOffset(source.lastIndexOf(">"))).toBeDefined();
+  });
+
+  it("masks quoted and generated ASP tag attributes with delimiter-like content", () => {
+    const source = `<input <%= AttributeWithText("data-end=>") %> data-state="<%= StateName() %>" <% Response.Write "disabled" %>>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const html = buildVirtualDocuments(parsed).get("html");
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(2);
+    expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(1);
+    expect(html?.text).not.toContain("AttributeWithText");
+    expect(html?.text).not.toContain("StateName");
+    expect(html?.text).not.toContain("Response.Write");
+    expect(html?.sourceMap.toVirtualOffset(source.indexOf("data-state"))).toBeDefined();
+    expect(html?.sourceMap.toVirtualOffset(source.lastIndexOf(">"))).toBeDefined();
+  });
+
+  it("masks inline ASP inside CSS values and style attributes", () => {
+    const source = `<style>.x { color: <%= themeColor %>; width: <% Response.Write width %>px; }</style>
+<div style="color: <%= themeColor %>; background: red"></div>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    const css = docs.get("css")?.text ?? "";
+    expect(css).toContain(".x { color: x");
+    expect(css).toContain("width: x");
+    expect(css).toContain("__asp_lsp__{color: x");
+    expect(css).not.toContain("themeColor");
+    expect(css).not.toContain("Response.Write");
+    expect(
+      parsed.regions.some(
+        (region) => region.kind === "style-attribute" && region.language === "css",
+      ),
+    ).toBe(true);
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(2);
+    expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(1);
+  });
+
   it("extracts inline style attributes as CSS virtual documents", () => {
     const source = `<div style="color: red; display: block"></div>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
@@ -259,6 +347,21 @@ describe("VBScript analysis", () => {
     ).toBe(true);
   });
 
+  it("treats Rem as a VBScript line comment only at statement starts", () => {
+    const cst = parseVbscriptCst(`Rem leading comment
+value = 1 : Rem trailing comment
+Reminder = 2
+value = Rem`);
+    const comments = cst.tokens
+      .filter((token) => token.kind === "comment")
+      .map((token) => token.text);
+    expect(comments).toEqual(["Rem leading comment", "Rem trailing comment"]);
+    expect(
+      cst.tokens.some((token) => token.kind === "identifier" && token.text === "Reminder"),
+    ).toBe(true);
+    expect(cst.tokens.some((token) => token.kind === "keyword" && token.text === "Rem")).toBe(true);
+  });
+
   it("builds VBScript statement CST nodes for blocks, calls and assignments", () => {
     const cst = parseVbscriptCst(`If ready Then
   Call Save(name)
@@ -295,6 +398,39 @@ Response. %>`;
         (item) => item.label === "customerName",
       ),
     ).toBe(true);
+  });
+
+  it("identifies fixed and dynamic VBScript arrays as Array symbols", () => {
+    const source = `<%
+Dim fixedItems(10)
+Dim dynamicItems()
+ReDim resizedItems(5)
+%>`;
+    const parsed = parseAspDocument("file:///site/arrays.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const fixed = symbols.find((symbol) => symbol.name === "fixedItems");
+    const dynamic = symbols.find((symbol) => symbol.name === "dynamicItems");
+    const resized = symbols.find((symbol) => symbol.name === "resizedItems");
+    expect(fixed).toMatchObject({
+      typeName: "Array",
+      array: { kind: "fixed", dimensions: ["10"] },
+    });
+    expect(dynamic).toMatchObject({
+      typeName: "Array",
+      array: { kind: "dynamic", dimensions: [] },
+    });
+    expect(resized).toMatchObject({
+      typeName: "Array",
+      array: { kind: "dynamic", dimensions: ["5"] },
+    });
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("fixedItems") + 2), { symbols }),
+    ).toContain("Dim fixedItems(10) As Array");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("dynamicItems") + 2), {
+        symbols,
+      }),
+    ).toContain("Dim dynamicItems() As Array");
   });
 
   it("keeps VBScript lookup and completions case-insensitive", () => {
@@ -390,6 +526,65 @@ Response.Write missingName
     expect(
       result.diagnostics.some((diagnostic) => diagnostic.message.includes("missingName")),
     ).toBe(true);
+  });
+
+  it("reports invalid VBScript variable declaration syntax as errors", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim initialized = 1
+Dim first, second = 2
+Public publicValue = 3
+Private privateValue = 4
+ReDim resized = 5
+Dim typed As Integer
+Public publicTyped As String
+Private privateTyped As Object
+%>`,
+    );
+    const syntaxDiagnostics = analyzeVbscript(parsed, {
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+    expect(
+      syntaxDiagnostics.filter((diagnostic) => diagnostic.code === "initializedDeclaration"),
+    ).toHaveLength(5);
+    expect(
+      syntaxDiagnostics.filter((diagnostic) => diagnostic.code === "typedDeclaration"),
+    ).toHaveLength(3);
+    expect(syntaxDiagnostics.every((diagnostic) => diagnostic.severity === 1)).toBe(true);
+  });
+
+  it("keeps valid VBScript variable declarations out of syntax diagnostics", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim value
+value = 1
+Dim fixedItems(10)
+Dim dynamicItems()
+ReDim fixedItems(20)
+ReDim Preserve fixedItems(30)
+Const knownValue = 1
+%>`,
+    );
+    expect(
+      analyzeVbscript(parsed, { unusedDiagnostics: false }).diagnostics.some(
+        (diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax",
+      ),
+    ).toBe(false);
+  });
+
+  it("localizes VBScript declaration syntax diagnostics", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim typed As Integer
+%>`,
+    );
+    const result = analyzeVbscript(parsed, { locale: "ja", unusedDiagnostics: false });
+    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("As 型指定"))).toBe(
+      true,
+    );
   });
 
   it("does not report VBScript line continuation as undeclared", () => {
@@ -700,7 +895,7 @@ Response.Write BuildName()
     const hover = getVbscriptHover(parsed, { line: 3, character: 17 }, { symbols });
     expect(hover).toContain("```vbscript");
     expect(hover).toContain("Function BuildName()");
-    expect(hover).toContain("VBScript function.");
+    expect(hover).not.toContain("VBScript function.");
     expect(getVbscriptDefinition(parsed, { line: 3, character: 17 }, { symbols })?.name).toBe(
       "BuildName",
     );
@@ -722,7 +917,8 @@ End Class
     expect(property?.propertyAccessor).toBe("get");
     const hover = getVbscriptHover(parsed, { line: 3, character: 5 }, { symbols });
     expect(hover).toContain("Public Property Get HasItems() As Boolean");
-    expect(hover).toContain("VBScript property. Member of `DashboardCustomer`.");
+    expect(hover).not.toContain("VBScript property.");
+    expect(hover).not.toContain("Member of `DashboardCustomer`.");
   });
 
   it("resolves built-in hover and signature help from CST tokens", () => {
@@ -750,10 +946,20 @@ Server.MapPath("/tmp")
     const parsed = parseAspDocument(
       "file:///site/default.asp",
       `<%
-Dim textValue, items, upperBound
+Dim textValue, items, upperBound, byteValue, intValue, longValue, singleValue, doubleValue
+Dim currencyValue, decimalValue, variantValue, errorValue
 textValue = CStr(42)
 items = Array("a", "b")
 upperBound = UBound(items)
+byteValue = CByte(1)
+intValue = CInt(1)
+longValue = CLng(1)
+singleValue = CSng(1)
+doubleValue = CDbl(1)
+currencyValue = CCur(1)
+decimalValue = CDec(1)
+variantValue = CVar(1)
+errorValue = CVErr(1)
 %>`,
     );
     const result = analyzeVbscript(parsed);
@@ -769,6 +975,21 @@ upperBound = UBound(items)
     expect(result.symbols.find((symbol) => symbol.name === "textValue")?.typeName).toBe("String");
     expect(result.symbols.find((symbol) => symbol.name === "items")?.typeName).toBe("Array");
     expect(result.symbols.find((symbol) => symbol.name === "upperBound")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "byteValue")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "intValue")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "longValue")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "singleValue")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "doubleValue")?.typeName).toBe("Number");
+    expect(result.symbols.find((symbol) => symbol.name === "currencyValue")?.typeName).toBe(
+      "Currency",
+    );
+    expect(result.symbols.find((symbol) => symbol.name === "decimalValue")?.typeName).toBe(
+      "Decimal",
+    );
+    expect(result.symbols.find((symbol) => symbol.name === "variantValue")?.typeName).toBe(
+      "Variant",
+    );
+    expect(result.symbols.find((symbol) => symbol.name === "errorValue")?.typeName).toBe("Error");
     expect(tokenAt("CStr")).toEqual(
       expect.objectContaining({ tokenType: "function", tokenModifiers: ["library"] }),
     );
@@ -778,10 +999,22 @@ upperBound = UBound(items)
     expect(tokenAt("UBound")).toEqual(
       expect.objectContaining({ tokenType: "function", tokenModifiers: ["library"] }),
     );
-    expect(getVbscriptHover(parsed, { line: 2, character: 13 })).toContain(
-      "Function CStr(value) As String",
+    expect(tokenAt("CCur")).toEqual(
+      expect.objectContaining({ tokenType: "function", tokenModifiers: ["library"] }),
     );
-    expect(getVbscriptSignatureHelp(parsed, { line: 4, character: 21 })).toEqual(
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("CStr"))),
+    ).toContain("Function CStr(value) As String");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("CStr"))),
+    ).toContain("Converts a value to String.");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("CStr"))),
+    ).not.toContain("VBScript built-in function.");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("CCur"))),
+    ).toContain("Function CCur(value) As Currency");
+    expect(getVbscriptSignatureHelp(parsed, { line: 5, character: 21 })).toEqual(
       expect.objectContaining({
         signatures: [expect.objectContaining({ label: "UBound(array, dimension)" })],
       }),
@@ -1115,6 +1348,172 @@ End Sub
     expect(labelUse?.range).toEqual(labelDefinition?.range);
   });
 
+  it("uses TypeName-style VBScript literal and numeric family types", () => {
+    const source = `<%
+Dim emptyValue, nullValue, objectValue, numericValue, currencyValue
+emptyValue = Empty
+nullValue = Null
+Set objectValue = Nothing
+' @type numericValue As Number
+numericValue = CCur(1)
+' @type currencyValue As Currency
+currencyValue = 1
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.find((symbol) => symbol.name === "emptyValue")?.typeName).toBe("Empty");
+    expect(symbols.find((symbol) => symbol.name === "nullValue")?.typeName).toBe("Null");
+    expect(symbols.find((symbol) => symbol.name === "objectValue")?.typeName).toBe("Nothing");
+    expect(symbols.find((symbol) => symbol.name === "numericValue")?.typeName).toBe("Number");
+    expect(symbols.find((symbol) => symbol.name === "currencyValue")?.typeName).toBe("Currency");
+    expect(parseVbscriptTypeRef("Integer").object).toBe(false);
+    expect(parseVbscriptTypeRef("Decimal").object).toBe(false);
+    expect(parseVbscriptTypeRef("Error").object).toBe(false);
+    expect(
+      analyzeVbscript(parsed, { symbols, typeChecking: "strict" }).diagnostics.some(
+        (diagnostic) => diagnostic.source === "asp-lsp-vbscript-type",
+      ),
+    ).toBe(false);
+  });
+
+  it("infers and checks VBScript union types", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Class FirstThing
+  Public SharedName
+  Public OnlyFirst
+End Class
+Class SecondThing
+  Public SharedName
+End Class
+x = 1
+x = "a"
+' @type annotated As Number
+Dim annotated
+annotated = "oops"
+' @type maybeName As String | Number
+Dim maybeName
+Class Holder
+  Public Value
+End Class
+' @member Holder.Value As String | Number
+Function MakeValue(flag)
+  If flag Then
+    MakeValue = 1
+  Else
+    MakeValue = "x"
+  End If
+End Function
+Dim both
+Set both = New FirstThing
+Set both = New SecondThing
+both.SharedName
+both.OnlyFirst
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.find((symbol) => symbol.name === "x")?.typeName).toBe("Number | String");
+    expect(symbols.find((symbol) => symbol.name === "maybeName")?.typeName).toBe("String | Number");
+    expect(symbols.find((symbol) => symbol.name === "annotated")?.typeName).toBe("Number");
+    expect(symbols.find((symbol) => symbol.name === "MakeValue")?.typeName).toBe("Number | String");
+    expect(symbols.find((symbol) => symbol.name === "both")?.typeName).toBe(
+      "FirstThing | SecondThing",
+    );
+
+    const env = buildVbTypeEnvironment(parsed, { symbols });
+    expect(
+      env.types
+        .find((type) => type.name === "Holder")
+        ?.members.find((member) => member.name === "Value")?.type?.name,
+    ).toBe("String | Number");
+
+    const completions = getVbscriptCompletions(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("both.SharedName") + "both.".length),
+      { symbols },
+    );
+    expect(completions.some((item) => item.label === "SharedName")).toBe(true);
+    expect(completions.some((item) => item.label === "OnlyFirst")).toBe(false);
+
+    const hints = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 32, character: 0 } },
+      { symbols },
+    );
+    expect(JSON.stringify(hints)).toContain("As String | Number");
+
+    const result = analyzeVbscript(parsed, { symbols, typeChecking: "strict" });
+    expect(
+      result.diagnostics.some((diagnostic) =>
+        diagnostic.message.includes("is Number, but assigned String"),
+      ),
+    ).toBe(true);
+    expect(
+      result.diagnostics.some((diagnostic) => diagnostic.message.includes("no member 'OnlyFirst'")),
+    ).toBe(true);
+    expect(
+      result.diagnostics.some((diagnostic) =>
+        diagnostic.message.includes("no member 'SharedName'"),
+      ),
+    ).toBe(false);
+  });
+
+  it("falls back unknown VBScript types to Variant and marks global variables", () => {
+    const source = `<%
+Dim rowClass
+rowClass = "customer-row"
+rowClass = 1
+Dim unknownGlobal
+Const UnknownConst = MissingValue
+Function UnknownReturn()
+End Function
+Sub Render()
+  Dim localValue
+End Sub
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.find((symbol) => symbol.name === "rowClass")?.typeName).toBe("String | Number");
+    expect(symbols.find((symbol) => symbol.name === "unknownGlobal")?.typeName).toBe("Variant");
+    expect(symbols.find((symbol) => symbol.name === "UnknownConst")?.typeName).toBe("Variant");
+    expect(symbols.find((symbol) => symbol.name === "UnknownReturn")?.typeName).toBe("Variant");
+    expect(
+      symbols.find((symbol) => symbol.name === "localValue" && symbol.scopeName === "Render")
+        ?.typeName,
+    ).toBe("Variant");
+
+    const hints = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      { symbols },
+    );
+    expect(hints.some((hint) => hint.label === " (global) As String | Number")).toBe(true);
+    expect(hints.some((hint) => hint.label === " (global) As Variant")).toBe(true);
+    expect(
+      hints.some(
+        (hint) =>
+          hint.label === " As Variant" &&
+          hint.position.line === positionAt(source, source.indexOf("localValue")).line,
+      ),
+    ).toBe(true);
+
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
+    ).toContain("(global) Dim unknownGlobal As Variant");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("UnknownConst")), { symbols }),
+    ).toContain("(global) Const UnknownConst As Variant");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
+    ).not.toContain("VBScript variable");
+    expect(
+      analyzeVbscript(parsed, { symbols, typeChecking: "strict" }).diagnostics.some(
+        (diagnostic) => diagnostic.source === "asp-lsp-vbscript-type",
+      ),
+    ).toBe(false);
+  });
+
   it("creates implicit variables without Option Explicit for hover, inlay and semantic tokens", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -1127,7 +1526,10 @@ Response.Write a
     const implicit = symbols.find((symbol) => symbol.name === "a");
     expect(implicit).toEqual(expect.objectContaining({ implicit: true, typeName: "Number" }));
     expect(getVbscriptHover(parsed, { line: 1, character: 0 }, { symbols })).toContain(
-      "Implicit VBScript variable.",
+      "(global) Dim a As Number",
+    );
+    expect(getVbscriptHover(parsed, { line: 1, character: 0 }, { symbols })).not.toContain(
+      "Implicit VBScript variable",
     );
     expect(
       getVbscriptInlayHints(
@@ -1136,7 +1538,9 @@ Response.Write a
         { symbols },
       ).some(
         (hint) =>
-          hint.label === " As Number" && hint.paddingLeft === false && hint.paddingRight === true,
+          hint.label === " (global) As Number" &&
+          hint.paddingLeft === false &&
+          hint.paddingRight === true,
       ),
     ).toBe(true);
     expect(
@@ -1257,6 +1661,16 @@ Response.Write BuildName("Ada")
       expect.objectContaining({ position: customerSymbol?.range.end, paddingLeft: false }),
     );
     expect(customerHint?.paddingRight).toBe(true);
+    const firstNameOffset = source.indexOf("firstName");
+    expect(
+      hints.some(
+        (hint) =>
+          hint.label === " As Variant" &&
+          hint.position.line === positionAt(source, firstNameOffset).line &&
+          hint.position.character ===
+            positionAt(source, firstNameOffset + "firstName".length).character,
+      ),
+    ).toBe(false);
 
     const returnHint = getVbscriptInlayHints(
       parseAspDocument(
@@ -1478,6 +1892,103 @@ longerName=2
       alignAssignments: true,
     });
     expect(edits[0].newText).toContain("first      = 1\nlongerName = 2");
+  });
+
+  it("indents VBScript line continuations one level deeper", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+a = _
+"aaa" & _
+"bbb"
+%>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 4, insertSpaces: true });
+    expect(edits[0].newText).toContain(`a = _
+    "aaa" & _
+    "bbb"`);
+  });
+
+  it("formats indented ASP blocks relative to their tag indentation", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<div>
+    <%
+If enabled Then
+Response.Write "ok"
+End If
+    %>
+</div>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toContain(`    <%
+    If enabled Then
+      Response.Write "ok"
+    End If
+    %>`);
+  });
+
+  it("can ignore tag indentation when formatting ASP blocks", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<div>
+    <%
+If enabled Then
+Response.Write "ok"
+End If
+    %>
+</div>`,
+    );
+    const edits = formatAspDocument(parsed, {
+      tabSize: 2,
+      insertSpaces: true,
+      ignoreVbscriptTagIndent: true,
+    });
+    expect(edits[0].newText).toContain(`    <%
+If enabled Then
+  Response.Write "ok"
+End If
+%>`);
+  });
+
+  it("formats server-side VBScript tags relative to their tag indentation", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<div>
+  <script runat="server">
+If enabled Then
+Response.Write "ok"
+End If
+  </script>
+</div>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toContain(`  <script runat="server">
+    If enabled Then
+      Response.Write "ok"
+    End If
+  </script>`);
+  });
+
+  it("formats Select Case blocks with case bodies indented", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Select Case kind
+Case "a"
+Response.Write "a"
+Case Else
+Response.Write "else"
+End Select
+%>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toContain(`Select Case kind
+  Case "a"
+    Response.Write "a"
+  Case Else
+    Response.Write "else"
+End Select`);
   });
 
   it("toggles line comments by embedded Classic ASP region", () => {

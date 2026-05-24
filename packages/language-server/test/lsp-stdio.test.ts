@@ -924,6 +924,155 @@ function boot() {
       }
     });
 
+    it("keeps ASP delimiters inside CSS and JavaScript from producing embedded diagnostics", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
+        });
+
+        const uri = "file:///tmp/embedded-asp-islands.asp";
+        const source = `<style>
+.card-<%= className %> { color: <%= themeColor %>; width: <% Response.Write width %>px; }
+</style>
+<div style="color: <%= themeColor %>; background: red"></div>
+<input type="checkbox" name="inactive" value="1" <%= CheckedAttribute(filter.IncludeInactive) %>>
+<input title='<%= Response.Write("x") %>'>
+<input <%= Response.Write("disabled") %> data-state="<%= Response.Write("active") %>">
+<script>
+const clientValue = <%= serverValue %>;
+const label = "<%= serverLabel %>";
+const fromServer = <% Response.Write clientValue %>;
+const n = "<%= RenderTierOptions(selectedTier: filter.Tier) %>";
+const selectedTierValue = "gold";
+function markTier(tier) { return tier; }
+markTier(selectedTierValue);
+console.log(label, fromServer, client, document.querySelector(".card"));
+</script>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const pulled = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        const serialized = JSON.stringify(pulled);
+        expect(serialized).not.toContain("asp-lsp-css");
+        expect(serialized).not.toContain("asp-lsp-typescript");
+        expect(serialized).not.toContain("asp-lsp-html");
+
+        const cssCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("backg") + "backg".length),
+        });
+        expect(completionLabels(cssCompletions)).toContain("background");
+
+        const jsCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(
+            source,
+            source.indexOf("client", source.indexOf("console.log")) + "client".length,
+          ),
+        });
+        expect(completionLabels(jsCompletions)).toContain("clientValue");
+
+        const aspCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("Response.") + "Response.".length),
+        });
+        expect(completionLabels(aspCompletions)).toContain("Write");
+
+        const tagAspCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(
+            source,
+            source.indexOf("Response.", source.indexOf("<input title")) + "Response.".length,
+          ),
+        });
+        expect(completionLabels(tagAspCompletions)).toContain("Write");
+
+        const bareTagAspCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(
+            source,
+            source.indexOf("Response.", source.indexOf("<input <%=")) + "Response.".length,
+          ),
+        });
+        expect(completionLabels(bareTagAspCompletions)).toContain("Write");
+
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: positionAt(source, source.length) },
+        });
+        const serializedInlayHints = JSON.stringify(inlayHints);
+        expect(serializedInlayHints).not.toContain("selectedTier");
+        expect(serializedInlayHints).toContain("tier:");
+
+        let editedSource = notifyRangedReplacement(
+          server,
+          uri,
+          source,
+          2,
+          'const n = "<%=',
+          "const n = <%=",
+        );
+        editedSource = notifyRangedReplacement(
+          server,
+          uri,
+          editedSource,
+          3,
+          "const n = <%=",
+          'const n = "<%=',
+        );
+        const editedInlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: {
+            start: { line: 0, character: 0 },
+            end: positionAt(editedSource, editedSource.length),
+          },
+        });
+        const serializedEditedInlayHints = JSON.stringify(editedInlayHints);
+        expect(serializedEditedInlayHints).not.toContain("selectedTier");
+        expect(serializedEditedInlayHints).toContain("tier:");
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        const selectedTier = positionAt(source, source.indexOf("selectedTier"));
+        expect(
+          decoded.some(
+            (token) =>
+              token.line === selectedTier.line &&
+              token.character === selectedTier.character &&
+              token.tokenType === semanticTokenType.parameter,
+          ),
+        ).toBe(false);
+        expect(
+          decoded.some((token) =>
+            tokenMatches(source, token, "querySelector", semanticTokenType.method),
+          ),
+        ).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("debounces diagnostics after rapid text changes and publishes only the latest version", async () => {
       const server = new RpcServer();
       try {
@@ -1275,7 +1424,7 @@ Response.Write BuildName()
         expect(serializedHover).toContain('"kind":"markdown"');
         expect(serializedHover).toContain("```vbscript");
         expect(serializedHover).toContain("Function BuildName()");
-        expect(serializedHover).toContain("VBScript function.");
+        expect(serializedHover).not.toContain("VBScript function.");
 
         const definition = await server.request("textDocument/definition", {
           textDocument: { uri },
@@ -1482,6 +1631,9 @@ Response.Write Shared▮Title()
     it("returns hover, inlay hints and semantic tokens for implicit VBScript variables", async () => {
       const source = `<%
 a = 1
+currencyValue = CCur(1)
+nullValue = Null
+emptyValue = Empty
 Response.Write a
 %>`;
       const server = new RpcServer();
@@ -1507,13 +1659,23 @@ Response.Write a
           textDocument: { uri },
           position: { line: 1, character: 0 },
         });
-        expect(JSON.stringify(hover)).toContain("Implicit VBScript variable.");
+        expect(JSON.stringify(hover)).toContain("(global) Dim a As Number");
+        expect(JSON.stringify(hover)).not.toContain("Implicit VBScript variable");
+        const currencyHover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("CCur")),
+        });
+        expect(JSON.stringify(currencyHover)).toContain("Function CCur(value) As Currency");
 
         const inlayHints = await server.request("textDocument/inlayHint", {
           textDocument: { uri },
-          range: { start: { line: 0, character: 0 }, end: { line: 4, character: 0 } },
+          range: { start: { line: 0, character: 0 }, end: { line: 7, character: 0 } },
         });
-        expect(JSON.stringify(inlayHints)).toContain("As Number");
+        const serializedInlayHints = JSON.stringify(inlayHints);
+        expect(serializedInlayHints).toContain("As Number");
+        expect(serializedInlayHints).toContain("As Currency");
+        expect(serializedInlayHints).toContain("As Null");
+        expect(serializedInlayHints).toContain("As Empty");
 
         const semanticTokens = await server.request("textDocument/semanticTokens/full", {
           textDocument: { uri },
@@ -1522,7 +1684,7 @@ Response.Write a
         expect(
           decoded.some(
             (token) =>
-              token.line === 2 &&
+              token.line === 5 &&
               token.character === "Response.Write ".length &&
               token.tokenType === semanticTokenType.variable,
           ),
@@ -1530,12 +1692,81 @@ Response.Write a
         expect(
           decoded.some(
             (token) =>
-              token.line === 2 &&
+              token.line === 5 &&
               token.character === 0 &&
               token.tokenType === semanticTokenType.variable &&
               token.tokenModifiers === semanticTokenModifier.library,
           ),
         ).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("returns hover, inlay hints and completions for VBScript union types", async () => {
+      const source = `<%
+Class FirstThing
+  Public SharedName
+  Public OnlyFirst
+End Class
+Class SecondThing
+  Public SharedName
+End Class
+x = 1
+x = "a"
+Dim unknownGlobal
+Function UnknownReturn()
+End Function
+Dim both
+Set both = New FirstThing
+Set both = New SecondThing
+both.SharedName
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/union-vbscript.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("x = 1")),
+        });
+        expect(JSON.stringify(hover)).toContain("(global) Dim x As Number | String");
+        expect(JSON.stringify(hover)).not.toContain("variable (global)");
+
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 20, character: 0 } },
+        });
+        const serializedInlayHints = JSON.stringify(inlayHints);
+        expect(serializedInlayHints).toContain("(global) As Number | String");
+        expect(serializedInlayHints).toContain("(global) As Variant");
+        expect(serializedInlayHints).toContain("As Variant");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("both.SharedName") + "both.".length),
+        });
+        const labels = completionLabels(completions);
+        expect(labels).toContain("SharedName");
+        expect(labels).not.toContain("OnlyFirst");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -1734,6 +1965,8 @@ Response.Write UBound(Array("a", "b"))
           position: positionAt(source, source.indexOf("CStr") + 1),
         });
         expect(JSON.stringify(hover)).toContain("Function CStr(value) As String");
+        expect(JSON.stringify(hover)).toContain("Converts a value to String.");
+        expect(JSON.stringify(hover)).not.toContain("VBScript built-in function.");
 
         const signature = await server.request("textDocument/signatureHelp", {
           textDocument: { uri },
@@ -1994,6 +2227,23 @@ End Sub
         );
         expect(JSON.stringify(inlayHints)).toContain("ByRef");
         expect(JSON.stringify(inlayHints)).toContain("firstName:");
+        const firstNameTypeHintPosition = positionAt(
+          marked.text,
+          marked.text.indexOf("firstName") + "firstName".length,
+        );
+        expect(
+          (
+            inlayHints as Array<{
+              label?: unknown;
+              position?: { line?: unknown; character?: unknown };
+            }>
+          ).some(
+            (hint) =>
+              hint.label === " As Variant" &&
+              hint.position?.line === firstNameTypeHintPosition.line &&
+              hint.position?.character === firstNameTypeHintPosition.character,
+          ),
+        ).toBe(false);
         const resolvedHint = await server.request(
           "inlayHint/resolve",
           (inlayHints as Array<Record<string, unknown>>)[0],
@@ -2473,6 +2723,98 @@ Response.Write Request.QueryString("name")
         expect(serialized).toContain("Dim extractedValue");
         expect(serialized).toContain('extractedValue = Request.QueryString(\\"name\\")');
         expect(serialized).toContain('"newText":"extractedValue"');
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("returns a VBScript quick fix for initialized Dim declarations", async () => {
+      const source = `<%
+Dim value = 1
+Response.Write value
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-split-dim.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await waitForDiagnosticsContaining(server, "initializers");
+        const syntaxDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+        expect(JSON.stringify(syntaxDiagnostics)).toContain("initializedDeclaration");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, source.indexOf("value")),
+            end: positionAt(source, source.indexOf("value") + "value".length),
+          },
+          context: { diagnostics: syntaxDiagnostics, only: ["quickfix"] },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Split initialized Dim declaration");
+        expect(serialized).toContain("Dim value\\nvalue = 1");
+        expect((actions as unknown[]).length).toBe(1);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("does not return split quick fixes for unsupported declaration syntax errors", async () => {
+      const source = `<%
+Public value = 1
+Dim typed As Integer
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-declaration-syntax.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await waitForDiagnosticsContaining(server, "As types");
+        const syntaxDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+        expect(JSON.stringify(syntaxDiagnostics)).toContain("initializedDeclaration");
+        expect(JSON.stringify(syntaxDiagnostics)).toContain("typedDeclaration");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, source.indexOf("Public value")),
+            end: positionAt(source, source.indexOf("Public value") + "Public value".length),
+          },
+          context: { diagnostics: syntaxDiagnostics, only: ["quickfix"] },
+        });
+        expect(JSON.stringify(actions)).not.toContain("Split initialized Dim declaration");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -3355,6 +3697,7 @@ Response.Write foo
       const marked = markedDocument(`<!-- #include file="missing.inc" -->
 <%
 Option Explicit
+Dim initialized = 1
 Function Save()
 End Function
 Response.Write miss▮ingName
@@ -3382,6 +3725,7 @@ Response.Write miss▮ingName
         const serializedDiagnostics = JSON.stringify(diagnostics.params);
         expect(serializedDiagnostics).toContain("解決できません");
         expect(serializedDiagnostics).toContain("宣言されていません");
+        expect(serializedDiagnostics).toContain("初期値を含められません");
 
         const actions = await server.request("textDocument/codeAction", {
           textDocument: { uri },
@@ -3393,6 +3737,15 @@ Response.Write miss▮ingName
         const serializedActions = JSON.stringify(actions);
         expect(serializedActions).toContain("missingName を Dim で宣言");
         expect(serializedActions).toContain("不足している include missing.inc を作成");
+        const splitDimActions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(marked.text, marked.text.indexOf("initialized")),
+            end: positionAt(marked.text, marked.text.indexOf("initialized") + "initialized".length),
+          },
+          context: { diagnostics: [], only: ["quickfix"] },
+        });
+        expect(JSON.stringify(splitDimActions)).toContain("初期化つき Dim 宣言を分割");
 
         const codeLens = await server.request("textDocument/codeLens", {
           textDocument: { uri },
@@ -3683,6 +4036,28 @@ End If
         expect(fullText).toContain(".x {");
         expect(fullText).toContain("color: red");
 
+        const islandUri = "file:///tmp/format-embedded-asp-islands.asp";
+        const islandSource = `<style>.x{color:<%= themeColor %>;width:<% Response.Write width %>px}</style>
+<div style="color:<%= themeColor %>;background:red"></div>
+<script>const value=<%= serverValue %>;const dynamic=<% Response.Write clientValue %>;</script>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: islandUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: islandSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const islandEdits = await server.request("textDocument/formatting", {
+          textDocument: { uri: islandUri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const islandText = (islandEdits as Array<{ newText?: string }>)[0]?.newText ?? islandSource;
+        expect(islandText).toContain("<%= themeColor %>");
+        expect(islandText).toContain("<% Response.Write width %>");
+        expect(islandText).toContain("<% Response.Write clientValue %>");
+
         const rangeEdits = await server.request("textDocument/rangeFormatting", {
           textDocument: { uri },
           range: {
@@ -3700,6 +4075,166 @@ End If
         const rangeText = JSON.stringify(rangeEdits);
         expect(rangeText).toContain("  Response.Write");
         expect(rangeText).not.toContain("<html>");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("formats embedded languages relative to tag indentation by default", async () => {
+      const source = `<html>
+<body>
+  <style>.x{color:red}</style>
+  <script>
+function greet(){
+console.log("x");
+}
+  </script>
+  <%
+If enabled Then
+Response.Write "ok"
+End If
+  %>
+</body>
+</html>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { format: { indentSize: 2 } } },
+        });
+        const uri = "file:///tmp/format-tag-indent.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const fullEdits = await server.request("textDocument/formatting", {
+          textDocument: { uri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const fullText = (fullEdits as Array<{ newText?: string }>)[0]?.newText ?? source;
+        expect(fullText).toContain(`  <style>
+    .x {
+      color: red
+    }
+  </style>`);
+        expect(fullText).toContain(`  <script>
+    function greet() {
+      console.log("x");
+    }
+  </script>`);
+        expect(fullText).toContain(`  <%
+  If enabled Then
+    Response.Write "ok"
+  End If
+  %>`);
+
+        const rangeEdits = await server.request("textDocument/rangeFormatting", {
+          textDocument: { uri },
+          range: {
+            start: { line: 2, character: 0 },
+            end: { line: 3, character: 0 },
+          },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const rangeText = JSON.stringify(rangeEdits);
+        expect(rangeText).toContain(".x {");
+        expect(rangeText).not.toContain("<html>");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("can ignore embedded tag indentation per language", async () => {
+      const source = `<html>
+<body>
+  <style>.x{color:red}</style>
+  <script>
+function greet(){
+console.log("x");
+}
+  </script>
+  <%
+If enabled Then
+Response.Write "ok"
+End If
+  %>
+</body>
+</html>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+
+        const formatWithSettings = async (uri: string, format: Record<string, unknown>) => {
+          server.notify("workspace/didChangeConfiguration", {
+            settings: { aspLsp: { format: { indentSize: 2, ...format } } },
+          });
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri,
+              languageId: "classic-asp",
+              version: 1,
+              text: source,
+            },
+          });
+          await server.waitForNotification("textDocument/publishDiagnostics");
+          const edits = await server.request("textDocument/formatting", {
+            textDocument: { uri },
+            options: { tabSize: 2, insertSpaces: true },
+          });
+          return (edits as Array<{ newText?: string }>)[0]?.newText ?? source;
+        };
+
+        const cssIgnored = await formatWithSettings("file:///tmp/format-ignore-css.asp", {
+          ignoreCssTagIndent: true,
+        });
+        expect(cssIgnored).toContain(`  <style>
+.x {`);
+        expect(cssIgnored).toContain(`  <script>
+    function greet() {`);
+        expect(cssIgnored).toContain(`  <%
+  If enabled Then`);
+
+        const jsIgnored = await formatWithSettings("file:///tmp/format-ignore-js.asp", {
+          ignoreJavaScriptTagIndent: true,
+        });
+        expect(jsIgnored).toContain(`  <style>
+    .x {`);
+        expect(jsIgnored).toContain(`  <script>
+function greet() {`);
+        expect(jsIgnored).toContain(`  <%
+  If enabled Then`);
+
+        const vbscriptIgnored = await formatWithSettings("file:///tmp/format-ignore-vbs.asp", {
+          ignoreVbscriptTagIndent: true,
+        });
+        expect(vbscriptIgnored).toContain(`  <style>
+    .x {`);
+        expect(vbscriptIgnored).toContain(`  <script>
+    function greet() {`);
+        expect(vbscriptIgnored).toContain(`  <%
+If enabled Then`);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

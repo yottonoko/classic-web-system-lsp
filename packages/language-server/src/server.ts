@@ -84,6 +84,7 @@ import {
   getVbscriptSignatureHelp,
   getVbscriptTypeDefinition,
   parseAspDocument,
+  parseVbscriptTypeRef,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
   updateAspParsedDocument,
@@ -1785,18 +1786,28 @@ function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
   if (cached.analysis?.htmlDiagnostics?.key === key) {
     return cached.analysis.htmlDiagnostics.items;
   }
+  const htmlDoc = toTextDocument(virtual);
   const scanner = htmlService.createScanner(virtual.text);
   const diagnostics: Diagnostic[] = [];
   let token = scanner.scan();
   while (token !== TokenType.EOS) {
     const error = scanner.getTokenError();
     if (error) {
+      const startOffset = scanner.getTokenOffset();
+      const endOffset = scanner.getTokenEnd();
+      const range = virtualRangeStaysWithinSegment(virtual, startOffset, endOffset)
+        ? sourceRangeFromVirtualRange(virtual, {
+            start: htmlDoc.positionAt(startOffset),
+            end: htmlDoc.positionAt(endOffset),
+          })
+        : undefined;
+      if (!range) {
+        token = scanner.scan();
+        continue;
+      }
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
-        range: {
-          start: cached.source.positionAt(scanner.getTokenOffset()),
-          end: cached.source.positionAt(scanner.getTokenEnd()),
-        },
+        range,
         message: error,
         source: "asp-lsp-html",
       });
@@ -2638,40 +2649,52 @@ function jsInlayHints(cached: CachedDocument, range: Range): InlayHint[] {
   return jsVirtualDocuments(cached).flatMap((virtual) => {
     const sourceStart = cached.source.offsetAt(range.start);
     const sourceEnd = cached.source.offsetAt(range.end);
-    const segment = virtual.sourceMap.segments.find(
+    const segments = virtual.sourceMap.segments.filter(
       (candidate) => candidate.sourceStart < sourceEnd && candidate.sourceEnd > sourceStart,
     );
-    if (!segment) {
-      return [];
-    }
-    const start = segment.virtualStart + Math.max(0, sourceStart - segment.sourceStart);
-    const end = segment.virtualStart + Math.min(segment.sourceEnd, sourceEnd) - segment.sourceStart;
-    if (start === undefined || end === undefined || start >= end) {
+    if (segments.length === 0) {
       return [];
     }
     const project = createJsLanguageService(virtual, settings);
-    return project.service
-      .provideInlayHints(
-        jsVirtualFileName(virtual.uri),
-        { start, length: end - start },
-        {
-          includeInlayParameterNameHints: hints?.parameterNames === false ? "none" : "all",
-          includeInlayVariableTypeHints: hints?.variableTypes !== false,
-          includeInlayFunctionLikeReturnTypeHints: hints?.functionReturnTypes !== false,
-          includeInlayPropertyDeclarationTypeHints: hints?.variableTypes !== false,
-        },
-      )
-      .map((hint): InlayHint | undefined => {
-        const sourcePosition = virtual.sourceMap.toSourcePosition(
-          toTextDocument(virtual).positionAt(hint.position),
+    const seen = new Set<string>();
+    return segments
+      .flatMap((segment) => {
+        const start = segment.virtualStart + Math.max(0, sourceStart - segment.sourceStart);
+        const end =
+          segment.virtualStart + Math.min(segment.sourceEnd, sourceEnd) - segment.sourceStart;
+        if (start >= end) {
+          return [];
+        }
+        return project.service.provideInlayHints(
+          jsVirtualFileName(virtual.uri),
+          { start, length: end - start },
+          {
+            includeInlayParameterNameHints: hints?.parameterNames === false ? "none" : "all",
+            includeInlayVariableTypeHints: hints?.variableTypes !== false,
+            includeInlayFunctionLikeReturnTypeHints: hints?.functionReturnTypes !== false,
+            includeInlayPropertyDeclarationTypeHints: hints?.variableTypes !== false,
+          },
         );
+      })
+      .map((hint): InlayHint | undefined => {
+        const sourceOffset = sourceOffsetFromVirtualPoint(virtual, hint.position);
+        const sourcePosition =
+          sourceOffset === undefined ? undefined : cached.source.positionAt(sourceOffset);
+        if (!sourcePosition || !isJavaScriptPosition(cached, sourcePosition)) {
+          return undefined;
+        }
         const label =
           hint.text ||
           hint.displayParts
             ?.map((part) => part.text)
             .join("")
             .trim();
-        return sourcePosition && label ? { position: sourcePosition, label } : undefined;
+        const key = `${sourcePosition.line}:${sourcePosition.character}:${label}`;
+        if (!label || seen.has(key)) {
+          return undefined;
+        }
+        seen.add(key);
+        return { position: sourcePosition, label };
       })
       .filter((hint): hint is InlayHint => Boolean(hint));
   });
@@ -3510,14 +3533,15 @@ function configuredVbscriptGlobals(cached: CachedDocument, settings: AspSettings
     if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name) || !typeName) {
       return [];
     }
+    const type = parseVbscriptTypeRef(typeName);
     return [
       {
         name,
         kind: typeof value === "object" && value.kind === "constant" ? "constant" : "variable",
         range,
         sourceUri: `${cached.source.uri}#runtime-global`,
-        typeName,
-        type: { name: typeName, object: true },
+        typeName: type.name,
+        type,
       } satisfies VbSymbol,
     ];
   });
@@ -3907,7 +3931,11 @@ function tsDiagnosticToLsp(
   const end = virtualDoc.positionAt(diagnostic.start + diagnostic.length);
   const sourceStart = virtual.sourceMap.toSourcePosition(start);
   const sourceEnd = virtual.sourceMap.toSourcePosition(end);
-  if (!sourceStart || !sourceEnd) {
+  if (
+    !sourceStart ||
+    !sourceEnd ||
+    !virtualRangeStaysWithinSegment(virtual, diagnostic.start, diagnostic.start + diagnostic.length)
+  ) {
     return undefined;
   }
   return {
@@ -3921,6 +3949,17 @@ function tsDiagnosticToLsp(
     code: diagnostic.code,
     source: override.source ?? "asp-lsp-typescript",
   };
+}
+
+function virtualRangeStaysWithinSegment(
+  virtual: VirtualDocument,
+  start: number,
+  end: number,
+): boolean {
+  const lastOffset = Math.max(start, end - 1);
+  return virtual.sourceMap.segments.some(
+    (segment) => start >= segment.virtualStart && lastOffset < segment.virtualEnd,
+  );
 }
 
 function tsDiagnosticKey(diagnostic: ts.Diagnostic): string {
@@ -4521,6 +4560,9 @@ function normalizeFormatSettings(
     uppercaseKeywords: record.uppercaseKeywords === true,
     alignAssignments: record.alignAssignments === true,
     onSave: record.onSave === true,
+    ignoreVbscriptTagIndent: record.ignoreVbscriptTagIndent === true,
+    ignoreCssTagIndent: record.ignoreCssTagIndent === true,
+    ignoreJavaScriptTagIndent: record.ignoreJavaScriptTagIndent === true,
   };
 }
 
@@ -4703,6 +4745,7 @@ function cssFormattingEdits(
       (region) =>
         region.language === "css" && region.contentEnd > spanStart && region.contentStart < spanEnd,
     )
+    .filter((region) => !regionHasNestedAsp(parsed, region))
     .flatMap((region) => formatCssRegion(text, region, options, spanStart, spanEnd));
 }
 
@@ -4720,20 +4763,40 @@ function formatCssRegion(
   if (localStart >= localEnd) {
     return [];
   }
-  return cssService
-    .format(
-      doc,
-      { start: doc.positionAt(localStart), end: doc.positionAt(localEnd) },
+  const edits = cssService.format(
+    doc,
+    { start: doc.positionAt(localStart), end: doc.positionAt(localEnd) },
+    {
+      tabSize: options.indentSize ?? options.tabSize,
+      insertSpaces: (options.indentStyle ?? (options.insertSpaces ? "space" : "tab")) !== "tab",
+    },
+  );
+  const offsetEdits = edits.map((edit) => ({
+    start: offsetAtText(content, edit.range.start),
+    end: offsetAtText(content, edit.range.end),
+    newText: edit.newText,
+  }));
+  if (region.kind === "style" && localStart === 0 && localEnd === content.length) {
+    return [
       {
-        tabSize: options.indentSize ?? options.tabSize,
-        insertSpaces: (options.indentStyle ?? (options.insertSpaces ? "space" : "tab")) !== "tab",
+        start: region.contentStart,
+        end: region.contentEnd,
+        newText: wrapEmbeddedElementContent(
+          text,
+          region,
+          options,
+          applyOffsetEdits(content, offsetEdits),
+          options.ignoreCssTagIndent === true,
+          false,
+        ),
       },
-    )
-    .map((edit) => ({
-      start: region.contentStart + offsetAtText(content, edit.range.start),
-      end: region.contentStart + offsetAtText(content, edit.range.end),
-      newText: edit.newText,
-    }));
+    ];
+  }
+  return offsetEdits.map((edit) => ({
+    start: region.contentStart + edit.start,
+    end: region.contentStart + edit.end,
+    newText: edit.newText,
+  }));
 }
 
 function javaScriptFormattingEdits(
@@ -4750,7 +4813,20 @@ function javaScriptFormattingEdits(
         region.contentEnd > spanStart &&
         region.contentStart < spanEnd,
     )
+    .filter((region) => !regionHasNestedAsp(parsed, region))
     .flatMap((region) => formatJavaScriptRegion(text, region, options, spanStart, spanEnd));
+}
+
+function regionHasNestedAsp(parsed: AspParsedDocument, owner: AspRegion): boolean {
+  return parsed.regions.some(
+    (region) =>
+      region !== owner &&
+      (region.kind === "asp-block" ||
+        region.kind === "asp-expression" ||
+        region.kind === "asp-directive") &&
+      region.start >= owner.contentStart &&
+      region.end <= owner.contentEnd,
+  );
 }
 
 function formatJavaScriptRegion(
@@ -4766,18 +4842,48 @@ function formatJavaScriptRegion(
   if (localStart >= localEnd) {
     return [];
   }
-  const changes =
-    localStart === 0 && localEnd === content.length
-      ? getJavaScriptFormattingService(content).getFormattingEditsForDocument(
-          "__asp_lsp_format.js",
-          tsFormatOptions(options),
-        )
-      : getJavaScriptFormattingService(content).getFormattingEditsForRange(
-          "__asp_lsp_format.js",
-          localStart,
-          localEnd,
-          tsFormatOptions(options),
-        );
+  const formatOptions = tsFormatOptions(
+    options,
+    embeddedBodyBaseIndentSize(text, region, options, options.ignoreJavaScriptTagIndent === true),
+  );
+  if (localStart === 0 && localEnd === content.length) {
+    const trimmedContent = content.trim();
+    if (trimmedContent.length === 0) {
+      return [];
+    }
+    const changes = getJavaScriptFormattingService(trimmedContent).getFormattingEditsForDocument(
+      "__asp_lsp_format.js",
+      formatOptions,
+    );
+    const formatted = applyOffsetEdits(
+      trimmedContent,
+      changes.map((change) => ({
+        start: change.span.start,
+        end: change.span.start + change.span.length,
+        newText: change.newText,
+      })),
+    );
+    return [
+      {
+        start: region.contentStart,
+        end: region.contentEnd,
+        newText: wrapEmbeddedElementContent(
+          text,
+          region,
+          options,
+          formatted,
+          options.ignoreJavaScriptTagIndent === true,
+          true,
+        ),
+      },
+    ];
+  }
+  const changes = getJavaScriptFormattingService(content).getFormattingEditsForRange(
+    "__asp_lsp_format.js",
+    localStart,
+    localEnd,
+    formatOptions,
+  );
   return changes.map((change) => ({
     start: region.contentStart + change.span.start,
     end: region.contentStart + change.span.start + change.span.length,
@@ -4806,9 +4912,13 @@ function getJavaScriptFormattingService(text: string): ts.LanguageService {
   });
 }
 
-function tsFormatOptions(options: AspFormattingOptions): ts.FormatCodeSettings {
+function tsFormatOptions(
+  options: AspFormattingOptions,
+  baseIndentSize?: number,
+): ts.FormatCodeSettings {
   const indentStyle = options.indentStyle ?? (options.insertSpaces ? "space" : "tab");
   return {
+    baseIndentSize,
     indentSize: options.indentSize ?? options.tabSize,
     tabSize: options.tabSize,
     convertTabsToSpaces: indentStyle !== "tab",
@@ -4818,6 +4928,70 @@ function tsFormatOptions(options: AspFormattingOptions): ts.FormatCodeSettings {
 
 function isJavaScriptLikeRegion(region: AspRegion): boolean {
   return region.language === "javascript" || region.language === "jscript";
+}
+
+function wrapEmbeddedElementContent(
+  text: string,
+  region: AspRegion,
+  options: AspFormattingOptions,
+  content: string,
+  ignoreTagIndent: boolean,
+  contentAlreadyIndented: boolean,
+): string {
+  const trimmed = contentAlreadyIndented ? trimOuterBlankLines(content) : content.trim();
+  if (trimmed.length === 0) {
+    return "";
+  }
+  const tagLevel = ignoreTagIndent ? 0 : leadingIndentLevel(text, region.start, options);
+  const tagIndent = indentUnit(options).repeat(tagLevel);
+  const body =
+    contentAlreadyIndented || ignoreTagIndent
+      ? trimmed
+      : indentLines(trimmed, indentUnit(options).repeat(tagLevel + 1));
+  return `\n${body}\n${tagIndent}`;
+}
+
+function trimOuterBlankLines(text: string): string {
+  return text
+    .replace(/^\s*\r?\n/, "")
+    .replace(/\r?\n\s*$/, "")
+    .trimEnd();
+}
+
+function embeddedBodyBaseIndentSize(
+  text: string,
+  region: AspRegion,
+  options: AspFormattingOptions,
+  ignoreTagIndent: boolean,
+): number {
+  if (ignoreTagIndent) {
+    return 0;
+  }
+  return leadingIndentWidth(text, region.start, options) + (options.indentSize ?? options.tabSize);
+}
+
+function indentLines(text: string, indent: string): string {
+  return text
+    .split("\n")
+    .map((line) => (line.length === 0 ? "" : `${indent}${line}`))
+    .join("\n");
+}
+
+function leadingIndentLevel(text: string, offset: number, options: AspFormattingOptions): number {
+  return Math.floor(
+    leadingIndentWidth(text, offset, options) / (options.indentSize ?? options.tabSize),
+  );
+}
+
+function leadingIndentWidth(text: string, offset: number, options: AspFormattingOptions): number {
+  const lineStart = lineStartOffset(text, offset);
+  const indent = text.slice(lineStart, offset).match(/^[\t ]*/)?.[0] ?? "";
+  return [...indent].reduce((width, char) => width + (char === "\t" ? options.tabSize : 1), 0);
+}
+
+function indentUnit(options: AspFormattingOptions): string {
+  const style = options.indentStyle ?? (options.insertSpaces ? "space" : "tab");
+  return style === "tab" ? "\t" : " ".repeat(options.indentSize ?? options.tabSize);
 }
 
 function applyTextEdits(text: string, edits: TextEdit[]): string {
@@ -5401,6 +5575,13 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
   if (diagnostic.source === "asp-lsp-vbscript-naming") {
     return vbscriptNamingDiagnosticActions(cached, diagnostic);
   }
+  if (
+    diagnostic.source === "asp-lsp-vbscript-syntax" &&
+    diagnostic.code === "initializedDeclaration"
+  ) {
+    const action = splitInitializedDimDeclarationAction(cached, diagnostic.range, diagnostic);
+    return action ? [action] : [];
+  }
   if (diagnostic.source === "asp-lsp-include") {
     const include = cached.parsed.includes.find(
       (candidate) =>
@@ -5810,20 +5991,68 @@ function vbscriptCodeActions(
   range: Range,
   context: CodeActionContext,
 ): CodeAction[] {
+  const actions: CodeAction[] = [];
+  if (codeActionAllows(context, CodeActionKind.QuickFix)) {
+    const hasInitializedDimDiagnostic = context.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.source === "asp-lsp-vbscript-syntax" &&
+        diagnostic.code === "initializedDeclaration",
+    );
+    if (!hasInitializedDimDiagnostic) {
+      const splitDim = splitInitializedDimDeclarationAction(cached, range);
+      if (splitDim) {
+        actions.push(splitDim);
+      }
+    }
+  }
   if (!codeActionAllows(context, vbscriptExtractVariableKind)) {
-    return [];
+    return actions;
   }
   const edit = extractVbscriptVariableEdit(cached, range);
   if (!edit) {
-    return [];
+    return actions;
   }
-  return [
-    {
-      title: localizerForUri(cached.source.uri).t("server.refactor.extractVbscriptVariable"),
-      kind: vbscriptExtractVariableKind,
-      edit,
+  actions.push({
+    title: localizerForUri(cached.source.uri).t("server.refactor.extractVbscriptVariable"),
+    kind: vbscriptExtractVariableKind,
+    edit,
+  });
+  return actions;
+}
+
+function splitInitializedDimDeclarationAction(
+  cached: CachedDocument,
+  range: Range,
+  diagnostic?: Diagnostic,
+): CodeAction | undefined {
+  const line = range.start.line;
+  if (range.end.line !== line) {
+    return undefined;
+  }
+  const text = lineText(cached.source, line);
+  const match = /^(\s*)Dim\s+([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/i.exec(text);
+  if (!match || /[_:]/.test(text) || !isVbscriptRange(cached, lineRange(cached.source, line))) {
+    return undefined;
+  }
+  const [, indent, name, value] = match;
+  if (!name || !value.trim()) {
+    return undefined;
+  }
+  return {
+    title: localizerForUri(cached.source.uri).t("server.quickfix.splitInitializedDim"),
+    kind: CodeActionKind.QuickFix,
+    diagnostics: diagnostic ? [diagnostic] : undefined,
+    edit: {
+      changes: {
+        [cached.source.uri]: [
+          {
+            range: lineRange(cached.source, line),
+            newText: `${indent}Dim ${name}\n${indent}${name} = ${value.trim()}`,
+          },
+        ],
+      },
     },
-  ];
+  };
 }
 
 function extractVbscriptVariableEdit(
@@ -6277,6 +6506,13 @@ function lineText(document: TextDocument, line: number): string {
     .replace(/\r?\n$/, "");
 }
 
+function lineRange(document: TextDocument, line: number): Range {
+  return {
+    start: { line, character: 0 },
+    end: { line, character: lineText(document, line).length },
+  };
+}
+
 function textInRange(document: TextDocument, range: Range): string {
   return document.getText(range);
 }
@@ -6537,6 +6773,7 @@ function addEmbeddedSemanticTokens(
       addVirtualWordToken(
         tokens,
         cached.source,
+        cached,
         html,
         match.index + match[0].lastIndexOf(match[1]),
         match[1].length,
@@ -6553,6 +6790,7 @@ function addEmbeddedSemanticTokens(
         addVirtualWordToken(
           tokens,
           cached.source,
+          cached,
           css,
           match.index,
           match[1].length,
@@ -6590,6 +6828,7 @@ function addJavaScriptSemanticTokens(
     addVirtualWordToken(
       tokens,
       cached.source,
+      cached,
       virtual,
       spans[index],
       spans[index + 1],
@@ -6659,6 +6898,7 @@ function jsSemanticTokenModifiers(modifierSet: number): string[] | undefined {
 function addVirtualWordToken(
   tokens: SemanticTokenData[],
   document: TextDocument,
+  cached: CachedDocument,
   virtual: VirtualDocument,
   virtualOffset: number,
   length: number,
@@ -6668,10 +6908,48 @@ function addVirtualWordToken(
   tokenModifiers?: readonly string[],
 ): void {
   const sourceOffset = virtual.sourceMap.toSourceOffset(virtualOffset);
-  if (sourceOffset === undefined || sourceOffset < rangeStart || sourceOffset > rangeEnd) {
+  const sourceEndOffset = virtual.sourceMap.toSourceOffset(virtualOffset + length - 1);
+  if (
+    !virtualRangeStaysWithinSegment(virtual, virtualOffset, virtualOffset + length) ||
+    sourceOffset === undefined ||
+    sourceEndOffset === undefined ||
+    sourceOffset < rangeStart ||
+    sourceOffset > rangeEnd ||
+    !isVirtualTokenSourceRegion(cached, sourceOffset, sourceEndOffset, virtual.languageId)
+  ) {
     return;
   }
-  addSemanticToken(tokens, document, sourceOffset, length, tokenType, tokenModifiers);
+  addSemanticToken(
+    tokens,
+    document,
+    sourceOffset,
+    sourceEndOffset - sourceOffset + 1,
+    tokenType,
+    tokenModifiers,
+  );
+}
+
+function isVirtualTokenSourceRegion(
+  cached: CachedDocument,
+  sourceStart: number,
+  sourceEnd: number,
+  languageId: VirtualDocument["languageId"],
+): boolean {
+  const startRegion = findRegionAt(cached.parsed, sourceStart);
+  const endRegion = findRegionAt(cached.parsed, sourceEnd);
+  return Boolean(
+    startRegion && endRegion && startRegion === endRegion && startRegion.language === languageId,
+  );
+}
+
+function sourceOffsetFromVirtualPoint(
+  virtual: VirtualDocument,
+  virtualOffset: number,
+): number | undefined {
+  const segment = virtual.sourceMap.segments.find(
+    (candidate) => virtualOffset >= candidate.virtualStart && virtualOffset < candidate.virtualEnd,
+  );
+  return segment ? segment.sourceStart + (virtualOffset - segment.virtualStart) : undefined;
 }
 
 function addSemanticToken(

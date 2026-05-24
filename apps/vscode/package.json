@@ -85,6 +85,17 @@
         }
       },
       {
+        "scopeName": "classic-asp.tag-injection",
+        "path": "./syntaxes/classic-asp-tag-injection.tmLanguage.json",
+        "injectTo": [
+          "text.html.classic-asp"
+        ],
+        "embeddedLanguages": {
+          "source.vbscript.embedded.asp": "vbscript",
+          "source.vbscript.embedded.asp.expression": "vbscript"
+        }
+      },
+      {
         "language": "vbscript",
         "scopeName": "source.vbscript",
         "path": "./syntaxes/vbscript.tmLanguage.json"
@@ -271,6 +282,30 @@
           "type": "boolean",
           "default": false,
           "description": "%configuration.format.alignAssignments.description%"
+        },
+        "aspLsp.format.ignoreVbscriptTagIndent": {
+          "type": "boolean",
+          "default": false,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.ignoreVbscriptTagIndent.description%"
+        },
+        "aspLsp.format.ignoreCssTagIndent": {
+          "type": "boolean",
+          "default": false,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.ignoreCssTagIndent.description%"
+        },
+        "aspLsp.format.ignoreJavaScriptTagIndent": {
+          "type": "boolean",
+          "default": false,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.ignoreJavaScriptTagIndent.description%"
         },
         "aspLsp.format.onSave": {
           "type": "boolean",

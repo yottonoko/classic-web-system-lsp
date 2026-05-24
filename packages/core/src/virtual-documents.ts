@@ -54,12 +54,7 @@ export function buildVirtualDocument(
     const start = text.length + prefix.length;
     const content = maskNestedRegions(sourceText, region, allRegions, languageId);
     text += prefix + content + suffix;
-    segments.push({
-      virtualStart: start,
-      virtualEnd: start + content.length,
-      sourceStart: region.contentStart,
-      sourceEnd: region.contentEnd,
-    });
+    segments.push(...sourceMapSegmentsForRegion(region, allRegions, start));
   }
   return {
     uri: `${uri}.${languageId}.virtual`,
@@ -67,6 +62,54 @@ export function buildVirtualDocument(
     text,
     sourceMap: createSourceMap(sourceText, text, segments),
   };
+}
+
+function sourceMapSegmentsForRegion(
+  owner: AspRegion,
+  allRegions: AspRegion[],
+  virtualStart: number,
+): SourceMapSegment[] {
+  const holes = allRegions
+    .filter((nested) => isNestedAspRegion(owner, nested))
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const segments: SourceMapSegment[] = [];
+  let cursor = owner.contentStart;
+  for (const hole of holes) {
+    if (cursor < hole.start) {
+      segments.push(sourceMapSegment(owner, virtualStart, cursor, hole.start));
+    }
+    cursor = Math.max(cursor, hole.end);
+  }
+  if (cursor < owner.contentEnd) {
+    segments.push(sourceMapSegment(owner, virtualStart, cursor, owner.contentEnd));
+  }
+  return segments;
+}
+
+function sourceMapSegment(
+  owner: AspRegion,
+  virtualStart: number,
+  sourceStart: number,
+  sourceEnd: number,
+): SourceMapSegment {
+  const offset = sourceStart - owner.contentStart;
+  return {
+    virtualStart: virtualStart + offset,
+    virtualEnd: virtualStart + offset + (sourceEnd - sourceStart),
+    sourceStart,
+    sourceEnd,
+  };
+}
+
+function isNestedAspRegion(owner: AspRegion, nested: AspRegion): boolean {
+  return (
+    nested !== owner &&
+    (nested.kind === "asp-block" ||
+      nested.kind === "asp-expression" ||
+      nested.kind === "asp-directive") &&
+    nested.start >= owner.contentStart &&
+    nested.end <= owner.contentEnd
+  );
 }
 
 function maskNestedRegions(
@@ -87,13 +130,89 @@ function maskNestedRegions(
     }
     const start = Math.max(0, nested.start - owner.contentStart);
     const end = Math.min(chars.length, nested.end - owner.contentStart);
-    for (let index = start; index < end; index += 1) {
-      if (chars[index] !== "\n" && chars[index] !== "\r") {
-        chars[index] = " ";
-      }
-    }
+    const mask = nestedRegionMask(sourceText, owner, nested, languageId).split("");
+    chars.splice(start, end - start, ...mask);
   }
   return chars.join("");
+}
+
+function nestedRegionMask(
+  sourceText: string,
+  owner: AspRegion,
+  nested: AspRegion,
+  languageId: AspEmbeddedLanguage,
+): string {
+  if (
+    nested.kind !== "asp-block" &&
+    nested.kind !== "asp-expression" &&
+    nested.kind !== "asp-directive"
+  ) {
+    return preserveLineEndings(sourceText.slice(nested.start, nested.end), " ");
+  }
+  if (languageId === "css") {
+    return preserveLineEndings(sourceText.slice(nested.start, nested.end), "x");
+  }
+  if (languageId === "javascript" || languageId === "jscript") {
+    return javascriptAspMask(sourceText, owner, nested);
+  }
+  return preserveLineEndings(sourceText.slice(nested.start, nested.end), " ");
+}
+
+function javascriptAspMask(sourceText: string, owner: AspRegion, nested: AspRegion): string {
+  if (
+    nested.kind === "asp-block" &&
+    !javascriptBlockNeedsValuePlaceholder(sourceText, owner, nested)
+  ) {
+    return preserveLineEndings(sourceText.slice(nested.start, nested.end), " ");
+  }
+  return firstValuePlaceholder(sourceText.slice(nested.start, nested.end), "0");
+}
+
+function javascriptBlockNeedsValuePlaceholder(
+  sourceText: string,
+  owner: AspRegion,
+  nested: AspRegion,
+): boolean {
+  const previous = previousSignificantChar(sourceText, owner.contentStart, nested.start);
+  return previous !== undefined && /=|\(|\[|,|:|\?|!|~|\+|-|\*|\/|%|&|\||\^|<|>/.test(previous);
+}
+
+function previousSignificantChar(
+  sourceText: string,
+  start: number,
+  end: number,
+): string | undefined {
+  for (let index = end - 1; index >= start; index -= 1) {
+    const char = sourceText[index];
+    if (char && !/\s/.test(char)) {
+      return char;
+    }
+  }
+  return undefined;
+}
+
+function firstValuePlaceholder(text: string, valueChar: string): string {
+  let placed = false;
+  return text
+    .split("")
+    .map((char) => {
+      if (char === "\n" || char === "\r") {
+        return char;
+      }
+      if (!placed) {
+        placed = true;
+        return valueChar;
+      }
+      return " ";
+    })
+    .join("");
+}
+
+function preserveLineEndings(text: string, fill: string): string {
+  return text
+    .split("")
+    .map((char) => (char === "\n" || char === "\r" ? char : fill))
+    .join("");
 }
 
 function buildMaskedDocument(

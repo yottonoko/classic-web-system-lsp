@@ -93,15 +93,21 @@ function formatRegion(
     if (!content.includes("\n") && !content.includes("\r")) {
       return `<% ${formatVbscriptLine(content.trim(), options)} %>`;
     }
-    return `<%\n${formatVbscriptBlock(content, options, leadingIndent(parsed.text, region.start))}\n%>`;
+    const baseIndentLevel = vbscriptTagIndentLevel(parsed.text, region, options);
+    return `<%\n${formatVbscriptBlock(content, options, baseIndentLevel)}\n${indentUnit(options).repeat(baseIndentLevel)}%>`;
   }
   const before = parsed.text.slice(region.start, region.contentStart);
   const after = parsed.text.slice(region.contentEnd, region.end);
-  return `${before}${formatVbscriptBlock(
-    parsed.text.slice(region.contentStart, region.contentEnd),
+  const content = parsed.text.slice(region.contentStart, region.contentEnd);
+  if (!content.includes("\n") && !content.includes("\r")) {
+    return `${before}${formatVbscriptLine(content.trim(), options)}${after}`;
+  }
+  const baseIndentLevel = vbscriptTagIndentLevel(parsed.text, region, options);
+  return `${before}\n${formatVbscriptBlock(
+    content,
     options,
-    leadingIndent(parsed.text, region.start) + 1,
-  )}${after}`;
+    baseIndentLevel + (options.ignoreVbscriptTagIndent === true ? 0 : 1),
+  )}\n${indentUnit(options).repeat(baseIndentLevel)}${after}`;
 }
 
 function formatVbscriptBlock(
@@ -116,19 +122,40 @@ function formatVbscriptBlock(
     .split(/\r?\n/);
   let indentLevel = baseIndentLevel;
   const formatted: string[] = [];
+  const selectIndentStack: number[] = [];
+  let previousSignificantLine: string | undefined;
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.length === 0) {
       formatted.push("");
       continue;
     }
-    if (dedentsBeforeLine(trimmed)) {
+    const continuesPreviousLine =
+      previousSignificantLine !== undefined && isLineContinuation(previousSignificantLine);
+    if (!continuesPreviousLine && /^End\s+Select\b/i.test(trimmed)) {
+      indentLevel = selectIndentStack.pop() ?? Math.max(baseIndentLevel, indentLevel - 1);
+    } else if (!continuesPreviousLine && isCaseLine(trimmed)) {
+      const selectIndent = selectIndentStack.at(-1);
+      if (selectIndent !== undefined) {
+        indentLevel = previousSignificantLine
+          ? selectIndent + 1
+          : Math.max(baseIndentLevel, indentLevel);
+      }
+    } else if (!continuesPreviousLine && dedentsBeforeLine(trimmed)) {
       indentLevel = Math.max(baseIndentLevel, indentLevel - 1);
     }
-    formatted.push(`${unit.repeat(indentLevel)}${formatVbscriptLine(trimmed, options)}`);
-    if (indentsAfterLine(trimmed)) {
+    const lineIndentLevel = indentLevel + (continuesPreviousLine ? 1 : 0);
+    const formattedLine = formatVbscriptLine(trimmed, options);
+    formatted.push(`${unit.repeat(lineIndentLevel)}${formattedLine}`);
+    if (/^Select\b/i.test(trimmed)) {
+      selectIndentStack.push(indentLevel);
+      indentLevel += 1;
+    } else if (isCaseLine(trimmed)) {
+      indentLevel += 1;
+    } else if (indentsAfterLine(trimmed)) {
       indentLevel += 1;
     }
+    previousSignificantLine = formattedLine;
   }
   return options.alignAssignments ? alignAssignments(formatted).join("\n") : formatted.join("\n");
 }
@@ -194,12 +221,18 @@ function dedentsBeforeLine(line: string): boolean {
 
 function indentsAfterLine(line: string): boolean {
   return (
-    (/^(Class|Sub|Function|Property\b.*\b(Get|Let|Set)|With|For\b|Do\b|While\b|Select\b)/i.test(
-      line,
-    ) ||
+    (/^(Class|Sub|Function|Property\b.*\b(Get|Let|Set)|With|For\b|Do\b|While\b)/i.test(line) ||
       /\bThen$/i.test(line)) &&
     !/^End\b/i.test(line)
   );
+}
+
+function isCaseLine(line: string): boolean {
+  return /^Case\b/i.test(line);
+}
+
+function isLineContinuation(line: string): boolean {
+  return /(?:^|\s)_\s*(?:'.*)?$/.test(line);
 }
 
 function oneLine(text: string): string {
@@ -250,14 +283,33 @@ function alignAssignments(lines: string[]): string[] {
   return result;
 }
 
-function leadingIndent(text: string, offset: number): number {
+function vbscriptTagIndentLevel(
+  text: string,
+  region: AspRegion,
+  options: AspFormattingOptions,
+): number {
+  return options.ignoreVbscriptTagIndent === true
+    ? 0
+    : leadingIndentLevel(text, region.start, options);
+}
+
+function leadingIndentLevel(text: string, offset: number, options: AspFormattingOptions): number {
   const lineStart = lineStartOffset(text, offset);
-  return Math.floor(
-    (text
-      .slice(lineStart, offset)
-      .match(/^[\t ]*/)?.[0]
-      .replaceAll("\t", "  ").length ?? 0) / 2,
-  );
+  const indent = text.slice(lineStart, offset).match(/^[\t ]*/)?.[0] ?? "";
+  return Math.floor(indentWidth(indent, options) / indentSize(options));
+}
+
+function indentSize(options: AspFormattingOptions): number {
+  return options.indentSize ?? options.tabSize;
+}
+
+function indentWidth(indent: string, options: AspFormattingOptions): number {
+  const tabSize = options.tabSize;
+  let width = 0;
+  for (const char of indent) {
+    width += char === "\t" ? tabSize : 1;
+  }
+  return width;
 }
 
 function lineStartOffset(text: string, offset: number): number {

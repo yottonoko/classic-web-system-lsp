@@ -30,7 +30,12 @@ describe("VS Code extension package", () => {
       dependencies?: Record<string, string>;
       contributes?: {
         languages?: Array<{ id: string; extensions?: string[] }>;
-        grammars?: Array<{ language?: string; scopeName?: string; path?: string }>;
+        grammars?: Array<{
+          language?: string;
+          scopeName?: string;
+          path?: string;
+          injectTo?: string[];
+        }>;
         configurationDefaults?: {
           "editor.tokenColorCustomizations"?: {
             textMateRules?: Array<{ scope?: string; settings?: Record<string, unknown> }>;
@@ -101,6 +106,9 @@ describe("VS Code extension package", () => {
     for (const setting of [
       "aspLsp.format.indentSize",
       "aspLsp.format.indentStyle",
+      "aspLsp.format.ignoreVbscriptTagIndent",
+      "aspLsp.format.ignoreCssTagIndent",
+      "aspLsp.format.ignoreJavaScriptTagIndent",
       "aspLsp.format.onSave",
     ]) {
       expect(manifest.contributes?.configuration?.properties?.[setting]).toEqual(
@@ -110,6 +118,15 @@ describe("VS Code extension package", () => {
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.format.indentSize"]).toEqual(
       expect.objectContaining({ type: ["number", "null"], default: null, minimum: 1 }),
     );
+    for (const setting of [
+      "aspLsp.format.ignoreVbscriptTagIndent",
+      "aspLsp.format.ignoreCssTagIndent",
+      "aspLsp.format.ignoreJavaScriptTagIndent",
+    ]) {
+      expect(manifest.contributes?.configuration?.properties?.[setting]).toEqual(
+        expect.objectContaining({ type: "boolean", default: false }),
+      );
+    }
     expect(manifest.repository?.url).toContain("github.com/yottonoko/asp-lsp");
     expect(manifest.icon).toBe("assets/icon.png");
     expect(fs.existsSync(manifest.icon ?? "")).toBe(true);
@@ -156,6 +173,14 @@ describe("VS Code extension package", () => {
           grammar.language === "asp-lsp-output" &&
           grammar.scopeName === "source.asp-lsp-output" &&
           grammar.path === "./syntaxes/asp-lsp-output.tmLanguage.json",
+      ),
+    ).toBe(true);
+    expect(
+      manifest.contributes?.grammars?.some(
+        (grammar) =>
+          grammar.scopeName === "classic-asp.tag-injection" &&
+          grammar.path === "./syntaxes/classic-asp-tag-injection.tmLanguage.json" &&
+          grammar.injectTo?.includes("text.html.classic-asp"),
       ),
     ).toBe(true);
     expect(fs.existsSync("syntaxes/asp-lsp-output.tmLanguage.json")).toBe(true);
@@ -238,10 +263,15 @@ describe("VS Code extension package", () => {
     const grammar = JSON.parse(fs.readFileSync("syntaxes/vbscript.tmLanguage.json", "utf8")) as {
       repository?: {
         "vbscript-basic"?: {
-          patterns?: Array<{ match?: string; name?: string }>;
+          patterns?: Array<{
+            captures?: Record<string, { name?: string }>;
+            match?: string;
+            name?: string;
+          }>;
         };
       };
     };
+    const patterns = grammar.repository?.["vbscript-basic"]?.patterns ?? [];
     const keywordPattern = grammar.repository?.["vbscript-basic"]?.patterns?.find(
       (pattern) => pattern.name === "keyword.control.vbscript",
     )?.match;
@@ -253,14 +283,46 @@ describe("VS Code extension package", () => {
     expect(keywordPattern).toContain("As");
     expect(keywordPattern).toContain("ElseIf");
     expect(keywordPattern).toContain("Is");
+    const remCommentPattern = grammar.repository?.["vbscript-basic"]?.patterns?.find(
+      (pattern) => pattern.name === "comment.line.rem.vbscript",
+    )?.match;
+    expect(remCommentPattern).toContain("Rem");
+    const functionDeclarationPattern = patterns.find(
+      (pattern) => pattern.captures?.["3"]?.name === "entity.name.function.vbscript",
+    );
+    expect(functionDeclarationPattern?.match).toContain("Function|Sub");
+    const propertyDeclarationPattern = patterns.find(
+      (pattern) => pattern.captures?.["4"]?.name === "entity.name.function.vbscript",
+    );
+    expect(propertyDeclarationPattern?.match).toContain("Property");
+    const typePattern = patterns.find(
+      (pattern) => pattern.captures?.["2"]?.name === "support.type.vbscript",
+    );
+    expect(typePattern?.match).toContain("String");
+    expect(typePattern?.match).toContain("Variant");
+    expect(typePattern?.match).toContain("Number");
+    expect(patterns.indexOf(functionDeclarationPattern!)).toBeLessThan(
+      patterns.findIndex((pattern) => pattern.name === "keyword.control.vbscript"),
+    );
 
     const classicAspGrammar = JSON.parse(
       fs.readFileSync("syntaxes/classic-asp.tmLanguage.json", "utf8"),
     ) as {
       patterns?: Array<{ include?: string }>;
+      injections?: Record<string, { patterns?: Array<{ include?: string }> }>;
       repository?: Record<
         string,
-        { begin?: string; patterns?: Array<{ include?: string; match?: string }> }
+        { begin?: string; end?: string; patterns?: Array<{ include?: string; match?: string }> }
+      >;
+    };
+    const classicAspTagInjection = JSON.parse(
+      fs.readFileSync("syntaxes/classic-asp-tag-injection.tmLanguage.json", "utf8"),
+    ) as {
+      injectionSelector?: string;
+      patterns?: Array<{ include?: string }>;
+      repository?: Record<
+        string,
+        { begin?: string; end?: string; patterns?: Array<{ include?: string }> }
       >;
     };
     expect(classicAspGrammar.patterns?.some((pattern) => pattern.include === "#asp-include")).toBe(
@@ -277,6 +339,22 @@ describe("VS Code extension package", () => {
         (pattern) => pattern.include === "source.vbscript",
       ),
     ).toBe(true);
+    expect(classicAspGrammar.repository?.["asp-expression"]?.end).toBe("%>");
+    expect(classicAspTagInjection.injectionSelector).toBe("L:text.html.classic-asp meta.tag");
+    expect(classicAspTagInjection.patterns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ include: "#asp-expression" }),
+        expect.objectContaining({ include: "#asp-block" }),
+      ]),
+    );
+    expect(classicAspTagInjection.repository?.["asp-expression"]?.end).toBe("%>");
+    expect(classicAspTagInjection.repository?.["asp-block"]?.end).toBe("%>");
+    expect(classicAspGrammar.injections?.["source.css, source.js"]?.patterns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ include: "#asp-expression" }),
+        expect.objectContaining({ include: "#asp-block" }),
+      ]),
+    );
   });
 
   it("describes the COM type catalog schema for settings UI", () => {
@@ -403,6 +481,8 @@ new Intl.DateTimeFormat("en");
       expect(fs.existsSync(vsixPath)).toBe(true);
       const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
       expect(listing).toContain("extension/dist/extension.js");
+      expect(listing).toContain("extension/syntaxes/classic-asp-tag-injection.tmLanguage.json");
+      expect(listing).toContain("extension/syntaxes/classic-asp.tmLanguage.json");
       expect(listing).toContain("extension/package.nls.json");
       expect(listing).toContain("extension/package.nls.ja.json");
       expect(listing).toContain("extension/assets/icon.png");

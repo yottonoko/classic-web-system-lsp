@@ -7,6 +7,34 @@
     "vbscript-basic": {
       "patterns": [
         {
+          "match": "(?i)(^|:)\\s*Rem\\b[^\\n\\r]*",
+          "name": "comment.line.rem.vbscript"
+        },
+        {
+          "match": "(?i)\\b(?:(Public|Private)\\s+)?(Function|Sub)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.visibility.vbscript" },
+            "2": { "name": "keyword.control.declaration.vbscript" },
+            "3": { "name": "entity.name.function.vbscript" }
+          }
+        },
+        {
+          "match": "(?i)\\b(?:(Public|Private)\\s+)?(Property)\\s+(Get|Let|Set)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.visibility.vbscript" },
+            "2": { "name": "keyword.control.declaration.vbscript" },
+            "3": { "name": "keyword.control.accessor.vbscript" },
+            "4": { "name": "entity.name.function.vbscript" }
+          }
+        },
+        {
+          "match": "(?i)\\b(As)\\s+(String|Variant|Number|Currency|Decimal|Error|Array|Boolean|Date|Object|Byte|Integer|Long|Single|Double)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.vbscript" },
+            "2": { "name": "support.type.vbscript" }
+          }
+        },
+        {
           "match": "(?i)\\b(Option\\s+Explicit|And|As|ByRef|ByVal|Call|Case|Class|Const|Dim|Do|Each|Else|ElseIf|Empty|End|Exit|Explicit|False|For|Function|Get|If|In|Is|Let|Loop|Me|Mod|New|Next|Not|Nothing|Null|Option|Or|Preserve|Private|Property|Public|ReDim|Select|Set|Step|Sub|Then|To|True|Until|Wend|While|With)\\b",
           "name": "keyword.control.vbscript"
         },
