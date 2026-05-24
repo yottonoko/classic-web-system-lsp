@@ -5454,6 +5454,13 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
   if (diagnostic.source === "asp-lsp-vbscript-naming") {
     return vbscriptNamingDiagnosticActions(cached, diagnostic);
   }
+  if (
+    diagnostic.source === "asp-lsp-vbscript-syntax" &&
+    diagnostic.code === "initializedDeclaration"
+  ) {
+    const action = splitInitializedDimDeclarationAction(cached, diagnostic.range, diagnostic);
+    return action ? [action] : [];
+  }
   if (diagnostic.source === "asp-lsp-include") {
     const include = cached.parsed.includes.find(
       (candidate) =>
@@ -5865,9 +5872,16 @@ function vbscriptCodeActions(
 ): CodeAction[] {
   const actions: CodeAction[] = [];
   if (codeActionAllows(context, CodeActionKind.QuickFix)) {
-    const splitDim = splitInitializedDimDeclarationAction(cached, range);
-    if (splitDim) {
-      actions.push(splitDim);
+    const hasInitializedDimDiagnostic = context.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.source === "asp-lsp-vbscript-syntax" &&
+        diagnostic.code === "initializedDeclaration",
+    );
+    if (!hasInitializedDimDiagnostic) {
+      const splitDim = splitInitializedDimDeclarationAction(cached, range);
+      if (splitDim) {
+        actions.push(splitDim);
+      }
     }
   }
   if (!codeActionAllows(context, vbscriptExtractVariableKind)) {
@@ -5888,6 +5902,7 @@ function vbscriptCodeActions(
 function splitInitializedDimDeclarationAction(
   cached: CachedDocument,
   range: Range,
+  diagnostic?: Diagnostic,
 ): CodeAction | undefined {
   const line = range.start.line;
   if (range.end.line !== line) {
@@ -5905,6 +5920,7 @@ function splitInitializedDimDeclarationAction(
   return {
     title: localizerForUri(cached.source.uri).t("server.quickfix.splitInitializedDim"),
     kind: CodeActionKind.QuickFix,
+    diagnostics: diagnostic ? [diagnostic] : undefined,
     edit: {
       changes: {
         [cached.source.uri]: [

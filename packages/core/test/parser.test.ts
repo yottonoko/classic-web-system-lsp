@@ -527,6 +527,65 @@ Response.Write missingName
     ).toBe(true);
   });
 
+  it("reports invalid VBScript variable declaration syntax as errors", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim initialized = 1
+Dim first, second = 2
+Public publicValue = 3
+Private privateValue = 4
+ReDim resized = 5
+Dim typed As Integer
+Public publicTyped As String
+Private privateTyped As Object
+%>`,
+    );
+    const syntaxDiagnostics = analyzeVbscript(parsed, {
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+    expect(
+      syntaxDiagnostics.filter((diagnostic) => diagnostic.code === "initializedDeclaration"),
+    ).toHaveLength(5);
+    expect(
+      syntaxDiagnostics.filter((diagnostic) => diagnostic.code === "typedDeclaration"),
+    ).toHaveLength(3);
+    expect(syntaxDiagnostics.every((diagnostic) => diagnostic.severity === 1)).toBe(true);
+  });
+
+  it("keeps valid VBScript variable declarations out of syntax diagnostics", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim value
+value = 1
+Dim fixedItems(10)
+Dim dynamicItems()
+ReDim fixedItems(20)
+ReDim Preserve fixedItems(30)
+Const knownValue = 1
+%>`,
+    );
+    expect(
+      analyzeVbscript(parsed, { unusedDiagnostics: false }).diagnostics.some(
+        (diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax",
+      ),
+    ).toBe(false);
+  });
+
+  it("localizes VBScript declaration syntax diagnostics", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Dim typed As Integer
+%>`,
+    );
+    const result = analyzeVbscript(parsed, { locale: "ja", unusedDiagnostics: false });
+    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("As 型指定"))).toBe(
+      true,
+    );
+  });
+
   it("does not report VBScript line continuation as undeclared", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

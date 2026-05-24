@@ -1623,6 +1623,7 @@ export function analyzeVbscript(
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const diagnostics: Diagnostic[] = [];
+  diagnostics.push(...diagnoseDeclarationSyntax(parsed, context.locale));
   const scriptText = getServerScriptText(parsed);
   if (/^\s*Option\s+Explicit\b/im.test(scriptText)) {
     diagnostics.push(...diagnoseUndeclaredVariables(parsed, symbols, context.locale));
@@ -3889,6 +3890,83 @@ function memberAccessAt(
   return owner?.kind === "identifier" || owner?.text.toLowerCase() === "me"
     ? { owner: owner.text, member: token.text }
     : { owner: "", member: token.text };
+}
+
+function diagnoseDeclarationSyntax(
+  parsed: AspParsedDocument,
+  locale: AspLocale | undefined,
+): Diagnostic[] {
+  const localizer = createLocalizer(locale);
+  const diagnostics: Diagnostic[] = [];
+  for (const node of vbDocuments(parsed).flatMap((document) => flattenVbNodes(document))) {
+    if (node.kind !== "VariableDeclaration" || !node.declarationKind) {
+      continue;
+    }
+    const tokens = node.tokens.filter((token) => !isTriviaToken(token));
+    if (topLevelToken(tokens, "=")) {
+      diagnostics.push(
+        declarationSyntaxDiagnostic(
+          parsed,
+          node,
+          localizer.t("vb.diagnostic.initializedDeclaration", {
+            keyword: titleCaseKeyword(node.declarationKind),
+          }),
+          "initializedDeclaration",
+        ),
+      );
+    }
+    if (
+      (node.declarationKind === "dim" ||
+        node.declarationKind === "public" ||
+        node.declarationKind === "private") &&
+      tokens.some((token) => lowerToken(token) === "as")
+    ) {
+      diagnostics.push(
+        declarationSyntaxDiagnostic(
+          parsed,
+          node,
+          localizer.t("vb.diagnostic.typedDeclaration", {
+            keyword: titleCaseKeyword(node.declarationKind),
+          }),
+          "typedDeclaration",
+        ),
+      );
+    }
+  }
+  return diagnostics;
+}
+
+function topLevelToken(tokens: VbToken[], text: string): VbToken | undefined {
+  let depth = 0;
+  for (const token of tokens) {
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")") {
+      depth = Math.max(0, depth - 1);
+    } else if (depth === 0 && token.text === text) {
+      return token;
+    }
+  }
+  return undefined;
+}
+
+function declarationSyntaxDiagnostic(
+  parsed: AspParsedDocument,
+  node: VbCstNode,
+  message: string,
+  code: "initializedDeclaration" | "typedDeclaration",
+): Diagnostic {
+  return {
+    severity: DiagnosticSeverity.Error,
+    range: rangeFromOffsets(parsed.text, node.start, node.end),
+    message,
+    code,
+    data: {
+      declarationKind: node.declarationKind ?? "",
+      name: node.identifiers?.[0]?.text ?? "",
+    },
+    source: "asp-lsp-vbscript-syntax",
+  };
 }
 
 function diagnoseUndeclaredVariables(

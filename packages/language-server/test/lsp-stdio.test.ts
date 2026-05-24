@@ -2721,18 +2721,68 @@ Response.Write value
             text: source,
           },
         });
-        await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "initializers");
+        const syntaxDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+        expect(JSON.stringify(syntaxDiagnostics)).toContain("initializedDeclaration");
         const actions = await server.request("textDocument/codeAction", {
           textDocument: { uri },
           range: {
             start: positionAt(source, source.indexOf("value")),
             end: positionAt(source, source.indexOf("value") + "value".length),
           },
-          context: { diagnostics: [], only: ["quickfix"] },
+          context: { diagnostics: syntaxDiagnostics, only: ["quickfix"] },
         });
         const serialized = JSON.stringify(actions);
         expect(serialized).toContain("Split initialized Dim declaration");
         expect(serialized).toContain("Dim value\\nvalue = 1");
+        expect((actions as unknown[]).length).toBe(1);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("does not return split quick fixes for unsupported declaration syntax errors", async () => {
+      const source = `<%
+Public value = 1
+Dim typed As Integer
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-declaration-syntax.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await waitForDiagnosticsContaining(server, "As types");
+        const syntaxDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+        expect(JSON.stringify(syntaxDiagnostics)).toContain("initializedDeclaration");
+        expect(JSON.stringify(syntaxDiagnostics)).toContain("typedDeclaration");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, source.indexOf("Public value")),
+            end: positionAt(source, source.indexOf("Public value") + "Public value".length),
+          },
+          context: { diagnostics: syntaxDiagnostics, only: ["quickfix"] },
+        });
+        expect(JSON.stringify(actions)).not.toContain("Split initialized Dim declaration");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -3643,6 +3693,7 @@ Response.Write miss▮ingName
         const serializedDiagnostics = JSON.stringify(diagnostics.params);
         expect(serializedDiagnostics).toContain("解決できません");
         expect(serializedDiagnostics).toContain("宣言されていません");
+        expect(serializedDiagnostics).toContain("初期値を含められません");
 
         const actions = await server.request("textDocument/codeAction", {
           textDocument: { uri },

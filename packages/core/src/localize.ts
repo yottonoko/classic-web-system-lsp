@@ -43,6 +43,8 @@ export type LocalizeKey =
   | "vb.diagnostic.undeclared"
   | "vb.diagnostic.unusedParameter"
   | "vb.diagnostic.unusedSymbol"
+  | "vb.diagnostic.initializedDeclaration"
+  | "vb.diagnostic.typedDeclaration"
   | "vb.diagnostic.setScalar"
   | "vb.diagnostic.objectNeedsSet"
   | "vb.diagnostic.typeMismatch"
@@ -114,6 +116,9 @@ const en: Record<LocalizeKey, string> = {
   "vb.diagnostic.undeclared": "'{name}' is not declared under Option Explicit.",
   "vb.diagnostic.unusedParameter": "Parameter '{name}' is never used.",
   "vb.diagnostic.unusedSymbol": "'{name}' is declared but never used.",
+  "vb.diagnostic.initializedDeclaration":
+    "VBScript {keyword} declarations cannot include initializers.",
+  "vb.diagnostic.typedDeclaration": "VBScript {keyword} declarations cannot include As types.",
   "vb.diagnostic.setScalar": "Set assigns an object reference, but '{name}' receives {type}.",
   "vb.diagnostic.objectNeedsSet": "Object assignment to '{name}' should use Set.",
   "vb.diagnostic.typeMismatch": "Type mismatch: '{name}' is {expected}, but assigned {actual}.",
@@ -191,6 +196,8 @@ const ja: Record<LocalizeKey, string> = {
   "vb.diagnostic.undeclared": "'{name}' は Option Explicit のもとで宣言されていません。",
   "vb.diagnostic.unusedParameter": "パラメーター '{name}' は使われていません。",
   "vb.diagnostic.unusedSymbol": "'{name}' は宣言されていますが使われていません。",
+  "vb.diagnostic.initializedDeclaration": "VBScript の {keyword} 宣言には初期値を含められません。",
+  "vb.diagnostic.typedDeclaration": "VBScript の {keyword} 宣言には As 型指定を含められません。",
   "vb.diagnostic.setScalar":
     "Set はオブジェクト参照を代入しますが、'{name}' は {type} を受け取っています。",
   "vb.diagnostic.objectNeedsSet": "'{name}' へのオブジェクト代入には Set が必要です。",
