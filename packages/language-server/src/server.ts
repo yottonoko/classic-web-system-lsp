@@ -84,6 +84,7 @@ import {
   getVbscriptSignatureHelp,
   getVbscriptTypeDefinition,
   parseAspDocument,
+  parseVbscriptTypeRef,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
   updateAspParsedDocument,
@@ -3532,14 +3533,15 @@ function configuredVbscriptGlobals(cached: CachedDocument, settings: AspSettings
     if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name) || !typeName) {
       return [];
     }
+    const type = parseVbscriptTypeRef(typeName);
     return [
       {
         name,
         kind: typeof value === "object" && value.kind === "constant" ? "constant" : "variable",
         range,
         sourceUri: `${cached.source.uri}#runtime-global`,
-        typeName,
-        type: { name: typeName, object: true },
+        typeName: type.name,
+        type,
       } satisfies VbSymbol,
     ];
   });

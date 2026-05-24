@@ -1202,6 +1202,89 @@ End Sub
     expect(labelUse?.range).toEqual(labelDefinition?.range);
   });
 
+  it("infers and checks VBScript union types", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Class FirstThing
+  Public SharedName
+  Public OnlyFirst
+End Class
+Class SecondThing
+  Public SharedName
+End Class
+x = 1
+x = "a"
+' @type annotated As Number
+Dim annotated
+annotated = "oops"
+' @type maybeName As String | Number
+Dim maybeName
+Class Holder
+  Public Value
+End Class
+' @member Holder.Value As String | Number
+Function MakeValue(flag)
+  If flag Then
+    MakeValue = 1
+  Else
+    MakeValue = "x"
+  End If
+End Function
+Dim both
+Set both = New FirstThing
+Set both = New SecondThing
+both.SharedName
+both.OnlyFirst
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.find((symbol) => symbol.name === "x")?.typeName).toBe("Number | String");
+    expect(symbols.find((symbol) => symbol.name === "maybeName")?.typeName).toBe("String | Number");
+    expect(symbols.find((symbol) => symbol.name === "annotated")?.typeName).toBe("Number");
+    expect(symbols.find((symbol) => symbol.name === "MakeValue")?.typeName).toBe("Number | String");
+    expect(symbols.find((symbol) => symbol.name === "both")?.typeName).toBe(
+      "FirstThing | SecondThing",
+    );
+
+    const env = buildVbTypeEnvironment(parsed, { symbols });
+    expect(
+      env.types
+        .find((type) => type.name === "Holder")
+        ?.members.find((member) => member.name === "Value")?.type?.name,
+    ).toBe("String | Number");
+
+    const completions = getVbscriptCompletions(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("both.SharedName") + "both.".length),
+      { symbols },
+    );
+    expect(completions.some((item) => item.label === "SharedName")).toBe(true);
+    expect(completions.some((item) => item.label === "OnlyFirst")).toBe(false);
+
+    const hints = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 32, character: 0 } },
+      { symbols },
+    );
+    expect(JSON.stringify(hints)).toContain("As String | Number");
+
+    const result = analyzeVbscript(parsed, { symbols, typeChecking: "strict" });
+    expect(
+      result.diagnostics.some((diagnostic) =>
+        diagnostic.message.includes("is Number, but assigned String"),
+      ),
+    ).toBe(true);
+    expect(
+      result.diagnostics.some((diagnostic) => diagnostic.message.includes("no member 'OnlyFirst'")),
+    ).toBe(true);
+    expect(
+      result.diagnostics.some((diagnostic) =>
+        diagnostic.message.includes("no member 'SharedName'"),
+      ),
+    ).toBe(false);
+  });
+
   it("creates implicit variables without Option Explicit for hover, inlay and semantic tokens", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

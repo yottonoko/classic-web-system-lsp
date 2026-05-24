@@ -1693,6 +1693,68 @@ Response.Write a
       }
     });
 
+    it("returns hover, inlay hints and completions for VBScript union types", async () => {
+      const source = `<%
+Class FirstThing
+  Public SharedName
+  Public OnlyFirst
+End Class
+Class SecondThing
+  Public SharedName
+End Class
+x = 1
+x = "a"
+Dim both
+Set both = New FirstThing
+Set both = New SecondThing
+both.SharedName
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/union-vbscript.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("x = 1")),
+        });
+        expect(JSON.stringify(hover)).toContain("Number | String");
+
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 15, character: 0 } },
+        });
+        expect(JSON.stringify(inlayHints)).toContain("As Number | String");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("both.SharedName") + "both.".length),
+        });
+        const labels = completionLabels(completions);
+        expect(labels).toContain("SharedName");
+        expect(labels).not.toContain("OnlyFirst");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns semantic tokens for Classic ASP include directives", async () => {
       const source = `<!-- #include file="includes/data.inc" -->
 <% Response.Write "ok" %>`;
