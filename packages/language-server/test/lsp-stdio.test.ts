@@ -2922,6 +2922,69 @@ Dim typed As Integer
       }
     });
 
+    it("returns VBScript quick fixes for invalid procedure call syntax", async () => {
+      const source = `<%
+Function Func1(hoge)
+  Func1 = hoge
+End Function
+Sub Func2(hoge, fuga)
+End Sub
+Call Func1 hoge
+Z = Func1 hoge
+Func2(hoge, fuga)
+Call Func2 hoge, fuga
+Z = Func2 hoge, fuga
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vb-call-syntax.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await waitForDiagnosticsContaining(server, "call syntax");
+        const syntaxDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+        expect(JSON.stringify(syntaxDiagnostics)).toContain("callStatementRequiresParentheses");
+        expect(JSON.stringify(syntaxDiagnostics)).toContain("expressionCallRequiresParentheses");
+        expect(JSON.stringify(syntaxDiagnostics)).toContain(
+          "statementCallDisallowsParenthesizedArguments",
+        );
+
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, source.indexOf("Call Func1")),
+            end: positionAt(source, source.indexOf("Call Func1") + "Call Func1".length),
+          },
+          context: { diagnostics: syntaxDiagnostics, only: ["quickfix"] },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Fix VBScript call syntax");
+        expect(serialized).toContain('"newText":"Call Func1(hoge)"');
+        expect(serialized).toContain('"newText":"Z = Func1(hoge)"');
+        expect(serialized).toContain('"newText":"Func2 hoge, fuga"');
+        expect(serialized).toContain('"newText":"Call Func2(hoge, fuga)"');
+        expect(serialized).toContain('"newText":"Z = Func2(hoge, fuga)"');
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("avoids existing VBScript extract variable names", async () => {
       const source = `<%
 Dim extractedValue

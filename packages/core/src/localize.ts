@@ -47,6 +47,7 @@ export type LocalizeKey =
   | "vb.diagnostic.unusedSymbol"
   | "vb.diagnostic.initializedDeclaration"
   | "vb.diagnostic.typedDeclaration"
+  | "vb.diagnostic.invalidCallSyntax"
   | "vb.diagnostic.setScalar"
   | "vb.diagnostic.objectNeedsSet"
   | "vb.diagnostic.typeMismatch"
@@ -65,6 +66,7 @@ export type LocalizeKey =
   | "server.completion.css.documentation"
   | "server.quickfix.declareDim"
   | "server.quickfix.splitInitializedDim"
+  | "server.quickfix.fixVbscriptCallSyntax"
   | "server.quickfix.removeUnusedDeclaration"
   | "server.quickfix.addSet"
   | "server.quickfix.removeSet"
@@ -124,6 +126,7 @@ const en: Record<LocalizeKey, string> = {
   "vb.diagnostic.initializedDeclaration":
     "VBScript {keyword} declarations cannot include initializers.",
   "vb.diagnostic.typedDeclaration": "VBScript {keyword} declarations cannot include As types.",
+  "vb.diagnostic.invalidCallSyntax": "VBScript call syntax is invalid for '{name}'.",
   "vb.diagnostic.setScalar": "Set assigns an object reference, but '{name}' receives {type}.",
   "vb.diagnostic.objectNeedsSet": "Object assignment to '{name}' should use Set.",
   "vb.diagnostic.typeMismatch": "Type mismatch: '{name}' is {expected}, but assigned {actual}.",
@@ -145,6 +148,7 @@ const en: Record<LocalizeKey, string> = {
   "server.completion.css.documentation": "Completion provided by vscode-css-languageservice.",
   "server.quickfix.declareDim": "Declare {name} with Dim",
   "server.quickfix.splitInitializedDim": "Split initialized Dim declaration",
+  "server.quickfix.fixVbscriptCallSyntax": "Fix VBScript call syntax",
   "server.quickfix.removeUnusedDeclaration": "Remove unused declaration {name}",
   "server.quickfix.addSet": "Use Set for object assignment to {name}",
   "server.quickfix.removeSet": "Remove Set from scalar assignment to {name}",
@@ -206,6 +210,7 @@ const ja: Record<LocalizeKey, string> = {
   "vb.diagnostic.unusedSymbol": "'{name}' は宣言されていますが使われていません。",
   "vb.diagnostic.initializedDeclaration": "VBScript の {keyword} 宣言には初期値を含められません。",
   "vb.diagnostic.typedDeclaration": "VBScript の {keyword} 宣言には As 型指定を含められません。",
+  "vb.diagnostic.invalidCallSyntax": "'{name}' の VBScript 呼び出し構文が無効です。",
   "vb.diagnostic.setScalar":
     "Set はオブジェクト参照を代入しますが、'{name}' は {type} を受け取っています。",
   "vb.diagnostic.objectNeedsSet": "'{name}' へのオブジェクト代入には Set が必要です。",
@@ -229,6 +234,7 @@ const ja: Record<LocalizeKey, string> = {
   "server.completion.css.documentation": "vscode-css-languageservice による補完です。",
   "server.quickfix.declareDim": "{name} を Dim で宣言",
   "server.quickfix.splitInitializedDim": "初期化つき Dim 宣言を分割",
+  "server.quickfix.fixVbscriptCallSyntax": "VBScript の呼び出し構文を修正",
   "server.quickfix.removeUnusedDeclaration": "未使用の宣言 {name} を削除",
   "server.quickfix.addSet": "{name} への object assignment に Set を使う",
   "server.quickfix.removeSet": "{name} への scalar assignment から Set を削除",

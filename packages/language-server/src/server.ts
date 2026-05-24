@@ -5586,6 +5586,10 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
     const action = splitInitializedDimDeclarationAction(cached, diagnostic.range, diagnostic);
     return action ? [action] : [];
   }
+  if (diagnostic.source === "asp-lsp-vbscript-syntax") {
+    const action = fixVbscriptCallSyntaxAction(cached, diagnostic);
+    return action ? [action] : [];
+  }
   if (diagnostic.source === "asp-lsp-include") {
     const include = cached.parsed.includes.find(
       (candidate) =>
@@ -5625,6 +5629,37 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
     ];
   }
   return [];
+}
+
+function fixVbscriptCallSyntaxAction(
+  cached: CachedDocument,
+  diagnostic: Diagnostic,
+): CodeAction | undefined {
+  const data = diagnostic.data as { fixKind?: string; newText?: string } | undefined;
+  if (
+    data?.fixKind !== "vbscriptCallSyntax" ||
+    !data.newText ||
+    diagnostic.range.start.line !== diagnostic.range.end.line
+  ) {
+    return undefined;
+  }
+  const text = lineText(cached.source, diagnostic.range.start.line);
+  if (text.includes(":") || /_\s*(?:'.*)?$/.test(text)) {
+    return undefined;
+  }
+  if (!isVbscriptRange(cached, diagnostic.range)) {
+    return undefined;
+  }
+  return {
+    title: localizerForUri(cached.source.uri).t("server.quickfix.fixVbscriptCallSyntax"),
+    kind: CodeActionKind.QuickFix,
+    diagnostics: [diagnostic],
+    edit: {
+      changes: {
+        [cached.source.uri]: [{ range: diagnostic.range, newText: data.newText }],
+      },
+    },
+  };
 }
 
 function vbscriptNamingDiagnosticActions(
