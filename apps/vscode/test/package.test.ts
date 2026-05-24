@@ -92,6 +92,18 @@ describe("VS Code extension package", () => {
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.implicitByRef"],
     ).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
+    for (const setting of [
+      "aspLsp.format.indentSize",
+      "aspLsp.format.indentStyle",
+      "aspLsp.format.onSave",
+    ]) {
+      expect(manifest.contributes?.configuration?.properties?.[setting]).toEqual(
+        expect.objectContaining({ tags: ["advanced"] }),
+      );
+    }
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.format.indentSize"]).toEqual(
+      expect.objectContaining({ type: ["number", "null"], default: null, minimum: 1 }),
+    );
     expect(manifest.repository?.url).toContain("github.com/yottonoko/asp-lsp");
     expect(manifest.icon).toBe("assets/icon.png");
     expect(fs.existsSync(manifest.icon ?? "")).toBe(true);
