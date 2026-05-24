@@ -10,6 +10,13 @@
     { "include": "text.html.basic" }
   ],
   "injections": {
+    "L:text.html.classic-asp meta.tag": {
+      "patterns": [
+        { "include": "#asp-expression" },
+        { "include": "#asp-directive" },
+        { "include": "#asp-block" }
+      ]
+    },
     "source.css, source.js": {
       "patterns": [
         { "include": "#asp-expression" },

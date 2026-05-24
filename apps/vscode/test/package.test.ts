@@ -261,7 +261,7 @@ describe("VS Code extension package", () => {
       injections?: Record<string, { patterns?: Array<{ include?: string }> }>;
       repository?: Record<
         string,
-        { begin?: string; patterns?: Array<{ include?: string; match?: string }> }
+        { begin?: string; end?: string; patterns?: Array<{ include?: string; match?: string }> }
       >;
     };
     expect(classicAspGrammar.patterns?.some((pattern) => pattern.include === "#asp-include")).toBe(
@@ -278,6 +278,13 @@ describe("VS Code extension package", () => {
         (pattern) => pattern.include === "source.vbscript",
       ),
     ).toBe(true);
+    expect(classicAspGrammar.repository?.["asp-expression"]?.end).toBe("%>");
+    expect(classicAspGrammar.injections?.["L:text.html.classic-asp meta.tag"]?.patterns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ include: "#asp-expression" }),
+        expect.objectContaining({ include: "#asp-block" }),
+      ]),
+    );
     expect(classicAspGrammar.injections?.["source.css, source.js"]?.patterns).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ include: "#asp-expression" }),
