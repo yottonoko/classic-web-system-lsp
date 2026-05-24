@@ -1,18 +1,29 @@
 import * as vscode from "vscode";
 import { getClassicAspLineCommentEdits } from "@asp-lsp/core";
 import {
+  CloseAction,
+  ErrorAction,
   LanguageClient,
   TransportKind,
+  type ErrorHandler,
   type LanguageClientOptions,
   type ServerOptions,
 } from "vscode-languageclient/node";
 import { getServerModulePath } from "./server-path";
 
+const maxCrashRestartCount = 4;
+const crashRestartWindowMs = 3 * 60 * 1000;
+
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
+let restartPromise: Promise<void> | undefined;
+let isDeactivating = false;
+let isManualRestarting = false;
+let crashRestartTimestamps: number[] = [];
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  isDeactivating = false;
   const localizer = extensionLocalizer();
   outputChannel = vscode.window.createOutputChannel("Classic ASP LSP", "asp-lsp-output");
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -40,6 +51,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 async function startClient(context: vscode.ExtensionContext): Promise<void> {
+  if (isDeactivating) {
+    return;
+  }
   const serverModule = getServerModulePath(context);
   const serverOptions: ServerOptions = {
     run: { module: serverModule, transport: TransportKind.ipc },
@@ -58,19 +72,30 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
         "**/*.{asp,asa,inc,js,jsx,mjs,cjs,ts,tsx,mts,cts,d.ts}",
       ),
     },
+    errorHandler: createLanguageClientErrorHandler(),
   };
 
-  client = new LanguageClient(
+  const nextClient = new LanguageClient(
     "asp-lsp",
     "Classic ASP Language Server",
     serverOptions,
     clientOptions,
   );
-  context.subscriptions.push(client);
-  await client.start();
+  client = nextClient;
+  try {
+    await nextClient.start();
+  } catch (error) {
+    if (client === nextClient) {
+      client = undefined;
+    }
+    throw error;
+  }
+  context.subscriptions.push(nextClient);
 }
 
 export async function deactivate(): Promise<void> {
+  isDeactivating = true;
+  await restartPromise?.catch(() => undefined);
   await client?.stop();
   client = undefined;
   outputChannel?.dispose();
@@ -179,9 +204,53 @@ function toLocation(value: unknown): vscode.Location | undefined {
 }
 
 async function restartServer(context: vscode.ExtensionContext): Promise<void> {
-  await client?.stop();
-  client = undefined;
+  restartPromise ??= restartServerOnce(context).finally(() => {
+    restartPromise = undefined;
+  });
+  await restartPromise;
+}
+
+async function restartServerOnce(context: vscode.ExtensionContext): Promise<void> {
+  isManualRestarting = true;
+  try {
+    await client?.stop();
+    client = undefined;
+    crashRestartTimestamps = [];
+  } finally {
+    isManualRestarting = false;
+  }
   await startClient(context);
+}
+
+function createLanguageClientErrorHandler(): ErrorHandler {
+  return {
+    error(_error, _message, count) {
+      if (count && count <= 3) {
+        return { action: ErrorAction.Continue };
+      }
+      return { action: ErrorAction.Shutdown };
+    },
+    closed() {
+      if (isDeactivating || isManualRestarting) {
+        return { action: CloseAction.DoNotRestart, handled: true };
+      }
+      crashRestartTimestamps.push(Date.now());
+      if (crashRestartTimestamps.length <= maxCrashRestartCount) {
+        return { action: CloseAction.Restart };
+      }
+      const elapsedMs =
+        crashRestartTimestamps[crashRestartTimestamps.length - 1] - crashRestartTimestamps[0];
+      if (elapsedMs <= crashRestartWindowMs) {
+        return {
+          action: CloseAction.DoNotRestart,
+          message:
+            "The Classic ASP Language Server crashed 5 times in the last 3 minutes. The server will not be restarted. See the output for more information.",
+        };
+      }
+      crashRestartTimestamps.shift();
+      return { action: CloseAction.Restart };
+    },
+  };
 }
 
 async function debugIisUrl(): Promise<void> {

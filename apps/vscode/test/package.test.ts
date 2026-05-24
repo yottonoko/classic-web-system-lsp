@@ -41,7 +41,7 @@ describe("VS Code extension package", () => {
             textMateRules?: Array<{ scope?: string; settings?: Record<string, unknown> }>;
           };
         };
-        commands?: Array<{ command: string }>;
+        commands?: Array<{ command: string; title?: string }>;
         keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
         problemMatchers?: Array<{ name: string }>;
         taskDefinitions?: Array<{ type: string }>;
@@ -64,6 +64,11 @@ describe("VS Code extension package", () => {
     expect(readme).toContain("MIT License");
     expect(readme).toContain("Apache License, Version 2.0");
     expect(commands).toContain("aspLsp.restartServer");
+    expect(commands.filter((command) => command === "aspLsp.restartServer")).toHaveLength(1);
+    expect(
+      manifest.contributes?.commands?.find((command) => command.command === "aspLsp.restartServer")
+        ?.title,
+    ).toBe("%command.restartServer.title%");
     expect(commands).toContain("aspLsp.reindexWorkspace");
     expect(commands).toContain("aspLsp.openOutput");
     expect(commands).toContain("aspLsp.debugIisUrl");
@@ -136,6 +141,13 @@ describe("VS Code extension package", () => {
     expect(manifest.galleryBanner?.color).toBeTruthy();
     expect(manifest.capabilities?.untrustedWorkspaces?.supported).toBe(true);
     const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    expect(extensionSource).toContain('registerCommand("aspLsp.restartServer"');
+    expect(extensionSource).toContain("errorHandler: createLanguageClientErrorHandler()");
+    expect(extensionSource).toContain("CloseAction.Restart");
+    expect(extensionSource).toContain("ErrorAction.Continue");
+    expect(extensionSource).toContain("restartPromise");
+    expect(extensionSource).toContain("isDeactivating");
+    expect(extensionSource).toContain("isManualRestarting");
     expect(extensionSource).toContain('registerCommand("aspLsp.showReferences"');
     expect(extensionSource).toContain('"editor.action.showReferences"');
     expect(extensionSource).toContain('registerCommand("aspLsp.toggleLineComment"');
@@ -256,6 +268,8 @@ describe("VS Code extension package", () => {
     expect(keys).toContain("extension.description");
     expect(keys).toContain("command.restartServer.title");
     expect(keys).toContain("configuration.locale.description");
+    expect(nls["command.restartServer.title"]).toBe("Classic ASP: Restart Language Server");
+    expect(nlsJa["command.restartServer.title"]).toBe("Classic ASP: Language Server を再起動");
     for (const key of keys) {
       expect(nls[key], key).toBeTruthy();
       expect(nlsJa[key], key).toBeTruthy();
