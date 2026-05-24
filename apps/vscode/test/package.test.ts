@@ -30,7 +30,12 @@ describe("VS Code extension package", () => {
       dependencies?: Record<string, string>;
       contributes?: {
         languages?: Array<{ id: string; extensions?: string[] }>;
-        grammars?: Array<{ language?: string; scopeName?: string; path?: string }>;
+        grammars?: Array<{
+          language?: string;
+          scopeName?: string;
+          path?: string;
+          injectTo?: string[];
+        }>;
         configurationDefaults?: {
           "editor.tokenColorCustomizations"?: {
             textMateRules?: Array<{ scope?: string; settings?: Record<string, unknown> }>;
@@ -158,6 +163,14 @@ describe("VS Code extension package", () => {
           grammar.path === "./syntaxes/asp-lsp-output.tmLanguage.json",
       ),
     ).toBe(true);
+    expect(
+      manifest.contributes?.grammars?.some(
+        (grammar) =>
+          grammar.scopeName === "classic-asp.tag-injection" &&
+          grammar.path === "./syntaxes/classic-asp-tag-injection.tmLanguage.json" &&
+          grammar.injectTo?.includes("text.html.classic-asp"),
+      ),
+    ).toBe(true);
     expect(fs.existsSync("syntaxes/asp-lsp-output.tmLanguage.json")).toBe(true);
     const outputGrammarText = fs.readFileSync("syntaxes/asp-lsp-output.tmLanguage.json", "utf8");
     const outputGrammar = JSON.parse(outputGrammarText) as {
@@ -264,6 +277,16 @@ describe("VS Code extension package", () => {
         { begin?: string; end?: string; patterns?: Array<{ include?: string; match?: string }> }
       >;
     };
+    const classicAspTagInjection = JSON.parse(
+      fs.readFileSync("syntaxes/classic-asp-tag-injection.tmLanguage.json", "utf8"),
+    ) as {
+      injectionSelector?: string;
+      patterns?: Array<{ include?: string }>;
+      repository?: Record<
+        string,
+        { begin?: string; end?: string; patterns?: Array<{ include?: string }> }
+      >;
+    };
     expect(classicAspGrammar.patterns?.some((pattern) => pattern.include === "#asp-include")).toBe(
       true,
     );
@@ -279,12 +302,15 @@ describe("VS Code extension package", () => {
       ),
     ).toBe(true);
     expect(classicAspGrammar.repository?.["asp-expression"]?.end).toBe("%>");
-    expect(classicAspGrammar.injections?.["L:text.html.classic-asp meta.tag"]?.patterns).toEqual(
+    expect(classicAspTagInjection.injectionSelector).toBe("L:text.html.classic-asp meta.tag");
+    expect(classicAspTagInjection.patterns).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ include: "#asp-expression" }),
         expect.objectContaining({ include: "#asp-block" }),
       ]),
     );
+    expect(classicAspTagInjection.repository?.["asp-expression"]?.end).toBe("%>");
+    expect(classicAspTagInjection.repository?.["asp-block"]?.end).toBe("%>");
     expect(classicAspGrammar.injections?.["source.css, source.js"]?.patterns).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ include: "#asp-expression" }),
@@ -417,6 +443,8 @@ new Intl.DateTimeFormat("en");
       expect(fs.existsSync(vsixPath)).toBe(true);
       const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
       expect(listing).toContain("extension/dist/extension.js");
+      expect(listing).toContain("extension/syntaxes/classic-asp-tag-injection.tmLanguage.json");
+      expect(listing).toContain("extension/syntaxes/classic-asp.tmLanguage.json");
       expect(listing).toContain("extension/package.nls.json");
       expect(listing).toContain("extension/package.nls.ja.json");
       expect(listing).toContain("extension/assets/icon.png");

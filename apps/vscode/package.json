@@ -85,6 +85,17 @@
         }
       },
       {
+        "scopeName": "classic-asp.tag-injection",
+        "path": "./syntaxes/classic-asp-tag-injection.tmLanguage.json",
+        "injectTo": [
+          "text.html.classic-asp"
+        ],
+        "embeddedLanguages": {
+          "source.vbscript.embedded.asp": "vbscript",
+          "source.vbscript.embedded.asp.expression": "vbscript"
+        }
+      },
+      {
         "language": "vbscript",
         "scopeName": "source.vbscript",
         "path": "./syntaxes/vbscript.tmLanguage.json"
