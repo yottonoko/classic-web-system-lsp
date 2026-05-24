@@ -1058,9 +1058,11 @@ Response.Write BuildName("Ada")
       (item) => item.label === "BuildName",
     );
     expect(completion?.labelDetails).toBeUndefined();
-    expect(
-      String(resolveVbscriptCompletionItem(completion!, parsed, { symbols }).documentation),
-    ).toContain("Builds a display name.");
+    const completionDocumentation = String(
+      resolveVbscriptCompletionItem(completion!, parsed, { symbols }).documentation,
+    );
+    expect(completionDocumentation).toContain("Builds a display name.");
+    expect(completionDocumentation).not.toContain("XML documentation is descriptive only.");
     expect(getVbscriptSignatureHelp(parsed, { line: 7, character: 26 }, { symbols })).toEqual(
       expect.objectContaining({
         signatures: [
@@ -1076,6 +1078,120 @@ Response.Write BuildName("Ada")
         ],
       }),
     );
+  });
+
+  it("uses XML parameter documentation for declaration hover and no-paren signature help", () => {
+    const source = `<%
+''' <summary>Renders the metric cards for the dashboard.</summary>
+''' <param name="metricMap">A dictionary of metric keys and values to render.</param>
+Sub RenderMetricCards(ByVal metricMap)
+End Sub
+RenderMetricCards metrics
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const parameterHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("metricMap)")),
+      { symbols },
+    );
+    expect(parameterHover).toContain("ByVal metricMap");
+    expect(parameterHover).toContain("A dictionary of metric keys and values to render.");
+    expect(parameterHover).not.toContain("XML documentation is descriptive only.");
+
+    const signature = getVbscriptSignatureHelp(
+      parsed,
+      positionAt(source, source.indexOf("metrics") + 2),
+      { symbols },
+    );
+    expect(signature).toEqual(
+      expect.objectContaining({
+        signatures: [
+          expect.objectContaining({
+            label: "Sub RenderMetricCards(ByVal metricMap)",
+            parameters: [
+              expect.objectContaining({
+                label: "ByVal metricMap",
+                documentation: "A dictionary of metric keys and values to render.",
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(JSON.stringify(signature)).not.toContain("XML documentation is descriptive only.");
+    expect(
+      getVbscriptSignatureHelp(
+        parsed,
+        positionAt(
+          source,
+          source.indexOf("RenderMetricCards metrics") + "RenderMetricCards ".length,
+        ),
+        { symbols },
+      )?.signatures[0]?.label,
+    ).toBe("Sub RenderMetricCards(ByVal metricMap)");
+  });
+
+  it("shows the XML documentation type note only on declarations missing metadata", () => {
+    const source = `<%
+''' <summary>Customer id.</summary>
+Dim customerId
+
+' @type typedValue As String
+''' <summary>Typed value.</summary>
+Dim typedValue
+
+''' <summary>Renders metrics.</summary>
+''' <param name="metricMap">Metric values.</param>
+Sub RenderMetricCards(ByVal metricMap)
+End Sub
+RenderMetricCards metrics
+
+' @param first As String
+' @returns BuildName String
+''' <summary>Builds a display name.</summary>
+''' <param name="first">First name.</param>
+''' <returns>Display name.</returns>
+Function BuildName(first)
+End Function
+Response.Write BuildName("Ada")
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const missingVariableHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("customerId")),
+      { symbols },
+    );
+    expect(missingVariableHover).toContain("XML documentation is descriptive only.");
+
+    const typedVariableHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("Dim typedValue") + "Dim ".length),
+      { symbols },
+    );
+    expect(typedVariableHover).not.toContain("XML documentation is descriptive only.");
+
+    const missingParamHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("RenderMetricCards(ByVal")),
+      { symbols },
+    );
+    expect(missingParamHover).toContain("XML documentation is descriptive only.");
+
+    const callHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.lastIndexOf("RenderMetricCards")),
+      { symbols },
+    );
+    expect(callHover).not.toContain("XML documentation is descriptive only.");
+
+    const typedFunctionHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("BuildName(first)")),
+      { symbols },
+    );
+    expect(typedFunctionHover).not.toContain("XML documentation is descriptive only.");
   });
 
   it("parses XML documentation with a tokenizer and keeps variable docs unambiguous", () => {

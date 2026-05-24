@@ -1789,19 +1789,24 @@ export function getVbscriptHover(
   if (builtin) {
     return builtin;
   }
-  const symbol = resolveSymbolAt(
-    parsed,
-    sourceOffset,
-    context.symbols ?? collectVbscriptSymbols(parsed, context),
-  );
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const symbol = resolveSymbolAt(parsed, sourceOffset, symbols);
   if (!symbol) {
     return undefined;
   }
-  return appendDocumentationMarkdown(
+  const hover = appendDocumentationMarkdown(
     markdownHover(vbscriptHoverSignature(parsed, symbol)),
     symbol.documentation,
     context.locale,
   );
+  const typeNote = documentationTypeNoteForDeclarationHover(
+    parsed,
+    token,
+    symbol,
+    symbols,
+    context.locale,
+  );
+  return typeNote ? `${hover}\n\n_${typeNote}_` : hover;
 }
 
 function markdownHover(signature: string, description?: string): string {
@@ -2750,6 +2755,7 @@ function addSymbolsFromVbNode(
         scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
         parameterMode: parameter.mode,
         optional: parameter.optional || undefined,
+        documentation: documentationForParameter(documentation, parameter.token.text),
       });
     }
   }
@@ -3058,6 +3064,22 @@ function documentationForNode(
   }
   const tokens = docCommentBlockBefore(parsed, node.start);
   return tokens.length > 0 ? parseVbDocumentation(tokens) : undefined;
+}
+
+function documentationForParameter(
+  documentation: VbDocumentation | undefined,
+  name: string,
+): VbDocumentation | undefined {
+  const summary = documentationParameterText(documentation, name);
+  return summary
+    ? {
+        summary,
+        params: {},
+        exceptions: [],
+        see: [],
+        seealso: [],
+      }
+    : undefined;
 }
 
 function docCommentBlockBefore(parsed: AspParsedDocument, offset: number): VbToken[] {
@@ -3397,16 +3419,7 @@ function documentationMarkdown(
   if (documentation.code) {
     lines.push(`\`\`\`vbscript\n${documentation.code}\n\`\`\``);
   }
-  if (hasDocumentationTypeLikeContent(documentation)) {
-    lines.push(`_${localizer.t("vb.doc.typeNote")}_`);
-  }
   return lines.filter(Boolean).join("\n\n");
-}
-
-function hasDocumentationTypeLikeContent(documentation: VbDocumentation): boolean {
-  return Boolean(
-    Object.keys(documentation.params).length > 0 || documentation.returns || documentation.value,
-  );
 }
 
 function appendDocumentationMarkdown(
@@ -3416,6 +3429,102 @@ function appendDocumentationMarkdown(
 ): string {
   const markdown = documentationMarkdown(documentation, locale);
   return markdown ? `${base}\n\n${markdown}` : base;
+}
+
+function documentationParameterText(
+  documentation: VbDocumentation | undefined,
+  name: string,
+): string | undefined {
+  return Object.entries(documentation?.params ?? {}).find(
+    ([parameter]) => parameter.toLowerCase() === name.toLowerCase(),
+  )?.[1];
+}
+
+function documentationTypeNoteForDeclarationHover(
+  parsed: AspParsedDocument,
+  token: VbToken,
+  symbol: VbSymbol,
+  symbols: VbSymbol[],
+  locale: AspLocale | undefined,
+): string | undefined {
+  if (
+    !symbol.documentation ||
+    !sameRange(rangeFromOffsets(parsed.text, token.start, token.end), symbol.range)
+  ) {
+    return undefined;
+  }
+  return symbolNeedsDocumentationTypeNote(parsed, symbol, symbols)
+    ? createLocalizer(locale).t("vb.doc.typeNote")
+    : undefined;
+}
+
+function symbolNeedsDocumentationTypeNote(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  symbols: VbSymbol[],
+): boolean {
+  const annotations = parseTypeAnnotations(parsed);
+  if (symbol.kind === "variable" || symbol.kind === "field" || symbol.kind === "constant") {
+    return !hasTypeAnnotation(parsed, symbol, symbols, annotations);
+  }
+  if (symbol.kind === "sub" || symbol.kind === "function" || symbol.kind === "method") {
+    return (
+      hasMissingParameterTypeAnnotation(symbol, annotations) ||
+      hasMissingReturnTypeAnnotation(symbol, annotations)
+    );
+  }
+  return false;
+}
+
+function hasTypeAnnotation(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  symbols: VbSymbol[],
+  annotations: TypeAnnotations,
+): boolean {
+  return annotations.types.some((annotation) => {
+    if (annotation.name.toLowerCase() !== symbol.name.toLowerCase()) {
+      return false;
+    }
+    const candidates = symbols.filter(
+      (candidate) => candidate.name.toLowerCase() === annotation.name.toLowerCase(),
+    );
+    const target =
+      candidates.find((candidate) =>
+        isSymbolVisibleAt(candidate, parsed.uri, parsed.text, annotation.offset),
+      ) ?? candidates[0];
+    return target ? sameSymbol(target, symbol) : false;
+  });
+}
+
+function hasMissingParameterTypeAnnotation(
+  symbol: VbSymbol,
+  annotations: TypeAnnotations,
+): boolean {
+  const parameters = parameterDetails(symbol);
+  return parameters.some(
+    (parameter) =>
+      !annotations.params.some(
+        (annotation) =>
+          annotation.name.toLowerCase() === parameter.name.toLowerCase() &&
+          (!annotation.procedureName ||
+            annotation.procedureName.toLowerCase() === symbol.name.toLowerCase()),
+      ),
+  );
+}
+
+function hasMissingReturnTypeAnnotation(symbol: VbSymbol, annotations: TypeAnnotations): boolean {
+  if (
+    !(
+      symbol.kind === "function" ||
+      (symbol.kind === "method" && symbol.procedureKind === "function")
+    )
+  ) {
+    return false;
+  }
+  return !annotations.returns.some(
+    (annotation) => annotation.name.toLowerCase() === symbol.name.toLowerCase(),
+  );
 }
 
 function nextProcedureName(parsed: AspParsedDocument, offset: number): string | undefined {
@@ -4344,7 +4453,7 @@ function callExpressionAt(
     const name = callNameBefore(tokens, index);
     return name ? { name, argumentsStart: current.end } : undefined;
   }
-  return undefined;
+  return statementCallExpressionAt(parsed, offset);
 }
 
 function callNameBefore(tokens: VbToken[], openParenIndex: number): string | undefined {
@@ -4359,6 +4468,80 @@ function callNameBefore(tokens: VbToken[], openParenIndex: number): string | und
     return `${tokens[openParenIndex - 3].text}.${before.text}`;
   }
   return before.text;
+}
+
+function statementCallExpressionAt(
+  parsed: AspParsedDocument,
+  offset: number,
+): { name: string; argumentsStart: number } | undefined {
+  const statement = vbStatements(parsed).find((candidate) =>
+    statementContainsOffset(candidate, parsed.text, offset),
+  );
+  if (!statement || statement.some((token) => token.text === "=")) {
+    return undefined;
+  }
+  const nameStartIndex = lowerToken(statement[0]) === "call" ? 1 : 0;
+  if (nameStartIndex === 0 && isNonCallStatementStart(statement[0])) {
+    return undefined;
+  }
+  const nameToken = statement[nameStartIndex];
+  if (nameToken?.kind !== "identifier") {
+    return undefined;
+  }
+  const name =
+    statement[nameStartIndex + 1]?.text === "." &&
+    statement[nameStartIndex + 2]?.kind === "identifier"
+      ? `${nameToken.text}.${statement[nameStartIndex + 2].text}`
+      : nameToken.text;
+  const nameEndIndex = name.includes(".") ? nameStartIndex + 2 : nameStartIndex;
+  if (statement[nameEndIndex + 1]?.text === "(" || offset <= statement[nameEndIndex].end) {
+    return undefined;
+  }
+  return {
+    name,
+    argumentsStart: statement[nameEndIndex + 1]?.start ?? statement[nameEndIndex].end,
+  };
+}
+
+function statementContainsOffset(
+  statement: VbToken[],
+  sourceText: string,
+  offset: number,
+): boolean {
+  const end = statement.at(-1)?.end ?? statement[0].end;
+  if (offset >= statement[0].start && offset <= end) {
+    return true;
+  }
+  return offset > end && /^[ \t]*$/.test(sourceText.slice(end, offset));
+}
+
+function isNonCallStatementStart(token: VbToken): boolean {
+  return [
+    "class",
+    "const",
+    "dim",
+    "do",
+    "else",
+    "elseif",
+    "end",
+    "exit",
+    "for",
+    "function",
+    "if",
+    "loop",
+    "next",
+    "option",
+    "private",
+    "property",
+    "public",
+    "redim",
+    "select",
+    "set",
+    "sub",
+    "wend",
+    "while",
+    "with",
+  ].includes(token.text.toLowerCase());
 }
 
 function countActiveParameter(parsed: AspParsedDocument, start: number, offset: number): number {

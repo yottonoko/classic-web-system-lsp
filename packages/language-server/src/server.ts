@@ -318,7 +318,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         triggerCharacters: ["<", ".", '"', "'", ":", "#", "("],
         resolveProvider: true,
       },
-      signatureHelpProvider: { triggerCharacters: ["(", ","] },
+      signatureHelpProvider: { triggerCharacters: ["(", ",", " "] },
       hoverProvider: true,
       declarationProvider: true,
       definitionProvider: true,
