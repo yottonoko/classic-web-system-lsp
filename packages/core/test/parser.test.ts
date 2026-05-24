@@ -395,17 +395,17 @@ Response. %>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
     const completions = getVbscriptCompletions(parsed, { line: 2, character: 9 });
     expect(completions.some((item) => item.label === "Write")).toBe(true);
-    expect(completions.find((item) => item.label === "Write")?.labelDetails?.detail).toBe(
+    expect(completions.find((item) => item.label === "Write")?.labelDetails?.description).toBe(
       "built-in",
     );
     const topLevelCompletions = getVbscriptCompletions(parsed, { line: 1, character: 4 });
     expect(
-      topLevelCompletions.find((item) => item.label === "Response")?.labelDetails?.detail,
+      topLevelCompletions.find((item) => item.label === "Response")?.labelDetails?.description,
     ).toBe("built-in");
-    expect(topLevelCompletions.find((item) => item.label === "CStr")?.labelDetails?.detail).toBe(
-      "built-in",
-    );
-    expect(resolveVbscriptCompletionItem({ label: "CStr" }, parsed).labelDetails?.detail).toBe(
+    expect(
+      topLevelCompletions.find((item) => item.label === "CStr")?.labelDetails?.description,
+    ).toBe("built-in");
+    expect(resolveVbscriptCompletionItem({ label: "CStr" }, parsed).labelDetails?.description).toBe(
       "built-in",
     );
     expect(topLevelCompletions.find((item) => item.label === "Dim")?.labelDetails).toBeUndefined();
