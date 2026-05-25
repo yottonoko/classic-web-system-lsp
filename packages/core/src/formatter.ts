@@ -1,7 +1,7 @@
 import type { Range, TextEdit } from "vscode-languageserver-types";
 import type { AspFormattingOptions, AspParsedDocument, AspRegion, VbToken } from "./types";
 import { offsetAt, rangeFromOffsets } from "./position";
-import { parseVbscriptCst } from "./vbscript";
+import { parseVbscriptCst } from "./vbscript-cst";
 
 export function formatAspDocument(
   parsed: AspParsedDocument,
