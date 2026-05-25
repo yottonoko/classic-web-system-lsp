@@ -4231,7 +4231,7 @@ function indexWorkspaceRoot(root: string): void {
     return;
   }
   const visit = (dir: string): void => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of readDirectoryEntries(dir)) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!isExcludedWorkspaceDirectory(entry.name, fullPath)) {
@@ -5136,9 +5136,9 @@ function createJsLanguageService(
       project.files.has(normalizeFileName(requested)) || ts.sys.fileExists(requested),
     readFile: (requested) =>
       project.files.get(normalizeFileName(requested))?.text ?? ts.sys.readFile(requested),
-    readDirectory: ts.sys.readDirectory,
+    readDirectory: readTypeScriptDirectory,
     directoryExists: ts.sys.directoryExists,
-    getDirectories: ts.sys.getDirectories,
+    getDirectories: getTypeScriptDirectories,
   };
   const result = { service: ts.createLanguageService(host), host, files: project.files };
   jsLanguageServiceCache.set(cacheKey, {
@@ -5367,7 +5367,7 @@ function browserJavaScriptTypes(
     fileExists: ts.sys.fileExists,
     readFile: ts.sys.readFile,
     directoryExists: ts.sys.directoryExists,
-    getDirectories: ts.sys.getDirectories,
+    getDirectories: getTypeScriptDirectories,
     realpath: ts.sys.realpath,
     getCurrentDirectory: () => currentDirectory,
   };
@@ -5389,7 +5389,7 @@ function collectWorkspaceScriptFiles(root: string): string[] {
     return cached.files;
   }
   const visit = (dir: string): void => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of readDirectoryEntries(dir)) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!isExcludedWorkspaceDirectory(entry.name, fullPath)) {
@@ -5409,6 +5409,36 @@ function collectWorkspaceScriptFiles(root: string): string[] {
     files: result,
   });
   return result;
+}
+
+function readDirectoryEntries(dir: string): fs.Dirent[] {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+function readTypeScriptDirectory(
+  rootDir: string,
+  extensions?: readonly string[],
+  excludes?: readonly string[],
+  includes?: readonly string[],
+  depth?: number,
+): string[] {
+  try {
+    return ts.sys.readDirectory(rootDir, extensions, excludes, includes, depth);
+  } catch {
+    return [];
+  }
+}
+
+function getTypeScriptDirectories(dir: string): string[] {
+  try {
+    return ts.sys.getDirectories(dir);
+  } catch {
+    return [];
+  }
 }
 
 function scriptKindForFileName(fileName: string): ts.ScriptKind {
