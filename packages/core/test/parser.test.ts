@@ -721,6 +721,25 @@ Response.Write("x")
     expect(syntaxDiagnostics).toHaveLength(0);
   });
 
+  it("allows function return value self references in assignments", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Option Explicit
+Function A(v)
+  A = ""
+  A = A & v
+End
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const diagnostics = analyzeVbscript(parsed, {
+      symbols,
+      unusedDiagnostics: false,
+    }).diagnostics;
+    expect(diagnostics).toHaveLength(0);
+  });
+
   it("localizes VBScript declaration syntax diagnostics", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

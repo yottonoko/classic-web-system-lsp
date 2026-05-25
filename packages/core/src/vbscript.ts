@@ -5933,7 +5933,8 @@ function assignmentCallWithoutParentheses(
     !name ||
     name.kind !== "identifier" ||
     statement[equalsIndex + 2]?.text === "(" ||
-    !statement[equalsIndex + 2]
+    !statement[equalsIndex + 2] ||
+    !isUnparenthesizedCallArgumentStart(statement[equalsIndex + 2])
   ) {
     return undefined;
   }
@@ -5952,6 +5953,15 @@ function assignmentCallWithoutParentheses(
       equalsIndex + 2,
     )})`,
     locale,
+  );
+}
+
+function isUnparenthesizedCallArgumentStart(token: VbToken): boolean {
+  return (
+    token.kind === "identifier" ||
+    token.kind === "string" ||
+    token.kind === "number" ||
+    ["true", "false", "nothing", "empty", "null", "me", "new"].includes(lowerToken(token) ?? "")
   );
 }
 

@@ -24,6 +24,7 @@ export interface AspSettings {
   defaultLanguage?: "VBScript" | "JScript";
   virtualRoot?: string;
   virtualRoots?: string[];
+  windowsPathResolution?: boolean;
   checkJs?: boolean;
   javascript?: AspJavascriptSettings;
   includePaths?: string[];

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { analyse, detect } from "chardet";
 import {
   CodeActionKind,
@@ -150,6 +151,17 @@ let semanticTokenResultCounter = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
 const hiddenJavaScriptGlobalCompletions = new Set(["__dirname", "__filename"]);
 const browserJavaScriptLibs = ["lib.esnext.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"];
+
+interface PathResolution {
+  fileName: string;
+  exists: boolean;
+  pathCaseMatches: boolean;
+  actualPath?: string;
+}
+
+interface IncludePathResolution extends PathResolution {
+  actualIncludePath?: string;
+}
 
 const semanticTokenTypes = [
   "keyword",
@@ -1658,6 +1670,8 @@ function diagnosticsSettingsKey(settings: AspSettings): unknown {
     locale: settings.resolvedLocale,
     virtualRoot: settings.virtualRoot,
     virtualRoots: settings.virtualRoots,
+    includePaths: settings.includePaths,
+    windowsPathResolution: settings.windowsPathResolution !== false,
     legacyEncoding: settings.legacyEncoding,
   };
 }
@@ -1899,8 +1913,8 @@ function jsSlowDiagnostics(
         if (settings.checkJs !== true) {
           return [];
         }
-        const service = createJsLanguageService(virtual, settings).service;
-        return service.getSemanticDiagnostics(jsVirtualFileName(virtual.uri));
+        const project = createJsLanguageService(virtual, settings);
+        return project.service.getSemanticDiagnostics(jsProjectFileName(virtual, project));
       },
     );
     const unused = measureDebugStep(
@@ -1960,8 +1974,8 @@ function vbDiagnostics(
 }
 
 function lightweightJsUnusedDiagnostics(virtual: VirtualDocument): ts.Diagnostic[] {
-  const fileName = jsVirtualFileName(virtual.uri);
-  const files = new Map([[normalizeFileName(fileName), virtual.text]]);
+  const fileName = normalizeFileName(jsVirtualFileName(virtual.uri));
+  const files = new Map([[fileName, virtual.text]]);
   const host: ts.LanguageServiceHost = {
     getScriptFileNames: () => [fileName],
     getScriptVersion: () => "0",
@@ -2659,6 +2673,7 @@ function jsInlayHints(cached: CachedDocument, range: Range): InlayHint[] {
       return [];
     }
     const project = createJsLanguageService(virtual, settings);
+    const fileName = jsProjectFileName(virtual, project);
     const seen = new Set<string>();
     return segments
       .flatMap((segment) => {
@@ -2669,7 +2684,7 @@ function jsInlayHints(cached: CachedDocument, range: Range): InlayHint[] {
           return [];
         }
         return project.service.provideInlayHints(
-          jsVirtualFileName(virtual.uri),
+          fileName,
           { start, length: end - start },
           {
             includeInlayParameterNameHints: hints?.parameterNames === false ? "none" : "all",
@@ -2774,10 +2789,11 @@ function jsCallHierarchyContext(
     return undefined;
   }
   const project = createJsLanguageService(virtual, cachedSettings(data.rootUri));
+  const fileName = data.fileName ?? jsProjectFileName(virtual, project);
   return {
     virtual,
     service: project.service,
-    fileName: data.fileName ?? jsVirtualFileName(virtual.uri),
+    fileName,
     offset: data.position,
     files: project.files,
     rootUri: data.rootUri,
@@ -3001,7 +3017,7 @@ function jsInlineValues(cached: CachedDocument, range: Range): InlineValue[] {
   const seen = new Set<string>();
   return jsVirtualDocuments(cached).flatMap((virtual) => {
     const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
-    const fileName = jsVirtualFileName(virtual.uri);
+    const fileName = jsProjectFileName(virtual, project);
     const file = project.files.get(fileName);
     if (!file) {
       return [];
@@ -3057,11 +3073,13 @@ function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem 
   if (!cached || !virtual || typeof data?.virtualOffset !== "number" || !data.name) {
     return undefined;
   }
-  const service = createJsLanguageService(virtual, cachedSettings(uri)).service;
+  const project = createJsLanguageService(virtual, cachedSettings(uri));
+  const service = project.service;
+  const fileName = jsProjectFileName(virtual, project);
   const preferences = jsCompletionPreferences(cachedSettings(uri));
   const details = safeGetCompletionEntryDetails(
     service,
-    jsVirtualFileName(virtual.uri),
+    fileName,
     data.virtualOffset,
     data.name,
     data.source,
@@ -3221,8 +3239,8 @@ function jsContextAt(cached: CachedDocument, position: Position): JsProjectConte
     return undefined;
   }
   const doc = toTextDocument(virtual);
-  const fileName = jsVirtualFileName(virtual.uri);
   const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
+  const fileName = jsProjectFileName(virtual, project);
   return {
     virtual,
     service: project.service,
@@ -3320,7 +3338,7 @@ function cssDocumentSymbols(cached: CachedDocument): DocumentSymbol[] {
 function jsDocumentSymbols(cached: CachedDocument): DocumentSymbol[] {
   return jsVirtualDocuments(cached).flatMap((virtual) => {
     const project = createJsLanguageService(virtual, cachedSettings(virtualSourceUri(virtual)));
-    const tree = project.service.getNavigationTree(jsVirtualFileName(virtual.uri));
+    const tree = project.service.getNavigationTree(jsProjectFileName(virtual, project));
     return (tree.childItems ?? [])
       .map((item) => navigationTreeToDocumentSymbol(virtual, item))
       .filter((symbol): symbol is DocumentSymbol => Boolean(symbol));
@@ -3386,7 +3404,7 @@ function jsFoldingRanges(cached: CachedDocument): FoldingRange[] {
   return jsVirtualDocuments(cached).flatMap((virtual) => {
     const project = createJsLanguageService(virtual, cachedSettings(virtualSourceUri(virtual)));
     return project.service
-      .getOutliningSpans(jsVirtualFileName(virtual.uri))
+      .getOutliningSpans(jsProjectFileName(virtual, project))
       .map((span) => textSpanToSourceRange(virtual, span.textSpan))
       .filter((range): range is Range => Boolean(range))
       .map((range) => ({ startLine: range.start.line, endLine: range.end.line }));
@@ -3602,8 +3620,13 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
   const owner = uriToFileName(cached.source.uri);
   const localizer = localizerForSettings(settings);
   for (const include of cached.parsed.includes) {
-    const resolved = resolveIncludePath(cached.source.uri, include.path, include.mode, settings);
-    if (!resolved || !fs.existsSync(resolved)) {
+    const resolved = resolveIncludePathDetails(
+      cached.source.uri,
+      include.path,
+      include.mode,
+      settings,
+    );
+    if (!resolved.exists) {
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
         range: include.range,
@@ -3611,8 +3634,21 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
         code: "include.missing",
         source: "asp-lsp-include",
       });
+      continue;
     }
-    if (sameFile(resolved, owner)) {
+    if (settings.windowsPathResolution !== false && !resolved.pathCaseMatches) {
+      diagnostics.push({
+        severity: DiagnosticSeverity.Warning,
+        range: include.pathRange,
+        message: localizer.t("server.include.caseMismatch", {
+          path: include.path,
+          actualPath: resolved.actualIncludePath ?? resolved.actualPath ?? resolved.fileName,
+        }),
+        code: "include.pathCaseMismatch",
+        source: "asp-lsp-include",
+      });
+    }
+    if (sameFile(resolved.fileName, owner)) {
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
         range: include.range,
@@ -3622,7 +3658,7 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
       });
       continue;
     }
-    const cycle = findIncludeCycle(owner, resolved, settings);
+    const cycle = findIncludeCycle(owner, resolved.fileName, settings);
     if (cycle) {
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
@@ -4356,6 +4392,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     resolvedLocale: resolveLocale(normalizeLocaleSetting(settings.locale)),
     defaultLanguage: settings.defaultLanguage === "JScript" ? "JScript" : "VBScript",
     checkJs: settings.checkJs === true,
+    windowsPathResolution: settings.windowsPathResolution !== false,
     virtualRoot:
       typeof settings.virtualRoot === "string" && settings.virtualRoot.length > 0
         ? path.resolve(settings.virtualRoot)
@@ -5099,9 +5136,9 @@ function createJsLanguageService(
       project.files.has(normalizeFileName(requested)) || ts.sys.fileExists(requested),
     readFile: (requested) =>
       project.files.get(normalizeFileName(requested))?.text ?? ts.sys.readFile(requested),
-    readDirectory: ts.sys.readDirectory,
+    readDirectory: readTypeScriptDirectory,
     directoryExists: ts.sys.directoryExists,
-    getDirectories: ts.sys.getDirectories,
+    getDirectories: getTypeScriptDirectories,
   };
   const result = { service: ts.createLanguageService(host), host, files: project.files };
   jsLanguageServiceCache.set(cacheKey, {
@@ -5330,7 +5367,7 @@ function browserJavaScriptTypes(
     fileExists: ts.sys.fileExists,
     readFile: ts.sys.readFile,
     directoryExists: ts.sys.directoryExists,
-    getDirectories: ts.sys.getDirectories,
+    getDirectories: getTypeScriptDirectories,
     realpath: ts.sys.realpath,
     getCurrentDirectory: () => currentDirectory,
   };
@@ -5382,6 +5419,28 @@ function readDirectoryEntries(dir: string): fs.Dirent[] {
   }
 }
 
+function readTypeScriptDirectory(
+  rootDir: string,
+  extensions?: readonly string[],
+  excludes?: readonly string[],
+  includes?: readonly string[],
+  depth?: number,
+): string[] {
+  try {
+    return ts.sys.readDirectory(rootDir, extensions, excludes, includes, depth);
+  } catch {
+    return [];
+  }
+}
+
+function getTypeScriptDirectories(dir: string): string[] {
+  try {
+    return ts.sys.getDirectories(dir);
+  } catch {
+    return [];
+  }
+}
+
 function scriptKindForFileName(fileName: string): ts.ScriptKind {
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".ts") || lower.endsWith(".mts") || lower.endsWith(".cts")) {
@@ -5402,6 +5461,15 @@ function resolveIncludePath(
   mode: "file" | "virtual",
   settings: AspSettings,
 ): string {
+  return resolveIncludePathDetails(ownerUri, includePath, mode, settings).fileName;
+}
+
+function resolveIncludePathDetails(
+  ownerUri: string,
+  includePath: string,
+  mode: "file" | "virtual",
+  settings: AspSettings,
+): IncludePathResolution {
   if (mode === "virtual") {
     const normalizedInclude = includePath.replace(/^\/+/, "");
     for (const root of [
@@ -5413,24 +5481,115 @@ function resolveIncludePath(
       if (!root) {
         continue;
       }
-      const candidate = path.resolve(root, normalizedInclude);
-      if (fs.existsSync(candidate)) {
+      const candidate = resolveIncludeCandidate(
+        root,
+        normalizedInclude,
+        settings,
+        (actual) => `/${path.relative(root, actual).split(path.sep).join("/")}`,
+      );
+      if (candidate.exists) {
         return candidate;
       }
     }
-    return path.resolve(settings.virtualRoot ?? workspaceRootFromUri(ownerUri), normalizedInclude);
+    const root = settings.virtualRoot ?? workspaceRootFromUri(ownerUri);
+    return resolveIncludeCandidate(
+      root,
+      normalizedInclude,
+      settings,
+      (actual) => `/${path.relative(root, actual).split(path.sep).join("/")}`,
+    );
   }
-  const local = path.resolve(path.dirname(uriToFileName(ownerUri)), includePath);
-  if (fs.existsSync(local)) {
+  const ownerDirectory = path.dirname(uriToFileName(ownerUri));
+  const local = resolveIncludeCandidate(ownerDirectory, includePath, settings, (actual) =>
+    path.relative(ownerDirectory, actual).split(path.sep).join("/"),
+  );
+  if (local.exists) {
     return local;
   }
   for (const root of [...(settings.includePaths ?? []), ...(settings.virtualRoots ?? [])]) {
-    const candidate = path.resolve(root, includePath);
-    if (fs.existsSync(candidate)) {
+    const candidate = resolveIncludeCandidate(root, includePath, settings, (actual) =>
+      path.relative(root, actual).split(path.sep).join("/"),
+    );
+    if (candidate.exists) {
       return candidate;
     }
   }
   return local;
+}
+
+function resolveIncludeCandidate(
+  baseDirectory: string,
+  includePath: string,
+  settings: AspSettings,
+  actualIncludePath: (actualPath: string) => string,
+): IncludePathResolution {
+  const resolved = resolvePathFromBase(baseDirectory, includePath, settings);
+  return {
+    ...resolved,
+    actualIncludePath: resolved.actualPath ? actualIncludePath(resolved.actualPath) : undefined,
+  };
+}
+
+function resolvePathFromBase(
+  baseDirectory: string,
+  requestedPath: string,
+  settings: AspSettings,
+): PathResolution {
+  const fileName = path.resolve(baseDirectory, requestedPath);
+  if (settings.windowsPathResolution === false) {
+    const exists = fs.existsSync(fileName);
+    return {
+      fileName,
+      exists,
+      pathCaseMatches: true,
+      actualPath: exists ? fileName : undefined,
+    };
+  }
+  let start = path.isAbsolute(requestedPath)
+    ? path.parse(fileName).root
+    : normalizeFileName(baseDirectory);
+  let relative = path.relative(start, fileName);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    start = path.parse(fileName).root;
+    relative = path.relative(start, fileName);
+  }
+  if (!relative) {
+    const exists = fs.existsSync(fileName);
+    return {
+      fileName,
+      exists,
+      pathCaseMatches: true,
+      actualPath: exists ? fileName : undefined,
+    };
+  }
+  let current = start;
+  let pathCaseMatches = true;
+  for (const segment of relative.split(path.sep).filter((part) => part.length > 0)) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return { fileName, exists: false, pathCaseMatches };
+    }
+    const exact = entries.find((entry) => entry.name === segment);
+    if (exact) {
+      current = path.join(current, exact.name);
+      continue;
+    }
+    const lower = segment.toLowerCase();
+    const insensitive = entries.filter((entry) => entry.name.toLowerCase() === lower);
+    if (insensitive.length !== 1) {
+      return { fileName, exists: false, pathCaseMatches };
+    }
+    pathCaseMatches = false;
+    current = path.join(current, insensitive[0].name);
+  }
+  return {
+    fileName: current,
+    exists: true,
+    pathCaseMatches,
+    actualPath: current,
+  };
 }
 
 function workspaceRootFromUri(uri: string): string {
@@ -5441,19 +5600,29 @@ function workspaceRootFromUri(uri: string): string {
 }
 
 function uriToFileName(uri: string): string {
-  if (uri.startsWith("file://")) {
-    return decodeURIComponent(new URL(uri).pathname);
-  }
-  return uri.replace(/\.(html|css|javascript|vbscript|jscript)\.virtual$/, "");
+  const fileName = uri.startsWith("file://") ? fileURLToPath(uri) : uri;
+  return fileName.replace(/\.(html|css|javascript|vbscript|jscript)\.virtual$/, "");
 }
 
 function jsVirtualFileName(uri: string): string {
-  const fileName = uri.startsWith("file://") ? decodeURIComponent(new URL(uri).pathname) : uri;
+  const fileName = uri.startsWith("file://") ? fileURLToPath(uri) : uri;
   return fileName.replace(/\.(javascript|jscript)\.virtual$/, ".$1.js");
 }
 
+function jsProjectFileName(
+  virtual: VirtualDocument,
+  project: Pick<JsLanguageServiceProject, "files">,
+): string {
+  const normalized = normalizeFileName(jsVirtualFileName(virtual.uri));
+  return (
+    project.files.get(normalized)?.fileName ??
+    [...project.files.values()].find((file) => file.virtual?.uri === virtual.uri)?.fileName ??
+    normalized
+  );
+}
+
 function pathToFileUri(fileName: string): string {
-  return new URL(`file://${fileName}`).toString();
+  return pathToFileURL(fileName).toString();
 }
 
 function normalizeFileName(fileName: string): string {
@@ -6407,8 +6576,9 @@ function jsCodeActions(
     if (virtualStart === undefined || virtualEnd === undefined) {
       continue;
     }
-    const service = createJsLanguageService(virtual, cachedSettings(cached.source.uri)).service;
-    const fileName = jsVirtualFileName(virtual.uri);
+    const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
+    const service = project.service;
+    const fileName = jsProjectFileName(virtual, project);
     if (codeActionAllows(context, CodeActionKind.QuickFix)) {
       const errorCodes = context.diagnostics
         .filter(
@@ -6475,10 +6645,14 @@ function codeActionAllows(context: CodeActionContext, kind: string): boolean {
 function organizeJavaScriptImportsEdit(cached: CachedDocument): WorkspaceEdit | undefined {
   const edits = jsVirtualDocuments(cached)
     .map((virtual) => {
-      const service = createJsLanguageService(virtual, cachedSettings(cached.source.uri)).service;
+      const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
       return fileTextChangesToWorkspaceEdit(
         virtual,
-        service.organizeImports({ type: "file", fileName: jsVirtualFileName(virtual.uri) }, {}, {}),
+        project.service.organizeImports(
+          { type: "file", fileName: jsProjectFileName(virtual, project) },
+          {},
+          {},
+        ),
       );
     })
     .filter((edit): edit is WorkspaceEdit => Boolean(edit));
@@ -7040,7 +7214,15 @@ function addEmbeddedSemanticTokens(
   }
   for (const virtual of jsVirtualDocuments(cached)) {
     const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
-    addJavaScriptSemanticTokens(tokens, cached, virtual, project.service, rangeStart, rangeEnd);
+    addJavaScriptSemanticTokens(
+      tokens,
+      cached,
+      virtual,
+      project.service,
+      jsProjectFileName(virtual, project),
+      rangeStart,
+      rangeEnd,
+    );
   }
 }
 
@@ -7049,11 +7231,12 @@ function addJavaScriptSemanticTokens(
   cached: CachedDocument,
   virtual: VirtualDocument,
   service: ts.LanguageService,
+  fileName: string,
   rangeStart: number,
   rangeEnd: number,
 ): void {
   const spans = service.getEncodedSemanticClassifications(
-    jsVirtualFileName(virtual.uri),
+    fileName,
     { start: 0, length: virtual.text.length },
     ts.SemanticClassificationFormat.TwentyTwenty,
   ).spans;

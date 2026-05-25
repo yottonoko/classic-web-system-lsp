@@ -105,6 +105,9 @@ describe("VS Code extension package", () => {
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.implicitByRef"],
     ).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.windowsPathResolution"],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.legacyEncoding"]).toEqual(
       expect.objectContaining({
         enum: ["auto", "utf8", "shift_jis", "cp932"],
@@ -500,7 +503,10 @@ describe("VS Code extension package", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       contributes?: {
         configuration?: {
-          properties?: Record<string, { enum?: string[]; properties?: Record<string, unknown> }>;
+          properties?: Record<
+            string,
+            { default?: unknown; enum?: string[]; properties?: Record<string, unknown> }
+          >;
         };
       };
     };
@@ -518,6 +524,7 @@ describe("VS Code extension package", () => {
         "ignore",
       ]),
     );
+    expect(identifierCase?.default).toBe("ignore");
     expect(identifierCase?.enum).not.toEqual(expect.arrayContaining(["lower", "upper"]));
     expect(byKind?.properties).toEqual(
       expect.objectContaining({

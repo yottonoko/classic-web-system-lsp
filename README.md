@@ -40,7 +40,7 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - quick fixes for undeclared variables, missing includes, include suggestions, removable unused VBScript declarations, strict type diagnostics such as missing `Set`, unnecessary `Set`, and type annotations, and extract-variable refactors for selected VBScript expressions
 - VB.NET-style `'''` XML documentation comments for VBScript hover, completion resolve, and signature help
 - XML documentation tag completion for `summary`, `remarks`, `param`, `returns`, `value`, `exception`, `see`, `seealso`, `example`, `code`, `c`, `list`, and `para`
-- conservative support for `ReDim`, `For Each`, `With`, W3Schools ASP Reference built-ins, FileSystem/Dictionary/MSWC components, and ADO object completions
+- conservative support for `ReDim`, `For Each`, `With`, ASP Reference built-ins, FileSystem/Dictionary/MSWC components, and ADO object completions
 - TypeScript-backed hover, navigation, references, rename, signature help, call hierarchy, monikers, inline values, and project-model-aware module resolution for JavaScript and server-side JScript regions
 - lazy workspace symbol and diagnostic indexing for unopened `.asp`, `.asa`, and `.inc` files
 - HTML/CSS rename, CSS/JS document symbols, richer folding, CSS colors, and include file-operation updates
@@ -98,6 +98,7 @@ JavaScript.
 | `aspLsp.javascript.ignoreProjectConfig`   | `false`                  | Ignore nearest `tsconfig.json` or `jsconfig.json` for embedded JavaScript/JScript language service projects.                                     |
 | `aspLsp.virtualRoot`                      | `""`                     | Root directory for `<!-- #include virtual="..." -->`.                                                                                            |
 | `aspLsp.virtualRoots`                     | `[]`                     | Additional virtual include roots.                                                                                                                |
+| `aspLsp.windowsPathResolution`            | `true`                   | Resolve includes case-insensitively like Windows and report diagnostics when path casing does not exactly match the file system.                 |
 | `aspLsp.legacyEncoding`                   | `auto`                   | Encoding for unopened include files, `auto`, `utf8`, `shift_jis`, or `cp932`.                                                                    |
 | `aspLsp.format.indentSize`                | `null`                   | Classic ASP formatter indent size; `null` uses editor options.                                                                                   |
 | `aspLsp.format.indentStyle`               | Unset                    | `space` or `tab`; unset uses editor options.                                                                                                     |
@@ -108,7 +109,7 @@ JavaScript.
 | `aspLsp.format.ignoreJavaScriptTagIndent` | `false`                  | Ignore surrounding tag indentation when formatting JavaScript/JScript regions.                                                                   |
 | `aspLsp.format.onSave`                    | `false`                  | Return full-document formatting edits from `textDocument/willSaveWaitUntil`.                                                                     |
 | `aspLsp.vbscript.typeChecking`            | `basic`                  | `basic` or `strict`; strict enables VBScript type diagnostics.                                                                                   |
-| `aspLsp.vbscript.identifierCase`          | Unset                    | `PascalCase`, `UPPERCASE`, `camelCase`, `lowercase`, `snake_case`, `UPPER_SNAKE`, or `ignore`; reports declaration casing hints and quick fixes. |
+| `aspLsp.vbscript.identifierCase`          | `ignore`                 | `PascalCase`, `UPPERCASE`, `camelCase`, `lowercase`, `snake_case`, `UPPER_SNAKE`, or `ignore`; reports declaration casing hints and quick fixes. |
 | `aspLsp.vbscript.identifierCaseByKind`    | `{}`                     | Per-symbol-kind VBScript identifier casing overrides.                                                                                            |
 | `aspLsp.vbscript.comTypes`                | `{}`                     | Custom COM type catalog keyed by `Server.CreateObject` Prog.ID.                                                                                  |
 | `aspLsp.vbscript.globals`                 | `{}`                     | Runtime or framework-provided VBScript globals keyed by identifier.                                                                              |
@@ -162,7 +163,7 @@ Example `aspLsp.vbscript.comTypes` and `aspLsp.vbscript.globals` entries:
 - Cross-language rename is conservative. It links HTML `id`/`class`, CSS `#id`/`.class`, and common JavaScript DOM selector strings such as `querySelector`, `querySelectorAll`, `getElementById`, and `classList` across open and indexed Classic ASP workspace files.
 - VBScript has no import syntax, so auto import support is exposed as include suggestions for undeclared symbols that exist in indexed `.asp`, `.asa`, or `.inc` workspace files.
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
-- Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
+- Include resolution supports `file` and `virtual` directives, Windows-style case-insensitive lookup with exact-casing diagnostics, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed. COM type information comes from built-in ASP/COM/ADO stubs or `aspLsp.vbscript.comTypes`.
 - Call hierarchy, type hierarchy, CodeLens, type definition, implementation, monikers, and inline values are static and user-defined-symbol first; runtime COM dispatch is not modeled.
 - Save and will-save hooks refresh diagnostics and caches. `willSaveWaitUntil` is non-mutating by default and returns full-document formatting edits only when `aspLsp.format.onSave` is enabled.

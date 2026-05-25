@@ -2,14 +2,33 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { CompletionItemKind, InsertTextFormat } from "vscode-languageserver-types";
+import {
+  CompletionItemKind,
+  DiagnosticSeverity,
+  InsertTextFormat,
+} from "vscode-languageserver-types";
 
 interface JsonRpcMessage {
   id?: number;
   method?: string;
   params?: unknown;
   result?: unknown;
+  error?: JsonRpcError;
+}
+
+interface JsonRpcError {
+  code?: number;
+  message?: string;
+  data?: unknown;
+}
+
+interface PendingResponse {
+  method: string;
+  resolve: (message: unknown) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface MarkedDocument {
@@ -1016,6 +1035,97 @@ function boot() {
       }
     });
 
+    it("keeps JavaScript diagnostics stable when virtual file names are normalized", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              checkJs: true,
+              diagnostics: { debounceMs: 0 },
+              javascript: { ignoreProjectConfig: true },
+            },
+          },
+        });
+
+        const uri = "relative/a.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<script>const title = document.title;</script>`,
+          },
+        });
+
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        expect(JSON.stringify(diagnostics)).not.toContain("Could not find source file");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("skips unreadable workspace directories when building JavaScript projects", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-unreadable-"));
+      const unreadableDir = path.join(tempDir, "blocked");
+      fs.mkdirSync(unreadableDir);
+      let restoreUnreadableDir = false;
+      try {
+        fs.chmodSync(unreadableDir, 0o000);
+        restoreUnreadableDir = true;
+      } catch {
+        restoreUnreadableDir = false;
+      }
+
+      const marked = markedDocument("<script>const safeName = 1; safe▮</script>");
+      const uri = pathToFileURL(path.join(tempDir, "page.asp")).toString();
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+        });
+        expect(completionLabels(completions)).toContain("safeName");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        if (restoreUnreadableDir) {
+          fs.chmodSync(unreadableDir, 0o700);
+        }
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("keeps ASP delimiters inside CSS and JavaScript from producing embedded diagnostics", async () => {
       const server = new RpcServer();
       try {
@@ -2018,6 +2128,148 @@ both.SharedName
           files: [{ oldUri: `file://${include}`, newUri: `file://${renamed}` }],
         });
         expect(JSON.stringify(edit)).toContain("renamed.inc");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("resolves Windows-style include paths and reports path casing mismatches", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-path-case-"));
+      const mismatchOwner = path.join(tempDir, "mismatch.asp");
+      const exactOwner = path.join(tempDir, "exact.asp");
+      const mixedCaseInclude = path.join(tempDir, "aB.asp");
+      const upperCaseInclude = path.join(tempDir, "BA.asp");
+      fs.writeFileSync(
+        mixedCaseInclude,
+        `<%
+Function SharedFromMixed()
+End Function
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        upperCaseInclude,
+        `<%
+Function SharedFromUpper()
+End Function
+%>`,
+        "utf8",
+      );
+      const mismatch = markedDocument(`<!-- #include file="ab.asp" -->
+<%
+Response.Write Shared▮FromMixed()
+%>`);
+      const exact = `<!-- #include file="BA.asp" -->
+<%
+Response.Write SharedFromUpper()
+%>`;
+      fs.writeFileSync(mismatchOwner, mismatch.text, "utf8");
+      fs.writeFileSync(exactOwner, exact, "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${mismatchOwner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: mismatch.text,
+          },
+        });
+
+        const diagnostics = await waitForDiagnosticsContaining(server, "file system casing");
+        const includeDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-include");
+        expect(includeDiagnostics).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              code: "include.pathCaseMismatch",
+              severity: DiagnosticSeverity.Warning,
+            }),
+          ]),
+        );
+        expect(JSON.stringify(includeDiagnostics)).toContain("aB.asp");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri: `file://${mismatchOwner}` },
+          position: mismatch.position,
+        });
+        expect(completionLabels(completions)).toContain("SharedFromMixed");
+
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${exactOwner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: exact,
+          },
+        });
+        const exactDiagnostics = await server.request("textDocument/diagnostic", {
+          textDocument: { uri: `file://${exactOwner}` },
+        });
+        expect(JSON.stringify(exactDiagnostics)).not.toContain("include.pathCaseMismatch");
+        expect(JSON.stringify(exactDiagnostics)).not.toContain("could not be resolved");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("can disable Windows-style include path casing diagnostics", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-path-case-off-"));
+      const owner = path.join(tempDir, "default.asp");
+      fs.writeFileSync(
+        path.join(tempDir, "aB.asp"),
+        `<%
+Function SharedFromMixed()
+End Function
+%>`,
+        "utf8",
+      );
+      const source = `<!-- #include file="ab.asp" -->
+<%
+Response.Write SharedFromMixed()
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { windowsPathResolution: false } },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${owner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        const diagnostics = await server.request("textDocument/diagnostic", {
+          textDocument: { uri: `file://${owner}` },
+        });
+        expect(JSON.stringify(diagnostics)).not.toContain("include.pathCaseMismatch");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -5259,7 +5511,7 @@ class RpcServer {
   private nextId = 1;
   private buffer = Buffer.alloc(0);
   private stderr = "";
-  private responses = new Map<number, (message: JsonRpcMessage) => void>();
+  private responses = new Map<number, PendingResponse>();
   private notifications = new Map<string, Array<(message: JsonRpcMessage) => void>>();
   private pendingNotifications = new Map<string, JsonRpcMessage[]>();
 
@@ -5280,11 +5532,11 @@ class RpcServer {
     this.nextId += 1;
     this.write({ jsonrpc: "2.0", id, method, params });
     return new Promise((resolve, reject) => {
-      this.responses.set(id, (message) => resolve(message.result));
-      setTimeout(
+      const timer = setTimeout(
         () => reject(new Error(`Timed out waiting for ${method}: ${this.stderr}`)),
         rpcTimeoutMs,
       );
+      this.responses.set(id, { method, resolve, reject, timer });
     });
   }
 
@@ -5346,7 +5598,19 @@ class RpcServer {
       ) as JsonRpcMessage;
       this.buffer = this.buffer.slice(bodyEnd);
       if (message.id !== undefined) {
-        this.responses.get(message.id)?.(message);
+        const pending = this.responses.get(message.id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          if (message.error) {
+            pending.reject(
+              new Error(
+                `Request ${pending.method} failed: ${JSON.stringify(message.error)} ${this.stderr}`,
+              ),
+            );
+          } else {
+            pending.resolve(message.result);
+          }
+        }
         this.responses.delete(message.id);
       } else if (message.method) {
         const callbacks = this.notifications.get(message.method) ?? [];
