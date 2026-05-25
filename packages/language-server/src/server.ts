@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -65,7 +66,7 @@ import { TextDocument } from "vscode-languageserver-textdocument";
 import {
   analyzeVbscript,
   buildVbTypeEnvironment,
-  buildVirtualDocuments,
+  buildVirtualDocument,
   collectVbscriptSymbols,
   createLocalizer,
   formatAspDocument,
@@ -92,6 +93,7 @@ import {
   resolveVbscriptCompletionItem,
   updateAspParsedDocument,
   type AspFormattingOptions,
+  type AspEmbeddedLanguage,
   type AspIncrementalChange,
   type AspLegacyEncoding,
   type AspLocale,
@@ -130,7 +132,10 @@ const documents = new TextDocuments({
 const htmlService = getHtmlLanguageService();
 const cssService = getCSSLanguageService();
 const settingsByUri = new Map<string, AspSettings>();
-const includeDocumentCache = new Map<string, { mtimeMs: number; parsed: AspParsedDocument }>();
+const includeDocumentCache = new Map<
+  string,
+  { mtimeMs: number; size: number; parsed: AspParsedDocument }
+>();
 const workspaceIndex = new Map<string, WorkspaceIndexedDocument>();
 const workspaceScriptFilesCache = new Map<
   string,
@@ -335,7 +340,8 @@ const slowDiagnosticsJobs = new Map<string, SlowDiagnosticsJob>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 const maxVbProjectContextCacheEntries = 32;
 let slowDiagnosticsSequence = 0;
-let vbDiagnosticsWorker: Worker | undefined;
+let vbDiagnosticsWorkers: Worker[] = [];
+let vbDiagnosticsWorkerCursor = 0;
 let vbDiagnosticsWorkerRequestSequence = 0;
 const pendingVbDiagnosticsWorkerRequests = new Map<number, PendingVbDiagnosticsWorkerRequest>();
 
@@ -581,7 +587,7 @@ connection.onCompletion((params) => {
     );
   }
   if (region.language === "html") {
-    const virtual = cached.virtuals.get("html");
+    const virtual = getCachedVirtual(cached, "html");
     if (!virtual) {
       return [];
     }
@@ -650,7 +656,7 @@ connection.onHover((params) => {
     return jsHover(cached, params.position);
   }
   if (region.language === "html") {
-    const virtual = cached.virtuals.get("html");
+    const virtual = getCachedVirtual(cached, "html");
     if (!virtual) {
       return null;
     }
@@ -658,7 +664,7 @@ connection.onHover((params) => {
     return htmlService.doHover(doc, params.position, htmlService.parseHTMLDocument(doc));
   }
   if (region.language === "css") {
-    const virtual = cached.virtuals.get("css");
+    const virtual = getCachedVirtual(cached, "css");
     if (!virtual) {
       return null;
     }
@@ -881,7 +887,7 @@ connection.onDocumentSymbol((params) => {
   if (!cached) {
     return [];
   }
-  const htmlVirtual = cached.virtuals.get("html");
+  const htmlVirtual = getCachedVirtual(cached, "html");
   const htmlSymbols: DocumentSymbol[] = htmlVirtual
     ? htmlService.findDocumentSymbols2(
         toTextDocument(htmlVirtual),
@@ -901,7 +907,7 @@ connection.onFoldingRanges((params) => {
   if (!cached) {
     return [];
   }
-  const htmlVirtual = cached.virtuals.get("html");
+  const htmlVirtual = getCachedVirtual(cached, "html");
   const htmlRanges: FoldingRange[] = htmlVirtual
     ? htmlService.getFoldingRanges(toTextDocument(htmlVirtual), {})
     : [];
@@ -1115,7 +1121,7 @@ function htmlLinkedRanges(cached: CachedDocument, position: Position): Range[] |
   if (!region || region.language !== "html") {
     return null;
   }
-  const virtual = cached.virtuals.get("html");
+  const virtual = getCachedVirtual(cached, "html");
   if (!virtual) {
     return null;
   }
@@ -1164,7 +1170,7 @@ connection.onDocumentRangeFormatting((params) => {
   if (!region || region.language !== "html") {
     return formatAspRangeWithDelegates(cached, params.range, params.options);
   }
-  const virtual = cached.virtuals.get("html");
+  const virtual = getCachedVirtual(cached, "html");
   if (!virtual) {
     return [];
   }
@@ -1273,9 +1279,12 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
     update?.incremental === true ? "analysis.parse.incremental" : "analysis.parse.full",
     parseStartedAt,
   );
-  const virtualStartedAt = process.hrtime.bigint();
-  const virtuals = buildVirtualDocuments(parsed);
-  finishDebugStep(settings, document.uri, "analysis.virtualDocuments", virtualStartedAt);
+  finishDebugStep(
+    settings,
+    document.uri,
+    "analysis.virtualDocuments.lazy",
+    process.hrtime.bigint(),
+  );
   const changes = update?.incremental
     ? [...(previous?.changes ?? []), ...(update.change ? [update.change] : [])]
     : undefined;
@@ -1289,7 +1298,7 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
   const cached = {
     source: document,
     parsed,
-    virtuals,
+    virtuals: new Map<string, VirtualDocument>(),
     analysis: previous?.analysis,
     changes,
     dirtyLanguages,
@@ -1482,22 +1491,10 @@ function fastDiagnosticsForCached(
   );
   const diagnostics: Diagnostic[] = [...parserDiagnostics, ...includeItems];
   if (!isIncDocument(cached.source.uri)) {
-    diagnostics.push(
-      ...measureDebugStep(settings, cached.source.uri, `${stepPrefix}.htmlDiagnostics`, () =>
-        htmlDiagnostics(cached),
-      ),
-    );
+    measureDebugStep(settings, cached.source.uri, `${stepPrefix}.htmlDiagnostics`, () => undefined);
   }
-  diagnostics.push(
-    ...measureDebugStep(settings, cached.source.uri, `${stepPrefix}.cssDiagnostics`, () =>
-      cssDiagnostics(cached),
-    ),
-  );
-  diagnostics.push(
-    ...measureDebugStep(settings, cached.source.uri, `${stepPrefix}.javascriptSyntax`, () =>
-      jsSyntaxDiagnostics(cached),
-    ),
-  );
+  measureDebugStep(settings, cached.source.uri, `${stepPrefix}.cssDiagnostics`, () => undefined);
+  measureDebugStep(settings, cached.source.uri, `${stepPrefix}.javascriptSyntax`, () => undefined);
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
     dedupeDiagnostics(diagnostics),
   );
@@ -1523,13 +1520,40 @@ function slowDiagnosticsForCached(
     );
     return cached.analysis.slowDiagnostics.items;
   }
+  const embeddedItems = embeddedSlowDiagnostics(cached, settings, stepPrefix);
   const vbItems = vbDiagnostics(cached, settings, stepPrefix);
   const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
-    dedupeDiagnostics([...vbItems, ...jsItems]),
+    dedupeDiagnostics([...embeddedItems, ...vbItems, ...jsItems]),
   );
   analysisFor(cached).slowDiagnostics = { key, items, text: cached.parsed.text };
   return items;
+}
+
+function embeddedSlowDiagnostics(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix: string,
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  if (!isIncDocument(cached.source.uri)) {
+    diagnostics.push(
+      ...measureDebugStep(settings, cached.source.uri, `${stepPrefix}.htmlDiagnostics`, () =>
+        htmlDiagnostics(cached),
+      ),
+    );
+  }
+  diagnostics.push(
+    ...measureDebugStep(settings, cached.source.uri, `${stepPrefix}.cssDiagnostics`, () =>
+      cssDiagnostics(cached),
+    ),
+  );
+  diagnostics.push(
+    ...measureDebugStep(settings, cached.source.uri, `${stepPrefix}.javascriptSyntax`, () =>
+      jsSyntaxDiagnostics(cached),
+    ),
+  );
+  return diagnostics;
 }
 
 async function slowDiagnosticsForCachedAsync(
@@ -1547,11 +1571,19 @@ async function slowDiagnosticsForCachedAsync(
     );
     return cached.analysis.slowDiagnostics.items;
   }
+  const embeddedItems = embeddedSlowDiagnostics(cached, settings, stepPrefix);
   const vbItemsPromise = vbDiagnosticsAsync(cached, settings, stepPrefix);
   const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
   const vbItems = await vbItemsPromise;
+  logWorkerDebugStep(settings, cached.source.uri, `${stepPrefix}.javascriptUnused.replayed`, 0);
+  logWorkerDebugStep(
+    settings,
+    cached.source.uri,
+    `${stepPrefix}.vbscript.diagnostics.unusedSymbols.replayed`,
+    0,
+  );
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
-    dedupeDiagnostics([...vbItems, ...jsItems]),
+    dedupeDiagnostics([...embeddedItems, ...vbItems, ...jsItems]),
   );
   analysisFor(cached).slowDiagnostics = { key, items, text: cached.parsed.text };
   return items;
@@ -1642,6 +1674,42 @@ function measureDebugStep<T>(
   const startedAt = process.hrtime.bigint();
   try {
     return callback();
+  } finally {
+    finishDebugStep(settings, uri, step, startedAt);
+  }
+}
+
+function workerPoolSize(): number {
+  return Math.max(1, Math.min(4, os.availableParallelism() - 1));
+}
+
+async function mapWithConcurrency<T, U>(
+  items: readonly T[],
+  concurrency: number,
+  callback: (item: T, index: number) => Promise<U>,
+): Promise<U[]> {
+  const results = Array.from<U>({ length: items.length });
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await callback(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function measureDebugStepAsync<T>(
+  settings: AspSettings,
+  uri: string,
+  step: string,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const startedAt = process.hrtime.bigint();
+  try {
+    return await callback();
   } finally {
     finishDebugStep(settings, uri, step, startedAt);
   }
@@ -1773,6 +1841,29 @@ function analysisFor(cached: CachedDocument): CachedAnalysis {
   return cached.analysis;
 }
 
+function getCachedVirtual(
+  cached: CachedDocument,
+  language: AspEmbeddedLanguage,
+): VirtualDocument | undefined {
+  const existing = cached.virtuals.get(language);
+  if (existing) {
+    return existing;
+  }
+  const regions = cached.parsed.regions.filter((region) => region.language === language);
+  if (regions.length === 0 && language !== "html") {
+    return undefined;
+  }
+  const virtual = buildVirtualDocument(
+    cached.parsed.uri,
+    cached.parsed.text,
+    language,
+    regions,
+    cached.parsed.regions,
+  );
+  cached.virtuals.set(language, virtual);
+  return virtual;
+}
+
 function reuseUnchangedDiagnostics(
   cached: CachedDocument,
   language: AspIncrementalChange["language"],
@@ -1842,7 +1933,7 @@ function shiftDiagnosticOffset(offset: number, change: AspIncrementalChange): nu
 }
 
 function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
-  const virtual = cached.virtuals.get("html");
+  const virtual = getCachedVirtual(cached, "html");
   if (!virtual) {
     return [];
   }
@@ -1887,7 +1978,7 @@ function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
 }
 
 function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
-  const virtual = cached.virtuals.get("css");
+  const virtual = getCachedVirtual(cached, "css");
   if (!virtual) {
     return [];
   }
@@ -2047,11 +2138,11 @@ async function vbDiagnosticsAsync(
   if (cached.analysis?.vbDiagnostics?.key === key) {
     return cached.analysis.vbDiagnostics.items;
   }
-  const context = measureDebugStep(
+  const context = await measureDebugStepAsync(
     settings,
     cached.source.uri,
     `${stepPrefix}.vbscript.projectContext`,
-    () => buildVbProjectContext(cached, settings),
+    () => buildVbProjectContextAsync(cached, settings),
   );
   const startedAt = process.hrtime.bigint();
   try {
@@ -2119,7 +2210,7 @@ function runVbDiagnosticsInWorker(
   parsed: AspParsedDocument,
   context: VbProjectContext,
 ): Promise<VbDiagnosticsWorkerResult> {
-  const worker = ensureVbDiagnosticsWorker();
+  const worker = nextVbDiagnosticsWorker();
   const id = ++vbDiagnosticsWorkerRequestSequence;
   return new Promise((resolve, reject) => {
     pendingVbDiagnosticsWorkerRequests.set(id, { resolve, reject });
@@ -2139,54 +2230,68 @@ function runVbDiagnosticsInWorker(
   });
 }
 
-function ensureVbDiagnosticsWorker(): Worker {
-  if (vbDiagnosticsWorker) {
-    return vbDiagnosticsWorker;
+function nextVbDiagnosticsWorker(): Worker {
+  const workers = ensureVbDiagnosticsWorkers();
+  const worker = workers[vbDiagnosticsWorkerCursor % workers.length];
+  vbDiagnosticsWorkerCursor += 1;
+  return worker;
+}
+
+function ensureVbDiagnosticsWorkers(): Worker[] {
+  if (vbDiagnosticsWorkers.length > 0) {
+    return vbDiagnosticsWorkers;
   }
+  const count = workerPoolSize();
+  vbDiagnosticsWorkers = Array.from({ length: count }, () => createVbDiagnosticsWorker());
+  return vbDiagnosticsWorkers;
+}
+
+function createVbDiagnosticsWorker(): Worker {
   const worker = new Worker(path.join(__dirname, "vb-diagnostics-worker.js"));
   worker.unref();
-  worker.on(
-    "message",
-    (message: {
-      id?: number;
-      diagnostics?: Diagnostic[];
-      timings?: VbDiagnosticsWorkerTiming[];
-      error?: string;
-    }) => {
-      if (typeof message.id !== "number") {
-        return;
-      }
-      const pending = pendingVbDiagnosticsWorkerRequests.get(message.id);
-      if (!pending) {
-        return;
-      }
-      pendingVbDiagnosticsWorkerRequests.delete(message.id);
-      if (message.error) {
-        pending.reject(new Error(message.error));
-        return;
-      }
-      pending.resolve({
-        diagnostics: message.diagnostics ?? [],
-        timings: message.timings ?? [],
-      });
-    },
-  );
+  worker.on("message", onVbDiagnosticsWorkerMessage);
   worker.on("error", (error) => {
+    removeVbDiagnosticsWorker(worker);
     rejectPendingVbDiagnosticsWorkerRequests(error);
-    vbDiagnosticsWorker = undefined;
   });
   worker.on("exit", (code) => {
-    if (vbDiagnosticsWorker === worker) {
-      vbDiagnosticsWorker = undefined;
-    }
+    removeVbDiagnosticsWorker(worker);
     if (code !== 0) {
       rejectPendingVbDiagnosticsWorkerRequests(
         new Error(`VBScript diagnostics worker exited with code ${code}`),
       );
     }
   });
-  vbDiagnosticsWorker = worker;
   return worker;
+}
+
+function onVbDiagnosticsWorkerMessage(message: {
+  id?: number;
+  diagnostics?: Diagnostic[];
+  timings?: VbDiagnosticsWorkerTiming[];
+  error?: string;
+}): void {
+  if (typeof message.id !== "number") {
+    return;
+  }
+  const pending = pendingVbDiagnosticsWorkerRequests.get(message.id);
+  if (!pending) {
+    return;
+  }
+  pendingVbDiagnosticsWorkerRequests.delete(message.id);
+  if (message.error) {
+    pending.reject(new Error(message.error));
+    return;
+  }
+  pending.resolve({
+    diagnostics: message.diagnostics ?? [],
+    timings: message.timings ?? [],
+  });
+}
+
+function removeVbDiagnosticsWorker(worker: Worker): void {
+  vbDiagnosticsWorkers = vbDiagnosticsWorkers.filter((candidate) => candidate !== worker);
+  vbDiagnosticsWorkerCursor = 0;
 }
 
 function rejectPendingVbDiagnosticsWorkerRequests(error: Error): void {
@@ -2241,7 +2346,7 @@ function cssCompletion(
   params: TextDocumentPositionParams,
   language: "css",
 ): CompletionItem[] {
-  const virtual = cached.virtuals.get(language);
+  const virtual = getCachedVirtual(cached, language);
   if (!virtual) {
     return [];
   }
@@ -2423,7 +2528,7 @@ function htmlRename(
   position: Position,
   newName: string,
 ): WorkspaceEdit | null {
-  const virtual = cached.virtuals.get("html");
+  const virtual = getCachedVirtual(cached, "html");
   if (!virtual) {
     return null;
   }
@@ -2433,7 +2538,7 @@ function htmlRename(
 }
 
 function cssPrepareRename(cached: CachedDocument, position: Position): Range | null {
-  const virtual = cached.virtuals.get("css");
+  const virtual = getCachedVirtual(cached, "css");
   const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
   if (!virtual || !virtualPosition) {
     return null;
@@ -2448,7 +2553,7 @@ function cssRename(
   position: Position,
   newName: string,
 ): WorkspaceEdit | null {
-  const virtual = cached.virtuals.get("css");
+  const virtual = getCachedVirtual(cached, "css");
   const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
   if (!virtual || !virtualPosition) {
     return null;
@@ -2836,7 +2941,7 @@ function jsDocumentHighlights(cached: CachedDocument, position: Position): Docum
 }
 
 function htmlDocumentHighlights(cached: CachedDocument, position: Position): DocumentHighlight[] {
-  const virtual = cached.virtuals.get("html");
+  const virtual = getCachedVirtual(cached, "html");
   if (!virtual) {
     return [];
   }
@@ -2852,7 +2957,7 @@ function htmlDocumentHighlights(cached: CachedDocument, position: Position): Doc
 }
 
 function cssDocumentHighlights(cached: CachedDocument, position: Position): DocumentHighlight[] {
-  const virtual = cached.virtuals.get("css");
+  const virtual = getCachedVirtual(cached, "css");
   const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
   if (!virtual || !virtualPosition) {
     return [];
@@ -3007,7 +3112,9 @@ function jsCallHierarchyContext(
     return undefined;
   }
   const cached = getCached(data.rootUri);
-  const virtual = cached?.virtuals.get(data.language);
+  const virtual = cached
+    ? getCachedVirtual(cached, data.language === "jscript" ? "jscript" : "javascript")
+    : undefined;
   if (!cached || !virtual || typeof data.position !== "number") {
     return undefined;
   }
@@ -3292,7 +3399,9 @@ function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem 
         importTextChanges?: ts.FileTextChanges[];
       }
     | undefined;
-  const virtual = cached?.virtuals.get(data?.language === "jscript" ? "jscript" : "javascript");
+  const virtual = cached
+    ? getCachedVirtual(cached, data?.language === "jscript" ? "jscript" : "javascript")
+    : undefined;
   if (!cached || !virtual || typeof data?.virtualOffset !== "number" || !data.name) {
     return undefined;
   }
@@ -3398,7 +3507,7 @@ function definitionLikeLocation(
     return jsLocations(cached, position, mode);
   }
   if (region.language === "css" && mode !== "implementation") {
-    const virtual = cached.virtuals.get("css");
+    const virtual = getCachedVirtual(cached, "css");
     const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
     if (!virtual || !virtualPosition) {
       return null;
@@ -3456,7 +3565,7 @@ function jsContextAt(cached: CachedDocument, position: Position): JsProjectConte
   if (!region || !isJavaScriptLikeRegion(region)) {
     return undefined;
   }
-  const virtual = cached.virtuals.get(region.language);
+  const virtual = getCachedVirtual(cached, region.language);
   const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
   if (!virtual || !virtualPosition) {
     return undefined;
@@ -3474,8 +3583,9 @@ function jsContextAt(cached: CachedDocument, position: Position): JsProjectConte
 }
 
 function jsVirtualDocuments(cached: CachedDocument): VirtualDocument[] {
-  return ["javascript", "jscript"]
-    .map((language) => cached.virtuals.get(language))
+  const languages: AspEmbeddedLanguage[] = ["javascript", "jscript"];
+  return languages
+    .map((language) => getCachedVirtual(cached, language))
     .filter((virtual): virtual is VirtualDocument => Boolean(virtual));
 }
 
@@ -3502,7 +3612,7 @@ function includeSymbols(cached: CachedDocument): SymbolInformation[] {
 
 function htmlWorkspaceSymbols(cached: CachedDocument): SymbolInformation[] {
   const symbols: SymbolInformation[] = [];
-  const html = cached.virtuals.get("html");
+  const html = getCachedVirtual(cached, "html");
   if (!html) {
     return symbols;
   }
@@ -3547,7 +3657,7 @@ function jsWorkspaceSymbols(cached: CachedDocument): SymbolInformation[] {
 }
 
 function cssDocumentSymbols(cached: CachedDocument): DocumentSymbol[] {
-  const virtual = cached.virtuals.get("css");
+  const virtual = getCachedVirtual(cached, "css");
   if (!virtual) {
     return [];
   }
@@ -3613,7 +3723,7 @@ function remapDocumentSymbol(
 }
 
 function cssFoldingRanges(cached: CachedDocument): FoldingRange[] {
-  const virtual = cached.virtuals.get("css");
+  const virtual = getCachedVirtual(cached, "css");
   if (!virtual) {
     return [];
   }
@@ -3719,6 +3829,47 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
   const symbols = documents.flatMap((document) =>
     collectVbscriptSymbols(document, contextSettings),
   );
+  symbols.push(...configuredVbscriptGlobals(cached, settings));
+  const typeEnvironment = buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols });
+  const context = {
+    documents,
+    symbols,
+    typeEnvironment,
+    ...contextSettings,
+  };
+  rememberVbProjectContext(key, context);
+  analysisFor(cached).vbProjectContext = { key, context };
+  return { ...context, locale: settings.resolvedLocale };
+}
+
+async function buildVbProjectContextAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<VbProjectContext> {
+  const documents = await collectVbProjectDocumentsAsync(cached.parsed, settings);
+  const contextSettings = {
+    typeChecking: settings.vbscript?.typeChecking,
+    identifierCase: settings.vbscript?.identifierCase,
+    identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
+    comTypes: settings.vbscript?.comTypes,
+    unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+    syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
+  };
+  const key = vbProjectContextCacheKey(documents, settings);
+  if (cached.analysis?.vbProjectContext?.key === key) {
+    return { ...cached.analysis.vbProjectContext.context, locale: settings.resolvedLocale };
+  }
+  const globalCached = vbProjectContextCache.get(key);
+  if (globalCached) {
+    globalCached.lastUsed = Date.now();
+    const context = { ...globalCached.context, locale: settings.resolvedLocale };
+    analysisFor(cached).vbProjectContext = { key, context: globalCached.context };
+    return context;
+  }
+  const symbolSets = await mapWithConcurrency(documents, workerPoolSize(), async (document) =>
+    collectVbscriptSymbols(document, contextSettings),
+  );
+  const symbols = symbolSets.flat();
   symbols.push(...configuredVbscriptGlobals(cached, settings));
   const typeEnvironment = buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols });
   const context = {
@@ -3840,16 +3991,61 @@ function collectVbProjectDocuments(
   return documents;
 }
 
+async function collectVbProjectDocumentsAsync(
+  root: AspParsedDocument,
+  settings: AspSettings,
+): Promise<AspParsedDocument[]> {
+  const documents: AspParsedDocument[] = [root];
+  const visited = new Set([root.uri]);
+  let frontier = [root];
+  for (let depth = 0; depth < 20 && frontier.length > 0; depth += 1) {
+    const candidates: string[] = [];
+    for (const document of frontier) {
+      for (const include of document.includes) {
+        const resolved = resolveIncludePath(document.uri, include.path, include.mode, settings);
+        const uri = pathToFileUri(resolved);
+        if (visited.has(uri)) {
+          continue;
+        }
+        visited.add(uri);
+        candidates.push(resolved);
+      }
+    }
+    const parsed = await mapWithConcurrency(candidates, workerPoolSize(), async (fileName) =>
+      readParsedIncludeDocumentAsync(fileName, settings).catch(() => undefined),
+    );
+    frontier = parsed.filter((document): document is AspParsedDocument => Boolean(document));
+    documents.push(...frontier);
+  }
+  return documents;
+}
+
 function readParsedIncludeDocument(fileName: string, settings: AspSettings): AspParsedDocument {
   const normalized = normalizeFileName(fileName);
   const stats = fs.statSync(normalized);
   const cached = includeDocumentCache.get(normalized);
-  if (cached && cached.mtimeMs === stats.mtimeMs) {
+  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
     return cached.parsed;
   }
   const text = readTextFile(normalized, settings.legacyEncoding);
   const parsed = parseAspDocument(pathToFileUri(normalized), text, settings);
-  includeDocumentCache.set(normalized, { mtimeMs: stats.mtimeMs, parsed });
+  includeDocumentCache.set(normalized, { mtimeMs: stats.mtimeMs, size: stats.size, parsed });
+  return parsed;
+}
+
+async function readParsedIncludeDocumentAsync(
+  fileName: string,
+  settings: AspSettings,
+): Promise<AspParsedDocument> {
+  const normalized = normalizeFileName(fileName);
+  const stats = await fs.promises.stat(normalized);
+  const cached = includeDocumentCache.get(normalized);
+  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+    return cached.parsed;
+  }
+  const text = await readTextFileAsync(normalized, settings.legacyEncoding);
+  const parsed = parseAspDocument(pathToFileUri(normalized), text, settings);
+  includeDocumentCache.set(normalized, { mtimeMs: stats.mtimeMs, size: stats.size, parsed });
   return parsed;
 }
 
@@ -4058,7 +4254,7 @@ function remapDiagnostic(
 function selectionRangeAt(cached: CachedDocument, position: Position): SelectionRange {
   const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
   if (region?.language === "html") {
-    const virtual = cached.virtuals.get("html");
+    const virtual = getCachedVirtual(cached, "html");
     if (virtual) {
       return remapSelectionRange(
         virtual,
@@ -4067,7 +4263,7 @@ function selectionRangeAt(cached: CachedDocument, position: Position): Selection
     }
   }
   if (region?.language === "css") {
-    const virtual = cached.virtuals.get("css");
+    const virtual = getCachedVirtual(cached, "css");
     const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
     if (virtual && virtualPosition) {
       const doc = toTextDocument(virtual);
@@ -4123,7 +4319,7 @@ function remapTsSelectionRange(virtual: VirtualDocument, range: ts.SelectionRang
 }
 
 function cssDocumentColors(cached: CachedDocument): ColorInformation[] {
-  const virtual = cached.virtuals.get("css");
+  const virtual = getCachedVirtual(cached, "css");
   if (!virtual) {
     return [];
   }
@@ -4142,7 +4338,7 @@ function cssColorPresentations(
   color: Color,
   range: Range,
 ): ColorPresentation[] {
-  const virtual = cached.virtuals.get("css");
+  const virtual = getCachedVirtual(cached, "css");
   if (!virtual) {
     return [];
   }
@@ -4263,7 +4459,7 @@ function getCached(uri: string): CachedDocument | undefined {
     return undefined;
   }
   const parsed = parseAspDocument(uri, document.getText(), cachedSettings(uri));
-  const cached = { source: document, parsed, virtuals: buildVirtualDocuments(parsed) };
+  const cached = { source: document, parsed, virtuals: new Map<string, VirtualDocument>() };
   cache.set(uri, cached);
   return cached;
 }
@@ -4278,7 +4474,7 @@ function cachedFromIndexed(entry: WorkspaceIndexedDocument): CachedDocument {
   return {
     source: TextDocument.create(entry.uri, "classic-asp", 0, entry.parsed.text),
     parsed: entry.parsed,
-    virtuals: buildVirtualDocuments(entry.parsed),
+    virtuals: new Map<string, VirtualDocument>(),
   };
 }
 
@@ -6767,7 +6963,7 @@ function cssCodeActions(
   range: Range,
   context: CodeActionContext,
 ): CodeAction[] {
-  const virtual = cached.virtuals.get("css");
+  const virtual = getCachedVirtual(cached, "css");
   const start = virtual?.sourceMap.toVirtualPosition(range.start);
   const end = virtual?.sourceMap.toVirtualPosition(range.end);
   if (!virtual || !start || !end) {
@@ -7098,7 +7294,7 @@ function htmlOnTypeFormatting(
   if (rangeOverlapsNonHtml(cached, lineRange)) {
     return undefined;
   }
-  const virtual = cached.virtuals.get("html");
+  const virtual = getCachedVirtual(cached, "html");
   if (!virtual) {
     return undefined;
   }
@@ -7418,7 +7614,7 @@ function addEmbeddedSemanticTokens(
   rangeStart: number,
   rangeEnd: number,
 ): void {
-  const html = cached.virtuals.get("html");
+  const html = getCachedVirtual(cached, "html");
   if (html) {
     const pattern = /<\/?\s*([A-Za-z][A-Za-z0-9:-]*)/g;
     let match: RegExpExecArray | null;
@@ -7436,7 +7632,7 @@ function addEmbeddedSemanticTokens(
       );
     }
   }
-  const css = cached.virtuals.get("css");
+  const css = getCachedVirtual(cached, "css");
   if (css) {
     for (const match of css.text.matchAll(/\b([A-Za-z-]+)\s*:/g)) {
       if (match.index !== undefined) {
@@ -7638,12 +7834,10 @@ function isDiagnostic(value: Diagnostic | undefined): value is Diagnostic {
 
 documents.listen(connection);
 connection.onShutdown(async () => {
-  const worker = vbDiagnosticsWorker;
-  vbDiagnosticsWorker = undefined;
+  const workers = vbDiagnosticsWorkers;
+  vbDiagnosticsWorkers = [];
   rejectPendingVbDiagnosticsWorkerRequests(new Error("Language server is shutting down."));
-  if (worker) {
-    await worker.terminate();
-  }
+  await Promise.all(workers.map((worker) => worker.terminate()));
 });
 
 connection.listen();

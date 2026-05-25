@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
+import { Worker } from "node:worker_threads";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -13,69 +15,61 @@ const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readPositiveInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
+const workerCount = readPositiveInteger(
+  "ASP_LSP_BENCH_WORKERS",
+  Math.max(1, Math.min(4, os.availableParallelism() - 1)),
+);
 const analyzeStepTotals = new Map();
 const results = [];
 
-if (!fs.existsSync(coreDist)) {
-  throw new Error(
-    "packages/core/dist/index.js is missing. Run `pnpm --filter @asp-lsp/core run build`.",
-  );
-}
-
-execFileSync(process.execPath, [generator], { stdio: "inherit" });
-
-const {
-  analyzeVbscript,
-  buildVirtualDocuments,
-  collectVbscriptSymbols,
-  parseAspDocument,
-} = require(coreDist);
-
-const sources = collectBenchmarkSources();
-const sourceStats = summarizeSources(sources);
-
-runBenchmark("parseAspDocument", () => {
-  for (const source of sources) {
-    parseAspDocument(source.uri, source.text);
+async function main() {
+  if (!fs.existsSync(coreDist)) {
+    throw new Error(
+      "packages/core/dist/index.js is missing. Run `pnpm --filter @asp-lsp/core run build`.",
+    );
   }
-});
 
-const parsedDocuments = sources.map((source) => parseAspDocument(source.uri, source.text));
-runBenchmark("buildVirtualDocuments", () => {
-  for (const parsed of parsedDocuments) {
-    buildVirtualDocuments(parsed);
+  execFileSync(process.execPath, [generator], { stdio: "inherit" });
+
+  const sources = collectBenchmarkSources();
+  const sourceStats = summarizeSources(sources);
+  const workerPool = new BenchmarkWorkerPool(workerCount);
+  try {
+    await runBenchmark("parseAspDocument", () =>
+      runParallelOperation(workerPool, "parseAspDocument", sources),
+    );
+    await runBenchmark("buildVirtualDocuments", () =>
+      runParallelOperation(workerPool, "buildVirtualDocuments", sources),
+    );
+    await runBenchmark("collectVbscriptSymbols", () =>
+      runParallelOperation(workerPool, "collectVbscriptSymbols", sources),
+    );
+    await runBenchmark("analyzeVbscript", () =>
+      runParallelOperation(workerPool, "analyzeVbscript", sources),
+    );
+  } finally {
+    await workerPool.close();
   }
-});
 
-runBenchmark("collectVbscriptSymbols", () => {
-  for (const parsed of parsedDocuments) {
-    collectVbscriptSymbols(parsed);
-  }
-});
-
-runBenchmark("analyzeVbscript", () => {
-  for (const parsed of parsedDocuments) {
-    analyzeVbscript(parsed, analyzeContext());
-  }
-});
-
-console.log("");
-console.log(`Large Classic ASP benchmark`);
-console.log(`Files: ${sourceStats.files}`);
-console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
-console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
-console.log(`Warmups: ${warmupIterations}`);
-console.log(`Iterations: ${benchmarkIterations}`);
-console.log("");
-printTable(results);
-if (collectDebugSteps) {
   console.log("");
-  console.log("analyzeVbscript debug step totals");
-  console.log(
-    `Measured calls include ${warmupIterations} warmup and ${benchmarkIterations} benchmark iterations.`,
-  );
+  console.log(`Large Classic ASP benchmark`);
+  console.log(`Files: ${sourceStats.files}`);
+  console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
+  console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
+  console.log(`Warmups: ${warmupIterations}`);
+  console.log(`Iterations: ${benchmarkIterations}`);
+  console.log(`Workers: ${workerCount}`);
   console.log("");
-  printDebugStepTotals(analyzeStepTotals);
+  printTable(results);
+  if (collectDebugSteps) {
+    console.log("");
+    console.log("analyzeVbscript debug step totals");
+    console.log(
+      `Measured calls include ${warmupIterations} warmup and ${benchmarkIterations} benchmark iterations.`,
+    );
+    console.log("");
+    printDebugStepTotals(analyzeStepTotals);
+  }
 }
 
 function collectBenchmarkSources() {
@@ -113,15 +107,30 @@ function summarizeSources(items) {
   );
 }
 
-function runBenchmark(name, fn) {
+async function runParallelOperation(pool, operation, inputs) {
+  const messages =
+    operation === "parseAspDocument"
+      ? inputs.map((source) => ({ operation, source }))
+      : inputs.map((source) => ({ operation, source, debugSteps: collectDebugSteps }));
+  const outputs = await pool.runAll(messages);
+  if (operation === "analyzeVbscript" && collectDebugSteps) {
+    for (const output of outputs) {
+      for (const [name, elapsed] of output.timings ?? []) {
+        analyzeStepTotals.set(name, (analyzeStepTotals.get(name) ?? 0) + elapsed);
+      }
+    }
+  }
+}
+
+async function runBenchmark(name, fn) {
   for (let index = 0; index < warmupIterations; index += 1) {
-    fn();
+    await fn();
   }
 
   const samples = [];
   for (let index = 0; index < benchmarkIterations; index += 1) {
     const start = performance.now();
-    fn();
+    await fn();
     samples.push(performance.now() - start);
   }
 
@@ -134,20 +143,6 @@ function runBenchmark(name, fn) {
     mean: total / samples.length,
     max: samples[samples.length - 1],
   });
-}
-
-function analyzeContext() {
-  if (!collectDebugSteps) {
-    return {};
-  }
-  return {
-    debugStep(name, action) {
-      const start = performance.now();
-      const value = action();
-      analyzeStepTotals.set(name, (analyzeStepTotals.get(name) ?? 0) + performance.now() - start);
-      return value;
-    },
-  };
 }
 
 function printTable(items) {
@@ -212,3 +207,64 @@ function readBoolean(name) {
   }
   throw new Error(`${name} must be 1, 0, true, or false.`);
 }
+
+class BenchmarkWorkerPool {
+  constructor(count) {
+    this.workers = Array.from(
+      { length: count },
+      () => new Worker(path.join(root, "scripts", "benchmark-large-worker.mjs")),
+    );
+    this.nextId = 0;
+    this.cursor = 0;
+    this.pending = new Map();
+    for (const worker of this.workers) {
+      worker.on("message", (message) => this.handleMessage(message));
+      worker.on("error", (error) => this.rejectAll(error));
+      worker.on("exit", (code) => {
+        if (code !== 0) {
+          this.rejectAll(new Error(`Benchmark worker exited with code ${code}`));
+        }
+      });
+    }
+  }
+
+  runAll(messages) {
+    return Promise.all(messages.map((message) => this.run(message)));
+  }
+
+  run(message) {
+    const id = ++this.nextId;
+    const worker = this.workers[this.cursor % this.workers.length];
+    this.cursor += 1;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      worker.postMessage({ id, ...message });
+    });
+  }
+
+  handleMessage(message) {
+    const pending = this.pending.get(message.id);
+    if (!pending) {
+      return;
+    }
+    this.pending.delete(message.id);
+    if (message.error) {
+      pending.reject(new Error(message.error));
+      return;
+    }
+    pending.resolve(message);
+  }
+
+  rejectAll(error) {
+    for (const pending of this.pending.values()) {
+      pending.reject(error);
+    }
+    this.pending.clear();
+  }
+
+  async close() {
+    await Promise.all(this.workers.map((worker) => worker.terminate()));
+  }
+}
+
+await main();

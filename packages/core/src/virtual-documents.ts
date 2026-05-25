@@ -209,10 +209,7 @@ function firstValuePlaceholder(text: string, valueChar: string): string {
 }
 
 function preserveLineEndings(text: string, fill: string): string {
-  return text
-    .split("")
-    .map((char) => (char === "\n" || char === "\r" ? char : fill))
-    .join("");
+  return text.replace(/[^\r\n]/g, fill);
 }
 
 function buildMaskedDocument(
@@ -222,24 +219,21 @@ function buildMaskedDocument(
   regions: AspRegion[],
 ): VirtualDocument {
   const htmlRanges = regions.map((region) => [region.contentStart, region.contentEnd] as const);
-  const chars = Array.from(sourceText);
   const segments: SourceMapSegment[] = [];
-  let rangeIndex = 0;
-  let current = htmlRanges[rangeIndex];
-  for (let index = 0; index < sourceText.length; index += 1) {
-    while (current && index >= current[1]) {
-      rangeIndex += 1;
-      current = htmlRanges[rangeIndex];
-    }
-    if (!current || index < current[0] || index >= current[1]) {
-      chars[index] =
-        sourceText[index] === "\n" || sourceText[index] === "\r" ? sourceText[index] : " ";
-    }
-  }
+  const chunks: string[] = [];
+  let cursor = 0;
   for (const [start, end] of htmlRanges) {
+    if (cursor < start) {
+      chunks.push(preserveLineEndings(sourceText.slice(cursor, start), " "));
+    }
+    chunks.push(sourceText.slice(start, end));
     segments.push({ virtualStart: start, virtualEnd: end, sourceStart: start, sourceEnd: end });
+    cursor = end;
   }
-  const text = chars.join("");
+  if (cursor < sourceText.length) {
+    chunks.push(preserveLineEndings(sourceText.slice(cursor), " "));
+  }
+  const text = chunks.join("");
   return {
     uri: `${uri}.${languageId}.virtual`,
     languageId,

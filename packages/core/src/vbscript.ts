@@ -147,6 +147,8 @@ const vbDocCommentAttributeCompletions: Record<string, string[]> = {
 interface VbAnalysisSnapshot {
   documents: VbCstNode[];
   nodes: VbCstNode[];
+  scopeNodes: VbCstNode[];
+  classNodes: VbCstNode[];
   significantTokens: VbToken[];
   identifierTokens: VbToken[];
   statements: VbToken[][];
@@ -4756,6 +4758,8 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
   }
   const documents = computeVbDocuments(parsed);
   const nodes = documents.flatMap((document) => flattenVbNodes(document));
+  const scopeNodes = nodes.filter((node) => node.kind === "Procedure" || node.kind === "Property");
+  const classNodes = nodes.filter((node) => node.kind === "Class");
   const significantTokens = documents
     .flatMap((document) => document.tokens)
     .filter((token) => !isTriviaToken(token));
@@ -4785,6 +4789,8 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
   const snapshot = {
     documents,
     nodes,
+    scopeNodes,
+    classNodes,
     significantTokens,
     identifierTokens,
     statements,
@@ -4797,15 +4803,15 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
 }
 
 function parentClassName(parsed: AspParsedDocument, offset: number): string | undefined {
-  return enclosingVbNodes(parsed, offset)
-    .reverse()
-    .find((node) => node.kind === "Class")?.nameToken?.text;
+  return snapshotFor(parsed)
+    .classNodes.filter((node) => offset >= node.start && offset <= node.end)
+    .sort((left, right) => left.end - left.start - (right.end - right.start))[0]?.nameToken?.text;
 }
 
 function scopeNodeAt(parsed: AspParsedDocument, offset: number): VbCstNode | undefined {
-  return enclosingVbNodes(parsed, offset)
-    .reverse()
-    .find((node) => node.kind === "Procedure" || node.kind === "Property");
+  return snapshotFor(parsed)
+    .scopeNodes.filter((node) => offset >= node.start && offset <= node.end)
+    .sort((left, right) => left.end - left.start - (right.end - right.start))[0];
 }
 
 function enclosingVbNodes(parsed: AspParsedDocument, offset: number): VbCstNode[] {
