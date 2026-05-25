@@ -131,7 +131,8 @@ export interface AspWorkspaceSettings {
   maxIndexFiles?: number;
   scanChunkSize?: number;
   backgroundAnalysis?: boolean;
-  backgroundConcurrency?: number;
+  idleAnalysisConcurrency?: number;
+  busyAnalysisConcurrency?: number;
 }
 
 export interface AspVbscriptComType {

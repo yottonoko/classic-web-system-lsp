@@ -108,6 +108,15 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.windowsPathResolution"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.workspace.backgroundConcurrency"],
+    ).toBeUndefined();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.workspace.idleAnalysisConcurrency"],
+    ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.workspace.busyAnalysisConcurrency"],
+    ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.legacyEncoding"]).toEqual(
       expect.objectContaining({
         enum: ["auto", "utf8", "shift_jis", "cp932"],

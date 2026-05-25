@@ -370,6 +370,7 @@ function aspFileOperationFilter() {
 const cache = new Map<string, CachedDocument>();
 const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const slowDiagnosticsJobs = new Map<string, SlowDiagnosticsJob>();
+const activeSlowDiagnostics = new Set<string>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 const vbProjectContextWarmups = new Map<string, { rootKey: string; version: number }>();
 const vbPublicSymbolSummaryCache = new Map<string, VbPublicSymbolSummary>();
@@ -919,7 +920,7 @@ connection.onWorkspaceSymbol(async (params, token) => {
   const indexedSymbols = (
     await mapWithConcurrency(
       [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri)),
-      backgroundAnalysisConcurrency(globalSettings),
+      analysisConcurrency(globalSettings),
       async (entry) => {
         if (token.isCancellationRequested) {
           return [];
@@ -1050,7 +1051,7 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
   const openedUris = new Set(documents.all().map((document) => document.uri));
   const indexedItems = await mapWithConcurrency(
     [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri)),
-    backgroundAnalysisConcurrency(globalSettings),
+    analysisConcurrency(globalSettings),
     async (entry) => ({
       kind: "full" as const,
       uri: entry.uri,
@@ -1472,7 +1473,11 @@ function enqueueSlowDiagnostics(cached: CachedDocument, settings: AspSettings): 
       return;
     }
     slowDiagnosticsJobs.delete(uri);
-    void publishSlowDiagnosticsForVersion(uri, version, settings, sequence);
+    activeSlowDiagnostics.add(uri);
+    void publishSlowDiagnosticsForVersion(uri, version, settings, sequence).finally(() => {
+      activeSlowDiagnostics.delete(uri);
+      scheduleBackgroundAnalysisWhenForegroundIdle("foregroundIdle");
+    });
   }, 0);
   slowDiagnosticsJobs.set(uri, { version, sequence, timer });
 }
@@ -1542,7 +1547,6 @@ async function publishSlowDiagnosticsForVersion(
   connection.sendDiagnostics({ uri, diagnostics: items });
   queueDiskAnalysisPersist(cached, settings);
   finishSlowCheckLog(cached, settings, startedAt, items.length, sequence);
-  scheduleBackgroundAnalysisWhenForegroundIdle("foregroundIdle");
 }
 
 function diagnosticsCancellation(uri: string, version: number): AnalysisCancellation {
@@ -1564,6 +1568,7 @@ function cancelSlowDiagnostics(uri: string): void {
   }
   clearTimeout(job.timer);
   slowDiagnosticsJobs.delete(uri);
+  activeSlowDiagnostics.delete(uri);
 }
 
 function cancelAllSlowDiagnostics(): void {
@@ -1939,8 +1944,16 @@ function measureDebugStep<T>(
   }
 }
 
-function workerPoolSize(): number {
+function availableAnalysisConcurrency(): number {
   return Math.max(1, os.availableParallelism());
+}
+
+function defaultIdleAnalysisConcurrency(): number {
+  return availableAnalysisConcurrency();
+}
+
+function defaultBusyAnalysisConcurrency(): number {
+  return Math.max(1, Math.floor(availableAnalysisConcurrency() / 2));
 }
 
 const neverCancelled: AnalysisCancellation = {
@@ -1984,16 +1997,38 @@ async function measureDebugStepAsync<T>(
   }
 }
 
-function backgroundAnalysisConcurrency(settings: AspSettings): number {
-  const maximum = workerPoolSize();
-  const configured = settings.workspace?.backgroundConcurrency;
-  return Math.max(1, Math.min(maximum, configured && configured > 0 ? configured : maximum));
+function clampAnalysisConcurrency(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || value <= 0) {
+    return fallback;
+  }
+  return Math.max(1, Math.min(availableAnalysisConcurrency(), Math.floor(value)));
+}
+
+function idleAnalysisConcurrency(settings: AspSettings): number {
+  return clampAnalysisConcurrency(
+    settings.workspace?.idleAnalysisConcurrency,
+    defaultIdleAnalysisConcurrency(),
+  );
+}
+
+function busyAnalysisConcurrency(settings: AspSettings): number {
+  return clampAnalysisConcurrency(
+    settings.workspace?.busyAnalysisConcurrency,
+    defaultBusyAnalysisConcurrency(),
+  );
+}
+
+function analysisConcurrency(settings: AspSettings): number {
+  return hasForegroundAnalysisWork()
+    ? busyAnalysisConcurrency(settings)
+    : idleAnalysisConcurrency(settings);
 }
 
 function hasForegroundAnalysisWork(): boolean {
   return (
     diagnosticsTimers.size > 0 ||
     slowDiagnosticsJobs.size > 0 ||
+    activeSlowDiagnostics.size > 0 ||
     vbProjectContextWarmups.size > 0 ||
     documents.all().some((document) => !cache.has(document.uri))
   );
@@ -2028,7 +2063,11 @@ async function runBackgroundAnalysis(sequence: number, reason: string): Promise<
     deferBackgroundAnalysisForForeground(settings, reason);
     return;
   }
-  logDebugSummary(settings, `[asp-lsp] background analysis started: ${reason}`);
+  const concurrency = idleAnalysisConcurrency(settings);
+  logDebugSummary(
+    settings,
+    `[asp-lsp] background analysis started: ${reason}, concurrency=${concurrency}`,
+  );
   const startedAt = process.hrtime.bigint();
   await ensureWorkspaceIndexAsync(settings, {
     get isCancellationRequested() {
@@ -2045,7 +2084,7 @@ async function runBackgroundAnalysis(sequence: number, reason: string): Promise<
   const openedUris = new Set(documents.all().map((document) => document.uri));
   const entries = [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri));
   let deferredForForeground = false;
-  await mapWithConcurrency(entries, backgroundAnalysisConcurrency(settings), async (entry) => {
+  await mapWithConcurrency(entries, concurrency, async (entry) => {
     if (sequence !== backgroundAnalysisSequence || deferredForForeground) {
       return;
     }
@@ -2759,7 +2798,13 @@ async function vbDiagnosticsAsync(
       `${stepPrefix}.vbscript.diagnostics.dispatch`,
       0,
     );
-    const result = await runVbDiagnosticsInWorker(cached.parsed, context);
+    logDebugSummary(
+      settings,
+      `[asp-lsp] VBScript diagnostics worker dispatch: ${cached.source.uri}, concurrency=${analysisConcurrency(
+        settings,
+      )}`,
+    );
+    const result = await runVbDiagnosticsInWorker(cached.parsed, context, settings);
     finishDebugStep(settings, cached.source.uri, `${stepPrefix}.vbscript.diagnostics`, startedAt);
     for (const timing of result.timings) {
       logWorkerDebugStep(
@@ -2816,8 +2861,9 @@ function logWorkerDebugStep(
 function runVbDiagnosticsInWorker(
   parsed: AspParsedDocument,
   context: VbProjectContext,
+  settings: AspSettings,
 ): Promise<VbDiagnosticsWorkerResult> {
-  const worker = nextVbDiagnosticsWorker();
+  const worker = nextVbDiagnosticsWorker(settings);
   const id = ++vbDiagnosticsWorkerRequestSequence;
   return new Promise((resolve, reject) => {
     pendingVbDiagnosticsWorkerRequests.set(id, { resolve, reject });
@@ -2837,19 +2883,24 @@ function runVbDiagnosticsInWorker(
   });
 }
 
-function nextVbDiagnosticsWorker(): Worker {
-  const workers = ensureVbDiagnosticsWorkers();
-  const worker = workers[vbDiagnosticsWorkerCursor % workers.length];
+function nextVbDiagnosticsWorker(settings: AspSettings): Worker {
+  const workers = ensureVbDiagnosticsWorkers(settings);
+  const activeCount = Math.min(analysisConcurrency(settings), workers.length);
+  const worker = workers[vbDiagnosticsWorkerCursor % activeCount];
   vbDiagnosticsWorkerCursor += 1;
   return worker;
 }
 
-function ensureVbDiagnosticsWorkers(): Worker[] {
-  if (vbDiagnosticsWorkers.length > 0) {
+function ensureVbDiagnosticsWorkers(settings: AspSettings): Worker[] {
+  const count = idleAnalysisConcurrency(settings);
+  if (vbDiagnosticsWorkers.length >= count) {
     return vbDiagnosticsWorkers;
   }
-  const count = workerPoolSize();
-  vbDiagnosticsWorkers = Array.from({ length: count }, () => createVbDiagnosticsWorker());
+  vbDiagnosticsWorkers.push(
+    ...Array.from({ length: count - vbDiagnosticsWorkers.length }, () =>
+      createVbDiagnosticsWorker(),
+    ),
+  );
   return vbDiagnosticsWorkers;
 }
 
@@ -4593,8 +4644,10 @@ async function buildVbProjectContextAsync(
     analysisFor(cached).vbProjectContext = { key, rootKey, context: globalCached.context };
     return context;
   }
-  const symbolSets = await mapWithConcurrency(documents, workerPoolSize(), async (document) =>
-    collectVbscriptSymbols(document, contextSettings),
+  const symbolSets = await mapWithConcurrency(
+    documents,
+    analysisConcurrency(settings),
+    async (document) => collectVbscriptSymbols(document, contextSettings),
   );
   const symbols = symbolSets.flat();
   symbols.push(...configuredVbscriptGlobals(cached, settings));
@@ -4786,7 +4839,7 @@ async function collectVbPublicSymbolSummaryGraphAsync(
       loaded.push(
         ...(await mapWithConcurrency(
           candidates.slice(index, index + 32),
-          workerPoolSize(),
+          analysisConcurrency(settings),
           async (fileName) => vbPublicSymbolSummaryForFileAsync(fileName, settings),
         )),
       );
@@ -5163,7 +5216,7 @@ async function collectVbProjectDocumentsAsync(
       parsed.push(
         ...(await mapWithConcurrency(
           candidates.slice(index, index + 32),
-          workerPoolSize(),
+          analysisConcurrency(settings),
           async (fileName) =>
             readParsedIncludeDocumentAsync(fileName, settings).catch(() => undefined),
         )),
@@ -6285,10 +6338,18 @@ function normalizeWorkspaceSettings(
         ? Math.floor(record.scanChunkSize)
         : defaultScanChunkSize,
     backgroundAnalysis: record.backgroundAnalysis !== false,
-    backgroundConcurrency:
-      typeof record.backgroundConcurrency === "number" && record.backgroundConcurrency > 0
-        ? Math.min(Math.floor(record.backgroundConcurrency), workerPoolSize())
-        : workerPoolSize(),
+    idleAnalysisConcurrency: clampAnalysisConcurrency(
+      typeof record.idleAnalysisConcurrency === "number"
+        ? record.idleAnalysisConcurrency
+        : undefined,
+      defaultIdleAnalysisConcurrency(),
+    ),
+    busyAnalysisConcurrency: clampAnalysisConcurrency(
+      typeof record.busyAnalysisConcurrency === "number"
+        ? record.busyAnalysisConcurrency
+        : undefined,
+      defaultBusyAnalysisConcurrency(),
+    ),
   };
 }
 

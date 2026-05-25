@@ -566,11 +566,17 @@
           "default": true,
           "description": "%configuration.workspace.backgroundAnalysis.description%"
         },
-        "aspLsp.workspace.backgroundConcurrency": {
+        "aspLsp.workspace.idleAnalysisConcurrency": {
           "type": "number",
           "minimum": 0,
           "default": 0,
-          "description": "%configuration.workspace.backgroundConcurrency.description%"
+          "description": "%configuration.workspace.idleAnalysisConcurrency.description%"
+        },
+        "aspLsp.workspace.busyAnalysisConcurrency": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "%configuration.workspace.busyAnalysisConcurrency.description%"
         },
         "aspLsp.iis.url": {
           "type": "string",

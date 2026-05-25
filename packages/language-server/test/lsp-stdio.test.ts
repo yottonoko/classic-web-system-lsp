@@ -3485,11 +3485,19 @@ End Function
           settings: {
             aspLsp: {
               cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
-              workspace: { backgroundAnalysis: true, backgroundConcurrency: 1 },
+              debug: { output: "summary" },
+              workspace: { backgroundAnalysis: true, idleAnalysisConcurrency: 999 },
             },
           },
         });
 
+        await waitForLogContaining(
+          server,
+          `background analysis started: configuration, concurrency=${Math.max(
+            1,
+            os.availableParallelism(),
+          )}`,
+        );
         const warmed = await waitForCborCacheFile(cacheDir);
         expect(warmed.endsWith(".cbor")).toBe(true);
         expect(collectFiles(cacheDir).some((fileName) => fileName.endsWith(".json"))).toBe(false);
@@ -3501,6 +3509,52 @@ End Function
         expect(JSON.stringify(diagnostics)).toContain("broken.asp");
         expect(JSON.stringify(diagnostics)).toContain("asp-lsp-css");
         expect(await waitForCborCacheFile(cacheDir)).toBeTruthy();
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("uses busy analysis concurrency while opened document diagnostics are running", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-busy-concurrency-"));
+      const fileName = path.join(tempDir, "busy.asp");
+      const uri = pathToFileURL(fileName).toString();
+      const source = `<% Option Explicit
+Response.Write missingName
+%>`;
+      fs.writeFileSync(fileName, source, "utf8");
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "summary" },
+              diagnostics: { debounceMs: 0 },
+              workspace: {
+                backgroundAnalysis: false,
+                idleAnalysisConcurrency: 999,
+                busyAnalysisConcurrency: 1,
+              },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
+        });
+
+        await waitForLogContaining(
+          server,
+          `VBScript diagnostics worker dispatch: ${uri}, concurrency=1`,
+        );
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -3532,7 +3586,11 @@ End Function
               cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
               debug: { output: "verbose" },
               diagnostics: { debounceMs: 2000 },
-              workspace: { backgroundAnalysis: true, backgroundConcurrency: 1 },
+              workspace: {
+                backgroundAnalysis: true,
+                idleAnalysisConcurrency: 1,
+                busyAnalysisConcurrency: 1,
+              },
             },
           },
         });
