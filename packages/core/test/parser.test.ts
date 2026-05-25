@@ -1013,6 +1013,29 @@ End Sub
     expect(analyzeVbscript(global).diagnostics).toHaveLength(0);
   });
 
+  it("keeps private class members referenced through typed variables out of unused diagnostics", () => {
+    const parsed = parseAspDocument(
+      "file:///site/member-reference.asp",
+      `<%
+Class Customer
+  Private Sub Save()
+  End Sub
+End Class
+
+Dim customer
+Set customer = New Customer
+customer.Save
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const unused = analyzeVbscript(parsed, { symbols }).diagnostics.filter(
+      (diagnostic) => diagnostic.source === "asp-lsp-vbscript-unused",
+    );
+    expect(unused.map((diagnostic) => diagnostic.message)).not.toEqual(
+      expect.arrayContaining([expect.stringContaining("Save")]),
+    );
+  });
+
   it("tracks VBScript class members and object member completion", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

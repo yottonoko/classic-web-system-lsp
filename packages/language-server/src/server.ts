@@ -143,6 +143,9 @@ const includeDocumentCache = new Map<
   string,
   { mtimeMs: number; size: number; parsed: AspParsedDocument }
 >();
+const includePathResolutionCache = new Map<string, IncludePathResolution>();
+const pathResolutionCache = new Map<string, PathResolution>();
+const includeCycleCache = new Map<string, string[] | null>();
 const workspaceIndex = new Map<string, WorkspaceIndexedDocument>();
 const workspaceScriptFilesCache = new Map<
   string,
@@ -151,6 +154,7 @@ const workspaceScriptFilesCache = new Map<
 const jsLanguageServiceCache = new Map<string, JsLanguageServiceCacheEntry>();
 const semanticTokenResults = new Map<string, { uri: string; data: number[] }>();
 const latestSemanticTokenResultByUri = new Map<string, string>();
+const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
 const defaultDiagnosticsDebounceMs = 250;
@@ -213,6 +217,10 @@ interface SemanticTokenData {
   tokenModifiers?: readonly string[];
 }
 
+interface RegionIndex {
+  byStart: AspRegion[];
+}
+
 interface CachedDocument {
   source: TextDocument;
   parsed: AspParsedDocument;
@@ -232,6 +240,10 @@ interface CachedAnalysis {
   jsSyntaxDiagnostics?: DiagnosticCacheEntry;
   jsSlowDiagnostics?: DiagnosticCacheEntry;
   vbProjectContext?: { key: string; context: VbProjectContext };
+  vbProjectDocuments?: {
+    collectionKey: string;
+    documents: AspParsedDocument[];
+  };
 }
 
 interface DiagnosticCacheEntry {
@@ -511,7 +523,7 @@ connection.onNotification(
       ...added.map((folder) => uriToFileName(folder.uri)).filter((root) => root.length > 0),
     ].filter((root, index, roots) => roots.indexOf(root) === index);
     invalidateWorkspaceIndex();
-    includeDocumentCache.clear();
+    clearIncludeCaches();
     clearJsProjectCaches();
     cancelAllSlowDiagnostics();
     cancelBackgroundAnalysis();
@@ -529,7 +541,7 @@ connection.onDidChangeConfiguration((change) => {
   }
   settingsByUri.clear();
   cache.clear();
-  includeDocumentCache.clear();
+  clearIncludeCaches();
   clearJsLanguageServiceCache();
   clearSemanticTokens();
   invalidateWorkspaceIndex();
@@ -566,7 +578,7 @@ connection.onDidChangeWatchedFiles((change) => {
   cancelAllSlowDiagnostics();
   cancelBackgroundAnalysis();
   if (aspChanged) {
-    includeDocumentCache.clear();
+    clearIncludeCaches();
   }
   if (aspChanged || scriptChanged) {
     clearJsProjectCaches();
@@ -581,21 +593,21 @@ connection.workspace.onWillRenameFiles((params) => includeRenameWorkspaceEdit(pa
 
 connection.workspace.onDidRenameFiles(() => {
   invalidateWorkspaceIndex();
-  includeDocumentCache.clear();
+  clearIncludeCaches();
   clearJsProjectCaches();
   scheduleBackgroundAnalysis("renameFiles");
 });
 
 connection.workspace.onDidCreateFiles(() => {
   invalidateWorkspaceIndex();
-  includeDocumentCache.clear();
+  clearIncludeCaches();
   clearJsProjectCaches();
   scheduleBackgroundAnalysis("createFiles");
 });
 
 connection.workspace.onDidDeleteFiles(() => {
   invalidateWorkspaceIndex();
-  includeDocumentCache.clear();
+  clearIncludeCaches();
   clearJsProjectCaches();
   scheduleBackgroundAnalysis("deleteFiles");
 });
@@ -685,7 +697,7 @@ connection.onHover((params) => {
   if (region.language === "vbscript") {
     return aspHover(cached, params);
   }
-  if (isJavaScriptLikeRegion(region)) {
+  if (region && isJavaScriptLikeRegion(region)) {
     return jsHover(cached, params.position);
   }
   if (region.language === "html") {
@@ -736,7 +748,7 @@ connection.onReferences((params: ReferenceParams) => {
   if (!region) {
     return [];
   }
-  if (isJavaScriptLikeRegion(region)) {
+  if (region && isJavaScriptLikeRegion(region)) {
     return jsReferences(cached, params.position);
   }
   if (region.language !== "vbscript") {
@@ -844,7 +856,7 @@ connection.onDocumentHighlight((params): DocumentHighlight[] => {
       buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
     );
   }
-  if (isJavaScriptLikeRegion(region)) {
+  if (region && isJavaScriptLikeRegion(region)) {
     return jsDocumentHighlights(cached, params.position);
   }
   if (region?.language === "html") {
@@ -1048,7 +1060,7 @@ connection.onExecuteCommand(async (params) => {
   if (params.command === "aspLsp.reindexWorkspace" || params.command === "aspLsp.clearCache") {
     cancelBackgroundAnalysis();
     invalidateWorkspaceIndex();
-    includeDocumentCache.clear();
+    clearIncludeCaches();
     cache.clear();
     clearJsProjectCaches();
     if (params.command === "aspLsp.clearCache") {
@@ -1931,7 +1943,7 @@ function diagnosticsSettingsKey(settings: AspSettings): unknown {
 
 function vbDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
   return JSON.stringify({
-    project: vbProjectContextCacheKey(collectVbProjectDocuments(cached.parsed, settings), settings),
+    project: vbProjectContextCacheKey(collectCachedVbProjectDocuments(cached, settings), settings),
     settings: {
       typeChecking: settings.vbscript?.typeChecking,
       identifierCase: settings.vbscript?.identifierCase,
@@ -4012,7 +4024,7 @@ function tsReferenceToLocation(
 }
 
 function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
-  const documents = collectVbProjectDocuments(cached.parsed, settings);
+  const documents = collectCachedVbProjectDocuments(cached, settings);
   const contextSettings = {
     typeChecking: settings.vbscript?.typeChecking,
     identifierCase: settings.vbscript?.identifierCase,
@@ -4052,7 +4064,7 @@ async function buildVbProjectContextAsync(
   cached: CachedDocument,
   settings: AspSettings,
 ): Promise<VbProjectContext> {
-  const documents = await collectVbProjectDocumentsAsync(cached.parsed, settings);
+  const documents = await collectCachedVbProjectDocumentsAsync(cached, settings);
   const contextSettings = {
     typeChecking: settings.vbscript?.typeChecking,
     identifierCase: settings.vbscript?.identifierCase,
@@ -4166,6 +4178,42 @@ function configuredVbscriptGlobals(cached: CachedDocument, settings: AspSettings
         type,
       } satisfies VbSymbol,
     ];
+  });
+}
+
+function collectCachedVbProjectDocuments(
+  cached: CachedDocument,
+  settings: AspSettings,
+): AspParsedDocument[] {
+  const collectionKey = vbProjectDocumentCollectionKey(cached, settings);
+  const existing = cached.analysis?.vbProjectDocuments;
+  if (existing?.collectionKey === collectionKey) {
+    return existing.documents;
+  }
+  const documents = collectVbProjectDocuments(cached.parsed, settings);
+  analysisFor(cached).vbProjectDocuments = { collectionKey, documents };
+  return documents;
+}
+
+async function collectCachedVbProjectDocumentsAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<AspParsedDocument[]> {
+  const collectionKey = vbProjectDocumentCollectionKey(cached, settings);
+  const existing = cached.analysis?.vbProjectDocuments;
+  if (existing?.collectionKey === collectionKey) {
+    return existing.documents;
+  }
+  const documents = await collectVbProjectDocumentsAsync(cached.parsed, settings);
+  analysisFor(cached).vbProjectDocuments = { collectionKey, documents };
+  return documents;
+}
+
+function vbProjectDocumentCollectionKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    uri: cached.source.uri,
+    text: textFingerprint(cached.parsed.text),
+    resolution: includeResolutionSettingsKey(settings),
   });
 }
 
@@ -4397,7 +4445,12 @@ function findIncludeCycle(
   start: string,
   settings: AspSettings,
 ): string[] | undefined {
+  const cacheKey = includeCycleCacheKey(owner, start, settings);
+  if (includeCycleCache.has(cacheKey)) {
+    return includeCycleCache.get(cacheKey) ?? undefined;
+  }
   if (!fs.existsSync(start)) {
+    includeCycleCache.set(cacheKey, null);
     return undefined;
   }
   const visited = new Set<string>();
@@ -4441,7 +4494,17 @@ function findIncludeCycle(
     stackIndexes.delete(normalized);
     return undefined;
   };
-  return search(start, 0);
+  const cycle = search(start, 0);
+  includeCycleCache.set(cacheKey, cycle ?? null);
+  return cycle;
+}
+
+function includeCycleCacheKey(owner: string, start: string, settings: AspSettings): string {
+  return JSON.stringify({
+    owner: normalizeFileName(owner),
+    start: normalizeFileName(start),
+    resolution: includeResolutionSettingsKey(settings),
+  });
 }
 
 function remapDiagnostic(
@@ -4642,9 +4705,8 @@ function virtualRangeStaysWithinSegment(
   end: number,
 ): boolean {
   const lastOffset = Math.max(start, end - 1);
-  return virtual.sourceMap.segments.some(
-    (segment) => start >= segment.virtualStart && lastOffset < segment.virtualEnd,
-  );
+  const segment = sourceMapSegmentAtVirtualOffset(virtual, start);
+  return Boolean(segment && lastOffset < segment.virtualEnd);
 }
 
 function tsDiagnosticKey(diagnostic: ts.Diagnostic): string {
@@ -5022,12 +5084,46 @@ function nearestPackageJson(directory: string): string | undefined {
 }
 
 function findRegionAt(parsed: AspParsedDocument, offset: number) {
-  return parsed.regions
-    .filter((region) => offset >= region.contentStart && offset <= region.contentEnd)
-    .sort(
+  const regions = regionIndexFor(parsed).byStart;
+  let low = 0;
+  let high = regions.length - 1;
+  let lastStartBeforeOffset = -1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (regions[middle].contentStart <= offset) {
+      lastStartBeforeOffset = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  let best: AspRegion | undefined;
+  for (let index = lastStartBeforeOffset; index >= 0; index -= 1) {
+    const region = regions[index];
+    if (region.contentEnd < offset) {
+      continue;
+    }
+    if (!best || region.contentEnd - region.contentStart < best.contentEnd - best.contentStart) {
+      best = region;
+    }
+  }
+  return best;
+}
+
+function regionIndexFor(parsed: AspParsedDocument): RegionIndex {
+  const cached = regionIndexes.get(parsed);
+  if (cached) {
+    return cached;
+  }
+  const index = {
+    byStart: [...parsed.regions].sort(
       (left, right) =>
+        left.contentStart - right.contentStart ||
         left.contentEnd - left.contentStart - (right.contentEnd - right.contentStart),
-    )[0];
+    ),
+  };
+  regionIndexes.set(parsed, index);
+  return index;
 }
 
 function cachedSettings(uri: string): AspSettings {
@@ -5950,6 +6046,13 @@ function clearJsProjectCaches(): void {
   workspaceScriptFilesCache.clear();
 }
 
+function clearIncludeCaches(): void {
+  includeDocumentCache.clear();
+  includePathResolutionCache.clear();
+  pathResolutionCache.clear();
+  includeCycleCache.clear();
+}
+
 function textFingerprint(text: string): string {
   let hash = 2166136261;
   for (let index = 0; index < text.length; index += 1) {
@@ -6204,6 +6307,22 @@ function resolveIncludePathDetails(
   mode: "file" | "virtual",
   settings: AspSettings,
 ): IncludePathResolution {
+  const cacheKey = includePathResolutionCacheKey(ownerUri, includePath, mode, settings);
+  const cached = includePathResolutionCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const resolved = resolveIncludePathDetailsUncached(ownerUri, includePath, mode, settings);
+  includePathResolutionCache.set(cacheKey, resolved);
+  return resolved;
+}
+
+function resolveIncludePathDetailsUncached(
+  ownerUri: string,
+  includePath: string,
+  mode: "file" | "virtual",
+  settings: AspSettings,
+): IncludePathResolution {
   if (mode === "virtual") {
     const normalizedInclude = includePath.replace(/^\/+/, "");
     for (const root of [
@@ -6251,6 +6370,20 @@ function resolveIncludePathDetails(
   return local;
 }
 
+function includePathResolutionCacheKey(
+  ownerUri: string,
+  includePath: string,
+  mode: "file" | "virtual",
+  settings: AspSettings,
+): string {
+  return JSON.stringify({
+    owner: normalizeFileName(uriToFileName(ownerUri)),
+    includePath,
+    mode,
+    resolution: includeResolutionSettingsKey(settings),
+  });
+}
+
 function resolveIncludeCandidate(
   baseDirectory: string,
   includePath: string,
@@ -6265,6 +6398,21 @@ function resolveIncludeCandidate(
 }
 
 function resolvePathFromBase(
+  baseDirectory: string,
+  requestedPath: string,
+  settings: AspSettings,
+): PathResolution {
+  const cacheKey = pathResolutionCacheKey(baseDirectory, requestedPath, settings);
+  const cached = pathResolutionCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const resolved = resolvePathFromBaseUncached(baseDirectory, requestedPath, settings);
+  pathResolutionCache.set(cacheKey, resolved);
+  return resolved;
+}
+
+function resolvePathFromBaseUncached(
   baseDirectory: string,
   requestedPath: string,
   settings: AspSettings,
@@ -6323,6 +6471,29 @@ function resolvePathFromBase(
     exists: true,
     pathCaseMatches,
     actualPath: current,
+  };
+}
+
+function pathResolutionCacheKey(
+  baseDirectory: string,
+  requestedPath: string,
+  settings: AspSettings,
+): string {
+  return JSON.stringify({
+    baseDirectory: normalizeFileName(baseDirectory),
+    requestedPath,
+    windowsPathResolution: settings.windowsPathResolution !== false,
+  });
+}
+
+function includeResolutionSettingsKey(settings: AspSettings): unknown {
+  return {
+    virtualRoot: settings.virtualRoot,
+    virtualRoots: settings.virtualRoots?.map(normalizeFileName),
+    includePaths: settings.includePaths?.map(normalizeFileName),
+    windowsPathResolution: settings.windowsPathResolution !== false,
+    legacyEncoding: settings.legacyEncoding,
+    roots: workspaceRoots.map(normalizeFileName).sort(),
   };
 }
 
@@ -7765,6 +7936,7 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
   for (const semanticToken of getVbscriptSemanticTokens(
     cached.parsed,
     buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    range,
   )) {
     const offset = cached.source.offsetAt(semanticToken.range.start);
     if (offset < rangeStart || offset > rangeEnd) {
@@ -7921,7 +8093,7 @@ function addEmbeddedSemanticTokens(
   rangeEnd: number,
 ): void {
   const html = getCachedVirtual(cached, "html");
-  if (html) {
+  if (html && virtualOverlapsSourceRange(html, rangeStart, rangeEnd)) {
     const pattern = /<\/?\s*([A-Za-z][A-Za-z0-9:-]*)/g;
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(html.text))) {
@@ -7939,7 +8111,7 @@ function addEmbeddedSemanticTokens(
     }
   }
   const css = getCachedVirtual(cached, "css");
-  if (css) {
+  if (css && virtualOverlapsSourceRange(css, rangeStart, rangeEnd)) {
     for (const match of css.text.matchAll(/\b([A-Za-z-]+)\s*:/g)) {
       if (match.index !== undefined) {
         addVirtualWordToken(
@@ -7957,6 +8129,9 @@ function addEmbeddedSemanticTokens(
     }
   }
   for (const virtual of jsVirtualDocuments(cached)) {
+    if (!virtualOverlapsSourceRange(virtual, rangeStart, rangeEnd)) {
+      continue;
+    }
     const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
     addJavaScriptSemanticTokens(
       tokens,
@@ -7979,29 +8154,64 @@ function addJavaScriptSemanticTokens(
   rangeStart: number,
   rangeEnd: number,
 ): void {
-  const spans = service.getEncodedSemanticClassifications(
-    fileName,
-    { start: 0, length: virtual.text.length },
-    ts.SemanticClassificationFormat.TwentyTwenty,
-  ).spans;
-  for (let index = 0; index + 2 < spans.length; index += 3) {
-    const token = jsSemanticTokenFromClassification(spans[index + 2]);
-    if (!token) {
+  for (const span of virtualSpansForSourceRange(virtual, rangeStart, rangeEnd)) {
+    const spans = service.getEncodedSemanticClassifications(
+      fileName,
+      span,
+      ts.SemanticClassificationFormat.TwentyTwenty,
+    ).spans;
+    for (let index = 0; index + 2 < spans.length; index += 3) {
+      const token = jsSemanticTokenFromClassification(spans[index + 2]);
+      if (!token) {
+        continue;
+      }
+      addVirtualWordToken(
+        tokens,
+        cached.source,
+        cached,
+        virtual,
+        spans[index],
+        spans[index + 1],
+        token.tokenType,
+        rangeStart,
+        rangeEnd,
+        token.tokenModifiers,
+      );
+    }
+  }
+}
+
+function virtualOverlapsSourceRange(
+  virtual: VirtualDocument,
+  rangeStart: number,
+  rangeEnd: number,
+): boolean {
+  return virtual.sourceMap.segments.some(
+    (segment) => segment.sourceEnd >= rangeStart && segment.sourceStart <= rangeEnd,
+  );
+}
+
+function virtualSpansForSourceRange(
+  virtual: VirtualDocument,
+  rangeStart: number,
+  rangeEnd: number,
+): Array<{ start: number; length: number }> {
+  const lastSourceEnd = virtual.sourceMap.segments.at(-1)?.sourceEnd ?? -1;
+  if (rangeStart <= 0 && rangeEnd >= lastSourceEnd) {
+    return [{ start: 0, length: virtual.text.length }];
+  }
+  const spans: Array<{ start: number; length: number }> = [];
+  for (const segment of virtual.sourceMap.segments) {
+    const sourceStart = Math.max(segment.sourceStart, rangeStart);
+    const sourceEnd = Math.min(segment.sourceEnd, rangeEnd);
+    if (sourceStart > sourceEnd) {
       continue;
     }
-    addVirtualWordToken(
-      tokens,
-      cached.source,
-      cached,
-      virtual,
-      spans[index],
-      spans[index + 1],
-      token.tokenType,
-      rangeStart,
-      rangeEnd,
-      token.tokenModifiers,
-    );
+    const virtualStart = segment.virtualStart + (sourceStart - segment.sourceStart);
+    const virtualEnd = segment.virtualStart + (sourceEnd - segment.sourceStart);
+    spans.push({ start: virtualStart, length: Math.max(1, virtualEnd - virtualStart + 1) });
   }
+  return spans.length > 0 ? spans : [{ start: 0, length: virtual.text.length }];
 }
 
 function jsSemanticTokenFromClassification(
@@ -8110,10 +8320,26 @@ function sourceOffsetFromVirtualPoint(
   virtual: VirtualDocument,
   virtualOffset: number,
 ): number | undefined {
-  const segment = virtual.sourceMap.segments.find(
-    (candidate) => virtualOffset >= candidate.virtualStart && virtualOffset < candidate.virtualEnd,
-  );
+  const segment = sourceMapSegmentAtVirtualOffset(virtual, virtualOffset);
   return segment ? segment.sourceStart + (virtualOffset - segment.virtualStart) : undefined;
+}
+
+function sourceMapSegmentAtVirtualOffset(virtual: VirtualDocument, virtualOffset: number) {
+  const segments = virtual.sourceMap.segments;
+  let low = 0;
+  let high = segments.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const segment = segments[middle];
+    if (virtualOffset < segment.virtualStart) {
+      high = middle - 1;
+    } else if (virtualOffset >= segment.virtualEnd) {
+      low = middle + 1;
+    } else {
+      return segment;
+    }
+  }
+  return undefined;
 }
 
 function addSemanticToken(

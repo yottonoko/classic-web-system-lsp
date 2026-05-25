@@ -168,6 +168,12 @@ interface VbReferenceIndex {
   counts: Map<string, number>;
 }
 
+interface VbUnusedReferenceCandidates {
+  keys: Set<string>;
+  lowerNames: Set<string>;
+  memberNames: Set<string>;
+}
+
 const analysisSnapshots = new WeakMap<AspParsedDocument, VbAnalysisSnapshot>();
 const symbolIndexes = new WeakMap<VbSymbol[], VbSymbolIndex>();
 const typeIndexes = new WeakMap<VbTypeEnvironment, Map<string, VbType>>();
@@ -2512,10 +2518,16 @@ function isFunctionReturnAssignmentToken(
 export function getVbscriptSemanticTokens(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
+  range?: Range,
 ): VbSemanticToken[] {
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
-  const tokens: VbSemanticToken[] = operatorSemanticTokens(parsed);
+  const rangeStart = range ? offsetAt(parsed.text, range.start) : 0;
+  const rangeEnd = range ? offsetAt(parsed.text, range.end) : parsed.text.length;
+  const tokens: VbSemanticToken[] = operatorSemanticTokens(parsed, rangeStart, rangeEnd);
   for (const token of identifierTokens(parsed)) {
+    if (token.end < rangeStart || token.start > rangeEnd) {
+      continue;
+    }
     if (isClassicAspObjectName(token.text)) {
       tokens.push({
         range: rangeFromOffsets(parsed.text, token.start, token.end),
@@ -2594,13 +2606,20 @@ function builtinMemberName(owner: string, member: string): boolean {
   );
 }
 
-function operatorSemanticTokens(parsed: AspParsedDocument): VbSemanticToken[] {
+function operatorSemanticTokens(
+  parsed: AspParsedDocument,
+  rangeStart = 0,
+  rangeEnd = parsed.text.length,
+): VbSemanticToken[] {
   const operators: VbSemanticToken[] = [];
   const documents = vbDocuments(parsed);
   for (const document of documents) {
     const tokens = document.tokens.filter((token) => !isTriviaToken(token));
     for (let index = 0; index < tokens.length; index += 1) {
       const token = tokens[index];
+      if (token.end < rangeStart || token.start > rangeEnd) {
+        continue;
+      }
       const next = tokens[index + 1];
       const multiChar =
         token.text === "<" && (next?.text === ">" || next?.text === "=")
@@ -3519,29 +3538,45 @@ function inferFunctionReturnTypes(
       }
     }
   }
-  const returnStatementsByFunction = new Map<string, VbToken[][]>();
+  const functionNodes = vbNodes(parsed)
+    .filter(
+      (node): node is VbCstNode & { nameToken: VbToken } =>
+        node.kind === "Procedure" && node.procedureKind === "function" && Boolean(node.nameToken),
+    )
+    .sort((left, right) => left.start - right.start);
+  const returnStatementsByFunction = new Map<VbCstNode, VbToken[][]>();
+  let functionIndex = 0;
   for (const statement of vbStatements(parsed)) {
     const target = statement[0];
     if (target?.kind === "identifier" && statement[1]?.text === "=") {
-      const key = target.text.toLowerCase();
-      const statements = returnStatementsByFunction.get(key) ?? [];
+      while (
+        functionIndex < functionNodes.length &&
+        functionNodes[functionIndex].end < target.start
+      ) {
+        functionIndex += 1;
+      }
+      const node = functionNodes[functionIndex];
+      if (
+        !node ||
+        target.start < node.start ||
+        target.end > node.end ||
+        target.text.toLowerCase() !== node.nameToken.text.toLowerCase()
+      ) {
+        continue;
+      }
+      const statements = returnStatementsByFunction.get(node) ?? [];
       statements.push(statement);
-      returnStatementsByFunction.set(key, statements);
+      returnStatementsByFunction.set(node, statements);
     }
   }
-  for (const node of vbNodes(parsed)) {
-    if (node.kind !== "Procedure" || node.procedureKind !== "function" || !node.nameToken) {
-      continue;
-    }
+  for (const node of functionNodes) {
     const symbol = functionSymbolsByLine.get(
       `${node.nameToken.text.toLowerCase()}:${positionAt(parsed.text, node.nameToken.start).line}`,
     );
     if (!symbol || symbol.explicitType) {
       continue;
     }
-    const returnType = (returnStatementsByFunction.get(node.nameToken.text.toLowerCase()) ?? [])
-      .filter((statement) => statement[0]?.start >= node.start && statement[0]?.end <= node.end)
-      .filter((statement) => statement[0]?.kind === "identifier" && statement[1]?.text === "=")
+    const returnType = (returnStatementsByFunction.get(node) ?? [])
       .map((statement) =>
         inferExpressionType(parsed, statement.slice(2), symbols, env, statement[0].start),
       )
@@ -5480,7 +5515,11 @@ function diagnoseUnusedSymbols(
   context: VbProjectContext,
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
-  const references = buildVbReferenceIndex(parsed, symbols, context);
+  const candidates = unusedReferenceCandidates(parsed, symbols);
+  if (candidates.keys.size === 0) {
+    return diagnostics;
+  }
+  const references = buildVbReferenceIndex(parsed, symbols, context, candidates);
   for (const symbol of symbols) {
     if (
       symbol.sourceUri !== parsed.uri ||
@@ -5507,23 +5546,82 @@ function buildVbReferenceIndex(
   parsed: AspParsedDocument,
   symbols: VbSymbol[],
   context: VbProjectContext,
+  candidates: VbUnusedReferenceCandidates,
 ): VbReferenceIndex {
   const counts = new Map<string, number>();
   const documents = context.documents ?? [parsed];
+  const index = symbolIndexFor(symbols, parsed);
   for (const document of documents) {
     for (const token of identifierTokens(document)) {
       if (isDeclarationNameToken(document, token)) {
         continue;
       }
-      const resolved = resolveSymbolForToken(document, token, symbols);
+      const member = memberAccessForToken(document, token);
+      if (member) {
+        if (!candidates.memberNames.has(member.member.toLowerCase())) {
+          continue;
+        }
+      } else if (!candidates.lowerNames.has(token.text.toLowerCase())) {
+        continue;
+      }
+      const resolved = member
+        ? resolveSymbolForToken(document, token, symbols)
+        : resolveVisibleSymbolByName(document, token, index);
       if (!resolved) {
         continue;
       }
       const key = symbolKey(resolved);
+      if (!candidates.keys.has(key)) {
+        continue;
+      }
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
   }
   return { counts };
+}
+
+function unusedReferenceCandidates(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+): VbUnusedReferenceCandidates {
+  const keys = new Set<string>();
+  const lowerNames = new Set<string>();
+  const memberNames = new Set<string>();
+  for (const symbol of symbols) {
+    if (
+      symbol.sourceUri !== parsed.uri ||
+      isBuiltinName(symbol.name) ||
+      isRuntimeEntryPoint(parsed, symbol) ||
+      !isUnusedDiagnosticCandidate(symbol)
+    ) {
+      continue;
+    }
+    keys.add(symbolKey(symbol));
+    if (symbol.memberOf) {
+      memberNames.add(symbol.name.toLowerCase());
+    } else {
+      lowerNames.add(symbol.name.toLowerCase());
+    }
+  }
+  return { keys, lowerNames, memberNames };
+}
+
+function resolveVisibleSymbolByName(
+  parsed: AspParsedDocument,
+  token: VbToken,
+  index: VbSymbolIndex,
+): VbSymbol | undefined {
+  const offset = token.start + Math.floor(token.text.length / 2);
+  let best: VbSymbol | undefined;
+  for (const symbol of index.byLowerName.get(token.text.toLowerCase()) ?? []) {
+    if (!isSymbolVisibleAt(symbol, parsed.uri, parsed.text, offset, index)) {
+      continue;
+    }
+    if (!best || symbolPriority(symbol) > symbolPriority(best)) {
+      best = symbol;
+    }
+  }
+  return best;
 }
 
 function isUnusedDiagnosticCandidate(symbol: VbSymbol): boolean {
