@@ -98,6 +98,7 @@ JavaScript.
 | `aspLsp.javascript.ignoreProjectConfig`   | `false`                  | Ignore nearest `tsconfig.json` or `jsconfig.json` for embedded JavaScript/JScript language service projects.                                     |
 | `aspLsp.virtualRoot`                      | `""`                     | Root directory for `<!-- #include virtual="..." -->`.                                                                                            |
 | `aspLsp.virtualRoots`                     | `[]`                     | Additional virtual include roots.                                                                                                                |
+| `aspLsp.windowsPathResolution`            | `true`                   | Resolve includes case-insensitively like Windows and report diagnostics when path casing does not exactly match the file system.                 |
 | `aspLsp.legacyEncoding`                   | `auto`                   | Encoding for unopened include files, `auto`, `utf8`, `shift_jis`, or `cp932`.                                                                    |
 | `aspLsp.format.indentSize`                | `null`                   | Classic ASP formatter indent size; `null` uses editor options.                                                                                   |
 | `aspLsp.format.indentStyle`               | Unset                    | `space` or `tab`; unset uses editor options.                                                                                                     |
@@ -162,7 +163,7 @@ Example `aspLsp.vbscript.comTypes` and `aspLsp.vbscript.globals` entries:
 - Cross-language rename is conservative. It links HTML `id`/`class`, CSS `#id`/`.class`, and common JavaScript DOM selector strings such as `querySelector`, `querySelectorAll`, `getElementById`, and `classList` across open and indexed Classic ASP workspace files.
 - VBScript has no import syntax, so auto import support is exposed as include suggestions for undeclared symbols that exist in indexed `.asp`, `.asa`, or `.inc` workspace files.
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
-- Include resolution supports `file` and `virtual` directives, missing include diagnostics, and bounded cycle detection.
+- Include resolution supports `file` and `virtual` directives, Windows-style case-insensitive lookup with exact-casing diagnostics, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed. COM type information comes from built-in ASP/COM/ADO stubs or `aspLsp.vbscript.comTypes`.
 - Call hierarchy, type hierarchy, CodeLens, type definition, implementation, monikers, and inline values are static and user-defined-symbol first; runtime COM dispatch is not modeled.
 - Save and will-save hooks refresh diagnostics and caches. `willSaveWaitUntil` is non-mutating by default and returns full-document formatting edits only when `aspLsp.format.onSave` is enabled.

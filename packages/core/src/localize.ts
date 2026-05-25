@@ -57,6 +57,7 @@ export type LocalizeKey =
   | "vb.diagnostic.identifierCase"
   | "server.unknownCommand"
   | "server.include.unresolved"
+  | "server.include.caseMismatch"
   | "server.include.currentDocument"
   | "server.include.cycle"
   | "server.workspaceIndex.truncated"
@@ -139,6 +140,8 @@ const en: Record<LocalizeKey, string> = {
     "Identifier '{name}' should be '{expectedName}' for {style} casing.",
   "server.unknownCommand": "Unknown command: {command}",
   "server.include.unresolved": "Include file '{path}' could not be resolved.",
+  "server.include.caseMismatch":
+    "Include path '{path}' differs from the file system casing '{actualPath}'.",
   "server.include.currentDocument": "Include file references the current document.",
   "server.include.cycle": "Include cycle detected: {cycle}.",
   "server.workspaceIndex.truncated":
@@ -226,6 +229,8 @@ const ja: Record<LocalizeKey, string> = {
     "識別子 '{name}' は {style} casing の '{expectedName}' にしてください。",
   "server.unknownCommand": "不明なコマンドです: {command}",
   "server.include.unresolved": "include file '{path}' を解決できません。",
+  "server.include.caseMismatch":
+    "include path '{path}' は file system 上の大文字小文字 '{actualPath}' と一致していません。",
   "server.include.currentDocument": "include file が現在のドキュメントを参照しています。",
   "server.include.cycle": "include の循環を検出しました: {cycle}。",
   "server.workspaceIndex.truncated":

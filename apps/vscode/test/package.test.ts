@@ -105,6 +105,9 @@ describe("VS Code extension package", () => {
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.implicitByRef"],
     ).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.windowsPathResolution"],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.legacyEncoding"]).toEqual(
       expect.objectContaining({
         enum: ["auto", "utf8", "shift_jis", "cp932"],

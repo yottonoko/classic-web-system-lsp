@@ -11,6 +11,7 @@
   "configuration.javascript.ignoreProjectConfig.description": "Ignore nearest tsconfig.json or jsconfig.json when building embedded JavaScript and JScript language service projects.",
   "configuration.virtualRoot.description": "Root directory used to resolve virtual include paths.",
   "configuration.virtualRoots.description": "Additional root directories used to resolve virtual include paths.",
+  "configuration.windowsPathResolution.description": "Resolve Classic ASP include paths case-insensitively like Windows and report diagnostics when include path casing differs from the file system. Disable to use the host file system behavior only.",
   "configuration.legacyEncoding.description": "Encoding used when reading unopened include files. Auto detection is used by default.",
   "configuration.format.indentSize.description": "Indent size used by the Classic ASP formatter. When unset, editor formatting options are used.",
   "configuration.format.indentStyle.description": "Indent style used by the Classic ASP formatter. When unset, editor formatting options are used.",

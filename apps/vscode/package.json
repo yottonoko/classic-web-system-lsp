@@ -239,6 +239,11 @@
           "default": [],
           "description": "%configuration.virtualRoots.description%"
         },
+        "aspLsp.windowsPathResolution": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.windowsPathResolution.description%"
+        },
         "aspLsp.legacyEncoding": {
           "type": "string",
           "enum": [

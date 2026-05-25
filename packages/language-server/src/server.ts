@@ -151,6 +151,17 @@ const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
 const hiddenJavaScriptGlobalCompletions = new Set(["__dirname", "__filename"]);
 const browserJavaScriptLibs = ["lib.esnext.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"];
 
+interface PathResolution {
+  fileName: string;
+  exists: boolean;
+  pathCaseMatches: boolean;
+  actualPath?: string;
+}
+
+interface IncludePathResolution extends PathResolution {
+  actualIncludePath?: string;
+}
+
 const semanticTokenTypes = [
   "keyword",
   "variable",
@@ -1658,6 +1669,8 @@ function diagnosticsSettingsKey(settings: AspSettings): unknown {
     locale: settings.resolvedLocale,
     virtualRoot: settings.virtualRoot,
     virtualRoots: settings.virtualRoots,
+    includePaths: settings.includePaths,
+    windowsPathResolution: settings.windowsPathResolution !== false,
     legacyEncoding: settings.legacyEncoding,
   };
 }
@@ -3602,8 +3615,13 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
   const owner = uriToFileName(cached.source.uri);
   const localizer = localizerForSettings(settings);
   for (const include of cached.parsed.includes) {
-    const resolved = resolveIncludePath(cached.source.uri, include.path, include.mode, settings);
-    if (!resolved || !fs.existsSync(resolved)) {
+    const resolved = resolveIncludePathDetails(
+      cached.source.uri,
+      include.path,
+      include.mode,
+      settings,
+    );
+    if (!resolved.exists) {
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
         range: include.range,
@@ -3611,8 +3629,21 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
         code: "include.missing",
         source: "asp-lsp-include",
       });
+      continue;
     }
-    if (sameFile(resolved, owner)) {
+    if (settings.windowsPathResolution !== false && !resolved.pathCaseMatches) {
+      diagnostics.push({
+        severity: DiagnosticSeverity.Error,
+        range: include.pathRange,
+        message: localizer.t("server.include.caseMismatch", {
+          path: include.path,
+          actualPath: resolved.actualIncludePath ?? resolved.actualPath ?? resolved.fileName,
+        }),
+        code: "include.pathCaseMismatch",
+        source: "asp-lsp-include",
+      });
+    }
+    if (sameFile(resolved.fileName, owner)) {
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
         range: include.range,
@@ -3622,7 +3653,7 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
       });
       continue;
     }
-    const cycle = findIncludeCycle(owner, resolved, settings);
+    const cycle = findIncludeCycle(owner, resolved.fileName, settings);
     if (cycle) {
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
@@ -4356,6 +4387,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     resolvedLocale: resolveLocale(normalizeLocaleSetting(settings.locale)),
     defaultLanguage: settings.defaultLanguage === "JScript" ? "JScript" : "VBScript",
     checkJs: settings.checkJs === true,
+    windowsPathResolution: settings.windowsPathResolution !== false,
     virtualRoot:
       typeof settings.virtualRoot === "string" && settings.virtualRoot.length > 0
         ? path.resolve(settings.virtualRoot)
@@ -5394,6 +5426,15 @@ function resolveIncludePath(
   mode: "file" | "virtual",
   settings: AspSettings,
 ): string {
+  return resolveIncludePathDetails(ownerUri, includePath, mode, settings).fileName;
+}
+
+function resolveIncludePathDetails(
+  ownerUri: string,
+  includePath: string,
+  mode: "file" | "virtual",
+  settings: AspSettings,
+): IncludePathResolution {
   if (mode === "virtual") {
     const normalizedInclude = includePath.replace(/^\/+/, "");
     for (const root of [
@@ -5405,24 +5446,115 @@ function resolveIncludePath(
       if (!root) {
         continue;
       }
-      const candidate = path.resolve(root, normalizedInclude);
-      if (fs.existsSync(candidate)) {
+      const candidate = resolveIncludeCandidate(
+        root,
+        normalizedInclude,
+        settings,
+        (actual) => `/${path.relative(root, actual).split(path.sep).join("/")}`,
+      );
+      if (candidate.exists) {
         return candidate;
       }
     }
-    return path.resolve(settings.virtualRoot ?? workspaceRootFromUri(ownerUri), normalizedInclude);
+    const root = settings.virtualRoot ?? workspaceRootFromUri(ownerUri);
+    return resolveIncludeCandidate(
+      root,
+      normalizedInclude,
+      settings,
+      (actual) => `/${path.relative(root, actual).split(path.sep).join("/")}`,
+    );
   }
-  const local = path.resolve(path.dirname(uriToFileName(ownerUri)), includePath);
-  if (fs.existsSync(local)) {
+  const ownerDirectory = path.dirname(uriToFileName(ownerUri));
+  const local = resolveIncludeCandidate(ownerDirectory, includePath, settings, (actual) =>
+    path.relative(ownerDirectory, actual).split(path.sep).join("/"),
+  );
+  if (local.exists) {
     return local;
   }
   for (const root of [...(settings.includePaths ?? []), ...(settings.virtualRoots ?? [])]) {
-    const candidate = path.resolve(root, includePath);
-    if (fs.existsSync(candidate)) {
+    const candidate = resolveIncludeCandidate(root, includePath, settings, (actual) =>
+      path.relative(root, actual).split(path.sep).join("/"),
+    );
+    if (candidate.exists) {
       return candidate;
     }
   }
   return local;
+}
+
+function resolveIncludeCandidate(
+  baseDirectory: string,
+  includePath: string,
+  settings: AspSettings,
+  actualIncludePath: (actualPath: string) => string,
+): IncludePathResolution {
+  const resolved = resolvePathFromBase(baseDirectory, includePath, settings);
+  return {
+    ...resolved,
+    actualIncludePath: resolved.actualPath ? actualIncludePath(resolved.actualPath) : undefined,
+  };
+}
+
+function resolvePathFromBase(
+  baseDirectory: string,
+  requestedPath: string,
+  settings: AspSettings,
+): PathResolution {
+  const fileName = path.resolve(baseDirectory, requestedPath);
+  if (settings.windowsPathResolution === false) {
+    const exists = fs.existsSync(fileName);
+    return {
+      fileName,
+      exists,
+      pathCaseMatches: true,
+      actualPath: exists ? fileName : undefined,
+    };
+  }
+  let start = path.isAbsolute(requestedPath)
+    ? path.parse(fileName).root
+    : normalizeFileName(baseDirectory);
+  let relative = path.relative(start, fileName);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    start = path.parse(fileName).root;
+    relative = path.relative(start, fileName);
+  }
+  if (!relative) {
+    const exists = fs.existsSync(fileName);
+    return {
+      fileName,
+      exists,
+      pathCaseMatches: true,
+      actualPath: exists ? fileName : undefined,
+    };
+  }
+  let current = start;
+  let pathCaseMatches = true;
+  for (const segment of relative.split(path.sep).filter((part) => part.length > 0)) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return { fileName, exists: false, pathCaseMatches };
+    }
+    const exact = entries.find((entry) => entry.name === segment);
+    if (exact) {
+      current = path.join(current, exact.name);
+      continue;
+    }
+    const lower = segment.toLowerCase();
+    const insensitive = entries.filter((entry) => entry.name.toLowerCase() === lower);
+    if (insensitive.length !== 1) {
+      return { fileName, exists: false, pathCaseMatches };
+    }
+    pathCaseMatches = false;
+    current = path.join(current, insensitive[0].name);
+  }
+  return {
+    fileName: current,
+    exists: true,
+    pathCaseMatches,
+    actualPath: current,
+  };
 }
 
 function workspaceRootFromUri(uri: string): string {

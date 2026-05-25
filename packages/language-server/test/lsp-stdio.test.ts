@@ -3,7 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { CompletionItemKind, InsertTextFormat } from "vscode-languageserver-types";
+import {
+  CompletionItemKind,
+  DiagnosticSeverity,
+  InsertTextFormat,
+} from "vscode-languageserver-types";
 
 interface JsonRpcMessage {
   id?: number;
@@ -2018,6 +2022,148 @@ both.SharedName
           files: [{ oldUri: `file://${include}`, newUri: `file://${renamed}` }],
         });
         expect(JSON.stringify(edit)).toContain("renamed.inc");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("resolves Windows-style include paths and reports path casing mismatches", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-path-case-"));
+      const mismatchOwner = path.join(tempDir, "mismatch.asp");
+      const exactOwner = path.join(tempDir, "exact.asp");
+      const mixedCaseInclude = path.join(tempDir, "aB.asp");
+      const upperCaseInclude = path.join(tempDir, "BA.asp");
+      fs.writeFileSync(
+        mixedCaseInclude,
+        `<%
+Function SharedFromMixed()
+End Function
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        upperCaseInclude,
+        `<%
+Function SharedFromUpper()
+End Function
+%>`,
+        "utf8",
+      );
+      const mismatch = markedDocument(`<!-- #include file="ab.asp" -->
+<%
+Response.Write Shared▮FromMixed()
+%>`);
+      const exact = `<!-- #include file="BA.asp" -->
+<%
+Response.Write SharedFromUpper()
+%>`;
+      fs.writeFileSync(mismatchOwner, mismatch.text, "utf8");
+      fs.writeFileSync(exactOwner, exact, "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${mismatchOwner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: mismatch.text,
+          },
+        });
+
+        const diagnostics = await waitForDiagnosticsContaining(server, "file system casing");
+        const includeDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-include");
+        expect(includeDiagnostics).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              code: "include.pathCaseMismatch",
+              severity: DiagnosticSeverity.Error,
+            }),
+          ]),
+        );
+        expect(JSON.stringify(includeDiagnostics)).toContain("aB.asp");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri: `file://${mismatchOwner}` },
+          position: mismatch.position,
+        });
+        expect(completionLabels(completions)).toContain("SharedFromMixed");
+
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${exactOwner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: exact,
+          },
+        });
+        const exactDiagnostics = await server.request("textDocument/diagnostic", {
+          textDocument: { uri: `file://${exactOwner}` },
+        });
+        expect(JSON.stringify(exactDiagnostics)).not.toContain("include.pathCaseMismatch");
+        expect(JSON.stringify(exactDiagnostics)).not.toContain("could not be resolved");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("can disable Windows-style include path casing diagnostics", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-path-case-off-"));
+      const owner = path.join(tempDir, "default.asp");
+      fs.writeFileSync(
+        path.join(tempDir, "aB.asp"),
+        `<%
+Function SharedFromMixed()
+End Function
+%>`,
+        "utf8",
+      );
+      const source = `<!-- #include file="ab.asp" -->
+<%
+Response.Write SharedFromMixed()
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { windowsPathResolution: false } },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${owner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        const diagnostics = await server.request("textDocument/diagnostic", {
+          textDocument: { uri: `file://${owner}` },
+        });
+        expect(JSON.stringify(diagnostics)).not.toContain("include.pathCaseMismatch");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
