@@ -159,6 +159,7 @@ interface VbAnalysisSnapshot {
 
 interface VbSymbolIndex {
   byLowerName: Map<string, VbSymbol[]>;
+  memberByOwner: Map<string, VbSymbol[]>;
   memberByOwnerAndName: Map<string, VbSymbol[]>;
   scopeOffsets: WeakMap<VbSymbol, { start: number; end: number }>;
 }
@@ -3193,6 +3194,7 @@ export function buildVbTypeEnvironment(
   context: VbProjectContext = {},
 ): VbTypeEnvironment {
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  const symbolIndex = symbolIndexFor(symbols);
   const typeMap = new Map<string, VbType>();
   for (const type of builtinTypes()) {
     addType(typeMap, type);
@@ -3204,27 +3206,25 @@ export function buildVbTypeEnvironment(
     addType(typeMap, {
       name: symbol.name,
       kind: "class",
-      members: symbols
-        .filter((member) => member.memberOf?.toLowerCase() === symbol.name.toLowerCase())
-        .map(
-          (member): VbMember => ({
-            name: member.name,
-            kind:
-              member.kind === "method" ? "method" : member.kind === "field" ? "field" : "property",
-            type: member.type ?? typeRef(member.typeName ?? "Variant"),
-            signature:
-              member.kind === "method" || member.kind === "property"
-                ? {
-                    parameters: parameterDetails(member).map((parameter) => ({
-                      name: parameter.name,
-                      mode: parameter.mode,
-                      optional: parameter.optional,
-                    })),
-                    returnType: member.type ?? typeRef(member.typeName ?? "Variant"),
-                  }
-                : undefined,
-          }),
-        ),
+      members: (symbolIndex.memberByOwner.get(symbol.name.toLowerCase()) ?? []).map(
+        (member): VbMember => ({
+          name: member.name,
+          kind:
+            member.kind === "method" ? "method" : member.kind === "field" ? "field" : "property",
+          type: member.type ?? typeRef(member.typeName ?? "Variant"),
+          signature:
+            member.kind === "method" || member.kind === "property"
+              ? {
+                  parameters: parameterDetails(member).map((parameter) => ({
+                    name: parameter.name,
+                    mode: parameter.mode,
+                    optional: parameter.optional,
+                  })),
+                  returnType: member.type ?? typeRef(member.typeName ?? "Variant"),
+                }
+              : undefined,
+        }),
+      ),
     });
   }
   for (const annotation of parseTypeAnnotations(parsed).members) {
@@ -3476,9 +3476,12 @@ function inferStatementTypes(
     ) {
       continue;
     }
-    const symbol = visibleSymbols(parsed, target.start, symbols).find(
-      (item) => item.name.toLowerCase() === target.text.toLowerCase(),
-    );
+    const symbol = visibleSymbolsByName(
+      parsed,
+      target.start,
+      symbols,
+      target.text.toLowerCase(),
+    )[0];
     if (!symbol) {
       continue;
     }
@@ -3507,28 +3510,38 @@ function inferFunctionReturnTypes(
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
 ): void {
+  const functionSymbolsByLine = new Map<string, VbSymbol>();
+  for (const symbol of symbols) {
+    if (symbol.kind === "function") {
+      const key = `${symbol.name.toLowerCase()}:${symbol.range.start.line}`;
+      if (!functionSymbolsByLine.has(key)) {
+        functionSymbolsByLine.set(key, symbol);
+      }
+    }
+  }
+  const returnStatementsByFunction = new Map<string, VbToken[][]>();
+  for (const statement of vbStatements(parsed)) {
+    const target = statement[0];
+    if (target?.kind === "identifier" && statement[1]?.text === "=") {
+      const key = target.text.toLowerCase();
+      const statements = returnStatementsByFunction.get(key) ?? [];
+      statements.push(statement);
+      returnStatementsByFunction.set(key, statements);
+    }
+  }
   for (const node of vbNodes(parsed)) {
     if (node.kind !== "Procedure" || node.procedureKind !== "function" || !node.nameToken) {
       continue;
     }
-    const symbol = symbols.find(
-      (candidate) =>
-        candidate.kind === "function" &&
-        candidate.name.toLowerCase() === node.nameToken?.text.toLowerCase() &&
-        candidate.range.start.line ===
-          rangeFromOffsets(parsed.text, node.nameToken.start, node.nameToken.end).start.line,
+    const symbol = functionSymbolsByLine.get(
+      `${node.nameToken.text.toLowerCase()}:${positionAt(parsed.text, node.nameToken.start).line}`,
     );
     if (!symbol || symbol.explicitType) {
       continue;
     }
-    const returnType = vbStatements(parsed)
+    const returnType = (returnStatementsByFunction.get(node.nameToken.text.toLowerCase()) ?? [])
       .filter((statement) => statement[0]?.start >= node.start && statement[0]?.end <= node.end)
-      .filter(
-        (statement) =>
-          statement[0]?.kind === "identifier" &&
-          statement[0].text.toLowerCase() === node.nameToken?.text.toLowerCase() &&
-          statement[1]?.text === "=",
-      )
+      .filter((statement) => statement[0]?.kind === "identifier" && statement[1]?.text === "=")
       .map((statement) =>
         inferExpressionType(parsed, statement.slice(2), symbols, env, statement[0].start),
       )
@@ -4803,15 +4816,24 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
 }
 
 function parentClassName(parsed: AspParsedDocument, offset: number): string | undefined {
-  return snapshotFor(parsed)
-    .classNodes.filter((node) => offset >= node.start && offset <= node.end)
-    .sort((left, right) => left.end - left.start - (right.end - right.start))[0]?.nameToken?.text;
+  return smallestContainingNode(snapshotFor(parsed).classNodes, offset)?.nameToken?.text;
 }
 
 function scopeNodeAt(parsed: AspParsedDocument, offset: number): VbCstNode | undefined {
-  return snapshotFor(parsed)
-    .scopeNodes.filter((node) => offset >= node.start && offset <= node.end)
-    .sort((left, right) => left.end - left.start - (right.end - right.start))[0];
+  return smallestContainingNode(snapshotFor(parsed).scopeNodes, offset);
+}
+
+function smallestContainingNode(nodes: VbCstNode[], offset: number): VbCstNode | undefined {
+  let best: VbCstNode | undefined;
+  for (const node of nodes) {
+    if (offset < node.start || offset > node.end) {
+      continue;
+    }
+    if (!best || node.end - node.start < best.end - best.start) {
+      best = node;
+    }
+  }
+  return best;
 }
 
 function enclosingVbNodes(parsed: AspParsedDocument, offset: number): VbCstNode[] {
@@ -5068,11 +5090,13 @@ function symbolIndexFor(symbols: VbSymbol[], parsed?: AspParsedDocument): VbSymb
     return cached;
   }
   const byLowerName = new Map<string, VbSymbol[]>();
+  const memberByOwner = new Map<string, VbSymbol[]>();
   const memberByOwnerAndName = new Map<string, VbSymbol[]>();
   const scopeOffsets = new WeakMap<VbSymbol, { start: number; end: number }>();
   for (const symbol of symbols) {
     pushMapItem(byLowerName, symbol.name.toLowerCase(), symbol);
     if (symbol.memberOf) {
+      pushMapItem(memberByOwner, symbol.memberOf.toLowerCase(), symbol);
       pushMapItem(memberByOwnerAndName, memberSymbolKey(symbol.memberOf, symbol.name), symbol);
     }
     if (parsed && symbol.sourceUri === parsed.uri && symbol.scopeRange) {
@@ -5082,7 +5106,7 @@ function symbolIndexFor(symbols: VbSymbol[], parsed?: AspParsedDocument): VbSymb
       });
     }
   }
-  const index = { byLowerName, memberByOwnerAndName, scopeOffsets };
+  const index = { byLowerName, memberByOwner, memberByOwnerAndName, scopeOffsets };
   symbolIndexes.set(symbols, index);
   return index;
 }

@@ -4942,6 +4942,49 @@ Response.Write enabled
       }
     });
 
+    it("ignores unrelated watched file changes without refreshing open ASP documents", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: { debug: { output: "verbose" }, workspace: { backgroundAnalysis: false } },
+          },
+        });
+        const uri = "file:///tmp/watched-noop.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<% Response.Write "ok" %>`,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await delay(350);
+        server.takePendingNotifications("window/logMessage");
+
+        server.notify("workspace/didChangeWatchedFiles", {
+          changes: [{ uri: "file:///tmp/readme.txt", type: 2 }],
+        });
+        await delay(350);
+
+        const logs = server.takePendingNotifications("window/logMessage");
+        expect(JSON.stringify(logs)).not.toContain("analysis.parse");
+        expect(JSON.stringify(logs)).not.toContain("LSP check started");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("separates fast and slow diagnostics in the classic ASP dashboard smoke scenario", async () => {
       const server = new RpcServer();
       try {

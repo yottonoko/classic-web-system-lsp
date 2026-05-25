@@ -45,17 +45,24 @@ export function buildVirtualDocument(
     return buildMaskedDocument(uri, sourceText, languageId, regions);
   }
 
-  let text = "";
+  const sortedRegions = [...allRegions].sort(
+    (left, right) => left.start - right.start || left.end - right.end,
+  );
+  const chunks: string[] = [];
   const segments: SourceMapSegment[] = [];
+  let textLength = 0;
   for (const region of regions) {
     const prefix =
       languageId === "css" ? (region.kind === "style-attribute" ? "__asp_lsp__{" : "\n") : "";
     const suffix = languageId === "css" && region.kind === "style-attribute" ? "}\n" : "\n";
-    const start = text.length + prefix.length;
-    const content = maskNestedRegions(sourceText, region, allRegions, languageId);
-    text += prefix + content + suffix;
-    segments.push(...sourceMapSegmentsForRegion(region, allRegions, start));
+    const start = textLength + prefix.length;
+    const nestedRegions = nestedRegionsForOwner(region, sortedRegions);
+    const content = maskNestedRegions(sourceText, region, nestedRegions, languageId);
+    chunks.push(prefix, content, suffix);
+    textLength += prefix.length + content.length + suffix.length;
+    segments.push(...sourceMapSegmentsForRegion(region, nestedRegions, start));
   }
+  const text = chunks.join("");
   return {
     uri: `${uri}.${languageId}.virtual`,
     languageId,
@@ -66,12 +73,10 @@ export function buildVirtualDocument(
 
 function sourceMapSegmentsForRegion(
   owner: AspRegion,
-  allRegions: AspRegion[],
+  nestedRegions: AspRegion[],
   virtualStart: number,
 ): SourceMapSegment[] {
-  const holes = allRegions
-    .filter((nested) => isNestedAspRegion(owner, nested))
-    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const holes = nestedRegions.filter(isAspRegionHole);
   const segments: SourceMapSegment[] = [];
   let cursor = owner.contentStart;
   for (const hole of holes) {
@@ -102,38 +107,69 @@ function sourceMapSegment(
 }
 
 function isNestedAspRegion(owner: AspRegion, nested: AspRegion): boolean {
+  return nested !== owner && nested.start >= owner.contentStart && nested.end <= owner.contentEnd;
+}
+
+function isAspRegionHole(region: AspRegion): boolean {
   return (
-    nested !== owner &&
-    (nested.kind === "asp-block" ||
-      nested.kind === "asp-expression" ||
-      nested.kind === "asp-directive") &&
-    nested.start >= owner.contentStart &&
-    nested.end <= owner.contentEnd
+    region.kind === "asp-block" ||
+    region.kind === "asp-expression" ||
+    region.kind === "asp-directive"
   );
+}
+
+function nestedRegionsForOwner(owner: AspRegion, sortedRegions: AspRegion[]): AspRegion[] {
+  const regions: AspRegion[] = [];
+  let index = lowerBoundRegionStart(sortedRegions, owner.contentStart);
+  while (index < sortedRegions.length) {
+    const nested = sortedRegions[index];
+    if (nested.start >= owner.contentEnd) {
+      break;
+    }
+    if (isNestedAspRegion(owner, nested)) {
+      regions.push(nested);
+    }
+    index += 1;
+  }
+  return regions;
+}
+
+function lowerBoundRegionStart(regions: AspRegion[], offset: number): number {
+  let low = 0;
+  let high = regions.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (regions[middle].start < offset) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
 }
 
 function maskNestedRegions(
   sourceText: string,
   owner: AspRegion,
-  allRegions: AspRegion[],
+  nestedRegions: AspRegion[],
   languageId: AspEmbeddedLanguage,
 ): string {
-  const chars = sourceText.slice(owner.contentStart, owner.contentEnd).split("");
-  for (const nested of allRegions) {
-    if (
-      nested === owner ||
-      nested.language === languageId ||
-      nested.start < owner.contentStart ||
-      nested.end > owner.contentEnd
-    ) {
+  const chunks: string[] = [];
+  let cursor = owner.contentStart;
+  for (const nested of nestedRegions) {
+    if (nested === owner || nested.language === languageId || nested.end <= cursor) {
       continue;
     }
-    const start = Math.max(0, nested.start - owner.contentStart);
-    const end = Math.min(chars.length, nested.end - owner.contentStart);
-    const mask = nestedRegionMask(sourceText, owner, nested, languageId).split("");
-    chars.splice(start, end - start, ...mask);
+    if (cursor < nested.start) {
+      chunks.push(sourceText.slice(cursor, nested.start));
+    }
+    chunks.push(nestedRegionMask(sourceText, owner, nested, languageId));
+    cursor = nested.end;
   }
-  return chars.join("");
+  if (cursor < owner.contentEnd) {
+    chunks.push(sourceText.slice(cursor, owner.contentEnd));
+  }
+  return chunks.join("");
 }
 
 function nestedRegionMask(
@@ -247,21 +283,20 @@ export function createSourceMap(
   virtualText: string,
   segments: SourceMapSegment[],
 ): SourceMap {
+  const sourceSegments = [...segments].sort(
+    (left, right) => left.sourceStart - right.sourceStart || left.sourceEnd - right.sourceEnd,
+  );
   const map = {
     segments,
     toSourceOffset(offset: number): number | undefined {
-      const segment = segments.find(
-        (candidate) => offset >= candidate.virtualStart && offset <= candidate.virtualEnd,
-      );
+      const segment = findSegmentContaining(segments, offset, "virtual");
       if (!segment) {
         return undefined;
       }
       return segment.sourceStart + (offset - segment.virtualStart);
     },
     toVirtualOffset(offset: number): number | undefined {
-      const segment = segments.find(
-        (candidate) => offset >= candidate.sourceStart && offset <= candidate.sourceEnd,
-      );
+      const segment = findSegmentContaining(sourceSegments, offset, "source");
       if (!segment) {
         return undefined;
       }
@@ -279,4 +314,27 @@ export function createSourceMap(
     },
   };
   return map;
+}
+
+function findSegmentContaining(
+  segments: SourceMapSegment[],
+  offset: number,
+  axis: "source" | "virtual",
+): SourceMapSegment | undefined {
+  const startKey = axis === "source" ? "sourceStart" : "virtualStart";
+  const endKey = axis === "source" ? "sourceEnd" : "virtualEnd";
+  let low = 0;
+  let high = segments.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const segment = segments[middle];
+    if (offset < segment[startKey]) {
+      high = middle - 1;
+    } else if (offset > segment[endKey]) {
+      low = middle + 1;
+    } else {
+      return segment;
+    }
+  }
+  return undefined;
 }

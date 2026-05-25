@@ -10,7 +10,7 @@ import type {
   AspSettings,
   AspToken,
 } from "./types";
-import { rangeFromOffsets } from "./position";
+import { offsetAt, rangeFromOffsets } from "./position";
 import { scanHtmlAndAsp, normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 import { parseVbscriptCst } from "./vbscript-cst";
 export { normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
@@ -224,7 +224,34 @@ function appliesChange(
   end: number,
   inserted: string,
 ): boolean {
-  return nextText === previousText.slice(0, start) + inserted + previousText.slice(end);
+  if (nextText.length !== previousText.length - (end - start) + inserted.length) {
+    return false;
+  }
+  if (!textMatchesAt(nextText, start, inserted)) {
+    return false;
+  }
+  for (let index = 0; index < start; index += 1) {
+    if (previousText.charCodeAt(index) !== nextText.charCodeAt(index)) {
+      return false;
+    }
+  }
+  const suffixLength = previousText.length - end;
+  const nextSuffixStart = start + inserted.length;
+  for (let index = 0; index < suffixLength; index += 1) {
+    if (previousText.charCodeAt(end + index) !== nextText.charCodeAt(nextSuffixStart + index)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function textMatchesAt(text: string, offset: number, expected: string): boolean {
+  for (let index = 0; index < expected.length; index += 1) {
+    if (text.charCodeAt(offset + index) !== expected.charCodeAt(index)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function editableRegionAt(regions: AspRegion[], start: number, end: number): AspRegion | undefined {
@@ -573,20 +600,7 @@ function regionTokens(text: string, region: AspRegion): AspToken[] {
 }
 
 function offsetFromRange(text: string, position: { line: number; character: number }): number {
-  let line = 0;
-  let character = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    if (line === position.line && character === position.character) {
-      return index;
-    }
-    if (text[index] === "\n") {
-      line += 1;
-      character = 0;
-    } else {
-      character += 1;
-    }
-  }
-  return text.length;
+  return offsetAt(text, position);
 }
 
 function buildRegions(

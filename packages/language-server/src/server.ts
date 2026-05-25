@@ -544,10 +544,6 @@ connection.onDidChangeConfiguration((change) => {
 connection.onDidChangeWatchedFiles((change) => {
   let aspChanged = false;
   let scriptChanged = false;
-  cache.clear();
-  clearSemanticTokens();
-  cancelAllSlowDiagnostics();
-  cancelBackgroundAnalysis();
   for (const file of change.changes) {
     const fileName = normalizeFileName(uriToFileName(file.uri));
     if (isAspWorkspaceFile(fileName)) {
@@ -562,6 +558,13 @@ connection.onDidChangeWatchedFiles((change) => {
       scriptChanged = true;
     }
   }
+  if (!aspChanged && !scriptChanged) {
+    return;
+  }
+  cache.clear();
+  clearSemanticTokens();
+  cancelAllSlowDiagnostics();
+  cancelBackgroundAnalysis();
   if (aspChanged) {
     includeDocumentCache.clear();
   }
@@ -877,42 +880,42 @@ connection.onWorkspaceSymbol(async (params, token) => {
   await ensureWorkspaceIndexAsync(globalSettings, token);
   const query = params.query.toLowerCase();
   const openedUris = new Set(documents.all().map((document) => document.uri));
-  const indexedCaches = await mapWithConcurrency(
-    [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri)),
-    backgroundAnalysisConcurrency(globalSettings),
-    async (entry) => cachedFromIndexedAsync(entry, cachedSettings(entry.uri)),
-  );
-  const indexedDocuments = indexedCaches.map((cached) => cached.parsed);
+  const matchesQuery = (name: string): boolean =>
+    query.length === 0 || name.toLowerCase().includes(query);
+  const indexedSymbols = (
+    await mapWithConcurrency(
+      [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri)),
+      backgroundAnalysisConcurrency(globalSettings),
+      async (entry) => {
+        if (token.isCancellationRequested) {
+          return [];
+        }
+        const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
+        return [
+          ...collectVbscriptSymbols(cached.parsed)
+            .filter((symbol) => matchesQuery(symbol.name))
+            .map(vbSymbolInformation),
+          ...workspaceSymbolsForCached(cached).filter((symbol) => matchesQuery(symbol.name)),
+        ];
+      },
+    )
+  ).flat();
   const openSymbols = documents.all().flatMap((document) => {
     const cached = getCached(document.uri);
     return cached
-      ? (buildVbProjectContext(cached, cachedSettings(document.uri)).symbols ?? [])
+      ? (buildVbProjectContext(cached, cachedSettings(document.uri)).symbols ?? []).filter(
+          (symbol) => matchesQuery(symbol.name),
+        )
       : [];
   });
-  const indexedSymbols = indexedDocuments.flatMap((parsed) =>
-    collectVbscriptSymbols(parsed, { documents: indexedDocuments }),
-  );
-  const vbSymbols = [...openSymbols, ...indexedSymbols].map((symbol) =>
-    SymbolInformation.create(
-      symbol.name,
-      vbWorkspaceSymbolKind(symbol.kind),
-      symbol.range,
-      symbol.sourceUri,
-      symbol.memberOf,
-    ),
-  );
-  const richSymbols = [
-    ...documents.all().flatMap((document) => {
-      const cached = getCached(document.uri);
-      return cached ? workspaceSymbolsForCached(cached) : [];
-    }),
-    ...[...workspaceIndex.values()]
-      .filter((entry) => !openedUris.has(entry.uri))
-      .flatMap((entry) => workspaceSymbolsForCached(cachedFromIndexed(entry))),
-  ];
-  return [...vbSymbols, ...richSymbols].filter(
-    (symbol) => query.length === 0 || symbol.name.toLowerCase().includes(query),
-  );
+  const vbSymbols = openSymbols.map(vbSymbolInformation);
+  const openRichSymbols = documents.all().flatMap((document) => {
+    const cached = getCached(document.uri);
+    return cached
+      ? workspaceSymbolsForCached(cached).filter((symbol) => matchesQuery(symbol.name))
+      : [];
+  });
+  return [...vbSymbols, ...indexedSymbols, ...openRichSymbols];
 });
 
 connection.onDocumentSymbol((params) => {
@@ -6424,6 +6427,16 @@ function vbWorkspaceSymbolKind(kind: VbSymbolKind): SymbolKind {
     case "variable":
       return SymbolKind.Variable;
   }
+}
+
+function vbSymbolInformation(symbol: VbSymbol): SymbolInformation {
+  return SymbolInformation.create(
+    symbol.name,
+    vbWorkspaceSymbolKind(symbol.kind),
+    symbol.range,
+    symbol.sourceUri,
+    symbol.memberOf,
+  );
 }
 
 function tsSymbolKind(kind: ts.ScriptElementKind): SymbolKind {
