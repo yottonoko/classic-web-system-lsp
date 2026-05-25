@@ -161,6 +161,7 @@ const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
 const defaultDiagnosticsDebounceMs = 250;
+const foregroundIdleBackgroundDelayMs = 250;
 const defaultCacheTtlHours = 168;
 const defaultCacheMaxSizeMb = 1024;
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
@@ -1541,6 +1542,7 @@ async function publishSlowDiagnosticsForVersion(
   connection.sendDiagnostics({ uri, diagnostics: items });
   queueDiskAnalysisPersist(cached, settings);
   finishSlowCheckLog(cached, settings, startedAt, items.length, sequence);
+  scheduleBackgroundAnalysisWhenForegroundIdle("foregroundIdle");
 }
 
 function diagnosticsCancellation(uri: string, version: number): AnalysisCancellation {
@@ -1986,6 +1988,15 @@ function backgroundAnalysisConcurrency(settings: AspSettings): number {
   return Math.max(1, settings.workspace?.backgroundConcurrency ?? Math.min(2, workerPoolSize()));
 }
 
+function hasForegroundAnalysisWork(): boolean {
+  return (
+    diagnosticsTimers.size > 0 ||
+    slowDiagnosticsJobs.size > 0 ||
+    vbProjectContextWarmups.size > 0 ||
+    documents.all().some((document) => !cache.has(document.uri))
+  );
+}
+
 function scheduleBackgroundAnalysis(reason: string, delayMs = 1000): void {
   if (globalSettings.workspace?.backgroundAnalysis === false) {
     return;
@@ -2011,6 +2022,10 @@ async function runBackgroundAnalysis(sequence: number, reason: string): Promise<
   if (settings.workspace?.backgroundAnalysis === false) {
     return;
   }
+  if (hasForegroundAnalysisWork()) {
+    deferBackgroundAnalysisForForeground(settings, reason);
+    return;
+  }
   logDebugSummary(settings, `[asp-lsp] background analysis started: ${reason}`);
   const startedAt = process.hrtime.bigint();
   await ensureWorkspaceIndexAsync(settings, {
@@ -2021,19 +2036,32 @@ async function runBackgroundAnalysis(sequence: number, reason: string): Promise<
   if (sequence !== backgroundAnalysisSequence) {
     return;
   }
+  if (hasForegroundAnalysisWork()) {
+    deferBackgroundAnalysisForForeground(settings, reason);
+    return;
+  }
   const openedUris = new Set(documents.all().map((document) => document.uri));
   const entries = [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri));
+  let deferredForForeground = false;
   await mapWithConcurrency(entries, backgroundAnalysisConcurrency(settings), async (entry) => {
-    if (sequence !== backgroundAnalysisSequence) {
+    if (sequence !== backgroundAnalysisSequence || deferredForForeground) {
+      return;
+    }
+    if (hasForegroundAnalysisWork()) {
+      deferredForForeground = true;
       return;
     }
     await diagnosticsForIndexed(entry, cachedSettings(entry.uri), {
       get isCancellationRequested() {
-        return sequence !== backgroundAnalysisSequence;
+        return sequence !== backgroundAnalysisSequence || hasForegroundAnalysisWork();
       },
     });
   });
   if (sequence !== backgroundAnalysisSequence) {
+    return;
+  }
+  if (deferredForForeground || hasForegroundAnalysisWork()) {
+    deferBackgroundAnalysisForForeground(settings, reason);
     return;
   }
   logDebugSummary(
@@ -2043,6 +2071,18 @@ async function runBackgroundAnalysis(sequence: number, reason: string): Promise<
     )}, files=${entries.length}`,
   );
   scheduleDiskCacheSweep(settings);
+}
+
+function deferBackgroundAnalysisForForeground(settings: AspSettings, reason: string): void {
+  logDebugSummary(settings, `[asp-lsp] background analysis deferred: foreground busy (${reason})`);
+  scheduleBackgroundAnalysis("foregroundIdle", foregroundIdleBackgroundDelayMs);
+}
+
+function scheduleBackgroundAnalysisWhenForegroundIdle(reason: string): void {
+  if (globalSettings.workspace?.backgroundAnalysis === false || hasForegroundAnalysisWork()) {
+    return;
+  }
+  scheduleBackgroundAnalysis(reason, foregroundIdleBackgroundDelayMs);
 }
 
 function scheduleDiskCacheSweep(settings: AspSettings): void {
@@ -4690,6 +4730,7 @@ function scheduleVbProjectContextWarmup(
   if (existing?.rootKey === rootKey && existing.version === version) {
     return;
   }
+  cancelBackgroundAnalysis();
   vbProjectContextWarmups.set(uri, { rootKey, version });
   setTimeout(() => {
     const current = vbProjectContextWarmups.get(uri);
@@ -4710,6 +4751,7 @@ function scheduleVbProjectContextWarmup(
         if (latest?.rootKey === rootKey && latest.version === version) {
           vbProjectContextWarmups.delete(uri);
         }
+        scheduleBackgroundAnalysisWhenForegroundIdle("foregroundIdle");
       });
   }, 0);
 }

@@ -3510,6 +3510,79 @@ End Function
       }
     });
 
+    it("defers background cache warming while opened document diagnostics are pending", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-background-foreground-"));
+      const cacheDir = path.join(tempDir, "cache");
+      const activeFileName = path.join(tempDir, "active.asp");
+      const unopenedFileName = path.join(tempDir, "broken.asp");
+      const activeUri = pathToFileURL(activeFileName).toString();
+      fs.writeFileSync(activeFileName, `<% Response.Write "active" %>`, "utf8");
+      fs.writeFileSync(unopenedFileName, `<style>.x { color: }</style>`, "utf8");
+      const server = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 2000 },
+              workspace: { backgroundAnalysis: true, backgroundConcurrency: 1 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: activeUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<% Response.Write "active" %>`,
+          },
+        });
+        server.notify("textDocument/didChange", {
+          textDocument: { uri: activeUri, version: 2 },
+          contentChanges: [{ text: `<% Response.Write "changed" %>` }],
+        });
+
+        server.takePendingNotifications("window/logMessage");
+        await delay(1200);
+        expect(
+          server
+            .takePendingNotifications("window/logMessage")
+            .some((message) =>
+              JSON.stringify(message.params).includes(
+                "background analysis deferred: foreground busy",
+              ),
+            ),
+        ).toBe(true);
+        expect(
+          hasCborCachePayload(
+            cacheDir,
+            (payload) =>
+              (payload.source as { fileName?: string } | undefined)?.fileName === unopenedFileName,
+          ),
+        ).toBe(false);
+
+        server.notify("textDocument/didClose", { textDocument: { uri: activeUri } });
+        await waitForCborCachePayload(
+          cacheDir,
+          (payload) =>
+            (payload.source as { fileName?: string } | undefined)?.fileName === unopenedFileName,
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns CSS and JavaScript source code actions", async () => {
       const source = `<style>.x { color: #ff0000; }</style>
 <script>
@@ -6424,6 +6497,23 @@ async function waitForCborCachePayload(
     await delay(250);
   }
   throw new Error(`Timed out waiting for matching CBOR cache payload under ${root}.`);
+}
+
+function hasCborCachePayload(
+  root: string,
+  predicate: (payload: Record<string, unknown>) => boolean,
+): boolean {
+  for (const fileName of collectFiles(root).filter((candidate) => candidate.endsWith(".cbor"))) {
+    try {
+      const payload = decode(fs.readFileSync(fileName)) as unknown;
+      if (payload && typeof payload === "object" && predicate(payload as Record<string, unknown>)) {
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
 }
 
 function collectFiles(root: string): string[] {
