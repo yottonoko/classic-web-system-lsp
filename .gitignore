@@ -7,3 +7,6 @@ apps/vscode/server/
 .DS_Store
 *.vsix
 .pnpm-store/
+samples/classic-asp-large-benchmark/default.asp
+samples/classic-asp-large-benchmark/includes/*.inc
+samples/classic-asp-large-benchmark/includes/generated/
