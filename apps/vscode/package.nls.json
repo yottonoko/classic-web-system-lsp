@@ -50,7 +50,7 @@
   "configuration.workspace.maxIndexFiles.description": "Maximum number of unopened Classic ASP workspace files indexed per scan.",
   "configuration.workspace.scanChunkSize.description": "Number of filesystem entries processed before yielding during workspace indexing.",
   "configuration.workspace.backgroundAnalysis.description": "Analyze unopened Classic ASP workspace files in the background to warm the disk cache.",
-  "configuration.workspace.backgroundConcurrency.description": "Maximum number of unopened Classic ASP files analyzed concurrently in background cache warm-up.",
+  "configuration.workspace.backgroundConcurrency.description": "Maximum number of unopened Classic ASP files analyzed concurrently in background cache warm-up. Set 0 to use the available CPU count.",
   "configuration.iis.url.description": "URL opened by the Classic ASP IIS debug helper command.",
   "configuration.iis.webRoot.description": "Web root used by the Classic ASP IIS debug helper command.",
   "configuration.iis.browser.description": "VS Code debug type used by the Classic ASP IIS debug helper command.",

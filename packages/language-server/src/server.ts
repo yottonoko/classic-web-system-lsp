@@ -1940,7 +1940,7 @@ function measureDebugStep<T>(
 }
 
 function workerPoolSize(): number {
-  return Math.max(1, Math.min(4, os.availableParallelism() - 1));
+  return Math.max(1, os.availableParallelism());
 }
 
 const neverCancelled: AnalysisCancellation = {
@@ -1985,7 +1985,9 @@ async function measureDebugStepAsync<T>(
 }
 
 function backgroundAnalysisConcurrency(settings: AspSettings): number {
-  return Math.max(1, settings.workspace?.backgroundConcurrency ?? Math.min(2, workerPoolSize()));
+  const maximum = workerPoolSize();
+  const configured = settings.workspace?.backgroundConcurrency;
+  return Math.max(1, Math.min(maximum, configured && configured > 0 ? configured : maximum));
 }
 
 function hasForegroundAnalysisWork(): boolean {
@@ -6285,8 +6287,8 @@ function normalizeWorkspaceSettings(
     backgroundAnalysis: record.backgroundAnalysis !== false,
     backgroundConcurrency:
       typeof record.backgroundConcurrency === "number" && record.backgroundConcurrency > 0
-        ? Math.floor(record.backgroundConcurrency)
-        : Math.min(2, workerPoolSize()),
+        ? Math.min(Math.floor(record.backgroundConcurrency), workerPoolSize())
+        : workerPoolSize(),
   };
 }
 

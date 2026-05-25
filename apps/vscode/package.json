@@ -568,8 +568,8 @@
         },
         "aspLsp.workspace.backgroundConcurrency": {
           "type": "number",
-          "minimum": 1,
-          "default": 2,
+          "minimum": 0,
+          "default": 0,
           "description": "%configuration.workspace.backgroundConcurrency.description%"
         },
         "aspLsp.iis.url": {
