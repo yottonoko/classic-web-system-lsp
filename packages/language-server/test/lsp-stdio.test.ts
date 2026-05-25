@@ -4881,6 +4881,7 @@ Response.Write enabled
           "check.slow.vbscript.projectContext",
           "check.slow.vbscript.diagnostics",
           "check.slow.javascriptUnused",
+          "check.slow.vbscript.diagnostics.unusedSymbols",
         ]) {
           const log = await waitForLogContaining(server, expected);
           expectElapsedLogWithoutHeat(log);

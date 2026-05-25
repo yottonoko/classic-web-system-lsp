@@ -73,6 +73,7 @@ export interface VbProjectContext {
   unusedDiagnostics?: boolean;
   syntaxSnippets?: boolean;
   locale?: AspLocale;
+  debugStep?: <T>(name: string, action: () => T) => T;
 }
 
 export interface VbInlayHintOptions {

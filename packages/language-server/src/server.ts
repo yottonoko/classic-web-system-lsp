@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import { analyse, detect } from "chardet";
 import {
   CodeActionKind,
@@ -280,6 +281,26 @@ interface JsLanguageServiceCacheEntry {
   lastUsed: number;
 }
 
+interface VbProjectContextCacheEntry {
+  context: VbProjectContext;
+  lastUsed: number;
+}
+
+interface VbDiagnosticsWorkerTiming {
+  step: string;
+  elapsedMs: number;
+}
+
+interface VbDiagnosticsWorkerResult {
+  diagnostics: Diagnostic[];
+  timings: VbDiagnosticsWorkerTiming[];
+}
+
+interface PendingVbDiagnosticsWorkerRequest {
+  resolve: (result: VbDiagnosticsWorkerResult) => void;
+  reject: (error: Error) => void;
+}
+
 interface JsCallHierarchyData {
   kind: "javascript";
   rootUri: string;
@@ -311,7 +332,12 @@ function aspFileOperationFilter() {
 const cache = new Map<string, CachedDocument>();
 const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const slowDiagnosticsJobs = new Map<string, SlowDiagnosticsJob>();
+const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
+const maxVbProjectContextCacheEntries = 32;
 let slowDiagnosticsSequence = 0;
+let vbDiagnosticsWorker: Worker | undefined;
+let vbDiagnosticsWorkerRequestSequence = 0;
+const pendingVbDiagnosticsWorkerRequests = new Map<number, PendingVbDiagnosticsWorkerRequest>();
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
   clientLocale = typeof params.locale === "string" ? params.locale : "en";
@@ -1353,24 +1379,24 @@ function enqueueSlowDiagnostics(cached: CachedDocument, settings: AspSettings): 
       return;
     }
     slowDiagnosticsJobs.delete(uri);
-    publishSlowDiagnosticsForVersion(uri, version, settings, sequence);
+    void publishSlowDiagnosticsForVersion(uri, version, settings, sequence);
   }, 0);
   slowDiagnosticsJobs.set(uri, { version, sequence, timer });
 }
 
-function publishSlowDiagnosticsForVersion(
+async function publishSlowDiagnosticsForVersion(
   uri: string,
   version: number,
   settings: AspSettings,
   sequence: number,
-): void {
+): Promise<void> {
   const document = documents.get(uri);
   const cached = getCached(uri);
   if (!document || !cached || document.version !== version || cached.source.version !== version) {
     return;
   }
   const startedAt = startSlowCheckLog(cached, settings);
-  const slowItems = slowDiagnosticsForCached(cached, settings, "check.slow");
+  const slowItems = await slowDiagnosticsForCachedAsync(cached, settings, "check.slow");
   if (documents.get(uri)?.version !== version || getCached(uri)?.source.version !== version) {
     return;
   }
@@ -1499,6 +1525,31 @@ function slowDiagnosticsForCached(
   }
   const vbItems = vbDiagnostics(cached, settings, stepPrefix);
   const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
+  const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
+    dedupeDiagnostics([...vbItems, ...jsItems]),
+  );
+  analysisFor(cached).slowDiagnostics = { key, items, text: cached.parsed.text };
+  return items;
+}
+
+async function slowDiagnosticsForCachedAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix = "check.slow",
+): Promise<Diagnostic[]> {
+  const key = slowDiagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.slowDiagnostics?.key === key) {
+    finishDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.cacheReuse`,
+      process.hrtime.bigint(),
+    );
+    return cached.analysis.slowDiagnostics.items;
+  }
+  const vbItemsPromise = vbDiagnosticsAsync(cached, settings, stepPrefix);
+  const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
+  const vbItems = await vbItemsPromise;
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
     dedupeDiagnostics([...vbItems, ...jsItems]),
   );
@@ -1967,10 +2018,182 @@ function vbDiagnostics(
     settings,
     cached.source.uri,
     `${stepPrefix}.vbscript.diagnostics`,
-    () => analyzeVbscript(cached.parsed, context).diagnostics,
+    () =>
+      analyzeVbscript(cached.parsed, {
+        ...context,
+        debugStep: (name, action) =>
+          measureDebugStep(
+            settings,
+            cached.source.uri,
+            `${stepPrefix}.vbscript.diagnostics.${name}`,
+            action,
+          ),
+      }).diagnostics,
   );
   analysisFor(cached).vbDiagnostics = { key, items, text: cached.parsed.text };
   return items;
+}
+
+async function vbDiagnosticsAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix: string,
+): Promise<Diagnostic[]> {
+  const reused = reuseUnchangedDiagnostics(cached, "vbscript", cached.analysis?.vbDiagnostics);
+  if (reused) {
+    return reused;
+  }
+  const key = vbDiagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.vbDiagnostics?.key === key) {
+    return cached.analysis.vbDiagnostics.items;
+  }
+  const context = measureDebugStep(
+    settings,
+    cached.source.uri,
+    `${stepPrefix}.vbscript.projectContext`,
+    () => buildVbProjectContext(cached, settings),
+  );
+  const startedAt = process.hrtime.bigint();
+  try {
+    logWorkerDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.vbscript.diagnostics.dispatch`,
+      0,
+    );
+    const result = await runVbDiagnosticsInWorker(cached.parsed, context);
+    finishDebugStep(settings, cached.source.uri, `${stepPrefix}.vbscript.diagnostics`, startedAt);
+    for (const timing of result.timings) {
+      logWorkerDebugStep(
+        settings,
+        cached.source.uri,
+        `${stepPrefix}.vbscript.diagnostics.${timing.step}`,
+        timing.elapsedMs,
+      );
+    }
+    analysisFor(cached).vbDiagnostics = {
+      key,
+      items: result.diagnostics,
+      text: cached.parsed.text,
+    };
+    return result.diagnostics;
+  } catch (error) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] VBScript diagnostics worker fallback: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    const items = measureDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.vbscript.diagnostics`,
+      () =>
+        analyzeVbscript(cached.parsed, {
+          ...context,
+          debugStep: (name, action) =>
+            measureDebugStep(
+              settings,
+              cached.source.uri,
+              `${stepPrefix}.vbscript.diagnostics.${name}`,
+              action,
+            ),
+        }).diagnostics,
+    );
+    analysisFor(cached).vbDiagnostics = { key, items, text: cached.parsed.text };
+    return items;
+  }
+}
+
+function logWorkerDebugStep(
+  settings: AspSettings,
+  uri: string,
+  step: string,
+  elapsedMs: number,
+): void {
+  if (!isDebugVerboseEnabled(settings)) {
+    return;
+  }
+  connection.console.info(`[asp-lsp] ${step}: ${uri} ${formatElapsedMs(elapsedMs)}`);
+}
+
+function runVbDiagnosticsInWorker(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+): Promise<VbDiagnosticsWorkerResult> {
+  const worker = ensureVbDiagnosticsWorker();
+  const id = ++vbDiagnosticsWorkerRequestSequence;
+  return new Promise((resolve, reject) => {
+    pendingVbDiagnosticsWorkerRequests.set(id, { resolve, reject });
+    try {
+      worker.postMessage({
+        id,
+        parsed,
+        context: {
+          ...context,
+          debugStep: undefined,
+        },
+      });
+    } catch (error) {
+      pendingVbDiagnosticsWorkerRequests.delete(id);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
+function ensureVbDiagnosticsWorker(): Worker {
+  if (vbDiagnosticsWorker) {
+    return vbDiagnosticsWorker;
+  }
+  const worker = new Worker(path.join(__dirname, "vb-diagnostics-worker.js"));
+  worker.unref();
+  worker.on(
+    "message",
+    (message: {
+      id?: number;
+      diagnostics?: Diagnostic[];
+      timings?: VbDiagnosticsWorkerTiming[];
+      error?: string;
+    }) => {
+      if (typeof message.id !== "number") {
+        return;
+      }
+      const pending = pendingVbDiagnosticsWorkerRequests.get(message.id);
+      if (!pending) {
+        return;
+      }
+      pendingVbDiagnosticsWorkerRequests.delete(message.id);
+      if (message.error) {
+        pending.reject(new Error(message.error));
+        return;
+      }
+      pending.resolve({
+        diagnostics: message.diagnostics ?? [],
+        timings: message.timings ?? [],
+      });
+    },
+  );
+  worker.on("error", (error) => {
+    rejectPendingVbDiagnosticsWorkerRequests(error);
+    vbDiagnosticsWorker = undefined;
+  });
+  worker.on("exit", (code) => {
+    if (vbDiagnosticsWorker === worker) {
+      vbDiagnosticsWorker = undefined;
+    }
+    if (code !== 0) {
+      rejectPendingVbDiagnosticsWorkerRequests(
+        new Error(`VBScript diagnostics worker exited with code ${code}`),
+      );
+    }
+  });
+  vbDiagnosticsWorker = worker;
+  return worker;
+}
+
+function rejectPendingVbDiagnosticsWorkerRequests(error: Error): void {
+  for (const pending of pendingVbDiagnosticsWorkerRequests.values()) {
+    pending.reject(error);
+  }
+  pendingVbDiagnosticsWorkerRequests.clear();
 }
 
 function lightweightJsUnusedDiagnostics(virtual: VirtualDocument): ts.Diagnostic[] {
@@ -3481,11 +3704,17 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     comTypes: settings.vbscript?.comTypes,
     unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
     syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
-    locale: settings.resolvedLocale,
   };
   const key = vbProjectContextCacheKey(documents, settings);
   if (cached.analysis?.vbProjectContext?.key === key) {
-    return cached.analysis.vbProjectContext.context;
+    return { ...cached.analysis.vbProjectContext.context, locale: settings.resolvedLocale };
+  }
+  const globalCached = vbProjectContextCache.get(key);
+  if (globalCached) {
+    globalCached.lastUsed = Date.now();
+    const context = { ...globalCached.context, locale: settings.resolvedLocale };
+    analysisFor(cached).vbProjectContext = { key, context: globalCached.context };
+    return context;
   }
   const symbols = documents.flatMap((document) =>
     collectVbscriptSymbols(document, contextSettings),
@@ -3498,8 +3727,22 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     typeEnvironment,
     ...contextSettings,
   };
+  rememberVbProjectContext(key, context);
   analysisFor(cached).vbProjectContext = { key, context };
-  return context;
+  return { ...context, locale: settings.resolvedLocale };
+}
+
+function rememberVbProjectContext(key: string, context: VbProjectContext): void {
+  vbProjectContextCache.set(key, { context, lastUsed: Date.now() });
+  if (vbProjectContextCache.size <= maxVbProjectContextCacheEntries) {
+    return;
+  }
+  const oldest = [...vbProjectContextCache.entries()].sort(
+    (left, right) => left[1].lastUsed - right[1].lastUsed,
+  )[0]?.[0];
+  if (oldest) {
+    vbProjectContextCache.delete(oldest);
+  }
 }
 
 function vbProjectContextCacheKey(documents: AspParsedDocument[], settings: AspSettings): string {
@@ -3515,7 +3758,6 @@ function vbProjectContextCacheKey(documents: AspParsedDocument[], settings: AspS
       comTypes: settings.vbscript?.comTypes,
       unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
       syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
-      locale: settings.resolvedLocale,
     },
     globals: settings.vbscript?.globals,
   });
@@ -7395,4 +7637,13 @@ function isDiagnostic(value: Diagnostic | undefined): value is Diagnostic {
 }
 
 documents.listen(connection);
+connection.onShutdown(async () => {
+  const worker = vbDiagnosticsWorker;
+  vbDiagnosticsWorker = undefined;
+  rejectPendingVbDiagnosticsWorkerRequests(new Error("Language server is shutting down."));
+  if (worker) {
+    await worker.terminate();
+  }
+});
+
 connection.listen();
