@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { analyse, detect } from "chardet";
 import {
   CodeActionKind,
@@ -1912,8 +1913,8 @@ function jsSlowDiagnostics(
         if (settings.checkJs !== true) {
           return [];
         }
-        const service = createJsLanguageService(virtual, settings).service;
-        return service.getSemanticDiagnostics(jsVirtualFileName(virtual.uri));
+        const project = createJsLanguageService(virtual, settings);
+        return project.service.getSemanticDiagnostics(jsProjectFileName(virtual, project));
       },
     );
     const unused = measureDebugStep(
@@ -1973,8 +1974,8 @@ function vbDiagnostics(
 }
 
 function lightweightJsUnusedDiagnostics(virtual: VirtualDocument): ts.Diagnostic[] {
-  const fileName = jsVirtualFileName(virtual.uri);
-  const files = new Map([[normalizeFileName(fileName), virtual.text]]);
+  const fileName = normalizeFileName(jsVirtualFileName(virtual.uri));
+  const files = new Map([[fileName, virtual.text]]);
   const host: ts.LanguageServiceHost = {
     getScriptFileNames: () => [fileName],
     getScriptVersion: () => "0",
@@ -2672,6 +2673,7 @@ function jsInlayHints(cached: CachedDocument, range: Range): InlayHint[] {
       return [];
     }
     const project = createJsLanguageService(virtual, settings);
+    const fileName = jsProjectFileName(virtual, project);
     const seen = new Set<string>();
     return segments
       .flatMap((segment) => {
@@ -2682,7 +2684,7 @@ function jsInlayHints(cached: CachedDocument, range: Range): InlayHint[] {
           return [];
         }
         return project.service.provideInlayHints(
-          jsVirtualFileName(virtual.uri),
+          fileName,
           { start, length: end - start },
           {
             includeInlayParameterNameHints: hints?.parameterNames === false ? "none" : "all",
@@ -2787,10 +2789,11 @@ function jsCallHierarchyContext(
     return undefined;
   }
   const project = createJsLanguageService(virtual, cachedSettings(data.rootUri));
+  const fileName = data.fileName ?? jsProjectFileName(virtual, project);
   return {
     virtual,
     service: project.service,
-    fileName: data.fileName ?? jsVirtualFileName(virtual.uri),
+    fileName,
     offset: data.position,
     files: project.files,
     rootUri: data.rootUri,
@@ -3014,7 +3017,7 @@ function jsInlineValues(cached: CachedDocument, range: Range): InlineValue[] {
   const seen = new Set<string>();
   return jsVirtualDocuments(cached).flatMap((virtual) => {
     const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
-    const fileName = jsVirtualFileName(virtual.uri);
+    const fileName = jsProjectFileName(virtual, project);
     const file = project.files.get(fileName);
     if (!file) {
       return [];
@@ -3070,11 +3073,13 @@ function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem 
   if (!cached || !virtual || typeof data?.virtualOffset !== "number" || !data.name) {
     return undefined;
   }
-  const service = createJsLanguageService(virtual, cachedSettings(uri)).service;
+  const project = createJsLanguageService(virtual, cachedSettings(uri));
+  const service = project.service;
+  const fileName = jsProjectFileName(virtual, project);
   const preferences = jsCompletionPreferences(cachedSettings(uri));
   const details = safeGetCompletionEntryDetails(
     service,
-    jsVirtualFileName(virtual.uri),
+    fileName,
     data.virtualOffset,
     data.name,
     data.source,
@@ -3234,8 +3239,8 @@ function jsContextAt(cached: CachedDocument, position: Position): JsProjectConte
     return undefined;
   }
   const doc = toTextDocument(virtual);
-  const fileName = jsVirtualFileName(virtual.uri);
   const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
+  const fileName = jsProjectFileName(virtual, project);
   return {
     virtual,
     service: project.service,
@@ -3333,7 +3338,7 @@ function cssDocumentSymbols(cached: CachedDocument): DocumentSymbol[] {
 function jsDocumentSymbols(cached: CachedDocument): DocumentSymbol[] {
   return jsVirtualDocuments(cached).flatMap((virtual) => {
     const project = createJsLanguageService(virtual, cachedSettings(virtualSourceUri(virtual)));
-    const tree = project.service.getNavigationTree(jsVirtualFileName(virtual.uri));
+    const tree = project.service.getNavigationTree(jsProjectFileName(virtual, project));
     return (tree.childItems ?? [])
       .map((item) => navigationTreeToDocumentSymbol(virtual, item))
       .filter((symbol): symbol is DocumentSymbol => Boolean(symbol));
@@ -3399,7 +3404,7 @@ function jsFoldingRanges(cached: CachedDocument): FoldingRange[] {
   return jsVirtualDocuments(cached).flatMap((virtual) => {
     const project = createJsLanguageService(virtual, cachedSettings(virtualSourceUri(virtual)));
     return project.service
-      .getOutliningSpans(jsVirtualFileName(virtual.uri))
+      .getOutliningSpans(jsProjectFileName(virtual, project))
       .map((span) => textSpanToSourceRange(virtual, span.textSpan))
       .filter((range): range is Range => Boolean(range))
       .map((range) => ({ startLine: range.start.line, endLine: range.end.line }));
@@ -5565,19 +5570,29 @@ function workspaceRootFromUri(uri: string): string {
 }
 
 function uriToFileName(uri: string): string {
-  if (uri.startsWith("file://")) {
-    return decodeURIComponent(new URL(uri).pathname);
-  }
-  return uri.replace(/\.(html|css|javascript|vbscript|jscript)\.virtual$/, "");
+  const fileName = uri.startsWith("file://") ? fileURLToPath(uri) : uri;
+  return fileName.replace(/\.(html|css|javascript|vbscript|jscript)\.virtual$/, "");
 }
 
 function jsVirtualFileName(uri: string): string {
-  const fileName = uri.startsWith("file://") ? decodeURIComponent(new URL(uri).pathname) : uri;
+  const fileName = uri.startsWith("file://") ? fileURLToPath(uri) : uri;
   return fileName.replace(/\.(javascript|jscript)\.virtual$/, ".$1.js");
 }
 
+function jsProjectFileName(
+  virtual: VirtualDocument,
+  project: Pick<JsLanguageServiceProject, "files">,
+): string {
+  const normalized = normalizeFileName(jsVirtualFileName(virtual.uri));
+  return (
+    project.files.get(normalized)?.fileName ??
+    [...project.files.values()].find((file) => file.virtual?.uri === virtual.uri)?.fileName ??
+    normalized
+  );
+}
+
 function pathToFileUri(fileName: string): string {
-  return new URL(`file://${fileName}`).toString();
+  return pathToFileURL(fileName).toString();
 }
 
 function normalizeFileName(fileName: string): string {
@@ -6531,8 +6546,9 @@ function jsCodeActions(
     if (virtualStart === undefined || virtualEnd === undefined) {
       continue;
     }
-    const service = createJsLanguageService(virtual, cachedSettings(cached.source.uri)).service;
-    const fileName = jsVirtualFileName(virtual.uri);
+    const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
+    const service = project.service;
+    const fileName = jsProjectFileName(virtual, project);
     if (codeActionAllows(context, CodeActionKind.QuickFix)) {
       const errorCodes = context.diagnostics
         .filter(
@@ -6599,10 +6615,14 @@ function codeActionAllows(context: CodeActionContext, kind: string): boolean {
 function organizeJavaScriptImportsEdit(cached: CachedDocument): WorkspaceEdit | undefined {
   const edits = jsVirtualDocuments(cached)
     .map((virtual) => {
-      const service = createJsLanguageService(virtual, cachedSettings(cached.source.uri)).service;
+      const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
       return fileTextChangesToWorkspaceEdit(
         virtual,
-        service.organizeImports({ type: "file", fileName: jsVirtualFileName(virtual.uri) }, {}, {}),
+        project.service.organizeImports(
+          { type: "file", fileName: jsProjectFileName(virtual, project) },
+          {},
+          {},
+        ),
       );
     })
     .filter((edit): edit is WorkspaceEdit => Boolean(edit));
@@ -7164,7 +7184,15 @@ function addEmbeddedSemanticTokens(
   }
   for (const virtual of jsVirtualDocuments(cached)) {
     const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
-    addJavaScriptSemanticTokens(tokens, cached, virtual, project.service, rangeStart, rangeEnd);
+    addJavaScriptSemanticTokens(
+      tokens,
+      cached,
+      virtual,
+      project.service,
+      jsProjectFileName(virtual, project),
+      rangeStart,
+      rangeEnd,
+    );
   }
 }
 
@@ -7173,11 +7201,12 @@ function addJavaScriptSemanticTokens(
   cached: CachedDocument,
   virtual: VirtualDocument,
   service: ts.LanguageService,
+  fileName: string,
   rangeStart: number,
   rangeEnd: number,
 ): void {
   const spans = service.getEncodedSemanticClassifications(
-    jsVirtualFileName(virtual.uri),
+    fileName,
     { start: 0, length: virtual.text.length },
     ts.SemanticClassificationFormat.TwentyTwenty,
   ).spans;

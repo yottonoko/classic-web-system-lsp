@@ -1020,6 +1020,48 @@ function boot() {
       }
     });
 
+    it("keeps JavaScript diagnostics stable when virtual file names are normalized", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              checkJs: true,
+              diagnostics: { debounceMs: 0 },
+              javascript: { ignoreProjectConfig: true },
+            },
+          },
+        });
+
+        const uri = "relative/a.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<script>const title = document.title;</script>`,
+          },
+        });
+
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        expect(JSON.stringify(diagnostics)).not.toContain("Could not find source file");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("keeps ASP delimiters inside CSS and JavaScript from producing embedded diagnostics", async () => {
       const server = new RpcServer();
       try {
