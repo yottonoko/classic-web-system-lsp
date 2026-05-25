@@ -201,6 +201,28 @@
           "default": 250,
           "description": "%configuration.diagnostics.debounceMs.description%"
         },
+        "aspLsp.cache.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.cache.enabled.description%"
+        },
+        "aspLsp.cache.directory": {
+          "type": "string",
+          "default": "",
+          "description": "%configuration.cache.directory.description%"
+        },
+        "aspLsp.cache.ttlHours": {
+          "type": "number",
+          "minimum": 1,
+          "default": 168,
+          "description": "%configuration.cache.ttlHours.description%"
+        },
+        "aspLsp.cache.maxSizeMb": {
+          "type": "number",
+          "minimum": 1,
+          "default": 1024,
+          "description": "%configuration.cache.maxSizeMb.description%"
+        },
         "aspLsp.debug.output": {
           "type": "string",
           "enum": [
@@ -538,6 +560,17 @@
           "minimum": 1,
           "default": 200,
           "description": "%configuration.workspace.scanChunkSize.description%"
+        },
+        "aspLsp.workspace.backgroundAnalysis": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.workspace.backgroundAnalysis.description%"
+        },
+        "aspLsp.workspace.backgroundConcurrency": {
+          "type": "number",
+          "minimum": 1,
+          "default": 2,
+          "description": "%configuration.workspace.backgroundConcurrency.description%"
         },
         "aspLsp.iis.url": {
           "type": "string",

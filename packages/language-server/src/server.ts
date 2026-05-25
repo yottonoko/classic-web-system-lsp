@@ -115,6 +115,13 @@ import {
   TokenType,
 } from "vscode-html-languageservice";
 import ts from "typescript";
+import {
+  DiskAnalysisCache,
+  diskAnalysisCacheFormatVersion,
+  type DiskAnalysisCachePayload,
+  type DiskDiagnosticEntry,
+  type DiskSourceMetadata,
+} from "./disk-analysis-cache";
 
 const connection = createConnection(ProposedFeatures.all);
 const pendingDocumentChanges = new Map<string, PendingDocumentChange>();
@@ -147,6 +154,8 @@ const latestSemanticTokenResultByUri = new Map<string, string>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
 const defaultDiagnosticsDebounceMs = 250;
+const defaultCacheTtlHours = 168;
+const defaultCacheMaxSizeMb = 1024;
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
 let workspaceRoots: string[] = [];
 let clientLocale = "en";
@@ -254,7 +263,6 @@ interface WorkspaceIndexedDocument {
   fileName: string;
   mtimeMs: number;
   size: number;
-  parsed: AspParsedDocument;
 }
 
 type JavaScriptMode = "definition" | "declaration" | "typeDefinition" | "implementation";
@@ -340,6 +348,11 @@ const slowDiagnosticsJobs = new Map<string, SlowDiagnosticsJob>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 const maxVbProjectContextCacheEntries = 32;
 let slowDiagnosticsSequence = 0;
+let backgroundAnalysisSequence = 0;
+let backgroundAnalysisTimer: ReturnType<typeof setTimeout> | undefined;
+let backgroundSweepTimer: ReturnType<typeof setTimeout> | undefined;
+let diskAnalysisCache: DiskAnalysisCache | undefined;
+let diskAnalysisCacheKey: string | undefined;
 let vbDiagnosticsWorkers: Worker[] = [];
 let vbDiagnosticsWorkerCursor = 0;
 let vbDiagnosticsWorkerRequestSequence = 0;
@@ -431,19 +444,26 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 });
 
 documents.onDidOpen((event) => {
+  cancelBackgroundAnalysis();
   cache.delete(event.document.uri);
   clearJsLanguageServiceCache();
   validate(event.document);
+  scheduleBackgroundAnalysis("documentOpen");
 });
 documents.onDidChangeContent((event) => {
+  cancelBackgroundAnalysis();
   cancelSlowDiagnostics(event.document.uri);
   refreshCachedDocument(event.document);
   scheduleDiagnostics(event.document);
+  scheduleBackgroundAnalysis("documentChange", defaultDiagnosticsDebounceMs);
 });
 documents.onDidSave((event) => {
+  cancelBackgroundAnalysis();
   cache.delete(event.document.uri);
   clearJsLanguageServiceCache();
+  indexWorkspaceFile(uriToFileName(event.document.uri));
   validate(event.document);
+  scheduleBackgroundAnalysis("documentSave");
 });
 documents.onDidClose((event) => {
   cancelScheduledDiagnostics(event.document.uri);
@@ -453,6 +473,7 @@ documents.onDidClose((event) => {
   clearJsLanguageServiceCache();
   clearSemanticTokensForUri(event.document.uri);
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
+  scheduleBackgroundAnalysis("documentClose");
 });
 
 documents.onWillSave((event) => {
@@ -469,7 +490,7 @@ documents.onWillSaveWaitUntil((event) => {
 });
 
 connection.onInitialized(() => {
-  void refreshConfiguration();
+  void refreshConfiguration().then(() => scheduleBackgroundAnalysis("initialized"));
 });
 
 connection.onNotification(
@@ -493,9 +514,11 @@ connection.onNotification(
     includeDocumentCache.clear();
     clearJsProjectCaches();
     cancelAllSlowDiagnostics();
+    cancelBackgroundAnalysis();
     for (const document of documents.all()) {
       validate(document);
     }
+    scheduleBackgroundAnalysis("workspaceFolders");
   },
 );
 
@@ -511,9 +534,11 @@ connection.onDidChangeConfiguration((change) => {
   clearSemanticTokens();
   invalidateWorkspaceIndex();
   cancelAllSlowDiagnostics();
+  cancelBackgroundAnalysis();
   for (const document of documents.all()) {
     validate(document);
   }
+  scheduleBackgroundAnalysis("configuration");
 });
 
 connection.onDidChangeWatchedFiles((change) => {
@@ -522,6 +547,7 @@ connection.onDidChangeWatchedFiles((change) => {
   cache.clear();
   clearSemanticTokens();
   cancelAllSlowDiagnostics();
+  cancelBackgroundAnalysis();
   for (const file of change.changes) {
     const fileName = normalizeFileName(uriToFileName(file.uri));
     if (isAspWorkspaceFile(fileName)) {
@@ -545,6 +571,7 @@ connection.onDidChangeWatchedFiles((change) => {
   for (const document of documents.all()) {
     validate(document);
   }
+  scheduleBackgroundAnalysis("watchedFiles");
 });
 
 connection.workspace.onWillRenameFiles((params) => includeRenameWorkspaceEdit(params.files));
@@ -553,18 +580,21 @@ connection.workspace.onDidRenameFiles(() => {
   invalidateWorkspaceIndex();
   includeDocumentCache.clear();
   clearJsProjectCaches();
+  scheduleBackgroundAnalysis("renameFiles");
 });
 
 connection.workspace.onDidCreateFiles(() => {
   invalidateWorkspaceIndex();
   includeDocumentCache.clear();
   clearJsProjectCaches();
+  scheduleBackgroundAnalysis("createFiles");
 });
 
 connection.workspace.onDidDeleteFiles(() => {
   invalidateWorkspaceIndex();
   includeDocumentCache.clear();
   clearJsProjectCaches();
+  scheduleBackgroundAnalysis("deleteFiles");
 });
 
 connection.onCompletion((params) => {
@@ -847,9 +877,12 @@ connection.onWorkspaceSymbol(async (params, token) => {
   await ensureWorkspaceIndexAsync(globalSettings, token);
   const query = params.query.toLowerCase();
   const openedUris = new Set(documents.all().map((document) => document.uri));
-  const indexedDocuments = [...workspaceIndex.values()]
-    .filter((entry) => !openedUris.has(entry.uri))
-    .map((entry) => entry.parsed);
+  const indexedCaches = await mapWithConcurrency(
+    [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri)),
+    backgroundAnalysisConcurrency(globalSettings),
+    async (entry) => cachedFromIndexedAsync(entry, cachedSettings(entry.uri)),
+  );
+  const indexedDocuments = indexedCaches.map((cached) => cached.parsed);
   const openSymbols = documents.all().flatMap((document) => {
     const cached = getCached(document.uri);
     return cached
@@ -978,6 +1011,16 @@ connection.languages.diagnostics.on((params) => {
 connection.languages.diagnostics.onWorkspace(async (_params, token) => {
   await ensureWorkspaceIndexAsync(globalSettings, token);
   const openedUris = new Set(documents.all().map((document) => document.uri));
+  const indexedItems = await mapWithConcurrency(
+    [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri)),
+    backgroundAnalysisConcurrency(globalSettings),
+    async (entry) => ({
+      kind: "full" as const,
+      uri: entry.uri,
+      version: null,
+      items: await diagnosticsForIndexed(entry, cachedSettings(entry.uri), token),
+    }),
+  );
   return {
     items: [
       ...documents.all().flatMap((document) => {
@@ -993,30 +1036,25 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
             ]
           : [];
       }),
-      ...[...workspaceIndex.values()]
-        .filter((entry) => !openedUris.has(entry.uri))
-        .map((entry) => {
-          const cached = cachedFromIndexed(entry);
-          return {
-            kind: "full" as const,
-            uri: entry.uri,
-            version: null,
-            items: diagnosticsForCached(cached, cachedSettings(entry.uri)),
-          };
-        }),
+      ...indexedItems,
     ],
   };
 });
 
-connection.onExecuteCommand((params) => {
+connection.onExecuteCommand(async (params) => {
   if (params.command === "aspLsp.reindexWorkspace" || params.command === "aspLsp.clearCache") {
+    cancelBackgroundAnalysis();
     invalidateWorkspaceIndex();
     includeDocumentCache.clear();
     cache.clear();
     clearJsProjectCaches();
+    if (params.command === "aspLsp.clearCache") {
+      await currentDiskAnalysisCache(globalSettings).clear();
+    }
     for (const document of documents.all()) {
       validate(document);
     }
+    scheduleBackgroundAnalysis(params.command);
     return { ok: true };
   }
   return {
@@ -1460,6 +1498,26 @@ function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Di
   return items;
 }
 
+async function diagnosticsForCachedAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix = "check.async",
+): Promise<Diagnostic[]> {
+  const key = diagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.diagnostics?.key === key) {
+    return cached.analysis.diagnostics.items;
+  }
+  const fastItems = fastDiagnosticsForCached(cached, settings, stepPrefix);
+  const slowItems = await slowDiagnosticsForCachedAsync(cached, settings, stepPrefix);
+  const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
+    dedupeDiagnostics([...fastItems, ...slowItems]),
+  );
+  analysisFor(cached).diagnostics = { key, items, text: cached.parsed.text };
+  cached.changes = undefined;
+  cached.dirtyLanguages = undefined;
+  return items;
+}
+
 function fastDiagnosticsForCached(
   cached: CachedDocument,
   settings: AspSettings,
@@ -1715,6 +1773,79 @@ async function measureDebugStepAsync<T>(
   }
 }
 
+function backgroundAnalysisConcurrency(settings: AspSettings): number {
+  return Math.max(1, settings.workspace?.backgroundConcurrency ?? Math.min(2, workerPoolSize()));
+}
+
+function scheduleBackgroundAnalysis(reason: string, delayMs = 1000): void {
+  if (globalSettings.workspace?.backgroundAnalysis === false) {
+    return;
+  }
+  cancelBackgroundAnalysis();
+  const sequence = ++backgroundAnalysisSequence;
+  backgroundAnalysisTimer = setTimeout(() => {
+    backgroundAnalysisTimer = undefined;
+    void runBackgroundAnalysis(sequence, reason);
+  }, delayMs);
+}
+
+function cancelBackgroundAnalysis(): void {
+  backgroundAnalysisSequence += 1;
+  if (backgroundAnalysisTimer) {
+    clearTimeout(backgroundAnalysisTimer);
+    backgroundAnalysisTimer = undefined;
+  }
+}
+
+async function runBackgroundAnalysis(sequence: number, reason: string): Promise<void> {
+  const settings = globalSettings;
+  if (settings.workspace?.backgroundAnalysis === false) {
+    return;
+  }
+  logDebugSummary(settings, `[asp-lsp] background analysis started: ${reason}`);
+  const startedAt = process.hrtime.bigint();
+  await ensureWorkspaceIndexAsync(settings, {
+    get isCancellationRequested() {
+      return sequence !== backgroundAnalysisSequence;
+    },
+  });
+  if (sequence !== backgroundAnalysisSequence) {
+    return;
+  }
+  const openedUris = new Set(documents.all().map((document) => document.uri));
+  const entries = [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri));
+  await mapWithConcurrency(entries, backgroundAnalysisConcurrency(settings), async (entry) => {
+    if (sequence !== backgroundAnalysisSequence) {
+      return;
+    }
+    await diagnosticsForIndexed(entry, cachedSettings(entry.uri), {
+      get isCancellationRequested() {
+        return sequence !== backgroundAnalysisSequence;
+      },
+    });
+  });
+  if (sequence !== backgroundAnalysisSequence) {
+    return;
+  }
+  logDebugSummary(
+    settings,
+    `[asp-lsp] background analysis completed: ${reason} ${formatElapsedMs(
+      Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+    )}, files=${entries.length}`,
+  );
+  scheduleDiskCacheSweep(settings);
+}
+
+function scheduleDiskCacheSweep(settings: AspSettings): void {
+  if (backgroundSweepTimer || settings.cache?.enabled === false) {
+    return;
+  }
+  backgroundSweepTimer = setTimeout(() => {
+    backgroundSweepTimer = undefined;
+    void currentDiskAnalysisCache(settings).sweep();
+  }, 30_000);
+}
+
 function isDebugSummaryEnabled(settings: AspSettings): boolean {
   return settings.debug?.output === "summary" || settings.debug?.output === "verbose";
 }
@@ -1834,6 +1965,78 @@ function virtualCacheKey(virtual: VirtualDocument): string {
     text: textFingerprint(virtual.text),
     segments: virtual.sourceMap.segments,
   });
+}
+
+function currentDiskAnalysisCache(settings: AspSettings): DiskAnalysisCache {
+  const key = JSON.stringify({
+    enabled: settings.cache?.enabled !== false,
+    directory: process.env.ASP_LSP_CACHE_DIR ?? settings.cache?.directory,
+    ttlHours: settings.cache?.ttlHours ?? defaultCacheTtlHours,
+    maxSizeMb: settings.cache?.maxSizeMb ?? defaultCacheMaxSizeMb,
+    roots: workspaceRoots.map(normalizeFileName).sort(),
+  });
+  if (diskAnalysisCacheKey !== key || !diskAnalysisCache) {
+    diskAnalysisCacheKey = key;
+    diskAnalysisCache = new DiskAnalysisCache({
+      enabled: settings.cache?.enabled !== false,
+      directory: process.env.ASP_LSP_CACHE_DIR ?? settings.cache?.directory,
+      workspaceRoots,
+      ttlHours: settings.cache?.ttlHours ?? defaultCacheTtlHours,
+      maxSizeMb: settings.cache?.maxSizeMb ?? defaultCacheMaxSizeMb,
+    });
+  }
+  return diskAnalysisCache;
+}
+
+function diskAnalysisSettingsKey(settings: AspSettings): string {
+  return JSON.stringify({
+    defaultLanguage: settings.defaultLanguage,
+    diagnostics: diagnosticsSettingsKey(settings),
+  });
+}
+
+function applyDiskAnalysis(
+  cached: CachedDocument,
+  payload: DiskAnalysisCachePayload | undefined,
+): void {
+  if (!payload) {
+    return;
+  }
+  const analysis = analysisFor(cached);
+  analysis.diagnostics = diskDiagnosticEntry(payload.diagnostics, cached.parsed.text);
+  analysis.fastDiagnostics = diskDiagnosticEntry(payload.fastDiagnostics, cached.parsed.text);
+  analysis.slowDiagnostics = diskDiagnosticEntry(payload.slowDiagnostics, cached.parsed.text);
+}
+
+async function persistDiskAnalysis(
+  cached: CachedDocument,
+  settings: AspSettings,
+  source: DiskSourceMetadata,
+): Promise<void> {
+  const analysis = cached.analysis;
+  await currentDiskAnalysisCache(settings).write({
+    version: diskAnalysisCacheFormatVersion,
+    source,
+    settingsKey: diskAnalysisSettingsKey(settings),
+    parsed: cached.parsed,
+    diagnostics: toDiskDiagnosticEntry(analysis?.diagnostics),
+    fastDiagnostics: toDiskDiagnosticEntry(analysis?.fastDiagnostics),
+    slowDiagnostics: toDiskDiagnosticEntry(analysis?.slowDiagnostics),
+  });
+  scheduleDiskCacheSweep(settings);
+}
+
+function diskDiagnosticEntry(
+  entry: DiskDiagnosticEntry | undefined,
+  text: string,
+): DiagnosticCacheEntry | undefined {
+  return entry ? { key: entry.key, items: entry.items, text } : undefined;
+}
+
+function toDiskDiagnosticEntry(
+  entry: DiagnosticCacheEntry | undefined,
+): DiskDiagnosticEntry | undefined {
+  return entry ? { key: entry.key, items: entry.items } : undefined;
 }
 
 function analysisFor(cached: CachedDocument): CachedAnalysis {
@@ -4471,10 +4674,78 @@ function getIndexedCached(uri: string): CachedDocument | undefined {
 }
 
 function cachedFromIndexed(entry: WorkspaceIndexedDocument): CachedDocument {
-  return {
-    source: TextDocument.create(entry.uri, "classic-asp", 0, entry.parsed.text),
-    parsed: entry.parsed,
+  const settings = cachedSettings(entry.uri);
+  const source = indexedSourceMetadata(entry);
+  const disk = currentDiskAnalysisCache(settings).readFreshSync(
+    source,
+    diskAnalysisSettingsKey(settings),
+  );
+  const parsed =
+    disk?.parsed ??
+    parseAspDocument(entry.uri, readTextFile(entry.fileName, settings.legacyEncoding), settings);
+  const cached = {
+    source: TextDocument.create(entry.uri, "classic-asp", 0, parsed.text),
+    parsed,
     virtuals: new Map<string, VirtualDocument>(),
+  };
+  applyDiskAnalysis(cached, disk);
+  return cached;
+}
+
+async function cachedFromIndexedAsync(
+  entry: WorkspaceIndexedDocument,
+  settings: AspSettings,
+): Promise<CachedDocument> {
+  const source = indexedSourceMetadata(entry);
+  const disk = await currentDiskAnalysisCache(settings).readFresh(
+    source,
+    diskAnalysisSettingsKey(settings),
+  );
+  const parsed =
+    disk?.parsed ??
+    parseAspDocument(
+      entry.uri,
+      await readTextFileAsync(entry.fileName, settings.legacyEncoding),
+      settings,
+    );
+  const cached = {
+    source: TextDocument.create(entry.uri, "classic-asp", 0, parsed.text),
+    parsed,
+    virtuals: new Map<string, VirtualDocument>(),
+  };
+  applyDiskAnalysis(cached, disk);
+  return cached;
+}
+
+async function diagnosticsForIndexed(
+  entry: WorkspaceIndexedDocument,
+  settings: AspSettings,
+  token?: { isCancellationRequested?: boolean },
+): Promise<Diagnostic[]> {
+  if (token?.isCancellationRequested) {
+    return [];
+  }
+  const source = indexedSourceMetadata(entry);
+  const settingsKey = diskAnalysisSettingsKey(settings);
+  const disk = await currentDiskAnalysisCache(settings).readFresh(source, settingsKey);
+  if (disk?.diagnostics) {
+    return disk.diagnostics.items;
+  }
+  const cached = await cachedFromIndexedAsync(entry, settings);
+  if (token?.isCancellationRequested) {
+    return [];
+  }
+  const items = await diagnosticsForCachedAsync(cached, settings, "check.workspace");
+  await persistDiskAnalysis(cached, settings, source);
+  return items;
+}
+
+function indexedSourceMetadata(entry: WorkspaceIndexedDocument): DiskSourceMetadata {
+  return {
+    uri: entry.uri,
+    fileName: entry.fileName,
+    mtimeMs: entry.mtimeMs,
+    size: entry.size,
   };
 }
 
@@ -4553,7 +4824,7 @@ async function indexWorkspaceRootAsync(
           directories.push(fullPath);
         }
       } else if (entry.isFile() && isAspWorkspaceFile(entry.name)) {
-        await indexWorkspaceFileAsync(fullPath, settings);
+        await indexWorkspaceFileAsync(fullPath);
         scannedFiles += 1;
       }
       operations += 1;
@@ -4565,7 +4836,7 @@ async function indexWorkspaceRootAsync(
   return scannedFiles;
 }
 
-async function indexWorkspaceFileAsync(fileName: string, settings: AspSettings): Promise<void> {
+async function indexWorkspaceFileAsync(fileName: string): Promise<void> {
   const normalized = normalizeFileName(fileName);
   const stat = await fs.promises.stat(normalized).catch(() => undefined);
   if (!stat?.isFile()) {
@@ -4577,14 +4848,11 @@ async function indexWorkspaceFileAsync(fileName: string, settings: AspSettings):
     return;
   }
   const uri = pathToFileUri(normalized);
-  const text = await readTextFileAsync(normalized, settings.legacyEncoding);
-  const parsed = parseAspDocument(uri, text, cachedSettings(uri));
   workspaceIndex.set(normalized, {
     uri,
     fileName: normalized,
     mtimeMs: stat.mtimeMs,
     size: stat.size,
-    parsed,
   });
 }
 
@@ -4697,14 +4965,11 @@ function indexWorkspaceFile(fileName: string): void {
     return;
   }
   const uri = pathToFileUri(normalized);
-  const text = readTextFile(normalized, globalSettings.legacyEncoding);
-  const parsed = parseAspDocument(uri, text, cachedSettings(uri));
   workspaceIndex.set(normalized, {
     uri,
     fileName: normalized,
     mtimeMs: stat.mtimeMs,
     size: stat.size,
-    parsed,
   });
 }
 
@@ -4839,6 +5104,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     includePaths,
     legacyEncoding: normalizeLegacyEncoding(settings.legacyEncoding),
     diagnostics: normalizeDiagnosticsSettings(settings),
+    cache: normalizeCacheSettings(settings),
     debug: normalizeDebugSettings(settings),
     format: normalizeFormatSettings(settings),
     javascript: normalizeJavascriptSettings(settings),
@@ -4874,6 +5140,11 @@ function normalizeWorkspaceSettings(
       typeof record.scanChunkSize === "number" && record.scanChunkSize > 0
         ? Math.floor(record.scanChunkSize)
         : defaultScanChunkSize,
+    backgroundAnalysis: record.backgroundAnalysis !== false,
+    backgroundConcurrency:
+      typeof record.backgroundConcurrency === "number" && record.backgroundConcurrency > 0
+        ? Math.floor(record.backgroundConcurrency)
+        : Math.min(2, workerPoolSize()),
   };
 }
 
@@ -4893,6 +5164,28 @@ function normalizeDiagnosticsSettings(
       typeof record.debounceMs === "number" && record.debounceMs >= 0
         ? Math.floor(record.debounceMs)
         : defaultDiagnosticsDebounceMs,
+  };
+}
+
+function normalizeCacheSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["cache"] {
+  const raw = settings.cache;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    enabled: record.enabled !== false,
+    directory:
+      typeof record.directory === "string" && record.directory.length > 0
+        ? path.resolve(record.directory)
+        : undefined,
+    ttlHours:
+      typeof record.ttlHours === "number" && record.ttlHours > 0
+        ? Math.floor(record.ttlHours)
+        : defaultCacheTtlHours,
+    maxSizeMb:
+      typeof record.maxSizeMb === "number" && record.maxSizeMb > 0
+        ? Math.floor(record.maxSizeMb)
+        : defaultCacheMaxSizeMb,
   };
 }
 

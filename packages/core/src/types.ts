@@ -30,6 +30,7 @@ export interface AspSettings {
   includePaths?: string[];
   legacyEncoding?: AspLegacyEncoding;
   diagnostics?: AspDiagnosticsSettings;
+  cache?: AspCacheSettings;
   debug?: AspDebugSettings;
   format?: AspFormatSettings;
   vbscript?: AspVbscriptSettings;
@@ -57,6 +58,13 @@ export interface AspFormatSettings {
 
 export interface AspDiagnosticsSettings {
   debounceMs?: number;
+}
+
+export interface AspCacheSettings {
+  enabled?: boolean;
+  directory?: string;
+  ttlHours?: number;
+  maxSizeMb?: number;
 }
 
 export type AspDebugOutputLevel = "off" | "summary" | "verbose";
@@ -122,6 +130,8 @@ export interface AspCodeLensSettings {
 export interface AspWorkspaceSettings {
   maxIndexFiles?: number;
   scanChunkSize?: number;
+  backgroundAnalysis?: boolean;
+  backgroundConcurrency?: number;
 }
 
 export interface AspVbscriptComType {

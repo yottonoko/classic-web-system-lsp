@@ -2988,6 +2988,47 @@ End Function
       }
     });
 
+    it("warms CBOR cache for unopened ASP files and rebuilds after deletion", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-background-cache-"));
+      const cacheDir = path.join(tempDir, "cache");
+      fs.writeFileSync(path.join(tempDir, "broken.asp"), `<style>.x { color: }</style>`, "utf8");
+      const server = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
+              workspace: { backgroundAnalysis: true, backgroundConcurrency: 1 },
+            },
+          },
+        });
+
+        const warmed = await waitForCborCacheFile(cacheDir);
+        expect(warmed.endsWith(".cbor")).toBe(true);
+        expect(collectFiles(cacheDir).some((fileName) => fileName.endsWith(".json"))).toBe(false);
+
+        fs.rmSync(warmed, { force: true });
+        const diagnostics = await server.request("workspace/diagnostic", {
+          previousResultIds: [],
+        });
+        expect(JSON.stringify(diagnostics)).toContain("broken.asp");
+        expect(JSON.stringify(diagnostics)).toContain("asp-lsp-css");
+        expect(await waitForCborCacheFile(cacheDir)).toBeTruthy();
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns CSS and JavaScript source code actions", async () => {
       const source = `<style>.x { color: #ff0000; }</style>
 <script>
@@ -5516,10 +5557,13 @@ class RpcServer {
   private notifications = new Map<string, Array<(message: JsonRpcMessage) => void>>();
   private pendingNotifications = new Map<string, JsonRpcMessage[]>();
 
+  constructor(private readonly options: { env?: Record<string, string> } = {}) {}
+
   async start(): Promise<void> {
     const serverPath = path.join(process.cwd(), "dist", "server.js");
     this.child = spawn(process.execPath, [serverPath, "--stdio"], {
       cwd: process.cwd(),
+      env: { ...process.env, ...this.options.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.stdout.on("data", (chunk: Buffer) => this.read(chunk));
@@ -5710,6 +5754,27 @@ async function waitForLogContaining(server: RpcServer, expected: string): Promis
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForCborCacheFile(root: string): Promise<string> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const fileName = collectFiles(root).find((candidate) => candidate.endsWith(".cbor"));
+    if (fileName) {
+      return fileName;
+    }
+    await delay(250);
+  }
+  throw new Error(`Timed out waiting for CBOR cache file under ${root}.`);
+}
+
+function collectFiles(root: string): string[] {
+  if (!fs.existsSync(root)) {
+    return [];
+  }
+  return fs.readdirSync(root).flatMap((entry) => {
+    const fileName = path.join(root, entry);
+    return fs.statSync(fileName).isDirectory() ? collectFiles(fileName) : [fileName];
+  });
 }
 
 function expectElapsedLogWithoutHeat(message: JsonRpcMessage): void {
