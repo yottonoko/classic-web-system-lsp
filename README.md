@@ -124,6 +124,7 @@ JavaScript.
 | `aspLsp.inlayHints.parameterNames`        | `true`                   | Show VBScript procedure parameter names at call sites.                                                                                           |
 | `aspLsp.inlayHints.functionReturnTypes`   | `true`                   | Show inferred VBScript function return types.                                                                                                    |
 | `aspLsp.inlayHints.implicitByRef`         | `true`                   | Show `ByRef` for VBScript parameters whose passing mode is omitted.                                                                              |
+| `aspLsp.inlayHints.globalVariableMarkers` | `true`                   | Show `(global)` markers on VBScript global variable type inlay hints.                                                                            |
 | `aspLsp.codeLens.references`              | `true`                   | Show VBScript reference counts.                                                                                                                  |
 | `aspLsp.codeLens.includes`                | `true`                   | Show include resolution lenses.                                                                                                                  |
 | `aspLsp.workspace.maxIndexFiles`          | `5000`                   | Maximum unopened Classic ASP files indexed in one workspace scan.                                                                                |

@@ -2891,6 +2891,7 @@ export function getVbscriptInlayHints(
     parameterNames: options.parameterNames !== false,
     functionReturnTypes: options.functionReturnTypes !== false,
     implicitByRef: options.implicitByRef !== false,
+    globalVariableMarkers: options.globalVariableMarkers !== false,
   };
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const env = context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
@@ -2910,7 +2911,7 @@ export function getVbscriptInlayHints(
       }
       hints.push({
         position: symbol.range.end,
-        label: `${globalInlayPrefix(parsed, symbol)} As ${symbol.typeName}`,
+        label: `${globalInlayPrefix(parsed, symbol, settings.globalVariableMarkers)} As ${symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: false,
         paddingRight: true,
@@ -3055,8 +3056,8 @@ function declarationCloseParenEnd(text: string, nameEnd: number): number | undef
   return undefined;
 }
 
-function globalInlayPrefix(parsed: AspParsedDocument, symbol: VbSymbol): string {
-  return isGlobalVariableLikeSymbol(parsed, symbol) ? " (global)" : "";
+function globalInlayPrefix(parsed: AspParsedDocument, symbol: VbSymbol, enabled: boolean): string {
+  return enabled && isGlobalVariableLikeSymbol(parsed, symbol) ? " (global)" : "";
 }
 
 function isGlobalVariableLikeSymbol(parsed: AspParsedDocument, symbol: VbSymbol): boolean {

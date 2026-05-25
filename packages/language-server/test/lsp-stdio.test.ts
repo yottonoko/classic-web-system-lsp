@@ -3219,6 +3219,52 @@ End Sub
       }
     });
 
+    it("honors the global variable marker inlay hint setting", async () => {
+      const source = `<%
+Dim pageTitle
+pageTitle = "Dashboard"
+Sub Render()
+  Dim localTitle
+End Sub
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { inlayHints: { globalVariableMarkers: false } } },
+        });
+        const uri = "file:///tmp/global-marker-inlay-disabled.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 8, character: 0 } },
+        });
+        const serialized = JSON.stringify(inlayHints);
+        expect(serialized).not.toContain("(global)");
+        expect(serialized).toContain("As String");
+        expect(serialized).toContain("As Variant");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("honors the implicit ByRef inlay hint setting", async () => {
       const source = `<%
 Function BuildName(firstName)

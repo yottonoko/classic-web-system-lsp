@@ -45,6 +45,7 @@
   "configuration.inlayHints.parameterNames.description": "Show VBScript procedure parameter name inlay hints.",
   "configuration.inlayHints.functionReturnTypes.description": "Show inferred VBScript function return type inlay hints.",
   "configuration.inlayHints.implicitByRef.description": "Show ByRef inlay hints for VBScript parameters whose passing mode is omitted.",
+  "configuration.inlayHints.globalVariableMarkers.description": "Show (global) markers on VBScript global variable type inlay hints.",
   "configuration.codeLens.references.description": "Show VBScript reference count CodeLens entries.",
   "configuration.codeLens.includes.description": "Show Classic ASP include CodeLens entries.",
   "configuration.workspace.maxIndexFiles.description": "Maximum number of unopened Classic ASP workspace files indexed per scan.",

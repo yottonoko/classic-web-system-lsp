@@ -2400,6 +2400,17 @@ End Sub
     );
     expect(hints.some((hint) => hint.label === " (global) As String | Number")).toBe(true);
     expect(hints.some((hint) => hint.label === " (global) As Variant")).toBe(true);
+    const hintsWithoutGlobalMarkers = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      { symbols },
+      { globalVariableMarkers: false },
+    );
+    expect(JSON.stringify(hintsWithoutGlobalMarkers)).not.toContain("(global)");
+    expect(hintsWithoutGlobalMarkers.some((hint) => hint.label === " As String | Number")).toBe(
+      true,
+    );
+    expect(hintsWithoutGlobalMarkers.some((hint) => hint.label === " As Variant")).toBe(true);
     expect(
       hints.some(
         (hint) =>

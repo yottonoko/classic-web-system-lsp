@@ -120,6 +120,7 @@ export interface AspInlayHintSettings {
   parameterNames?: boolean;
   functionReturnTypes?: boolean;
   implicitByRef?: boolean;
+  globalVariableMarkers?: boolean;
 }
 
 export interface AspCodeLensSettings {

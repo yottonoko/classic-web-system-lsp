@@ -45,6 +45,7 @@
   "configuration.inlayHints.parameterNames.description": "VBScript procedure call site に parameter name inlay hint を表示します。",
   "configuration.inlayHints.functionReturnTypes.description": "推論された VBScript function return type の inlay hint を表示します。",
   "configuration.inlayHints.implicitByRef.description": "passing mode が省略された VBScript parameter に ByRef inlay hint を表示します。",
+  "configuration.inlayHints.globalVariableMarkers.description": "VBScript global variable type の inlay hint に (global) marker を表示します。",
   "configuration.codeLens.references.description": "VBScript reference count CodeLens を表示します。",
   "configuration.codeLens.includes.description": "Classic ASP include CodeLens を表示します。",
   "configuration.workspace.maxIndexFiles.description": "1 回の workspace scan で index する、開いていない Classic ASP file の最大数です。",

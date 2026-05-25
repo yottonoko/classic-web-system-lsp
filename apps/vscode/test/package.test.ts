@@ -104,6 +104,9 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.implicitByRef"],
     ).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.globalVariableMarkers"],
+    ).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.windowsPathResolution"],
