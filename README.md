@@ -109,7 +109,7 @@ JavaScript.
 | `aspLsp.format.ignoreJavaScriptTagIndent` | `false`                  | Ignore surrounding tag indentation when formatting JavaScript/JScript regions.                                                                   |
 | `aspLsp.format.onSave`                    | `false`                  | Return full-document formatting edits from `textDocument/willSaveWaitUntil`.                                                                     |
 | `aspLsp.vbscript.typeChecking`            | `basic`                  | `basic` or `strict`; strict enables VBScript type diagnostics.                                                                                   |
-| `aspLsp.vbscript.identifierCase`          | Unset                    | `PascalCase`, `UPPERCASE`, `camelCase`, `lowercase`, `snake_case`, `UPPER_SNAKE`, or `ignore`; reports declaration casing hints and quick fixes. |
+| `aspLsp.vbscript.identifierCase`          | `ignore`                 | `PascalCase`, `UPPERCASE`, `camelCase`, `lowercase`, `snake_case`, `UPPER_SNAKE`, or `ignore`; reports declaration casing hints and quick fixes. |
 | `aspLsp.vbscript.identifierCaseByKind`    | `{}`                     | Per-symbol-kind VBScript identifier casing overrides.                                                                                            |
 | `aspLsp.vbscript.comTypes`                | `{}`                     | Custom COM type catalog keyed by `Server.CreateObject` Prog.ID.                                                                                  |
 | `aspLsp.vbscript.globals`                 | `{}`                     | Runtime or framework-provided VBScript globals keyed by identifier.                                                                              |

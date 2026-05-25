@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -340,6 +340,7 @@
             "UPPER_SNAKE",
             "ignore"
           ],
+          "default": "ignore",
           "description": "%configuration.vbscript.identifierCase.description%"
         },
         "aspLsp.vbscript.identifierCaseByKind": {

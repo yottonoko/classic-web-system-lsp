@@ -503,7 +503,10 @@ describe("VS Code extension package", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       contributes?: {
         configuration?: {
-          properties?: Record<string, { enum?: string[]; properties?: Record<string, unknown> }>;
+          properties?: Record<
+            string,
+            { default?: unknown; enum?: string[]; properties?: Record<string, unknown> }
+          >;
         };
       };
     };
@@ -521,6 +524,7 @@ describe("VS Code extension package", () => {
         "ignore",
       ]),
     );
+    expect(identifierCase?.default).toBe("ignore");
     expect(identifierCase?.enum).not.toEqual(expect.arrayContaining(["lower", "upper"]));
     expect(byKind?.properties).toEqual(
       expect.objectContaining({

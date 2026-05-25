@@ -44,7 +44,7 @@ fs.writeFileSync(
   `${JSON.stringify(
     {
       name: "@asp-lsp/language-server-bundled",
-      version: "0.1.0",
+      version: "0.1.1",
       private: true,
       main: "dist/server.js",
     },
