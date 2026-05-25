@@ -1364,7 +1364,7 @@ Response.Write known
       }
     });
 
-    it("publishes fast diagnostics before slow diagnostics for push diagnostics", async () => {
+    it("publishes fast, syntax and project diagnostics in stages for push diagnostics", async () => {
       const server = new RpcServer();
       try {
         await server.start();
@@ -1380,7 +1380,8 @@ Response.Write known
             uri,
             languageId: "classic-asp",
             version: 1,
-            text: `<!-- #include file="missing.inc" -->
+            text: `<style>.broken { color: }</style>
+<!-- #include file="missing.inc" -->
 <% Option Explicit
 Response.Write missingName
 %>`,
@@ -1390,11 +1391,19 @@ Response.Write missingName
         const fastDiagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
         const fastText = JSON.stringify(fastDiagnostics.params);
         expect(fastText).toContain("missing.inc");
+        expect(fastText).not.toContain("asp-lsp-css");
         expect(fastText).not.toContain("missingName");
+
+        const syntaxDiagnostics = await waitForDiagnosticsContaining(server, "asp-lsp-css");
+        const syntaxText = JSON.stringify(syntaxDiagnostics.params);
+        expect(syntaxText).toContain("missing.inc");
+        expect(syntaxText).toContain("asp-lsp-css");
+        expect(syntaxText).not.toContain("missingName");
 
         const slowDiagnostics = await waitForDiagnosticsContaining(server, "missingName");
         const slowText = JSON.stringify(slowDiagnostics.params);
         expect(slowText).toContain("missing.inc");
+        expect(slowText).toContain("asp-lsp-css");
         expect(slowText).toContain("missingName");
 
         await server.request("shutdown", null);
@@ -4990,12 +4999,12 @@ Response.Write enabled
         for (const expected of [
           "analysis.parse",
           "analysis.virtualDocuments",
-          "check.fast.cssDiagnostics",
-          "check.fast.javascriptSyntax",
-          "check.slow.vbscript.projectContext",
-          "check.slow.vbscript.diagnostics",
-          "check.slow.javascriptUnused",
-          "check.slow.vbscript.diagnostics.unusedSymbols",
+          "check.syntax.cssDiagnostics",
+          "check.syntax.javascriptSyntax",
+          "check.project.vbscript.projectContext",
+          "check.project.vbscript.diagnostics",
+          "check.project.javascriptUnused",
+          "check.project.vbscript.diagnostics.unusedSymbols",
         ]) {
           const log = await waitForLogContaining(server, expected);
           expectElapsedLogWithoutHeat(log);
@@ -5085,10 +5094,9 @@ Response.Write enabled
           },
         });
 
-        await waitForLogContaining(server, "check.fast.javascriptSyntax");
         const fastLog = await waitForLogContaining(server, "LSP check fast completed");
         expectElapsedLogWithoutHeat(fastLog);
-        await waitForLogContaining(server, "check.slow.javascriptUnused");
+        await waitForLogContaining(server, "check.project.javascriptUnused");
         const slowLog = await waitForLogContaining(server, "LSP check slow completed");
         expectElapsedLogWithoutHeat(slowLog);
 

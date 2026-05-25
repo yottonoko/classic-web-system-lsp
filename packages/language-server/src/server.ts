@@ -233,6 +233,8 @@ interface CachedDocument {
 interface CachedAnalysis {
   diagnostics?: DiagnosticCacheEntry;
   fastDiagnostics?: DiagnosticCacheEntry;
+  syntaxDiagnostics?: DiagnosticCacheEntry;
+  projectDiagnostics?: DiagnosticCacheEntry;
   slowDiagnostics?: DiagnosticCacheEntry;
   htmlDiagnostics?: DiagnosticCacheEntry;
   cssDiagnostics?: DiagnosticCacheEntry;
@@ -1461,12 +1463,28 @@ async function publishSlowDiagnosticsForVersion(
     return;
   }
   const startedAt = startSlowCheckLog(cached, settings);
-  const slowItems = await slowDiagnosticsForCachedAsync(cached, settings, "check.slow");
+  const syntaxItems = syntaxDiagnosticsForCached(cached, settings, "check.syntax");
   if (documents.get(uri)?.version !== version || getCached(uri)?.source.version !== version) {
     return;
   }
   const fastItems =
     cached.analysis?.fastDiagnostics?.items ?? fastDiagnosticsForCached(cached, settings);
+  const syntaxMerged = measureDebugStep(settings, uri, "check.syntax.merge", () =>
+    dedupeDiagnostics([...fastItems, ...syntaxItems]),
+  );
+  connection.sendDiagnostics({ uri, diagnostics: syntaxMerged });
+  const projectItems = await projectDiagnosticsForCachedAsync(cached, settings, "check.project");
+  if (documents.get(uri)?.version !== version || getCached(uri)?.source.version !== version) {
+    return;
+  }
+  const slowItems = measureDebugStep(settings, uri, "check.slow.dedupe", () =>
+    dedupeDiagnostics([...syntaxItems, ...projectItems]),
+  );
+  analysisFor(cached).slowDiagnostics = {
+    key: slowDiagnosticsCacheKey(cached, settings),
+    items: slowItems,
+    text: cached.parsed.text,
+  };
   const items = measureDebugStep(settings, uri, "check.slow.merge", () =>
     dedupeDiagnostics([...fastItems, ...slowItems]),
   );
@@ -1566,11 +1584,6 @@ function fastDiagnosticsForCached(
     () => includeDiagnostics(cached, settings),
   );
   const diagnostics: Diagnostic[] = [...parserDiagnostics, ...includeItems];
-  if (!isIncDocument(cached.source.uri)) {
-    measureDebugStep(settings, cached.source.uri, `${stepPrefix}.htmlDiagnostics`, () => undefined);
-  }
-  measureDebugStep(settings, cached.source.uri, `${stepPrefix}.cssDiagnostics`, () => undefined);
-  measureDebugStep(settings, cached.source.uri, `${stepPrefix}.javascriptSyntax`, () => undefined);
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
     dedupeDiagnostics(diagnostics),
   );
@@ -1596,17 +1609,36 @@ function slowDiagnosticsForCached(
     );
     return cached.analysis.slowDiagnostics.items;
   }
-  const embeddedItems = embeddedSlowDiagnostics(cached, settings, stepPrefix);
-  const vbItems = vbDiagnostics(cached, settings, stepPrefix);
-  const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
+  const syntaxItems = syntaxDiagnosticsForCached(cached, settings, stepPrefix);
+  const projectItems = projectDiagnosticsForCached(cached, settings, stepPrefix);
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
-    dedupeDiagnostics([...embeddedItems, ...vbItems, ...jsItems]),
+    dedupeDiagnostics([...syntaxItems, ...projectItems]),
   );
   analysisFor(cached).slowDiagnostics = { key, items, text: cached.parsed.text };
   return items;
 }
 
-function embeddedSlowDiagnostics(
+function syntaxDiagnosticsForCached(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix: string,
+): Diagnostic[] {
+  const key = syntaxDiagnosticsCacheKey(cached);
+  if (cached.analysis?.syntaxDiagnostics?.key === key) {
+    finishDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.syntax.cacheReuse`,
+      process.hrtime.bigint(),
+    );
+    return cached.analysis.syntaxDiagnostics.items;
+  }
+  const items = embeddedSyntaxDiagnostics(cached, settings, stepPrefix);
+  analysisFor(cached).syntaxDiagnostics = { key, items, text: cached.parsed.text };
+  return items;
+}
+
+function embeddedSyntaxDiagnostics(
   cached: CachedDocument,
   settings: AspSettings,
   stepPrefix: string,
@@ -1632,6 +1664,30 @@ function embeddedSlowDiagnostics(
   return diagnostics;
 }
 
+function projectDiagnosticsForCached(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix: string,
+): Diagnostic[] {
+  const key = projectDiagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.projectDiagnostics?.key === key) {
+    finishDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.project.cacheReuse`,
+      process.hrtime.bigint(),
+    );
+    return cached.analysis.projectDiagnostics.items;
+  }
+  const vbItems = vbDiagnostics(cached, settings, stepPrefix);
+  const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
+  const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.project.dedupe`, () =>
+    dedupeDiagnostics([...vbItems, ...jsItems]),
+  );
+  analysisFor(cached).projectDiagnostics = { key, items, text: cached.parsed.text };
+  return items;
+}
+
 async function slowDiagnosticsForCachedAsync(
   cached: CachedDocument,
   settings: AspSettings,
@@ -1647,7 +1703,30 @@ async function slowDiagnosticsForCachedAsync(
     );
     return cached.analysis.slowDiagnostics.items;
   }
-  const embeddedItems = embeddedSlowDiagnostics(cached, settings, stepPrefix);
+  const syntaxItems = syntaxDiagnosticsForCached(cached, settings, stepPrefix);
+  const projectItems = await projectDiagnosticsForCachedAsync(cached, settings, stepPrefix);
+  const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
+    dedupeDiagnostics([...syntaxItems, ...projectItems]),
+  );
+  analysisFor(cached).slowDiagnostics = { key, items, text: cached.parsed.text };
+  return items;
+}
+
+async function projectDiagnosticsForCachedAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix: string,
+): Promise<Diagnostic[]> {
+  const key = projectDiagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.projectDiagnostics?.key === key) {
+    finishDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.project.cacheReuse`,
+      process.hrtime.bigint(),
+    );
+    return cached.analysis.projectDiagnostics.items;
+  }
   const vbItemsPromise = vbDiagnosticsAsync(cached, settings, stepPrefix);
   const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
   const vbItems = await vbItemsPromise;
@@ -1658,10 +1737,10 @@ async function slowDiagnosticsForCachedAsync(
     `${stepPrefix}.vbscript.diagnostics.unusedSymbols.replayed`,
     0,
   );
-  const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
-    dedupeDiagnostics([...embeddedItems, ...vbItems, ...jsItems]),
+  const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.project.dedupe`, () =>
+    dedupeDiagnostics([...vbItems, ...jsItems]),
   );
-  analysisFor(cached).slowDiagnostics = { key, items, text: cached.parsed.text };
+  analysisFor(cached).projectDiagnostics = { key, items, text: cached.parsed.text };
   return items;
 }
 
@@ -1914,6 +1993,23 @@ function fastDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings):
 }
 
 function slowDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    syntax: syntaxDiagnosticsCacheKey(cached),
+    project: projectDiagnosticsCacheKey(cached, settings),
+  });
+}
+
+function syntaxDiagnosticsCacheKey(cached: CachedDocument): string {
+  const html = getCachedVirtual(cached, "html");
+  const css = getCachedVirtual(cached, "css");
+  return JSON.stringify({
+    html: html ? virtualCacheKey(html) : undefined,
+    css: css ? virtualCacheKey(css) : undefined,
+    javascript: jsVirtualDocuments(cached).map(virtualCacheKey),
+  });
+}
+
+function projectDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
   return JSON.stringify({
     vbscript: vbDiagnosticsCacheKey(cached, settings),
     javascript: jsSlowDiagnosticsCacheKey(cached, settings),
