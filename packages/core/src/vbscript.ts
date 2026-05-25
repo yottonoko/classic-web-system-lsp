@@ -3195,17 +3195,70 @@ export function getVbscriptOutgoingCalls(
 export function collectVbscriptSymbols(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
+  options: VbSymbolCollectionOptions = {},
 ): VbSymbol[] {
   const symbols: VbSymbol[] = [];
   for (const node of vbDocuments(parsed)) {
     addSymbolsFromVbNode(parsed, node, symbols);
   }
-  addImplicitAssignmentSymbols(parsed, symbols);
+  if (options.implicitAssignments !== false) {
+    addImplicitAssignmentSymbols(parsed, symbols);
+  }
   applyTypeAnnotations(parsed, symbols);
-  inferAssignedTypes(parsed, symbols, context);
+  if (options.inferTypes !== false) {
+    inferAssignedTypes(parsed, symbols, context);
+  }
   applyTypeAnnotations(parsed, symbols);
-  applyVariantFallbackTypes(symbols);
+  if (options.variantFallback !== false) {
+    applyVariantFallbackTypes(symbols);
+  }
   return symbols;
+}
+
+interface VbSymbolCollectionOptions {
+  implicitAssignments?: boolean;
+  inferTypes?: boolean;
+  variantFallback?: boolean;
+}
+
+export function collectVbscriptPublicSymbols(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): VbSymbol[] {
+  return collectVbscriptSymbols(parsed, context, {
+    implicitAssignments: false,
+    inferTypes: false,
+  })
+    .filter(isPublicSummarySymbol)
+    .map(sanitizePublicSummarySymbol);
+}
+
+function isPublicSummarySymbol(symbol: VbSymbol): boolean {
+  if (symbol.visibility === "private" || symbol.scopeName || symbol.kind === "parameter") {
+    return false;
+  }
+  if (symbol.memberOf) {
+    return symbol.kind === "field" || symbol.kind === "method" || symbol.kind === "property";
+  }
+  return (
+    symbol.kind === "variable" ||
+    symbol.kind === "constant" ||
+    symbol.kind === "function" ||
+    symbol.kind === "sub" ||
+    symbol.kind === "class"
+  );
+}
+
+function sanitizePublicSummarySymbol(symbol: VbSymbol): VbSymbol {
+  if (symbol.explicitType || !symbol.type || symbol.typeName === "Variant") {
+    return { ...symbol };
+  }
+  return {
+    ...symbol,
+    type: typeRef("Variant"),
+    typeName: "Variant",
+    explicitType: false,
+  };
 }
 
 export function buildVbTypeEnvironment(
@@ -5082,7 +5135,39 @@ function resolveSymbolAt(
   symbols: VbSymbol[],
 ): VbSymbol | undefined {
   const token = identifierTokenAt(parsed, offset);
-  return token ? resolveSymbolForToken(parsed, token, symbols) : undefined;
+  const resolved = token ? resolveSymbolForToken(parsed, token, symbols) : undefined;
+  if (resolved || memberAccessAt(parsed, offset)) {
+    return resolved;
+  }
+  const word = identifierTextAt(parsed.text, offset);
+  return word
+    ? visibleSymbolsByName(parsed, offset, symbols, word.toLowerCase()).sort(
+        (left, right) => symbolPriority(right) - symbolPriority(left),
+      )[0]
+    : undefined;
+}
+
+function identifierTextAt(sourceText: string, offset: number): string | undefined {
+  if (!isVbIdentifierCharacter(sourceText.charAt(offset))) {
+    offset -= 1;
+  }
+  if (!isVbIdentifierCharacter(sourceText.charAt(offset))) {
+    return undefined;
+  }
+  let start = offset;
+  while (start > 0 && isVbIdentifierCharacter(sourceText.charAt(start - 1))) {
+    start -= 1;
+  }
+  let end = offset + 1;
+  while (end < sourceText.length && isVbIdentifierCharacter(sourceText.charAt(end))) {
+    end += 1;
+  }
+  const word = sourceText.slice(start, end);
+  return /^[A-Za-z_]/.test(word) ? word : undefined;
+}
+
+function isVbIdentifierCharacter(value: string): boolean {
+  return /^[A-Za-z0-9_]$/.test(value);
 }
 
 function resolveSymbolForToken(

@@ -2025,6 +2025,219 @@ Response.Write Shared▮Title()
       }
     });
 
+    it("uses cached public include summaries for VBScript help", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-public-summary-"));
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "common.inc");
+      fs.writeFileSync(
+        include,
+        `<%
+' @type SharedRecords As ADODB.Recordset
+Dim SharedRecords
+Dim UntypedRecords
+Set UntypedRecords = Server.CreateObject("ADODB.Recordset")
+Class SharedWidget
+  Public Name
+  Private Secret
+  Public Function Title()
+  End Function
+End Class
+Function IncludedFunction(arg)
+  Dim localOnly
+End Function
+Private Function HiddenFunction()
+End Function
+%>`,
+        "utf8",
+      );
+      const source = `<!-- #include file="common.inc" -->
+<%
+Dim widget
+Set widget = New SharedWidget
+Response.Write IncludedFunction()
+Response.Write SharedRecords.
+Response.Write UntypedRecords.
+Response.Write widget.
+Response.Write${" "}
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
+      const uri = pathToFileURL(owner).toString();
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              diagnostics: { debounceMs: 0 },
+              workspace: { backgroundAnalysis: false },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
+        });
+
+        const globalCompletions = await waitForCompletionSatisfying(
+          server,
+          { uri, position: positionAt(source, source.lastIndexOf("Response.Write ") + 15) },
+          (completions) => {
+            const labels = completionLabels(completions);
+            return (
+              labels.includes("IncludedFunction") &&
+              labels.includes("SharedRecords") &&
+              labels.includes("SharedWidget") &&
+              !labels.includes("HiddenFunction")
+            );
+          },
+          "public summary completions without private include symbols",
+        );
+        const labels = completionLabels(globalCompletions);
+        expect(labels).toContain("SharedRecords");
+        expect(labels).toContain("SharedWidget");
+        expect(labels).not.toContain("arg");
+        expect(labels).not.toContain("localOnly");
+        expect(labels).not.toContain("HiddenFunction");
+
+        const definition = await waitForDefinitionContaining(
+          server,
+          {
+            uri,
+            position: positionAt(source, source.indexOf("IncludedFunction") + "Included".length),
+          },
+          "common.inc",
+        );
+        expect(JSON.stringify(definition)).toContain("common.inc");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("IncludedFunction") + "Included".length),
+        });
+        expect(JSON.stringify(hover)).toContain("Function IncludedFunction");
+
+        const recordsetCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("SharedRecords.") + "SharedRecords.".length),
+        });
+        expect(completionLabels(recordsetCompletions)).toContain("MoveNext");
+
+        const untypedCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(
+            source,
+            source.indexOf("UntypedRecords.") + "UntypedRecords.".length,
+          ),
+        });
+        expect(completionLabels(untypedCompletions)).not.toContain("MoveNext");
+
+        const widgetCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("widget.") + "widget.".length),
+        });
+        const widgetLabels = completionLabels(widgetCompletions);
+        expect(widgetLabels).toContain("Name");
+        expect(widgetLabels).toContain("Title");
+        expect(widgetLabels).not.toContain("Secret");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("restores public include summaries from CBOR cache after restart", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-public-summary-disk-"));
+      const cacheDir = path.join(tempDir, "cache");
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "common.inc");
+      fs.writeFileSync(
+        include,
+        `<%
+Function DiskSharedTitle()
+End Function
+%>`,
+        "utf8",
+      );
+      const source = `<!-- #include file="common.inc" -->
+<%
+Response.Write${" "}
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
+      const uri = pathToFileURL(owner).toString();
+      const configuration = {
+        aspLsp: {
+          cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
+          debug: { output: "verbose" },
+          diagnostics: { debounceMs: 0 },
+          workspace: { backgroundAnalysis: false },
+        },
+      };
+
+      try {
+        const firstServer = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
+        try {
+          await firstServer.start();
+          await firstServer.request("initialize", {
+            processId: process.pid,
+            rootUri: pathToFileURL(tempDir).toString(),
+            capabilities: {},
+          });
+          firstServer.notify("workspace/didChangeConfiguration", { settings: configuration });
+          firstServer.notify("textDocument/didOpen", {
+            textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
+          });
+          await waitForCompletionContaining(
+            firstServer,
+            { uri, position: positionAt(source, source.lastIndexOf("Response.Write ") + 15) },
+            "DiskSharedTitle",
+          );
+          await waitForCborCachePayload(cacheDir, (payload) =>
+            Array.isArray(payload.publicSymbols),
+          );
+          await firstServer.request("shutdown", null);
+          firstServer.notify("exit", undefined);
+        } finally {
+          firstServer.stop();
+        }
+
+        const secondServer = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
+        try {
+          await secondServer.start();
+          await secondServer.request("initialize", {
+            processId: process.pid,
+            rootUri: pathToFileURL(tempDir).toString(),
+            capabilities: {},
+          });
+          secondServer.notify("workspace/didChangeConfiguration", { settings: configuration });
+          secondServer.notify("textDocument/didOpen", {
+            textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
+          });
+
+          const startedAt = Date.now();
+          const completions = await secondServer.request("textDocument/completion", {
+            textDocument: { uri },
+            position: positionAt(source, source.lastIndexOf("Response.Write ") + 15),
+          });
+          expect(Date.now() - startedAt).toBeLessThan(1_000);
+          expect(completionLabels(completions)).toContain("DiskSharedTitle");
+
+          await secondServer.request("shutdown", null);
+          secondServer.notify("exit", undefined);
+        } finally {
+          secondServer.stop();
+        }
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns current-file VBScript help while the include graph warms", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-progressive-"));
       const owner = path.join(tempDir, "default.asp");
@@ -6119,17 +6332,31 @@ async function waitForCompletionContaining(
   params: { uri: string; position: { line: number; character: number } },
   expected: string,
 ): Promise<unknown> {
+  return waitForCompletionSatisfying(
+    server,
+    params,
+    (completions) => JSON.stringify(completions).includes(expected),
+    `completion containing ${expected}`,
+  );
+}
+
+async function waitForCompletionSatisfying(
+  server: RpcServer,
+  params: { uri: string; position: { line: number; character: number } },
+  predicate: (completions: unknown) => boolean,
+  description: string,
+): Promise<unknown> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const completions = await server.request("textDocument/completion", {
       textDocument: { uri: params.uri },
       position: params.position,
     });
-    if (JSON.stringify(completions).includes(expected)) {
+    if (predicate(completions)) {
       return completions;
     }
     await delay(50);
   }
-  throw new Error(`Timed out waiting for completion containing ${expected}.`);
+  throw new Error(`Timed out waiting for ${description}.`);
 }
 
 async function waitForDefinitionContaining(

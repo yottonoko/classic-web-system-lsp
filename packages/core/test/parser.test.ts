@@ -4,6 +4,7 @@ import {
   analyzeVbscript,
   buildVbTypeEnvironment,
   buildVirtualDocuments,
+  collectVbscriptPublicSymbols,
   collectVbscriptSymbols,
   formatAspDocument,
   formatAspRange,
@@ -492,6 +493,67 @@ ReDim resizedItems(5)
         symbols,
       }),
     ).toContain("Dim dynamicItems() As Array");
+  });
+
+  it("collects only public VBScript symbols for include summaries", () => {
+    const source = `<%
+Dim PublicValue
+Set PublicValue = Server.CreateObject("ADODB.Recordset")
+' @type ExplicitRecordset As ADODB.Recordset
+Dim ExplicitRecordset
+Class PublicClass
+  Public publicField
+  Private privateField
+  Public Function PublicMember()
+  End Function
+  Private Function PrivateMember()
+  End Function
+End Class
+Function PublicFunction(arg)
+  Dim localValue
+  localValue = 1
+End Function
+' @returns PublicFactory ADODB.Recordset
+Function PublicFactory()
+  Set PublicFactory = Server.CreateObject("ADODB.Recordset")
+End Function
+Private Sub PrivateProcedure()
+End Sub
+%>`;
+    const parsed = parseAspDocument("file:///site/common.inc", source);
+    const symbols = collectVbscriptPublicSymbols(parsed);
+    const names = symbols.map((symbol) => symbol.name);
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "PublicValue",
+        "ExplicitRecordset",
+        "PublicClass",
+        "publicField",
+        "PublicMember",
+        "PublicFunction",
+        "PublicFactory",
+      ]),
+    );
+    expect(names).not.toEqual(
+      expect.arrayContaining([
+        "arg",
+        "localValue",
+        "privateField",
+        "PrivateMember",
+        "PrivateProcedure",
+      ]),
+    );
+    expect(symbols.find((symbol) => symbol.name === "PublicValue")?.typeName).toBe("Variant");
+    expect(symbols.find((symbol) => symbol.name === "ExplicitRecordset")).toMatchObject({
+      typeName: "ADODB.Recordset",
+      explicitType: true,
+    });
+    expect(symbols.find((symbol) => symbol.name === "PublicFactory")).toMatchObject({
+      typeName: "ADODB.Recordset",
+      explicitType: true,
+    });
+    expect(symbols.find((symbol) => symbol.name === "PublicFunction")?.typeName).toBe("Variant");
   });
 
   it("keeps VBScript lookup and completions case-insensitive", () => {

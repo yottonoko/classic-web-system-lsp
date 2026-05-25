@@ -7,7 +7,9 @@ import { describe, expect, it } from "vitest";
 import {
   DiskAnalysisCache,
   diskAnalysisCacheFormatVersion,
+  vbPublicSymbolSummaryFormatVersion,
   type DiskAnalysisCachePayload,
+  type VbPublicSymbolSummary,
 } from "../src/disk-analysis-cache";
 
 describe("DiskAnalysisCache", () => {
@@ -89,6 +91,64 @@ describe("DiskAnalysisCache", () => {
 
       expect(fs.existsSync(oldFile)).toBe(false);
       expect(fs.existsSync(largeFile)).toBe(false);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stores VBScript public symbol summaries in a separate CBOR entry", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-public-summary-cache-"));
+    try {
+      const sourceFile = path.join(tempDir, "common.inc");
+      fs.writeFileSync(sourceFile, `<% Function SharedTitle()\nEnd Function %>`, "utf8");
+      const stat = fs.statSync(sourceFile);
+      const source = {
+        uri: pathToFileURL(sourceFile).href,
+        fileName: sourceFile,
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+      };
+      const cache = new DiskAnalysisCache({
+        enabled: true,
+        directory: path.join(tempDir, "cache"),
+        workspaceRoots: [tempDir],
+        ttlHours: 168,
+        maxSizeMb: 1024,
+      });
+      const payload: VbPublicSymbolSummary = {
+        version: vbPublicSymbolSummaryFormatVersion,
+        source,
+        settingsKey: "public-settings",
+        defaultLanguage: "vbscript",
+        legacyEncoding: "utf8",
+        includes: [],
+        publicSymbols: [
+          {
+            name: "SharedTitle",
+            kind: "function",
+            range: { start: { line: 0, character: 12 }, end: { line: 0, character: 23 } },
+            sourceUri: source.uri,
+            typeName: "Variant",
+            type: { name: "Variant" },
+          },
+        ],
+      };
+
+      await cache.writeVbPublicSymbolSummary(payload);
+      const files = collectFiles(cache.root).filter((fileName) => fileName.endsWith(".cbor"));
+      expect(files).toHaveLength(1);
+      expect(files[0]).toContain(".vb-public-symbols.cbor");
+      expect(await cache.readFresh(source, "public-settings")).toBeUndefined();
+      expect(await cache.readVbPublicSymbolSummaryFresh(source, "public-settings")).toMatchObject({
+        settingsKey: "public-settings",
+        publicSymbols: [{ name: "SharedTitle" }],
+      });
+      expect(
+        await cache.readVbPublicSymbolSummaryFresh(
+          { ...source, mtimeMs: source.mtimeMs + 1 },
+          "public-settings",
+        ),
+      ).toBeUndefined();
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

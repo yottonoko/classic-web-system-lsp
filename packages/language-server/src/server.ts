@@ -67,6 +67,7 @@ import {
   analyzeVbscript,
   buildVbTypeEnvironment,
   buildVirtualDocument,
+  collectVbscriptPublicSymbols,
   collectVbscriptSymbols,
   createLocalizer,
   formatAspDocument,
@@ -118,9 +119,11 @@ import ts from "typescript";
 import {
   DiskAnalysisCache,
   diskAnalysisCacheFormatVersion,
+  vbPublicSymbolSummaryFormatVersion,
   type DiskAnalysisCachePayload,
   type DiskDiagnosticEntry,
   type DiskSourceMetadata,
+  type VbPublicSymbolSummary,
 } from "./disk-analysis-cache";
 
 const connection = createConnection(ProposedFeatures.all);
@@ -243,6 +246,7 @@ interface CachedAnalysis {
   jsSyntaxDiagnostics?: DiagnosticCacheEntry;
   jsSlowDiagnostics?: DiagnosticCacheEntry;
   vbProjectContext?: { key: string; rootKey: string; context: VbProjectContext };
+  vbPublicProjectContext?: { key: string; rootKey: string; context: VbProjectContext };
   localVbProjectContext?: { key: string; context: VbProjectContext };
   vbProjectDocuments?: {
     collectionKey: string;
@@ -367,7 +371,9 @@ const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const slowDiagnosticsJobs = new Map<string, SlowDiagnosticsJob>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 const vbProjectContextWarmups = new Map<string, { rootKey: string; version: number }>();
+const vbPublicSymbolSummaryCache = new Map<string, VbPublicSymbolSummary>();
 const maxVbProjectContextCacheEntries = 32;
+const maxVbPublicSymbolSummaryCacheEntries = 1024;
 let slowDiagnosticsSequence = 0;
 let backgroundAnalysisSequence = 0;
 let backgroundAnalysisTimer: ReturnType<typeof setTimeout> | undefined;
@@ -637,12 +643,12 @@ connection.onCompletion((params) => {
     return [];
   }
   if (region.language === "vbscript") {
+    const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
+    const completions = getVbscriptCompletions(cached.parsed, params.position, context);
     return withCompletionData(
-      getVbscriptCompletions(
-        cached.parsed,
-        params.position,
-        bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
-      ),
+      completions.length > 0
+        ? completions
+        : fallbackVbMemberCompletions(cached, params.position, context),
       { kind: "vbscript", uri: cached.source.uri },
     );
   }
@@ -2229,6 +2235,19 @@ function diskAnalysisSettingsKey(settings: AspSettings): string {
   });
 }
 
+function vbPublicSymbolSummarySettingsKey(settings: AspSettings): string {
+  return JSON.stringify({
+    defaultLanguage: settings.defaultLanguage,
+    legacyEncoding: settings.legacyEncoding,
+    vbscript: {
+      typeChecking: settings.vbscript?.typeChecking,
+      identifierCase: settings.vbscript?.identifierCase,
+      identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
+      comTypes: settings.vbscript?.comTypes,
+    },
+  });
+}
+
 function diskAnalysisForDocument(
   document: TextDocument,
   settings: AspSettings,
@@ -2302,13 +2321,19 @@ function diskSourceMetadataForDocument(document: TextDocument): DiskSourceMetada
     return undefined;
   }
   const fileName = normalizeFileName(uriToFileName(document.uri));
-  const stat = fs.statSync(fileName, { throwIfNoEntry: false });
+  const source = diskSourceMetadataForFile(fileName);
+  return source ? { ...source, uri: document.uri } : undefined;
+}
+
+function diskSourceMetadataForFile(fileName: string): DiskSourceMetadata | undefined {
+  const normalized = normalizeFileName(fileName);
+  const stat = fs.statSync(normalized, { throwIfNoEntry: false });
   if (!stat?.isFile()) {
     return undefined;
   }
   return {
-    uri: document.uri,
-    fileName,
+    uri: pathToFileUri(normalized),
+    fileName: normalized,
     mtimeMs: stat.mtimeMs,
     size: stat.size,
   };
@@ -3971,12 +3996,143 @@ function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem 
 }
 
 function aspHover(cached: CachedDocument, params: TextDocumentPositionParams): Hover | null {
-  const value = getVbscriptHover(
-    cached.parsed,
-    params.position,
-    bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
+  const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const value = getVbscriptHover(cached.parsed, params.position, context);
+  const fallback = value ?? fallbackVbscriptHover(cached, params.position, context);
+  return fallback ? { contents: { kind: "markdown", value: fallback } } : null;
+}
+
+function fallbackVbscriptHover(
+  cached: CachedDocument,
+  position: Position,
+  context: VbProjectContext,
+): string | undefined {
+  const symbol = fallbackVbscriptSymbolAt(cached, position, context);
+  if (!symbol) {
+    return undefined;
+  }
+  return `\`\`\`vbscript\n${fallbackVbscriptSignature(symbol)}\n\`\`\``;
+}
+
+function fallbackVbscriptSignature(symbol: VbSymbol): string {
+  if (symbol.kind === "class") {
+    return `Class ${symbol.name}`;
+  }
+  if (symbol.kind === "function" || symbol.kind === "method" || symbol.kind === "property") {
+    const keyword =
+      symbol.kind === "property"
+        ? "Property"
+        : symbol.procedureKind === "sub"
+          ? "Sub"
+          : symbol.kind === "method"
+            ? "Function"
+            : "Function";
+    const parameters = symbol.parameterDetails?.length
+      ? symbol.parameterDetails
+          .map((parameter) => `${parameter.mode === "byval" ? "ByVal" : "ByRef"} ${parameter.name}`)
+          .join(", ")
+      : (symbol.parameters ?? []).join(", ");
+    const typeSuffix =
+      symbol.kind !== "property" && symbol.procedureKind === "sub"
+        ? ""
+        : ` As ${symbol.typeName ?? "Variant"}`;
+    return `${keyword} ${symbol.name}(${parameters})${typeSuffix}`;
+  }
+  if (symbol.kind === "sub") {
+    const parameters = symbol.parameterDetails?.length
+      ? symbol.parameterDetails
+          .map((parameter) => `${parameter.mode === "byval" ? "ByVal" : "ByRef"} ${parameter.name}`)
+          .join(", ")
+      : (symbol.parameters ?? []).join(", ");
+    return `Sub ${symbol.name}(${parameters})`;
+  }
+  const declaration =
+    symbol.kind === "constant" ? "Const" : symbol.kind === "field" ? "Public" : "Dim";
+  return `${declaration} ${symbol.name} As ${symbol.typeName ?? "Variant"}`;
+}
+
+function fallbackVbscriptSymbolAt(
+  cached: CachedDocument,
+  position: Position,
+  context: VbProjectContext,
+): VbSymbol | undefined {
+  const word = vbIdentifierWordAt(cached.parsed.text, cached.source.offsetAt(position));
+  if (!word) {
+    return undefined;
+  }
+  const lower = word.toLowerCase();
+  return (context.symbols ?? []).find(
+    (symbol) =>
+      symbol.name.toLowerCase() === lower &&
+      (symbol.sourceUri === cached.parsed.uri || (!symbol.scopeName && !symbol.memberOf)),
   );
-  return value ? { contents: { kind: "markdown", value } } : null;
+}
+
+function fallbackVbMemberCompletions(
+  cached: CachedDocument,
+  position: Position,
+  context: VbProjectContext,
+): CompletionItem[] {
+  const offset = cached.source.offsetAt(position);
+  if (cached.parsed.text.charAt(offset - 1) !== ".") {
+    return [];
+  }
+  const owner = vbIdentifierWordBefore(cached.parsed.text, offset - 1);
+  if (!owner) {
+    return [];
+  }
+  const symbol = (context.symbols ?? []).find(
+    (candidate) =>
+      candidate.name.toLowerCase() === owner.toLowerCase() &&
+      (candidate.sourceUri === cached.parsed.uri || (!candidate.scopeName && !candidate.memberOf)),
+  );
+  const typeName = symbol?.type?.name ?? symbol?.typeName;
+  const type = (
+    context.typeEnvironment ?? buildVbTypeEnvironment(cached.parsed, context)
+  ).types.find((candidate) => candidate.name.toLowerCase() === typeName?.toLowerCase());
+  return (
+    type?.members.map((member) => ({
+      label: member.name,
+      kind:
+        member.kind === "method"
+          ? CompletionItemKind.Method
+          : member.kind === "field"
+            ? CompletionItemKind.Field
+            : CompletionItemKind.Property,
+      detail: `${member.kind}${member.type ? ` As ${member.type.name}` : ""}`,
+    })) ?? []
+  );
+}
+
+function vbIdentifierWordAt(sourceText: string, offset: number): string | undefined {
+  if (!isVbIdentifierCharacter(sourceText.charAt(offset))) {
+    offset -= 1;
+  }
+  if (!isVbIdentifierCharacter(sourceText.charAt(offset))) {
+    return undefined;
+  }
+  let start = offset;
+  while (start > 0 && isVbIdentifierCharacter(sourceText.charAt(start - 1))) {
+    start -= 1;
+  }
+  let end = offset + 1;
+  while (end < sourceText.length && isVbIdentifierCharacter(sourceText.charAt(end))) {
+    end += 1;
+  }
+  const word = sourceText.slice(start, end);
+  return /^[A-Za-z_]/.test(word) ? word : undefined;
+}
+
+function vbIdentifierWordBefore(sourceText: string, offset: number): string | undefined {
+  let cursor = offset - 1;
+  while (cursor >= 0 && /\s/.test(sourceText.charAt(cursor))) {
+    cursor -= 1;
+  }
+  return vbIdentifierWordAt(sourceText, cursor);
+}
+
+function isVbIdentifierCharacter(value: string): boolean {
+  return /^[A-Za-z0-9_]$/.test(value);
 }
 
 function withCompletionData(
@@ -4040,7 +4196,8 @@ function definitionLikeLocation(
         ? getVbscriptTypeDefinition(cached.parsed, position, context)
         : mode === "implementation"
           ? getVbscriptImplementation(cached.parsed, position, context)
-          : getVbscriptDefinition(cached.parsed, position, context);
+          : (getVbscriptDefinition(cached.parsed, position, context) ??
+            fallbackVbscriptSymbolAt(cached, position, context));
     return symbol ? Location.create(symbol.sourceUri, symbol.range) : null;
   }
   if (isJavaScriptLikeRegion(region)) {
@@ -4411,6 +4568,64 @@ async function buildVbProjectContextAsync(
   return { ...context, locale: settings.resolvedLocale };
 }
 
+async function buildVbPublicProjectContextAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<VbProjectContext> {
+  const rootKey = vbPublicProjectRootContextCacheKey(cached, settings);
+  const summaries = await collectVbPublicSymbolSummaryGraphAsync(cached.parsed, settings);
+  return createVbPublicProjectContext(cached, summaries, settings, rootKey);
+}
+
+function buildVbPublicProjectContextFromSummaryCache(
+  cached: CachedDocument,
+  settings: AspSettings,
+): VbProjectContext | undefined {
+  const summaries = collectVbPublicSymbolSummaryGraphFromCache(cached.parsed, settings);
+  if (!summaries) {
+    return undefined;
+  }
+  return createVbPublicProjectContext(
+    cached,
+    summaries,
+    settings,
+    vbPublicProjectRootContextCacheKey(cached, settings),
+  );
+}
+
+function createVbPublicProjectContext(
+  cached: CachedDocument,
+  summaries: VbPublicSymbolSummary[],
+  settings: AspSettings,
+  rootKey: string,
+): VbProjectContext {
+  const contextSettings = vbProjectContextSettings(settings);
+  const key = vbPublicProjectContextCacheKey(cached, summaries, settings);
+  if (cached.analysis?.vbPublicProjectContext?.key === key) {
+    return { ...cached.analysis.vbPublicProjectContext.context, locale: settings.resolvedLocale };
+  }
+  const globalCached = vbProjectContextCache.get(key);
+  if (globalCached) {
+    globalCached.lastUsed = Date.now();
+    const context = { ...globalCached.context, locale: settings.resolvedLocale };
+    analysisFor(cached).vbPublicProjectContext = { key, rootKey, context: globalCached.context };
+    return context;
+  }
+  const symbols = collectVbscriptSymbols(cached.parsed, contextSettings);
+  symbols.push(...summaries.flatMap((summary) => summary.publicSymbols));
+  symbols.push(...configuredVbscriptGlobals(cached, settings));
+  const typeEnvironment = buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols });
+  const context = {
+    documents: [cached.parsed],
+    symbols,
+    typeEnvironment,
+    ...contextSettings,
+  };
+  rememberVbProjectContext(key, context);
+  analysisFor(cached).vbPublicProjectContext = { key, rootKey, context };
+  return { ...context, locale: settings.resolvedLocale };
+}
+
 function buildLocalVbProjectContext(
   cached: CachedDocument,
   settings: AspSettings,
@@ -4439,6 +4654,14 @@ function bestEffortVbProjectContext(
   settings: AspSettings,
 ): VbProjectContext {
   const rootKey = vbProjectRootContextCacheKey(cached, settings);
+  const publicContext = cached.analysis?.vbPublicProjectContext;
+  if (publicContext?.rootKey === vbPublicProjectRootContextCacheKey(cached, settings)) {
+    return { ...publicContext.context, locale: settings.resolvedLocale };
+  }
+  const restoredPublicContext = buildVbPublicProjectContextFromSummaryCache(cached, settings);
+  if (restoredPublicContext) {
+    return restoredPublicContext;
+  }
   const full = cached.analysis?.vbProjectContext;
   if (full?.rootKey === rootKey) {
     return { ...full.context, locale: settings.resolvedLocale };
@@ -4455,6 +4678,12 @@ function scheduleVbProjectContextWarmup(
   if (cached.analysis?.vbProjectContext?.rootKey === rootKey) {
     return;
   }
+  if (
+    cached.analysis?.vbPublicProjectContext?.rootKey ===
+    vbPublicProjectRootContextCacheKey(cached, settings)
+  ) {
+    return;
+  }
   const uri = cached.source.uri;
   const version = cached.source.version;
   const existing = vbProjectContextWarmups.get(uri);
@@ -4467,11 +4696,11 @@ function scheduleVbProjectContextWarmup(
     if (current?.rootKey !== rootKey || current.version !== version) {
       return;
     }
-    void buildVbProjectContextAsync(cached, settings)
+    void buildVbPublicProjectContextAsync(cached, settings)
       .catch((error) => {
         logDebugSummary(
           settings,
-          `[asp-lsp] VBScript project context warmup failed: ${
+          `[asp-lsp] VBScript public project context warmup failed: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -4483,6 +4712,180 @@ function scheduleVbProjectContextWarmup(
         }
       });
   }, 0);
+}
+
+async function collectVbPublicSymbolSummaryGraphAsync(
+  root: AspParsedDocument,
+  settings: AspSettings,
+): Promise<VbPublicSymbolSummary[]> {
+  const summaries: VbPublicSymbolSummary[] = [];
+  const visited = new Set([root.uri]);
+  let frontier: Array<{ ownerUri: string; includes: AspParsedDocument["includes"] }> = [
+    { ownerUri: root.uri, includes: root.includes },
+  ];
+  for (let depth = 0; depth < 20 && frontier.length > 0; depth += 1) {
+    const candidates: string[] = [];
+    for (const item of frontier) {
+      for (const include of item.includes) {
+        const resolved = resolveIncludePath(item.ownerUri, include.path, include.mode, settings);
+        const normalized = normalizeFileName(resolved);
+        const uri = pathToFileUri(normalized);
+        if (visited.has(uri)) {
+          continue;
+        }
+        visited.add(uri);
+        candidates.push(normalized);
+      }
+    }
+    const loaded: Array<VbPublicSymbolSummary | undefined> = [];
+    for (let index = 0; index < candidates.length; index += 32) {
+      loaded.push(
+        ...(await mapWithConcurrency(
+          candidates.slice(index, index + 32),
+          workerPoolSize(),
+          async (fileName) => vbPublicSymbolSummaryForFileAsync(fileName, settings),
+        )),
+      );
+      await yieldToEventLoop();
+    }
+    const next = loaded.filter((summary): summary is VbPublicSymbolSummary => Boolean(summary));
+    summaries.push(...next);
+    frontier = next.map((summary) => ({
+      ownerUri: summary.source.uri,
+      includes: summary.includes,
+    }));
+  }
+  return summaries;
+}
+
+function collectVbPublicSymbolSummaryGraphFromCache(
+  root: AspParsedDocument,
+  settings: AspSettings,
+): VbPublicSymbolSummary[] | undefined {
+  const summaries: VbPublicSymbolSummary[] = [];
+  const visited = new Set([root.uri]);
+  let frontier: Array<{ ownerUri: string; includes: AspParsedDocument["includes"] }> = [
+    { ownerUri: root.uri, includes: root.includes },
+  ];
+  for (let depth = 0; depth < 20 && frontier.length > 0; depth += 1) {
+    const next: VbPublicSymbolSummary[] = [];
+    for (const item of frontier) {
+      for (const include of item.includes) {
+        const resolved = resolveIncludePath(item.ownerUri, include.path, include.mode, settings);
+        const normalized = normalizeFileName(resolved);
+        const uri = pathToFileUri(normalized);
+        if (visited.has(uri)) {
+          continue;
+        }
+        visited.add(uri);
+        const summary = vbPublicSymbolSummaryForFileFromCache(normalized, settings);
+        if (!summary) {
+          return undefined;
+        }
+        next.push(summary);
+      }
+    }
+    summaries.push(...next);
+    frontier = next.map((summary) => ({
+      ownerUri: summary.source.uri,
+      includes: summary.includes,
+    }));
+  }
+  return summaries;
+}
+
+function vbPublicSymbolSummaryForFileFromCache(
+  fileName: string,
+  settings: AspSettings,
+): VbPublicSymbolSummary | undefined {
+  const source = diskSourceMetadataForFile(fileName);
+  if (!source) {
+    return undefined;
+  }
+  const settingsKey = vbPublicSymbolSummarySettingsKey(settings);
+  const memory = vbPublicSymbolSummaryCache.get(normalizeFileName(source.fileName));
+  if (memory && diskSourceMatches(memory.source, source) && memory.settingsKey === settingsKey) {
+    return memory;
+  }
+  const disk = currentDiskAnalysisCache(settings).readVbPublicSymbolSummaryFreshSync(
+    source,
+    settingsKey,
+  );
+  if (!disk) {
+    return undefined;
+  }
+  rememberVbPublicSymbolSummary(disk);
+  logDebugSummary(settings, `[asp-lsp] vbPublicSummary.diskCacheReuse ${source.uri}`);
+  return disk;
+}
+
+async function vbPublicSymbolSummaryForFileAsync(
+  fileName: string,
+  settings: AspSettings,
+): Promise<VbPublicSymbolSummary | undefined> {
+  const source = diskSourceMetadataForFile(fileName);
+  if (!source) {
+    return undefined;
+  }
+  const settingsKey = vbPublicSymbolSummarySettingsKey(settings);
+  const memory = vbPublicSymbolSummaryCache.get(normalizeFileName(source.fileName));
+  if (memory && diskSourceMatches(memory.source, source) && memory.settingsKey === settingsKey) {
+    return memory;
+  }
+  const disk = await currentDiskAnalysisCache(settings).readVbPublicSymbolSummaryFresh(
+    source,
+    settingsKey,
+  );
+  if (disk) {
+    rememberVbPublicSymbolSummary(disk);
+    logDebugSummary(settings, `[asp-lsp] vbPublicSummary.diskCacheReuse ${source.uri}`);
+    return disk;
+  }
+  const text = await readTextFileAsync(source.fileName, settings.legacyEncoding);
+  const parsed = parseAspDocument(source.uri, text, settings);
+  const summary = vbPublicSymbolSummaryForParsed(parsed, source, settings, settingsKey);
+  rememberVbPublicSymbolSummary(summary);
+  void currentDiskAnalysisCache(settings)
+    .writeVbPublicSymbolSummary(summary)
+    .then(() => scheduleDiskCacheSweep(settings));
+  return summary;
+}
+
+function vbPublicSymbolSummaryForParsed(
+  parsed: AspParsedDocument,
+  source: DiskSourceMetadata,
+  settings: AspSettings,
+  settingsKey = vbPublicSymbolSummarySettingsKey(settings),
+): VbPublicSymbolSummary {
+  return {
+    version: vbPublicSymbolSummaryFormatVersion,
+    source,
+    settingsKey,
+    defaultLanguage: parsed.defaultLanguage,
+    legacyEncoding: settings.legacyEncoding,
+    includes: parsed.includes,
+    publicSymbols: collectVbscriptPublicSymbols(parsed, vbProjectContextSettings(settings)),
+  };
+}
+
+function rememberVbPublicSymbolSummary(summary: VbPublicSymbolSummary): void {
+  vbPublicSymbolSummaryCache.set(normalizeFileName(summary.source.fileName), summary);
+  if (vbPublicSymbolSummaryCache.size <= maxVbPublicSymbolSummaryCacheEntries) {
+    return;
+  }
+  const first = vbPublicSymbolSummaryCache.keys().next().value as string | undefined;
+  if (first) {
+    vbPublicSymbolSummaryCache.delete(first);
+  }
+}
+
+function diskSourceMatches(left: DiskSourceMetadata, right: DiskSourceMetadata): boolean {
+  return (
+    sameFile(left.fileName, right.fileName) &&
+    left.uri === right.uri &&
+    left.mtimeMs === right.mtimeMs &&
+    left.size === right.size
+  );
 }
 
 function vbProjectContextSettings(
@@ -4531,6 +4934,40 @@ function vbProjectContextCacheKey(documents: AspParsedDocument[], settings: AspS
     documents: documents.map((document) => ({
       uri: document.uri,
       vbscript: vbProjectDocumentFingerprint(document),
+    })),
+    settings: {
+      typeChecking: settings.vbscript?.typeChecking,
+      identifierCase: settings.vbscript?.identifierCase,
+      identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
+      comTypes: settings.vbscript?.comTypes,
+      unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+      syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
+    },
+    globals: settings.vbscript?.globals,
+  });
+}
+
+function vbPublicProjectRootContextCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return `public:${vbProjectRootContextCacheKey(cached, settings)}`;
+}
+
+function vbPublicProjectContextCacheKey(
+  cached: CachedDocument,
+  summaries: VbPublicSymbolSummary[],
+  settings: AspSettings,
+): string {
+  return JSON.stringify({
+    root: {
+      uri: cached.parsed.uri,
+      vbscript: vbProjectDocumentFingerprint(cached.parsed),
+    },
+    summaries: summaries.map((summary) => ({
+      uri: summary.source.uri,
+      fileName: normalizeFileName(summary.source.fileName),
+      mtimeMs: summary.source.mtimeMs,
+      size: summary.source.size,
+      version: summary.version,
+      settingsKey: summary.settingsKey,
     })),
     settings: {
       typeChecking: settings.vbscript?.typeChecking,
@@ -6612,6 +7049,7 @@ function clearJsProjectCaches(): void {
 
 function clearIncludeCaches(): void {
   includeDocumentCache.clear();
+  vbPublicSymbolSummaryCache.clear();
   includePathResolutionCache.clear();
   pathResolutionCache.clear();
   includeCycleCache.clear();
@@ -8497,11 +8935,8 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
       );
     }
   }
-  for (const semanticToken of getVbscriptSemanticTokens(
-    cached.parsed,
-    bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
-    range,
-  )) {
+  const vbContext = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
+  for (const semanticToken of getVbscriptSemanticTokens(cached.parsed, vbContext, range)) {
     const offset = cached.source.offsetAt(semanticToken.range.start);
     if (offset < rangeStart || offset > rangeEnd) {
       continue;
@@ -8514,6 +8949,7 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
       tokenModifiers: semanticToken.tokenModifiers,
     });
   }
+  addFallbackVbSemanticTokens(tokens, cached, vbContext, rangeStart, rangeEnd);
   addIncludeSemanticTokens(tokens, cached, rangeStart, rangeEnd);
   addEmbeddedSemanticTokens(tokens, cached, rangeStart, rangeEnd);
   const uniqueTokens = dedupeSemanticTokens(tokens).sort(
@@ -8557,6 +8993,68 @@ function addIncludeSemanticTokens(
     );
     addRangeSemanticToken(tokens, cached.source, include.pathRange, "string", rangeStart, rangeEnd);
   }
+}
+
+function addFallbackVbSemanticTokens(
+  tokens: SemanticTokenData[],
+  cached: CachedDocument,
+  context: VbProjectContext,
+  rangeStart: number,
+  rangeEnd: number,
+): void {
+  const candidates = (context.symbols ?? []).filter(
+    (symbol) => symbol.sourceUri !== cached.parsed.uri && !symbol.scopeName && !symbol.memberOf,
+  );
+  for (const symbol of candidates) {
+    const tokenType = fallbackVbSemanticTokenType(symbol.kind);
+    if (!tokenType) {
+      continue;
+    }
+    const pattern = new RegExp(`\\b${escapeRegExp(symbol.name)}\\b`, "gi");
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(cached.parsed.text))) {
+      const start = match.index;
+      const end = start + match[0].length;
+      if (end < rangeStart || start > rangeEnd || !isVbscriptOffset(cached.parsed, start)) {
+        continue;
+      }
+      const position = cached.source.positionAt(start);
+      tokens.push({
+        line: position.line,
+        character: position.character,
+        length: match[0].length,
+        tokenType,
+        tokenModifiers: fallbackVbSemanticTokenModifiers(symbol),
+      });
+    }
+  }
+}
+
+function fallbackVbSemanticTokenType(kind: VbSymbolKind): string | undefined {
+  if (kind === "function" || kind === "sub") {
+    return "function";
+  }
+  if (kind === "class") {
+    return "class";
+  }
+  if (kind === "variable" || kind === "constant") {
+    return "variable";
+  }
+  return undefined;
+}
+
+function fallbackVbSemanticTokenModifiers(symbol: VbSymbol): readonly string[] | undefined {
+  if (symbol.visibility === "public") {
+    return ["public"];
+  }
+  if (symbol.visibility === "private") {
+    return ["private"];
+  }
+  return undefined;
+}
+
+function isVbscriptOffset(parsed: AspParsedDocument, offset: number): boolean {
+  return findRegionAt(parsed, offset)?.language === "vbscript";
 }
 
 function addRangeSemanticToken(

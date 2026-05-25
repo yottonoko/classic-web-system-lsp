@@ -3,10 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { decode, encode } from "cbor-x";
-import type { AspParsedDocument } from "@asp-lsp/core";
+import type { AspInclude, AspParsedDocument, VbSymbol } from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver/node";
 
 export const diskAnalysisCacheFormatVersion = 3;
+export const vbPublicSymbolSummaryFormatVersion = 1;
 
 export interface DiskAnalysisCacheOptions {
   enabled: boolean;
@@ -39,6 +40,16 @@ export interface DiskAnalysisCachePayload {
   syntaxDiagnostics?: DiskDiagnosticEntry;
   projectDiagnostics?: DiskDiagnosticEntry;
   slowDiagnostics?: DiskDiagnosticEntry;
+}
+
+export interface VbPublicSymbolSummary {
+  version: number;
+  source: DiskSourceMetadata;
+  settingsKey: string;
+  defaultLanguage: string;
+  legacyEncoding?: string;
+  includes: AspInclude[];
+  publicSymbols: VbSymbol[];
 }
 
 export class DiskAnalysisCache {
@@ -90,6 +101,26 @@ export class DiskAnalysisCache {
     }
   }
 
+  readVbPublicSymbolSummaryFreshSync(
+    source: DiskSourceMetadata,
+    settingsKey: string,
+  ): VbPublicSymbolSummary | undefined {
+    if (!this.enabled) {
+      return undefined;
+    }
+    try {
+      const fileName = this.entryPath(source.fileName, "vb-public-symbols");
+      const payload = decode(fs.readFileSync(fileName)) as unknown;
+      if (!isVbPublicSymbolSummary(payload) || !matchesPayload(payload, source, settingsKey)) {
+        return undefined;
+      }
+      touchSync(fileName);
+      return payload;
+    } catch {
+      return undefined;
+    }
+  }
+
   async readFresh(
     source: DiskSourceMetadata,
     settingsKey: string,
@@ -110,12 +141,47 @@ export class DiskAnalysisCache {
     }
   }
 
+  async readVbPublicSymbolSummaryFresh(
+    source: DiskSourceMetadata,
+    settingsKey: string,
+  ): Promise<VbPublicSymbolSummary | undefined> {
+    if (!this.enabled) {
+      return undefined;
+    }
+    try {
+      const fileName = this.entryPath(source.fileName, "vb-public-symbols");
+      const payload = decode(await fs.promises.readFile(fileName)) as unknown;
+      if (!isVbPublicSymbolSummary(payload) || !matchesPayload(payload, source, settingsKey)) {
+        return undefined;
+      }
+      await touch(fileName);
+      return payload;
+    } catch {
+      return undefined;
+    }
+  }
+
   async write(payload: DiskAnalysisCachePayload): Promise<void> {
     if (!this.enabled) {
       return;
     }
     try {
       const fileName = this.entryPath(payload.source.fileName);
+      await fs.promises.mkdir(path.dirname(fileName), { recursive: true });
+      const temporary = `${fileName}.${process.pid}.${Date.now()}.tmp`;
+      await fs.promises.writeFile(temporary, Buffer.from(encode(payload)));
+      await fs.promises.rename(temporary, fileName);
+    } catch {
+      return;
+    }
+  }
+
+  async writeVbPublicSymbolSummary(payload: VbPublicSymbolSummary): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
+    try {
+      const fileName = this.entryPath(payload.source.fileName, "vb-public-symbols");
       await fs.promises.mkdir(path.dirname(fileName), { recursive: true });
       const temporary = `${fileName}.${process.pid}.${Date.now()}.tmp`;
       await fs.promises.writeFile(temporary, Buffer.from(encode(payload)));
@@ -163,8 +229,9 @@ export class DiskAnalysisCache {
     }
   }
 
-  private entryPath(fileName: string): string {
-    return path.join(this.namespaceRoot, `${hashString(normalizePath(fileName))}.cbor`);
+  private entryPath(fileName: string, kind = "analysis"): string {
+    const suffix = kind === "analysis" ? "" : `.${kind}`;
+    return path.join(this.namespaceRoot, `${hashString(normalizePath(fileName))}${suffix}.cbor`);
   }
 
   private async cacheEntries(): Promise<
@@ -209,8 +276,23 @@ function isPayload(value: unknown): value is DiskAnalysisCachePayload {
   );
 }
 
+function isVbPublicSymbolSummary(value: unknown): value is VbPublicSymbolSummary {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Partial<VbPublicSymbolSummary>;
+  return (
+    record.version === vbPublicSymbolSummaryFormatVersion &&
+    typeof record.settingsKey === "string" &&
+    typeof record.defaultLanguage === "string" &&
+    Boolean(record.source) &&
+    Array.isArray(record.includes) &&
+    Array.isArray(record.publicSymbols)
+  );
+}
+
 function matchesPayload(
-  payload: DiskAnalysisCachePayload,
+  payload: Pick<DiskAnalysisCachePayload, "settingsKey" | "source">,
   source: DiskSourceMetadata,
   settingsKey: string,
 ): boolean {
