@@ -1830,6 +1830,79 @@ Response.Write Shared▮Title()
       }
     });
 
+    it("returns current-file VBScript help while the include graph warms", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-progressive-"));
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "common.inc");
+      fs.writeFileSync(
+        include,
+        `<%
+Function IncludedOnly()
+End Function
+%>`,
+        "utf8",
+      );
+      const marked = markedDocument(`<!-- #include file="common.inc" -->
+<%
+Function LocalOnly()
+End Function
+localValue = 1
+Response.Write ▮
+%>`);
+      fs.writeFileSync(owner, marked.text, "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${owner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+
+        const immediateCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri: `file://${owner}` },
+          position: marked.position,
+        });
+        expect(completionLabels(immediateCompletions)).toContain("LocalOnly");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri: `file://${owner}` },
+          position: positionAt(marked.text, marked.text.indexOf("LocalOnly")),
+        });
+        expect(JSON.stringify(hover)).toContain("Function LocalOnly()");
+
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri: `file://${owner}` },
+          range: { start: { line: 0, character: 0 }, end: { line: 7, character: 0 } },
+        });
+        expect(JSON.stringify(inlayHints)).toContain("As Number");
+
+        await server.request("textDocument/diagnostic", {
+          textDocument: { uri: `file://${owner}` },
+        });
+        const warmedCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri: `file://${owner}` },
+          position: marked.position,
+        });
+        expect(completionLabels(warmedCompletions)).toContain("IncludedOnly");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns hover, inlay hints and semantic tokens for implicit VBScript variables", async () => {
       const source = `<%
 a = 1
@@ -5256,6 +5329,66 @@ Repository.
         server.notify("exit", undefined);
       } finally {
         server.stop();
+      }
+    });
+
+    it("keeps include-backed VBScript types out of progressive diagnostics", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-progressive-types-"));
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "customer.inc");
+      fs.writeFileSync(
+        include,
+        `<%
+Class IncludedCustomer
+  Public Name
+End Class
+%>`,
+        "utf8",
+      );
+      const source = `<!-- #include file="customer.inc" -->
+<%
+' @type customer As IncludedCustomer
+Dim customer
+customer.Name
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { vbscript: { typeChecking: "strict" } } },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${owner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        await server.request("textDocument/hover", {
+          textDocument: { uri: `file://${owner}` },
+          position: positionAt(source, source.indexOf("customer.Name")),
+        });
+        const diagnostics = await server.request("textDocument/diagnostic", {
+          textDocument: { uri: `file://${owner}` },
+        });
+        const serialized = JSON.stringify(diagnostics);
+        expect(serialized).not.toContain("no member");
+        expect(serialized).not.toContain("missingMember");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
 

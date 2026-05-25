@@ -239,7 +239,8 @@ interface CachedAnalysis {
   vbDiagnostics?: DiagnosticCacheEntry;
   jsSyntaxDiagnostics?: DiagnosticCacheEntry;
   jsSlowDiagnostics?: DiagnosticCacheEntry;
-  vbProjectContext?: { key: string; context: VbProjectContext };
+  vbProjectContext?: { key: string; rootKey: string; context: VbProjectContext };
+  localVbProjectContext?: { key: string; context: VbProjectContext };
   vbProjectDocuments?: {
     collectionKey: string;
     documents: AspParsedDocument[];
@@ -358,6 +359,7 @@ const cache = new Map<string, CachedDocument>();
 const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const slowDiagnosticsJobs = new Map<string, SlowDiagnosticsJob>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
+const vbProjectContextWarmups = new Map<string, { rootKey: string; version: number }>();
 const maxVbProjectContextCacheEntries = 32;
 let slowDiagnosticsSequence = 0;
 let backgroundAnalysisSequence = 0;
@@ -465,7 +467,8 @@ documents.onDidOpen((event) => {
 documents.onDidChangeContent((event) => {
   cancelBackgroundAnalysis();
   cancelSlowDiagnostics(event.document.uri);
-  refreshCachedDocument(event.document);
+  const cached = refreshCachedDocument(event.document);
+  scheduleVbProjectContextWarmup(cached, cachedSettings(event.document.uri));
   scheduleDiagnostics(event.document);
   scheduleBackgroundAnalysis("documentChange", defaultDiagnosticsDebounceMs);
 });
@@ -626,7 +629,7 @@ connection.onCompletion((params) => {
       getVbscriptCompletions(
         cached.parsed,
         params.position,
-        buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+        bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
       ),
       { kind: "vbscript", uri: cached.source.uri },
     );
@@ -671,7 +674,7 @@ connection.onCompletionResolve((item) => {
       ? resolveVbscriptCompletionItem(
           item,
           cached.parsed,
-          buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+          bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
         )
       : item;
   }
@@ -853,7 +856,7 @@ connection.onDocumentHighlight((params): DocumentHighlight[] => {
     return getVbscriptDocumentHighlights(
       cached.parsed,
       params.position,
-      buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+      bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
     );
   }
   if (region && isJavaScriptLikeRegion(region)) {
@@ -883,7 +886,7 @@ connection.onSignatureHelp((params): SignatureHelp | null => {
     getVbscriptSignatureHelp(
       cached.parsed,
       params.position,
-      buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+      bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
     ) ?? null
   );
 });
@@ -1008,7 +1011,7 @@ connection.languages.inlayHint.on((params): InlayHint[] => {
     ...getVbscriptInlayHints(
       cached.parsed,
       params.range,
-      buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+      bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
       cachedSettings(cached.source.uri).inlayHints,
     ),
     ...jsInlayHints(cached, params.range),
@@ -3383,7 +3386,7 @@ function vbTypeHierarchyItemAt(
   if (!isVbscriptPosition(cached, position)) {
     return undefined;
   }
-  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
   const symbol =
     getVbscriptDefinition(cached.parsed, position, context) ??
     getVbscriptTypeDefinition(cached.parsed, position, context);
@@ -3440,7 +3443,7 @@ function vbTypeHierarchyRelatedItems(item: TypeHierarchyItem): TypeHierarchyItem
   if (!cached) {
     return [];
   }
-  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
   const type = vbTypeByName(context, data.typeName);
   if (!type) {
     return [];
@@ -3478,7 +3481,7 @@ function monikersAt(cached: CachedDocument, position: Position): Moniker[] {
 }
 
 function vbMonikersAt(cached: CachedDocument, position: Position): Moniker[] {
-  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
   const symbol =
     getVbscriptDefinition(cached.parsed, position, context) ??
     getVbscriptTypeDefinition(cached.parsed, position, context);
@@ -3540,7 +3543,7 @@ function inlineValues(cached: CachedDocument, range: Range): InlineValue[] {
 }
 
 function vbInlineValues(cached: CachedDocument, range: Range): InlineValue[] {
-  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
   const seen = new Set<string>();
   return (context.symbols ?? [])
     .filter(
@@ -3652,7 +3655,7 @@ function aspHover(cached: CachedDocument, params: TextDocumentPositionParams): H
   const value = getVbscriptHover(
     cached.parsed,
     params.position,
-    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
   );
   return value ? { contents: { kind: "markdown", value } } : null;
 }
@@ -3712,7 +3715,7 @@ function definitionLikeLocation(
     return null;
   }
   if (region.language === "vbscript") {
-    const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+    const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
     const symbol =
       mode === "typeDefinition"
         ? getVbscriptTypeDefinition(cached.parsed, position, context)
@@ -3963,7 +3966,7 @@ function jsFoldingRanges(cached: CachedDocument): FoldingRange[] {
 }
 
 function vbscriptFoldingRanges(cached: CachedDocument): FoldingRange[] {
-  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
   return (context.symbols ?? [])
     .filter((symbol) => symbol.sourceUri === cached.source.uri && symbol.scopeRange)
     .map((symbol) => symbol.scopeRange)
@@ -4024,15 +4027,9 @@ function tsReferenceToLocation(
 }
 
 function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
+  const rootKey = vbProjectRootContextCacheKey(cached, settings);
   const documents = collectCachedVbProjectDocuments(cached, settings);
-  const contextSettings = {
-    typeChecking: settings.vbscript?.typeChecking,
-    identifierCase: settings.vbscript?.identifierCase,
-    identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
-    comTypes: settings.vbscript?.comTypes,
-    unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
-    syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
-  };
+  const contextSettings = vbProjectContextSettings(settings);
   const key = vbProjectContextCacheKey(documents, settings);
   if (cached.analysis?.vbProjectContext?.key === key) {
     return { ...cached.analysis.vbProjectContext.context, locale: settings.resolvedLocale };
@@ -4041,7 +4038,7 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
   if (globalCached) {
     globalCached.lastUsed = Date.now();
     const context = { ...globalCached.context, locale: settings.resolvedLocale };
-    analysisFor(cached).vbProjectContext = { key, context: globalCached.context };
+    analysisFor(cached).vbProjectContext = { key, rootKey, context: globalCached.context };
     return context;
   }
   const symbols = documents.flatMap((document) =>
@@ -4056,7 +4053,7 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     ...contextSettings,
   };
   rememberVbProjectContext(key, context);
-  analysisFor(cached).vbProjectContext = { key, context };
+  analysisFor(cached).vbProjectContext = { key, rootKey, context };
   return { ...context, locale: settings.resolvedLocale };
 }
 
@@ -4064,15 +4061,9 @@ async function buildVbProjectContextAsync(
   cached: CachedDocument,
   settings: AspSettings,
 ): Promise<VbProjectContext> {
+  const rootKey = vbProjectRootContextCacheKey(cached, settings);
   const documents = await collectCachedVbProjectDocumentsAsync(cached, settings);
-  const contextSettings = {
-    typeChecking: settings.vbscript?.typeChecking,
-    identifierCase: settings.vbscript?.identifierCase,
-    identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
-    comTypes: settings.vbscript?.comTypes,
-    unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
-    syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
-  };
+  const contextSettings = vbProjectContextSettings(settings);
   const key = vbProjectContextCacheKey(documents, settings);
   if (cached.analysis?.vbProjectContext?.key === key) {
     return { ...cached.analysis.vbProjectContext.context, locale: settings.resolvedLocale };
@@ -4081,7 +4072,7 @@ async function buildVbProjectContextAsync(
   if (globalCached) {
     globalCached.lastUsed = Date.now();
     const context = { ...globalCached.context, locale: settings.resolvedLocale };
-    analysisFor(cached).vbProjectContext = { key, context: globalCached.context };
+    analysisFor(cached).vbProjectContext = { key, rootKey, context: globalCached.context };
     return context;
   }
   const symbolSets = await mapWithConcurrency(documents, workerPoolSize(), async (document) =>
@@ -4097,8 +4088,104 @@ async function buildVbProjectContextAsync(
     ...contextSettings,
   };
   rememberVbProjectContext(key, context);
-  analysisFor(cached).vbProjectContext = { key, context };
+  analysisFor(cached).vbProjectContext = { key, rootKey, context };
   return { ...context, locale: settings.resolvedLocale };
+}
+
+function buildLocalVbProjectContext(
+  cached: CachedDocument,
+  settings: AspSettings,
+): VbProjectContext {
+  const documents = [cached.parsed];
+  const key = `local:${vbProjectContextCacheKey(documents, settings)}`;
+  if (cached.analysis?.localVbProjectContext?.key === key) {
+    return { ...cached.analysis.localVbProjectContext.context, locale: settings.resolvedLocale };
+  }
+  const contextSettings = vbProjectContextSettings(settings);
+  const symbols = collectVbscriptSymbols(cached.parsed, contextSettings);
+  symbols.push(...configuredVbscriptGlobals(cached, settings));
+  const typeEnvironment = buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols });
+  const context = {
+    documents,
+    symbols,
+    typeEnvironment,
+    ...contextSettings,
+  };
+  analysisFor(cached).localVbProjectContext = { key, context };
+  return { ...context, locale: settings.resolvedLocale };
+}
+
+function bestEffortVbProjectContext(
+  cached: CachedDocument,
+  settings: AspSettings,
+): VbProjectContext {
+  const rootKey = vbProjectRootContextCacheKey(cached, settings);
+  const full = cached.analysis?.vbProjectContext;
+  if (full?.rootKey === rootKey) {
+    return { ...full.context, locale: settings.resolvedLocale };
+  }
+  scheduleVbProjectContextWarmup(cached, settings, rootKey);
+  return buildLocalVbProjectContext(cached, settings);
+}
+
+function scheduleVbProjectContextWarmup(
+  cached: CachedDocument,
+  settings: AspSettings,
+  rootKey = vbProjectRootContextCacheKey(cached, settings),
+): void {
+  if (cached.analysis?.vbProjectContext?.rootKey === rootKey) {
+    return;
+  }
+  const uri = cached.source.uri;
+  const version = cached.source.version;
+  const existing = vbProjectContextWarmups.get(uri);
+  if (existing?.rootKey === rootKey && existing.version === version) {
+    return;
+  }
+  vbProjectContextWarmups.set(uri, { rootKey, version });
+  void buildVbProjectContextAsync(cached, settings)
+    .catch((error) => {
+      logDebugSummary(
+        settings,
+        `[asp-lsp] VBScript project context warmup failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    })
+    .finally(() => {
+      const current = vbProjectContextWarmups.get(uri);
+      if (current?.rootKey === rootKey && current.version === version) {
+        vbProjectContextWarmups.delete(uri);
+      }
+    });
+}
+
+function vbProjectContextSettings(
+  settings: AspSettings,
+): Omit<VbProjectContext, "documents" | "symbols" | "typeEnvironment" | "locale"> {
+  return {
+    typeChecking: settings.vbscript?.typeChecking,
+    identifierCase: settings.vbscript?.identifierCase,
+    identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
+    comTypes: settings.vbscript?.comTypes,
+    unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+    syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
+  };
+}
+
+function vbProjectRootContextCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    root: vbProjectDocumentCollectionKey(cached, settings),
+    settings: {
+      typeChecking: settings.vbscript?.typeChecking,
+      identifierCase: settings.vbscript?.identifierCase,
+      identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
+      comTypes: settings.vbscript?.comTypes,
+      unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+      syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
+    },
+    globals: settings.vbscript?.globals,
+  });
 }
 
 function rememberVbProjectContext(key: string, context: VbProjectContext): void {
@@ -7935,7 +8022,7 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
   }
   for (const semanticToken of getVbscriptSemanticTokens(
     cached.parsed,
-    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
     range,
   )) {
     const offset = cached.source.offsetAt(semanticToken.range.start);
