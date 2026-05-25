@@ -33,6 +33,21 @@ cd samples/classic-asp-large-benchmark
 node generate.mjs
 ```
 
+Run the benchmark from the repository root:
+
+```sh
+pnpm run benchmark:large
+```
+
+The benchmark rebuilds `@asp-lsp/core`, regenerates this sample, and measures
+parsing, virtual document construction, VBScript symbol collection, and VBScript
+diagnostics analysis over the generated files. The default run uses one warmup
+and five measured iterations. Override those counts when needed:
+
+```sh
+ASP_LSP_BENCH_WARMUPS=2 ASP_LSP_BENCH_ITERATIONS=10 pnpm run benchmark:large
+```
+
 Useful checks:
 
 ```sh

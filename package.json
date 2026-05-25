@@ -6,6 +6,7 @@
   "license": "MIT OR Apache-2.0",
   "scripts": {
     "build": "pnpm -r run build",
+    "benchmark:large": "pnpm --filter @asp-lsp/core run build && node scripts/benchmark-large.mjs",
     "typecheck": "pnpm -r run typecheck",
     "lint": "pnpm -r run lint",
     "format": "oxfmt .",
