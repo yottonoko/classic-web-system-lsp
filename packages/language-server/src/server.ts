@@ -3638,7 +3638,7 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
     }
     if (settings.windowsPathResolution !== false && !resolved.pathCaseMatches) {
       diagnostics.push({
-        severity: DiagnosticSeverity.Error,
+        severity: DiagnosticSeverity.Warning,
         range: include.pathRange,
         message: localizer.t("server.include.caseMismatch", {
           path: include.path,

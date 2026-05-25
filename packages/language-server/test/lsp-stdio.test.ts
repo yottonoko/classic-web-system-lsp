@@ -2131,7 +2131,7 @@ Response.Write SharedFromUpper()
           expect.arrayContaining([
             expect.objectContaining({
               code: "include.pathCaseMismatch",
-              severity: DiagnosticSeverity.Error,
+              severity: DiagnosticSeverity.Warning,
             }),
           ]),
         );
