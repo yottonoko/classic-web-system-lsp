@@ -12,6 +12,8 @@ const generator = path.join(sampleRoot, "generate.mjs");
 const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readPositiveInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
+const analyzeStepTotals = new Map();
 const results = [];
 
 if (!fs.existsSync(coreDist)) {
@@ -53,7 +55,7 @@ runBenchmark("collectVbscriptSymbols", () => {
 
 runBenchmark("analyzeVbscript", () => {
   for (const parsed of parsedDocuments) {
-    analyzeVbscript(parsed);
+    analyzeVbscript(parsed, analyzeContext());
   }
 });
 
@@ -66,6 +68,15 @@ console.log(`Warmups: ${warmupIterations}`);
 console.log(`Iterations: ${benchmarkIterations}`);
 console.log("");
 printTable(results);
+if (collectDebugSteps) {
+  console.log("");
+  console.log("analyzeVbscript debug step totals");
+  console.log(
+    `Measured calls include ${warmupIterations} warmup and ${benchmarkIterations} benchmark iterations.`,
+  );
+  console.log("");
+  printDebugStepTotals(analyzeStepTotals);
+}
 
 function collectBenchmarkSources() {
   const relativePaths = [
@@ -125,6 +136,20 @@ function runBenchmark(name, fn) {
   });
 }
 
+function analyzeContext() {
+  if (!collectDebugSteps) {
+    return {};
+  }
+  return {
+    debugStep(name, action) {
+      const start = performance.now();
+      const value = action();
+      analyzeStepTotals.set(name, (analyzeStepTotals.get(name) ?? 0) + performance.now() - start);
+      return value;
+    },
+  };
+}
+
 function printTable(items) {
   const rows = [
     ["Operation", "min ms", "median ms", "mean ms", "max ms"],
@@ -135,6 +160,22 @@ function printTable(items) {
       formatMillis(item.mean),
       formatMillis(item.max),
     ]),
+  ];
+  const widths = rows[0].map((_, column) => Math.max(...rows.map((row) => row[column].length)));
+  for (const [index, row] of rows.entries()) {
+    console.log(row.map((value, column) => value.padEnd(widths[column])).join("  "));
+    if (index === 0) {
+      console.log(widths.map((width) => "-".repeat(width)).join("  "));
+    }
+  }
+}
+
+function printDebugStepTotals(totals) {
+  const rows = [
+    ["Step", "total ms"],
+    ...[...totals.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .map(([name, total]) => [name, formatMillis(total)]),
   ];
   const widths = rows[0].map((_, column) => Math.max(...rows.map((row) => row[column].length)));
   for (const [index, row] of rows.entries()) {
@@ -159,4 +200,15 @@ function readPositiveInteger(name, fallback) {
     throw new Error(`${name} must be a positive integer.`);
   }
   return value;
+}
+
+function readBoolean(name) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "" || raw === "0" || raw.toLowerCase() === "false") {
+    return false;
+  }
+  if (raw === "1" || raw.toLowerCase() === "true") {
+    return true;
+  }
+  throw new Error(`${name} must be 1, 0, true, or false.`);
 }

@@ -5018,7 +5018,17 @@ function resolveSymbolAt(
   offset: number,
   symbols: VbSymbol[],
 ): VbSymbol | undefined {
-  const member = memberAccessAt(parsed, offset);
+  const token = identifierTokenAt(parsed, offset);
+  return token ? resolveSymbolForToken(parsed, token, symbols) : undefined;
+}
+
+function resolveSymbolForToken(
+  parsed: AspParsedDocument,
+  token: VbToken,
+  symbols: VbSymbol[],
+): VbSymbol | undefined {
+  const offset = token.start + Math.floor(token.text.length / 2);
+  const member = memberAccessForToken(parsed, token);
   if (member) {
     const type =
       member.owner === ""
@@ -5027,10 +5037,6 @@ function resolveSymbolAt(
           ? currentClassTypeRef(parsed, offset, symbols)
           : inferVariableTypeRef(member.owner, parsed, offset, symbols);
     return type ? resolveMemberSymbolForType(type, member.member, symbols) : undefined;
-  }
-  const token = identifierTokenAt(parsed, offset);
-  if (!token) {
-    return undefined;
   }
   return visibleSymbolsByName(parsed, offset, symbols, token.text.toLowerCase()).sort(
     (left, right) => symbolPriority(right) - symbolPriority(left),
@@ -5114,15 +5120,18 @@ function memberAccessAt(
   offset: number,
 ): { owner: string; member: string } | undefined {
   const token = identifierTokenAt(parsed, offset);
-  if (!token) {
+  return token ? memberAccessForToken(parsed, token) : undefined;
+}
+
+function memberAccessForToken(
+  parsed: AspParsedDocument,
+  token: VbToken,
+): { owner: string; member: string } | undefined {
+  const dot = previousSignificantTokenForToken(parsed, token);
+  if (dot?.text !== ".") {
     return undefined;
   }
-  const tokens = significantTokens(parsed);
-  const index = tokens.findIndex((item) => item.start === token.start && item.end === token.end);
-  if (tokens[index - 1]?.text !== ".") {
-    return undefined;
-  }
-  const owner = tokens[index - 2];
+  const owner = previousSignificantTokenForToken(parsed, dot);
   return owner?.kind === "identifier" || owner?.text.toLowerCase() === "me"
     ? { owner: owner.text, member: token.text }
     : { owner: "", member: token.text };
@@ -5473,12 +5482,11 @@ function buildVbReferenceIndex(
   const documents = context.documents ?? [parsed];
   for (const document of documents) {
     for (const token of identifierTokens(document)) {
-      const resolved = resolveSymbolAt(
-        document,
-        token.start + Math.floor(token.text.length / 2),
-        symbols,
-      );
-      if (!resolved || isDeclarationNameToken(document, token)) {
+      if (isDeclarationNameToken(document, token)) {
+        continue;
+      }
+      const resolved = resolveSymbolForToken(document, token, symbols);
+      if (!resolved) {
         continue;
       }
       const key = symbolKey(resolved);
