@@ -233,6 +233,7 @@ interface CachedDocument {
 interface CachedAnalysis {
   diagnostics?: DiagnosticCacheEntry;
   fastDiagnostics?: DiagnosticCacheEntry;
+  includeDiagnostics?: DiagnosticCacheEntry;
   syntaxDiagnostics?: DiagnosticCacheEntry;
   projectDiagnostics?: DiagnosticCacheEntry;
   slowDiagnostics?: DiagnosticCacheEntry;
@@ -253,6 +254,10 @@ interface DiagnosticCacheEntry {
   key: string;
   items: Diagnostic[];
   text: string;
+}
+
+interface AnalysisCancellation {
+  isCancellationRequested(): boolean;
 }
 
 interface PendingDocumentChange {
@@ -465,6 +470,10 @@ documents.onDidOpen((event) => {
   cache.delete(event.document.uri);
   clearJsLanguageServiceCache();
   validate(event.document);
+  const cached = getCached(event.document.uri);
+  if (cached) {
+    scheduleVbProjectContextWarmup(cached, cachedSettings(event.document.uri));
+  }
   scheduleBackgroundAnalysis("documentOpen");
 });
 documents.onDidChangeContent((event) => {
@@ -1472,24 +1481,41 @@ async function publishSlowDiagnosticsForVersion(
   if (!document || !cached || document.version !== version || cached.source.version !== version) {
     return;
   }
+  const cancellation = diagnosticsCancellation(uri, version);
   const startedAt = startSlowCheckLog(cached, settings);
-  const syntaxItems = syntaxDiagnosticsForCached(cached, settings, "check.syntax");
-  if (documents.get(uri)?.version !== version || getCached(uri)?.source.version !== version) {
+  const includeItems = await includeDiagnosticsForCachedAsync(
+    cached,
+    settings,
+    "check.include",
+    cancellation,
+  );
+  if (cancellation.isCancellationRequested()) {
     return;
   }
   const fastItems =
     cached.analysis?.fastDiagnostics?.items ?? fastDiagnosticsForCached(cached, settings);
+  if (includeItems.length > 0) {
+    const includeMerged = measureDebugStep(settings, uri, "check.include.merge", () =>
+      dedupeDiagnostics([...fastItems, ...includeItems]),
+    );
+    connection.sendDiagnostics({ uri, diagnostics: includeMerged });
+    queueDiskAnalysisPersist(cached, settings);
+  }
+  const syntaxItems = syntaxDiagnosticsForCached(cached, settings, "check.syntax");
+  if (cancellation.isCancellationRequested()) {
+    return;
+  }
   const syntaxMerged = measureDebugStep(settings, uri, "check.syntax.merge", () =>
-    dedupeDiagnostics([...fastItems, ...syntaxItems]),
+    dedupeDiagnostics([...fastItems, ...includeItems, ...syntaxItems]),
   );
   connection.sendDiagnostics({ uri, diagnostics: syntaxMerged });
   queueDiskAnalysisPersist(cached, settings);
   const projectItems = await projectDiagnosticsForCachedAsync(cached, settings, "check.project");
-  if (documents.get(uri)?.version !== version || getCached(uri)?.source.version !== version) {
+  if (cancellation.isCancellationRequested()) {
     return;
   }
   const slowItems = measureDebugStep(settings, uri, "check.slow.dedupe", () =>
-    dedupeDiagnostics([...syntaxItems, ...projectItems]),
+    dedupeDiagnostics([...includeItems, ...syntaxItems, ...projectItems]),
   );
   analysisFor(cached).slowDiagnostics = {
     key: slowDiagnosticsCacheKey(cached, settings),
@@ -1509,6 +1535,18 @@ async function publishSlowDiagnosticsForVersion(
   connection.sendDiagnostics({ uri, diagnostics: items });
   queueDiskAnalysisPersist(cached, settings);
   finishSlowCheckLog(cached, settings, startedAt, items.length, sequence);
+}
+
+function diagnosticsCancellation(uri: string, version: number): AnalysisCancellation {
+  return {
+    isCancellationRequested: () => {
+      const document = documents.get(uri);
+      const cached = getCached(uri);
+      return (
+        !document || !cached || document.version !== version || cached.source.version !== version
+      );
+    },
+  };
 }
 
 function cancelSlowDiagnostics(uri: string): void {
@@ -1591,19 +1629,62 @@ function fastDiagnosticsForCached(
     `${stepPrefix}.parserDiagnostics`,
     () => cached.parsed.diagnostics,
   );
-  const includeItems = measureDebugStep(
+  const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
+    dedupeDiagnostics(parserDiagnostics),
+  );
+  analysisFor(cached).fastDiagnostics = { key, items, text: cached.parsed.text };
+  if (shouldLogFastSummary) {
+    finishFastCheckLog(cached, settings, startedAt, items.length);
+  }
+  return items;
+}
+
+function includeDiagnosticsForCached(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix = "check.include",
+): Diagnostic[] {
+  const key = includeDiagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.includeDiagnostics?.key === key) {
+    finishDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.include.cacheReuse`,
+      process.hrtime.bigint(),
+    );
+    return cached.analysis.includeDiagnostics.items;
+  }
+  const items = measureDebugStep(
     settings,
     cached.source.uri,
     `${stepPrefix}.includeDiagnostics`,
     () => includeDiagnostics(cached, settings),
   );
-  const diagnostics: Diagnostic[] = [...parserDiagnostics, ...includeItems];
-  const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
-    dedupeDiagnostics(diagnostics),
-  );
-  analysisFor(cached).fastDiagnostics = { key, items, text: cached.parsed.text };
-  if (shouldLogFastSummary) {
-    finishFastCheckLog(cached, settings, startedAt, items.length);
+  analysisFor(cached).includeDiagnostics = { key, items, text: cached.parsed.text };
+  return items;
+}
+
+async function includeDiagnosticsForCachedAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix = "check.include",
+  cancellation: AnalysisCancellation = neverCancelled,
+): Promise<Diagnostic[]> {
+  const key = includeDiagnosticsCacheKey(cached, settings);
+  if (cached.analysis?.includeDiagnostics?.key === key) {
+    finishDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.include.cacheReuse`,
+      process.hrtime.bigint(),
+    );
+    return cached.analysis.includeDiagnostics.items;
+  }
+  const startedAt = process.hrtime.bigint();
+  const items = await includeDiagnosticsAsync(cached, settings, cancellation);
+  finishDebugStep(settings, cached.source.uri, `${stepPrefix}.includeDiagnostics`, startedAt);
+  if (!cancellation.isCancellationRequested()) {
+    analysisFor(cached).includeDiagnostics = { key, items, text: cached.parsed.text };
   }
   return items;
 }
@@ -1623,10 +1704,11 @@ function slowDiagnosticsForCached(
     );
     return cached.analysis.slowDiagnostics.items;
   }
+  const includeItems = includeDiagnosticsForCached(cached, settings, stepPrefix);
   const syntaxItems = syntaxDiagnosticsForCached(cached, settings, stepPrefix);
   const projectItems = projectDiagnosticsForCached(cached, settings, stepPrefix);
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
-    dedupeDiagnostics([...syntaxItems, ...projectItems]),
+    dedupeDiagnostics([...includeItems, ...syntaxItems, ...projectItems]),
   );
   analysisFor(cached).slowDiagnostics = { key, items, text: cached.parsed.text };
   return items;
@@ -1717,10 +1799,11 @@ async function slowDiagnosticsForCachedAsync(
     );
     return cached.analysis.slowDiagnostics.items;
   }
+  const includeItems = await includeDiagnosticsForCachedAsync(cached, settings, stepPrefix);
   const syntaxItems = syntaxDiagnosticsForCached(cached, settings, stepPrefix);
   const projectItems = await projectDiagnosticsForCachedAsync(cached, settings, stepPrefix);
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
-    dedupeDiagnostics([...syntaxItems, ...projectItems]),
+    dedupeDiagnostics([...includeItems, ...syntaxItems, ...projectItems]),
   );
   analysisFor(cached).slowDiagnostics = { key, items, text: cached.parsed.text };
   return items;
@@ -1850,6 +1933,15 @@ function measureDebugStep<T>(
 
 function workerPoolSize(): number {
   return Math.max(1, Math.min(4, os.availableParallelism() - 1));
+}
+
+const neverCancelled: AnalysisCancellation = {
+  isCancellationRequested: () => false,
+};
+
+async function fileExistsAsync(fileName: string): Promise<boolean> {
+  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  return Boolean(stat?.isFile());
 }
 
 async function mapWithConcurrency<T, U>(
@@ -2008,8 +2100,22 @@ function fastDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings):
 
 function slowDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
   return JSON.stringify({
+    include: includeDiagnosticsCacheKey(cached, settings),
     syntax: syntaxDiagnosticsCacheKey(cached),
     project: projectDiagnosticsCacheKey(cached, settings),
+  });
+}
+
+function includeDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    text: textFingerprint(cached.parsed.text),
+    includes: cached.parsed.includes.map((include) => ({
+      offset: include.offset,
+      path: include.path,
+      mode: include.mode,
+    })),
+    resolution: includeResolutionSettingsKey(settings),
+    locale: settings.resolvedLocale,
   });
 }
 
@@ -2230,6 +2336,7 @@ function applyDiskAnalysis(
   const analysis = analysisFor(cached);
   analysis.diagnostics = diskDiagnosticEntry(payload.diagnostics, cached.parsed.text);
   analysis.fastDiagnostics = diskDiagnosticEntry(payload.fastDiagnostics, cached.parsed.text);
+  analysis.includeDiagnostics = diskDiagnosticEntry(payload.includeDiagnostics, cached.parsed.text);
   analysis.syntaxDiagnostics = diskDiagnosticEntry(payload.syntaxDiagnostics, cached.parsed.text);
   analysis.projectDiagnostics = diskDiagnosticEntry(payload.projectDiagnostics, cached.parsed.text);
   analysis.slowDiagnostics = diskDiagnosticEntry(payload.slowDiagnostics, cached.parsed.text);
@@ -2248,6 +2355,7 @@ async function persistDiskAnalysis(
     parsed: cached.parsed,
     diagnostics: toDiskDiagnosticEntry(analysis?.diagnostics),
     fastDiagnostics: toDiskDiagnosticEntry(analysis?.fastDiagnostics),
+    includeDiagnostics: toDiskDiagnosticEntry(analysis?.includeDiagnostics),
     syntaxDiagnostics: toDiskDiagnosticEntry(analysis?.syntaxDiagnostics),
     projectDiagnostics: toDiskDiagnosticEntry(analysis?.projectDiagnostics),
     slowDiagnostics: toDiskDiagnosticEntry(analysis?.slowDiagnostics),
@@ -4354,21 +4462,27 @@ function scheduleVbProjectContextWarmup(
     return;
   }
   vbProjectContextWarmups.set(uri, { rootKey, version });
-  void buildVbProjectContextAsync(cached, settings)
-    .catch((error) => {
-      logDebugSummary(
-        settings,
-        `[asp-lsp] VBScript project context warmup failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    })
-    .finally(() => {
-      const current = vbProjectContextWarmups.get(uri);
-      if (current?.rootKey === rootKey && current.version === version) {
-        vbProjectContextWarmups.delete(uri);
-      }
-    });
+  setTimeout(() => {
+    const current = vbProjectContextWarmups.get(uri);
+    if (current?.rootKey !== rootKey || current.version !== version) {
+      return;
+    }
+    void buildVbProjectContextAsync(cached, settings)
+      .catch((error) => {
+        logDebugSummary(
+          settings,
+          `[asp-lsp] VBScript project context warmup failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      })
+      .finally(() => {
+        const latest = vbProjectContextWarmups.get(uri);
+        if (latest?.rootKey === rootKey && latest.version === version) {
+          vbProjectContextWarmups.delete(uri);
+        }
+      });
+  }, 0);
 }
 
 function vbProjectContextSettings(
@@ -4563,9 +4677,18 @@ async function collectVbProjectDocumentsAsync(
         candidates.push(resolved);
       }
     }
-    const parsed = await mapWithConcurrency(candidates, workerPoolSize(), async (fileName) =>
-      readParsedIncludeDocumentAsync(fileName, settings).catch(() => undefined),
-    );
+    const parsed: Array<AspParsedDocument | undefined> = [];
+    for (let index = 0; index < candidates.length; index += 32) {
+      parsed.push(
+        ...(await mapWithConcurrency(
+          candidates.slice(index, index + 32),
+          workerPoolSize(),
+          async (fileName) =>
+            readParsedIncludeDocumentAsync(fileName, settings).catch(() => undefined),
+        )),
+      );
+      await yieldToEventLoop();
+    }
     frontier = parsed.filter((document): document is AspParsedDocument => Boolean(document));
     documents.push(...frontier);
   }
@@ -4660,6 +4783,76 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
         source: "asp-lsp-include",
       });
     }
+  }
+  return diagnostics;
+}
+
+async function includeDiagnosticsAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<Diagnostic[]> {
+  const diagnostics: Diagnostic[] = [];
+  const owner = uriToFileName(cached.source.uri);
+  const localizer = localizerForSettings(settings);
+  for (const include of cached.parsed.includes) {
+    if (cancellation.isCancellationRequested()) {
+      return [];
+    }
+    const resolved = resolveIncludePathDetails(
+      cached.source.uri,
+      include.path,
+      include.mode,
+      settings,
+    );
+    if (!resolved.exists) {
+      diagnostics.push({
+        severity: DiagnosticSeverity.Warning,
+        range: include.range,
+        message: localizer.t("server.include.unresolved", { path: include.path }),
+        code: "include.missing",
+        source: "asp-lsp-include",
+      });
+      continue;
+    }
+    if (settings.windowsPathResolution !== false && !resolved.pathCaseMatches) {
+      diagnostics.push({
+        severity: DiagnosticSeverity.Warning,
+        range: include.pathRange,
+        message: localizer.t("server.include.caseMismatch", {
+          path: include.path,
+          actualPath: resolved.actualIncludePath ?? resolved.actualPath ?? resolved.fileName,
+        }),
+        code: "include.pathCaseMismatch",
+        source: "asp-lsp-include",
+      });
+    }
+    if (sameFile(resolved.fileName, owner)) {
+      diagnostics.push({
+        severity: DiagnosticSeverity.Warning,
+        range: include.range,
+        message: localizer.t("server.include.currentDocument"),
+        code: "include.currentDocument",
+        source: "asp-lsp-include",
+      });
+      continue;
+    }
+    const cycle = await findIncludeCycleAsync(owner, resolved.fileName, settings, cancellation);
+    if (cancellation.isCancellationRequested()) {
+      return [];
+    }
+    if (cycle) {
+      diagnostics.push({
+        severity: DiagnosticSeverity.Warning,
+        range: include.range,
+        message: localizer.t("server.include.cycle", {
+          cycle: cycle.map((fileName) => path.basename(fileName)).join(" -> "),
+        }),
+        code: "include.cycle",
+        source: "asp-lsp-include",
+      });
+    }
+    await yieldToEventLoop();
   }
   return diagnostics;
 }
@@ -4794,6 +4987,76 @@ function findIncludeCycle(
   };
   const cycle = search(start, 0);
   includeCycleCache.set(cacheKey, cycle ?? null);
+  return cycle;
+}
+
+async function findIncludeCycleAsync(
+  owner: string,
+  start: string,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<string[] | undefined> {
+  const cacheKey = includeCycleCacheKey(owner, start, settings);
+  if (includeCycleCache.has(cacheKey)) {
+    return includeCycleCache.get(cacheKey) ?? undefined;
+  }
+  if (!(await fileExistsAsync(start)) || cancellation.isCancellationRequested()) {
+    includeCycleCache.set(cacheKey, null);
+    return undefined;
+  }
+  const visited = new Set<string>();
+  const stack: string[] = [];
+  const stackIndexes = new Map<string, number>();
+  const search = async (fileName: string, depth: number): Promise<string[] | undefined> => {
+    if (depth > 20 || cancellation.isCancellationRequested()) {
+      return undefined;
+    }
+    const normalized = normalizeFileName(fileName);
+    if (sameFile(normalized, owner) && stack.length > 0) {
+      return [...stack, owner];
+    }
+    const existingStackIndex = stackIndexes.get(normalized);
+    if (existingStackIndex !== undefined) {
+      return [...stack.slice(existingStackIndex), normalized];
+    }
+    if (visited.has(normalized)) {
+      return undefined;
+    }
+    visited.add(normalized);
+    stackIndexes.set(normalized, stack.length);
+    stack.push(normalized);
+    const parsed = await readParsedIncludeDocumentAsync(normalized, settings).catch(
+      () => undefined,
+    );
+    await yieldToEventLoop();
+    if (!parsed || cancellation.isCancellationRequested()) {
+      stack.pop();
+      stackIndexes.delete(normalized);
+      return undefined;
+    }
+    for (const include of parsed.includes) {
+      const next = resolveIncludePath(
+        pathToFileUri(normalized),
+        include.path,
+        include.mode,
+        settings,
+      );
+      if (!(await fileExistsAsync(next))) {
+        continue;
+      }
+      const cycle = await search(next, depth + 1);
+      if (cycle) {
+        return cycle;
+      }
+    }
+    stack.pop();
+    stackIndexes.delete(normalized);
+    return undefined;
+  };
+  const cycle = await search(start, 0);
+  if (!cancellation.isCancellationRequested()) {
+    includeCycleCache.set(cacheKey, cycle ?? null);
+  }
   return cycle;
 }
 

@@ -1391,9 +1391,15 @@ Response.Write missingName
 
         const fastDiagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
         const fastText = JSON.stringify(fastDiagnostics.params);
-        expect(fastText).toContain("missing.inc");
+        expect(fastText).not.toContain("missing.inc");
         expect(fastText).not.toContain("asp-lsp-css");
         expect(fastText).not.toContain("missingName");
+
+        const includeDiagnostics = await waitForDiagnosticsContaining(server, "missing.inc");
+        const includeText = JSON.stringify(includeDiagnostics.params);
+        expect(includeText).toContain("missing.inc");
+        expect(includeText).not.toContain("asp-lsp-css");
+        expect(includeText).not.toContain("missingName");
 
         const syntaxDiagnostics = await waitForDiagnosticsContaining(server, "asp-lsp-css");
         const syntaxText = JSON.stringify(syntaxDiagnostics.params);
@@ -1451,6 +1457,7 @@ Response.Write cachedMissingName
           await waitForCborCachePayload(cacheDir, (payload) =>
             Boolean(
               payload.fastDiagnostics &&
+              payload.includeDiagnostics &&
               payload.syntaxDiagnostics &&
               payload.projectDiagnostics &&
               payload.diagnostics,
@@ -1480,10 +1487,20 @@ Response.Write cachedMissingName
             "textDocument/publishDiagnostics",
           );
           const fastText = JSON.stringify(fastDiagnostics.params);
-          expect(fastText).toContain("missing.inc");
+          expect(fastText).not.toContain("missing.inc");
           expect(fastText).not.toContain("asp-lsp-css");
           expect(fastText).not.toContain("cachedMissingName");
           await waitForLogContaining(secondServer, "check.fast.cacheReuse");
+
+          const includeDiagnostics = await waitForDiagnosticsContaining(
+            secondServer,
+            "missing.inc",
+          );
+          const includeText = JSON.stringify(includeDiagnostics.params);
+          expect(includeText).toContain("missing.inc");
+          expect(includeText).not.toContain("asp-lsp-css");
+          expect(includeText).not.toContain("cachedMissingName");
+          await waitForLogContaining(secondServer, "check.include.include.cacheReuse");
 
           const syntaxDiagnostics = await waitForDiagnosticsContaining(secondServer, "asp-lsp-css");
           const syntaxText = JSON.stringify(syntaxDiagnostics.params);
@@ -1509,6 +1526,74 @@ Response.Write cachedMissingName
         }
       } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("returns local language features quickly for the include tree benchmark root", async () => {
+      const sampleRoot = path.join(
+        process.cwd(),
+        "..",
+        "..",
+        "samples",
+        "classic-asp-include-tree-benchmark",
+      );
+      const fileName = path.join(sampleRoot, "default.asp");
+      if (!fs.existsSync(fileName)) {
+        return;
+      }
+      const source = fs.readFileSync(fileName, "utf8");
+      const uri = pathToFileURL(fileName).toString();
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(sampleRoot).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              diagnostics: { debounceMs: 0 },
+              workspace: { backgroundAnalysis: false },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
+        });
+
+        const completionStartedAt = Date.now();
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("Response.") + "Response.".length),
+        });
+        expect(Date.now() - completionStartedAt).toBeLessThan(1_000);
+        expect(completionLabels(completions)).toContain("Write");
+
+        const hoverStartedAt = Date.now();
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(
+            source,
+            source.indexOf("includeTreeValue0001", source.indexOf("Response.Write")),
+          ),
+        });
+        expect(Date.now() - hoverStartedAt).toBeLessThan(1_000);
+        expect(JSON.stringify(hover)).toContain("Dim includeTreeValue0001");
+
+        const inlayStartedAt = Date.now();
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 80, character: 0 } },
+        });
+        expect(Date.now() - inlayStartedAt).toBeLessThan(1_000);
+        expect(Array.isArray(inlayHints)).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
       }
     });
 
@@ -1905,16 +1990,18 @@ Response.Write Shared▮Title()
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
 
-        const completions = await server.request("textDocument/completion", {
-          textDocument: { uri: `file://${owner}` },
-          position: marked.position,
-        });
+        const completions = await waitForCompletionContaining(
+          server,
+          { uri: `file://${owner}`, position: marked.position },
+          "SharedTitle",
+        );
         expect(JSON.stringify(completions)).toContain("SharedTitle");
 
-        const definition = await server.request("textDocument/definition", {
-          textDocument: { uri: `file://${owner}` },
-          position: marked.position,
-        });
+        const definition = await waitForDefinitionContaining(
+          server,
+          { uri: `file://${owner}`, position: marked.position },
+          "common.inc",
+        );
         expect(JSON.stringify(definition)).toContain("common.inc");
 
         const semanticTokens = await server.request("textDocument/semanticTokens/full", {
@@ -5597,10 +5684,11 @@ Response.Write Shared▮Title()
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
 
-        const definition = await server.request("textDocument/definition", {
-          textDocument: { uri: `file://${owner}` },
-          position: marked.position,
-        });
+        const definition = await waitForDefinitionContaining(
+          server,
+          { uri: `file://${owner}`, position: marked.position },
+          "common.inc",
+        );
         expect(JSON.stringify(definition)).toContain("common.inc");
 
         await server.request("shutdown", null);
@@ -5652,10 +5740,11 @@ Response.Write Shared▮Thing()
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
 
-        const completions = await server.request("textDocument/completion", {
-          textDocument: { uri: `file://${owner}` },
-          position: marked.position,
-        });
+        const completions = await waitForCompletionContaining(
+          server,
+          { uri: `file://${owner}`, position: marked.position },
+          "SharedThing",
+        );
         expect(completionLabels(completions)).toContain("SharedThing");
 
         await server.request("shutdown", null);
@@ -5780,7 +5869,7 @@ Response.Write Shared▮Thing()
           },
         });
 
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "Include cycle detected");
         expect(JSON.stringify(diagnostics.params)).toContain("Include cycle detected");
 
         await server.request("shutdown", null);
@@ -5817,7 +5906,7 @@ Response.Write Shared▮Thing()
           },
         });
 
-        const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+        const diagnostics = await waitForDiagnosticsContaining(server, "Include cycle detected");
         expect(JSON.stringify(diagnostics.params)).toContain("Include cycle detected");
 
         await server.request("shutdown", null);
@@ -6023,6 +6112,42 @@ async function waitForDiagnosticsContaining(
     }
   }
   throw new Error(`Timed out waiting for diagnostics containing ${expected}.`);
+}
+
+async function waitForCompletionContaining(
+  server: RpcServer,
+  params: { uri: string; position: { line: number; character: number } },
+  expected: string,
+): Promise<unknown> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const completions = await server.request("textDocument/completion", {
+      textDocument: { uri: params.uri },
+      position: params.position,
+    });
+    if (JSON.stringify(completions).includes(expected)) {
+      return completions;
+    }
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for completion containing ${expected}.`);
+}
+
+async function waitForDefinitionContaining(
+  server: RpcServer,
+  params: { uri: string; position: { line: number; character: number } },
+  expected: string,
+): Promise<unknown> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const definition = await server.request("textDocument/definition", {
+      textDocument: { uri: params.uri },
+      position: params.position,
+    });
+    if (JSON.stringify(definition).includes(expected)) {
+      return definition;
+    }
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for definition containing ${expected}.`);
 }
 
 async function waitForLogContaining(server: RpcServer, expected: string): Promise<JsonRpcMessage> {

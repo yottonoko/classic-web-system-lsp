@@ -37,6 +37,7 @@ describe("DiskAnalysisCache", () => {
         parsed: parseAspDocument(source.uri, fs.readFileSync(sourceFile, "utf8")),
         diagnostics: { key: "diagnostics", items: [] },
         fastDiagnostics: { key: "fast", items: [] },
+        includeDiagnostics: { key: "include", items: [] },
         syntaxDiagnostics: { key: "syntax", items: [] },
         projectDiagnostics: { key: "project", items: [] },
       };
@@ -50,6 +51,7 @@ describe("DiskAnalysisCache", () => {
         source: { fileName: sourceFile },
         diagnostics: { key: "diagnostics" },
         fastDiagnostics: { key: "fast" },
+        includeDiagnostics: { key: "include" },
         syntaxDiagnostics: { key: "syntax" },
         projectDiagnostics: { key: "project" },
       });
