@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { decode } from "cbor-x";
 import { describe, expect, it } from "vitest";
 import {
   CompletionItemKind,
@@ -1410,6 +1411,104 @@ Response.Write missingName
         server.notify("exit", undefined);
       } finally {
         server.stop();
+      }
+    });
+
+    it("restores staged diagnostics from CBOR cache for reopened file-backed documents", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-open-stage-cache-"));
+      const cacheDir = path.join(tempDir, "cache");
+      const fileName = path.join(tempDir, "cached-staged-diagnostics.asp");
+      const uri = pathToFileURL(fileName).toString();
+      const source = `<style>.broken { color: }</style>
+<!-- #include file="missing.inc" -->
+<% Option Explicit
+Response.Write cachedMissingName
+%>`;
+      fs.writeFileSync(fileName, source, "utf8");
+      const configuration = {
+        aspLsp: {
+          cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
+          debug: { output: "verbose" },
+          diagnostics: { debounceMs: 0 },
+          workspace: { backgroundAnalysis: false },
+        },
+      };
+
+      try {
+        const firstServer = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
+        try {
+          await firstServer.start();
+          await firstServer.request("initialize", {
+            processId: process.pid,
+            rootUri: pathToFileURL(tempDir).toString(),
+            capabilities: {},
+          });
+          firstServer.notify("workspace/didChangeConfiguration", { settings: configuration });
+          firstServer.notify("textDocument/didOpen", {
+            textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
+          });
+          await waitForDiagnosticsContaining(firstServer, "cachedMissingName");
+          await waitForCborCachePayload(cacheDir, (payload) =>
+            Boolean(
+              payload.fastDiagnostics &&
+              payload.syntaxDiagnostics &&
+              payload.projectDiagnostics &&
+              payload.diagnostics,
+            ),
+          );
+          await firstServer.request("shutdown", null);
+          firstServer.notify("exit", undefined);
+        } finally {
+          firstServer.stop();
+        }
+
+        const secondServer = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
+        try {
+          await secondServer.start();
+          await secondServer.request("initialize", {
+            processId: process.pid,
+            rootUri: pathToFileURL(tempDir).toString(),
+            capabilities: {},
+          });
+          secondServer.notify("workspace/didChangeConfiguration", { settings: configuration });
+          secondServer.notify("textDocument/didOpen", {
+            textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
+          });
+          await waitForLogContaining(secondServer, "analysis.parse.diskCache");
+
+          const fastDiagnostics = await secondServer.waitForNotification(
+            "textDocument/publishDiagnostics",
+          );
+          const fastText = JSON.stringify(fastDiagnostics.params);
+          expect(fastText).toContain("missing.inc");
+          expect(fastText).not.toContain("asp-lsp-css");
+          expect(fastText).not.toContain("cachedMissingName");
+          await waitForLogContaining(secondServer, "check.fast.cacheReuse");
+
+          const syntaxDiagnostics = await waitForDiagnosticsContaining(secondServer, "asp-lsp-css");
+          const syntaxText = JSON.stringify(syntaxDiagnostics.params);
+          expect(syntaxText).toContain("missing.inc");
+          expect(syntaxText).toContain("asp-lsp-css");
+          expect(syntaxText).not.toContain("cachedMissingName");
+          await waitForLogContaining(secondServer, "check.syntax.syntax.cacheReuse");
+
+          const projectDiagnostics = await waitForDiagnosticsContaining(
+            secondServer,
+            "cachedMissingName",
+          );
+          const projectText = JSON.stringify(projectDiagnostics.params);
+          expect(projectText).toContain("missing.inc");
+          expect(projectText).toContain("asp-lsp-css");
+          expect(projectText).toContain("cachedMissingName");
+          await waitForLogContaining(secondServer, "check.project.project.cacheReuse");
+
+          await secondServer.request("shutdown", null);
+          secondServer.notify("exit", undefined);
+        } finally {
+          secondServer.stop();
+        }
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
 
@@ -5949,6 +6048,30 @@ async function waitForCborCacheFile(root: string): Promise<string> {
     await delay(250);
   }
   throw new Error(`Timed out waiting for CBOR cache file under ${root}.`);
+}
+
+async function waitForCborCachePayload(
+  root: string,
+  predicate: (payload: Record<string, unknown>) => boolean,
+): Promise<Record<string, unknown>> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    for (const fileName of collectFiles(root).filter((candidate) => candidate.endsWith(".cbor"))) {
+      try {
+        const payload = decode(fs.readFileSync(fileName)) as unknown;
+        if (
+          payload &&
+          typeof payload === "object" &&
+          predicate(payload as Record<string, unknown>)
+        ) {
+          return payload as Record<string, unknown>;
+        }
+      } catch {
+        continue;
+      }
+    }
+    await delay(250);
+  }
+  throw new Error(`Timed out waiting for matching CBOR cache payload under ${root}.`);
 }
 
 function collectFiles(root: string): string[] {

@@ -369,6 +369,7 @@ let backgroundAnalysisTimer: ReturnType<typeof setTimeout> | undefined;
 let backgroundSweepTimer: ReturnType<typeof setTimeout> | undefined;
 let diskAnalysisCache: DiskAnalysisCache | undefined;
 let diskAnalysisCacheKey: string | undefined;
+const diskAnalysisPersistQueues = new Map<string, Promise<void>>();
 let vbDiagnosticsWorkers: Worker[] = [];
 let vbDiagnosticsWorkerCursor = 0;
 let vbDiagnosticsWorkerRequestSequence = 0;
@@ -1321,6 +1322,8 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
   const previous = cache.get(document.uri);
   const pending = pendingDocumentChanges.get(document.uri);
   const parseStartedAt = process.hrtime.bigint();
+  const disk =
+    previous || pending ? undefined : diskAnalysisForDocument(document, settings)?.payload;
   const update =
     previous && pending?.version === document.version
       ? updateAspParsedDocument(
@@ -1330,11 +1333,16 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
           settings,
         )
       : undefined;
-  const parsed = update?.parsed ?? parseAspDocument(document.uri, document.getText(), settings);
+  const parsed =
+    update?.parsed ?? disk?.parsed ?? parseAspDocument(document.uri, document.getText(), settings);
   finishDebugStep(
     settings,
     document.uri,
-    update?.incremental === true ? "analysis.parse.incremental" : "analysis.parse.full",
+    update?.incremental === true
+      ? "analysis.parse.incremental"
+      : disk
+        ? "analysis.parse.diskCache"
+        : "analysis.parse.full",
     parseStartedAt,
   );
   finishDebugStep(
@@ -1362,6 +1370,7 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
     dirtyLanguages,
   };
   cache.set(document.uri, cached);
+  applyDiskAnalysis(cached, disk);
   if (pending?.version === document.version) {
     pendingDocumentChanges.delete(document.uri);
   }
@@ -1433,6 +1442,7 @@ function publishStagedDiagnosticsForCached(cached: CachedDocument, settings: Asp
     uri: cached.source.uri,
     diagnostics,
   });
+  queueDiskAnalysisPersist(cached, settings);
   enqueueSlowDiagnostics(cached, settings);
 }
 
@@ -1473,6 +1483,7 @@ async function publishSlowDiagnosticsForVersion(
     dedupeDiagnostics([...fastItems, ...syntaxItems]),
   );
   connection.sendDiagnostics({ uri, diagnostics: syntaxMerged });
+  queueDiskAnalysisPersist(cached, settings);
   const projectItems = await projectDiagnosticsForCachedAsync(cached, settings, "check.project");
   if (documents.get(uri)?.version !== version || getCached(uri)?.source.version !== version) {
     return;
@@ -1496,6 +1507,7 @@ async function publishSlowDiagnosticsForVersion(
   cached.changes = undefined;
   cached.dirtyLanguages = undefined;
   connection.sendDiagnostics({ uri, diagnostics: items });
+  queueDiskAnalysisPersist(cached, settings);
   finishSlowCheckLog(cached, settings, startedAt, items.length, sequence);
 }
 
@@ -1530,6 +1542,7 @@ function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Di
   analysisFor(cached).diagnostics = { key, items, text: cached.parsed.text };
   cached.changes = undefined;
   cached.dirtyLanguages = undefined;
+  queueDiskAnalysisPersist(cached, settings);
   finishCheckLog(cached, settings, startedAt, items.length, false);
   return items;
 }
@@ -1551,6 +1564,7 @@ async function diagnosticsForCachedAsync(
   analysisFor(cached).diagnostics = { key, items, text: cached.parsed.text };
   cached.changes = undefined;
   cached.dirtyLanguages = undefined;
+  queueDiskAnalysisPersist(cached, settings);
   return items;
 }
 
@@ -2109,6 +2123,103 @@ function diskAnalysisSettingsKey(settings: AspSettings): string {
   });
 }
 
+function diskAnalysisForDocument(
+  document: TextDocument,
+  settings: AspSettings,
+): { source: DiskSourceMetadata; payload: DiskAnalysisCachePayload } | undefined {
+  if (settings.cache?.enabled === false) {
+    return undefined;
+  }
+  const source = diskSourceMetadataForDocument(document);
+  if (!source) {
+    return undefined;
+  }
+  const payload = currentDiskAnalysisCache(settings).readFreshSync(
+    source,
+    diskAnalysisSettingsKey(settings),
+  );
+  if (!payload || payload.parsed.text !== document.getText()) {
+    return undefined;
+  }
+  return { source, payload };
+}
+
+function queueDiskAnalysisPersist(cached: CachedDocument, settings: AspSettings): void {
+  if (settings.cache?.enabled === false) {
+    return;
+  }
+  if (cache.get(cached.source.uri) !== cached) {
+    return;
+  }
+  const source = diskSourceMetadataForCached(cached, settings);
+  if (!source) {
+    return;
+  }
+  const queueKey = normalizeFileName(source.fileName);
+  const previous = diskAnalysisPersistQueues.get(queueKey) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const current = cache.get(cached.source.uri);
+      if (!current || current.source.version !== cached.source.version) {
+        return;
+      }
+      const currentSettings = cachedSettings(current.source.uri);
+      const currentSource = diskSourceMetadataForCached(current, currentSettings);
+      if (!currentSource || !sameFile(currentSource.fileName, source.fileName)) {
+        return;
+      }
+      await persistDiskAnalysis(current, currentSettings, currentSource);
+    });
+  const tracked = next.finally(() => {
+    if (diskAnalysisPersistQueues.get(queueKey) === tracked) {
+      diskAnalysisPersistQueues.delete(queueKey);
+    }
+  });
+  diskAnalysisPersistQueues.set(queueKey, tracked);
+  void tracked.catch(() => undefined);
+}
+
+function diskSourceMetadataForCached(
+  cached: CachedDocument,
+  settings: AspSettings,
+): DiskSourceMetadata | undefined {
+  const source = diskSourceMetadataForDocument(cached.source);
+  if (!source || !diskFileTextMatchesCached(cached, settings, source.fileName)) {
+    return undefined;
+  }
+  return source;
+}
+
+function diskSourceMetadataForDocument(document: TextDocument): DiskSourceMetadata | undefined {
+  if (!document.uri.startsWith("file://")) {
+    return undefined;
+  }
+  const fileName = normalizeFileName(uriToFileName(document.uri));
+  const stat = fs.statSync(fileName, { throwIfNoEntry: false });
+  if (!stat?.isFile()) {
+    return undefined;
+  }
+  return {
+    uri: document.uri,
+    fileName,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+  };
+}
+
+function diskFileTextMatchesCached(
+  cached: CachedDocument,
+  settings: AspSettings,
+  fileName: string,
+): boolean {
+  try {
+    return readTextFile(fileName, settings.legacyEncoding) === cached.parsed.text;
+  } catch {
+    return false;
+  }
+}
+
 function applyDiskAnalysis(
   cached: CachedDocument,
   payload: DiskAnalysisCachePayload | undefined,
@@ -2119,6 +2230,8 @@ function applyDiskAnalysis(
   const analysis = analysisFor(cached);
   analysis.diagnostics = diskDiagnosticEntry(payload.diagnostics, cached.parsed.text);
   analysis.fastDiagnostics = diskDiagnosticEntry(payload.fastDiagnostics, cached.parsed.text);
+  analysis.syntaxDiagnostics = diskDiagnosticEntry(payload.syntaxDiagnostics, cached.parsed.text);
+  analysis.projectDiagnostics = diskDiagnosticEntry(payload.projectDiagnostics, cached.parsed.text);
   analysis.slowDiagnostics = diskDiagnosticEntry(payload.slowDiagnostics, cached.parsed.text);
 }
 
@@ -2135,6 +2248,8 @@ async function persistDiskAnalysis(
     parsed: cached.parsed,
     diagnostics: toDiskDiagnosticEntry(analysis?.diagnostics),
     fastDiagnostics: toDiskDiagnosticEntry(analysis?.fastDiagnostics),
+    syntaxDiagnostics: toDiskDiagnosticEntry(analysis?.syntaxDiagnostics),
+    projectDiagnostics: toDiskDiagnosticEntry(analysis?.projectDiagnostics),
     slowDiagnostics: toDiskDiagnosticEntry(analysis?.slowDiagnostics),
   });
   scheduleDiskCacheSweep(settings);
@@ -4909,9 +5024,12 @@ function getCached(uri: string): CachedDocument | undefined {
   if (!document) {
     return undefined;
   }
-  const parsed = parseAspDocument(uri, document.getText(), cachedSettings(uri));
+  const settings = cachedSettings(uri);
+  const disk = diskAnalysisForDocument(document, settings)?.payload;
+  const parsed = disk?.parsed ?? parseAspDocument(uri, document.getText(), settings);
   const cached = { source: document, parsed, virtuals: new Map<string, VirtualDocument>() };
   cache.set(uri, cached);
+  applyDiskAnalysis(cached, disk);
   return cached;
 }
 

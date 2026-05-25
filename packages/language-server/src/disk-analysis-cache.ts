@@ -6,7 +6,7 @@ import { decode, encode } from "cbor-x";
 import type { AspParsedDocument } from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver/node";
 
-export const diskAnalysisCacheFormatVersion = 1;
+export const diskAnalysisCacheFormatVersion = 2;
 
 export interface DiskAnalysisCacheOptions {
   enabled: boolean;
@@ -35,6 +35,8 @@ export interface DiskAnalysisCachePayload {
   parsed: AspParsedDocument;
   diagnostics?: DiskDiagnosticEntry;
   fastDiagnostics?: DiskDiagnosticEntry;
+  syntaxDiagnostics?: DiskDiagnosticEntry;
+  projectDiagnostics?: DiskDiagnosticEntry;
   slowDiagnostics?: DiskDiagnosticEntry;
 }
 

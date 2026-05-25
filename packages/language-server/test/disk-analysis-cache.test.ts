@@ -36,6 +36,9 @@ describe("DiskAnalysisCache", () => {
         settingsKey: "settings",
         parsed: parseAspDocument(source.uri, fs.readFileSync(sourceFile, "utf8")),
         diagnostics: { key: "diagnostics", items: [] },
+        fastDiagnostics: { key: "fast", items: [] },
+        syntaxDiagnostics: { key: "syntax", items: [] },
+        projectDiagnostics: { key: "project", items: [] },
       };
 
       await cache.write(payload);
@@ -45,6 +48,10 @@ describe("DiskAnalysisCache", () => {
       expect(await cache.readFresh(source, "settings")).toMatchObject({
         settingsKey: "settings",
         source: { fileName: sourceFile },
+        diagnostics: { key: "diagnostics" },
+        fastDiagnostics: { key: "fast" },
+        syntaxDiagnostics: { key: "syntax" },
+        projectDiagnostics: { key: "project" },
       });
 
       expect(
