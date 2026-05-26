@@ -324,6 +324,13 @@ interface VbProjectContextCacheEntry {
   lastUsed: number;
 }
 
+interface VbProjectContextWarmup {
+  rootKey: string;
+  version: number;
+  timer?: ReturnType<typeof setTimeout>;
+  running?: boolean;
+}
+
 interface VbDiagnosticsWorkerTiming {
   step: string;
   elapsedMs: number;
@@ -372,10 +379,11 @@ const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const slowDiagnosticsJobs = new Map<string, SlowDiagnosticsJob>();
 const activeSlowDiagnostics = new Set<string>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
-const vbProjectContextWarmups = new Map<string, { rootKey: string; version: number }>();
+const vbProjectContextWarmups = new Map<string, VbProjectContextWarmup>();
 const vbPublicSymbolSummaryCache = new Map<string, VbPublicSymbolSummary>();
 const maxVbProjectContextCacheEntries = 32;
 const maxVbPublicSymbolSummaryCacheEntries = 1024;
+const interactiveIdleDelayMs = 1500;
 let slowDiagnosticsSequence = 0;
 let backgroundAnalysisSequence = 0;
 let backgroundAnalysisTimer: ReturnType<typeof setTimeout> | undefined;
@@ -383,6 +391,8 @@ let backgroundSweepTimer: ReturnType<typeof setTimeout> | undefined;
 let diskAnalysisCache: DiskAnalysisCache | undefined;
 let diskAnalysisCacheKey: string | undefined;
 const diskAnalysisPersistQueues = new Map<string, Promise<void>>();
+let activeInteractiveRequests = 0;
+let lastInteractiveRequestAt = 0;
 let vbDiagnosticsWorkers: Worker[] = [];
 let vbDiagnosticsWorkerCursor = 0;
 let vbDiagnosticsWorkerRequestSequence = 0;
@@ -635,116 +645,122 @@ connection.workspace.onDidDeleteFiles(() => {
   scheduleBackgroundAnalysis("deleteFiles");
 });
 
-connection.onCompletion((params) => {
-  const cached = getCached(params.textDocument.uri);
-  if (!cached) {
-    return [];
-  }
-  const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
-  if (!region) {
-    return [];
-  }
-  if (region.language === "vbscript") {
-    const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
-    const completions = getVbscriptCompletions(cached.parsed, params.position, context);
-    return withCompletionData(
-      completions.length > 0
-        ? completions
-        : fallbackVbMemberCompletions(cached, params.position, context),
-      { kind: "vbscript", uri: cached.source.uri },
-    );
-  }
-  if (region.language === "html") {
-    const virtual = getCachedVirtual(cached, "html");
-    if (!virtual) {
+connection.onCompletion((params) =>
+  runInteractiveLanguageFeature(() => {
+    const cached = getCached(params.textDocument.uri);
+    if (!cached) {
       return [];
     }
-    const virtualDocument = toTextDocument(virtual);
-    return withCompletionData(
-      htmlService.doComplete(
-        virtualDocument,
-        params.position,
-        htmlService.parseHTMLDocument(virtualDocument),
-      ).items,
-      {
-        kind: "html",
+    const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
+    if (!region) {
+      return [];
+    }
+    if (region.language === "vbscript") {
+      const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
+      const completions = getVbscriptCompletions(cached.parsed, params.position, context);
+      return withCompletionData(
+        completions.length > 0
+          ? completions
+          : fallbackVbMemberCompletions(cached, params.position, context),
+        { kind: "vbscript", uri: cached.source.uri },
+      );
+    }
+    if (region.language === "html") {
+      const virtual = getCachedVirtual(cached, "html");
+      if (!virtual) {
+        return [];
+      }
+      const virtualDocument = toTextDocument(virtual);
+      return withCompletionData(
+        htmlService.doComplete(
+          virtualDocument,
+          params.position,
+          htmlService.parseHTMLDocument(virtualDocument),
+        ).items,
+        {
+          kind: "html",
+          uri: cached.source.uri,
+          locale: cachedSettings(cached.source.uri).resolvedLocale,
+        },
+      );
+    }
+    if (region.language === "css") {
+      return withCompletionData(cssCompletion(cached, params, "css"), {
+        kind: "css",
         uri: cached.source.uri,
         locale: cachedSettings(cached.source.uri).resolvedLocale,
-      },
-    );
-  }
-  if (region.language === "css") {
-    return withCompletionData(cssCompletion(cached, params, "css"), {
-      kind: "css",
-      uri: cached.source.uri,
-      locale: cachedSettings(cached.source.uri).resolvedLocale,
-    });
-  }
-  if (region && isJavaScriptLikeRegion(region)) {
-    return jsCompletion(cached, params);
-  }
-  return [];
-});
+      });
+    }
+    if (region && isJavaScriptLikeRegion(region)) {
+      return jsCompletion(cached, params);
+    }
+    return [];
+  }),
+);
 
-connection.onCompletionResolve((item) => {
-  const data = item.data as { kind?: string; uri?: string } | undefined;
-  if (data?.kind === "vbscript" && data.uri) {
-    const cached = getCached(data.uri);
-    return cached
-      ? resolveVbscriptCompletionItem(
-          item,
-          cached.parsed,
-          bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
-        )
-      : item;
-  }
-  if (data?.kind === "javascript" && data.uri) {
-    const resolved = resolveJsCompletion(item, data.uri);
-    return resolved ?? item;
-  }
-  if ((data?.kind === "html" || data?.kind === "css") && data.uri) {
-    return resolveEmbeddedCompletion(item, data.kind);
-  }
-  return item;
-});
+connection.onCompletionResolve((item) =>
+  runInteractiveLanguageFeature(() => {
+    const data = item.data as { kind?: string; uri?: string } | undefined;
+    if (data?.kind === "vbscript" && data.uri) {
+      const cached = getCached(data.uri);
+      return cached
+        ? resolveVbscriptCompletionItem(
+            item,
+            cached.parsed,
+            bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
+          )
+        : item;
+    }
+    if (data?.kind === "javascript" && data.uri) {
+      const resolved = resolveJsCompletion(item, data.uri);
+      return resolved ?? item;
+    }
+    if ((data?.kind === "html" || data?.kind === "css") && data.uri) {
+      return resolveEmbeddedCompletion(item, data.kind);
+    }
+    return item;
+  }),
+);
 
-connection.onHover((params) => {
-  const cached = getCached(params.textDocument.uri);
-  if (!cached) {
+connection.onHover((params) =>
+  runInteractiveLanguageFeature(() => {
+    const cached = getCached(params.textDocument.uri);
+    if (!cached) {
+      return null;
+    }
+    const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
+    if (!region) {
+      return null;
+    }
+    if (region.language === "vbscript") {
+      return aspHover(cached, params);
+    }
+    if (region && isJavaScriptLikeRegion(region)) {
+      return jsHover(cached, params.position);
+    }
+    if (region.language === "html") {
+      const virtual = getCachedVirtual(cached, "html");
+      if (!virtual) {
+        return null;
+      }
+      const doc = toTextDocument(virtual);
+      return htmlService.doHover(doc, params.position, htmlService.parseHTMLDocument(doc));
+    }
+    if (region.language === "css") {
+      const virtual = getCachedVirtual(cached, "css");
+      if (!virtual) {
+        return null;
+      }
+      const virtualPosition = virtual.sourceMap.toVirtualPosition(params.position);
+      if (!virtualPosition) {
+        return null;
+      }
+      const doc = toTextDocument(virtual);
+      return cssService.doHover(doc, virtualPosition, cssService.parseStylesheet(doc));
+    }
     return null;
-  }
-  const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
-  if (!region) {
-    return null;
-  }
-  if (region.language === "vbscript") {
-    return aspHover(cached, params);
-  }
-  if (region && isJavaScriptLikeRegion(region)) {
-    return jsHover(cached, params.position);
-  }
-  if (region.language === "html") {
-    const virtual = getCachedVirtual(cached, "html");
-    if (!virtual) {
-      return null;
-    }
-    const doc = toTextDocument(virtual);
-    return htmlService.doHover(doc, params.position, htmlService.parseHTMLDocument(doc));
-  }
-  if (region.language === "css") {
-    const virtual = getCachedVirtual(cached, "css");
-    if (!virtual) {
-      return null;
-    }
-    const virtualPosition = virtual.sourceMap.toVirtualPosition(params.position);
-    if (!virtualPosition) {
-      return null;
-    }
-    const doc = toTextDocument(virtual);
-    return cssService.doHover(doc, virtualPosition, cssService.parseStylesheet(doc));
-  }
-  return null;
-});
+  }),
+);
 
 connection.onDefinition((params) => {
   return definitionLikeLocation(params.textDocument.uri, params.position, "definition");
@@ -1022,21 +1038,23 @@ connection.onSelectionRanges((params): SelectionRange[] => {
   return params.positions.map((position) => selectionRangeAt(cached, position));
 });
 
-connection.languages.inlayHint.on((params): InlayHint[] => {
-  const cached = getCached(params.textDocument.uri);
-  if (!cached) {
-    return [];
-  }
-  return [
-    ...getVbscriptInlayHints(
-      cached.parsed,
-      params.range,
-      bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
-      cachedSettings(cached.source.uri).inlayHints,
-    ),
-    ...jsInlayHints(cached, params.range),
-  ];
-});
+connection.languages.inlayHint.on((params): InlayHint[] =>
+  runInteractiveLanguageFeature(() => {
+    const cached = getCached(params.textDocument.uri);
+    if (!cached) {
+      return [];
+    }
+    return [
+      ...getVbscriptInlayHints(
+        cached.parsed,
+        params.range,
+        bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
+        cachedSettings(cached.source.uri).inlayHints,
+      ),
+      ...jsInlayHints(cached, params.range),
+    ];
+  }),
+);
 
 connection.languages.diagnostics.on((params) => {
   const cached = getCached(params.textDocument.uri) ?? getIndexedCached(params.textDocument.uri);
@@ -2024,8 +2042,27 @@ function analysisConcurrency(settings: AspSettings): number {
     : idleAnalysisConcurrency(settings);
 }
 
+function runInteractiveLanguageFeature<T>(callback: () => T): T {
+  activeInteractiveRequests += 1;
+  lastInteractiveRequestAt = Date.now();
+  try {
+    return callback();
+  } finally {
+    activeInteractiveRequests = Math.max(0, activeInteractiveRequests - 1);
+    lastInteractiveRequestAt = Date.now();
+  }
+}
+
+function hasRecentInteractiveActivity(now = Date.now()): boolean {
+  return (
+    activeInteractiveRequests > 0 ||
+    (lastInteractiveRequestAt > 0 && now - lastInteractiveRequestAt < interactiveIdleDelayMs)
+  );
+}
+
 function hasForegroundAnalysisWork(): boolean {
   return (
+    hasRecentInteractiveActivity() ||
     diagnosticsTimers.size > 0 ||
     slowDiagnosticsJobs.size > 0 ||
     activeSlowDiagnostics.size > 0 ||
@@ -4666,9 +4703,13 @@ async function buildVbProjectContextAsync(
 async function buildVbPublicProjectContextAsync(
   cached: CachedDocument,
   settings: AspSettings,
-): Promise<VbProjectContext> {
+  token?: { isCancellationRequested?: boolean },
+): Promise<VbProjectContext | undefined> {
   const rootKey = vbPublicProjectRootContextCacheKey(cached, settings);
-  const summaries = await collectVbPublicSymbolSummaryGraphAsync(cached.parsed, settings);
+  const summaries = await collectVbPublicSymbolSummaryGraphAsync(cached.parsed, settings, token);
+  if (!summaries || token?.isCancellationRequested) {
+    return undefined;
+  }
   return createVbPublicProjectContext(cached, summaries, settings, rootKey);
 }
 
@@ -4763,47 +4804,103 @@ function scheduleVbProjectContextWarmup(
   const version = cached.source.version;
   const existing = vbProjectContextWarmups.get(uri);
   if (existing?.rootKey === rootKey && existing.version === version) {
+    if (!existing.running) {
+      if (existing.timer) {
+        clearTimeout(existing.timer);
+      }
+      existing.timer = setTimeout(
+        () => startVbProjectContextWarmup(cached, settings, rootKey, version),
+        interactiveIdleDelayMs,
+      );
+    }
     return;
   }
+  if (existing?.timer) {
+    clearTimeout(existing.timer);
+  }
   cancelBackgroundAnalysis();
-  vbProjectContextWarmups.set(uri, { rootKey, version });
-  setTimeout(() => {
-    const current = vbProjectContextWarmups.get(uri);
-    if (current?.rootKey !== rootKey || current.version !== version) {
-      return;
-    }
-    void buildVbPublicProjectContextAsync(cached, settings)
-      .catch((error) => {
-        logDebugSummary(
-          settings,
-          `[asp-lsp] VBScript public project context warmup failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      })
-      .finally(() => {
-        const latest = vbProjectContextWarmups.get(uri);
-        if (latest?.rootKey === rootKey && latest.version === version) {
-          vbProjectContextWarmups.delete(uri);
-        }
+  vbProjectContextWarmups.set(uri, {
+    rootKey,
+    version,
+    timer: setTimeout(
+      () => startVbProjectContextWarmup(cached, settings, rootKey, version),
+      interactiveIdleDelayMs,
+    ),
+  });
+}
+
+function startVbProjectContextWarmup(
+  cached: CachedDocument,
+  settings: AspSettings,
+  rootKey: string,
+  version: number,
+): void {
+  const uri = cached.source.uri;
+  const current = vbProjectContextWarmups.get(uri);
+  if (current?.rootKey !== rootKey || current.version !== version) {
+    return;
+  }
+  current.timer = undefined;
+  if (hasRecentInteractiveActivity()) {
+    scheduleVbProjectContextWarmup(cached, settings, rootKey);
+    return;
+  }
+  current.running = true;
+  void buildVbPublicProjectContextAsync(cached, settings, {
+    get isCancellationRequested() {
+      return (
+        hasRecentInteractiveActivity() ||
+        vbProjectContextWarmups.get(uri)?.rootKey !== rootKey ||
+        vbProjectContextWarmups.get(uri)?.version !== version
+      );
+    },
+  })
+    .catch((error) => {
+      logDebugSummary(
+        settings,
+        `[asp-lsp] VBScript public project context warmup failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    })
+    .finally(() => {
+      const latest = vbProjectContextWarmups.get(uri);
+      if (latest?.rootKey !== rootKey || latest.version !== version) {
+        return;
+      }
+      latest.running = false;
+      if (
+        cached.analysis?.vbPublicProjectContext?.rootKey ===
+        vbPublicProjectRootContextCacheKey(cached, settings)
+      ) {
+        vbProjectContextWarmups.delete(uri);
         scheduleBackgroundAnalysisWhenForegroundIdle("foregroundIdle");
-      });
-  }, foregroundIdleBackgroundDelayMs);
+        return;
+      }
+      scheduleVbProjectContextWarmup(cached, settings, rootKey);
+    });
 }
 
 async function collectVbPublicSymbolSummaryGraphAsync(
   root: AspParsedDocument,
   settings: AspSettings,
-): Promise<VbPublicSymbolSummary[]> {
+  token?: { isCancellationRequested?: boolean },
+): Promise<VbPublicSymbolSummary[] | undefined> {
   const summaries: VbPublicSymbolSummary[] = [];
   const visited = new Set([root.uri]);
   let frontier: Array<{ ownerUri: string; includes: AspParsedDocument["includes"] }> = [
     { ownerUri: root.uri, includes: root.includes },
   ];
   for (let depth = 0; depth < 20 && frontier.length > 0; depth += 1) {
+    if (token?.isCancellationRequested) {
+      return undefined;
+    }
     const candidates: string[] = [];
     for (const item of frontier) {
       for (const include of item.includes) {
+        if (token?.isCancellationRequested) {
+          return undefined;
+        }
         const resolved = resolveIncludePath(item.ownerUri, include.path, include.mode, settings);
         const normalized = normalizeFileName(resolved);
         const uri = pathToFileUri(normalized);
@@ -4815,14 +4912,11 @@ async function collectVbPublicSymbolSummaryGraphAsync(
       }
     }
     const loaded: Array<VbPublicSymbolSummary | undefined> = [];
-    for (let index = 0; index < candidates.length; index += 32) {
-      loaded.push(
-        ...(await mapWithConcurrency(
-          candidates.slice(index, index + 32),
-          analysisConcurrency(settings),
-          async (fileName) => vbPublicSymbolSummaryForFileAsync(fileName, settings),
-        )),
-      );
+    for (const fileName of candidates) {
+      if (token?.isCancellationRequested) {
+        return undefined;
+      }
+      loaded.push(await vbPublicSymbolSummaryForFileAsync(fileName, settings));
       await yieldToEventLoop();
     }
     const next = loaded.filter((summary): summary is VbPublicSymbolSummary => Boolean(summary));

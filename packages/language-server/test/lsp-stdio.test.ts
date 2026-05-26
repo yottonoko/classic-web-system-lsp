@@ -1541,9 +1541,10 @@ Response.Write cachedMissingName
       if (!fs.existsSync(fileName)) {
         return;
       }
+      const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-tree-cache-"));
       const source = fs.readFileSync(fileName, "utf8");
       const uri = pathToFileURL(fileName).toString();
-      const server = new RpcServer();
+      const server = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
       try {
         await server.start();
         await server.request("initialize", {
@@ -1554,6 +1555,8 @@ Response.Write cachedMissingName
         server.notify("workspace/didChangeConfiguration", {
           settings: {
             aspLsp: {
+              cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
+              debug: { output: "verbose" },
               diagnostics: { debounceMs: 0 },
               workspace: { backgroundAnalysis: false },
             },
@@ -1590,10 +1593,38 @@ Response.Write cachedMissingName
         expect(Date.now() - inlayStartedAt).toBeLessThan(1_000);
         expect(Array.isArray(inlayHints)).toBe(true);
 
+        await delay(1700);
+        const warmedHoverStartedAt = Date.now();
+        const warmedHover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(
+            source,
+            source.indexOf("includeTreeValue0001", source.indexOf("Response.Write")),
+          ),
+        });
+        expect(Date.now() - warmedHoverStartedAt).toBeLessThan(1_000);
+        expect(JSON.stringify(warmedHover)).toContain("Dim includeTreeValue0001");
+
+        const warmedInlayStartedAt = Date.now();
+        const warmedInlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 80, character: 0 } },
+        });
+        expect(Date.now() - warmedInlayStartedAt).toBeLessThan(1_000);
+        expect(Array.isArray(warmedInlayHints)).toBe(true);
+        expect(
+          server
+            .takePendingNotifications("window/logMessage")
+            .some((message) =>
+              JSON.stringify(message.params).includes("vbPublicSummary.diskCacheReuse"),
+            ),
+        ).toBe(false);
+
         await server.request("shutdown", null);
         server.notify("exit", undefined);
       } finally {
         server.stop();
+        fs.rmSync(cacheDir, { recursive: true, force: true });
       }
     });
 
@@ -2082,6 +2113,7 @@ Response.Write${" "}
         server.notify("textDocument/didOpen", {
           textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
         });
+        await delay(1700);
 
         const globalCompletions = await waitForCompletionSatisfying(
           server,
@@ -2152,7 +2184,7 @@ Response.Write${" "}
       }
     });
 
-    it("warms public include summaries from CBOR cache after restart without blocking local help", async () => {
+    it("warms public include summaries from CBOR cache after restart without blocking interactive local help", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-public-summary-disk-"));
       const cacheDir = path.join(tempDir, "cache");
       const owner = path.join(tempDir, "default.asp");
@@ -2197,6 +2229,7 @@ Response.Write ▮
           firstServer.notify("textDocument/didOpen", {
             textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
           });
+          await delay(1700);
           await waitForCompletionContaining(
             firstServer,
             { uri, position: marked.position },
@@ -2225,21 +2258,24 @@ Response.Write ▮
           });
           secondServer.takePendingNotifications("window/logMessage");
 
-          const hoverStartedAt = Date.now();
-          const hover = await secondServer.request("textDocument/hover", {
-            textDocument: { uri },
-            position: positionAt(source, source.indexOf("LocalOnly")),
-          });
-          expect(Date.now() - hoverStartedAt).toBeLessThan(1_000);
-          expect(JSON.stringify(hover)).toContain("Function LocalOnly()");
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            const hoverStartedAt = Date.now();
+            const hover = await secondServer.request("textDocument/hover", {
+              textDocument: { uri },
+              position: positionAt(source, source.indexOf("LocalOnly")),
+            });
+            expect(Date.now() - hoverStartedAt).toBeLessThan(1_000);
+            expect(JSON.stringify(hover)).toContain("Function LocalOnly()");
 
-          const inlayStartedAt = Date.now();
-          const inlayHints = await secondServer.request("textDocument/inlayHint", {
-            textDocument: { uri },
-            range: { start: { line: 0, character: 0 }, end: { line: 7, character: 0 } },
-          });
-          expect(Date.now() - inlayStartedAt).toBeLessThan(1_000);
-          expect(JSON.stringify(inlayHints)).toContain("As Number");
+            const inlayStartedAt = Date.now();
+            const inlayHints = await secondServer.request("textDocument/inlayHint", {
+              textDocument: { uri },
+              range: { start: { line: 0, character: 0 }, end: { line: 7, character: 0 } },
+            });
+            expect(Date.now() - inlayStartedAt).toBeLessThan(1_000);
+            expect(JSON.stringify(inlayHints)).toContain("As Number");
+            await delay(400);
+          }
           expect(
             secondServer
               .takePendingNotifications("window/logMessage")
@@ -2248,6 +2284,7 @@ Response.Write ▮
               ),
           ).toBe(false);
 
+          await delay(2200);
           await waitForCompletionContaining(
             secondServer,
             { uri, position: marked.position },
