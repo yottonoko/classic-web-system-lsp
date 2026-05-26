@@ -4672,22 +4672,6 @@ async function buildVbPublicProjectContextAsync(
   return createVbPublicProjectContext(cached, summaries, settings, rootKey);
 }
 
-function buildVbPublicProjectContextFromSummaryCache(
-  cached: CachedDocument,
-  settings: AspSettings,
-): VbProjectContext | undefined {
-  const summaries = collectVbPublicSymbolSummaryGraphFromCache(cached.parsed, settings);
-  if (!summaries) {
-    return undefined;
-  }
-  return createVbPublicProjectContext(
-    cached,
-    summaries,
-    settings,
-    vbPublicProjectRootContextCacheKey(cached, settings),
-  );
-}
-
 function createVbPublicProjectContext(
   cached: CachedDocument,
   summaries: VbPublicSymbolSummary[],
@@ -4753,10 +4737,6 @@ function bestEffortVbProjectContext(
   if (publicContext?.rootKey === vbPublicProjectRootContextCacheKey(cached, settings)) {
     return { ...publicContext.context, locale: settings.resolvedLocale };
   }
-  const restoredPublicContext = buildVbPublicProjectContextFromSummaryCache(cached, settings);
-  if (restoredPublicContext) {
-    return restoredPublicContext;
-  }
   const full = cached.analysis?.vbProjectContext;
   if (full?.rootKey === rootKey) {
     return { ...full.context, locale: settings.resolvedLocale };
@@ -4808,7 +4788,7 @@ function scheduleVbProjectContextWarmup(
         }
         scheduleBackgroundAnalysisWhenForegroundIdle("foregroundIdle");
       });
-  }, 0);
+  }, foregroundIdleBackgroundDelayMs);
 }
 
 async function collectVbPublicSymbolSummaryGraphAsync(
@@ -4853,67 +4833,6 @@ async function collectVbPublicSymbolSummaryGraphAsync(
     }));
   }
   return summaries;
-}
-
-function collectVbPublicSymbolSummaryGraphFromCache(
-  root: AspParsedDocument,
-  settings: AspSettings,
-): VbPublicSymbolSummary[] | undefined {
-  const summaries: VbPublicSymbolSummary[] = [];
-  const visited = new Set([root.uri]);
-  let frontier: Array<{ ownerUri: string; includes: AspParsedDocument["includes"] }> = [
-    { ownerUri: root.uri, includes: root.includes },
-  ];
-  for (let depth = 0; depth < 20 && frontier.length > 0; depth += 1) {
-    const next: VbPublicSymbolSummary[] = [];
-    for (const item of frontier) {
-      for (const include of item.includes) {
-        const resolved = resolveIncludePath(item.ownerUri, include.path, include.mode, settings);
-        const normalized = normalizeFileName(resolved);
-        const uri = pathToFileUri(normalized);
-        if (visited.has(uri)) {
-          continue;
-        }
-        visited.add(uri);
-        const summary = vbPublicSymbolSummaryForFileFromCache(normalized, settings);
-        if (!summary) {
-          return undefined;
-        }
-        next.push(summary);
-      }
-    }
-    summaries.push(...next);
-    frontier = next.map((summary) => ({
-      ownerUri: summary.source.uri,
-      includes: summary.includes,
-    }));
-  }
-  return summaries;
-}
-
-function vbPublicSymbolSummaryForFileFromCache(
-  fileName: string,
-  settings: AspSettings,
-): VbPublicSymbolSummary | undefined {
-  const source = diskSourceMetadataForFile(fileName);
-  if (!source) {
-    return undefined;
-  }
-  const settingsKey = vbPublicSymbolSummarySettingsKey(settings);
-  const memory = vbPublicSymbolSummaryCache.get(normalizeFileName(source.fileName));
-  if (memory && diskSourceMatches(memory.source, source) && memory.settingsKey === settingsKey) {
-    return memory;
-  }
-  const disk = currentDiskAnalysisCache(settings).readVbPublicSymbolSummaryFreshSync(
-    source,
-    settingsKey,
-  );
-  if (!disk) {
-    return undefined;
-  }
-  rememberVbPublicSymbolSummary(disk);
-  logDebugSummary(settings, `[asp-lsp] vbPublicSummary.diskCacheReuse ${source.uri}`);
-  return disk;
 }
 
 async function vbPublicSymbolSummaryForFileAsync(

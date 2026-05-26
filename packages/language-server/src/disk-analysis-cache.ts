@@ -113,26 +113,6 @@ export class DiskAnalysisCache {
     }
   }
 
-  readVbPublicSymbolSummaryFreshSync(
-    source: DiskSourceMetadata,
-    settingsKey: string,
-  ): VbPublicSymbolSummary | undefined {
-    if (!this.enabled) {
-      return undefined;
-    }
-    try {
-      const fileName = this.entryPath(source.fileName, "vb-public-symbols");
-      const payload = decode(fs.readFileSync(fileName)) as unknown;
-      if (!isVbPublicSymbolSummary(payload) || !matchesPayload(payload, source, settingsKey)) {
-        return undefined;
-      }
-      touchSync(fileName);
-      return payload;
-    } catch {
-      return undefined;
-    }
-  }
-
   async readFresh(
     source: DiskSourceMetadata,
     settingsKey: string,

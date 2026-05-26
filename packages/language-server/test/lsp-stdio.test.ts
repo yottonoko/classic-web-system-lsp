@@ -2152,7 +2152,7 @@ Response.Write${" "}
       }
     });
 
-    it("restores public include summaries from CBOR cache after restart", async () => {
+    it("warms public include summaries from CBOR cache after restart without blocking local help", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-public-summary-disk-"));
       const cacheDir = path.join(tempDir, "cache");
       const owner = path.join(tempDir, "default.asp");
@@ -2165,10 +2165,14 @@ End Function
 %>`,
         "utf8",
       );
-      const source = `<!-- #include file="common.inc" -->
+      const marked = markedDocument(`<!-- #include file="common.inc" -->
 <%
-Response.Write${" "}
-%>`;
+Function LocalOnly()
+End Function
+localValue = 1
+Response.Write ▮
+%>`);
+      const source = marked.text;
       fs.writeFileSync(owner, source, "utf8");
       const uri = pathToFileURL(owner).toString();
       const configuration = {
@@ -2195,7 +2199,7 @@ Response.Write${" "}
           });
           await waitForCompletionContaining(
             firstServer,
-            { uri, position: positionAt(source, source.lastIndexOf("Response.Write ") + 15) },
+            { uri, position: marked.position },
             "DiskSharedTitle",
           );
           await waitForCborCachePayload(cacheDir, (payload) =>
@@ -2219,14 +2223,36 @@ Response.Write${" "}
           secondServer.notify("textDocument/didOpen", {
             textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
           });
+          secondServer.takePendingNotifications("window/logMessage");
 
-          const startedAt = Date.now();
-          const completions = await secondServer.request("textDocument/completion", {
+          const hoverStartedAt = Date.now();
+          const hover = await secondServer.request("textDocument/hover", {
             textDocument: { uri },
-            position: positionAt(source, source.lastIndexOf("Response.Write ") + 15),
+            position: positionAt(source, source.indexOf("LocalOnly")),
           });
-          expect(Date.now() - startedAt).toBeLessThan(1_000);
-          expect(completionLabels(completions)).toContain("DiskSharedTitle");
+          expect(Date.now() - hoverStartedAt).toBeLessThan(1_000);
+          expect(JSON.stringify(hover)).toContain("Function LocalOnly()");
+
+          const inlayStartedAt = Date.now();
+          const inlayHints = await secondServer.request("textDocument/inlayHint", {
+            textDocument: { uri },
+            range: { start: { line: 0, character: 0 }, end: { line: 7, character: 0 } },
+          });
+          expect(Date.now() - inlayStartedAt).toBeLessThan(1_000);
+          expect(JSON.stringify(inlayHints)).toContain("As Number");
+          expect(
+            secondServer
+              .takePendingNotifications("window/logMessage")
+              .some((message) =>
+                JSON.stringify(message.params).includes("vbPublicSummary.diskCacheReuse"),
+              ),
+          ).toBe(false);
+
+          await waitForCompletionContaining(
+            secondServer,
+            { uri, position: marked.position },
+            "DiskSharedTitle",
+          );
 
           await secondServer.request("shutdown", null);
           secondServer.notify("exit", undefined);
