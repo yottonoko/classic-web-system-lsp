@@ -46,7 +46,8 @@ describe("DiskAnalysisCache", () => {
 
       await cache.write(payload);
       const files = collectFiles(cache.root);
-      expect(files.filter((fileName) => fileName.endsWith(".cbor"))).toHaveLength(1);
+      expect(files.filter((fileName) => fileName.endsWith(".cbor"))).toHaveLength(2);
+      expect(files.some((fileName) => fileName.endsWith(".diagnostics.cbor"))).toBe(true);
       expect(files.some((fileName) => fileName.endsWith(".json"))).toBe(false);
       expect(await cache.readFresh(source, "settings")).toMatchObject({
         settingsKey: "settings",
@@ -57,12 +58,27 @@ describe("DiskAnalysisCache", () => {
         syntaxDiagnostics: { key: "syntax" },
         projectDiagnostics: { key: "project" },
       });
+      const diagnostics = await cache.readDiagnosticsFresh(source, "settings");
+      expect(diagnostics).toMatchObject({
+        settingsKey: "settings",
+        source: { fileName: sourceFile },
+        diagnostics: { key: "diagnostics" },
+      });
+      expect(diagnostics).not.toHaveProperty("parsed");
 
       expect(
         await cache.readFresh({ ...source, size: source.size + 1 }, "settings"),
       ).toBeUndefined();
+      expect(
+        await cache.readDiagnosticsFresh({ ...source, size: source.size + 1 }, "settings"),
+      ).toBeUndefined();
 
-      fs.writeFileSync(files.find((fileName) => fileName.endsWith(".cbor")) ?? "", "broken");
+      fs.writeFileSync(
+        files.find(
+          (fileName) => fileName.endsWith(".cbor") && !fileName.endsWith(".diagnostics.cbor"),
+        ) ?? "",
+        "broken",
+      );
       expect(await cache.readFresh(source, "settings")).toBeUndefined();
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });

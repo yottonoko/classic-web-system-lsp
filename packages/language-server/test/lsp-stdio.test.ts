@@ -3548,7 +3548,11 @@ End Function
         expect(warmed.endsWith(".cbor")).toBe(true);
         expect(collectFiles(cacheDir).some((fileName) => fileName.endsWith(".json"))).toBe(false);
 
-        fs.rmSync(warmed, { force: true });
+        for (const fileName of collectFiles(cacheDir).filter((candidate) =>
+          candidate.endsWith(".cbor"),
+        )) {
+          fs.rmSync(fileName, { force: true });
+        }
         const diagnostics = await server.request("workspace/diagnostic", {
           previousResultIds: [],
         });

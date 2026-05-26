@@ -42,6 +42,18 @@ export interface DiskAnalysisCachePayload {
   slowDiagnostics?: DiskDiagnosticEntry;
 }
 
+export interface DiskDiagnosticsCachePayload {
+  version: number;
+  source: DiskSourceMetadata;
+  settingsKey: string;
+  diagnostics?: DiskDiagnosticEntry;
+  fastDiagnostics?: DiskDiagnosticEntry;
+  includeDiagnostics?: DiskDiagnosticEntry;
+  syntaxDiagnostics?: DiskDiagnosticEntry;
+  projectDiagnostics?: DiskDiagnosticEntry;
+  slowDiagnostics?: DiskDiagnosticEntry;
+}
+
 export interface VbPublicSymbolSummary {
   version: number;
   source: DiskSourceMetadata;
@@ -141,6 +153,26 @@ export class DiskAnalysisCache {
     }
   }
 
+  async readDiagnosticsFresh(
+    source: DiskSourceMetadata,
+    settingsKey: string,
+  ): Promise<DiskDiagnosticsCachePayload | undefined> {
+    if (!this.enabled) {
+      return undefined;
+    }
+    try {
+      const fileName = this.entryPath(source.fileName, "diagnostics");
+      const payload = decode(await fs.promises.readFile(fileName)) as unknown;
+      if (!isDiagnosticsPayload(payload) || !matchesPayload(payload, source, settingsKey)) {
+        return undefined;
+      }
+      await touch(fileName);
+      return payload;
+    } catch {
+      return undefined;
+    }
+  }
+
   async readVbPublicSymbolSummaryFresh(
     source: DiskSourceMetadata,
     settingsKey: string,
@@ -167,6 +199,22 @@ export class DiskAnalysisCache {
     }
     try {
       const fileName = this.entryPath(payload.source.fileName);
+      await fs.promises.mkdir(path.dirname(fileName), { recursive: true });
+      const temporary = `${fileName}.${process.pid}.${Date.now()}.tmp`;
+      await fs.promises.writeFile(temporary, Buffer.from(encode(payload)));
+      await fs.promises.rename(temporary, fileName);
+      await this.writeDiagnostics(diagnosticsPayload(payload));
+    } catch {
+      return;
+    }
+  }
+
+  async writeDiagnostics(payload: DiskDiagnosticsCachePayload): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
+    try {
+      const fileName = this.entryPath(payload.source.fileName, "diagnostics");
       await fs.promises.mkdir(path.dirname(fileName), { recursive: true });
       const temporary = `${fileName}.${process.pid}.${Date.now()}.tmp`;
       await fs.promises.writeFile(temporary, Buffer.from(encode(payload)));
@@ -276,6 +324,18 @@ function isPayload(value: unknown): value is DiskAnalysisCachePayload {
   );
 }
 
+function isDiagnosticsPayload(value: unknown): value is DiskDiagnosticsCachePayload {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Partial<DiskDiagnosticsCachePayload>;
+  return (
+    record.version === diskAnalysisCacheFormatVersion &&
+    typeof record.settingsKey === "string" &&
+    Boolean(record.source)
+  );
+}
+
 function isVbPublicSymbolSummary(value: unknown): value is VbPublicSymbolSummary {
   if (!value || typeof value !== "object") {
     return false;
@@ -328,4 +388,18 @@ function hashString(value: string): string {
 
 function normalizePath(value: string): string {
   return path.resolve(value).toLowerCase();
+}
+
+function diagnosticsPayload(payload: DiskAnalysisCachePayload): DiskDiagnosticsCachePayload {
+  return {
+    version: payload.version,
+    source: payload.source,
+    settingsKey: payload.settingsKey,
+    diagnostics: payload.diagnostics,
+    fastDiagnostics: payload.fastDiagnostics,
+    includeDiagnostics: payload.includeDiagnostics,
+    syntaxDiagnostics: payload.syntaxDiagnostics,
+    projectDiagnostics: payload.projectDiagnostics,
+    slowDiagnostics: payload.slowDiagnostics,
+  };
 }

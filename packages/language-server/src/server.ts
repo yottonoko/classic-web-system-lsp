@@ -5890,6 +5890,13 @@ async function diagnosticsForIndexed(
   }
   const source = indexedSourceMetadata(entry);
   const settingsKey = diskAnalysisSettingsKey(settings);
+  const diagnosticsDisk = await currentDiskAnalysisCache(settings).readDiagnosticsFresh(
+    source,
+    settingsKey,
+  );
+  if (diagnosticsDisk?.diagnostics) {
+    return diagnosticsDisk.diagnostics.items;
+  }
   const disk = await currentDiskAnalysisCache(settings).readFresh(source, settingsKey);
   if (disk?.diagnostics) {
     return disk.diagnostics.items;
