@@ -249,6 +249,7 @@ interface CachedAnalysis {
   vbProjectContext?: { key: string; rootKey: string; context: VbProjectContext };
   vbPublicProjectContext?: { key: string; rootKey: string; context: VbProjectContext };
   localVbProjectContext?: { key: string; context: VbProjectContext };
+  immediateLocalVbProjectContext?: { key: string; context: VbProjectContext };
   vbProjectDocuments?: {
     collectionKey: string;
     documents: AspParsedDocument[];
@@ -656,7 +657,7 @@ connection.onCompletion((params) =>
       return [];
     }
     if (region.language === "vbscript") {
-      const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
+      const context = immediateVbProjectContext(cached, cachedSettings(cached.source.uri));
       const completions = getVbscriptCompletions(cached.parsed, params.position, context);
       return withCompletionData(
         completions.length > 0
@@ -707,7 +708,7 @@ connection.onCompletionResolve((item) =>
         ? resolveVbscriptCompletionItem(
             item,
             cached.parsed,
-            bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
+            immediateVbProjectContext(cached, cachedSettings(cached.source.uri)),
           )
         : item;
     }
@@ -922,7 +923,7 @@ connection.onSignatureHelp((params): SignatureHelp | null => {
     getVbscriptSignatureHelp(
       cached.parsed,
       params.position,
-      bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri)),
+      immediateVbProjectContext(cached, cachedSettings(cached.source.uri)),
     ) ?? null
   );
 });
@@ -4126,7 +4127,28 @@ function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem 
 }
 
 function aspHover(cached: CachedDocument, params: TextDocumentPositionParams): Hover | null {
-  const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const settings = cachedSettings(cached.source.uri);
+  const cachedContext = cachedVbProjectContext(cached, settings);
+  if (cachedContext) {
+    const value = getVbscriptHover(cached.parsed, params.position, cachedContext);
+    const fallback = value ?? fallbackVbscriptHover(cached, params.position, cachedContext);
+    return fallback ? { contents: { kind: "markdown", value: fallback } } : null;
+  }
+
+  scheduleVbProjectContextWarmup(cached, settings);
+  const builtinValue = getVbscriptHover(
+    cached.parsed,
+    params.position,
+    builtinOnlyVbProjectContext(settings),
+  );
+  if (builtinValue) {
+    return { contents: { kind: "markdown", value: builtinValue } };
+  }
+
+  const context =
+    cached.parsed.includes.length > 0
+      ? buildImmediateLocalVbProjectContext(cached, settings)
+      : buildLocalVbProjectContext(cached, settings);
   const value = getVbscriptHover(cached.parsed, params.position, context);
   const fallback = value ?? fallbackVbscriptHover(cached, params.position, context);
   return fallback ? { contents: { kind: "markdown", value: fallback } } : null;
@@ -4320,7 +4342,7 @@ function definitionLikeLocation(
     return null;
   }
   if (region.language === "vbscript") {
-    const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
+    const context = immediateVbProjectContext(cached, cachedSettings(cached.source.uri));
     const symbol =
       mode === "typeDefinition"
         ? getVbscriptTypeDefinition(cached.parsed, position, context)
@@ -4769,19 +4791,77 @@ function buildLocalVbProjectContext(
   return { ...context, locale: settings.resolvedLocale };
 }
 
-function bestEffortVbProjectContext(
+function buildImmediateLocalVbProjectContext(
   cached: CachedDocument,
   settings: AspSettings,
 ): VbProjectContext {
-  const rootKey = vbProjectRootContextCacheKey(cached, settings);
+  const key = `immediate-local:${vbProjectContextCacheKey([cached.parsed], settings)}`;
+  if (cached.analysis?.immediateLocalVbProjectContext?.key === key) {
+    return {
+      ...cached.analysis.immediateLocalVbProjectContext.context,
+      locale: settings.resolvedLocale,
+    };
+  }
+  const contextSettings = vbProjectContextSettings(settings);
+  const symbols = collectVbscriptSymbols(cached.parsed, contextSettings, { inferTypes: false });
+  symbols.push(...configuredVbscriptGlobals(cached, settings));
+  const typeEnvironment = buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols });
+  const context = {
+    documents: [cached.parsed],
+    symbols,
+    typeEnvironment,
+    ...contextSettings,
+  };
+  analysisFor(cached).immediateLocalVbProjectContext = { key, context };
+  return { ...context, locale: settings.resolvedLocale };
+}
+
+function cachedVbProjectContext(
+  cached: CachedDocument,
+  settings: AspSettings,
+): VbProjectContext | undefined {
   const publicContext = cached.analysis?.vbPublicProjectContext;
   if (publicContext?.rootKey === vbPublicProjectRootContextCacheKey(cached, settings)) {
     return { ...publicContext.context, locale: settings.resolvedLocale };
   }
   const full = cached.analysis?.vbProjectContext;
-  if (full?.rootKey === rootKey) {
+  if (full?.rootKey === vbProjectRootContextCacheKey(cached, settings)) {
     return { ...full.context, locale: settings.resolvedLocale };
   }
+  return undefined;
+}
+
+function immediateVbProjectContext(
+  cached: CachedDocument,
+  settings: AspSettings,
+): VbProjectContext {
+  const cachedContext = cachedVbProjectContext(cached, settings);
+  if (cachedContext) {
+    return cachedContext;
+  }
+  scheduleVbProjectContextWarmup(cached, settings);
+  return cached.parsed.includes.length > 0
+    ? buildImmediateLocalVbProjectContext(cached, settings)
+    : buildLocalVbProjectContext(cached, settings);
+}
+
+function builtinOnlyVbProjectContext(settings: AspSettings): VbProjectContext {
+  return {
+    symbols: [],
+    ...vbProjectContextSettings(settings),
+    locale: settings.resolvedLocale,
+  };
+}
+
+function bestEffortVbProjectContext(
+  cached: CachedDocument,
+  settings: AspSettings,
+): VbProjectContext {
+  const cachedContext = cachedVbProjectContext(cached, settings);
+  if (cachedContext) {
+    return cachedContext;
+  }
+  const rootKey = vbProjectRootContextCacheKey(cached, settings);
   scheduleVbProjectContextWarmup(cached, settings, rootKey);
   return buildLocalVbProjectContext(cached, settings);
 }

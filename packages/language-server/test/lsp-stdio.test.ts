@@ -2313,12 +2313,23 @@ End Function
 %>`,
         "utf8",
       );
+      const localFiller = Array.from(
+        { length: 1_200 },
+        (_, index) => `localFastValue${index} = ${index}`,
+      ).join("\n");
       const marked = markedDocument(`<!-- #include file="common.inc" -->
 <%
-Function LocalOnly()
+Function LocalOnly(ByVal value)
+LocalOnly = value
 End Function
+Sub UsesLocal()
+LocalOnly(localValue)
+End Sub
+${localFiller}
 localValue = 1
 Response.Write ▮
+Response.Write CStr(localValue)
+Response.Write IncludedOnly()
 %>`);
       fs.writeFileSync(owner, marked.text, "utf8");
 
@@ -2345,15 +2356,44 @@ Response.Write ▮
         });
         expect(completionLabels(immediateCompletions)).toContain("LocalOnly");
 
+        const responseHoverStartedAt = Date.now();
+        const responseHover = await server.request("textDocument/hover", {
+          textDocument: { uri: `file://${owner}` },
+          position: positionAt(marked.text, marked.text.indexOf("Write CStr")),
+        });
+        expect(Date.now() - responseHoverStartedAt).toBeLessThan(1_000);
+        expect(JSON.stringify(responseHover)).toContain("Response.Write");
+
+        const cstrHoverStartedAt = Date.now();
+        const cstrHover = await server.request("textDocument/hover", {
+          textDocument: { uri: `file://${owner}` },
+          position: positionAt(marked.text, marked.text.indexOf("CStr")),
+        });
+        expect(Date.now() - cstrHoverStartedAt).toBeLessThan(1_000);
+        expect(JSON.stringify(cstrHover)).toContain("Function CStr(value) As String");
+
         const hover = await server.request("textDocument/hover", {
           textDocument: { uri: `file://${owner}` },
           position: positionAt(marked.text, marked.text.indexOf("LocalOnly")),
         });
-        expect(JSON.stringify(hover)).toContain("Function LocalOnly()");
+        expect(JSON.stringify(hover)).toContain("Function LocalOnly(ByVal value)");
+
+        const localCallOffset = marked.text.indexOf("LocalOnly(localValue)");
+        const signature = await server.request("textDocument/signatureHelp", {
+          textDocument: { uri: `file://${owner}` },
+          position: positionAt(marked.text, localCallOffset + "LocalOnly(".length),
+        });
+        expect(JSON.stringify(signature)).toContain("Function LocalOnly(ByVal value)");
+
+        const definition = await server.request("textDocument/definition", {
+          textDocument: { uri: `file://${owner}` },
+          position: positionAt(marked.text, localCallOffset + "Local".length),
+        });
+        expect(JSON.stringify(definition)).toContain(`"uri":"file://${owner}"`);
 
         const inlayHints = await server.request("textDocument/inlayHint", {
           textDocument: { uri: `file://${owner}` },
-          range: { start: { line: 0, character: 0 }, end: { line: 7, character: 0 } },
+          range: { start: { line: 0, character: 0 }, end: { line: 1_210, character: 0 } },
         });
         expect(JSON.stringify(inlayHints)).toContain("As Number");
 
@@ -2365,6 +2405,12 @@ Response.Write ▮
           position: marked.position,
         });
         expect(completionLabels(warmedCompletions)).toContain("IncludedOnly");
+
+        const includeHover = await server.request("textDocument/hover", {
+          textDocument: { uri: `file://${owner}` },
+          position: positionAt(marked.text, marked.text.indexOf("IncludedOnly()")),
+        });
+        expect(JSON.stringify(includeHover)).toContain("Function IncludedOnly()");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
