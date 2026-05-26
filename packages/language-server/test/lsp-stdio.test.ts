@@ -3282,6 +3282,58 @@ End Sub
       }
     });
 
+    it("hides include CodeLens by default and shows it when enabled", async () => {
+      const source = `<!-- #include file="common.inc" -->
+<%
+Function BuildName()
+End Function
+Response.Write BuildName()
+%>`;
+      const uri = "file:///tmp/include-codelens-default.asp";
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const defaultCodeLens = await server.request("textDocument/codeLens", {
+          textDocument: { uri },
+        });
+        expect(JSON.stringify(defaultCodeLens)).toContain("reference");
+        expect(JSON.stringify(defaultCodeLens)).not.toContain("vscode.open");
+        expect(JSON.stringify(defaultCodeLens)).not.toContain("common.inc");
+
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { codeLens: { includes: true } } },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const enabledCodeLens = await server.request("textDocument/codeLens", {
+          textDocument: { uri },
+        });
+        expect(JSON.stringify(enabledCodeLens)).toContain("reference");
+        expect(JSON.stringify(enabledCodeLens)).toContain("vscode.open");
+        expect(JSON.stringify(enabledCodeLens)).toContain("common.inc");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("honors the global variable marker inlay hint setting", async () => {
       const source = `<%
 Dim pageTitle

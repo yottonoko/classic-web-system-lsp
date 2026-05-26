@@ -6449,7 +6449,7 @@ function normalizeCodeLensSettings(
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
     references: record.references !== false,
-    includes: record.includes !== false,
+    includes: record.includes === true,
   };
 }
 
@@ -8749,10 +8749,10 @@ function mergeWorkspaceEdits(
 
 function codeLenses(cached: CachedDocument): CodeLens[] {
   const settings = cachedSettings(cached.source.uri).codeLens;
-  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
   const localizer = localizerForUri(cached.source.uri);
   const lenses: CodeLens[] = [];
   if (settings?.references !== false) {
+    const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
     for (const symbol of (context.symbols ?? []).filter(
       (item) =>
         item.sourceUri === cached.source.uri &&
