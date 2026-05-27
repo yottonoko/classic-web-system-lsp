@@ -1,7 +1,10 @@
 import type { Diagnostic, Range, TextEdit } from "vscode-languageserver-types";
 import type {
   AspLocale,
+  AspEmbeddedLanguage,
+  AspInclude,
   AspParsedDocument,
+  AspRegionKind,
   AspVbscriptComType,
   AspVbscriptIdentifierCase,
   AspVbscriptIdentifierKind,
@@ -74,6 +77,55 @@ export interface VbProjectContext {
   syntaxSnippets?: boolean;
   locale?: AspLocale;
   debugStep?: <T>(name: string, action: () => T) => T;
+}
+
+export interface FileAnalysisSummary {
+  uri: string;
+  fingerprint: string;
+  defaultLanguage: AspParsedDocument["defaultLanguage"];
+  languageRegions: LanguageRegionSummary[];
+  includeRefs: AspInclude[];
+  diagnostics: Diagnostic[];
+  vbscript?: VbLocalSummary;
+}
+
+export interface LanguageRegionSummary {
+  language: AspEmbeddedLanguage;
+  kind: AspRegionKind;
+  start: number;
+  end: number;
+  contentStart: number;
+  contentEnd: number;
+  fingerprint: string;
+}
+
+export interface VbLocalSummary {
+  fingerprint: string;
+  localSymbols: VbSymbol[];
+  publicSymbols: VbSymbol[];
+  exports: VbExportSummary[];
+  externalRefs: VbExternalRef[];
+  typeFacts: VbType[];
+}
+
+export interface VbExportSummary {
+  name: string;
+  kind: VbSymbolKind;
+  range: Range;
+  typeName?: string;
+  memberOf?: string;
+  visibility?: "public" | "private";
+  members?: VbExportSummary[];
+}
+
+export interface VbExternalRef {
+  name: string;
+  range: Range;
+  kindHint?: VbSymbolKind;
+  memberName?: string;
+  callShape?: {
+    argumentCount?: number;
+  };
 }
 
 export interface VbInlayHintOptions {

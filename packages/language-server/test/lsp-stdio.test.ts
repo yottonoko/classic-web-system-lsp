@@ -5818,7 +5818,7 @@ Response.Write enabled
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { debug: { output: "verbose" } } },
+          settings: { aspLsp: { cache: { enabled: false }, debug: { output: "verbose" } } },
         });
 
         const samplePath = path.resolve(

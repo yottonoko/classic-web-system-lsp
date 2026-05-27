@@ -67,7 +67,6 @@ import {
   analyzeVbscript,
   buildVbTypeEnvironment,
   buildVirtualDocument,
-  collectVbscriptPublicSymbols,
   collectVbscriptSymbols,
   createLocalizer,
   formatAspDocument,
@@ -92,6 +91,7 @@ import {
   parseVbscriptTypeRef,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
+  summarizeAspFileAnalysis,
   updateAspParsedDocument,
   type AspFormattingOptions,
   type AspEmbeddedLanguage,
@@ -100,6 +100,7 @@ import {
   type AspLocale,
   type AspLocaleSetting,
   type AspCstNode,
+  type FileAnalysisSummary,
   type AspParsedDocument,
   type AspSettings,
   type AspRegion,
@@ -119,6 +120,7 @@ import ts from "typescript";
 import {
   DiskAnalysisCache,
   diskAnalysisCacheFormatVersion,
+  fileAnalysisSummaryFormatVersion,
   vbPublicSymbolSummaryFormatVersion,
   type DiskAnalysisCachePayload,
   type DiskDiagnosticEntry,
@@ -235,6 +237,7 @@ interface CachedDocument {
 }
 
 interface CachedAnalysis {
+  fileSummary?: FileSummaryCacheEntry;
   diagnostics?: DiagnosticCacheEntry;
   fastDiagnostics?: DiagnosticCacheEntry;
   includeDiagnostics?: DiagnosticCacheEntry;
@@ -254,6 +257,16 @@ interface CachedAnalysis {
     collectionKey: string;
     documents: AspParsedDocument[];
   };
+}
+
+interface FileSummaryCacheEntry {
+  key: string;
+  summary: FileAnalysisSummary;
+}
+
+interface WatchedAspFileChange {
+  fileName: string;
+  type: FileChangeType;
 }
 
 interface DiagnosticCacheEntry {
@@ -590,10 +603,12 @@ connection.onDidChangeConfiguration((change) => {
 connection.onDidChangeWatchedFiles((change) => {
   let aspChanged = false;
   let scriptChanged = false;
+  const aspChanges: WatchedAspFileChange[] = [];
   for (const file of change.changes) {
     const fileName = normalizeFileName(uriToFileName(file.uri));
     if (isAspWorkspaceFile(fileName)) {
       aspChanged = true;
+      aspChanges.push({ fileName, type: file.type });
       if (file.type === FileChangeType.Deleted) {
         workspaceIndex.delete(fileName);
       } else {
@@ -607,8 +622,6 @@ connection.onDidChangeWatchedFiles((change) => {
   if (!aspChanged && !scriptChanged) {
     return;
   }
-  cache.clear();
-  clearSemanticTokens();
   cancelAllSlowDiagnostics();
   cancelBackgroundAnalysis();
   if (aspChanged) {
@@ -617,7 +630,16 @@ connection.onDidChangeWatchedFiles((change) => {
   if (aspChanged || scriptChanged) {
     clearJsProjectCaches();
   }
-  for (const document of documents.all()) {
+  const affectedUris = scriptChanged
+    ? new Set(documents.all().map((document) => document.uri))
+    : affectedOpenUrisForAspChanges(aspChanges);
+  if (scriptChanged) {
+    cache.clear();
+    clearSemanticTokens();
+  } else {
+    invalidateCachedAnalysisForUris(affectedUris);
+  }
+  for (const document of documents.all().filter((item) => affectedUris.has(item.uri))) {
     validate(document);
   }
   scheduleBackgroundAnalysis("watchedFiles");
@@ -2354,6 +2376,21 @@ function diskAnalysisSettingsKey(settings: AspSettings): string {
   });
 }
 
+function fileAnalysisSummarySettingsKey(settings: AspSettings): string {
+  return JSON.stringify({
+    defaultLanguage: settings.defaultLanguage,
+    legacyEncoding: settings.legacyEncoding,
+    vbscript: {
+      typeChecking: settings.vbscript?.typeChecking,
+      identifierCase: settings.vbscript?.identifierCase,
+      identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
+      comTypes: settings.vbscript?.comTypes,
+      unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+      syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
+    },
+  });
+}
+
 function vbPublicSymbolSummarySettingsKey(settings: AspSettings): string {
   return JSON.stringify({
     defaultLanguage: settings.defaultLanguage,
@@ -2364,6 +2401,13 @@ function vbPublicSymbolSummarySettingsKey(settings: AspSettings): string {
       identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
       comTypes: settings.vbscript?.comTypes,
     },
+  });
+}
+
+function fileAnalysisSummaryCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    text: textFingerprint(cached.parsed.text),
+    settings: fileAnalysisSummarySettingsKey(settings),
   });
 }
 
@@ -2484,6 +2528,12 @@ function applyDiskAnalysis(
   analysis.syntaxDiagnostics = diskDiagnosticEntry(payload.syntaxDiagnostics, cached.parsed.text);
   analysis.projectDiagnostics = diskDiagnosticEntry(payload.projectDiagnostics, cached.parsed.text);
   analysis.slowDiagnostics = diskDiagnosticEntry(payload.slowDiagnostics, cached.parsed.text);
+  if (payload.fileSummary) {
+    analysis.fileSummary = {
+      key: fileAnalysisSummaryCacheKey(cached, cachedSettings(cached.source.uri)),
+      summary: payload.fileSummary,
+    };
+  }
 }
 
 async function persistDiskAnalysis(
@@ -2492,6 +2542,7 @@ async function persistDiskAnalysis(
   source: DiskSourceMetadata,
 ): Promise<void> {
   const analysis = cached.analysis;
+  const summary = fileSummaryForCached(cached, settings);
   await currentDiskAnalysisCache(settings).write({
     version: diskAnalysisCacheFormatVersion,
     source,
@@ -2503,6 +2554,13 @@ async function persistDiskAnalysis(
     syntaxDiagnostics: toDiskDiagnosticEntry(analysis?.syntaxDiagnostics),
     projectDiagnostics: toDiskDiagnosticEntry(analysis?.projectDiagnostics),
     slowDiagnostics: toDiskDiagnosticEntry(analysis?.slowDiagnostics),
+    fileSummary: summary,
+  });
+  await currentDiskAnalysisCache(settings).writeFileAnalysisSummary({
+    version: fileAnalysisSummaryFormatVersion,
+    source,
+    settingsKey: fileAnalysisSummarySettingsKey(settings),
+    summary,
   });
   scheduleDiskCacheSweep(settings);
 }
@@ -2523,6 +2581,16 @@ function toDiskDiagnosticEntry(
 function analysisFor(cached: CachedDocument): CachedAnalysis {
   cached.analysis ??= {};
   return cached.analysis;
+}
+
+function fileSummaryForCached(cached: CachedDocument, settings: AspSettings): FileAnalysisSummary {
+  const key = fileAnalysisSummaryCacheKey(cached, settings);
+  if (cached.analysis?.fileSummary?.key === key) {
+    return cached.analysis.fileSummary.summary;
+  }
+  const summary = summarizeAspFileAnalysis(cached.parsed, vbProjectContextSettings(settings));
+  analysisFor(cached).fileSummary = { key, summary };
+  return summary;
 }
 
 function getCachedVirtual(
@@ -5022,6 +5090,21 @@ async function vbPublicSymbolSummaryForFileAsync(
   if (memory && diskSourceMatches(memory.source, source) && memory.settingsKey === settingsKey) {
     return memory;
   }
+  const fileSummary = await currentDiskAnalysisCache(settings).readFileAnalysisSummaryFresh(
+    source,
+    fileAnalysisSummarySettingsKey(settings),
+  );
+  if (fileSummary) {
+    const summary = vbPublicSymbolSummaryFromFileSummary(
+      fileSummary.summary,
+      source,
+      settings,
+      settingsKey,
+    );
+    rememberVbPublicSymbolSummary(summary);
+    logDebugSummary(settings, `[asp-lsp] fileSummary.diskCacheReuse ${source.uri}`);
+    return summary;
+  }
   const disk = await currentDiskAnalysisCache(settings).readVbPublicSymbolSummaryFresh(
     source,
     settingsKey,
@@ -5035,9 +5118,7 @@ async function vbPublicSymbolSummaryForFileAsync(
   const parsed = parseAspDocument(source.uri, text, settings);
   const summary = vbPublicSymbolSummaryForParsed(parsed, source, settings, settingsKey);
   rememberVbPublicSymbolSummary(summary);
-  void currentDiskAnalysisCache(settings)
-    .writeVbPublicSymbolSummary(summary)
-    .then(() => scheduleDiskCacheSweep(settings));
+  queueVbPublicSymbolSummaryPersist(summary, settings);
   return summary;
 }
 
@@ -5047,6 +5128,7 @@ function vbPublicSymbolSummaryForParsed(
   settings: AspSettings,
   settingsKey = vbPublicSymbolSummarySettingsKey(settings),
 ): VbPublicSymbolSummary {
+  const fileSummary = summarizeAspFileAnalysis(parsed, vbProjectContextSettings(settings));
   return {
     version: vbPublicSymbolSummaryFormatVersion,
     source,
@@ -5054,7 +5136,30 @@ function vbPublicSymbolSummaryForParsed(
     defaultLanguage: parsed.defaultLanguage,
     legacyEncoding: settings.legacyEncoding,
     includes: parsed.includes,
-    publicSymbols: collectVbscriptPublicSymbols(parsed, vbProjectContextSettings(settings)),
+    publicSymbols: fileSummary.vbscript?.publicSymbols ?? [],
+    exports: fileSummary.vbscript?.exports ?? [],
+    externalRefs: fileSummary.vbscript?.externalRefs ?? [],
+    fileSummary,
+  };
+}
+
+function vbPublicSymbolSummaryFromFileSummary(
+  fileSummary: FileAnalysisSummary,
+  source: DiskSourceMetadata,
+  settings: AspSettings,
+  settingsKey = vbPublicSymbolSummarySettingsKey(settings),
+): VbPublicSymbolSummary {
+  return {
+    version: vbPublicSymbolSummaryFormatVersion,
+    source,
+    settingsKey,
+    defaultLanguage: fileSummary.defaultLanguage,
+    legacyEncoding: settings.legacyEncoding,
+    includes: fileSummary.includeRefs,
+    publicSymbols: fileSummary.vbscript?.publicSymbols ?? [],
+    exports: fileSummary.vbscript?.exports ?? [],
+    externalRefs: fileSummary.vbscript?.externalRefs ?? [],
+    fileSummary,
   };
 }
 
@@ -5076,6 +5181,189 @@ function diskSourceMatches(left: DiskSourceMetadata, right: DiskSourceMetadata):
     left.mtimeMs === right.mtimeMs &&
     left.size === right.size
   );
+}
+
+function affectedOpenUrisForAspChanges(changes: WatchedAspFileChange[]): Set<string> {
+  const allOpenUris = new Set(documents.all().map((document) => document.uri));
+  const affectedUris = new Set<string>();
+  for (const change of changes) {
+    const changedUri = pathToFileUri(change.fileName);
+    affectedUris.add(changedUri);
+    const changedExports = changedExportKeysForWatchedFile(change);
+    if (!changedExports) {
+      return allOpenUris;
+    }
+    for (const document of documents.all()) {
+      if (affectedUris.has(document.uri)) {
+        continue;
+      }
+      const cached = cache.get(document.uri);
+      if (!cached) {
+        affectedUris.add(document.uri);
+        continue;
+      }
+      if (
+        fileSummaryReferencesChangedExports(
+          fileSummaryForCached(cached, cachedSettings(document.uri)),
+          changedExports,
+        )
+      ) {
+        affectedUris.add(document.uri);
+      }
+    }
+  }
+  return affectedUris;
+}
+
+function changedExportKeysForWatchedFile(change: WatchedAspFileChange): Set<string> | undefined {
+  const cacheKey = normalizeFileName(change.fileName);
+  const previous = vbPublicSymbolSummaryCache.get(cacheKey);
+  if (change.type === FileChangeType.Deleted) {
+    vbPublicSymbolSummaryCache.delete(cacheKey);
+    return previous ? exportKeysForSummary(previous) : undefined;
+  }
+  const current = vbPublicSymbolSummaryForFile(change.fileName, globalSettings);
+  if (!previous || !current) {
+    if (current) {
+      rememberVbPublicSymbolSummary(current);
+      queueVbPublicSymbolSummaryPersist(current, globalSettings);
+    }
+    return undefined;
+  }
+  rememberVbPublicSymbolSummary(current);
+  queueVbPublicSymbolSummaryPersist(current, globalSettings);
+  return changedExportKeys(previous, current);
+}
+
+function vbPublicSymbolSummaryForFile(
+  fileName: string,
+  settings: AspSettings,
+): VbPublicSymbolSummary | undefined {
+  const source = diskSourceMetadataForFile(fileName);
+  if (!source) {
+    return undefined;
+  }
+  try {
+    const text = readTextFile(source.fileName, settings.legacyEncoding);
+    const parsed = parseAspDocument(source.uri, text, settings);
+    return vbPublicSymbolSummaryForParsed(parsed, source, settings);
+  } catch {
+    return undefined;
+  }
+}
+
+function queueVbPublicSymbolSummaryPersist(
+  summary: VbPublicSymbolSummary,
+  settings: AspSettings,
+): void {
+  void currentDiskAnalysisCache(settings)
+    .writeVbPublicSymbolSummary(summary)
+    .then(() =>
+      summary.fileSummary
+        ? currentDiskAnalysisCache(settings).writeFileAnalysisSummary({
+            version: fileAnalysisSummaryFormatVersion,
+            source: summary.source,
+            settingsKey: fileAnalysisSummarySettingsKey(settings),
+            summary: summary.fileSummary,
+          })
+        : undefined,
+    )
+    .then(() => scheduleDiskCacheSweep(settings));
+}
+
+function changedExportKeys(
+  previous: VbPublicSymbolSummary,
+  current: VbPublicSymbolSummary,
+): Set<string> {
+  const previousExports = exportIdentitiesForSummary(previous);
+  const currentExports = exportIdentitiesForSummary(current);
+  const changed = new Set<string>();
+  for (const key of new Set([...previousExports.keys(), ...currentExports.keys()])) {
+    if (previousExports.get(key) !== currentExports.get(key)) {
+      changed.add(key);
+    }
+  }
+  return changed;
+}
+
+function exportKeysForSummary(summary: VbPublicSymbolSummary): Set<string> {
+  return new Set(exportIdentitiesForSummary(summary).keys());
+}
+
+function exportIdentitiesForSummary(summary: VbPublicSymbolSummary): Map<string, string> {
+  const identities = new Map<string, string>();
+  const visit = (
+    namePrefix: string | undefined,
+    item: NonNullable<VbPublicSymbolSummary["exports"]>[number],
+  ): void => {
+    const qualifiedName = namePrefix ? `${namePrefix}.${item.name}` : item.name;
+    const key = normalizeExportKey(qualifiedName);
+    identities.set(
+      key,
+      JSON.stringify({
+        kind: item.kind,
+        typeName: item.typeName,
+        visibility: item.visibility,
+        memberOf: item.memberOf,
+      }),
+    );
+    for (const member of item.members ?? []) {
+      visit(qualifiedName, member);
+    }
+  };
+  if (summary.exports) {
+    for (const item of summary.exports) {
+      visit(undefined, item);
+    }
+    return identities;
+  }
+  for (const symbol of summary.publicSymbols) {
+    identities.set(
+      normalizeExportKey(symbol.memberOf ? `${symbol.memberOf}.${symbol.name}` : symbol.name),
+      JSON.stringify({
+        kind: symbol.kind,
+        typeName: symbol.typeName,
+        visibility: symbol.visibility,
+        memberOf: symbol.memberOf,
+      }),
+    );
+  }
+  return identities;
+}
+
+function fileSummaryReferencesChangedExports(
+  summary: FileAnalysisSummary,
+  changedExports: Set<string>,
+): boolean {
+  for (const ref of summary.vbscript?.externalRefs ?? []) {
+    if (changedExports.has(normalizeExportKey(ref.name))) {
+      return true;
+    }
+    if (ref.memberName && changedExports.has(normalizeExportKey(`${ref.name}.${ref.memberName}`))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function invalidateCachedAnalysisForUris(uris: Set<string>): void {
+  if (uris.size > 0) {
+    vbProjectContextCache.clear();
+  }
+  for (const uri of uris) {
+    const cached = cache.get(uri);
+    if (cached) {
+      cached.analysis = undefined;
+      cached.changes = undefined;
+      cached.dirtyLanguages = undefined;
+    }
+    vbProjectContextWarmups.delete(uri);
+    clearSemanticTokensForUri(uri);
+  }
+}
+
+function normalizeExportKey(value: string): string {
+  return value.toLowerCase();
 }
 
 function vbProjectContextSettings(

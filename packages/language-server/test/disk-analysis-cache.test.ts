@@ -2,13 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseAspDocument } from "@asp-lsp/core";
+import { parseAspDocument, summarizeAspFileAnalysis } from "@asp-lsp/core";
 import { describe, expect, it } from "vitest";
 import {
   DiskAnalysisCache,
   diskAnalysisCacheFormatVersion,
+  fileAnalysisSummaryFormatVersion,
   vbPublicSymbolSummaryFormatVersion,
   type DiskAnalysisCachePayload,
+  type DiskFileAnalysisSummaryPayload,
   type VbPublicSymbolSummary,
 } from "../src/disk-analysis-cache";
 
@@ -42,6 +44,9 @@ describe("DiskAnalysisCache", () => {
         includeDiagnostics: { key: "include", items: [] },
         syntaxDiagnostics: { key: "syntax", items: [] },
         projectDiagnostics: { key: "project", items: [] },
+        fileSummary: summarizeAspFileAnalysis(
+          parseAspDocument(source.uri, fs.readFileSync(sourceFile, "utf8")),
+        ),
       };
 
       await cache.write(payload);
@@ -80,6 +85,56 @@ describe("DiskAnalysisCache", () => {
         "broken",
       );
       expect(await cache.readFresh(source, "settings")).toBeUndefined();
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stores file analysis summaries in a separate CBOR entry", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-file-summary-cache-"));
+    try {
+      const sourceFile = path.join(tempDir, "default.asp");
+      fs.writeFileSync(sourceFile, `<% Response.Write SharedTitle() %>`, "utf8");
+      const stat = fs.statSync(sourceFile);
+      const source = {
+        uri: pathToFileURL(sourceFile).href,
+        fileName: sourceFile,
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+      };
+      const cache = new DiskAnalysisCache({
+        enabled: true,
+        directory: path.join(tempDir, "cache"),
+        workspaceRoots: [tempDir],
+        ttlHours: 168,
+        maxSizeMb: 1024,
+      });
+      const summary = summarizeAspFileAnalysis(
+        parseAspDocument(source.uri, fs.readFileSync(sourceFile, "utf8")),
+      );
+      const payload: DiskFileAnalysisSummaryPayload = {
+        version: fileAnalysisSummaryFormatVersion,
+        source,
+        settingsKey: "summary-settings",
+        summary,
+      };
+
+      await cache.writeFileAnalysisSummary(payload);
+
+      const files = collectFiles(cache.root).filter((fileName) => fileName.endsWith(".cbor"));
+      expect(files).toHaveLength(1);
+      expect(files[0]).toContain(".file-summary.cbor");
+      await expect(
+        cache.readFileAnalysisSummaryFresh(source, "summary-settings"),
+      ).resolves.toMatchObject({
+        settingsKey: "summary-settings",
+        summary: {
+          uri: source.uri,
+          vbscript: {
+            externalRefs: [expect.objectContaining({ name: "SharedTitle" })],
+          },
+        },
+      });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
@@ -148,6 +203,14 @@ describe("DiskAnalysisCache", () => {
             type: { name: "Variant" },
           },
         ],
+        exports: [
+          {
+            name: "SharedTitle",
+            kind: "function",
+            range: { start: { line: 0, character: 12 }, end: { line: 0, character: 23 } },
+          },
+        ],
+        externalRefs: [],
       };
 
       await cache.writeVbPublicSymbolSummary(payload);

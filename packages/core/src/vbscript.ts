@@ -49,8 +49,11 @@ import type {
   VbCallSyntaxDiagnosticCode,
   VbDocumentation,
   VbDocumentationQuickAction,
+  FileAnalysisSummary,
   VbInlayHintOptions,
   VbMember,
+  VbExportSummary,
+  VbExternalRef,
   VbParameterInfo,
   VbProjectContext,
   VbReference,
@@ -59,6 +62,7 @@ import type {
   VbSignature,
   VbSymbol,
   VbSymbolKind,
+  VbLocalSummary,
   VbType,
   VbTypeEnvironment,
   VbTypeRef,
@@ -68,8 +72,11 @@ export type {
   VbCallHierarchyData,
   VbDocumentation,
   VbDocumentationQuickAction,
+  FileAnalysisSummary,
   VbInlayHintOptions,
   VbMember,
+  VbExportSummary,
+  VbExternalRef,
   VbParameterInfo,
   VbProjectContext,
   VbReference,
@@ -79,6 +86,7 @@ export type {
   VbSignatureParameter,
   VbSymbol,
   VbSymbolKind,
+  VbLocalSummary,
   VbType,
   VbTypeDiagnostic,
   VbTypeEnvironment,
@@ -3234,6 +3242,127 @@ export function collectVbscriptPublicSymbols(
     .map(sanitizePublicSummarySymbol);
 }
 
+export function summarizeAspFileAnalysis(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): FileAnalysisSummary {
+  const vbscript = parsed.regions.some((region) => region.language === "vbscript")
+    ? summarizeVbscriptFile(parsed, context)
+    : undefined;
+  return {
+    uri: parsed.uri,
+    fingerprint: textFingerprint(parsed.text),
+    defaultLanguage: parsed.defaultLanguage,
+    languageRegions: parsed.regions.map((region) => ({
+      language: region.language,
+      kind: region.kind,
+      start: region.start,
+      end: region.end,
+      contentStart: region.contentStart,
+      contentEnd: region.contentEnd,
+      fingerprint: textFingerprint(parsed.text.slice(region.contentStart, region.contentEnd)),
+    })),
+    includeRefs: parsed.includes,
+    diagnostics: parsed.diagnostics,
+    vbscript,
+  };
+}
+
+export function summarizeVbscriptFile(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): VbLocalSummary {
+  const localSymbols = collectVbscriptSymbols(parsed, context);
+  const publicSymbols = collectVbscriptPublicSymbols(parsed, context);
+  const typeEnvironment = buildVbTypeEnvironment(parsed, { ...context, symbols: localSymbols });
+  return {
+    fingerprint: textFingerprint(
+      serverRegions(parsed)
+        .map((region) => parsed.text.slice(region.contentStart, region.contentEnd))
+        .join("\n"),
+    ),
+    localSymbols,
+    publicSymbols,
+    exports: exportSummariesForSymbols(publicSymbols),
+    externalRefs: collectVbscriptExternalRefs(parsed, localSymbols),
+    typeFacts: typeEnvironment.types,
+  };
+}
+
+function exportSummariesForSymbols(symbols: VbSymbol[]): VbExportSummary[] {
+  const membersByOwner = new Map<string, VbSymbol[]>();
+  for (const symbol of symbols) {
+    if (symbol.memberOf) {
+      pushMapItem(membersByOwner, symbol.memberOf.toLowerCase(), symbol);
+    }
+  }
+  return symbols
+    .filter((symbol) => !symbol.memberOf)
+    .map((symbol) => exportSummaryForSymbol(symbol, membersByOwner));
+}
+
+function exportSummaryForSymbol(
+  symbol: VbSymbol,
+  membersByOwner: Map<string, VbSymbol[]>,
+): VbExportSummary {
+  const members = membersByOwner
+    .get(symbol.name.toLowerCase())
+    ?.map((member) => exportSummaryForSymbol(member, membersByOwner));
+  return {
+    name: symbol.name,
+    kind: symbol.kind,
+    range: symbol.range,
+    typeName: symbol.typeName,
+    memberOf: symbol.memberOf,
+    visibility: symbol.visibility,
+    members,
+  };
+}
+
+function collectVbscriptExternalRefs(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+): VbExternalRef[] {
+  const refs = new Map<string, VbExternalRef>();
+  for (const token of identifierTokens(parsed)) {
+    if (isDeclarationNameToken(parsed, token) || isBuiltinName(token.text)) {
+      continue;
+    }
+    const previous = previousSignificantTokenForToken(parsed, token);
+    if (previous?.text === ".") {
+      continue;
+    }
+    const lowerName = token.text.toLowerCase();
+    if (visibleSymbolsByName(parsed, token.start, symbols, lowerName).length > 0) {
+      continue;
+    }
+    const next = nextSignificantTokenForToken(parsed, token);
+    const memberName =
+      next?.text === "."
+        ? nextSignificantTokenForToken(parsed, next)?.kind === "identifier"
+          ? nextSignificantTokenForToken(parsed, next)?.text
+          : undefined
+        : undefined;
+    const ref: VbExternalRef = {
+      name: token.text,
+      range: rangeFromOffsets(parsed.text, token.start, token.end),
+      kindHint: next?.text === "(" ? "function" : undefined,
+      memberName,
+    };
+    refs.set(externalRefKey(ref), ref);
+  }
+  return [...refs.values()];
+}
+
+function externalRefKey(ref: VbExternalRef): string {
+  return [
+    ref.name.toLowerCase(),
+    ref.memberName?.toLowerCase() ?? "",
+    ref.range.start.line,
+    ref.range.start.character,
+  ].join("|");
+}
+
 function isPublicSummarySymbol(symbol: VbSymbol): boolean {
   if (symbol.visibility === "private" || symbol.scopeName || symbol.kind === "parameter") {
     return false;
@@ -3260,6 +3389,15 @@ function sanitizePublicSummarySymbol(symbol: VbSymbol): VbSymbol {
     typeName: "Variant",
     explicitType: false,
   };
+}
+
+function textFingerprint(text: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${text.length}:${(hash >>> 0).toString(16)}`;
 }
 
 export function buildVbTypeEnvironment(

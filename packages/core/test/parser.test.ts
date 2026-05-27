@@ -25,6 +25,7 @@ import {
   parseVbscriptCst,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
+  summarizeAspFileAnalysis,
   updateAspParsedDocument,
 } from "../src";
 import type { VbCstNode } from "../src";
@@ -554,6 +555,30 @@ End Sub
       explicitType: true,
     });
     expect(symbols.find((symbol) => symbol.name === "PublicFunction")?.typeName).toBe("Variant");
+  });
+
+  it("summarizes VBScript exports and unresolved external references", () => {
+    const source = `<%
+Option Explicit
+Dim localValue
+Function LocalTitle()
+End Function
+Response.Write SharedTitle(localValue)
+Response.Write SharedCatalog.Name
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const summary = summarizeAspFileAnalysis(parsed);
+
+    expect(summary.languageRegions.some((region) => region.language === "vbscript")).toBe(true);
+    expect(summary.vbscript?.exports.map((item) => item.name)).toContain("LocalTitle");
+    expect(summary.vbscript?.externalRefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "SharedTitle", kindHint: "function" }),
+        expect.objectContaining({ name: "SharedCatalog", memberName: "Name" }),
+      ]),
+    );
+    expect(summary.vbscript?.externalRefs.map((item) => item.name)).not.toContain("Response");
+    expect(summary.vbscript?.externalRefs.map((item) => item.name)).not.toContain("localValue");
   });
 
   it("keeps VBScript lookup and completions case-insensitive", () => {

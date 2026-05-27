@@ -3,11 +3,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { decode, encode } from "cbor-x";
-import type { AspInclude, AspParsedDocument, VbSymbol } from "@asp-lsp/core";
+import type {
+  AspInclude,
+  AspParsedDocument,
+  FileAnalysisSummary,
+  VbExportSummary,
+  VbExternalRef,
+  VbSymbol,
+} from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver/node";
 
-export const diskAnalysisCacheFormatVersion = 3;
-export const vbPublicSymbolSummaryFormatVersion = 1;
+export const diskAnalysisCacheFormatVersion = 4;
+export const fileAnalysisSummaryFormatVersion = 1;
+export const vbPublicSymbolSummaryFormatVersion = 2;
 
 export interface DiskAnalysisCacheOptions {
   enabled: boolean;
@@ -40,6 +48,7 @@ export interface DiskAnalysisCachePayload {
   syntaxDiagnostics?: DiskDiagnosticEntry;
   projectDiagnostics?: DiskDiagnosticEntry;
   slowDiagnostics?: DiskDiagnosticEntry;
+  fileSummary?: FileAnalysisSummary;
 }
 
 export interface DiskDiagnosticsCachePayload {
@@ -62,6 +71,16 @@ export interface VbPublicSymbolSummary {
   legacyEncoding?: string;
   includes: AspInclude[];
   publicSymbols: VbSymbol[];
+  exports?: VbExportSummary[];
+  externalRefs?: VbExternalRef[];
+  fileSummary?: FileAnalysisSummary;
+}
+
+export interface DiskFileAnalysisSummaryPayload {
+  version: number;
+  source: DiskSourceMetadata;
+  settingsKey: string;
+  summary: FileAnalysisSummary;
 }
 
 export class DiskAnalysisCache {
@@ -173,6 +192,26 @@ export class DiskAnalysisCache {
     }
   }
 
+  async readFileAnalysisSummaryFresh(
+    source: DiskSourceMetadata,
+    settingsKey: string,
+  ): Promise<DiskFileAnalysisSummaryPayload | undefined> {
+    if (!this.enabled) {
+      return undefined;
+    }
+    try {
+      const fileName = this.entryPath(source.fileName, "file-summary");
+      const payload = decode(await fs.promises.readFile(fileName)) as unknown;
+      if (!isFileAnalysisSummaryPayload(payload) || !matchesPayload(payload, source, settingsKey)) {
+        return undefined;
+      }
+      await touch(fileName);
+      return payload;
+    } catch {
+      return undefined;
+    }
+  }
+
   async write(payload: DiskAnalysisCachePayload): Promise<void> {
     if (!this.enabled) {
       return;
@@ -195,6 +234,21 @@ export class DiskAnalysisCache {
     }
     try {
       const fileName = this.entryPath(payload.source.fileName, "diagnostics");
+      await fs.promises.mkdir(path.dirname(fileName), { recursive: true });
+      const temporary = `${fileName}.${process.pid}.${Date.now()}.tmp`;
+      await fs.promises.writeFile(temporary, Buffer.from(encode(payload)));
+      await fs.promises.rename(temporary, fileName);
+    } catch {
+      return;
+    }
+  }
+
+  async writeFileAnalysisSummary(payload: DiskFileAnalysisSummaryPayload): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
+    try {
+      const fileName = this.entryPath(payload.source.fileName, "file-summary");
       await fs.promises.mkdir(path.dirname(fileName), { recursive: true });
       const temporary = `${fileName}.${process.pid}.${Date.now()}.tmp`;
       await fs.promises.writeFile(temporary, Buffer.from(encode(payload)));
@@ -328,6 +382,20 @@ function isVbPublicSymbolSummary(value: unknown): value is VbPublicSymbolSummary
     Boolean(record.source) &&
     Array.isArray(record.includes) &&
     Array.isArray(record.publicSymbols)
+  );
+}
+
+function isFileAnalysisSummaryPayload(value: unknown): value is DiskFileAnalysisSummaryPayload {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Partial<DiskFileAnalysisSummaryPayload>;
+  return (
+    record.version === fileAnalysisSummaryFormatVersion &&
+    typeof record.settingsKey === "string" &&
+    Boolean(record.source) &&
+    typeof record.summary?.fingerprint === "string" &&
+    typeof record.summary?.uri === "string"
   );
 }
 
