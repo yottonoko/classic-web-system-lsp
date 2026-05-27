@@ -3759,6 +3759,148 @@ End Function
       }
     });
 
+    it("restores workspace diagnostics from disk cache and clears it by command", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-cache-"));
+      const cacheDir = path.join(tempDir, ".cache");
+      fs.writeFileSync(
+        path.join(tempDir, "broken.asp"),
+        `<%\nOption Explicit\nResponse.Write missingName\n%>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              checkJs: true,
+              debug: { output: "verbose" },
+              cache: { enabled: true, directory: cacheDir },
+              workspace: { backgroundAnalysis: false },
+            },
+          },
+        });
+        const first = await server.request("workspace/diagnostic", { previousResultIds: [] });
+        expect(JSON.stringify(first)).toContain("missingName");
+        await waitForLogContaining(server, "diskCache.write");
+        server.takePendingNotifications("window/logMessage");
+
+        const second = await server.request("workspace/diagnostic", { previousResultIds: [] });
+        expect(JSON.stringify(second)).toContain("missingName");
+        await waitForLogContaining(server, "diskCache.hit");
+
+        await server.request("workspace/executeCommand", { command: "aspLsp.clearCache" });
+        server.takePendingNotifications("window/logMessage");
+        await server.request("workspace/diagnostic", { previousResultIds: [] });
+        await waitForLogContaining(server, "diskCache.miss");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("invalidates disk cache when include dependencies change", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-cache-"));
+      const cacheDir = path.join(tempDir, ".cache");
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "shared.inc");
+      fs.writeFileSync(
+        owner,
+        '<!-- #include file="shared.inc" -->\n<% Response.Write "ok" %>',
+        "utf8",
+      );
+      fs.writeFileSync(include, '<% Const SharedValue = "ok" %>', "utf8");
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              cache: { enabled: true, directory: cacheDir },
+              workspace: { backgroundAnalysis: false },
+            },
+          },
+        });
+
+        const first = await server.request("workspace/diagnostic", { previousResultIds: [] });
+        expect(JSON.stringify(first)).not.toContain("include.missing");
+        await waitForLogContaining(server, "diskCache.write");
+        server.takePendingNotifications("window/logMessage");
+
+        fs.rmSync(include);
+        server.notify("workspace/didChangeWatchedFiles", {
+          changes: [{ uri: `file://${include}`, type: 3 }],
+        });
+        const second = await server.request("workspace/diagnostic", { previousResultIds: [] });
+        expect(JSON.stringify(second)).toContain("include.missing");
+        await waitForLogContaining(server, "diskCache.miss");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("warms unopened workspace diagnostics in the background", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-background-cache-"));
+      const cacheDir = path.join(tempDir, ".cache");
+      fs.writeFileSync(
+        path.join(tempDir, "broken.asp"),
+        `<%\nOption Explicit\nResponse.Write backgroundMissing\n%>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              cache: { enabled: true, directory: cacheDir },
+              workspace: { backgroundAnalysis: true, idleAnalysisConcurrency: 1 },
+            },
+          },
+        });
+
+        await waitForLogContaining(server, "backgroundAnalysis.completed");
+        const logs = JSON.stringify(server.takePendingNotifications("window/logMessage"));
+        expect(logs).toContain("diskCache.write");
+
+        const diagnostics = await server.request("workspace/diagnostic", {
+          previousResultIds: [],
+        });
+        expect(JSON.stringify(diagnostics)).toContain("backgroundMissing");
+        await waitForLogContaining(server, "diskCache.hit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns CSS and JavaScript source code actions", async () => {
       const source = `<style>.x { color: #ff0000; }</style>
 <script>

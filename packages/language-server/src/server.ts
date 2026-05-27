@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { VbDiagnosticsWorkerPool } from "./vb-worker-pool";
+import { DiskAnalysisCache, type DiskAnalysisSourceMetadata } from "./disk-analysis-cache";
 import type {
   VbDiagnosticsWorkerContext,
   VbDiagnosticsWorkerResponse,
@@ -153,6 +154,8 @@ const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
 const defaultDiagnosticsDebounceMs = 250;
+const languageServerVersion = "0.1.6";
+const backgroundAnalysisIdleDelayMs = 5_000;
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
 let workspaceRoots: string[] = [];
 let clientLocale = "en";
@@ -164,6 +167,13 @@ let documentCacheGeneration = 0;
 let workspaceGeneration = 0;
 let includeResolutionGeneration = 0;
 let jsProjectGeneration = 0;
+let diskAnalysisCache = createDiskAnalysisCache(globalSettings);
+let backgroundAnalysisTimer: ReturnType<typeof setTimeout> | undefined;
+let backgroundAnalysisGeneration = 0;
+let backgroundAnalysisRunning = false;
+let backgroundAnalysisRunningGeneration: number | undefined;
+let pendingBackgroundAnalysisReason: string | undefined;
+let lastForegroundActivityAt = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
 const hiddenJavaScriptGlobalCompletions = new Set(["__dirname", "__filename"]);
 const browserJavaScriptLibs = ["lib.esnext.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"];
@@ -572,7 +582,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         ],
       },
       executeCommandProvider: {
-        commands: ["aspLsp.reindexWorkspace"],
+        commands: ["aspLsp.reindexWorkspace", "aspLsp.clearCache"],
       },
       codeLensProvider: { resolveProvider: true },
       colorProvider: true,
@@ -614,12 +624,14 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 });
 
 documents.onDidOpen((event) => {
+  noteForegroundActivity();
   documentOpenContentVersions.set(event.document.uri, event.document.version);
   pendingDocumentChanges.delete(event.document.uri);
   cache.delete(event.document.uri);
   validate(event.document);
 });
 documents.onDidChangeContent((event) => {
+  noteForegroundActivity();
   const openedVersion = documentOpenContentVersions.get(event.document.uri);
   if (openedVersion === event.document.version) {
     documentOpenContentVersions.delete(event.document.uri);
@@ -635,6 +647,7 @@ documents.onDidChangeContent((event) => {
   );
 });
 documents.onDidSave((event) => {
+  noteForegroundActivity();
   indexWorkspaceFile(uriToFileName(event.document.uri));
   invalidateCachedAnalysisForUris(new Set([event.document.uri]), "document.save");
   validate(event.document);
@@ -691,6 +704,7 @@ connection.onNotification(
     for (const document of documents.all()) {
       validate(document);
     }
+    scheduleBackgroundAnalysis("workspaceFolders.changed");
   },
 );
 
@@ -700,6 +714,7 @@ connection.onDidChangeConfiguration((change) => {
   if (incoming) {
     globalSettings = normalizeSettings(incoming);
   }
+  configureDiskAnalysisCache();
   settingsByUri.clear();
   const impact = settingsInvalidationImpact(previousSettingsByUri);
   applySettingsInvalidation(impact);
@@ -709,6 +724,7 @@ connection.onDidChangeConfiguration((change) => {
       validate(document);
     }
   }
+  scheduleBackgroundAnalysis("configuration.changed");
 });
 
 connection.onDidChangeWatchedFiles((change) => {
@@ -757,6 +773,7 @@ connection.onDidChangeWatchedFiles((change) => {
   for (const document of documents.all().filter((item) => affectedUris.has(item.uri))) {
     validate(document);
   }
+  scheduleBackgroundAnalysis(scriptChanged ? "watchedScript.changed" : "watchedAsp.changed");
 });
 
 connection.workspace.onWillRenameFiles((params) => includeRenameWorkspaceEdit(params.files));
@@ -1194,6 +1211,7 @@ connection.languages.inlayHint.on((params): InlayHint[] =>
 );
 
 connection.languages.diagnostics.on(async (params) => {
+  noteForegroundActivity();
   const cached =
     getFreshCached(params.textDocument.uri) ?? getIndexedCached(params.textDocument.uri);
   return {
@@ -1203,6 +1221,7 @@ connection.languages.diagnostics.on(async (params) => {
 });
 
 connection.languages.diagnostics.onWorkspace(async (_params, token) => {
+  noteForegroundActivity();
   await ensureWorkspaceIndexAsync(globalSettings, token);
   const openedUris = new Set(documents.all().map((document) => document.uri));
   const concurrency = analysisConcurrency(globalSettings);
@@ -1247,6 +1266,14 @@ connection.onExecuteCommand(async (params) => {
     for (const document of documents.all()) {
       validate(document);
     }
+    scheduleBackgroundAnalysis("command.reindexWorkspace");
+    return { ok: true };
+  }
+  if (params.command === "aspLsp.clearCache") {
+    diskAnalysisCache.clear();
+    vbProjectContextCache.clear();
+    clearJsProjectCaches();
+    logDebugSummary(globalSettings, "[asp-lsp] diskCache.clear");
     return { ok: true };
   }
   return {
@@ -2100,7 +2127,124 @@ function workerAnalysisConcurrency(settings: AspSettings, mode: "busy" | "idle" 
   return mode === "idle" ? idleAnalysisConcurrency(settings) : busyAnalysisConcurrency(settings);
 }
 
+function noteForegroundActivity(): void {
+  lastForegroundActivityAt = Date.now();
+  if (
+    globalSettings.workspace?.backgroundAnalysis === true &&
+    (backgroundAnalysisTimer || backgroundAnalysisRunning || pendingBackgroundAnalysisReason)
+  ) {
+    scheduleBackgroundAnalysis(pendingBackgroundAnalysisReason ?? "foreground.defer");
+  }
+}
+
+function createDiskAnalysisCache(settings: AspSettings): DiskAnalysisCache {
+  return new DiskAnalysisCache({
+    enabled: settings.cache?.enabled !== false,
+    directory: settings.cache?.directory,
+    ttlHours: settings.cache?.ttlHours,
+    maxSizeMb: settings.cache?.maxSizeMb,
+    namespace: diskAnalysisNamespace(),
+    toolVersion: languageServerVersion,
+  });
+}
+
+function configureDiskAnalysisCache(): void {
+  diskAnalysisCache = createDiskAnalysisCache(globalSettings);
+  diskAnalysisCache.sweep();
+}
+
+function diskAnalysisNamespace(): string {
+  return textFingerprint(
+    JSON.stringify({
+      roots: workspaceRoots.map(normalizeFileName).sort(),
+      cwd: process.cwd(),
+    }),
+  );
+}
+
+function scheduleBackgroundAnalysis(reason: string): void {
+  if (globalSettings.workspace?.backgroundAnalysis !== true) {
+    cancelBackgroundAnalysis();
+    return;
+  }
+  pendingBackgroundAnalysisReason = reason;
+  if (backgroundAnalysisTimer) {
+    clearTimeout(backgroundAnalysisTimer);
+  }
+  const generation = ++backgroundAnalysisGeneration;
+  backgroundAnalysisTimer = setTimeout(() => {
+    backgroundAnalysisTimer = undefined;
+    void runBackgroundAnalysis(generation, reason);
+  }, backgroundAnalysisIdleDelayMs);
+}
+
+async function runBackgroundAnalysis(generation: number, reason: string): Promise<void> {
+  const settings = globalSettings;
+  if (settings.workspace?.backgroundAnalysis !== true) {
+    return;
+  }
+  backgroundAnalysisRunning = true;
+  backgroundAnalysisRunningGeneration = generation;
+  try {
+    await waitForForegroundIdle();
+    if (generation !== backgroundAnalysisGeneration) {
+      return;
+    }
+    logDebugSummary(settings, `[asp-lsp] backgroundAnalysis.started: reason=${reason}`);
+    const token = {
+      get isCancellationRequested() {
+        return generation !== backgroundAnalysisGeneration;
+      },
+    };
+    await ensureWorkspaceIndexAsync(settings, token);
+    if (token.isCancellationRequested) {
+      return;
+    }
+    const openedUris = openDocumentUris();
+    const entries = [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri));
+    await mapWithConcurrency(entries, idleAnalysisConcurrency(settings), async (entry) => {
+      if (token.isCancellationRequested) {
+        return;
+      }
+      await waitForForegroundIdle();
+      if (token.isCancellationRequested) {
+        return;
+      }
+      await diagnosticsForIndexed(entry, cachedSettings(entry.uri), token, "idle");
+    });
+    if (!token.isCancellationRequested) {
+      diskAnalysisCache.sweep();
+      pendingBackgroundAnalysisReason = undefined;
+      logDebugSummary(
+        settings,
+        `[asp-lsp] backgroundAnalysis.completed: files=${entries.length}, cache=${diskAnalysisCache.directory}`,
+      );
+    }
+  } finally {
+    if (backgroundAnalysisRunningGeneration === generation) {
+      backgroundAnalysisRunning = false;
+      backgroundAnalysisRunningGeneration = undefined;
+    }
+  }
+}
+
+function cancelBackgroundAnalysis(): void {
+  if (backgroundAnalysisTimer) {
+    clearTimeout(backgroundAnalysisTimer);
+    backgroundAnalysisTimer = undefined;
+  }
+  backgroundAnalysisGeneration += 1;
+  pendingBackgroundAnalysisReason = undefined;
+}
+
+async function waitForForegroundIdle(): Promise<void> {
+  while (Date.now() - lastForegroundActivityAt < backgroundAnalysisIdleDelayMs) {
+    await delay(100);
+  }
+}
+
 function runInteractiveLanguageFeature<T>(callback: () => T): T {
+  noteForegroundActivity();
   return callback();
 }
 
@@ -5295,11 +5439,26 @@ async function diagnosticsForIndexed(
   entry: WorkspaceIndexedDocument,
   settings: AspSettings,
   token?: { isCancellationRequested?: boolean },
+  mode: AnalysisExecutionMode = "workspace",
 ): Promise<Diagnostic[]> {
   if (token?.isCancellationRequested) {
     return [];
   }
+  const sourceMetadata = diskAnalysisSourceMetadata(entry);
   const cached = await cachedFromIndexedAsync(entry, settings);
+  if (token?.isCancellationRequested) {
+    return [];
+  }
+  const settingsKey = diskAnalysisSettingsKey(settings, cached.parsed);
+  const cachedDiagnostics = diskAnalysisCache.read({
+    source: sourceMetadata,
+    settingsKey,
+  });
+  if (cachedDiagnostics) {
+    logDebugSummary(settings, `[asp-lsp] diskCache.hit: ${entry.uri}`);
+    return cachedDiagnostics;
+  }
+  logDebugSummary(settings, `[asp-lsp] diskCache.miss: ${entry.uri}`);
   const cancellation: AnalysisCancellation = {
     isCancellationRequested: () => token?.isCancellationRequested === true,
   };
@@ -5311,12 +5470,79 @@ async function diagnosticsForIndexed(
     settings,
     "check.workspace",
     cancellation,
-    "workspace",
+    mode,
   );
   if (cancellation.isCancellationRequested()) {
     return [];
   }
+  diskAnalysisCache.write({
+    source: sourceMetadata,
+    settingsKey,
+    diagnostics: items,
+  });
+  logDebugSummary(settings, `[asp-lsp] diskCache.write: ${entry.uri}`);
   return items;
+}
+
+function diskAnalysisSourceMetadata(entry: WorkspaceIndexedDocument): DiskAnalysisSourceMetadata {
+  return {
+    fileName: normalizeFileName(entry.fileName),
+    mtimeMs: entry.mtimeMs,
+    size: entry.size,
+  };
+}
+
+function diskAnalysisSettingsKey(settings: AspSettings, parsed: AspParsedDocument): string {
+  return JSON.stringify({
+    parse: parseSettingsIdentity(settings),
+    diagnostics: diagnosticsIdentity(settings),
+    include: includeResolutionIdentity(settings),
+    includeDependencies: diskAnalysisIncludeDependencyKey(parsed, settings),
+    js: jsProjectSettingsIdentity(settings),
+    workspace: workspaceIndexSettingsIdentity(settings),
+  });
+}
+
+function diskAnalysisIncludeDependencyKey(root: AspParsedDocument, settings: AspSettings): string {
+  const dependencies: unknown[] = [];
+  const visited = new Set<string>();
+  const visit = (document: AspParsedDocument, depth: number): void => {
+    if (depth > 20) {
+      return;
+    }
+    for (const include of document.includes) {
+      const resolved = resolveIncludePathDetails(
+        document.uri,
+        include.path,
+        include.mode,
+        settings,
+      );
+      const normalizedFileName = normalizeFileName(resolved.fileName);
+      const stat = fs.statSync(normalizedFileName, { throwIfNoEntry: false });
+      const exists = stat?.isFile() === true;
+      dependencies.push({
+        owner: normalizeFileName(uriToFileName(document.uri)),
+        path: include.path,
+        mode: include.mode,
+        fileName: normalizedFileName,
+        exists,
+        mtimeMs: exists ? stat.mtimeMs : undefined,
+        size: exists ? stat.size : undefined,
+        pathCaseMatches: resolved.pathCaseMatches,
+        actualPath: resolved.actualPath ? normalizeFileName(resolved.actualPath) : undefined,
+      });
+      if (!exists || visited.has(normalizedFileName)) {
+        continue;
+      }
+      visited.add(normalizedFileName);
+      const entry = includeDocumentLoader.read(normalizedFileName, settings);
+      if (entry) {
+        visit(entry.parsed, depth + 1);
+      }
+    }
+  };
+  visit(root, 0);
+  return textFingerprint(JSON.stringify(dependencies));
 }
 
 function ensureWorkspaceIndex(): void {
@@ -5499,6 +5725,10 @@ function isValidUtf8(buffer: Uint8Array): boolean {
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 function indexWorkspaceRoot(root: string): void {
@@ -5810,6 +6040,7 @@ async function refreshConfiguration(): Promise<void> {
     globalSettings = normalizeSettings(
       (await connection.workspace.getConfiguration("aspLsp")) as Record<string, unknown>,
     );
+    configureDiskAnalysisCache();
     settingsByUri.clear();
     const impact = settingsInvalidationImpact(previousSettingsByUri);
     applySettingsInvalidation(impact);
@@ -5821,7 +6052,9 @@ async function refreshConfiguration(): Promise<void> {
     }
   } catch {
     globalSettings = normalizeSettings(globalSettings);
+    configureDiskAnalysisCache();
   }
+  scheduleBackgroundAnalysis("configuration.refresh");
 }
 
 function readSettingsFromChange(settings: unknown): Record<string, unknown> | undefined {
@@ -5867,6 +6100,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     vbscript: normalizeVbscriptSettings(settings),
     inlayHints: normalizeInlayHintSettings(settings),
     codeLens: normalizeCodeLensSettings(settings),
+    cache: normalizeCacheSettings(settings),
     workspace: normalizeWorkspaceSettings(settings),
   };
 }
@@ -5896,6 +6130,7 @@ function normalizeWorkspaceSettings(
       typeof record.scanChunkSize === "number" && record.scanChunkSize > 0
         ? Math.floor(record.scanChunkSize)
         : defaultScanChunkSize,
+    backgroundAnalysis: record.backgroundAnalysis === true,
     idleAnalysisConcurrency: clampAnalysisConcurrency(
       typeof record.idleAnalysisConcurrency === "number"
         ? record.idleAnalysisConcurrency
@@ -5908,6 +6143,25 @@ function normalizeWorkspaceSettings(
         : undefined,
       defaultBusyAnalysisConcurrency(),
     ),
+  };
+}
+
+function normalizeCacheSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["cache"] {
+  const raw = settings.cache;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    enabled: record.enabled !== false,
+    directory: typeof record.directory === "string" ? record.directory : undefined,
+    ttlHours:
+      typeof record.ttlHours === "number" && record.ttlHours > 0
+        ? Math.floor(record.ttlHours)
+        : 24 * 14,
+    maxSizeMb:
+      typeof record.maxSizeMb === "number" && record.maxSizeMb > 0
+        ? Math.floor(record.maxSizeMb)
+        : 128,
   };
 }
 
@@ -9313,6 +9567,7 @@ function isDiagnostic(value: Diagnostic | undefined): value is Diagnostic {
 }
 
 connection.onShutdown(async () => {
+  cancelBackgroundAnalysis();
   await vbDiagnosticsWorkerPool?.close();
   vbDiagnosticsWorkerPool = undefined;
 });

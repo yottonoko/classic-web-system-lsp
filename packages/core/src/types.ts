@@ -35,6 +35,7 @@ export interface AspSettings {
   vbscript?: AspVbscriptSettings;
   inlayHints?: AspInlayHintSettings;
   codeLens?: AspCodeLensSettings;
+  cache?: AspCacheSettings;
   workspace?: AspWorkspaceSettings;
 }
 
@@ -145,9 +146,17 @@ export interface AspCodeLensSettings {
   includes?: boolean;
 }
 
+export interface AspCacheSettings {
+  enabled?: boolean;
+  directory?: string;
+  ttlHours?: number;
+  maxSizeMb?: number;
+}
+
 export interface AspWorkspaceSettings {
   maxIndexFiles?: number;
   scanChunkSize?: number;
+  backgroundAnalysis?: boolean;
   idleAnalysisConcurrency?: number;
   busyAnalysisConcurrency?: number;
 }
