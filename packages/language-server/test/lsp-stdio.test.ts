@@ -2709,6 +2709,65 @@ both.SharedName
       }
     });
 
+    it("limits range semantic tokens to the requested ASP and embedded spans", async () => {
+      const source = `<style>
+.a { color: red; }
+</style>
+<%
+Dim beforeValue
+Dim targetValue
+targetValue = beforeValue + 1
+Dim afterValue
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/range-semantic.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const cssTokens = await server.request("textDocument/semanticTokens/range", {
+          textDocument: { uri },
+          range: { start: { line: 1, character: 0 }, end: { line: 1, character: 20 } },
+        });
+        const decodedCss = decodeSemanticTokens((cssTokens as { data?: number[] }).data);
+        expect(decodedCss.length).toBeGreaterThan(0);
+        expect(decodedCss.every((token) => token.line === 1)).toBe(true);
+
+        const vbTokens = await server.request("textDocument/semanticTokens/range", {
+          textDocument: { uri },
+          range: { start: { line: 6, character: 0 }, end: { line: 6, character: 32 } },
+        });
+        const decodedVb = decodeSemanticTokens((vbTokens as { data?: number[] }).data);
+        expect(decodedVb.length).toBeGreaterThan(0);
+        expect(decodedVb.every((token) => token.line === 6)).toBe(true);
+        expect(decodedVb).toContainEqual(
+          expect.objectContaining({
+            line: 6,
+            character: 12,
+            tokenType: semanticTokenType.operator,
+          }),
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("updates include directives for file rename operations", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-rename-"));
       const owner = path.join(tempDir, "default.asp");
@@ -5681,6 +5740,52 @@ Response.Write missingName`,
         server.notify("exit", undefined);
       } finally {
         server.stop();
+      }
+    });
+
+    it("runs VBScript project diagnostics through the worker pool", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vb-worker-"));
+      const page = path.join(tempDir, "default.asp");
+      fs.writeFileSync(
+        page,
+        `<%
+Dim unusedValue
+Response.Write "ok"
+%>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+              workspace: { busyAnalysisConcurrency: 1, idleAnalysisConcurrency: 1 },
+            },
+          },
+        });
+
+        const diagnostics = await server.request("workspace/diagnostic", {
+          previousResultIds: [],
+        });
+        expect(JSON.stringify(diagnostics)).toContain("unusedValue");
+        expect(JSON.stringify(diagnostics)).toContain("asp-lsp-vbscript-unused");
+        await waitForLogContaining(server, "vbscript.worker.dispatch");
+        await waitForLogContaining(server, "check.workspace.vbscript.diagnostics.worker");
+        await waitForLogContaining(server, "vbscript.worker.complete");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
 

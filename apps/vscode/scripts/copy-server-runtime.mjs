@@ -7,11 +7,21 @@ const extensionRoot = path.resolve(import.meta.dirname, "..");
 const repoRoot = path.resolve(extensionRoot, "..", "..");
 const serverRoot = path.join(extensionRoot, "server", "language-server");
 const serverEntry = path.join(repoRoot, "packages", "language-server", "dist", "server.js");
+const workerEntry = path.join(
+  repoRoot,
+  "packages",
+  "language-server",
+  "dist",
+  "vb-diagnostics-worker.js",
+);
 const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
 const require = createRequire(import.meta.url);
 
 if (!fs.existsSync(serverEntry)) {
   throw new Error(`Build @asp-lsp/language-server before packaging: ${serverEntry}`);
+}
+if (!fs.existsSync(workerEntry)) {
+  throw new Error(`Build @asp-lsp/language-server before packaging: ${workerEntry}`);
 }
 
 fs.rmSync(path.join(extensionRoot, "server"), { recursive: true, force: true });
@@ -19,7 +29,9 @@ const distRoot = path.join(serverRoot, "dist");
 fs.mkdirSync(distRoot, { recursive: true });
 
 await bundleNodeEntry(serverEntry, path.join(distRoot, "server.js"));
+await bundleNodeEntry(workerEntry, path.join(distRoot, "vb-diagnostics-worker.js"));
 fs.chmodSync(path.join(distRoot, "server.js"), 0o755);
+fs.chmodSync(path.join(distRoot, "vb-diagnostics-worker.js"), 0o755);
 copyTypeScriptLibs(distRoot);
 fs.writeFileSync(
   path.join(serverRoot, "package.json"),

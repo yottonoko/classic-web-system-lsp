@@ -46,6 +46,7 @@
   "configuration.codeLens.includes.description": "Classic ASP include CodeLens を表示します。",
   "configuration.workspace.maxIndexFiles.description": "1 回の workspace scan で index する、開いていない Classic ASP file の最大数です。",
   "configuration.workspace.scanChunkSize.description": "workspace indexing 中に yield するまでに処理する filesystem entry 数です。",
+  "configuration.workspace.idleAnalysisConcurrency.description": "idle/background analysis の最大並列数です。0 の場合は利用可能な CPU 数から 1 を引いた数を使います。",
   "configuration.workspace.busyAnalysisConcurrency.description": "workspace analysis の最大並列数です。0 の場合は利用可能な CPU 数の半分を使います。",
   "configuration.iis.url.description": "IIS debug helper command が開く URL です。",
   "configuration.iis.webRoot.description": "IIS debug helper command が使う web root です。",

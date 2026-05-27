@@ -115,6 +115,9 @@ describe("VS Code extension package", () => {
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.backgroundConcurrency"],
     ).toBeUndefined();
     expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.workspace.idleAnalysisConcurrency"],
+    ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
+    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.busyAnalysisConcurrency"],
     ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.legacyEncoding"]).toEqual(

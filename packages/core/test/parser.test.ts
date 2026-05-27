@@ -2642,6 +2642,31 @@ End Sub
     expect(tokenAt("+")).toEqual(expect.objectContaining({ tokenType: "operator" }));
   });
 
+  it("returns VBScript semantic tokens only inside the requested range", () => {
+    const source = `<%
+Dim beforeValue
+Dim targetValue
+targetValue = beforeValue + 1
+Dim afterValue
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const tokens = getVbscriptSemanticTokens(
+      parsed,
+      { symbols },
+      {
+        start: { line: 3, character: 0 },
+        end: { line: 3, character: 32 },
+      },
+    );
+    expect(tokens.length).toBeGreaterThan(0);
+    expect(tokens.every((token) => token.range.start.line === 3)).toBe(true);
+    expect(
+      tokens.some((token) => token.range.start.character === 14 && token.tokenType === "variable"),
+    ).toBe(true);
+    expect(tokens.some((token) => token.tokenType === "operator")).toBe(true);
+  });
+
   it("keeps undeclared assignments undeclared under Option Explicit", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

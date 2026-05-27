@@ -148,6 +148,7 @@ export interface AspCodeLensSettings {
 export interface AspWorkspaceSettings {
   maxIndexFiles?: number;
   scanChunkSize?: number;
+  idleAnalysisConcurrency?: number;
   busyAnalysisConcurrency?: number;
 }
 

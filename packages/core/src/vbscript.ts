@@ -159,6 +159,7 @@ interface VbAnalysisSnapshot {
   nodes: VbCstNode[];
   scopeNodes: VbCstNode[];
   classNodes: VbCstNode[];
+  serverScriptText: string;
   significantTokens: VbToken[];
   identifierTokens: VbToken[];
   statements: VbToken[][];
@@ -174,7 +175,12 @@ interface VbSymbolIndex {
   scopeOffsets: WeakMap<VbSymbol, { start: number; end: number }>;
 }
 
-interface VbReferenceIndex {
+interface VbTypeIndex {
+  byName: Map<string, VbType>;
+  memberByTypeAndName: Map<string, VbMember>;
+}
+
+interface VbUsageIndex {
   counts: Map<string, number>;
 }
 
@@ -186,7 +192,7 @@ interface VbUnusedReferenceCandidates {
 
 const analysisSnapshots = new WeakMap<AspParsedDocument, VbAnalysisSnapshot>();
 const symbolIndexes = new WeakMap<VbSymbol[], VbSymbolIndex>();
-const typeIndexes = new WeakMap<VbTypeEnvironment, Map<string, VbType>>();
+const typeIndexes = new WeakMap<VbTypeEnvironment, VbTypeIndex>();
 let cachedBuiltinNameSet: Set<string> | undefined;
 
 function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
@@ -2219,8 +2225,10 @@ export function analyzeVbscript(
       diagnoseCallSyntax(parsed, symbols, context.locale),
     ),
   );
-  const scriptText = measureVbDebugStep(context, "serverScriptText", () =>
-    getServerScriptText(parsed),
+  const scriptText = measureVbDebugStep(
+    context,
+    "serverScriptText",
+    () => snapshotFor(parsed).serverScriptText,
   );
   if (/^\s*Option\s+Explicit\b/im.test(scriptText)) {
     diagnostics.push(
@@ -2534,10 +2542,7 @@ export function getVbscriptSemanticTokens(
   const rangeStart = range ? offsetAt(parsed.text, range.start) : 0;
   const rangeEnd = range ? offsetAt(parsed.text, range.end) : parsed.text.length;
   const tokens: VbSemanticToken[] = operatorSemanticTokens(parsed, rangeStart, rangeEnd);
-  for (const token of identifierTokens(parsed)) {
-    if (token.end < rangeStart || token.start > rangeEnd) {
-      continue;
-    }
+  for (const token of identifierTokensInRange(parsed, rangeStart, rangeEnd)) {
     if (isClassicAspObjectName(token.text)) {
       tokens.push({
         range: rangeFromOffsets(parsed.text, token.start, token.end),
@@ -2622,35 +2627,37 @@ function operatorSemanticTokens(
   rangeEnd = parsed.text.length,
 ): VbSemanticToken[] {
   const operators: VbSemanticToken[] = [];
-  const documents = vbDocuments(parsed);
-  for (const document of documents) {
-    const tokens = document.tokens.filter((token) => !isTriviaToken(token));
-    for (let index = 0; index < tokens.length; index += 1) {
-      const token = tokens[index];
-      if (token.end < rangeStart || token.start > rangeEnd) {
-        continue;
-      }
-      const next = tokens[index + 1];
-      const multiChar =
-        token.text === "<" && (next?.text === ">" || next?.text === "=")
+  const seenMultiCharStarts = new Set<number>();
+  for (const token of significantTokensInRange(parsed, rangeStart, rangeEnd)) {
+    const next = nextSignificantTokenForToken(parsed, token);
+    const multiChar =
+      token.text === "<" && (next?.text === ">" || next?.text === "=")
+        ? next
+        : token.text === ">" && next?.text === "="
           ? next
-          : token.text === ">" && next?.text === "="
-            ? next
-            : undefined;
-      if (multiChar) {
-        operators.push({
-          range: rangeFromOffsets(parsed.text, token.start, multiChar.end),
-          tokenType: "operator",
-        });
-        index += 1;
-        continue;
-      }
-      if (isVbscriptOperator(token.text)) {
-        operators.push({
-          range: rangeFromOffsets(parsed.text, token.start, token.end),
-          tokenType: "operator",
-        });
-      }
+          : undefined;
+    if (multiChar) {
+      seenMultiCharStarts.add(token.start);
+      operators.push({
+        range: rangeFromOffsets(parsed.text, token.start, multiChar.end),
+        tokenType: "operator",
+      });
+      continue;
+    }
+    const previous = previousSignificantTokenForToken(parsed, token);
+    if (
+      previous &&
+      seenMultiCharStarts.has(previous.start) &&
+      ((previous.text === "<" && (token.text === ">" || token.text === "=")) ||
+        (previous.text === ">" && token.text === "="))
+    ) {
+      continue;
+    }
+    if (isVbscriptOperator(token.text)) {
+      operators.push({
+        range: rangeFromOffsets(parsed.text, token.start, token.end),
+        tokenType: "operator",
+      });
     }
   }
   return operators;
@@ -5032,6 +5039,9 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
   const nodes = documents.flatMap((document) => flattenVbNodes(document));
   const scopeNodes = nodes.filter((node) => node.kind === "Procedure" || node.kind === "Property");
   const classNodes = nodes.filter((node) => node.kind === "Class");
+  const serverScriptText = serverRegions(parsed)
+    .map((region) => parsed.text.slice(region.contentStart, region.contentEnd))
+    .join("\n");
   const significantTokens = documents
     .flatMap((document) => document.tokens)
     .filter((token) => !isTriviaToken(token));
@@ -5063,6 +5073,7 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
     nodes,
     scopeNodes,
     classNodes,
+    serverScriptText,
     significantTokens,
     identifierTokens,
     statements,
@@ -5771,11 +5782,10 @@ function diagnoseUnusedSymbols(
   context: VbProjectContext,
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
-  const candidates = unusedReferenceCandidates(parsed, symbols);
-  if (candidates.keys.size === 0) {
+  const usage = buildVbUsageIndex(parsed, symbols, context);
+  if (usage.candidates.keys.size === 0) {
     return diagnostics;
   }
-  const references = buildVbReferenceIndex(parsed, symbols, context, candidates);
   for (const symbol of symbols) {
     if (
       symbol.sourceUri !== parsed.uri ||
@@ -5785,7 +5795,7 @@ function diagnoseUnusedSymbols(
     ) {
       continue;
     }
-    if ((references.counts.get(symbolKey(symbol)) ?? 0) > 0) {
+    if ((usage.counts.get(symbolKey(symbol)) ?? 0) > 0) {
       continue;
     }
     diagnostics.push({
@@ -5798,13 +5808,16 @@ function diagnoseUnusedSymbols(
   return diagnostics;
 }
 
-function buildVbReferenceIndex(
+function buildVbUsageIndex(
   parsed: AspParsedDocument,
   symbols: VbSymbol[],
   context: VbProjectContext,
-  candidates: VbUnusedReferenceCandidates,
-): VbReferenceIndex {
+): VbUsageIndex & { candidates: VbUnusedReferenceCandidates } {
+  const candidates = unusedReferenceCandidates(parsed, symbols);
   const counts = new Map<string, number>();
+  if (candidates.keys.size === 0) {
+    return { counts, candidates };
+  }
   const documents = context.documents ?? [parsed];
   const index = symbolIndexFor(symbols, parsed);
   for (const document of documents) {
@@ -5834,7 +5847,7 @@ function buildVbReferenceIndex(
     }
   }
   addExternalRefUsageCounts(counts, symbols, context.externalRefUsages ?? [], candidates);
-  return { counts };
+  return { counts, candidates };
 }
 
 function addExternalRefUsageCounts(
@@ -6122,6 +6135,48 @@ function significantTokens(parsed: AspParsedDocument): VbToken[] {
 
 function identifierTokens(parsed: AspParsedDocument): VbToken[] {
   return snapshotFor(parsed).identifierTokens;
+}
+
+function identifierTokensInRange(
+  parsed: AspParsedDocument,
+  rangeStart: number,
+  rangeEnd: number,
+): VbToken[] {
+  return tokensInOffsetRange(snapshotFor(parsed).identifierTokens, rangeStart, rangeEnd);
+}
+
+function significantTokensInRange(
+  parsed: AspParsedDocument,
+  rangeStart: number,
+  rangeEnd: number,
+): VbToken[] {
+  return tokensInOffsetRange(snapshotFor(parsed).significantTokens, rangeStart, rangeEnd);
+}
+
+function tokensInOffsetRange<T extends { start: number; end: number }>(
+  tokens: readonly T[],
+  rangeStart: number,
+  rangeEnd: number,
+): T[] {
+  let low = 0;
+  let high = tokens.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (tokens[middle].end < rangeStart) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  const result: T[] = [];
+  for (let index = low; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.start > rangeEnd) {
+      break;
+    }
+    result.push(token);
+  }
+  return result;
 }
 
 function identifierTokenAt(parsed: AspParsedDocument, offset: number): VbToken | undefined {
@@ -6989,12 +7044,7 @@ function addType(typeMap: Map<string, VbType>, type: VbType): void {
 }
 
 function findType(env: VbTypeEnvironment, name: string): VbType | undefined {
-  let index = typeIndexes.get(env);
-  if (!index) {
-    index = new Map(env.types.map((type) => [type.name.toLowerCase(), type]));
-    typeIndexes.set(env, index);
-  }
-  return index.get(name.toLowerCase());
+  return typeIndexFor(env).byName.get(name.toLowerCase());
 }
 
 function findTypeMember(
@@ -7002,9 +7052,29 @@ function findTypeMember(
   typeName: string,
   memberName: string,
 ): VbMember | undefined {
-  return findType(env, typeName)?.members.find(
-    (member) => member.name.toLowerCase() === memberName.toLowerCase(),
-  );
+  return typeIndexFor(env).memberByTypeAndName.get(typeMemberKey(typeName, memberName));
+}
+
+function typeIndexFor(env: VbTypeEnvironment): VbTypeIndex {
+  let index = typeIndexes.get(env);
+  if (index) {
+    return index;
+  }
+  const byName = new Map<string, VbType>();
+  const memberByTypeAndName = new Map<string, VbMember>();
+  for (const type of env.types) {
+    byName.set(type.name.toLowerCase(), type);
+    for (const member of type.members) {
+      memberByTypeAndName.set(typeMemberKey(type.name, member.name), member);
+    }
+  }
+  index = { byName, memberByTypeAndName };
+  typeIndexes.set(env, index);
+  return index;
+}
+
+function typeMemberKey(typeName: string, memberName: string): string {
+  return `${typeName.toLowerCase()}\0${memberName.toLowerCase()}`;
 }
 
 function canonicalBuiltinTypeName(name: string): string {

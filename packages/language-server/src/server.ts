@@ -3,6 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { VbDiagnosticsWorkerPool } from "./vb-worker-pool";
+import type {
+  VbDiagnosticsWorkerContext,
+  VbDiagnosticsWorkerResponse,
+} from "./vb-diagnostics-protocol";
 import { analyse, detect } from "chardet";
 import {
   CodeActionKind,
@@ -107,9 +112,11 @@ import {
   type VirtualDocument,
   type VbCstNode,
   type VbProjectContext,
+  type VbExternalRefUsage,
   type VbSymbol,
   type VbSymbolKind,
   type VbType,
+  type VbTypeEnvironment,
 } from "@asp-lsp/core";
 import { getCSSLanguageService } from "vscode-css-languageservice";
 import {
@@ -245,6 +252,14 @@ interface CachedAnalysis {
     collectionKey: string;
     documents: AspParsedDocument[];
   };
+  vbFileSummary?: {
+    key: string;
+    summary: FileAnalysisSummary;
+  };
+  vbProjectAnalysis?: {
+    key: string;
+    analysis: VbProjectAnalysis;
+  };
 }
 
 interface DocumentIdentity {
@@ -294,6 +309,8 @@ interface StagedDiagnosticsState {
 interface AnalysisCancellation {
   isCancellationRequested(): boolean;
 }
+
+type AnalysisExecutionMode = "foreground" | "workspace" | "idle";
 
 interface OffsetEdit {
   start: number;
@@ -356,6 +373,13 @@ interface IncludePublicSummaryState {
   uri: string;
   key: string;
   publicFingerprint: string;
+}
+
+interface VbProjectAnalysis {
+  documents: AspParsedDocument[];
+  symbols: VbSymbol[];
+  typeEnvironment: VbTypeEnvironment;
+  externalRefUsages: VbExternalRefUsage[];
 }
 
 interface JsCallHierarchyData {
@@ -482,6 +506,8 @@ const pendingDocumentChanges = new Map<string, PendingDocumentChange>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 const includeDocumentLoader = new IncludeDocumentLoader();
 const maxVbProjectContextCacheEntries = 32;
+let vbDiagnosticsWorkerPool: VbDiagnosticsWorkerPool | undefined;
+let vbDiagnosticsWorkerRequestId = 0;
 let stagedDiagnosticsGeneration = 0;
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
@@ -1149,21 +1175,22 @@ connection.languages.inlayHint.on((params): InlayHint[] =>
   }),
 );
 
-connection.languages.diagnostics.on((params) => {
+connection.languages.diagnostics.on(async (params) => {
   const cached =
     getFreshCached(params.textDocument.uri) ?? getIndexedCached(params.textDocument.uri);
   return {
     kind: "full" as const,
-    items: cached ? diagnosticsForCached(cached, cachedSettings(cached.source.uri)) : [],
+    items: cached ? await diagnosticsForCachedAsync(cached, cachedSettings(cached.source.uri)) : [],
   };
 });
 
 connection.languages.diagnostics.onWorkspace(async (_params, token) => {
   await ensureWorkspaceIndexAsync(globalSettings, token);
   const openedUris = new Set(documents.all().map((document) => document.uri));
+  const concurrency = analysisConcurrency(globalSettings);
   const indexedItems = await mapWithConcurrency(
     [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri)),
-    analysisConcurrency(globalSettings),
+    concurrency,
     async (entry) => ({
       kind: "full" as const,
       uri: entry.uri,
@@ -1171,23 +1198,25 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
       items: await diagnosticsForIndexed(entry, cachedSettings(entry.uri), token),
     }),
   );
+  const openItems = await mapWithConcurrency(documents.all(), concurrency, async (document) => {
+    const cached = ensureFreshCachedDocument(document);
+    return cached
+      ? {
+          kind: "full" as const,
+          uri: document.uri,
+          version: document.version,
+          items: await diagnosticsForCachedAsync(
+            cached,
+            cachedSettings(document.uri),
+            "check.workspace",
+            neverCancelled,
+            "workspace",
+          ),
+        }
+      : undefined;
+  });
   return {
-    items: [
-      ...documents.all().flatMap((document) => {
-        const cached = ensureFreshCachedDocument(document);
-        return cached
-          ? [
-              {
-                kind: "full" as const,
-                uri: document.uri,
-                version: document.version,
-                items: diagnosticsForCached(cached, cachedSettings(document.uri)),
-              },
-            ]
-          : [];
-      }),
-      ...indexedItems,
-    ],
+    items: [...openItems.filter((item) => item !== undefined), ...indexedItems],
   };
 });
 
@@ -1426,6 +1455,7 @@ connection.languages.semanticTokens.onDelta((params): SemanticTokens | SemanticT
   const resultId = nextSemanticTokenResultId();
   semanticTokenResults.set(resultId, { uri: cached.source.uri, data: next });
   latestSemanticTokenResultByUri.set(cached.source.uri, resultId);
+  semanticTokenResults.delete(params.previousResultId);
   return {
     resultId,
     edits: [semanticTokenDeltaEdit(previous.data, next)],
@@ -1735,7 +1765,13 @@ async function runStagedDiagnostics(
     logStaleStagedDiagnostics(settings, state, "project");
     return;
   }
-  state.layers.project = projectDiagnosticsForCached(cached, settings, "check");
+  state.layers.project = await projectDiagnosticsForCachedAsync(
+    cached,
+    settings,
+    "check",
+    cancellation,
+    "foreground",
+  );
   publishStagedDiagnosticsLayer(cached, settings, state, "project");
   if (!isCurrentStagedDiagnostics(cached, state)) {
     logStaleStagedDiagnostics(settings, state, "final");
@@ -1810,29 +1846,12 @@ function logStaleStagedDiagnostics(
   );
 }
 
-function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
-  const startedAt = startCheckLog(cached, settings);
-  const parserItems = measureDebugStep(
-    settings,
-    cached.source.uri,
-    "check.parserDiagnostics",
-    () => cached.parsed.diagnostics,
-  );
-  const includeItems = includeDiagnosticsForCached(cached, settings, "check");
-  const syntaxItems = syntaxDiagnosticsForCached(cached, settings, "check");
-  const projectItems = projectDiagnosticsForCached(cached, settings, "check");
-  const items = measureDebugStep(settings, cached.source.uri, "check.dedupe", () =>
-    dedupeDiagnostics([...parserItems, ...includeItems, ...syntaxItems, ...projectItems]),
-  );
-  finishCheckLog(cached, settings, startedAt, items.length);
-  return items;
-}
-
 async function diagnosticsForCachedAsync(
   cached: CachedDocument,
   settings: AspSettings,
   stepPrefix = "check.async",
   cancellation: AnalysisCancellation = neverCancelled,
+  mode: AnalysisExecutionMode = "foreground",
 ): Promise<Diagnostic[]> {
   const parserItems = cached.parsed.diagnostics;
   const includeItems = await includeDiagnosticsForCachedAsync(
@@ -1845,21 +1864,17 @@ async function diagnosticsForCachedAsync(
     return [];
   }
   const syntaxItems = syntaxDiagnosticsForCached(cached, settings, stepPrefix);
-  const projectItems = projectDiagnosticsForCached(cached, settings, stepPrefix);
+  const projectItems = await projectDiagnosticsForCachedAsync(
+    cached,
+    settings,
+    stepPrefix,
+    cancellation,
+    mode,
+  );
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
     dedupeDiagnostics([...parserItems, ...includeItems, ...syntaxItems, ...projectItems]),
   );
   return items;
-}
-
-function includeDiagnosticsForCached(
-  cached: CachedDocument,
-  settings: AspSettings,
-  stepPrefix = "check.include",
-): Diagnostic[] {
-  return measureDebugStep(settings, cached.source.uri, `${stepPrefix}.includeDiagnostics`, () =>
-    includeDiagnostics(cached, settings),
-  );
 }
 
 async function includeDiagnosticsForCachedAsync(
@@ -1908,13 +1923,19 @@ function embeddedSyntaxDiagnostics(
   return diagnostics;
 }
 
-function projectDiagnosticsForCached(
+async function projectDiagnosticsForCachedAsync(
   cached: CachedDocument,
   settings: AspSettings,
   stepPrefix: string,
-): Diagnostic[] {
-  const vbItems = vbDiagnostics(cached, settings, stepPrefix);
+  cancellation: AnalysisCancellation = neverCancelled,
+  mode: AnalysisExecutionMode = "foreground",
+): Promise<Diagnostic[]> {
+  const vbItemsPromise = vbDiagnosticsAsync(cached, settings, stepPrefix, cancellation, mode);
   const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
+  const vbItems = await vbItemsPromise;
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
   return measureDebugStep(settings, cached.source.uri, `${stepPrefix}.project.dedupe`, () =>
     dedupeDiagnostics([...vbItems, ...jsItems]),
   );
@@ -1950,10 +1971,18 @@ function finishDebugStep(
   step: string,
   startedAt: bigint,
 ): void {
+  logDebugElapsed(settings, uri, step, Number(process.hrtime.bigint() - startedAt) / 1_000_000);
+}
+
+function logDebugElapsed(
+  settings: AspSettings,
+  uri: string,
+  step: string,
+  elapsedMs: number,
+): void {
   if (!isDebugVerboseEnabled(settings)) {
     return;
   }
-  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
   connection.console.info(`[asp-lsp] ${step}: ${uri} ${formatElapsedMs(elapsedMs)}`);
 }
 
@@ -1971,12 +2000,30 @@ function measureDebugStep<T>(
   }
 }
 
+async function measureDebugStepAsync<T>(
+  settings: AspSettings,
+  uri: string,
+  step: string,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const startedAt = process.hrtime.bigint();
+  try {
+    return await callback();
+  } finally {
+    finishDebugStep(settings, uri, step, startedAt);
+  }
+}
+
 function availableAnalysisConcurrency(): number {
   return Math.max(1, os.availableParallelism());
 }
 
 function defaultBusyAnalysisConcurrency(): number {
   return Math.max(1, Math.floor(availableAnalysisConcurrency() / 2));
+}
+
+function defaultIdleAnalysisConcurrency(): number {
+  return Math.max(1, availableAnalysisConcurrency() - 1);
 }
 
 const neverCancelled: AnalysisCancellation = {
@@ -2020,8 +2067,19 @@ function busyAnalysisConcurrency(settings: AspSettings): number {
   );
 }
 
+function idleAnalysisConcurrency(settings: AspSettings): number {
+  return clampAnalysisConcurrency(
+    settings.workspace?.idleAnalysisConcurrency,
+    defaultIdleAnalysisConcurrency(),
+  );
+}
+
 function analysisConcurrency(settings: AspSettings): number {
   return busyAnalysisConcurrency(settings);
+}
+
+function workerAnalysisConcurrency(settings: AspSettings, mode: "busy" | "idle" = "busy"): number {
+  return mode === "idle" ? idleAnalysisConcurrency(settings) : busyAnalysisConcurrency(settings);
 }
 
 function runInteractiveLanguageFeature<T>(callback: () => T): T {
@@ -2217,11 +2275,13 @@ function jsSlowDiagnostics(
   });
 }
 
-function vbDiagnostics(
+async function vbDiagnosticsAsync(
   cached: CachedDocument,
   settings: AspSettings,
   stepPrefix: string,
-): Diagnostic[] {
+  cancellation: AnalysisCancellation = neverCancelled,
+  mode: AnalysisExecutionMode = "foreground",
+): Promise<Diagnostic[]> {
   const diagnosticsKey = vbDiagnosticsCacheKey(cached, settings);
   const cachedItems = cached.analysis?.vbDiagnostics;
   if (cachedItems?.key === diagnosticsKey) {
@@ -2238,28 +2298,154 @@ function vbDiagnostics(
     `${stepPrefix}.vbscript.projectContext`,
     () => buildVbProjectContext(cached, settings),
   );
-  const items = measureDebugStep(
+  const items = await measureDebugStepAsync(
     settings,
     cached.source.uri,
-    `${stepPrefix}.vbscript.diagnostics`,
-    () =>
-      analyzeVbscript(cached.parsed, {
-        ...context,
-        debugStep: (name, action) =>
-          measureDebugStep(
-            settings,
-            cached.source.uri,
-            `${stepPrefix}.vbscript.diagnostics.${name}`,
-            action,
-          ),
-      }).diagnostics,
+    mode === "foreground"
+      ? `${stepPrefix}.vbscript.diagnostics`
+      : `${stepPrefix}.vbscript.diagnostics.worker`,
+    () => analyzeVbscriptAsync(cached, context, settings, stepPrefix, cancellation, mode),
   );
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
   analysisFor(cached).vbDiagnostics = {
     key: diagnosticsKey,
     items,
     text: cached.parsed.text,
   };
   return items;
+}
+
+async function analyzeVbscriptAsync(
+  cached: CachedDocument,
+  context: VbProjectContext,
+  settings: AspSettings,
+  stepPrefix: string,
+  cancellation: AnalysisCancellation,
+  mode: AnalysisExecutionMode,
+): Promise<Diagnostic[]> {
+  if (shouldUseVbDiagnosticsWorker(mode)) {
+    try {
+      const response = await runVbDiagnosticsWorker(
+        cached,
+        cloneableVbProjectContext(context),
+        settings,
+        cancellation,
+        mode,
+      );
+      if (response.error) {
+        throw workerResponseError(response);
+      }
+      logVbWorkerTimings(settings, cached.source.uri, stepPrefix, response);
+      return response.diagnostics ?? [];
+    } catch (error) {
+      logDebugSummary(
+        settings,
+        `[asp-lsp] vbscript.worker.fallback: ${cached.source.uri}, reason=${errorMessage(error)}`,
+      );
+    }
+  }
+  return analyzeVbscript(cached.parsed, {
+    ...context,
+    debugStep: (name, action) =>
+      measureDebugStep(
+        settings,
+        cached.source.uri,
+        `${stepPrefix}.vbscript.diagnostics.${name}`,
+        action,
+      ),
+  }).diagnostics;
+}
+
+async function runVbDiagnosticsWorker(
+  cached: CachedDocument,
+  context: VbDiagnosticsWorkerContext,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+  mode: AnalysisExecutionMode,
+): Promise<VbDiagnosticsWorkerResponse> {
+  if (cancellation.isCancellationRequested()) {
+    return { id: 0, diagnostics: [] };
+  }
+  const pool = getVbDiagnosticsWorkerPool(settings, mode);
+  const id = ++vbDiagnosticsWorkerRequestId;
+  const concurrencyMode = mode === "idle" ? "idle" : "busy";
+  logDebugSummary(
+    settings,
+    `[asp-lsp] vbscript.worker.dispatch: ${cached.source.uri}, request=${id}, mode=${mode}, concurrency=${workerAnalysisConcurrency(settings, concurrencyMode)}`,
+  );
+  const response = await pool.run({
+    id,
+    parsed: cached.parsed,
+    context,
+  });
+  logDebugSummary(
+    settings,
+    `[asp-lsp] vbscript.worker.complete: ${cached.source.uri}, request=${id}, diagnostics=${response.diagnostics?.length ?? 0}`,
+  );
+  return response;
+}
+
+function getVbDiagnosticsWorkerPool(
+  settings: AspSettings,
+  mode: AnalysisExecutionMode,
+): VbDiagnosticsWorkerPool {
+  vbDiagnosticsWorkerPool ??= new VbDiagnosticsWorkerPool();
+  vbDiagnosticsWorkerPool.resize(
+    workerAnalysisConcurrency(settings, mode === "idle" ? "idle" : "busy"),
+  );
+  return vbDiagnosticsWorkerPool;
+}
+
+function shouldUseVbDiagnosticsWorker(mode: AnalysisExecutionMode): boolean {
+  return (
+    process.env.ASP_LSP_DISABLE_VB_WORKERS !== "1" &&
+    (mode !== "foreground" || process.env.ASP_LSP_FORCE_VB_WORKERS === "1")
+  );
+}
+
+function cloneableVbProjectContext(context: VbProjectContext): VbDiagnosticsWorkerContext {
+  return {
+    documents: context.documents,
+    symbols: context.symbols,
+    externalRefUsages: context.externalRefUsages,
+    typeChecking: context.typeChecking,
+    identifierCase: context.identifierCase,
+    identifierCaseByKind: context.identifierCaseByKind,
+    comTypes: context.comTypes,
+    typeEnvironment: context.typeEnvironment,
+    unusedDiagnostics: context.unusedDiagnostics,
+    syntaxSnippets: context.syntaxSnippets,
+    locale: context.locale,
+  };
+}
+
+function logVbWorkerTimings(
+  settings: AspSettings,
+  uri: string,
+  stepPrefix: string,
+  response: VbDiagnosticsWorkerResponse,
+): void {
+  for (const timing of response.timings ?? []) {
+    logDebugElapsed(
+      settings,
+      uri,
+      `${stepPrefix}.vbscript.diagnostics.${timing.name}`,
+      timing.elapsedMs,
+    );
+  }
+}
+
+function workerResponseError(response: VbDiagnosticsWorkerResponse): Error {
+  const error = new Error(response.error?.message ?? "VBScript diagnostics worker failed.");
+  error.name = response.error?.name ?? error.name;
+  error.stack = response.error?.stack ?? error.stack;
+  return error;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function seedVbReuseAfterIncrementalChange(
@@ -4060,7 +4246,8 @@ function tsReferenceToLocation(
 
 function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
   const rootKey = vbProjectRootContextCacheKey(cached, settings);
-  const documents = collectCachedVbProjectDocuments(cached, settings);
+  const project = collectCachedVbProjectAnalysis(cached, settings);
+  const documents = project.documents;
   const contextSettings = vbProjectContextSettings(settings);
   const key = vbProjectContextCacheKey(documents, settings);
   if (cached.analysis?.vbProjectContext?.key === key) {
@@ -4073,15 +4260,11 @@ function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): V
     analysisFor(cached).vbProjectContext = { key, rootKey, context: globalCached.context };
     return context;
   }
-  const symbols = documents.flatMap((document) =>
-    collectVbscriptSymbols(document, contextSettings),
-  );
-  symbols.push(...configuredVbscriptGlobals(cached, settings));
-  const typeEnvironment = buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols });
   const context = {
     documents,
-    symbols,
-    typeEnvironment,
+    symbols: project.symbols,
+    typeEnvironment: project.typeEnvironment,
+    externalRefUsages: project.externalRefUsages,
     ...contextSettings,
   };
   rememberVbProjectContext(key, context);
@@ -4337,6 +4520,112 @@ function configuredVbscriptGlobals(cached: CachedDocument, settings: AspSettings
   });
 }
 
+function collectCachedVbProjectAnalysis(
+  cached: CachedDocument,
+  settings: AspSettings,
+): VbProjectAnalysis {
+  const documents = collectCachedVbProjectDocuments(cached, settings);
+  const key = vbProjectContextCacheKey(documents, settings);
+  const existing = cached.analysis?.vbProjectAnalysis;
+  if (existing?.key === key) {
+    return existing.analysis;
+  }
+  const contextSettings = vbProjectContextSettings(settings);
+  const summaries = documents.map((document) =>
+    fileAnalysisSummaryForProjectDocument(cached, document, settings, contextSettings),
+  );
+  const symbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
+  symbols.push(...configuredVbscriptGlobals(cached, settings));
+  const typeEnvironment = mergeVbTypeEnvironment(
+    buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
+    summaries.flatMap((summary) => summary.vbscript?.typeFacts ?? []),
+    symbols,
+  );
+  const analysis = {
+    documents,
+    symbols,
+    typeEnvironment,
+    externalRefUsages: summaries.flatMap((summary) => summary.vbscript?.externalRefUsages ?? []),
+  };
+  analysisFor(cached).vbProjectAnalysis = { key, analysis };
+  return analysis;
+}
+
+function fileAnalysisSummaryForProjectDocument(
+  cached: CachedDocument,
+  document: AspParsedDocument,
+  settings: AspSettings,
+  context: VbProjectContext,
+): FileAnalysisSummary {
+  if (document.uri !== cached.parsed.uri) {
+    const entry = includeDocumentLoader.read(uriToFileName(document.uri), settings);
+    if (entry?.parsed === document || entry?.key) {
+      return entry.summary;
+    }
+  }
+  return cachedFileAnalysisSummary(cached, context);
+}
+
+function cachedFileAnalysisSummary(
+  cached: CachedDocument,
+  context: VbProjectContext,
+): FileAnalysisSummary {
+  const key = JSON.stringify({
+    document: vbProjectDocumentFingerprint(cached.parsed),
+    context: {
+      typeChecking: context.typeChecking,
+      identifierCase: context.identifierCase,
+      identifierCaseByKind: context.identifierCaseByKind,
+      comTypes: context.comTypes,
+      unusedDiagnostics: context.unusedDiagnostics,
+      syntaxSnippets: context.syntaxSnippets,
+    },
+  });
+  const existing = cached.analysis?.vbFileSummary;
+  if (existing?.key === key) {
+    return existing.summary;
+  }
+  const summary = summarizeAspFileAnalysis(cached.parsed, context);
+  analysisFor(cached).vbFileSummary = { key, summary };
+  return summary;
+}
+
+function mergeVbTypeEnvironment(
+  base: VbTypeEnvironment,
+  facts: VbType[],
+  symbols: VbSymbol[],
+): VbTypeEnvironment {
+  const byName = new Map<string, VbType>();
+  for (const type of base.types) {
+    byName.set(type.name.toLowerCase(), type);
+  }
+  for (const type of facts) {
+    const key = type.name.toLowerCase();
+    const existing = byName.get(key);
+    byName.set(
+      key,
+      existing
+        ? {
+            ...existing,
+            members: mergeVbMembers(existing.members, type.members),
+          }
+        : type,
+    );
+  }
+  return {
+    types: [...byName.values()],
+    symbols,
+  };
+}
+
+function mergeVbMembers(left: VbType["members"], right: VbType["members"]): VbType["members"] {
+  const byName = new Map(left.map((member) => [member.name.toLowerCase(), member]));
+  for (const member of right) {
+    byName.set(member.name.toLowerCase(), member);
+  }
+  return [...byName.values()];
+}
+
 function collectCachedVbProjectDocuments(
   cached: CachedDocument,
   settings: AspSettings,
@@ -4445,6 +4734,7 @@ function includeDocumentSettingsIdentity(settings: AspSettings): string {
   return JSON.stringify({
     parse: parseSettingsIdentity(settings),
     legacyEncoding: settings.legacyEncoding,
+    vbscript: vbProjectContextSettings(settings),
   });
 }
 
@@ -4455,7 +4745,7 @@ function createIncludeDocumentCacheEntry(
   key: string,
 ): IncludeDocumentCacheEntry {
   const parsed = parseAspDocument(pathToFileUri(fileName), text, settings);
-  const summary = summarizeAspFileAnalysis(parsed);
+  const summary = summarizeAspFileAnalysis(parsed, vbProjectContextSettings(settings));
   return {
     key,
     fileName,
@@ -4510,66 +4800,6 @@ function publicExportBoundary(
     visibility: summary.visibility,
     members: summary.members?.map(publicExportBoundary),
   };
-}
-
-function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
-  const diagnostics: Diagnostic[] = [];
-  const owner = uriToFileName(cached.source.uri);
-  const localizer = localizerForSettings(settings);
-  for (const include of cached.parsed.includes) {
-    const resolved = resolveIncludePathDetails(
-      cached.source.uri,
-      include.path,
-      include.mode,
-      settings,
-    );
-    recordIncludeDependency(cached.source.uri, pathToFileUri(resolved.fileName));
-    if (!resolved.exists) {
-      diagnostics.push({
-        severity: DiagnosticSeverity.Warning,
-        range: include.range,
-        message: localizer.t("server.include.unresolved", { path: include.path }),
-        code: "include.missing",
-        source: "asp-lsp-include",
-      });
-      continue;
-    }
-    if (settings.windowsPathResolution !== false && !resolved.pathCaseMatches) {
-      diagnostics.push({
-        severity: DiagnosticSeverity.Warning,
-        range: include.pathRange,
-        message: localizer.t("server.include.caseMismatch", {
-          path: include.path,
-          actualPath: resolved.actualIncludePath ?? resolved.actualPath ?? resolved.fileName,
-        }),
-        code: "include.pathCaseMismatch",
-        source: "asp-lsp-include",
-      });
-    }
-    if (sameFile(resolved.fileName, owner)) {
-      diagnostics.push({
-        severity: DiagnosticSeverity.Warning,
-        range: include.range,
-        message: localizer.t("server.include.currentDocument"),
-        code: "include.currentDocument",
-        source: "asp-lsp-include",
-      });
-      continue;
-    }
-    const cycle = findIncludeCycle(owner, resolved.fileName, settings);
-    if (cycle) {
-      diagnostics.push({
-        severity: DiagnosticSeverity.Warning,
-        range: include.range,
-        message: localizer.t("server.include.cycle", {
-          cycle: cycle.map((fileName) => path.basename(fileName)).join(" -> "),
-        }),
-        code: "include.cycle",
-        source: "asp-lsp-include",
-      });
-    }
-  }
-  return diagnostics;
 }
 
 async function includeDiagnosticsAsync(
@@ -4715,65 +4945,6 @@ function includePathForRenamedTarget(
     }
   }
   return `/${path.basename(targetFile)}`;
-}
-
-function findIncludeCycle(
-  owner: string,
-  start: string,
-  settings: AspSettings,
-): string[] | undefined {
-  const cacheKey = includeCycleCacheKey(owner, start, settings);
-  if (includeCycleCache.has(cacheKey)) {
-    return includeCycleCache.get(cacheKey) ?? undefined;
-  }
-  if (!fs.existsSync(start)) {
-    includeCycleCache.set(cacheKey, null);
-    return undefined;
-  }
-  const visited = new Set<string>();
-  const stack: string[] = [];
-  const stackIndexes = new Map<string, number>();
-  const search = (fileName: string, depth: number): string[] | undefined => {
-    if (depth > 20) {
-      return undefined;
-    }
-    const normalized = normalizeFileName(fileName);
-    if (sameFile(normalized, owner) && stack.length > 0) {
-      return [...stack, owner];
-    }
-    const existingStackIndex = stackIndexes.get(normalized);
-    if (existingStackIndex !== undefined) {
-      return [...stack.slice(existingStackIndex), normalized];
-    }
-    if (visited.has(normalized)) {
-      return undefined;
-    }
-    visited.add(normalized);
-    stackIndexes.set(normalized, stack.length);
-    stack.push(normalized);
-    const parsed = readParsedIncludeDocument(normalized, settings);
-    for (const include of parsed.includes) {
-      const next = resolveIncludePath(
-        pathToFileUri(normalized),
-        include.path,
-        include.mode,
-        settings,
-      );
-      if (!fs.existsSync(next)) {
-        continue;
-      }
-      const cycle = search(next, depth + 1);
-      if (cycle) {
-        return cycle;
-      }
-    }
-    stack.pop();
-    stackIndexes.delete(normalized);
-    return undefined;
-  };
-  const cycle = search(start, 0);
-  includeCycleCache.set(cacheKey, cycle ?? null);
-  return cycle;
 }
 
 async function findIncludeCycleAsync(
@@ -5131,7 +5302,13 @@ async function diagnosticsForIndexed(
   if (cancellation.isCancellationRequested()) {
     return [];
   }
-  const items = await diagnosticsForCachedAsync(cached, settings, "check.workspace", cancellation);
+  const items = await diagnosticsForCachedAsync(
+    cached,
+    settings,
+    "check.workspace",
+    cancellation,
+    "workspace",
+  );
   if (cancellation.isCancellationRequested()) {
     return [];
   }
@@ -5715,6 +5892,12 @@ function normalizeWorkspaceSettings(
       typeof record.scanChunkSize === "number" && record.scanChunkSize > 0
         ? Math.floor(record.scanChunkSize)
         : defaultScanChunkSize,
+    idleAnalysisConcurrency: clampAnalysisConcurrency(
+      typeof record.idleAnalysisConcurrency === "number"
+        ? record.idleAnalysisConcurrency
+        : undefined,
+      defaultIdleAnalysisConcurrency(),
+    ),
     busyAnalysisConcurrency: clampAnalysisConcurrency(
       typeof record.busyAnalysisConcurrency === "number"
         ? record.busyAnalysisConcurrency
@@ -8355,25 +8538,48 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
   const rangeStart = range ? cached.source.offsetAt(range.start) : 0;
   const rangeEnd = range ? cached.source.offsetAt(range.end) : cached.source.getText().length;
   const tokens: SemanticTokenData[] = [];
-  for (const region of cached.parsed.regions) {
-    if (region.end < rangeStart || region.start > rangeEnd) {
-      continue;
-    }
+  for (const region of regionsInSourceRange(cached.parsed, rangeStart, rangeEnd)) {
     if (region.kind === "asp-block" || region.kind === "asp-expression") {
-      addSemanticToken(tokens, cached.source, region.start, 2, "keyword");
+      addSemanticTokenInSourceRange(
+        tokens,
+        cached.source,
+        region.start,
+        2,
+        "keyword",
+        rangeStart,
+        rangeEnd,
+      );
       if (region.kind === "asp-expression") {
-        addSemanticToken(tokens, cached.source, region.start + 2, 1, "keyword");
+        addSemanticTokenInSourceRange(
+          tokens,
+          cached.source,
+          region.start + 2,
+          1,
+          "keyword",
+          rangeStart,
+          rangeEnd,
+        );
       }
       if (region.end - region.contentEnd >= 2) {
-        addSemanticToken(tokens, cached.source, region.contentEnd, 2, "keyword");
+        addSemanticTokenInSourceRange(
+          tokens,
+          cached.source,
+          region.contentEnd,
+          2,
+          "keyword",
+          rangeStart,
+          rangeEnd,
+        );
       }
     } else if (region.kind === "asp-directive") {
-      addSemanticToken(
+      addSemanticTokenInSourceRange(
         tokens,
         cached.source,
         region.start,
         Math.min(region.end - region.start, 3),
         "keyword",
+        rangeStart,
+        rangeEnd,
       );
     }
   }
@@ -8408,6 +8614,49 @@ function buildSemanticTokens(cached: CachedDocument, range?: Range): SemanticTok
     );
   }
   return builder.build();
+}
+
+function addSemanticTokenInSourceRange(
+  tokens: SemanticTokenData[],
+  document: TextDocument,
+  offset: number,
+  length: number,
+  tokenType: string,
+  rangeStart: number,
+  rangeEnd: number,
+  tokenModifiers?: readonly string[],
+): void {
+  if (offset < rangeStart || offset > rangeEnd) {
+    return;
+  }
+  addSemanticToken(tokens, document, offset, length, tokenType, tokenModifiers);
+}
+
+function regionsInSourceRange(
+  parsed: AspParsedDocument,
+  rangeStart: number,
+  rangeEnd: number,
+): AspRegion[] {
+  const regions = parsed.regions;
+  let low = 0;
+  let high = regions.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (regions[middle].end < rangeStart) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  const result: AspRegion[] = [];
+  for (let index = low; index < regions.length; index += 1) {
+    const region = regions[index];
+    if (region.start > rangeEnd) {
+      break;
+    }
+    result.push(region);
+  }
+  return result;
 }
 
 function addIncludeSemanticTokens(
@@ -8453,11 +8702,19 @@ function addFallbackVbSemanticTokens(
       continue;
     }
     const pattern = new RegExp(`\\b${escapeRegExp(symbol.name)}\\b`, "gi");
+    const searchStart = Math.max(0, rangeStart - symbol.name.length);
+    const searchEnd = Math.min(cached.parsed.text.length, rangeEnd + symbol.name.length);
+    const searchText = cached.parsed.text.slice(searchStart, searchEnd);
     let match: RegExpExecArray | null;
-    while ((match = pattern.exec(cached.parsed.text))) {
-      const start = match.index;
+    while ((match = pattern.exec(searchText))) {
+      const start = searchStart + match.index;
       const end = start + match[0].length;
-      if (end < rangeStart || start > rangeEnd || !isVbscriptOffset(cached.parsed, start)) {
+      if (
+        end < rangeStart ||
+        start > rangeEnd ||
+        !isWholeWordAt(cached.parsed.text, start, end) ||
+        !isVbscriptOffset(cached.parsed, start)
+      ) {
         continue;
       }
       const position = cached.source.positionAt(start);
@@ -8470,6 +8727,10 @@ function addFallbackVbSemanticTokens(
       });
     }
   }
+}
+
+function isWholeWordAt(text: string, start: number, end: number): boolean {
+  return !/[A-Za-z0-9_]/.test(text.charAt(start - 1)) && !/[A-Za-z0-9_]/.test(text.charAt(end));
 }
 
 function fallbackVbSemanticTokenType(kind: VbSymbolKind): string | undefined {
@@ -8594,36 +8855,44 @@ function addEmbeddedSemanticTokens(
   const html = getCachedVirtual(cached, "html");
   if (html && virtualOverlapsSourceRange(html, rangeStart, rangeEnd)) {
     const pattern = /<\/?\s*([A-Za-z][A-Za-z0-9:-]*)/g;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(html.text))) {
-      addVirtualWordToken(
-        tokens,
-        cached.source,
-        cached,
-        html,
-        match.index + match[0].lastIndexOf(match[1]),
-        match[1].length,
-        "keyword",
-        rangeStart,
-        rangeEnd,
-      );
-    }
-  }
-  const css = getCachedVirtual(cached, "css");
-  if (css && virtualOverlapsSourceRange(css, rangeStart, rangeEnd)) {
-    for (const match of css.text.matchAll(/\b([A-Za-z-]+)\s*:/g)) {
-      if (match.index !== undefined) {
+    for (const slice of virtualSearchSlicesForSourceRange(html, rangeStart, rangeEnd)) {
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(slice.text))) {
         addVirtualWordToken(
           tokens,
           cached.source,
           cached,
-          css,
-          match.index,
+          html,
+          slice.start + match.index + match[0].lastIndexOf(match[1]),
           match[1].length,
-          "property",
+          "keyword",
           rangeStart,
           rangeEnd,
         );
+      }
+    }
+  }
+  const css = getCachedVirtual(cached, "css");
+  if (css && virtualOverlapsSourceRange(css, rangeStart, rangeEnd)) {
+    const pattern = /\b([A-Za-z-]+)\s*:/g;
+    for (const slice of virtualSearchSlicesForSourceRange(css, rangeStart, rangeEnd)) {
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(slice.text))) {
+        if (match.index !== undefined) {
+          addVirtualWordToken(
+            tokens,
+            cached.source,
+            cached,
+            css,
+            slice.start + match.index,
+            match[1].length,
+            "property",
+            rangeStart,
+            rangeEnd,
+          );
+        }
       }
     }
   }
@@ -8642,6 +8911,21 @@ function addEmbeddedSemanticTokens(
       rangeEnd,
     );
   }
+}
+
+function virtualSearchSlicesForSourceRange(
+  virtual: VirtualDocument,
+  rangeStart: number,
+  rangeEnd: number,
+): Array<{ start: number; text: string }> {
+  return virtualSpansForSourceRange(virtual, rangeStart, rangeEnd).map((span) => {
+    const start = Math.max(0, span.start - 128);
+    const end = Math.min(virtual.text.length, span.start + span.length + 128);
+    return {
+      start,
+      text: virtual.text.slice(start, end),
+    };
+  });
 }
 
 function addJavaScriptSemanticTokens(
@@ -8862,6 +9146,11 @@ function addSemanticToken(
 function isDiagnostic(value: Diagnostic | undefined): value is Diagnostic {
   return value !== undefined;
 }
+
+connection.onShutdown(async () => {
+  await vbDiagnosticsWorkerPool?.close();
+  vbDiagnosticsWorkerPool = undefined;
+});
 
 documents.listen(connection);
 connection.listen();

@@ -46,6 +46,7 @@
   "configuration.codeLens.includes.description": "Show Classic ASP include CodeLens entries.",
   "configuration.workspace.maxIndexFiles.description": "Maximum number of unopened Classic ASP workspace files indexed per scan.",
   "configuration.workspace.scanChunkSize.description": "Number of filesystem entries processed before yielding during workspace indexing.",
+  "configuration.workspace.idleAnalysisConcurrency.description": "Maximum idle/background analysis concurrency. Set 0 to use one less than the available CPU count.",
   "configuration.workspace.busyAnalysisConcurrency.description": "Maximum workspace analysis concurrency. Set 0 to use half of the available CPU count.",
   "configuration.iis.url.description": "URL opened by the Classic ASP IIS debug helper command.",
   "configuration.iis.webRoot.description": "Web root used by the Classic ASP IIS debug helper command.",
