@@ -89,6 +89,7 @@ import {
   parseVbscriptTypeRef,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
+  shiftAspRangeAfterChange,
   updateAspParsedDocument,
   type AspFormattingOptions,
   type AspEmbeddedLanguage,
@@ -217,6 +218,8 @@ interface CachedDocument {
   includeResolutionGeneration: number;
   jsProjectGeneration: number;
   editHistory: AspEditImpact[];
+  lastEditImpact?: AspEditImpact;
+  lastIncrementalChange?: AspIncrementalChange;
   analysis?: CachedAnalysis;
 }
 
@@ -1366,6 +1369,9 @@ function refreshCachedDocumentIncremental(
       ? [...previous.editHistory, updated.impact].slice(-8)
       : [];
   const cached = createCachedDocument(document, updated.parsed, settings, editHistory);
+  cached.lastEditImpact = updated.impact;
+  cached.lastIncrementalChange = change;
+  seedVbReuseAfterIncrementalChange(previous, cached, settings, change, updated.impact);
   cache.set(document.uri, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
   finishAnalysisLog(settings, document.uri, startedAt, updated.impact.kind);
@@ -1954,6 +1960,16 @@ function vbDiagnostics(
   settings: AspSettings,
   stepPrefix: string,
 ): Diagnostic[] {
+  const diagnosticsKey = vbDiagnosticsCacheKey(cached, settings);
+  const cachedItems = cached.analysis?.vbDiagnostics;
+  if (cachedItems?.key === diagnosticsKey) {
+    return measureDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.vbscript.diagnostics.reuse`,
+      () => cachedItems.items,
+    );
+  }
   const context = measureDebugStep(
     settings,
     cached.source.uri,
@@ -1976,7 +1992,171 @@ function vbDiagnostics(
           ),
       }).diagnostics,
   );
+  analysisFor(cached).vbDiagnostics = {
+    key: diagnosticsKey,
+    items,
+    text: cached.parsed.text,
+  };
   return items;
+}
+
+function seedVbReuseAfterIncrementalChange(
+  previous: CachedDocument,
+  cached: CachedDocument,
+  settings: AspSettings,
+  change: AspIncrementalChange,
+  impact: AspEditImpact,
+): void {
+  if (
+    impact.kind !== "incremental" ||
+    impact.language === "vbscript" ||
+    impact.language === "jscript" ||
+    vbscriptRegionContentFingerprint(previous.parsed) !==
+      vbscriptRegionContentFingerprint(cached.parsed)
+  ) {
+    return;
+  }
+  const analysis = analysisFor(cached);
+  const previousDiagnostics = previous.analysis?.vbDiagnostics;
+  if (previousDiagnostics) {
+    analysis.vbDiagnostics = {
+      key: vbDiagnosticsCacheKey(cached, settings),
+      text: cached.parsed.text,
+      items: previousDiagnostics.items.map((diagnostic) =>
+        shiftDiagnosticForIncrementalChange(
+          diagnostic,
+          previous.source.uri,
+          previous.parsed.text,
+          cached.parsed.text,
+          change,
+        ),
+      ),
+    };
+  }
+  const previousContext = previous.analysis?.vbProjectContext;
+  if (previousContext) {
+    const context = shiftVbProjectContextForIncrementalChange(
+      previousContext.context,
+      previous.source.uri,
+      previous.parsed.text,
+      cached.parsed.text,
+      change,
+      cached.parsed,
+    );
+    analysis.vbProjectContext = {
+      key: vbProjectContextCacheKey(context.documents ?? [cached.parsed], settings),
+      rootKey: vbProjectRootContextCacheKey(cached, settings),
+      context,
+    };
+  }
+  if (previousDiagnostics || previousContext) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] analysis.vbscript.reuse: ${cached.source.uri}, diagnostics=${previousDiagnostics ? "hit" : "miss"}, projectContext=${previousContext ? "hit" : "miss"}`,
+    );
+  }
+}
+
+function vbDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    root: vbProjectRootContextCacheKey(cached, settings),
+    vbscript: vbscriptRegionContentFingerprint(cached.parsed),
+    locale: settings.resolvedLocale,
+  });
+}
+
+function vbscriptRegionContentFingerprint(parsed: AspParsedDocument): string {
+  return JSON.stringify({
+    defaultLanguage: parsed.defaultLanguage,
+    includes: parsed.includes.map((include) => ({
+      path: include.path,
+      mode: include.mode,
+    })),
+    regions: parsed.regions
+      .filter((region) => region.language === "vbscript")
+      .map((region) => ({
+        kind: region.kind,
+        text: textFingerprint(parsed.text.slice(region.contentStart, region.contentEnd)),
+      })),
+  });
+}
+
+function shiftDiagnosticForIncrementalChange(
+  diagnostic: Diagnostic,
+  rootUri: string,
+  previousText: string,
+  nextText: string,
+  change: AspIncrementalChange,
+): Diagnostic {
+  return {
+    ...diagnostic,
+    range: shiftAspRangeAfterChange(diagnostic.range, previousText, nextText, change),
+    relatedInformation: diagnostic.relatedInformation?.map((info) => ({
+      ...info,
+      location:
+        info.location.uri === rootUri
+          ? {
+              ...info.location,
+              range: shiftAspRangeAfterChange(info.location.range, previousText, nextText, change),
+            }
+          : info.location,
+    })),
+  };
+}
+
+function shiftVbProjectContextForIncrementalChange(
+  context: VbProjectContext,
+  rootUri: string,
+  previousText: string,
+  nextText: string,
+  change: AspIncrementalChange,
+  currentRoot: AspParsedDocument,
+): VbProjectContext {
+  const symbols = context.symbols?.map((symbol) =>
+    shiftVbSymbolForIncrementalChange(symbol, rootUri, previousText, nextText, change),
+  );
+  return {
+    ...context,
+    documents: [
+      currentRoot,
+      ...(context.documents?.filter((document) => document.uri !== rootUri) ?? []),
+    ],
+    symbols,
+    typeEnvironment: context.typeEnvironment
+      ? {
+          ...context.typeEnvironment,
+          symbols:
+            context.typeEnvironment.symbols?.map((symbol) =>
+              shiftVbSymbolForIncrementalChange(symbol, rootUri, previousText, nextText, change),
+            ) ?? [],
+        }
+      : undefined,
+    externalRefUsages: context.externalRefUsages?.map((usage) => ({
+      ...usage,
+      ranges: usage.ranges.map((range) =>
+        shiftAspRangeAfterChange(range, previousText, nextText, change),
+      ),
+    })),
+  };
+}
+
+function shiftVbSymbolForIncrementalChange(
+  symbol: VbSymbol,
+  rootUri: string,
+  previousText: string,
+  nextText: string,
+  change: AspIncrementalChange,
+): VbSymbol {
+  if (symbol.sourceUri !== rootUri) {
+    return symbol;
+  }
+  return {
+    ...symbol,
+    range: shiftAspRangeAfterChange(symbol.range, previousText, nextText, change),
+    scopeRange: symbol.scopeRange
+      ? shiftAspRangeAfterChange(symbol.scopeRange, previousText, nextText, change)
+      : undefined,
+  };
 }
 
 function lightweightJsUnusedDiagnostics(virtual: VirtualDocument): ts.Diagnostic[] {

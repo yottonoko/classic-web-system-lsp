@@ -1627,6 +1627,156 @@ Response.Write known
       }
     });
 
+    it("reuses VBScript diagnostics after HTML edits outside VBScript regions", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/vb-reuse-after-html-edit.asp";
+        let source = `<div>top</div>
+<%
+Option Explicit
+Response.Write missingName
+%>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const firstDiagnostics = await waitForDiagnosticsContaining(server, "missingName");
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+        const firstMissing = diagnosticContaining(firstDiagnostics, "missingName");
+        expect(firstMissing?.range.start.line).toBe(3);
+
+        source = notifyRangedReplacement(server, uri, source, 2, "top", "top\nnext");
+
+        const nextDiagnostics = await waitForDiagnosticsContaining(server, "missingName");
+        const reuseLog = await waitForLogContaining(server, "analysis.vbscript.reuse");
+        const diagnosticsReuseLog = await waitForLogContaining(
+          server,
+          "check.vbscript.diagnostics.reuse",
+        );
+        const nextMissing = diagnosticContaining(nextDiagnostics, "missingName");
+        expect(nextMissing?.range.start.line).toBe(4);
+        const logs = JSON.stringify([
+          reuseLog,
+          diagnosticsReuseLog,
+          ...server.takePendingNotifications("window/logMessage"),
+        ]);
+        expect(logs).not.toContain("check.vbscript.diagnostics.symbols");
+        expect(logs).not.toContain("check.vbscript.projectContext");
+        expect(source).toContain("top\nnext");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("reuses VBScript diagnostics after CSS and client JavaScript edits", async () => {
+      const cases = [
+        {
+          uri: "file:///tmp/vb-reuse-after-css-edit.asp",
+          source: `<style>.card { color: red; }</style>
+<%
+Option Explicit
+Response.Write missingName
+%>`,
+          needle: "red",
+          replacement: "blue",
+        },
+        {
+          uri: "file:///tmp/vb-reuse-after-client-js-edit.asp",
+          source: `<script>const clientValue = 1;</script>
+<%
+Option Explicit
+Response.Write missingName
+%>`,
+          needle: "clientValue",
+          replacement: "renamedClientValue",
+        },
+      ];
+
+      for (const testCase of cases) {
+        const server = new RpcServer();
+        try {
+          await server.start();
+          await server.request("initialize", {
+            processId: process.pid,
+            rootUri: "file:///tmp",
+            capabilities: {},
+          });
+          server.notify("workspace/didChangeConfiguration", {
+            settings: {
+              aspLsp: {
+                debug: { output: "verbose" },
+                diagnostics: { debounceMs: 0 },
+              },
+            },
+          });
+          let source = testCase.source;
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri: testCase.uri,
+              languageId: "classic-asp",
+              version: 1,
+              text: source,
+            },
+          });
+          await waitForDiagnosticsContaining(server, "missingName");
+          await waitForLogContaining(server, "LSP check completed");
+          server.takePendingNotifications("window/logMessage");
+
+          source = notifyRangedReplacement(
+            server,
+            testCase.uri,
+            source,
+            2,
+            testCase.needle,
+            testCase.replacement,
+          );
+
+          await waitForDiagnosticsContaining(server, "missingName");
+          const reuseLog = await waitForLogContaining(server, "analysis.vbscript.reuse");
+          const diagnosticsReuseLog = await waitForLogContaining(
+            server,
+            "check.vbscript.diagnostics.reuse",
+          );
+          const logs = JSON.stringify([
+            reuseLog,
+            diagnosticsReuseLog,
+            ...server.takePendingNotifications("window/logMessage"),
+          ]);
+          expect(logs).not.toContain("check.vbscript.diagnostics.symbols");
+          expect(logs).not.toContain("check.vbscript.projectContext");
+          expect(source).toContain(testCase.replacement);
+
+          await server.request("shutdown", null);
+          server.notify("exit", undefined);
+        } finally {
+          server.stop();
+        }
+      }
+    });
+
     it("publishes complete diagnostics once for push diagnostics", async () => {
       const server = new RpcServer();
       try {
@@ -6629,6 +6779,19 @@ async function waitForDiagnosticsContaining(
     }
   }
   throw new Error(`Timed out waiting for diagnostics containing ${expected}.`);
+}
+
+function diagnosticContaining(message: JsonRpcMessage, expected: string) {
+  const diagnostics =
+    (
+      message.params as {
+        diagnostics?: Array<{
+          message?: string;
+          range: { start: { line: number; character: number } };
+        }>;
+      }
+    )?.diagnostics ?? [];
+  return diagnostics.find((diagnostic) => diagnostic.message?.includes(expected));
 }
 
 async function waitForCompletionContaining(

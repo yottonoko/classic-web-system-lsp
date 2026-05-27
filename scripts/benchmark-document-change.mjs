@@ -18,6 +18,7 @@ const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", 120_000);
 const changeKinds = readChangeKinds();
 const changeModes = readChangeModes();
+const editTargets = readEditTargets();
 const backgroundModes = readBackgroundModes();
 const selectedStepNames = [
   "documentChange.bumpAnalysisGeneration",
@@ -35,6 +36,7 @@ const selectedStepNames = [
   "check.javascriptUnused",
   "check.vbscript.projectContext",
   "check.vbscript.diagnostics",
+  "check.vbscript.diagnostics.reuse",
   "check.vbscript.diagnostics.symbols",
   "check.vbscript.diagnostics.unusedSymbols",
   "check.vbscript.diagnostics.identifierCase",
@@ -69,8 +71,12 @@ async function main() {
   const scenarioResults = [];
   for (const backgroundAnalysis of backgroundModes) {
     for (const changeMode of changeModes) {
-      for (const changeKind of changeKinds) {
-        scenarioResults.push(await runScenario(changeKind, changeMode, backgroundAnalysis));
+      for (const editTarget of editTargets) {
+        for (const changeKind of changeKinds) {
+          scenarioResults.push(
+            await runScenario(changeKind, changeMode, backgroundAnalysis, editTarget),
+          );
+        }
       }
     }
   }
@@ -84,6 +90,7 @@ async function main() {
   console.log(`Iterations: ${benchmarkIterations}`);
   console.log(`Change kinds: ${changeKinds.join(", ")}`);
   console.log(`Change modes: ${changeModes.join(", ")}`);
+  console.log(`Edit targets: ${editTargets.join(", ")}`);
   console.log(`Rapid burst size: ${rapidBurstSize}`);
   console.log(`Rapid debounce: ${rapidDebounceMs} ms`);
   console.log(`Background analysis: ${backgroundModes.map(backgroundLabel).join(", ")}`);
@@ -101,7 +108,7 @@ async function main() {
   }
 }
 
-async function runScenario(changeKind, changeMode, backgroundAnalysis) {
+async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarget) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-change-bench-"));
   const cacheDir = path.join(tempDir, "cache");
   const sourcePath = path.join(sampleRoot, "default.asp");
@@ -109,7 +116,11 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis) {
   const { burstSize, debounceMs } = changeModeSettings(changeMode);
   const totalChanges = (benchmarkIterations + warmupIterations) * burstSize + 8;
   const state = {
-    text: appendMutableBenchmarkRegion(fs.readFileSync(sourcePath, "utf8"), totalChanges),
+    text: appendMutableBenchmarkRegion(
+      fs.readFileSync(sourcePath, "utf8"),
+      totalChanges,
+      editTarget,
+    ),
     version: 1,
   };
   const editOffset = mutableEditOffset(state.text);
@@ -171,6 +182,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis) {
     return {
       changeKind,
       changeMode,
+      editTarget,
       backgroundAnalysis,
       burstSize,
       debounceMs,
@@ -246,21 +258,45 @@ function buildTextChange(currentText, editOffset, changeKind) {
   };
 }
 
-function appendMutableBenchmarkRegion(text, totalChanges) {
+function appendMutableBenchmarkRegion(text, totalChanges, editTarget) {
+  const markerText = `${benchmarkMarker()}${"x".repeat(totalChanges)}`;
+  if (editTarget === "html") {
+    return `${text}
+<div data-asp-lsp-benchmark="${markerText}"></div>
+`;
+  }
+  if (editTarget === "css") {
+    return `${text}
+<style>
+.asp-lsp-benchmark::after { content: "${markerText}"; }
+</style>
+`;
+  }
+  if (editTarget === "client-js") {
+    return `${text}
+<script>
+const aspLspBenchmark = "${markerText}";
+</script>
+`;
+  }
   return `${text}
 <%
-' asp-lsp change benchmark ${"x".repeat(totalChanges)}
+${markerText}
 %>
 `;
 }
 
 function mutableEditOffset(text) {
-  const marker = "' asp-lsp change benchmark ";
+  const marker = benchmarkMarker();
   const markerOffset = text.indexOf(marker);
   if (markerOffset === -1) {
     throw new Error("Mutable benchmark marker was not inserted.");
   }
   return markerOffset + marker.length;
+}
+
+function benchmarkMarker() {
+  return "' asp-lsp change benchmark ";
 }
 
 function collectBenchmarkSources() {
@@ -430,7 +466,7 @@ function statsCells(samples) {
 }
 
 function scenarioLabel(scenario) {
-  return `${scenario.changeKind}, mode=${scenario.changeMode}, burst=${scenario.burstSize}, debounce=${scenario.debounceMs}ms, background=${backgroundLabel(
+  return `target=${scenario.editTarget}, ${scenario.changeKind}, mode=${scenario.changeMode}, burst=${scenario.burstSize}, debounce=${scenario.debounceMs}ms, background=${backgroundLabel(
     scenario.backgroundAnalysis,
   )}`;
 }
@@ -485,6 +521,23 @@ function readChangeModes() {
     }
   }
   return values.length > 0 ? values : ["single", "rapid"];
+}
+
+function readEditTargets() {
+  const raw = process.env.ASP_LSP_BENCH_EDIT_TARGET ?? "vbscript";
+  if (raw === "all") {
+    return ["vbscript", "html", "css", "client-js"];
+  }
+  const values = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const value of values) {
+    if (value !== "vbscript" && value !== "html" && value !== "css" && value !== "client-js") {
+      throw new Error("ASP_LSP_BENCH_EDIT_TARGET must be vbscript, html, css, client-js, or all.");
+    }
+  }
+  return values.length > 0 ? values : ["vbscript"];
 }
 
 function changeModeSettings(changeMode) {
