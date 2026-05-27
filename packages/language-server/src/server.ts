@@ -145,6 +145,8 @@ const includeReverseDependencies = new Map<string, Set<string>>();
 const includePublicSummaries = new Map<string, IncludePublicSummaryState>();
 const workspaceIndex = new Map<string, WorkspaceIndexedDocument>();
 const jsLanguageServiceCache = new Map<string, JsLanguageServiceCacheEntry>();
+const jsProjectConfigCache = new Map<string, JsProjectConfigCacheEntry>();
+const jsDocumentRegistry = ts.createDocumentRegistry(ts.sys.useCaseSensitiveFileNames);
 const semanticTokenResults = new Map<string, { uri: string; data: number[] }>();
 const latestSemanticTokenResultByUri = new Map<string, string>();
 const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
@@ -347,11 +349,27 @@ interface JsLanguageServiceProject {
   service: ts.LanguageService;
   host: ts.LanguageServiceHost;
   files: Map<string, JsProjectFile>;
+  options: ts.CompilerOptions;
+  currentDirectory: string;
+  moduleResolutionCache: ts.ModuleResolutionCache;
+  optionsKey: string;
+  projectVersion: number;
 }
 
 interface JsLanguageServiceCacheEntry {
   project: JsLanguageServiceProject;
   lastUsed: number;
+}
+
+interface JsProjectConfigCacheEntry {
+  config: JsProjectConfig;
+  lastUsed: number;
+}
+
+interface JsProjectConfig {
+  fileNames: string[];
+  options: ts.CompilerOptions;
+  currentDirectory: string;
 }
 
 interface VbProjectContextCacheEntry {
@@ -2679,18 +2697,6 @@ function jsCompletion(
       .getCompletionsAtPosition(fileName, offset, preferences)
       ?.entries.filter((entry) => !hiddenJavaScriptGlobalCompletions.has(entry.name))
       .map((entry) => {
-        const details =
-          entry.hasAction || entry.source
-            ? safeGetCompletionEntryDetails(
-                service,
-                fileName,
-                offset,
-                entry.name,
-                entry.source,
-                preferences,
-                entry.data,
-              )
-            : undefined;
         return {
           label: entry.name,
           kind: tsCompletionKind(entry.kind),
@@ -2703,7 +2709,6 @@ function jsCompletion(
             virtualOffset: offset,
             source: entry.source,
             tsData: entry.data,
-            importTextChanges: details?.codeActions?.flatMap((action) => action.changes),
           },
         };
       }) ?? []
@@ -3702,7 +3707,6 @@ function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem 
         language?: string;
         source?: string;
         tsData?: ts.CompletionEntryData;
-        importTextChanges?: ts.FileTextChanges[];
       }
     | undefined;
   const virtual = cached
@@ -3726,7 +3730,7 @@ function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem 
   );
   const importEdit = fileTextChangesToWorkspaceEdit(
     virtual,
-    details?.codeActions?.flatMap((action) => action.changes) ?? data.importTextChanges ?? [],
+    details?.codeActions?.flatMap((action) => action.changes) ?? [],
   );
   return {
     ...item,
@@ -6579,18 +6583,47 @@ function createJsLanguageService(
   optionOverrides: Partial<ts.CompilerOptions> = {},
 ): JsLanguageServiceProject {
   const cacheKey = jsLanguageServiceCacheKey(virtual, settings, optionOverrides);
+  const collected = collectJsProjectFiles(virtual, settings, optionOverrides);
   const cached = jsLanguageServiceCache.get(cacheKey);
   if (cached) {
+    updateJsLanguageServiceProject(cached.project, collected);
     cached.lastUsed = ++jsLanguageServiceCacheTick;
+    logDebugSummary(
+      settings,
+      `[asp-lsp] javascript.languageService.reuse: ${virtualSourceUri(virtual)}, files=${cached.project.files.size}`,
+    );
     return cached.project;
   }
-  const project = collectJsProjectFiles(virtual, settings, optionOverrides);
+  const files = new Map<string, JsProjectFile>();
+  const moduleResolutionHost: ts.ModuleResolutionHost = {
+    fileExists: (requested) =>
+      files.has(normalizeFileName(requested)) || ts.sys.fileExists(requested),
+    readFile: (requested) =>
+      files.get(normalizeFileName(requested))?.text ?? ts.sys.readFile(requested),
+    directoryExists: ts.sys.directoryExists,
+    getDirectories: getTypeScriptDirectories,
+    realpath: ts.sys.realpath,
+  };
+  const project = {
+    service: undefined as unknown as ts.LanguageService,
+    host: undefined as unknown as ts.LanguageServiceHost,
+    files,
+    options: collected.options,
+    currentDirectory: collected.currentDirectory,
+    moduleResolutionCache: ts.createModuleResolutionCache(
+      collected.currentDirectory,
+      normalizeFileName,
+      collected.options,
+    ),
+    optionsKey: jsCompilerOptionsKey(collected.options),
+    projectVersion: 0,
+  };
   const host: ts.LanguageServiceHost = {
-    getScriptFileNames: () => [...project.files.keys()],
-    getScriptVersion: (requested) =>
-      project.files.get(normalizeFileName(requested))?.version ?? "0",
+    getScriptFileNames: () => [...files.keys()],
+    getProjectVersion: () => String(project.projectVersion),
+    getScriptVersion: (requested) => files.get(normalizeFileName(requested))?.version ?? "0",
     getScriptSnapshot: (requested) => {
-      const file = project.files.get(normalizeFileName(requested));
+      const file = files.get(normalizeFileName(requested));
       if (file) {
         return ts.ScriptSnapshot.fromString(file.text);
       }
@@ -6602,20 +6635,45 @@ function createJsLanguageService(
     getCompilationSettings: () => project.options,
     getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
     fileExists: (requested) =>
-      project.files.has(normalizeFileName(requested)) || ts.sys.fileExists(requested),
+      files.has(normalizeFileName(requested)) || ts.sys.fileExists(requested),
     readFile: (requested) =>
-      project.files.get(normalizeFileName(requested))?.text ?? ts.sys.readFile(requested),
+      files.get(normalizeFileName(requested))?.text ?? ts.sys.readFile(requested),
     readDirectory: readTypeScriptDirectory,
     directoryExists: ts.sys.directoryExists,
     getDirectories: getTypeScriptDirectories,
+    realpath: ts.sys.realpath,
+    useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
+    resolveModuleNames: (
+      moduleNames,
+      containingFile,
+      _reusedNames,
+      _redirectedReference,
+      options,
+    ) =>
+      moduleNames.map(
+        (moduleName) =>
+          ts.resolveModuleName(
+            moduleName,
+            containingFile,
+            options,
+            moduleResolutionHost,
+            project.moduleResolutionCache,
+          ).resolvedModule,
+      ),
   };
-  const result = { service: ts.createLanguageService(host), host, files: project.files };
+  project.host = host;
+  updateJsLanguageServiceProject(project, collected);
+  project.service = ts.createLanguageService(host, jsDocumentRegistry);
   jsLanguageServiceCache.set(cacheKey, {
-    project: result,
+    project,
     lastUsed: ++jsLanguageServiceCacheTick,
   });
+  logDebugSummary(
+    settings,
+    `[asp-lsp] javascript.languageService.create: ${virtualSourceUri(virtual)}, files=${project.files.size}`,
+  );
   pruneJsLanguageServiceCache();
-  return result;
+  return project;
 }
 
 function jsLanguageServiceCacheKey(
@@ -6624,9 +6682,7 @@ function jsLanguageServiceCacheKey(
   optionOverrides: Partial<ts.CompilerOptions>,
 ): string {
   return JSON.stringify({
-    uri: virtual.uri,
-    language: virtual.languageId,
-    text: textFingerprint(virtual.text),
+    projectEnvironment: jsProjectEnvironmentFingerprint(virtualSourceUri(virtual), settings),
     projectGeneration: jsProjectGeneration,
     settings: {
       checkJs: settings.checkJs ?? false,
@@ -6635,13 +6691,62 @@ function jsLanguageServiceCacheKey(
       ignoreProjectConfig: settings.javascript?.ignoreProjectConfig === true,
     },
     optionOverrides,
-    projectEnvironment: jsProjectEnvironmentFingerprint(virtualSourceUri(virtual), settings),
     roots: workspaceRoots.map(normalizeFileName).sort(),
-    documents: documents
-      .all()
-      .map((document) => `${document.uri}:${document.version}`)
-      .sort(),
   });
+}
+
+function updateJsLanguageServiceProject(
+  project: Pick<
+    JsLanguageServiceProject,
+    | "files"
+    | "options"
+    | "currentDirectory"
+    | "moduleResolutionCache"
+    | "optionsKey"
+    | "projectVersion"
+  >,
+  collected: JsProjectConfig & { files: Map<string, JsProjectFile> },
+): void {
+  const previousFiles = jsProjectFilesFingerprint(project.files);
+  const nextFiles = jsProjectFilesFingerprint(collected.files);
+  const nextOptionsKey = jsCompilerOptionsKey(collected.options);
+  const resolutionShapeChanged =
+    project.currentDirectory !== collected.currentDirectory ||
+    project.optionsKey !== nextOptionsKey;
+  project.files.clear();
+  for (const [fileName, file] of collected.files) {
+    project.files.set(fileName, file);
+  }
+  project.options = collected.options;
+  project.currentDirectory = collected.currentDirectory;
+  if (resolutionShapeChanged) {
+    project.moduleResolutionCache = ts.createModuleResolutionCache(
+      project.currentDirectory,
+      normalizeFileName,
+      project.options,
+    );
+    project.optionsKey = nextOptionsKey;
+  }
+  if (previousFiles !== nextFiles || resolutionShapeChanged) {
+    project.projectVersion += 1;
+  }
+}
+
+function jsProjectFilesFingerprint(files: Map<string, JsProjectFile>): string {
+  return JSON.stringify(
+    [...files.values()]
+      .map((file) => ({
+        fileName: file.fileName,
+        version: file.version,
+      }))
+      .sort((left, right) => left.fileName.localeCompare(right.fileName)),
+  );
+}
+
+function jsCompilerOptionsKey(options: ts.CompilerOptions): string {
+  return JSON.stringify(options, (_key, value) =>
+    typeof value === "function" ? undefined : value,
+  );
 }
 
 function jsProjectEnvironmentFingerprint(ownerUri: string, settings: AspSettings): string {
@@ -6683,6 +6788,7 @@ function clearJsLanguageServiceCache(): void {
 
 function clearJsProjectCaches(): void {
   clearJsLanguageServiceCache();
+  jsProjectConfigCache.clear();
 }
 
 function clearIncludeCaches(): void {
@@ -6727,26 +6833,26 @@ function collectJsProjectFiles(
   activeVirtual: VirtualDocument,
   settings: AspSettings,
   optionOverrides: Partial<ts.CompilerOptions> = {},
-): { files: Map<string, JsProjectFile>; options: ts.CompilerOptions; currentDirectory: string } {
+): JsProjectConfig & { files: Map<string, JsProjectFile> } {
   const files = new Map<string, JsProjectFile>();
-  const addVirtual = (virtual: VirtualDocument, version: string): void => {
+  const addVirtual = (virtual: VirtualDocument): void => {
     const fileName = normalizeFileName(jsVirtualFileName(virtual.uri));
     files.set(fileName, {
       fileName,
       text: virtual.text,
-      version,
+      version: jsVirtualDocumentVersion(virtual),
       uri: virtualSourceUri(virtual),
       virtual,
     });
   };
-  addVirtual(activeVirtual, "0");
+  addVirtual(activeVirtual);
   for (const document of documents.all()) {
     const cached = ensureFreshCachedDocument(document);
     if (!cached) {
       continue;
     }
     for (const virtual of jsVirtualDocuments(cached)) {
-      addVirtual(virtual, String(document.version));
+      addVirtual(virtual);
     }
   }
 
@@ -6769,20 +6875,39 @@ function collectJsProjectFiles(
       uri: pathToFileUri(normalized),
     });
   }
-  return { files, options: config.options, currentDirectory: config.currentDirectory };
+  return {
+    files,
+    fileNames: config.fileNames,
+    options: config.options,
+    currentDirectory: config.currentDirectory,
+  };
+}
+
+function jsVirtualDocumentVersion(virtual: VirtualDocument): string {
+  return JSON.stringify({
+    language: virtual.languageId,
+    text: textFingerprint(virtual.text),
+  });
 }
 
 function readJsProjectConfig(
   ownerFile: string,
   settings: AspSettings,
   optionOverrides: Partial<ts.CompilerOptions> = {},
-): { fileNames: string[]; options: ts.CompilerOptions; currentDirectory: string } {
+): JsProjectConfig {
   const ownerDirectory = path.dirname(ownerFile);
   const configPath =
     settings.javascript?.ignoreProjectConfig === true
       ? undefined
       : (ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "tsconfig.json") ??
         ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "jsconfig.json"));
+  const cacheKey = jsProjectConfigCacheKey(ownerFile, configPath, settings, optionOverrides);
+  const cached = jsProjectConfigCache.get(cacheKey);
+  if (cached) {
+    cached.lastUsed = ++jsLanguageServiceCacheTick;
+    return cached.config;
+  }
+  let result: JsProjectConfig;
   const defaultOptions: ts.CompilerOptions = {
     allowJs: true,
     checkJs: settings.checkJs ?? false,
@@ -6802,7 +6927,7 @@ function readJsProjectConfig(
       configPath,
     );
     const currentDirectory = path.dirname(configPath);
-    return {
+    result = {
       fileNames: parsed.fileNames,
       options: browserJavaScriptCompilerOptions(
         parsed.options,
@@ -6812,19 +6937,59 @@ function readJsProjectConfig(
       ),
       currentDirectory,
     };
-  }
-  const roots = workspaceRoots.length > 0 ? workspaceRoots : [ownerDirectory];
-  const currentDirectory = roots[0] ?? ownerDirectory;
-  return {
-    fileNames: [],
-    options: browserJavaScriptCompilerOptions(
-      defaultOptions,
+  } else {
+    const roots = workspaceRoots.length > 0 ? workspaceRoots : [ownerDirectory];
+    const currentDirectory = roots[0] ?? ownerDirectory;
+    result = {
+      fileNames: [],
+      options: browserJavaScriptCompilerOptions(
+        defaultOptions,
+        currentDirectory,
+        settings,
+        optionOverrides,
+      ),
       currentDirectory,
-      settings,
-      optionOverrides,
-    ),
-    currentDirectory,
-  };
+    };
+  }
+  jsProjectConfigCache.set(cacheKey, {
+    config: result,
+    lastUsed: ++jsLanguageServiceCacheTick,
+  });
+  pruneJsProjectConfigCache();
+  return result;
+}
+
+function jsProjectConfigCacheKey(
+  ownerFile: string,
+  configPath: string | undefined,
+  settings: AspSettings,
+  optionOverrides: Partial<ts.CompilerOptions>,
+): string {
+  const environmentFiles = [configPath, nearestPackageJson(path.dirname(ownerFile))]
+    .filter((fileName): fileName is string => Boolean(fileName))
+    .map((fileName) => {
+      const stat = fs.statSync(fileName, { throwIfNoEntry: false });
+      return stat ? `${normalizeFileName(fileName)}:${stat.mtimeMs}:${stat.size}` : fileName;
+    });
+  return JSON.stringify({
+    ownerDirectory: normalizeFileName(path.dirname(ownerFile)),
+    configPath: configPath ? normalizeFileName(configPath) : undefined,
+    environmentFiles,
+    settings: jsProjectSettingsIdentity(settings),
+    optionOverrides,
+  });
+}
+
+function pruneJsProjectConfigCache(): void {
+  while (jsProjectConfigCache.size > 16) {
+    const oldest = [...jsProjectConfigCache.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0];
+    if (!oldest) {
+      return;
+    }
+    jsProjectConfigCache.delete(oldest[0]);
+  }
 }
 
 function browserJavaScriptCompilerOptions(

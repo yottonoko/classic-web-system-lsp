@@ -6033,6 +6033,98 @@ newProjectGlobal;
       }
     });
 
+    it("reuses the TypeScript language service across JavaScript document edits", async () => {
+      const source = `<script>
+const alphaValue = 1;
+alph
+</script>`;
+      const updated = `<script>
+const betaValue = 1;
+beta
+</script>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = "file:///tmp/js-ls-reuse.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+
+        const alpha = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.lastIndexOf("alph") + "alph".length),
+        });
+        expect(JSON.stringify(alpha)).toContain("alphaValue");
+        await waitForLogContaining(server, "javascript.languageService.create");
+        server.takePendingNotifications("window/logMessage");
+
+        const alphaReused = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.lastIndexOf("alph") + "alph".length),
+        });
+        expect(JSON.stringify(alphaReused)).toContain("alphaValue");
+        await waitForLogContaining(server, "javascript.languageService.reuse");
+        server.takePendingNotifications("window/logMessage");
+
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: updated }],
+        });
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+
+        const beta = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(updated, updated.lastIndexOf("beta") + "beta".length),
+        });
+        expect(JSON.stringify(beta)).toContain("betaValue");
+        expect(JSON.stringify(beta)).not.toContain("alphaValue");
+        await waitForLogContaining(server, "javascript.languageService.reuse");
+        server.takePendingNotifications("window/logMessage");
+
+        const htmlEdited = `<div>shifted</div>
+${updated}`;
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 3 },
+          contentChanges: [{ text: htmlEdited }],
+        });
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+
+        const shifted = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(htmlEdited, htmlEdited.lastIndexOf("beta") + "beta".length),
+        });
+        expect(JSON.stringify(shifted)).toContain("betaValue");
+        await waitForLogContaining(server, "javascript.languageService.reuse");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("does not advance workspace generation for document edits", async () => {
       const server = new RpcServer();
       try {
