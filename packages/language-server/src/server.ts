@@ -234,7 +234,10 @@ interface CachedDocument {
   analysis?: CachedAnalysis;
   changes?: AspIncrementalChange[];
   dirtyLanguages?: Set<AspIncrementalChange["language"]>;
+  projectDiagnosticsMode?: ProjectDiagnosticsMode;
 }
+
+type ProjectDiagnosticsMode = "reuse" | "currentFile" | "full";
 
 interface CachedAnalysis {
   fileSummary?: FileSummaryCacheEntry;
@@ -1453,6 +1456,16 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
         ...(update.change ? [update.change.language] : []),
       ])
     : undefined;
+  const projectDiagnosticsMode =
+    update?.incremental === true && pending?.version === document.version
+      ? projectDiagnosticsModeForIncrementalUpdate(
+          previous,
+          dirtyLanguages,
+          pending.previousText,
+          document.getText(),
+          pending.changes,
+        )
+      : "full";
   const cacheStartedAt = process.hrtime.bigint();
   const cached = {
     source: document,
@@ -1461,6 +1474,7 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
     analysis: previous?.analysis,
     changes,
     dirtyLanguages,
+    projectDiagnosticsMode,
   };
   cache.set(document.uri, cached);
   applyDiskAnalysis(cached, disk);
@@ -1634,6 +1648,7 @@ async function publishSlowDiagnosticsForVersion(
   };
   cached.changes = undefined;
   cached.dirtyLanguages = undefined;
+  cached.projectDiagnosticsMode = undefined;
   measureDebugStep(settings, uri, "diagnostics.slow.send", () =>
     connection.sendDiagnostics({ uri, diagnostics: items }),
   );
@@ -1685,6 +1700,7 @@ function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Di
   analysisFor(cached).diagnostics = { key, items, text: cached.parsed.text };
   cached.changes = undefined;
   cached.dirtyLanguages = undefined;
+  cached.projectDiagnosticsMode = undefined;
   queueDiskAnalysisPersist(cached, settings);
   finishCheckLog(cached, settings, startedAt, items.length, false);
   return items;
@@ -1707,6 +1723,7 @@ async function diagnosticsForCachedAsync(
   analysisFor(cached).diagnostics = { key, items, text: cached.parsed.text };
   cached.changes = undefined;
   cached.dirtyLanguages = undefined;
+  cached.projectDiagnosticsMode = undefined;
   queueDiskAnalysisPersist(cached, settings);
   return items;
 }
@@ -1919,7 +1936,30 @@ async function projectDiagnosticsForCachedAsync(
   settings: AspSettings,
   stepPrefix: string,
 ): Promise<Diagnostic[]> {
-  const key = projectDiagnosticsCacheKey(cached, settings);
+  const reused = measureDebugStep(
+    settings,
+    cached.source.uri,
+    "diagnostics.slow.project.reuse",
+    () => reuseProjectDiagnostics(cached),
+  );
+  if (reused) {
+    return reused;
+  }
+  finishDebugStep(
+    settings,
+    cached.source.uri,
+    cached.projectDiagnosticsMode === "currentFile"
+      ? "diagnostics.slow.project.currentFileOnly"
+      : "diagnostics.slow.project.fullRecompute",
+    process.hrtime.bigint(),
+  );
+  const vb = await vbDiagnosticsAsync(cached, settings, stepPrefix);
+  await waitForInteractiveIdle(settings, cached.source.uri, `${stepPrefix}.javascript.idle`);
+  const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
+  const key = projectDiagnosticsCacheKeyFromParts(
+    vb.key,
+    jsSlowDiagnosticsCacheKey(cached, settings),
+  );
   if (cached.analysis?.projectDiagnostics?.key === key) {
     finishDebugStep(
       settings,
@@ -1929,13 +1969,6 @@ async function projectDiagnosticsForCachedAsync(
     );
     return cached.analysis.projectDiagnostics.items;
   }
-  const vbItems = await vbDiagnosticsAsync(cached, settings, stepPrefix);
-  await waitForInteractiveIdle(
-    settings,
-    cached.source.uri,
-    `${stepPrefix}.javascript.idle`,
-  );
-  const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
   logWorkerDebugStep(settings, cached.source.uri, `${stepPrefix}.javascriptUnused.replayed`, 0);
   logWorkerDebugStep(
     settings,
@@ -1944,7 +1977,7 @@ async function projectDiagnosticsForCachedAsync(
     0,
   );
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.project.dedupe`, () =>
-    dedupeDiagnostics([...vbItems, ...jsItems]),
+    dedupeDiagnostics([...vb.items, ...jsItems]),
   );
   analysisFor(cached).projectDiagnostics = { key, items, text: cached.parsed.text };
   return items;
@@ -2149,9 +2182,7 @@ async function waitForInteractiveIdle(
   const startedAt = process.hrtime.bigint();
   const deadline = Date.now() + slowDiagnosticsInteractiveDeferMs;
   while (hasRecentInteractiveActivity() && Date.now() < deadline) {
-    await sleep(
-      Math.max(1, Math.min(millisecondsUntilInteractiveIdle(), deadline - Date.now())),
-    );
+    await sleep(Math.max(1, Math.min(millisecondsUntilInteractiveIdle(), deadline - Date.now())));
   }
   finishDebugStep(settings, uri, step, startedAt);
 }
@@ -2361,10 +2392,14 @@ function syntaxDiagnosticsCacheKey(cached: CachedDocument): string {
 }
 
 function projectDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
-  return JSON.stringify({
-    vbscript: vbDiagnosticsCacheKey(cached, settings),
-    javascript: jsSlowDiagnosticsCacheKey(cached, settings),
-  });
+  return projectDiagnosticsCacheKeyFromParts(
+    vbDiagnosticsCacheKey(cached, settings),
+    jsSlowDiagnosticsCacheKey(cached, settings),
+  );
+}
+
+function projectDiagnosticsCacheKeyFromParts(vbscript: string, javascript: string): string {
+  return JSON.stringify({ vbscript, javascript });
 }
 
 function diagnosticsSettingsKey(settings: AspSettings): unknown {
@@ -2392,8 +2427,20 @@ function diagnosticsSettingsKey(settings: AspSettings): unknown {
 }
 
 function vbDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return vbDiagnosticsCacheKeyForContext(
+    cached,
+    settings,
+    vbProjectContextCacheKey(collectCachedVbProjectDocuments(cached, settings), settings),
+  );
+}
+
+function vbDiagnosticsCacheKeyForContext(
+  cached: CachedDocument,
+  settings: AspSettings,
+  contextKey: unknown,
+): string {
   return JSON.stringify({
-    project: vbProjectContextCacheKey(collectCachedVbProjectDocuments(cached, settings), settings),
+    project: contextKey,
     settings: {
       typeChecking: settings.vbscript?.typeChecking,
       identifierCase: settings.vbscript?.identifierCase,
@@ -2404,6 +2451,28 @@ function vbDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): s
       locale: settings.resolvedLocale,
     },
   });
+}
+
+function vbProjectContextIdentity(context: VbProjectContext): unknown {
+  return {
+    symbols: context.symbols?.map((symbol) => ({
+      name: symbol.name,
+      kind: symbol.kind,
+      sourceUri: symbol.sourceUri,
+      range: symbol.range,
+      memberOf: symbol.memberOf,
+      scopeName: symbol.scopeName,
+      typeName: symbol.typeName,
+      explicitType: symbol.explicitType,
+      visibility: symbol.visibility,
+      procedureKind: symbol.procedureKind,
+      parameters: symbol.parameters,
+    })),
+    externalRefUsages: context.externalRefUsages?.map((usage) => ({
+      key: usage.key,
+      count: usage.count,
+    })),
+  };
 }
 
 function jsSlowDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
@@ -2722,6 +2791,72 @@ function reuseUnchangedDiagnostics(
   return items;
 }
 
+function reuseProjectDiagnostics(cached: CachedDocument): Diagnostic[] | undefined {
+  const entry = cached.analysis?.projectDiagnostics;
+  const changes = cached.changes;
+  if (cached.projectDiagnosticsMode !== "reuse" || !entry || !changes || changes.length === 0) {
+    return undefined;
+  }
+  const items = shiftDiagnosticsAfterChanges(entry.items, entry.text, cached.source, changes);
+  entry.items = items;
+  entry.text = cached.parsed.text;
+  entry.key = `${entry.key}|project-shift:${changes
+    .map((change) => `${change.start}:${change.end}:${change.delta}`)
+    .join(",")}`;
+  return items;
+}
+
+function projectDiagnosticsModeForIncrementalUpdate(
+  previous: CachedDocument | undefined,
+  dirtyLanguages: Set<AspIncrementalChange["language"]> | undefined,
+  previousText: string,
+  nextText: string,
+  changes: TextDocumentContentChangeEvent[],
+): ProjectDiagnosticsMode {
+  if (!previous || !dirtyLanguages || dirtyLanguages.size === 0) {
+    return "full";
+  }
+  if (dirtyLanguages.has("asp-directive")) {
+    return "full";
+  }
+  if (dirtyLanguages.has("javascript") || dirtyLanguages.has("jscript")) {
+    return "currentFile";
+  }
+  if (dirtyLanguages.has("vbscript")) {
+    return isCommentOnlyVbscriptChange(previous.source, previousText, nextText, changes)
+      ? "reuse"
+      : "currentFile";
+  }
+  return "reuse";
+}
+
+function isCommentOnlyVbscriptChange(
+  previousDocument: TextDocument,
+  previousText: string,
+  nextText: string,
+  changes: TextDocumentContentChangeEvent[],
+): boolean {
+  if (changes.length !== 1 || !("range" in changes[0]) || !changes[0].range) {
+    return false;
+  }
+  const change = changes[0];
+  const start = previousDocument.offsetAt(change.range.start);
+  const end = previousDocument.offsetAt(change.range.end);
+  return (
+    isVbCommentOnlySpan(previousText, start, end) &&
+    isVbCommentOnlySpan(nextText, start, start + change.text.length)
+  );
+}
+
+function isVbCommentOnlySpan(text: string, start: number, end: number): boolean {
+  const firstLineStart = lineStartOffset(text, start);
+  const lastLineEnd = lineEndOffset(text, Math.max(start, end));
+  return text
+    .slice(firstLineStart, lastLineEnd)
+    .split(/\r?\n/)
+    .every((line) => line.trimStart().startsWith("'"));
+}
+
 function isDiagnosticLanguageDirty(
   cached: CachedDocument,
   language: AspIncrementalChange["language"],
@@ -2969,21 +3104,23 @@ async function vbDiagnosticsAsync(
   cached: CachedDocument,
   settings: AspSettings,
   stepPrefix: string,
-): Promise<Diagnostic[]> {
+): Promise<{ key: string; items: Diagnostic[] }> {
   const reused = reuseUnchangedDiagnostics(cached, "vbscript", cached.analysis?.vbDiagnostics);
   if (reused) {
-    return reused;
-  }
-  const key = vbDiagnosticsCacheKey(cached, settings);
-  if (cached.analysis?.vbDiagnostics?.key === key) {
-    return cached.analysis.vbDiagnostics.items;
+    return { key: cached.analysis?.vbDiagnostics?.key ?? "reused", items: reused };
   }
   const context = await measureDebugStepAsync(
     settings,
     cached.source.uri,
     `${stepPrefix}.vbscript.projectContext`,
-    () => buildVbProjectContextAsync(cached, settings),
+    async () =>
+      (await buildVbPublicProjectContextAsync(cached, settings)) ??
+      buildVbProjectContextAsync(cached, settings),
   );
+  const key = vbDiagnosticsCacheKeyForContext(cached, settings, vbProjectContextIdentity(context));
+  if (cached.analysis?.vbDiagnostics?.key === key) {
+    return { key, items: cached.analysis.vbDiagnostics.items };
+  }
   const startedAt = process.hrtime.bigint();
   try {
     logWorkerDebugStep(
@@ -3013,7 +3150,7 @@ async function vbDiagnosticsAsync(
       items: result.diagnostics,
       text: cached.parsed.text,
     };
-    return result.diagnostics;
+    return { key, items: result.diagnostics };
   } catch (error) {
     logDebugSummary(
       settings,
@@ -3036,7 +3173,7 @@ async function vbDiagnosticsAsync(
         }).diagnostics,
     );
     analysisFor(cached).vbDiagnostics = { key, items, text: cached.parsed.text };
-    return items;
+    return { key, items };
   }
 }
 
@@ -4916,6 +5053,7 @@ function createVbPublicProjectContext(
   const context = {
     documents: [cached.parsed],
     symbols,
+    externalRefUsages: summaries.flatMap((summary) => summary.externalRefUsages ?? []),
     typeEnvironment,
     ...contextSettings,
   };
@@ -5176,6 +5314,12 @@ async function vbPublicSymbolSummaryForFileAsync(
   const settingsKey = vbPublicSymbolSummarySettingsKey(settings);
   const memory = vbPublicSymbolSummaryCache.get(normalizeFileName(source.fileName));
   if (memory && diskSourceMatches(memory.source, source) && memory.settingsKey === settingsKey) {
+    finishDebugStep(
+      settings,
+      source.uri,
+      "vbProjectContext.includeSummaryReuse",
+      process.hrtime.bigint(),
+    );
     return memory;
   }
   const fileSummary = await currentDiskAnalysisCache(settings).readFileAnalysisSummaryFresh(
@@ -5191,6 +5335,12 @@ async function vbPublicSymbolSummaryForFileAsync(
     );
     rememberVbPublicSymbolSummary(summary);
     logDebugSummary(settings, `[asp-lsp] fileSummary.diskCacheReuse ${source.uri}`);
+    finishDebugStep(
+      settings,
+      source.uri,
+      "vbProjectContext.includeSummaryReuse",
+      process.hrtime.bigint(),
+    );
     return summary;
   }
   const disk = await currentDiskAnalysisCache(settings).readVbPublicSymbolSummaryFresh(
@@ -5200,10 +5350,20 @@ async function vbPublicSymbolSummaryForFileAsync(
   if (disk) {
     rememberVbPublicSymbolSummary(disk);
     logDebugSummary(settings, `[asp-lsp] vbPublicSummary.diskCacheReuse ${source.uri}`);
+    finishDebugStep(
+      settings,
+      source.uri,
+      "vbProjectContext.includeSummaryReuse",
+      process.hrtime.bigint(),
+    );
     return disk;
   }
-  const text = await readTextFileAsync(source.fileName, settings.legacyEncoding);
-  const parsed = parseAspDocument(source.uri, text, settings);
+  const parsed = await measureDebugStepAsync(
+    settings,
+    source.uri,
+    "vbProjectContext.includeParseFallback",
+    () => readParsedIncludeDocumentAsync(source.fileName, settings),
+  );
   const summary = vbPublicSymbolSummaryForParsed(parsed, source, settings, settingsKey);
   rememberVbPublicSymbolSummary(summary);
   queueVbPublicSymbolSummaryPersist(summary, settings);

@@ -5833,7 +5833,44 @@ function buildVbReferenceIndex(
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
   }
+  addExternalRefUsageCounts(counts, symbols, context.externalRefUsages ?? [], candidates);
   return { counts };
+}
+
+function addExternalRefUsageCounts(
+  counts: Map<string, number>,
+  symbols: VbSymbol[],
+  usages: VbExternalRefUsage[],
+  candidates: VbUnusedReferenceCandidates,
+): void {
+  if (usages.length === 0) {
+    return;
+  }
+  const byName = new Map<string, VbSymbol[]>();
+  const byMember = new Map<string, VbSymbol[]>();
+  for (const symbol of symbols) {
+    if (!candidates.keys.has(symbolKey(symbol))) {
+      continue;
+    }
+    if (symbol.memberOf) {
+      pushMapItem(
+        byMember,
+        `${symbol.memberOf.toLowerCase()}.${symbol.name.toLowerCase()}`,
+        symbol,
+      );
+    } else {
+      pushMapItem(byName, symbol.name.toLowerCase(), symbol);
+    }
+  }
+  for (const usage of usages) {
+    const matches = usage.memberName
+      ? (byMember.get(`${usage.name.toLowerCase()}.${usage.memberName.toLowerCase()}`) ?? [])
+      : (byName.get(usage.name.toLowerCase()) ?? []);
+    for (const symbol of matches) {
+      const key = symbolKey(symbol);
+      counts.set(key, (counts.get(key) ?? 0) + usage.count);
+    }
+  }
 }
 
 function unusedReferenceCandidates(

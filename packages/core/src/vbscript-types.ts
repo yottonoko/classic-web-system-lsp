@@ -68,6 +68,7 @@ export interface VbReferenceOptions {
 export interface VbProjectContext {
   symbols?: VbSymbol[];
   documents?: AspParsedDocument[];
+  externalRefUsages?: VbExternalRefUsage[];
   typeChecking?: "basic" | "strict";
   identifierCase?: AspVbscriptIdentifierCase;
   identifierCaseByKind?: Partial<Record<AspVbscriptIdentifierKind, AspVbscriptIdentifierCase>>;

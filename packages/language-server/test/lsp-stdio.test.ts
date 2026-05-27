@@ -1407,15 +1407,85 @@ Response.Write known
         await server.waitForNotification("textDocument/publishDiagnostics");
         await waitForLogContaining(server, "documentChange.refreshCachedDocument");
         await waitForLogContaining(server, "diagnostics.fast.total");
-        await waitForLogContaining(server, "diagnostics.slow.project");
+        await waitForLogContaining(server, "diagnostics.slow.project.reuse");
         await waitForLogContaining(server, "diagnostics.slow.send");
         await waitForLogContaining(server, "LSP check slow completed");
+        expect(JSON.stringify(server.takePendingNotifications("window/logMessage"))).not.toContain(
+          "vbscript.diagnostics.dispatch",
+        );
         expect(source).toContain("' benchmark y");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
       } finally {
         server.stop();
+      }
+    });
+
+    it("reuses include public summaries for current-file-only project diagnostics", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-current-file-project-"));
+      const include = path.join(tempDir, "shared.inc");
+      const page = path.join(tempDir, "default.asp");
+      fs.writeFileSync(
+        include,
+        `<%
+Function SharedTitle()
+  SharedTitle = "ok"
+End Function
+%>`,
+        "utf8",
+      );
+      let source = `<!-- #include file="shared.inc" -->
+<% Option Explicit
+Dim localValue
+Response.Write SharedTitle()
+Response.Write localValue
+%>`;
+      fs.writeFileSync(page, source, "utf8");
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+              workspace: { backgroundAnalysis: false },
+            },
+          },
+        });
+
+        const uri = pathToFileURL(page).toString();
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "LSP check slow completed");
+        server.takePendingNotifications("window/logMessage");
+
+        source = notifyRangedReplacement(server, uri, source, 2, "localValue", "renamedValue");
+
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "diagnostics.slow.project.currentFileOnly");
+        await waitForLogContaining(server, "vbProjectContext.includeSummaryReuse");
+        await waitForLogContaining(server, "LSP check slow completed");
+        expect(source).toContain("renamedValue");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
 

@@ -24,7 +24,12 @@ const selectedStepNames = [
   "diagnostics.slow.include",
   "diagnostics.slow.syntax",
   "diagnostics.slow.project",
+  "diagnostics.slow.project.reuse",
+  "diagnostics.slow.project.currentFileOnly",
+  "diagnostics.slow.project.fullRecompute",
   "diagnostics.slow.send",
+  "vbProjectContext.includeSummaryReuse",
+  "vbProjectContext.includeParseFallback",
 ];
 
 async function main() {
