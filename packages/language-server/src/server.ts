@@ -5217,7 +5217,9 @@ function affectedOpenUrisForAspChanges(changes: WatchedAspFileChange[]): Set<str
 
 function changedExportKeysForWatchedFile(change: WatchedAspFileChange): Set<string> | undefined {
   const cacheKey = normalizeFileName(change.fileName);
-  const previous = vbPublicSymbolSummaryCache.get(cacheKey);
+  const previous =
+    vbPublicSymbolSummaryCache.get(cacheKey) ??
+    cachedVbPublicSymbolSummaryForChangedFile(change.fileName, globalSettings);
   if (change.type === FileChangeType.Deleted) {
     vbPublicSymbolSummaryCache.delete(cacheKey);
     return previous ? exportKeysForSummary(previous) : undefined;
@@ -5233,6 +5235,24 @@ function changedExportKeysForWatchedFile(change: WatchedAspFileChange): Set<stri
   rememberVbPublicSymbolSummary(current);
   queueVbPublicSymbolSummaryPersist(current, globalSettings);
   return changedExportKeys(previous, current);
+}
+
+function cachedVbPublicSymbolSummaryForChangedFile(
+  fileName: string,
+  settings: AspSettings,
+): VbPublicSymbolSummary | undefined {
+  const disk = currentDiskAnalysisCache(settings).readFileAnalysisSummaryForFile(
+    fileName,
+    fileAnalysisSummarySettingsKey(settings),
+  );
+  return disk
+    ? vbPublicSymbolSummaryFromFileSummary(
+        disk.summary,
+        disk.source,
+        settings,
+        vbPublicSymbolSummarySettingsKey(settings),
+      )
+    : undefined;
 }
 
 function vbPublicSymbolSummaryForFile(

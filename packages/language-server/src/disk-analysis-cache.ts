@@ -212,6 +212,29 @@ export class DiskAnalysisCache {
     }
   }
 
+  readFileAnalysisSummaryForFile(
+    fileName: string,
+    settingsKey: string,
+  ): DiskFileAnalysisSummaryPayload | undefined {
+    if (!this.enabled) {
+      return undefined;
+    }
+    try {
+      const cacheFileName = this.entryPath(fileName, "file-summary");
+      const payload = decode(fs.readFileSync(cacheFileName)) as unknown;
+      if (
+        !isFileAnalysisSummaryPayload(payload) ||
+        !matchesFileSummaryFile(payload, fileName, settingsKey)
+      ) {
+        return undefined;
+      }
+      touchSync(cacheFileName);
+      return payload;
+    } catch {
+      return undefined;
+    }
+  }
+
   async write(payload: DiskAnalysisCachePayload): Promise<void> {
     if (!this.enabled) {
       return;
@@ -410,6 +433,17 @@ function matchesPayload(
     payload.source.uri === source.uri &&
     payload.source.mtimeMs === source.mtimeMs &&
     payload.source.size === source.size
+  );
+}
+
+function matchesFileSummaryFile(
+  payload: DiskFileAnalysisSummaryPayload,
+  fileName: string,
+  settingsKey: string,
+): boolean {
+  return (
+    payload.settingsKey === settingsKey &&
+    normalizePath(payload.source.fileName) === normalizePath(fileName)
   );
 }
 

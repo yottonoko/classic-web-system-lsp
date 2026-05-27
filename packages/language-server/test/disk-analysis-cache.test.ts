@@ -135,6 +135,19 @@ describe("DiskAnalysisCache", () => {
           },
         },
       });
+
+      fs.writeFileSync(sourceFile, `<% Response.Write SharedTitle("changed") %>`, "utf8");
+      const changedStat = fs.statSync(sourceFile);
+      await expect(
+        cache.readFileAnalysisSummaryFresh(
+          { ...source, mtimeMs: changedStat.mtimeMs, size: changedStat.size },
+          "summary-settings",
+        ),
+      ).resolves.toBeUndefined();
+      expect(cache.readFileAnalysisSummaryForFile(sourceFile, "summary-settings")).toMatchObject({
+        settingsKey: "summary-settings",
+        summary: { uri: source.uri },
+      });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
