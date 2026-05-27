@@ -20,6 +20,14 @@ const changeKinds = readChangeKinds();
 const changeModes = readChangeModes();
 const editTargets = readEditTargets();
 const backgroundModes = readBackgroundModes();
+const debugEventNames = [
+  "diskCache.hit",
+  "diskCache.miss",
+  "diskCache.write",
+  "backgroundAnalysis.started",
+  "backgroundAnalysis.completed",
+  "check.vbscript.diagnostics.reuse",
+];
 const selectedStepNames = [
   "documentChange.bumpAnalysisGeneration",
   "documentChange.dropCachedDocument",
@@ -107,7 +115,16 @@ async function main() {
     );
     console.log("");
     printDebugStepTotals(scenarioResults);
+    console.log("");
+    console.log("Debug event counts");
+    console.log("");
+    printDebugEventTotals(scenarioResults);
   }
+
+  console.log("");
+  console.log("Workspace cache benchmark");
+  console.log("");
+  printWorkspaceCacheTable(await runWorkspaceCacheBenchmarks());
 }
 
 async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarget) {
@@ -164,6 +181,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
 
     const samples = [];
     const debugStepTotals = new Map();
+    const debugEventTotals = new Map();
     for (let index = 0; index < benchmarkIterations; index += 1) {
       const sample = await measureDocumentChange(
         server,
@@ -177,6 +195,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
       for (const [step, elapsedMs] of sample.stepTimings) {
         debugStepTotals.set(step, (debugStepTotals.get(step) ?? 0) + elapsedMs);
       }
+      addCounters(debugEventTotals, sample.eventCounts);
     }
 
     await server.request("shutdown", null);
@@ -190,6 +209,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
       debounceMs,
       samples,
       debugStepTotals,
+      debugEventTotals,
     };
   } finally {
     server.stop();
@@ -224,7 +244,116 @@ async function measureDocumentChange(server, uri, state, editOffset, changeKind,
     finalDiagnosticsMs,
     analysisStarts: countLogsContaining(logs, `LSP analysis started: ${uri}`),
     stepTimings: collectLogTimings(logs),
+    eventCounts: collectDebugEventCounts(logs),
   };
+}
+
+async function runWorkspaceCacheBenchmarks() {
+  const results = [];
+  if (backgroundModes.includes(false)) {
+    results.push(await runColdWarmWorkspaceCacheScenario());
+  }
+  if (backgroundModes.includes(true)) {
+    results.push(await runBackgroundWorkspaceCacheScenario());
+  }
+  return results;
+}
+
+async function runColdWarmWorkspaceCacheScenario() {
+  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer(false);
+  try {
+    const cold = await measureWorkspaceDiagnostics(server, "diskCache.write");
+    const warm = await measureWorkspaceDiagnostics(server, "diskCache.hit");
+    return {
+      scenario: "background=off",
+      cacheDir,
+      rows: [
+        { metric: "cold workspace diagnostics", ...cold },
+        { metric: "warm workspace diagnostics", ...warm },
+      ],
+    };
+  } finally {
+    await stopWorkspaceCacheServer(server);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function runBackgroundWorkspaceCacheScenario() {
+  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer(true);
+  try {
+    const warmupStartedAt = performance.now();
+    const warmupLogs = [];
+    await waitForLogContaining(server, "backgroundAnalysis.completed", warmupLogs);
+    warmupLogs.push(...server.takePendingNotifications("window/logMessage"));
+    const warmup = {
+      elapsedMs: performance.now() - warmupStartedAt,
+      diagnosticCount: 0,
+      eventCounts: collectDebugEventCounts(warmupLogs),
+    };
+    const warm = await measureWorkspaceDiagnostics(server, "diskCache.hit");
+    return {
+      scenario: "background=on",
+      cacheDir,
+      rows: [
+        { metric: "background warmup", ...warmup },
+        { metric: "post-background workspace diagnostics", ...warm },
+      ],
+    };
+  } finally {
+    await stopWorkspaceCacheServer(server);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function startWorkspaceCacheServer(backgroundAnalysis) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-cache-bench-"));
+  const cacheDir = path.join(tempDir, "cache");
+  const server = new RpcServer();
+  await server.start();
+  await server.request("initialize", {
+    processId: process.pid,
+    rootUri: pathToFileURL(sampleRoot).href,
+    capabilities: {},
+  });
+  server.notify("workspace/didChangeConfiguration", {
+    settings: {
+      aspLsp: {
+        cache: { enabled: true, directory: cacheDir },
+        debug: { output: "verbose" },
+        workspace: { backgroundAnalysis },
+      },
+    },
+  });
+  drainBenchmarkNotifications(server);
+  return { server, tempDir, cacheDir };
+}
+
+async function stopWorkspaceCacheServer(server) {
+  try {
+    await server.request("shutdown", null);
+    server.notify("exit", undefined);
+  } finally {
+    server.stop();
+  }
+}
+
+async function measureWorkspaceDiagnostics(server, expectedLog) {
+  drainBenchmarkNotifications(server);
+  const startedAt = performance.now();
+  const report = await server.request("workspace/diagnostic", { previousResultIds: [] });
+  const logs = [];
+  await waitForLogContaining(server, expectedLog, logs);
+  await sleep(50);
+  logs.push(...server.takePendingNotifications("window/logMessage"));
+  return {
+    elapsedMs: performance.now() - startedAt,
+    diagnosticCount: countWorkspaceDiagnostics(report),
+    eventCounts: collectDebugEventCounts(logs),
+  };
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function buildTextChange(currentText, editOffset, changeKind) {
@@ -348,8 +477,37 @@ function collectLogTimings(logs) {
   return timings;
 }
 
+function collectDebugEventCounts(logs) {
+  const counts = new Map();
+  for (const log of logs) {
+    const message = logMessage(log);
+    for (const eventName of debugEventNames) {
+      if (message.includes(`[asp-lsp] ${eventName}`)) {
+        counts.set(eventName, (counts.get(eventName) ?? 0) + 1);
+      }
+    }
+  }
+  return counts;
+}
+
+function addCounters(target, source) {
+  for (const [key, value] of source) {
+    target.set(key, (target.get(key) ?? 0) + value);
+  }
+}
+
 function countLogsContaining(logs, expected) {
   return logs.filter((log) => logMessage(log).includes(expected)).length;
+}
+
+function countWorkspaceDiagnostics(report) {
+  const items =
+    report && typeof report === "object" && Array.isArray(report.items) ? report.items : [];
+  return items.reduce(
+    (sum, item) =>
+      sum + (item && typeof item === "object" && Array.isArray(item.items) ? item.items.length : 0),
+    0,
+  );
 }
 
 async function waitForLogContaining(server, expected, collectedLogs) {
@@ -451,6 +609,52 @@ function printDebugStepTotals(scenarioResults) {
       (left, right) => right[1] - left[1],
     )) {
       rows.push([scenarioName, step, formatMillis(total)]);
+    }
+  }
+  printRows(rows);
+}
+
+function printDebugEventTotals(scenarioResults) {
+  const rows = [["Scenario", "Event", "count"]];
+  for (const scenario of scenarioResults) {
+    const scenarioName = scenarioLabel(scenario);
+    for (const eventName of debugEventNames) {
+      const count = scenario.debugEventTotals.get(eventName) ?? 0;
+      if (count > 0) {
+        rows.push([scenarioName, eventName, String(count)]);
+      }
+    }
+  }
+  printRows(rows);
+}
+
+function printWorkspaceCacheTable(results) {
+  const rows = [
+    [
+      "Scenario",
+      "Metric",
+      "elapsed ms",
+      "diagnostics",
+      "disk hits",
+      "disk misses",
+      "disk writes",
+      "background starts",
+      "background completes",
+    ],
+  ];
+  for (const result of results) {
+    for (const row of result.rows) {
+      rows.push([
+        result.scenario,
+        row.metric,
+        formatMillis(row.elapsedMs),
+        String(row.diagnosticCount),
+        String(row.eventCounts.get("diskCache.hit") ?? 0),
+        String(row.eventCounts.get("diskCache.miss") ?? 0),
+        String(row.eventCounts.get("diskCache.write") ?? 0),
+        String(row.eventCounts.get("backgroundAnalysis.started") ?? 0),
+        String(row.eventCounts.get("backgroundAnalysis.completed") ?? 0),
+      ]);
     }
   }
   printRows(rows);
