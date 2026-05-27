@@ -274,6 +274,18 @@ interface DiagnosticCacheEntry {
   text: string;
 }
 
+type DiagnosticLayerKey = "fast" | "include" | "syntax" | "project" | "final";
+
+interface StagedDiagnosticsState {
+  generation: number;
+  uri: string;
+  version: number;
+  documentGeneration: number;
+  diagnosticsIdentity: string;
+  startedAt: bigint;
+  layers: Partial<Record<DiagnosticLayerKey, Diagnostic[]>>;
+}
+
 interface AnalysisCancellation {
   isCancellationRequested(): boolean;
 }
@@ -355,9 +367,11 @@ function aspFileOperationFilter() {
 
 const cache = new Map<string, CachedDocument>();
 const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const stagedDiagnosticsByUri = new Map<string, StagedDiagnosticsState>();
 const pendingDocumentChanges = new Map<string, PendingDocumentChange>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 const maxVbProjectContextCacheEntries = 32;
+let stagedDiagnosticsGeneration = 0;
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
   clientLocale = typeof params.locale === "string" ? params.locale : "en";
@@ -476,6 +490,7 @@ documents.onDidClose((event) => {
   pendingDocumentChanges.delete(event.document.uri);
   cache.delete(event.document.uri);
   clearSemanticTokensForUri(event.document.uri);
+  stagedDiagnosticsByUri.delete(event.document.uri);
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
 });
 
@@ -1300,10 +1315,7 @@ connection.languages.semanticTokens.onDelta((params): SemanticTokens | SemanticT
 function validate(document: TextDocument): void {
   cancelScheduledDiagnostics(document.uri);
   const cached = ensureFreshCachedDocument(document);
-  connection.sendDiagnostics({
-    uri: document.uri,
-    diagnostics: diagnosticsForCached(cached, cachedSettings(document.uri)),
-  });
+  startStagedDiagnostics(cached, cachedSettings(document.uri));
 }
 
 function refreshCachedDocument(document: TextDocument, impactReason?: string): CachedDocument {
@@ -1511,32 +1523,25 @@ function finishAnalysisLog(
 
 function scheduleDiagnostics(document: TextDocument): void {
   cancelScheduledDiagnostics(document.uri);
-  const delay =
-    cachedSettings(document.uri).diagnostics?.debounceMs ?? defaultDiagnosticsDebounceMs;
+  const settings = cachedSettings(document.uri);
+  const cached = ensureFreshCachedDocument(document);
+  const state = startStagedDiagnostics(cached, settings, false);
+  const delay = settings.diagnostics?.debounceMs ?? defaultDiagnosticsDebounceMs;
   if (delay <= 0) {
-    publishDiagnosticsForVersion(document.uri, document.version);
+    void runStagedDiagnostics(cached, settings, state);
     return;
   }
-  const version = document.version;
   diagnosticsTimers.set(
     document.uri,
     setTimeout(() => {
       diagnosticsTimers.delete(document.uri);
-      publishDiagnosticsForVersion(document.uri, version);
+      if (!isCurrentStagedDiagnostics(cached, state)) {
+        logStaleStagedDiagnostics(settings, state, "include");
+        return;
+      }
+      void runStagedDiagnostics(cached, settings, state);
     }, delay),
   );
-}
-
-function publishDiagnosticsForVersion(uri: string, version: number): void {
-  const document = documents.get(uri);
-  if (!document || document.version !== version) {
-    return;
-  }
-  const cached = ensureFreshCachedDocument(document);
-  connection.sendDiagnostics({
-    uri,
-    diagnostics: diagnosticsForCached(cached, cachedSettings(uri)),
-  });
 }
 
 function cancelScheduledDiagnostics(uri: string): void {
@@ -1546,6 +1551,143 @@ function cancelScheduledDiagnostics(uri: string): void {
   }
   clearTimeout(timer);
   diagnosticsTimers.delete(uri);
+}
+
+function startStagedDiagnostics(
+  cached: CachedDocument,
+  settings: AspSettings,
+  runAsyncLayers = true,
+): StagedDiagnosticsState {
+  const state: StagedDiagnosticsState = {
+    generation: ++stagedDiagnosticsGeneration,
+    uri: cached.source.uri,
+    version: cached.source.version,
+    documentGeneration: cached.generation,
+    diagnosticsIdentity: cached.diagnosticsIdentity,
+    startedAt: startCheckLog(cached, settings),
+    layers: {},
+  };
+  stagedDiagnosticsByUri.set(cached.source.uri, state);
+  state.layers.fast = measureDebugStep(
+    settings,
+    cached.source.uri,
+    "check.parserDiagnostics",
+    () => cached.parsed.diagnostics,
+  );
+  publishStagedDiagnosticsLayer(cached, settings, state, "fast");
+  if (runAsyncLayers) {
+    void runStagedDiagnostics(cached, settings, state);
+  }
+  return state;
+}
+
+async function runStagedDiagnostics(
+  cached: CachedDocument,
+  settings: AspSettings,
+  state: StagedDiagnosticsState,
+): Promise<void> {
+  const cancellation: AnalysisCancellation = {
+    isCancellationRequested: () => !isCurrentStagedDiagnostics(cached, state),
+  };
+  const includeItems = await includeDiagnosticsForCachedAsync(
+    cached,
+    settings,
+    "check",
+    cancellation,
+  );
+  if (!isCurrentStagedDiagnostics(cached, state)) {
+    logStaleStagedDiagnostics(settings, state, "include");
+    return;
+  }
+  state.layers.include = includeItems;
+  publishStagedDiagnosticsLayer(cached, settings, state, "include");
+  await yieldToEventLoop();
+
+  if (!isCurrentStagedDiagnostics(cached, state)) {
+    logStaleStagedDiagnostics(settings, state, "syntax");
+    return;
+  }
+  state.layers.syntax = syntaxDiagnosticsForCached(cached, settings, "check");
+  publishStagedDiagnosticsLayer(cached, settings, state, "syntax");
+  await yieldToEventLoop();
+
+  if (!isCurrentStagedDiagnostics(cached, state)) {
+    logStaleStagedDiagnostics(settings, state, "project");
+    return;
+  }
+  state.layers.project = projectDiagnosticsForCached(cached, settings, "check");
+  publishStagedDiagnosticsLayer(cached, settings, state, "project");
+  if (!isCurrentStagedDiagnostics(cached, state)) {
+    logStaleStagedDiagnostics(settings, state, "final");
+    return;
+  }
+  const finalItems = publishStagedDiagnosticsLayer(cached, settings, state, "final");
+  finishCheckLog(cached, settings, state.startedAt, finalItems.length);
+}
+
+function publishStagedDiagnosticsLayer(
+  cached: CachedDocument,
+  settings: AspSettings,
+  state: StagedDiagnosticsState,
+  layer: DiagnosticLayerKey,
+): Diagnostic[] {
+  if (!isCurrentStagedDiagnostics(cached, state)) {
+    logStaleStagedDiagnostics(settings, state, layer);
+    return [];
+  }
+  const startedAt = process.hrtime.bigint();
+  const items = measureDebugStep(settings, cached.source.uri, `diagnostics.${layer}.dedupe`, () =>
+    dedupeDiagnostics(stagedDiagnosticsItems(state)),
+  );
+  if (layer === "final") {
+    state.layers.final = items;
+  }
+  connection.sendDiagnostics({
+    uri: cached.source.uri,
+    version: state.version,
+    diagnostics: items,
+  });
+  finishDebugStep(settings, cached.source.uri, `diagnostics.${layer}.publish`, startedAt);
+  logDebugSummary(
+    settings,
+    `[asp-lsp] diagnostics.${layer}.published: ${cached.source.uri}, generation=${state.generation}, diagnostics=${items.length}`,
+  );
+  return items;
+}
+
+function stagedDiagnosticsItems(state: StagedDiagnosticsState): Diagnostic[] {
+  return [
+    ...(state.layers.fast ?? []),
+    ...(state.layers.include ?? []),
+    ...(state.layers.syntax ?? []),
+    ...(state.layers.project ?? []),
+  ];
+}
+
+function isCurrentStagedDiagnostics(
+  cached: CachedDocument,
+  state: StagedDiagnosticsState,
+): boolean {
+  const document = documents.get(state.uri);
+  const active = stagedDiagnosticsByUri.get(state.uri);
+  return (
+    active?.generation === state.generation &&
+    document?.version === state.version &&
+    cache.get(state.uri)?.generation === state.documentGeneration &&
+    cached.generation === state.documentGeneration &&
+    cache.get(state.uri)?.diagnosticsIdentity === state.diagnosticsIdentity
+  );
+}
+
+function logStaleStagedDiagnostics(
+  settings: AspSettings,
+  state: StagedDiagnosticsState,
+  layer: DiagnosticLayerKey,
+): void {
+  logDebugSummary(
+    settings,
+    `[asp-lsp] diagnostics.${layer}.stale: ${state.uri}, generation=${state.generation}`,
+  );
 }
 
 function diagnosticsForCached(cached: CachedDocument, settings: AspSettings): Diagnostic[] {

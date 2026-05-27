@@ -1326,7 +1326,7 @@ Response.Write known
       }
     });
 
-    it("debounces document analysis after rapid text changes", async () => {
+    it("debounces slow diagnostics after rapid text changes while publishing fast diagnostics", async () => {
       const server = new RpcServer();
       try {
         await server.start();
@@ -1374,9 +1374,16 @@ Response.Write known
         expect(serializedDiagnostics).toContain("finalName");
         expect(serializedDiagnostics).not.toContain("staleName");
 
-        const serializedLogs = JSON.stringify(server.takePendingNotifications("window/logMessage"));
-        expect(countOccurrences(serializedLogs, "LSP analysis started")).toBe(1);
+        const checkLog = await waitForLogContaining(server, "LSP check completed");
+        const serializedLogs = JSON.stringify([
+          checkLog,
+          ...server.takePendingNotifications("window/logMessage"),
+        ]);
+        expect(countOccurrences(serializedLogs, "LSP analysis started")).toBe(2);
         expect(serializedLogs).toContain("LSP analysis completed");
+        expect(countOccurrences(serializedLogs, "diagnostics.fast.published")).toBe(2);
+        expect(countOccurrences(serializedLogs, "diagnostics.final.published")).toBe(1);
+        expect(countOccurrences(serializedLogs, "LSP check completed")).toBe(1);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -1662,6 +1669,7 @@ Response.Write missingName
         const firstDiagnostics = await waitForDiagnosticsContaining(server, "missingName");
         await waitForLogContaining(server, "LSP check completed");
         server.takePendingNotifications("window/logMessage");
+        server.takePendingNotifications("textDocument/publishDiagnostics");
         const firstMissing = diagnosticContaining(firstDiagnostics, "missingName");
         expect(firstMissing?.range.start.line).toBe(3);
 
@@ -1744,6 +1752,7 @@ Response.Write missingName
           await waitForDiagnosticsContaining(server, "missingName");
           await waitForLogContaining(server, "LSP check completed");
           server.takePendingNotifications("window/logMessage");
+          server.takePendingNotifications("textDocument/publishDiagnostics");
 
           source = notifyRangedReplacement(
             server,
@@ -1864,6 +1873,78 @@ Response.Write known
         server.notify("exit", undefined);
       } finally {
         server.stop();
+      }
+    });
+
+    it("drops stale staged async diagnostics when a newer document version wins", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-staged-stale-"));
+      for (let index = 0; index < 80; index += 1) {
+        const next = index === 79 ? "inc0.inc" : `inc${index + 1}.inc`;
+        fs.writeFileSync(
+          path.join(tempDir, `inc${index}.inc`),
+          `<!-- #include file="${next}" -->\n<% Const Value${index} = ${index} %>`,
+          "utf8",
+        );
+      }
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = `file://${path.join(tempDir, "default.asp")}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<!-- #include file="inc0.inc" -->
+<%
+Option Explicit
+Response.Write staleName
+%>`,
+          },
+        });
+        await waitForDiagnosticsPublished(server, uri);
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [
+            {
+              text: `<%
+Option Explicit
+Response.Write finalName
+%>`,
+            },
+          ],
+        });
+
+        const diagnostics = await waitForDiagnosticsContaining(server, "finalName");
+        expect((diagnostics.params as { version?: number }).version).toBe(2);
+        await waitForLogContaining(server, "diagnostics.include.stale");
+        await delay(80);
+        const pendingText = JSON.stringify(
+          server
+            .takePendingNotifications("textDocument/publishDiagnostics")
+            .map((item) => item.params),
+        );
+        expect(pendingText).not.toContain("staleName");
+        expect(pendingText).not.toContain("Include cycle detected");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
 
@@ -5528,6 +5609,81 @@ Response.Write enabled
       }
     });
 
+    it("publishes staged diagnostics from parser to final layers", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = "file:///tmp/staged-diagnostics.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<!-- #include file="missing.inc" -->
+<style>.broken { color: }</style>
+<%
+Option Explicit
+Response.Write missingName`,
+          },
+        });
+
+        const fast = await waitForDiagnosticsPublished(server, uri);
+        expect(diagnosticMessages(fast).join("\n")).toContain("closing %>");
+        expect(diagnosticText(fast)).not.toContain("missing.inc");
+        const include = await waitForDiagnosticsContaining(server, "missing.inc");
+        expect(diagnosticMessages(include)).toContain(
+          "Include file 'missing.inc' could not be resolved.",
+        );
+        const syntax = await waitForDiagnosticsContaining(server, "asp-lsp-css");
+        expect(diagnosticText(syntax)).toContain("asp-lsp-css");
+        const final = await waitForDiagnosticsContaining(server, "missingName");
+        expect(diagnosticMessages(final)).toContain(
+          "Include file 'missing.inc' could not be resolved.",
+        );
+        expect(JSON.stringify(final.params)).toContain("missingName");
+
+        const logs = [
+          await waitForLogContaining(server, "diagnostics.fast.published"),
+          await waitForLogContaining(server, "diagnostics.include.published"),
+          await waitForLogContaining(server, "diagnostics.syntax.published"),
+          await waitForLogContaining(server, "diagnostics.project.published"),
+          await waitForLogContaining(server, "diagnostics.final.published"),
+          await waitForLogContaining(server, "LSP check completed"),
+        ];
+        const logText = logs.map((log) => JSON.stringify(log.params)).join("\n");
+        expect(logText.indexOf("diagnostics.fast.published")).toBeLessThan(
+          logText.indexOf("diagnostics.include.published"),
+        );
+        expect(logText.indexOf("diagnostics.include.published")).toBeLessThan(
+          logText.indexOf("diagnostics.syntax.published"),
+        );
+        expect(logText.indexOf("diagnostics.syntax.published")).toBeLessThan(
+          logText.indexOf("diagnostics.project.published"),
+        );
+        expect(logText.indexOf("diagnostics.project.published")).toBeLessThan(
+          logText.indexOf("diagnostics.final.published"),
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("ignores unrelated watched file changes without refreshing open ASP documents", async () => {
       const server = new RpcServer();
       try {
@@ -6779,6 +6935,29 @@ async function waitForDiagnosticsContaining(
     }
   }
   throw new Error(`Timed out waiting for diagnostics containing ${expected}.`);
+}
+
+async function waitForDiagnosticsPublished(
+  server: RpcServer,
+  uri: string,
+): Promise<JsonRpcMessage> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+    if ((diagnostics.params as { uri?: string })?.uri === uri) {
+      return diagnostics;
+    }
+  }
+  throw new Error(`Timed out waiting for diagnostics published for ${uri}.`);
+}
+
+function diagnosticMessages(message: JsonRpcMessage): string[] {
+  return (
+    (message.params as { diagnostics?: Array<{ message?: string }> })?.diagnostics ?? []
+  ).flatMap((diagnostic) => (diagnostic.message ? [diagnostic.message] : []));
+}
+
+function diagnosticText(message: JsonRpcMessage): string {
+  return JSON.stringify(message.params);
 }
 
 function diagnosticContaining(message: JsonRpcMessage, expected: string) {
