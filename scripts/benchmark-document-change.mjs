@@ -21,9 +21,28 @@ const changeModes = readChangeModes();
 const backgroundModes = readBackgroundModes();
 const selectedStepNames = [
   "documentChange.bumpAnalysisGeneration",
+  "documentChange.dropCachedDocument",
   "documentChange.scheduleDiagnostics",
   "analysis.parse.incremental",
   "analysis.parse.full",
+  "check.parserDiagnostics",
+  "check.includeDiagnostics",
+  "check.htmlDiagnostics",
+  "check.cssDiagnostics",
+  "check.javascriptSyntax",
+  "check.javascriptSemantic",
+  "check.javascriptUnused",
+  "check.vbscript.projectContext",
+  "check.vbscript.diagnostics",
+  "check.vbscript.diagnostics.symbols",
+  "check.vbscript.diagnostics.unusedSymbols",
+  "check.vbscript.diagnostics.identifierCase",
+  "check.vbscript.diagnostics.callSyntax",
+  "check.vbscript.diagnostics.declarationSyntax",
+  "check.vbscript.diagnostics.serverScriptText",
+  "check.vbscript.diagnostics.dedupe",
+  "check.project.dedupe",
+  "check.dedupe",
   "diagnostics.fast.total",
   "diagnostics.slow.include",
   "diagnostics.slow.syntax",
@@ -121,7 +140,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis) {
       },
     });
     const openLogs = [];
-    await waitForLogContaining(server, `LSP check slow completed: ${uri}`, openLogs);
+    await waitForFinalCheckLog(server, uri, openLogs);
     drainBenchmarkNotifications(server);
 
     for (let index = 0; index < warmupIterations; index += 1) {
@@ -180,11 +199,7 @@ async function measureDocumentChange(server, uri, state, editOffset, changeKind,
   const firstDiagnosticsMs = performance.now() - startedAt;
 
   const logs = [];
-  await waitForLogContainingAny(
-    server,
-    [`LSP check slow completed: ${uri}`, `LSP check slow reused: ${uri}`],
-    logs,
-  );
+  await waitForFinalCheckLog(server, uri, logs);
   const finalDiagnosticsMs = performance.now() - startedAt;
   logs.push(...server.takePendingNotifications("window/logMessage"));
   server.takePendingNotifications("textDocument/publishDiagnostics");
@@ -300,6 +315,18 @@ function countLogsContaining(logs, expected) {
 
 async function waitForLogContaining(server, expected, collectedLogs) {
   return waitForLogContainingAny(server, [expected], collectedLogs);
+}
+
+async function waitForFinalCheckLog(server, uri, collectedLogs) {
+  return waitForLogContainingAny(server, finalCheckMessages(uri), collectedLogs);
+}
+
+function finalCheckMessages(uri) {
+  return [
+    `LSP check completed: ${uri}`,
+    `LSP check slow completed: ${uri}`,
+    `LSP check slow reused: ${uri}`,
+  ];
 }
 
 async function waitForLogContainingAny(server, expectedMessages, collectedLogs) {
