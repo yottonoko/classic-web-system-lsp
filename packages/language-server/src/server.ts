@@ -130,15 +130,20 @@ import {
 
 const connection = createConnection(ProposedFeatures.all);
 const pendingDocumentChanges = new Map<string, PendingDocumentChange>();
+const documentAnalysisGenerations = new Map<string, number>();
+const documentOpenContentVersions = new Map<string, number>();
 const documents = new TextDocuments({
   create: TextDocument.create,
   update(document, changes, version) {
+    const pending = pendingDocumentChanges.get(document.uri);
+    const previousText = pending?.previousText ?? document.getText();
+    const updated = TextDocument.update(document, changes, version);
     pendingDocumentChanges.set(document.uri, {
-      previousText: document.getText(),
-      changes,
+      previousText,
+      changes: pending ? [combinedTextChange(previousText, updated.getText())] : changes,
       version,
     });
-    return TextDocument.update(document, changes, version);
+    return updated;
   },
 });
 const htmlService = getHtmlLanguageService();
@@ -231,6 +236,7 @@ interface CachedDocument {
   source: TextDocument;
   parsed: AspParsedDocument;
   virtuals: Map<string, VirtualDocument>;
+  generation: number;
   analysis?: CachedAnalysis;
   changes?: AspIncrementalChange[];
   dirtyLanguages?: Set<AspIncrementalChange["language"]>;
@@ -295,6 +301,7 @@ interface PendingDocumentChange {
 
 interface SlowDiagnosticsJob {
   version: number;
+  generation: number;
   sequence: number;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -509,19 +516,30 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 });
 
 documents.onDidOpen((event) => {
+  bumpDocumentAnalysisGeneration(event.document.uri);
+  documentOpenContentVersions.set(event.document.uri, event.document.version);
   cancelBackgroundAnalysis();
   cache.delete(event.document.uri);
   removeExternalRefUsageIndexForUri(event.document.uri);
   clearJsLanguageServiceCache();
   validate(event.document);
-  const cached = getCached(event.document.uri);
+  const cached = ensureFreshCachedDocument(event.document);
   if (cached) {
     scheduleVbProjectContextWarmup(cached, cachedSettings(event.document.uri));
   }
   scheduleBackgroundAnalysis("documentOpen");
 });
 documents.onDidChangeContent((event) => {
+  const openedVersion = documentOpenContentVersions.get(event.document.uri);
+  if (openedVersion === event.document.version) {
+    documentOpenContentVersions.delete(event.document.uri);
+    return;
+  }
+  documentOpenContentVersions.delete(event.document.uri);
   const settings = cachedSettings(event.document.uri);
+  measureDebugStep(settings, event.document.uri, "documentChange.bumpAnalysisGeneration", () =>
+    bumpDocumentAnalysisGeneration(event.document.uri),
+  );
   measureDebugStep(settings, event.document.uri, "documentChange.cancelBackgroundAnalysis", () =>
     cancelBackgroundAnalysis(),
   );
@@ -531,18 +549,6 @@ documents.onDidChangeContent((event) => {
   measureDebugStep(settings, event.document.uri, "documentChange.removeExternalRefUsageIndex", () =>
     removeExternalRefUsageIndexForUri(event.document.uri),
   );
-  const cached = measureDebugStep(
-    settings,
-    event.document.uri,
-    "documentChange.refreshCachedDocument",
-    () => refreshCachedDocument(event.document),
-  );
-  measureDebugStep(
-    settings,
-    event.document.uri,
-    "documentChange.scheduleVbProjectContextWarmup",
-    () => scheduleVbProjectContextWarmup(cached, cachedSettings(event.document.uri)),
-  );
   measureDebugStep(settings, event.document.uri, "documentChange.scheduleDiagnostics", () =>
     scheduleDiagnostics(event.document),
   );
@@ -551,6 +557,7 @@ documents.onDidChangeContent((event) => {
   );
 });
 documents.onDidSave((event) => {
+  bumpDocumentAnalysisGeneration(event.document.uri);
   cancelBackgroundAnalysis();
   cache.delete(event.document.uri);
   removeExternalRefUsageIndexForUri(event.document.uri);
@@ -560,9 +567,11 @@ documents.onDidSave((event) => {
   scheduleBackgroundAnalysis("documentSave");
 });
 documents.onDidClose((event) => {
+  bumpDocumentAnalysisGeneration(event.document.uri);
   cancelScheduledDiagnostics(event.document.uri);
   cancelSlowDiagnostics(event.document.uri);
   pendingDocumentChanges.delete(event.document.uri);
+  documentOpenContentVersions.delete(event.document.uri);
   cache.delete(event.document.uri);
   removeExternalRefUsageIndexForUri(event.document.uri);
   clearJsLanguageServiceCache();
@@ -577,7 +586,7 @@ documents.onWillSave((event) => {
 
 documents.onWillSaveWaitUntil((event) => {
   validate(event.document);
-  const cached = getCached(event.document.uri);
+  const cached = ensureFreshCachedDocument(event.document);
   const settings = cached ? cachedSettings(cached.source.uri) : undefined;
   return cached && settings?.format?.onSave === true
     ? formatAspDocumentWithDelegates(cached, defaultFormattingOptions(settings))
@@ -611,6 +620,7 @@ connection.onNotification(
     cancelAllSlowDiagnostics();
     cancelBackgroundAnalysis();
     for (const document of documents.all()) {
+      bumpDocumentAnalysisGeneration(document.uri);
       validate(document);
     }
     scheduleBackgroundAnalysis("workspaceFolders");
@@ -632,6 +642,7 @@ connection.onDidChangeConfiguration((change) => {
   cancelAllSlowDiagnostics();
   cancelBackgroundAnalysis();
   for (const document of documents.all()) {
+    bumpDocumentAnalysisGeneration(document.uri);
     validate(document);
   }
   scheduleBackgroundAnalysis("configuration");
@@ -677,6 +688,7 @@ connection.onDidChangeWatchedFiles((change) => {
     invalidateCachedAnalysisForUris(affectedUris);
   }
   for (const document of documents.all().filter((item) => affectedUris.has(item.uri))) {
+    bumpDocumentAnalysisGeneration(document.uri);
     validate(document);
   }
   scheduleBackgroundAnalysis("watchedFiles");
@@ -707,7 +719,7 @@ connection.workspace.onDidDeleteFiles(() => {
 
 connection.onCompletion((params) =>
   runInteractiveLanguageFeature(() => {
-    const cached = getCached(params.textDocument.uri);
+    const cached = getFreshCached(params.textDocument.uri);
     if (!cached) {
       return [];
     }
@@ -762,7 +774,7 @@ connection.onCompletionResolve((item) =>
   runInteractiveLanguageFeature(() => {
     const data = item.data as { kind?: string; uri?: string } | undefined;
     if (data?.kind === "vbscript" && data.uri) {
-      const cached = getCached(data.uri);
+      const cached = getFreshCached(data.uri);
       return cached
         ? resolveVbscriptCompletionItem(
             item,
@@ -784,7 +796,7 @@ connection.onCompletionResolve((item) =>
 
 connection.onHover((params) =>
   runInteractiveLanguageFeature(() => {
-    const cached = getCached(params.textDocument.uri);
+    const cached = getFreshCached(params.textDocument.uri);
     if (!cached) {
       return null;
     }
@@ -839,7 +851,7 @@ connection.onImplementation((params) => {
 });
 
 connection.onReferences((params: ReferenceParams) => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -862,7 +874,7 @@ connection.onReferences((params: ReferenceParams) => {
 });
 
 connection.onPrepareRename((params) => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return null;
   }
@@ -897,7 +909,7 @@ connection.onPrepareRename((params) => {
 });
 
 connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return null;
   }
@@ -943,7 +955,7 @@ connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null => {
 });
 
 connection.onDocumentHighlight((params): DocumentHighlight[] => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -968,7 +980,7 @@ connection.onDocumentHighlight((params): DocumentHighlight[] => {
 });
 
 connection.onSignatureHelp((params): SignatureHelp | null => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return null;
   }
@@ -1012,7 +1024,7 @@ connection.onWorkspaceSymbol(async (params, token) => {
     )
   ).flat();
   const openSymbols = documents.all().flatMap((document) => {
-    const cached = getCached(document.uri);
+    const cached = ensureFreshCachedDocument(document);
     return cached
       ? (buildVbProjectContext(cached, cachedSettings(document.uri)).symbols ?? []).filter(
           (symbol) => matchesQuery(symbol.name),
@@ -1021,7 +1033,7 @@ connection.onWorkspaceSymbol(async (params, token) => {
   });
   const vbSymbols = openSymbols.map(vbSymbolInformation);
   const openRichSymbols = documents.all().flatMap((document) => {
-    const cached = getCached(document.uri);
+    const cached = ensureFreshCachedDocument(document);
     return cached
       ? workspaceSymbolsForCached(cached).filter((symbol) => matchesQuery(symbol.name))
       : [];
@@ -1030,7 +1042,7 @@ connection.onWorkspaceSymbol(async (params, token) => {
 });
 
 connection.onDocumentSymbol((params) => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1050,7 +1062,7 @@ connection.onDocumentSymbol((params) => {
 });
 
 connection.onFoldingRanges((params) => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1075,7 +1087,7 @@ connection.onFoldingRanges((params) => {
 });
 
 connection.onDocumentLinks((params) => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1091,7 +1103,7 @@ connection.onDocumentLinks((params) => {
 });
 
 connection.onSelectionRanges((params): SelectionRange[] => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1100,7 +1112,7 @@ connection.onSelectionRanges((params): SelectionRange[] => {
 
 connection.languages.inlayHint.on((params): InlayHint[] =>
   runInteractiveLanguageFeature(() => {
-    const cached = getCached(params.textDocument.uri);
+    const cached = getFreshCached(params.textDocument.uri);
     if (!cached) {
       return [];
     }
@@ -1117,7 +1129,8 @@ connection.languages.inlayHint.on((params): InlayHint[] =>
 );
 
 connection.languages.diagnostics.on((params) => {
-  const cached = getCached(params.textDocument.uri) ?? getIndexedCached(params.textDocument.uri);
+  const cached =
+    getFreshCached(params.textDocument.uri) ?? getIndexedCached(params.textDocument.uri);
   return {
     kind: "full" as const,
     items: cached ? diagnosticsForCached(cached, cachedSettings(cached.source.uri)) : [],
@@ -1140,7 +1153,7 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
   return {
     items: [
       ...documents.all().flatMap((document) => {
-        const cached = getCached(document.uri);
+        const cached = ensureFreshCachedDocument(document);
         return cached
           ? [
               {
@@ -1169,6 +1182,7 @@ connection.onExecuteCommand(async (params) => {
       await currentDiskAnalysisCache(globalSettings).clear();
     }
     for (const document of documents.all()) {
+      bumpDocumentAnalysisGeneration(document.uri);
       validate(document);
     }
     scheduleBackgroundAnalysis(params.command);
@@ -1183,7 +1197,7 @@ connection.onExecuteCommand(async (params) => {
 });
 
 connection.languages.callHierarchy.onPrepare((params): CallHierarchyItem[] => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1206,7 +1220,7 @@ connection.languages.callHierarchy.onIncomingCalls((params): CallHierarchyIncomi
     return jsIncomingCalls(params.item);
   }
   const root = callHierarchyRootUri(params.item);
-  const cached = getCached(root) ?? getCached(params.item.uri);
+  const cached = getFreshCached(root) ?? getFreshCached(params.item.uri);
   if (!cached) {
     return [];
   }
@@ -1221,7 +1235,7 @@ connection.languages.callHierarchy.onOutgoingCalls((params): CallHierarchyOutgoi
     return jsOutgoingCalls(params.item);
   }
   const root = callHierarchyRootUri(params.item);
-  const cached = getCached(root) ?? getCached(params.item.uri);
+  const cached = getFreshCached(root) ?? getFreshCached(params.item.uri);
   if (!cached) {
     return [];
   }
@@ -1232,7 +1246,7 @@ connection.languages.callHierarchy.onOutgoingCalls((params): CallHierarchyOutgoi
 });
 
 connection.languages.typeHierarchy.onPrepare((params): TypeHierarchyItem[] => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1247,7 +1261,7 @@ connection.languages.typeHierarchy.onSubtypes((params): TypeHierarchyItem[] =>
 );
 
 connection.languages.moniker.on((params): Moniker[] => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1255,7 +1269,7 @@ connection.languages.moniker.on((params): Moniker[] => {
 });
 
 connection.languages.inlineValue.on((params: InlineValueParams): InlineValue[] => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1263,7 +1277,7 @@ connection.languages.inlineValue.on((params: InlineValueParams): InlineValue[] =
 });
 
 connection.languages.onLinkedEditingRange((params): LinkedEditingRanges | null => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return null;
   }
@@ -1285,7 +1299,7 @@ function htmlLinkedRanges(cached: CachedDocument, position: Position): Range[] |
 }
 
 connection.onDocumentColor((params): ColorInformation[] => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1293,7 +1307,7 @@ connection.onDocumentColor((params): ColorInformation[] => {
 });
 
 connection.onColorPresentation((params): ColorPresentation[] => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1301,7 +1315,7 @@ connection.onColorPresentation((params): ColorPresentation[] => {
 });
 
 connection.onCodeLens((params): CodeLens[] => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1309,7 +1323,7 @@ connection.onCodeLens((params): CodeLens[] => {
 });
 
 connection.onDocumentFormatting((params) => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1317,7 +1331,7 @@ connection.onDocumentFormatting((params) => {
 });
 
 connection.onDocumentRangeFormatting((params) => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1339,7 +1353,7 @@ connection.onDocumentRangeFormatting((params) => {
 });
 
 connection.onCodeAction((params): CodeAction[] => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1362,7 +1376,7 @@ connection.onDocumentLinkResolve((link) => link);
 connection.languages.inlayHint.resolve((hint) => hint);
 
 connection.onDocumentOnTypeFormatting((params) => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
@@ -1370,7 +1384,7 @@ connection.onDocumentOnTypeFormatting((params) => {
 });
 
 connection.languages.semanticTokens.on((params) => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return { data: [] };
   }
@@ -1378,7 +1392,7 @@ connection.languages.semanticTokens.on((params) => {
 });
 
 connection.languages.semanticTokens.onRange((params): SemanticTokens => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return { data: [] };
   }
@@ -1386,7 +1400,7 @@ connection.languages.semanticTokens.onRange((params): SemanticTokens => {
 });
 
 connection.languages.semanticTokens.onDelta((params): SemanticTokens | SemanticTokensDelta => {
-  const cached = getCached(params.textDocument.uri);
+  const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return { data: [] };
   }
@@ -1404,9 +1418,52 @@ connection.languages.semanticTokens.onDelta((params): SemanticTokens | SemanticT
   };
 });
 
+function combinedTextChange(
+  previousText: string,
+  nextText: string,
+): TextDocumentContentChangeEvent {
+  let prefixLength = 0;
+  while (
+    prefixLength < previousText.length &&
+    prefixLength < nextText.length &&
+    previousText[prefixLength] === nextText[prefixLength]
+  ) {
+    prefixLength += 1;
+  }
+  let previousSuffixStart = previousText.length;
+  let nextSuffixStart = nextText.length;
+  while (
+    previousSuffixStart > prefixLength &&
+    nextSuffixStart > prefixLength &&
+    previousText[previousSuffixStart - 1] === nextText[nextSuffixStart - 1]
+  ) {
+    previousSuffixStart -= 1;
+    nextSuffixStart -= 1;
+  }
+  const previousDocument = TextDocument.create("", "classic-asp", 0, previousText);
+  return {
+    range: {
+      start: previousDocument.positionAt(prefixLength),
+      end: previousDocument.positionAt(previousSuffixStart),
+    },
+    text: nextText.slice(prefixLength, nextSuffixStart),
+  };
+}
+
+function documentAnalysisGeneration(uri: string): number {
+  return documentAnalysisGenerations.get(uri) ?? 0;
+}
+
+function bumpDocumentAnalysisGeneration(uri: string): void {
+  documentAnalysisGenerations.set(uri, documentAnalysisGeneration(uri) + 1);
+}
+
 function validate(document: TextDocument): void {
   cancelScheduledDiagnostics(document.uri);
-  publishStagedDiagnosticsForCached(refreshCachedDocument(document), cachedSettings(document.uri));
+  publishStagedDiagnosticsForCached(
+    ensureFreshCachedDocument(document),
+    cachedSettings(document.uri),
+  );
 }
 
 function refreshCachedDocument(document: TextDocument): CachedDocument {
@@ -1471,6 +1528,7 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
     source: document,
     parsed,
     virtuals: new Map<string, VirtualDocument>(),
+    generation: documentAnalysisGeneration(document.uri),
     analysis: previous?.analysis,
     changes,
     dirtyLanguages,
@@ -1484,6 +1542,24 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
   finishAnalysisLog(settings, document.uri, startedAt, update?.incremental === true);
   return cached;
+}
+
+function ensureFreshCachedDocument(document: TextDocument): CachedDocument {
+  const existing = cache.get(document.uri);
+  if (
+    existing &&
+    existing.source.version === document.version &&
+    existing.generation === documentAnalysisGeneration(document.uri) &&
+    !pendingDocumentChanges.has(document.uri)
+  ) {
+    return existing;
+  }
+  return refreshCachedDocument(document);
+}
+
+function getFreshCached(uri: string): CachedDocument | undefined {
+  const document = documents.get(uri);
+  return document ? ensureFreshCachedDocument(document) : getCached(uri);
 }
 
 function startAnalysisLog(settings: AspSettings, uri: string): void {
@@ -1527,10 +1603,9 @@ function publishDiagnosticsForVersion(uri: string, version: number): void {
   if (!document || document.version !== version) {
     return;
   }
-  publishStagedDiagnosticsForCached(
-    getCached(uri) ?? refreshCachedDocument(document),
-    cachedSettings(uri),
-  );
+  const cached = ensureFreshCachedDocument(document);
+  scheduleVbProjectContextWarmup(cached, cachedSettings(uri));
+  publishStagedDiagnosticsForCached(cached, cachedSettings(uri));
 }
 
 function cancelScheduledDiagnostics(uri: string): void {
@@ -1564,6 +1639,7 @@ function publishStagedDiagnosticsForCached(cached: CachedDocument, settings: Asp
 function enqueueSlowDiagnostics(cached: CachedDocument, settings: AspSettings): void {
   const uri = cached.source.uri;
   const version = cached.source.version;
+  const generation = cached.generation;
   const sequence = ++slowDiagnosticsSequence;
   const timer = setTimeout(() => {
     const current = slowDiagnosticsJobs.get(uri);
@@ -1572,26 +1648,35 @@ function enqueueSlowDiagnostics(cached: CachedDocument, settings: AspSettings): 
     }
     slowDiagnosticsJobs.delete(uri);
     activeSlowDiagnostics.add(uri);
-    void publishSlowDiagnosticsForVersion(uri, version, settings, sequence).finally(() => {
-      activeSlowDiagnostics.delete(uri);
-      scheduleBackgroundAnalysisWhenForegroundIdle("foregroundIdle");
-    });
+    void publishSlowDiagnosticsForVersion(uri, version, generation, settings, sequence).finally(
+      () => {
+        activeSlowDiagnostics.delete(uri);
+        scheduleBackgroundAnalysisWhenForegroundIdle("foregroundIdle");
+      },
+    );
   }, 0);
-  slowDiagnosticsJobs.set(uri, { version, sequence, timer });
+  slowDiagnosticsJobs.set(uri, { version, generation, sequence, timer });
 }
 
 async function publishSlowDiagnosticsForVersion(
   uri: string,
   version: number,
+  generation: number,
   settings: AspSettings,
   sequence: number,
 ): Promise<void> {
   const document = documents.get(uri);
-  const cached = getCached(uri);
-  if (!document || !cached || document.version !== version || cached.source.version !== version) {
+  const cached = cache.get(uri);
+  if (
+    !document ||
+    !cached ||
+    document.version !== version ||
+    cached.source.version !== version ||
+    cached.generation !== generation
+  ) {
     return;
   }
-  const cancellation = diagnosticsCancellation(uri, version);
+  const cancellation = diagnosticsCancellation(uri, version, generation);
   const startedAt = startSlowCheckLog(cached, settings);
   await sleep(0);
   const includeItems = await measureDebugStepAsync(settings, uri, "diagnostics.slow.include", () =>
@@ -1625,7 +1710,7 @@ async function publishSlowDiagnosticsForVersion(
   );
   queueDiskAnalysisPersist(cached, settings);
   const projectItems = await measureDebugStepAsync(settings, uri, "diagnostics.slow.project", () =>
-    projectDiagnosticsForCachedAsync(cached, settings, "check.project"),
+    projectDiagnosticsForCachedAsync(cached, settings, "check.project", cancellation),
   );
   if (cancellation.isCancellationRequested()) {
     return;
@@ -1656,13 +1741,21 @@ async function publishSlowDiagnosticsForVersion(
   finishSlowCheckLog(cached, settings, startedAt, items.length, sequence);
 }
 
-function diagnosticsCancellation(uri: string, version: number): AnalysisCancellation {
+function diagnosticsCancellation(
+  uri: string,
+  version: number,
+  generation: number,
+): AnalysisCancellation {
   return {
     isCancellationRequested: () => {
       const document = documents.get(uri);
-      const cached = getCached(uri);
+      const cached = cache.get(uri);
       return (
-        !document || !cached || document.version !== version || cached.source.version !== version
+        !document ||
+        !cached ||
+        document.version !== version ||
+        cached.source.version !== version ||
+        cached.generation !== generation
       );
     },
   };
@@ -1710,13 +1803,17 @@ async function diagnosticsForCachedAsync(
   cached: CachedDocument,
   settings: AspSettings,
   stepPrefix = "check.async",
+  cancellation: AnalysisCancellation = neverCancelled,
 ): Promise<Diagnostic[]> {
   const key = diagnosticsCacheKey(cached, settings);
   if (cached.analysis?.diagnostics?.key === key) {
     return cached.analysis.diagnostics.items;
   }
   const fastItems = fastDiagnosticsForCached(cached, settings, stepPrefix);
-  const slowItems = await slowDiagnosticsForCachedAsync(cached, settings, stepPrefix);
+  const slowItems = await slowDiagnosticsForCachedAsync(cached, settings, stepPrefix, cancellation);
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
     dedupeDiagnostics([...fastItems, ...slowItems]),
   );
@@ -1910,6 +2007,7 @@ async function slowDiagnosticsForCachedAsync(
   cached: CachedDocument,
   settings: AspSettings,
   stepPrefix = "check.slow",
+  cancellation: AnalysisCancellation = neverCancelled,
 ): Promise<Diagnostic[]> {
   const key = slowDiagnosticsCacheKey(cached, settings);
   if (cached.analysis?.slowDiagnostics?.key === key) {
@@ -1921,9 +2019,28 @@ async function slowDiagnosticsForCachedAsync(
     );
     return cached.analysis.slowDiagnostics.items;
   }
-  const includeItems = await includeDiagnosticsForCachedAsync(cached, settings, stepPrefix);
+  const includeItems = await includeDiagnosticsForCachedAsync(
+    cached,
+    settings,
+    stepPrefix,
+    cancellation,
+  );
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
   const syntaxItems = syntaxDiagnosticsForCached(cached, settings, stepPrefix);
-  const projectItems = await projectDiagnosticsForCachedAsync(cached, settings, stepPrefix);
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
+  const projectItems = await projectDiagnosticsForCachedAsync(
+    cached,
+    settings,
+    stepPrefix,
+    cancellation,
+  );
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
     dedupeDiagnostics([...includeItems, ...syntaxItems, ...projectItems]),
   );
@@ -1935,6 +2052,7 @@ async function projectDiagnosticsForCachedAsync(
   cached: CachedDocument,
   settings: AspSettings,
   stepPrefix: string,
+  cancellation: AnalysisCancellation = neverCancelled,
 ): Promise<Diagnostic[]> {
   const reused = measureDebugStep(
     settings,
@@ -1953,9 +2071,18 @@ async function projectDiagnosticsForCachedAsync(
       : "diagnostics.slow.project.fullRecompute",
     process.hrtime.bigint(),
   );
-  const vb = await vbDiagnosticsAsync(cached, settings, stepPrefix);
+  const vb = await vbDiagnosticsAsync(cached, settings, stepPrefix, cancellation);
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
   await waitForInteractiveIdle(settings, cached.source.uri, `${stepPrefix}.javascript.idle`);
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
   const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
   const key = projectDiagnosticsCacheKeyFromParts(
     vb.key,
     jsSlowDiagnosticsCacheKey(cached, settings),
@@ -2602,7 +2729,11 @@ function queueDiskAnalysisPersist(cached: CachedDocument, settings: AspSettings)
     .catch(() => undefined)
     .then(async () => {
       const current = cache.get(cached.source.uri);
-      if (!current || current.source.version !== cached.source.version) {
+      if (
+        !current ||
+        current.source.version !== cached.source.version ||
+        current.generation !== cached.generation
+      ) {
         return;
       }
       const currentSettings = cachedSettings(current.source.uri);
@@ -3104,6 +3235,7 @@ async function vbDiagnosticsAsync(
   cached: CachedDocument,
   settings: AspSettings,
   stepPrefix: string,
+  cancellation: AnalysisCancellation = neverCancelled,
 ): Promise<{ key: string; items: Diagnostic[] }> {
   const reused = reuseUnchangedDiagnostics(cached, "vbscript", cached.analysis?.vbDiagnostics);
   if (reused) {
@@ -3117,6 +3249,9 @@ async function vbDiagnosticsAsync(
       (await buildVbPublicProjectContextAsync(cached, settings)) ??
       buildVbProjectContextAsync(cached, settings),
   );
+  if (cancellation.isCancellationRequested()) {
+    return { key: "cancelled", items: [] };
+  }
   const key = vbDiagnosticsCacheKeyForContext(cached, settings, vbProjectContextIdentity(context));
   if (cached.analysis?.vbDiagnostics?.key === key) {
     return { key, items: cached.analysis.vbDiagnostics.items };
@@ -3137,6 +3272,9 @@ async function vbDiagnosticsAsync(
     );
     const result = await runVbDiagnosticsInWorker(cached.parsed, context, settings);
     finishDebugStep(settings, cached.source.uri, `${stepPrefix}.vbscript.diagnostics`, startedAt);
+    if (cancellation.isCancellationRequested()) {
+      return { key, items: [] };
+    }
     for (const timing of result.timings) {
       logWorkerDebugStep(
         settings,
@@ -3172,6 +3310,9 @@ async function vbDiagnosticsAsync(
             ),
         }).diagnostics,
     );
+    if (cancellation.isCancellationRequested()) {
+      return { key, items: [] };
+    }
     analysisFor(cached).vbDiagnostics = { key, items, text: cached.parsed.text };
     return { key, items };
   }
@@ -3593,7 +3734,7 @@ function crossLanguageRenameCandidates(active: CachedDocument): CachedDocument[]
     if (seen.has(document.uri)) {
       continue;
     }
-    const cached = getCached(document.uri);
+    const cached = ensureFreshCachedDocument(document);
     if (cached) {
       seen.add(cached.source.uri);
       candidates.push(cached);
@@ -4100,7 +4241,7 @@ function jsCallHierarchyContext(
   if (data?.kind !== "javascript" || !data.rootUri || !data.language) {
     return undefined;
   }
-  const cached = getCached(data.rootUri);
+  const cached = getFreshCached(data.rootUri);
   const virtual = cached
     ? getCachedVirtual(cached, data.language === "jscript" ? "jscript" : "javascript")
     : undefined;
@@ -4207,7 +4348,7 @@ function vbTypeHierarchyRelatedItems(item: TypeHierarchyItem): TypeHierarchyItem
   if (data?.kind !== "vbscript" || !data.typeName) {
     return [];
   }
-  const cached = getCached(data.rootUri ?? item.uri) ?? getCached(item.uri);
+  const cached = getFreshCached(data.rootUri ?? item.uri) ?? getFreshCached(item.uri);
   if (!cached) {
     return [];
   }
@@ -4377,7 +4518,7 @@ function isInlineValueSymbol(kind: VbSymbolKind): boolean {
 }
 
 function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem | undefined {
-  const cached = getCached(uri);
+  const cached = getFreshCached(uri);
   const data = item.data as
     | {
         name?: string;
@@ -4626,7 +4767,7 @@ function definitionLikeLocation(
   position: Position,
   mode: JavaScriptMode,
 ): Location | Location[] | null {
-  const cached = getCached(uri);
+  const cached = getFreshCached(uri);
   if (!cached) {
     return null;
   }
@@ -6089,7 +6230,7 @@ function includeRenameWorkspaceEdit(
   }));
   const candidates = [
     ...documents.all().flatMap((document) => {
-      const cached = getCached(document.uri);
+      const cached = ensureFreshCachedDocument(document);
       return cached ? [cached] : [];
     }),
     ...[...workspaceIndex.values()].map(cachedFromIndexed),
@@ -6510,7 +6651,12 @@ function getCached(uri: string): CachedDocument | undefined {
   const settings = cachedSettings(uri);
   const disk = diskAnalysisForDocument(document, settings)?.payload;
   const parsed = disk?.parsed ?? parseAspDocument(uri, document.getText(), settings);
-  const cached = { source: document, parsed, virtuals: new Map<string, VirtualDocument>() };
+  const cached = {
+    source: document,
+    parsed,
+    virtuals: new Map<string, VirtualDocument>(),
+    generation: documentAnalysisGeneration(uri),
+  };
   cache.set(uri, cached);
   applyDiskAnalysis(cached, disk);
   return cached;
@@ -6536,6 +6682,7 @@ function cachedFromIndexed(entry: WorkspaceIndexedDocument): CachedDocument {
     source: TextDocument.create(entry.uri, "classic-asp", 0, parsed.text),
     parsed,
     virtuals: new Map<string, VirtualDocument>(),
+    generation: documentAnalysisGeneration(entry.uri),
   };
   applyDiskAnalysis(cached, disk);
   return cached;
@@ -6561,6 +6708,7 @@ async function cachedFromIndexedAsync(
     source: TextDocument.create(entry.uri, "classic-asp", 0, parsed.text),
     parsed,
     virtuals: new Map<string, VirtualDocument>(),
+    generation: documentAnalysisGeneration(entry.uri),
   };
   applyDiskAnalysis(cached, disk);
   return cached;
@@ -6588,10 +6736,16 @@ async function diagnosticsForIndexed(
     return disk.diagnostics.items;
   }
   const cached = await cachedFromIndexedAsync(entry, settings);
-  if (token?.isCancellationRequested) {
+  const cancellation: AnalysisCancellation = {
+    isCancellationRequested: () => token?.isCancellationRequested === true,
+  };
+  if (cancellation.isCancellationRequested()) {
     return [];
   }
-  const items = await diagnosticsForCachedAsync(cached, settings, "check.workspace");
+  const items = await diagnosticsForCachedAsync(cached, settings, "check.workspace", cancellation);
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
   await persistDiskAnalysis(cached, settings, source);
   return items;
 }
@@ -7881,7 +8035,7 @@ function collectJsProjectFiles(
   };
   addVirtual(activeVirtual, "0");
   for (const document of documents.all()) {
-    const cached = getCached(document.uri);
+    const cached = ensureFreshCachedDocument(document);
     if (!cached) {
       continue;
     }
@@ -8833,7 +8987,7 @@ function vbscriptIncludeSuggestionActions(
   for (const document of documents.all()) {
     const fileName = normalizeFileName(uriToFileName(document.uri));
     if (fileName !== ownerFile) {
-      const opened = getCached(document.uri);
+      const opened = ensureFreshCachedDocument(document);
       if (opened) {
         candidates.set(fileName, opened);
       }

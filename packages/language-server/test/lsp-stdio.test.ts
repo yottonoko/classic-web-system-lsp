@@ -1324,6 +1324,113 @@ Response.Write known
       }
     });
 
+    it("debounces document analysis after rapid text changes", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 80 },
+              workspace: { backgroundAnalysis: false },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/debounced-analysis.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<% Option Explicit
+Dim known
+Response.Write known
+%>`,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "LSP check slow completed");
+        server.takePendingNotifications("window/logMessage");
+
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: `<% Option Explicit\nResponse.Write staleName\n%>` }],
+        });
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 3 },
+          contentChanges: [{ text: `<% Option Explicit\nResponse.Write finalName\n%>` }],
+        });
+
+        const diagnostics = await waitForDiagnosticsContaining(server, "finalName");
+        const serializedDiagnostics = JSON.stringify(diagnostics.params);
+        expect(serializedDiagnostics).toContain("finalName");
+        expect(serializedDiagnostics).not.toContain("staleName");
+
+        const serializedLogs = JSON.stringify(server.takePendingNotifications("window/logMessage"));
+        expect(countOccurrences(serializedLogs, "LSP analysis started")).toBe(1);
+        expect(serializedLogs).toContain("LSP analysis completed");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("refreshes pending changes before hover during diagnostic debounce", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              diagnostics: { debounceMs: 1000 },
+              workspace: { backgroundAnalysis: false },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/hover-before-debounce.asp";
+        let source = `<% Response.Write CStr(1) %>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        source = notifyRangedReplacement(server, uri, source, 2, "CStr", "Date");
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("Date")),
+        });
+
+        const serialized = JSON.stringify(hover);
+        expect(serialized).toContain("Date()");
+        expect(serialized).not.toContain("CStr(value)");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("publishes diagnostics immediately when debounce is disabled", async () => {
       const server = new RpcServer();
       try {
@@ -1405,8 +1512,9 @@ Response.Write known
         source = notifyRangedReplacement(server, uri, source, 2, "' benchmark x", "' benchmark y");
 
         await server.waitForNotification("textDocument/publishDiagnostics");
-        await waitForLogContaining(server, "documentChange.refreshCachedDocument");
+        await waitForLogContaining(server, "LSP analysis completed");
         await waitForLogContaining(server, "diagnostics.fast.total");
+        await waitForLogContaining(server, "documentChange.scheduleDiagnostics");
         await waitForLogContaining(server, "diagnostics.slow.project.reuse");
         await waitForLogContaining(server, "diagnostics.slow.send");
         await waitForLogContaining(server, "LSP check slow completed");
@@ -7059,6 +7167,10 @@ async function waitForLogContaining(server: RpcServer, expected: string): Promis
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function countOccurrences(text: string, needle: string): number {
+  return text.split(needle).length - 1;
 }
 
 async function waitForCborCacheFile(root: string): Promise<string> {
