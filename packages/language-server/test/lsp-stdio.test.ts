@@ -2474,6 +2474,104 @@ Response.Write IncludedOnly()
       }
     });
 
+    it("keeps VBScript interactions responsive while slow diagnostics waits for idle", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-slow-idle-"));
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "common.inc");
+      fs.writeFileSync(
+        include,
+        `<%
+Function IncludedOnly()
+End Function
+%>`,
+        "utf8",
+      );
+      const localFiller = Array.from(
+        { length: 1_500 },
+        (_, index) => `localIdleValue${index} = ${index}`,
+      ).join("\n");
+      const marked = markedDocument(`<!-- #include file="common.inc" -->
+<%
+Function LocalOnly(ByVal value)
+LocalOnly = value
+End Function
+localValue = 1
+Response.Write ▮
+Response.Write CStr(localValue)
+Response.Write IncludedOnly()
+${localFiller}
+%>
+<script>
+const unusedClientValue = 1;
+</script>`);
+      fs.writeFileSync(owner, marked.text, "utf8");
+      const uri = pathToFileURL(owner).toString();
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+              workspace: { backgroundAnalysis: false },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        const hoverStartedAt = Date.now();
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(marked.text, marked.text.indexOf("LocalOnly")),
+        });
+        expect(Date.now() - hoverStartedAt).toBeLessThan(1_000);
+        expect(JSON.stringify(hover)).toContain("Function LocalOnly(ByVal value)");
+
+        const completionStartedAt = Date.now();
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+        });
+        expect(Date.now() - completionStartedAt).toBeLessThan(1_000);
+        expect(completionLabels(completions)).toContain("LocalOnly");
+
+        await waitForLogContaining(server, "LSP check slow started");
+        const runningHoverStartedAt = Date.now();
+        const runningHover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(marked.text, marked.text.indexOf("CStr")),
+        });
+        expect(Date.now() - runningHoverStartedAt).toBeLessThan(1_000);
+        expect(JSON.stringify(runningHover)).toContain("Function CStr(value) As String");
+
+        await waitForLogContaining(server, "VBScript diagnostics worker dispatch");
+        await waitForCompletionContaining(
+          server,
+          { uri, position: marked.position },
+          "IncludedOnly",
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns hover, inlay hints and semantic tokens for implicit VBScript variables", async () => {
       const source = `<%
 a = 1

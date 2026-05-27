@@ -405,6 +405,7 @@ const externalRefUsageIndexByUri = new Map<string, ExternalRefUsageIndexEntry>()
 const maxVbProjectContextCacheEntries = 32;
 const maxVbPublicSymbolSummaryCacheEntries = 1024;
 const interactiveIdleDelayMs = 1500;
+const slowDiagnosticsInteractiveDeferMs = 400;
 let slowDiagnosticsSequence = 0;
 let backgroundAnalysisSequence = 0;
 let backgroundAnalysisTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1578,6 +1579,7 @@ async function publishSlowDiagnosticsForVersion(
   }
   const cancellation = diagnosticsCancellation(uri, version);
   const startedAt = startSlowCheckLog(cached, settings);
+  await sleep(0);
   const includeItems = await measureDebugStepAsync(settings, uri, "diagnostics.slow.include", () =>
     includeDiagnosticsForCachedAsync(cached, settings, "check.include", cancellation),
   );
@@ -1927,9 +1929,13 @@ async function projectDiagnosticsForCachedAsync(
     );
     return cached.analysis.projectDiagnostics.items;
   }
-  const vbItemsPromise = vbDiagnosticsAsync(cached, settings, stepPrefix);
+  const vbItems = await vbDiagnosticsAsync(cached, settings, stepPrefix);
+  await waitForInteractiveIdle(
+    settings,
+    cached.source.uri,
+    `${stepPrefix}.javascript.idle`,
+  );
   const jsItems = jsSlowDiagnostics(cached, settings, stepPrefix);
-  const vbItems = await vbItemsPromise;
   logWorkerDebugStep(settings, cached.source.uri, `${stepPrefix}.javascriptUnused.replayed`, 0);
   logWorkerDebugStep(
     settings,
@@ -2130,6 +2136,35 @@ function hasRecentInteractiveActivity(now = Date.now()): boolean {
     activeInteractiveRequests > 0 ||
     (lastInteractiveRequestAt > 0 && now - lastInteractiveRequestAt < interactiveIdleDelayMs)
   );
+}
+
+async function waitForInteractiveIdle(
+  settings: AspSettings,
+  uri: string,
+  step: string,
+): Promise<void> {
+  if (!hasRecentInteractiveActivity()) {
+    return;
+  }
+  const startedAt = process.hrtime.bigint();
+  const deadline = Date.now() + slowDiagnosticsInteractiveDeferMs;
+  while (hasRecentInteractiveActivity() && Date.now() < deadline) {
+    await sleep(
+      Math.max(1, Math.min(millisecondsUntilInteractiveIdle(), deadline - Date.now())),
+    );
+  }
+  finishDebugStep(settings, uri, step, startedAt);
+}
+
+function millisecondsUntilInteractiveIdle(now = Date.now()): number {
+  if (activeInteractiveRequests > 0 || lastInteractiveRequestAt <= 0) {
+    return interactiveIdleDelayMs;
+  }
+  return Math.max(0, interactiveIdleDelayMs - (now - lastInteractiveRequestAt));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function hasForegroundAnalysisWork(): boolean {
