@@ -5983,6 +5983,7 @@ Response.Write known
       const include = path.join(tempDir, "shared.inc");
       const affected = path.join(tempDir, "affected.asp");
       const unaffected = path.join(tempDir, "unaffected.asp");
+      const unrelated = path.join(tempDir, "unrelated.asp");
       fs.writeFileSync(
         include,
         `<%
@@ -6006,6 +6007,7 @@ End Function
         `<!-- #include file="shared.inc" -->\n<% Response.Write OtherValue() %>`,
         "utf8",
       );
+      fs.writeFileSync(unrelated, `<% Response.Write "standalone" %>`, "utf8");
       const server = new RpcServer();
       try {
         await server.start();
@@ -6024,7 +6026,8 @@ End Function
         });
         const affectedUri = `file://${affected}`;
         const unaffectedUri = `file://${unaffected}`;
-        for (const fileName of [affected, unaffected]) {
+        const unrelatedUri = `file://${unrelated}`;
+        for (const fileName of [affected, unaffected, unrelated]) {
           server.notify("textDocument/didOpen", {
             textDocument: {
               uri: `file://${fileName}`,
@@ -6034,6 +6037,7 @@ End Function
             },
           });
         }
+        await waitForLogContaining(server, "LSP check completed");
         await waitForLogContaining(server, "LSP check completed");
         await waitForLogContaining(server, "LSP check completed");
         server.takePendingNotifications("window/logMessage");
@@ -6061,6 +6065,88 @@ End Function
         const serialized = JSON.stringify(logs);
         expect(serialized).toContain(affectedUri);
         expect(serialized).toContain(unaffectedUri);
+        expect(serialized).not.toContain(unrelatedUri);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps dependent diagnostics idle after private include implementation changes", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-private-"));
+      const include = path.join(tempDir, "shared.inc");
+      const page = path.join(tempDir, "default.asp");
+      fs.writeFileSync(
+        include,
+        `<%
+Function SharedValue()
+  Dim privateValue
+  privateValue = "old"
+  SharedValue = privateValue
+End Function
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="shared.inc" -->\n<% Response.Write SharedValue() %>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = `file://${page}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(page, "utf8"),
+          },
+        });
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+        server.takePendingNotifications("textDocument/publishDiagnostics");
+
+        fs.writeFileSync(
+          include,
+          `<%
+Function SharedValue()
+  Dim privateValue
+  privateValue = "new"
+  SharedValue = privateValue
+End Function
+%>`,
+          "utf8",
+        );
+        server.notify("workspace/didChangeWatchedFiles", {
+          changes: [{ uri: `file://${include}`, type: 2 }],
+        });
+        await delay(350);
+
+        const logs = JSON.stringify(server.takePendingNotifications("window/logMessage"));
+        const diagnostics = JSON.stringify(
+          server.takePendingNotifications("textDocument/publishDiagnostics"),
+        );
+        expect(logs).toContain("include.publicBoundary.reuse");
+        expect(logs).not.toContain(`LSP check started: ${uri}`);
+        expect(diagnostics).not.toContain(uri);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

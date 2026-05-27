@@ -90,6 +90,7 @@ import {
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
   shiftAspRangeAfterChange,
+  summarizeAspFileAnalysis,
   updateAspParsedDocument,
   type AspFormattingOptions,
   type AspEmbeddedLanguage,
@@ -102,6 +103,7 @@ import {
   type AspParsedDocument,
   type AspSettings,
   type AspRegion,
+  type FileAnalysisSummary,
   type VirtualDocument,
   type VbCstNode,
   type VbProjectContext,
@@ -131,6 +133,9 @@ const settingsByUri = new Map<string, AspSettings>();
 const includePathResolutionCache = new Map<string, IncludePathResolution>();
 const pathResolutionCache = new Map<string, PathResolution>();
 const includeCycleCache = new Map<string, string[] | null>();
+const includeForwardDependencies = new Map<string, Set<string>>();
+const includeReverseDependencies = new Map<string, Set<string>>();
+const includePublicSummaries = new Map<string, IncludePublicSummaryState>();
 const workspaceIndex = new Map<string, WorkspaceIndexedDocument>();
 const jsLanguageServiceCache = new Map<string, JsLanguageServiceCacheEntry>();
 const semanticTokenResults = new Map<string, { uri: string; data: number[] }>();
@@ -337,6 +342,22 @@ interface VbProjectContextCacheEntry {
   lastUsed: number;
 }
 
+interface IncludeDocumentCacheEntry {
+  key: string;
+  fileName: string;
+  uri: string;
+  parsed: AspParsedDocument;
+  summary: FileAnalysisSummary;
+  publicFingerprint: string;
+}
+
+interface IncludePublicSummaryState {
+  fileName: string;
+  uri: string;
+  key: string;
+  publicFingerprint: string;
+}
+
 interface JsCallHierarchyData {
   kind: "javascript";
   rootUri: string;
@@ -365,11 +386,101 @@ function aspFileOperationFilter() {
   };
 }
 
+class IncludeDocumentLoader {
+  private readonly cache = new Map<string, IncludeDocumentCacheEntry>();
+  private readonly inFlight = new Map<string, Promise<IncludeDocumentCacheEntry | undefined>>();
+  private readonly generations = new Map<string, number>();
+
+  read(fileName: string, settings: AspSettings): IncludeDocumentCacheEntry | undefined {
+    const normalized = normalizeFileName(fileName);
+    const key = includeDocumentCacheKey(normalized, settings);
+    if (!key) {
+      return undefined;
+    }
+    const existing = this.cache.get(normalized);
+    if (existing?.key === key) {
+      return existing;
+    }
+    const text = readTextFile(normalized, settings.legacyEncoding);
+    const entry = createIncludeDocumentCacheEntry(normalized, text, settings, key);
+    this.cache.set(normalized, entry);
+    rememberIncludePublicSummary(entry);
+    return entry;
+  }
+
+  async readAsync(
+    fileName: string,
+    settings: AspSettings,
+  ): Promise<IncludeDocumentCacheEntry | undefined> {
+    const normalized = normalizeFileName(fileName);
+    const key = await includeDocumentCacheKeyAsync(normalized, settings);
+    if (!key) {
+      return undefined;
+    }
+    const existing = this.cache.get(normalized);
+    if (existing?.key === key) {
+      return existing;
+    }
+    const inFlightKey = `${normalized}:${key}`;
+    const pending = this.inFlight.get(inFlightKey);
+    if (pending) {
+      return pending;
+    }
+    const generation = this.generation(normalized);
+    let promise: Promise<IncludeDocumentCacheEntry | undefined> | undefined;
+    promise = (async () => {
+      try {
+        const text = await readTextFileAsync(normalized, settings.legacyEncoding);
+        const entry = createIncludeDocumentCacheEntry(normalized, text, settings, key);
+        if (this.generation(normalized) === generation) {
+          this.cache.set(normalized, entry);
+          rememberIncludePublicSummary(entry);
+        }
+        return entry;
+      } finally {
+        if (this.inFlight.get(inFlightKey) === promise) {
+          this.inFlight.delete(inFlightKey);
+        }
+      }
+    })();
+    this.inFlight.set(inFlightKey, promise);
+    return promise;
+  }
+
+  cachedPublicSummary(fileName: string): IncludePublicSummaryState | undefined {
+    return includePublicSummaries.get(normalizeFileName(fileName));
+  }
+
+  invalidateFiles(fileNames: Iterable<string>): void {
+    for (const fileName of fileNames) {
+      const normalized = normalizeFileName(fileName);
+      this.generations.set(normalized, this.generation(normalized) + 1);
+      this.cache.delete(normalized);
+      for (const key of this.inFlight.keys()) {
+        if (key.startsWith(`${normalized}:`)) {
+          this.inFlight.delete(key);
+        }
+      }
+    }
+  }
+
+  clear(): void {
+    this.cache.clear();
+    this.inFlight.clear();
+    this.generations.clear();
+  }
+
+  private generation(fileName: string): number {
+    return this.generations.get(fileName) ?? 0;
+  }
+}
+
 const cache = new Map<string, CachedDocument>();
 const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const stagedDiagnosticsByUri = new Map<string, StagedDiagnosticsState>();
 const pendingDocumentChanges = new Map<string, PendingDocumentChange>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
+const includeDocumentLoader = new IncludeDocumentLoader();
 const maxVbProjectContextCacheEntries = 32;
 let stagedDiagnosticsGeneration = 0;
 
@@ -491,6 +602,7 @@ documents.onDidClose((event) => {
   cache.delete(event.document.uri);
   clearSemanticTokensForUri(event.document.uri);
   stagedDiagnosticsByUri.delete(event.document.uri);
+  resetIncludeDependencies(event.document.uri);
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
 });
 
@@ -577,15 +689,23 @@ connection.onDidChangeWatchedFiles((change) => {
   if (!aspChanged && !scriptChanged) {
     return;
   }
+  let publicChangedFiles = new Set<string>();
   if (aspChanged) {
-    invalidateIncludeResolution("watchedAsp.changed");
+    publicChangedFiles = refreshIncludePublicBoundariesForAspChanges(aspChanges);
+    if (publicChangedFiles.size > 0) {
+      ensureIncludeGraphForOpenDocuments(publicChangedFiles);
+    }
+    includeCycleCache.clear();
+    if (aspChanges.some((change) => change.type !== FileChangeType.Changed)) {
+      invalidateIncludeResolution("watchedAsp.structureChanged");
+    }
   }
   if (aspChanged || scriptChanged) {
     invalidateJsProject(scriptChanged ? "watchedScript.changed" : "watchedAsp.changed");
   }
   const affectedUris = scriptChanged
     ? new Set(documents.all().map((document) => document.uri))
-    : affectedOpenUrisForAspChanges(aspChanges);
+    : affectedOpenUrisForAspChanges(aspChanges, publicChangedFiles);
   invalidateCachedAnalysisForUris(
     affectedUris,
     scriptChanged ? "watchedScript.changed" : "watchedAsp.changed",
@@ -3983,18 +4103,116 @@ function bestEffortVbProjectContext(
   return buildVbProjectContext(cached, settings);
 }
 
-function affectedOpenUrisForAspChanges(changes: WatchedAspFileChange[]): Set<string> {
-  const allOpenUris = new Set(documents.all().map((document) => document.uri));
+function refreshIncludePublicBoundariesForAspChanges(changes: WatchedAspFileChange[]): Set<string> {
+  const changed = new Set<string>();
+  includeDocumentLoader.invalidateFiles(changes.map((change) => change.fileName));
   for (const change of changes) {
-    if (allOpenUris.has(pathToFileUri(change.fileName))) {
-      return allOpenUris;
+    const fileName = normalizeFileName(change.fileName);
+    const previous = includeDocumentLoader.cachedPublicSummary(fileName);
+    const uri = pathToFileUri(fileName);
+    const next =
+      change.type === FileChangeType.Deleted
+        ? undefined
+        : includeDocumentLoader.read(fileName, cachedSettings(uri));
+    const nextFingerprint = next?.publicFingerprint ?? "missing";
+    if (previous?.publicFingerprint === nextFingerprint) {
+      logDebugSummary(
+        cachedSettings(uri),
+        `[asp-lsp] include.publicBoundary.reuse: ${uri}, fingerprint=${nextFingerprint}`,
+      );
+      continue;
+    }
+    changed.add(fileName);
+    logInvalidation(
+      "includePublicBoundary",
+      `watchedAsp.changed, uri=${uri}, previous=${previous?.publicFingerprint ?? "missing"}, next=${nextFingerprint}`,
+    );
+  }
+  return changed;
+}
+
+function ensureIncludeGraphForOpenDocuments(publicChangedFiles: Set<string>): void {
+  const changedUris = new Set([...publicChangedFiles].map(pathToFileUri));
+  for (const document of documents.all()) {
+    const cached = ensureFreshCachedDocument(document);
+    const existing = includeForwardDependencies.get(cached.source.uri);
+    if (existing && setsIntersect(existing, changedUris)) {
+      continue;
+    }
+    collectCachedVbProjectDocuments(cached, cachedSettings(cached.source.uri));
+  }
+}
+
+function setsIntersect<T>(left: Set<T>, right: Set<T>): boolean {
+  for (const item of left) {
+    if (right.has(item)) {
+      return true;
     }
   }
-  return allOpenUris;
+  return false;
+}
+
+function affectedOpenUrisForAspChanges(
+  changes: WatchedAspFileChange[],
+  publicChangedFiles: Set<string>,
+): Set<string> {
+  const allOpenUris = openDocumentUris();
+  const affected = new Set<string>();
+  for (const change of changes) {
+    const changedUri = pathToFileUri(change.fileName);
+    if (allOpenUris.has(changedUri)) {
+      affected.add(changedUri);
+    }
+    if (!publicChangedFiles.has(normalizeFileName(change.fileName))) {
+      continue;
+    }
+    for (const dependent of includeReverseDependencies.get(changedUri) ?? []) {
+      if (allOpenUris.has(dependent)) {
+        affected.add(dependent);
+      }
+    }
+  }
+  return affected;
 }
 
 function openDocumentUris(): Set<string> {
   return new Set(documents.all().map((document) => document.uri));
+}
+
+function resetIncludeDependencies(ownerUri: string): void {
+  const previous = includeForwardDependencies.get(ownerUri);
+  if (!previous) {
+    return;
+  }
+  for (const includeUri of previous) {
+    const owners = includeReverseDependencies.get(includeUri);
+    owners?.delete(ownerUri);
+    if (owners?.size === 0) {
+      includeReverseDependencies.delete(includeUri);
+    }
+  }
+  includeForwardDependencies.delete(ownerUri);
+}
+
+function recordIncludeDependency(ownerUri: string, includeUri: string): void {
+  let forward = includeForwardDependencies.get(ownerUri);
+  if (!forward) {
+    forward = new Set();
+    includeForwardDependencies.set(ownerUri, forward);
+  }
+  forward.add(includeUri);
+  let reverse = includeReverseDependencies.get(includeUri);
+  if (!reverse) {
+    reverse = new Set();
+    includeReverseDependencies.set(includeUri, reverse);
+  }
+  reverse.add(ownerUri);
+}
+
+function clearIncludeGraph(): void {
+  includeForwardDependencies.clear();
+  includeReverseDependencies.clear();
+  includePublicSummaries.clear();
 }
 
 function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.invalidate"): void {
@@ -4147,6 +4365,7 @@ function collectVbProjectDocuments(
 ): AspParsedDocument[] {
   const documents: AspParsedDocument[] = [];
   const visited = new Set<string>();
+  resetIncludeDependencies(root.uri);
   const visit = (document: AspParsedDocument, depth: number): void => {
     if (depth > 20 || visited.has(document.uri)) {
       return;
@@ -4155,10 +4374,11 @@ function collectVbProjectDocuments(
     documents.push(document);
     for (const include of document.includes) {
       const resolved = resolveIncludePath(document.uri, include.path, include.mode, settings);
+      const uri = pathToFileUri(resolved);
+      recordIncludeDependency(root.uri, uri);
       if (!fs.existsSync(resolved)) {
         continue;
       }
-      const uri = pathToFileUri(resolved);
       if (visited.has(uri)) {
         continue;
       }
@@ -4170,22 +4390,126 @@ function collectVbProjectDocuments(
 }
 
 function readParsedIncludeDocument(fileName: string, settings: AspSettings): AspParsedDocument {
-  const normalized = normalizeFileName(fileName);
-  const text = readTextFile(normalized, settings.legacyEncoding);
-  return parseAspDocument(pathToFileUri(normalized), text, settings);
+  const entry = includeDocumentLoader.read(fileName, settings);
+  if (!entry) {
+    throw new Error(`Include document does not exist: ${fileName}`);
+  }
+  return entry.parsed;
 }
 
 async function readParsedIncludeDocumentAsync(
   fileName: string,
   settings: AspSettings,
 ): Promise<AspParsedDocument> {
-  const normalized = normalizeFileName(fileName);
-  const text = await readTextFileAsync(normalized, settings.legacyEncoding);
-  return parseAspDocument(pathToFileUri(normalized), text, settings);
+  const entry = await includeDocumentLoader.readAsync(fileName, settings);
+  if (!entry) {
+    throw new Error(`Include document does not exist: ${fileName}`);
+  }
+  return entry.parsed;
 }
 
 function readTextFile(fileName: string, encoding: AspLegacyEncoding | undefined): string {
   return decodeLegacyText(fs.readFileSync(fileName), encoding);
+}
+
+function includeDocumentCacheKey(fileName: string, settings: AspSettings): string | undefined {
+  const stat = fs.statSync(fileName, { throwIfNoEntry: false });
+  if (!stat?.isFile()) {
+    return undefined;
+  }
+  return JSON.stringify({
+    fileName,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    settings: includeDocumentSettingsIdentity(settings),
+  });
+}
+
+async function includeDocumentCacheKeyAsync(
+  fileName: string,
+  settings: AspSettings,
+): Promise<string | undefined> {
+  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  if (!stat?.isFile()) {
+    return undefined;
+  }
+  return JSON.stringify({
+    fileName,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    settings: includeDocumentSettingsIdentity(settings),
+  });
+}
+
+function includeDocumentSettingsIdentity(settings: AspSettings): string {
+  return JSON.stringify({
+    parse: parseSettingsIdentity(settings),
+    legacyEncoding: settings.legacyEncoding,
+  });
+}
+
+function createIncludeDocumentCacheEntry(
+  fileName: string,
+  text: string,
+  settings: AspSettings,
+  key: string,
+): IncludeDocumentCacheEntry {
+  const parsed = parseAspDocument(pathToFileUri(fileName), text, settings);
+  const summary = summarizeAspFileAnalysis(parsed);
+  return {
+    key,
+    fileName,
+    uri: parsed.uri,
+    parsed,
+    summary,
+    publicFingerprint: includePublicBoundaryFingerprint(summary),
+  };
+}
+
+function rememberIncludePublicSummary(entry: IncludeDocumentCacheEntry): void {
+  includePublicSummaries.set(entry.fileName, {
+    fileName: entry.fileName,
+    uri: entry.uri,
+    key: entry.key,
+    publicFingerprint: entry.publicFingerprint,
+  });
+}
+
+function includePublicBoundaryFingerprint(summary: FileAnalysisSummary): string {
+  return textFingerprint(
+    JSON.stringify({
+      defaultLanguage: summary.defaultLanguage,
+      includes: summary.includeRefs.map((include) => ({
+        path: include.path,
+        mode: include.mode,
+      })),
+      vbscript: summary.vbscript
+        ? {
+            exports: summary.vbscript.exports.map(publicExportBoundary),
+            externalRefUsages: summary.vbscript.externalRefUsages.map((usage) => ({
+              key: usage.key,
+              name: usage.name,
+              memberName: usage.memberName,
+              kindHint: usage.kindHint,
+              count: usage.count,
+            })),
+          }
+        : undefined,
+    }),
+  );
+}
+
+function publicExportBoundary(
+  summary: NonNullable<FileAnalysisSummary["vbscript"]>["exports"][number],
+): unknown {
+  return {
+    name: summary.name,
+    kind: summary.kind,
+    typeName: summary.typeName,
+    memberOf: summary.memberOf,
+    visibility: summary.visibility,
+    members: summary.members?.map(publicExportBoundary),
+  };
 }
 
 function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diagnostic[] {
@@ -4199,6 +4523,7 @@ function includeDiagnostics(cached: CachedDocument, settings: AspSettings): Diag
       include.mode,
       settings,
     );
+    recordIncludeDependency(cached.source.uri, pathToFileUri(resolved.fileName));
     if (!resolved.exists) {
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
@@ -4265,6 +4590,7 @@ async function includeDiagnosticsAsync(
       include.mode,
       settings,
     );
+    recordIncludeDependency(cached.source.uri, pathToFileUri(resolved.fileName));
     if (!resolved.exists) {
       diagnostics.push({
         severity: DiagnosticSeverity.Warning,
@@ -6180,6 +6506,8 @@ function clearIncludeCaches(): void {
   includePathResolutionCache.clear();
   pathResolutionCache.clear();
   includeCycleCache.clear();
+  includeDocumentLoader.clear();
+  clearIncludeGraph();
 }
 
 function invalidateIncludeResolution(reason: string): void {
