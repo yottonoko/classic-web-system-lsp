@@ -3121,6 +3121,11 @@ Response.Write SharedFromUpper()
         );
         expect(JSON.stringify(includeDiagnostics)).toContain("aB.asp");
 
+        await waitForDefinitionContaining(
+          server,
+          { uri: `file://${mismatchOwner}`, position: mismatch.position },
+          "aB.asp",
+        );
         const completions = await server.request("textDocument/completion", {
           textDocument: { uri: `file://${mismatchOwner}` },
           position: mismatch.position,
