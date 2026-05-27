@@ -7,38 +7,31 @@ const extensionRoot = path.resolve(import.meta.dirname, "..");
 const repoRoot = path.resolve(extensionRoot, "..", "..");
 const serverRoot = path.join(extensionRoot, "server", "language-server");
 const serverEntry = path.join(repoRoot, "packages", "language-server", "dist", "server.js");
+const workerEntry = path.join(
+  repoRoot,
+  "packages",
+  "language-server",
+  "dist",
+  "vb-diagnostics-worker.js",
+);
 const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
 const require = createRequire(import.meta.url);
 
 if (!fs.existsSync(serverEntry)) {
   throw new Error(`Build @asp-lsp/language-server before packaging: ${serverEntry}`);
 }
-
-fs.rmSync(path.join(extensionRoot, "server"), { recursive: true, force: true });
-fs.mkdirSync(path.join(serverRoot, "dist"), { recursive: true });
-
-const bundle = await rolldown({
-  input: serverEntry,
-  platform: "node",
-  resolve: {
-    mainFields: ["module", "main"],
-  },
-  external: (id) => nodeBuiltins.has(id),
-});
-
-try {
-  await bundle.write({
-    file: path.join(serverRoot, "dist", "server.js"),
-    format: "cjs",
-    sourcemap: true,
-    exports: "auto",
-  });
-} finally {
-  await bundle.close();
+if (!fs.existsSync(workerEntry)) {
+  throw new Error(`Build @asp-lsp/language-server before packaging: ${workerEntry}`);
 }
 
-fs.chmodSync(path.join(serverRoot, "dist", "server.js"), 0o755);
-copyTypeScriptLibs(path.join(serverRoot, "dist"));
+fs.rmSync(path.join(extensionRoot, "server"), { recursive: true, force: true });
+const distRoot = path.join(serverRoot, "dist");
+fs.mkdirSync(distRoot, { recursive: true });
+
+await bundleNodeEntry(serverEntry, path.join(distRoot, "server.js"));
+await bundleNodeEntry(workerEntry, path.join(distRoot, "vb-diagnostics-worker.js"));
+fs.chmodSync(path.join(distRoot, "server.js"), 0o755);
+copyTypeScriptLibs(distRoot);
 fs.writeFileSync(
   path.join(serverRoot, "package.json"),
   `${JSON.stringify(
@@ -52,6 +45,28 @@ fs.writeFileSync(
     2,
   )}\n`,
 );
+
+async function bundleNodeEntry(input, output) {
+  const bundle = await rolldown({
+    input,
+    platform: "node",
+    resolve: {
+      mainFields: ["module", "main"],
+    },
+    external: (id) => nodeBuiltins.has(id),
+  });
+
+  try {
+    await bundle.write({
+      file: output,
+      format: "cjs",
+      sourcemap: true,
+      exports: "auto",
+    });
+  } finally {
+    await bundle.close();
+  }
+}
 
 function copyTypeScriptLibs(targetDirectory) {
   const typescriptPackage = require.resolve("typescript/package.json", { paths: [repoRoot] });
