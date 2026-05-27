@@ -127,6 +127,7 @@ import {
   type DiskSourceMetadata,
   type VbPublicSymbolSummary,
 } from "./disk-analysis-cache";
+import { IncludeDocumentLoader } from "./include-document-loader";
 
 const connection = createConnection(ProposedFeatures.all);
 const pendingDocumentChanges = new Map<string, PendingDocumentChange>();
@@ -149,10 +150,7 @@ const documents = new TextDocuments({
 const htmlService = getHtmlLanguageService();
 const cssService = getCSSLanguageService();
 const settingsByUri = new Map<string, AspSettings>();
-const includeDocumentCache = new Map<
-  string,
-  { mtimeMs: number; size: number; parsed: AspParsedDocument }
->();
+const includeDocuments = new IncludeDocumentLoader<AspParsedDocument>();
 const includePathResolutionCache = new Map<string, IncludePathResolution>();
 const pathResolutionCache = new Map<string, PathResolution>();
 const includeCycleCache = new Map<string, string[] | null>();
@@ -6059,13 +6057,13 @@ async function collectVbProjectDocumentsAsync(
 function readParsedIncludeDocument(fileName: string, settings: AspSettings): AspParsedDocument {
   const normalized = normalizeFileName(fileName);
   const stats = fs.statSync(normalized);
-  const cached = includeDocumentCache.get(normalized);
-  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
-    return cached.parsed;
+  const cached = includeDocuments.get(normalized, stats);
+  if (cached) {
+    return cached;
   }
   const text = readTextFile(normalized, settings.legacyEncoding);
   const parsed = parseAspDocument(pathToFileUri(normalized), text, settings);
-  includeDocumentCache.set(normalized, { mtimeMs: stats.mtimeMs, size: stats.size, parsed });
+  includeDocuments.set(normalized, stats, parsed);
   return parsed;
 }
 
@@ -6075,14 +6073,10 @@ async function readParsedIncludeDocumentAsync(
 ): Promise<AspParsedDocument> {
   const normalized = normalizeFileName(fileName);
   const stats = await fs.promises.stat(normalized);
-  const cached = includeDocumentCache.get(normalized);
-  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
-    return cached.parsed;
-  }
-  const text = await readTextFileAsync(normalized, settings.legacyEncoding);
-  const parsed = parseAspDocument(pathToFileUri(normalized), text, settings);
-  includeDocumentCache.set(normalized, { mtimeMs: stats.mtimeMs, size: stats.size, parsed });
-  return parsed;
+  return includeDocuments.getOrLoad(normalized, stats, async () => {
+    const text = await readTextFileAsync(normalized, settings.legacyEncoding);
+    return parseAspDocument(pathToFileUri(normalized), text, settings);
+  });
 }
 
 function readTextFile(fileName: string, encoding: AspLegacyEncoding | undefined): string {
@@ -8001,7 +7995,7 @@ function clearJsProjectCaches(): void {
 }
 
 function clearIncludeCaches(): void {
-  includeDocumentCache.clear();
+  includeDocuments.clear();
   vbPublicSymbolSummaryCache.clear();
   includePathResolutionCache.clear();
   pathResolutionCache.clear();
