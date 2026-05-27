@@ -136,6 +136,10 @@ let workspaceIndexDirty = true;
 let workspaceIndexTruncated = false;
 let jsLanguageServiceCacheTick = 0;
 let semanticTokenResultCounter = 0;
+let documentCacheGeneration = 0;
+let workspaceGeneration = 0;
+let includeResolutionGeneration = 0;
+let jsProjectGeneration = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
 const hiddenJavaScriptGlobalCompletions = new Set(["__dirname", "__filename"]);
 const browserJavaScriptLibs = ["lib.esnext.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"];
@@ -194,6 +198,15 @@ interface CachedDocument {
   source: TextDocument;
   parsed: AspParsedDocument;
   virtuals: Map<string, VirtualDocument>;
+  identity: DocumentIdentity;
+  generation: number;
+  parseSettingsIdentity: string;
+  includeResolutionIdentity: string;
+  diagnosticsIdentity: string;
+  jsProjectIdentity: string;
+  workspaceGeneration: number;
+  includeResolutionGeneration: number;
+  jsProjectGeneration: number;
   analysis?: CachedAnalysis;
 }
 
@@ -214,6 +227,20 @@ interface CachedAnalysis {
     collectionKey: string;
     documents: AspParsedDocument[];
   };
+}
+
+interface DocumentIdentity {
+  uri: string;
+  version: number;
+  text: string;
+}
+
+interface SettingsInvalidationImpact {
+  parse: boolean;
+  includeResolution: boolean;
+  jsProject: boolean;
+  diagnostics: boolean;
+  workspaceIndex: boolean;
 }
 
 interface WatchedAspFileChange {
@@ -399,7 +426,6 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 documents.onDidOpen((event) => {
   documentOpenContentVersions.set(event.document.uri, event.document.version);
   cache.delete(event.document.uri);
-  clearJsLanguageServiceCache();
   validate(event.document);
 });
 documents.onDidChangeContent((event) => {
@@ -418,16 +444,14 @@ documents.onDidChangeContent((event) => {
   );
 });
 documents.onDidSave((event) => {
-  cache.delete(event.document.uri);
-  clearJsLanguageServiceCache();
   indexWorkspaceFile(uriToFileName(event.document.uri));
+  invalidateCachedAnalysisForUris(new Set([event.document.uri]), "document.save");
   validate(event.document);
 });
 documents.onDidClose((event) => {
   cancelScheduledDiagnostics(event.document.uri);
   documentOpenContentVersions.delete(event.document.uri);
   cache.delete(event.document.uri);
-  clearJsLanguageServiceCache();
   clearSemanticTokensForUri(event.document.uri);
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
 });
@@ -466,9 +490,10 @@ connection.onNotification(
       ...workspaceRoots.filter((root) => !removed.has(normalizeFileName(root))),
       ...added.map((folder) => uriToFileName(folder.uri)).filter((root) => root.length > 0),
     ].filter((root, index, roots) => roots.indexOf(root) === index);
-    invalidateWorkspaceIndex();
-    clearIncludeCaches();
-    clearJsProjectCaches();
+    invalidateWorkspaceIndex("workspaceFolders.changed");
+    invalidateIncludeResolution("workspaceFolders.changed");
+    invalidateJsProject("workspaceFolders.changed");
+    invalidateCachedAnalysisForUris(openDocumentUris(), "workspaceFolders.changed");
     for (const document of documents.all()) {
       validate(document);
     }
@@ -476,18 +501,19 @@ connection.onNotification(
 );
 
 connection.onDidChangeConfiguration((change) => {
+  const previousSettingsByUri = currentOpenDocumentSettingsByUri();
   const incoming = readSettingsFromChange(change.settings);
   if (incoming) {
     globalSettings = normalizeSettings(incoming);
   }
   settingsByUri.clear();
-  cache.clear();
-  clearIncludeCaches();
-  clearJsLanguageServiceCache();
-  clearSemanticTokens();
-  invalidateWorkspaceIndex();
+  const impact = settingsInvalidationImpact(previousSettingsByUri);
+  applySettingsInvalidation(impact);
   for (const document of documents.all()) {
-    validate(document);
+    applyDocumentSettingsInvalidation(document.uri, impact.get(document.uri));
+    if (shouldValidateAfterSettingsChange(impact.get(document.uri))) {
+      validate(document);
+    }
   }
 });
 
@@ -514,20 +540,18 @@ connection.onDidChangeWatchedFiles((change) => {
     return;
   }
   if (aspChanged) {
-    clearIncludeCaches();
+    invalidateIncludeResolution("watchedAsp.changed");
   }
   if (aspChanged || scriptChanged) {
-    clearJsProjectCaches();
+    invalidateJsProject(scriptChanged ? "watchedScript.changed" : "watchedAsp.changed");
   }
   const affectedUris = scriptChanged
     ? new Set(documents.all().map((document) => document.uri))
     : affectedOpenUrisForAspChanges(aspChanges);
-  if (scriptChanged) {
-    cache.clear();
-    clearSemanticTokens();
-  } else {
-    invalidateCachedAnalysisForUris(affectedUris);
-  }
+  invalidateCachedAnalysisForUris(
+    affectedUris,
+    scriptChanged ? "watchedScript.changed" : "watchedAsp.changed",
+  );
   for (const document of documents.all().filter((item) => affectedUris.has(item.uri))) {
     validate(document);
   }
@@ -536,21 +560,24 @@ connection.onDidChangeWatchedFiles((change) => {
 connection.workspace.onWillRenameFiles((params) => includeRenameWorkspaceEdit(params.files));
 
 connection.workspace.onDidRenameFiles(() => {
-  invalidateWorkspaceIndex();
-  clearIncludeCaches();
-  clearJsProjectCaches();
+  invalidateWorkspaceIndex("fileOperation.rename");
+  invalidateIncludeResolution("fileOperation.rename");
+  invalidateJsProject("fileOperation.rename");
+  invalidateCachedAnalysisForUris(openDocumentUris(), "fileOperation.rename");
 });
 
 connection.workspace.onDidCreateFiles(() => {
-  invalidateWorkspaceIndex();
-  clearIncludeCaches();
-  clearJsProjectCaches();
+  invalidateWorkspaceIndex("fileOperation.create");
+  invalidateIncludeResolution("fileOperation.create");
+  invalidateJsProject("fileOperation.create");
+  invalidateCachedAnalysisForUris(openDocumentUris(), "fileOperation.create");
 });
 
 connection.workspace.onDidDeleteFiles(() => {
-  invalidateWorkspaceIndex();
-  clearIncludeCaches();
-  clearJsProjectCaches();
+  invalidateWorkspaceIndex("fileOperation.delete");
+  invalidateIncludeResolution("fileOperation.delete");
+  invalidateJsProject("fileOperation.delete");
+  invalidateCachedAnalysisForUris(openDocumentUris(), "fileOperation.delete");
 });
 
 connection.onCompletion((params) =>
@@ -1008,10 +1035,10 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
 
 connection.onExecuteCommand(async (params) => {
   if (params.command === "aspLsp.reindexWorkspace") {
-    invalidateWorkspaceIndex();
-    clearIncludeCaches();
-    cache.clear();
-    clearJsProjectCaches();
+    invalidateWorkspaceIndex("command.reindexWorkspace");
+    invalidateIncludeResolution("command.reindexWorkspace");
+    invalidateJsProject("command.reindexWorkspace");
+    invalidateCachedAnalysisForUris(openDocumentUris(), "command.reindexWorkspace");
     for (const document of documents.all()) {
       validate(document);
     }
@@ -1272,11 +1299,7 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
     process.hrtime.bigint(),
   );
   const cacheStartedAt = process.hrtime.bigint();
-  const cached = {
-    source: document,
-    parsed,
-    virtuals: new Map<string, VirtualDocument>(),
-  };
+  const cached = createCachedDocument(document, parsed, settings);
   cache.set(document.uri, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
   finishAnalysisLog(settings, document.uri, startedAt);
@@ -1285,7 +1308,13 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
 
 function ensureFreshCachedDocument(document: TextDocument): CachedDocument {
   const existing = cache.get(document.uri);
-  if (existing && existing.source.version === document.version) {
+  const settings = cachedSettings(document.uri);
+  if (
+    existing &&
+    sameDocumentIdentity(existing.identity, documentIdentityFor(document)) &&
+    existing.parseSettingsIdentity === parseSettingsIdentity(settings)
+  ) {
+    updateCachedDocumentRuntimeIdentity(existing, settings);
     return existing;
   }
   return refreshCachedDocument(document);
@@ -1294,6 +1323,49 @@ function ensureFreshCachedDocument(document: TextDocument): CachedDocument {
 function getFreshCached(uri: string): CachedDocument | undefined {
   const document = documents.get(uri);
   return document ? ensureFreshCachedDocument(document) : getCached(uri);
+}
+
+function createCachedDocument(
+  document: TextDocument,
+  parsed: AspParsedDocument,
+  settings: AspSettings,
+): CachedDocument {
+  const cached: CachedDocument = {
+    source: document,
+    parsed,
+    virtuals: new Map<string, VirtualDocument>(),
+    identity: documentIdentityFor(document),
+    generation: ++documentCacheGeneration,
+    parseSettingsIdentity: parseSettingsIdentity(settings),
+    includeResolutionIdentity: includeResolutionIdentity(settings),
+    diagnosticsIdentity: diagnosticsIdentity(settings),
+    jsProjectIdentity: jsProjectIdentity(settings),
+    workspaceGeneration,
+    includeResolutionGeneration,
+    jsProjectGeneration,
+  };
+  return cached;
+}
+
+function updateCachedDocumentRuntimeIdentity(cached: CachedDocument, settings: AspSettings): void {
+  cached.includeResolutionIdentity = includeResolutionIdentity(settings);
+  cached.diagnosticsIdentity = diagnosticsIdentity(settings);
+  cached.jsProjectIdentity = jsProjectIdentity(settings);
+  cached.workspaceGeneration = workspaceGeneration;
+  cached.includeResolutionGeneration = includeResolutionGeneration;
+  cached.jsProjectGeneration = jsProjectGeneration;
+}
+
+function documentIdentityFor(document: TextDocument): DocumentIdentity {
+  return {
+    uri: document.uri,
+    version: document.version,
+    text: textFingerprint(document.getText()),
+  };
+}
+
+function sameDocumentIdentity(left: DocumentIdentity, right: DocumentIdentity): boolean {
+  return left.uri === right.uri && left.version === right.version && left.text === right.text;
 }
 
 function startAnalysisLog(settings: AspSettings, uri: string): void {
@@ -1600,6 +1672,24 @@ function diagnosticKey(diagnostic: Diagnostic): string {
 }
 
 function analysisFor(cached: CachedDocument): CachedAnalysis {
+  const settings = cachedSettings(cached.source.uri);
+  const nextDiagnosticsIdentity = diagnosticsIdentity(settings);
+  const nextIncludeResolutionIdentity = includeResolutionIdentity(settings);
+  const nextJsProjectIdentity = jsProjectIdentity(settings);
+  if (
+    cached.analysis &&
+    (cached.diagnosticsIdentity !== nextDiagnosticsIdentity ||
+      cached.includeResolutionIdentity !== nextIncludeResolutionIdentity ||
+      cached.jsProjectIdentity !== nextJsProjectIdentity)
+  ) {
+    cached.analysis = undefined;
+  }
+  cached.diagnosticsIdentity = nextDiagnosticsIdentity;
+  cached.includeResolutionIdentity = nextIncludeResolutionIdentity;
+  cached.jsProjectIdentity = nextJsProjectIdentity;
+  cached.workspaceGeneration = workspaceGeneration;
+  cached.includeResolutionGeneration = includeResolutionGeneration;
+  cached.jsProjectGeneration = jsProjectGeneration;
   cached.analysis ??= {};
   return cached.analysis;
 }
@@ -3458,9 +3548,14 @@ function affectedOpenUrisForAspChanges(changes: WatchedAspFileChange[]): Set<str
   return allOpenUris;
 }
 
-function invalidateCachedAnalysisForUris(uris: Set<string>): void {
+function openDocumentUris(): Set<string> {
+  return new Set(documents.all().map((document) => document.uri));
+}
+
+function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.invalidate"): void {
   if (uris.size > 0) {
     vbProjectContextCache.clear();
+    logInvalidation("analysis", `${reason}, files=${uris.size}`);
   }
   for (const uri of uris) {
     const cached = cache.get(uri);
@@ -4209,11 +4304,7 @@ function getCached(uri: string): CachedDocument | undefined {
   }
   const settings = cachedSettings(uri);
   const parsed = parseAspDocument(uri, document.getText(), settings);
-  const cached = {
-    source: document,
-    parsed,
-    virtuals: new Map<string, VirtualDocument>(),
-  };
+  const cached = createCachedDocument(document, parsed, settings);
   cache.set(uri, cached);
   return cached;
 }
@@ -4231,11 +4322,11 @@ function cachedFromIndexed(entry: WorkspaceIndexedDocument): CachedDocument {
     readTextFile(entry.fileName, settings.legacyEncoding),
     settings,
   );
-  return {
-    source: TextDocument.create(entry.uri, "classic-asp", 0, parsed.text),
+  return createCachedDocument(
+    TextDocument.create(entry.uri, "classic-asp", 0, parsed.text),
     parsed,
-    virtuals: new Map<string, VirtualDocument>(),
-  };
+    settings,
+  );
 }
 
 async function cachedFromIndexedAsync(
@@ -4247,11 +4338,11 @@ async function cachedFromIndexedAsync(
     await readTextFileAsync(entry.fileName, settings.legacyEncoding),
     settings,
   );
-  return {
-    source: TextDocument.create(entry.uri, "classic-asp", 0, parsed.text),
+  return createCachedDocument(
+    TextDocument.create(entry.uri, "classic-asp", 0, parsed.text),
     parsed,
-    virtuals: new Map<string, VirtualDocument>(),
-  };
+    settings,
+  );
 }
 
 async function diagnosticsForIndexed(
@@ -4500,10 +4591,12 @@ function indexWorkspaceFile(fileName: string): void {
   });
 }
 
-function invalidateWorkspaceIndex(): void {
+function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
+  workspaceGeneration += 1;
   workspaceIndexDirty = true;
   workspaceIndexTruncated = false;
   workspaceIndex.clear();
+  logInvalidation("workspaceIndex", reason, workspaceGeneration);
 }
 
 function isExcludedWorkspaceDirectory(name: string, fullPath: string): boolean {
@@ -4593,17 +4686,162 @@ function cachedSettings(uri: string): AspSettings {
   if (existing) {
     return existing;
   }
-  const settings: AspSettings = {
-    ...globalSettings,
-    virtualRoot:
-      globalSettings.virtualRoot || globalSettings.virtualRoots?.[0] || workspaceRootFromUri(uri),
-    virtualRoots:
-      globalSettings.virtualRoots && globalSettings.virtualRoots.length > 0
-        ? globalSettings.virtualRoots
-        : [workspaceRootFromUri(uri), ...workspaceRoots],
-  };
+  const settings = settingsForUri(uri, globalSettings);
   settingsByUri.set(uri, settings);
   return settings;
+}
+
+function settingsForUri(uri: string, baseSettings: AspSettings): AspSettings {
+  const settings: AspSettings = {
+    ...baseSettings,
+    virtualRoot:
+      baseSettings.virtualRoot || baseSettings.virtualRoots?.[0] || workspaceRootFromUri(uri),
+    virtualRoots:
+      baseSettings.virtualRoots && baseSettings.virtualRoots.length > 0
+        ? baseSettings.virtualRoots
+        : [workspaceRootFromUri(uri), ...workspaceRoots],
+  };
+  return settings;
+}
+
+function currentOpenDocumentSettingsByUri(): Map<string, AspSettings> {
+  return new Map(
+    documents.all().map((document) => [document.uri, settingsForUri(document.uri, globalSettings)]),
+  );
+}
+
+function parseSettingsIdentity(settings: AspSettings): string {
+  return JSON.stringify({
+    defaultLanguage: settings.defaultLanguage ?? "VBScript",
+    resolvedLocale: settings.resolvedLocale ?? "en",
+  });
+}
+
+function includeResolutionIdentity(settings: AspSettings): string {
+  return JSON.stringify({
+    generation: includeResolutionGeneration,
+    settings: includeResolutionSettingsKey(settings),
+  });
+}
+
+function includeResolutionSettingsIdentity(settings: AspSettings): string {
+  return JSON.stringify(includeResolutionSettingsKey(settings));
+}
+
+function diagnosticsIdentity(settings: AspSettings): string {
+  return JSON.stringify({
+    parse: parseSettingsIdentity(settings),
+    includeResolution: includeResolutionSettingsIdentity(settings),
+    checkJs: settings.checkJs === true,
+    javascript: {
+      unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
+    },
+    vbscript: {
+      typeChecking: settings.vbscript?.typeChecking,
+      identifierCase: settings.vbscript?.identifierCase,
+      identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
+      comTypes: settings.vbscript?.comTypes,
+      globals: settings.vbscript?.globals,
+      unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+    },
+    locale: settings.resolvedLocale ?? "en",
+  });
+}
+
+function jsProjectIdentity(settings: AspSettings): string {
+  return JSON.stringify({
+    generation: jsProjectGeneration,
+    settings: jsProjectSettingsIdentity(settings),
+  });
+}
+
+function jsProjectSettingsIdentity(settings: AspSettings): string {
+  return JSON.stringify({
+    checkJs: settings.checkJs === true,
+    javascript: {
+      autoImports: settings.javascript?.autoImports !== false,
+      unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
+      ignoreProjectConfig: settings.javascript?.ignoreProjectConfig === true,
+    },
+    roots: workspaceRoots.map(normalizeFileName).sort(),
+  });
+}
+
+function workspaceIndexSettingsIdentity(settings: AspSettings): string {
+  return JSON.stringify({
+    roots: workspaceRoots.map(normalizeFileName).sort(),
+    maxIndexFiles: settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles,
+    scanChunkSize: settings.workspace?.scanChunkSize ?? defaultScanChunkSize,
+  });
+}
+
+function settingsInvalidationImpact(
+  previousSettingsByUri: Map<string, AspSettings>,
+): Map<string, SettingsInvalidationImpact> {
+  const impact = new Map<string, SettingsInvalidationImpact>();
+  for (const document of documents.all()) {
+    const previous = previousSettingsByUri.get(document.uri) ?? settingsForUri(document.uri, {});
+    const next = cachedSettings(document.uri);
+    const parse = parseSettingsIdentity(previous) !== parseSettingsIdentity(next);
+    const includeResolution =
+      includeResolutionSettingsIdentity(previous) !== includeResolutionSettingsIdentity(next);
+    const jsProject = jsProjectSettingsIdentity(previous) !== jsProjectSettingsIdentity(next);
+    const diagnostics = diagnosticsIdentity(previous) !== diagnosticsIdentity(next);
+    const workspaceIndex =
+      workspaceIndexSettingsIdentity(previous) !== workspaceIndexSettingsIdentity(next);
+    impact.set(document.uri, {
+      parse,
+      includeResolution,
+      jsProject,
+      diagnostics,
+      workspaceIndex,
+    });
+  }
+  return impact;
+}
+
+function applySettingsInvalidation(impact: Map<string, SettingsInvalidationImpact>): void {
+  const impacts = [...impact.values()];
+  if (impacts.some((item) => item.workspaceIndex)) {
+    invalidateWorkspaceIndex("settings.workspaceIndex");
+  }
+  if (impacts.some((item) => item.includeResolution)) {
+    invalidateIncludeResolution("settings.includeResolution");
+  }
+  if (impacts.some((item) => item.jsProject)) {
+    invalidateJsProject("settings.jsProject");
+  }
+}
+
+function applyDocumentSettingsInvalidation(
+  uri: string,
+  impact: SettingsInvalidationImpact | undefined,
+): void {
+  const cached = cache.get(uri);
+  if (!impact) {
+    return;
+  }
+  if (impact.parse) {
+    cache.delete(uri);
+    vbProjectContextCache.clear();
+    clearSemanticTokensForUri(uri);
+    logInvalidation("parseCache", `settings.parse, uri=${uri}`);
+    return;
+  }
+  if (cached) {
+    updateCachedDocumentRuntimeIdentity(cached, cachedSettings(uri));
+  }
+  if (impact.includeResolution || impact.jsProject || impact.diagnostics) {
+    invalidateCachedAnalysisForUris(new Set([uri]), "settings.analysis");
+  }
+}
+
+function shouldValidateAfterSettingsChange(
+  impact: SettingsInvalidationImpact | undefined,
+): boolean {
+  return Boolean(
+    impact && (impact.parse || impact.includeResolution || impact.jsProject || impact.diagnostics),
+  );
 }
 
 function localizerForSettings(settings: AspSettings) {
@@ -4616,12 +4854,18 @@ function localizerForUri(uri: string) {
 
 async function refreshConfiguration(): Promise<void> {
   try {
+    const previousSettingsByUri = currentOpenDocumentSettingsByUri();
     globalSettings = normalizeSettings(
       (await connection.workspace.getConfiguration("aspLsp")) as Record<string, unknown>,
     );
     settingsByUri.clear();
+    const impact = settingsInvalidationImpact(previousSettingsByUri);
+    applySettingsInvalidation(impact);
     for (const document of documents.all()) {
-      await validate(document);
+      applyDocumentSettingsInvalidation(document.uri, impact.get(document.uri));
+      if (shouldValidateAfterSettingsChange(impact.get(document.uri))) {
+        await validate(document);
+      }
     }
   } catch {
     globalSettings = normalizeSettings(globalSettings);
@@ -5429,6 +5673,7 @@ function jsLanguageServiceCacheKey(
     uri: virtual.uri,
     language: virtual.languageId,
     text: textFingerprint(virtual.text),
+    projectGeneration: jsProjectGeneration,
     settings: {
       checkJs: settings.checkJs ?? false,
       autoImports: settings.javascript?.autoImports !== false,
@@ -5490,6 +5735,27 @@ function clearIncludeCaches(): void {
   includePathResolutionCache.clear();
   pathResolutionCache.clear();
   includeCycleCache.clear();
+}
+
+function invalidateIncludeResolution(reason: string): void {
+  includeResolutionGeneration += 1;
+  clearIncludeCaches();
+  logInvalidation("includeResolution", reason, includeResolutionGeneration);
+}
+
+function invalidateJsProject(reason: string): void {
+  jsProjectGeneration += 1;
+  clearJsProjectCaches();
+  logInvalidation("jsProject", reason, jsProjectGeneration);
+}
+
+function logInvalidation(layer: string, reason: string, generation?: number): void {
+  logDebugSummary(
+    globalSettings,
+    `[asp-lsp] invalidation.${layer}: ${reason}${
+      generation === undefined ? "" : `, generation=${generation}`
+    }`,
+  );
 }
 
 function textFingerprint(text: string): string {
@@ -7544,11 +7810,6 @@ function clearSemanticTokensForUri(uri: string): void {
     semanticTokenResults.delete(resultId);
     latestSemanticTokenResultByUri.delete(uri);
   }
-}
-
-function clearSemanticTokens(): void {
-  semanticTokenResults.clear();
-  latestSemanticTokenResultByUri.clear();
 }
 
 function addEmbeddedSemanticTokens(

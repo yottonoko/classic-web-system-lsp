@@ -3056,7 +3056,6 @@ Response.Write BuildName()
         server.notify("workspace/didChangeConfiguration", {
           settings: { aspLsp: { codeLens: { includes: true } } },
         });
-        await server.waitForNotification("textDocument/publishDiagnostics");
 
         const enabledCodeLens = await server.request("textDocument/codeLens", {
           textDocument: { uri },
@@ -5312,6 +5311,257 @@ Response.Write enabled
         const logs = server.takePendingNotifications("window/logMessage");
         expect(JSON.stringify(logs)).not.toContain("analysis.parse");
         expect(JSON.stringify(logs)).not.toContain("LSP check started");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("keeps parse and diagnostics idle for formatting-only settings changes", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = "file:///tmp/format-only-settings.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<% Response.Write "ok" %>`,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+              format: { uppercaseKeywords: true },
+            },
+          },
+        });
+        await delay(350);
+
+        const logs = JSON.stringify(server.takePendingNotifications("window/logMessage"));
+        expect(logs).not.toContain("analysis.parse");
+        expect(logs).not.toContain("LSP check started");
+        expect(logs).not.toContain("invalidation.");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("invalidates include resolution settings without reparsing or clearing JavaScript projects", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-settings-"));
+      const pageDir = path.join(tempDir, "pages");
+      const includeDir = path.join(tempDir, "includes");
+      fs.mkdirSync(pageDir, { recursive: true });
+      fs.mkdirSync(includeDir, { recursive: true });
+      const page = path.join(pageDir, "default.asp");
+      const include = path.join(includeDir, "shared.inc");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="shared.inc" -->\n<% Response.Write "ok" %>`,
+        "utf8",
+      );
+      fs.writeFileSync(include, `<% Const SharedValue = "ok" %>`, "utf8");
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = `file://${page}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(page, "utf8"),
+          },
+        });
+        await waitForDiagnosticsContaining(server, "shared.inc");
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+        server.takePendingNotifications("textDocument/publishDiagnostics");
+
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+              includePaths: [includeDir],
+            },
+          },
+        });
+        const includeLog = await waitForLogContaining(server, "invalidation.includeResolution");
+        const checkLog = await waitForLogContaining(server, "LSP check completed");
+        const pulled = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+
+        expect(JSON.stringify(pulled)).not.toContain("shared.inc");
+        const logs = JSON.stringify([
+          includeLog,
+          checkLog,
+          ...server.takePendingNotifications("window/logMessage"),
+        ]);
+        expect(logs).not.toContain("analysis.parse.full");
+        expect(logs).not.toContain("invalidation.jsProject");
+        expect(logs).not.toContain("invalidation.workspaceIndex");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps JavaScript project changes fresh without dropping ASP parse caches", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-invalidation-"));
+      const helper = path.join(tempDir, "helper.js");
+      const page = path.join(tempDir, "default.asp");
+      fs.writeFileSync(helper, `const oldProjectGlobal = 1;\n`, "utf8");
+      fs.writeFileSync(
+        path.join(tempDir, "jsconfig.json"),
+        JSON.stringify({ include: ["*.js", "*.asp"] }),
+        "utf8",
+      );
+      const source = `<script>
+newProjectGlobal;
+</script>`;
+      fs.writeFileSync(page, source, "utf8");
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              checkJs: true,
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = `file://${page}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await waitForDiagnosticsContaining(server, "newProjectGlobal");
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+
+        fs.writeFileSync(helper, `const newProjectGlobal = 1;\n`, "utf8");
+        server.notify("workspace/didChangeWatchedFiles", {
+          changes: [{ uri: `file://${helper}`, type: 2 }],
+        });
+        const jsLog = await waitForLogContaining(server, "invalidation.jsProject");
+        const checkLog = await waitForLogContaining(server, "LSP check completed");
+        const pulled = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+
+        expect(JSON.stringify(pulled)).not.toContain("Cannot find name 'newProjectGlobal'");
+        const logs = JSON.stringify([
+          jsLog,
+          checkLog,
+          ...server.takePendingNotifications("window/logMessage"),
+        ]);
+        expect(logs).not.toContain("analysis.parse.full");
+        expect(logs).not.toContain("invalidation.workspaceIndex");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("does not advance workspace generation for document edits", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = "file:///tmp/document-edit-generation.asp";
+        let source = `<%
+Option Explicit
+Dim known
+Response.Write known
+%>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+
+        source = notifyRangedReplacement(server, uri, source, 2, "known", "renamed");
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "LSP check completed");
+
+        const logs = JSON.stringify(server.takePendingNotifications("window/logMessage"));
+        expect(source).toContain("Dim renamed");
+        expect(logs).not.toContain("invalidation.workspaceIndex");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
