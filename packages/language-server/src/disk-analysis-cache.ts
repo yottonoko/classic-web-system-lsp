@@ -4,7 +4,7 @@ import path from "node:path";
 import { decode, encode } from "cbor-x";
 import type { Diagnostic } from "vscode-languageserver-types";
 
-const formatVersion = 1;
+const formatVersion = 2;
 const defaultTtlHours = 24 * 14;
 const defaultMaxSizeMb = 128;
 
@@ -30,6 +30,14 @@ export interface DiskAnalysisCacheLookup {
 
 export interface DiskAnalysisCacheEntry extends DiskAnalysisCacheLookup {
   diagnostics: Diagnostic[];
+  builderState?: DiskAnalysisBuilderState;
+}
+
+export interface DiskAnalysisBuilderState {
+  publicSignature?: unknown;
+  includeDeps?: unknown[];
+  externalRefUsageKeys?: string[];
+  diagnosticsLayerFingerprints?: Record<string, string>;
 }
 
 interface PersistedDiskAnalysisEntry extends DiskAnalysisCacheEntry {
@@ -62,6 +70,10 @@ export class DiskAnalysisCache {
   }
 
   read(lookup: DiskAnalysisCacheLookup): Diagnostic[] | undefined {
+    return this.readAnalysis(lookup)?.diagnostics;
+  }
+
+  readAnalysis(lookup: DiskAnalysisCacheLookup): DiskAnalysisCacheEntry | undefined {
     if (!this.enabled) {
       return undefined;
     }
@@ -69,7 +81,7 @@ export class DiskAnalysisCache {
     if (!entry || !this.matches(entry, lookup)) {
       return undefined;
     }
-    return entry.diagnostics;
+    return entry;
   }
 
   write(entry: DiskAnalysisCacheEntry): void {

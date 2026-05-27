@@ -28,6 +28,7 @@ export interface VbDiagnosticsWorkerRequest {
   id: number;
   parsed: AspParsedDocument;
   context: VbDiagnosticsWorkerContext;
+  cancellationGeneration?: number;
 }
 
 export interface VbDiagnosticsWorkerTiming {
@@ -39,6 +40,12 @@ export interface VbDiagnosticsWorkerResponse {
   id: number;
   diagnostics?: Diagnostic[];
   timings?: VbDiagnosticsWorkerTiming[];
+  queueWaitMs?: number;
+  runMs?: number;
+  payloadBytes?: number;
+  resultBytes?: number;
+  queueLengthAtDispatch?: number;
+  cancelled?: boolean;
   error?: {
     name?: string;
     message: string;

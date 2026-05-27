@@ -6267,6 +6267,126 @@ ${updated}`;
       }
     });
 
+    it("reports virtual JavaScript snapshot change range reuse", async () => {
+      let source = `<script>
+const alphaValue = 1;
+alph
+</script>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = "file:///tmp/js-snapshot-change-range.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await waitForLogContaining(server, "LSP check completed");
+        await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.lastIndexOf("alph") + "alph".length),
+        });
+        await waitForLogContaining(server, "js.snapshot.changeRange.miss");
+        server.takePendingNotifications("window/logMessage");
+
+        source = notifyRangedReplacement(server, uri, source, 2, "alphaValue", "betaValue");
+        await waitForLogContaining(server, "LSP check completed");
+        await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.lastIndexOf("alph") + "alph".length),
+        });
+        await waitForLogContaining(server, "js.snapshot.changeRange.hit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("reuses completion results for prefix continuation", async () => {
+      let source = `<%
+Response.W
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = "file:///tmp/completion-cache.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await waitForLogContaining(server, "LSP check completed");
+        const first = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("Response.W") + "Response.W".length),
+        });
+        expect(JSON.stringify(first)).toContain("Write");
+        await waitForLogContaining(server, "completion.cache.miss");
+        server.takePendingNotifications("window/logMessage");
+
+        const insertOffset = source.indexOf("Response.W") + "Response.W".length;
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [
+            {
+              range: {
+                start: positionAt(source, insertOffset),
+                end: positionAt(source, insertOffset),
+              },
+              text: "r",
+            },
+          ],
+        });
+        source = `${source.slice(0, insertOffset)}r${source.slice(insertOffset)}`;
+        await waitForLogContaining(server, "LSP check completed");
+        const reused = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("Response.Wr") + "Response.Wr".length),
+        });
+        expect(JSON.stringify(reused)).toContain("Write");
+        await waitForLogContaining(server, "completion.cache.hit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("does not advance workspace generation for document edits", async () => {
       const server = new RpcServer();
       try {

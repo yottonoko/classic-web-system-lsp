@@ -13,6 +13,9 @@ interface WorkerSlot {
 
 interface WorkerTask {
   request: VbDiagnosticsWorkerRequest;
+  enqueuedAt: bigint;
+  payloadBytes: number;
+  isCancellationRequested?: () => boolean;
   resolve(response: VbDiagnosticsWorkerResponse): void;
   reject(error: Error): void;
 }
@@ -41,9 +44,19 @@ export class VbDiagnosticsWorkerPool {
     this.dispatch();
   }
 
-  run(request: VbDiagnosticsWorkerRequest): Promise<VbDiagnosticsWorkerResponse> {
+  run(
+    request: VbDiagnosticsWorkerRequest,
+    options: { isCancellationRequested?: () => boolean } = {},
+  ): Promise<VbDiagnosticsWorkerResponse> {
     return new Promise((resolve, reject) => {
-      this.queue.push({ request, resolve, reject });
+      this.queue.push({
+        request,
+        enqueuedAt: process.hrtime.bigint(),
+        payloadBytes: byteLengthOfJson(request),
+        isCancellationRequested: options.isCancellationRequested,
+        resolve,
+        reject,
+      });
       this.dispatch();
     });
   }
@@ -70,8 +83,24 @@ export class VbDiagnosticsWorkerPool {
       if (!task) {
         return;
       }
+      if (task.isCancellationRequested?.()) {
+        task.resolve({
+          id: task.request.id,
+          diagnostics: [],
+          cancelled: true,
+          queueWaitMs: elapsedMs(task.enqueuedAt),
+          payloadBytes: task.payloadBytes,
+          queueLengthAtDispatch: this.queue.length,
+        });
+        continue;
+      }
       slot.task = task;
+      task.request = {
+        ...task.request,
+      };
+      const startedAt = process.hrtime.bigint();
       slot.worker.postMessage(task.request);
+      task.resolve = timedWorkerResolve(task, startedAt, this.queue.length, task.resolve);
     }
   }
 
@@ -120,6 +149,37 @@ export class VbDiagnosticsWorkerPool {
     const task = slot.task;
     slot.task = undefined;
     task?.reject(error);
+  }
+}
+
+function timedWorkerResolve(
+  task: WorkerTask,
+  startedAt: bigint,
+  queueLengthAtDispatch: number,
+  resolve: WorkerTask["resolve"],
+): WorkerTask["resolve"] {
+  return (response) => {
+    const enriched = {
+      ...response,
+      queueWaitMs: elapsedMs(task.enqueuedAt) - elapsedMs(startedAt),
+      runMs: elapsedMs(startedAt),
+      payloadBytes: task.payloadBytes,
+      resultBytes: byteLengthOfJson(response),
+      queueLengthAtDispatch,
+    };
+    resolve(enriched);
+  };
+}
+
+function elapsedMs(startedAt: bigint): number {
+  return Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+}
+
+function byteLengthOfJson(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return 0;
   }
 }
 
