@@ -30,7 +30,6 @@ export interface AspSettings {
   includePaths?: string[];
   legacyEncoding?: AspLegacyEncoding;
   diagnostics?: AspDiagnosticsSettings;
-  cache?: AspCacheSettings;
   debug?: AspDebugSettings;
   format?: AspFormatSettings;
   vbscript?: AspVbscriptSettings;
@@ -58,13 +57,6 @@ export interface AspFormatSettings {
 
 export interface AspDiagnosticsSettings {
   debounceMs?: number;
-}
-
-export interface AspCacheSettings {
-  enabled?: boolean;
-  directory?: string;
-  ttlHours?: number;
-  maxSizeMb?: number;
 }
 
 export type AspDebugOutputLevel = "off" | "summary" | "verbose";
@@ -131,8 +123,6 @@ export interface AspCodeLensSettings {
 export interface AspWorkspaceSettings {
   maxIndexFiles?: number;
   scanChunkSize?: number;
-  backgroundAnalysis?: boolean;
-  idleAnalysisConcurrency?: number;
   busyAnalysisConcurrency?: number;
 }
 
@@ -193,26 +183,6 @@ export interface AspParsedDocument {
   includes: AspInclude[];
   defaultLanguage: "VBScript" | "JScript";
   diagnostics: Diagnostic[];
-}
-
-export interface AspDocumentChange {
-  range?: Range;
-  text: string;
-}
-
-export interface AspParsedDocumentUpdate {
-  parsed: AspParsedDocument;
-  incremental: boolean;
-  fallbackReason?: string;
-  change?: AspIncrementalChange;
-}
-
-export interface AspIncrementalChange {
-  start: number;
-  end: number;
-  delta: number;
-  language: AspEmbeddedLanguage;
-  regionKind: AspRegionKind;
 }
 
 export interface SourceMapSegment {

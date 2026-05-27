@@ -115,9 +115,6 @@ describe("VS Code extension package", () => {
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.backgroundConcurrency"],
     ).toBeUndefined();
     expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.workspace.idleAnalysisConcurrency"],
-    ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
-    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.busyAnalysisConcurrency"],
     ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.legacyEncoding"]).toEqual(
@@ -602,60 +599,6 @@ new Intl.DateTimeFormat("en");
     }
   });
 
-  it("bundles the VBScript diagnostics worker for slow diagnostics", async () => {
-    const serverModule = path.join(process.cwd(), "server", "language-server", "dist", "server.js");
-    expect(fs.existsSync(path.join(path.dirname(serverModule), "vb-diagnostics-worker.js"))).toBe(
-      true,
-    );
-
-    const server = new RpcServer(serverModule);
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-bundled-worker-"));
-    try {
-      await server.start();
-      const uri = `file://${path.join(tempDir, "default.asp")}`;
-      await server.request("initialize", {
-        processId: process.pid,
-        rootUri: `file://${tempDir}`,
-        capabilities: {},
-      });
-      server.notify("workspace/didChangeConfiguration", {
-        settings: {
-          aspLsp: {
-            debug: { output: "verbose" },
-            diagnostics: { debounceMs: 0 },
-            workspace: { backgroundAnalysis: false },
-          },
-        },
-      });
-      server.notify("textDocument/didOpen", {
-        textDocument: {
-          uri,
-          languageId: "classic-asp",
-          version: 1,
-          text: `<% Option Explicit
-Dim known
-Response.Write known
-%>`,
-        },
-      });
-      await server.waitForNotification("textDocument/publishDiagnostics");
-      const logs = await collectLogsUntil(server, "LSP check slow completed");
-      const serializedLogs = JSON.stringify([
-        ...logs,
-        ...server.takePendingNotifications("window/logMessage"),
-      ]);
-      expect(serializedLogs).toContain("VBScript diagnostics worker dispatch");
-      expect(serializedLogs).not.toContain("VBScript diagnostics worker fallback");
-      expect(serializedLogs).not.toContain("Cannot find module");
-
-      await server.request("shutdown", null);
-      server.notify("exit", undefined);
-    } finally {
-      server.stop();
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
   it("packages a VSIX with the language server entrypoint", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vsix-"));
     const vsixPath = path.join(tempDir, "classic-asp-lsp.vsix");
@@ -674,7 +617,6 @@ Response.Write known
       expect(listing).toContain("extension/package.nls.ja.json");
       expect(listing).toContain("extension/assets/icon.png");
       expect(listing).toContain("extension/server/language-server/dist/server.js");
-      expect(listing).toContain("extension/server/language-server/dist/vb-diagnostics-worker.js");
       expect(listing).toContain("extension/server/language-server/dist/lib.esnext.d.ts");
       expect(listing).toContain("extension/server/language-server/dist/lib.dom.d.ts");
       expect(listing).not.toContain("extension/server/language-server/node_modules/");
@@ -793,23 +735,4 @@ class RpcServer {
       }
     }
   }
-}
-
-async function collectLogsUntil(server: RpcServer, expected: string): Promise<JsonRpcMessage[]> {
-  const deadline = Date.now() + 30_000;
-  const logs: JsonRpcMessage[] = [];
-  while (Date.now() < deadline) {
-    for (const message of server.takePendingNotifications("window/logMessage")) {
-      logs.push(message);
-      if (JSON.stringify(message.params).includes(expected)) {
-        return logs;
-      }
-    }
-    const message = await server.waitForNotification("window/logMessage");
-    logs.push(message);
-    if (JSON.stringify(message.params).includes(expected)) {
-      return logs;
-    }
-  }
-  throw new Error(`Timed out waiting for log containing ${expected}.`);
 }

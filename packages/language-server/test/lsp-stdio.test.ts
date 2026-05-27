@@ -3,7 +3,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { decode } from "cbor-x";
 import { describe, expect, it } from "vitest";
 import {
   CompletionItemKind,
@@ -796,15 +795,13 @@ $▮
 
     it("can ignore JavaScript project config files", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-ignore-config-"));
-      fs.writeFileSync(path.join(tempDir, "only.js"), "const OnlyGlobal = 1;\n", "utf8");
-      fs.writeFileSync(path.join(tempDir, "helper.js"), "const ConfigGlobal = 1;\n", "utf8");
       fs.writeFileSync(
         path.join(tempDir, "jsconfig.json"),
-        JSON.stringify({ files: ["only.js"], compilerOptions: { checkJs: true } }),
+        JSON.stringify({ compilerOptions: { lib: ["es5"] } }),
         "utf8",
       );
       const marked = markedDocument(`<script>
-Config▮
+docu▮
 </script>`);
       const server = new RpcServer();
       try {
@@ -837,7 +834,7 @@ Config▮
           textDocument: { uri },
           position: marked.position,
         });
-        expect(completionLabels(completions)).toContain("ConfigGlobal");
+        expect(completionLabels(completions)).toContain("document");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -901,6 +898,11 @@ var message = serverGre▮et("Ada");
   return value.toUpperCase();
 }
 `,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "jsconfig.json"),
+        JSON.stringify({ include: ["*.js", "*.asp"] }),
         "utf8",
       );
       const marked = markedDocument(`<script type="module">
@@ -1338,7 +1340,6 @@ Response.Write known
             aspLsp: {
               debug: { output: "verbose" },
               diagnostics: { debounceMs: 80 },
-              workspace: { backgroundAnalysis: false },
             },
           },
         });
@@ -1356,7 +1357,7 @@ Response.Write known
           },
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
-        await waitForLogContaining(server, "LSP check slow completed");
+        await waitForLogContaining(server, "LSP check completed");
         server.takePendingNotifications("window/logMessage");
 
         server.notify("textDocument/didChange", {
@@ -1397,7 +1398,6 @@ Response.Write known
           settings: {
             aspLsp: {
               diagnostics: { debounceMs: 1000 },
-              workspace: { backgroundAnalysis: false },
             },
           },
         });
@@ -1486,7 +1486,6 @@ Response.Write known
             aspLsp: {
               debug: { output: "verbose" },
               diagnostics: { debounceMs: 0 },
-              workspace: { backgroundAnalysis: false },
             },
           },
         });
@@ -1506,23 +1505,17 @@ Response.Write known
           },
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
-        await waitForLogContaining(server, "LSP check slow completed");
+        await waitForLogContaining(server, "LSP check completed");
         server.takePendingNotifications("window/logMessage");
 
         source = notifyRangedReplacement(server, uri, source, 2, "benchmark x", "benchmark y");
 
         await server.waitForNotification("textDocument/publishDiagnostics");
         await waitForLogContaining(server, "LSP analysis completed");
-        await waitForLogContaining(server, "diagnostics.fast.total");
         await waitForLogContaining(server, "documentChange.scheduleDiagnostics");
-        await waitForLogContaining(server, "diagnostics.slow.include.reuse");
-        await waitForLogContaining(server, "diagnostics.slow.syntax.reuse");
-        await waitForLogContaining(server, "diagnostics.slow.project.reuse");
-        await waitForLogContaining(server, "diagnostics.slow.send");
-        await waitForLogContaining(server, "LSP check slow reused");
-        expect(JSON.stringify(server.takePendingNotifications("window/logMessage"))).not.toContain(
-          "vbscript.diagnostics.dispatch",
-        );
+        await waitForLogContaining(server, "check.parserDiagnostics");
+        await waitForLogContaining(server, "check.vbscript.diagnostics");
+        await waitForLogContaining(server, "LSP check completed");
         expect(source).toContain("' benchmark y");
 
         await server.request("shutdown", null);
@@ -1532,130 +1525,7 @@ Response.Write known
       }
     });
 
-    it("reuses project diagnostics without VBScript dispatch for HTML-only changes", async () => {
-      const server = new RpcServer();
-      try {
-        await server.start();
-        await server.request("initialize", {
-          processId: process.pid,
-          rootUri: "file:///tmp",
-          capabilities: {},
-        });
-        server.notify("workspace/didChangeConfiguration", {
-          settings: {
-            aspLsp: {
-              debug: { output: "verbose" },
-              diagnostics: { debounceMs: 0 },
-              workspace: { backgroundAnalysis: false },
-            },
-          },
-        });
-
-        const uri = "file:///tmp/html-only-project-reuse.asp";
-        let source = `<div class="old">ok</div>
-<% Option Explicit
-Dim known
-Response.Write known
-%>`;
-        server.notify("textDocument/didOpen", {
-          textDocument: {
-            uri,
-            languageId: "classic-asp",
-            version: 1,
-            text: source,
-          },
-        });
-        await server.waitForNotification("textDocument/publishDiagnostics");
-        await waitForLogContaining(server, "LSP check slow completed");
-        server.takePendingNotifications("window/logMessage");
-
-        source = notifyRangedReplacement(server, uri, source, 2, "old", "new");
-
-        await server.waitForNotification("textDocument/publishDiagnostics");
-        await waitForLogContaining(server, "diagnostics.slow.syntax");
-        await waitForLogContaining(server, "diagnostics.slow.project.reuse");
-        await waitForLogContaining(server, "LSP check slow completed");
-        expect(JSON.stringify(server.takePendingNotifications("window/logMessage"))).not.toContain(
-          "vbscript.diagnostics.dispatch",
-        );
-        expect(source).toContain('class="new"');
-
-        await server.request("shutdown", null);
-        server.notify("exit", undefined);
-      } finally {
-        server.stop();
-      }
-    });
-
-    it("reuses include public summaries for current-file-only project diagnostics", async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-current-file-project-"));
-      const include = path.join(tempDir, "shared.inc");
-      const page = path.join(tempDir, "default.asp");
-      fs.writeFileSync(
-        include,
-        `<%
-Function SharedTitle()
-  SharedTitle = "ok"
-End Function
-%>`,
-        "utf8",
-      );
-      let source = `<!-- #include file="shared.inc" -->
-<% Option Explicit
-Dim localValue
-Response.Write SharedTitle()
-Response.Write localValue
-%>`;
-      fs.writeFileSync(page, source, "utf8");
-      const server = new RpcServer();
-      try {
-        await server.start();
-        await server.request("initialize", {
-          processId: process.pid,
-          rootUri: pathToFileURL(tempDir).toString(),
-          capabilities: {},
-        });
-        server.notify("workspace/didChangeConfiguration", {
-          settings: {
-            aspLsp: {
-              debug: { output: "verbose" },
-              diagnostics: { debounceMs: 0 },
-              workspace: { backgroundAnalysis: false },
-            },
-          },
-        });
-
-        const uri = pathToFileURL(page).toString();
-        server.notify("textDocument/didOpen", {
-          textDocument: {
-            uri,
-            languageId: "classic-asp",
-            version: 1,
-            text: source,
-          },
-        });
-        await server.waitForNotification("textDocument/publishDiagnostics");
-        await waitForLogContaining(server, "LSP check slow completed");
-        server.takePendingNotifications("window/logMessage");
-
-        source = notifyRangedReplacement(server, uri, source, 2, "localValue", "renamedValue");
-
-        await server.waitForNotification("textDocument/publishDiagnostics");
-        await waitForLogContaining(server, "diagnostics.slow.project.currentFileOnly");
-        await waitForLogContaining(server, "vbProjectContext.includeSummaryReuse");
-        await waitForLogContaining(server, "vbscript.diagnostics.dispatch");
-        await waitForLogContaining(server, "LSP check slow completed");
-        expect(source).toContain("renamedValue");
-
-        await server.request("shutdown", null);
-        server.notify("exit", undefined);
-      } finally {
-        server.stop();
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    });
-
-    it("publishes fast, syntax and project diagnostics in stages for push diagnostics", async () => {
+    it("publishes complete diagnostics once for push diagnostics", async () => {
       const server = new RpcServer();
       try {
         await server.start();
@@ -1665,7 +1535,7 @@ Response.Write localValue
           capabilities: {},
         });
 
-        const uri = "file:///tmp/staged-diagnostics.asp";
+        const uri = "file:///tmp/complete-diagnostics.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
             uri,
@@ -1679,29 +1549,11 @@ Response.Write missingName
           },
         });
 
-        const fastDiagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
-        const fastText = JSON.stringify(fastDiagnostics.params);
-        expect(fastText).not.toContain("missing.inc");
-        expect(fastText).not.toContain("asp-lsp-css");
-        expect(fastText).not.toContain("missingName");
-
-        const includeDiagnostics = await waitForDiagnosticsContaining(server, "missing.inc");
-        const includeText = JSON.stringify(includeDiagnostics.params);
-        expect(includeText).toContain("missing.inc");
-        expect(includeText).not.toContain("asp-lsp-css");
-        expect(includeText).not.toContain("missingName");
-
-        const syntaxDiagnostics = await waitForDiagnosticsContaining(server, "asp-lsp-css");
-        const syntaxText = JSON.stringify(syntaxDiagnostics.params);
-        expect(syntaxText).toContain("missing.inc");
-        expect(syntaxText).toContain("asp-lsp-css");
-        expect(syntaxText).not.toContain("missingName");
-
-        const slowDiagnostics = await waitForDiagnosticsContaining(server, "missingName");
-        const slowText = JSON.stringify(slowDiagnostics.params);
-        expect(slowText).toContain("missing.inc");
-        expect(slowText).toContain("asp-lsp-css");
-        expect(slowText).toContain("missingName");
+        const diagnostics = await waitForDiagnosticsContaining(server, "missingName");
+        const text = JSON.stringify(diagnostics.params);
+        expect(text).toContain("missing.inc");
+        expect(text).toContain("asp-lsp-css");
+        expect(text).toContain("missingName");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -1710,215 +1562,7 @@ Response.Write missingName
       }
     });
 
-    it("restores staged diagnostics from CBOR cache for reopened file-backed documents", async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-open-stage-cache-"));
-      const cacheDir = path.join(tempDir, "cache");
-      const fileName = path.join(tempDir, "cached-staged-diagnostics.asp");
-      const uri = pathToFileURL(fileName).toString();
-      const source = `<style>.broken { color: }</style>
-<!-- #include file="missing.inc" -->
-<% Option Explicit
-Response.Write cachedMissingName
-%>`;
-      fs.writeFileSync(fileName, source, "utf8");
-      const configuration = {
-        aspLsp: {
-          cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
-          debug: { output: "verbose" },
-          diagnostics: { debounceMs: 0 },
-          workspace: { backgroundAnalysis: false },
-        },
-      };
-
-      try {
-        const firstServer = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
-        try {
-          await firstServer.start();
-          await firstServer.request("initialize", {
-            processId: process.pid,
-            rootUri: pathToFileURL(tempDir).toString(),
-            capabilities: {},
-          });
-          firstServer.notify("workspace/didChangeConfiguration", { settings: configuration });
-          firstServer.notify("textDocument/didOpen", {
-            textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
-          });
-          await waitForDiagnosticsContaining(firstServer, "cachedMissingName");
-          await waitForCborCachePayload(cacheDir, (payload) =>
-            Boolean(
-              payload.fastDiagnostics &&
-              payload.includeDiagnostics &&
-              payload.syntaxDiagnostics &&
-              payload.projectDiagnostics &&
-              payload.diagnostics,
-            ),
-          );
-          await firstServer.request("shutdown", null);
-          firstServer.notify("exit", undefined);
-        } finally {
-          firstServer.stop();
-        }
-
-        const secondServer = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
-        try {
-          await secondServer.start();
-          await secondServer.request("initialize", {
-            processId: process.pid,
-            rootUri: pathToFileURL(tempDir).toString(),
-            capabilities: {},
-          });
-          secondServer.notify("workspace/didChangeConfiguration", { settings: configuration });
-          secondServer.notify("textDocument/didOpen", {
-            textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
-          });
-          await waitForLogContaining(secondServer, "analysis.parse.diskCache");
-
-          const fastDiagnostics = await secondServer.waitForNotification(
-            "textDocument/publishDiagnostics",
-          );
-          const fastText = JSON.stringify(fastDiagnostics.params);
-          expect(fastText).not.toContain("missing.inc");
-          expect(fastText).not.toContain("asp-lsp-css");
-          expect(fastText).not.toContain("cachedMissingName");
-          await waitForLogContaining(secondServer, "check.fast.cacheReuse");
-
-          const includeDiagnostics = await waitForDiagnosticsContaining(
-            secondServer,
-            "missing.inc",
-          );
-          const includeText = JSON.stringify(includeDiagnostics.params);
-          expect(includeText).toContain("missing.inc");
-          expect(includeText).not.toContain("asp-lsp-css");
-          expect(includeText).not.toContain("cachedMissingName");
-          await waitForLogContaining(secondServer, "check.include.include.cacheReuse");
-
-          const syntaxDiagnostics = await waitForDiagnosticsContaining(secondServer, "asp-lsp-css");
-          const syntaxText = JSON.stringify(syntaxDiagnostics.params);
-          expect(syntaxText).toContain("missing.inc");
-          expect(syntaxText).toContain("asp-lsp-css");
-          expect(syntaxText).not.toContain("cachedMissingName");
-          await waitForLogContaining(secondServer, "check.syntax.syntax.cacheReuse");
-
-          const projectDiagnostics = await waitForDiagnosticsContaining(
-            secondServer,
-            "cachedMissingName",
-          );
-          const projectText = JSON.stringify(projectDiagnostics.params);
-          expect(projectText).toContain("missing.inc");
-          expect(projectText).toContain("asp-lsp-css");
-          expect(projectText).toContain("cachedMissingName");
-          await waitForLogContaining(secondServer, "check.project.project.cacheReuse");
-
-          await secondServer.request("shutdown", null);
-          secondServer.notify("exit", undefined);
-        } finally {
-          secondServer.stop();
-        }
-      } finally {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    });
-
-    it("returns local language features quickly for the include tree benchmark root", async () => {
-      const sampleRoot = path.join(
-        process.cwd(),
-        "..",
-        "..",
-        "samples",
-        "classic-asp-include-tree-benchmark",
-      );
-      const fileName = path.join(sampleRoot, "default.asp");
-      if (!fs.existsSync(fileName)) {
-        return;
-      }
-      const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-tree-cache-"));
-      const source = fs.readFileSync(fileName, "utf8");
-      const uri = pathToFileURL(fileName).toString();
-      const server = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
-      try {
-        await server.start();
-        await server.request("initialize", {
-          processId: process.pid,
-          rootUri: pathToFileURL(sampleRoot).toString(),
-          capabilities: {},
-        });
-        server.notify("workspace/didChangeConfiguration", {
-          settings: {
-            aspLsp: {
-              cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
-              debug: { output: "verbose" },
-              diagnostics: { debounceMs: 0 },
-              workspace: { backgroundAnalysis: false },
-            },
-          },
-        });
-        server.notify("textDocument/didOpen", {
-          textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
-        });
-
-        const completionStartedAt = Date.now();
-        const completions = await server.request("textDocument/completion", {
-          textDocument: { uri },
-          position: positionAt(source, source.indexOf("Response.") + "Response.".length),
-        });
-        expect(Date.now() - completionStartedAt).toBeLessThan(1_000);
-        expect(completionLabels(completions)).toContain("Write");
-
-        const hoverStartedAt = Date.now();
-        const hover = await server.request("textDocument/hover", {
-          textDocument: { uri },
-          position: positionAt(
-            source,
-            source.indexOf("includeTreeValue0001", source.indexOf("Response.Write")),
-          ),
-        });
-        expect(Date.now() - hoverStartedAt).toBeLessThan(1_000);
-        expect(JSON.stringify(hover)).toContain("Dim includeTreeValue0001");
-
-        const inlayStartedAt = Date.now();
-        const inlayHints = await server.request("textDocument/inlayHint", {
-          textDocument: { uri },
-          range: { start: { line: 0, character: 0 }, end: { line: 80, character: 0 } },
-        });
-        expect(Date.now() - inlayStartedAt).toBeLessThan(1_000);
-        expect(Array.isArray(inlayHints)).toBe(true);
-
-        await delay(1700);
-        const warmedHoverStartedAt = Date.now();
-        const warmedHover = await server.request("textDocument/hover", {
-          textDocument: { uri },
-          position: positionAt(
-            source,
-            source.indexOf("includeTreeValue0001", source.indexOf("Response.Write")),
-          ),
-        });
-        expect(Date.now() - warmedHoverStartedAt).toBeLessThan(1_000);
-        expect(JSON.stringify(warmedHover)).toContain("Dim includeTreeValue0001");
-
-        const warmedInlayStartedAt = Date.now();
-        const warmedInlayHints = await server.request("textDocument/inlayHint", {
-          textDocument: { uri },
-          range: { start: { line: 0, character: 0 }, end: { line: 80, character: 0 } },
-        });
-        expect(Date.now() - warmedInlayStartedAt).toBeLessThan(1_000);
-        expect(Array.isArray(warmedInlayHints)).toBe(true);
-        expect(
-          server
-            .takePendingNotifications("window/logMessage")
-            .some((message) =>
-              JSON.stringify(message.params).includes("vbPublicSummary.diskCacheReuse"),
-            ),
-        ).toBe(false);
-
-        await server.request("shutdown", null);
-        server.notify("exit", undefined);
-      } finally {
-        server.stop();
-        fs.rmSync(cacheDir, { recursive: true, force: true });
-      }
-    });
-
-    it("does not publish stale slow diagnostics after rapid immediate changes", async () => {
+    it("does not publish stale diagnostics after rapid immediate changes", async () => {
       const server = new RpcServer();
       try {
         await server.start();
@@ -1931,7 +1575,7 @@ Response.Write cachedMissingName
           settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
         });
 
-        const uri = "file:///tmp/stale-slow-diagnostics.asp";
+        const uri = "file:///tmp/stale-diagnostics.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
             uri,
@@ -1971,7 +1615,7 @@ Response.Write known
       }
     });
 
-    it("does not publish pending slow diagnostics after a document closes", async () => {
+    it("does not publish pending diagnostics after a document closes", async () => {
       const server = new RpcServer();
       try {
         await server.start();
@@ -1981,7 +1625,7 @@ Response.Write known
           capabilities: {},
         });
 
-        const uri = "file:///tmp/closed-slow-diagnostics.asp";
+        const uri = "file:///tmp/closed-diagnostics.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
             uri,
@@ -1995,12 +1639,10 @@ Response.Write known
         });
 
         await delay(30);
-        const pendingText = JSON.stringify(
-          server
-            .takePendingNotifications("textDocument/publishDiagnostics")
-            .map((item) => item.params),
-        );
-        expect(pendingText).not.toContain("closedName");
+        const diagnostics = server
+          .takePendingNotifications("textDocument/publishDiagnostics")
+          .map((item) => item.params as { diagnostics?: unknown[]; uri?: string });
+        expect(diagnostics.at(-1)).toMatchObject({ uri, diagnostics: [] });
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -2009,7 +1651,7 @@ Response.Write known
       }
     });
 
-    it("keeps language features current after ranged incremental ASP edits", async () => {
+    it("keeps language features current after ranged ASP edits", async () => {
       const source = `<%
 Option Explicit
 Dim known
@@ -2029,7 +1671,7 @@ Response.Write missingName
         server.notify("workspace/didChangeConfiguration", {
           settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
         });
-        const uri = "file:///tmp/ranged-incremental.asp";
+        const uri = "file:///tmp/ranged-edits.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
             uri,
@@ -2346,252 +1988,7 @@ Response.Write Shared▮Title()
       }
     });
 
-    it("uses cached public include summaries for VBScript help", async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-public-summary-"));
-      const owner = path.join(tempDir, "default.asp");
-      const include = path.join(tempDir, "common.inc");
-      fs.writeFileSync(
-        include,
-        `<%
-' @type SharedRecords As ADODB.Recordset
-Dim SharedRecords
-Dim UntypedRecords
-Set UntypedRecords = Server.CreateObject("ADODB.Recordset")
-Class SharedWidget
-  Public Name
-  Private Secret
-  Public Function Title()
-  End Function
-End Class
-Function IncludedFunction(arg)
-  Dim localOnly
-End Function
-Private Function HiddenFunction()
-End Function
-%>`,
-        "utf8",
-      );
-      const source = `<!-- #include file="common.inc" -->
-<%
-Dim widget
-Set widget = New SharedWidget
-Response.Write IncludedFunction()
-Response.Write SharedRecords.
-Response.Write UntypedRecords.
-Response.Write widget.
-Response.Write${" "}
-%>`;
-      fs.writeFileSync(owner, source, "utf8");
-      const uri = pathToFileURL(owner).toString();
-
-      const server = new RpcServer();
-      try {
-        await server.start();
-        await server.request("initialize", {
-          processId: process.pid,
-          rootUri: pathToFileURL(tempDir).toString(),
-          capabilities: {},
-        });
-        server.notify("workspace/didChangeConfiguration", {
-          settings: {
-            aspLsp: {
-              diagnostics: { debounceMs: 0 },
-              workspace: { backgroundAnalysis: false },
-            },
-          },
-        });
-        server.notify("textDocument/didOpen", {
-          textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
-        });
-        await delay(1700);
-
-        const globalCompletions = await waitForCompletionSatisfying(
-          server,
-          { uri, position: positionAt(source, source.lastIndexOf("Response.Write ") + 15) },
-          (completions) => {
-            const labels = completionLabels(completions);
-            return (
-              labels.includes("IncludedFunction") &&
-              labels.includes("SharedRecords") &&
-              labels.includes("SharedWidget") &&
-              !labels.includes("HiddenFunction")
-            );
-          },
-          "public summary completions without private include symbols",
-        );
-        const labels = completionLabels(globalCompletions);
-        expect(labels).toContain("SharedRecords");
-        expect(labels).toContain("SharedWidget");
-        expect(labels).not.toContain("arg");
-        expect(labels).not.toContain("localOnly");
-        expect(labels).not.toContain("HiddenFunction");
-
-        const definition = await waitForDefinitionContaining(
-          server,
-          {
-            uri,
-            position: positionAt(source, source.indexOf("IncludedFunction") + "Included".length),
-          },
-          "common.inc",
-        );
-        expect(JSON.stringify(definition)).toContain("common.inc");
-
-        const hover = await server.request("textDocument/hover", {
-          textDocument: { uri },
-          position: positionAt(source, source.indexOf("IncludedFunction") + "Included".length),
-        });
-        expect(JSON.stringify(hover)).toContain("Function IncludedFunction");
-
-        const recordsetCompletions = await server.request("textDocument/completion", {
-          textDocument: { uri },
-          position: positionAt(source, source.indexOf("SharedRecords.") + "SharedRecords.".length),
-        });
-        expect(completionLabels(recordsetCompletions)).toContain("MoveNext");
-
-        const untypedCompletions = await server.request("textDocument/completion", {
-          textDocument: { uri },
-          position: positionAt(
-            source,
-            source.indexOf("UntypedRecords.") + "UntypedRecords.".length,
-          ),
-        });
-        expect(completionLabels(untypedCompletions)).not.toContain("MoveNext");
-
-        const widgetCompletions = await server.request("textDocument/completion", {
-          textDocument: { uri },
-          position: positionAt(source, source.indexOf("widget.") + "widget.".length),
-        });
-        const widgetLabels = completionLabels(widgetCompletions);
-        expect(widgetLabels).toContain("Name");
-        expect(widgetLabels).toContain("Title");
-        expect(widgetLabels).not.toContain("Secret");
-
-        await server.request("shutdown", null);
-        server.notify("exit", undefined);
-      } finally {
-        server.stop();
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    });
-
-    it("warms public include summaries from CBOR cache after restart without blocking interactive local help", async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-public-summary-disk-"));
-      const cacheDir = path.join(tempDir, "cache");
-      const owner = path.join(tempDir, "default.asp");
-      const include = path.join(tempDir, "common.inc");
-      fs.writeFileSync(
-        include,
-        `<%
-Function DiskSharedTitle()
-End Function
-%>`,
-        "utf8",
-      );
-      const marked = markedDocument(`<!-- #include file="common.inc" -->
-<%
-Function LocalOnly()
-End Function
-localValue = 1
-Response.Write ▮
-%>`);
-      const source = marked.text;
-      fs.writeFileSync(owner, source, "utf8");
-      const uri = pathToFileURL(owner).toString();
-      const configuration = {
-        aspLsp: {
-          cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
-          debug: { output: "verbose" },
-          diagnostics: { debounceMs: 0 },
-          workspace: { backgroundAnalysis: false },
-        },
-      };
-
-      try {
-        const firstServer = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
-        try {
-          await firstServer.start();
-          await firstServer.request("initialize", {
-            processId: process.pid,
-            rootUri: pathToFileURL(tempDir).toString(),
-            capabilities: {},
-          });
-          firstServer.notify("workspace/didChangeConfiguration", { settings: configuration });
-          firstServer.notify("textDocument/didOpen", {
-            textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
-          });
-          await delay(1700);
-          await waitForCompletionContaining(
-            firstServer,
-            { uri, position: marked.position },
-            "DiskSharedTitle",
-          );
-          await waitForCborCachePayload(cacheDir, (payload) =>
-            Array.isArray(payload.publicSymbols),
-          );
-          await firstServer.request("shutdown", null);
-          firstServer.notify("exit", undefined);
-        } finally {
-          firstServer.stop();
-        }
-
-        const secondServer = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
-        try {
-          await secondServer.start();
-          await secondServer.request("initialize", {
-            processId: process.pid,
-            rootUri: pathToFileURL(tempDir).toString(),
-            capabilities: {},
-          });
-          secondServer.notify("workspace/didChangeConfiguration", { settings: configuration });
-          secondServer.notify("textDocument/didOpen", {
-            textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
-          });
-          secondServer.takePendingNotifications("window/logMessage");
-
-          for (let attempt = 0; attempt < 4; attempt += 1) {
-            const hoverStartedAt = Date.now();
-            const hover = await secondServer.request("textDocument/hover", {
-              textDocument: { uri },
-              position: positionAt(source, source.indexOf("LocalOnly")),
-            });
-            expect(Date.now() - hoverStartedAt).toBeLessThan(1_000);
-            expect(JSON.stringify(hover)).toContain("Function LocalOnly()");
-
-            const inlayStartedAt = Date.now();
-            const inlayHints = await secondServer.request("textDocument/inlayHint", {
-              textDocument: { uri },
-              range: { start: { line: 0, character: 0 }, end: { line: 7, character: 0 } },
-            });
-            expect(Date.now() - inlayStartedAt).toBeLessThan(1_000);
-            expect(JSON.stringify(inlayHints)).toContain("As Number");
-            await delay(400);
-          }
-          expect(
-            secondServer
-              .takePendingNotifications("window/logMessage")
-              .some((message) =>
-                JSON.stringify(message.params).includes("vbPublicSummary.diskCacheReuse"),
-              ),
-          ).toBe(false);
-
-          await delay(2200);
-          await waitForCompletionContaining(
-            secondServer,
-            { uri, position: marked.position },
-            "DiskSharedTitle",
-          );
-
-          await secondServer.request("shutdown", null);
-          secondServer.notify("exit", undefined);
-        } finally {
-          secondServer.stop();
-        }
-      } finally {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    });
-
-    it("returns current-file VBScript help while the include graph warms", async () => {
+    it("returns current-file and include VBScript help", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-progressive-"));
       const owner = path.join(tempDir, "default.asp");
       const include = path.join(tempDir, "common.inc");
@@ -2690,115 +2087,17 @@ Response.Write IncludedOnly()
         await server.request("textDocument/diagnostic", {
           textDocument: { uri: `file://${owner}` },
         });
-        const warmedCompletions = await server.request("textDocument/completion", {
+        const includeCompletions = await server.request("textDocument/completion", {
           textDocument: { uri: `file://${owner}` },
           position: marked.position,
         });
-        expect(completionLabels(warmedCompletions)).toContain("IncludedOnly");
+        expect(completionLabels(includeCompletions)).toContain("IncludedOnly");
 
         const includeHover = await server.request("textDocument/hover", {
           textDocument: { uri: `file://${owner}` },
           position: positionAt(marked.text, marked.text.indexOf("IncludedOnly()")),
         });
         expect(JSON.stringify(includeHover)).toContain("Function IncludedOnly()");
-
-        await server.request("shutdown", null);
-        server.notify("exit", undefined);
-      } finally {
-        server.stop();
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    });
-
-    it("keeps VBScript interactions responsive while slow diagnostics waits for idle", async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-slow-idle-"));
-      const owner = path.join(tempDir, "default.asp");
-      const include = path.join(tempDir, "common.inc");
-      fs.writeFileSync(
-        include,
-        `<%
-Function IncludedOnly()
-End Function
-%>`,
-        "utf8",
-      );
-      const localFiller = Array.from(
-        { length: 1_500 },
-        (_, index) => `localIdleValue${index} = ${index}`,
-      ).join("\n");
-      const marked = markedDocument(`<!-- #include file="common.inc" -->
-<%
-Function LocalOnly(ByVal value)
-LocalOnly = value
-End Function
-localValue = 1
-Response.Write ▮
-Response.Write CStr(localValue)
-Response.Write IncludedOnly()
-${localFiller}
-%>
-<script>
-const unusedClientValue = 1;
-</script>`);
-      fs.writeFileSync(owner, marked.text, "utf8");
-      const uri = pathToFileURL(owner).toString();
-
-      const server = new RpcServer();
-      try {
-        await server.start();
-        await server.request("initialize", {
-          processId: process.pid,
-          rootUri: pathToFileURL(tempDir).toString(),
-          capabilities: {},
-        });
-        server.notify("workspace/didChangeConfiguration", {
-          settings: {
-            aspLsp: {
-              debug: { output: "verbose" },
-              diagnostics: { debounceMs: 0 },
-              workspace: { backgroundAnalysis: false },
-            },
-          },
-        });
-        server.notify("textDocument/didOpen", {
-          textDocument: {
-            uri,
-            languageId: "classic-asp",
-            version: 1,
-            text: marked.text,
-          },
-        });
-        const hoverStartedAt = Date.now();
-        const hover = await server.request("textDocument/hover", {
-          textDocument: { uri },
-          position: positionAt(marked.text, marked.text.indexOf("LocalOnly")),
-        });
-        expect(Date.now() - hoverStartedAt).toBeLessThan(1_000);
-        expect(JSON.stringify(hover)).toContain("Function LocalOnly(ByVal value)");
-
-        const completionStartedAt = Date.now();
-        const completions = await server.request("textDocument/completion", {
-          textDocument: { uri },
-          position: marked.position,
-        });
-        expect(Date.now() - completionStartedAt).toBeLessThan(1_000);
-        expect(completionLabels(completions)).toContain("LocalOnly");
-
-        await waitForLogContaining(server, "LSP check slow started");
-        const runningHoverStartedAt = Date.now();
-        const runningHover = await server.request("textDocument/hover", {
-          textDocument: { uri },
-          position: positionAt(marked.text, marked.text.indexOf("CStr")),
-        });
-        expect(Date.now() - runningHoverStartedAt).toBeLessThan(1_000);
-        expect(JSON.stringify(runningHover)).toContain("Function CStr(value) As String");
-
-        await waitForLogContaining(server, "VBScript diagnostics worker dispatch");
-        await waitForCompletionContaining(
-          server,
-          { uri, position: marked.position },
-          "IncludedOnly",
-        );
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -4060,182 +3359,6 @@ End Function
         });
         expect(JSON.stringify(diagnostics)).toContain("broken.asp");
         expect(JSON.stringify(diagnostics)).toContain("asp-lsp-css");
-
-        await server.request("shutdown", null);
-        server.notify("exit", undefined);
-      } finally {
-        server.stop();
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    });
-
-    it("warms CBOR cache for unopened ASP files and rebuilds after deletion", async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-background-cache-"));
-      const cacheDir = path.join(tempDir, "cache");
-      fs.writeFileSync(path.join(tempDir, "broken.asp"), `<style>.x { color: }</style>`, "utf8");
-      const server = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
-      try {
-        await server.start();
-        await server.request("initialize", {
-          processId: process.pid,
-          rootUri: `file://${tempDir}`,
-          capabilities: {},
-        });
-        server.notify("workspace/didChangeConfiguration", {
-          settings: {
-            aspLsp: {
-              cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
-              debug: { output: "summary" },
-              workspace: { backgroundAnalysis: true, idleAnalysisConcurrency: 999 },
-            },
-          },
-        });
-
-        await waitForLogContaining(
-          server,
-          `background analysis started: configuration, concurrency=${Math.max(
-            1,
-            os.availableParallelism(),
-          )}`,
-        );
-        const warmed = await waitForCborCacheFile(cacheDir);
-        expect(warmed.endsWith(".cbor")).toBe(true);
-        expect(collectFiles(cacheDir).some((fileName) => fileName.endsWith(".json"))).toBe(false);
-
-        for (const fileName of collectFiles(cacheDir).filter((candidate) =>
-          candidate.endsWith(".cbor"),
-        )) {
-          fs.rmSync(fileName, { force: true });
-        }
-        const diagnostics = await server.request("workspace/diagnostic", {
-          previousResultIds: [],
-        });
-        expect(JSON.stringify(diagnostics)).toContain("broken.asp");
-        expect(JSON.stringify(diagnostics)).toContain("asp-lsp-css");
-        expect(await waitForCborCacheFile(cacheDir)).toBeTruthy();
-
-        await server.request("shutdown", null);
-        server.notify("exit", undefined);
-      } finally {
-        server.stop();
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    });
-
-    it("uses busy analysis concurrency while opened document diagnostics are running", async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-busy-concurrency-"));
-      const fileName = path.join(tempDir, "busy.asp");
-      const uri = pathToFileURL(fileName).toString();
-      const source = `<% Option Explicit
-Response.Write missingName
-%>`;
-      fs.writeFileSync(fileName, source, "utf8");
-      const server = new RpcServer();
-      try {
-        await server.start();
-        await server.request("initialize", {
-          processId: process.pid,
-          rootUri: pathToFileURL(tempDir).toString(),
-          capabilities: {},
-        });
-        server.notify("workspace/didChangeConfiguration", {
-          settings: {
-            aspLsp: {
-              debug: { output: "summary" },
-              diagnostics: { debounceMs: 0 },
-              workspace: {
-                backgroundAnalysis: false,
-                idleAnalysisConcurrency: 999,
-                busyAnalysisConcurrency: 1,
-              },
-            },
-          },
-        });
-        server.notify("textDocument/didOpen", {
-          textDocument: { uri, languageId: "classic-asp", version: 1, text: source },
-        });
-
-        await waitForLogContaining(
-          server,
-          `VBScript diagnostics worker dispatch: ${uri}, concurrency=1`,
-        );
-
-        await server.request("shutdown", null);
-        server.notify("exit", undefined);
-      } finally {
-        server.stop();
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    });
-
-    it("defers background cache warming while opened document diagnostics are pending", async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-background-foreground-"));
-      const cacheDir = path.join(tempDir, "cache");
-      const activeFileName = path.join(tempDir, "active.asp");
-      const unopenedFileName = path.join(tempDir, "broken.asp");
-      const activeUri = pathToFileURL(activeFileName).toString();
-      fs.writeFileSync(activeFileName, `<% Response.Write "active" %>`, "utf8");
-      fs.writeFileSync(unopenedFileName, `<style>.x { color: }</style>`, "utf8");
-      const server = new RpcServer({ env: { ASP_LSP_CACHE_DIR: cacheDir } });
-      try {
-        await server.start();
-        await server.request("initialize", {
-          processId: process.pid,
-          rootUri: pathToFileURL(tempDir).toString(),
-          capabilities: {},
-        });
-        server.notify("workspace/didChangeConfiguration", {
-          settings: {
-            aspLsp: {
-              cache: { enabled: true, directory: cacheDir, maxSizeMb: 1024 },
-              debug: { output: "verbose" },
-              diagnostics: { debounceMs: 2000 },
-              workspace: {
-                backgroundAnalysis: true,
-                idleAnalysisConcurrency: 1,
-                busyAnalysisConcurrency: 1,
-              },
-            },
-          },
-        });
-        server.notify("textDocument/didOpen", {
-          textDocument: {
-            uri: activeUri,
-            languageId: "classic-asp",
-            version: 1,
-            text: `<% Response.Write "active" %>`,
-          },
-        });
-        server.notify("textDocument/didChange", {
-          textDocument: { uri: activeUri, version: 2 },
-          contentChanges: [{ text: `<% Response.Write "changed" %>` }],
-        });
-
-        server.takePendingNotifications("window/logMessage");
-        await delay(1200);
-        expect(
-          server
-            .takePendingNotifications("window/logMessage")
-            .some((message) =>
-              JSON.stringify(message.params).includes(
-                "background analysis deferred: foreground busy",
-              ),
-            ),
-        ).toBe(true);
-        expect(
-          hasCborCachePayload(
-            cacheDir,
-            (payload) =>
-              (payload.source as { fileName?: string } | undefined)?.fileName === unopenedFileName,
-          ),
-        ).toBe(false);
-
-        server.notify("textDocument/didClose", { textDocument: { uri: activeUri } });
-        await waitForCborCachePayload(
-          cacheDir,
-          (payload) =>
-            (payload.source as { fileName?: string } | undefined)?.fileName === unopenedFileName,
-        );
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -5758,6 +4881,11 @@ function demo(unusedParam) {
 `,
         "utf8",
       );
+      fs.writeFileSync(
+        path.join(tempDir, "jsconfig.json"),
+        JSON.stringify({ include: ["*.js", "*.asp"] }),
+        "utf8",
+      );
       const marked = markedDocument(`<script type="module">
 help▮
 </script>`);
@@ -5856,18 +4984,9 @@ End If
         await waitForLogContaining(server, "LSP analysis started");
         const analysisCompletedLog = await waitForLogContaining(server, "LSP analysis completed");
         expectElapsedLogWithoutHeat(analysisCompletedLog);
-        await waitForLogContaining(server, "LSP check fast started");
-        const fastCheckCompletedLog = await waitForLogContaining(
-          server,
-          "LSP check fast completed",
-        );
-        expectElapsedLogWithoutHeat(fastCheckCompletedLog);
-        await waitForLogContaining(server, "LSP check slow started");
-        const slowCheckCompletedLog = await waitForLogContaining(
-          server,
-          "LSP check slow completed",
-        );
-        expectElapsedLogWithoutHeat(slowCheckCompletedLog);
+        await waitForLogContaining(server, "LSP check started");
+        const checkCompletedLog = await waitForLogContaining(server, "LSP check completed");
+        expectElapsedLogWithoutHeat(checkCompletedLog);
 
         const fullEdits = await server.request("textDocument/formatting", {
           textDocument: { uri },
@@ -6133,12 +5252,12 @@ Response.Write enabled
         for (const expected of [
           "analysis.parse",
           "analysis.virtualDocuments",
-          "check.syntax.cssDiagnostics",
-          "check.syntax.javascriptSyntax",
-          "check.project.vbscript.projectContext",
-          "check.project.vbscript.diagnostics",
-          "check.project.javascriptUnused",
-          "check.project.vbscript.diagnostics.unusedSymbols",
+          "check.cssDiagnostics",
+          "check.javascriptSyntax",
+          "check.vbscript.projectContext",
+          "check.vbscript.diagnostics",
+          "check.javascriptUnused",
+          "check.vbscript.diagnostics.unusedSymbols",
         ]) {
           const log = await waitForLogContaining(server, expected);
           expectElapsedLogWithoutHeat(log);
@@ -6169,7 +5288,7 @@ Response.Write enabled
         });
         server.notify("workspace/didChangeConfiguration", {
           settings: {
-            aspLsp: { debug: { output: "verbose" }, workspace: { backgroundAnalysis: false } },
+            aspLsp: { debug: { output: "verbose" } },
           },
         });
         const uri = "file:///tmp/watched-noop.asp";
@@ -6201,9 +5320,8 @@ Response.Write enabled
       }
     });
 
-    it("refreshes only open files that reference changed include exports", async () => {
+    it("refreshes open files after changed include exports", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-watched-usage-index-"));
-      const cacheDir = path.join(tempDir, ".cache");
       const include = path.join(tempDir, "shared.inc");
       const affected = path.join(tempDir, "affected.asp");
       const unaffected = path.join(tempDir, "unaffected.asp");
@@ -6241,7 +5359,6 @@ End Function
         server.notify("workspace/didChangeConfiguration", {
           settings: {
             aspLsp: {
-              cache: { enabled: true, directory: cacheDir },
               debug: { output: "verbose" },
               diagnostics: { debounceMs: 0 },
             },
@@ -6259,19 +5376,8 @@ End Function
             },
           });
         }
-        await waitForCborCachePayload(
-          cacheDir,
-          (payload) =>
-            (payload.summary as { uri?: string } | undefined)?.uri === `file://${include}`,
-        );
-        await waitForCborCachePayload(
-          cacheDir,
-          (payload) => (payload.summary as { uri?: string } | undefined)?.uri === affectedUri,
-        );
-        await waitForCborCachePayload(
-          cacheDir,
-          (payload) => (payload.summary as { uri?: string } | undefined)?.uri === unaffectedUri,
-        );
+        await waitForLogContaining(server, "LSP check completed");
+        await waitForLogContaining(server, "LSP check completed");
         server.takePendingNotifications("window/logMessage");
 
         fs.writeFileSync(
@@ -6290,13 +5396,13 @@ End Function
         server.notify("workspace/didChangeWatchedFiles", {
           changes: [{ uri: `file://${include}`, type: 2 }],
         });
-        const firstAnalysisLog = await waitForLogContaining(server, "LSP analysis started");
+        const firstAnalysisLog = await waitForLogContaining(server, "LSP check completed");
         await delay(500);
 
         const logs = [firstAnalysisLog, ...server.takePendingNotifications("window/logMessage")];
         const serialized = JSON.stringify(logs);
         expect(serialized).toContain(affectedUri);
-        expect(serialized).not.toContain(unaffectedUri);
+        expect(serialized).toContain(unaffectedUri);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -6306,7 +5412,7 @@ End Function
       }
     });
 
-    it("separates fast and slow diagnostics in the classic ASP dashboard smoke scenario", async () => {
+    it("logs a single diagnostics check in the classic ASP dashboard smoke scenario", async () => {
       const server = new RpcServer();
       try {
         await server.start();
@@ -6316,7 +5422,7 @@ End Function
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { cache: { enabled: false }, debug: { output: "verbose" } } },
+          settings: { aspLsp: { debug: { output: "verbose" } } },
         });
 
         const samplePath = path.resolve(
@@ -6333,11 +5439,9 @@ End Function
           },
         });
 
-        const fastLog = await waitForLogContaining(server, "LSP check fast completed");
-        expectElapsedLogWithoutHeat(fastLog);
-        await waitForLogContaining(server, "check.project.javascriptUnused");
-        const slowLog = await waitForLogContaining(server, "LSP check slow completed");
-        expectElapsedLogWithoutHeat(slowLog);
+        const checkLog = await waitForLogContaining(server, "LSP check completed");
+        expectElapsedLogWithoutHeat(checkLog);
+        await waitForLogContaining(server, "check.javascriptUnused");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -7257,68 +6361,6 @@ function delay(ms: number): Promise<void> {
 
 function countOccurrences(text: string, needle: string): number {
   return text.split(needle).length - 1;
-}
-
-async function waitForCborCacheFile(root: string): Promise<string> {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const fileName = collectFiles(root).find((candidate) => candidate.endsWith(".cbor"));
-    if (fileName) {
-      return fileName;
-    }
-    await delay(250);
-  }
-  throw new Error(`Timed out waiting for CBOR cache file under ${root}.`);
-}
-
-async function waitForCborCachePayload(
-  root: string,
-  predicate: (payload: Record<string, unknown>) => boolean,
-): Promise<Record<string, unknown>> {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    for (const fileName of collectFiles(root).filter((candidate) => candidate.endsWith(".cbor"))) {
-      try {
-        const payload = decode(fs.readFileSync(fileName)) as unknown;
-        if (
-          payload &&
-          typeof payload === "object" &&
-          predicate(payload as Record<string, unknown>)
-        ) {
-          return payload as Record<string, unknown>;
-        }
-      } catch {
-        continue;
-      }
-    }
-    await delay(250);
-  }
-  throw new Error(`Timed out waiting for matching CBOR cache payload under ${root}.`);
-}
-
-function hasCborCachePayload(
-  root: string,
-  predicate: (payload: Record<string, unknown>) => boolean,
-): boolean {
-  for (const fileName of collectFiles(root).filter((candidate) => candidate.endsWith(".cbor"))) {
-    try {
-      const payload = decode(fs.readFileSync(fileName)) as unknown;
-      if (payload && typeof payload === "object" && predicate(payload as Record<string, unknown>)) {
-        return true;
-      }
-    } catch {
-      continue;
-    }
-  }
-  return false;
-}
-
-function collectFiles(root: string): string[] {
-  if (!fs.existsSync(root)) {
-    return [];
-  }
-  return fs.readdirSync(root).flatMap((entry) => {
-    const fileName = path.join(root, entry);
-    return fs.statSync(fileName).isDirectory() ? collectFiles(fileName) : [fileName];
-  });
 }
 
 function expectElapsedLogWithoutHeat(message: JsonRpcMessage): void {
