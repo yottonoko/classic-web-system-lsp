@@ -25,11 +25,149 @@ import {
   parseVbscriptCst,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
+  shiftAspRangeAfterChange,
   summarizeAspFileAnalysis,
+  updateAspParsedDocument,
 } from "../src";
 import type { VbCstNode } from "../src";
 
 describe("parseAspDocument", () => {
+  it("updates safe HTML edits incrementally while shifting later include ranges", () => {
+    const source = `<div>hello</div>
+<!-- #include file="common.inc" -->
+<% Response.Write "ok" %>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const start = source.indexOf("hello") + "hello".length;
+    const change = {
+      range: { start: positionAt(source, start), end: positionAt(source, start) },
+      rangeOffset: start,
+      rangeLength: 0,
+      text: " world",
+    };
+    const updated = updateAspParsedDocument(parsed, [change]);
+    const expectedText = source.replace("hello", "hello world");
+
+    expect(updated.impact).toMatchObject({
+      kind: "incremental",
+      reason: "safe content edit",
+      language: "html",
+    });
+    expect(updated.parsed).toEqual(parseAspDocument("file:///site/default.asp", expectedText));
+  });
+
+  it("updates safe VBScript edits incrementally", () => {
+    const source = `<%
+Dim message
+message = "ok"
+Response.Write message
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const start = source.indexOf('"ok"') + 1;
+    const end = start + "ok".length;
+    const change = {
+      range: { start: positionAt(source, start), end: positionAt(source, end) },
+      rangeOffset: start,
+      rangeLength: end - start,
+      text: "ready",
+    };
+    const updated = updateAspParsedDocument(parsed, [change]);
+    const expectedText = `${source.slice(0, start)}ready${source.slice(end)}`;
+
+    expect(updated.impact).toMatchObject({ kind: "incremental", language: "vbscript" });
+    expect(updated.parsed).toEqual(parseAspDocument("file:///site/default.asp", expectedText));
+  });
+
+  it("falls back to full parse for unsafe incremental edits", () => {
+    const source = `<%@ LANGUAGE="VBScript" %>
+<script>const value = 1;</script>
+<!-- #include file="common.inc" -->
+<% Response.Write "ok" %>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const cases = [
+      { needle: "VBScript", text: "JScript", reason: "ASP directive edit" },
+      { needle: "value = 1", text: "value = '</script>'", reason: "boundary text inserted" },
+      { needle: "common.inc", text: "other.inc", reason: "include directive edit" },
+      { needle: '"ok"', text: "a".repeat(257), reason: "large edit" },
+    ];
+
+    for (const testCase of cases) {
+      const start = source.indexOf(testCase.needle);
+      const end = start + testCase.needle.length;
+      const updated = updateAspParsedDocument(parsed, [
+        {
+          range: { start: positionAt(source, start), end: positionAt(source, end) },
+          rangeOffset: start,
+          rangeLength: end - start,
+          text: testCase.text,
+        },
+      ]);
+      expect(updated.impact).toMatchObject({ kind: "full", reason: testCase.reason });
+    }
+
+    const first = source.indexOf("value = 1");
+    const second = source.indexOf('"ok"');
+    const multi = updateAspParsedDocument(parsed, [
+      {
+        range: {
+          start: positionAt(source, first),
+          end: positionAt(source, first + "value".length),
+        },
+        rangeOffset: first,
+        rangeLength: "value".length,
+        text: "clientValue",
+      },
+      {
+        range: {
+          start: positionAt(source, second),
+          end: positionAt(source, second + '"ok"'.length),
+        },
+        rangeOffset: second,
+        rangeLength: '"ok"'.length,
+        text: '"ready"',
+      },
+    ]);
+    expect(multi.impact).toMatchObject({ kind: "full", reason: "multiple changes" });
+  });
+
+  it("falls back when an edit touches an embedded region content boundary", () => {
+    const source = `<script>const value = 1;</script>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const script = parsed.regions.find((region) => region.kind === "client-script");
+    expect(script).toBeTruthy();
+    const updated = updateAspParsedDocument(parsed, [
+      {
+        range: {
+          start: positionAt(source, script!.contentStart),
+          end: positionAt(source, script!.contentStart),
+        },
+        rangeOffset: script!.contentStart,
+        rangeLength: 0,
+        text: "/* header */",
+      },
+    ]);
+
+    expect(updated.impact).toMatchObject({ kind: "full", reason: "region boundary edit" });
+  });
+
+  it("shifts UTF-16 ranges after incremental changes", () => {
+    const source = "😀\nResponse.Write value";
+    const start = source.indexOf("Response");
+    const range = {
+      start: positionAt(source, start),
+      end: positionAt(source, start + "Response".length),
+    };
+    const change = {
+      range: { start: positionAt(source, 0), end: positionAt(source, 0) },
+      rangeOffset: 0,
+      rangeLength: 0,
+      text: "prefix\n",
+    };
+    const shifted = shiftAspRangeAfterChange(range, source, `${change.text}${source}`, change);
+
+    expect(shifted.start).toEqual({ line: 2, character: 0 });
+    expect(shifted.end).toEqual({ line: 2, character: "Response".length });
+  });
+
   it("detects ASP blocks, directives, includes, style and script regions", () => {
     const source = `<%@ LANGUAGE="VBScript" %>
 <!-- #include file="inc/common.inc" -->

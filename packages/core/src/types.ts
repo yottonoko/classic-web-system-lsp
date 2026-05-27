@@ -38,6 +38,31 @@ export interface AspSettings {
   workspace?: AspWorkspaceSettings;
 }
 
+export interface AspIncrementalChange {
+  range: Range;
+  text: string;
+  rangeOffset?: number;
+  rangeLength?: number;
+}
+
+export type AspEditImpactKind = "incremental" | "full";
+
+export interface AspEditImpact {
+  kind: AspEditImpactKind;
+  reason: string;
+  startOffset: number;
+  endOffset: number;
+  insertedLength: number;
+  deletedLength: number;
+  delta: number;
+  language?: AspEmbeddedLanguage | "mixed";
+}
+
+export interface AspIncrementalUpdateResult {
+  parsed: AspParsedDocument;
+  impact: AspEditImpact;
+}
+
 export type AspLocaleSetting = "auto" | AspLocale;
 
 export type AspLocale = "en" | "ja";

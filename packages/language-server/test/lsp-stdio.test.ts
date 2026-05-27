@@ -1512,11 +1512,113 @@ Response.Write known
 
         await server.waitForNotification("textDocument/publishDiagnostics");
         await waitForLogContaining(server, "LSP analysis completed");
+        await waitForLogContaining(server, "analysis.parse.incremental");
         await waitForLogContaining(server, "documentChange.scheduleDiagnostics");
         await waitForLogContaining(server, "check.parserDiagnostics");
         await waitForLogContaining(server, "check.vbscript.diagnostics");
         await waitForLogContaining(server, "LSP check completed");
         expect(source).toContain("' benchmark y");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("falls back to full parsing for boundary-sensitive document edits", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/boundary-edit-fallback.asp";
+        let source = `<div>safe</div>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+
+        source = notifyRangedReplacement(server, uri, source, 0, "safe", "safe <%");
+
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "analysis.parse.full");
+        const impactLog = await waitForLogContaining(server, "analysis.parse.impact");
+        expect(JSON.stringify(impactLog.params)).toContain("boundary text inserted");
+        expect(source).toContain("safe <%");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("does not treat full document replacements as incremental edits", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/full-replacement-fallback.asp";
+        const source = `<div>safe</div>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: `<div>changed</div>` }],
+        });
+
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "analysis.parse.full");
+        const impactLog = await waitForLogContaining(server, "analysis.parse.impact");
+        const logs = JSON.stringify([
+          impactLog,
+          ...server.takePendingNotifications("window/logMessage"),
+        ]);
+        expect(logs).toContain("full document replacement");
+        expect(logs).not.toContain("analysis.parse.incremental");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

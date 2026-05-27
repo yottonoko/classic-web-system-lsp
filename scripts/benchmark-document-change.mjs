@@ -22,6 +22,7 @@ const backgroundModes = readBackgroundModes();
 const selectedStepNames = [
   "documentChange.bumpAnalysisGeneration",
   "documentChange.dropCachedDocument",
+  "documentChange.keepCachedDocument",
   "documentChange.scheduleDiagnostics",
   "analysis.parse.incremental",
   "analysis.parse.full",

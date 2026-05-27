@@ -89,8 +89,11 @@ import {
   parseVbscriptTypeRef,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
+  updateAspParsedDocument,
   type AspFormattingOptions,
   type AspEmbeddedLanguage,
+  type AspEditImpact,
+  type AspIncrementalChange,
   type AspLegacyEncoding,
   type AspLocale,
   type AspLocaleSetting,
@@ -114,7 +117,13 @@ import ts from "typescript";
 
 const connection = createConnection(ProposedFeatures.all);
 const documentOpenContentVersions = new Map<string, number>();
-const documents = new TextDocuments(TextDocument);
+const documents = new TextDocuments({
+  create: TextDocument.create,
+  update: (document, changes, version) => {
+    pendingDocumentChanges.set(document.uri, pendingChangeFromContentChanges(version, changes));
+    return TextDocument.update(document, changes, version);
+  },
+});
 const htmlService = getHtmlLanguageService();
 const cssService = getCSSLanguageService();
 const settingsByUri = new Map<string, AspSettings>();
@@ -207,6 +216,7 @@ interface CachedDocument {
   workspaceGeneration: number;
   includeResolutionGeneration: number;
   jsProjectGeneration: number;
+  editHistory: AspEditImpact[];
   analysis?: CachedAnalysis;
 }
 
@@ -241,6 +251,13 @@ interface SettingsInvalidationImpact {
   jsProject: boolean;
   diagnostics: boolean;
   workspaceIndex: boolean;
+}
+
+interface PendingDocumentChange {
+  version: number;
+  changes: AspIncrementalChange[];
+  reason: string;
+  ranged: boolean;
 }
 
 interface WatchedAspFileChange {
@@ -335,6 +352,7 @@ function aspFileOperationFilter() {
 
 const cache = new Map<string, CachedDocument>();
 const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingDocumentChanges = new Map<string, PendingDocumentChange>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 const maxVbProjectContextCacheEntries = 32;
 
@@ -425,6 +443,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 
 documents.onDidOpen((event) => {
   documentOpenContentVersions.set(event.document.uri, event.document.version);
+  pendingDocumentChanges.delete(event.document.uri);
   cache.delete(event.document.uri);
   validate(event.document);
 });
@@ -436,8 +455,8 @@ documents.onDidChangeContent((event) => {
   }
   documentOpenContentVersions.delete(event.document.uri);
   const settings = cachedSettings(event.document.uri);
-  measureDebugStep(settings, event.document.uri, "documentChange.dropCachedDocument", () => {
-    cache.delete(event.document.uri);
+  measureDebugStep(settings, event.document.uri, "documentChange.keepCachedDocument", () => {
+    // Keep the previous parsed document available for updateAspParsedDocument.
   });
   measureDebugStep(settings, event.document.uri, "documentChange.scheduleDiagnostics", () =>
     scheduleDiagnostics(event.document),
@@ -451,6 +470,7 @@ documents.onDidSave((event) => {
 documents.onDidClose((event) => {
   cancelScheduledDiagnostics(event.document.uri);
   documentOpenContentVersions.delete(event.document.uri);
+  pendingDocumentChanges.delete(event.document.uri);
   cache.delete(event.document.uri);
   clearSemanticTokensForUri(event.document.uri);
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
@@ -1283,7 +1303,7 @@ function validate(document: TextDocument): void {
   });
 }
 
-function refreshCachedDocument(document: TextDocument): CachedDocument {
+function refreshCachedDocument(document: TextDocument, impactReason?: string): CachedDocument {
   const startedAt = process.hrtime.bigint();
   const settingsStartedAt = startedAt;
   const settings = cachedSettings(document.uri);
@@ -1298,11 +1318,57 @@ function refreshCachedDocument(document: TextDocument): CachedDocument {
     "analysis.virtualDocuments.lazy",
     process.hrtime.bigint(),
   );
+  if (impactReason) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] analysis.parse.impact: ${document.uri}, mode=full, reason=${impactReason}`,
+    );
+  }
   const cacheStartedAt = process.hrtime.bigint();
   const cached = createCachedDocument(document, parsed, settings);
   cache.set(document.uri, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
-  finishAnalysisLog(settings, document.uri, startedAt);
+  finishAnalysisLog(settings, document.uri, startedAt, "full");
+  return cached;
+}
+
+function refreshCachedDocumentIncremental(
+  previous: CachedDocument,
+  document: TextDocument,
+  settings: AspSettings,
+  change: AspIncrementalChange,
+): CachedDocument {
+  const startedAt = process.hrtime.bigint();
+  const settingsStartedAt = startedAt;
+  startAnalysisLog(settings, document.uri);
+  finishDebugStep(settings, document.uri, "analysis.settings", settingsStartedAt);
+  const parseStartedAt = process.hrtime.bigint();
+  const updated = updateAspParsedDocument(previous.parsed, [change], settings);
+  finishDebugStep(
+    settings,
+    document.uri,
+    updated.impact.kind === "incremental" ? "analysis.parse.incremental" : "analysis.parse.full",
+    parseStartedAt,
+  );
+  logDebugSummary(
+    settings,
+    `[asp-lsp] analysis.parse.impact: ${document.uri}, mode=${updated.impact.kind}, reason=${updated.impact.reason}`,
+  );
+  finishDebugStep(
+    settings,
+    document.uri,
+    "analysis.virtualDocuments.lazy",
+    process.hrtime.bigint(),
+  );
+  const cacheStartedAt = process.hrtime.bigint();
+  const editHistory =
+    updated.impact.kind === "incremental"
+      ? [...previous.editHistory, updated.impact].slice(-8)
+      : [];
+  const cached = createCachedDocument(document, updated.parsed, settings, editHistory);
+  cache.set(document.uri, cached);
+  finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
+  finishAnalysisLog(settings, document.uri, startedAt, updated.impact.kind);
   return cached;
 }
 
@@ -1317,6 +1383,17 @@ function ensureFreshCachedDocument(document: TextDocument): CachedDocument {
     updateCachedDocumentRuntimeIdentity(existing, settings);
     return existing;
   }
+  if (existing && existing.parseSettingsIdentity === parseSettingsIdentity(settings)) {
+    const pending = pendingDocumentChanges.get(document.uri);
+    if (pending?.version === document.version) {
+      pendingDocumentChanges.delete(document.uri);
+      if (pending.ranged && pending.changes.length === 1) {
+        return refreshCachedDocumentIncremental(existing, document, settings, pending.changes[0]);
+      }
+      return refreshCachedDocument(document, pending?.reason ?? "non-incremental document change");
+    }
+  }
+  pendingDocumentChanges.delete(document.uri);
   return refreshCachedDocument(document);
 }
 
@@ -1329,6 +1406,7 @@ function createCachedDocument(
   document: TextDocument,
   parsed: AspParsedDocument,
   settings: AspSettings,
+  editHistory: AspEditImpact[] = [],
 ): CachedDocument {
   const cached: CachedDocument = {
     source: document,
@@ -1343,6 +1421,7 @@ function createCachedDocument(
     workspaceGeneration,
     includeResolutionGeneration,
     jsProjectGeneration,
+    editHistory,
   };
   return cached;
 }
@@ -1368,15 +1447,59 @@ function sameDocumentIdentity(left: DocumentIdentity, right: DocumentIdentity): 
   return left.uri === right.uri && left.version === right.version && left.text === right.text;
 }
 
+function pendingChangeFromContentChanges(
+  version: number,
+  changes: Array<{
+    range?: Range;
+    rangeLength?: number;
+    text: string;
+  }>,
+): PendingDocumentChange {
+  if (changes.length !== 1) {
+    return {
+      version,
+      changes: [],
+      reason: "multiple content changes",
+      ranged: false,
+    };
+  }
+  const change = changes[0];
+  if (!change.range) {
+    return {
+      version,
+      changes: [],
+      reason: "full document replacement",
+      ranged: false,
+    };
+  }
+  return {
+    version,
+    changes: [
+      {
+        range: change.range,
+        rangeLength: change.rangeLength,
+        text: change.text,
+      },
+    ],
+    reason: "single ranged edit",
+    ranged: true,
+  };
+}
+
 function startAnalysisLog(settings: AspSettings, uri: string): void {
   logDebugSummary(settings, `[asp-lsp] LSP analysis started: ${uri}`);
 }
 
-function finishAnalysisLog(settings: AspSettings, uri: string, startedAt: bigint): void {
+function finishAnalysisLog(
+  settings: AspSettings,
+  uri: string,
+  startedAt: bigint,
+  mode: AspEditImpact["kind"] = "full",
+): void {
   const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
   logDebugSummary(
     settings,
-    `[asp-lsp] LSP analysis completed: ${uri} ${formatElapsedMs(elapsedMs)}, mode=full`,
+    `[asp-lsp] LSP analysis completed: ${uri} ${formatElapsedMs(elapsedMs)}, mode=${mode}`,
   );
 }
 
