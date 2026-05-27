@@ -1602,8 +1602,11 @@ function publishDiagnosticsForVersion(uri: string, version: number): void {
     return;
   }
   const cached = ensureFreshCachedDocument(document);
-  scheduleVbProjectContextWarmup(cached, cachedSettings(uri));
-  publishStagedDiagnosticsForCached(cached, cachedSettings(uri));
+  const settings = cachedSettings(uri);
+  if (cached.projectDiagnosticsMode !== "reuse") {
+    scheduleVbProjectContextWarmup(cached, settings);
+  }
+  publishStagedDiagnosticsForCached(cached, settings);
 }
 
 function cancelScheduledDiagnostics(uri: string): void {
@@ -1629,8 +1632,70 @@ function publishStagedDiagnosticsForCached(cached: CachedDocument, settings: Asp
   measureDebugStep(settings, cached.source.uri, "diagnostics.queueDiskAnalysisPersist", () =>
     queueDiskAnalysisPersist(cached, settings),
   );
-  measureDebugStep(settings, cached.source.uri, "diagnostics.slow.enqueue", () =>
-    enqueueSlowDiagnostics(cached, settings),
+  measureDebugStep(settings, cached.source.uri, "diagnostics.slow.enqueue", () => {
+    if (publishReusedSlowDiagnostics(cached, settings, diagnostics)) {
+      return;
+    }
+    enqueueSlowDiagnostics(cached, settings);
+  });
+}
+
+function publishReusedSlowDiagnostics(
+  cached: CachedDocument,
+  settings: AspSettings,
+  fastItems: Diagnostic[],
+): boolean {
+  if (!canReuseCompleteSlowDiagnostics(cached)) {
+    return false;
+  }
+  const uri = cached.source.uri;
+  const sequence = ++slowDiagnosticsSequence;
+  const startedAt = process.hrtime.bigint();
+  const includeItems = measureDebugStep(settings, uri, "diagnostics.slow.include.reuse", () =>
+    reuseIncludeDiagnostics(cached),
+  );
+  const syntaxItems = measureDebugStep(settings, uri, "diagnostics.slow.syntax.reuse", () =>
+    reuseSyntaxDiagnostics(cached),
+  );
+  const projectItems = measureDebugStep(settings, uri, "diagnostics.slow.project.reuse", () =>
+    reuseProjectDiagnostics(cached),
+  );
+  if (!includeItems || !syntaxItems || !projectItems) {
+    return false;
+  }
+  const slowItems = measureDebugStep(settings, uri, "check.slow.dedupe", () =>
+    dedupeDiagnostics([...includeItems, ...syntaxItems, ...projectItems]),
+  );
+  analysisFor(cached).slowDiagnostics = {
+    key: slowDiagnosticsCacheKey(cached, settings),
+    items: slowItems,
+    text: cached.parsed.text,
+  };
+  const items = measureDebugStep(settings, uri, "check.slow.merge", () =>
+    dedupeDiagnostics([...fastItems, ...slowItems]),
+  );
+  analysisFor(cached).diagnostics = {
+    key: diagnosticsCacheKey(cached, settings),
+    items,
+    text: cached.parsed.text,
+  };
+  cached.changes = undefined;
+  cached.dirtyLanguages = undefined;
+  cached.projectDiagnosticsMode = undefined;
+  measureDebugStep(settings, uri, "diagnostics.slow.send", () =>
+    connection.sendDiagnostics({ uri, diagnostics: items }),
+  );
+  queueDiskAnalysisPersist(cached, settings);
+  finishSlowReuseLog(cached, settings, startedAt, items.length, sequence);
+  scheduleBackgroundAnalysisWhenForegroundIdle("foregroundIdle");
+  return true;
+}
+
+function canReuseCompleteSlowDiagnostics(cached: CachedDocument): boolean {
+  return (
+    canReuseIncludeDiagnostics(cached) &&
+    canReuseSyntaxDiagnostics(cached) &&
+    canReuseProjectDiagnostics(cached)
   );
 }
 
@@ -1861,6 +1926,10 @@ function includeDiagnosticsForCached(
   settings: AspSettings,
   stepPrefix = "check.include",
 ): Diagnostic[] {
+  const reused = reuseIncludeDiagnostics(cached);
+  if (reused) {
+    return reused;
+  }
   const key = includeDiagnosticsCacheKey(cached, settings);
   if (cached.analysis?.includeDiagnostics?.key === key) {
     finishDebugStep(
@@ -1887,6 +1956,10 @@ async function includeDiagnosticsForCachedAsync(
   stepPrefix = "check.include",
   cancellation: AnalysisCancellation = neverCancelled,
 ): Promise<Diagnostic[]> {
+  const reused = reuseIncludeDiagnostics(cached);
+  if (reused) {
+    return reused;
+  }
   const key = includeDiagnosticsCacheKey(cached, settings);
   if (cached.analysis?.includeDiagnostics?.key === key) {
     finishDebugStep(
@@ -1936,6 +2009,10 @@ function syntaxDiagnosticsForCached(
   settings: AspSettings,
   stepPrefix: string,
 ): Diagnostic[] {
+  const reused = reuseSyntaxDiagnostics(cached);
+  if (reused) {
+    return reused;
+  }
   const key = syntaxDiagnosticsCacheKey(cached);
   if (cached.analysis?.syntaxDiagnostics?.key === key) {
     finishDebugStep(
@@ -2162,6 +2239,20 @@ function finishSlowCheckLog(
   logDebugSummary(
     settings,
     `[asp-lsp] LSP check slow completed: ${cached.source.uri} ${formatElapsedMs(elapsedMs)}, diagnostics=${diagnosticCount}, sequence=${sequence}`,
+  );
+}
+
+function finishSlowReuseLog(
+  cached: CachedDocument,
+  settings: AspSettings,
+  startedAt: bigint,
+  diagnosticCount: number,
+  sequence: number,
+): void {
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  logDebugSummary(
+    settings,
+    `[asp-lsp] LSP check slow reused: ${cached.source.uri} ${formatElapsedMs(elapsedMs)}, diagnostics=${diagnosticCount}, sequence=${sequence}`,
   );
 }
 
@@ -2907,32 +2998,89 @@ function reuseUnchangedDiagnostics(
   language: AspIncrementalChange["language"],
   entry: DiagnosticCacheEntry | undefined,
 ): Diagnostic[] | undefined {
-  const changes = cached.changes;
-  if (!changes || changes.length === 0 || !entry || isDiagnosticLanguageDirty(cached, language)) {
+  if (isDiagnosticLanguageDirty(cached, language)) {
     return undefined;
   }
-  const items = shiftDiagnosticsAfterChanges(entry.items, entry.text, cached.source, changes);
-  entry.items = items;
-  entry.text = cached.parsed.text;
-  entry.key = `${entry.key}|shift:${changes
-    .map((change) => `${change.start}:${change.end}:${change.delta}`)
-    .join(",")}`;
-  return items;
+  return reuseDiagnosticsEntryAfterChanges(cached, entry, "shift");
+}
+
+function reuseIncludeDiagnostics(cached: CachedDocument): Diagnostic[] | undefined {
+  if (!canReuseIncludeDiagnostics(cached)) {
+    return undefined;
+  }
+  return reuseDiagnosticsEntryAfterChanges(
+    cached,
+    cached.analysis?.includeDiagnostics,
+    "include-shift",
+  );
+}
+
+function reuseSyntaxDiagnostics(cached: CachedDocument): Diagnostic[] | undefined {
+  if (!canReuseSyntaxDiagnostics(cached)) {
+    return undefined;
+  }
+  return reuseDiagnosticsEntryAfterChanges(
+    cached,
+    cached.analysis?.syntaxDiagnostics,
+    "syntax-shift",
+  );
 }
 
 function reuseProjectDiagnostics(cached: CachedDocument): Diagnostic[] | undefined {
-  const entry = cached.analysis?.projectDiagnostics;
+  if (!canReuseProjectDiagnostics(cached)) {
+    return undefined;
+  }
+  return reuseDiagnosticsEntryAfterChanges(
+    cached,
+    cached.analysis?.projectDiagnostics,
+    "project-shift",
+  );
+}
+
+function reuseDiagnosticsEntryAfterChanges(
+  cached: CachedDocument,
+  entry: DiagnosticCacheEntry | undefined,
+  reason: string,
+): Diagnostic[] | undefined {
   const changes = cached.changes;
-  if (cached.projectDiagnosticsMode !== "reuse" || !entry || !changes || changes.length === 0) {
+  if (!changes || changes.length === 0 || !entry) {
     return undefined;
   }
   const items = shiftDiagnosticsAfterChanges(entry.items, entry.text, cached.source, changes);
   entry.items = items;
   entry.text = cached.parsed.text;
-  entry.key = `${entry.key}|project-shift:${changes
-    .map((change) => `${change.start}:${change.end}:${change.delta}`)
-    .join(",")}`;
+  entry.key = `${entry.key}|${reason}:${diagnosticShiftKey(changes)}`;
   return items;
+}
+
+function canReuseIncludeDiagnostics(cached: CachedDocument): boolean {
+  return canReuseDiagnosticEntryAfterChanges(cached, cached.analysis?.includeDiagnostics);
+}
+
+function canReuseSyntaxDiagnostics(cached: CachedDocument): boolean {
+  return (
+    canReuseDiagnosticEntryAfterChanges(cached, cached.analysis?.syntaxDiagnostics) &&
+    !isAnyDiagnosticLanguageDirty(cached, ["html", "css", "javascript", "jscript"])
+  );
+}
+
+function canReuseProjectDiagnostics(cached: CachedDocument): boolean {
+  const entry = cached.analysis?.projectDiagnostics;
+  const changes = cached.changes;
+  return (
+    cached.projectDiagnosticsMode === "reuse" && Boolean(entry && changes && changes.length > 0)
+  );
+}
+
+function canReuseDiagnosticEntryAfterChanges(
+  cached: CachedDocument,
+  entry: DiagnosticCacheEntry | undefined,
+): boolean {
+  return Boolean(cached.changes && cached.changes.length > 0 && entry);
+}
+
+function diagnosticShiftKey(changes: AspIncrementalChange[]): string {
+  return changes.map((change) => `${change.start}:${change.end}:${change.delta}`).join(",");
 }
 
 function projectDiagnosticsModeForIncrementalUpdate(
@@ -2997,6 +3145,13 @@ function isDiagnosticLanguageDirty(
     return cached.dirtyLanguages.has("javascript") || cached.dirtyLanguages.has("jscript");
   }
   return cached.dirtyLanguages.has(language);
+}
+
+function isAnyDiagnosticLanguageDirty(
+  cached: CachedDocument,
+  languages: AspIncrementalChange["language"][],
+): boolean {
+  return languages.some((language) => isDiagnosticLanguageDirty(cached, language));
 }
 
 function shiftDiagnosticsAfterChanges(

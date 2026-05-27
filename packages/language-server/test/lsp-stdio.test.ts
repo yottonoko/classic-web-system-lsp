@@ -1509,19 +1509,76 @@ Response.Write known
         await waitForLogContaining(server, "LSP check slow completed");
         server.takePendingNotifications("window/logMessage");
 
-        source = notifyRangedReplacement(server, uri, source, 2, "' benchmark x", "' benchmark y");
+        source = notifyRangedReplacement(server, uri, source, 2, "benchmark x", "benchmark y");
 
         await server.waitForNotification("textDocument/publishDiagnostics");
         await waitForLogContaining(server, "LSP analysis completed");
         await waitForLogContaining(server, "diagnostics.fast.total");
         await waitForLogContaining(server, "documentChange.scheduleDiagnostics");
+        await waitForLogContaining(server, "diagnostics.slow.include.reuse");
+        await waitForLogContaining(server, "diagnostics.slow.syntax.reuse");
         await waitForLogContaining(server, "diagnostics.slow.project.reuse");
         await waitForLogContaining(server, "diagnostics.slow.send");
-        await waitForLogContaining(server, "LSP check slow completed");
+        await waitForLogContaining(server, "LSP check slow reused");
         expect(JSON.stringify(server.takePendingNotifications("window/logMessage"))).not.toContain(
           "vbscript.diagnostics.dispatch",
         );
         expect(source).toContain("' benchmark y");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("reuses project diagnostics without VBScript dispatch for HTML-only changes", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+              workspace: { backgroundAnalysis: false },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/html-only-project-reuse.asp";
+        let source = `<div class="old">ok</div>
+<% Option Explicit
+Dim known
+Response.Write known
+%>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "LSP check slow completed");
+        server.takePendingNotifications("window/logMessage");
+
+        source = notifyRangedReplacement(server, uri, source, 2, "old", "new");
+
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "diagnostics.slow.syntax");
+        await waitForLogContaining(server, "diagnostics.slow.project.reuse");
+        await waitForLogContaining(server, "LSP check slow completed");
+        expect(JSON.stringify(server.takePendingNotifications("window/logMessage"))).not.toContain(
+          "vbscript.diagnostics.dispatch",
+        );
+        expect(source).toContain('class="new"');
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -1586,6 +1643,7 @@ Response.Write localValue
         await server.waitForNotification("textDocument/publishDiagnostics");
         await waitForLogContaining(server, "diagnostics.slow.project.currentFileOnly");
         await waitForLogContaining(server, "vbProjectContext.includeSummaryReuse");
+        await waitForLogContaining(server, "vbscript.diagnostics.dispatch");
         await waitForLogContaining(server, "LSP check slow completed");
         expect(source).toContain("renamedValue");
 
@@ -6979,6 +7037,14 @@ class RpcServer {
     return pending;
   }
 
+  prependPendingNotifications(method: string, messages: JsonRpcMessage[]): void {
+    if (messages.length === 0) {
+      return;
+    }
+    const pending = this.pendingNotifications.get(method) ?? [];
+    this.pendingNotifications.set(method, [...messages, ...pending]);
+  }
+
   stop(): void {
     this.child?.kill();
   }
@@ -7161,12 +7227,27 @@ async function waitForDefinitionContaining(
 
 async function waitForLogContaining(server: RpcServer, expected: string): Promise<JsonRpcMessage> {
   const deadline = Date.now() + rpcTimeoutMs;
+  const skipped: JsonRpcMessage[] = [];
   while (Date.now() < deadline) {
+    const pending = server.takePendingNotifications("window/logMessage");
+    for (const [index, message] of pending.entries()) {
+      if (JSON.stringify(message.params).includes(expected)) {
+        server.prependPendingNotifications("window/logMessage", [
+          ...skipped,
+          ...pending.slice(index + 1),
+        ]);
+        return message;
+      }
+      skipped.push(message);
+    }
     const message = await server.waitForNotification("window/logMessage");
     if (JSON.stringify(message.params).includes(expected)) {
+      server.prependPendingNotifications("window/logMessage", skipped);
       return message;
     }
+    skipped.push(message);
   }
+  server.prependPendingNotifications("window/logMessage", skipped);
   throw new Error(`Timed out waiting for log containing ${expected}.`);
 }
 

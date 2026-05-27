@@ -180,7 +180,11 @@ async function measureDocumentChange(server, uri, state, editOffset, changeKind,
   const firstDiagnosticsMs = performance.now() - startedAt;
 
   const logs = [];
-  await waitForLogContaining(server, `LSP check slow completed: ${uri}`, logs);
+  await waitForLogContainingAny(
+    server,
+    [`LSP check slow completed: ${uri}`, `LSP check slow reused: ${uri}`],
+    logs,
+  );
   const finalDiagnosticsMs = performance.now() - startedAt;
   logs.push(...server.takePendingNotifications("window/logMessage"));
   server.takePendingNotifications("textDocument/publishDiagnostics");
@@ -295,22 +299,26 @@ function countLogsContaining(logs, expected) {
 }
 
 async function waitForLogContaining(server, expected, collectedLogs) {
+  return waitForLogContainingAny(server, [expected], collectedLogs);
+}
+
+async function waitForLogContainingAny(server, expectedMessages, collectedLogs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const log of server.takePendingNotifications("window/logMessage")) {
       collectedLogs.push(log);
-      if (logMessage(log).includes(expected)) {
+      if (expectedMessages.some((expected) => logMessage(log).includes(expected))) {
         return log;
       }
     }
     const remaining = Math.max(1, deadline - Date.now());
     const log = await server.waitForNotification("window/logMessage", remaining);
     collectedLogs.push(log);
-    if (logMessage(log).includes(expected)) {
+    if (expectedMessages.some((expected) => logMessage(log).includes(expected))) {
       return log;
     }
   }
-  throw new Error(`Timed out waiting for log containing ${expected}.`);
+  throw new Error(`Timed out waiting for log containing one of ${expectedMessages.join(", ")}.`);
 }
 
 function drainBenchmarkNotifications(server) {
