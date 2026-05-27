@@ -517,13 +517,34 @@ documents.onDidOpen((event) => {
   scheduleBackgroundAnalysis("documentOpen");
 });
 documents.onDidChangeContent((event) => {
-  cancelBackgroundAnalysis();
-  cancelSlowDiagnostics(event.document.uri);
-  removeExternalRefUsageIndexForUri(event.document.uri);
-  const cached = refreshCachedDocument(event.document);
-  scheduleVbProjectContextWarmup(cached, cachedSettings(event.document.uri));
-  scheduleDiagnostics(event.document);
-  scheduleBackgroundAnalysis("documentChange", defaultDiagnosticsDebounceMs);
+  const settings = cachedSettings(event.document.uri);
+  measureDebugStep(settings, event.document.uri, "documentChange.cancelBackgroundAnalysis", () =>
+    cancelBackgroundAnalysis(),
+  );
+  measureDebugStep(settings, event.document.uri, "documentChange.cancelSlowDiagnostics", () =>
+    cancelSlowDiagnostics(event.document.uri),
+  );
+  measureDebugStep(settings, event.document.uri, "documentChange.removeExternalRefUsageIndex", () =>
+    removeExternalRefUsageIndexForUri(event.document.uri),
+  );
+  const cached = measureDebugStep(
+    settings,
+    event.document.uri,
+    "documentChange.refreshCachedDocument",
+    () => refreshCachedDocument(event.document),
+  );
+  measureDebugStep(
+    settings,
+    event.document.uri,
+    "documentChange.scheduleVbProjectContextWarmup",
+    () => scheduleVbProjectContextWarmup(cached, cachedSettings(event.document.uri)),
+  );
+  measureDebugStep(settings, event.document.uri, "documentChange.scheduleDiagnostics", () =>
+    scheduleDiagnostics(event.document),
+  );
+  measureDebugStep(settings, event.document.uri, "documentChange.scheduleBackgroundAnalysis", () =>
+    scheduleBackgroundAnalysis("documentChange", defaultDiagnosticsDebounceMs),
+  );
 });
 documents.onDidSave((event) => {
   cancelBackgroundAnalysis();
@@ -1508,13 +1529,21 @@ function cancelScheduledDiagnostics(uri: string): void {
 
 function publishStagedDiagnosticsForCached(cached: CachedDocument, settings: AspSettings): void {
   cancelSlowDiagnostics(cached.source.uri);
-  const diagnostics = fastDiagnosticsForCached(cached, settings);
-  connection.sendDiagnostics({
-    uri: cached.source.uri,
-    diagnostics,
-  });
-  queueDiskAnalysisPersist(cached, settings);
-  enqueueSlowDiagnostics(cached, settings);
+  const diagnostics = measureDebugStep(settings, cached.source.uri, "diagnostics.fast.total", () =>
+    fastDiagnosticsForCached(cached, settings),
+  );
+  measureDebugStep(settings, cached.source.uri, "diagnostics.fast.send", () =>
+    connection.sendDiagnostics({
+      uri: cached.source.uri,
+      diagnostics,
+    }),
+  );
+  measureDebugStep(settings, cached.source.uri, "diagnostics.queueDiskAnalysisPersist", () =>
+    queueDiskAnalysisPersist(cached, settings),
+  );
+  measureDebugStep(settings, cached.source.uri, "diagnostics.slow.enqueue", () =>
+    enqueueSlowDiagnostics(cached, settings),
+  );
 }
 
 function enqueueSlowDiagnostics(cached: CachedDocument, settings: AspSettings): void {
@@ -1549,11 +1578,8 @@ async function publishSlowDiagnosticsForVersion(
   }
   const cancellation = diagnosticsCancellation(uri, version);
   const startedAt = startSlowCheckLog(cached, settings);
-  const includeItems = await includeDiagnosticsForCachedAsync(
-    cached,
-    settings,
-    "check.include",
-    cancellation,
+  const includeItems = await measureDebugStepAsync(settings, uri, "diagnostics.slow.include", () =>
+    includeDiagnosticsForCachedAsync(cached, settings, "check.include", cancellation),
   );
   if (cancellation.isCancellationRequested()) {
     return;
@@ -1564,19 +1590,27 @@ async function publishSlowDiagnosticsForVersion(
     const includeMerged = measureDebugStep(settings, uri, "check.include.merge", () =>
       dedupeDiagnostics([...fastItems, ...includeItems]),
     );
-    connection.sendDiagnostics({ uri, diagnostics: includeMerged });
+    measureDebugStep(settings, uri, "diagnostics.slow.send", () =>
+      connection.sendDiagnostics({ uri, diagnostics: includeMerged }),
+    );
     queueDiskAnalysisPersist(cached, settings);
   }
-  const syntaxItems = syntaxDiagnosticsForCached(cached, settings, "check.syntax");
+  const syntaxItems = measureDebugStep(settings, uri, "diagnostics.slow.syntax", () =>
+    syntaxDiagnosticsForCached(cached, settings, "check.syntax"),
+  );
   if (cancellation.isCancellationRequested()) {
     return;
   }
   const syntaxMerged = measureDebugStep(settings, uri, "check.syntax.merge", () =>
     dedupeDiagnostics([...fastItems, ...includeItems, ...syntaxItems]),
   );
-  connection.sendDiagnostics({ uri, diagnostics: syntaxMerged });
+  measureDebugStep(settings, uri, "diagnostics.slow.send", () =>
+    connection.sendDiagnostics({ uri, diagnostics: syntaxMerged }),
+  );
   queueDiskAnalysisPersist(cached, settings);
-  const projectItems = await projectDiagnosticsForCachedAsync(cached, settings, "check.project");
+  const projectItems = await measureDebugStepAsync(settings, uri, "diagnostics.slow.project", () =>
+    projectDiagnosticsForCachedAsync(cached, settings, "check.project"),
+  );
   if (cancellation.isCancellationRequested()) {
     return;
   }
@@ -1598,7 +1632,9 @@ async function publishSlowDiagnosticsForVersion(
   };
   cached.changes = undefined;
   cached.dirtyLanguages = undefined;
-  connection.sendDiagnostics({ uri, diagnostics: items });
+  measureDebugStep(settings, uri, "diagnostics.slow.send", () =>
+    connection.sendDiagnostics({ uri, diagnostics: items }),
+  );
   queueDiskAnalysisPersist(cached, settings);
   finishSlowCheckLog(cached, settings, startedAt, items.length, sequence);
 }

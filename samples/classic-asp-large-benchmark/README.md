@@ -48,6 +48,20 @@ and five measured iterations. Override those counts when needed:
 ASP_LSP_BENCH_WARMUPS=2 ASP_LSP_BENCH_ITERATIONS=10 pnpm run benchmark:large
 ```
 
+Measure end-to-end editor update latency through the LSP server after one
+character insert, delete, and replace edits:
+
+```sh
+pnpm run benchmark:change
+```
+
+Useful filters:
+
+```sh
+ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_BACKGROUND=off pnpm run benchmark:change
+ASP_LSP_BENCH_DEBUG_STEPS=1 pnpm run benchmark:change
+```
+
 Useful checks:
 
 ```sh

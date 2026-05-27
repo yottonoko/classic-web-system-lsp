@@ -1365,6 +1365,60 @@ Response.Write known
       }
     });
 
+    it("logs detailed document change timing steps in verbose debug output", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+              workspace: { backgroundAnalysis: false },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/document-change-timing.asp";
+        let source = `<% Option Explicit
+' benchmark x
+Dim known
+Response.Write known
+%>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "LSP check slow completed");
+        server.takePendingNotifications("window/logMessage");
+
+        source = notifyRangedReplacement(server, uri, source, 2, "' benchmark x", "' benchmark y");
+
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForLogContaining(server, "documentChange.refreshCachedDocument");
+        await waitForLogContaining(server, "diagnostics.fast.total");
+        await waitForLogContaining(server, "diagnostics.slow.project");
+        await waitForLogContaining(server, "diagnostics.slow.send");
+        await waitForLogContaining(server, "LSP check slow completed");
+        expect(source).toContain("' benchmark y");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("publishes fast, syntax and project diagnostics in stages for push diagnostics", async () => {
       const server = new RpcServer();
       try {
@@ -6825,7 +6879,8 @@ async function waitForDefinitionContaining(
 }
 
 async function waitForLogContaining(server: RpcServer, expected: string): Promise<JsonRpcMessage> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  const deadline = Date.now() + rpcTimeoutMs;
+  while (Date.now() < deadline) {
     const message = await server.waitForNotification("window/logMessage");
     if (JSON.stringify(message.params).includes(expected)) {
       return message;

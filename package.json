@@ -9,6 +9,7 @@
     "benchmark:large": "pnpm --filter @asp-lsp/core run build && node scripts/benchmark-large.mjs",
     "benchmark:huge": "pnpm --filter @asp-lsp/core run build && node scripts/benchmark-huge.mjs",
     "benchmark:include-tree": "pnpm --filter @asp-lsp/core run build && node scripts/benchmark-include-tree.mjs",
+    "benchmark:change": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && node scripts/benchmark-document-change.mjs",
     "typecheck": "pnpm -r run typecheck",
     "lint": "pnpm -r run lint",
     "format": "oxfmt .",
