@@ -132,6 +132,12 @@ describe("DiskAnalysisCache", () => {
           uri: source.uri,
           vbscript: {
             externalRefs: [expect.objectContaining({ name: "SharedTitle" })],
+            externalRefUsages: [
+              expect.objectContaining({
+                key: "sharedtitle",
+                count: 1,
+              }),
+            ],
           },
         },
       });
@@ -224,6 +230,7 @@ describe("DiskAnalysisCache", () => {
           },
         ],
         externalRefs: [],
+        externalRefUsages: [],
       };
 
       await cache.writeVbPublicSymbolSummary(payload);

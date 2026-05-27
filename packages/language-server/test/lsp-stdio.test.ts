@@ -5808,6 +5808,111 @@ Response.Write enabled
       }
     });
 
+    it("refreshes only open files that reference changed include exports", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-watched-usage-index-"));
+      const cacheDir = path.join(tempDir, ".cache");
+      const include = path.join(tempDir, "shared.inc");
+      const affected = path.join(tempDir, "affected.asp");
+      const unaffected = path.join(tempDir, "unaffected.asp");
+      fs.writeFileSync(
+        include,
+        `<%
+Function SharedValue()
+  SharedValue = "old"
+End Function
+
+Function OtherValue()
+  OtherValue = "same"
+End Function
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        affected,
+        `<!-- #include file="shared.inc" -->\n<% Response.Write SharedValue() %>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        unaffected,
+        `<!-- #include file="shared.inc" -->\n<% Response.Write OtherValue() %>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              cache: { enabled: true, directory: cacheDir },
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const affectedUri = `file://${affected}`;
+        const unaffectedUri = `file://${unaffected}`;
+        for (const fileName of [affected, unaffected]) {
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri: `file://${fileName}`,
+              languageId: "classic-asp",
+              version: 1,
+              text: fs.readFileSync(fileName, "utf8"),
+            },
+          });
+        }
+        await waitForCborCachePayload(
+          cacheDir,
+          (payload) =>
+            (payload.summary as { uri?: string } | undefined)?.uri === `file://${include}`,
+        );
+        await waitForCborCachePayload(
+          cacheDir,
+          (payload) => (payload.summary as { uri?: string } | undefined)?.uri === affectedUri,
+        );
+        await waitForCborCachePayload(
+          cacheDir,
+          (payload) => (payload.summary as { uri?: string } | undefined)?.uri === unaffectedUri,
+        );
+        server.takePendingNotifications("window/logMessage");
+
+        fs.writeFileSync(
+          include,
+          `<%
+Function SharedValueRenamed()
+  SharedValueRenamed = "new"
+End Function
+
+Function OtherValue()
+  OtherValue = "same"
+End Function
+%>`,
+          "utf8",
+        );
+        server.notify("workspace/didChangeWatchedFiles", {
+          changes: [{ uri: `file://${include}`, type: 2 }],
+        });
+        const firstAnalysisLog = await waitForLogContaining(server, "LSP analysis started");
+        await delay(500);
+
+        const logs = [firstAnalysisLog, ...server.takePendingNotifications("window/logMessage")];
+        const serialized = JSON.stringify(logs);
+        expect(serialized).toContain(affectedUri);
+        expect(serialized).not.toContain(unaffectedUri);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("separates fast and slow diagnostics in the classic ASP dashboard smoke scenario", async () => {
       const server = new RpcServer();
       try {

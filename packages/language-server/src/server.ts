@@ -264,6 +264,11 @@ interface FileSummaryCacheEntry {
   summary: FileAnalysisSummary;
 }
 
+interface ExternalRefUsageIndexEntry {
+  summaryKey: string;
+  lookupKeys: Set<string>;
+}
+
 interface WatchedAspFileChange {
   fileName: string;
   type: FileChangeType;
@@ -395,6 +400,8 @@ const activeSlowDiagnostics = new Set<string>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 const vbProjectContextWarmups = new Map<string, VbProjectContextWarmup>();
 const vbPublicSymbolSummaryCache = new Map<string, VbPublicSymbolSummary>();
+const externalRefUsageIndex = new Map<string, Set<string>>();
+const externalRefUsageIndexByUri = new Map<string, ExternalRefUsageIndexEntry>();
 const maxVbProjectContextCacheEntries = 32;
 const maxVbPublicSymbolSummaryCacheEntries = 1024;
 const interactiveIdleDelayMs = 1500;
@@ -500,6 +507,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 documents.onDidOpen((event) => {
   cancelBackgroundAnalysis();
   cache.delete(event.document.uri);
+  removeExternalRefUsageIndexForUri(event.document.uri);
   clearJsLanguageServiceCache();
   validate(event.document);
   const cached = getCached(event.document.uri);
@@ -511,6 +519,7 @@ documents.onDidOpen((event) => {
 documents.onDidChangeContent((event) => {
   cancelBackgroundAnalysis();
   cancelSlowDiagnostics(event.document.uri);
+  removeExternalRefUsageIndexForUri(event.document.uri);
   const cached = refreshCachedDocument(event.document);
   scheduleVbProjectContextWarmup(cached, cachedSettings(event.document.uri));
   scheduleDiagnostics(event.document);
@@ -519,6 +528,7 @@ documents.onDidChangeContent((event) => {
 documents.onDidSave((event) => {
   cancelBackgroundAnalysis();
   cache.delete(event.document.uri);
+  removeExternalRefUsageIndexForUri(event.document.uri);
   clearJsLanguageServiceCache();
   indexWorkspaceFile(uriToFileName(event.document.uri));
   validate(event.document);
@@ -529,6 +539,7 @@ documents.onDidClose((event) => {
   cancelSlowDiagnostics(event.document.uri);
   pendingDocumentChanges.delete(event.document.uri);
   cache.delete(event.document.uri);
+  removeExternalRefUsageIndexForUri(event.document.uri);
   clearJsLanguageServiceCache();
   clearSemanticTokensForUri(event.document.uri);
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
@@ -588,6 +599,7 @@ connection.onDidChangeConfiguration((change) => {
   }
   settingsByUri.clear();
   cache.clear();
+  clearExternalRefUsageIndex();
   clearIncludeCaches();
   clearJsLanguageServiceCache();
   clearSemanticTokens();
@@ -1126,6 +1138,7 @@ connection.onExecuteCommand(async (params) => {
     invalidateWorkspaceIndex();
     clearIncludeCaches();
     cache.clear();
+    clearExternalRefUsageIndex();
     clearJsProjectCaches();
     if (params.command === "aspLsp.clearCache") {
       await currentDiskAnalysisCache(globalSettings).clear();
@@ -2529,10 +2542,12 @@ function applyDiskAnalysis(
   analysis.projectDiagnostics = diskDiagnosticEntry(payload.projectDiagnostics, cached.parsed.text);
   analysis.slowDiagnostics = diskDiagnosticEntry(payload.slowDiagnostics, cached.parsed.text);
   if (payload.fileSummary) {
+    const key = fileAnalysisSummaryCacheKey(cached, cachedSettings(cached.source.uri));
     analysis.fileSummary = {
-      key: fileAnalysisSummaryCacheKey(cached, cachedSettings(cached.source.uri)),
+      key,
       summary: payload.fileSummary,
     };
+    rememberExternalRefUsageIndex(cached.source.uri, payload.fileSummary, key);
   }
 }
 
@@ -2586,10 +2601,12 @@ function analysisFor(cached: CachedDocument): CachedAnalysis {
 function fileSummaryForCached(cached: CachedDocument, settings: AspSettings): FileAnalysisSummary {
   const key = fileAnalysisSummaryCacheKey(cached, settings);
   if (cached.analysis?.fileSummary?.key === key) {
+    rememberExternalRefUsageIndex(cached.source.uri, cached.analysis.fileSummary.summary, key);
     return cached.analysis.fileSummary.summary;
   }
   const summary = summarizeAspFileAnalysis(cached.parsed, vbProjectContextSettings(settings));
   analysisFor(cached).fileSummary = { key, summary };
+  rememberExternalRefUsageIndex(cached.source.uri, summary, key);
   return summary;
 }
 
@@ -5139,6 +5156,7 @@ function vbPublicSymbolSummaryForParsed(
     publicSymbols: fileSummary.vbscript?.publicSymbols ?? [],
     exports: fileSummary.vbscript?.exports ?? [],
     externalRefs: fileSummary.vbscript?.externalRefs ?? [],
+    externalRefUsages: fileSummary.vbscript?.externalRefUsages ?? [],
     fileSummary,
   };
 }
@@ -5159,6 +5177,7 @@ function vbPublicSymbolSummaryFromFileSummary(
     publicSymbols: fileSummary.vbscript?.publicSymbols ?? [],
     exports: fileSummary.vbscript?.exports ?? [],
     externalRefs: fileSummary.vbscript?.externalRefs ?? [],
+    externalRefUsages: fileSummary.vbscript?.externalRefUsages ?? [],
     fileSummary,
   };
 }
@@ -5193,22 +5212,14 @@ function affectedOpenUrisForAspChanges(changes: WatchedAspFileChange[]): Set<str
     if (!changedExports) {
       return allOpenUris;
     }
-    for (const document of documents.all()) {
-      if (affectedUris.has(document.uri)) {
-        continue;
-      }
-      const cached = cache.get(document.uri);
-      if (!cached) {
-        affectedUris.add(document.uri);
-        continue;
-      }
-      if (
-        fileSummaryReferencesChangedExports(
-          fileSummaryForCached(cached, cachedSettings(document.uri)),
-          changedExports,
-        )
-      ) {
-        affectedUris.add(document.uri);
+    if (documents.all().some((document) => !externalRefUsageIndexByUri.has(document.uri))) {
+      return allOpenUris;
+    }
+    for (const key of changedExports) {
+      for (const uri of externalRefUsageIndex.get(key) ?? []) {
+        if (allOpenUris.has(uri)) {
+          affectedUris.add(uri);
+        }
       }
     }
   }
@@ -5351,19 +5362,62 @@ function exportIdentitiesForSummary(summary: VbPublicSymbolSummary): Map<string,
   return identities;
 }
 
-function fileSummaryReferencesChangedExports(
+function rememberExternalRefUsageIndex(
+  uri: string,
   summary: FileAnalysisSummary,
-  changedExports: Set<string>,
-): boolean {
-  for (const ref of summary.vbscript?.externalRefs ?? []) {
-    if (changedExports.has(normalizeExportKey(ref.name))) {
-      return true;
-    }
-    if (ref.memberName && changedExports.has(normalizeExportKey(`${ref.name}.${ref.memberName}`))) {
-      return true;
+  summaryKey: string,
+): void {
+  const existing = externalRefUsageIndexByUri.get(uri);
+  if (existing?.summaryKey === summaryKey) {
+    return;
+  }
+  removeExternalRefUsageIndexForUri(uri);
+  const lookupKeys = new Set<string>();
+  for (const usage of summary.vbscript?.externalRefUsages ?? []) {
+    for (const key of externalRefUsageLookupKeys(usage)) {
+      lookupKeys.add(key);
+      let uris = externalRefUsageIndex.get(key);
+      if (!uris) {
+        uris = new Set();
+        externalRefUsageIndex.set(key, uris);
+      }
+      uris.add(uri);
     }
   }
-  return false;
+  externalRefUsageIndexByUri.set(uri, { summaryKey, lookupKeys });
+}
+
+function removeExternalRefUsageIndexForUri(uri: string): void {
+  const existing = externalRefUsageIndexByUri.get(uri);
+  if (!existing) {
+    return;
+  }
+  externalRefUsageIndexByUri.delete(uri);
+  for (const key of existing.lookupKeys) {
+    const uris = externalRefUsageIndex.get(key);
+    if (!uris) {
+      continue;
+    }
+    uris.delete(uri);
+    if (uris.size === 0) {
+      externalRefUsageIndex.delete(key);
+    }
+  }
+}
+
+function clearExternalRefUsageIndex(): void {
+  externalRefUsageIndex.clear();
+  externalRefUsageIndexByUri.clear();
+}
+
+function externalRefUsageLookupKeys(
+  usage: NonNullable<FileAnalysisSummary["vbscript"]>["externalRefUsages"][number],
+): string[] {
+  const keys = new Set([normalizeExportKey(usage.name), normalizeExportKey(usage.key)]);
+  if (usage.memberName) {
+    keys.add(normalizeExportKey(`${usage.name}.${usage.memberName}`));
+  }
+  return [...keys];
 }
 
 function invalidateCachedAnalysisForUris(uris: Set<string>): void {

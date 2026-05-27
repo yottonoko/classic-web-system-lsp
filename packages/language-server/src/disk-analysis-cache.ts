@@ -9,13 +9,14 @@ import type {
   FileAnalysisSummary,
   VbExportSummary,
   VbExternalRef,
+  VbExternalRefUsage,
   VbSymbol,
 } from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver/node";
 
-export const diskAnalysisCacheFormatVersion = 4;
-export const fileAnalysisSummaryFormatVersion = 1;
-export const vbPublicSymbolSummaryFormatVersion = 2;
+export const diskAnalysisCacheFormatVersion = 5;
+export const fileAnalysisSummaryFormatVersion = 2;
+export const vbPublicSymbolSummaryFormatVersion = 3;
 
 export interface DiskAnalysisCacheOptions {
   enabled: boolean;
@@ -73,6 +74,7 @@ export interface VbPublicSymbolSummary {
   publicSymbols: VbSymbol[];
   exports?: VbExportSummary[];
   externalRefs?: VbExternalRef[];
+  externalRefUsages?: VbExternalRefUsage[];
   fileSummary?: FileAnalysisSummary;
 }
 

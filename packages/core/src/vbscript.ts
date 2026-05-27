@@ -54,6 +54,7 @@ import type {
   VbMember,
   VbExportSummary,
   VbExternalRef,
+  VbExternalRefUsage,
   VbParameterInfo,
   VbProjectContext,
   VbReference,
@@ -77,6 +78,7 @@ export type {
   VbMember,
   VbExportSummary,
   VbExternalRef,
+  VbExternalRefUsage,
   VbParameterInfo,
   VbProjectContext,
   VbReference,
@@ -3275,6 +3277,7 @@ export function summarizeVbscriptFile(
   const localSymbols = collectVbscriptSymbols(parsed, context);
   const publicSymbols = collectVbscriptPublicSymbols(parsed, context);
   const typeEnvironment = buildVbTypeEnvironment(parsed, { ...context, symbols: localSymbols });
+  const externalRefs = collectVbscriptExternalRefs(parsed, localSymbols);
   return {
     fingerprint: textFingerprint(
       serverRegions(parsed)
@@ -3284,7 +3287,8 @@ export function summarizeVbscriptFile(
     localSymbols,
     publicSymbols,
     exports: exportSummariesForSymbols(publicSymbols),
-    externalRefs: collectVbscriptExternalRefs(parsed, localSymbols),
+    externalRefs,
+    externalRefUsages: externalRefUsagesForRefs(externalRefs),
     typeFacts: typeEnvironment.types,
   };
 }
@@ -3361,6 +3365,34 @@ function externalRefKey(ref: VbExternalRef): string {
     ref.range.start.line,
     ref.range.start.character,
   ].join("|");
+}
+
+function externalRefUsagesForRefs(refs: VbExternalRef[]): VbExternalRefUsage[] {
+  const usages = new Map<string, VbExternalRefUsage>();
+  for (const ref of refs) {
+    const key = externalRefUsageKey(ref);
+    const existing = usages.get(key);
+    if (existing) {
+      existing.count += 1;
+      existing.ranges.push(ref.range);
+      continue;
+    }
+    usages.set(key, {
+      key,
+      name: ref.name,
+      memberName: ref.memberName,
+      kindHint: ref.kindHint,
+      count: 1,
+      ranges: [ref.range],
+    });
+  }
+  return [...usages.values()];
+}
+
+function externalRefUsageKey(ref: VbExternalRef): string {
+  return ref.memberName
+    ? `${ref.name.toLowerCase()}.${ref.memberName.toLowerCase()}`
+    : ref.name.toLowerCase();
 }
 
 function isPublicSummarySymbol(symbol: VbSymbol): boolean {

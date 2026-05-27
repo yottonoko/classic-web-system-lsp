@@ -105,6 +105,7 @@ export interface VbLocalSummary {
   publicSymbols: VbSymbol[];
   exports: VbExportSummary[];
   externalRefs: VbExternalRef[];
+  externalRefUsages: VbExternalRefUsage[];
   typeFacts: VbType[];
 }
 
@@ -126,6 +127,15 @@ export interface VbExternalRef {
   callShape?: {
     argumentCount?: number;
   };
+}
+
+export interface VbExternalRefUsage {
+  key: string;
+  name: string;
+  memberName?: string;
+  kindHint?: VbSymbolKind;
+  count: number;
+  ranges: Range[];
 }
 
 export interface VbInlayHintOptions {

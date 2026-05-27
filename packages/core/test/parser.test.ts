@@ -579,6 +579,20 @@ Response.Write SharedCatalog.Name
     );
     expect(summary.vbscript?.externalRefs.map((item) => item.name)).not.toContain("Response");
     expect(summary.vbscript?.externalRefs.map((item) => item.name)).not.toContain("localValue");
+    expect(summary.vbscript?.externalRefUsages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "sharedtitle",
+          count: 1,
+          ranges: [expect.objectContaining({ start: expect.objectContaining({ line: 5 }) })],
+        }),
+        expect.objectContaining({
+          key: "sharedcatalog.name",
+          count: 1,
+          ranges: [expect.objectContaining({ start: expect.objectContaining({ line: 6 }) })],
+        }),
+      ]),
+    );
   });
 
   it("keeps VBScript lookup and completions case-insensitive", () => {
