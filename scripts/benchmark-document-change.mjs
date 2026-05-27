@@ -12,12 +12,16 @@ const generator = path.join(sampleRoot, "generate.mjs");
 const serverPath = path.join(root, "packages", "language-server", "dist", "server.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readPositiveInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const rapidBurstSize = readPositiveInteger("ASP_LSP_BENCH_BURST_SIZE", 5);
+const rapidDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEBOUNCE_MS", 80);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", 120_000);
 const changeKinds = readChangeKinds();
+const changeModes = readChangeModes();
 const backgroundModes = readBackgroundModes();
 const selectedStepNames = [
-  "documentChange.refreshCachedDocument",
+  "documentChange.bumpAnalysisGeneration",
+  "documentChange.scheduleDiagnostics",
   "analysis.parse.incremental",
   "analysis.parse.full",
   "diagnostics.fast.total",
@@ -44,8 +48,10 @@ async function main() {
   const sourceStats = summarizeSources(collectBenchmarkSources());
   const scenarioResults = [];
   for (const backgroundAnalysis of backgroundModes) {
-    for (const changeKind of changeKinds) {
-      scenarioResults.push(await runScenario(changeKind, backgroundAnalysis));
+    for (const changeMode of changeModes) {
+      for (const changeKind of changeKinds) {
+        scenarioResults.push(await runScenario(changeKind, changeMode, backgroundAnalysis));
+      }
     }
   }
 
@@ -57,6 +63,9 @@ async function main() {
   console.log(`Warmups: ${warmupIterations}`);
   console.log(`Iterations: ${benchmarkIterations}`);
   console.log(`Change kinds: ${changeKinds.join(", ")}`);
+  console.log(`Change modes: ${changeModes.join(", ")}`);
+  console.log(`Rapid burst size: ${rapidBurstSize}`);
+  console.log(`Rapid debounce: ${rapidDebounceMs} ms`);
   console.log(`Background analysis: ${backgroundModes.map(backgroundLabel).join(", ")}`);
   console.log("");
   printScenarioTable(scenarioResults);
@@ -72,12 +81,13 @@ async function main() {
   }
 }
 
-async function runScenario(changeKind, backgroundAnalysis) {
+async function runScenario(changeKind, changeMode, backgroundAnalysis) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-change-bench-"));
   const cacheDir = path.join(tempDir, "cache");
   const sourcePath = path.join(sampleRoot, "default.asp");
   const uri = pathToFileURL(sourcePath).href;
-  const totalChanges = benchmarkIterations + warmupIterations + 8;
+  const { burstSize, debounceMs } = changeModeSettings(changeMode);
+  const totalChanges = (benchmarkIterations + warmupIterations) * burstSize + 8;
   const state = {
     text: appendMutableBenchmarkRegion(fs.readFileSync(sourcePath, "utf8"), totalChanges),
     version: 1,
@@ -97,7 +107,7 @@ async function runScenario(changeKind, backgroundAnalysis) {
         aspLsp: {
           cache: { enabled: true, directory: cacheDir },
           debug: { output: "verbose" },
-          diagnostics: { debounceMs: 0 },
+          diagnostics: { debounceMs },
           workspace: { backgroundAnalysis },
         },
       },
@@ -115,14 +125,21 @@ async function runScenario(changeKind, backgroundAnalysis) {
     drainBenchmarkNotifications(server);
 
     for (let index = 0; index < warmupIterations; index += 1) {
-      await measureDocumentChange(server, uri, state, editOffset, changeKind);
+      await measureDocumentChange(server, uri, state, editOffset, changeKind, burstSize);
       drainBenchmarkNotifications(server);
     }
 
     const samples = [];
     const debugStepTotals = new Map();
     for (let index = 0; index < benchmarkIterations; index += 1) {
-      const sample = await measureDocumentChange(server, uri, state, editOffset, changeKind);
+      const sample = await measureDocumentChange(
+        server,
+        uri,
+        state,
+        editOffset,
+        changeKind,
+        burstSize,
+      );
       samples.push(sample);
       for (const [step, elapsedMs] of sample.stepTimings) {
         debugStepTotals.set(step, (debugStepTotals.get(step) ?? 0) + elapsedMs);
@@ -131,23 +148,33 @@ async function runScenario(changeKind, backgroundAnalysis) {
 
     await server.request("shutdown", null);
     server.notify("exit", undefined);
-    return { changeKind, backgroundAnalysis, samples, debugStepTotals };
+    return {
+      changeKind,
+      changeMode,
+      backgroundAnalysis,
+      burstSize,
+      debounceMs,
+      samples,
+      debugStepTotals,
+    };
   } finally {
     server.stop();
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
-async function measureDocumentChange(server, uri, state, editOffset, changeKind) {
+async function measureDocumentChange(server, uri, state, editOffset, changeKind, burstSize) {
   drainBenchmarkNotifications(server);
-  const change = buildTextChange(state.text, editOffset, changeKind);
-  state.version += 1;
   const startedAt = performance.now();
-  server.notify("textDocument/didChange", {
-    textDocument: { uri, version: state.version },
-    contentChanges: [{ range: change.range, text: change.text }],
-  });
-  state.text = change.nextText;
+  for (let index = 0; index < burstSize; index += 1) {
+    const change = buildTextChange(state.text, editOffset, changeKind);
+    state.version += 1;
+    server.notify("textDocument/didChange", {
+      textDocument: { uri, version: state.version },
+      contentChanges: [{ range: change.range, text: change.text }],
+    });
+    state.text = change.nextText;
+  }
 
   await server.waitForNotification("textDocument/publishDiagnostics");
   const firstDiagnosticsMs = performance.now() - startedAt;
@@ -161,6 +188,7 @@ async function measureDocumentChange(server, uri, state, editOffset, changeKind)
   return {
     firstDiagnosticsMs,
     finalDiagnosticsMs,
+    analysisStarts: countLogsContaining(logs, `LSP analysis started: ${uri}`),
     stepTimings: collectLogTimings(logs),
   };
 }
@@ -262,6 +290,10 @@ function collectLogTimings(logs) {
   return timings;
 }
 
+function countLogsContaining(logs, expected) {
+  return logs.filter((log) => logMessage(log).includes(expected)).length;
+}
+
 async function waitForLogContaining(server, expected, collectedLogs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -311,9 +343,7 @@ function positionAt(text, offset) {
 function printScenarioTable(scenarioResults) {
   const rows = [["Scenario", "Metric", "min ms", "median ms", "mean ms", "max ms"]];
   for (const scenario of scenarioResults) {
-    const scenarioName = `${scenario.changeKind}, background=${backgroundLabel(
-      scenario.backgroundAnalysis,
-    )}`;
+    const scenarioName = scenarioLabel(scenario);
     rows.push([
       scenarioName,
       "didChange->firstDiagnostics",
@@ -323,6 +353,11 @@ function printScenarioTable(scenarioResults) {
       scenarioName,
       "didChange->finalDiagnostics",
       ...statsCells(scenario.samples.map((sample) => sample.finalDiagnosticsMs)),
+    ]);
+    rows.push([
+      scenarioName,
+      "LSP analysis starts",
+      ...statsCells(scenario.samples.map((sample) => sample.analysisStarts)),
     ]);
     for (const step of selectedStepNames) {
       const samples = scenario.samples.map((sample) => sample.stepTimings.get(step) ?? 0);
@@ -337,9 +372,7 @@ function printScenarioTable(scenarioResults) {
 function printDebugStepTotals(scenarioResults) {
   const rows = [["Scenario", "Step", "total ms"]];
   for (const scenario of scenarioResults) {
-    const scenarioName = `${scenario.changeKind}, background=${backgroundLabel(
-      scenario.backgroundAnalysis,
-    )}`;
+    const scenarioName = scenarioLabel(scenario);
     for (const [step, total] of [...scenario.debugStepTotals.entries()].sort(
       (left, right) => right[1] - left[1],
     )) {
@@ -358,6 +391,12 @@ function statsCells(samples) {
     formatMillis(total / sorted.length),
     formatMillis(sorted[sorted.length - 1]),
   ];
+}
+
+function scenarioLabel(scenario) {
+  return `${scenario.changeKind}, mode=${scenario.changeMode}, burst=${scenario.burstSize}, debounce=${scenario.debounceMs}ms, background=${backgroundLabel(
+    scenario.backgroundAnalysis,
+  )}`;
 }
 
 function printRows(rows) {
@@ -395,6 +434,29 @@ function readChangeKinds() {
   return values.length > 0 ? values : ["insert", "delete", "replace"];
 }
 
+function readChangeModes() {
+  const raw = process.env.ASP_LSP_BENCH_CHANGE_MODE ?? "all";
+  if (raw === "all") {
+    return ["single", "rapid"];
+  }
+  const values = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const value of values) {
+    if (value !== "single" && value !== "rapid") {
+      throw new Error("ASP_LSP_BENCH_CHANGE_MODE must be single, rapid, or all.");
+    }
+  }
+  return values.length > 0 ? values : ["single", "rapid"];
+}
+
+function changeModeSettings(changeMode) {
+  return changeMode === "rapid"
+    ? { burstSize: rapidBurstSize, debounceMs: rapidDebounceMs }
+    : { burstSize: 1, debounceMs: 0 };
+}
+
 function readBackgroundModes() {
   const raw = process.env.ASP_LSP_BENCH_BACKGROUND ?? "both";
   if (raw === "both") {
@@ -417,6 +479,18 @@ function readPositiveInteger(name, fallback) {
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer.`);
+  }
+  return value;
+}
+
+function readNonNegativeInteger(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
   }
   return value;
 }
