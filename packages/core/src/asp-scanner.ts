@@ -30,13 +30,6 @@ interface AttributeSpan {
   valueEnd: number;
 }
 
-interface AspCloseState {
-  quote?: string;
-  lineComment: boolean;
-  blockComment: boolean;
-  skipNext: boolean;
-}
-
 export function scanHtmlAndAsp(
   text: string,
   diagnostics: AspParsedDocument["diagnostics"],
@@ -154,87 +147,93 @@ function parseAspRegionAt(
 }
 
 function findAspClose(text: string, offset: number, maxEnd: number): number {
-  const vbState = createAspCloseState();
-  const jsState = createAspCloseState();
+  let vbQuote: string | undefined;
+  let vbLineComment = false;
+  let vbBlockComment = false;
+  let vbSkipNext = false;
+  let jsQuote: string | undefined;
+  let jsLineComment = false;
+  let jsBlockComment = false;
+  let jsSkipNext = false;
   for (let index = offset; index < maxEnd; index += 1) {
     const char = text[index];
     const next = text[index + 1];
-    if (
-      advanceAspCloseState(vbState, "vbscript", char, next) ||
-      advanceAspCloseState(jsState, "jscript", char, next)
-    ) {
-      return index;
+
+    if (vbSkipNext) {
+      vbSkipNext = false;
+    } else if (vbLineComment) {
+      if (char === "\r" || char === "\n") {
+        vbLineComment = false;
+      }
+    } else if (vbBlockComment) {
+      if (char === "*" && next === "/") {
+        vbBlockComment = false;
+        vbSkipNext = true;
+      }
+    } else if (vbQuote) {
+      if (char === vbQuote) {
+        if (vbQuote === '"' && next === '"') {
+          vbSkipNext = true;
+        } else {
+          vbQuote = undefined;
+        }
+      }
+    } else if (char === "%") {
+      if (next === ">") {
+        return index;
+      }
+    } else if (char === '"' || char === "'" || char === "`") {
+      if (char === "'") {
+        vbLineComment = true;
+      } else {
+        vbQuote = char;
+      }
+    } else if (char === "/" && next === "/") {
+      vbLineComment = true;
+      vbSkipNext = true;
+    } else if (char === "/" && next === "*") {
+      vbBlockComment = true;
+      vbSkipNext = true;
+    }
+
+    if (jsSkipNext) {
+      jsSkipNext = false;
+    } else if (jsLineComment) {
+      if (char === "\r" || char === "\n") {
+        jsLineComment = false;
+      }
+    } else if (jsBlockComment) {
+      if (char === "*" && next === "/") {
+        jsBlockComment = false;
+        jsSkipNext = true;
+      }
+    } else if (jsQuote) {
+      if (jsQuote === "'" && (char === "\r" || char === "\n")) {
+        jsQuote = undefined;
+      } else if (char === "\\") {
+        jsSkipNext = true;
+      } else if (char === jsQuote) {
+        if (jsQuote === '"' && next === '"') {
+          jsSkipNext = true;
+        } else {
+          jsQuote = undefined;
+        }
+      }
+    } else if (char === "%") {
+      if (next === ">") {
+        return index;
+      }
+    } else if (char === '"' || char === "'" || char === "`") {
+      jsQuote = char;
+    } else if (char === "/" && next === "/") {
+      jsLineComment = true;
+      jsSkipNext = true;
+    } else if (char === "/" && next === "*") {
+      jsBlockComment = true;
+      jsSkipNext = true;
     }
   }
   return -1;
-}
-
-function createAspCloseState(): AspCloseState {
-  return { lineComment: false, blockComment: false, skipNext: false };
-}
-
-function advanceAspCloseState(
-  state: AspCloseState,
-  mode: "vbscript" | "jscript",
-  char: string,
-  next: string | undefined,
-): boolean {
-  if (state.skipNext) {
-    state.skipNext = false;
-    return false;
-  }
-  if (state.lineComment) {
-    if (char === "\r" || char === "\n") {
-      state.lineComment = false;
-    }
-    return false;
-  }
-  if (state.blockComment) {
-    if (char === "*" && next === "/") {
-      state.blockComment = false;
-      state.skipNext = true;
-    }
-    return false;
-  }
-  if (state.quote) {
-    if (mode === "jscript" && state.quote === "'" && (char === "\r" || char === "\n")) {
-      state.quote = undefined;
-      return false;
-    }
-    if (mode === "jscript" && char === "\\") {
-      state.skipNext = true;
-      return false;
-    }
-    if (char === state.quote) {
-      if (state.quote === '"' && next === '"') {
-        state.skipNext = true;
-        return false;
-      }
-      state.quote = undefined;
-    }
-    return false;
-  }
-  if (char === "%") {
-    return next === ">";
-  }
-  if (char === '"' || char === "'" || char === "`") {
-    if (mode === "vbscript" && char === "'") {
-      state.lineComment = true;
-    } else {
-      state.quote = char;
-    }
-    return false;
-  }
-  if (char === "/" && next === "/") {
-    state.lineComment = true;
-    state.skipNext = true;
-    return false;
-  }
-  if (char === "/" && next === "*") {
-    state.blockComment = true;
-    state.skipNext = true;
-  }
-  return false;
 }
 
 function readHtmlTag(text: string, start: number): HtmlTag | undefined {
