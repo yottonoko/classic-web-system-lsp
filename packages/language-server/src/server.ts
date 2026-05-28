@@ -159,6 +159,10 @@ const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
 const defaultDiagnosticsDebounceMs = 250;
+const reindexWorkspaceCommand = "aspLsp.reindexWorkspace";
+const clearCacheCommand = "aspLsp.clearCache";
+const reindexWorkspaceServerCommand = "aspLsp.server.reindexWorkspace";
+const clearCacheServerCommand = "aspLsp.server.clearCache";
 const languageServerVersion = "0.1.6";
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -896,7 +900,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         ],
       },
       executeCommandProvider: {
-        commands: ["aspLsp.reindexWorkspace", "aspLsp.clearCache"],
+        commands: [reindexWorkspaceServerCommand, clearCacheServerCommand],
       },
       codeLensProvider: { resolveProvider: true },
       colorProvider: true,
@@ -1595,7 +1599,10 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
 });
 
 connection.onExecuteCommand(async (params) => {
-  if (params.command === "aspLsp.reindexWorkspace") {
+  if (
+    params.command === reindexWorkspaceCommand ||
+    params.command === reindexWorkspaceServerCommand
+  ) {
     invalidateWorkspaceIndex("command.reindexWorkspace");
     invalidateIncludeResolution("command.reindexWorkspace");
     invalidateJsProject("command.reindexWorkspace");
@@ -1606,7 +1613,7 @@ connection.onExecuteCommand(async (params) => {
     scheduleBackgroundAnalysis("command.reindexWorkspace");
     return { ok: true };
   }
-  if (params.command === "aspLsp.clearCache") {
+  if (params.command === clearCacheCommand || params.command === clearCacheServerCommand) {
     diskAnalysisCache.clear();
     vbProjectContextCache.clear();
     clearJsProjectCaches();

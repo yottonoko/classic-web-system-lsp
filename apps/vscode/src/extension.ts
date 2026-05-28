@@ -13,6 +13,8 @@ import { getServerModulePath } from "./server-path";
 
 const maxCrashRestartCount = 4;
 const crashRestartWindowMs = 3 * 60 * 1000;
+const reindexWorkspaceServerCommand = "aspLsp.server.reindexWorkspace";
+const clearCacheServerCommand = "aspLsp.server.clearCache";
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
@@ -36,10 +38,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     statusBarItem,
     vscode.commands.registerCommand("aspLsp.restartServer", async () => restartServer(context)),
     vscode.commands.registerCommand("aspLsp.reindexWorkspace", async () =>
-      executeServerCommand("aspLsp.reindexWorkspace"),
+      executeServerCommand(reindexWorkspaceServerCommand),
     ),
     vscode.commands.registerCommand("aspLsp.clearCache", async () =>
-      executeServerCommand("aspLsp.clearCache"),
+      executeServerCommand(clearCacheServerCommand),
     ),
     vscode.commands.registerCommand("aspLsp.openOutput", () => outputChannel?.show()),
     vscode.commands.registerCommand("aspLsp.showReferences", async (uri, position, locations) =>

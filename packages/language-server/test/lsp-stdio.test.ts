@@ -84,8 +84,13 @@ describe(
           rootUri: `file://${process.cwd()}`,
           capabilities: {},
         });
-        expect(JSON.stringify(initialize)).toContain("completionProvider");
-        expect(JSON.stringify(initialize)).not.toContain("diagnosticProvider");
+        const initializeText = JSON.stringify(initialize);
+        expect(initializeText).toContain("completionProvider");
+        expect(initializeText).toContain('"aspLsp.server.reindexWorkspace"');
+        expect(initializeText).toContain('"aspLsp.server.clearCache"');
+        expect(initializeText).not.toContain('"aspLsp.reindexWorkspace"');
+        expect(initializeText).not.toContain('"aspLsp.clearCache"');
+        expect(initializeText).not.toContain("diagnosticProvider");
 
         const uri = "file:///tmp/default.asp";
         server.notify("textDocument/didOpen", {
@@ -3722,7 +3727,9 @@ End Function
 %>`,
           "utf8",
         );
-        await server.request("workspace/executeCommand", { command: "aspLsp.reindexWorkspace" });
+        await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.reindexWorkspace",
+        });
         const reindexed = await server.request("workspace/symbol", { query: "Reindexed" });
         expect(JSON.stringify(reindexed)).toContain("ReindexedTitle");
 
@@ -3794,7 +3801,7 @@ End Function
         expect(JSON.stringify(second)).toContain("missingName");
         await waitForLogContaining(server, "diskCache.hit");
 
-        await server.request("workspace/executeCommand", { command: "aspLsp.clearCache" });
+        await server.request("workspace/executeCommand", { command: "aspLsp.server.clearCache" });
         server.takePendingNotifications("window/logMessage");
         await server.request("workspace/diagnostic", { previousResultIds: [] });
         await waitForLogContaining(server, "diskCache.miss");
