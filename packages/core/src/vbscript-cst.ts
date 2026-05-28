@@ -309,12 +309,13 @@ export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0
 
 function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
   const tokens: VbToken[] = [];
+  const length = text.length;
   let index = 0;
-  while (index < text.length) {
+  while (index < length) {
     const start = index;
-    const char = text[index];
-    if (char === "\r" || char === "\n") {
-      if (char === "\r" && text[index + 1] === "\n") {
+    const code = text.charCodeAt(index);
+    if (code === 13 || code === 10) {
+      if (code === 13 && text.charCodeAt(index + 1) === 10) {
         index += 2;
       } else {
         index += 1;
@@ -322,15 +323,23 @@ function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
       tokens.push(token("newline", text, start, index, baseOffset));
       continue;
     }
-    if (char === " " || char === "\t") {
-      while (index < text.length && (text[index] === " " || text[index] === "\t")) {
+    if (code === 32 || code === 9) {
+      while (index < length) {
+        const whitespaceCode = text.charCodeAt(index);
+        if (whitespaceCode !== 32 && whitespaceCode !== 9) {
+          break;
+        }
         index += 1;
       }
       tokens.push(token("whitespace", text, start, index, baseOffset));
       continue;
     }
-    if (char === "'") {
-      while (index < text.length && text[index] !== "\r" && text[index] !== "\n") {
+    if (code === 39) {
+      while (index < length) {
+        const commentCode = text.charCodeAt(index);
+        if (commentCode === 13 || commentCode === 10) {
+          break;
+        }
         index += 1;
       }
       tokens.push(token("comment", text, start, index, baseOffset));
@@ -338,20 +347,24 @@ function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
     }
     if (isRemCommentStart(text, index)) {
       index += 3;
-      while (index < text.length && text[index] !== "\r" && text[index] !== "\n") {
+      while (index < length) {
+        const commentCode = text.charCodeAt(index);
+        if (commentCode === 13 || commentCode === 10) {
+          break;
+        }
         index += 1;
       }
       tokens.push(token("comment", text, start, index, baseOffset));
       continue;
     }
-    if (char === '"') {
+    if (code === 34) {
       index += 1;
-      while (index < text.length) {
-        if (text[index] === '"' && text[index + 1] === '"') {
+      while (index < length) {
+        if (text.charCodeAt(index) === 34 && text.charCodeAt(index + 1) === 34) {
           index += 2;
           continue;
         }
-        if (text[index] === '"') {
+        if (text.charCodeAt(index) === 34) {
           index += 1;
           break;
         }
@@ -362,9 +375,9 @@ function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
       tokens.push(result);
       continue;
     }
-    if (isIdentifierStart(char)) {
+    if (isIdentifierStartCode(code)) {
       index += 1;
-      while (index < text.length && isIdentifierPart(text[index])) {
+      while (index < length && isIdentifierPartCode(text.charCodeAt(index))) {
         index += 1;
       }
       const result = token("identifier", text, start, index, baseOffset);
@@ -374,9 +387,9 @@ function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
       tokens.push(result);
       continue;
     }
-    if (isDigit(char)) {
+    if (isDigitCode(code)) {
       index += 1;
-      while (index < text.length && isNumberPart(text[index])) {
+      while (index < length && isNumberPartCode(text.charCodeAt(index))) {
         index += 1;
       }
       tokens.push(token("number", text, start, index, baseOffset));
@@ -398,19 +411,11 @@ function token(
   return { kind, start: baseOffset + start, end: baseOffset + end, text: text.slice(start, end) };
 }
 
-function isIdentifierStart(char: string | undefined): boolean {
-  if (!char) {
-    return false;
-  }
-  const code = char.charCodeAt(0);
+function isIdentifierStartCode(code: number): boolean {
   return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 }
 
-function isIdentifierPart(char: string | undefined): boolean {
-  if (!char) {
-    return false;
-  }
-  const code = char.charCodeAt(0);
+function isIdentifierPartCode(code: number): boolean {
   return (
     (code >= 65 && code <= 90) ||
     (code >= 97 && code <= 122) ||
@@ -419,16 +424,12 @@ function isIdentifierPart(char: string | undefined): boolean {
   );
 }
 
-function isDigit(char: string | undefined): boolean {
-  if (!char) {
-    return false;
-  }
-  const code = char.charCodeAt(0);
+function isDigitCode(code: number): boolean {
   return code >= 48 && code <= 57;
 }
 
-function isNumberPart(char: string | undefined): boolean {
-  return char === "." || isDigit(char);
+function isNumberPartCode(code: number): boolean {
+  return code === 46 || isDigitCode(code);
 }
 
 function isRemCommentStart(text: string, index: number): boolean {
@@ -444,15 +445,19 @@ function isRemCommentStart(text: string, index: number): boolean {
   if (third !== 77 && third !== 109) {
     return false;
   }
-  const after = text[index + 3];
-  if (after && isIdentifierPart(after)) {
+  if (isIdentifierPartCode(text.charCodeAt(index + 3))) {
     return false;
   }
   let cursor = index - 1;
-  while (cursor >= 0 && (text[cursor] === " " || text[cursor] === "\t")) {
+  while (cursor >= 0) {
+    const previous = text.charCodeAt(cursor);
+    if (previous !== 32 && previous !== 9) {
+      break;
+    }
     cursor -= 1;
   }
-  return cursor < 0 || text[cursor] === "\n" || text[cursor] === "\r" || text[cursor] === ":";
+  const previous = text.charCodeAt(cursor);
+  return cursor < 0 || previous === 10 || previous === 13 || previous === 58;
 }
 
 export function isTriviaToken(token: VbToken): boolean {
