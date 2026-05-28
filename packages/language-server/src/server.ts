@@ -1521,7 +1521,7 @@ connection.onDocumentSymbol((params) => {
     ...cssDocumentSymbols(cached),
     ...jsDocumentSymbols(cached),
     ...getVbscriptDocumentSymbols(cached.parsed),
-  ];
+  ].map(documentSymbolWithContainedSelectionRange);
 });
 
 connection.onFoldingRanges((params) => {
@@ -1673,7 +1673,7 @@ connection.languages.callHierarchy.onPrepare((params): CallHierarchyItem[] => {
     return [];
   }
   if (isJavaScriptPosition(cached, params.position)) {
-    return jsPrepareCallHierarchy(cached, params.position);
+    return jsPrepareCallHierarchy(cached, params.position).map(itemWithContainedSelectionRange);
   }
   if (!isVbscriptPosition(cached, params.position)) {
     return [];
@@ -1683,12 +1683,12 @@ connection.languages.callHierarchy.onPrepare((params): CallHierarchyItem[] => {
     params.position,
     buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
     cached.source.uri,
-  );
+  ).map(itemWithContainedSelectionRange);
 });
 
 connection.languages.callHierarchy.onIncomingCalls((params): CallHierarchyIncomingCall[] => {
   if (isJsCallHierarchyItem(params.item)) {
-    return jsIncomingCalls(params.item);
+    return jsIncomingCalls(params.item).map(incomingCallWithContainedSelectionRange);
   }
   const root = callHierarchyRootUri(params.item);
   const cached = getFreshCached(root) ?? getFreshCached(params.item.uri);
@@ -1698,12 +1698,12 @@ connection.languages.callHierarchy.onIncomingCalls((params): CallHierarchyIncomi
   return getVbscriptIncomingCalls(
     params.item,
     buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
-  );
+  ).map(incomingCallWithContainedSelectionRange);
 });
 
 connection.languages.callHierarchy.onOutgoingCalls((params): CallHierarchyOutgoingCall[] => {
   if (isJsCallHierarchyItem(params.item)) {
-    return jsOutgoingCalls(params.item);
+    return jsOutgoingCalls(params.item).map(outgoingCallWithContainedSelectionRange);
   }
   const root = callHierarchyRootUri(params.item);
   const cached = getFreshCached(root) ?? getFreshCached(params.item.uri);
@@ -1713,7 +1713,7 @@ connection.languages.callHierarchy.onOutgoingCalls((params): CallHierarchyOutgoi
   return getVbscriptOutgoingCalls(
     params.item,
     buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
-  );
+  ).map(outgoingCallWithContainedSelectionRange);
 });
 
 connection.languages.typeHierarchy.onPrepare((params): TypeHierarchyItem[] => {
@@ -1722,13 +1722,13 @@ connection.languages.typeHierarchy.onPrepare((params): TypeHierarchyItem[] => {
     return [];
   }
   const item = vbTypeHierarchyItemAt(cached, params.position);
-  return item ? [item] : [];
+  return item ? [itemWithContainedSelectionRange(item)] : [];
 });
 
 connection.languages.typeHierarchy.onSupertypes((): TypeHierarchyItem[] => []);
 
 connection.languages.typeHierarchy.onSubtypes((params): TypeHierarchyItem[] =>
-  vbTypeHierarchyRelatedItems(params.item),
+  vbTypeHierarchyRelatedItems(params.item).map(itemWithContainedSelectionRange),
 );
 
 connection.languages.moniker.on((params): Moniker[] => {
@@ -4938,6 +4938,50 @@ function remapDocumentSymbol(
   };
 }
 
+function documentSymbolWithContainedSelectionRange(symbol: DocumentSymbol): DocumentSymbol {
+  return {
+    ...symbol,
+    range: rangeWithContainedSelectionRange(symbol.range, symbol.selectionRange),
+    children: symbol.children?.map(documentSymbolWithContainedSelectionRange),
+  };
+}
+
+function itemWithContainedSelectionRange<T extends { range: Range; selectionRange: Range }>(
+  item: T,
+): T {
+  const range = rangeWithContainedSelectionRange(item.range, item.selectionRange);
+  return range === item.range ? item : { ...item, range };
+}
+
+function incomingCallWithContainedSelectionRange(
+  call: CallHierarchyIncomingCall,
+): CallHierarchyIncomingCall {
+  return { ...call, from: itemWithContainedSelectionRange(call.from) };
+}
+
+function outgoingCallWithContainedSelectionRange(
+  call: CallHierarchyOutgoingCall,
+): CallHierarchyOutgoingCall {
+  return { ...call, to: itemWithContainedSelectionRange(call.to) };
+}
+
+function rangeWithContainedSelectionRange(range: Range, selectionRange: Range): Range {
+  return rangeContainsRange(range, selectionRange) ? range : rangeContaining(range, selectionRange);
+}
+
+function rangeContainsRange(outer: Range, inner: Range): boolean {
+  return (
+    comparePositions(outer.start, inner.start) <= 0 && comparePositions(outer.end, inner.end) >= 0
+  );
+}
+
+function rangeContaining(left: Range, right: Range): Range {
+  return {
+    start: comparePositions(left.start, right.start) <= 0 ? left.start : right.start,
+    end: comparePositions(left.end, right.end) >= 0 ? left.end : right.end,
+  };
+}
+
 function cssFoldingRanges(cached: CachedDocument): FoldingRange[] {
   const virtual = getCachedVirtual(cached, "css");
   if (!virtual) {
@@ -6194,10 +6238,10 @@ function selectionRangeAt(cached: CachedDocument, position: Position): Selection
 function remapSelectionRange(virtual: VirtualDocument, range: SelectionRange): SelectionRange {
   const start = virtual.sourceMap.toSourcePosition(range.range.start) ?? range.range.start;
   const end = virtual.sourceMap.toSourcePosition(range.range.end) ?? range.range.end;
-  return {
+  return selectionRangeWithContainedParents({
     range: { start, end },
     parent: range.parent ? remapSelectionRange(virtual, range.parent) : undefined,
-  };
+  });
 }
 
 function jsSelectionRange(cached: CachedDocument, position: Position): SelectionRange | undefined {
@@ -6215,12 +6259,32 @@ function remapTsSelectionRange(virtual: VirtualDocument, range: ts.SelectionRang
   const end = virtual.sourceMap.toSourcePosition(
     doc.positionAt(range.textSpan.start + range.textSpan.length),
   );
-  return {
+  return selectionRangeWithContainedParents({
     range: {
       start: start ?? { line: 0, character: 0 },
       end: end ?? start ?? { line: 0, character: 0 },
     },
     parent: range.parent ? remapTsSelectionRange(virtual, range.parent) : undefined,
+  });
+}
+
+function selectionRangeWithContainedParents(range: SelectionRange): SelectionRange {
+  if (!range.parent) {
+    return range;
+  }
+  return {
+    range: range.range,
+    parent: expandSelectionRangeToContain(range.parent, range.range),
+  };
+}
+
+function expandSelectionRangeToContain(range: SelectionRange, childRange: Range): SelectionRange {
+  const containedRange = rangeContainsRange(range.range, childRange)
+    ? range.range
+    : rangeContaining(range.range, childRange);
+  return {
+    range: containedRange,
+    parent: range.parent ? expandSelectionRangeToContain(range.parent, containedRange) : undefined,
   };
 }
 

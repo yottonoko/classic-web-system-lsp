@@ -1071,6 +1071,46 @@ function boot() {
       }
     });
 
+    it("keeps remapped selection range parents containing child ranges", async () => {
+      const source = `<style>
+.panel { <% If ok Then %>color: red;<% End If %> }
+</style>
+<script>function boot(){ return <%= value %>; }</script>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/selection-ranges.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const selection = await server.request("textDocument/selectionRange", {
+          textDocument: { uri },
+          positions: [
+            positionAt(source, source.indexOf("color")),
+            positionAt(source, source.indexOf("return")),
+          ],
+        });
+        expectSelectionRangesToBeNested(selection);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("publishes CSS and JavaScript diagnostics over JSON-RPC", async () => {
       const server = new RpcServer();
       try {
@@ -7748,6 +7788,42 @@ function completionEditRange(
       }
     | undefined;
   return textEdit?.range ?? textEdit?.insert ?? textEdit?.replace;
+}
+
+function expectSelectionRangesToBeNested(selection: unknown): void {
+  expect(Array.isArray(selection)).toBe(true);
+  for (const item of selection as LspSelectionRange[]) {
+    let child = item;
+    let parent = item.parent;
+    while (parent) {
+      expect(rangeContainsRange(parent.range, child.range)).toBe(true);
+      child = parent;
+      parent = parent.parent;
+    }
+  }
+}
+
+interface LspSelectionRange {
+  range: LspRange;
+  parent?: LspSelectionRange;
+}
+
+interface LspRange {
+  start: { line: number; character: number };
+  end: { line: number; character: number };
+}
+
+function rangeContainsRange(outer: LspRange, inner: LspRange): boolean {
+  return (
+    comparePositions(outer.start, inner.start) <= 0 && comparePositions(outer.end, inner.end) >= 0
+  );
+}
+
+function comparePositions(
+  left: { line: number; character: number },
+  right: { line: number; character: number },
+): number {
+  return left.line === right.line ? left.character - right.character : left.line - right.line;
 }
 
 async function waitForDiagnosticsContaining(
