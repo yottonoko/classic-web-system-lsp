@@ -356,6 +356,21 @@ Response.Write "done"
     );
   });
 
+  it("keeps ASP delimiters inside script comments from ending regions", () => {
+    const source = `<%
+/* block comment with %> */
+// line comment with %>
+Response.Write "done"
+%>`;
+    const parsed = parseAspDocument("file:///site/comment-delimiters.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    const blocks = parsed.regions.filter((region) => region.kind === "asp-block");
+    expect(blocks).toHaveLength(1);
+    expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).toContain(
+      'Response.Write "done"',
+    );
+  });
+
   it("keeps script and style closing tags inside strings or comments from ending regions", () => {
     const source = `<script>
 const literal = "</script>";

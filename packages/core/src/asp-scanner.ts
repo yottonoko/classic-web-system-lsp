@@ -30,6 +30,13 @@ interface AttributeSpan {
   valueEnd: number;
 }
 
+interface AspCloseState {
+  quote?: string;
+  lineComment: boolean;
+  blockComment: boolean;
+  skipNext: boolean;
+}
+
 export function scanHtmlAndAsp(
   text: string,
   diagnostics: AspParsedDocument["diagnostics"],
@@ -147,85 +154,87 @@ function parseAspRegionAt(
 }
 
 function findAspClose(text: string, offset: number, maxEnd: number): number {
-  const vbClose = findAspCloseInMode(text, offset, maxEnd, "vbscript");
-  const jsClose = findAspCloseInMode(text, offset, maxEnd, "jscript");
-  if (vbClose === -1) {
-    return jsClose;
-  }
-  if (jsClose === -1) {
-    return vbClose;
-  }
-  return Math.min(vbClose, jsClose);
-}
-
-function findAspCloseInMode(
-  text: string,
-  offset: number,
-  maxEnd: number,
-  mode: "vbscript" | "jscript",
-): number {
-  let quote: string | undefined;
-  let lineComment = false;
-  let blockComment = false;
+  const vbState = createAspCloseState();
+  const jsState = createAspCloseState();
   for (let index = offset; index < maxEnd; index += 1) {
     const char = text[index];
     const next = text[index + 1];
-    if (lineComment) {
-      if (char === "\r" || char === "\n") {
-        lineComment = false;
-      }
-      continue;
-    }
-    if (blockComment) {
-      if (char === "*" && next === "/") {
-        blockComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (quote) {
-      if (mode === "jscript" && quote === "'" && (char === "\r" || char === "\n")) {
-        quote = undefined;
-        continue;
-      }
-      if (mode === "jscript" && char === "\\") {
-        index += 1;
-        continue;
-      }
-      if (char === quote) {
-        if (quote === '"' && next === '"') {
-          index += 1;
-          continue;
-        }
-        quote = undefined;
-      }
-      continue;
-    }
-    if (char === "%") {
-      if (next === ">") {
-        return index;
-      }
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      if (mode === "vbscript" && char === "'") {
-        lineComment = true;
-      } else {
-        quote = char;
-      }
-      continue;
-    }
-    if (char === "/" && next === "/") {
-      lineComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      blockComment = true;
-      index += 1;
+    if (
+      advanceAspCloseState(vbState, "vbscript", char, next) ||
+      advanceAspCloseState(jsState, "jscript", char, next)
+    ) {
+      return index;
     }
   }
   return -1;
+}
+
+function createAspCloseState(): AspCloseState {
+  return { lineComment: false, blockComment: false, skipNext: false };
+}
+
+function advanceAspCloseState(
+  state: AspCloseState,
+  mode: "vbscript" | "jscript",
+  char: string,
+  next: string | undefined,
+): boolean {
+  if (state.skipNext) {
+    state.skipNext = false;
+    return false;
+  }
+  if (state.lineComment) {
+    if (char === "\r" || char === "\n") {
+      state.lineComment = false;
+    }
+    return false;
+  }
+  if (state.blockComment) {
+    if (char === "*" && next === "/") {
+      state.blockComment = false;
+      state.skipNext = true;
+    }
+    return false;
+  }
+  if (state.quote) {
+    if (mode === "jscript" && state.quote === "'" && (char === "\r" || char === "\n")) {
+      state.quote = undefined;
+      return false;
+    }
+    if (mode === "jscript" && char === "\\") {
+      state.skipNext = true;
+      return false;
+    }
+    if (char === state.quote) {
+      if (state.quote === '"' && next === '"') {
+        state.skipNext = true;
+        return false;
+      }
+      state.quote = undefined;
+    }
+    return false;
+  }
+  if (char === "%") {
+    return next === ">";
+  }
+  if (char === '"' || char === "'" || char === "`") {
+    if (mode === "vbscript" && char === "'") {
+      state.lineComment = true;
+    } else {
+      state.quote = char;
+    }
+    return false;
+  }
+  if (char === "/" && next === "/") {
+    state.lineComment = true;
+    state.skipNext = true;
+    return false;
+  }
+  if (char === "/" && next === "*") {
+    state.blockComment = true;
+    state.skipNext = true;
+  }
+  return false;
 }
 
 function readHtmlTag(text: string, start: number): HtmlTag | undefined {
