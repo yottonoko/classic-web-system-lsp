@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { DiskAnalysisCache } from "../src/disk-analysis-cache";
 
 describe("DiskAnalysisCache", () => {
-  it("restores matching diagnostics and rejects stale metadata", () => {
+  it("restores matching diagnostics and rejects stale metadata", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
     try {
       const cache = new DiskAnalysisCache({
@@ -18,7 +18,7 @@ describe("DiskAnalysisCache", () => {
         source: { fileName: "/site/default.asp", mtimeMs: 1, size: 10 },
         settingsKey: "settings",
       };
-      cache.write({
+      await cache.write({
         ...lookup,
         diagnostics: [
           {
@@ -30,9 +30,9 @@ describe("DiskAnalysisCache", () => {
           },
         ],
       });
-      expect(cache.read(lookup)?.[0]?.message).toBe("cached");
+      expect((await cache.read(lookup))?.[0]?.message).toBe("cached");
       expect(
-        cache.read({
+        await cache.read({
           ...lookup,
           source: { ...lookup.source, size: 11 },
         }),
@@ -56,12 +56,12 @@ describe("DiskAnalysisCache", () => {
         source: { fileName: "/site/default.asp", mtimeMs: 1, size: 10 },
         settingsKey: "settings",
       };
-      cache.write({ ...lookup, diagnostics: [] });
+      await cache.write({ ...lookup, diagnostics: [] });
       const fileName = path.join(directory, fs.readdirSync(directory)[0]);
       fs.writeFileSync(fileName, "not-cbor");
-      expect(cache.read(lookup)).toBeUndefined();
+      expect(await cache.read(lookup)).toBeUndefined();
 
-      cache.write({ ...lookup, diagnostics: [] });
+      await cache.write({ ...lookup, diagnostics: [] });
       cache = new DiskAnalysisCache({
         enabled: true,
         directory,
@@ -70,14 +70,14 @@ describe("DiskAnalysisCache", () => {
         toolVersion: "1",
       });
       await new Promise((resolve) => setTimeout(resolve, 10));
-      cache.sweep();
+      await cache.sweep();
       expect(fs.readdirSync(directory)).toHaveLength(0);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 
-  it("clears and sweeps by maximum size", () => {
+  it("clears and sweeps by maximum size", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
     try {
       const cache = new DiskAnalysisCache({
@@ -88,7 +88,7 @@ describe("DiskAnalysisCache", () => {
         toolVersion: "1",
       });
       for (let index = 0; index < 32; index += 1) {
-        cache.write({
+        await cache.write({
           source: { fileName: `/site/${index}.asp`, mtimeMs: index, size: 10 },
           settingsKey: "settings",
           diagnostics: Array.from({ length: 64 }, (_, diagnosticIndex) => ({
@@ -101,10 +101,10 @@ describe("DiskAnalysisCache", () => {
         });
       }
       const beforeSweep = fs.readdirSync(directory).length;
-      cache.sweep();
+      await cache.sweep();
       expect(beforeSweep).toBeGreaterThan(0);
       expect(fs.readdirSync(directory).length).toBeLessThan(beforeSweep);
-      cache.clear();
+      await cache.clear();
       expect(fs.existsSync(directory)).toBe(false);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });

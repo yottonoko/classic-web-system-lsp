@@ -593,6 +593,26 @@ ReDim resizedItems(5)
         symbols,
       }),
     ).toContain("Dim dynamicItems() As Array");
+    const hints = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+      { symbols },
+    );
+    const arrayHintPositions = hints
+      .filter((hint) => hint.label === " (global) As Array")
+      .map((hint) => hint.position);
+    expect(arrayHintPositions).toEqual(
+      expect.arrayContaining([
+        positionAt(source, source.indexOf("fixedItems(10)") + "fixedItems(10)".length),
+        positionAt(source, source.indexOf("dynamicItems()") + "dynamicItems()".length),
+        positionAt(source, source.indexOf("resizedItems(5)") + "resizedItems(5)".length),
+      ]),
+    );
+    expect(hints.find((hint) => hint.label === " (global) As Array")).not.toEqual(
+      expect.objectContaining({
+        position: positionAt(source, source.indexOf("fixedItems") + "fixedItems".length),
+      }),
+    );
   });
 
   it("collects only public VBScript symbols for include summaries", () => {
@@ -692,6 +712,31 @@ Response.Write SharedCatalog.Name
         }),
       ]),
     );
+  });
+
+  it("summarizes VBScript public symbols without implicit or inferred exports", () => {
+    const source = `<%
+Dim ExplicitValue
+' @type TypedValue As ADODB.Recordset
+Dim TypedValue
+InferredValue = Server.CreateObject("ADODB.Recordset")
+Function PublicFactory()
+  Set PublicFactory = Server.CreateObject("ADODB.Recordset")
+End Function
+%>`;
+    const parsed = parseAspDocument("file:///site/common.inc", source);
+    const summary = summarizeAspFileAnalysis(parsed);
+    const symbols = summary.vbscript?.publicSymbols ?? [];
+    const names = symbols.map((symbol) => symbol.name);
+
+    expect(names).toEqual(expect.arrayContaining(["ExplicitValue", "TypedValue", "PublicFactory"]));
+    expect(names).not.toContain("InferredValue");
+    expect(symbols.find((symbol) => symbol.name === "ExplicitValue")?.typeName).toBe("Variant");
+    expect(symbols.find((symbol) => symbol.name === "TypedValue")).toMatchObject({
+      typeName: "ADODB.Recordset",
+      explicitType: true,
+    });
+    expect(symbols.find((symbol) => symbol.name === "PublicFactory")?.typeName).toBe("Variant");
   });
 
   it("keeps VBScript lookup and completions case-insensitive", () => {
@@ -2583,7 +2628,7 @@ End Sub
       parsed,
       { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
       { symbols },
-      { globalVariableMarkers: false },
+      { globalVariableMarkers: "off" },
     );
     expect(JSON.stringify(hintsWithoutGlobalMarkers)).not.toContain("(global)");
     expect(hintsWithoutGlobalMarkers.some((hint) => hint.label === " As String | Number")).toBe(
@@ -2594,6 +2639,19 @@ End Sub
       hints.some(
         (hint) =>
           hint.label === " As Variant" &&
+          hint.position.line === positionAt(source, source.indexOf("localValue")).line,
+      ),
+    ).toBe(true);
+    const hintsWithLocalMarkers = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      { symbols },
+      { globalVariableMarkers: "all" },
+    );
+    expect(
+      hintsWithLocalMarkers.some(
+        (hint) =>
+          hint.label === " (local) As Variant" &&
           hint.position.line === positionAt(source, source.indexOf("localValue")).line,
       ),
     ).toBe(true);
@@ -2657,6 +2715,49 @@ Response.Write a
           token.tokenModifiers?.includes("library"),
       ),
     ).toBe(true);
+  });
+
+  it("marks include-related implicit VBScript variables as uncertain in inlay hints", () => {
+    const includeSource = `<%
+a = 1
+Sub Render()
+  b = "local"
+End Sub
+%>`;
+    const includeParsed = parseAspDocument("file:///site/shared.inc", includeSource);
+    const includeSymbols = collectVbscriptSymbols(includeParsed);
+    const includeHints = getVbscriptInlayHints(
+      includeParsed,
+      { start: { line: 0, character: 0 }, end: { line: 6, character: 0 } },
+      { symbols: includeSymbols },
+      { globalVariableMarkers: "all" },
+    );
+    expect(includeHints.filter((hint) => hint.label === " (?) As Number")).toHaveLength(1);
+    expect(includeHints.filter((hint) => hint.label === " (?) As String")).toHaveLength(1);
+    expect(JSON.stringify(includeHints)).not.toContain("(global)");
+    expect(JSON.stringify(includeHints)).not.toContain("(local)");
+
+    const pageSource = `<!-- #include file="shared.inc" -->
+<%
+a = 1
+%>`;
+    const pageParsed = parseAspDocument("file:///site/default.asp", pageSource);
+    const pageSymbols = collectVbscriptSymbols(pageParsed);
+    const pageHints = getVbscriptInlayHints(
+      pageParsed,
+      { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+      { symbols: pageSymbols },
+    );
+    expect(pageHints.some((hint) => hint.label === " (?) As Number")).toBe(true);
+    expect(JSON.stringify(pageHints)).not.toContain("(global) As Number");
+
+    const disabled = getVbscriptInlayHints(
+      includeParsed,
+      { start: { line: 0, character: 0 }, end: { line: 6, character: 0 } },
+      { symbols: includeSymbols },
+      { globalVariableMarkers: "off" },
+    );
+    expect(JSON.stringify(disabled)).not.toContain("(?)");
   });
 
   it("adds semantic token types and modifiers for VBScript symbols", () => {

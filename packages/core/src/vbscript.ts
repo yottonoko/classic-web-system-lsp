@@ -2928,7 +2928,7 @@ export function getVbscriptInlayHints(
     parameterNames: options.parameterNames !== false,
     functionReturnTypes: options.functionReturnTypes !== false,
     implicitByRef: options.implicitByRef !== false,
-    globalVariableMarkers: options.globalVariableMarkers !== false,
+    globalVariableMarkers: options.globalVariableMarkers ?? "global",
   };
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const env = context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
@@ -2947,8 +2947,8 @@ export function getVbscriptInlayHints(
         continue;
       }
       hints.push({
-        position: symbol.range.end,
-        label: `${globalInlayPrefix(parsed, symbol, settings.globalVariableMarkers)} As ${symbol.typeName}`,
+        position: variableTypeHintPosition(parsed, symbol),
+        label: `${scopeInlayPrefix(parsed, symbol, context, settings.globalVariableMarkers)} As ${symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: false,
         paddingRight: true,
@@ -3058,6 +3058,17 @@ function functionReturnHintPosition(parsed: AspParsedDocument, symbol: VbSymbol)
     : symbol.range.end;
 }
 
+function variableTypeHintPosition(parsed: AspParsedDocument, symbol: VbSymbol): Position {
+  if (!symbol.array) {
+    return symbol.range.end;
+  }
+  const nameEnd = offsetAt(parsed.text, symbol.range.end);
+  const closeParenEnd = declarationCloseParenEnd(parsed.text, nameEnd);
+  return closeParenEnd
+    ? rangeFromOffsets(parsed.text, closeParenEnd, closeParenEnd).start
+    : symbol.range.end;
+}
+
 function isProcedureDeclarationOpenParen(
   parsed: AspParsedDocument,
   statement: VbToken[],
@@ -3093,8 +3104,47 @@ function declarationCloseParenEnd(text: string, nameEnd: number): number | undef
   return undefined;
 }
 
-function globalInlayPrefix(parsed: AspParsedDocument, symbol: VbSymbol, enabled: boolean): string {
-  return enabled && isGlobalVariableLikeSymbol(parsed, symbol) ? " (global)" : "";
+function scopeInlayPrefix(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  context: VbProjectContext,
+  mode: "global" | "all" | "off",
+): string {
+  if (mode === "off" || !isVariableMarkerSymbol(parsed, symbol)) {
+    return "";
+  }
+  if (isUncertainIncludeImplicitSymbol(parsed, symbol, context)) {
+    return " (?)";
+  }
+  if (isGlobalVariableLikeSymbol(parsed, symbol)) {
+    return " (global)";
+  }
+  if (mode === "all" && isLocalVariableLikeSymbol(parsed, symbol)) {
+    return " (local)";
+  }
+  return "";
+}
+
+function isVariableMarkerSymbol(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
+  return (
+    symbol.sourceUri === parsed.uri &&
+    (symbol.kind === "variable" || symbol.kind === "constant") &&
+    !symbol.memberOf
+  );
+}
+
+function isUncertainIncludeImplicitSymbol(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  context: VbProjectContext,
+): boolean {
+  return (
+    symbol.implicit === true &&
+    isVariableMarkerSymbol(parsed, symbol) &&
+    (isIncDocumentUri(parsed.uri) ||
+      parsed.includes.length > 0 ||
+      (context.documents?.some((document) => document.uri !== parsed.uri) ?? false))
+  );
 }
 
 function isGlobalVariableLikeSymbol(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
@@ -3104,6 +3154,19 @@ function isGlobalVariableLikeSymbol(parsed: AspParsedDocument, symbol: VbSymbol)
     !symbol.scopeName &&
     !symbol.memberOf
   );
+}
+
+function isLocalVariableLikeSymbol(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
+  return (
+    symbol.sourceUri === parsed.uri &&
+    (symbol.kind === "variable" || symbol.kind === "constant") &&
+    Boolean(symbol.scopeName) &&
+    !symbol.memberOf
+  );
+}
+
+function isIncDocumentUri(uri: string): boolean {
+  return uri.toLowerCase().split(/[?#]/, 1)[0].endsWith(".inc");
 }
 
 function isHiddenInlayType(typeName: string): boolean {
@@ -3307,7 +3370,7 @@ export function summarizeVbscriptFile(
   context: VbProjectContext = {},
 ): VbLocalSummary {
   const localSymbols = collectVbscriptSymbols(parsed, context);
-  const publicSymbols = collectVbscriptPublicSymbols(parsed, context);
+  const publicSymbols = publicSymbolsFromLocalSymbols(localSymbols);
   const typeEnvironment = buildVbTypeEnvironment(parsed, { ...context, symbols: localSymbols });
   const externalRefs = collectVbscriptExternalRefs(parsed, localSymbols);
   return {
@@ -3323,6 +3386,13 @@ export function summarizeVbscriptFile(
     externalRefUsages: externalRefUsagesForRefs(externalRefs),
     typeFacts: typeEnvironment.types,
   };
+}
+
+function publicSymbolsFromLocalSymbols(symbols: VbSymbol[]): VbSymbol[] {
+  return symbols
+    .filter((symbol) => !symbol.implicit)
+    .filter(isPublicSummarySymbol)
+    .map(sanitizePublicSummarySymbol);
 }
 
 function exportSummariesForSymbols(symbols: VbSymbol[]): VbExportSummary[] {

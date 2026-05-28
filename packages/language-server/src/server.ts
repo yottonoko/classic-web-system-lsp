@@ -800,23 +800,6 @@ class IncludeDocumentLoader {
   private readonly inFlight = new Map<string, Promise<IncludeDocumentCacheEntry | undefined>>();
   private readonly generations = new Map<string, number>();
 
-  read(fileName: string, settings: AspSettings): IncludeDocumentCacheEntry | undefined {
-    const normalized = normalizeFileName(fileName);
-    const key = includeDocumentCacheKey(normalized, settings);
-    if (!key) {
-      return undefined;
-    }
-    const existing = this.cache.get(normalized);
-    if (existing?.key === key) {
-      return existing;
-    }
-    const text = readTextFile(normalized, settings.legacyEncoding);
-    const entry = createIncludeDocumentCacheEntry(normalized, text, settings, key);
-    this.cache.set(normalized, entry);
-    rememberIncludePublicSummary(entry, settings);
-    return entry;
-  }
-
   async readAsync(
     fileName: string,
     settings: AspSettings,
@@ -1014,9 +997,9 @@ documents.onDidChangeContent((event) => {
     scheduleProjectUpdate("document.change");
   }
 });
-documents.onDidSave((event) => {
+documents.onDidSave(async (event) => {
   noteForegroundActivity();
-  indexWorkspaceFile(uriToFileName(event.document.uri));
+  await indexWorkspaceFileAsync(uriToFileName(event.document.uri));
   invalidateCachedAnalysisForUris(new Set([event.document.uri]), "document.save");
   scheduleProjectUpdate("document.save");
   validate(event.document);
@@ -1087,7 +1070,9 @@ connection.onDidChangeConfiguration((change) => {
   if (incoming) {
     globalSettings = normalizeSettings(incoming);
   }
-  configureDiskAnalysisCache();
+  void configureDiskAnalysisCacheAsync().catch((error) =>
+    logDiskAnalysisCacheError("diskCache.configure", error),
+  );
   settingsByUri.clear();
   const impact = settingsInvalidationImpact(previousSettingsByUri);
   applySettingsInvalidation(impact);
@@ -1102,7 +1087,7 @@ connection.onDidChangeConfiguration((change) => {
   scheduleBackgroundAnalysis("configuration.changed");
 });
 
-connection.onDidChangeWatchedFiles((change) => {
+connection.onDidChangeWatchedFiles(async (change) => {
   let aspChanged = false;
   let scriptChanged = false;
   const aspChanges: WatchedAspFileChange[] = [];
@@ -1114,7 +1099,7 @@ connection.onDidChangeWatchedFiles((change) => {
       if (file.type === FileChangeType.Deleted) {
         workspaceIndex.delete(fileName);
       } else {
-        indexWorkspaceFile(fileName);
+        await indexWorkspaceFileAsync(fileName);
       }
     }
     if (isScriptWorkspaceFile(fileName) || isJavaScriptProjectEnvironmentFile(fileName)) {
@@ -1126,9 +1111,9 @@ connection.onDidChangeWatchedFiles((change) => {
   }
   let publicChangedFiles = new Set<string>();
   if (aspChanged) {
-    publicChangedFiles = refreshIncludePublicBoundariesForAspChanges(aspChanges);
+    publicChangedFiles = await refreshIncludePublicBoundariesForAspChangesAsync(aspChanges);
     if (publicChangedFiles.size > 0) {
-      ensureIncludeGraphForOpenDocuments(publicChangedFiles);
+      await ensureIncludeGraphForOpenDocumentsAsync(publicChangedFiles);
     }
     includeCycleCache.clear();
     if (aspChanges.some((change) => change.type !== FileChangeType.Changed)) {
@@ -1152,7 +1137,7 @@ connection.onDidChangeWatchedFiles((change) => {
   scheduleBackgroundAnalysis(scriptChanged ? "watchedScript.changed" : "watchedAsp.changed");
 });
 
-connection.workspace.onWillRenameFiles((params) => includeRenameWorkspaceEdit(params.files));
+connection.workspace.onWillRenameFiles((params) => includeRenameWorkspaceEditAsync(params.files));
 
 connection.workspace.onDidRenameFiles(() => {
   invalidateWorkspaceIndex("fileOperation.rename");
@@ -1349,7 +1334,7 @@ connection.onReferences(async (params: ReferenceParams) => {
   ).map((reference) => Location.create(reference.uri, reference.range));
 });
 
-connection.onPrepareRename((params) => {
+connection.onPrepareRename(async (params) => {
   const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return null;
@@ -1379,7 +1364,7 @@ connection.onPrepareRename((params) => {
     getVbscriptRenameRange(
       cached.parsed,
       params.position,
-      buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+      await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
     ) ?? null
   );
 });
@@ -1407,7 +1392,7 @@ connection.onRenameRequest(async (params: RenameParams): Promise<WorkspaceEdit |
   if (!isVbscriptPosition(cached, params.position)) {
     return null;
   }
-  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const context = await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri));
   const range = getVbscriptRenameRange(cached.parsed, params.position, context);
   if (!range || !/^[A-Za-z][A-Za-z0-9_]*$/.test(params.newName)) {
     return null;
@@ -1490,14 +1475,18 @@ connection.onWorkspaceSymbol(async (params, token) => {
       },
     )
   ).flat();
-  const openSymbols = documents.all().flatMap((document) => {
-    const cached = ensureFreshCachedDocument(document);
-    return cached
-      ? (buildVbProjectContext(cached, cachedSettings(document.uri)).symbols ?? []).filter(
-          (symbol) => matchesQuery(symbol.name),
-        )
-      : [];
-  });
+  const openSymbols = (
+    await Promise.all(
+      documents.all().map(async (document) => {
+        const cached = ensureFreshCachedDocument(document);
+        return cached
+          ? ((
+              await buildVbProjectContextAsync(cached, cachedSettings(document.uri))
+            ).symbols?.filter((symbol) => matchesQuery(symbol.name)) ?? [])
+          : [];
+      }),
+    )
+  ).flat();
   const vbSymbols = openSymbols.map(vbSymbolInformation);
   const openRichSymbols = documents.all().flatMap((document) => {
     const cached = ensureFreshCachedDocument(document);
@@ -1553,20 +1542,22 @@ connection.onFoldingRanges((params) => {
   return [...htmlRanges, ...cssRanges, ...jsRanges, ...vbRanges, ...aspRanges];
 });
 
-connection.onDocumentLinks((params) => {
+connection.onDocumentLinks(async (params): Promise<DocumentLink[]> => {
   const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
-  return cached.parsed.includes.map((include): DocumentLink => {
-    const targetPath = resolveIncludePath(
-      cached.source.uri,
-      include.path,
-      include.mode,
-      cachedSettings(cached.source.uri),
-    );
-    return { range: include.pathRange, target: pathToFileUri(targetPath) };
-  });
+  return Promise.all(
+    cached.parsed.includes.map(async (include): Promise<DocumentLink> => {
+      const targetPath = await resolveIncludePathAsync(
+        cached.source.uri,
+        include.path,
+        include.mode,
+        cachedSettings(cached.source.uri),
+      );
+      return { range: include.pathRange, target: pathToFileUri(targetPath) };
+    }),
+  );
 });
 
 connection.onSelectionRanges((params): SelectionRange[] => {
@@ -1598,7 +1589,8 @@ connection.languages.inlayHint.on((params): InlayHint[] =>
 connection.languages.diagnostics.on(async (params) => {
   noteForegroundActivity();
   const cached =
-    getFreshCached(params.textDocument.uri) ?? getIndexedCached(params.textDocument.uri);
+    getFreshCached(params.textDocument.uri) ??
+    (await getIndexedCachedAsync(params.textDocument.uri, globalSettings));
   return {
     kind: "full" as const,
     items: cached ? await diagnosticsForCachedAsync(cached, cachedSettings(cached.source.uri)) : [],
@@ -1660,7 +1652,7 @@ connection.onExecuteCommand(async (params) => {
     return { ok: true };
   }
   if (params.command === clearCacheCommand || params.command === clearCacheServerCommand) {
-    diskAnalysisCache.clear();
+    await diskAnalysisCache.clear();
     vbProjectContextCache.clear();
     clearJsProjectCaches();
     logDebugSummary(globalSettings, "[asp-lsp] diskCache.clear");
@@ -1674,7 +1666,7 @@ connection.onExecuteCommand(async (params) => {
   };
 });
 
-connection.languages.callHierarchy.onPrepare((params): CallHierarchyItem[] => {
+connection.languages.callHierarchy.onPrepare(async (params): Promise<CallHierarchyItem[]> => {
   const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
@@ -1688,40 +1680,44 @@ connection.languages.callHierarchy.onPrepare((params): CallHierarchyItem[] => {
   return prepareVbscriptCallHierarchy(
     cached.parsed,
     params.position,
-    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+    await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
     cached.source.uri,
   ).map(itemWithContainedSelectionRange);
 });
 
-connection.languages.callHierarchy.onIncomingCalls((params): CallHierarchyIncomingCall[] => {
-  if (isJsCallHierarchyItem(params.item)) {
-    return jsIncomingCalls(params.item).map(incomingCallWithContainedSelectionRange);
-  }
-  const root = callHierarchyRootUri(params.item);
-  const cached = getFreshCached(root) ?? getFreshCached(params.item.uri);
-  if (!cached) {
-    return [];
-  }
-  return getVbscriptIncomingCalls(
-    params.item,
-    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
-  ).map(incomingCallWithContainedSelectionRange);
-});
+connection.languages.callHierarchy.onIncomingCalls(
+  async (params): Promise<CallHierarchyIncomingCall[]> => {
+    if (isJsCallHierarchyItem(params.item)) {
+      return jsIncomingCalls(params.item).map(incomingCallWithContainedSelectionRange);
+    }
+    const root = callHierarchyRootUri(params.item);
+    const cached = getFreshCached(root) ?? getFreshCached(params.item.uri);
+    if (!cached) {
+      return [];
+    }
+    return getVbscriptIncomingCalls(
+      params.item,
+      await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+    ).map(incomingCallWithContainedSelectionRange);
+  },
+);
 
-connection.languages.callHierarchy.onOutgoingCalls((params): CallHierarchyOutgoingCall[] => {
-  if (isJsCallHierarchyItem(params.item)) {
-    return jsOutgoingCalls(params.item).map(outgoingCallWithContainedSelectionRange);
-  }
-  const root = callHierarchyRootUri(params.item);
-  const cached = getFreshCached(root) ?? getFreshCached(params.item.uri);
-  if (!cached) {
-    return [];
-  }
-  return getVbscriptOutgoingCalls(
-    params.item,
-    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
-  ).map(outgoingCallWithContainedSelectionRange);
-});
+connection.languages.callHierarchy.onOutgoingCalls(
+  async (params): Promise<CallHierarchyOutgoingCall[]> => {
+    if (isJsCallHierarchyItem(params.item)) {
+      return jsOutgoingCalls(params.item).map(outgoingCallWithContainedSelectionRange);
+    }
+    const root = callHierarchyRootUri(params.item);
+    const cached = getFreshCached(root) ?? getFreshCached(params.item.uri);
+    if (!cached) {
+      return [];
+    }
+    return getVbscriptOutgoingCalls(
+      params.item,
+      await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+    ).map(outgoingCallWithContainedSelectionRange);
+  },
+);
 
 connection.languages.typeHierarchy.onPrepare((params): TypeHierarchyItem[] => {
   const cached = getFreshCached(params.textDocument.uri);
@@ -1792,12 +1788,12 @@ connection.onColorPresentation((params): ColorPresentation[] => {
   return cssColorPresentations(cached, params.color, params.range);
 });
 
-connection.onCodeLens((params): CodeLens[] => {
+connection.onCodeLens(async (params): Promise<CodeLens[]> => {
   const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
-  return codeLenses(cached);
+  return codeLensesAsync(cached);
 });
 
 connection.onDocumentFormatting((params) => {
@@ -1830,16 +1826,21 @@ connection.onDocumentRangeFormatting((params) => {
   }) as TextEdit[];
 });
 
-connection.onCodeAction((params): CodeAction[] => {
+connection.onCodeAction(async (params): Promise<CodeAction[]> => {
   const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
   }
+  const quickFixes = (
+    await Promise.all(
+      params.context.diagnostics.map((diagnostic) =>
+        quickFixesForDiagnosticAsync(cached, diagnostic),
+      ),
+    )
+  ).flat();
   return [
-    ...params.context.diagnostics.flatMap((diagnostic) =>
-      quickFixesForDiagnostic(cached, diagnostic),
-    ),
-    ...vbscriptCodeActions(cached, params.range, params.context),
+    ...quickFixes,
+    ...(await vbscriptCodeActionsAsync(cached, params.range, params.context)),
     ...cssCodeActions(cached, params.range, params.context),
     ...jsCodeActions(cached, params.range, params.context),
   ];
@@ -2589,6 +2590,11 @@ async function fileExistsAsync(fileName: string): Promise<boolean> {
   return Boolean(stat?.isFile());
 }
 
+async function pathExistsAsync(fileName: string): Promise<boolean> {
+  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  return Boolean(stat);
+}
+
 async function mapWithConcurrency<T, U>(
   items: readonly T[],
   concurrency: number,
@@ -2700,7 +2706,7 @@ async function flushPendingProjectUpdatesAsync(
   let refreshed = 0;
   for (const document of documents.all()) {
     const cached = ensureFreshCachedDocument(document);
-    collectCachedVbProjectDocuments(cached, cachedSettings(document.uri));
+    await collectCachedVbProjectDocumentsAsync(cached, cachedSettings(document.uri));
     for (const virtual of jsVirtualDocuments(cached)) {
       createJsLanguageService(virtual, cachedSettings(document.uri));
     }
@@ -2758,9 +2764,13 @@ function createDiskAnalysisCache(settings: AspSettings): DiskAnalysisCache {
   });
 }
 
-function configureDiskAnalysisCache(): void {
+async function configureDiskAnalysisCacheAsync(): Promise<void> {
   diskAnalysisCache = createDiskAnalysisCache(globalSettings);
-  diskAnalysisCache.sweep();
+  await diskAnalysisCache.sweep();
+}
+
+function logDiskAnalysisCacheError(operation: string, error: unknown): void {
+  connection.console.warn(`[asp-lsp] ${operation}.failed: ${errorMessage(error)}`);
 }
 
 function diskAnalysisNamespace(): string {
@@ -2834,7 +2844,7 @@ async function runBackgroundAnalysis(generation: number, reason: string): Promis
       await diagnosticsForIndexed(entry, cachedSettings(entry.uri), token, "idle");
     });
     if (!token.isCancellationRequested) {
-      diskAnalysisCache.sweep();
+      await diskAnalysisCache.sweep();
       pendingBackgroundAnalysisReason = undefined;
       logDebugSummary(
         settings,
@@ -3086,11 +3096,11 @@ async function vbDiagnosticsAsync(
       () => cachedItems.items,
     );
   }
-  const context = measureDebugStep(
+  const context = await measureDebugStepAsync(
     settings,
     cached.source.uri,
     `${stepPrefix}.vbscript.projectContext`,
-    () => buildVbProjectContext(cached, settings),
+    () => buildVbProjectContextAsync(cached, settings),
   );
   const items = await measureDebugStepAsync(
     settings,
@@ -4787,7 +4797,7 @@ function resolveJsCompletion(item: CompletionItem, uri: string): CompletionItem 
 
 function aspHover(cached: CachedDocument, params: TextDocumentPositionParams): Hover | null {
   const settings = cachedSettings(cached.source.uri);
-  const context = buildVbProjectContext(cached, settings);
+  const context = immediateVbProjectContext(cached, settings);
   const value = getVbscriptHover(cached.parsed, params.position, context);
   const fallback = value ?? fallbackVbscriptHover(cached, params.position, context);
   return fallback ? { contents: { kind: "markdown", value: fallback } } : null;
@@ -5337,9 +5347,12 @@ function tsReferenceToLocation(
   return textSpanToLocation(context, reference.fileName, reference.textSpan);
 }
 
-function buildVbProjectContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
+async function buildVbProjectContextAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<VbProjectContext> {
   const rootKey = vbProjectRootContextCacheKey(cached, settings);
-  const project = collectCachedVbProjectAnalysis(cached, settings);
+  const project = await collectCachedVbProjectAnalysisAsync(cached, settings);
   const documents = project.documents;
   const contextSettings = vbProjectContextSettings(settings);
   const key = vbProjectContextCacheKey(documents, settings);
@@ -5448,7 +5461,7 @@ async function workspaceVbscriptReferencesForPosition(
   options: VbReferenceOptions = {},
 ): Promise<VbReference[]> {
   const settings = cachedSettings(cached.source.uri);
-  const context = buildVbProjectContext(cached, settings);
+  const context = await buildVbProjectContextAsync(cached, settings);
   const symbol = getVbscriptDefinition(cached.parsed, position, context);
   return symbol ? workspaceVbscriptReferencesForSymbol(cached, symbol, settings, options) : [];
 }
@@ -5459,7 +5472,7 @@ async function workspaceVbscriptReferencesForSymbol(
   settings: AspSettings,
   options: VbReferenceOptions = {},
 ): Promise<VbReference[]> {
-  const context = buildVbProjectContext(cached, settings);
+  const context = await buildVbProjectContextAsync(cached, settings);
   const target = equivalentVbSymbol(context.symbols ?? [], symbol) ?? symbol;
   const references = new Map<string, VbReference>();
   addVbReferences(references, getVbscriptReferencesForSymbol(target, context, options));
@@ -5479,7 +5492,7 @@ async function workspaceVbscriptReferencesForSymbol(
     if (!candidateCached) {
       continue;
     }
-    const candidateContext = buildVbProjectContext(candidateCached, settings);
+    const candidateContext = await buildVbProjectContextAsync(candidateCached, settings);
     const candidateTarget = equivalentVbSymbol(candidateContext.symbols ?? [], target);
     if (candidateTarget) {
       addVbReferences(
@@ -5720,7 +5733,9 @@ function pushWorkspaceVbReferenceSummary(
   map.set(key, summaries);
 }
 
-function refreshIncludePublicBoundariesForAspChanges(changes: WatchedAspFileChange[]): Set<string> {
+async function refreshIncludePublicBoundariesForAspChangesAsync(
+  changes: WatchedAspFileChange[],
+): Promise<Set<string>> {
   const changed = new Set<string>();
   includeDocumentLoader.invalidateFiles(changes.map((change) => change.fileName));
   for (const change of changes) {
@@ -5730,7 +5745,7 @@ function refreshIncludePublicBoundariesForAspChanges(changes: WatchedAspFileChan
     const next =
       change.type === FileChangeType.Deleted
         ? undefined
-        : includeDocumentLoader.read(fileName, cachedSettings(uri));
+        : await includeDocumentLoader.readAsync(fileName, cachedSettings(uri));
     const nextFingerprint = next?.publicFingerprint ?? "missing";
     if (previous?.publicFingerprint === nextFingerprint) {
       logDebugSummary(
@@ -5749,7 +5764,9 @@ function refreshIncludePublicBoundariesForAspChanges(changes: WatchedAspFileChan
   return changed;
 }
 
-function ensureIncludeGraphForOpenDocuments(publicChangedFiles: Set<string>): void {
+async function ensureIncludeGraphForOpenDocumentsAsync(
+  publicChangedFiles: Set<string>,
+): Promise<void> {
   const changedUris = new Set([...publicChangedFiles].map(pathToFileUri));
   for (const document of documents.all()) {
     const cached = ensureFreshCachedDocument(document);
@@ -5757,7 +5774,7 @@ function ensureIncludeGraphForOpenDocuments(publicChangedFiles: Set<string>): vo
     if (existing && setsIntersect(existing, changedUris)) {
       continue;
     }
-    collectCachedVbProjectDocuments(cached, cachedSettings(cached.source.uri));
+    await collectCachedVbProjectDocumentsAsync(cached, cachedSettings(cached.source.uri));
   }
 }
 
@@ -5956,19 +5973,21 @@ function configuredVbscriptGlobals(cached: CachedDocument, settings: AspSettings
   });
 }
 
-function collectCachedVbProjectAnalysis(
+async function collectCachedVbProjectAnalysisAsync(
   cached: CachedDocument,
   settings: AspSettings,
-): VbProjectAnalysis {
-  const documents = collectCachedVbProjectDocuments(cached, settings);
+): Promise<VbProjectAnalysis> {
+  const documents = await collectCachedVbProjectDocumentsAsync(cached, settings);
   const key = vbProjectContextCacheKey(documents, settings);
   const existing = cached.analysis?.vbProjectAnalysis;
   if (existing?.key === key) {
     return existing.analysis;
   }
   const contextSettings = vbProjectContextSettings(settings);
-  const summaries = documents.map((document) =>
-    fileAnalysisSummaryForProjectDocument(cached, document, settings, contextSettings),
+  const summaries = await Promise.all(
+    documents.map((document) =>
+      fileAnalysisSummaryForProjectDocumentAsync(cached, document, settings, contextSettings),
+    ),
   );
   const symbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
   symbols.push(...configuredVbscriptGlobals(cached, settings));
@@ -5987,14 +6006,14 @@ function collectCachedVbProjectAnalysis(
   return analysis;
 }
 
-function fileAnalysisSummaryForProjectDocument(
+async function fileAnalysisSummaryForProjectDocumentAsync(
   cached: CachedDocument,
   document: AspParsedDocument,
   settings: AspSettings,
   context: VbProjectContext,
-): FileAnalysisSummary {
+): Promise<FileAnalysisSummary> {
   if (document.uri !== cached.parsed.uri) {
-    const entry = includeDocumentLoader.read(uriToFileName(document.uri), settings);
+    const entry = await includeDocumentLoader.readAsync(uriToFileName(document.uri), settings);
     if (entry?.parsed === document || entry?.key) {
       return entry.summary;
     }
@@ -6074,16 +6093,16 @@ function mergeVbMembers(left: VbType["members"], right: VbType["members"]): VbTy
   return [...byName.values()];
 }
 
-function collectCachedVbProjectDocuments(
+async function collectCachedVbProjectDocumentsAsync(
   cached: CachedDocument,
   settings: AspSettings,
-): AspParsedDocument[] {
+): Promise<AspParsedDocument[]> {
   const collectionKey = vbProjectDocumentCollectionKey(cached, settings);
   const existing = cached.analysis?.vbProjectDocuments;
   if (existing?.collectionKey === collectionKey) {
     return existing.documents;
   }
-  const documents = collectVbProjectDocuments(cached.parsed, settings);
+  const documents = await collectVbProjectDocumentsAsync(cached.parsed, settings);
   analysisFor(cached).vbProjectDocuments = { collectionKey, documents };
   return documents;
 }
@@ -6096,42 +6115,36 @@ function vbProjectDocumentCollectionKey(cached: CachedDocument, settings: AspSet
   });
 }
 
-function collectVbProjectDocuments(
+async function collectVbProjectDocumentsAsync(
   root: AspParsedDocument,
   settings: AspSettings,
-): AspParsedDocument[] {
+): Promise<AspParsedDocument[]> {
   const documents: AspParsedDocument[] = [];
   const visited = new Set<string>();
   resetIncludeDependencies(root.uri);
-  const visit = (document: AspParsedDocument, depth: number): void => {
+  const visit = async (document: AspParsedDocument, depth: number): Promise<void> => {
     if (depth > 20 || visited.has(document.uri)) {
       return;
     }
     visited.add(document.uri);
     documents.push(document);
     for (const include of document.includes) {
-      const resolved = resolveIncludePath(document.uri, include.path, include.mode, settings);
-      const uri = pathToFileUri(resolved);
+      const resolved = await resolveIncludePathDetailsAsync(
+        document.uri,
+        include.path,
+        include.mode,
+        settings,
+      );
+      const uri = pathToFileUri(resolved.fileName);
       recordIncludeDependency(root.uri, uri);
-      if (!fs.existsSync(resolved)) {
+      if (!resolved.exists || visited.has(uri)) {
         continue;
       }
-      if (visited.has(uri)) {
-        continue;
-      }
-      visit(readParsedIncludeDocument(resolved, settings), depth + 1);
+      await visit(await readParsedIncludeDocumentAsync(resolved.fileName, settings), depth + 1);
     }
   };
-  visit(root, 0);
+  await visit(root, 0);
   return documents;
-}
-
-function readParsedIncludeDocument(fileName: string, settings: AspSettings): AspParsedDocument {
-  const entry = includeDocumentLoader.read(fileName, settings);
-  if (!entry) {
-    throw new Error(`Include document does not exist: ${fileName}`);
-  }
-  return entry.parsed;
 }
 
 async function readParsedIncludeDocumentAsync(
@@ -6143,23 +6156,6 @@ async function readParsedIncludeDocumentAsync(
     throw new Error(`Include document does not exist: ${fileName}`);
   }
   return entry.parsed;
-}
-
-function readTextFile(fileName: string, encoding: AspLegacyEncoding | undefined): string {
-  return decodeLegacyText(fs.readFileSync(fileName), encoding);
-}
-
-function includeDocumentCacheKey(fileName: string, settings: AspSettings): string | undefined {
-  const stat = fs.statSync(fileName, { throwIfNoEntry: false });
-  if (!stat?.isFile()) {
-    return undefined;
-  }
-  return JSON.stringify({
-    fileName,
-    mtimeMs: stat.mtimeMs,
-    size: stat.size,
-    settings: includeDocumentSettingsIdentity(settings),
-  });
 }
 
 async function includeDocumentCacheKeyAsync(
@@ -6312,7 +6308,7 @@ async function includeDiagnosticsAsync(
     if (cancellation.isCancellationRequested()) {
       return [];
     }
-    const resolved = resolveIncludePathDetails(
+    const resolved = await resolveIncludePathDetailsAsync(
       cached.source.uri,
       include.path,
       include.mode,
@@ -6371,28 +6367,33 @@ async function includeDiagnosticsAsync(
   return diagnostics;
 }
 
-function includeRenameWorkspaceEdit(
+async function includeRenameWorkspaceEditAsync(
   files: Array<{ oldUri: string; newUri: string }>,
-): WorkspaceEdit | null {
-  ensureWorkspaceIndex();
+): Promise<WorkspaceEdit | null> {
+  await ensureWorkspaceIndexAsync(globalSettings);
   const changes: NonNullable<WorkspaceEdit["changes"]> = {};
   const seenEdits = new Set<string>();
   const renamePairs = files.map((file) => ({
     oldFile: normalizeFileName(uriToFileName(file.oldUri)),
     newFile: normalizeFileName(uriToFileName(file.newUri)),
   }));
+  const indexedCandidates = await Promise.all(
+    [...workspaceIndex.values()].map((entry) =>
+      cachedFromIndexedAsync(entry, cachedSettings(entry.uri)),
+    ),
+  );
   const candidates = [
     ...documents.all().flatMap((document) => {
       const cached = ensureFreshCachedDocument(document);
       return cached ? [cached] : [];
     }),
-    ...[...workspaceIndex.values()].map(cachedFromIndexed),
+    ...indexedCandidates,
   ];
   for (const cached of candidates) {
     const settings = cachedSettings(cached.source.uri);
     for (const include of cached.parsed.includes) {
       const resolved = normalizeFileName(
-        resolveIncludePath(cached.source.uri, include.path, include.mode, settings),
+        await resolveIncludePathAsync(cached.source.uri, include.path, include.mode, settings),
       );
       const pair = renamePairs.find((item) => sameFile(item.oldFile, resolved));
       if (!pair) {
@@ -6490,7 +6491,7 @@ async function findIncludeCycleAsync(
       return undefined;
     }
     for (const include of parsed.includes) {
-      const next = resolveIncludePath(
+      const next = await resolveIncludePathAsync(
         pathToFileUri(normalized),
         include.path,
         include.mode,
@@ -6777,24 +6778,13 @@ function getCached(uri: string): CachedDocument | undefined {
   return cached;
 }
 
-function getIndexedCached(uri: string): CachedDocument | undefined {
-  ensureWorkspaceIndex();
+async function getIndexedCachedAsync(
+  uri: string,
+  settings: AspSettings,
+): Promise<CachedDocument | undefined> {
+  await ensureWorkspaceIndexAsync(settings);
   const entry = workspaceIndex.get(normalizeFileName(uriToFileName(uri)));
-  return entry ? cachedFromIndexed(entry) : undefined;
-}
-
-function cachedFromIndexed(entry: WorkspaceIndexedDocument): CachedDocument {
-  const settings = cachedSettings(entry.uri);
-  const parsed = parseAspDocument(
-    entry.uri,
-    readTextFile(entry.fileName, settings.legacyEncoding),
-    settings,
-  );
-  return createCachedDocument(
-    TextDocument.create(entry.uri, "classic-asp", 0, parsed.text),
-    parsed,
-    settings,
-  );
+  return entry ? cachedFromIndexedAsync(entry, cachedSettings(entry.uri)) : undefined;
 }
 
 async function cachedFromIndexedAsync(
@@ -6838,7 +6828,7 @@ async function diagnosticsForIndexed(
     source: sourceMetadata,
     settingsKey,
   };
-  const cachedAnalysis = diskAnalysisCache.readAnalysis(lookup);
+  const cachedAnalysis = await diskAnalysisCache.readAnalysis(lookup);
   if (cachedAnalysis) {
     logDebugSummary(settings, `[asp-lsp] diskCache.hit: ${entry.uri}`);
     aspProjectBuilderState.restoreDiskState(
@@ -6866,7 +6856,7 @@ async function diagnosticsForIndexed(
   if (cancellation.isCancellationRequested()) {
     return [];
   }
-  diskAnalysisCache.write({
+  await diskAnalysisCache.write({
     source: sourceMetadata,
     settingsKey,
     diagnostics: items,
@@ -6915,7 +6905,7 @@ async function diskAnalysisIncludeDependencyKey(
       if (cancellation.isCancellationRequested()) {
         return;
       }
-      const resolved = resolveIncludePathDetails(
+      const resolved = await resolveIncludePathDetailsAsync(
         document.uri,
         include.path,
         include.mode,
@@ -6950,16 +6940,6 @@ async function diskAnalysisIncludeDependencyKey(
   };
   await visit(root, 0);
   return textFingerprint(JSON.stringify(dependencies));
-}
-
-function ensureWorkspaceIndex(): void {
-  if (!workspaceIndexDirty) {
-    return;
-  }
-  for (const root of workspaceRoots) {
-    indexWorkspaceRoot(root);
-  }
-  workspaceIndexDirty = false;
 }
 
 async function ensureWorkspaceIndexAsync(
@@ -7136,48 +7116,6 @@ async function yieldToEventLoop(): Promise<void> {
 
 async function delay(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
-}
-
-function indexWorkspaceRoot(root: string): void {
-  const stat = fs.statSync(root, { throwIfNoEntry: false });
-  if (!stat?.isDirectory()) {
-    return;
-  }
-  const visit = (dir: string): void => {
-    for (const entry of readDirectoryEntries(dir)) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!isExcludedWorkspaceDirectory(entry.name, fullPath)) {
-          visit(fullPath);
-        }
-        continue;
-      }
-      if (entry.isFile() && isAspWorkspaceFile(entry.name)) {
-        indexWorkspaceFile(fullPath);
-      }
-    }
-  };
-  visit(root);
-}
-
-function indexWorkspaceFile(fileName: string): void {
-  const normalized = normalizeFileName(fileName);
-  const stat = fs.statSync(normalized, { throwIfNoEntry: false });
-  if (!stat?.isFile()) {
-    workspaceIndex.delete(normalized);
-    return;
-  }
-  const existing = workspaceIndex.get(normalized);
-  if (existing && existing.mtimeMs === stat.mtimeMs && existing.size === stat.size) {
-    return;
-  }
-  const uri = pathToFileUri(normalized);
-  workspaceIndex.set(normalized, {
-    uri,
-    fileName: normalized,
-    mtimeMs: stat.mtimeMs,
-    size: stat.size,
-  });
 }
 
 function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
@@ -7459,7 +7397,7 @@ async function refreshConfiguration(): Promise<void> {
     globalSettings = normalizeSettings(
       (await connection.workspace.getConfiguration("aspLsp")) as Record<string, unknown>,
     );
-    configureDiskAnalysisCache();
+    await configureDiskAnalysisCacheAsync();
     settingsByUri.clear();
     const impact = settingsInvalidationImpact(previousSettingsByUri);
     applySettingsInvalidation(impact);
@@ -7471,7 +7409,7 @@ async function refreshConfiguration(): Promise<void> {
     }
   } catch {
     globalSettings = normalizeSettings(globalSettings);
-    configureDiskAnalysisCache();
+    await configureDiskAnalysisCacheAsync();
   }
   scheduleBackgroundAnalysis("configuration.refresh");
 }
@@ -7627,8 +7565,20 @@ function normalizeInlayHintSettings(
     parameterNames: record.parameterNames !== false,
     functionReturnTypes: record.functionReturnTypes !== false,
     implicitByRef: record.implicitByRef !== false,
-    globalVariableMarkers: record.globalVariableMarkers !== false,
+    globalVariableMarkers: normalizeInlayMarkerMode(record.globalVariableMarkers),
   };
+}
+
+function normalizeInlayMarkerMode(
+  value: unknown,
+): NonNullable<NonNullable<AspSettings["inlayHints"]>["globalVariableMarkers"]> {
+  if (value === "all" || value === "off") {
+    return value;
+  }
+  if (value === false) {
+    return "off";
+  }
+  return "global";
 }
 
 function normalizeCodeLensSettings(
@@ -7639,6 +7589,7 @@ function normalizeCodeLensSettings(
   return {
     references: record.references !== false,
     includes: record.includes === true,
+    referenceScope: record.referenceScope === "workspace" ? "workspace" : "analyzed",
   };
 }
 
@@ -8903,14 +8854,6 @@ function browserJavaScriptTypes(
   return types;
 }
 
-function readDirectoryEntries(dir: string): fs.Dirent[] {
-  try {
-    return fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-}
-
 function cachedTsFileExists(fileName: string): boolean {
   const key = safeNormalizeFileName(fileName);
   const cached = jsFileExistsCache.get(key);
@@ -9032,49 +8975,55 @@ function scriptKindForFileName(fileName: string): ts.ScriptKind {
   return ts.ScriptKind.JS;
 }
 
-function resolveIncludePath(
+async function resolveIncludePathAsync(
   ownerUri: string,
   includePath: string,
   mode: "file" | "virtual",
   settings: AspSettings,
-): string {
-  return resolveIncludePathDetails(ownerUri, includePath, mode, settings).fileName;
+): Promise<string> {
+  return (await resolveIncludePathDetailsAsync(ownerUri, includePath, mode, settings)).fileName;
 }
 
-function resolveIncludePathDetails(
+async function resolveIncludePathDetailsAsync(
   ownerUri: string,
   includePath: string,
   mode: "file" | "virtual",
   settings: AspSettings,
-): IncludePathResolution {
+): Promise<IncludePathResolution> {
   const cacheKey = includePathResolutionCacheKey(ownerUri, includePath, mode, settings);
   const cached = includePathResolutionCache.get(cacheKey);
   if (cached) {
     return cached;
   }
-  const resolved = resolveIncludePathDetailsUncached(ownerUri, includePath, mode, settings);
+  const resolved = await resolveIncludePathDetailsUncachedAsync(
+    ownerUri,
+    includePath,
+    mode,
+    settings,
+  );
   includePathResolutionCache.set(cacheKey, resolved);
   return resolved;
 }
 
-function resolveIncludePathDetailsUncached(
+async function resolveIncludePathDetailsUncachedAsync(
   ownerUri: string,
   includePath: string,
   mode: "file" | "virtual",
   settings: AspSettings,
-): IncludePathResolution {
+): Promise<IncludePathResolution> {
   if (mode === "virtual") {
     const normalizedInclude = includePath.replace(/^\/+/, "");
+    const ownerRoot = await workspaceRootFromUriAsync(ownerUri);
     for (const root of [
       ...(settings.virtualRoots ?? []),
       settings.virtualRoot,
       ...workspaceRoots,
-      workspaceRootFromUri(ownerUri),
+      ownerRoot,
     ]) {
       if (!root) {
         continue;
       }
-      const candidate = resolveIncludeCandidate(
+      const candidate = await resolveIncludeCandidateAsync(
         root,
         normalizedInclude,
         settings,
@@ -9084,8 +9033,8 @@ function resolveIncludePathDetailsUncached(
         return candidate;
       }
     }
-    const root = settings.virtualRoot ?? workspaceRootFromUri(ownerUri);
-    return resolveIncludeCandidate(
+    const root = settings.virtualRoot ?? ownerRoot;
+    return resolveIncludeCandidateAsync(
       root,
       normalizedInclude,
       settings,
@@ -9093,14 +9042,17 @@ function resolveIncludePathDetailsUncached(
     );
   }
   const ownerDirectory = path.dirname(uriToFileName(ownerUri));
-  const local = resolveIncludeCandidate(ownerDirectory, includePath, settings, (actual) =>
-    path.relative(ownerDirectory, actual).split(path.sep).join("/"),
+  const local = await resolveIncludeCandidateAsync(
+    ownerDirectory,
+    includePath,
+    settings,
+    (actual) => path.relative(ownerDirectory, actual).split(path.sep).join("/"),
   );
   if (local.exists) {
     return local;
   }
   for (const root of [...(settings.includePaths ?? []), ...(settings.virtualRoots ?? [])]) {
-    const candidate = resolveIncludeCandidate(root, includePath, settings, (actual) =>
+    const candidate = await resolveIncludeCandidateAsync(root, includePath, settings, (actual) =>
       path.relative(root, actual).split(path.sep).join("/"),
     );
     if (candidate.exists) {
@@ -9124,42 +9076,42 @@ function includePathResolutionCacheKey(
   });
 }
 
-function resolveIncludeCandidate(
+async function resolveIncludeCandidateAsync(
   baseDirectory: string,
   includePath: string,
   settings: AspSettings,
   actualIncludePath: (actualPath: string) => string,
-): IncludePathResolution {
-  const resolved = resolvePathFromBase(baseDirectory, includePath, settings);
+): Promise<IncludePathResolution> {
+  const resolved = await resolvePathFromBaseAsync(baseDirectory, includePath, settings);
   return {
     ...resolved,
     actualIncludePath: resolved.actualPath ? actualIncludePath(resolved.actualPath) : undefined,
   };
 }
 
-function resolvePathFromBase(
+async function resolvePathFromBaseAsync(
   baseDirectory: string,
   requestedPath: string,
   settings: AspSettings,
-): PathResolution {
+): Promise<PathResolution> {
   const cacheKey = pathResolutionCacheKey(baseDirectory, requestedPath, settings);
   const cached = pathResolutionCache.get(cacheKey);
   if (cached) {
     return cached;
   }
-  const resolved = resolvePathFromBaseUncached(baseDirectory, requestedPath, settings);
+  const resolved = await resolvePathFromBaseUncachedAsync(baseDirectory, requestedPath, settings);
   pathResolutionCache.set(cacheKey, resolved);
   return resolved;
 }
 
-function resolvePathFromBaseUncached(
+async function resolvePathFromBaseUncachedAsync(
   baseDirectory: string,
   requestedPath: string,
   settings: AspSettings,
-): PathResolution {
+): Promise<PathResolution> {
   const fileName = path.resolve(baseDirectory, requestedPath);
   if (settings.windowsPathResolution === false) {
-    const exists = fs.existsSync(fileName);
+    const exists = await pathExistsAsync(fileName);
     return {
       fileName,
       exists,
@@ -9176,7 +9128,7 @@ function resolvePathFromBaseUncached(
     relative = path.relative(start, fileName);
   }
   if (!relative) {
-    const exists = fs.existsSync(fileName);
+    const exists = await pathExistsAsync(fileName);
     return {
       fileName,
       exists,
@@ -9187,10 +9139,10 @@ function resolvePathFromBaseUncached(
   let current = start;
   let pathCaseMatches = true;
   for (const segment of relative.split(path.sep).filter((part) => part.length > 0)) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
+    const entries = await fs.promises
+      .readdir(current, { withFileTypes: true })
+      .catch(() => undefined);
+    if (!entries) {
       return { fileName, exists: false, pathCaseMatches };
     }
     const exact = entries.find((entry) => entry.name === segment);
@@ -9239,9 +9191,16 @@ function includeResolutionSettingsKey(settings: AspSettings): unknown {
 
 function workspaceRootFromUri(uri: string): string {
   const fileName = uriToFileName(uri);
-  return fs.statSync(fileName, { throwIfNoEntry: false })?.isDirectory()
-    ? fileName
-    : path.dirname(fileName);
+  const normalized = normalizeFileName(fileName);
+  const root = workspaceRoots.find((candidate) => {
+    const normalizedRoot = normalizeFileName(candidate);
+    return normalized === normalizedRoot || normalized.startsWith(`${normalizedRoot}${path.sep}`);
+  });
+  return root ?? path.dirname(fileName);
+}
+
+function workspaceRootFromUriAsync(uri: string): Promise<string> {
+  return Promise.resolve(workspaceRootFromUri(uri));
 }
 
 function uriToFileName(uri: string): string {
@@ -9374,7 +9333,10 @@ function tsSymbolKind(kind: ts.ScriptElementKind): SymbolKind {
   }
 }
 
-function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic): CodeAction[] {
+async function quickFixesForDiagnosticAsync(
+  cached: CachedDocument,
+  diagnostic: Diagnostic,
+): Promise<CodeAction[]> {
   if (diagnostic.source === "asp-lsp-vbscript") {
     const name = textInRange(cached.source, diagnostic.range).trim();
     if (!name) {
@@ -9382,6 +9344,7 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
     }
     const line = diagnostic.range.start.line;
     const localizer = localizerForUri(cached.source.uri);
+    const includeActions = await vbscriptIncludeSuggestionActionsAsync(cached, diagnostic, name);
     return [
       {
         title: localizer.t("server.quickfix.declareDim", { name }),
@@ -9401,17 +9364,17 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
           },
         },
       },
-      ...vbscriptIncludeSuggestionActions(cached, diagnostic, name),
+      ...includeActions,
     ];
   }
   if (diagnostic.source === "asp-lsp-vbscript-unused") {
-    return removeUnusedVbscriptDeclarationActions(cached, diagnostic);
+    return removeUnusedVbscriptDeclarationActionsAsync(cached, diagnostic);
   }
   if (diagnostic.source === "asp-lsp-vbscript-type") {
     return vbscriptTypeDiagnosticActions(cached, diagnostic);
   }
   if (diagnostic.source === "asp-lsp-vbscript-naming") {
-    return vbscriptNamingDiagnosticActions(cached, diagnostic);
+    return vbscriptNamingDiagnosticActionsAsync(cached, diagnostic);
   }
   if (
     diagnostic.source === "asp-lsp-vbscript-syntax" &&
@@ -9436,7 +9399,7 @@ function quickFixesForDiagnostic(cached: CachedDocument, diagnostic: Diagnostic)
     }
     const localizer = localizerForUri(cached.source.uri);
     const targetPath = include
-      ? resolveIncludePath(
+      ? await resolveIncludePathAsync(
           cached.source.uri,
           include.path,
           include.mode,
@@ -9496,10 +9459,10 @@ function fixVbscriptCallSyntaxAction(
   };
 }
 
-function vbscriptNamingDiagnosticActions(
+async function vbscriptNamingDiagnosticActionsAsync(
   cached: CachedDocument,
   diagnostic: Diagnostic,
-): CodeAction[] {
+): Promise<CodeAction[]> {
   const data = diagnostic.data as
     | {
         name?: string;
@@ -9516,7 +9479,7 @@ function vbscriptNamingDiagnosticActions(
   ) {
     return [];
   }
-  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  const context = await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri));
   const symbol = context.symbols?.find(
     (candidate) =>
       candidate.sourceUri === cached.source.uri && sameRange(candidate.range, diagnostic.range),
@@ -9657,11 +9620,12 @@ function vbscriptTypeDiagnosticActions(
   return [];
 }
 
-function removeUnusedVbscriptDeclarationActions(
+async function removeUnusedVbscriptDeclarationActionsAsync(
   cached: CachedDocument,
   diagnostic: Diagnostic,
-): CodeAction[] {
-  const symbol = buildVbProjectContext(cached, cachedSettings(cached.source.uri)).symbols?.find(
+): Promise<CodeAction[]> {
+  const context = await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri));
+  const symbol = context.symbols?.find(
     (candidate) =>
       candidate.sourceUri === cached.source.uri && sameRange(candidate.range, diagnostic.range),
   );
@@ -9745,28 +9709,38 @@ function removeVbscriptParameterEdit(
   };
 }
 
-function vbscriptIncludeSuggestionActions(
+async function vbscriptIncludeSuggestionActionsAsync(
   cached: CachedDocument,
   diagnostic: Diagnostic,
   symbolName: string,
-): CodeAction[] {
+): Promise<CodeAction[]> {
   const settings = cachedSettings(cached.source.uri);
   if (settings.vbscript?.includeSuggestions === false) {
     return [];
   }
-  ensureWorkspaceIndex();
+  await ensureWorkspaceIndexAsync(settings);
   const ownerFile = normalizeFileName(uriToFileName(cached.source.uri));
   const includedFiles = new Set(
-    cached.parsed.includes.map((include) =>
-      normalizeFileName(
-        resolveIncludePath(cached.source.uri, include.path, include.mode, settings),
+    await Promise.all(
+      cached.parsed.includes.map(async (include) =>
+        normalizeFileName(
+          await resolveIncludePathAsync(cached.source.uri, include.path, include.mode, settings),
+        ),
       ),
     ),
   );
   const candidates = new Map<string, CachedDocument>();
-  for (const entry of workspaceIndex.values()) {
-    if (normalizeFileName(entry.fileName) !== ownerFile) {
-      candidates.set(normalizeFileName(entry.fileName), cachedFromIndexed(entry));
+  for (const entry of await mapWithConcurrency(
+    [...workspaceIndex.values()],
+    analysisConcurrency(settings),
+    async (indexed) => ({
+      indexed,
+      cached: await cachedFromIndexedAsync(indexed, cachedSettings(indexed.uri)),
+    }),
+  )) {
+    const { indexed, cached: indexedCached } = entry;
+    if (normalizeFileName(indexed.fileName) !== ownerFile) {
+      candidates.set(normalizeFileName(indexed.fileName), indexedCached);
     }
   }
   for (const document of documents.all()) {
@@ -9859,18 +9833,18 @@ function includeSuggestionPath(
 
 const vbscriptExtractVariableKind = `${CodeActionKind.Refactor}.extract`;
 
-function vbscriptCodeActions(
+async function vbscriptCodeActionsAsync(
   cached: CachedDocument,
   range: Range,
   context: CodeActionContext,
-): CodeAction[] {
+): Promise<CodeAction[]> {
   const actions: CodeAction[] = [];
   if (codeActionAllows(context, CodeActionKind.QuickFix)) {
     if (context.diagnostics.length === 0) {
       const documentation = getVbscriptDocumentationQuickAction(
         cached.parsed,
         range.start,
-        buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
+        await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
       );
       if (documentation) {
         actions.push({
@@ -10370,12 +10344,15 @@ function mergeWorkspaceEdits(
   return Object.keys(changes).length > 0 ? { changes } : undefined;
 }
 
-function codeLenses(cached: CachedDocument): CodeLens[] {
+async function codeLensesAsync(cached: CachedDocument): Promise<CodeLens[]> {
   const settings = cachedSettings(cached.source.uri).codeLens;
   const lenses: CodeLens[] = [];
   if (settings?.references !== false) {
-    const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
-    for (const symbol of (context.symbols ?? []).filter(
+    const symbols = collectVbscriptSymbols(
+      cached.parsed,
+      vbProjectContextSettings(cachedSettings(cached.source.uri)),
+    );
+    for (const symbol of symbols.filter(
       (item) =>
         item.sourceUri === cached.source.uri &&
         ["function", "sub", "class", "method", "property"].includes(item.kind),
@@ -10389,7 +10366,7 @@ function codeLenses(cached: CachedDocument): CodeLens[] {
   if (settings?.includes !== false) {
     const localizer = localizerForUri(cached.source.uri);
     for (const include of cached.parsed.includes) {
-      const target = resolveIncludePath(
+      const target = await resolveIncludePathAsync(
         cached.source.uri,
         include.path,
         include.mode,
@@ -10421,15 +10398,15 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
   if (!symbol) {
     return lens;
   }
-  const references = await workspaceVbscriptReferencesForSymbol(
-    cached,
-    symbol,
-    cachedSettings(cached.source.uri),
-    {
-      includeDeclaration: false,
-      includeFunctionReturnAssignments: false,
-    },
-  );
+  const settings = cachedSettings(cached.source.uri);
+  const options = {
+    includeDeclaration: false,
+    includeFunctionReturnAssignments: false,
+  };
+  const references =
+    settings.codeLens?.referenceScope === "workspace"
+      ? await workspaceVbscriptReferencesForSymbol(cached, symbol, settings, options)
+      : analyzedVbscriptReferencesForSymbol(cached, symbol, settings, options);
   const localizer = localizerForUri(cached.source.uri);
   return {
     ...lens,
@@ -10479,8 +10456,10 @@ function vbSymbolForCodeLensData(
   cached: CachedDocument,
   data: VbReferenceCodeLensData,
 ): VbSymbol | undefined {
-  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
-  return (context.symbols ?? []).find(
+  return collectVbscriptSymbols(
+    cached.parsed,
+    vbProjectContextSettings(cachedSettings(data.uri)),
+  ).find(
     (symbol) =>
       symbol.sourceUri === data.uri &&
       symbol.name.toLowerCase() === data.name.toLowerCase() &&
@@ -10489,6 +10468,68 @@ function vbSymbolForCodeLensData(
       symbol.range.start.line === data.line &&
       symbol.range.start.character === data.character,
   );
+}
+
+function analyzedVbscriptReferencesForSymbol(
+  cached: CachedDocument,
+  symbol: VbSymbol,
+  settings: AspSettings,
+  options: VbReferenceOptions,
+): VbReference[] {
+  const references = new Map<string, VbReference>();
+  const analyzed = analyzedCachedDocuments();
+  const currentContext = localVbReferenceContext(cached, settings);
+  const currentTarget = equivalentVbSymbol(currentContext.symbols ?? [], symbol) ?? symbol;
+  addVbReferences(
+    references,
+    getVbscriptReferencesForSymbol(currentTarget, currentContext, options),
+  );
+
+  for (const candidate of analyzed) {
+    if (candidate.source.uri === cached.source.uri) {
+      continue;
+    }
+    const warmed = candidate.analysis?.vbProjectContext?.context;
+    const warmedTarget = warmed ? equivalentVbSymbol(warmed.symbols ?? [], symbol) : undefined;
+    if (warmedTarget) {
+      addVbReferences(references, getVbscriptReferencesForSymbol(warmedTarget, warmed, options));
+      continue;
+    }
+    addVbReferences(
+      references,
+      fallbackWorkspaceExternalReferences(
+        workspaceVbReferenceSummaryForCached(candidate, settings).summary,
+        symbol,
+      ),
+    );
+  }
+
+  return [...references.values()].sort(vbReferenceOrder);
+}
+
+function analyzedCachedDocuments(): CachedDocument[] {
+  const byUri = new Map<string, CachedDocument>();
+  for (const document of documents.all()) {
+    const cached = ensureFreshCachedDocument(document);
+    byUri.set(cached.source.uri, cached);
+  }
+  for (const cached of cache.values()) {
+    byUri.set(cached.source.uri, cached);
+  }
+  return [...byUri.values()];
+}
+
+function localVbReferenceContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
+  const contextSettings = vbProjectContextSettings(settings);
+  const symbols = collectVbscriptSymbols(cached.parsed, contextSettings);
+  return {
+    documents: [cached.parsed],
+    symbols,
+    typeEnvironment: buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
+    externalRefUsages:
+      cachedFileAnalysisSummary(cached, contextSettings).vbscript?.externalRefUsages ?? [],
+    ...contextSettings,
+  };
 }
 
 function onTypeFormatting(
@@ -10885,8 +10926,13 @@ function addFallbackVbSemanticTokens(
   rangeStart: number,
   rangeEnd: number,
 ): void {
+  const namesInRange = vbIdentifierNamesInSourceRange(cached, rangeStart, rangeEnd);
   const candidates = (context.symbols ?? []).filter(
-    (symbol) => symbol.sourceUri !== cached.parsed.uri && !symbol.scopeName && !symbol.memberOf,
+    (symbol) =>
+      symbol.sourceUri !== cached.parsed.uri &&
+      !symbol.scopeName &&
+      !symbol.memberOf &&
+      namesInRange.has(symbol.name.toLowerCase()),
   );
   for (const symbol of candidates) {
     const tokenType = fallbackVbSemanticTokenType(symbol.kind);
@@ -10919,6 +10965,29 @@ function addFallbackVbSemanticTokens(
       });
     }
   }
+}
+
+function vbIdentifierNamesInSourceRange(
+  cached: CachedDocument,
+  rangeStart: number,
+  rangeEnd: number,
+): Set<string> {
+  const names = new Set<string>();
+  const pattern = /\b[A-Za-z_][A-Za-z0-9_]*\b/g;
+  for (const region of regionsInSourceRange(cached.parsed, rangeStart, rangeEnd)) {
+    if (region.language !== "vbscript") {
+      continue;
+    }
+    const start = Math.max(region.contentStart, rangeStart);
+    const end = Math.min(region.contentEnd, rangeEnd);
+    const text = cached.parsed.text.slice(start, end);
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text))) {
+      names.add(match[0].toLowerCase());
+    }
+  }
+  return names;
 }
 
 function isWholeWordAt(text: string, start: number, end: number): boolean {

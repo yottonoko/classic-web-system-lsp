@@ -45,6 +45,26 @@ and five measured iterations. Override those counts when needed:
 ASP_LSP_BENCH_WARMUPS=1 ASP_LSP_BENCH_ITERATIONS=1 pnpm run benchmark:include-tree
 ```
 
+Measure end-to-end editor update latency through the LSP server on the include
+tree sample:
+
+```sh
+pnpm run benchmark:change:include-tree
+```
+
+The include-tree change benchmark is intentionally disabled until this scenario
+is at least 10000% faster than the current baseline. It can take a long time
+because it opens the sample through the full LSP server and then runs workspace
+cache scenarios. For this sample, the benchmark gives the spawned server a 16 GB
+V8 old-space limit unless `NODE_OPTIONS` already configures one. Override it with
+`ASP_LSP_BENCH_INCLUDE_TREE_SERVER_OLD_SPACE_MB` when needed. After confirming
+the required speedup, set `ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000` or
+higher and keep the first matrix narrow:
+
+```sh
+ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000 ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default ASP_LSP_BENCH_BACKGROUND=off pnpm run benchmark:change:include-tree
+```
+
 Useful checks:
 
 ```sh
