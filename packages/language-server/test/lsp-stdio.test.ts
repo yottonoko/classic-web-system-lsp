@@ -315,6 +315,70 @@ Server.HTMLEe▮
       }
     });
 
+    it("maps CSS completion, hover and style close tag positions back to ASP source", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const cssDocument = markedDocument(`<style>
+.card { colo▮r: red; }
+</style>`);
+        const uri = "file:///tmp/css-source-map.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: cssDocument.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: cssDocument.position,
+        });
+        const colorCompletion = completionItems(completions).find((item) => item.label === "color");
+        expect(colorCompletion).toBeTruthy();
+        expect(completionEditRange(colorCompletion)?.start.line).toBe(1);
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: cssDocument.position,
+        });
+        expect(JSON.stringify(hover)).toContain("Sets the color");
+        expect((hover as { range?: { start: { line: number } } }).range?.start.line).toBe(1);
+
+        const closeTagDocument = markedDocument(`<style>
+.card { color: red; }
+</▮style>`);
+        const closeTagUri = "file:///tmp/css-close-tag.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: closeTagUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: closeTagDocument.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const closeTagCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri: closeTagUri },
+          position: closeTagDocument.position,
+        });
+        expect(completionLabels(closeTagCompletions)).toContain("/style");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("renames HTML tags and CSS selectors through embedded language services", async () => {
       const source = `<div><span>name</span></div>
 <style>.oldName { color: red; }</style>`;
@@ -7529,6 +7593,30 @@ function completionItems(completions: unknown): Array<Record<string, unknown>> {
   return items.filter(
     (item): item is Record<string, unknown> => item !== null && typeof item === "object",
   );
+}
+
+function completionEditRange(
+  item: Record<string, unknown> | undefined,
+):
+  | { start: { line: number; character: number }; end: { line: number; character: number } }
+  | undefined {
+  const textEdit = item?.textEdit as
+    | {
+        range?: {
+          start: { line: number; character: number };
+          end: { line: number; character: number };
+        };
+        insert?: {
+          start: { line: number; character: number };
+          end: { line: number; character: number };
+        };
+        replace?: {
+          start: { line: number; character: number };
+          end: { line: number; character: number };
+        };
+      }
+    | undefined;
+  return textEdit?.range ?? textEdit?.insert ?? textEdit?.replace;
 }
 
 async function waitForDiagnosticsContaining(

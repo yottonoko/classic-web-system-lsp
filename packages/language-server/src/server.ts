@@ -1261,7 +1261,10 @@ connection.onHover((params) =>
         return null;
       }
       const doc = toTextDocument(virtual);
-      return cssService.doHover(doc, virtualPosition, cssService.parseStylesheet(doc));
+      return remapHover(
+        virtual,
+        cssService.doHover(doc, virtualPosition, cssService.parseStylesheet(doc)),
+      );
     }
     return null;
   }),
@@ -3384,7 +3387,45 @@ function cssCompletion(
     return [];
   }
   const doc = toTextDocument(virtual);
-  return cssService.doComplete(doc, position, cssService.parseStylesheet(doc)).items;
+  return cssService
+    .doComplete(doc, position, cssService.parseStylesheet(doc))
+    .items.map((item) => remapCompletionItem(virtual, item))
+    .filter((item): item is CompletionItem => Boolean(item));
+}
+
+function remapCompletionItem(
+  virtual: VirtualDocument,
+  item: CompletionItem,
+): CompletionItem | undefined {
+  const textEdit = item.textEdit ? remapCompletionTextEdit(virtual, item.textEdit) : undefined;
+  if (item.textEdit && !textEdit) {
+    return undefined;
+  }
+  const additionalTextEdits = item.additionalTextEdits
+    ?.map((edit) => remapTextEdit(virtual, edit))
+    .filter((edit): edit is TextEdit => Boolean(edit));
+  return {
+    ...item,
+    textEdit,
+    additionalTextEdits,
+  };
+}
+
+function remapCompletionTextEdit(
+  virtual: VirtualDocument,
+  textEdit: NonNullable<CompletionItem["textEdit"]>,
+): CompletionItem["textEdit"] | undefined {
+  if ("range" in textEdit) {
+    return remapTextEdit(virtual, textEdit);
+  }
+  const insert = sourceRangeFromVirtualRange(virtual, textEdit.insert);
+  const replace = sourceRangeFromVirtualRange(virtual, textEdit.replace);
+  return insert && replace ? { ...textEdit, insert, replace } : undefined;
+}
+
+function remapTextEdit(virtual: VirtualDocument, textEdit: TextEdit): TextEdit | undefined {
+  const range = sourceRangeFromVirtualRange(virtual, textEdit.range);
+  return range ? { ...textEdit, range } : undefined;
 }
 
 function jsCompletion(
@@ -5933,6 +5974,14 @@ function sourceRangeFromVirtualRange(virtual: VirtualDocument, range: Range): Ra
   return start && end ? { start, end } : undefined;
 }
 
+function remapHover(virtual: VirtualDocument, hover: Hover | null): Hover | null {
+  if (!hover?.range) {
+    return hover;
+  }
+  const range = sourceRangeFromVirtualRange(virtual, hover.range);
+  return range ? { ...hover, range } : { ...hover, range: undefined };
+}
+
 function remapWorkspaceEdit(
   virtual: VirtualDocument,
   edit: WorkspaceEdit,
@@ -6457,7 +6506,7 @@ function nearestPackageJson(directory: string): string | undefined {
   }
 }
 
-function findRegionAt(parsed: AspParsedDocument, offset: number) {
+function findRegionAt(parsed: AspParsedDocument, offset: number): AspRegion | undefined {
   const regions = regionIndexFor(parsed).byStart;
   let low = 0;
   let high = regions.length - 1;
@@ -6474,14 +6523,25 @@ function findRegionAt(parsed: AspParsedDocument, offset: number) {
   let best: AspRegion | undefined;
   for (let index = lastStartBeforeOffset; index >= 0; index -= 1) {
     const region = regions[index];
-    if (region.contentEnd < offset) {
+    if (region.contentEnd <= offset) {
       continue;
     }
     if (!best || region.contentEnd - region.contentStart < best.contentEnd - best.contentStart) {
       best = region;
     }
   }
-  return best;
+  const boundaryRegion = regions.find(
+    (region) =>
+      (region.kind === "style-attribute" ||
+        region.kind === "style" ||
+        region.kind === "client-script" ||
+        region.kind === "server-script") &&
+      region.contentEnd === offset,
+  );
+  if (boundaryRegion && (!best || best.kind === "html")) {
+    return boundaryRegion;
+  }
+  return best ?? (offset > 0 ? findRegionAt(parsed, offset - 1) : undefined);
 }
 
 function regionIndexFor(parsed: AspParsedDocument): RegionIndex {

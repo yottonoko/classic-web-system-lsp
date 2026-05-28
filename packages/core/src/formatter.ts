@@ -42,7 +42,12 @@ function formatText(
   let cursor = start;
   const regions = parsed.regions
     .filter((region) => region.end > start && region.start < end)
-    .sort((left, right) => left.start - right.start || left.end - right.end);
+    .sort(
+      (left, right) =>
+        left.start - right.start ||
+        formatRegionPriority(left) - formatRegionPriority(right) ||
+        right.end - left.end,
+    );
   for (const region of regions) {
     if (region.start < cursor) {
       continue;
@@ -61,6 +66,10 @@ function formatText(
     pieces.push(parsed.text.slice(cursor, end));
   }
   return pieces.join("");
+}
+
+function formatRegionPriority(region: AspRegion): number {
+  return region.kind === "html" ? 1 : 0;
 }
 
 function formatRegion(

@@ -210,8 +210,12 @@ Response.Write name
     const parsed = parseAspDocument("file:///site/default.asp", source);
     const docs = buildVirtualDocuments(parsed);
     expect(docs.get("html")?.text).toContain("<div>");
+    expect(docs.get("html")?.text).toContain("<style>");
+    expect(docs.get("html")?.text).toContain("</style>");
+    expect(docs.get("html")?.text).not.toContain(".x { color: red }");
     expect(docs.get("html")?.text).not.toContain("title");
     expect(docs.get("css")?.text).toContain("color");
+    expect(docs.get("css")?.text).not.toContain("</style>");
   });
 
   it("masks inline ASP inside CSS regions while keeping ASP completions routable", () => {

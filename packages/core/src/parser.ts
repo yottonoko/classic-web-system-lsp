@@ -98,6 +98,9 @@ export function updateAspParsedDocument(
   if (changeOverlapsDirective(previous, change.startOffset, change.endOffset)) {
     return fallback("ASP directive edit", change, nextText);
   }
+  if (changeTouchesEmbeddedContentBoundary(previous, change.startOffset, change.endOffset)) {
+    return fallback("region boundary edit", change, nextText);
+  }
   const region = incrementalRegionForChange(previous, change.startOffset, change.endOffset);
   if (!region) {
     return fallback("edit crosses language boundary", change, nextText);
@@ -324,6 +327,21 @@ function rangeOverlapsOrTouches(
     : startOffset < rangeEnd && endOffset > rangeStart;
 }
 
+function changeTouchesEmbeddedContentBoundary(
+  parsed: AspParsedDocument,
+  startOffset: number,
+  endOffset: number,
+): boolean {
+  return (
+    startOffset === endOffset &&
+    parsed.regions.some(
+      (region) =>
+        region.kind !== "html" &&
+        (startOffset === region.contentStart || startOffset === region.contentEnd),
+    )
+  );
+}
+
 function incrementalRegionForChange(
   parsed: AspParsedDocument,
   startOffset: number,
@@ -335,7 +353,7 @@ function incrementalRegionForChange(
         return false;
       }
       return startOffset === endOffset
-        ? startOffset >= region.contentStart && startOffset <= region.contentEnd
+        ? startOffset >= region.contentStart && startOffset < region.contentEnd
         : startOffset >= region.contentStart && endOffset <= region.contentEnd;
     })
     .sort(
@@ -712,30 +730,39 @@ function buildRegions(
   let cursor = 0;
   for (const region of topLevel) {
     if (cursor < region.start) {
-      regions.push({
-        kind: "html",
-        language: "html",
-        start: cursor,
-        end: region.start,
-        contentStart: cursor,
-        contentEnd: region.start,
-      });
+      regions.push(htmlRegion(cursor, region.start));
+    }
+    if (regionHasHtmlTagWrapper(region) && region.start < region.contentStart) {
+      regions.push(htmlRegion(region.start, region.contentStart));
     }
     regions.push(region);
+    if (regionHasHtmlTagWrapper(region) && region.contentEnd < region.end) {
+      regions.push(htmlRegion(region.contentEnd, region.end));
+    }
     cursor = region.end;
   }
   if (cursor < text.length) {
-    regions.push({
-      kind: "html",
-      language: "html",
-      start: cursor,
-      end: text.length,
-      contentStart: cursor,
-      contentEnd: text.length,
-    });
+    regions.push(htmlRegion(cursor, text.length));
   }
   const topLevelSet = new Set(topLevel);
   return [...regions, ...accepted.filter((region) => !topLevelSet.has(region))].sort(
     (left, right) => left.start - right.start || left.end - left.start - (right.end - right.start),
   );
+}
+
+function regionHasHtmlTagWrapper(region: AspRegion): boolean {
+  return (
+    region.kind === "style" || region.kind === "client-script" || region.kind === "server-script"
+  );
+}
+
+function htmlRegion(start: number, end: number): AspRegion {
+  return {
+    kind: "html",
+    language: "html",
+    start,
+    end,
+    contentStart: start,
+    contentEnd: end,
+  };
 }
