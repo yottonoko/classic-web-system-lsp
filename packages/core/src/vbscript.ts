@@ -3235,7 +3235,7 @@ export function collectVbscriptSymbols(
 ): VbSymbol[] {
   const symbols: VbSymbol[] = [];
   for (const node of vbDocuments(parsed)) {
-    addSymbolsFromVbNode(parsed, node, symbols);
+    addSymbolsFromVbNode(parsed, node, symbols, createDocCommentLookup(node));
   }
   if (options.implicitAssignments !== false) {
     addImplicitAssignmentSymbols(parsed, symbols);
@@ -3254,6 +3254,12 @@ interface VbSymbolCollectionOptions {
   implicitAssignments?: boolean;
   inferTypes?: boolean;
   variantFallback?: boolean;
+}
+
+interface VbDocCommentLookup {
+  tokens: VbToken[];
+  nextIndex: number;
+  lastOffset: number;
 }
 
 export function collectVbscriptPublicSymbols(
@@ -3519,6 +3525,7 @@ function addSymbolsFromVbNode(
   parsed: AspParsedDocument,
   node: VbCstNode,
   symbols: VbSymbol[],
+  docCommentLookup: VbDocCommentLookup,
   currentScopeName?: string,
   currentScopeRange?: Range,
   currentClassName?: string,
@@ -3528,7 +3535,7 @@ function addSymbolsFromVbNode(
       ? rangeFromOffsets(parsed.text, node.start, node.end)
       : undefined;
   if (node.kind === "Class" && node.nameToken) {
-    const documentation = documentationForNode(parsed, node);
+    const documentation = documentationForNode(node, docCommentLookup);
     symbols.push({
       name: node.nameToken.text,
       kind: "class",
@@ -3539,7 +3546,7 @@ function addSymbolsFromVbNode(
     });
   }
   if ((node.kind === "Procedure" || node.kind === "Property") && node.nameToken) {
-    const documentation = documentationForNode(parsed, node);
+    const documentation = documentationForNode(node, docCommentLookup);
     const scopeRange = nodeScopeRange;
     const name = node.nameToken.text;
     const kind: VbSymbolKind =
@@ -3601,7 +3608,7 @@ function addSymbolsFromVbNode(
       (memberOf ? rangeFromOffsets(parsed.text, node.start, node.end) : undefined);
     const identifiers = node.identifiers ?? (node.nameToken ? [node.nameToken] : []);
     const variableDocumentation =
-      identifiers.length === 1 ? documentationForNode(parsed, node) : undefined;
+      identifiers.length === 1 ? documentationForNode(node, docCommentLookup) : undefined;
     for (const identifier of identifiers) {
       const array = node.arrayDeclarations?.find((item) => item.name === identifier);
       symbols.push({
@@ -3632,7 +3639,15 @@ function addSymbolsFromVbNode(
   const childScopeRange = nodeScopeRange ?? currentScopeRange;
   const childClassName = node.kind === "Class" ? node.nameToken?.text : currentClassName;
   for (const child of node.children) {
-    addSymbolsFromVbNode(parsed, child, symbols, childScopeName, childScopeRange, childClassName);
+    addSymbolsFromVbNode(
+      parsed,
+      child,
+      symbols,
+      docCommentLookup,
+      childScopeName,
+      childScopeRange,
+      childClassName,
+    );
   }
 }
 
@@ -3935,13 +3950,13 @@ function parseReturnsTypeAnnotation(
 }
 
 function documentationForNode(
-  parsed: AspParsedDocument,
   node: VbCstNode,
+  docCommentLookup: VbDocCommentLookup,
 ): VbDocumentation | undefined {
   if (!node.nameToken && !node.identifiers?.length) {
     return undefined;
   }
-  const tokens = docCommentBlockBefore(parsed, node.start);
+  const tokens = docCommentBlockBeforeLookup(docCommentLookup, node.start);
   return tokens.length > 0 ? parseVbDocumentation(tokens) : undefined;
 }
 
@@ -3965,9 +3980,20 @@ function docCommentBlockBefore(parsed: AspParsedDocument, offset: number): VbTok
   const document = vbDocuments(parsed).find(
     (candidate) => offset >= candidate.start && offset <= candidate.end,
   );
-  const tokens = document?.tokens ?? [];
-  let index = tokens.findIndex((token) => token.start >= offset);
-  index = index === -1 ? tokens.length - 1 : index - 1;
+  return document ? docCommentBlockBeforeLookup(createDocCommentLookup(document), offset) : [];
+}
+
+function createDocCommentLookup(document: VbCstNode): VbDocCommentLookup {
+  return { tokens: document.tokens, nextIndex: 0, lastOffset: 0 };
+}
+
+function docCommentBlockBeforeLookup(lookup: VbDocCommentLookup, offset: number): VbToken[] {
+  const tokens = lookup.tokens;
+  const tokenIndex =
+    offset >= lookup.lastOffset
+      ? nextTokenAtOrAfter(lookup, offset)
+      : firstTokenAtOrAfter(tokens, offset);
+  let index = tokenIndex === tokens.length ? tokens.length - 1 : tokenIndex - 1;
   while (index >= 0 && isWhitespaceOrNewline(tokens[index])) {
     index -= 1;
   }
@@ -3984,6 +4010,31 @@ function docCommentBlockBefore(parsed: AspParsedDocument, offset: number): VbTok
     }
   }
   return comments.reverse();
+}
+
+function nextTokenAtOrAfter(lookup: VbDocCommentLookup, offset: number): number {
+  const tokens = lookup.tokens;
+  let index = lookup.nextIndex;
+  while (index < tokens.length && tokens[index].start < offset) {
+    index += 1;
+  }
+  lookup.nextIndex = index;
+  lookup.lastOffset = offset;
+  return index;
+}
+
+function firstTokenAtOrAfter(tokens: VbToken[], offset: number): number {
+  let low = 0;
+  let high = tokens.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (tokens[middle].start >= offset) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  return low;
 }
 
 function parseVbDocumentation(tokens: VbToken[]): VbDocumentation | undefined {
