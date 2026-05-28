@@ -3519,7 +3519,14 @@ function addSymbolsFromVbNode(
   parsed: AspParsedDocument,
   node: VbCstNode,
   symbols: VbSymbol[],
+  currentScopeName?: string,
+  currentScopeRange?: Range,
+  currentClassName?: string,
 ): void {
+  const nodeScopeRange =
+    node.kind === "Procedure" || node.kind === "Property"
+      ? rangeFromOffsets(parsed.text, node.start, node.end)
+      : undefined;
   if (node.kind === "Class" && node.nameToken) {
     const documentation = documentationForNode(parsed, node);
     symbols.push({
@@ -3533,6 +3540,7 @@ function addSymbolsFromVbNode(
   }
   if ((node.kind === "Procedure" || node.kind === "Property") && node.nameToken) {
     const documentation = documentationForNode(parsed, node);
+    const scopeRange = nodeScopeRange;
     const name = node.nameToken.text;
     const kind: VbSymbolKind =
       node.kind === "Property"
@@ -3550,7 +3558,7 @@ function addSymbolsFromVbNode(
       memberOf: node.memberOf,
       containerName: node.memberOf,
       scopeName: undefined,
-      scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
+      scopeRange,
       parameters: node.parameters?.map((token) => token.text) ?? [],
       parameterDetails:
         node.parameterMetadata?.map((parameter) => ({
@@ -3573,7 +3581,7 @@ function addSymbolsFromVbNode(
         range: rangeFromOffsets(parsed.text, parameter.token.start, parameter.token.end),
         sourceUri: parsed.uri,
         scopeName: name,
-        scopeRange: rangeFromOffsets(parsed.text, node.start, node.end),
+        scopeRange,
         parameterMode: parameter.mode,
         optional: parameter.optional || undefined,
         documentation: documentationForParameter(documentation, parameter.token.text),
@@ -3587,8 +3595,10 @@ function addSymbolsFromVbNode(
   ) {
     const baseKind: "variable" | "constant" =
       node.kind === "ConstantDeclaration" ? "constant" : "variable";
-    const scope = scopeNodeAt(parsed, node.start);
-    const memberOf = scope ? undefined : (node.memberOf ?? parentClassName(parsed, node.start));
+    const memberOf = currentScopeRange ? undefined : (node.memberOf ?? currentClassName);
+    const scopeRange =
+      currentScopeRange ??
+      (memberOf ? rangeFromOffsets(parsed.text, node.start, node.end) : undefined);
     const identifiers = node.identifiers ?? (node.nameToken ? [node.nameToken] : []);
     const variableDocumentation =
       identifiers.length === 1 ? documentationForNode(parsed, node) : undefined;
@@ -3601,12 +3611,8 @@ function addSymbolsFromVbNode(
         sourceUri: parsed.uri,
         memberOf,
         containerName: memberOf,
-        scopeName: scope?.nameToken?.text,
-        scopeRange: scope
-          ? rangeFromOffsets(parsed.text, scope.start, scope.end)
-          : memberOf
-            ? rangeFromOffsets(parsed.text, node.start, node.end)
-            : undefined,
+        scopeName: currentScopeName,
+        scopeRange,
         type: array ? typeRef("Array") : undefined,
         typeName: array ? "Array" : undefined,
         explicitType: Boolean(array),
@@ -3621,8 +3627,12 @@ function addSymbolsFromVbNode(
       });
     }
   }
+  const childScopeName =
+    node.kind === "Procedure" || node.kind === "Property" ? node.nameToken?.text : currentScopeName;
+  const childScopeRange = nodeScopeRange ?? currentScopeRange;
+  const childClassName = node.kind === "Class" ? node.nameToken?.text : currentClassName;
   for (const child of node.children) {
-    addSymbolsFromVbNode(parsed, child, symbols);
+    addSymbolsFromVbNode(parsed, child, symbols, childScopeName, childScopeRange, childClassName);
   }
 }
 

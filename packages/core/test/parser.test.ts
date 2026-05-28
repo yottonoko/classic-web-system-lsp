@@ -690,6 +690,47 @@ Response.Write customername
     expect(references).toHaveLength(2);
   });
 
+  it("collects VBScript declaration scopes from CST containment", () => {
+    const source = `<%
+Dim topLevel
+Class Customer
+  Public Name
+  Public Sub Save()
+    Dim localValue
+    For Each item In items
+    Next
+  End Sub
+End Class
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const symbol = (name: string) => {
+      const found = symbols.find((item) => item.name === name);
+      expect(found, name).toBeDefined();
+      return found;
+    };
+
+    const topLevel = symbol("topLevel");
+    expect(topLevel?.kind).toBe("variable");
+    expect(topLevel?.memberOf).toBeUndefined();
+    expect(topLevel?.scopeName).toBeUndefined();
+
+    const field = symbol("Name");
+    expect(field?.kind).toBe("field");
+    expect(field?.memberOf).toBe("Customer");
+    expect(field?.scopeName).toBeUndefined();
+
+    const local = symbol("localValue");
+    expect(local?.kind).toBe("variable");
+    expect(local?.memberOf).toBeUndefined();
+    expect(local?.scopeName).toBe("Save");
+
+    const loopItem = symbol("item");
+    expect(loopItem?.kind).toBe("variable");
+    expect(loopItem?.memberOf).toBeUndefined();
+    expect(loopItem?.scopeName).toBe("Save");
+  });
+
   it("can count only VBScript usage references for functions", () => {
     const source = `<%
 Function MakeCustomer()
