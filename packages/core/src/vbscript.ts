@@ -195,6 +195,7 @@ const analysisSnapshots = new WeakMap<AspParsedDocument, VbAnalysisSnapshot>();
 const symbolIndexes = new WeakMap<VbSymbol[], VbSymbolIndex>();
 const typeIndexes = new WeakMap<VbTypeEnvironment, VbTypeIndex>();
 let cachedBuiltinNameSet: Set<string> | undefined;
+let cachedBuiltinTypes: VbType[] | undefined;
 
 function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
   const localizer = createLocalizer(locale);
@@ -3501,11 +3502,14 @@ export function buildVbTypeEnvironment(
     });
   }
   for (const annotation of parseTypeAnnotations(parsed).members) {
-    const existing = typeMap.get(annotation.typeName.toLowerCase()) ?? {
-      name: annotation.typeName,
-      kind: "class" as const,
-      members: [],
-    };
+    const existingType = typeMap.get(annotation.typeName.toLowerCase());
+    const existing = existingType
+      ? { ...existingType, members: existingType.members }
+      : {
+          name: annotation.typeName,
+          kind: "class" as const,
+          members: [],
+        };
     existing.members = [
       ...existing.members.filter(
         (member) => member.name.toLowerCase() !== annotation.memberName.toLowerCase(),
@@ -6924,6 +6928,11 @@ function typeHasMember(type: VbTypeRef, memberName: string, env: VbTypeEnvironme
 }
 
 function builtinTypes(): VbType[] {
+  cachedBuiltinTypes ??= createBuiltinTypes();
+  return cachedBuiltinTypes;
+}
+
+function createBuiltinTypes(): VbType[] {
   const intrinsic: VbType[] = [
     "String",
     "Byte",
