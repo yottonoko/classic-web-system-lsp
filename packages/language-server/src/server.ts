@@ -10125,27 +10125,6 @@ function addEmbeddedSemanticTokens(
   rangeStart: number,
   rangeEnd: number,
 ): void {
-  const html = getCachedVirtual(cached, "html");
-  if (html && virtualOverlapsSourceRange(html, rangeStart, rangeEnd)) {
-    const pattern = /<\/?\s*([A-Za-z][A-Za-z0-9:-]*)/g;
-    for (const slice of virtualSearchSlicesForSourceRange(html, rangeStart, rangeEnd)) {
-      pattern.lastIndex = 0;
-      let match: RegExpExecArray | null;
-      while ((match = pattern.exec(slice.text))) {
-        addVirtualWordToken(
-          tokens,
-          cached.source,
-          cached,
-          html,
-          slice.start + match.index + match[0].lastIndexOf(match[1]),
-          match[1].length,
-          "keyword",
-          rangeStart,
-          rangeEnd,
-        );
-      }
-    }
-  }
   const css = getCachedVirtual(cached, "css");
   if (css && virtualOverlapsSourceRange(css, rangeStart, rangeEnd)) {
     const pattern = /\b([A-Za-z-]+)\s*:/g;

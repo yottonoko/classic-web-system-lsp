@@ -2778,6 +2778,64 @@ both.SharedName
       }
     });
 
+    it("does not mark HTML tag names as keyword semantic tokens", async () => {
+      const source = `<div class="card"><span><%= title %></span></div>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/html-tag-semantic.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        expect(
+          decoded.some((token) => tokenMatches(source, token, "div", semanticTokenType.keyword)),
+        ).toBe(false);
+        expect(
+          decoded.some((token) => tokenMatches(source, token, "span", semanticTokenType.keyword)),
+        ).toBe(false);
+        expect(
+          decoded.some((token) => tokenMatches(source, token, "<%=", semanticTokenType.keyword, 2)),
+        ).toBe(true);
+
+        const rangeTokens = await server.request("textDocument/semanticTokens/range", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: source.length } },
+        });
+        const decodedRange = decodeSemanticTokens((rangeTokens as { data?: number[] }).data);
+        expect(
+          decodedRange.some((token) =>
+            tokenMatches(source, token, "div", semanticTokenType.keyword),
+          ),
+        ).toBe(false);
+        expect(
+          decodedRange.some((token) =>
+            tokenMatches(source, token, "span", semanticTokenType.keyword),
+          ),
+        ).toBe(false);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("limits range semantic tokens to the requested ASP and embedded spans", async () => {
       const source = `<style>
 .a { color: red; }
