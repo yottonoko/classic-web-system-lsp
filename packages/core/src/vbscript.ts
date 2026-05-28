@@ -3361,7 +3361,7 @@ function collectVbscriptExternalRefs(
       continue;
     }
     const lowerName = token.text.toLowerCase();
-    if (visibleSymbolsByName(parsed, token.start, symbols, lowerName).length > 0) {
+    if (hasVisibleSymbolByName(parsed, token.start, symbols, lowerName)) {
       continue;
     }
     const next = nextSignificantTokenForToken(parsed, token);
@@ -5321,9 +5321,25 @@ function visibleSymbolsByName(
   symbols: VbSymbol[],
   lowerName: string,
 ): VbSymbol[] {
-  return (symbolIndexFor(symbols, parsed).byLowerName.get(lowerName) ?? []).filter((symbol) =>
-    isSymbolVisibleAt(symbol, parsed.uri, parsed.text, offset, symbolIndexFor(symbols, parsed)),
+  const index = symbolIndexFor(symbols, parsed);
+  return (index.byLowerName.get(lowerName) ?? []).filter((symbol) =>
+    isSymbolVisibleAt(symbol, parsed.uri, parsed.text, offset, index),
   );
+}
+
+function hasVisibleSymbolByName(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+  lowerName: string,
+): boolean {
+  const index = symbolIndexFor(symbols, parsed);
+  for (const symbol of index.byLowerName.get(lowerName) ?? []) {
+    if (isSymbolVisibleAt(symbol, parsed.uri, parsed.text, offset, index)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isSymbolVisibleAt(
@@ -5793,7 +5809,7 @@ function diagnoseUndeclaredVariables(
     const next = nextSignificantTokenForToken(parsed, token);
     if (
       declaredBuiltins.has(lower) ||
-      visibleSymbolsByName(parsed, token.start, symbols, lower).length > 0 ||
+      hasVisibleSymbolByName(parsed, token.start, symbols, lower) ||
       isBuiltinName(name) ||
       isDeclarationNameToken(parsed, token) ||
       previous?.text === "."
