@@ -12,27 +12,44 @@ import type {
 export function buildVirtualDocuments(
   parsed: AspParsedDocument,
 ): Map<AspEmbeddedLanguage, VirtualDocument> {
-  const languages: AspEmbeddedLanguage[] = [
-    "html",
-    "css",
-    "javascript",
-    "vbscript",
-    "jscript",
-    "asp-directive",
-  ];
+  const regionsByLanguage = new Map<AspEmbeddedLanguage, AspRegion[]>();
+  for (const region of parsed.regions) {
+    const regions = regionsByLanguage.get(region.language);
+    if (regions) {
+      regions.push(region);
+    } else {
+      regionsByLanguage.set(region.language, [region]);
+    }
+  }
+  const sortedRegions = sortRegionsBySource(parsed.regions);
   const result = new Map<AspEmbeddedLanguage, VirtualDocument>();
-  for (const language of languages) {
-    const regions = parsed.regions.filter((region) => region.language === language);
+  for (const language of virtualDocumentLanguages) {
+    const regions = regionsByLanguage.get(language) ?? [];
     if (regions.length === 0 && language !== "html") {
       continue;
     }
     result.set(
       language,
-      buildVirtualDocument(parsed.uri, parsed.text, language, regions, parsed.regions),
+      buildVirtualDocumentWithSortedRegions(
+        parsed.uri,
+        parsed.text,
+        language,
+        regions,
+        sortedRegions,
+      ),
     );
   }
   return result;
 }
+
+const virtualDocumentLanguages: AspEmbeddedLanguage[] = [
+  "html",
+  "css",
+  "javascript",
+  "vbscript",
+  "jscript",
+  "asp-directive",
+];
 
 export function buildVirtualDocument(
   uri: string,
@@ -41,13 +58,26 @@ export function buildVirtualDocument(
   regions: AspRegion[],
   allRegions: AspRegion[] = regions,
 ): VirtualDocument {
+  return buildVirtualDocumentWithSortedRegions(
+    uri,
+    sourceText,
+    languageId,
+    regions,
+    sortRegionsBySource(allRegions),
+  );
+}
+
+function buildVirtualDocumentWithSortedRegions(
+  uri: string,
+  sourceText: string,
+  languageId: AspEmbeddedLanguage,
+  regions: AspRegion[],
+  sortedRegions: AspRegion[],
+): VirtualDocument {
   if (languageId === "html") {
     return buildMaskedDocument(uri, sourceText, languageId, regions);
   }
 
-  const sortedRegions = [...allRegions].sort(
-    (left, right) => left.start - right.start || left.end - right.end,
-  );
   const chunks: string[] = [];
   const segments: SourceMapSegment[] = [];
   let textLength = 0;
@@ -69,6 +99,10 @@ export function buildVirtualDocument(
     text,
     sourceMap: createSourceMap(sourceText, text, segments),
   };
+}
+
+function sortRegionsBySource(regions: AspRegion[]): AspRegion[] {
+  return [...regions].sort((left, right) => left.start - right.start || left.end - right.end);
 }
 
 function sourceMapSegmentsForRegion(
