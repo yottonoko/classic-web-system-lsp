@@ -331,7 +331,13 @@ interface StagedDiagnosticsState {
   documentGeneration: number;
   diagnosticsIdentity: string;
   startedAt: bigint;
+  preservePreviousDiagnosticsUntilFinal: boolean;
   layers: Partial<Record<DiagnosticLayerKey, Diagnostic[]>>;
+}
+
+interface PublishedDiagnosticsState {
+  version?: number;
+  diagnostics: Diagnostic[];
 }
 
 interface AnalysisCancellation {
@@ -846,6 +852,7 @@ class IncludeDocumentLoader {
 const cache = new Map<string, CachedDocument>();
 const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const stagedDiagnosticsByUri = new Map<string, StagedDiagnosticsState>();
+const publishedDiagnosticsByUri = new Map<string, PublishedDiagnosticsState>();
 const pendingDocumentChanges = new Map<string, PendingDocumentChange>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 const includeDocumentLoader = new IncludeDocumentLoader();
@@ -945,6 +952,7 @@ documents.onDidOpen((event) => {
   noteForegroundActivity();
   documentOpenContentVersions.set(event.document.uri, event.document.version);
   pendingDocumentChanges.delete(event.document.uri);
+  publishedDiagnosticsByUri.delete(event.document.uri);
   cache.delete(event.document.uri);
   scheduleOpenFileProjectMaintenance("document.open");
   validate(event.document);
@@ -980,6 +988,7 @@ documents.onDidClose((event) => {
   cache.delete(event.document.uri);
   clearSemanticTokensForUri(event.document.uri);
   stagedDiagnosticsByUri.delete(event.document.uri);
+  publishedDiagnosticsByUri.delete(event.document.uri);
   resetIncludeDependencies(event.document.uri);
   scheduleOpenFileProjectMaintenance("document.close");
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
@@ -1854,7 +1863,9 @@ connection.languages.semanticTokens.onDelta((params): SemanticTokens | SemanticT
 function validate(document: TextDocument): void {
   cancelScheduledDiagnostics(document.uri);
   const cached = ensureFreshCachedDocument(document);
-  startStagedDiagnostics(cached, cachedSettings(document.uri));
+  startStagedDiagnostics(cached, cachedSettings(document.uri), true, {
+    preservePreviousDiagnosticsUntilFinal: hasPublishedDiagnostics(document.uri),
+  });
 }
 
 function refreshCachedDocument(document: TextDocument, impactReason?: string): CachedDocument {
@@ -2064,7 +2075,9 @@ function scheduleDiagnostics(document: TextDocument): void {
   cancelScheduledDiagnostics(document.uri);
   const settings = cachedSettings(document.uri);
   const cached = ensureFreshCachedDocument(document);
-  const state = startStagedDiagnostics(cached, settings, false);
+  const state = startStagedDiagnostics(cached, settings, false, {
+    preservePreviousDiagnosticsUntilFinal: hasPublishedDiagnostics(document.uri),
+  });
   const delay = settings.diagnostics?.debounceMs ?? defaultDiagnosticsDebounceMs;
   if (delay <= 0) {
     void runStagedDiagnostics(cached, settings, state);
@@ -2092,10 +2105,15 @@ function cancelScheduledDiagnostics(uri: string): void {
   diagnosticsTimers.delete(uri);
 }
 
+function hasPublishedDiagnostics(uri: string): boolean {
+  return (publishedDiagnosticsByUri.get(uri)?.diagnostics.length ?? 0) > 0;
+}
+
 function startStagedDiagnostics(
   cached: CachedDocument,
   settings: AspSettings,
   runAsyncLayers = true,
+  options: { preservePreviousDiagnosticsUntilFinal?: boolean } = {},
 ): StagedDiagnosticsState {
   const state: StagedDiagnosticsState = {
     generation: ++stagedDiagnosticsGeneration,
@@ -2104,6 +2122,7 @@ function startStagedDiagnostics(
     documentGeneration: cached.generation,
     diagnosticsIdentity: cached.diagnosticsIdentity,
     startedAt: startCheckLog(cached, settings),
+    preservePreviousDiagnosticsUntilFinal: options.preservePreviousDiagnosticsUntilFinal === true,
     layers: {},
   };
   stagedDiagnosticsByUri.set(cached.source.uri, state);
@@ -2187,8 +2206,20 @@ function publishStagedDiagnosticsLayer(
   if (layer === "final") {
     state.layers.final = items;
   }
+  if (shouldPreservePublishedDiagnostics(state, layer)) {
+    finishDebugStep(settings, cached.source.uri, `diagnostics.${layer}.preserve`, startedAt);
+    logDebugSummary(
+      settings,
+      `[asp-lsp] diagnostics.${layer}.preserved: ${cached.source.uri}, generation=${state.generation}, diagnostics=${items.length}, previous=${publishedDiagnosticsByUri.get(state.uri)?.diagnostics.length ?? 0}`,
+    );
+    return items;
+  }
   connection.sendDiagnostics({
     uri: cached.source.uri,
+    version: state.version,
+    diagnostics: items,
+  });
+  publishedDiagnosticsByUri.set(cached.source.uri, {
     version: state.version,
     diagnostics: items,
   });
@@ -2207,6 +2238,17 @@ function stagedDiagnosticsItems(state: StagedDiagnosticsState): Diagnostic[] {
     ...(state.layers.syntax ?? []),
     ...(state.layers.project ?? []),
   ];
+}
+
+function shouldPreservePublishedDiagnostics(
+  state: StagedDiagnosticsState,
+  layer: DiagnosticLayerKey,
+): boolean {
+  return (
+    state.preservePreviousDiagnosticsUntilFinal &&
+    layer !== "final" &&
+    hasPublishedDiagnostics(state.uri)
+  );
 }
 
 function isCurrentStagedDiagnostics(

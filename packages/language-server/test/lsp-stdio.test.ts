@@ -5892,6 +5892,61 @@ Response.Write missingName`,
       }
     });
 
+    it("does not clear visible diagnostics while change diagnostics are debounced", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 120 },
+            },
+          },
+        });
+        const uri = "file:///tmp/diagnostics-preserve-on-change.asp";
+        const initial = `<%
+Option Explicit
+Response.Write missingName
+%>
+<div>hello</div>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: initial,
+          },
+        });
+
+        await waitForDiagnosticsContaining(server, "missingName");
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("textDocument/publishDiagnostics");
+        server.takePendingNotifications("window/logMessage");
+
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: initial.replace("hello", "hello!") }],
+        });
+
+        await delay(30);
+        expect(server.takePendingNotifications("textDocument/publishDiagnostics")).toHaveLength(0);
+
+        const final = await waitForDiagnosticsContaining(server, "missingName");
+        expect(JSON.stringify(final.params)).toContain("missingName");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("runs VBScript project diagnostics through the worker pool", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vb-worker-"));
       const page = path.join(tempDir, "default.asp");
