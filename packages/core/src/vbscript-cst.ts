@@ -374,9 +374,9 @@ function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
       tokens.push(result);
       continue;
     }
-    if (/[0-9]/.test(char)) {
+    if (isDigit(char)) {
       index += 1;
-      while (index < text.length && /[0-9.]/.test(text[index])) {
+      while (index < text.length && isNumberPart(text[index])) {
         index += 1;
       }
       tokens.push(token("number", text, start, index, baseOffset));
@@ -398,12 +398,37 @@ function token(
   return { kind, start: baseOffset + start, end: baseOffset + end, text: text.slice(start, end) };
 }
 
-function isIdentifierStart(char: string): boolean {
-  return /[A-Za-z]/.test(char);
+function isIdentifierStart(char: string | undefined): boolean {
+  if (!char) {
+    return false;
+  }
+  const code = char.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 }
 
-function isIdentifierPart(char: string): boolean {
-  return /[A-Za-z0-9_]/.test(char);
+function isIdentifierPart(char: string | undefined): boolean {
+  if (!char) {
+    return false;
+  }
+  const code = char.charCodeAt(0);
+  return (
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    (code >= 48 && code <= 57) ||
+    code === 95
+  );
+}
+
+function isDigit(char: string | undefined): boolean {
+  if (!char) {
+    return false;
+  }
+  const code = char.charCodeAt(0);
+  return code >= 48 && code <= 57;
+}
+
+function isNumberPart(char: string | undefined): boolean {
+  return char === "." || isDigit(char);
 }
 
 function isRemCommentStart(text: string, index: number): boolean {
