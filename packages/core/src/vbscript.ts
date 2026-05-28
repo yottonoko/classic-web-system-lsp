@@ -193,6 +193,7 @@ interface VbUnusedReferenceCandidates {
 
 const analysisSnapshots = new WeakMap<AspParsedDocument, VbAnalysisSnapshot>();
 const symbolIndexes = new WeakMap<VbSymbol[], VbSymbolIndex>();
+const symbolKeys = new WeakMap<VbSymbol, string>();
 const typeIndexes = new WeakMap<VbTypeEnvironment, VbTypeIndex>();
 let cachedBuiltinNameSet: Set<string> | undefined;
 let cachedBuiltinTypes: VbType[] | undefined;
@@ -7616,7 +7617,11 @@ function enclosingCallableSymbol(
 }
 
 function symbolKey(symbol: VbSymbol): string {
-  return [
+  const cached = symbolKeys.get(symbol);
+  if (cached) {
+    return cached;
+  }
+  const key = [
     symbol.sourceUri,
     symbol.kind,
     symbol.memberOf ?? "",
@@ -7624,6 +7629,8 @@ function symbolKey(symbol: VbSymbol): string {
     symbol.range.start.line,
     symbol.range.start.character,
   ].join("|");
+  symbolKeys.set(symbol, key);
+  return key;
 }
 
 function isLikelyDynamicCall(name: string): boolean {
