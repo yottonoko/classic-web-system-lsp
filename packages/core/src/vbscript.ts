@@ -188,6 +188,7 @@ interface VbUnusedReferenceCandidates {
   keys: Set<string>;
   lowerNames: Set<string>;
   memberNames: Set<string>;
+  symbols: VbSymbol[];
 }
 
 const analysisSnapshots = new WeakMap<AspParsedDocument, VbAnalysisSnapshot>();
@@ -5838,15 +5839,7 @@ function diagnoseUnusedSymbols(
   if (usage.candidates.keys.size === 0) {
     return diagnostics;
   }
-  for (const symbol of symbols) {
-    if (
-      symbol.sourceUri !== parsed.uri ||
-      isBuiltinName(symbol.name) ||
-      isRuntimeEntryPoint(parsed, symbol) ||
-      !isUnusedDiagnosticCandidate(symbol)
-    ) {
-      continue;
-    }
+  for (const symbol of usage.candidates.symbols) {
     if ((usage.counts.get(symbolKey(symbol)) ?? 0) > 0) {
       continue;
     }
@@ -5949,6 +5942,7 @@ function unusedReferenceCandidates(
   const keys = new Set<string>();
   const lowerNames = new Set<string>();
   const memberNames = new Set<string>();
+  const candidates: VbSymbol[] = [];
   for (const symbol of symbols) {
     if (
       symbol.sourceUri !== parsed.uri ||
@@ -5958,6 +5952,7 @@ function unusedReferenceCandidates(
     ) {
       continue;
     }
+    candidates.push(symbol);
     keys.add(symbolKey(symbol));
     if (symbol.memberOf) {
       memberNames.add(symbol.name.toLowerCase());
@@ -5965,7 +5960,7 @@ function unusedReferenceCandidates(
       lowerNames.add(symbol.name.toLowerCase());
     }
   }
-  return { keys, lowerNames, memberNames };
+  return { keys, lowerNames, memberNames, symbols: candidates };
 }
 
 function resolveVisibleSymbolByName(
