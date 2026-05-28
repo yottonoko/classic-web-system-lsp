@@ -245,15 +245,15 @@ function readHtmlTag(text: string, start: number): HtmlTag | undefined {
   if (closing) {
     cursor += 1;
   }
-  while (cursor < text.length && /\s/.test(text[cursor])) {
+  while (cursor < text.length && isHtmlWhitespaceCode(text.charCodeAt(cursor))) {
     cursor += 1;
   }
   const nameStart = cursor;
-  if (!/[A-Za-z]/.test(text[cursor] ?? "")) {
+  if (!isAsciiAlphaCode(text.charCodeAt(cursor))) {
     return undefined;
   }
   cursor += 1;
-  while (cursor < text.length && /[A-Za-z0-9:_-]/.test(text[cursor])) {
+  while (cursor < text.length && isHtmlTagNamePartCode(text.charCodeAt(cursor))) {
     cursor += 1;
   }
   const name = text.slice(nameStart, cursor).toLowerCase();
@@ -315,7 +315,11 @@ function parseAttributeSpans(text: string, start: number, end: number): Attribut
   const attributes: AttributeSpan[] = [];
   let cursor = start;
   while (cursor < end) {
-    while (cursor < end && /[\s/]/.test(text[cursor])) {
+    while (cursor < end) {
+      const code = text.charCodeAt(cursor);
+      if (code !== 47 && !isHtmlWhitespaceCode(code)) {
+        break;
+      }
       cursor += 1;
     }
     if (text.startsWith("<%", cursor)) {
@@ -324,16 +328,16 @@ function parseAttributeSpans(text: string, start: number, end: number): Attribut
       continue;
     }
     const nameStart = cursor;
-    if (!/[A-Za-z_:]/.test(text[cursor] ?? "")) {
+    if (!isAttributeNameStartCode(text.charCodeAt(cursor))) {
       cursor += 1;
       continue;
     }
     cursor += 1;
-    while (cursor < end && /[-A-Za-z0-9_:.]/.test(text[cursor])) {
+    while (cursor < end && isAttributeNamePartCode(text.charCodeAt(cursor))) {
       cursor += 1;
     }
     const name = text.slice(nameStart, cursor);
-    while (cursor < end && /\s/.test(text[cursor])) {
+    while (cursor < end && isHtmlWhitespaceCode(text.charCodeAt(cursor))) {
       cursor += 1;
     }
     if (text[cursor] !== "=") {
@@ -341,7 +345,7 @@ function parseAttributeSpans(text: string, start: number, end: number): Attribut
       continue;
     }
     cursor += 1;
-    while (cursor < end && /\s/.test(text[cursor])) {
+    while (cursor < end && isHtmlWhitespaceCode(text.charCodeAt(cursor))) {
       cursor += 1;
     }
     const quote = text[cursor] === '"' || text[cursor] === "'" ? text[cursor] : undefined;
@@ -358,12 +362,65 @@ function parseAttributeSpans(text: string, start: number, end: number): Attribut
       attributes.push({ name, value: text.slice(valueStart, valueEnd), valueStart, valueEnd });
       continue;
     }
-    while (cursor < end && !/[\s>]/.test(text[cursor])) {
+    while (cursor < end) {
+      const code = text.charCodeAt(cursor);
+      if (code === 62 || isHtmlWhitespaceCode(code)) {
+        break;
+      }
       cursor += 1;
     }
     attributes.push({ name, value: text.slice(valueStart, cursor), valueStart, valueEnd: cursor });
   }
   return attributes;
+}
+
+function isHtmlWhitespaceCode(code: number): boolean {
+  return (
+    code === 9 ||
+    code === 10 ||
+    code === 11 ||
+    code === 12 ||
+    code === 13 ||
+    code === 32 ||
+    code === 160 ||
+    code === 5760 ||
+    (code >= 8192 && code <= 8202) ||
+    code === 8232 ||
+    code === 8233 ||
+    code === 8239 ||
+    code === 8287 ||
+    code === 12288 ||
+    code === 65279
+  );
+}
+
+function isAsciiAlphaCode(code: number): boolean {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isAsciiDigitCode(code: number): boolean {
+  return code >= 48 && code <= 57;
+}
+
+function isHtmlTagNamePartCode(code: number): boolean {
+  return (
+    isAsciiAlphaCode(code) || isAsciiDigitCode(code) || code === 58 || code === 95 || code === 45
+  );
+}
+
+function isAttributeNameStartCode(code: number): boolean {
+  return isAsciiAlphaCode(code) || code === 95 || code === 58;
+}
+
+function isAttributeNamePartCode(code: number): boolean {
+  return (
+    isAsciiAlphaCode(code) ||
+    isAsciiDigitCode(code) ||
+    code === 45 ||
+    code === 95 ||
+    code === 58 ||
+    code === 46
+  );
 }
 
 function styleAttributeRegionsFromTag(tag: HtmlTag): AspRegion[] {
@@ -525,8 +582,8 @@ function isClosingTagAt(text: string, index: number, tagName: string): boolean {
     return false;
   }
   const candidate = text.slice(index + 2, index + 2 + tagName.length);
-  const next = text[index + 2 + tagName.length];
-  return candidate.toLowerCase() === tagName && (next === ">" || /\s/.test(next ?? ""));
+  const next = text.charCodeAt(index + 2 + tagName.length);
+  return candidate.toLowerCase() === tagName && (next === 62 || isHtmlWhitespaceCode(next));
 }
 
 function parseIncludeComment(text: string, start: number, end: number): AspInclude | undefined {
