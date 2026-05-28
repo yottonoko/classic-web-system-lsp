@@ -1969,6 +1969,7 @@ function refreshCachedDocumentIncremental(
   cached.lastEditImpact = updated.impact;
   cached.lastIncrementalChange = change;
   seedVbReuseAfterIncrementalChange(previous, cached, settings, change, updated.impact);
+  seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
   cache.set(document.uri, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
   finishAnalysisLog(settings, document.uri, startedAt, updated.impact.kind);
@@ -2907,6 +2908,10 @@ function getCachedVirtual(
 }
 
 function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
+  const analysis = analysisFor(cached);
+  if (analysis.htmlDiagnostics) {
+    return analysis.htmlDiagnostics.items;
+  }
   const virtual = getCachedVirtual(cached, "html");
   if (!virtual) {
     return [];
@@ -2939,19 +2944,26 @@ function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
     }
     token = scanner.scan();
   }
+  analysis.htmlDiagnostics = { key: "html", items: diagnostics, text: cached.parsed.text };
   return diagnostics;
 }
 
 function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
+  const analysis = analysisFor(cached);
+  if (analysis.cssDiagnostics) {
+    return analysis.cssDiagnostics.items;
+  }
   const virtual = getCachedVirtual(cached, "css");
   if (!virtual) {
     return [];
   }
   const doc = toTextDocument(virtual);
-  return cssService
+  const diagnostics = cssService
     .doValidation(doc, cssService.parseStylesheet(doc))
     .map((diagnostic) => remapDiagnostic(virtual, diagnostic, "asp-lsp-css"))
     .filter(isDiagnostic);
+  analysis.cssDiagnostics = { key: "css", items: diagnostics, text: cached.parsed.text };
+  return diagnostics;
 }
 
 function jsSyntaxDiagnostics(cached: CachedDocument): Diagnostic[] {
@@ -3257,6 +3269,23 @@ function seedVbReuseAfterIncrementalChange(
       settings,
       `[asp-lsp] analysis.vbscript.reuse: ${cached.source.uri}, diagnostics=${previousDiagnostics ? "hit" : "miss"}, projectContext=${previousContext ? "hit" : "miss"}`,
     );
+  }
+}
+
+function seedSyntaxDiagnosticsAfterIncrementalChange(
+  previous: CachedDocument,
+  cached: CachedDocument,
+  impact: AspEditImpact,
+): void {
+  if (impact.kind !== "incremental" || impact.delta !== 0) {
+    return;
+  }
+  const analysis = analysisFor(cached);
+  if (impact.language !== "html" && previous.analysis?.htmlDiagnostics) {
+    analysis.htmlDiagnostics = previous.analysis.htmlDiagnostics;
+  }
+  if (impact.language !== "css" && previous.analysis?.cssDiagnostics) {
+    analysis.cssDiagnostics = previous.analysis.cssDiagnostics;
   }
 }
 
