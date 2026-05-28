@@ -1802,6 +1802,7 @@ Response.Write missingName
         ]);
         expect(logs).not.toContain("check.vbscript.diagnostics.symbols");
         expect(logs).not.toContain("check.vbscript.projectContext");
+        expect(logs).not.toContain("projectUpdate.scheduled");
         expect(source).toContain("' benchmark y");
 
         await server.request("shutdown", null);

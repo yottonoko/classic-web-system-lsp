@@ -271,6 +271,7 @@ interface CachedDocument {
   editHistory: AspEditImpact[];
   lastEditImpact?: AspEditImpact;
   lastIncrementalChange?: AspIncrementalChange;
+  lastEditIsOrdinaryVbscriptComment?: boolean;
   analysis?: CachedAnalysis;
 }
 
@@ -1969,6 +1970,10 @@ function refreshCachedDocumentIncremental(
   const cached = createCachedDocument(document, updated.parsed, settings, editHistory);
   cached.lastEditImpact = updated.impact;
   cached.lastIncrementalChange = change;
+  cached.lastEditIsOrdinaryVbscriptComment =
+    updated.impact.kind === "incremental" &&
+    updated.impact.language === "vbscript" &&
+    isOrdinaryVbscriptCommentEdit(previous, cached, change);
   seedVbReuseAfterIncrementalChange(previous, cached, settings, change, updated.impact);
   seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
   cache.set(document.uri, cached);
@@ -2136,6 +2141,9 @@ function scheduleDiagnostics(document: TextDocument): CachedDocument {
 function shouldScheduleProjectUpdateForDocumentChange(cached: CachedDocument): boolean {
   if (cached.lastEditImpact?.kind !== "incremental") {
     return true;
+  }
+  if (cached.lastEditIsOrdinaryVbscriptComment) {
+    return false;
   }
   return cached.lastEditImpact.language !== "html" && cached.lastEditImpact.language !== "css";
 }
@@ -3224,7 +3232,7 @@ function seedVbReuseAfterIncrementalChange(
   impact: AspEditImpact,
 ): void {
   const canReuseVbscriptChange =
-    impact.language === "vbscript" && isOrdinaryVbscriptCommentEdit(previous, cached, change);
+    impact.language === "vbscript" && cached.lastEditIsOrdinaryVbscriptComment === true;
   if (
     impact.kind !== "incremental" ||
     (impact.language === "vbscript" && !canReuseVbscriptChange) ||
