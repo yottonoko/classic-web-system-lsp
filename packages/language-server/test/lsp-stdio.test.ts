@@ -6564,6 +6564,73 @@ ${updated}`;
       }
     });
 
+    it("answers JavaScript completions after edits without flushing project prewarm", async () => {
+      const source = `<script>
+const alphaValue = 1;
+alph
+</script>`;
+      const updated = `<script>
+const betaValue = 1;
+bet
+</script>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 1000 },
+            },
+          },
+        });
+        const uri = "file:///tmp/js-interactive-no-prewarm-flush.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await waitForLogContaining(server, "LSP check completed");
+
+        const alpha = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.lastIndexOf("alph") + "alph".length),
+        });
+        expect(JSON.stringify(alpha)).toContain("alphaValue");
+        await waitForLogContaining(server, "javascript.languageService.create");
+        server.takePendingNotifications("window/logMessage");
+
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: updated }],
+        });
+        const beta = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(updated, updated.lastIndexOf("bet") + "bet".length),
+        });
+        const serialized = JSON.stringify(beta);
+        expect(serialized).toContain("betaValue");
+        expect(serialized).not.toContain("alphaValue");
+        const logs = JSON.stringify(server.takePendingNotifications("window/logMessage"));
+        expect(logs).toContain("projectUpdate.scheduled");
+        expect(logs).toContain("javascript.languageService.reuse");
+        expect(logs).not.toContain("projectUpdate.flushed: reason=document.change");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("reports virtual JavaScript snapshot change range reuse", async () => {
       let source = `<script>
 const alphaValue = 1;

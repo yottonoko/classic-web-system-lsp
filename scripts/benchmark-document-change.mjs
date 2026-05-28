@@ -196,7 +196,15 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
     drainBenchmarkNotifications(server);
 
     for (let index = 0; index < warmupIterations; index += 1) {
-      await measureDocumentChange(server, uri, state, editOffset, changeKind, burstSize);
+      await measureDocumentChange(
+        server,
+        uri,
+        state,
+        editOffset,
+        changeKind,
+        burstSize,
+        editTarget,
+      );
       drainBenchmarkNotifications(server);
     }
 
@@ -211,6 +219,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
         editOffset,
         changeKind,
         burstSize,
+        editTarget,
       );
       samples.push(sample);
       for (const [step, elapsedMs] of sample.stepTimings) {
@@ -238,7 +247,15 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
   }
 }
 
-async function measureDocumentChange(server, uri, state, editOffset, changeKind, burstSize) {
+async function measureDocumentChange(
+  server,
+  uri,
+  state,
+  editOffset,
+  changeKind,
+  burstSize,
+  editTarget,
+) {
   drainBenchmarkNotifications(server);
   const startedAt = performance.now();
   for (let index = 0; index < burstSize; index += 1) {
@@ -250,6 +267,8 @@ async function measureDocumentChange(server, uri, state, editOffset, changeKind,
     });
     state.text = change.nextText;
   }
+
+  const interactiveHoverMs = await measureInteractiveHover(server, uri, state.text, editTarget);
 
   await server.waitForNotification("textDocument/publishDiagnostics");
   const firstDiagnosticsMs = performance.now() - startedAt;
@@ -263,10 +282,32 @@ async function measureDocumentChange(server, uri, state, editOffset, changeKind,
   return {
     firstDiagnosticsMs,
     finalDiagnosticsMs,
+    interactiveHoverMs,
     analysisStarts: countLogsContaining(logs, `LSP analysis started: ${uri}`),
     stepTimings: collectLogTimings(logs),
     eventCounts: collectDebugEventCounts(logs),
   };
+}
+
+async function measureInteractiveHover(server, uri, text, editTarget) {
+  const position = interactiveHoverPosition(text, editTarget);
+  if (!position) {
+    return undefined;
+  }
+  const startedAt = performance.now();
+  await server.request("textDocument/hover", {
+    textDocument: { uri },
+    position,
+  });
+  return performance.now() - startedAt;
+}
+
+function interactiveHoverPosition(text, editTarget) {
+  if (editTarget !== "client-js") {
+    return undefined;
+  }
+  const offset = text.lastIndexOf("aspLspBenchmark");
+  return offset === -1 ? undefined : positionAt(text, offset + "aspLsp".length);
 }
 
 async function runWorkspaceCacheBenchmarks() {
@@ -607,6 +648,17 @@ function printScenarioTable(scenarioResults) {
       "didChange->finalDiagnostics",
       ...statsCells(scenario.samples.map((sample) => sample.finalDiagnosticsMs)),
     ]);
+    if (scenario.samples.some((sample) => sample.interactiveHoverMs !== undefined)) {
+      rows.push([
+        scenarioName,
+        "interactive hover",
+        ...statsCells(
+          scenario.samples
+            .map((sample) => sample.interactiveHoverMs)
+            .filter((value) => value !== undefined),
+        ),
+      ]);
+    }
     rows.push([
       scenarioName,
       "LSP analysis starts",

@@ -2598,9 +2598,22 @@ function scheduleProjectUpdate(reason: string): void {
   }
   projectUpdateTimer = setTimeout(() => {
     projectUpdateTimer = undefined;
-    flushPendingProjectUpdates(reason);
+    flushPendingProjectUpdatesWhenIdle(reason);
   }, projectUpdateDelayMs);
   logDebugSummary(globalSettings, `[asp-lsp] projectUpdate.scheduled: reason=${reason}`);
+}
+
+function flushPendingProjectUpdatesWhenIdle(reason: string): void {
+  const elapsedSinceForeground = Date.now() - lastForegroundActivityAt;
+  if (elapsedSinceForeground < projectUpdateDelayMs) {
+    projectUpdateTimer = setTimeout(() => {
+      projectUpdateTimer = undefined;
+      flushPendingProjectUpdatesWhenIdle(reason);
+    }, projectUpdateDelayMs - elapsedSinceForeground);
+    logDebugSummary(globalSettings, `[asp-lsp] projectUpdate.deferred: reason=${reason}`);
+    return;
+  }
+  flushPendingProjectUpdates(reason);
 }
 
 function scheduleOpenFileProjectMaintenance(reason: string): void {
@@ -2777,7 +2790,6 @@ async function waitForForegroundIdle(): Promise<void> {
 
 function runInteractiveLanguageFeature<T>(callback: () => T): T {
   noteForegroundActivity();
-  flushPendingProjectUpdates();
   return callback();
 }
 
@@ -7904,10 +7916,9 @@ function createJsLanguageService(
   optionOverrides: Partial<ts.CompilerOptions> = {},
 ): JsLanguageServiceProject {
   const cacheKey = jsLanguageServiceCacheKey(virtual, settings, optionOverrides);
-  const collected = collectJsProjectFiles(virtual, settings, optionOverrides);
   const cached = jsLanguageServiceCache.get(cacheKey);
   if (cached) {
-    updateJsLanguageServiceProject(cached.project, collected);
+    updateJsLanguageServiceOpenFiles(cached.project, collectOpenJsProjectFiles(virtual, settings));
     cached.lastUsed = ++jsLanguageServiceCacheTick;
     logDebugSummary(
       settings,
@@ -7915,6 +7926,7 @@ function createJsLanguageService(
     );
     return cached.project;
   }
+  const collected = collectJsProjectFiles(virtual, settings, optionOverrides);
   const files = new Map<string, JsProjectFile>();
   const moduleResolutionHost: ts.ModuleResolutionHost = {
     fileExists: (requested) =>
@@ -8049,6 +8061,25 @@ function updateJsLanguageServiceProject(
     project.optionsKey = nextOptionsKey;
   }
   if (previousFiles !== nextFiles || resolutionShapeChanged) {
+    project.projectVersion += 1;
+  }
+}
+
+function updateJsLanguageServiceOpenFiles(
+  project: Pick<JsLanguageServiceProject, "files" | "projectVersion">,
+  openFiles: Map<string, JsProjectFile>,
+): void {
+  const previousFiles = jsProjectFilesFingerprint(project.files);
+  const openFileNames = new Set(openFiles.keys());
+  for (const [fileName, file] of project.files) {
+    if (file.virtual && !openFileNames.has(fileName)) {
+      project.files.delete(fileName);
+    }
+  }
+  for (const [fileName, file] of openFiles) {
+    project.files.set(fileName, file);
+  }
+  if (previousFiles !== jsProjectFilesFingerprint(project.files)) {
     project.projectVersion += 1;
   }
 }
@@ -8310,30 +8341,7 @@ function collectJsProjectFiles(
   settings: AspSettings,
   optionOverrides: Partial<ts.CompilerOptions> = {},
 ): JsProjectConfig & { files: Map<string, JsProjectFile> } {
-  const files = new Map<string, JsProjectFile>();
-  const addVirtual = (virtual: VirtualDocument): void => {
-    const fileName = normalizeFileName(jsVirtualFileName(virtual.uri));
-    const snapshot = jsScriptSnapshotForVirtual(fileName, virtual, settings);
-    files.set(fileName, {
-      fileName,
-      text: virtual.text,
-      version: snapshot.version,
-      uri: virtualSourceUri(virtual),
-      virtual,
-      snapshot,
-    });
-  };
-  addVirtual(activeVirtual);
-  for (const document of documents.all()) {
-    const cached = ensureFreshCachedDocument(document);
-    if (!cached) {
-      continue;
-    }
-    for (const virtual of jsVirtualDocuments(cached)) {
-      addVirtual(virtual);
-    }
-  }
-
+  const files = collectOpenJsProjectFiles(activeVirtual, settings);
   const ownerFile = uriToFileName(virtualSourceUri(activeVirtual));
   const config = readJsProjectConfig(ownerFile, settings, optionOverrides);
   for (const fileName of config.fileNames) {
@@ -8359,6 +8367,36 @@ function collectJsProjectFiles(
     options: config.options,
     currentDirectory: config.currentDirectory,
   };
+}
+
+function collectOpenJsProjectFiles(
+  activeVirtual: VirtualDocument,
+  settings: AspSettings,
+): Map<string, JsProjectFile> {
+  const files = new Map<string, JsProjectFile>();
+  const addVirtual = (virtual: VirtualDocument): void => {
+    const fileName = normalizeFileName(jsVirtualFileName(virtual.uri));
+    const snapshot = jsScriptSnapshotForVirtual(fileName, virtual, settings);
+    files.set(fileName, {
+      fileName,
+      text: virtual.text,
+      version: snapshot.version,
+      uri: virtualSourceUri(virtual),
+      virtual,
+      snapshot,
+    });
+  };
+  addVirtual(activeVirtual);
+  for (const document of documents.all()) {
+    const cached = ensureFreshCachedDocument(document);
+    if (!cached) {
+      continue;
+    }
+    for (const virtual of jsVirtualDocuments(cached)) {
+      addVirtual(virtual);
+    }
+  }
+  return files;
 }
 
 function jsVirtualDocumentVersion(virtual: VirtualDocument): string {
