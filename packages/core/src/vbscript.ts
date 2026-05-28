@@ -3628,6 +3628,10 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
   if (hasOptionExplicit(parsed)) {
     return;
   }
+  const existingSymbols = new Map<string, VbSymbol[]>();
+  for (const symbol of symbols) {
+    pushMapItem(existingSymbols, implicitAssignmentSymbolKey(symbol), symbol);
+  }
   for (const statement of vbStatements(parsed)) {
     const first = lowerToken(statement[0]);
     const targetIndex = first === "set" ? 1 : 0;
@@ -3649,19 +3653,15 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
     if (scope?.nameToken?.text.toLowerCase() === target.text.toLowerCase()) {
       continue;
     }
+    const existing = existingSymbols.get(
+      implicitAssignmentKey(target.text, parsed.uri, scope?.nameToken?.text ?? "", memberOf ?? ""),
+    );
     if (
-      symbols.some(
-        (symbol) =>
-          symbol.name.toLowerCase() === target.text.toLowerCase() &&
-          symbol.sourceUri === parsed.uri &&
-          (symbol.scopeName ?? "") === (scope?.nameToken?.text ?? "") &&
-          (symbol.memberOf ?? "") === (memberOf ?? "") &&
-          isSymbolVisibleAt(symbol, parsed.uri, parsed.text, target.start),
-      )
+      existing?.some((symbol) => isSymbolVisibleAt(symbol, parsed.uri, parsed.text, target.start))
     ) {
       continue;
     }
-    symbols.push({
+    const symbol: VbSymbol = {
       name: target.text,
       kind: "variable",
       range: rangeFromOffsets(parsed.text, target.start, target.end),
@@ -3675,8 +3675,28 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
           ? rangeFromOffsets(parsed.text, target.start, statement.at(-1)?.end ?? target.end)
           : undefined,
       implicit: true,
-    });
+    };
+    symbols.push(symbol);
+    pushMapItem(existingSymbols, implicitAssignmentSymbolKey(symbol), symbol);
   }
+}
+
+function implicitAssignmentSymbolKey(symbol: VbSymbol): string {
+  return implicitAssignmentKey(
+    symbol.name,
+    symbol.sourceUri,
+    symbol.scopeName ?? "",
+    symbol.memberOf ?? "",
+  );
+}
+
+function implicitAssignmentKey(
+  name: string,
+  sourceUri: string,
+  scopeName: string,
+  memberOf: string,
+): string {
+  return `${sourceUri}\0${scopeName.toLowerCase()}\0${memberOf.toLowerCase()}\0${name.toLowerCase()}`;
 }
 
 function hasOptionExplicit(parsed: AspParsedDocument): boolean {
