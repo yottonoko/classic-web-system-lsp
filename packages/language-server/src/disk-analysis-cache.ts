@@ -69,26 +69,26 @@ export class DiskAnalysisCache {
     return this.root;
   }
 
-  read(lookup: DiskAnalysisCacheLookup): Diagnostic[] | undefined {
-    return this.readAnalysis(lookup)?.diagnostics;
+  async read(lookup: DiskAnalysisCacheLookup): Promise<Diagnostic[] | undefined> {
+    return (await this.readAnalysis(lookup))?.diagnostics;
   }
 
-  readAnalysis(lookup: DiskAnalysisCacheLookup): DiskAnalysisCacheEntry | undefined {
+  async readAnalysis(lookup: DiskAnalysisCacheLookup): Promise<DiskAnalysisCacheEntry | undefined> {
     if (!this.enabled) {
       return undefined;
     }
-    const entry = this.readEntry(this.fileNameForLookup(lookup));
+    const entry = await this.readEntry(this.fileNameForLookup(lookup));
     if (!entry || !this.matches(entry, lookup)) {
       return undefined;
     }
     return entry;
   }
 
-  write(entry: DiskAnalysisCacheEntry): void {
+  async write(entry: DiskAnalysisCacheEntry): Promise<void> {
     if (!this.enabled) {
       return;
     }
-    fs.mkdirSync(this.root, { recursive: true });
+    await fs.promises.mkdir(this.root, { recursive: true });
     const payload: PersistedDiskAnalysisEntry = {
       ...entry,
       formatVersion,
@@ -96,44 +96,41 @@ export class DiskAnalysisCache {
       namespace: this.options.namespace,
       writtenAt: Date.now(),
     };
-    fs.writeFileSync(this.fileNameForLookup(entry), encode(payload));
+    await fs.promises.writeFile(this.fileNameForLookup(entry), encode(payload));
   }
 
-  clear(): void {
-    fs.rmSync(this.root, { recursive: true, force: true });
+  async clear(): Promise<void> {
+    await fs.promises.rm(this.root, { recursive: true, force: true });
   }
 
-  sweep(): void {
+  async sweep(): Promise<void> {
     if (!this.enabled) {
       return;
     }
-    const files = this.cacheFiles();
+    const files = await this.cacheFiles();
     const now = Date.now();
-    let entries = files
-      .map((fileName) => {
-        const stat = fs.statSync(fileName, { throwIfNoEntry: false });
-        const entry = this.readEntry(fileName);
-        const expired = !entry || now - entry.writtenAt > this.ttlMs;
-        if (expired) {
-          fs.rmSync(fileName, { force: true });
-          return undefined;
-        }
-        return {
-          fileName,
-          size: stat?.size ?? 0,
-          writtenAt: entry.writtenAt,
-        };
-      })
-      .filter((entry): entry is { fileName: string; size: number; writtenAt: number } =>
-        Boolean(entry),
-      );
+    let entries: Array<{ fileName: string; size: number; writtenAt: number }> = [];
+    for (const fileName of files) {
+      const stat = await fs.promises.stat(fileName).catch(() => undefined);
+      const entry = await this.readEntry(fileName);
+      const expired = !entry || now - entry.writtenAt > this.ttlMs;
+      if (expired) {
+        await fs.promises.rm(fileName, { force: true });
+        continue;
+      }
+      entries.push({
+        fileName,
+        size: stat?.size ?? 0,
+        writtenAt: entry.writtenAt,
+      });
+    }
     let total = entries.reduce((sum, entry) => sum + entry.size, 0);
     entries = entries.sort((left, right) => left.writtenAt - right.writtenAt);
     for (const entry of entries) {
       if (total <= this.maxSizeBytes) {
         break;
       }
-      fs.rmSync(entry.fileName, { force: true });
+      await fs.promises.rm(entry.fileName, { force: true });
       total -= entry.size;
     }
   }
@@ -151,11 +148,11 @@ export class DiskAnalysisCache {
     );
   }
 
-  private readEntry(fileName: string): PersistedDiskAnalysisEntry | undefined {
+  private async readEntry(fileName: string): Promise<PersistedDiskAnalysisEntry | undefined> {
     try {
-      return decode(fs.readFileSync(fileName)) as PersistedDiskAnalysisEntry;
+      return decode(await fs.promises.readFile(fileName)) as PersistedDiskAnalysisEntry;
     } catch {
-      fs.rmSync(fileName, { force: true });
+      await fs.promises.rm(fileName, { force: true }).catch(() => undefined);
       return undefined;
     }
   }
@@ -173,10 +170,9 @@ export class DiskAnalysisCache {
     );
   }
 
-  private cacheFiles(): string[] {
+  private async cacheFiles(): Promise<string[]> {
     try {
-      return fs
-        .readdirSync(this.root)
+      return (await fs.promises.readdir(this.root))
         .filter((entry) => entry.endsWith(".cbor"))
         .map((entry) => path.join(this.root, entry));
     } catch {
