@@ -303,7 +303,6 @@ interface CachedAnalysis {
 interface DocumentIdentity {
   uri: string;
   version: number;
-  text: string;
 }
 
 interface SettingsInvalidationImpact {
@@ -2043,12 +2042,11 @@ function documentIdentityFor(document: TextDocument): DocumentIdentity {
   return {
     uri: document.uri,
     version: document.version,
-    text: textFingerprint(document.getText()),
   };
 }
 
 function sameDocumentIdentity(left: DocumentIdentity, right: DocumentIdentity): boolean {
-  return left.uri === right.uri && left.version === right.version && left.text === right.text;
+  return left.uri === right.uri && left.version === right.version;
 }
 
 function pendingChangeFromContentChanges(
