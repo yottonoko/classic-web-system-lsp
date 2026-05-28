@@ -3402,13 +3402,33 @@ function vbTokenCoveringRange(
     if (!tokens || child.contentEnd < startOffset || child.contentStart > endOffset) {
       continue;
     }
-    for (const token of tokens) {
-      if (token.start <= startOffset && token.end >= endOffset) {
-        return token;
-      }
+    const token = tokenCoveringRange(tokens, startOffset, endOffset);
+    if (token) {
+      return token;
     }
   }
   return undefined;
+}
+
+function tokenCoveringRange(
+  tokens: VbToken[],
+  startOffset: number,
+  endOffset: number,
+): VbToken | undefined {
+  let low = 0;
+  let high = tokens.length - 1;
+  let candidate: VbToken | undefined;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const token = tokens[middle];
+    if (token.start <= startOffset) {
+      candidate = token;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return candidate && candidate.end >= endOffset ? candidate : undefined;
 }
 
 function isOrdinaryVbscriptCommentToken(token: VbToken | undefined): boolean {
