@@ -156,6 +156,12 @@ const jsLanguageServiceCache = new Map<string, JsLanguageServiceCacheEntry>();
 const jsProjectConfigCache = new Map<string, JsProjectConfigCacheEntry>();
 const jsDocumentRegistry = ts.createDocumentRegistry(ts.sys.useCaseSensitiveFileNames);
 const jsScriptSnapshots = new Map<string, AspJsScriptSnapshot>();
+const jsFileExistsCache = new Map<string, boolean>();
+const jsReadFileCache = new Map<string, string | undefined>();
+const jsDirectoryExistsCache = new Map<string, boolean>();
+const jsDirectoriesCache = new Map<string, string[]>();
+const jsReadDirectoryCache = new Map<string, string[]>();
+const jsRealpathCache = new Map<string, string>();
 const semanticTokenResults = new Map<string, { uri: string; data: number[] }>();
 const latestSemanticTokenResultByUri = new Map<string, string>();
 const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
@@ -1183,16 +1189,17 @@ connection.onCompletion((params) =>
       return items;
     };
     if (region.language === "vbscript") {
-      const context = immediateVbProjectContext(cached, settings);
+      const warmedContext = cachedVbProjectContext(cached, settings);
+      const shouldCache = Boolean(warmedContext) || cached.parsed.includes.length === 0;
+      const context = warmedContext ?? buildImmediateLocalVbProjectContext(cached, settings);
       const completions = getVbscriptCompletions(cached.parsed, params.position, context);
-      return remember(
-        withCompletionData(
-          completions.length > 0
-            ? completions
-            : fallbackVbMemberCompletions(cached, params.position, context),
-          { kind: "vbscript", uri: cached.source.uri },
-        ),
+      const items = withCompletionData(
+        completions.length > 0
+          ? completions
+          : fallbackVbMemberCompletions(cached, params.position, context),
+        { kind: "vbscript", uri: cached.source.uri },
       );
+      return shouldCache ? remember(items) : items;
     }
     if (region.language === "html") {
       const virtual = getCachedVirtual(cached, "html");
@@ -1371,34 +1378,25 @@ connection.onPrepareRename((params) => {
   );
 });
 
-connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null => {
+connection.onRenameRequest(async (params: RenameParams): Promise<WorkspaceEdit | null> => {
   const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return null;
   }
   if (isJavaScriptPosition(cached, params.position)) {
-    return (
-      mergeWorkspaceEdits([
-        jsRename(cached, params.position, params.newName),
-        crossLanguageRename(cached, params.position, params.newName),
-      ]) ?? null
-    );
+    const rename = jsRename(cached, params.position, params.newName);
+    const crossLanguage = await crossLanguageRename(cached, params.position, params.newName);
+    return mergeWorkspaceEdits([rename, crossLanguage]) ?? null;
   }
   if (isHtmlPosition(cached, params.position)) {
-    return (
-      mergeWorkspaceEdits([
-        htmlRename(cached, params.position, params.newName),
-        crossLanguageRename(cached, params.position, params.newName),
-      ]) ?? null
-    );
+    const rename = htmlRename(cached, params.position, params.newName);
+    const crossLanguage = await crossLanguageRename(cached, params.position, params.newName);
+    return mergeWorkspaceEdits([rename, crossLanguage]) ?? null;
   }
   if (isCssPosition(cached, params.position)) {
-    return (
-      mergeWorkspaceEdits([
-        cssRename(cached, params.position, params.newName),
-        crossLanguageRename(cached, params.position, params.newName),
-      ]) ?? null
-    );
+    const rename = cssRename(cached, params.position, params.newName);
+    const crossLanguage = await crossLanguageRename(cached, params.position, params.newName);
+    return mergeWorkspaceEdits([rename, crossLanguage]) ?? null;
   }
   if (!isVbscriptPosition(cached, params.position)) {
     return null;
@@ -1604,6 +1602,9 @@ connection.languages.diagnostics.on(async (params) => {
 connection.languages.diagnostics.onWorkspace(async (_params, token) => {
   noteForegroundActivity();
   await ensureWorkspaceIndexAsync(globalSettings, token);
+  const cancellation: AnalysisCancellation = {
+    isCancellationRequested: () => token.isCancellationRequested,
+  };
   const openedUris = new Set(documents.all().map((document) => document.uri));
   const concurrency = analysisConcurrency(globalSettings);
   const indexedEntries = workspaceEntriesAffectedFirst(
@@ -1626,7 +1627,7 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
             cached,
             cachedSettings(document.uri),
             "check.workspace",
-            neverCancelled,
+            cancellation,
             "workspace",
           ),
         }
@@ -2598,22 +2599,22 @@ function scheduleProjectUpdate(reason: string): void {
   }
   projectUpdateTimer = setTimeout(() => {
     projectUpdateTimer = undefined;
-    flushPendingProjectUpdatesWhenIdle(reason);
+    void flushPendingProjectUpdatesWhenIdle(reason);
   }, projectUpdateDelayMs);
   logDebugSummary(globalSettings, `[asp-lsp] projectUpdate.scheduled: reason=${reason}`);
 }
 
-function flushPendingProjectUpdatesWhenIdle(reason: string): void {
+async function flushPendingProjectUpdatesWhenIdle(reason: string): Promise<boolean> {
   const elapsedSinceForeground = Date.now() - lastForegroundActivityAt;
   if (elapsedSinceForeground < projectUpdateDelayMs) {
     projectUpdateTimer = setTimeout(() => {
       projectUpdateTimer = undefined;
-      flushPendingProjectUpdatesWhenIdle(reason);
+      void flushPendingProjectUpdatesWhenIdle(reason);
     }, projectUpdateDelayMs - elapsedSinceForeground);
     logDebugSummary(globalSettings, `[asp-lsp] projectUpdate.deferred: reason=${reason}`);
-    return;
+    return false;
   }
-  flushPendingProjectUpdates(reason);
+  return flushPendingProjectUpdatesAsync(reason);
 }
 
 function scheduleOpenFileProjectMaintenance(reason: string): void {
@@ -2631,15 +2632,15 @@ function scheduleOpenFileProjectMaintenance(reason: string): void {
   );
 }
 
-function flushPendingProjectUpdates(
+async function flushPendingProjectUpdatesAsync(
   reason = pendingProjectUpdateReason ?? "foreground.flush",
-): void {
+): Promise<boolean> {
   if (projectUpdateTimer) {
     clearTimeout(projectUpdateTimer);
     projectUpdateTimer = undefined;
   }
   if (!pendingProjectUpdateReason && reason === "foreground.flush") {
-    return;
+    return false;
   }
   const startedAt = process.hrtime.bigint();
   let refreshed = 0;
@@ -2650,6 +2651,12 @@ function flushPendingProjectUpdates(
       createJsLanguageService(virtual, cachedSettings(document.uri));
     }
     refreshed += 1;
+    await yieldToEventLoop();
+    if (Date.now() - lastForegroundActivityAt < projectUpdateDelayMs) {
+      scheduleProjectUpdate(reason);
+      logDebugSummary(globalSettings, `[asp-lsp] projectUpdate.interrupted: reason=${reason}`);
+      return false;
+    }
   }
   pendingProjectUpdateReason = undefined;
   logDebugElapsed(
@@ -2662,6 +2669,7 @@ function flushPendingProjectUpdates(
     globalSettings,
     `[asp-lsp] projectUpdate.flushed: reason=${reason}, openFiles=${refreshed}`,
   );
+  return true;
 }
 
 function flushOpenFileProjectMaintenance(
@@ -2675,11 +2683,14 @@ function flushOpenFileProjectMaintenance(
     return;
   }
   pendingOpenFileMaintenanceReason = undefined;
-  flushPendingProjectUpdates(reason);
-  logDebugSummary(
-    globalSettings,
-    `[asp-lsp] openFileProjectMaintenance.completed: reason=${reason}`,
-  );
+  void flushPendingProjectUpdatesWhenIdle(reason).then((completed) => {
+    if (completed) {
+      logDebugSummary(
+        globalSettings,
+        `[asp-lsp] openFileProjectMaintenance.completed: reason=${reason}`,
+      );
+    }
+  });
 }
 
 function createDiskAnalysisCache(settings: AspSettings): DiskAnalysisCache {
@@ -2726,6 +2737,17 @@ function scheduleBackgroundAnalysis(reason: string): void {
 async function runBackgroundAnalysis(generation: number, reason: string): Promise<void> {
   const settings = globalSettings;
   if (settings.workspace?.backgroundAnalysis !== true) {
+    return;
+  }
+  if (generation !== backgroundAnalysisGeneration) {
+    return;
+  }
+  if (backgroundAnalysisRunning) {
+    backgroundAnalysisTimer = setTimeout(() => {
+      backgroundAnalysisTimer = undefined;
+      void runBackgroundAnalysis(generation, reason);
+    }, backgroundAnalysisIdleDelayMs);
+    logDebugSummary(settings, `[asp-lsp] backgroundAnalysis.deferred: reason=${reason}`);
     return;
   }
   backgroundAnalysisRunning = true;
@@ -3121,10 +3143,9 @@ function getVbDiagnosticsWorkerPool(
   return vbDiagnosticsWorkerPool;
 }
 
-function shouldUseVbDiagnosticsWorker(mode: AnalysisExecutionMode): boolean {
+function shouldUseVbDiagnosticsWorker(_mode: AnalysisExecutionMode): boolean {
   return (
-    process.env.ASP_LSP_DISABLE_VB_WORKERS !== "1" &&
-    (mode !== "foreground" || process.env.ASP_LSP_FORCE_VB_WORKERS === "1")
+    process.env.ASP_LSP_DISABLE_VB_WORKERS !== "1" || process.env.ASP_LSP_FORCE_VB_WORKERS === "1"
   );
 }
 
@@ -3662,18 +3683,18 @@ function cssRename(
   );
 }
 
-function crossLanguageRename(
+async function crossLanguageRename(
   cached: CachedDocument,
   position: Position,
   newName: string,
-): WorkspaceEdit | undefined {
+): Promise<WorkspaceEdit | undefined> {
   const target = crossLanguageRenameTarget(cached, position);
   if (!target || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(newName)) {
     return undefined;
   }
   const changes: NonNullable<WorkspaceEdit["changes"]> = {};
   const seen = new Set<string>();
-  for (const candidate of crossLanguageRenameCandidates(cached)) {
+  for (const candidate of await crossLanguageRenameCandidates(cached)) {
     const text = candidate.source.getText();
     const edits = [
       ...htmlAttributeRenameEdits(candidate, target, newName),
@@ -3692,8 +3713,9 @@ function crossLanguageRename(
   return Object.keys(changes).length > 0 ? { changes } : undefined;
 }
 
-function crossLanguageRenameCandidates(active: CachedDocument): CachedDocument[] {
-  ensureWorkspaceIndex();
+async function crossLanguageRenameCandidates(active: CachedDocument): Promise<CachedDocument[]> {
+  const settings = cachedSettings(active.source.uri);
+  await ensureWorkspaceIndexAsync(settings);
   const candidates: CachedDocument[] = [active];
   const seen = new Set([active.source.uri]);
   for (const document of documents.all()) {
@@ -3706,13 +3728,16 @@ function crossLanguageRenameCandidates(active: CachedDocument): CachedDocument[]
       candidates.push(cached);
     }
   }
-  for (const entry of workspaceIndex.values()) {
-    if (seen.has(entry.uri)) {
-      continue;
-    }
-    seen.add(entry.uri);
-    candidates.push(cachedFromIndexed(entry));
-  }
+  const indexed = await mapWithConcurrency(
+    [...workspaceIndex.values()].filter((entry) => !seen.has(entry.uri)),
+    analysisConcurrency(settings),
+    async (entry) => {
+      seen.add(entry.uri);
+      await yieldToEventLoop();
+      return cachedFromIndexedAsync(entry, cachedSettings(entry.uri)).catch(() => undefined);
+    },
+  );
+  candidates.push(...indexed.filter((item): item is CachedDocument => Boolean(item)));
   return candidates;
 }
 
@@ -5109,14 +5134,77 @@ function immediateVbProjectContext(
   cached: CachedDocument,
   settings: AspSettings,
 ): VbProjectContext {
-  return buildVbProjectContext(cached, settings);
+  return (
+    cachedVbProjectContext(cached, settings) ??
+    buildImmediateLocalVbProjectContext(cached, settings)
+  );
 }
 
 function bestEffortVbProjectContext(
   cached: CachedDocument,
   settings: AspSettings,
 ): VbProjectContext {
-  return buildVbProjectContext(cached, settings);
+  return (
+    cachedVbProjectContext(cached, settings) ??
+    buildImmediateLocalVbProjectContext(cached, settings)
+  );
+}
+
+function cachedVbProjectContext(
+  cached: CachedDocument,
+  settings: AspSettings,
+): VbProjectContext | undefined {
+  const rootKey = vbProjectRootContextCacheKey(cached, settings);
+  const existing = cached.analysis?.vbProjectContext;
+  if (existing?.rootKey === rootKey) {
+    return { ...existing.context, locale: settings.resolvedLocale };
+  }
+  const documents = cached.analysis?.vbProjectDocuments;
+  if (documents?.collectionKey !== vbProjectDocumentCollectionKey(cached, settings)) {
+    return undefined;
+  }
+  const key = vbProjectContextCacheKey(documents.documents, settings);
+  const globalCached = vbProjectContextCache.get(key);
+  if (!globalCached) {
+    return undefined;
+  }
+  globalCached.lastUsed = Date.now();
+  analysisFor(cached).vbProjectContext = { key, rootKey, context: globalCached.context };
+  return { ...globalCached.context, locale: settings.resolvedLocale };
+}
+
+function buildImmediateLocalVbProjectContext(
+  cached: CachedDocument,
+  settings: AspSettings,
+): VbProjectContext {
+  const contextSettings = vbProjectContextSettings(settings);
+  const key = JSON.stringify({
+    document: vbProjectDocumentFingerprint(cached.parsed),
+    settings: {
+      typeChecking: contextSettings.typeChecking,
+      identifierCase: contextSettings.identifierCase,
+      identifierCaseByKind: contextSettings.identifierCaseByKind,
+      comTypes: contextSettings.comTypes,
+      unusedDiagnostics: contextSettings.unusedDiagnostics,
+      syntaxSnippets: contextSettings.syntaxSnippets,
+    },
+    globals: settings.vbscript?.globals,
+  });
+  const existing = cached.analysis?.immediateLocalVbProjectContext;
+  if (existing?.key === key) {
+    return { ...existing.context, locale: settings.resolvedLocale };
+  }
+  const symbols = collectVbscriptSymbols(cached.parsed, contextSettings);
+  symbols.push(...configuredVbscriptGlobals(cached, settings));
+  const context: VbProjectContext = {
+    documents: [cached.parsed],
+    symbols,
+    typeEnvironment: buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
+    externalRefUsages: [],
+    ...contextSettings,
+  };
+  analysisFor(cached).immediateLocalVbProjectContext = { key, context };
+  return { ...context, locale: settings.resolvedLocale };
 }
 
 async function workspaceVbscriptReferencesForPosition(
@@ -6500,11 +6588,17 @@ async function diagnosticsForIndexed(
     return [];
   }
   const sourceMetadata = diskAnalysisSourceMetadata(entry);
+  const cancellation: AnalysisCancellation = {
+    isCancellationRequested: () => token?.isCancellationRequested === true,
+  };
   const cached = await cachedFromIndexedAsync(entry, settings);
-  if (token?.isCancellationRequested) {
+  if (cancellation.isCancellationRequested()) {
     return [];
   }
-  const settingsKey = diskAnalysisSettingsKey(settings, cached.parsed);
+  const settingsKey = await diskAnalysisSettingsKey(settings, cached.parsed, cancellation);
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
   const lookup = {
     source: sourceMetadata,
     settingsKey,
@@ -6524,9 +6618,6 @@ async function diagnosticsForIndexed(
   }
   logDebugSummary(settings, `[asp-lsp] diskCache.miss: ${entry.uri}`);
   logDebugSummary(settings, `[asp-lsp] disk.builder.restore.miss: ${entry.uri}`);
-  const cancellation: AnalysisCancellation = {
-    isCancellationRequested: () => token?.isCancellationRequested === true,
-  };
   if (cancellation.isCancellationRequested()) {
     return [];
   }
@@ -6559,25 +6650,36 @@ function diskAnalysisSourceMetadata(entry: WorkspaceIndexedDocument): DiskAnalys
   };
 }
 
-function diskAnalysisSettingsKey(settings: AspSettings, parsed: AspParsedDocument): string {
+async function diskAnalysisSettingsKey(
+  settings: AspSettings,
+  parsed: AspParsedDocument,
+  cancellation: AnalysisCancellation,
+): Promise<string> {
   return JSON.stringify({
     parse: parseSettingsIdentity(settings),
     diagnostics: diagnosticsIdentity(settings),
     include: includeResolutionIdentity(settings),
-    includeDependencies: diskAnalysisIncludeDependencyKey(parsed, settings),
+    includeDependencies: await diskAnalysisIncludeDependencyKey(parsed, settings, cancellation),
     js: jsProjectSettingsIdentity(settings),
     workspace: workspaceIndexSettingsIdentity(settings),
   });
 }
 
-function diskAnalysisIncludeDependencyKey(root: AspParsedDocument, settings: AspSettings): string {
+async function diskAnalysisIncludeDependencyKey(
+  root: AspParsedDocument,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<string> {
   const dependencies: unknown[] = [];
   const visited = new Set<string>();
-  const visit = (document: AspParsedDocument, depth: number): void => {
-    if (depth > 20) {
+  const visit = async (document: AspParsedDocument, depth: number): Promise<void> => {
+    if (depth > 20 || cancellation.isCancellationRequested()) {
       return;
     }
     for (const include of document.includes) {
+      if (cancellation.isCancellationRequested()) {
+        return;
+      }
       const resolved = resolveIncludePathDetails(
         document.uri,
         include.path,
@@ -6585,7 +6687,7 @@ function diskAnalysisIncludeDependencyKey(root: AspParsedDocument, settings: Asp
         settings,
       );
       const normalizedFileName = normalizeFileName(resolved.fileName);
-      const stat = fs.statSync(normalizedFileName, { throwIfNoEntry: false });
+      const stat = await fs.promises.stat(normalizedFileName).catch(() => undefined);
       const exists = stat?.isFile() === true;
       dependencies.push({
         owner: normalizeFileName(uriToFileName(document.uri)),
@@ -6602,13 +6704,16 @@ function diskAnalysisIncludeDependencyKey(root: AspParsedDocument, settings: Asp
         continue;
       }
       visited.add(normalizedFileName);
-      const entry = includeDocumentLoader.read(normalizedFileName, settings);
+      const entry = await includeDocumentLoader
+        .readAsync(normalizedFileName, settings)
+        .catch(() => undefined);
       if (entry) {
-        visit(entry.parsed, depth + 1);
+        await visit(entry.parsed, depth + 1);
       }
+      await yieldToEventLoop();
     }
   };
-  visit(root, 0);
+  await visit(root, 0);
   return textFingerprint(JSON.stringify(dependencies));
 }
 
@@ -7930,12 +8035,12 @@ function createJsLanguageService(
   const files = new Map<string, JsProjectFile>();
   const moduleResolutionHost: ts.ModuleResolutionHost = {
     fileExists: (requested) =>
-      files.has(normalizeFileName(requested)) || ts.sys.fileExists(requested),
+      files.has(normalizeFileName(requested)) || cachedTsFileExists(requested),
     readFile: (requested) =>
-      files.get(normalizeFileName(requested))?.text ?? ts.sys.readFile(requested),
-    directoryExists: ts.sys.directoryExists,
-    getDirectories: getTypeScriptDirectories,
-    realpath: ts.sys.realpath,
+      files.get(normalizeFileName(requested))?.text ?? cachedTsReadFile(requested),
+    directoryExists: cachedTsDirectoryExists,
+    getDirectories: cachedTsGetDirectories,
+    realpath: cachedTsRealpath,
   };
   const project = {
     service: undefined as unknown as ts.LanguageService,
@@ -7960,7 +8065,7 @@ function createJsLanguageService(
       if (file) {
         return file.snapshot ?? ts.ScriptSnapshot.fromString(file.text);
       }
-      const text = ts.sys.readFile(requested);
+      const text = cachedTsReadFile(requested);
       return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text);
     },
     getScriptKind: (requested) => scriptKindForFileName(requested),
@@ -7968,13 +8073,13 @@ function createJsLanguageService(
     getCompilationSettings: () => project.options,
     getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
     fileExists: (requested) =>
-      files.has(normalizeFileName(requested)) || ts.sys.fileExists(requested),
+      files.has(normalizeFileName(requested)) || cachedTsFileExists(requested),
     readFile: (requested) =>
-      files.get(normalizeFileName(requested))?.text ?? ts.sys.readFile(requested),
-    readDirectory: readTypeScriptDirectory,
-    directoryExists: ts.sys.directoryExists,
-    getDirectories: getTypeScriptDirectories,
-    realpath: ts.sys.realpath,
+      files.get(normalizeFileName(requested))?.text ?? cachedTsReadFile(requested),
+    readDirectory: cachedReadTypeScriptDirectory,
+    directoryExists: cachedTsDirectoryExists,
+    getDirectories: cachedTsGetDirectories,
+    realpath: cachedTsRealpath,
     useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
     resolveModuleNames: (
       moduleNames,
@@ -8015,7 +8120,7 @@ function jsLanguageServiceCacheKey(
   optionOverrides: Partial<ts.CompilerOptions>,
 ): string {
   return JSON.stringify({
-    projectEnvironment: jsProjectEnvironmentFingerprint(virtualSourceUri(virtual), settings),
+    projectOwner: jsProjectOwnerIdentity(virtualSourceUri(virtual)),
     projectGeneration: jsProjectGeneration,
     settings: {
       checkJs: settings.checkJs ?? false,
@@ -8024,6 +8129,14 @@ function jsLanguageServiceCacheKey(
       ignoreProjectConfig: settings.javascript?.ignoreProjectConfig === true,
     },
     optionOverrides,
+    roots: workspaceRoots.map(normalizeFileName).sort(),
+  });
+}
+
+function jsProjectOwnerIdentity(ownerUri: string): string {
+  const ownerFile = uriToFileName(ownerUri);
+  return JSON.stringify({
+    ownerDirectory: normalizeFileName(path.dirname(ownerFile)),
     roots: workspaceRoots.map(normalizeFileName).sort(),
   });
 }
@@ -8101,23 +8214,6 @@ function jsCompilerOptionsKey(options: ts.CompilerOptions): string {
   );
 }
 
-function jsProjectEnvironmentFingerprint(ownerUri: string, settings: AspSettings): string {
-  const ownerFile = uriToFileName(ownerUri);
-  const ownerDirectory = path.dirname(ownerFile);
-  const configPath =
-    settings.javascript?.ignoreProjectConfig === true
-      ? undefined
-      : (ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "tsconfig.json") ??
-        ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "jsconfig.json"));
-  return [configPath, nearestPackageJson(ownerDirectory)]
-    .filter((fileName): fileName is string => Boolean(fileName))
-    .map((fileName) => {
-      const stat = fs.statSync(fileName, { throwIfNoEntry: false });
-      return stat ? `${normalizeFileName(fileName)}:${stat.mtimeMs}:${stat.size}` : fileName;
-    })
-    .join("|");
-}
-
 function pruneJsLanguageServiceCache(): void {
   while (jsLanguageServiceCache.size > 16) {
     const oldest = [...jsLanguageServiceCache.entries()].sort(
@@ -8142,7 +8238,17 @@ function clearJsProjectCaches(): void {
   clearJsLanguageServiceCache();
   jsProjectConfigCache.clear();
   jsScriptSnapshots.clear();
+  clearJsFileSystemCache();
   completionSessionCache.clear("jsProject");
+}
+
+function clearJsFileSystemCache(): void {
+  jsFileExistsCache.clear();
+  jsReadFileCache.clear();
+  jsDirectoryExistsCache.clear();
+  jsDirectoriesCache.clear();
+  jsReadDirectoryCache.clear();
+  jsRealpathCache.clear();
 }
 
 function clearIncludeCaches(): void {
@@ -8346,10 +8452,10 @@ function collectJsProjectFiles(
   const config = readJsProjectConfig(ownerFile, settings, optionOverrides);
   for (const fileName of config.fileNames) {
     const normalized = normalizeFileName(fileName);
-    if (files.has(normalized) || !ts.sys.fileExists(normalized)) {
+    if (files.has(normalized) || !cachedTsFileExists(normalized)) {
       continue;
     }
-    const text = ts.sys.readFile(normalized);
+    const text = cachedTsReadFile(normalized);
     if (text === undefined) {
       continue;
     }
@@ -8415,8 +8521,8 @@ function readJsProjectConfig(
   const configPath =
     settings.javascript?.ignoreProjectConfig === true
       ? undefined
-      : (ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "tsconfig.json") ??
-        ts.findConfigFile(ownerDirectory, ts.sys.fileExists, "jsconfig.json"));
+      : (ts.findConfigFile(ownerDirectory, cachedTsFileExists, "tsconfig.json") ??
+        ts.findConfigFile(ownerDirectory, cachedTsFileExists, "jsconfig.json"));
   const cacheKey = jsProjectConfigCacheKey(ownerFile, configPath, settings, optionOverrides);
   const cached = jsProjectConfigCache.get(cacheKey);
   if (cached) {
@@ -8434,10 +8540,16 @@ function readJsProjectConfig(
     lib: browserJavaScriptLibs,
   };
   if (configPath) {
-    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    const config = ts.readConfigFile(configPath, cachedTsReadFile);
+    const parseHost: ts.ParseConfigHost = {
+      useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
+      fileExists: cachedTsFileExists,
+      readFile: cachedTsReadFile,
+      readDirectory: cachedReadTypeScriptDirectory,
+    };
     const parsed = ts.parseJsonConfigFileContent(
       config.config ?? {},
-      ts.sys,
+      parseHost,
       path.dirname(configPath),
       defaultOptions,
       configPath,
@@ -8543,11 +8655,11 @@ function browserJavaScriptTypes(
     return options.types.filter((type) => type.toLowerCase() !== "node");
   }
   const host: ts.ModuleResolutionHost = {
-    fileExists: ts.sys.fileExists,
-    readFile: ts.sys.readFile,
-    directoryExists: ts.sys.directoryExists,
-    getDirectories: getTypeScriptDirectories,
-    realpath: ts.sys.realpath,
+    fileExists: cachedTsFileExists,
+    readFile: cachedTsReadFile,
+    directoryExists: cachedTsDirectoryExists,
+    getDirectories: cachedTsGetDirectories,
+    realpath: cachedTsRealpath,
     getCurrentDirectory: () => currentDirectory,
   };
   const types = ts
@@ -8561,6 +8673,91 @@ function readDirectoryEntries(dir: string): fs.Dirent[] {
     return fs.readdirSync(dir, { withFileTypes: true });
   } catch {
     return [];
+  }
+}
+
+function cachedTsFileExists(fileName: string): boolean {
+  const key = safeNormalizeFileName(fileName);
+  const cached = jsFileExistsCache.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const exists = ts.sys.fileExists(fileName);
+  jsFileExistsCache.set(key, exists);
+  return exists;
+}
+
+function cachedTsReadFile(fileName: string): string | undefined {
+  const key = safeNormalizeFileName(fileName);
+  if (jsReadFileCache.has(key)) {
+    return jsReadFileCache.get(key);
+  }
+  const text = ts.sys.readFile(fileName);
+  jsReadFileCache.set(key, text);
+  return text;
+}
+
+function cachedTsDirectoryExists(directory: string): boolean {
+  const key = safeNormalizeFileName(directory);
+  const cached = jsDirectoryExistsCache.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const exists = ts.sys.directoryExists(directory);
+  jsDirectoryExistsCache.set(key, exists);
+  return exists;
+}
+
+function cachedTsGetDirectories(directory: string): string[] {
+  const key = safeNormalizeFileName(directory);
+  const cached = jsDirectoriesCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  const directories = getTypeScriptDirectories(directory);
+  jsDirectoriesCache.set(key, directories);
+  return directories;
+}
+
+function cachedReadTypeScriptDirectory(
+  rootDir: string,
+  extensions?: readonly string[],
+  excludes?: readonly string[],
+  includes?: readonly string[],
+  depth?: number,
+): string[] {
+  const key = JSON.stringify({
+    rootDir: safeNormalizeFileName(rootDir),
+    extensions,
+    excludes,
+    includes,
+    depth,
+  });
+  const cached = jsReadDirectoryCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  const entries = readTypeScriptDirectory(rootDir, extensions, excludes, includes, depth);
+  jsReadDirectoryCache.set(key, entries);
+  return entries;
+}
+
+function cachedTsRealpath(fileName: string): string {
+  const key = safeNormalizeFileName(fileName);
+  const cached = jsRealpathCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  const realpath = ts.sys.realpath?.(fileName) ?? fileName;
+  jsRealpathCache.set(key, realpath);
+  return realpath;
+}
+
+function safeNormalizeFileName(fileName: string): string {
+  try {
+    return normalizeFileName(fileName);
+  } catch {
+    return fileName;
   }
 }
 
@@ -9781,7 +9978,7 @@ function jsCodeActions(
   context: CodeActionContext,
 ): CodeAction[] {
   const actions: CodeAction[] = [];
-  if (codeActionAllows(context, CodeActionKind.SourceOrganizeImports)) {
+  if (codeActionExplicitlyAllows(context, CodeActionKind.SourceOrganizeImports)) {
     const edit = organizeJavaScriptImportsEdit(cached);
     if (edit || jsVirtualDocuments(cached).length > 0) {
       actions.push({
@@ -9790,6 +9987,21 @@ function jsCodeActions(
         edit: edit ?? { changes: {} },
       });
     }
+  }
+  const wantsQuickFix = codeActionAllows(context, CodeActionKind.QuickFix);
+  const errorCodes = wantsQuickFix
+    ? context.diagnostics
+        .filter(
+          (diagnostic) =>
+            diagnostic.source === "asp-lsp-typescript" ||
+            diagnostic.source === "asp-lsp-typescript-unused",
+        )
+        .map((diagnostic) => Number(diagnostic.code))
+        .filter((code) => Number.isInteger(code))
+    : [];
+  const wantsRefactor = codeActionExplicitlyAllows(context, CodeActionKind.Refactor);
+  if (errorCodes.length === 0 && !wantsRefactor) {
+    return actions;
   }
   const sourceStart = cached.source.offsetAt(range.start);
   const sourceEnd = cached.source.offsetAt(range.end);
@@ -9802,15 +10014,7 @@ function jsCodeActions(
     const project = createJsLanguageService(virtual, cachedSettings(cached.source.uri));
     const service = project.service;
     const fileName = jsProjectFileName(virtual, project);
-    if (codeActionAllows(context, CodeActionKind.QuickFix)) {
-      const errorCodes = context.diagnostics
-        .filter(
-          (diagnostic) =>
-            diagnostic.source === "asp-lsp-typescript" ||
-            diagnostic.source === "asp-lsp-typescript-unused",
-        )
-        .map((diagnostic) => Number(diagnostic.code))
-        .filter((code) => Number.isInteger(code));
+    if (errorCodes.length > 0) {
       for (const fix of service.getCodeFixesAtPosition(
         fileName,
         virtualStart,
@@ -9825,7 +10029,7 @@ function jsCodeActions(
         }
       }
     }
-    if (codeActionAllows(context, CodeActionKind.Refactor)) {
+    if (wantsRefactor) {
       for (const refactor of service.getApplicableRefactors(
         fileName,
         { pos: virtualStart, end: virtualEnd },
@@ -9863,6 +10067,10 @@ function codeActionAllows(context: CodeActionContext, kind: string): boolean {
     (candidate) =>
       kind === candidate || kind.startsWith(`${candidate}.`) || candidate.startsWith(`${kind}.`),
   );
+}
+
+function codeActionExplicitlyAllows(context: CodeActionContext, kind: string): boolean {
+  return Boolean(context.only?.length) && codeActionAllows(context, kind);
 }
 
 function organizeJavaScriptImportsEdit(cached: CachedDocument): WorkspaceEdit | undefined {
