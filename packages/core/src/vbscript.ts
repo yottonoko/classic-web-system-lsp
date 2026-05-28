@@ -3520,8 +3520,8 @@ function addSymbolsFromVbNode(
   node: VbCstNode,
   symbols: VbSymbol[],
 ): void {
-  const documentation = documentationForNode(parsed, node);
   if (node.kind === "Class" && node.nameToken) {
+    const documentation = documentationForNode(parsed, node);
     symbols.push({
       name: node.nameToken.text,
       kind: "class",
@@ -3532,6 +3532,7 @@ function addSymbolsFromVbNode(
     });
   }
   if ((node.kind === "Procedure" || node.kind === "Property") && node.nameToken) {
+    const documentation = documentationForNode(parsed, node);
     const name = node.nameToken.text;
     const kind: VbSymbolKind =
       node.kind === "Property"
@@ -3589,7 +3590,8 @@ function addSymbolsFromVbNode(
     const scope = scopeNodeAt(parsed, node.start);
     const memberOf = scope ? undefined : (node.memberOf ?? parentClassName(parsed, node.start));
     const identifiers = node.identifiers ?? (node.nameToken ? [node.nameToken] : []);
-    const variableDocumentation = identifiers.length === 1 ? documentation : undefined;
+    const variableDocumentation =
+      identifiers.length === 1 ? documentationForNode(parsed, node) : undefined;
     for (const identifier of identifiers) {
       const array = node.arrayDeclarations?.find((item) => item.name === identifier);
       symbols.push({
