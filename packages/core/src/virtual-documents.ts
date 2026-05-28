@@ -279,7 +279,23 @@ function firstValuePlaceholder(text: string, valueChar: string): string {
 }
 
 function preserveLineEndings(text: string, fill: string): string {
-  return text.replace(/[^\r\n]/g, fill);
+  const chunks: string[] = [];
+  let runStart = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char !== "\r" && char !== "\n") {
+      continue;
+    }
+    if (runStart < index) {
+      chunks.push(fill.repeat(index - runStart));
+    }
+    chunks.push(char);
+    runStart = index + 1;
+  }
+  if (runStart < text.length) {
+    chunks.push(fill.repeat(text.length - runStart));
+  }
+  return chunks.join("");
 }
 
 function buildMaskedDocument(
