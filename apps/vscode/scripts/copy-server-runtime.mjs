@@ -31,6 +31,7 @@ fs.mkdirSync(distRoot, { recursive: true });
 await bundleNodeEntry(serverEntry, path.join(distRoot, "server.js"));
 await bundleNodeEntry(workerEntry, path.join(distRoot, "vb-diagnostics-worker.js"));
 fs.chmodSync(path.join(distRoot, "server.js"), 0o755);
+fs.chmodSync(path.join(distRoot, "vb-diagnostics-worker.js"), 0o755);
 copyTypeScriptLibs(distRoot);
 fs.writeFileSync(
   path.join(serverRoot, "package.json"),

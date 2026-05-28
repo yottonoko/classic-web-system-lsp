@@ -1,265 +1,113 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-import { parseAspDocument, summarizeAspFileAnalysis } from "@asp-lsp/core";
 import { describe, expect, it } from "vitest";
-import {
-  DiskAnalysisCache,
-  diskAnalysisCacheFormatVersion,
-  fileAnalysisSummaryFormatVersion,
-  vbPublicSymbolSummaryFormatVersion,
-  type DiskAnalysisCachePayload,
-  type DiskFileAnalysisSummaryPayload,
-  type VbPublicSymbolSummary,
-} from "../src/disk-analysis-cache";
+import { DiskAnalysisCache } from "../src/disk-analysis-cache";
 
 describe("DiskAnalysisCache", () => {
-  it("stores fresh CBOR entries and treats stale or corrupt entries as misses", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-cbor-cache-"));
+  it("restores matching diagnostics and rejects stale metadata", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
     try {
-      const sourceFile = path.join(tempDir, "default.asp");
-      fs.writeFileSync(sourceFile, `<% Response.Write "ok" %>`, "utf8");
-      const stat = fs.statSync(sourceFile);
-      const source = {
-        uri: pathToFileURL(sourceFile).href,
-        fileName: sourceFile,
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
-      };
       const cache = new DiskAnalysisCache({
         enabled: true,
-        directory: path.join(tempDir, "cache"),
-        workspaceRoots: [tempDir],
-        ttlHours: 168,
-        maxSizeMb: 1024,
+        directory,
+        namespace: "test",
+        toolVersion: "1",
       });
-      const payload: DiskAnalysisCachePayload = {
-        version: diskAnalysisCacheFormatVersion,
-        source,
+      const lookup = {
+        source: { fileName: "/site/default.asp", mtimeMs: 1, size: 10 },
         settingsKey: "settings",
-        parsed: parseAspDocument(source.uri, fs.readFileSync(sourceFile, "utf8")),
-        diagnostics: { key: "diagnostics", items: [] },
-        fastDiagnostics: { key: "fast", items: [] },
-        includeDiagnostics: { key: "include", items: [] },
-        syntaxDiagnostics: { key: "syntax", items: [] },
-        projectDiagnostics: { key: "project", items: [] },
-        fileSummary: summarizeAspFileAnalysis(
-          parseAspDocument(source.uri, fs.readFileSync(sourceFile, "utf8")),
-        ),
       };
-
-      await cache.write(payload);
-      const files = collectFiles(cache.root);
-      expect(files.filter((fileName) => fileName.endsWith(".cbor"))).toHaveLength(2);
-      expect(files.some((fileName) => fileName.endsWith(".diagnostics.cbor"))).toBe(true);
-      expect(files.some((fileName) => fileName.endsWith(".json"))).toBe(false);
-      expect(await cache.readFresh(source, "settings")).toMatchObject({
-        settingsKey: "settings",
-        source: { fileName: sourceFile },
-        diagnostics: { key: "diagnostics" },
-        fastDiagnostics: { key: "fast" },
-        includeDiagnostics: { key: "include" },
-        syntaxDiagnostics: { key: "syntax" },
-        projectDiagnostics: { key: "project" },
-      });
-      const diagnostics = await cache.readDiagnosticsFresh(source, "settings");
-      expect(diagnostics).toMatchObject({
-        settingsKey: "settings",
-        source: { fileName: sourceFile },
-        diagnostics: { key: "diagnostics" },
-      });
-      expect(diagnostics).not.toHaveProperty("parsed");
-
-      expect(
-        await cache.readFresh({ ...source, size: source.size + 1 }, "settings"),
-      ).toBeUndefined();
-      expect(
-        await cache.readDiagnosticsFresh({ ...source, size: source.size + 1 }, "settings"),
-      ).toBeUndefined();
-
-      fs.writeFileSync(
-        files.find(
-          (fileName) => fileName.endsWith(".cbor") && !fileName.endsWith(".diagnostics.cbor"),
-        ) ?? "",
-        "broken",
-      );
-      expect(await cache.readFresh(source, "settings")).toBeUndefined();
-    } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it("stores file analysis summaries in a separate CBOR entry", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-file-summary-cache-"));
-    try {
-      const sourceFile = path.join(tempDir, "default.asp");
-      fs.writeFileSync(sourceFile, `<% Response.Write SharedTitle() %>`, "utf8");
-      const stat = fs.statSync(sourceFile);
-      const source = {
-        uri: pathToFileURL(sourceFile).href,
-        fileName: sourceFile,
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
-      };
-      const cache = new DiskAnalysisCache({
-        enabled: true,
-        directory: path.join(tempDir, "cache"),
-        workspaceRoots: [tempDir],
-        ttlHours: 168,
-        maxSizeMb: 1024,
-      });
-      const summary = summarizeAspFileAnalysis(
-        parseAspDocument(source.uri, fs.readFileSync(sourceFile, "utf8")),
-      );
-      const payload: DiskFileAnalysisSummaryPayload = {
-        version: fileAnalysisSummaryFormatVersion,
-        source,
-        settingsKey: "summary-settings",
-        summary,
-      };
-
-      await cache.writeFileAnalysisSummary(payload);
-
-      const files = collectFiles(cache.root).filter((fileName) => fileName.endsWith(".cbor"));
-      expect(files).toHaveLength(1);
-      expect(files[0]).toContain(".file-summary.cbor");
-      await expect(
-        cache.readFileAnalysisSummaryFresh(source, "summary-settings"),
-      ).resolves.toMatchObject({
-        settingsKey: "summary-settings",
-        summary: {
-          uri: source.uri,
-          vbscript: {
-            externalRefs: [expect.objectContaining({ name: "SharedTitle" })],
-            externalRefUsages: [
-              expect.objectContaining({
-                key: "sharedtitle",
-                count: 1,
-              }),
-            ],
+      cache.write({
+        ...lookup,
+        diagnostics: [
+          {
+            message: "cached",
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: 0, character: 1 },
+            },
           },
-        },
+        ],
       });
-
-      fs.writeFileSync(sourceFile, `<% Response.Write SharedTitle("changed") %>`, "utf8");
-      const changedStat = fs.statSync(sourceFile);
-      await expect(
-        cache.readFileAnalysisSummaryFresh(
-          { ...source, mtimeMs: changedStat.mtimeMs, size: changedStat.size },
-          "summary-settings",
-        ),
-      ).resolves.toBeUndefined();
-      expect(cache.readFileAnalysisSummaryForFile(sourceFile, "summary-settings")).toMatchObject({
-        settingsKey: "summary-settings",
-        summary: { uri: source.uri },
-      });
+      expect(cache.read(lookup)?.[0]?.message).toBe("cached");
+      expect(
+        cache.read({
+          ...lookup,
+          source: { ...lookup.source, size: 11 },
+        }),
+      ).toBeUndefined();
     } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 
-  it("sweeps old and oversized CBOR entries", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-cbor-sweep-"));
+  it("drops corrupt and expired entries during read and sweep", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
     try {
-      const cache = new DiskAnalysisCache({
+      let cache = new DiskAnalysisCache({
         enabled: true,
-        directory: path.join(tempDir, "cache"),
-        workspaceRoots: [tempDir],
+        directory,
         ttlHours: 1,
-        maxSizeMb: 1,
+        namespace: "test",
+        toolVersion: "1",
       });
-      const oldFile = path.join(cache.root, "old.cbor");
-      const largeFile = path.join(cache.root, "large.cbor");
-      await fs.promises.mkdir(cache.root, { recursive: true });
-      fs.writeFileSync(oldFile, Buffer.alloc(128));
-      fs.writeFileSync(largeFile, Buffer.alloc(2 * 1024 * 1024));
-      const oldDate = new Date(Date.now() - 2 * 60 * 60 * 1000);
-      fs.utimesSync(oldFile, oldDate, oldDate);
+      const lookup = {
+        source: { fileName: "/site/default.asp", mtimeMs: 1, size: 10 },
+        settingsKey: "settings",
+      };
+      cache.write({ ...lookup, diagnostics: [] });
+      const fileName = path.join(directory, fs.readdirSync(directory)[0]);
+      fs.writeFileSync(fileName, "not-cbor");
+      expect(cache.read(lookup)).toBeUndefined();
 
-      await cache.sweep();
-
-      expect(fs.existsSync(oldFile)).toBe(false);
-      expect(fs.existsSync(largeFile)).toBe(false);
+      cache.write({ ...lookup, diagnostics: [] });
+      cache = new DiskAnalysisCache({
+        enabled: true,
+        directory,
+        ttlHours: 0.000001,
+        namespace: "test",
+        toolVersion: "1",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      cache.sweep();
+      expect(fs.readdirSync(directory)).toHaveLength(0);
     } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 
-  it("stores VBScript public symbol summaries in a separate CBOR entry", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-public-summary-cache-"));
+  it("clears and sweeps by maximum size", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
     try {
-      const sourceFile = path.join(tempDir, "common.inc");
-      fs.writeFileSync(sourceFile, `<% Function SharedTitle()\nEnd Function %>`, "utf8");
-      const stat = fs.statSync(sourceFile);
-      const source = {
-        uri: pathToFileURL(sourceFile).href,
-        fileName: sourceFile,
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
-      };
       const cache = new DiskAnalysisCache({
         enabled: true,
-        directory: path.join(tempDir, "cache"),
-        workspaceRoots: [tempDir],
-        ttlHours: 168,
-        maxSizeMb: 1024,
+        directory,
+        maxSizeMb: 0.000001,
+        namespace: "test",
+        toolVersion: "1",
       });
-      const payload: VbPublicSymbolSummary = {
-        version: vbPublicSymbolSummaryFormatVersion,
-        source,
-        settingsKey: "public-settings",
-        defaultLanguage: "vbscript",
-        legacyEncoding: "utf8",
-        includes: [],
-        publicSymbols: [
-          {
-            name: "SharedTitle",
-            kind: "function",
-            range: { start: { line: 0, character: 12 }, end: { line: 0, character: 23 } },
-            sourceUri: source.uri,
-            typeName: "Variant",
-            type: { name: "Variant" },
-          },
-        ],
-        exports: [
-          {
-            name: "SharedTitle",
-            kind: "function",
-            range: { start: { line: 0, character: 12 }, end: { line: 0, character: 23 } },
-          },
-        ],
-        externalRefs: [],
-        externalRefUsages: [],
-      };
-
-      await cache.writeVbPublicSymbolSummary(payload);
-      const files = collectFiles(cache.root).filter((fileName) => fileName.endsWith(".cbor"));
-      expect(files).toHaveLength(1);
-      expect(files[0]).toContain(".vb-public-symbols.cbor");
-      expect(await cache.readFresh(source, "public-settings")).toBeUndefined();
-      expect(await cache.readVbPublicSymbolSummaryFresh(source, "public-settings")).toMatchObject({
-        settingsKey: "public-settings",
-        publicSymbols: [{ name: "SharedTitle" }],
-      });
-      expect(
-        await cache.readVbPublicSymbolSummaryFresh(
-          { ...source, mtimeMs: source.mtimeMs + 1 },
-          "public-settings",
-        ),
-      ).toBeUndefined();
+      for (let index = 0; index < 32; index += 1) {
+        cache.write({
+          source: { fileName: `/site/${index}.asp`, mtimeMs: index, size: 10 },
+          settingsKey: "settings",
+          diagnostics: Array.from({ length: 64 }, (_, diagnosticIndex) => ({
+            message: `diagnostic-${index}-${diagnosticIndex}`,
+            range: {
+              start: { line: diagnosticIndex, character: 0 },
+              end: { line: diagnosticIndex, character: 1 },
+            },
+          })),
+        });
+      }
+      const beforeSweep = fs.readdirSync(directory).length;
+      cache.sweep();
+      expect(beforeSweep).toBeGreaterThan(0);
+      expect(fs.readdirSync(directory).length).toBeLessThan(beforeSweep);
+      cache.clear();
+      expect(fs.existsSync(directory)).toBe(false);
     } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 });
-
-function collectFiles(root: string): string[] {
-  if (!fs.existsSync(root)) {
-    return [];
-  }
-  return fs.readdirSync(root).flatMap((entry) => {
-    const fileName = path.join(root, entry);
-    return fs.statSync(fileName).isDirectory() ? collectFiles(fileName) : [fileName];
-  });
-}

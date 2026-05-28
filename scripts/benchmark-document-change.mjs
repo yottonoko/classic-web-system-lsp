@@ -18,20 +18,73 @@ const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", 120_000);
 const changeKinds = readChangeKinds();
 const changeModes = readChangeModes();
+const editTargets = readEditTargets();
 const backgroundModes = readBackgroundModes();
+const debugEventNames = [
+  "diskCache.hit",
+  "diskCache.miss",
+  "diskCache.write",
+  "backgroundAnalysis.started",
+  "backgroundAnalysis.completed",
+  "check.vbscript.diagnostics.reuse",
+  "js.snapshot.changeRange.hit",
+  "js.snapshot.changeRange.miss",
+  "js.snapshot.changeRange.reuse",
+  "asp.builder.affected.count",
+  "asp.builder.cache.hit",
+  "asp.builder.cache.miss",
+  "asp.signature.changed",
+  "asp.signature.unchanged",
+  "completion.cache.hit",
+  "completion.cache.miss",
+  "completion.cache.invalidate",
+  "projectUpdate.scheduled",
+  "projectUpdate.flushed",
+  "openFileProjectMaintenance.completed",
+  "disk.builder.restore.hit",
+  "disk.builder.restore.miss",
+  "disk.builder.persist",
+  "worker.queue.wait",
+  "worker.run.duration",
+  "worker.payload.bytes",
+];
 const selectedStepNames = [
+  "projectUpdate.flush",
   "documentChange.bumpAnalysisGeneration",
+  "documentChange.dropCachedDocument",
+  "documentChange.keepCachedDocument",
   "documentChange.scheduleDiagnostics",
   "analysis.parse.incremental",
   "analysis.parse.full",
-  "diagnostics.fast.total",
-  "diagnostics.slow.include",
-  "diagnostics.slow.syntax",
-  "diagnostics.slow.project",
-  "diagnostics.slow.project.reuse",
-  "diagnostics.slow.project.currentFileOnly",
-  "diagnostics.slow.project.fullRecompute",
-  "diagnostics.slow.send",
+  "check.parserDiagnostics",
+  "check.includeDiagnostics",
+  "check.htmlDiagnostics",
+  "check.cssDiagnostics",
+  "check.javascriptSyntax",
+  "check.javascriptSemantic",
+  "check.javascriptUnused",
+  "check.vbscript.projectContext",
+  "check.vbscript.diagnostics",
+  "check.vbscript.diagnostics.reuse",
+  "check.vbscript.diagnostics.symbols",
+  "check.vbscript.diagnostics.unusedSymbols",
+  "check.vbscript.diagnostics.identifierCase",
+  "check.vbscript.diagnostics.callSyntax",
+  "check.vbscript.diagnostics.declarationSyntax",
+  "check.vbscript.diagnostics.serverScriptText",
+  "check.vbscript.diagnostics.dedupe",
+  "check.project.dedupe",
+  "check.dedupe",
+  "diagnostics.fast.dedupe",
+  "diagnostics.fast.publish",
+  "diagnostics.include.dedupe",
+  "diagnostics.include.publish",
+  "diagnostics.syntax.dedupe",
+  "diagnostics.syntax.publish",
+  "diagnostics.project.dedupe",
+  "diagnostics.project.publish",
+  "diagnostics.final.dedupe",
+  "diagnostics.final.publish",
   "vbProjectContext.includeSummaryReuse",
   "vbProjectContext.includeParseFallback",
 ];
@@ -49,8 +102,12 @@ async function main() {
   const scenarioResults = [];
   for (const backgroundAnalysis of backgroundModes) {
     for (const changeMode of changeModes) {
-      for (const changeKind of changeKinds) {
-        scenarioResults.push(await runScenario(changeKind, changeMode, backgroundAnalysis));
+      for (const editTarget of editTargets) {
+        for (const changeKind of changeKinds) {
+          scenarioResults.push(
+            await runScenario(changeKind, changeMode, backgroundAnalysis, editTarget),
+          );
+        }
       }
     }
   }
@@ -64,6 +121,7 @@ async function main() {
   console.log(`Iterations: ${benchmarkIterations}`);
   console.log(`Change kinds: ${changeKinds.join(", ")}`);
   console.log(`Change modes: ${changeModes.join(", ")}`);
+  console.log(`Edit targets: ${editTargets.join(", ")}`);
   console.log(`Rapid burst size: ${rapidBurstSize}`);
   console.log(`Rapid debounce: ${rapidDebounceMs} ms`);
   console.log(`Background analysis: ${backgroundModes.map(backgroundLabel).join(", ")}`);
@@ -78,10 +136,19 @@ async function main() {
     );
     console.log("");
     printDebugStepTotals(scenarioResults);
+    console.log("");
+    console.log("Debug event counts");
+    console.log("");
+    printDebugEventTotals(scenarioResults);
   }
+
+  console.log("");
+  console.log("Workspace cache benchmark");
+  console.log("");
+  printWorkspaceCacheTable(await runWorkspaceCacheBenchmarks());
 }
 
-async function runScenario(changeKind, changeMode, backgroundAnalysis) {
+async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarget) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-change-bench-"));
   const cacheDir = path.join(tempDir, "cache");
   const sourcePath = path.join(sampleRoot, "default.asp");
@@ -89,7 +156,11 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis) {
   const { burstSize, debounceMs } = changeModeSettings(changeMode);
   const totalChanges = (benchmarkIterations + warmupIterations) * burstSize + 8;
   const state = {
-    text: appendMutableBenchmarkRegion(fs.readFileSync(sourcePath, "utf8"), totalChanges),
+    text: appendMutableBenchmarkRegion(
+      fs.readFileSync(sourcePath, "utf8"),
+      totalChanges,
+      editTarget,
+    ),
     version: 1,
   };
   const editOffset = mutableEditOffset(state.text);
@@ -121,7 +192,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis) {
       },
     });
     const openLogs = [];
-    await waitForLogContaining(server, `LSP check slow completed: ${uri}`, openLogs);
+    await waitForFinalCheckLog(server, uri, openLogs);
     drainBenchmarkNotifications(server);
 
     for (let index = 0; index < warmupIterations; index += 1) {
@@ -131,6 +202,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis) {
 
     const samples = [];
     const debugStepTotals = new Map();
+    const debugEventTotals = new Map();
     for (let index = 0; index < benchmarkIterations; index += 1) {
       const sample = await measureDocumentChange(
         server,
@@ -144,6 +216,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis) {
       for (const [step, elapsedMs] of sample.stepTimings) {
         debugStepTotals.set(step, (debugStepTotals.get(step) ?? 0) + elapsedMs);
       }
+      addCounters(debugEventTotals, sample.eventCounts);
     }
 
     await server.request("shutdown", null);
@@ -151,11 +224,13 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis) {
     return {
       changeKind,
       changeMode,
+      editTarget,
       backgroundAnalysis,
       burstSize,
       debounceMs,
       samples,
       debugStepTotals,
+      debugEventTotals,
     };
   } finally {
     server.stop();
@@ -180,11 +255,7 @@ async function measureDocumentChange(server, uri, state, editOffset, changeKind,
   const firstDiagnosticsMs = performance.now() - startedAt;
 
   const logs = [];
-  await waitForLogContainingAny(
-    server,
-    [`LSP check slow completed: ${uri}`, `LSP check slow reused: ${uri}`],
-    logs,
-  );
+  await waitForFinalCheckLog(server, uri, logs);
   const finalDiagnosticsMs = performance.now() - startedAt;
   logs.push(...server.takePendingNotifications("window/logMessage"));
   server.takePendingNotifications("textDocument/publishDiagnostics");
@@ -194,7 +265,116 @@ async function measureDocumentChange(server, uri, state, editOffset, changeKind,
     finalDiagnosticsMs,
     analysisStarts: countLogsContaining(logs, `LSP analysis started: ${uri}`),
     stepTimings: collectLogTimings(logs),
+    eventCounts: collectDebugEventCounts(logs),
   };
+}
+
+async function runWorkspaceCacheBenchmarks() {
+  const results = [];
+  if (backgroundModes.includes(false)) {
+    results.push(await runColdWarmWorkspaceCacheScenario());
+  }
+  if (backgroundModes.includes(true)) {
+    results.push(await runBackgroundWorkspaceCacheScenario());
+  }
+  return results;
+}
+
+async function runColdWarmWorkspaceCacheScenario() {
+  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer(false);
+  try {
+    const cold = await measureWorkspaceDiagnostics(server, "diskCache.write");
+    const warm = await measureWorkspaceDiagnostics(server, "diskCache.hit");
+    return {
+      scenario: "background=off",
+      cacheDir,
+      rows: [
+        { metric: "cold workspace diagnostics", ...cold },
+        { metric: "warm workspace diagnostics", ...warm },
+      ],
+    };
+  } finally {
+    await stopWorkspaceCacheServer(server);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function runBackgroundWorkspaceCacheScenario() {
+  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer(true);
+  try {
+    const warmupStartedAt = performance.now();
+    const warmupLogs = [];
+    await waitForLogContaining(server, "backgroundAnalysis.completed", warmupLogs);
+    warmupLogs.push(...server.takePendingNotifications("window/logMessage"));
+    const warmup = {
+      elapsedMs: performance.now() - warmupStartedAt,
+      diagnosticCount: 0,
+      eventCounts: collectDebugEventCounts(warmupLogs),
+    };
+    const warm = await measureWorkspaceDiagnostics(server, "diskCache.hit");
+    return {
+      scenario: "background=on",
+      cacheDir,
+      rows: [
+        { metric: "background warmup", ...warmup },
+        { metric: "post-background workspace diagnostics", ...warm },
+      ],
+    };
+  } finally {
+    await stopWorkspaceCacheServer(server);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function startWorkspaceCacheServer(backgroundAnalysis) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-cache-bench-"));
+  const cacheDir = path.join(tempDir, "cache");
+  const server = new RpcServer();
+  await server.start();
+  await server.request("initialize", {
+    processId: process.pid,
+    rootUri: pathToFileURL(sampleRoot).href,
+    capabilities: {},
+  });
+  server.notify("workspace/didChangeConfiguration", {
+    settings: {
+      aspLsp: {
+        cache: { enabled: true, directory: cacheDir },
+        debug: { output: "verbose" },
+        workspace: { backgroundAnalysis },
+      },
+    },
+  });
+  drainBenchmarkNotifications(server);
+  return { server, tempDir, cacheDir };
+}
+
+async function stopWorkspaceCacheServer(server) {
+  try {
+    await server.request("shutdown", null);
+    server.notify("exit", undefined);
+  } finally {
+    server.stop();
+  }
+}
+
+async function measureWorkspaceDiagnostics(server, expectedLog) {
+  drainBenchmarkNotifications(server);
+  const startedAt = performance.now();
+  const report = await server.request("workspace/diagnostic", { previousResultIds: [] });
+  const logs = [];
+  await waitForLogContaining(server, expectedLog, logs);
+  await sleep(50);
+  logs.push(...server.takePendingNotifications("window/logMessage"));
+  return {
+    elapsedMs: performance.now() - startedAt,
+    diagnosticCount: countWorkspaceDiagnostics(report),
+    eventCounts: collectDebugEventCounts(logs),
+  };
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function buildTextChange(currentText, editOffset, changeKind) {
@@ -230,21 +410,45 @@ function buildTextChange(currentText, editOffset, changeKind) {
   };
 }
 
-function appendMutableBenchmarkRegion(text, totalChanges) {
+function appendMutableBenchmarkRegion(text, totalChanges, editTarget) {
+  const markerText = `${benchmarkMarker()}${"x".repeat(totalChanges)}`;
+  if (editTarget === "html") {
+    return `${text}
+<div data-asp-lsp-benchmark="${markerText}"></div>
+`;
+  }
+  if (editTarget === "css") {
+    return `${text}
+<style>
+.asp-lsp-benchmark::after { content: "${markerText}"; }
+</style>
+`;
+  }
+  if (editTarget === "client-js") {
+    return `${text}
+<script>
+const aspLspBenchmark = "${markerText}";
+</script>
+`;
+  }
   return `${text}
 <%
-' asp-lsp change benchmark ${"x".repeat(totalChanges)}
+${markerText}
 %>
 `;
 }
 
 function mutableEditOffset(text) {
-  const marker = "' asp-lsp change benchmark ";
+  const marker = benchmarkMarker();
   const markerOffset = text.indexOf(marker);
   if (markerOffset === -1) {
     throw new Error("Mutable benchmark marker was not inserted.");
   }
   return markerOffset + marker.length;
+}
+
+function benchmarkMarker() {
+  return "' asp-lsp change benchmark ";
 }
 
 function collectBenchmarkSources() {
@@ -294,12 +498,53 @@ function collectLogTimings(logs) {
   return timings;
 }
 
+function collectDebugEventCounts(logs) {
+  const counts = new Map();
+  for (const log of logs) {
+    const message = logMessage(log);
+    for (const eventName of debugEventNames) {
+      if (message.includes(`[asp-lsp] ${eventName}`)) {
+        counts.set(eventName, (counts.get(eventName) ?? 0) + 1);
+      }
+    }
+  }
+  return counts;
+}
+
+function addCounters(target, source) {
+  for (const [key, value] of source) {
+    target.set(key, (target.get(key) ?? 0) + value);
+  }
+}
+
 function countLogsContaining(logs, expected) {
   return logs.filter((log) => logMessage(log).includes(expected)).length;
 }
 
+function countWorkspaceDiagnostics(report) {
+  const items =
+    report && typeof report === "object" && Array.isArray(report.items) ? report.items : [];
+  return items.reduce(
+    (sum, item) =>
+      sum + (item && typeof item === "object" && Array.isArray(item.items) ? item.items.length : 0),
+    0,
+  );
+}
+
 async function waitForLogContaining(server, expected, collectedLogs) {
   return waitForLogContainingAny(server, [expected], collectedLogs);
+}
+
+async function waitForFinalCheckLog(server, uri, collectedLogs) {
+  return waitForLogContainingAny(server, finalCheckMessages(uri), collectedLogs);
+}
+
+function finalCheckMessages(uri) {
+  return [
+    `LSP check completed: ${uri}`,
+    `LSP check slow completed: ${uri}`,
+    `LSP check slow reused: ${uri}`,
+  ];
 }
 
 async function waitForLogContainingAny(server, expectedMessages, collectedLogs) {
@@ -390,6 +635,52 @@ function printDebugStepTotals(scenarioResults) {
   printRows(rows);
 }
 
+function printDebugEventTotals(scenarioResults) {
+  const rows = [["Scenario", "Event", "count"]];
+  for (const scenario of scenarioResults) {
+    const scenarioName = scenarioLabel(scenario);
+    for (const eventName of debugEventNames) {
+      const count = scenario.debugEventTotals.get(eventName) ?? 0;
+      if (count > 0) {
+        rows.push([scenarioName, eventName, String(count)]);
+      }
+    }
+  }
+  printRows(rows);
+}
+
+function printWorkspaceCacheTable(results) {
+  const rows = [
+    [
+      "Scenario",
+      "Metric",
+      "elapsed ms",
+      "diagnostics",
+      "disk hits",
+      "disk misses",
+      "disk writes",
+      "background starts",
+      "background completes",
+    ],
+  ];
+  for (const result of results) {
+    for (const row of result.rows) {
+      rows.push([
+        result.scenario,
+        row.metric,
+        formatMillis(row.elapsedMs),
+        String(row.diagnosticCount),
+        String(row.eventCounts.get("diskCache.hit") ?? 0),
+        String(row.eventCounts.get("diskCache.miss") ?? 0),
+        String(row.eventCounts.get("diskCache.write") ?? 0),
+        String(row.eventCounts.get("backgroundAnalysis.started") ?? 0),
+        String(row.eventCounts.get("backgroundAnalysis.completed") ?? 0),
+      ]);
+    }
+  }
+  printRows(rows);
+}
+
 function statsCells(samples) {
   const sorted = [...samples].sort((left, right) => left - right);
   const total = sorted.reduce((sum, value) => sum + value, 0);
@@ -402,7 +693,7 @@ function statsCells(samples) {
 }
 
 function scenarioLabel(scenario) {
-  return `${scenario.changeKind}, mode=${scenario.changeMode}, burst=${scenario.burstSize}, debounce=${scenario.debounceMs}ms, background=${backgroundLabel(
+  return `target=${scenario.editTarget}, ${scenario.changeKind}, mode=${scenario.changeMode}, burst=${scenario.burstSize}, debounce=${scenario.debounceMs}ms, background=${backgroundLabel(
     scenario.backgroundAnalysis,
   )}`;
 }
@@ -457,6 +748,23 @@ function readChangeModes() {
     }
   }
   return values.length > 0 ? values : ["single", "rapid"];
+}
+
+function readEditTargets() {
+  const raw = process.env.ASP_LSP_BENCH_EDIT_TARGET ?? "vbscript";
+  if (raw === "all") {
+    return ["vbscript", "html", "css", "client-js"];
+  }
+  const values = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const value of values) {
+    if (value !== "vbscript" && value !== "html" && value !== "css" && value !== "client-js") {
+      throw new Error("ASP_LSP_BENCH_EDIT_TARGET must be vbscript, html, css, client-js, or all.");
+    }
+  }
+  return values.length > 0 ? values : ["vbscript"];
 }
 
 function changeModeSettings(changeMode) {

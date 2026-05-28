@@ -35,6 +35,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     outputChannel,
     statusBarItem,
     vscode.commands.registerCommand("aspLsp.restartServer", async () => restartServer(context)),
+    vscode.commands.registerCommand("aspLsp.reindexWorkspace", async () =>
+      executeServerCommand("aspLsp.reindexWorkspace"),
+    ),
+    vscode.commands.registerCommand("aspLsp.clearCache", async () =>
+      executeServerCommand("aspLsp.clearCache"),
+    ),
     vscode.commands.registerCommand("aspLsp.openOutput", () => outputChannel?.show()),
     vscode.commands.registerCommand("aspLsp.showReferences", async (uri, position, locations) =>
       showReferences(uri, position, locations),
@@ -48,6 +54,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.tasks.registerTaskProvider("asp-lsp", new AspLspTaskProvider()),
   );
   await startClient(context);
+}
+
+async function executeServerCommand(command: string): Promise<unknown> {
+  return client?.sendRequest("workspace/executeCommand", { command });
 }
 
 async function startClient(context: vscode.ExtensionContext): Promise<void> {

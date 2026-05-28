@@ -30,13 +30,38 @@ export interface AspSettings {
   includePaths?: string[];
   legacyEncoding?: AspLegacyEncoding;
   diagnostics?: AspDiagnosticsSettings;
-  cache?: AspCacheSettings;
   debug?: AspDebugSettings;
   format?: AspFormatSettings;
   vbscript?: AspVbscriptSettings;
   inlayHints?: AspInlayHintSettings;
   codeLens?: AspCodeLensSettings;
+  cache?: AspCacheSettings;
   workspace?: AspWorkspaceSettings;
+}
+
+export interface AspIncrementalChange {
+  range: Range;
+  text: string;
+  rangeOffset?: number;
+  rangeLength?: number;
+}
+
+export type AspEditImpactKind = "incremental" | "full";
+
+export interface AspEditImpact {
+  kind: AspEditImpactKind;
+  reason: string;
+  startOffset: number;
+  endOffset: number;
+  insertedLength: number;
+  deletedLength: number;
+  delta: number;
+  language?: AspEmbeddedLanguage | "mixed";
+}
+
+export interface AspIncrementalUpdateResult {
+  parsed: AspParsedDocument;
+  impact: AspEditImpact;
 }
 
 export type AspLocaleSetting = "auto" | AspLocale;
@@ -58,13 +83,6 @@ export interface AspFormatSettings {
 
 export interface AspDiagnosticsSettings {
   debounceMs?: number;
-}
-
-export interface AspCacheSettings {
-  enabled?: boolean;
-  directory?: string;
-  ttlHours?: number;
-  maxSizeMb?: number;
 }
 
 export type AspDebugOutputLevel = "off" | "summary" | "verbose";
@@ -126,6 +144,13 @@ export interface AspInlayHintSettings {
 export interface AspCodeLensSettings {
   references?: boolean;
   includes?: boolean;
+}
+
+export interface AspCacheSettings {
+  enabled?: boolean;
+  directory?: string;
+  ttlHours?: number;
+  maxSizeMb?: number;
 }
 
 export interface AspWorkspaceSettings {
@@ -193,26 +218,6 @@ export interface AspParsedDocument {
   includes: AspInclude[];
   defaultLanguage: "VBScript" | "JScript";
   diagnostics: Diagnostic[];
-}
-
-export interface AspDocumentChange {
-  range?: Range;
-  text: string;
-}
-
-export interface AspParsedDocumentUpdate {
-  parsed: AspParsedDocument;
-  incremental: boolean;
-  fallbackReason?: string;
-  change?: AspIncrementalChange;
-}
-
-export interface AspIncrementalChange {
-  start: number;
-  end: number;
-  delta: number;
-  language: AspEmbeddedLanguage;
-  regionKind: AspRegionKind;
 }
 
 export interface SourceMapSegment {

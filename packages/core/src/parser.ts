@@ -2,10 +2,11 @@ import { DiagnosticSeverity } from "vscode-languageserver-types";
 import type {
   AspCstNode,
   AspDirective,
-  AspDocumentChange,
+  AspEditImpact,
   AspInclude,
+  AspIncrementalChange,
+  AspIncrementalUpdateResult,
   AspParsedDocument,
-  AspParsedDocumentUpdate,
   AspRegion,
   AspSettings,
   AspToken,
@@ -45,7 +46,6 @@ export function parseAspDocument(
     directiveLanguage ?? settings.defaultLanguage ?? "VBScript",
   );
   const regions = buildRegions(text, inlineRegions, defaultLanguage);
-
   return {
     uri,
     text,
@@ -60,86 +60,397 @@ export function parseAspDocument(
 
 export function updateAspParsedDocument(
   previous: AspParsedDocument,
-  nextText: string,
-  changes: AspDocumentChange[],
+  changes: readonly AspIncrementalChange[],
   settings: AspSettings = {},
-): AspParsedDocumentUpdate {
-  const fallback = (reason: string): AspParsedDocumentUpdate => ({
+): AspIncrementalUpdateResult {
+  const fallback = (
+    reason: string,
+    change = changes[0],
+    nextText = applyIncrementalChanges(previous.text, changes),
+  ): AspIncrementalUpdateResult => ({
     parsed: parseAspDocument(previous.uri, nextText, settings),
-    incremental: false,
-    fallbackReason: reason,
+    impact: editImpact("full", reason, previous.text, nextText, change),
   });
+
   if (changes.length !== 1) {
     return fallback("multiple changes");
   }
-  const change = changes[0];
-  if (!change.range) {
-    return fallback("full text change");
+  const change = normalizeIncrementalChange(previous.text, changes[0]);
+  if (!change) {
+    return fallback("invalid change range");
   }
-  const start = offsetFromRange(previous.text, change.range.start);
-  const end = offsetFromRange(previous.text, change.range.end);
-  if (!appliesChange(previous.text, nextText, start, end, change.text)) {
-    return fallback("change text mismatch");
+  const nextText =
+    previous.text.slice(0, change.startOffset) +
+    change.text +
+    previous.text.slice(change.endOffset);
+  if (change.text.length > 256 || change.endOffset - change.startOffset > 256) {
+    return fallback("large edit", change, nextText);
   }
-  const delta = change.text.length - (end - start);
-  const owner = editableRegionAt(previous.regions, start, end);
-  if (!owner) {
-    return fallback("change is outside a reusable region");
+  if (boundarySensitiveText(previous.text.slice(change.startOffset, change.endOffset))) {
+    return fallback("boundary text deleted", change, nextText);
   }
-  const unsafeReason = unsafeIncrementalChangeReason(previous, owner, start, end, change.text);
-  if (unsafeReason) {
-    return fallback(unsafeReason);
+  if (boundarySensitiveText(change.text)) {
+    return fallback("boundary text inserted", change, nextText);
   }
-  const shiftedRegions = previous.regions.map((region) =>
-    shiftRegionForChange(region, owner, end, delta),
+  if (changeOverlapsInclude(previous, change.startOffset, change.endOffset)) {
+    return fallback("include directive edit", change, nextText);
+  }
+  if (changeOverlapsDirective(previous, change.startOffset, change.endOffset)) {
+    return fallback("ASP directive edit", change, nextText);
+  }
+  const region = incrementalRegionForChange(previous, change.startOffset, change.endOffset);
+  if (!region) {
+    return fallback("edit crosses language boundary", change, nextText);
+  }
+  if (region.kind === "asp-directive") {
+    return fallback("ASP directive region edit", change, nextText);
+  }
+  if (changeTouchesRegionBoundary(region, change.startOffset, change.endOffset)) {
+    return fallback("region boundary edit", change, nextText);
+  }
+  const shiftedRegions = shiftRegionsForChange(
+    previous.regions,
+    region,
+    change.startOffset,
+    change.endOffset,
+    change.text.length - (change.endOffset - change.startOffset),
   );
   const shiftedDirectives = previous.directives.map((directive) =>
-    shiftDirectiveForChange(previous.text, nextText, directive, end, delta),
+    shiftDirectiveAfterChange(directive, previous.text, nextText, change),
   );
   const shiftedIncludes = previous.includes.map((include) =>
-    shiftIncludeForChange(previous.text, nextText, include, end, delta),
+    shiftIncludeAfterChange(include, previous.text, nextText, change),
   );
-  const defaultLanguage = defaultLanguageFromDirectives(
-    shiftedDirectives,
-    settings.defaultLanguage ?? previous.defaultLanguage,
+  const shiftedDiagnostics = previous.diagnostics.map((diagnostic) => ({
+    ...diagnostic,
+    range: shiftAspRangeAfterChange(diagnostic.range, previous.text, nextText, change),
+  }));
+  return {
+    parsed: buildParsedDocument(
+      previous.uri,
+      nextText,
+      shiftedRegions,
+      shiftedDirectives,
+      shiftedIncludes,
+      previous.defaultLanguage,
+      shiftedDiagnostics,
+    ),
+    impact: editImpact("incremental", "safe content edit", previous.text, nextText, change, region),
+  };
+}
+
+export function shiftAspRangeAfterChange(
+  range: { start: { line: number; character: number }; end: { line: number; character: number } },
+  previousText: string,
+  nextText: string,
+  change: AspIncrementalChange,
+) {
+  const normalized = normalizeIncrementalChange(previousText, change);
+  if (!normalized) {
+    return range;
+  }
+  const delta = normalized.text.length - (normalized.endOffset - normalized.startOffset);
+  const start = shiftOffsetAfterChange(
+    offsetAt(previousText, range.start),
+    normalized.startOffset,
+    normalized.endOffset,
+    delta,
   );
-  const children = [
-    ...shiftedRegions.map((region) => regionToNode(nextText, region)),
-    ...shiftedIncludes.map((include) => includeToNode(nextText, include)),
+  const end = shiftOffsetAfterChange(
+    offsetAt(previousText, range.end),
+    normalized.startOffset,
+    normalized.endOffset,
+    delta,
+  );
+  return rangeFromOffsets(nextText, start, Math.max(start, end));
+}
+
+function buildParsedDocument(
+  uri: string,
+  text: string,
+  regions: AspRegion[],
+  directives: AspDirective[],
+  includes: AspInclude[],
+  defaultLanguage: "VBScript" | "JScript",
+  diagnostics: AspParsedDocument["diagnostics"],
+): AspParsedDocument {
+  const nodes: AspCstNode[] = [
+    ...regions.map((region) => regionToNode(text, region)),
+    ...includes.map((include) => includeToNode(text, include)),
   ].sort(
     (left, right) => left.start - right.start || left.end - left.start - (right.end - right.start),
   );
-  const root: AspCstNode = {
+  for (const directive of directives) {
+    const node = nodes.find(
+      (item) => item.start === directive.offset && item.kind === "AspDirective",
+    );
+    if (node) {
+      node.directive = directive;
+      node.attributes = directive.attributes;
+    }
+  }
+  const cst: AspCstNode = {
     kind: "Document",
     start: 0,
-    end: nextText.length,
+    end: text.length,
     contentStart: 0,
-    contentEnd: nextText.length,
-    text: nextText,
-    tokens: children.flatMap((node) => node.tokens),
-    children,
-    errors: shiftParseErrors(previous, nextText, end, delta),
+    contentEnd: text.length,
+    text,
+    tokens: nodes.flatMap((node) => node.tokens),
+    children: nodes,
+    errors: diagnostics.map((diagnostic) => ({
+      message: diagnostic.message,
+      start: offsetFromRange(text, diagnostic.range.start),
+      end: offsetFromRange(text, diagnostic.range.end),
+    })),
   };
   return {
-    parsed: {
-      uri: previous.uri,
-      text: nextText,
-      cst: root,
-      regions: shiftedRegions,
-      directives: shiftedDirectives,
-      includes: shiftedIncludes,
-      defaultLanguage,
-      diagnostics: shiftDiagnostics(previous, nextText, end, delta),
-    },
-    incremental: true,
-    change: {
-      start,
-      end,
-      delta,
-      language: owner.language,
-      regionKind: owner.kind,
-    },
+    uri,
+    text,
+    cst,
+    regions,
+    directives,
+    includes,
+    defaultLanguage,
+    diagnostics,
   };
+}
+
+function applyIncrementalChanges(
+  previousText: string,
+  changes: readonly AspIncrementalChange[],
+): string {
+  return [...changes]
+    .map((change) => normalizeIncrementalChange(previousText, change))
+    .filter((change): change is NormalizedIncrementalChange => Boolean(change))
+    .sort((left, right) => right.startOffset - left.startOffset)
+    .reduce(
+      (text, change) =>
+        `${text.slice(0, change.startOffset)}${change.text}${text.slice(change.endOffset)}`,
+      previousText,
+    );
+}
+
+interface NormalizedIncrementalChange extends AspIncrementalChange {
+  startOffset: number;
+  endOffset: number;
+}
+
+function normalizeIncrementalChange(
+  previousText: string,
+  change: AspIncrementalChange,
+): NormalizedIncrementalChange | undefined {
+  const startOffset = change.rangeOffset ?? offsetAt(previousText, change.range.start);
+  const rangeLength = change.rangeLength ?? offsetAt(previousText, change.range.end) - startOffset;
+  const endOffset = startOffset + rangeLength;
+  if (
+    startOffset < 0 ||
+    endOffset < startOffset ||
+    startOffset > previousText.length ||
+    endOffset > previousText.length
+  ) {
+    return undefined;
+  }
+  return { ...change, startOffset, endOffset, rangeOffset: startOffset, rangeLength };
+}
+
+function editImpact(
+  kind: AspEditImpact["kind"],
+  reason: string,
+  previousText: string,
+  nextText: string,
+  change: AspIncrementalChange | undefined,
+  region?: AspRegion,
+): AspEditImpact {
+  const normalized = change ? normalizeIncrementalChange(previousText, change) : undefined;
+  const startOffset = normalized?.startOffset ?? 0;
+  const endOffset = normalized?.endOffset ?? previousText.length;
+  return {
+    kind,
+    reason,
+    startOffset,
+    endOffset,
+    insertedLength: normalized?.text.length ?? nextText.length,
+    deletedLength: endOffset - startOffset,
+    delta: nextText.length - previousText.length,
+    language: region?.language,
+  };
+}
+
+function boundarySensitiveText(text: string): boolean {
+  return /<%|%>|<!--|#\s*include|<\s*\/?\s*script\b|<\s*\/?\s*style\b|\brunat\s*=|\blanguage\s*=/i.test(
+    text,
+  );
+}
+
+function changeOverlapsInclude(
+  parsed: AspParsedDocument,
+  startOffset: number,
+  endOffset: number,
+): boolean {
+  return parsed.includes.some((include) =>
+    rangeOverlapsOrTouches(
+      startOffset,
+      endOffset,
+      offsetFromRange(parsed.text, include.range.start),
+      offsetFromRange(parsed.text, include.range.end),
+    ),
+  );
+}
+
+function changeOverlapsDirective(
+  parsed: AspParsedDocument,
+  startOffset: number,
+  endOffset: number,
+): boolean {
+  return parsed.directives.some((directive) =>
+    rangeOverlapsOrTouches(
+      startOffset,
+      endOffset,
+      directive.offset,
+      offsetFromRange(parsed.text, directive.range.end),
+    ),
+  );
+}
+
+function rangeOverlapsOrTouches(
+  startOffset: number,
+  endOffset: number,
+  rangeStart: number,
+  rangeEnd: number,
+): boolean {
+  return startOffset === endOffset
+    ? startOffset >= rangeStart && startOffset <= rangeEnd
+    : startOffset < rangeEnd && endOffset > rangeStart;
+}
+
+function incrementalRegionForChange(
+  parsed: AspParsedDocument,
+  startOffset: number,
+  endOffset: number,
+): AspRegion | undefined {
+  return parsed.regions
+    .filter((region) => {
+      if (region.contentStart > startOffset || region.contentEnd < endOffset) {
+        return false;
+      }
+      return startOffset === endOffset
+        ? startOffset >= region.contentStart && startOffset <= region.contentEnd
+        : startOffset >= region.contentStart && endOffset <= region.contentEnd;
+    })
+    .sort(
+      (left, right) =>
+        left.contentEnd - left.contentStart - (right.contentEnd - right.contentStart),
+    )[0];
+}
+
+function changeTouchesRegionBoundary(
+  region: AspRegion,
+  startOffset: number,
+  endOffset: number,
+): boolean {
+  return (
+    region.kind !== "html" &&
+    (startOffset === region.contentStart || endOffset === region.contentEnd)
+  );
+}
+
+function shiftRegionsForChange(
+  regions: readonly AspRegion[],
+  editedRegion: AspRegion,
+  startOffset: number,
+  endOffset: number,
+  delta: number,
+): AspRegion[] {
+  return regions.map((region) => {
+    if (regionContainsChange(region, startOffset, endOffset)) {
+      return {
+        ...region,
+        end: region.end + delta,
+        contentEnd: region.contentEnd + delta,
+      };
+    }
+    if (region.start >= endOffset) {
+      return shiftRegion(region, delta);
+    }
+    if (region !== editedRegion && region.end >= endOffset && region.contentEnd >= endOffset) {
+      return {
+        ...region,
+        end: region.end + delta,
+        contentEnd: region.contentEnd + delta,
+      };
+    }
+    return region;
+  });
+}
+
+function regionContainsChange(region: AspRegion, startOffset: number, endOffset: number): boolean {
+  return startOffset >= region.contentStart && endOffset <= region.contentEnd;
+}
+
+function shiftRegion(region: AspRegion, delta: number): AspRegion {
+  return {
+    ...region,
+    start: region.start + delta,
+    end: region.end + delta,
+    contentStart: region.contentStart + delta,
+    contentEnd: region.contentEnd + delta,
+  };
+}
+
+function shiftDirectiveAfterChange(
+  directive: AspDirective,
+  previousText: string,
+  nextText: string,
+  change: NormalizedIncrementalChange,
+): AspDirective {
+  return {
+    ...directive,
+    offset: shiftOffsetAfterChange(
+      directive.offset,
+      change.startOffset,
+      change.endOffset,
+      change.text.length - (change.endOffset - change.startOffset),
+    ),
+    range: shiftAspRangeAfterChange(directive.range, previousText, nextText, change),
+  };
+}
+
+function shiftIncludeAfterChange(
+  include: AspInclude,
+  previousText: string,
+  nextText: string,
+  change: NormalizedIncrementalChange,
+): AspInclude {
+  const delta = change.text.length - (change.endOffset - change.startOffset);
+  return {
+    ...include,
+    offset: shiftOffsetAfterChange(include.offset, change.startOffset, change.endOffset, delta),
+    range: shiftAspRangeAfterChange(include.range, previousText, nextText, change),
+    directiveRange: shiftAspRangeAfterChange(
+      include.directiveRange,
+      previousText,
+      nextText,
+      change,
+    ),
+    modeRange: shiftAspRangeAfterChange(include.modeRange, previousText, nextText, change),
+    pathRange: shiftAspRangeAfterChange(include.pathRange, previousText, nextText, change),
+  };
+}
+
+function shiftOffsetAfterChange(
+  offset: number,
+  startOffset: number,
+  endOffset: number,
+  delta: number,
+): number {
+  if (offset < startOffset) {
+    return offset;
+  }
+  if (offset >= endOffset) {
+    return offset + delta;
+  }
+  return startOffset;
 }
 
 export function parseAspCst(uri: string, text: string, settings: AspSettings = {}): AspCstNode {
@@ -215,246 +526,6 @@ export function parseAspCst(uri: string, text: string, settings: AspSettings = {
   };
   void uri;
   return root;
-}
-
-function appliesChange(
-  previousText: string,
-  nextText: string,
-  start: number,
-  end: number,
-  inserted: string,
-): boolean {
-  if (nextText.length !== previousText.length - (end - start) + inserted.length) {
-    return false;
-  }
-  if (!textMatchesAt(nextText, start, inserted)) {
-    return false;
-  }
-  for (let index = 0; index < start; index += 1) {
-    if (previousText.charCodeAt(index) !== nextText.charCodeAt(index)) {
-      return false;
-    }
-  }
-  const suffixLength = previousText.length - end;
-  const nextSuffixStart = start + inserted.length;
-  for (let index = 0; index < suffixLength; index += 1) {
-    if (previousText.charCodeAt(end + index) !== nextText.charCodeAt(nextSuffixStart + index)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function textMatchesAt(text: string, offset: number, expected: string): boolean {
-  for (let index = 0; index < expected.length; index += 1) {
-    if (text.charCodeAt(offset + index) !== expected.charCodeAt(index)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function editableRegionAt(regions: AspRegion[], start: number, end: number): AspRegion | undefined {
-  const candidates = regions
-    .filter((region) => {
-      if (region.kind === "asp-directive") {
-        return false;
-      }
-      return start >= region.contentStart && end <= region.contentEnd;
-    })
-    .sort(
-      (left, right) =>
-        left.contentEnd - left.contentStart - (right.contentEnd - right.contentStart),
-    );
-  return candidates[0];
-}
-
-function unsafeIncrementalChangeReason(
-  previous: AspParsedDocument,
-  owner: AspRegion,
-  start: number,
-  end: number,
-  inserted: string,
-): string | undefined {
-  const removed = previous.text.slice(start, end);
-  const changedText = removed + inserted;
-  if (
-    previous.includes.some((include) =>
-      changeTouchesRange(start, end, include.offset, includeEnd(previous.text, include)),
-    )
-  ) {
-    return "include directive changed";
-  }
-  if (
-    previous.regions.some(
-      (region) =>
-        region !== owner &&
-        region.start < end &&
-        region.end > start &&
-        (start < region.contentStart || end > region.contentEnd),
-    )
-  ) {
-    return "change overlaps a nested region boundary";
-  }
-  if (owner.kind === "html" && /<|>/.test(changedText)) {
-    return "HTML structure may have changed";
-  }
-  if (
-    (owner.kind === "style" || owner.kind === "client-script" || owner.kind === "server-script") &&
-    (/<%|<!--|<\/\s*(script|style)\b/i.test(changedText) || /["'`/*]/.test(changedText))
-  ) {
-    return "embedded structure may have changed";
-  }
-  if (
-    (owner.kind === "asp-block" || owner.kind === "asp-expression") &&
-    (/<%|%>/.test(changedText) || /["'`/]/.test(changedText))
-  ) {
-    return "ASP delimiter may have changed";
-  }
-  if (owner.kind === "style-attribute" && /["'<>]/.test(changedText)) {
-    return "style attribute boundary may have changed";
-  }
-  return undefined;
-}
-
-function changeTouchesRange(
-  changeStart: number,
-  changeEnd: number,
-  rangeStart: number,
-  rangeEnd: number,
-) {
-  return changeStart === changeEnd
-    ? changeStart >= rangeStart && changeStart <= rangeEnd
-    : changeStart < rangeEnd && rangeStart < changeEnd;
-}
-
-function includeEnd(text: string, include: AspInclude): number {
-  return offsetFromRange(text, include.range.end);
-}
-
-function shiftRegionForChange(
-  region: AspRegion,
-  owner: AspRegion,
-  changeEnd: number,
-  delta: number,
-): AspRegion {
-  if (region === owner) {
-    return { ...region, end: region.end + delta, contentEnd: region.contentEnd + delta };
-  }
-  if (region.start >= changeEnd) {
-    return shiftRegion(region, delta);
-  }
-  if (region.end >= changeEnd && containsRegion(region, owner)) {
-    return { ...region, end: region.end + delta, contentEnd: region.contentEnd + delta };
-  }
-  return region;
-}
-
-function containsRegion(container: AspRegion, child: AspRegion): boolean {
-  return container.start <= child.start && container.end >= child.end;
-}
-
-function shiftRegion(region: AspRegion, delta: number): AspRegion {
-  return {
-    ...region,
-    start: region.start + delta,
-    end: region.end + delta,
-    contentStart: region.contentStart + delta,
-    contentEnd: region.contentEnd + delta,
-  };
-}
-
-function shiftDirectiveForChange(
-  previousText: string,
-  nextText: string,
-  directive: AspDirective,
-  changeEnd: number,
-  delta: number,
-): AspDirective {
-  const start = shiftOffset(directive.offset, changeEnd, delta);
-  const end = shiftOffset(offsetFromRange(previousText, directive.range.end), changeEnd, delta);
-  return {
-    ...directive,
-    offset: start,
-    range: rangeFromOffsets(nextText, start, end),
-  };
-}
-
-function shiftIncludeForChange(
-  previousText: string,
-  nextText: string,
-  include: AspInclude,
-  changeEnd: number,
-  delta: number,
-): AspInclude {
-  const start = shiftOffset(include.offset, changeEnd, delta);
-  const end = shiftOffset(offsetFromRange(previousText, include.range.end), changeEnd, delta);
-  return {
-    ...include,
-    offset: start,
-    range: rangeFromOffsets(nextText, start, end),
-    directiveRange: shiftRange(previousText, nextText, include.directiveRange, changeEnd, delta),
-    modeRange: shiftRange(previousText, nextText, include.modeRange, changeEnd, delta),
-    pathRange: shiftRange(previousText, nextText, include.pathRange, changeEnd, delta),
-  };
-}
-
-function shiftRange(
-  previousText: string,
-  nextText: string,
-  range: AspInclude["range"],
-  changeEnd: number,
-  delta: number,
-) {
-  const start = shiftOffset(offsetFromRange(previousText, range.start), changeEnd, delta);
-  const end = shiftOffset(offsetFromRange(previousText, range.end), changeEnd, delta);
-  return rangeFromOffsets(nextText, start, end);
-}
-
-function shiftOffset(offset: number, changeEnd: number, delta: number): number {
-  return offset >= changeEnd ? offset + delta : offset;
-}
-
-function defaultLanguageFromDirectives(
-  directives: AspDirective[],
-  fallback: "VBScript" | "JScript",
-): "VBScript" | "JScript" {
-  const directiveLanguage = directives
-    .map((directive) => directive.attributes.language ?? directive.attributes.LANGUAGE)
-    .find((value): value is string => typeof value === "string");
-  return normalizeScriptLanguage(directiveLanguage ?? fallback);
-}
-
-function shiftParseErrors(
-  previous: AspParsedDocument,
-  nextText: string,
-  changeEnd: number,
-  delta: number,
-): NonNullable<AspCstNode["errors"]> {
-  return (
-    previous.cst.errors?.map((error) => ({
-      ...error,
-      start: shiftOffset(error.start, changeEnd, delta),
-      end: shiftOffset(error.end, changeEnd, delta),
-    })) ?? []
-  );
-}
-
-function shiftDiagnostics(
-  previous: AspParsedDocument,
-  nextText: string,
-  changeEnd: number,
-  delta: number,
-): AspParsedDocument["diagnostics"] {
-  return previous.diagnostics.map((diagnostic) => {
-    const start = shiftOffset(
-      offsetFromRange(previous.text, diagnostic.range.start),
-      changeEnd,
-      delta,
-    );
-    const end = shiftOffset(offsetFromRange(previous.text, diagnostic.range.end), changeEnd, delta);
-    return { ...diagnostic, range: rangeFromOffsets(nextText, start, end) };
-  });
 }
 
 function regionToNode(text: string, region: AspRegion): AspCstNode {

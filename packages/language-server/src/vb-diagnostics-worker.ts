@@ -1,48 +1,54 @@
 import { parentPort } from "node:worker_threads";
-import { analyzeVbscript, type AspParsedDocument, type VbProjectContext } from "@asp-lsp/core";
-import type { Diagnostic } from "vscode-languageserver/node";
-
-interface VbDiagnosticsWorkerTiming {
-  step: string;
-  elapsedMs: number;
-}
-
-interface VbDiagnosticsWorkerRequest {
-  id: number;
-  parsed: AspParsedDocument;
-  context: VbProjectContext;
-}
+import { analyzeVbscript } from "@asp-lsp/core";
+import type {
+  VbDiagnosticsWorkerRequest,
+  VbDiagnosticsWorkerResponse,
+  VbDiagnosticsWorkerTiming,
+} from "./vb-diagnostics-protocol";
 
 if (!parentPort) {
   throw new Error("VBScript diagnostics worker requires a parent port.");
 }
 
-parentPort.on("message", (message: VbDiagnosticsWorkerRequest) => {
+parentPort.on("message", (request: VbDiagnosticsWorkerRequest) => {
   const timings: VbDiagnosticsWorkerTiming[] = [];
   try {
-    const diagnostics = analyzeVbscript(message.parsed, {
-      ...message.context,
-      debugStep: (step, action) => {
+    const diagnostics = analyzeVbscript(request.parsed, {
+      ...request.context,
+      debugStep: (name, action) => {
         const startedAt = process.hrtime.bigint();
         try {
           return action();
         } finally {
           timings.push({
-            step,
+            name,
             elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
           });
         }
       },
     }).diagnostics;
     parentPort?.postMessage({
-      id: message.id,
+      id: request.id,
       diagnostics,
       timings,
-    } satisfies { id: number; diagnostics: Diagnostic[]; timings: VbDiagnosticsWorkerTiming[] });
+    } satisfies VbDiagnosticsWorkerResponse);
   } catch (error) {
     parentPort?.postMessage({
-      id: message.id,
-      error: error instanceof Error ? error.message : String(error),
-    });
+      id: request.id,
+      error: serializeWorkerError(error),
+    } satisfies VbDiagnosticsWorkerResponse);
   }
 });
+
+function serializeWorkerError(error: unknown): VbDiagnosticsWorkerResponse["error"] {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+  }
+  return {
+    message: String(error),
+  };
+}
