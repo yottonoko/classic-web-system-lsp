@@ -1624,7 +1624,14 @@ Response.Write known
         await waitForLogContaining(server, "LSP check completed");
         server.takePendingNotifications("window/logMessage");
 
-        source = notifyRangedReplacement(server, uri, source, 2, "benchmark x", "benchmark y");
+        source = notifyRangedReplacement(
+          server,
+          uri,
+          source,
+          2,
+          "Response.Write known",
+          "Response.Write known2",
+        );
 
         await server.waitForNotification("textDocument/publishDiagnostics");
         await waitForLogContaining(server, "LSP analysis completed");
@@ -1633,7 +1640,7 @@ Response.Write known
         await waitForLogContaining(server, "check.parserDiagnostics");
         await waitForLogContaining(server, "check.vbscript.diagnostics");
         await waitForLogContaining(server, "LSP check completed");
-        expect(source).toContain("' benchmark y");
+        expect(source).toContain("Response.Write known2");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -1735,6 +1742,67 @@ Response.Write known
         ]);
         expect(logs).toContain("full document replacement");
         expect(logs).not.toContain("analysis.parse.incremental");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("reuses VBScript diagnostics after ordinary VBScript comment edits", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/vb-reuse-after-comment-edit.asp";
+        let source = `<% Option Explicit
+' benchmark x
+Dim known
+Response.Write missingName
+%>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await waitForDiagnosticsContaining(server, "missingName");
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+        server.takePendingNotifications("textDocument/publishDiagnostics");
+
+        source = notifyRangedReplacement(server, uri, source, 2, "benchmark x", "benchmark y");
+
+        await waitForDiagnosticsContaining(server, "missingName");
+        const reuseLog = await waitForLogContaining(server, "analysis.vbscript.reuse");
+        const diagnosticsReuseLog = await waitForLogContaining(
+          server,
+          "check.vbscript.diagnostics.reuse",
+        );
+        const logs = JSON.stringify([
+          reuseLog,
+          diagnosticsReuseLog,
+          ...server.takePendingNotifications("window/logMessage"),
+        ]);
+        expect(logs).not.toContain("check.vbscript.diagnostics.symbols");
+        expect(logs).not.toContain("check.vbscript.projectContext");
+        expect(source).toContain("' benchmark y");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

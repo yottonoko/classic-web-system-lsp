@@ -123,6 +123,7 @@ import {
   type VbReferenceOptions,
   type VbSymbol,
   type VbSymbolKind,
+  type VbToken,
   type VbType,
   type VbTypeEnvironment,
 } from "@asp-lsp/core";
@@ -3222,12 +3223,15 @@ function seedVbReuseAfterIncrementalChange(
   change: AspIncrementalChange,
   impact: AspEditImpact,
 ): void {
+  const canReuseVbscriptChange =
+    impact.language === "vbscript" && isOrdinaryVbscriptCommentEdit(previous, cached, change);
   if (
     impact.kind !== "incremental" ||
-    impact.language === "vbscript" ||
+    (impact.language === "vbscript" && !canReuseVbscriptChange) ||
     impact.language === "jscript" ||
-    vbscriptRegionContentFingerprint(previous.parsed) !==
-      vbscriptRegionContentFingerprint(cached.parsed)
+    (!canReuseVbscriptChange &&
+      vbscriptRegionContentFingerprint(previous.parsed) !==
+        vbscriptRegionContentFingerprint(cached.parsed))
   ) {
     return;
   }
@@ -3270,6 +3274,51 @@ function seedVbReuseAfterIncrementalChange(
       `[asp-lsp] analysis.vbscript.reuse: ${cached.source.uri}, diagnostics=${previousDiagnostics ? "hit" : "miss"}, projectContext=${previousContext ? "hit" : "miss"}`,
     );
   }
+}
+
+function isOrdinaryVbscriptCommentEdit(
+  previous: CachedDocument,
+  cached: CachedDocument,
+  change: AspIncrementalChange,
+): boolean {
+  if (change.text.includes("\n") || change.text.includes("\r")) {
+    return false;
+  }
+  const startOffset = previous.source.offsetAt(change.range.start);
+  const endOffset =
+    change.rangeLength === undefined
+      ? previous.source.offsetAt(change.range.end)
+      : startOffset + change.rangeLength;
+  const insertedEndOffset = startOffset + change.text.length;
+  return (
+    isOrdinaryVbscriptCommentToken(vbTokenCoveringRange(previous.parsed, startOffset, endOffset)) &&
+    isOrdinaryVbscriptCommentToken(
+      vbTokenCoveringRange(cached.parsed, startOffset, insertedEndOffset),
+    )
+  );
+}
+
+function vbTokenCoveringRange(
+  parsed: AspParsedDocument,
+  startOffset: number,
+  endOffset: number,
+): VbToken | undefined {
+  for (const child of parsed.cst.children) {
+    const tokens = child.vbscript?.tokens;
+    if (!tokens || child.contentEnd < startOffset || child.contentStart > endOffset) {
+      continue;
+    }
+    for (const token of tokens) {
+      if (token.start <= startOffset && token.end >= endOffset) {
+        return token;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isOrdinaryVbscriptCommentToken(token: VbToken | undefined): boolean {
+  return token?.kind === "comment" && !token.text.startsWith("'''");
 }
 
 function seedSyntaxDiagnosticsAfterIncrementalChange(
