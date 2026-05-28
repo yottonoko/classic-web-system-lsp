@@ -1974,6 +1974,7 @@ function refreshCachedDocumentIncremental(
     updated.impact.kind === "incremental" &&
     updated.impact.language === "vbscript" &&
     isOrdinaryVbscriptCommentEdit(previous, cached, change);
+  seedIncludeDiagnosticsAfterIncrementalChange(previous, cached, settings, change, updated.impact);
   seedVbReuseAfterIncrementalChange(previous, cached, settings, change, updated.impact);
   seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
   cache.set(document.uri, cached);
@@ -2375,9 +2376,41 @@ async function includeDiagnosticsForCachedAsync(
   cancellation: AnalysisCancellation = neverCancelled,
 ): Promise<Diagnostic[]> {
   const startedAt = process.hrtime.bigint();
-  const items = await includeDiagnosticsAsync(cached, settings, cancellation);
+  const key = includeDiagnosticsCacheKey(cached, settings);
+  const cachedItems = cached.analysis?.includeDiagnostics;
+  const items =
+    cachedItems?.key === key
+      ? measureDebugStep(
+          settings,
+          cached.source.uri,
+          `${stepPrefix}.includeDiagnostics.reuse`,
+          () => {
+            logDebugSummary(settings, `[asp-lsp] includeDiagnostics.reuse: ${cached.source.uri}`);
+            return cachedItems.items;
+          },
+        )
+      : await includeDiagnosticsAsync(cached, settings, cancellation);
+  if (cachedItems?.key !== key && !cancellation.isCancellationRequested()) {
+    analysisFor(cached).includeDiagnostics = {
+      key,
+      items,
+      text: cached.parsed.text,
+    };
+  }
   finishDebugStep(settings, cached.source.uri, `${stepPrefix}.includeDiagnostics`, startedAt);
   return items;
+}
+
+function includeDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    includeResolution: cached.includeResolutionIdentity,
+    locale: settings.resolvedLocale,
+    windowsPathResolution: settings.windowsPathResolution !== false,
+    includes: cached.parsed.includes.map((include) => ({
+      path: include.path,
+      mode: include.mode,
+    })),
+  });
 }
 
 function syntaxDiagnosticsForCached(
@@ -3222,6 +3255,49 @@ function workerResponseError(response: VbDiagnosticsWorkerResponse): Error {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function seedIncludeDiagnosticsAfterIncrementalChange(
+  previous: CachedDocument,
+  cached: CachedDocument,
+  settings: AspSettings,
+  change: AspIncrementalChange,
+  impact: AspEditImpact,
+): void {
+  const previousDiagnostics = previous.analysis?.includeDiagnostics;
+  if (
+    impact.kind !== "incremental" ||
+    !previousDiagnostics ||
+    !sameIncludeRefs(previous.parsed, cached.parsed)
+  ) {
+    return;
+  }
+  analysisFor(cached).includeDiagnostics = {
+    key: includeDiagnosticsCacheKey(cached, settings),
+    text: cached.parsed.text,
+    items:
+      impact.delta === 0
+        ? previousDiagnostics.items
+        : previousDiagnostics.items.map((diagnostic) =>
+            shiftDiagnosticForIncrementalChange(
+              diagnostic,
+              previous.source.uri,
+              previous.parsed.text,
+              cached.parsed.text,
+              change,
+            ),
+          ),
+  };
+}
+
+function sameIncludeRefs(left: AspParsedDocument, right: AspParsedDocument): boolean {
+  if (left.includes.length !== right.includes.length) {
+    return false;
+  }
+  return left.includes.every((include, index) => {
+    const other = right.includes[index];
+    return include.path === other.path && include.mode === other.mode;
+  });
 }
 
 function seedVbReuseAfterIncrementalChange(

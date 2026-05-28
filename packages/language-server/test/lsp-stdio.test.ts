@@ -1812,6 +1812,59 @@ Response.Write missingName
       }
     });
 
+    it("reuses and shifts include diagnostics after safe incremental edits", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/include-reuse-after-html-edit.asp";
+        let source = `<div>top</div>
+<!--#include file="missing.inc"-->
+<% Response.Write "ok" %>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const firstDiagnostics = await waitForDiagnosticsContaining(server, "missing.inc");
+        await waitForLogContaining(server, "LSP check completed");
+        const firstMissing = diagnosticContaining(firstDiagnostics, "missing.inc");
+        expect(firstMissing?.range.start.line).toBe(1);
+        server.takePendingNotifications("window/logMessage");
+        server.takePendingNotifications("textDocument/publishDiagnostics");
+
+        source = notifyRangedReplacement(server, uri, source, 2, "top", "top\nnext");
+
+        const nextDiagnostics = await waitForDiagnosticsContaining(server, "missing.inc");
+        const reuseLog = await waitForLogContaining(server, "includeDiagnostics.reuse");
+        const nextMissing = diagnosticContaining(nextDiagnostics, "missing.inc");
+        expect(nextMissing?.range.start.line).toBe(2);
+        expect(JSON.stringify(reuseLog.params)).toContain(uri);
+        expect(source).toContain("top\nnext");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("reuses VBScript diagnostics after HTML edits outside VBScript regions", async () => {
       const server = new RpcServer();
       try {
