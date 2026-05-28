@@ -5862,12 +5862,16 @@ function buildVbUsageIndex(
       if (isDeclarationNameToken(document, token)) {
         continue;
       }
+      const lowerName = token.text.toLowerCase();
+      if (!candidates.lowerNames.has(lowerName) && !candidates.memberNames.has(lowerName)) {
+        continue;
+      }
       const member = memberAccessForToken(document, token);
       if (member) {
-        if (!candidates.memberNames.has(member.member.toLowerCase())) {
+        if (!candidates.memberNames.has(lowerName)) {
           continue;
         }
-      } else if (!candidates.lowerNames.has(token.text.toLowerCase())) {
+      } else if (!candidates.lowerNames.has(lowerName)) {
         continue;
       }
       const resolved = member
