@@ -3241,27 +3241,37 @@ function seedVbReuseAfterIncrementalChange(
     analysis.vbDiagnostics = {
       key: vbDiagnosticsCacheKey(cached, settings),
       text: cached.parsed.text,
-      items: previousDiagnostics.items.map((diagnostic) =>
-        shiftDiagnosticForIncrementalChange(
-          diagnostic,
-          previous.source.uri,
-          previous.parsed.text,
-          cached.parsed.text,
-          change,
-        ),
-      ),
+      items:
+        impact.delta === 0
+          ? previousDiagnostics.items
+          : previousDiagnostics.items.map((diagnostic) =>
+              shiftDiagnosticForIncrementalChange(
+                diagnostic,
+                previous.source.uri,
+                previous.parsed.text,
+                cached.parsed.text,
+                change,
+              ),
+            ),
     };
   }
   const previousContext = previous.analysis?.vbProjectContext;
   if (previousContext) {
-    const context = shiftVbProjectContextForIncrementalChange(
-      previousContext.context,
-      previous.source.uri,
-      previous.parsed.text,
-      cached.parsed.text,
-      change,
-      cached.parsed,
-    );
+    const context =
+      impact.delta === 0
+        ? replaceVbProjectContextRootDocument(
+            previousContext.context,
+            previous.source.uri,
+            cached.parsed,
+          )
+        : shiftVbProjectContextForIncrementalChange(
+            previousContext.context,
+            previous.source.uri,
+            previous.parsed.text,
+            cached.parsed.text,
+            change,
+            cached.parsed,
+          );
     analysis.vbProjectContext = {
       key: vbProjectContextCacheKey(context.documents ?? [cached.parsed], settings),
       rootKey: vbProjectRootContextCacheKey(cached, settings),
@@ -3418,6 +3428,20 @@ function shiftVbProjectContextForIncrementalChange(
         shiftAspRangeAfterChange(range, previousText, nextText, change),
       ),
     })),
+  };
+}
+
+function replaceVbProjectContextRootDocument(
+  context: VbProjectContext,
+  rootUri: string,
+  currentRoot: AspParsedDocument,
+): VbProjectContext {
+  return {
+    ...context,
+    documents: [
+      currentRoot,
+      ...(context.documents?.filter((document) => document.uri !== rootUri) ?? []),
+    ],
   };
 }
 
