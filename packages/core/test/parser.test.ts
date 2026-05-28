@@ -448,12 +448,17 @@ describe("VBScript analysis", () => {
   it("treats Rem as a VBScript line comment only at statement starts", () => {
     const cst = parseVbscriptCst(`Rem leading comment
 value = 1 : Rem trailing comment
+rEm mixed case comment
 Reminder = 2
 value = Rem`);
     const comments = cst.tokens
       .filter((token) => token.kind === "comment")
       .map((token) => token.text);
-    expect(comments).toEqual(["Rem leading comment", "Rem trailing comment"]);
+    expect(comments).toEqual([
+      "Rem leading comment",
+      "Rem trailing comment",
+      "rEm mixed case comment",
+    ]);
     expect(
       cst.tokens.some((token) => token.kind === "identifier" && token.text === "Reminder"),
     ).toBe(true);

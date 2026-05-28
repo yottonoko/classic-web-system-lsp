@@ -432,7 +432,16 @@ function isNumberPart(char: string | undefined): boolean {
 }
 
 function isRemCommentStart(text: string, index: number): boolean {
-  if (text.slice(index, index + 3).toLowerCase() !== "rem") {
+  const first = text.charCodeAt(index);
+  if (first !== 82 && first !== 114) {
+    return false;
+  }
+  const second = text.charCodeAt(index + 1);
+  if (second !== 69 && second !== 101) {
+    return false;
+  }
+  const third = text.charCodeAt(index + 2);
+  if (third !== 77 && third !== 109) {
     return false;
   }
   const after = text[index + 3];
