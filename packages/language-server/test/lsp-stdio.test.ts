@@ -3680,8 +3680,18 @@ Response.Write SharedTitle()
           "codeLens/resolve",
           referencesCodeLens,
         )) as Record<string, unknown>;
-        expect(JSON.stringify(resolvedCodeLens.command)).toContain("1 reference");
-        expect(JSON.stringify(resolvedCodeLens.command)).toContain(pageUri);
+        expect(JSON.stringify(resolvedCodeLens.command)).toContain("0 references");
+        expect(JSON.stringify(resolvedCodeLens.command)).not.toContain(pageUri);
+
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { codeLens: { referenceScope: "workspace" } } },
+        });
+        const workspaceResolvedCodeLens = (await server.request(
+          "codeLens/resolve",
+          referencesCodeLens,
+        )) as Record<string, unknown>;
+        expect(JSON.stringify(workspaceResolvedCodeLens.command)).toContain("1 reference");
+        expect(JSON.stringify(workspaceResolvedCodeLens.command)).toContain(pageUri);
 
         const references = await server.request("textDocument/references", {
           textDocument: { uri: commonUri },
@@ -3736,6 +3746,76 @@ End Sub
         expect(serialized).not.toContain("(global)");
         expect(serialized).toContain("As String");
         expect(serialized).toContain("As Variant");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("shows local and uncertain VBScript variable inlay hint markers when configured", async () => {
+      const source = `<!-- #include file="shared.inc" -->
+<%
+a = 1
+Sub Render()
+  b = "local"
+End Sub
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { inlayHints: { globalVariableMarkers: "all" } } },
+        });
+        const uri = "file:///tmp/include-uncertain-inlay.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 8, character: 0 } },
+        });
+        const serialized = JSON.stringify(inlayHints);
+        expect(serialized).toContain("(?)");
+        expect(serialized).not.toContain("(global) As Number");
+        expect(serialized).not.toContain("(local) As String");
+
+        const localOnlyUri = "file:///tmp/local-marker-inlay.asp";
+        const localOnlySource = `<%
+Dim pageTitle
+Sub Render()
+  Dim localTitle
+End Sub
+%>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: localOnlyUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: localOnlySource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const localHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri: localOnlyUri },
+          range: { start: { line: 0, character: 0 }, end: { line: 7, character: 0 } },
+        });
+        const serializedLocalHints = JSON.stringify(localHints);
+        expect(serializedLocalHints).toContain("(global) As Variant");
+        expect(serializedLocalHints).toContain("(local) As Variant");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

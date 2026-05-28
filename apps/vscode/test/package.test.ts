@@ -107,7 +107,22 @@ describe("VS Code extension package", () => {
     ).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.globalVariableMarkers"],
-    ).toBeTruthy();
+    ).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["global", "all", "off"],
+        default: "global",
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.codeLens.referenceScope"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["analyzed", "workspace"],
+        default: "analyzed",
+      }),
+    );
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.windowsPathResolution"],

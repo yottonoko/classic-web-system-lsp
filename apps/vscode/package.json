@@ -518,14 +518,28 @@
           "description": "%configuration.inlayHints.implicitByRef.description%"
         },
         "aspLsp.inlayHints.globalVariableMarkers": {
-          "type": "boolean",
-          "default": true,
+          "type": "string",
+          "enum": [
+            "global",
+            "all",
+            "off"
+          ],
+          "default": "global",
           "description": "%configuration.inlayHints.globalVariableMarkers.description%"
         },
         "aspLsp.codeLens.references": {
           "type": "boolean",
           "default": true,
           "description": "%configuration.codeLens.references.description%"
+        },
+        "aspLsp.codeLens.referenceScope": {
+          "type": "string",
+          "enum": [
+            "analyzed",
+            "workspace"
+          ],
+          "default": "analyzed",
+          "description": "%configuration.codeLens.referenceScope.description%"
         },
         "aspLsp.codeLens.includes": {
           "type": "boolean",

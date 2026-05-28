@@ -138,12 +138,15 @@ export interface AspInlayHintSettings {
   parameterNames?: boolean;
   functionReturnTypes?: boolean;
   implicitByRef?: boolean;
-  globalVariableMarkers?: boolean;
+  globalVariableMarkers?: AspInlayHintMarkerMode;
 }
+
+export type AspInlayHintMarkerMode = "global" | "all" | "off";
 
 export interface AspCodeLensSettings {
   references?: boolean;
   includes?: boolean;
+  referenceScope?: "analyzed" | "workspace";
 }
 
 export interface AspCacheSettings {

@@ -7330,8 +7330,20 @@ function normalizeInlayHintSettings(
     parameterNames: record.parameterNames !== false,
     functionReturnTypes: record.functionReturnTypes !== false,
     implicitByRef: record.implicitByRef !== false,
-    globalVariableMarkers: record.globalVariableMarkers !== false,
+    globalVariableMarkers: normalizeInlayMarkerMode(record.globalVariableMarkers),
   };
+}
+
+function normalizeInlayMarkerMode(
+  value: unknown,
+): NonNullable<NonNullable<AspSettings["inlayHints"]>["globalVariableMarkers"]> {
+  if (value === "all" || value === "off") {
+    return value;
+  }
+  if (value === false) {
+    return "off";
+  }
+  return "global";
 }
 
 function normalizeCodeLensSettings(
@@ -7342,6 +7354,7 @@ function normalizeCodeLensSettings(
   return {
     references: record.references !== false,
     includes: record.includes === true,
+    referenceScope: record.referenceScope === "workspace" ? "workspace" : "analyzed",
   };
 }
 
@@ -10100,8 +10113,11 @@ async function codeLensesAsync(cached: CachedDocument): Promise<CodeLens[]> {
   const settings = cachedSettings(cached.source.uri).codeLens;
   const lenses: CodeLens[] = [];
   if (settings?.references !== false) {
-    const context = await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri));
-    for (const symbol of (context.symbols ?? []).filter(
+    const symbols = collectVbscriptSymbols(
+      cached.parsed,
+      vbProjectContextSettings(cachedSettings(cached.source.uri)),
+    );
+    for (const symbol of symbols.filter(
       (item) =>
         item.sourceUri === cached.source.uri &&
         ["function", "sub", "class", "method", "property"].includes(item.kind),
@@ -10143,19 +10159,19 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
   if (!cached) {
     return lens;
   }
-  const symbol = await vbSymbolForCodeLensDataAsync(cached, data);
+  const symbol = vbSymbolForCodeLensData(cached, data);
   if (!symbol) {
     return lens;
   }
-  const references = await workspaceVbscriptReferencesForSymbol(
-    cached,
-    symbol,
-    cachedSettings(cached.source.uri),
-    {
-      includeDeclaration: false,
-      includeFunctionReturnAssignments: false,
-    },
-  );
+  const settings = cachedSettings(cached.source.uri);
+  const options = {
+    includeDeclaration: false,
+    includeFunctionReturnAssignments: false,
+  };
+  const references =
+    settings.codeLens?.referenceScope === "workspace"
+      ? await workspaceVbscriptReferencesForSymbol(cached, symbol, settings, options)
+      : analyzedVbscriptReferencesForSymbol(cached, symbol, settings, options);
   const localizer = localizerForUri(cached.source.uri);
   return {
     ...lens,
@@ -10201,12 +10217,14 @@ function vbReferenceCodeLensDataFromUnknown(value: unknown): VbReferenceCodeLens
     : undefined;
 }
 
-async function vbSymbolForCodeLensDataAsync(
+function vbSymbolForCodeLensData(
   cached: CachedDocument,
   data: VbReferenceCodeLensData,
-): Promise<VbSymbol | undefined> {
-  const context = await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri));
-  return (context.symbols ?? []).find(
+): VbSymbol | undefined {
+  return collectVbscriptSymbols(
+    cached.parsed,
+    vbProjectContextSettings(cachedSettings(data.uri)),
+  ).find(
     (symbol) =>
       symbol.sourceUri === data.uri &&
       symbol.name.toLowerCase() === data.name.toLowerCase() &&
@@ -10215,6 +10233,68 @@ async function vbSymbolForCodeLensDataAsync(
       symbol.range.start.line === data.line &&
       symbol.range.start.character === data.character,
   );
+}
+
+function analyzedVbscriptReferencesForSymbol(
+  cached: CachedDocument,
+  symbol: VbSymbol,
+  settings: AspSettings,
+  options: VbReferenceOptions,
+): VbReference[] {
+  const references = new Map<string, VbReference>();
+  const analyzed = analyzedCachedDocuments();
+  const currentContext = localVbReferenceContext(cached, settings);
+  const currentTarget = equivalentVbSymbol(currentContext.symbols ?? [], symbol) ?? symbol;
+  addVbReferences(
+    references,
+    getVbscriptReferencesForSymbol(currentTarget, currentContext, options),
+  );
+
+  for (const candidate of analyzed) {
+    if (candidate.source.uri === cached.source.uri) {
+      continue;
+    }
+    const warmed = candidate.analysis?.vbProjectContext?.context;
+    const warmedTarget = warmed ? equivalentVbSymbol(warmed.symbols ?? [], symbol) : undefined;
+    if (warmedTarget) {
+      addVbReferences(references, getVbscriptReferencesForSymbol(warmedTarget, warmed, options));
+      continue;
+    }
+    addVbReferences(
+      references,
+      fallbackWorkspaceExternalReferences(
+        workspaceVbReferenceSummaryForCached(candidate, settings).summary,
+        symbol,
+      ),
+    );
+  }
+
+  return [...references.values()].sort(vbReferenceOrder);
+}
+
+function analyzedCachedDocuments(): CachedDocument[] {
+  const byUri = new Map<string, CachedDocument>();
+  for (const document of documents.all()) {
+    const cached = ensureFreshCachedDocument(document);
+    byUri.set(cached.source.uri, cached);
+  }
+  for (const cached of cache.values()) {
+    byUri.set(cached.source.uri, cached);
+  }
+  return [...byUri.values()];
+}
+
+function localVbReferenceContext(cached: CachedDocument, settings: AspSettings): VbProjectContext {
+  const contextSettings = vbProjectContextSettings(settings);
+  const symbols = collectVbscriptSymbols(cached.parsed, contextSettings);
+  return {
+    documents: [cached.parsed],
+    symbols,
+    typeEnvironment: buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
+    externalRefUsages:
+      cachedFileAnalysisSummary(cached, contextSettings).vbscript?.externalRefUsages ?? [],
+    ...contextSettings,
+  };
 }
 
 function onTypeFormatting(
