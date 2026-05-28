@@ -53,13 +53,14 @@ character insert, delete, and replace edits:
 
 ```sh
 pnpm run benchmark:change
+pnpm run benchmark:change:large
 ```
 
 Useful filters:
 
 ```sh
-ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_BACKGROUND=off pnpm run benchmark:change
-ASP_LSP_BENCH_DEBUG_STEPS=1 pnpm run benchmark:change
+ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_BACKGROUND=off pnpm run benchmark:change:large
+ASP_LSP_BENCH_DEBUG_STEPS=1 pnpm run benchmark:change:large
 ```
 
 Useful checks:

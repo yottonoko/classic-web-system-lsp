@@ -7,7 +7,21 @@ import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 
 const root = path.resolve(import.meta.dirname, "..");
-const sampleRoot = path.join(root, "samples", "classic-asp-large-benchmark");
+const sampleConfigs = new Map([
+  ["large", { directory: "classic-asp-large-benchmark" }],
+  ["huge", { directory: "classic-asp-huge-benchmark" }],
+  ["include-tree", { directory: "classic-asp-include-tree-benchmark" }],
+]);
+const samplePreset = readSamplePreset();
+const sampleConfig = sampleConfigForPreset(samplePreset);
+const sampleRoot = path.join(root, "samples", sampleConfig.directory);
+const relativeSampleRoot = path.relative(root, sampleRoot);
+const includeTreeRequiredSpeedupPercent = 10_000;
+const defaultTimeoutMs = samplePreset === "include-tree" ? 600_000 : 120_000;
+const includeTreeServerOldSpaceMb = readPositiveInteger(
+  "ASP_LSP_BENCH_INCLUDE_TREE_SERVER_OLD_SPACE_MB",
+  16_384,
+);
 const generator = path.join(sampleRoot, "generate.mjs");
 const serverPath = path.join(root, "packages", "language-server", "dist", "server.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
@@ -16,7 +30,7 @@ const rapidBurstSize = readPositiveInteger("ASP_LSP_BENCH_BURST_SIZE", 5);
 const rapidDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEBOUNCE_MS", 80);
 const defaultDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEFAULT_DEBOUNCE_MS", 250);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
-const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", 120_000);
+const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", defaultTimeoutMs);
 const changeKinds = readChangeKinds();
 const changeModes = readChangeModes();
 const editTargets = readEditTargets();
@@ -91,12 +105,14 @@ const selectedStepNames = [
 ];
 
 async function main() {
+  assertSampleCanRun();
   if (!fs.existsSync(serverPath)) {
     throw new Error(
       "packages/language-server/dist/server.js is missing. Run `pnpm --filter @asp-lsp/language-server run build`.",
     );
   }
 
+  console.log(`Preparing benchmark sample: ${samplePreset} (${relativeSampleRoot})`);
   execFileSync(process.execPath, [generator], { stdio: "inherit" });
 
   const sourceStats = summarizeSources(collectBenchmarkSources());
@@ -115,6 +131,8 @@ async function main() {
 
   console.log("");
   console.log("Classic ASP document change benchmark");
+  console.log(`Sample: ${samplePreset}`);
+  console.log(`Sample path: ${relativeSampleRoot}`);
   console.log(`Files: ${sourceStats.files}`);
   console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
   console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
@@ -877,6 +895,39 @@ function formatMillis(value) {
   return value.toFixed(2);
 }
 
+function readSamplePreset() {
+  const raw = process.env.ASP_LSP_BENCH_SAMPLE ?? "large";
+  if (sampleConfigs.has(raw)) {
+    return raw;
+  }
+  throw new Error(
+    `ASP_LSP_BENCH_SAMPLE must be large, huge, or include-tree. Received ${JSON.stringify(raw)}.`,
+  );
+}
+
+function sampleConfigForPreset(preset) {
+  const config = sampleConfigs.get(preset);
+  if (!config) {
+    throw new Error(`Unsupported ASP_LSP_BENCH_SAMPLE preset: ${preset}.`);
+  }
+  return config;
+}
+
+function assertSampleCanRun() {
+  if (samplePreset !== "include-tree") {
+    return;
+  }
+  const speedupPercent = readOptionalNonNegativeNumber(
+    "ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT",
+  );
+  if (speedupPercent !== undefined && speedupPercent >= includeTreeRequiredSpeedupPercent) {
+    return;
+  }
+  throw new Error(
+    `benchmark:change:include-tree is disabled until this scenario is at least ${includeTreeRequiredSpeedupPercent}% faster than the current baseline. Set ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=${includeTreeRequiredSpeedupPercent} or higher only after confirming that speedup.`,
+  );
+}
+
 function readChangeKinds() {
   const raw = process.env.ASP_LSP_BENCH_CHANGE_KIND ?? "all";
   if (raw === "all") {
@@ -976,6 +1027,18 @@ function readNonNegativeInteger(name, fallback) {
   return value;
 }
 
+function readOptionalNonNegativeNumber(name) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return undefined;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative number.`);
+  }
+  return value;
+}
+
 function readBoolean(name) {
   const raw = process.env[name];
   if (raw === undefined || raw === "" || raw === "0" || raw.toLowerCase() === "false") {
@@ -985,6 +1048,21 @@ function readBoolean(name) {
     return true;
   }
   throw new Error(`${name} must be 1, 0, true, or false.`);
+}
+
+function serverEnvironment() {
+  const env = { ...process.env };
+  if (samplePreset !== "include-tree" || hasOldSpaceSizeOption(env.NODE_OPTIONS)) {
+    return env;
+  }
+  env.NODE_OPTIONS = [env.NODE_OPTIONS, `--max-old-space-size=${includeTreeServerOldSpaceMb}`]
+    .filter(Boolean)
+    .join(" ");
+  return env;
+}
+
+function hasOldSpaceSizeOption(nodeOptions) {
+  return nodeOptions ? /(?:^|\s)--max-old-space-size(?:=|\s|$)/.test(nodeOptions) : false;
 }
 
 class RpcServer {
@@ -1000,7 +1078,7 @@ class RpcServer {
   async start() {
     this.child = spawn(process.execPath, [serverPath, "--stdio"], {
       cwd: root,
-      env: { ...process.env },
+      env: serverEnvironment(),
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.stdout.on("data", (chunk) => this.read(chunk));

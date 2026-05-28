@@ -84,6 +84,25 @@ sample for manual language-server checks. It mixes `.asp` pages, `.inc` includes
 VBScript server regions, a server-side JScript block, HTML, CSS, and client
 JavaScript.
 
+The generated benchmark samples exercise larger workspaces and editor update
+paths:
+
+| Command                                  | Sample                                       | Use case                                  |
+| ---------------------------------------- | -------------------------------------------- | ----------------------------------------- |
+| `pnpm run benchmark:change`              | `samples/classic-asp-large-benchmark`        | Backward-compatible large change latency. |
+| `pnpm run benchmark:change:large`        | `samples/classic-asp-large-benchmark`        | Explicit large change latency.            |
+| `pnpm run benchmark:change:huge`         | `samples/classic-asp-huge-benchmark`         | Very large file/include stacks.           |
+| `pnpm run benchmark:change:include-tree` | `samples/classic-asp-include-tree-benchmark` | Guarded broad include tree run.           |
+
+The include-tree change benchmark is intentionally disabled until this scenario
+is at least 10000% faster than the current baseline. After confirming that
+speedup, set `ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000` or higher and
+start with a narrow scenario:
+
+```sh
+ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000 ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default ASP_LSP_BENCH_BACKGROUND=off pnpm run benchmark:change:include-tree
+```
+
 ## Settings
 
 | Item                                       | Default                  | Description                                                                                                                                      |
