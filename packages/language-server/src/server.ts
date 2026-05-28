@@ -3397,7 +3397,9 @@ function vbTokenCoveringRange(
   startOffset: number,
   endOffset: number,
 ): VbToken | undefined {
-  for (const child of parsed.cst.children) {
+  const children = parsed.cst.children;
+  for (let index = lastCstChildIndexAtOffset(children, startOffset); index >= 0; index -= 1) {
+    const child = children[index];
     const tokens = child.vbscript?.tokens;
     if (!tokens || child.contentEnd < startOffset || child.contentStart > endOffset) {
       continue;
@@ -3408,6 +3410,22 @@ function vbTokenCoveringRange(
     }
   }
   return undefined;
+}
+
+function lastCstChildIndexAtOffset(children: AspCstNode[], offset: number): number {
+  let low = 0;
+  let high = children.length - 1;
+  let index = -1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (children[middle].contentStart <= offset) {
+      index = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return index;
 }
 
 function tokenCoveringRange(
