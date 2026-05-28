@@ -86,7 +86,9 @@ function buildVirtualDocumentWithSortedRegions(
       languageId === "css" ? (region.kind === "style-attribute" ? "__asp_lsp__{" : "\n") : "";
     const suffix = languageId === "css" && region.kind === "style-attribute" ? "}\n" : "\n";
     const start = textLength + prefix.length;
-    const nestedRegions = nestedRegionsForOwner(region, sortedRegions);
+    const nestedRegions = canContainNestedRegions(region)
+      ? nestedRegionsForOwner(region, sortedRegions)
+      : [];
     const content = maskNestedRegions(sourceText, region, nestedRegions, languageId);
     chunks.push(prefix, content, suffix);
     textLength += prefix.length + content.length + suffix.length;
@@ -149,6 +151,14 @@ function isAspRegionHole(region: AspRegion): boolean {
     region.kind === "asp-block" ||
     region.kind === "asp-expression" ||
     region.kind === "asp-directive"
+  );
+}
+
+function canContainNestedRegions(region: AspRegion): boolean {
+  return (
+    region.kind !== "asp-block" &&
+    region.kind !== "asp-expression" &&
+    region.kind !== "asp-directive"
   );
 }
 
@@ -217,15 +227,15 @@ function nestedRegionMask(
     nested.kind !== "asp-expression" &&
     nested.kind !== "asp-directive"
   ) {
-    return preserveLineEndings(sourceText.slice(nested.start, nested.end), " ");
+    return preserveLineEndingsRange(sourceText, nested.start, nested.end, " ");
   }
   if (languageId === "css") {
-    return preserveLineEndings(sourceText.slice(nested.start, nested.end), "x");
+    return preserveLineEndingsRange(sourceText, nested.start, nested.end, "x");
   }
   if (languageId === "javascript" || languageId === "jscript") {
     return javascriptAspMask(sourceText, owner, nested);
   }
-  return preserveLineEndings(sourceText.slice(nested.start, nested.end), " ");
+  return preserveLineEndingsRange(sourceText, nested.start, nested.end, " ");
 }
 
 function javascriptAspMask(sourceText: string, owner: AspRegion, nested: AspRegion): string {
@@ -233,9 +243,9 @@ function javascriptAspMask(sourceText: string, owner: AspRegion, nested: AspRegi
     nested.kind === "asp-block" &&
     !javascriptBlockNeedsValuePlaceholder(sourceText, owner, nested)
   ) {
-    return preserveLineEndings(sourceText.slice(nested.start, nested.end), " ");
+    return preserveLineEndingsRange(sourceText, nested.start, nested.end, " ");
   }
-  return firstValuePlaceholder(sourceText.slice(nested.start, nested.end), "0");
+  return firstValuePlaceholderRange(sourceText, nested.start, nested.end, "0");
 }
 
 function javascriptBlockNeedsValuePlaceholder(
@@ -261,27 +271,34 @@ function previousSignificantChar(
   return undefined;
 }
 
-function firstValuePlaceholder(text: string, valueChar: string): string {
+function firstValuePlaceholderRange(
+  text: string,
+  start: number,
+  end: number,
+  valueChar: string,
+): string {
   let placed = false;
-  return text
-    .split("")
-    .map((char) => {
-      if (char === "\n" || char === "\r") {
-        return char;
-      }
-      if (!placed) {
-        placed = true;
-        return valueChar;
-      }
-      return " ";
-    })
-    .join("");
+  const chunks: string[] = [];
+  for (let index = start; index < end; index += 1) {
+    const char = text[index];
+    if (char === "\n" || char === "\r") {
+      chunks.push(char);
+      continue;
+    }
+    if (!placed) {
+      placed = true;
+      chunks.push(valueChar);
+      continue;
+    }
+    chunks.push(" ");
+  }
+  return chunks.join("");
 }
 
-function preserveLineEndings(text: string, fill: string): string {
+function preserveLineEndingsRange(text: string, start: number, end: number, fill: string): string {
   const chunks: string[] = [];
-  let runStart = 0;
-  for (let index = 0; index < text.length; index += 1) {
+  let runStart = start;
+  for (let index = start; index < end; index += 1) {
     const char = text[index];
     if (char !== "\r" && char !== "\n") {
       continue;
@@ -292,8 +309,8 @@ function preserveLineEndings(text: string, fill: string): string {
     chunks.push(char);
     runStart = index + 1;
   }
-  if (runStart < text.length) {
-    chunks.push(fill.repeat(text.length - runStart));
+  if (runStart < end) {
+    chunks.push(fill.repeat(end - runStart));
   }
   return chunks.join("");
 }
@@ -304,20 +321,21 @@ function buildMaskedDocument(
   languageId: AspEmbeddedLanguage,
   regions: AspRegion[],
 ): VirtualDocument {
-  const htmlRanges = regions.map((region) => [region.contentStart, region.contentEnd] as const);
   const segments: SourceMapSegment[] = [];
   const chunks: string[] = [];
   let cursor = 0;
-  for (const [start, end] of htmlRanges) {
+  for (const region of regions) {
+    const start = region.contentStart;
+    const end = region.contentEnd;
     if (cursor < start) {
-      chunks.push(preserveLineEndings(sourceText.slice(cursor, start), " "));
+      chunks.push(preserveLineEndingsRange(sourceText, cursor, start, " "));
     }
     chunks.push(sourceText.slice(start, end));
     segments.push({ virtualStart: start, virtualEnd: end, sourceStart: start, sourceEnd: end });
     cursor = end;
   }
   if (cursor < sourceText.length) {
-    chunks.push(preserveLineEndings(sourceText.slice(cursor), " "));
+    chunks.push(preserveLineEndingsRange(sourceText, cursor, sourceText.length, " "));
   }
   const text = chunks.join("");
   return {
