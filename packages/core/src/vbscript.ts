@@ -3243,7 +3243,6 @@ export function collectVbscriptSymbols(
   if (options.inferTypes !== false) {
     inferAssignedTypes(parsed, symbols, context);
   }
-  applyTypeAnnotations(parsed, symbols);
   if (options.variantFallback !== false) {
     applyVariantFallbackTypes(symbols);
   }
