@@ -14,6 +14,7 @@ const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readPositiveInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const rapidBurstSize = readPositiveInteger("ASP_LSP_BENCH_BURST_SIZE", 5);
 const rapidDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEBOUNCE_MS", 80);
+const defaultDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEFAULT_DEBOUNCE_MS", 250);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", 120_000);
 const changeKinds = readChangeKinds();
@@ -122,6 +123,7 @@ async function main() {
   console.log(`Change kinds: ${changeKinds.join(", ")}`);
   console.log(`Change modes: ${changeModes.join(", ")}`);
   console.log(`Edit targets: ${editTargets.join(", ")}`);
+  console.log(`Default debounce: ${defaultDebounceMs} ms`);
   console.log(`Rapid burst size: ${rapidBurstSize}`);
   console.log(`Rapid debounce: ${rapidDebounceMs} ms`);
   console.log(`Background analysis: ${backgroundModes.map(backgroundLabel).join(", ")}`);
@@ -183,6 +185,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
         },
       },
     });
+    const openStartedAt = performance.now();
     server.notify("textDocument/didOpen", {
       textDocument: {
         uri,
@@ -191,8 +194,17 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
         text: state.text,
       },
     });
+    await server.waitForNotification("textDocument/publishDiagnostics");
+    const openFirstDiagnosticsMs = performance.now() - openStartedAt;
     const openLogs = [];
     await waitForFinalCheckLog(server, uri, openLogs);
+    const openFinalDiagnosticsMs = performance.now() - openStartedAt;
+    const openFeatureMetrics = await measureOpenLanguageFeatures(
+      server,
+      uri,
+      state.text,
+      editTarget,
+    );
     drainBenchmarkNotifications(server);
 
     for (let index = 0; index < warmupIterations; index += 1) {
@@ -237,6 +249,11 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
       backgroundAnalysis,
       burstSize,
       debounceMs,
+      openMetrics: {
+        firstDiagnosticsMs: openFirstDiagnosticsMs,
+        finalDiagnosticsMs: openFinalDiagnosticsMs,
+        ...openFeatureMetrics,
+      },
       samples,
       debugStepTotals,
       debugEventTotals,
@@ -303,11 +320,78 @@ async function measureInteractiveHover(server, uri, text, editTarget) {
 }
 
 function interactiveHoverPosition(text, editTarget) {
-  if (editTarget !== "client-js") {
+  const marker =
+    editTarget === "vbscript"
+      ? "aspLspBenchmarkValue"
+      : editTarget === "client-js"
+        ? "aspLspBenchmark"
+        : editTarget === "html"
+          ? "data-asp-lsp-benchmark"
+          : editTarget === "css"
+            ? "asp-lsp-benchmark"
+            : undefined;
+  if (!marker) {
     return undefined;
   }
-  const offset = text.lastIndexOf("aspLspBenchmark");
-  return offset === -1 ? undefined : positionAt(text, offset + "aspLsp".length);
+  const offset = text.lastIndexOf(marker);
+  return offset === -1 ? undefined : positionAt(text, offset + Math.min(marker.length, 6));
+}
+
+async function measureOpenLanguageFeatures(server, uri, text, editTarget) {
+  const position = interactiveHoverPosition(text, editTarget);
+  const range = semanticTokenRange(text, position);
+  const metrics = {};
+  if (position) {
+    metrics.hoverMs = await timedRequest(server, "textDocument/hover", {
+      textDocument: { uri },
+      position,
+    });
+    metrics.completionMs = await timedRequest(server, "textDocument/completion", {
+      textDocument: { uri },
+      position,
+      context: { triggerKind: 1 },
+    });
+  }
+  metrics.semanticTokensFullMs = await timedRequest(server, "textDocument/semanticTokens/full", {
+    textDocument: { uri },
+  });
+  if (range) {
+    metrics.semanticTokensRangeMs = await timedRequest(
+      server,
+      "textDocument/semanticTokens/range",
+      {
+        textDocument: { uri },
+        range,
+      },
+    );
+  }
+  const codeLensStartedAt = performance.now();
+  const codeLenses = await server.request("textDocument/codeLens", { textDocument: { uri } });
+  metrics.codeLensMs = performance.now() - codeLensStartedAt;
+  const resolvableLens = Array.isArray(codeLenses)
+    ? codeLenses.find((item) => item && typeof item === "object" && item.data)
+    : undefined;
+  if (resolvableLens) {
+    metrics.codeLensResolveMs = await timedRequest(server, "codeLens/resolve", resolvableLens);
+  }
+  return metrics;
+}
+
+async function timedRequest(server, method, params) {
+  const startedAt = performance.now();
+  await server.request(method, params);
+  return performance.now() - startedAt;
+}
+
+function semanticTokenRange(text, position) {
+  if (!position) {
+    return undefined;
+  }
+  const lastLine = positionAt(text, text.length).line;
+  return {
+    start: { line: Math.max(0, position.line - 5), character: 0 },
+    end: { line: Math.min(lastLine, position.line + 6), character: 0 },
+  };
 }
 
 async function runWorkspaceCacheBenchmarks() {
@@ -474,6 +558,8 @@ const aspLspBenchmark = "${markerText}";
   }
   return `${text}
 <%
+Dim aspLspBenchmarkValue
+aspLspBenchmarkValue = 1
 ${markerText}
 %>
 `;
@@ -640,6 +726,29 @@ function printScenarioTable(scenarioResults) {
     const scenarioName = scenarioLabel(scenario);
     rows.push([
       scenarioName,
+      "didOpen->firstDiagnostics",
+      ...statsCells([scenario.openMetrics.firstDiagnosticsMs]),
+    ]);
+    rows.push([
+      scenarioName,
+      "didOpen->finalDiagnostics",
+      ...statsCells([scenario.openMetrics.finalDiagnosticsMs]),
+    ]);
+    for (const [metric, label] of [
+      ["hoverMs", "post-open hover"],
+      ["completionMs", "post-open completion"],
+      ["semanticTokensFullMs", "post-open semanticTokens/full"],
+      ["semanticTokensRangeMs", "post-open semanticTokens/range"],
+      ["codeLensMs", "post-open codeLens"],
+      ["codeLensResolveMs", "post-open codeLens/resolve"],
+    ]) {
+      const value = scenario.openMetrics[metric];
+      if (value !== undefined) {
+        rows.push([scenarioName, label, ...statsCells([value])]);
+      }
+    }
+    rows.push([
+      scenarioName,
       "didChange->firstDiagnostics",
       ...statsCells(scenario.samples.map((sample) => sample.firstDiagnosticsMs)),
     ]);
@@ -788,18 +897,18 @@ function readChangeKinds() {
 function readChangeModes() {
   const raw = process.env.ASP_LSP_BENCH_CHANGE_MODE ?? "all";
   if (raw === "all") {
-    return ["single", "rapid"];
+    return ["single", "default", "rapid"];
   }
   const values = raw
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
   for (const value of values) {
-    if (value !== "single" && value !== "rapid") {
-      throw new Error("ASP_LSP_BENCH_CHANGE_MODE must be single, rapid, or all.");
+    if (value !== "single" && value !== "default" && value !== "rapid") {
+      throw new Error("ASP_LSP_BENCH_CHANGE_MODE must be single, default, rapid, or all.");
     }
   }
-  return values.length > 0 ? values : ["single", "rapid"];
+  return values.length > 0 ? values : ["single", "default", "rapid"];
 }
 
 function readEditTargets() {
@@ -820,9 +929,13 @@ function readEditTargets() {
 }
 
 function changeModeSettings(changeMode) {
-  return changeMode === "rapid"
-    ? { burstSize: rapidBurstSize, debounceMs: rapidDebounceMs }
-    : { burstSize: 1, debounceMs: 0 };
+  if (changeMode === "rapid") {
+    return { burstSize: rapidBurstSize, debounceMs: rapidDebounceMs };
+  }
+  if (changeMode === "default") {
+    return { burstSize: 1, debounceMs: defaultDebounceMs };
+  }
+  return { burstSize: 1, debounceMs: 0 };
 }
 
 function readBackgroundModes() {

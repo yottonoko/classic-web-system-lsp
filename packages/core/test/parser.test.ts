@@ -674,6 +674,31 @@ Response.Write SharedCatalog.Name
     );
   });
 
+  it("summarizes VBScript public symbols without implicit or inferred exports", () => {
+    const source = `<%
+Dim ExplicitValue
+' @type TypedValue As ADODB.Recordset
+Dim TypedValue
+InferredValue = Server.CreateObject("ADODB.Recordset")
+Function PublicFactory()
+  Set PublicFactory = Server.CreateObject("ADODB.Recordset")
+End Function
+%>`;
+    const parsed = parseAspDocument("file:///site/common.inc", source);
+    const summary = summarizeAspFileAnalysis(parsed);
+    const symbols = summary.vbscript?.publicSymbols ?? [];
+    const names = symbols.map((symbol) => symbol.name);
+
+    expect(names).toEqual(expect.arrayContaining(["ExplicitValue", "TypedValue", "PublicFactory"]));
+    expect(names).not.toContain("InferredValue");
+    expect(symbols.find((symbol) => symbol.name === "ExplicitValue")?.typeName).toBe("Variant");
+    expect(symbols.find((symbol) => symbol.name === "TypedValue")).toMatchObject({
+      typeName: "ADODB.Recordset",
+      explicitType: true,
+    });
+    expect(symbols.find((symbol) => symbol.name === "PublicFactory")?.typeName).toBe("Variant");
+  });
+
   it("keeps VBScript lookup and completions case-insensitive", () => {
     const source = `<%
 Dim CustomerName

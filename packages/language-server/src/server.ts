@@ -10611,8 +10611,13 @@ function addFallbackVbSemanticTokens(
   rangeStart: number,
   rangeEnd: number,
 ): void {
+  const namesInRange = vbIdentifierNamesInSourceRange(cached, rangeStart, rangeEnd);
   const candidates = (context.symbols ?? []).filter(
-    (symbol) => symbol.sourceUri !== cached.parsed.uri && !symbol.scopeName && !symbol.memberOf,
+    (symbol) =>
+      symbol.sourceUri !== cached.parsed.uri &&
+      !symbol.scopeName &&
+      !symbol.memberOf &&
+      namesInRange.has(symbol.name.toLowerCase()),
   );
   for (const symbol of candidates) {
     const tokenType = fallbackVbSemanticTokenType(symbol.kind);
@@ -10645,6 +10650,29 @@ function addFallbackVbSemanticTokens(
       });
     }
   }
+}
+
+function vbIdentifierNamesInSourceRange(
+  cached: CachedDocument,
+  rangeStart: number,
+  rangeEnd: number,
+): Set<string> {
+  const names = new Set<string>();
+  const pattern = /\b[A-Za-z_][A-Za-z0-9_]*\b/g;
+  for (const region of regionsInSourceRange(cached.parsed, rangeStart, rangeEnd)) {
+    if (region.language !== "vbscript") {
+      continue;
+    }
+    const start = Math.max(region.contentStart, rangeStart);
+    const end = Math.min(region.contentEnd, rangeEnd);
+    const text = cached.parsed.text.slice(start, end);
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text))) {
+      names.add(match[0].toLowerCase());
+    }
+  }
+  return names;
 }
 
 function isWholeWordAt(text: string, start: number, end: number): boolean {

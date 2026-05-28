@@ -3299,7 +3299,7 @@ export function summarizeVbscriptFile(
   context: VbProjectContext = {},
 ): VbLocalSummary {
   const localSymbols = collectVbscriptSymbols(parsed, context);
-  const publicSymbols = collectVbscriptPublicSymbols(parsed, context);
+  const publicSymbols = publicSymbolsFromLocalSymbols(localSymbols);
   const typeEnvironment = buildVbTypeEnvironment(parsed, { ...context, symbols: localSymbols });
   const externalRefs = collectVbscriptExternalRefs(parsed, localSymbols);
   return {
@@ -3315,6 +3315,13 @@ export function summarizeVbscriptFile(
     externalRefUsages: externalRefUsagesForRefs(externalRefs),
     typeFacts: typeEnvironment.types,
   };
+}
+
+function publicSymbolsFromLocalSymbols(symbols: VbSymbol[]): VbSymbol[] {
+  return symbols
+    .filter((symbol) => !symbol.implicit)
+    .filter(isPublicSummarySymbol)
+    .map(sanitizePublicSummarySymbol);
 }
 
 function exportSummariesForSymbols(symbols: VbSymbol[]): VbExportSummary[] {
