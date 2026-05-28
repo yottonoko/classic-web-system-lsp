@@ -1003,10 +1003,15 @@ documents.onDidChangeContent((event) => {
   measureDebugStep(settings, event.document.uri, "documentChange.keepCachedDocument", () => {
     // Keep the previous parsed document available for updateAspParsedDocument.
   });
-  measureDebugStep(settings, event.document.uri, "documentChange.scheduleDiagnostics", () =>
-    scheduleDiagnostics(event.document),
+  const cached = measureDebugStep(
+    settings,
+    event.document.uri,
+    "documentChange.scheduleDiagnostics",
+    () => scheduleDiagnostics(event.document),
   );
-  scheduleProjectUpdate("document.change");
+  if (shouldScheduleProjectUpdateForDocumentChange(cached)) {
+    scheduleProjectUpdate("document.change");
+  }
 });
 documents.onDidSave((event) => {
   noteForegroundActivity();
@@ -2102,7 +2107,7 @@ function finishAnalysisLog(
   );
 }
 
-function scheduleDiagnostics(document: TextDocument): void {
+function scheduleDiagnostics(document: TextDocument): CachedDocument {
   cancelScheduledDiagnostics(document.uri);
   const settings = cachedSettings(document.uri);
   const cached = ensureFreshCachedDocument(document);
@@ -2112,7 +2117,7 @@ function scheduleDiagnostics(document: TextDocument): void {
   const delay = settings.diagnostics?.debounceMs ?? defaultDiagnosticsDebounceMs;
   if (delay <= 0) {
     void runStagedDiagnostics(cached, settings, state);
-    return;
+    return cached;
   }
   diagnosticsTimers.set(
     document.uri,
@@ -2125,6 +2130,14 @@ function scheduleDiagnostics(document: TextDocument): void {
       void runStagedDiagnostics(cached, settings, state);
     }, delay),
   );
+  return cached;
+}
+
+function shouldScheduleProjectUpdateForDocumentChange(cached: CachedDocument): boolean {
+  if (cached.lastEditImpact?.kind !== "incremental") {
+    return true;
+  }
+  return cached.lastEditImpact.language !== "html" && cached.lastEditImpact.language !== "css";
 }
 
 function cancelScheduledDiagnostics(uri: string): void {
