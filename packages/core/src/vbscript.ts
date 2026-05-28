@@ -2461,8 +2461,25 @@ export function getVbscriptReferences(
   if (!symbol) {
     return [];
   }
-  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
-  const documents = context.documents ?? [parsed];
+  return getVbscriptReferencesForSymbol(
+    symbol,
+    {
+      ...context,
+      symbols: context.symbols ?? collectVbscriptSymbols(parsed, context),
+      documents: context.documents ?? [parsed],
+    },
+    options,
+  );
+}
+
+export function getVbscriptReferencesForSymbol(
+  symbol: VbSymbol,
+  context: VbProjectContext = {},
+  options: VbReferenceOptions = {},
+): VbReference[] {
+  const documents = context.documents ?? [];
+  const symbols =
+    context.symbols ?? documents.flatMap((document) => collectVbscriptSymbols(document, context));
   const references: VbReference[] = [];
   for (const document of documents) {
     for (const token of identifierTokens(document)) {

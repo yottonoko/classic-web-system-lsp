@@ -3497,19 +3497,21 @@ End Sub
         const codeLens = await server.request("textDocument/codeLens", {
           textDocument: { uri },
         });
-        expect(JSON.stringify(codeLens)).toContain("references");
-        const referencesCommandAtLine = (lens: Record<string, unknown>, line: number) => {
-          const command = lens.command as { command?: unknown; arguments?: unknown[] } | undefined;
-          const position = command?.arguments?.[1] as { line?: unknown } | undefined;
-          return command?.command === "aspLsp.showReferences" && position?.line === line;
+        const referencesDataAtLine = (lens: Record<string, unknown>, line: number) => {
+          const data = lens.data as { kind?: unknown; line?: unknown } | undefined;
+          return data?.kind === "vbscript-reference" && data.line === line;
         };
         const referencesCodeLens = (codeLens as Array<Record<string, unknown>>).find((lens) =>
-          referencesCommandAtLine(lens, 4),
+          referencesDataAtLine(lens, 4),
         );
+        const resolvedCodeLens = (await server.request(
+          "codeLens/resolve",
+          referencesCodeLens,
+        )) as Record<string, unknown>;
         const referencesArguments = (
-          referencesCodeLens?.command as { arguments?: unknown[] } | undefined
+          resolvedCodeLens.command as { arguments?: unknown[] } | undefined
         )?.arguments;
-        expect(referencesCodeLens).toEqual(
+        expect(resolvedCodeLens).toEqual(
           expect.objectContaining({
             command: expect.objectContaining({
               command: "aspLsp.showReferences",
@@ -3520,7 +3522,7 @@ End Sub
             }),
           }),
         );
-        expect(JSON.stringify(referencesCodeLens?.command)).toContain("1 reference");
+        expect(JSON.stringify(resolvedCodeLens.command)).toContain("1 reference");
         expect(referencesArguments?.[2]).toEqual([
           expect.objectContaining({
             uri,
@@ -3529,7 +3531,6 @@ End Sub
             }),
           }),
         ]);
-        const resolvedCodeLens = await server.request("codeLens/resolve", referencesCodeLens);
         expect(JSON.stringify(resolvedCodeLens)).toContain("aspLsp.showReferences");
 
         await server.request("shutdown", null);
@@ -3587,6 +3588,73 @@ Response.Write BuildName()
         server.notify("exit", undefined);
       } finally {
         server.stop();
+      }
+    });
+
+    it("counts VBScript references from unopened workspace files", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-"));
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "default.asp");
+      const commonSource = `<%
+Function SharedTitle()
+  SharedTitle = "Dashboard"
+End Function
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="common.inc" -->
+<%
+Response.Write SharedTitle()
+%>`,
+        "utf8",
+      );
+      const commonUri = pathToFileURL(common).href;
+      const pageUri = pathToFileURL(page).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: commonUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: commonSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: commonUri },
+        })) as Array<Record<string, unknown>>;
+        const referencesCodeLens = codeLens.find((lens) => {
+          const data = lens.data as { kind?: unknown; line?: unknown } | undefined;
+          return data?.kind === "vbscript-reference" && data.line === 1;
+        });
+        const resolvedCodeLens = (await server.request(
+          "codeLens/resolve",
+          referencesCodeLens,
+        )) as Record<string, unknown>;
+        expect(JSON.stringify(resolvedCodeLens.command)).toContain("1 reference");
+        expect(JSON.stringify(resolvedCodeLens.command)).toContain(pageUri);
+
+        const references = await server.request("textDocument/references", {
+          textDocument: { uri: commonUri },
+          position: { line: 1, character: 10 },
+          context: { includeDeclaration: false },
+        });
+        expect(JSON.stringify(references)).toContain(pageUri);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
 
@@ -5384,7 +5452,12 @@ Response.Write miss▮ingName
         const codeLens = await server.request("textDocument/codeLens", {
           textDocument: { uri },
         });
-        expect(JSON.stringify(codeLens)).toContain("件の参照");
+        const referencesCodeLens = (codeLens as Array<Record<string, unknown>>).find((lens) => {
+          const data = lens.data as { kind?: unknown } | undefined;
+          return data?.kind === "vbscript-reference";
+        });
+        const resolvedCodeLens = await server.request("codeLens/resolve", referencesCodeLens);
+        expect(JSON.stringify(resolvedCodeLens)).toContain("件の参照");
 
         const unknown = await server.request("workspace/executeCommand", {
           command: "aspLsp.unknown",

@@ -91,6 +91,7 @@ import {
   getVbscriptOutgoingCalls,
   getVbscriptRenameRange,
   getVbscriptReferences,
+  getVbscriptReferencesForSymbol,
   getVbscriptSelectionRanges,
   getVbscriptSemanticTokens,
   getVbscriptSignatureHelp,
@@ -118,6 +119,8 @@ import {
   type VbCstNode,
   type VbProjectContext,
   type VbExternalRefUsage,
+  type VbReference,
+  type VbReferenceOptions,
   type VbSymbol,
   type VbSymbolKind,
   type VbType,
@@ -172,6 +175,7 @@ let workspaceRoots: string[] = [];
 let clientLocale = "en";
 let workspaceIndexDirty = true;
 let workspaceIndexTruncated = false;
+let workspaceVbReferenceIndex: WorkspaceVbReferenceIndex | undefined;
 let jsLanguageServiceCacheTick = 0;
 let jsScriptSnapshotSequence = 0;
 let semanticTokenResultCounter = 0;
@@ -433,6 +437,30 @@ interface VbProjectAnalysis {
   symbols: VbSymbol[];
   typeEnvironment: VbTypeEnvironment;
   externalRefUsages: VbExternalRefUsage[];
+}
+
+interface WorkspaceVbReferenceSummary {
+  uri: string;
+  fileName: string;
+  summary: FileAnalysisSummary;
+}
+
+interface WorkspaceVbReferenceIndex {
+  key: string;
+  summaries: WorkspaceVbReferenceSummary[];
+  byUsageKey: Map<string, WorkspaceVbReferenceSummary[]>;
+  byMemberName: Map<string, WorkspaceVbReferenceSummary[]>;
+  lastUsed: number;
+}
+
+interface VbReferenceCodeLensData {
+  kind: "vbscript-reference";
+  uri: string;
+  name: string;
+  symbolKind: VbSymbolKind;
+  memberOf?: string;
+  line: number;
+  character: number;
 }
 
 interface FilePublicSignature {
@@ -1286,7 +1314,7 @@ connection.onImplementation((params) => {
   return definitionLikeLocation(params.textDocument.uri, params.position, "implementation");
 });
 
-connection.onReferences((params: ReferenceParams) => {
+connection.onReferences(async (params: ReferenceParams) => {
   const cached = getFreshCached(params.textDocument.uri);
   if (!cached) {
     return [];
@@ -1301,11 +1329,10 @@ connection.onReferences((params: ReferenceParams) => {
   if (region.language !== "vbscript") {
     return [];
   }
-  return getVbscriptReferences(
-    cached.parsed,
-    params.position,
-    buildVbProjectContext(cached, cachedSettings(cached.source.uri)),
-    { includeDeclaration: params.context.includeDeclaration },
+  return (
+    await workspaceVbscriptReferencesForPosition(cached, params.position, {
+      includeDeclaration: params.context.includeDeclaration,
+    })
   ).map((reference) => Location.create(reference.uri, reference.range));
 });
 
@@ -1813,7 +1840,7 @@ connection.onCodeAction((params): CodeAction[] => {
 
 connection.onCodeActionResolve((action) => action);
 
-connection.onCodeLensResolve((lens) => lens);
+connection.onCodeLensResolve((lens) => resolveCodeLens(lens));
 
 connection.onDocumentLinkResolve((link) => link);
 
@@ -5036,6 +5063,284 @@ function bestEffortVbProjectContext(
   return buildVbProjectContext(cached, settings);
 }
 
+async function workspaceVbscriptReferencesForPosition(
+  cached: CachedDocument,
+  position: Position,
+  options: VbReferenceOptions = {},
+): Promise<VbReference[]> {
+  const settings = cachedSettings(cached.source.uri);
+  const context = buildVbProjectContext(cached, settings);
+  const symbol = getVbscriptDefinition(cached.parsed, position, context);
+  return symbol ? workspaceVbscriptReferencesForSymbol(cached, symbol, settings, options) : [];
+}
+
+async function workspaceVbscriptReferencesForSymbol(
+  cached: CachedDocument,
+  symbol: VbSymbol,
+  settings: AspSettings,
+  options: VbReferenceOptions = {},
+): Promise<VbReference[]> {
+  const context = buildVbProjectContext(cached, settings);
+  const target = equivalentVbSymbol(context.symbols ?? [], symbol) ?? symbol;
+  const references = new Map<string, VbReference>();
+  addVbReferences(references, getVbscriptReferencesForSymbol(target, context, options));
+
+  const indexed = await workspaceVbReferenceIndexForSettings(settings);
+  const contextUris = new Set((context.documents ?? []).map((document) => document.uri));
+  const candidates = workspaceVbReferenceCandidatesForSymbol(indexed, target).filter(
+    (candidate) => !contextUris.has(candidate.uri),
+  );
+  logDebugSummary(
+    settings,
+    `[asp-lsp] vb.references.workspace.candidates: ${target.sourceUri}, symbol=${target.name}, candidates=${candidates.length}`,
+  );
+
+  for (const candidate of candidates) {
+    const candidateCached = await cachedForWorkspaceVbReferenceSummary(candidate, settings);
+    if (!candidateCached) {
+      continue;
+    }
+    const candidateContext = buildVbProjectContext(candidateCached, settings);
+    const candidateTarget = equivalentVbSymbol(candidateContext.symbols ?? [], target);
+    if (candidateTarget) {
+      addVbReferences(
+        references,
+        getVbscriptReferencesForSymbol(candidateTarget, candidateContext, options),
+      );
+      continue;
+    }
+    addVbReferences(references, fallbackWorkspaceExternalReferences(candidate.summary, target));
+  }
+
+  return [...references.values()].sort(vbReferenceOrder);
+}
+
+async function workspaceVbReferenceIndexForSettings(
+  settings: AspSettings,
+): Promise<WorkspaceVbReferenceIndex> {
+  await ensureWorkspaceIndexAsync(settings);
+  const key = workspaceVbReferenceIndexKey(settings);
+  if (workspaceVbReferenceIndex?.key === key) {
+    workspaceVbReferenceIndex.lastUsed = Date.now();
+    logDebugSummary(settings, "[asp-lsp] vb.references.workspaceIndex.hit");
+    return workspaceVbReferenceIndex;
+  }
+  logDebugSummary(settings, "[asp-lsp] vb.references.workspaceIndex.miss");
+  const opened = new Set(documents.all().map((document) => document.uri));
+  const summaries: WorkspaceVbReferenceSummary[] = [];
+  for (const document of documents.all()) {
+    const cached = ensureFreshCachedDocument(document);
+    if (cached) {
+      summaries.push(workspaceVbReferenceSummaryForCached(cached, settings));
+    }
+  }
+  const indexedSummaries = await mapWithConcurrency(
+    [...workspaceIndex.values()].filter((entry) => !opened.has(entry.uri)),
+    analysisConcurrency(settings),
+    async (entry) => workspaceVbReferenceSummaryForIndexed(entry, settings),
+  );
+  summaries.push(
+    ...indexedSummaries.filter((summary): summary is WorkspaceVbReferenceSummary =>
+      Boolean(summary),
+    ),
+  );
+
+  const byUsageKey = new Map<string, WorkspaceVbReferenceSummary[]>();
+  const byMemberName = new Map<string, WorkspaceVbReferenceSummary[]>();
+  for (const summary of summaries) {
+    for (const usage of summary.summary.vbscript?.externalRefUsages ?? []) {
+      pushWorkspaceVbReferenceSummary(byUsageKey, usage.key, summary);
+      if (usage.memberName) {
+        pushWorkspaceVbReferenceSummary(byMemberName, usage.memberName.toLowerCase(), summary);
+      }
+    }
+  }
+  workspaceVbReferenceIndex = {
+    key,
+    summaries,
+    byUsageKey,
+    byMemberName,
+    lastUsed: Date.now(),
+  };
+  logDebugSummary(
+    settings,
+    `[asp-lsp] vb.references.workspaceIndex.built: files=${summaries.length}, usageKeys=${byUsageKey.size}, memberKeys=${byMemberName.size}`,
+  );
+  return workspaceVbReferenceIndex;
+}
+
+function workspaceVbReferenceIndexKey(settings: AspSettings): string {
+  return JSON.stringify({
+    workspaceGeneration,
+    workspace: workspaceIndexSettingsIdentity(settings),
+    parse: parseSettingsIdentity(settings),
+    include: includeResolutionSettingsIdentity(settings),
+    vbscript: vbProjectContextSettings(settings),
+    opened: documents.all().map((document) => documentIdentityFor(document)),
+    indexed: [...workspaceIndex.values()]
+      .map((entry) => ({
+        uri: entry.uri,
+        mtimeMs: entry.mtimeMs,
+        size: entry.size,
+      }))
+      .sort((left, right) => left.uri.localeCompare(right.uri)),
+  });
+}
+
+function workspaceVbReferenceSummaryForCached(
+  cached: CachedDocument,
+  settings: AspSettings,
+): WorkspaceVbReferenceSummary {
+  const fileName = normalizeFileName(uriToFileName(cached.source.uri));
+  return {
+    uri: cached.source.uri,
+    fileName,
+    summary: cachedFileAnalysisSummary(cached, vbProjectContextSettings(settings)),
+  };
+}
+
+async function workspaceVbReferenceSummaryForIndexed(
+  entry: WorkspaceIndexedDocument,
+  settings: AspSettings,
+): Promise<WorkspaceVbReferenceSummary | undefined> {
+  try {
+    const parsed = parseAspDocument(
+      entry.uri,
+      await readTextFileAsync(entry.fileName, settings.legacyEncoding),
+      settings,
+    );
+    return {
+      uri: entry.uri,
+      fileName: entry.fileName,
+      summary: summarizeAspFileAnalysis(parsed, vbProjectContextSettings(settings)),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function cachedForWorkspaceVbReferenceSummary(
+  summary: WorkspaceVbReferenceSummary,
+  settings: AspSettings,
+): Promise<CachedDocument | undefined> {
+  const document = documents.get(summary.uri);
+  if (document) {
+    return ensureFreshCachedDocument(document);
+  }
+  try {
+    const text = await readTextFileAsync(summary.fileName, settings.legacyEncoding);
+    const parsed = parseAspDocument(summary.uri, text, settings);
+    return createCachedDocument(
+      TextDocument.create(summary.uri, "classic-asp", 0, text),
+      parsed,
+      settings,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function workspaceVbReferenceCandidatesForSymbol(
+  index: WorkspaceVbReferenceIndex,
+  symbol: VbSymbol,
+): WorkspaceVbReferenceSummary[] {
+  const candidates = new Map<string, WorkspaceVbReferenceSummary>();
+  const usageKey = vbSymbolExternalUsageKey(symbol);
+  if (usageKey) {
+    for (const candidate of index.byUsageKey.get(usageKey) ?? []) {
+      candidates.set(candidate.uri, candidate);
+    }
+  }
+  if (symbol.memberOf) {
+    for (const candidate of index.byMemberName.get(symbol.name.toLowerCase()) ?? []) {
+      candidates.set(candidate.uri, candidate);
+    }
+  }
+  return [...candidates.values()];
+}
+
+function fallbackWorkspaceExternalReferences(
+  summary: FileAnalysisSummary,
+  symbol: VbSymbol,
+): VbReference[] {
+  if (!isGlobalWorkspaceReferenceFallbackSymbol(symbol)) {
+    return [];
+  }
+  const usageKey = vbSymbolExternalUsageKey(symbol);
+  if (!usageKey) {
+    return [];
+  }
+  return (summary.vbscript?.externalRefUsages ?? [])
+    .filter((usage) => usage.key === usageKey)
+    .flatMap((usage) => usage.ranges.map((range) => ({ uri: summary.uri, range })));
+}
+
+function isGlobalWorkspaceReferenceFallbackSymbol(symbol: VbSymbol): boolean {
+  return (
+    !symbol.scopeName &&
+    !symbol.memberOf &&
+    symbol.visibility !== "private" &&
+    ["function", "sub", "class"].includes(symbol.kind)
+  );
+}
+
+function vbSymbolExternalUsageKey(symbol: VbSymbol): string | undefined {
+  if (symbol.memberOf) {
+    return undefined;
+  }
+  return symbol.name.toLowerCase();
+}
+
+function equivalentVbSymbol(symbols: VbSymbol[], target: VbSymbol): VbSymbol | undefined {
+  return symbols.find((symbol) => sameVbSymbolIdentity(symbol, target));
+}
+
+function sameVbSymbolIdentity(left: VbSymbol, right: VbSymbol): boolean {
+  return (
+    left.sourceUri === right.sourceUri &&
+    left.name.toLowerCase() === right.name.toLowerCase() &&
+    left.kind === right.kind &&
+    (left.memberOf ?? "").toLowerCase() === (right.memberOf ?? "").toLowerCase() &&
+    left.range.start.line === right.range.start.line &&
+    left.range.start.character === right.range.start.character &&
+    left.range.end.line === right.range.end.line &&
+    left.range.end.character === right.range.end.character
+  );
+}
+
+function addVbReferences(target: Map<string, VbReference>, references: VbReference[]): void {
+  for (const reference of references) {
+    target.set(vbReferenceKey(reference), reference);
+  }
+}
+
+function vbReferenceKey(reference: VbReference): string {
+  return JSON.stringify({
+    uri: reference.uri,
+    range: reference.range,
+  });
+}
+
+function vbReferenceOrder(left: VbReference, right: VbReference): number {
+  return (
+    left.uri.localeCompare(right.uri) ||
+    left.range.start.line - right.range.start.line ||
+    left.range.start.character - right.range.start.character ||
+    left.range.end.line - right.range.end.line ||
+    left.range.end.character - right.range.end.character
+  );
+}
+
+function pushWorkspaceVbReferenceSummary(
+  map: Map<string, WorkspaceVbReferenceSummary[]>,
+  key: string,
+  summary: WorkspaceVbReferenceSummary,
+): void {
+  const summaries = map.get(key) ?? [];
+  summaries.push(summary);
+  map.set(key, summaries);
+}
+
 function refreshIncludePublicBoundariesForAspChanges(changes: WatchedAspFileChange[]): Set<string> {
   const changed = new Set<string>();
   includeDocumentLoader.invalidateFiles(changes.map((change) => change.fileName));
@@ -6464,6 +6769,7 @@ function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
   workspaceIndexDirty = true;
   workspaceIndexTruncated = false;
   workspaceIndex.clear();
+  workspaceVbReferenceIndex = undefined;
   logInvalidation("workspaceIndex", reason, workspaceGeneration);
 }
 
@@ -9521,7 +9827,6 @@ function mergeWorkspaceEdits(
 
 function codeLenses(cached: CachedDocument): CodeLens[] {
   const settings = cachedSettings(cached.source.uri).codeLens;
-  const localizer = localizerForUri(cached.source.uri);
   const lenses: CodeLens[] = [];
   if (settings?.references !== false) {
     const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
@@ -9530,28 +9835,14 @@ function codeLenses(cached: CachedDocument): CodeLens[] {
         item.sourceUri === cached.source.uri &&
         ["function", "sub", "class", "method", "property"].includes(item.kind),
     )) {
-      const references = getVbscriptReferences(cached.parsed, symbol.range.start, context, {
-        includeDeclaration: false,
-        includeFunctionReturnAssignments: false,
-      });
       lenses.push({
         range: symbol.range,
-        command: {
-          title: localizer.t(
-            references.length === 1 ? "server.codeLens.reference" : "server.codeLens.references",
-            { count: references.length },
-          ),
-          command: "aspLsp.showReferences",
-          arguments: [
-            cached.source.uri,
-            symbol.range.start,
-            references.map((reference) => Location.create(reference.uri, reference.range)),
-          ],
-        },
+        data: vbReferenceCodeLensData(symbol),
       });
     }
   }
   if (settings?.includes !== false) {
+    const localizer = localizerForUri(cached.source.uri);
     for (const include of cached.parsed.includes) {
       const target = resolveIncludePath(
         cached.source.uri,
@@ -9570,6 +9861,89 @@ function codeLenses(cached: CachedDocument): CodeLens[] {
     }
   }
   return lenses;
+}
+
+async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
+  const data = vbReferenceCodeLensDataFromUnknown(lens.data);
+  if (!data) {
+    return lens;
+  }
+  const cached = getFreshCached(data.uri);
+  if (!cached) {
+    return lens;
+  }
+  const symbol = vbSymbolForCodeLensData(cached, data);
+  if (!symbol) {
+    return lens;
+  }
+  const references = await workspaceVbscriptReferencesForSymbol(
+    cached,
+    symbol,
+    cachedSettings(cached.source.uri),
+    {
+      includeDeclaration: false,
+      includeFunctionReturnAssignments: false,
+    },
+  );
+  const localizer = localizerForUri(cached.source.uri);
+  return {
+    ...lens,
+    command: {
+      title: localizer.t(
+        references.length === 1 ? "server.codeLens.reference" : "server.codeLens.references",
+        { count: references.length },
+      ),
+      command: "aspLsp.showReferences",
+      arguments: [
+        cached.source.uri,
+        symbol.range.start,
+        references.map((reference) => Location.create(reference.uri, reference.range)),
+      ],
+    },
+  };
+}
+
+function vbReferenceCodeLensData(symbol: VbSymbol): VbReferenceCodeLensData {
+  return {
+    kind: "vbscript-reference",
+    uri: symbol.sourceUri,
+    name: symbol.name,
+    symbolKind: symbol.kind,
+    memberOf: symbol.memberOf,
+    line: symbol.range.start.line,
+    character: symbol.range.start.character,
+  };
+}
+
+function vbReferenceCodeLensDataFromUnknown(value: unknown): VbReferenceCodeLensData | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const data = value as Partial<VbReferenceCodeLensData>;
+  return data.kind === "vbscript-reference" &&
+    typeof data.uri === "string" &&
+    typeof data.name === "string" &&
+    typeof data.symbolKind === "string" &&
+    typeof data.line === "number" &&
+    typeof data.character === "number"
+    ? (data as VbReferenceCodeLensData)
+    : undefined;
+}
+
+function vbSymbolForCodeLensData(
+  cached: CachedDocument,
+  data: VbReferenceCodeLensData,
+): VbSymbol | undefined {
+  const context = buildVbProjectContext(cached, cachedSettings(cached.source.uri));
+  return (context.symbols ?? []).find(
+    (symbol) =>
+      symbol.sourceUri === data.uri &&
+      symbol.name.toLowerCase() === data.name.toLowerCase() &&
+      symbol.kind === data.symbolKind &&
+      (symbol.memberOf ?? "").toLowerCase() === (data.memberOf ?? "").toLowerCase() &&
+      symbol.range.start.line === data.line &&
+      symbol.range.start.character === data.character,
+  );
 }
 
 function onTypeFormatting(
