@@ -10,8 +10,20 @@ permissions:
 
 jobs:
   release-vsix:
-    name: Build and release VSIX
-    runs-on: ubuntu-latest
+    name: Build VSIX (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: macos-13
+            target: darwin-x64
+          - os: macos-14
+            target: darwin-arm64
+          - os: windows-latest
+            target: win32-x64
 
     steps:
       - name: Check out repository
@@ -37,15 +49,34 @@ jobs:
 
       - name: Resolve VSIX name
         id: vsix
+        shell: bash
         run: |
           tag_name="${GITHUB_REF_NAME//\//-}"
-          echo "name=classic-asp-lsp-${tag_name}.vsix" >> "$GITHUB_OUTPUT"
+          echo "name=classic-asp-lsp-${tag_name}-${{ matrix.target }}.vsix" >> "$GITHUB_OUTPUT"
 
       - name: Package VSIX
-        run: pnpm run package:vsix --out "$GITHUB_WORKSPACE/${{ steps.vsix.outputs.name }}"
+        run: pnpm run package:vsix -- --target "${{ matrix.target }}" --out "$GITHUB_WORKSPACE/${{ steps.vsix.outputs.name }}"
 
-      - name: Upload release asset
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ steps.vsix.outputs.name }}
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish release
+    needs: release-vsix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download VSIX artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.vsix.outputs.name }}
+          files: dist/*.vsix
           generate_release_notes: true

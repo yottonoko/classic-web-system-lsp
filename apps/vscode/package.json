@@ -30,8 +30,8 @@
     "build": "tsc -p tsconfig.json && node scripts/bundle-extension.mjs && node scripts/copy-server-runtime.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "oxlint src test --deny-warnings --no-error-on-unmatched-pattern",
-    "package:vsix": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --no-dependencies --follow-symlinks",
-    "test": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
+    "package:vsix": "pnpm --dir ../.. run build:native && pnpm --dir ../.. run build:wasm && pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --no-dependencies --follow-symlinks",
+    "test": "pnpm --dir ../.. run build:native && pnpm --dir ../.. run build:wasm && pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
   },
   "dependencies": {
     "@asp-lsp/core": "workspace:*",

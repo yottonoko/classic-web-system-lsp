@@ -654,6 +654,8 @@ new Intl.DateTimeFormat("en");
       expect(listing).toContain("extension/server/language-server/dist/vb-diagnostics-worker.js");
       expect(listing).toContain("extension/server/language-server/dist/lib.esnext.d.ts");
       expect(listing).toContain("extension/server/language-server/dist/lib.dom.d.ts");
+      expect(listing).toMatch(/extension\/server\/language-server\/native\/[^/]+\/asp-lsp-core/);
+      expect(listing).toContain("extension/server/language-server/wasm/asp_lsp_core.wasm");
       expect(listing).not.toContain("extension/server/language-server/node_modules/");
       expect(listing).not.toContain("extension/node_modules/");
     } finally {

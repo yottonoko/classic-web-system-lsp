@@ -14,9 +14,22 @@ import type {
 import { offsetAt, rangeFromOffsets } from "./position";
 import { scanHtmlAndAsp, normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 import { parseVbscriptCst } from "./vbscript-cst";
+import { tryNativeParseAspCst, tryNativeParseAspDocument } from "./native-backend";
 export { normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 
 export function parseAspDocument(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): AspParsedDocument {
+  const native = tryNativeParseAspDocument(uri, text, settings);
+  if (native) {
+    return native;
+  }
+  return parseAspDocumentTypeScript(uri, text, settings);
+}
+
+function parseAspDocumentTypeScript(
   uri: string,
   text: string,
   settings: AspSettings = {},
@@ -472,6 +485,14 @@ function shiftOffsetAfterChange(
 }
 
 export function parseAspCst(uri: string, text: string, settings: AspSettings = {}): AspCstNode {
+  const native = tryNativeParseAspCst(text, settings);
+  if (native) {
+    return native;
+  }
+  return parseAspCstTypeScript(uri, text, settings);
+}
+
+function parseAspCstTypeScript(uri: string, text: string, settings: AspSettings = {}): AspCstNode {
   const diagnostics: AspParsedDocument["diagnostics"] = [];
   const scan = scanHtmlAndAsp(text, diagnostics, settings);
   const { inlineRegions, tagRegions, includes } = scan;

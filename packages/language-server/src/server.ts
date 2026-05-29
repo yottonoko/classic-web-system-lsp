@@ -73,6 +73,7 @@ import type {
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
   analyzeVbscript,
+  aspAnalysisBackendInfo,
   buildVbTypeEnvironment,
   buildVirtualDocument,
   collectVbscriptSymbols,
@@ -6176,6 +6177,7 @@ async function includeDocumentCacheKeyAsync(
 
 function includeDocumentSettingsIdentity(settings: AspSettings): string {
   return JSON.stringify({
+    engine: aspAnalysisBackendInfo(),
     parse: parseSettingsIdentity(settings),
     legacyEncoding: settings.legacyEncoding,
     vbscript: vbProjectContextSettings(settings),

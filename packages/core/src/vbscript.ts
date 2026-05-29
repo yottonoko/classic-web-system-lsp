@@ -23,6 +23,11 @@ import type {
 } from "vscode-languageserver-types";
 import { offsetAt, positionAt, rangeFromOffsets } from "./position";
 import { createLocalizer } from "./localize";
+import {
+  tryNativeAnalyzeVbscript,
+  tryNativeCollectVbscriptSymbols,
+  tryNativeSummarizeAspFileAnalysis,
+} from "./native-backend";
 import type {
   AspCstNode,
   AspInlayHintMarkerMode,
@@ -2213,6 +2218,12 @@ export function analyzeVbscript(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
+  if (process.env.ASP_LSP_NATIVE_SEMANTICS === "1") {
+    const native = tryNativeAnalyzeVbscript(parsed, context);
+    if (native) {
+      return native;
+    }
+  }
   const symbols = measureVbDebugStep(
     context,
     "symbols",
@@ -3321,6 +3332,17 @@ export function collectVbscriptSymbols(
   context: VbProjectContext = {},
   options: VbSymbolCollectionOptions = {},
 ): VbSymbol[] {
+  if (
+    process.env.ASP_LSP_NATIVE_SEMANTICS === "1" &&
+    options.implicitAssignments !== false &&
+    options.inferTypes !== false &&
+    options.variantFallback !== false
+  ) {
+    const native = tryNativeCollectVbscriptSymbols(parsed, context);
+    if (native) {
+      return native;
+    }
+  }
   const symbols: VbSymbol[] = [];
   for (const node of vbDocuments(parsed)) {
     addSymbolsFromVbNode(parsed, node, symbols, createDocCommentLookup(node));
@@ -3366,6 +3388,12 @@ export function summarizeAspFileAnalysis(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): FileAnalysisSummary {
+  if (process.env.ASP_LSP_NATIVE_SEMANTICS === "1") {
+    const native = tryNativeSummarizeAspFileAnalysis(parsed, context);
+    if (native) {
+      return native;
+    }
+  }
   const vbscript = parsed.regions.some((region) => region.language === "vbscript")
     ? summarizeVbscriptFile(parsed, context)
     : undefined;

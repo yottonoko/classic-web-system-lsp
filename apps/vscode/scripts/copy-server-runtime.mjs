@@ -16,6 +16,9 @@ const workerEntry = path.join(
 );
 const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
 const require = createRequire(import.meta.url);
+const languageServerManifest = JSON.parse(
+  fs.readFileSync(path.join(repoRoot, "packages", "language-server", "package.json"), "utf8"),
+);
 
 if (!fs.existsSync(serverEntry)) {
   throw new Error(`Build @asp-lsp/language-server before packaging: ${serverEntry}`);
@@ -33,12 +36,14 @@ await bundleNodeEntry(workerEntry, path.join(distRoot, "vb-diagnostics-worker.js
 fs.chmodSync(path.join(distRoot, "server.js"), 0o755);
 fs.chmodSync(path.join(distRoot, "vb-diagnostics-worker.js"), 0o755);
 copyTypeScriptLibs(distRoot);
+copyNativeCore(serverRoot);
+copyWasmCore(serverRoot);
 fs.writeFileSync(
   path.join(serverRoot, "package.json"),
   `${JSON.stringify(
     {
       name: "@asp-lsp/language-server-bundled",
-      version: "0.1.1",
+      version: languageServerManifest.version,
       private: true,
       main: "dist/server.js",
     },
@@ -77,4 +82,22 @@ function copyTypeScriptLibs(targetDirectory) {
       fs.copyFileSync(path.join(sourceDirectory, entry), path.join(targetDirectory, entry));
     }
   }
+}
+
+function copyNativeCore(targetRoot) {
+  const sourceRoot = path.join(repoRoot, "packages", "core", "native");
+  if (!fs.existsSync(sourceRoot)) {
+    return;
+  }
+  const targetDirectory = path.join(targetRoot, "native");
+  fs.cpSync(sourceRoot, targetDirectory, { recursive: true });
+}
+
+function copyWasmCore(targetRoot) {
+  const sourceRoot = path.join(repoRoot, "packages", "core", "wasm");
+  if (!fs.existsSync(sourceRoot)) {
+    return;
+  }
+  const targetDirectory = path.join(targetRoot, "wasm");
+  fs.cpSync(sourceRoot, targetDirectory, { recursive: true });
 }

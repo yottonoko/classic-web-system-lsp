@@ -2,7 +2,10 @@ node_modules/
 dist/
 out/
 coverage/
+target/
 apps/vscode/server/
+packages/core/native/
+packages/core/wasm/
 *.tsbuildinfo
 .DS_Store
 *.vsix
