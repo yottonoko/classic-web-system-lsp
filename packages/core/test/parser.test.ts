@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CompletionItemKind, InsertTextFormat } from "vscode-languageserver-types";
+import { CompletionItemKind, DiagnosticTag, InsertTextFormat } from "vscode-languageserver-types";
 import {
   analyzeVbscript,
   buildVbTypeEnvironment,
@@ -1244,6 +1244,11 @@ End Class
     expect(diagnostics.some((diagnostic) => diagnostic.message.includes("unusedArg"))).toBe(true);
     expect(diagnostics.some((diagnostic) => diagnostic.message.includes("Lonely"))).toBe(true);
     expect(diagnostics.every((diagnostic) => diagnostic.severity === 4)).toBe(true);
+    expect(
+      diagnostics
+        .filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-unused")
+        .every((diagnostic) => diagnostic.tags?.includes(DiagnosticTag.Unnecessary)),
+    ).toBe(true);
   });
 
   it("reports VBScript identifier casing hints", () => {

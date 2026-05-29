@@ -19,6 +19,7 @@ import {
   CompletionItemKind,
   createConnection,
   DiagnosticSeverity,
+  DiagnosticTag,
   DocumentHighlightKind,
   DocumentSymbol,
   FileChangeType,
@@ -6822,6 +6823,7 @@ function tsDiagnosticToLsp(
     message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
     code: diagnostic.code,
     source: override.source ?? "asp-lsp-typescript",
+    tags: diagnostic.reportsUnnecessary === true ? [DiagnosticTag.Unnecessary] : undefined,
   };
 }
 
@@ -9757,19 +9759,18 @@ function removeVbscriptParameterEdit(
   symbol: VbSymbol,
 ): TextEdit | undefined {
   const line = lineText(cached.source, symbol.range.start.line);
-  const startOffset = cached.source.offsetAt(symbol.range.start);
   const endOffset = cached.source.offsetAt(symbol.range.end);
   const lineStart = cached.source.offsetAt({ line: symbol.range.start.line, character: 0 });
   const lineEnd = lineStart + line.length;
-  let removeStart = startOffset;
+  let removeStart = parameterRemovalStartOffset(cached.source, symbol, lineStart);
   let removeEnd = endOffset;
   const after = cached.source.getText({
-    start: symbol.range.end,
+    start: cached.source.positionAt(removeEnd),
     end: cached.source.positionAt(lineEnd),
   });
   const before = cached.source.getText({
     start: cached.source.positionAt(lineStart),
-    end: symbol.range.start,
+    end: cached.source.positionAt(removeStart),
   });
   const afterComma = /^\s*,\s*/.exec(after);
   const beforeComma = /,\s*$/.exec(before);
@@ -9788,6 +9789,31 @@ function removeVbscriptParameterEdit(
     },
     newText: "",
   };
+}
+
+function parameterRemovalStartOffset(
+  document: TextDocument,
+  symbol: VbSymbol,
+  lineStart: number,
+): number {
+  const startOffset = document.offsetAt(symbol.range.start);
+  const before = document.getText({
+    start: document.positionAt(lineStart),
+    end: symbol.range.start,
+  });
+  const segmentStart = Math.max(before.lastIndexOf("("), before.lastIndexOf(",")) + 1;
+  const segmentPrefix = before.slice(segmentStart);
+  const keywordPrefix = /(?:^|\s)((?:(?:Optional|ByRef|ByVal)\s+)+)$/i.exec(segmentPrefix);
+  if (!keywordPrefix?.[1]) {
+    return startOffset;
+  }
+  return (
+    lineStart +
+    segmentStart +
+    keywordPrefix.index +
+    keywordPrefix[0].length -
+    keywordPrefix[1].length
+  );
 }
 
 async function vbscriptIncludeSuggestionActionsAsync(

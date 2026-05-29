@@ -6,9 +6,11 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   CompletionItemKind,
+  DiagnosticTag,
   DiagnosticSeverity,
   InsertTextFormat,
 } from "vscode-languageserver-types";
+import type { TextEdit } from "vscode-languageserver-types";
 
 interface JsonRpcMessage {
   id?: number;
@@ -5135,6 +5137,9 @@ Response.Write Request.Form("name")
       const source = `<%
 Dim unusedValue
 Const usedValue = 1
+Sub Save(usedArg, ByRef unusedArg)
+  Response.Write usedArg
+End Sub
 Response.Write usedValue
 %>`;
       const server = new RpcServer();
@@ -5159,7 +5164,14 @@ Response.Write usedValue
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics;
         expect(JSON.stringify(vbDiagnostics)).toContain("unusedValue");
-        const actions = await server.request("textDocument/codeAction", {
+        expect(
+          vbDiagnostics
+            .filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-unused")
+            .every((diagnostic) =>
+              (diagnostic.tags as unknown[] | undefined)?.includes(DiagnosticTag.Unnecessary),
+            ),
+        ).toBe(true);
+        const valueActions = await server.request("textDocument/codeAction", {
           textDocument: { uri },
           range: {
             start: { line: 1, character: 4 },
@@ -5167,9 +5179,30 @@ Response.Write usedValue
           },
           context: { diagnostics: vbDiagnostics },
         });
-        const serialized = JSON.stringify(actions);
+        const serialized = JSON.stringify(valueActions);
         expect(serialized).toContain("Remove unused declaration unusedValue");
         expect(serialized).toContain('"newText":""');
+
+        const unusedArgDiagnostic = vbDiagnostics.find((diagnostic) =>
+          String(diagnostic.message).includes("unusedArg"),
+        );
+        expect(unusedArgDiagnostic).toBeDefined();
+        const parameterActions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: unusedArgDiagnostic?.range,
+          context: { diagnostics: unusedArgDiagnostic ? [unusedArgDiagnostic] : [] },
+        });
+        const parameterAction = (parameterActions as Array<Record<string, unknown>>).find(
+          (action) => JSON.stringify(action).includes("unusedArg"),
+        );
+        const parameterEdit = ((
+          parameterAction?.edit as { changes?: Record<string, TextEdit[]> } | undefined
+        )?.changes?.[uri] ?? [])[0];
+        expect(parameterEdit).toBeDefined();
+        const updated = parameterEdit ? applyTextEdit(source, parameterEdit) : source;
+        expect(updated).toContain("Sub Save(usedArg)");
+        expect(updated).not.toContain("ByRef unusedArg");
+        expect(updated).not.toContain("ByRef )");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -6082,6 +6115,7 @@ function demo(unusedParam) {
         expect(serialized).toContain("asp-lsp-typescript-unused");
         expect(serialized).toContain("unusedLocal");
         expect(serialized).toContain('"severity":4');
+        expect(serialized).toContain(`"tags":[${DiagnosticTag.Unnecessary}]`);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -8499,6 +8533,29 @@ function notifyRangedReplacement(
     ],
   });
   return current.slice(0, start) + replacement + current.slice(end);
+}
+
+function applyTextEdit(text: string, edit: TextEdit): string {
+  const start = offsetAt(text, edit.range.start);
+  const end = offsetAt(text, edit.range.end);
+  return text.slice(0, start) + edit.newText + text.slice(end);
+}
+
+function offsetAt(text: string, position: { line: number; character: number }): number {
+  let line = 0;
+  let character = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (line === position.line && character === position.character) {
+      return index;
+    }
+    if (text[index] === "\n") {
+      line += 1;
+      character = 0;
+    } else {
+      character += 1;
+    }
+  }
+  return text.length;
 }
 
 function positionAt(text: string, offset: number): { line: number; character: number } {

@@ -1,4 +1,5 @@
 import {
+  DiagnosticTag,
   CompletionItemKind,
   DiagnosticSeverity,
   DocumentHighlightKind,
@@ -6617,6 +6618,7 @@ function diagnoseUnusedSymbols(
       range: symbol.range,
       message: unusedDiagnosticMessage(symbol, context.locale),
       source: "asp-lsp-vbscript-unused",
+      tags: [DiagnosticTag.Unnecessary],
     });
   }
   return diagnostics;
