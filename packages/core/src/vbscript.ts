@@ -3134,27 +3134,23 @@ function scopeMarker(
   context: VbProjectContext,
   mode: AspInlayHintMarkerMode,
 ): string {
-  if (mode === "off" || !isVariableMarkerSymbol(parsed, symbol)) {
+  if (mode === "off" || !isVariableMarkerSymbol(symbol)) {
     return "";
   }
   if (isUncertainIncludeImplicitSymbol(parsed, symbol, context)) {
     return "(?)";
   }
-  if (isGlobalVariableLikeSymbol(parsed, symbol)) {
+  if (isGlobalVariableLikeSymbol(symbol)) {
     return mode === "global" || mode === "all" ? "(global)" : "";
   }
-  if (isLocalVariableLikeSymbol(parsed, symbol)) {
+  if (isLocalVariableLikeSymbol(symbol)) {
     return mode === "local" || mode === "all" ? "(local)" : "";
   }
   return "";
 }
 
-function isVariableMarkerSymbol(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
-  return (
-    symbol.sourceUri === parsed.uri &&
-    (symbol.kind === "variable" || symbol.kind === "constant") &&
-    !symbol.memberOf
-  );
+function isVariableMarkerSymbol(symbol: VbSymbol): boolean {
+  return (symbol.kind === "variable" || symbol.kind === "constant") && !symbol.memberOf;
 }
 
 function isUncertainIncludeImplicitSymbol(
@@ -3164,7 +3160,8 @@ function isUncertainIncludeImplicitSymbol(
 ): boolean {
   return (
     symbol.implicit === true &&
-    isVariableMarkerSymbol(parsed, symbol) &&
+    symbol.sourceUri === parsed.uri &&
+    isGlobalVariableLikeSymbol(symbol) &&
     parsed.includes.length > 0 &&
     !hasIncludeAwareDocuments(parsed, context)
   );
@@ -3174,22 +3171,12 @@ function hasIncludeAwareDocuments(parsed: AspParsedDocument, context: VbProjectC
   return context.documents?.some((document) => document.uri !== parsed.uri) ?? false;
 }
 
-function isGlobalVariableLikeSymbol(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
-  return (
-    symbol.sourceUri === parsed.uri &&
-    (symbol.kind === "variable" || symbol.kind === "constant") &&
-    !symbol.scopeName &&
-    !symbol.memberOf
-  );
+function isGlobalVariableLikeSymbol(symbol: VbSymbol): boolean {
+  return isVariableMarkerSymbol(symbol) && !symbol.scopeName;
 }
 
-function isLocalVariableLikeSymbol(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
-  return (
-    symbol.sourceUri === parsed.uri &&
-    (symbol.kind === "variable" || symbol.kind === "constant") &&
-    Boolean(symbol.scopeName) &&
-    !symbol.memberOf
-  );
+function isLocalVariableLikeSymbol(symbol: VbSymbol): boolean {
+  return isVariableMarkerSymbol(symbol) && Boolean(symbol.scopeName);
 }
 
 function isHiddenInlayType(typeName: string): boolean {
@@ -3633,7 +3620,7 @@ function addSymbolsFromVbNode(
       ? rangeFromOffsets(parsed.text, node.start, node.end)
       : undefined;
   if (node.kind === "Class" && node.nameToken) {
-    const documentation = documentationForNode(node, docCommentLookup);
+    const documentation = documentationForNode(parsed, node, docCommentLookup);
     symbols.push({
       name: node.nameToken.text,
       kind: "class",
@@ -3644,7 +3631,7 @@ function addSymbolsFromVbNode(
     });
   }
   if ((node.kind === "Procedure" || node.kind === "Property") && node.nameToken) {
-    const documentation = documentationForNode(node, docCommentLookup);
+    const documentation = documentationForNode(parsed, node, docCommentLookup);
     const scopeRange = nodeScopeRange;
     const name = node.nameToken.text;
     const kind: VbSymbolKind =
@@ -3706,9 +3693,14 @@ function addSymbolsFromVbNode(
       (memberOf ? rangeFromOffsets(parsed.text, node.start, node.end) : undefined);
     const identifiers = node.identifiers ?? (node.nameToken ? [node.nameToken] : []);
     const variableDocumentation =
-      identifiers.length === 1 ? documentationForNode(node, docCommentLookup) : undefined;
+      identifiers.length === 1 ? documentationForNode(parsed, node, docCommentLookup) : undefined;
     for (const identifier of identifiers) {
       const array = node.arrayDeclarations?.find((item) => item.name === identifier);
+      const documentation =
+        variableDocumentation ??
+        (identifiers.length === 1
+          ? trailingPlainCommentDocumentation(parsed, docCommentLookup, identifier)
+          : undefined);
       symbols.push({
         name: identifier.text,
         kind: memberOf && baseKind === "variable" ? "field" : baseKind,
@@ -3728,7 +3720,7 @@ function addSymbolsFromVbNode(
             }
           : undefined,
         visibility: node.visibility,
-        documentation: variableDocumentation,
+        documentation,
       });
     }
   }
@@ -4048,19 +4040,40 @@ function parseReturnsTypeAnnotation(
 }
 
 function documentationForNode(
+  parsed: AspParsedDocument,
   node: VbCstNode,
   docCommentLookup: VbDocCommentLookup,
 ): VbDocumentation | undefined {
   if (!node.nameToken && !node.identifiers?.length) {
     return undefined;
   }
-  const block = documentationCommentBlockBeforeLookup(docCommentLookup, node.start);
+  const block = documentationCommentBlockBeforeLookup(parsed.text, docCommentLookup, node.start);
   if (block.tokens.length === 0) {
     return undefined;
   }
   return block.kind === "xml"
     ? parseVbDocumentation(block.tokens)
     : parsePlainCommentDocumentation(block.tokens);
+}
+
+function trailingPlainCommentDocumentation(
+  parsed: AspParsedDocument,
+  lookup: VbDocCommentLookup,
+  identifier: VbToken,
+): VbDocumentation | undefined {
+  const identifierLine = positionAt(parsed.text, identifier.end).line;
+  const tokenIndex = firstTokenAtOrAfter(lookup.tokens, identifier.end);
+  for (let index = tokenIndex; index < lookup.tokens.length; index += 1) {
+    const token = lookup.tokens[index];
+    const tokenLine = positionAt(parsed.text, token.start).line;
+    if (tokenLine !== identifierLine) {
+      break;
+    }
+    if (isPlainCommentToken(token)) {
+      return parsePlainCommentDocumentation([token]);
+    }
+  }
+  return undefined;
 }
 
 function documentationForParameter(
@@ -4096,6 +4109,7 @@ interface VbDocumentationCommentBlock {
 }
 
 function documentationCommentBlockBeforeLookup(
+  sourceText: string,
   lookup: VbDocCommentLookup,
   offset: number,
 ): VbDocumentationCommentBlock {
@@ -4103,7 +4117,7 @@ function documentationCommentBlockBeforeLookup(
   if (xmlTokens.length > 0) {
     return { kind: "xml", tokens: xmlTokens };
   }
-  return { kind: "plain", tokens: plainCommentBlockBeforeLookup(lookup, offset) };
+  return { kind: "plain", tokens: plainCommentBlockBeforeLookup(sourceText, lookup, offset) };
 }
 
 function docCommentBlockBeforeLookup(lookup: VbDocCommentLookup, offset: number): VbToken[] {
@@ -4131,7 +4145,11 @@ function docCommentBlockBeforeLookup(lookup: VbDocCommentLookup, offset: number)
   return comments.reverse();
 }
 
-function plainCommentBlockBeforeLookup(lookup: VbDocCommentLookup, offset: number): VbToken[] {
+function plainCommentBlockBeforeLookup(
+  sourceText: string,
+  lookup: VbDocCommentLookup,
+  offset: number,
+): VbToken[] {
   const tokens = lookup.tokens;
   const tokenIndex =
     offset >= lookup.lastOffset
@@ -4141,13 +4159,17 @@ function plainCommentBlockBeforeLookup(lookup: VbDocCommentLookup, offset: numbe
   while (index >= 0 && isWhitespaceOrNewline(tokens[index])) {
     index -= 1;
   }
+  const declarationLine = positionAt(sourceText, offset).line;
   const comments: VbToken[] = [];
+  let nextLine = declarationLine;
   while (index >= 0) {
     const current = tokens[index];
-    if (!isPlainCommentToken(current)) {
+    const currentLine = positionAt(sourceText, current.start).line;
+    if (!isPlainCommentOnlyLineToken(sourceText, current) || currentLine + 1 !== nextLine) {
       break;
     }
     comments.push(current);
+    nextLine = currentLine;
     index -= 1;
     while (index >= 0 && isWhitespaceOrNewline(tokens[index])) {
       index -= 1;
@@ -4222,11 +4244,11 @@ function parseVbDocumentation(tokens: VbToken[]): VbDocumentation | undefined {
 }
 
 function parsePlainCommentDocumentation(tokens: VbToken[]): VbDocumentation | undefined {
+  if (tokens.some((token) => isVbTypeAnnotationComment(stripPlainCommentPrefix(token.text)))) {
+    return undefined;
+  }
   const summary = normalizeDocText(
-    tokens
-      .map((token) => stripPlainCommentPrefix(token.text).trimEnd())
-      .filter((line) => !isVbTypeAnnotationComment(line))
-      .join("\n"),
+    tokens.map((token) => stripPlainCommentPrefix(token.text).trimEnd()).join("\n"),
   );
   if (!summary) {
     return undefined;
@@ -4250,6 +4272,17 @@ function stripPlainCommentPrefix(text: string): string {
 
 function isPlainCommentToken(token: VbToken | undefined): token is VbToken {
   return token?.kind === "comment" && token.text.startsWith("'") && !isDocCommentToken(token);
+}
+
+function isPlainCommentOnlyLineToken(
+  sourceText: string,
+  token: VbToken | undefined,
+): token is VbToken {
+  if (!isPlainCommentToken(token)) {
+    return false;
+  }
+  const lineStart = sourceText.lastIndexOf("\n", token.start - 1) + 1;
+  return /^[ \t]*$/.test(sourceText.slice(lineStart, token.start));
 }
 
 function isVbTypeAnnotationComment(text: string): boolean {
@@ -5216,11 +5249,13 @@ function typeIncludesName(type: VbTypeRef | undefined, name: string): boolean {
 function applyTypeAnnotations(parsed: AspParsedDocument, symbols: VbSymbol[]): void {
   const annotations = parseTypeAnnotations(parsed);
   for (const annotation of annotations.types) {
+    const lowerName = annotation.name.toLowerCase();
     const symbol =
-      visibleSymbols(parsed, annotation.offset, symbols).find(
-        (candidate) => candidate.name.toLowerCase() === annotation.name.toLowerCase(),
-      ) ??
-      symbols.find((candidate) => candidate.name.toLowerCase() === annotation.name.toLowerCase());
+      visibleSymbolsByName(parsed, annotation.offset, symbols, lowerName).sort(
+        (left, right) =>
+          symbolPriority(right) - symbolPriority(left) ||
+          rangeSize(left.scopeRange ?? left.range) - rangeSize(right.scopeRange ?? right.range),
+      )[0] ?? symbols.find((candidate) => candidate.name.toLowerCase() === lowerName);
     if (symbol) {
       setSymbolType(symbol, annotation.typeName, true);
     }

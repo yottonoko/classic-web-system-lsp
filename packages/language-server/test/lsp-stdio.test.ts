@@ -3913,7 +3913,7 @@ End Sub
         const serialized = JSON.stringify(inlayHints);
         expect(serialized).toContain("(?)");
         expect(serialized).not.toContain("(global) As Number");
-        expect(serialized).not.toContain("(local) As String");
+        expect(serialized).toContain("(local) As String");
 
         server.notify("workspace/didChangeConfiguration", {
           settings: { aspLsp: { inlayHints: { globalVariableMarkers: "local" } } },

@@ -1927,9 +1927,7 @@ Response.Write BuildName("Ada")
   });
 
   it("uses regular comment blocks as fallback VBScript documentation", () => {
-    const parsed = parseAspDocument(
-      "file:///site/default.asp",
-      `<%
+    const source = `<%
 ' Build a display name.
 ' Used by dashboard headers.
 Function BuildName(first)
@@ -1940,30 +1938,83 @@ Response.Write BuildName("Ada")
 ' @type customerId As String
 ' Customer id from the request.
 Dim customerId
+Dim trailingValue ' Trailing value docs.
+Const TrailingConst = 10 ' Trailing constant docs.
+Dim firstValue, secondValue ' Ambiguous trailing docs.
+Response.Write "not docs" ' Inline code comment before declaration.
+Dim inlineNeighbor
 
 ' Plain fallback.
 ''' <summary>XML summary wins.</summary>
 Function XmlDocumented()
 End Function
-%>`,
-    );
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
     const symbols = collectVbscriptSymbols(parsed);
-    const functionHover = getVbscriptHover(parsed, { line: 3, character: 10 }, { symbols });
+    const functionHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("BuildName(first)")),
+      { symbols },
+    );
     expect(functionHover).toContain("Build a display name.");
     expect(functionHover).toContain("Used by dashboard headers.");
 
-    const completion = getVbscriptCompletions(parsed, { line: 6, character: 20 }, { symbols }).find(
-      (item) => item.label === "BuildName",
-    );
+    const completion = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf('BuildName("Ada")') + "BuildName".length),
+      { symbols },
+    ).find((item) => item.label === "BuildName");
     expect(
       String(resolveVbscriptCompletionItem(completion!, parsed, { symbols }).documentation),
     ).toContain("Build a display name.");
 
-    const variableHover = getVbscriptHover(parsed, { line: 10, character: 4 }, { symbols });
-    expect(variableHover).toContain("Customer id from the request.");
+    const variableHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("Dim customerId") + "Dim ".length),
+      { symbols },
+    );
+    expect(variableHover).not.toContain("Customer id from the request.");
     expect(variableHover).not.toContain("@type customerId");
 
-    const xmlHover = getVbscriptHover(parsed, { line: 14, character: 10 }, { symbols });
+    const trailingValueHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("trailingValue")),
+      { symbols },
+    );
+    expect(trailingValueHover).toContain("Trailing value docs.");
+
+    const trailingConstHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("TrailingConst")),
+      { symbols },
+    );
+    expect(trailingConstHover).toContain("Trailing constant docs.");
+
+    const firstValueHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("firstValue")),
+      { symbols },
+    );
+    const secondValueHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("secondValue")),
+      { symbols },
+    );
+    expect(firstValueHover).not.toContain("Ambiguous trailing docs.");
+    expect(secondValueHover).not.toContain("Ambiguous trailing docs.");
+
+    const inlineNeighborHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("inlineNeighbor")),
+      { symbols },
+    );
+    expect(inlineNeighborHover).not.toContain("Inline code comment before declaration.");
+
+    const xmlHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("XmlDocumented()")),
+      { symbols },
+    );
     expect(xmlHover).toContain("XML summary wins.");
     expect(xmlHover).not.toContain("Plain fallback.");
   });
@@ -2451,7 +2502,11 @@ flags = count > 1 And True
 ' @type items As Array
 Dim items
 items = Array("a", "b")
+' @type sharedName As String
+Dim sharedName
 Sub Save(Optional ByVal firstName, ByRef lastName, defaultName)
+  ' @type sharedName As Number
+  Dim sharedName
 End Sub
 %>`,
     );
@@ -2460,6 +2515,13 @@ End Sub
     expect(symbols.find((symbol) => symbol.name === "count")?.typeName).toBe("Number");
     expect(symbols.find((symbol) => symbol.name === "flags")?.typeName).toBe("Boolean");
     expect(symbols.find((symbol) => symbol.name === "items")?.typeName).toBe("Array");
+    expect(
+      symbols.find((symbol) => symbol.name === "sharedName" && !symbol.scopeName)?.typeName,
+    ).toBe("String");
+    expect(
+      symbols.find((symbol) => symbol.name === "sharedName" && symbol.scopeName === "Save")
+        ?.typeName,
+    ).toBe("Number");
     expect(symbols.find((symbol) => symbol.name === "Save")?.parameters).toEqual([
       "firstName",
       "lastName",
@@ -2647,9 +2709,14 @@ Function UnknownReturn()
 End Function
 Sub Render()
   Dim localValue
+  implicitLocal = 1
 End Sub
 %>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
+    const sourceRange = {
+      start: { line: 0, character: 0 },
+      end: positionAt(source, source.length),
+    };
     const symbols = collectVbscriptSymbols(parsed);
     expect(symbols.find((symbol) => symbol.name === "rowClass")?.typeName).toBe("String | Number");
     expect(symbols.find((symbol) => symbol.name === "unknownGlobal")?.typeName).toBe("Variant");
@@ -2659,17 +2726,17 @@ End Sub
       symbols.find((symbol) => symbol.name === "localValue" && symbol.scopeName === "Render")
         ?.typeName,
     ).toBe("Variant");
+    expect(
+      symbols.find((symbol) => symbol.name === "implicitLocal" && symbol.scopeName === "Render")
+        ?.typeName,
+    ).toBe("Number");
 
-    const hints = getVbscriptInlayHints(
-      parsed,
-      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
-      { symbols },
-    );
+    const hints = getVbscriptInlayHints(parsed, sourceRange, { symbols });
     expect(hints.some((hint) => hint.label === " (global) As String | Number")).toBe(true);
     expect(hints.some((hint) => hint.label === " (global) As Variant")).toBe(true);
     const hintsWithoutGlobalMarkers = getVbscriptInlayHints(
       parsed,
-      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      sourceRange,
       { symbols },
       { globalVariableMarkers: "off" },
     );
@@ -2687,7 +2754,7 @@ End Sub
     ).toBe(true);
     const hintsWithLocalMarkers = getVbscriptInlayHints(
       parsed,
-      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      sourceRange,
       { symbols },
       { globalVariableMarkers: "all" },
     );
@@ -2698,9 +2765,16 @@ End Sub
           hint.position.line === positionAt(source, source.indexOf("localValue")).line,
       ),
     ).toBe(true);
+    expect(
+      hintsWithLocalMarkers.some(
+        (hint) =>
+          hint.label === " (local) As Number" &&
+          hint.position.line === positionAt(source, source.indexOf("implicitLocal")).line,
+      ),
+    ).toBe(true);
     const localOnlyHints = getVbscriptInlayHints(
       parsed,
-      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      sourceRange,
       { symbols },
       { globalVariableMarkers: "local" },
     );
@@ -2712,6 +2786,13 @@ End Sub
           hint.position.line === positionAt(source, source.indexOf("localValue")).line,
       ),
     ).toBe(true);
+    expect(
+      localOnlyHints.some(
+        (hint) =>
+          hint.label === " (local) As Number" &&
+          hint.position.line === positionAt(source, source.indexOf("implicitLocal")).line,
+      ),
+    ).toBe(true);
 
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
@@ -2719,6 +2800,9 @@ End Sub
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("UnknownConst")), { symbols }),
     ).toContain("(global) Const UnknownConst As Variant");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("implicitLocal")), { symbols }),
+    ).toContain("(local) Dim implicitLocal As Number");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
     ).not.toContain("VBScript variable");
@@ -2777,6 +2861,7 @@ Response.Write a
   it("uses uncertain markers only before include-aware implicit variable analysis is available", () => {
     const includeSource = `<%
 a = 1
+sharedTitle = "include"
 Sub Render()
   b = "local"
 End Sub
@@ -2785,46 +2870,71 @@ End Sub
     const includeSymbols = collectVbscriptSymbols(includeParsed);
     const includeHints = getVbscriptInlayHints(
       includeParsed,
-      { start: { line: 0, character: 0 }, end: { line: 6, character: 0 } },
+      { start: { line: 0, character: 0 }, end: positionAt(includeSource, includeSource.length) },
       { symbols: includeSymbols },
       { globalVariableMarkers: "all" },
     );
     expect(includeHints.filter((hint) => hint.label === " (global) As Number")).toHaveLength(1);
+    expect(includeHints.filter((hint) => hint.label === " (global) As String")).toHaveLength(1);
     expect(includeHints.filter((hint) => hint.label === " (local) As String")).toHaveLength(1);
     expect(JSON.stringify(includeHints)).not.toContain("(?)");
     expect(
-      getVbscriptHover(includeParsed, { line: 1, character: 0 }, { symbols: includeSymbols }),
+      getVbscriptHover(includeParsed, positionAt(includeSource, includeSource.indexOf("a =")), {
+        symbols: includeSymbols,
+      }),
     ).toContain("(global) Dim a As Number");
     expect(
-      getVbscriptHover(includeParsed, { line: 3, character: 2 }, { symbols: includeSymbols }),
+      getVbscriptHover(includeParsed, positionAt(includeSource, includeSource.indexOf("b =")), {
+        symbols: includeSymbols,
+      }),
     ).toContain("(local) Dim b As String");
 
     const pageSource = `<!-- #include file="shared.inc" -->
 <%
+Response.Write sharedTitle
 a = 1
+Sub Render()
+  b = "page local"
+End Sub
+Response.Write b
 %>`;
     const pageParsed = parseAspDocument("file:///site/default.asp", pageSource);
     const pageSymbols = collectVbscriptSymbols(pageParsed);
     const pageHints = getVbscriptInlayHints(
       pageParsed,
-      { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+      { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
       { symbols: pageSymbols },
+      { globalVariableMarkers: "all" },
     );
     expect(pageHints.some((hint) => hint.label === " (?) As Number")).toBe(true);
+    expect(pageHints.some((hint) => hint.label === " (local) As String")).toBe(true);
     expect(JSON.stringify(pageHints)).not.toContain("(global) As Number");
 
     const includeAwarePageHints = getVbscriptInlayHints(
       pageParsed,
-      { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+      { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
       { symbols: [...pageSymbols, ...includeSymbols], documents: [pageParsed, includeParsed] },
       { globalVariableMarkers: "all" },
     );
     expect(includeAwarePageHints.some((hint) => hint.label === " (global) As Number")).toBe(true);
+    expect(includeAwarePageHints.some((hint) => hint.label === " (local) As String")).toBe(true);
     expect(JSON.stringify(includeAwarePageHints)).not.toContain("(?)");
+    expect(
+      getVbscriptHover(pageParsed, positionAt(pageSource, pageSource.indexOf("sharedTitle")), {
+        symbols: [...pageSymbols, ...includeSymbols],
+        documents: [pageParsed, includeParsed],
+      }),
+    ).toContain("(global) Dim sharedTitle As String");
+    expect(
+      getVbscriptHover(pageParsed, positionAt(pageSource, pageSource.lastIndexOf("b")), {
+        symbols: [...pageSymbols, ...includeSymbols],
+        documents: [pageParsed, includeParsed],
+      }),
+    ).toBeUndefined();
 
     const disabled = getVbscriptInlayHints(
       includeParsed,
-      { start: { line: 0, character: 0 }, end: { line: 6, character: 0 } },
+      { start: { line: 0, character: 0 }, end: positionAt(includeSource, includeSource.length) },
       { symbols: includeSymbols },
       { globalVariableMarkers: "off" },
     );
