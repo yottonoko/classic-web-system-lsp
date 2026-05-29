@@ -3126,7 +3126,7 @@ Response.Write b
       { symbols: [...pageSymbols, ...includeSymbols], documents: [pageParsed, includeParsed] },
       { globalVariableMarkers: "all" },
     );
-    expect(includeAwarePageHints.some((hint) => hint.label === " (global) As Number")).toBe(true);
+    expect(JSON.stringify(includeAwarePageHints)).not.toContain("(global) As Number");
     expect(includeAwarePageHints.some((hint) => hint.label === " (local) As String")).toBe(true);
     expect(JSON.stringify(includeAwarePageHints)).not.toContain("(?)");
     expect(
@@ -3175,6 +3175,14 @@ sharedTitle = "page"
         context,
       )?.sourceUri,
     ).toBe(includeParsed.uri);
+    expect(
+      getVbscriptInlayHints(
+        pageParsed,
+        { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
+        context,
+        { globalVariableMarkers: "all" },
+      ).some((hint) => hint.label === " (global) As String"),
+    ).toBe(false);
 
     const beforeIncludeSource = `<%
 sharedTitle = "page"
@@ -3192,6 +3200,69 @@ sharedTitle = "page"
         },
       )?.sourceUri,
     ).toBe(beforeIncludeParsed.uri);
+    expect(
+      getVbscriptInlayHints(
+        beforeIncludeParsed,
+        {
+          start: { line: 0, character: 0 },
+          end: positionAt(beforeIncludeSource, beforeIncludeSource.length),
+        },
+        {
+          symbols: [...beforeIncludeSymbols, ...includeSymbols],
+          documents: [beforeIncludeParsed, includeParsed],
+        },
+        { globalVariableMarkers: "all" },
+      ).some((hint) => hint.label === " (global) As String"),
+    ).toBe(true);
+  });
+
+  it("resolves procedure assignments after includes to include-defined implicit globals", () => {
+    const includeSource = `<%
+sharedTitle = "include"
+%>`;
+    const includeParsed = parseAspDocument("file:///site/shared.inc", includeSource);
+    const includeSymbols = collectVbscriptSymbols(includeParsed);
+    const pageSource = `<!-- #include file="shared.inc" -->
+<%
+Function Render()
+  sharedTitle = "function"
+End Function
+Class Widget
+  Public Sub Save()
+    sharedTitle = "method"
+  End Sub
+End Class
+%>`;
+    const pageParsed = parseAspDocument("file:///site/default.asp", pageSource);
+    const pageSymbols = collectVbscriptSymbols(pageParsed);
+    const context = {
+      symbols: [...pageSymbols, ...includeSymbols],
+      documents: [pageParsed, includeParsed],
+    };
+
+    expect(
+      getVbscriptDefinition(
+        pageParsed,
+        positionAt(pageSource, pageSource.indexOf("sharedTitle =")),
+        context,
+      )?.sourceUri,
+    ).toBe(includeParsed.uri);
+    expect(
+      getVbscriptDefinition(
+        pageParsed,
+        positionAt(pageSource, pageSource.lastIndexOf("sharedTitle =")),
+        context,
+      )?.sourceUri,
+    ).toBe(includeParsed.uri);
+
+    const hints = getVbscriptInlayHints(
+      pageParsed,
+      { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
+      context,
+      { globalVariableMarkers: "all" },
+    );
+    expect(JSON.stringify(hints)).not.toContain("(local) As String");
+    expect(JSON.stringify(hints)).not.toContain("(global) As String");
   });
 
   it("adds semantic token types and modifiers for VBScript symbols", () => {

@@ -1557,7 +1557,12 @@ Response.Write known
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
+          settings: {
+            aspLsp: {
+              diagnostics: { debounceMs: 0 },
+              inlayHints: { globalVariableMarkers: "all" },
+            },
+          },
         });
 
         const uri = "file:///tmp/immediate-diagnostics.asp";
@@ -4075,8 +4080,9 @@ a = 2
             end: positionAt(source, source.length),
           },
         });
-        expect(JSON.stringify(warmedHints)).toContain("(global) As Number");
-        expect(JSON.stringify(warmedHints)).not.toContain("(?)");
+        const serializedWarmedHints = JSON.stringify(warmedHints);
+        expect(serializedWarmedHints).not.toContain("(global) As Number");
+        expect(serializedWarmedHints).not.toContain("(?)");
 
         const editedSource = notifyRangedReplacement(
           server,
@@ -4094,7 +4100,7 @@ a = 2
           },
         });
         const serializedImmediateHints = JSON.stringify(immediateHints);
-        expect(serializedImmediateHints).toContain("(global) As Number");
+        expect(serializedImmediateHints).not.toContain("(global) As Number");
         expect(serializedImmediateHints).not.toContain("(?)");
 
         await server.request("shutdown", null);
@@ -4109,11 +4115,19 @@ a = 2
       const include = path.join(tempDir, "shared.inc");
       const owner = path.join(tempDir, "default.asp");
       fs.writeFileSync(include, `<%\nsharedTitle = "include"\n%>`, "utf8");
-      const marked = markedDocument(`<!-- #include file="shared.inc" -->
+      const source = `<!-- #include file="shared.inc" -->
 <%
-shared▮Title = "page"
-%>`);
-      fs.writeFileSync(owner, marked.text, "utf8");
+sharedTitle = "page"
+Function Render()
+  sharedTitle = "function"
+End Function
+Class Widget
+  Public Sub Save()
+    sharedTitle = "method"
+  End Sub
+End Class
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
       const uri = pathToFileURL(owner).href;
       const server = new RpcServer();
       try {
@@ -4131,7 +4145,7 @@ shared▮Title = "page"
             uri,
             languageId: "classic-asp",
             version: 1,
-            text: marked.text,
+            text: source,
           },
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
@@ -4139,14 +4153,32 @@ shared▮Title = "page"
           textDocument: { uri },
         });
 
-        const definition = await waitForDefinitionContaining(
-          server,
-          { uri, position: marked.position },
-          "shared.inc",
-        );
-        const serialized = JSON.stringify(definition);
-        expect(serialized).toContain("shared.inc");
-        expect(serialized).not.toContain("default.asp");
+        const assignmentOffsets = [
+          source.indexOf("sharedTitle ="),
+          source.indexOf("sharedTitle =", source.indexOf("Function Render")),
+          source.lastIndexOf("sharedTitle ="),
+        ];
+        for (const offset of assignmentOffsets) {
+          const definition = await waitForDefinitionContaining(
+            server,
+            { uri, position: positionAt(source, offset) },
+            "shared.inc",
+          );
+          const serialized = JSON.stringify(definition);
+          expect(serialized).toContain("shared.inc");
+          expect(serialized).not.toContain("default.asp");
+        }
+
+        const hints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: {
+            start: { line: 0, character: 0 },
+            end: positionAt(source, source.length),
+          },
+        });
+        const serializedHints = JSON.stringify(hints);
+        expect(serializedHints).not.toContain("(global) As String");
+        expect(serializedHints).not.toContain("(local) As String");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

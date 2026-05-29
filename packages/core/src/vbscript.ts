@@ -3315,6 +3315,7 @@ export function getVbscriptInlayHints(
         !["variable", "constant", "field"].includes(symbol.kind) ||
         !symbol.typeName ||
         isHiddenInlayType(symbol.typeName) ||
+        isImplicitAssignmentDuplicateOfEarlierIncludeGlobal(parsed, symbol, symbols) ||
         !rangeOverlapsOffsets(parsed.text, symbol.range, rangeStart, rangeEnd)
       ) {
         continue;
@@ -8420,17 +8421,17 @@ function symbolResolutionPriority(
   symbol: VbSymbol,
   symbols: VbSymbol[],
 ): number {
+  if (isImplicitAssignmentDuplicateOfEarlierIncludeGlobal(parsed, symbol, symbols)) {
+    return 0;
+  }
   let priority = symbolPriority(symbol) * 10;
   if (!symbol.implicit) {
     priority += 2;
   }
-  if (isImplicitGlobalDuplicateAfterInclude(parsed, symbol, symbols)) {
-    priority -= 5;
-  }
   return priority;
 }
 
-function isImplicitGlobalDuplicateAfterInclude(
+function isImplicitAssignmentDuplicateOfEarlierIncludeGlobal(
   parsed: AspParsedDocument,
   symbol: VbSymbol,
   symbols: VbSymbol[],
@@ -8438,7 +8439,7 @@ function isImplicitGlobalDuplicateAfterInclude(
   if (
     symbol.sourceUri !== parsed.uri ||
     symbol.implicit !== true ||
-    !isGlobalVariableLikeSymbol(symbol) ||
+    !isVariableMarkerSymbol(symbol) ||
     !hasEarlierIncludeDirective(parsed, symbol)
   ) {
     return false;
@@ -8448,6 +8449,7 @@ function isImplicitGlobalDuplicateAfterInclude(
     (candidate) =>
       candidate !== symbol &&
       candidate.sourceUri !== parsed.uri &&
+      !candidate.sourceUri.includes("#runtime-global") &&
       candidate.name.toLowerCase() === lowerName &&
       isGlobalVariableLikeSymbol(candidate),
   );
