@@ -4025,6 +4025,82 @@ End Sub
       }
     });
 
+    it("keeps include-aware inlay markers after a non-include full reparse edit", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-marker-reuse-"));
+      const include = path.join(tempDir, "shared.inc");
+      fs.writeFileSync(include, `<%\na = 1\n%>`, "utf8");
+      const source = `<!-- #include file="shared.inc" -->
+<div>top</div>
+<%
+Response.Write a
+a = 2
+%>`;
+      const uri = pathToFileURL(path.join(tempDir, "default.asp")).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              diagnostics: { debounceMs: 0 },
+              inlayHints: { globalVariableMarkers: "all" },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+
+        const warmedHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: {
+            start: { line: 0, character: 0 },
+            end: positionAt(source, source.length),
+          },
+        });
+        expect(JSON.stringify(warmedHints)).toContain("(global) As Number");
+        expect(JSON.stringify(warmedHints)).not.toContain("(?)");
+
+        const editedSource = notifyRangedReplacement(
+          server,
+          uri,
+          source,
+          2,
+          "<div>top</div>",
+          '<div data-note="<script>">top</div>',
+        );
+        const immediateHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: {
+            start: { line: 0, character: 0 },
+            end: positionAt(editedSource, editedSource.length),
+          },
+        });
+        const serializedImmediateHints = JSON.stringify(immediateHints);
+        expect(serializedImmediateHints).toContain("(global) As Number");
+        expect(serializedImmediateHints).not.toContain("(?)");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("honors the implicit ByRef inlay hint setting", async () => {
       const source = `<%
 Function BuildName(firstName)

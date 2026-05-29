@@ -2004,6 +2004,13 @@ export function getVbscriptCompletions(
           : inferVariableTypeRef(ownerName, parsed, sourceOffset, symbols);
     return ownerType ? typeMemberCompletions(ownerType, symbols, typeEnvironment) : [];
   }
+  const endBlockCompletions =
+    context.syntaxSnippets === false
+      ? []
+      : vbscriptEndBlockCompletions(parsed, sourceOffset, context.locale);
+  if (endBlockCompletions.length > 0) {
+    return endBlockCompletions;
+  }
   return dedupeCompletions([
     ...(context.syntaxSnippets === false ? [] : vbscriptSyntaxSnippetCompletions(context.locale)),
     ...builtinCompletions(context.locale),
@@ -2011,6 +2018,249 @@ export function getVbscriptCompletions(
       symbolToCompletion(symbol, context.locale),
     ),
   ]);
+}
+
+type VbEndCompletionBlockKind =
+  | "Class"
+  | "Procedure"
+  | "Property"
+  | "If"
+  | "Select"
+  | "With"
+  | "DoLoop"
+  | "While"
+  | "ForEach";
+
+interface VbEndCompletionBlock {
+  kind: VbEndCompletionBlockKind;
+  procedureKind?: "sub" | "function" | "property";
+}
+
+function vbscriptEndBlockCompletions(
+  parsed: AspParsedDocument,
+  sourceOffset: number,
+  locale: AspLocale | undefined,
+): CompletionItem[] {
+  const context = endBlockCompletionContext(parsed.text, sourceOffset);
+  if (!context) {
+    return [];
+  }
+  const document = vbDocuments(parsed).find(
+    (candidate) => sourceOffset >= candidate.start && sourceOffset <= candidate.end,
+  );
+  if (!document) {
+    return [];
+  }
+  const blocks = openVbEndCompletionBlocksBefore(document, context.replaceStart);
+  const labels = endCompletionLabels(blocks);
+  const detail = createLocalizer(locale).t("vb.completion.syntaxSnippet");
+  return labels.map((label, index) => ({
+    label,
+    kind: CompletionItemKind.Snippet,
+    detail,
+    filterText: context.filterBySuffix ? label.slice("End ".length) : label,
+    sortText: `0${index}-${label}`,
+    textEdit: {
+      range: {
+        start: positionAt(parsed.text, context.replaceStart),
+        end: positionAt(parsed.text, sourceOffset),
+      },
+      newText: label,
+    },
+  }));
+}
+
+function endBlockCompletionContext(
+  text: string,
+  sourceOffset: number,
+): { replaceStart: number; filterBySuffix: boolean } | undefined {
+  const lineStart = text.lastIndexOf("\n", Math.max(0, sourceOffset - 1)) + 1;
+  const lineEnd = lineEndOffset(text, lineStart);
+  const currentLine = text.slice(lineStart, lineEnd);
+  const indent = /^[ \t]*/.exec(currentLine)?.[0].length ?? 0;
+  const replaceStart = lineStart + indent;
+  if (sourceOffset < replaceStart || sourceOffset > lineEnd) {
+    return undefined;
+  }
+  const prefix = text.slice(replaceStart, sourceOffset);
+  const match = /^end(?:\s+([A-Za-z]*))?$/i.exec(prefix);
+  if (!match) {
+    return undefined;
+  }
+  return { replaceStart, filterBySuffix: match[1] !== undefined };
+}
+
+function openVbEndCompletionBlocksBefore(
+  document: VbCstNode,
+  offset: number,
+): VbEndCompletionBlock[] {
+  const tokens = document.tokens.filter(
+    (token) => token.start < offset && token.kind !== "whitespace" && token.kind !== "comment",
+  );
+  const stack: VbEndCompletionBlock[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (!isCompletionStatementStart(tokens, index)) {
+      continue;
+    }
+    const first = lowerToken(tokens[index]);
+    const second = lowerToken(tokens[index + 1]);
+    if (first === "class" && tokens[index + 1]?.kind === "identifier") {
+      stack.push({ kind: "Class" });
+      continue;
+    }
+    if (first === "end") {
+      closeVbEndCompletionBlock(stack, second);
+      continue;
+    }
+    const declarationStart =
+      first === "public" || first === "private" ? lowerToken(tokens[index + 1]) : first;
+    const declarationOffset = first === "public" || first === "private" ? 1 : 0;
+    if (
+      (declarationStart === "sub" || declarationStart === "function") &&
+      tokens[index + declarationOffset + 1]?.kind === "identifier"
+    ) {
+      stack.push({ kind: "Procedure", procedureKind: declarationStart });
+      continue;
+    }
+    if (declarationStart === "property") {
+      const accessor = lowerToken(tokens[index + declarationOffset + 1]);
+      if (
+        (accessor === "get" || accessor === "let" || accessor === "set") &&
+        tokens[index + declarationOffset + 2]?.kind === "identifier"
+      ) {
+        stack.push({ kind: "Property", procedureKind: "property" });
+      }
+      continue;
+    }
+    if (first === "loop") {
+      closeVbEndCompletionBlock(stack, "loop");
+      continue;
+    }
+    if (first === "wend") {
+      closeVbEndCompletionBlock(stack, "wend");
+      continue;
+    }
+    if (first === "next") {
+      closeVbEndCompletionBlock(stack, "next");
+      continue;
+    }
+    if (first === "if" && isCompletionMultilineIf(tokens, index)) {
+      stack.push({ kind: "If" });
+      continue;
+    }
+    if (first === "select" && second === "case") {
+      stack.push({ kind: "Select" });
+      continue;
+    }
+    if (first === "with") {
+      stack.push({ kind: "With" });
+      continue;
+    }
+    if (first === "do") {
+      stack.push({ kind: "DoLoop" });
+      continue;
+    }
+    if (first === "while") {
+      stack.push({ kind: "While" });
+      continue;
+    }
+    if (first === "for" && second === "each") {
+      stack.push({ kind: "ForEach" });
+    }
+  }
+  return stack;
+}
+
+function isCompletionStatementStart(tokens: VbToken[], index: number): boolean {
+  const previous = tokens[index - 1];
+  return !previous || previous.kind === "newline" || previous.text === ":";
+}
+
+function closeVbEndCompletionBlock(
+  stack: VbEndCompletionBlock[],
+  endKind: string | undefined,
+): void {
+  const targetKind =
+    endKind === "class"
+      ? "Class"
+      : endKind === "property"
+        ? "Property"
+        : endKind === "with"
+          ? "With"
+          : endKind === "if"
+            ? "If"
+            : endKind === "select"
+              ? "Select"
+              : endKind === "loop"
+                ? "DoLoop"
+                : endKind === "wend"
+                  ? "While"
+                  : endKind === "next"
+                    ? "ForEach"
+                    : "Procedure";
+  const index = findLastIndex(stack, (node) => node.kind === targetKind);
+  if (index !== -1) {
+    stack.splice(index, 1);
+  }
+}
+
+function isCompletionMultilineIf(tokens: VbToken[], startIndex: number): boolean {
+  const endIndex = completionStatementEndIndex(tokens, startIndex);
+  let thenIndex = -1;
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    if (lowerToken(tokens[index]) === "then") {
+      thenIndex = index;
+    }
+  }
+  return thenIndex !== -1 && thenIndex === endIndex;
+}
+
+function completionStatementEndIndex(tokens: VbToken[], startIndex: number): number {
+  let index = startIndex;
+  while (index + 1 < tokens.length) {
+    const next = tokens[index + 1];
+    if ((next.kind === "newline" && tokens[index]?.text !== "_") || next.text === ":") {
+      break;
+    }
+    index += 1;
+  }
+  return index;
+}
+
+function endCompletionLabels(blocks: VbEndCompletionBlock[]): string[] {
+  const labels: string[] = [];
+  for (const block of [...blocks].reverse()) {
+    const label = endCompletionLabel(block);
+    if (!label) {
+      if (labels.length === 0) {
+        return [];
+      }
+      break;
+    }
+    if (!labels.includes(label)) {
+      labels.push(label);
+    }
+  }
+  return labels;
+}
+
+function endCompletionLabel(block: VbEndCompletionBlock): string | undefined {
+  switch (block.kind) {
+    case "Class":
+      return "End Class";
+    case "Procedure":
+      return block.procedureKind === "function" ? "End Function" : "End Sub";
+    case "Property":
+      return "End Property";
+    case "If":
+      return "End If";
+    case "Select":
+      return "End Select";
+    case "With":
+      return "End With";
+    default:
+      return undefined;
+  }
 }
 
 function memberCompletionTargetAt(
@@ -3430,6 +3680,7 @@ export function collectVbscriptSymbols(
   for (const node of vbDocuments(parsed)) {
     addSymbolsFromVbNode(parsed, node, symbols, createDocCommentLookup(node));
   }
+  addServerObjectSymbols(parsed, symbols);
   if (options.implicitAssignments !== false) {
     addImplicitAssignmentSymbols(parsed, symbols);
   }
@@ -3471,9 +3722,11 @@ export function summarizeAspFileAnalysis(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): FileAnalysisSummary {
-  const vbscript = parsed.regions.some((region) => region.language === "vbscript")
-    ? summarizeVbscriptFile(parsed, context)
-    : undefined;
+  const vbscript =
+    parsed.regions.some((region) => region.language === "vbscript") ||
+    parsed.serverObjects.length > 0
+      ? summarizeVbscriptFile(parsed, context)
+      : undefined;
   return {
     uri: parsed.uri,
     fingerprint: textFingerprint(parsed.text),
@@ -3503,9 +3756,12 @@ export function summarizeVbscriptFile(
   const externalRefs = collectVbscriptExternalRefs(parsed, localSymbols);
   return {
     fingerprint: textFingerprint(
-      serverRegions(parsed)
-        .map((region) => parsed.text.slice(region.contentStart, region.contentEnd))
-        .join("\n"),
+      JSON.stringify({
+        serverRegions: serverRegions(parsed).map((region) =>
+          parsed.text.slice(region.contentStart, region.contentEnd),
+        ),
+        serverObjects: serverObjectDeclarations(parsed),
+      }),
     ),
     localSymbols,
     publicSymbols,
@@ -3660,6 +3916,18 @@ function textFingerprint(text: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return `${text.length}:${(hash >>> 0).toString(16)}`;
+}
+
+function serverObjectDeclarations(parsed: AspParsedDocument): Array<{
+  id: string;
+  progId?: string;
+  classId?: string;
+}> {
+  return parsed.serverObjects.map((serverObject) => ({
+    id: serverObject.id,
+    progId: serverObject.progId,
+    classId: serverObject.classId,
+  }));
 }
 
 export function buildVbTypeEnvironment(
@@ -3857,6 +4125,28 @@ function addSymbolsFromVbNode(
       childClassName,
     );
   }
+}
+
+function addServerObjectSymbols(parsed: AspParsedDocument, symbols: VbSymbol[]): void {
+  for (const serverObject of parsed.serverObjects) {
+    if (!isVbServerObjectIdentifier(serverObject.id)) {
+      continue;
+    }
+    const symbol: VbSymbol = {
+      name: serverObject.id,
+      kind: "variable",
+      range: serverObject.idRange,
+      sourceUri: parsed.uri,
+    };
+    if (serverObject.progId) {
+      setSymbolType(symbol, serverObject.progId, true);
+    }
+    symbols.push(symbol);
+  }
+}
+
+function isVbServerObjectIdentifier(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
 }
 
 function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymbol[]): void {

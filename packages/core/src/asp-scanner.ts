@@ -1,5 +1,11 @@
 import { DiagnosticSeverity } from "vscode-languageserver-types";
-import type { AspInclude, AspParsedDocument, AspRegion, AspSettings } from "./types";
+import type {
+  AspInclude,
+  AspParsedDocument,
+  AspRegion,
+  AspServerObject,
+  AspSettings,
+} from "./types";
 import { rangeFromOffsets } from "./position";
 import { createLocalizer } from "./localize";
 
@@ -9,6 +15,7 @@ export interface AspHtmlScan {
   inlineRegions: AspRegion[];
   tagRegions: AspRegion[];
   includes: AspInclude[];
+  serverObjects: AspServerObject[];
 }
 
 interface HtmlTag {
@@ -38,6 +45,7 @@ export function scanHtmlAndAsp(
   const inlineRegions: AspRegion[] = [];
   const tagRegions: AspRegion[] = [];
   const includes: AspInclude[] = [];
+  const serverObjects: AspServerObject[] = [];
   let cursor = 0;
   while (cursor < text.length) {
     if (text.startsWith("<%", cursor)) {
@@ -68,6 +76,10 @@ export function scanHtmlAndAsp(
     if (!tag.closing) {
       const styleAttributeRegions = styleAttributeRegionsFromTag(tag);
       tagRegions.push(...styleAttributeRegions);
+      const serverObject = serverObjectFromTag(text, tag);
+      if (serverObject) {
+        serverObjects.push(serverObject);
+      }
       inlineRegions.push(
         ...scanAspRegionsInRange(
           text,
@@ -92,7 +104,7 @@ export function scanHtmlAndAsp(
     }
     cursor = tag.end;
   }
-  return { inlineRegions, tagRegions, includes };
+  return { inlineRegions, tagRegions, includes, serverObjects };
 }
 
 function scanAspRegionsInRange(
@@ -438,6 +450,48 @@ function styleAttributeRegionsFromTag(tag: HtmlTag): AspRegion[] {
       contentEnd: attribute.valueEnd,
       attributes: { tagName: tag.name },
     }));
+}
+
+function serverObjectFromTag(text: string, tag: HtmlTag): AspServerObject | undefined {
+  if (tag.name !== "object" || String(tag.attributes.runat ?? "").toLowerCase() !== "server") {
+    return undefined;
+  }
+  const id = attributeStringValue(tag, "id");
+  const idSpan = attributeSpanByName(tag, "id");
+  if (!id || !idSpan || idSpan.value === true) {
+    return undefined;
+  }
+  const progId = attributeStringValue(tag, "progid");
+  const progIdSpan = attributeSpanByName(tag, "progid");
+  const classId = attributeStringValue(tag, "classid");
+  const classIdSpan = attributeSpanByName(tag, "classid");
+  return {
+    range: rangeFromOffsets(text, tag.start, tag.end),
+    offset: tag.start,
+    id,
+    idRange: rangeFromOffsets(text, idSpan.valueStart, idSpan.valueEnd),
+    progId,
+    progIdRange:
+      progId && progIdSpan && progIdSpan.value !== true
+        ? rangeFromOffsets(text, progIdSpan.valueStart, progIdSpan.valueEnd)
+        : undefined,
+    classId,
+    classIdRange:
+      classId && classIdSpan && classIdSpan.value !== true
+        ? rangeFromOffsets(text, classIdSpan.valueStart, classIdSpan.valueEnd)
+        : undefined,
+    attributes: tag.attributes,
+  };
+}
+
+function attributeStringValue(tag: HtmlTag, name: string): string | undefined {
+  const value = attributeSpanByName(tag, name)?.value;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function attributeSpanByName(tag: HtmlTag, name: string): AttributeSpan | undefined {
+  const lowerName = name.toLowerCase();
+  return tag.attributeSpans.find((attribute) => attribute.name.toLowerCase() === lowerName);
 }
 
 function elementRegionFromTag(tag: HtmlTag, close: { start: number; end: number }): AspRegion {

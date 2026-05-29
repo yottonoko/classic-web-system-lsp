@@ -212,6 +212,18 @@ export interface AspInclude {
   pathRange: Range;
 }
 
+export interface AspServerObject {
+  range: Range;
+  offset: number;
+  id: string;
+  idRange: Range;
+  progId?: string;
+  progIdRange?: Range;
+  classId?: string;
+  classIdRange?: Range;
+  attributes: Record<string, string | true>;
+}
+
 export interface AspParsedDocument {
   uri: string;
   text: string;
@@ -219,6 +231,7 @@ export interface AspParsedDocument {
   regions: AspRegion[];
   directives: AspDirective[];
   includes: AspInclude[];
+  serverObjects: AspServerObject[];
   defaultLanguage: "VBScript" | "JScript";
   diagnostics: Diagnostic[];
 }
@@ -309,6 +322,7 @@ export interface AspCstNode {
   regionKind?: AspRegionKind;
   directive?: AspDirective;
   include?: AspInclude;
+  serverObjects?: AspServerObject[];
   vbscript?: VbCstNode;
   errors?: ParseError[];
 }

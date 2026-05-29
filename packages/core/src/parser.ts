@@ -8,6 +8,7 @@ import type {
   AspIncrementalUpdateResult,
   AspParsedDocument,
   AspRegion,
+  AspServerObject,
   AspSettings,
   AspToken,
 } from "./types";
@@ -39,6 +40,7 @@ export function parseAspDocument(
   const includes = cst.children
     .map((node) => node.include)
     .filter((include): include is AspInclude => include !== undefined);
+  const serverObjects = cst.serverObjects ?? [];
   const directiveLanguage = directives
     .map((directive) => directive.attributes.language ?? directive.attributes.LANGUAGE)
     .find((value): value is string => typeof value === "string");
@@ -53,6 +55,7 @@ export function parseAspDocument(
     regions,
     directives,
     includes,
+    serverObjects,
     defaultLanguage,
     diagnostics,
   };
@@ -95,6 +98,9 @@ export function updateAspParsedDocument(
   if (changeOverlapsInclude(previous, change.startOffset, change.endOffset)) {
     return fallback("include directive edit", change, nextText);
   }
+  if (changeOverlapsServerObject(previous, change.startOffset, change.endOffset)) {
+    return fallback("server object tag edit", change, nextText);
+  }
   if (changeOverlapsDirective(previous, change.startOffset, change.endOffset)) {
     return fallback("ASP directive edit", change, nextText);
   }
@@ -124,6 +130,9 @@ export function updateAspParsedDocument(
   const shiftedIncludes = previous.includes.map((include) =>
     shiftIncludeAfterChange(include, previous.text, nextText, change),
   );
+  const shiftedServerObjects = previous.serverObjects.map((serverObject) =>
+    shiftServerObjectAfterChange(serverObject, previous.text, nextText, change),
+  );
   const shiftedDiagnostics = previous.diagnostics.map((diagnostic) => ({
     ...diagnostic,
     range: shiftAspRangeAfterChange(diagnostic.range, previous.text, nextText, change),
@@ -135,6 +144,7 @@ export function updateAspParsedDocument(
       shiftedRegions,
       shiftedDirectives,
       shiftedIncludes,
+      shiftedServerObjects,
       previous.defaultLanguage,
       shiftedDiagnostics,
     ),
@@ -174,6 +184,7 @@ function buildParsedDocument(
   regions: AspRegion[],
   directives: AspDirective[],
   includes: AspInclude[],
+  serverObjects: AspServerObject[],
   defaultLanguage: "VBScript" | "JScript",
   diagnostics: AspParsedDocument["diagnostics"],
 ): AspParsedDocument {
@@ -201,6 +212,7 @@ function buildParsedDocument(
     text,
     tokens: nodes.flatMap((node) => node.tokens),
     children: nodes,
+    serverObjects,
     errors: diagnostics.map((diagnostic) => ({
       message: diagnostic.message,
       start: offsetFromRange(text, diagnostic.range.start),
@@ -214,6 +226,7 @@ function buildParsedDocument(
     regions,
     directives,
     includes,
+    serverObjects,
     defaultLanguage,
     diagnostics,
   };
@@ -281,7 +294,7 @@ function editImpact(
 }
 
 function boundarySensitiveText(text: string): boolean {
-  return /<%|%>|<!--|#\s*include|<\s*\/?\s*script\b|<\s*\/?\s*style\b|\brunat\s*=|\blanguage\s*=/i.test(
+  return /<%|%>|<!--|#\s*include|<\s*\/?\s*script\b|<\s*\/?\s*style\b|<\s*\/?\s*object\b|\brunat\s*=|\blanguage\s*=|\bprogid\s*=|\bclassid\s*=/i.test(
     text,
   );
 }
@@ -297,6 +310,21 @@ function changeOverlapsInclude(
       endOffset,
       offsetFromRange(parsed.text, include.range.start),
       offsetFromRange(parsed.text, include.range.end),
+    ),
+  );
+}
+
+function changeOverlapsServerObject(
+  parsed: AspParsedDocument,
+  startOffset: number,
+  endOffset: number,
+): boolean {
+  return parsed.serverObjects.some((serverObject) =>
+    rangeOverlapsOrTouches(
+      startOffset,
+      endOffset,
+      serverObject.offset,
+      offsetFromRange(parsed.text, serverObject.range.end),
     ),
   );
 }
@@ -456,6 +484,32 @@ function shiftIncludeAfterChange(
   };
 }
 
+function shiftServerObjectAfterChange(
+  serverObject: AspServerObject,
+  previousText: string,
+  nextText: string,
+  change: NormalizedIncrementalChange,
+): AspServerObject {
+  const delta = change.text.length - (change.endOffset - change.startOffset);
+  return {
+    ...serverObject,
+    offset: shiftOffsetAfterChange(
+      serverObject.offset,
+      change.startOffset,
+      change.endOffset,
+      delta,
+    ),
+    range: shiftAspRangeAfterChange(serverObject.range, previousText, nextText, change),
+    idRange: shiftAspRangeAfterChange(serverObject.idRange, previousText, nextText, change),
+    progIdRange: serverObject.progIdRange
+      ? shiftAspRangeAfterChange(serverObject.progIdRange, previousText, nextText, change)
+      : undefined,
+    classIdRange: serverObject.classIdRange
+      ? shiftAspRangeAfterChange(serverObject.classIdRange, previousText, nextText, change)
+      : undefined,
+  };
+}
+
 function shiftOffsetAfterChange(
   offset: number,
   startOffset: number,
@@ -474,7 +528,7 @@ function shiftOffsetAfterChange(
 export function parseAspCst(uri: string, text: string, settings: AspSettings = {}): AspCstNode {
   const diagnostics: AspParsedDocument["diagnostics"] = [];
   const scan = scanHtmlAndAsp(text, diagnostics, settings);
-  const { inlineRegions, tagRegions, includes } = scan;
+  const { inlineRegions, tagRegions, includes, serverObjects } = scan;
   const directives = inlineRegions
     .filter((region) => region.kind === "asp-directive")
     .map((region): AspDirective => {
@@ -536,6 +590,7 @@ export function parseAspCst(uri: string, text: string, settings: AspSettings = {
     text,
     tokens: nodes.flatMap((node) => node.tokens),
     children: nodes,
+    serverObjects,
     errors: diagnostics.map((diagnostic) => ({
       message: diagnostic.message,
       start: offsetFromRange(text, diagnostic.range.start),

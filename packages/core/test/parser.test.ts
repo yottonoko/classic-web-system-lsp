@@ -562,6 +562,92 @@ Response.
     expect(memberCompletions.some((item) => item.label === "If Then")).toBe(false);
   });
 
+  it("completes matching End block labels for open VBScript blocks", () => {
+    const source = `<%
+Function Render()
+If ready Then
+end
+%>`;
+    const parsed = parseAspDocument("file:///site/end-completion.asp", source);
+    const endOffset = source.lastIndexOf("end") + "end".length;
+    const completions = getVbscriptCompletions(parsed, positionAt(source, endOffset));
+    expect(completions.map((item) => item.label)).toEqual(
+      expect.arrayContaining(["End If", "End Function"]),
+    );
+    expect(completions.find((item) => item.label === "End If")).toMatchObject({
+      kind: CompletionItemKind.Snippet,
+      detail: "VBScript syntax snippet",
+      textEdit: {
+        newText: "End If",
+      },
+    });
+
+    const suffixSource = `<%
+Function Render()
+End F
+%>`;
+    const suffixParsed = parseAspDocument("file:///site/end-function-completion.asp", suffixSource);
+    const suffixCompletions = getVbscriptCompletions(
+      suffixParsed,
+      positionAt(suffixSource, suffixSource.indexOf("End F") + "End F".length),
+    );
+    expect(suffixCompletions.find((item) => item.label === "End Function")).toMatchObject({
+      filterText: "Function",
+      textEdit: {
+        newText: "End Function",
+      },
+    });
+
+    const blockedSource = `<%
+Function Render()
+Do
+end
+%>`;
+    const blockedParsed = parseAspDocument(
+      "file:///site/end-blocked-completion.asp",
+      blockedSource,
+    );
+    const blockedEndOffset = blockedSource.lastIndexOf("end") + "end".length;
+    const blockedCompletions = getVbscriptCompletions(
+      blockedParsed,
+      positionAt(blockedSource, blockedEndOffset),
+    );
+    expect(blockedCompletions.some((item) => item.label === "End Function")).toBe(false);
+
+    const disabled = getVbscriptCompletions(parsed, positionAt(source, endOffset), {
+      syntaxSnippets: false,
+    });
+    expect(disabled.some((item) => item.label === "End If")).toBe(false);
+  });
+
+  it("treats server-side object tags as typed VBScript globals", () => {
+    const source = `<object runat="server" id="rs" progid="ADODB.Recordset"></object>
+<%
+rs.
+%>`;
+    const parsed = parseAspDocument("file:///site/server-object.asp", source);
+    expect(parsed.serverObjects).toHaveLength(1);
+    expect(parsed.serverObjects[0]).toMatchObject({
+      id: "rs",
+      progId: "ADODB.Recordset",
+    });
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.find((symbol) => symbol.name === "rs")).toMatchObject({
+      kind: "variable",
+      typeName: "ADODB.Recordset",
+      explicitType: true,
+    });
+    const completions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("rs.") + "rs.".length),
+      { symbols },
+    );
+    expect(completions.some((item) => item.label === "MoveNext")).toBe(true);
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("rs.")), { symbols }),
+    ).toContain("Dim rs As ADODB.Recordset");
+  });
+
   it("identifies fixed and dynamic VBScript arrays as Array symbols", () => {
     const source = `<%
 Dim fixedItems(10)
