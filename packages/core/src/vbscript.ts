@@ -3770,6 +3770,16 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
     if (scope?.nameToken?.text.toLowerCase() === target.text.toLowerCase()) {
       continue;
     }
+    const lowerTarget = target.text.toLowerCase();
+    if (
+      symbols.some(
+        (symbol) =>
+          symbol.name.toLowerCase() === lowerTarget &&
+          isSymbolVisibleAt(symbol, parsed.uri, parsed.text, target.start),
+      )
+    ) {
+      continue;
+    }
     const existing = existingSymbols.get(
       implicitAssignmentKey(target.text, parsed.uri, scope?.nameToken?.text ?? "", memberOf ?? ""),
     );

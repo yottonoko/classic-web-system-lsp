@@ -2707,7 +2707,9 @@ Dim unknownGlobal
 Const UnknownConst = MissingValue
 Function UnknownReturn()
 End Function
+Dim sharedValue
 Sub Render()
+  sharedValue = 1
   Dim localValue
   implicitLocal = 1
 End Sub
@@ -2729,6 +2731,12 @@ End Sub
     expect(
       symbols.find((symbol) => symbol.name === "implicitLocal" && symbol.scopeName === "Render")
         ?.typeName,
+    ).toBe("Number");
+    expect(
+      symbols.find((symbol) => symbol.name === "sharedValue" && symbol.scopeName === "Render"),
+    ).toBeUndefined();
+    expect(
+      symbols.find((symbol) => symbol.name === "sharedValue" && !symbol.scopeName)?.typeName,
     ).toBe("Number");
 
     const hints = getVbscriptInlayHints(parsed, sourceRange, { symbols });
@@ -2800,6 +2808,9 @@ End Sub
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("UnknownConst")), { symbols }),
     ).toContain("(global) Const UnknownConst As Variant");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("sharedValue =")), { symbols }),
+    ).toContain("(global) Dim sharedValue As Number");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("implicitLocal")), { symbols }),
     ).toContain("(local) Dim implicitLocal As Number");
