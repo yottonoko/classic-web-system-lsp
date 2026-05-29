@@ -11,6 +11,8 @@ import { createLocalizer } from "./localize";
 
 const attrPattern = /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*(?:=\s*("([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
 
+type AspScriptScanLanguage = "VBScript" | "JScript";
+
 export interface AspHtmlScan {
   inlineRegions: AspRegion[];
   tagRegions: AspRegion[];
@@ -46,11 +48,20 @@ export function scanHtmlAndAsp(
   const tagRegions: AspRegion[] = [];
   const includes: AspInclude[] = [];
   const serverObjects: AspServerObject[] = [];
+  let scriptLanguage = normalizeScriptLanguage(settings.defaultLanguage ?? "VBScript");
   let cursor = 0;
   while (cursor < text.length) {
     if (text.startsWith("<%", cursor)) {
-      const region = parseAspRegionAt(text, cursor, diagnostics, text.length, settings);
+      const region = parseAspRegionAt(
+        text,
+        cursor,
+        diagnostics,
+        text.length,
+        settings,
+        scriptLanguage,
+      );
       inlineRegions.push(region);
+      scriptLanguage = scriptLanguageFromDirectiveRegion(text, region) ?? scriptLanguage;
       cursor = region.end;
       continue;
     }
@@ -68,7 +79,7 @@ export function scanHtmlAndAsp(
       cursor += 1;
       continue;
     }
-    const tag = readHtmlTag(text, cursor);
+    const tag = readHtmlTag(text, cursor, scriptLanguage);
     if (!tag) {
       cursor += 1;
       continue;
@@ -87,6 +98,7 @@ export function scanHtmlAndAsp(
           tag.attributesEnd,
           diagnostics,
           settings,
+          scriptLanguage,
         ),
       );
     }
@@ -96,7 +108,14 @@ export function scanHtmlAndAsp(
         const region = elementRegionFromTag(tag, close);
         tagRegions.push(region);
         inlineRegions.push(
-          ...scanAspRegionsInRange(text, tag.end, close.start, diagnostics, settings),
+          ...scanAspRegionsInRange(
+            text,
+            tag.end,
+            close.start,
+            diagnostics,
+            settings,
+            scriptLanguage,
+          ),
         );
         cursor = close.end;
         continue;
@@ -113,6 +132,9 @@ function scanAspRegionsInRange(
   end: number,
   diagnostics: AspParsedDocument["diagnostics"],
   settings: AspSettings = {},
+  scriptLanguage: AspScriptScanLanguage = normalizeScriptLanguage(
+    settings.defaultLanguage ?? "VBScript",
+  ),
 ): AspRegion[] {
   const regions: AspRegion[] = [];
   let cursor = start;
@@ -121,7 +143,7 @@ function scanAspRegionsInRange(
     if (next === -1 || next >= end) {
       break;
     }
-    const region = parseAspRegionAt(text, next, diagnostics, end, settings);
+    const region = parseAspRegionAt(text, next, diagnostics, end, settings, scriptLanguage);
     regions.push(region);
     cursor = Math.max(region.end, next + 2);
   }
@@ -134,8 +156,11 @@ function parseAspRegionAt(
   diagnostics: AspParsedDocument["diagnostics"],
   maxEnd = text.length,
   settings: AspSettings = {},
+  scriptLanguage: AspScriptScanLanguage = normalizeScriptLanguage(
+    settings.defaultLanguage ?? "VBScript",
+  ),
 ): AspRegion {
-  const close = findAspClose(text, start + 2, maxEnd);
+  const close = findAspClose(text, start + 2, maxEnd, scriptLanguage);
   if (close === -1) {
     diagnostics.push({
       severity: DiagnosticSeverity.Error,
@@ -158,9 +183,29 @@ function parseAspRegionAt(
   };
 }
 
-function findAspClose(text: string, offset: number, maxEnd: number): number {
+function scriptLanguageFromDirectiveRegion(
+  text: string,
+  region: AspRegion,
+): AspScriptScanLanguage | undefined {
+  if (region.kind !== "asp-directive") {
+    return undefined;
+  }
+  const raw = text.slice(region.contentStart, region.contentEnd).trim();
+  const normalized = raw.startsWith("@") ? raw.slice(1).trim() : raw;
+  const [first = "Page", ...rest] = normalized.split(/\s+/);
+  const attributeText = first.includes("=") ? normalized : rest.join(" ");
+  const language = parseAttributes(attributeText).language;
+  return typeof language === "string" ? normalizeScriptLanguage(language) : undefined;
+}
+
+function findAspClose(
+  text: string,
+  offset: number,
+  maxEnd: number,
+  scriptLanguage: AspScriptScanLanguage,
+): number {
   let vbQuote: string | undefined;
-  let vbLineComment = false;
+  let vbLineComment: "apostrophe" | "slash" | undefined;
   let vbBlockComment = false;
   let vbSkipNext = false;
   let jsQuote: string | undefined;
@@ -171,41 +216,47 @@ function findAspClose(text: string, offset: number, maxEnd: number): number {
     const char = text[index];
     const next = text[index + 1];
 
-    if (vbSkipNext) {
-      vbSkipNext = false;
-    } else if (vbLineComment) {
-      if (char === "\r" || char === "\n") {
-        vbLineComment = false;
-      }
-    } else if (vbBlockComment) {
-      if (char === "*" && next === "/") {
-        vbBlockComment = false;
+    if (scriptLanguage === "VBScript") {
+      if (vbSkipNext) {
+        vbSkipNext = false;
+      } else if (vbLineComment) {
+        if (vbLineComment === "apostrophe" && char === "%" && next === ">") {
+          return index;
+        }
+        if (char === "\r" || char === "\n") {
+          vbLineComment = undefined;
+        }
+      } else if (vbBlockComment) {
+        if (char === "*" && next === "/") {
+          vbBlockComment = false;
+          vbSkipNext = true;
+        }
+      } else if (vbQuote) {
+        if (char === vbQuote) {
+          if (vbQuote === '"' && next === '"') {
+            vbSkipNext = true;
+          } else {
+            vbQuote = undefined;
+          }
+        }
+      } else if (char === "%") {
+        if (next === ">") {
+          return index;
+        }
+      } else if (char === '"' || char === "'" || char === "`") {
+        if (char === "'") {
+          vbLineComment = "apostrophe";
+        } else {
+          vbQuote = char;
+        }
+      } else if (char === "/" && next === "/") {
+        vbLineComment = "slash";
+        vbSkipNext = true;
+      } else if (char === "/" && next === "*") {
+        vbBlockComment = true;
         vbSkipNext = true;
       }
-    } else if (vbQuote) {
-      if (char === vbQuote) {
-        if (vbQuote === '"' && next === '"') {
-          vbSkipNext = true;
-        } else {
-          vbQuote = undefined;
-        }
-      }
-    } else if (char === "%") {
-      if (next === ">") {
-        return index;
-      }
-    } else if (char === '"' || char === "'" || char === "`") {
-      if (char === "'") {
-        vbLineComment = true;
-      } else {
-        vbQuote = char;
-      }
-    } else if (char === "/" && next === "/") {
-      vbLineComment = true;
-      vbSkipNext = true;
-    } else if (char === "/" && next === "*") {
-      vbBlockComment = true;
-      vbSkipNext = true;
+      continue;
     }
 
     if (jsSkipNext) {
@@ -248,7 +299,11 @@ function findAspClose(text: string, offset: number, maxEnd: number): number {
   return -1;
 }
 
-function readHtmlTag(text: string, start: number): HtmlTag | undefined {
+function readHtmlTag(
+  text: string,
+  start: number,
+  scriptLanguage: AspScriptScanLanguage,
+): HtmlTag | undefined {
   if (text[start] !== "<" || text.startsWith("<!--", start) || text[start + 1] === "%") {
     return undefined;
   }
@@ -269,13 +324,13 @@ function readHtmlTag(text: string, start: number): HtmlTag | undefined {
     cursor += 1;
   }
   const name = text.slice(nameStart, cursor).toLowerCase();
-  const tagEnd = findTagEnd(text, cursor);
+  const tagEnd = findTagEnd(text, cursor, scriptLanguage);
   if (tagEnd === -1) {
     return undefined;
   }
   const attributesStart = cursor;
   const attributesEnd = tagEnd;
-  const attributeSpans = parseAttributeSpans(text, attributesStart, attributesEnd);
+  const attributeSpans = parseAttributeSpans(text, attributesStart, attributesEnd, scriptLanguage);
   const attributes: Record<string, string | true> = {};
   for (const attribute of attributeSpans) {
     attributes[attribute.name] = attribute.value;
@@ -294,7 +349,11 @@ function readHtmlTag(text: string, start: number): HtmlTag | undefined {
   };
 }
 
-function findTagEnd(text: string, offset: number): number {
+function findTagEnd(
+  text: string,
+  offset: number,
+  scriptLanguage: AspScriptScanLanguage = "VBScript",
+): number {
   let quote: string | undefined;
   for (let index = offset; index < text.length; index += 1) {
     const char = text[index];
@@ -309,7 +368,7 @@ function findTagEnd(text: string, offset: number): number {
       continue;
     }
     if (text.startsWith("<%", index)) {
-      const close = findAspClose(text, index + 2, text.length);
+      const close = findAspClose(text, index + 2, text.length, scriptLanguage);
       if (close === -1) {
         return -1;
       }
@@ -323,7 +382,12 @@ function findTagEnd(text: string, offset: number): number {
   return -1;
 }
 
-function parseAttributeSpans(text: string, start: number, end: number): AttributeSpan[] {
+function parseAttributeSpans(
+  text: string,
+  start: number,
+  end: number,
+  scriptLanguage: AspScriptScanLanguage,
+): AttributeSpan[] {
   const attributes: AttributeSpan[] = [];
   let cursor = start;
   while (cursor < end) {
@@ -335,7 +399,7 @@ function parseAttributeSpans(text: string, start: number, end: number): Attribut
       cursor += 1;
     }
     if (text.startsWith("<%", cursor)) {
-      const close = findAspClose(text, cursor + 2, end);
+      const close = findAspClose(text, cursor + 2, end, scriptLanguage);
       cursor = close === -1 ? end : close + 2;
       continue;
     }

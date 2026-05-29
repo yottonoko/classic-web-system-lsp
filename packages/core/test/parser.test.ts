@@ -338,10 +338,9 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(parsed.diagnostics[0]?.message).toContain("閉じ区切り");
   });
 
-  it("keeps ASP delimiters inside script strings and comments from ending regions", () => {
+  it("keeps ASP delimiters inside script strings from ending regions", () => {
     const source = `<%
 Response.Write "%>"
-' comment with %>
 Response.Write "done"
 %>
 <%@ LANGUAGE="JScript" %><% var text = '%>'; Response.Write(text); %>`;
@@ -354,6 +353,20 @@ Response.Write "done"
     expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).toContain(
       'Response.Write "done"',
     );
+  });
+
+  it("closes ASP regions at delimiters on VBScript comment lines", () => {
+    const source = `<%
+' comment with %>
+<div>done</div>`;
+    const parsed = parseAspDocument("file:///site/vb-comment-close.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    const block = parsed.regions.find((region) => region.kind === "asp-block");
+    expect(block).toBeDefined();
+    expect(block?.end).toBe(source.indexOf("%>") + "%>".length);
+    expect(source.slice(block?.contentStart, block?.contentEnd)).toContain("' comment with ");
+    expect(source.slice(block?.contentStart, block?.contentEnd)).not.toContain("<div>");
+    expect(parsed.regions.some((region) => region.kind === "html")).toBe(true);
   });
 
   it("keeps ASP delimiters inside script comments from ending regions", () => {
