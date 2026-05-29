@@ -14,6 +14,14 @@ export type LocalizeKey =
   | "vb.doc.detail.attribute"
   | "vb.doc.detail.closingTag"
   | "vb.doc.detail.tag"
+  | "vb.doc.annotation.type.detail"
+  | "vb.doc.annotation.type.documentation"
+  | "vb.doc.annotation.param.detail"
+  | "vb.doc.annotation.param.documentation"
+  | "vb.doc.annotation.returns.detail"
+  | "vb.doc.annotation.returns.documentation"
+  | "vb.doc.annotation.member.detail"
+  | "vb.doc.annotation.member.documentation"
   | "vb.doc.heading.remarks"
   | "vb.doc.heading.parameters"
   | "vb.doc.heading.returns"
@@ -90,6 +98,18 @@ const en: Record<LocalizeKey, string> = {
   "vb.doc.detail.attribute": "VBScript XML documentation attribute",
   "vb.doc.detail.closingTag": "VBScript XML documentation closing tag",
   "vb.doc.detail.tag": "VBScript XML documentation tag",
+  "vb.doc.annotation.type.detail": "VBScript type annotation",
+  "vb.doc.annotation.type.documentation":
+    "Declares VBScript type metadata for a variable or constant: `' @type name As Type`.",
+  "vb.doc.annotation.param.detail": "VBScript parameter type annotation",
+  "vb.doc.annotation.param.documentation":
+    "Declares VBScript type metadata for a parameter: `' @param [procedure.]name As Type`.",
+  "vb.doc.annotation.returns.detail": "VBScript return type annotation",
+  "vb.doc.annotation.returns.documentation":
+    "Declares VBScript return type metadata: `' @returns [procedure] Type`.",
+  "vb.doc.annotation.member.detail": "VBScript member type annotation",
+  "vb.doc.annotation.member.documentation":
+    "Declares type metadata for a dynamic or external member: `' @member Type.member As Type`.",
   "vb.doc.heading.remarks": "Remarks",
   "vb.doc.heading.parameters": "Parameters",
   "vb.doc.heading.returns": "Returns",
@@ -176,6 +196,18 @@ const ja: Record<LocalizeKey, string> = {
   "vb.doc.detail.attribute": "VBScript XML ドキュメントコメントの attribute",
   "vb.doc.detail.closingTag": "VBScript XML ドキュメントコメントの closing tag",
   "vb.doc.detail.tag": "VBScript XML ドキュメントコメントの tag",
+  "vb.doc.annotation.type.detail": "VBScript type annotation",
+  "vb.doc.annotation.type.documentation":
+    "VBScript の変数または定数の型メタデータを宣言します: `' @type name As Type`。",
+  "vb.doc.annotation.param.detail": "VBScript parameter type annotation",
+  "vb.doc.annotation.param.documentation":
+    "VBScript の parameter 型メタデータを宣言します: `' @param [procedure.]name As Type`。",
+  "vb.doc.annotation.returns.detail": "VBScript return type annotation",
+  "vb.doc.annotation.returns.documentation":
+    "VBScript の戻り値型メタデータを宣言します: `' @returns [procedure] Type`。",
+  "vb.doc.annotation.member.detail": "VBScript member type annotation",
+  "vb.doc.annotation.member.documentation":
+    "dynamic member または external member の型メタデータを宣言します: `' @member Type.member As Type`。",
   "vb.doc.heading.remarks": "補足",
   "vb.doc.heading.parameters": "パラメーター",
   "vb.doc.heading.returns": "戻り値",

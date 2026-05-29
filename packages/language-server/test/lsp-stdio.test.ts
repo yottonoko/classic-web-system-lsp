@@ -2378,20 +2378,22 @@ Response.Write BuildName()
       const source = `<%
 ''' <summary>Builds a display name.</summary>
 ''' <param name="first">First name.</param>
+''' <param name="▮"></param>
 ''' <returns>Display name.</returns>
 Function BuildName(first)
   BuildName = first
 End Function
 Response.Write BuildName("Ada")
 ''' <▮
-''' <param name="▮"></param>
 ''' <see ▮/>
 ''' <summary>Text</▮
 ''' <see cref="▮" />
 %>`;
-      const firstMarker = markedDocument(source);
-      const text = firstMarker.text.replaceAll("▮", "");
-      const tagPosition = firstMarker.position;
+      const text = source.replaceAll("▮", "");
+      const tagPosition = positionAt(
+        text,
+        text.indexOf("''' <\n", text.indexOf('BuildName("Ada")')) + "''' <".length,
+      );
       const paramPosition = positionAt(text, text.indexOf('name=""></param>') + 'name="'.length);
       const attrPosition = positionAt(text, text.indexOf("<see />") + "<see ".length);
       const closingPosition = positionAt(
@@ -2473,6 +2475,80 @@ Response.Write BuildName("Ada")
           position: crefPosition,
         });
         expect(JSON.stringify(crefCompletions)).toContain("BuildName");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("uses plain comment docs and annotation completions over JSON-RPC", async () => {
+      const source = `<%
+' **Plain** docs with <summary>tag</summary>.
+Function PlainDocumented()
+End Function
+Response.Write PlainDocumented()
+' Response.▮
+' @▮
+' @type customerId As String
+%>`;
+      const firstMarker = markedDocument(source);
+      const text = firstMarker.text.replaceAll("▮", "");
+      const ordinaryCommentPosition = firstMarker.position;
+      const annotationPosition = positionAt(text, text.indexOf("' @") + "' @".length);
+      const callPosition = positionAt(text, text.indexOf("PlainDocumented()") + 2);
+      const annotationHoverPosition = positionAt(text, text.indexOf("@type") + 1);
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vbscript-plain-comments.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: callPosition,
+        });
+        const serializedHover = JSON.stringify(hover);
+        expect(serializedHover).toContain("\\\\*\\\\*Plain\\\\*\\\\* docs");
+        expect(serializedHover).toContain("&lt;summary&gt;tag&lt;/summary&gt;");
+        expect(serializedHover).not.toContain("**Plain** docs");
+        expect(serializedHover).not.toContain("<summary>tag</summary>");
+
+        const ordinaryCommentCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: ordinaryCommentPosition,
+        });
+        expect(completionLabels(ordinaryCommentCompletions)).not.toContain("Write");
+
+        const annotationCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: annotationPosition,
+        });
+        expect(completionLabels(annotationCompletions)).toEqual(
+          expect.arrayContaining(["@type", "@param", "@returns"]),
+        );
+        expect(JSON.stringify(annotationCompletions)).toContain("VBScript type annotation");
+        expect(JSON.stringify(annotationCompletions)).toContain("' @type name As Type");
+
+        const annotationHover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: annotationHoverPosition,
+        });
+        expect(JSON.stringify(annotationHover)).toContain("' @type name As Type");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

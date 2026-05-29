@@ -211,6 +211,7 @@ export interface VbTypeEnvironment {
 export type VbTypeDiagnostic = Diagnostic;
 
 export interface VbDocumentation {
+  format?: "xml" | "markdown" | "plain";
   summary?: string;
   remarks?: string;
   params: Record<string, string>;

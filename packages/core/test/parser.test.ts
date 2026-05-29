@@ -1956,8 +1956,8 @@ End Function
       positionAt(source, source.indexOf("BuildName(first)")),
       { symbols },
     );
-    expect(functionHover).toContain("Build a display name.");
-    expect(functionHover).toContain("Used by dashboard headers.");
+    expect(functionHover).toContain("Build a display name\\.");
+    expect(functionHover).toContain("Used by dashboard headers\\.");
 
     const completion = getVbscriptCompletions(
       parsed,
@@ -1966,7 +1966,7 @@ End Function
     ).find((item) => item.label === "BuildName");
     expect(
       String(resolveVbscriptCompletionItem(completion!, parsed, { symbols }).documentation),
-    ).toContain("Build a display name.");
+    ).toContain("Build a display name\\.");
 
     const variableHover = getVbscriptHover(
       parsed,
@@ -1981,14 +1981,14 @@ End Function
       positionAt(source, source.indexOf("trailingValue")),
       { symbols },
     );
-    expect(trailingValueHover).toContain("Trailing value docs.");
+    expect(trailingValueHover).toContain("Trailing value docs\\.");
 
     const trailingConstHover = getVbscriptHover(
       parsed,
       positionAt(source, source.indexOf("TrailingConst")),
       { symbols },
     );
-    expect(trailingConstHover).toContain("Trailing constant docs.");
+    expect(trailingConstHover).toContain("Trailing constant docs\\.");
 
     const firstValueHover = getVbscriptHover(
       parsed,
@@ -2017,6 +2017,45 @@ End Function
     );
     expect(xmlHover).toContain("XML summary wins.");
     expect(xmlHover).not.toContain("Plain fallback.");
+  });
+
+  it("keeps plain comment docs escaped and tagless triple-quote docs as markdown", () => {
+    const source = `<%
+''' **Markdown** docs with \`code\`.
+Function MarkdownDocumented()
+End Function
+
+' **Plain** docs with <summary>tag</summary>.
+Function PlainDocumented()
+End Function
+Dim trailingPlain ' trailing **plain** <value>
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const markdownHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("MarkdownDocumented()")),
+      { symbols },
+    );
+    expect(markdownHover).toContain("**Markdown** docs with `code`.");
+
+    const plainHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("PlainDocumented()")),
+      { symbols },
+    );
+    expect(plainHover).toContain("\\*\\*Plain\\*\\* docs");
+    expect(plainHover).toContain("&lt;summary&gt;tag&lt;/summary&gt;");
+    expect(plainHover).not.toContain("**Plain** docs");
+    expect(plainHover).not.toContain("<summary>tag</summary>");
+
+    const trailingHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("trailingPlain")),
+      { symbols },
+    );
+    expect(trailingHover).toContain("\\*\\*plain\\*\\*");
+    expect(trailingHover).toContain("&lt;value&gt;");
   });
 
   it("generates VBScript documentation and type annotations for undocumented functions", () => {
@@ -2277,7 +2316,8 @@ End Function
 %>`,
     );
     const singleHover = getVbscriptHover(single, { line: 2, character: 10 });
-    expect(singleHover).toContain("<summary>Not documentation.</summary>");
+    expect(singleHover).toContain("&lt;summary&gt;Not documentation\\.&lt;/summary&gt;");
+    expect(singleHover).not.toContain("<summary>Not documentation.</summary>");
 
     const broken = parseAspDocument(
       "file:///site/default.asp",
@@ -2356,6 +2396,63 @@ End Sub
         (item) => item.label === "BuildName",
       ),
     ).toBe(true);
+  });
+
+  it("limits comment completions to documentation annotations and hovers annotation tags", () => {
+    const plainAnnotation = markedDocument(`<%
+' @▮
+Response.Write "ok"
+%>`);
+    const plainLabels = getVbscriptCompletions(
+      parseAspDocument("file:///site/default.asp", plainAnnotation.text),
+      plainAnnotation.position,
+    ).map((item) => item.label);
+    expect(plainLabels).toEqual(expect.arrayContaining(["@type", "@param", "@returns"]));
+    expect(plainLabels).not.toContain("Write");
+    expect(plainLabels).not.toContain("Response");
+    const plainTypeCompletion = getVbscriptCompletions(
+      parseAspDocument("file:///site/default.asp", plainAnnotation.text),
+      plainAnnotation.position,
+    ).find((item) => item.label === "@type");
+    expect(plainTypeCompletion?.detail).toBe("VBScript type annotation");
+    expect(String(plainTypeCompletion?.documentation)).toContain("' @type name As Type");
+
+    const docAnnotation = markedDocument(`<%
+''' @▮
+Function BuildName(first)
+End Function
+%>`);
+    const docLabels = getVbscriptCompletions(
+      parseAspDocument("file:///site/default.asp", docAnnotation.text),
+      docAnnotation.position,
+    ).map((item) => item.label);
+    expect(docLabels).toEqual(expect.arrayContaining(["@type", "@param", "@returns"]));
+    expect(docLabels).not.toContain("Function");
+
+    const ordinaryComment = markedDocument(`<%
+' Response.▮
+Response.Write "ok"
+%>`);
+    expect(
+      getVbscriptCompletions(
+        parseAspDocument("file:///site/default.asp", ordinaryComment.text),
+        ordinaryComment.position,
+      ).map((item) => item.label),
+    ).not.toContain("Write");
+
+    const hoverSource = `<%
+' @type customerId As String
+''' @returns BuildName String
+Function BuildName()
+End Function
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", hoverSource);
+    expect(
+      getVbscriptHover(parsed, positionAt(hoverSource, hoverSource.indexOf("@type") + 1)),
+    ).toContain("' @type name As Type");
+    expect(
+      getVbscriptHover(parsed, positionAt(hoverSource, hoverSource.indexOf("@returns") + 1)),
+    ).toContain("' @returns [procedure] Type");
   });
 
   it("tracks common VBScript statements and conservative external COM members", () => {
