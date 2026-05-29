@@ -2108,10 +2108,12 @@ End Function
   it("keeps plain comment docs escaped and tagless triple-quote docs as markdown", () => {
     const source = `<%
 ''' **Markdown** docs with \`code\`.
+''' Second markdown line.
 Function MarkdownDocumented()
 End Function
 
 ' **Plain** docs with <summary>tag</summary>.
+' Second plain line.
 Function PlainDocumented()
 End Function
 Dim trailingPlain ' trailing **plain** <value>
@@ -2123,7 +2125,7 @@ Dim trailingPlain ' trailing **plain** <value>
       positionAt(source, source.indexOf("MarkdownDocumented()")),
       { symbols },
     );
-    expect(markdownHover).toContain("**Markdown** docs with `code`.");
+    expect(markdownHover).toContain("**Markdown** docs with `code`.  \nSecond markdown line.");
 
     const plainHover = getVbscriptHover(
       parsed,
@@ -2132,6 +2134,7 @@ Dim trailingPlain ' trailing **plain** <value>
     );
     expect(plainHover).toContain("\\*\\*Plain\\*\\* docs");
     expect(plainHover).toContain("&lt;summary&gt;tag&lt;/summary&gt;");
+    expect(plainHover).toContain("&lt;/summary&gt;\\.  \nSecond plain line\\.");
     expect(plainHover).not.toContain("**Plain** docs");
     expect(plainHover).not.toContain("<summary>tag</summary>");
 

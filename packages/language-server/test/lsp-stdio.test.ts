@@ -2486,6 +2486,7 @@ Response.Write BuildName("Ada")
     it("uses plain comment docs and annotation completions over JSON-RPC", async () => {
       const source = `<%
 ' **Plain** docs with <summary>tag</summary>.
+' Second plain line.
 Function PlainDocumented()
 End Function
 Response.Write PlainDocumented()
@@ -2525,6 +2526,8 @@ Response.Write PlainDocumented()
         const serializedHover = JSON.stringify(hover);
         expect(serializedHover).toContain("\\\\*\\\\*Plain\\\\*\\\\* docs");
         expect(serializedHover).toContain("&lt;summary&gt;tag&lt;/summary&gt;");
+        expect(serializedHover).toContain("&lt;/summary&gt;\\\\.  ");
+        expect(serializedHover).toContain("Second plain line\\\\.");
         expect(serializedHover).not.toContain("**Plain** docs");
         expect(serializedHover).not.toContain("<summary>tag</summary>");
 

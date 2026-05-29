@@ -5043,7 +5043,10 @@ function documentationMarkdown(
 }
 
 function documentationTextMarkdown(documentation: VbDocumentation, text: string): string {
-  return documentation.format === "plain" ? escapeMarkdownPlainText(text) : text;
+  const markdown = documentation.format === "plain" ? escapeMarkdownPlainText(text) : text;
+  return documentation.format === "plain" || documentation.format === "markdown"
+    ? preserveCommentLineBreaks(markdown)
+    : markdown;
 }
 
 function escapeMarkdownPlainText(text: string): string {
@@ -5052,6 +5055,10 @@ function escapeMarkdownPlainText(text: string): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replace(/[\\`*_{}[\]()#+\-.!|]/g, "\\$&");
+}
+
+function preserveCommentLineBreaks(text: string): string {
+  return text.replace(/\n/g, "  \n");
 }
 
 function builtinDocumentationMarkdown(
