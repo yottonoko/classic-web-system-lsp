@@ -25,37 +25,39 @@ if (!fs.existsSync(coreDist)) {
 execFileSync(process.execPath, [generator], { stdio: "inherit" });
 
 const {
-  analyzeVbscript,
+  analyzeVbscriptAsync,
   buildVirtualDocuments,
-  collectVbscriptSymbols,
-  parseAspDocument,
+  collectVbscriptSymbolsAsync,
+  parseAspDocumentAsync,
 } = require(coreDist);
 
 const sources = collectBenchmarkSources();
 const sourceStats = summarizeSources(sources);
 
-runBenchmark("parseAspDocument", () => {
+await runBenchmark("parseAspDocument", async () => {
   for (const source of sources) {
-    parseAspDocument(source.uri, source.text);
+    await parseAspDocumentAsync(source.uri, source.text);
   }
 });
 
-const parsedDocuments = sources.map((source) => parseAspDocument(source.uri, source.text));
-runBenchmark("buildVirtualDocuments", () => {
+const parsedDocuments = await Promise.all(
+  sources.map((source) => parseAspDocumentAsync(source.uri, source.text)),
+);
+await runBenchmark("buildVirtualDocuments", () => {
   for (const parsed of parsedDocuments) {
     buildVirtualDocuments(parsed);
   }
 });
 
-runBenchmark("collectVbscriptSymbols", () => {
+await runBenchmark("collectVbscriptSymbols", async () => {
   for (const parsed of parsedDocuments) {
-    collectVbscriptSymbols(parsed);
+    await collectVbscriptSymbolsAsync(parsed);
   }
 });
 
-runBenchmark("analyzeVbscript", () => {
+await runBenchmark("analyzeVbscript", async () => {
   for (const parsed of parsedDocuments) {
-    analyzeVbscript(parsed, analyzeContext());
+    await analyzeVbscriptAsync(parsed, analyzeContext());
   }
 });
 
@@ -113,15 +115,15 @@ function summarizeSources(items) {
   );
 }
 
-function runBenchmark(name, fn) {
+async function runBenchmark(name, fn) {
   for (let index = 0; index < warmupIterations; index += 1) {
-    fn();
+    await fn();
   }
 
   const samples = [];
   for (let index = 0; index < benchmarkIterations; index += 1) {
     const start = performance.now();
-    fn();
+    await fn();
     samples.push(performance.now() - start);
   }
 

@@ -73,7 +73,7 @@ import type {
 } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
-  analyzeVbscript,
+  analyzeVbscriptAsync as analyzeVbscriptCoreAsync,
   aspAnalysisBackendInfo,
   buildVbTypeEnvironment,
   buildVirtualDocument,
@@ -99,11 +99,13 @@ import {
   getVbscriptSignatureHelp,
   getVbscriptTypeDefinition,
   parseAspDocument,
+  parseAspDocumentAsync,
   parseVbscriptTypeRef,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
   shiftAspRangeAfterChange,
   summarizeAspFileAnalysis,
+  summarizeAspFileAnalysisFromTextAsync,
   updateAspParsedDocument,
   type AspFormattingOptions,
   type AspEmbeddedLanguage,
@@ -3153,16 +3155,18 @@ async function analyzeVbscriptAsync(
       );
     }
   }
-  return analyzeVbscript(cached.parsed, {
-    ...context,
-    debugStep: (name, action) =>
-      measureDebugStep(
-        settings,
-        cached.source.uri,
-        `${stepPrefix}.vbscript.diagnostics.${name}`,
-        action,
-      ),
-  }).diagnostics;
+  return (
+    await analyzeVbscriptCoreAsync(cached.parsed, {
+      ...context,
+      debugStep: (name, action) =>
+        measureDebugStep(
+          settings,
+          cached.source.uri,
+          `${stepPrefix}.vbscript.diagnostics.${name}`,
+          action,
+        ),
+    })
+  ).diagnostics;
 }
 
 async function runVbDiagnosticsWorker(
@@ -5669,15 +5673,16 @@ async function workspaceVbReferenceSummaryForIndexed(
   settings: AspSettings,
 ): Promise<WorkspaceVbReferenceSummary | undefined> {
   try {
-    const parsed = parseAspDocument(
-      entry.uri,
-      await readTextFileAsync(entry.fileName, settings.legacyEncoding),
-      settings,
-    );
+    const text = await readTextFileAsync(entry.fileName, settings.legacyEncoding);
     return {
       uri: entry.uri,
       fileName: entry.fileName,
-      summary: summarizeAspFileAnalysis(parsed, vbProjectContextSettings(settings)),
+      summary: await summarizeAspFileAnalysisFromTextAsync(
+        entry.uri,
+        text,
+        settings,
+        vbProjectContextSettings(settings),
+      ),
     };
   } catch {
     return undefined;
@@ -5694,7 +5699,7 @@ async function cachedForWorkspaceVbReferenceSummary(
   }
   try {
     const text = await readTextFileAsync(summary.fileName, settings.legacyEncoding);
-    const parsed = parseAspDocument(summary.uri, text, settings);
+    const parsed = await parseAspDocumentAsync(summary.uri, text, settings);
     return createCachedDocument(
       TextDocument.create(summary.uri, "classic-asp", 0, text),
       parsed,

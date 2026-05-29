@@ -1,5 +1,5 @@
 import { parentPort } from "node:worker_threads";
-import { analyzeVbscript, aspAnalysisBackendInfo } from "@asp-lsp/core";
+import { analyzeVbscriptAsync, aspAnalysisBackendInfo } from "@asp-lsp/core";
 import type {
   VbDiagnosticsWorkerRequest,
   VbDiagnosticsWorkerResponse,
@@ -10,23 +10,25 @@ if (!parentPort) {
   throw new Error("VBScript diagnostics worker requires a parent port.");
 }
 
-parentPort.on("message", (request: VbDiagnosticsWorkerRequest) => {
+parentPort.on("message", async (request: VbDiagnosticsWorkerRequest) => {
   const timings: VbDiagnosticsWorkerTiming[] = [];
   try {
-    const diagnostics = analyzeVbscript(request.parsed, {
-      ...request.context,
-      debugStep: (name, action) => {
-        const startedAt = process.hrtime.bigint();
-        try {
-          return action();
-        } finally {
-          timings.push({
-            name,
-            elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
-          });
-        }
-      },
-    }).diagnostics;
+    const diagnostics = (
+      await analyzeVbscriptAsync(request.parsed, {
+        ...request.context,
+        debugStep: (name, action) => {
+          const startedAt = process.hrtime.bigint();
+          try {
+            return action();
+          } finally {
+            timings.push({
+              name,
+              elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+            });
+          }
+        },
+      })
+    ).diagnostics;
     const backend = aspAnalysisBackendInfo();
     timings.push({
       name: `backend.${backend.backend}`,

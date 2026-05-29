@@ -15,7 +15,12 @@ import type {
 import { offsetAt, rangeFromOffsets } from "./position";
 import { scanHtmlAndAsp, normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 import { parseVbscriptCst } from "./vbscript-cst";
-import { tryNativeParseAspCst, tryNativeParseAspDocument } from "./native-backend";
+import {
+  tryNativeParseAspCst,
+  tryNativeParseAspCstAsync,
+  tryNativeParseAspDocument,
+  tryNativeParseAspDocumentAsync,
+} from "./native-backend";
 export { normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 
 export function parseAspDocument(
@@ -24,6 +29,18 @@ export function parseAspDocument(
   settings: AspSettings = {},
 ): AspParsedDocument {
   const native = tryNativeParseAspDocument(uri, text, settings);
+  if (native) {
+    return native;
+  }
+  return parseAspDocumentTypeScript(uri, text, settings);
+}
+
+export async function parseAspDocumentAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): Promise<AspParsedDocument> {
+  const native = await tryNativeParseAspDocumentAsync(uri, text, settings);
   if (native) {
     return native;
   }
@@ -540,6 +557,18 @@ function shiftOffsetAfterChange(
 
 export function parseAspCst(uri: string, text: string, settings: AspSettings = {}): AspCstNode {
   const native = tryNativeParseAspCst(text, settings);
+  if (native) {
+    return native;
+  }
+  return parseAspCstTypeScript(uri, text, settings);
+}
+
+export async function parseAspCstAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): Promise<AspCstNode> {
+  const native = await tryNativeParseAspCstAsync(text, settings);
   if (native) {
     return native;
   }

@@ -11,7 +11,8 @@ const sampleRoot = path.join(root, "samples", "classic-asp-include-tree-benchmar
 const generator = path.join(sampleRoot, "generate.mjs");
 const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
-const warmupIterations = readPositiveInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const benchmarkConcurrency = readPositiveInteger("ASP_LSP_BENCH_CONCURRENCY", 4);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const analyzeStepTotals = new Map();
 const results = [];
@@ -25,36 +26,39 @@ if (!fs.existsSync(coreDist)) {
 execFileSync(process.execPath, [generator], { stdio: "inherit" });
 
 const {
-  analyzeVbscript,
+  analyzeVbscriptFromTextAsync,
   buildVirtualDocuments,
-  collectVbscriptSymbols,
-  parseAspDocument,
+  collectVbscriptSymbolsFromTextAsync,
+  parseAspDocumentAsync,
+  tryNativeParseAspDocumentLightAsync,
 } = require(coreDist);
 
 const sourceRefs = collectBenchmarkSourceRefs();
 const sourceStats = summarizeSources(sourceRefs);
 
-runBenchmark("parseAspDocument", () =>
-  measureAcrossSources(sourceRefs, (source) => {
-    parseAspDocument(source.uri, source.text);
+await runBenchmark("parseAspDocument", () =>
+  measureAcrossSources(sourceRefs, async (source) => {
+    if (!(await tryNativeParseAspDocumentLightAsync(source.uri, source.text, {}))) {
+      await parseAspDocumentAsync(source.uri, source.text);
+    }
   }),
 );
 
-runBenchmark("buildVirtualDocuments", () =>
+await runBenchmark("buildVirtualDocuments", () =>
   measureAcrossParsedSources(sourceRefs, (parsed) => {
     buildVirtualDocuments(parsed);
   }),
 );
 
-runBenchmark("collectVbscriptSymbols", () =>
-  measureAcrossParsedSources(sourceRefs, (parsed) => {
-    collectVbscriptSymbols(parsed);
+await runBenchmark("collectVbscriptSymbols", () =>
+  measureAcrossSources(sourceRefs, async (source) => {
+    await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
   }),
 );
 
-runBenchmark("analyzeVbscript", () =>
-  measureAcrossParsedSources(sourceRefs, (parsed) => {
-    analyzeVbscript(parsed, analyzeContext());
+await runBenchmark("analyzeVbscript", () =>
+  measureAcrossSources(sourceRefs, async (source) => {
+    await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
   }),
 );
 
@@ -65,6 +69,7 @@ console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
 console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
 console.log(`Warmups: ${warmupIterations}`);
 console.log(`Iterations: ${benchmarkIterations}`);
+console.log(`Concurrency: ${benchmarkConcurrency}`);
 console.log("");
 printTable(results);
 if (collectDebugSteps) {
@@ -123,35 +128,46 @@ function summarizeSources(items) {
   );
 }
 
-function measureAcrossSources(sources, callback) {
-  let elapsed = 0;
-  for (const source of sources) {
-    const start = performance.now();
-    callback(source);
-    elapsed += performance.now() - start;
-  }
-  return elapsed;
+async function measureAcrossSources(sources, callback) {
+  const start = performance.now();
+  await runBounded(sources, async (source) => {
+    await callback(source);
+  });
+  return performance.now() - start;
 }
 
-function measureAcrossParsedSources(sources, callback) {
-  let elapsed = 0;
-  for (const source of sources) {
-    const parsed = parseAspDocument(source.uri, source.text);
-    const start = performance.now();
-    callback(parsed);
-    elapsed += performance.now() - start;
-  }
-  return elapsed;
+async function measureAcrossParsedSources(parsedDocuments, callback) {
+  const start = performance.now();
+  await runBounded(parsedDocuments, async (source) => {
+    const parsed = await parseAspDocumentAsync(source.uri, source.text);
+    await callback(parsed);
+  });
+  return performance.now() - start;
 }
 
-function runBenchmark(name, fn) {
+async function runBounded(items, callback) {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(benchmarkConcurrency, items.length) }, async () => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) {
+        return;
+      }
+      await callback(items[index]);
+    }
+  });
+  await Promise.all(workers);
+}
+
+async function runBenchmark(name, fn) {
   for (let index = 0; index < warmupIterations; index += 1) {
-    fn();
+    await fn();
   }
 
   const samples = [];
   for (let index = 0; index < benchmarkIterations; index += 1) {
-    samples.push(fn());
+    samples.push(await fn());
   }
 
   samples.sort((left, right) => left - right);
@@ -227,6 +243,18 @@ function readPositiveInteger(name, fallback) {
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer.`);
+  }
+  return value;
+}
+
+function readNonNegativeInteger(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
   }
   return value;
 }

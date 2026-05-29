@@ -23,11 +23,18 @@ import type {
   TextEdit,
 } from "vscode-languageserver-types";
 import { offsetAt, positionAt, rangeFromOffsets } from "./position";
+import { parseAspDocumentAsync } from "./parser";
 import { createLocalizer } from "./localize";
 import {
   tryNativeAnalyzeVbscript,
+  tryNativeAnalyzeVbscriptAsync,
+  tryNativeAnalyzeVbscriptFromTextAsync,
   tryNativeCollectVbscriptSymbols,
+  tryNativeCollectVbscriptSymbolsAsync,
+  tryNativeCollectVbscriptSymbolsFromTextAsync,
   tryNativeSummarizeAspFileAnalysis,
+  tryNativeSummarizeAspFileAnalysisAsync,
+  tryNativeSummarizeAspFileAnalysisFromTextAsync,
 } from "./native-backend";
 import type {
   AspCstNode,
@@ -35,6 +42,7 @@ import type {
   AspLocale,
   AspParsedDocument,
   AspRegion,
+  AspSettings,
   AspVbscriptComType,
   AspVbscriptIdentifierCase,
   AspVbscriptIdentifierKind,
@@ -2526,10 +2534,45 @@ export function analyzeVbscript(
       return native;
     }
   }
+  return analyzeVbscriptTypeScript(parsed, context);
+}
+
+export async function analyzeVbscriptAsync(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
+  if (nativeSemanticsEnabled()) {
+    const native = await tryNativeAnalyzeVbscriptAsync(parsed, context);
+    if (native) {
+      return native;
+    }
+  }
+  return analyzeVbscriptTypeScript(parsed, context);
+}
+
+export async function analyzeVbscriptFromTextAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+  context: VbProjectContext = {},
+): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
+  if (nativeSemanticsEnabled()) {
+    const native = await tryNativeAnalyzeVbscriptFromTextAsync(uri, text, settings, context);
+    if (native) {
+      return native;
+    }
+  }
+  return analyzeVbscriptTypeScript(await parseAspDocumentAsync(uri, text, settings), context);
+}
+
+function analyzeVbscriptTypeScript(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
   const symbols = measureVbDebugStep(
     context,
     "symbols",
-    () => context.symbols ?? collectVbscriptSymbols(parsed, context),
+    () => context.symbols ?? collectVbscriptSymbolsTypeScript(parsed, context, {}),
   );
   const diagnostics: Diagnostic[] = [];
   diagnostics.push(
@@ -3700,6 +3743,52 @@ export function collectVbscriptSymbols(
       return native;
     }
   }
+  return collectVbscriptSymbolsTypeScript(parsed, context, options);
+}
+
+export async function collectVbscriptSymbolsAsync(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+  options: VbSymbolCollectionOptions = {},
+): Promise<VbSymbol[]> {
+  if (
+    nativeSemanticsEnabled() &&
+    options.implicitAssignments !== false &&
+    options.inferTypes !== false &&
+    options.variantFallback !== false
+  ) {
+    const native = await tryNativeCollectVbscriptSymbolsAsync(parsed, context);
+    if (native) {
+      return native;
+    }
+  }
+  return collectVbscriptSymbolsTypeScript(parsed, context, options);
+}
+
+export async function collectVbscriptSymbolsFromTextAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+  context: VbProjectContext = {},
+): Promise<VbSymbol[]> {
+  if (nativeSemanticsEnabled()) {
+    const native = await tryNativeCollectVbscriptSymbolsFromTextAsync(uri, text, settings, context);
+    if (native) {
+      return native;
+    }
+  }
+  return collectVbscriptSymbolsTypeScript(
+    await parseAspDocumentAsync(uri, text, settings),
+    context,
+    {},
+  );
+}
+
+function collectVbscriptSymbolsTypeScript(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+  options: VbSymbolCollectionOptions,
+): VbSymbol[] {
   const symbols: VbSymbol[] = [];
   for (const node of vbDocuments(parsed)) {
     addSymbolsFromVbNode(parsed, node, symbols, createDocCommentLookup(node));
@@ -3752,10 +3841,53 @@ export function summarizeAspFileAnalysis(
       return native;
     }
   }
+  return summarizeAspFileAnalysisTypeScript(parsed, context);
+}
+
+export async function summarizeAspFileAnalysisAsync(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): Promise<FileAnalysisSummary> {
+  if (nativeSemanticsEnabled()) {
+    const native = await tryNativeSummarizeAspFileAnalysisAsync(parsed, context);
+    if (native) {
+      return native;
+    }
+  }
+  return summarizeAspFileAnalysisTypeScript(parsed, context);
+}
+
+export async function summarizeAspFileAnalysisFromTextAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+  context: VbProjectContext = {},
+): Promise<FileAnalysisSummary> {
+  if (nativeSemanticsEnabled()) {
+    const native = await tryNativeSummarizeAspFileAnalysisFromTextAsync(
+      uri,
+      text,
+      settings,
+      context,
+    );
+    if (native) {
+      return native;
+    }
+  }
+  return summarizeAspFileAnalysisTypeScript(
+    await parseAspDocumentAsync(uri, text, settings),
+    context,
+  );
+}
+
+function summarizeAspFileAnalysisTypeScript(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+): FileAnalysisSummary {
   const vbscript =
     parsed.regions.some((region) => region.language === "vbscript") ||
     parsed.serverObjects.length > 0
-      ? summarizeVbscriptFile(parsed, context)
+      ? summarizeVbscriptFileTypeScript(parsed, context)
       : undefined;
   return {
     uri: parsed.uri,
@@ -3784,7 +3916,14 @@ export function summarizeVbscriptFile(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): VbLocalSummary {
-  const localSymbols = collectVbscriptSymbols(parsed, context);
+  return summarizeVbscriptFileTypeScript(parsed, context);
+}
+
+function summarizeVbscriptFileTypeScript(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+): VbLocalSummary {
+  const localSymbols = collectVbscriptSymbolsTypeScript(parsed, context, {});
   const publicSymbols = publicSymbolsFromLocalSymbols(localSymbols);
   const typeEnvironment = buildVbTypeEnvironment(parsed, { ...context, symbols: localSymbols });
   const externalRefs = collectVbscriptExternalRefs(parsed, localSymbols);

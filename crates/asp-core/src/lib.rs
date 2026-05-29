@@ -5,6 +5,11 @@ type JsonMap = Map<String, Value>;
 
 pub fn handle_json(input: &str) -> Result<String, String> {
     let request: Value = serde_json::from_str(input).map_err(|error| error.to_string())?;
+    let result = handle_value(&request)?;
+    serde_json::to_string(&result).map_err(|error| error.to_string())
+}
+
+pub fn handle_value(request: &Value) -> Result<Value, String> {
     let operation = request
         .get("operation")
         .and_then(Value::as_str)
@@ -50,6 +55,26 @@ pub fn handle_json(input: &str) -> Result<String, String> {
             let settings = request.get("settings").unwrap_or(&Value::Null);
             parse_asp_document(uri, text, settings)
         }
+        "parseAspDocumentLight" => {
+            let uri = request
+                .get("uri")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let text = request
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let settings = request.get("settings").unwrap_or(&Value::Null);
+            let parsed = parse_asp_document(uri, text, settings);
+            json!({
+                "uri": parsed.get("uri").cloned().unwrap_or(Value::Null),
+                "defaultLanguage": parsed.get("defaultLanguage").cloned().unwrap_or(Value::Null),
+                "regionCount": parsed.get("regions").and_then(Value::as_array).map_or(0, Vec::len),
+                "includeCount": parsed.get("includes").and_then(Value::as_array).map_or(0, Vec::len),
+                "diagnosticCount": parsed.get("diagnostics").and_then(Value::as_array).map_or(0, Vec::len),
+                "serverObjectCount": parsed.get("serverObjects").and_then(Value::as_array).map_or(0, Vec::len),
+            })
+        }
         "collectVbscriptSymbols" => {
             let parsed = request
                 .get("parsed")
@@ -58,11 +83,39 @@ pub fn handle_json(input: &str) -> Result<String, String> {
             let symbols = collect_symbols_from_parsed(parsed, context);
             Value::Array(symbols)
         }
+        "collectVbscriptSymbolsFromText" => {
+            let uri = request
+                .get("uri")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let text = request
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let settings = request.get("settings").unwrap_or(&Value::Null);
+            let context = request.get("context").unwrap_or(&Value::Null);
+            let parsed = parse_asp_document(uri, text, settings);
+            let symbols = collect_symbols_from_parsed(&parsed, context);
+            Value::Array(symbols)
+        }
         "summarizeAspFileAnalysis" => {
             let parsed = request
                 .get("parsed")
                 .ok_or_else(|| "parsed is required".to_string())?;
             summarize_asp_file(parsed)
+        }
+        "summarizeAspFileAnalysisFromText" => {
+            let uri = request
+                .get("uri")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let text = request
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let settings = request.get("settings").unwrap_or(&Value::Null);
+            let parsed = parse_asp_document(uri, text, settings);
+            summarize_asp_file(&parsed)
         }
         "analyzeVbscript" => {
             let parsed = request
@@ -73,9 +126,25 @@ pub fn handle_json(input: &str) -> Result<String, String> {
             let diagnostics = diagnose_vbscript(parsed, &symbols, context);
             json!({ "diagnostics": diagnostics, "symbols": symbols })
         }
+        "analyzeVbscriptFromText" => {
+            let uri = request
+                .get("uri")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let text = request
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let settings = request.get("settings").unwrap_or(&Value::Null);
+            let context = request.get("context").unwrap_or(&Value::Null);
+            let parsed = parse_asp_document(uri, text, settings);
+            let symbols = collect_symbols_from_parsed(&parsed, context);
+            let diagnostics = diagnose_vbscript(&parsed, &symbols, context);
+            json!({ "diagnostics": diagnostics, "symbols": symbols })
+        }
         _ => return Err(format!("unknown operation: {operation}")),
     };
-    serde_json::to_string(&result).map_err(|error| error.to_string())
+    Ok(result)
 }
 
 #[no_mangle]
