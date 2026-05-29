@@ -4104,6 +4104,58 @@ a = 2
       }
     });
 
+    it("jumps from assignments to include-defined implicit globals", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-global-"));
+      const include = path.join(tempDir, "shared.inc");
+      const owner = path.join(tempDir, "default.asp");
+      fs.writeFileSync(include, `<%\nsharedTitle = "include"\n%>`, "utf8");
+      const marked = markedDocument(`<!-- #include file="shared.inc" -->
+<%
+shared▮Title = "page"
+%>`);
+      fs.writeFileSync(owner, marked.text, "utf8");
+      const uri = pathToFileURL(owner).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+
+        const definition = await waitForDefinitionContaining(
+          server,
+          { uri, position: marked.position },
+          "shared.inc",
+        );
+        const serialized = JSON.stringify(definition);
+        expect(serialized).toContain("shared.inc");
+        expect(serialized).not.toContain("default.asp");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("honors the implicit ByRef inlay hint setting", async () => {
       const source = `<%
 Function BuildName(firstName)

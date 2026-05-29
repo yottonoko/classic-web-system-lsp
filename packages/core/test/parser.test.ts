@@ -3151,6 +3151,49 @@ Response.Write b
     expect(JSON.stringify(disabled)).not.toContain("(?)");
   });
 
+  it("resolves assignments after includes to include-defined implicit globals", () => {
+    const includeSource = `<%
+sharedTitle = "include"
+%>`;
+    const includeParsed = parseAspDocument("file:///site/shared.inc", includeSource);
+    const includeSymbols = collectVbscriptSymbols(includeParsed);
+    const pageSource = `<!-- #include file="shared.inc" -->
+<%
+sharedTitle = "page"
+%>`;
+    const pageParsed = parseAspDocument("file:///site/default.asp", pageSource);
+    const pageSymbols = collectVbscriptSymbols(pageParsed);
+    const context = {
+      symbols: [...pageSymbols, ...includeSymbols],
+      documents: [pageParsed, includeParsed],
+    };
+
+    expect(
+      getVbscriptDefinition(
+        pageParsed,
+        positionAt(pageSource, pageSource.indexOf("sharedTitle =")),
+        context,
+      )?.sourceUri,
+    ).toBe(includeParsed.uri);
+
+    const beforeIncludeSource = `<%
+sharedTitle = "page"
+%>
+<!-- #include file="shared.inc" -->`;
+    const beforeIncludeParsed = parseAspDocument("file:///site/before.asp", beforeIncludeSource);
+    const beforeIncludeSymbols = collectVbscriptSymbols(beforeIncludeParsed);
+    expect(
+      getVbscriptDefinition(
+        beforeIncludeParsed,
+        positionAt(beforeIncludeSource, beforeIncludeSource.indexOf("sharedTitle =")),
+        {
+          symbols: [...beforeIncludeSymbols, ...includeSymbols],
+          documents: [beforeIncludeParsed, includeParsed],
+        },
+      )?.sourceUri,
+    ).toBe(beforeIncludeParsed.uri);
+  });
+
   it("adds semantic token types and modifiers for VBScript symbols", () => {
     const source = `<%
 Class Customer

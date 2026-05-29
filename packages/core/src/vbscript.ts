@@ -6096,9 +6096,9 @@ function visibleSymbolsByName(
   lowerName: string,
 ): VbSymbol[] {
   const index = symbolIndexFor(symbols, parsed);
-  return (index.byLowerName.get(lowerName) ?? []).filter((symbol) =>
-    isSymbolVisibleAt(symbol, parsed.uri, parsed.text, offset, index),
-  );
+  return (index.byLowerName.get(lowerName) ?? [])
+    .filter((symbol) => isSymbolVisibleAt(symbol, parsed.uri, parsed.text, offset, index))
+    .sort((left, right) => compareSymbolsForResolution(parsed, symbols, left, right));
 }
 
 function hasVisibleSymbolByName(
@@ -6149,11 +6149,7 @@ function resolveSymbolAt(
     return resolved;
   }
   const word = identifierTextAt(parsed.text, offset);
-  return word
-    ? visibleSymbolsByName(parsed, offset, symbols, word.toLowerCase()).sort(
-        (left, right) => symbolPriority(right) - symbolPriority(left),
-      )[0]
-    : undefined;
+  return word ? visibleSymbolsByName(parsed, offset, symbols, word.toLowerCase())[0] : undefined;
 }
 
 function identifierTextAt(sourceText: string, offset: number): string | undefined {
@@ -6195,9 +6191,7 @@ function resolveSymbolForToken(
           : inferVariableTypeRef(member.owner, parsed, offset, symbols);
     return type ? resolveMemberSymbolForType(type, member.member, symbols) : undefined;
   }
-  return visibleSymbolsByName(parsed, offset, symbols, token.text.toLowerCase()).sort(
-    (left, right) => symbolPriority(right) - symbolPriority(left),
-  )[0];
+  return visibleSymbolsByName(parsed, offset, symbols, token.text.toLowerCase())[0];
 }
 
 function resolveMemberSymbolForType(
@@ -8406,6 +8400,67 @@ function symbolPriority(symbol: VbSymbol): number {
     return 2;
   }
   return 1;
+}
+
+function compareSymbolsForResolution(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+  left: VbSymbol,
+  right: VbSymbol,
+): number {
+  return (
+    symbolResolutionPriority(parsed, right, symbols) -
+      symbolResolutionPriority(parsed, left, symbols) ||
+    Number(right.sourceUri === parsed.uri) - Number(left.sourceUri === parsed.uri)
+  );
+}
+
+function symbolResolutionPriority(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  symbols: VbSymbol[],
+): number {
+  let priority = symbolPriority(symbol) * 10;
+  if (!symbol.implicit) {
+    priority += 2;
+  }
+  if (isImplicitGlobalDuplicateAfterInclude(parsed, symbol, symbols)) {
+    priority -= 5;
+  }
+  return priority;
+}
+
+function isImplicitGlobalDuplicateAfterInclude(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  symbols: VbSymbol[],
+): boolean {
+  if (
+    symbol.sourceUri !== parsed.uri ||
+    symbol.implicit !== true ||
+    !isGlobalVariableLikeSymbol(symbol) ||
+    !hasEarlierIncludeDirective(parsed, symbol)
+  ) {
+    return false;
+  }
+  const lowerName = symbol.name.toLowerCase();
+  return symbols.some(
+    (candidate) =>
+      candidate !== symbol &&
+      candidate.sourceUri !== parsed.uri &&
+      candidate.name.toLowerCase() === lowerName &&
+      isGlobalVariableLikeSymbol(candidate),
+  );
+}
+
+function hasEarlierIncludeDirective(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
+  if (parsed.includes.length === 0) {
+    return false;
+  }
+  const symbolStart = offsetAt(parsed.text, symbol.range.start);
+  return parsed.includes.some(
+    (include) => offsetAt(parsed.text, include.range.start) <= symbolStart,
+  );
 }
 
 function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
