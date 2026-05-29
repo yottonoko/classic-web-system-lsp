@@ -110,7 +110,7 @@ describe("VS Code extension package", () => {
     ).toEqual(
       expect.objectContaining({
         type: "string",
-        enum: ["global", "all", "off"],
+        enum: ["global", "local", "all", "off"],
         default: "global",
       }),
     );

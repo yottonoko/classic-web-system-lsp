@@ -521,6 +521,7 @@
           "type": "string",
           "enum": [
             "global",
+            "local",
             "all",
             "off"
           ],

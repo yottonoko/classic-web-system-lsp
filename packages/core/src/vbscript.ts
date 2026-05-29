@@ -25,6 +25,7 @@ import { offsetAt, positionAt, rangeFromOffsets } from "./position";
 import { createLocalizer } from "./localize";
 import type {
   AspCstNode,
+  AspInlayHintMarkerMode,
   AspLocale,
   AspParsedDocument,
   AspRegion,
@@ -2342,7 +2343,7 @@ export function getVbscriptHover(
     return builtinMemberDescription(parsed, sourceOffset, symbols, typeEnvironment, context.locale);
   }
   const hover = appendDocumentationMarkdown(
-    markdownHover(vbscriptHoverSignature(parsed, symbol)),
+    markdownHover(vbscriptHoverSignature(parsed, symbol, context)),
     symbol.documentation,
     context.locale,
   );
@@ -2370,13 +2371,17 @@ function appendBuiltinDocumentation(
   return markdown ? `${base}\n\n${markdown}` : base;
 }
 
-function vbscriptHoverSignature(parsed: AspParsedDocument, symbol: VbSymbol): string {
+function vbscriptHoverSignature(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  context: VbProjectContext,
+): string {
   const type = symbolTypeRef(symbol);
   const typeSuffix = type ? ` As ${formatTypeRef(type)}` : "";
   const arraySuffix = symbolArraySuffix(symbol);
   const visibility = symbol.visibility ? `${titleCaseKeyword(symbol.visibility)} ` : "";
   const parameters = `(${parameterLabels(symbol).join(", ")})`;
-  const globalPrefix = isGlobalVariableLikeSymbol(parsed, symbol) ? "(global) " : "";
+  const scopePrefix = hoverScopePrefix(parsed, symbol, context);
   if (symbol.kind === "class") {
     return `Class ${symbol.name}`;
   }
@@ -2400,7 +2405,7 @@ function vbscriptHoverSignature(parsed: AspParsedDocument, symbol: VbSymbol): st
     return `${visibility || "Public "}${symbol.name}${arraySuffix}${typeSuffix}`;
   }
   if (symbol.kind === "constant") {
-    return `${globalPrefix}Const ${symbol.name}${typeSuffix}`;
+    return `${scopePrefix}Const ${symbol.name}${typeSuffix}`;
   }
   if (symbol.kind === "parameter") {
     return `${parameterLabel({
@@ -2409,7 +2414,7 @@ function vbscriptHoverSignature(parsed: AspParsedDocument, symbol: VbSymbol): st
       optional: symbol.optional,
     })}${typeSuffix}`;
   }
-  return `${globalPrefix}Dim ${symbol.name}${arraySuffix}${typeSuffix}`;
+  return `${scopePrefix}Dim ${symbol.name}${arraySuffix}${typeSuffix}`;
 }
 
 function symbolArraySuffix(symbol: VbSymbol): string {
@@ -3108,19 +3113,38 @@ function scopeInlayPrefix(
   parsed: AspParsedDocument,
   symbol: VbSymbol,
   context: VbProjectContext,
-  mode: "global" | "all" | "off",
+  mode: AspInlayHintMarkerMode,
+): string {
+  const marker = scopeMarker(parsed, symbol, context, mode);
+  return marker ? ` ${marker}` : "";
+}
+
+function hoverScopePrefix(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  context: VbProjectContext,
+): string {
+  const marker = scopeMarker(parsed, symbol, context, "all");
+  return marker ? `${marker} ` : "";
+}
+
+function scopeMarker(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  context: VbProjectContext,
+  mode: AspInlayHintMarkerMode,
 ): string {
   if (mode === "off" || !isVariableMarkerSymbol(parsed, symbol)) {
     return "";
   }
   if (isUncertainIncludeImplicitSymbol(parsed, symbol, context)) {
-    return " (?)";
+    return "(?)";
   }
   if (isGlobalVariableLikeSymbol(parsed, symbol)) {
-    return " (global)";
+    return mode === "global" || mode === "all" ? "(global)" : "";
   }
-  if (mode === "all" && isLocalVariableLikeSymbol(parsed, symbol)) {
-    return " (local)";
+  if (isLocalVariableLikeSymbol(parsed, symbol)) {
+    return mode === "local" || mode === "all" ? "(local)" : "";
   }
   return "";
 }
@@ -3141,10 +3165,13 @@ function isUncertainIncludeImplicitSymbol(
   return (
     symbol.implicit === true &&
     isVariableMarkerSymbol(parsed, symbol) &&
-    (isIncDocumentUri(parsed.uri) ||
-      parsed.includes.length > 0 ||
-      (context.documents?.some((document) => document.uri !== parsed.uri) ?? false))
+    parsed.includes.length > 0 &&
+    !hasIncludeAwareDocuments(parsed, context)
   );
+}
+
+function hasIncludeAwareDocuments(parsed: AspParsedDocument, context: VbProjectContext): boolean {
+  return context.documents?.some((document) => document.uri !== parsed.uri) ?? false;
 }
 
 function isGlobalVariableLikeSymbol(parsed: AspParsedDocument, symbol: VbSymbol): boolean {
@@ -3163,10 +3190,6 @@ function isLocalVariableLikeSymbol(parsed: AspParsedDocument, symbol: VbSymbol):
     Boolean(symbol.scopeName) &&
     !symbol.memberOf
   );
-}
-
-function isIncDocumentUri(uri: string): boolean {
-  return uri.toLowerCase().split(/[?#]/, 1)[0].endsWith(".inc");
 }
 
 function isHiddenInlayType(typeName: string): boolean {
@@ -4031,8 +4054,13 @@ function documentationForNode(
   if (!node.nameToken && !node.identifiers?.length) {
     return undefined;
   }
-  const tokens = docCommentBlockBeforeLookup(docCommentLookup, node.start);
-  return tokens.length > 0 ? parseVbDocumentation(tokens) : undefined;
+  const block = documentationCommentBlockBeforeLookup(docCommentLookup, node.start);
+  if (block.tokens.length === 0) {
+    return undefined;
+  }
+  return block.kind === "xml"
+    ? parseVbDocumentation(block.tokens)
+    : parsePlainCommentDocumentation(block.tokens);
 }
 
 function documentationForParameter(
@@ -4062,6 +4090,22 @@ function createDocCommentLookup(document: VbCstNode): VbDocCommentLookup {
   return { tokens: document.tokens, nextIndex: 0, lastOffset: 0 };
 }
 
+interface VbDocumentationCommentBlock {
+  kind: "xml" | "plain";
+  tokens: VbToken[];
+}
+
+function documentationCommentBlockBeforeLookup(
+  lookup: VbDocCommentLookup,
+  offset: number,
+): VbDocumentationCommentBlock {
+  const xmlTokens = docCommentBlockBeforeLookup(lookup, offset);
+  if (xmlTokens.length > 0) {
+    return { kind: "xml", tokens: xmlTokens };
+  }
+  return { kind: "plain", tokens: plainCommentBlockBeforeLookup(lookup, offset) };
+}
+
 function docCommentBlockBeforeLookup(lookup: VbDocCommentLookup, offset: number): VbToken[] {
   const tokens = lookup.tokens;
   const tokenIndex =
@@ -4076,6 +4120,31 @@ function docCommentBlockBeforeLookup(lookup: VbDocCommentLookup, offset: number)
   while (index >= 0) {
     const current = tokens[index];
     if (!isDocCommentToken(current)) {
+      break;
+    }
+    comments.push(current);
+    index -= 1;
+    while (index >= 0 && isWhitespaceOrNewline(tokens[index])) {
+      index -= 1;
+    }
+  }
+  return comments.reverse();
+}
+
+function plainCommentBlockBeforeLookup(lookup: VbDocCommentLookup, offset: number): VbToken[] {
+  const tokens = lookup.tokens;
+  const tokenIndex =
+    offset >= lookup.lastOffset
+      ? nextTokenAtOrAfter(lookup, offset)
+      : firstTokenAtOrAfter(tokens, offset);
+  let index = tokenIndex === tokens.length ? tokens.length - 1 : tokenIndex - 1;
+  while (index >= 0 && isWhitespaceOrNewline(tokens[index])) {
+    index -= 1;
+  }
+  const comments: VbToken[] = [];
+  while (index >= 0) {
+    const current = tokens[index];
+    if (!isPlainCommentToken(current)) {
       break;
     }
     comments.push(current);
@@ -4152,8 +4221,39 @@ function parseVbDocumentation(tokens: VbToken[]): VbDocumentation | undefined {
   return hasDocumentationContent(documentation) ? documentation : undefined;
 }
 
+function parsePlainCommentDocumentation(tokens: VbToken[]): VbDocumentation | undefined {
+  const summary = normalizeDocText(
+    tokens
+      .map((token) => stripPlainCommentPrefix(token.text).trimEnd())
+      .filter((line) => !isVbTypeAnnotationComment(line))
+      .join("\n"),
+  );
+  if (!summary) {
+    return undefined;
+  }
+  return {
+    summary,
+    params: {},
+    exceptions: [],
+    see: [],
+    seealso: [],
+  };
+}
+
 function stripDocCommentPrefix(text: string): string {
   return text.replace(/^'''\s?/, "");
+}
+
+function stripPlainCommentPrefix(text: string): string {
+  return text.replace(/^'\s?/, "");
+}
+
+function isPlainCommentToken(token: VbToken | undefined): token is VbToken {
+  return token?.kind === "comment" && token.text.startsWith("'") && !isDocCommentToken(token);
+}
+
+function isVbTypeAnnotationComment(text: string): boolean {
+  return /^@(type|param|returns|member)\b/i.test(text.trim());
 }
 
 function parseVbDocXml(text: string): VbDocElement {

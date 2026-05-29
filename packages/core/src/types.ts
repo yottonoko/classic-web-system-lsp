@@ -141,7 +141,7 @@ export interface AspInlayHintSettings {
   globalVariableMarkers?: AspInlayHintMarkerMode;
 }
 
-export type AspInlayHintMarkerMode = "global" | "all" | "off";
+export type AspInlayHintMarkerMode = "global" | "local" | "all" | "off";
 
 export interface AspCodeLensSettings {
   references?: boolean;

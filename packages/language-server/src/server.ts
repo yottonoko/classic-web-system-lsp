@@ -7572,7 +7572,7 @@ function normalizeInlayHintSettings(
 function normalizeInlayMarkerMode(
   value: unknown,
 ): NonNullable<NonNullable<AspSettings["inlayHints"]>["globalVariableMarkers"]> {
-  if (value === "all" || value === "off") {
+  if (value === "all" || value === "local" || value === "off") {
     return value;
   }
   if (value === false) {

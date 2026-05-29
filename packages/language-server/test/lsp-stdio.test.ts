@@ -3915,6 +3915,9 @@ End Sub
         expect(serialized).not.toContain("(global) As Number");
         expect(serialized).not.toContain("(local) As String");
 
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { inlayHints: { globalVariableMarkers: "local" } } },
+        });
         const localOnlyUri = "file:///tmp/local-marker-inlay.asp";
         const localOnlySource = `<%
 Dim pageTitle
@@ -3936,7 +3939,7 @@ End Sub
           range: { start: { line: 0, character: 0 }, end: { line: 7, character: 0 } },
         });
         const serializedLocalHints = JSON.stringify(localHints);
-        expect(serializedLocalHints).toContain("(global) As Variant");
+        expect(serializedLocalHints).not.toContain("(global) As Variant");
         expect(serializedLocalHints).toContain("(local) As Variant");
 
         await server.request("shutdown", null);

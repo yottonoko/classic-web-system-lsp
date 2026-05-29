@@ -1926,6 +1926,48 @@ Response.Write BuildName("Ada")
     );
   });
 
+  it("uses regular comment blocks as fallback VBScript documentation", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+' Build a display name.
+' Used by dashboard headers.
+Function BuildName(first)
+  BuildName = first
+End Function
+Response.Write BuildName("Ada")
+
+' @type customerId As String
+' Customer id from the request.
+Dim customerId
+
+' Plain fallback.
+''' <summary>XML summary wins.</summary>
+Function XmlDocumented()
+End Function
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const functionHover = getVbscriptHover(parsed, { line: 3, character: 10 }, { symbols });
+    expect(functionHover).toContain("Build a display name.");
+    expect(functionHover).toContain("Used by dashboard headers.");
+
+    const completion = getVbscriptCompletions(parsed, { line: 6, character: 20 }, { symbols }).find(
+      (item) => item.label === "BuildName",
+    );
+    expect(
+      String(resolveVbscriptCompletionItem(completion!, parsed, { symbols }).documentation),
+    ).toContain("Build a display name.");
+
+    const variableHover = getVbscriptHover(parsed, { line: 10, character: 4 }, { symbols });
+    expect(variableHover).toContain("Customer id from the request.");
+    expect(variableHover).not.toContain("@type customerId");
+
+    const xmlHover = getVbscriptHover(parsed, { line: 14, character: 10 }, { symbols });
+    expect(xmlHover).toContain("XML summary wins.");
+    expect(xmlHover).not.toContain("Plain fallback.");
+  });
+
   it("generates VBScript documentation and type annotations for undocumented functions", () => {
     const source = `<%
 Function BuildName(first)
@@ -2174,7 +2216,7 @@ Dim firstValue, secondValue
     expect(getVbscriptHover(parsed, { line: 9, character: 5 })).not.toContain("Ambiguous values.");
   });
 
-  it("ignores single-quote XML comments and tolerates broken XML documentation", () => {
+  it("uses single-quote XML-looking comments as plain text and tolerates broken XML documentation", () => {
     const single = parseAspDocument(
       "file:///site/default.asp",
       `<%
@@ -2183,7 +2225,8 @@ Function BuildName()
 End Function
 %>`,
     );
-    expect(getVbscriptHover(single, { line: 2, character: 10 })).not.toContain("Not documentation");
+    const singleHover = getVbscriptHover(single, { line: 2, character: 10 });
+    expect(singleHover).toContain("<summary>Not documentation.</summary>");
 
     const broken = parseAspDocument(
       "file:///site/default.asp",
@@ -2655,6 +2698,20 @@ End Sub
           hint.position.line === positionAt(source, source.indexOf("localValue")).line,
       ),
     ).toBe(true);
+    const localOnlyHints = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      { symbols },
+      { globalVariableMarkers: "local" },
+    );
+    expect(JSON.stringify(localOnlyHints)).not.toContain("(global)");
+    expect(
+      localOnlyHints.some(
+        (hint) =>
+          hint.label === " (local) As Variant" &&
+          hint.position.line === positionAt(source, source.indexOf("localValue")).line,
+      ),
+    ).toBe(true);
 
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
@@ -2717,7 +2774,7 @@ Response.Write a
     ).toBe(true);
   });
 
-  it("marks include-related implicit VBScript variables as uncertain in inlay hints", () => {
+  it("uses uncertain markers only before include-aware implicit variable analysis is available", () => {
     const includeSource = `<%
 a = 1
 Sub Render()
@@ -2732,10 +2789,15 @@ End Sub
       { symbols: includeSymbols },
       { globalVariableMarkers: "all" },
     );
-    expect(includeHints.filter((hint) => hint.label === " (?) As Number")).toHaveLength(1);
-    expect(includeHints.filter((hint) => hint.label === " (?) As String")).toHaveLength(1);
-    expect(JSON.stringify(includeHints)).not.toContain("(global)");
-    expect(JSON.stringify(includeHints)).not.toContain("(local)");
+    expect(includeHints.filter((hint) => hint.label === " (global) As Number")).toHaveLength(1);
+    expect(includeHints.filter((hint) => hint.label === " (local) As String")).toHaveLength(1);
+    expect(JSON.stringify(includeHints)).not.toContain("(?)");
+    expect(
+      getVbscriptHover(includeParsed, { line: 1, character: 0 }, { symbols: includeSymbols }),
+    ).toContain("(global) Dim a As Number");
+    expect(
+      getVbscriptHover(includeParsed, { line: 3, character: 2 }, { symbols: includeSymbols }),
+    ).toContain("(local) Dim b As String");
 
     const pageSource = `<!-- #include file="shared.inc" -->
 <%
@@ -2750,6 +2812,15 @@ a = 1
     );
     expect(pageHints.some((hint) => hint.label === " (?) As Number")).toBe(true);
     expect(JSON.stringify(pageHints)).not.toContain("(global) As Number");
+
+    const includeAwarePageHints = getVbscriptInlayHints(
+      pageParsed,
+      { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+      { symbols: [...pageSymbols, ...includeSymbols], documents: [pageParsed, includeParsed] },
+      { globalVariableMarkers: "all" },
+    );
+    expect(includeAwarePageHints.some((hint) => hint.label === " (global) As Number")).toBe(true);
+    expect(JSON.stringify(includeAwarePageHints)).not.toContain("(?)");
 
     const disabled = getVbscriptInlayHints(
       includeParsed,
