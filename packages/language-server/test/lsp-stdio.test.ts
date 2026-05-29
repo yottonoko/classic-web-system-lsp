@@ -6,9 +6,11 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   CompletionItemKind,
+  DiagnosticTag,
   DiagnosticSeverity,
   InsertTextFormat,
 } from "vscode-languageserver-types";
+import type { TextEdit } from "vscode-languageserver-types";
 
 interface JsonRpcMessage {
   id?: number;
@@ -1557,7 +1559,12 @@ Response.Write known
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
+          settings: {
+            aspLsp: {
+              diagnostics: { debounceMs: 0 },
+              inlayHints: { globalVariableMarkers: "all" },
+            },
+          },
         });
 
         const uri = "file:///tmp/immediate-diagnostics.asp";
@@ -2378,20 +2385,22 @@ Response.Write BuildName()
       const source = `<%
 ''' <summary>Builds a display name.</summary>
 ''' <param name="first">First name.</param>
+''' <param name="▮"></param>
 ''' <returns>Display name.</returns>
 Function BuildName(first)
   BuildName = first
 End Function
 Response.Write BuildName("Ada")
 ''' <▮
-''' <param name="▮"></param>
 ''' <see ▮/>
 ''' <summary>Text</▮
 ''' <see cref="▮" />
 %>`;
-      const firstMarker = markedDocument(source);
-      const text = firstMarker.text.replaceAll("▮", "");
-      const tagPosition = firstMarker.position;
+      const text = source.replaceAll("▮", "");
+      const tagPosition = positionAt(
+        text,
+        text.indexOf("''' <\n", text.indexOf('BuildName("Ada")')) + "''' <".length,
+      );
       const paramPosition = positionAt(text, text.indexOf('name=""></param>') + 'name="'.length);
       const attrPosition = positionAt(text, text.indexOf("<see />") + "<see ".length);
       const closingPosition = positionAt(
@@ -2473,6 +2482,83 @@ Response.Write BuildName("Ada")
           position: crefPosition,
         });
         expect(JSON.stringify(crefCompletions)).toContain("BuildName");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("uses plain comment docs and annotation completions over JSON-RPC", async () => {
+      const source = `<%
+' **Plain** docs with <summary>tag</summary>.
+' Second plain line.
+Function PlainDocumented()
+End Function
+Response.Write PlainDocumented()
+' Response.▮
+' @▮
+' @type customerId As String
+%>`;
+      const firstMarker = markedDocument(source);
+      const text = firstMarker.text.replaceAll("▮", "");
+      const ordinaryCommentPosition = firstMarker.position;
+      const annotationPosition = positionAt(text, text.indexOf("' @") + "' @".length);
+      const callPosition = positionAt(text, text.indexOf("PlainDocumented()") + 2);
+      const annotationHoverPosition = positionAt(text, text.indexOf("@type") + 1);
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vbscript-plain-comments.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: callPosition,
+        });
+        const serializedHover = JSON.stringify(hover);
+        expect(serializedHover).toContain("\\\\*\\\\*Plain\\\\*\\\\* docs");
+        expect(serializedHover).toContain("&lt;summary&gt;tag&lt;/summary&gt;");
+        expect(serializedHover).toContain("&lt;/summary&gt;\\\\.  ");
+        expect(serializedHover).toContain("Second plain line\\\\.");
+        expect(serializedHover).not.toContain("**Plain** docs");
+        expect(serializedHover).not.toContain("<summary>tag</summary>");
+
+        const ordinaryCommentCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: ordinaryCommentPosition,
+        });
+        expect(completionLabels(ordinaryCommentCompletions)).not.toContain("Write");
+
+        const annotationCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: annotationPosition,
+        });
+        expect(completionLabels(annotationCompletions)).toEqual(
+          expect.arrayContaining(["@type", "@param", "@returns"]),
+        );
+        expect(JSON.stringify(annotationCompletions)).toContain("VBScript type annotation");
+        expect(JSON.stringify(annotationCompletions)).toContain("' @type name As Type");
+
+        const annotationHover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: annotationHoverPosition,
+        });
+        expect(JSON.stringify(annotationHover)).toContain("' @type name As Type");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -3913,7 +3999,7 @@ End Sub
         const serialized = JSON.stringify(inlayHints);
         expect(serialized).toContain("(?)");
         expect(serialized).not.toContain("(global) As Number");
-        expect(serialized).not.toContain("(local) As String");
+        expect(serialized).toContain("(local) As String");
 
         server.notify("workspace/didChangeConfiguration", {
           settings: { aspLsp: { inlayHints: { globalVariableMarkers: "local" } } },
@@ -3946,6 +4032,161 @@ End Sub
         server.notify("exit", undefined);
       } finally {
         server.stop();
+      }
+    });
+
+    it("keeps include-aware inlay markers after a non-include full reparse edit", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-marker-reuse-"));
+      const include = path.join(tempDir, "shared.inc");
+      fs.writeFileSync(include, `<%\na = 1\n%>`, "utf8");
+      const source = `<!-- #include file="shared.inc" -->
+<div>top</div>
+<%
+Response.Write a
+a = 2
+%>`;
+      const uri = pathToFileURL(path.join(tempDir, "default.asp")).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              diagnostics: { debounceMs: 0 },
+              inlayHints: { globalVariableMarkers: "all" },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+
+        const warmedHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: {
+            start: { line: 0, character: 0 },
+            end: positionAt(source, source.length),
+          },
+        });
+        const serializedWarmedHints = JSON.stringify(warmedHints);
+        expect(serializedWarmedHints).not.toContain("(global) As Number");
+        expect(serializedWarmedHints).not.toContain("(?)");
+
+        const editedSource = notifyRangedReplacement(
+          server,
+          uri,
+          source,
+          2,
+          "<div>top</div>",
+          '<div data-note="<script>">top</div>',
+        );
+        const immediateHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: {
+            start: { line: 0, character: 0 },
+            end: positionAt(editedSource, editedSource.length),
+          },
+        });
+        const serializedImmediateHints = JSON.stringify(immediateHints);
+        expect(serializedImmediateHints).not.toContain("(global) As Number");
+        expect(serializedImmediateHints).not.toContain("(?)");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("jumps from assignments to include-defined implicit globals", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-global-"));
+      const include = path.join(tempDir, "shared.inc");
+      const owner = path.join(tempDir, "default.asp");
+      fs.writeFileSync(include, `<%\nsharedTitle = "include"\n%>`, "utf8");
+      const source = `<!-- #include file="shared.inc" -->
+<%
+sharedTitle = "page"
+Function Render()
+  sharedTitle = "function"
+End Function
+Class Widget
+  Public Sub Save()
+    sharedTitle = "method"
+  End Sub
+End Class
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
+      const uri = pathToFileURL(owner).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+
+        const assignmentOffsets = [
+          source.indexOf("sharedTitle ="),
+          source.indexOf("sharedTitle =", source.indexOf("Function Render")),
+          source.lastIndexOf("sharedTitle ="),
+        ];
+        for (const offset of assignmentOffsets) {
+          const definition = await waitForDefinitionContaining(
+            server,
+            { uri, position: positionAt(source, offset) },
+            "shared.inc",
+          );
+          const serialized = JSON.stringify(definition);
+          expect(serialized).toContain("shared.inc");
+          expect(serialized).not.toContain("default.asp");
+        }
+
+        const hints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: {
+            start: { line: 0, character: 0 },
+            end: positionAt(source, source.length),
+          },
+        });
+        const serializedHints = JSON.stringify(hints);
+        expect(serializedHints).not.toContain("(global) As String");
+        expect(serializedHints).not.toContain("(local) As String");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
 
@@ -4896,6 +5137,9 @@ Response.Write Request.Form("name")
       const source = `<%
 Dim unusedValue
 Const usedValue = 1
+Sub Save(usedArg, ByRef unusedArg)
+  Response.Write usedArg
+End Sub
 Response.Write usedValue
 %>`;
       const server = new RpcServer();
@@ -4920,7 +5164,14 @@ Response.Write usedValue
           diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
         ).diagnostics;
         expect(JSON.stringify(vbDiagnostics)).toContain("unusedValue");
-        const actions = await server.request("textDocument/codeAction", {
+        expect(
+          vbDiagnostics
+            .filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-unused")
+            .every((diagnostic) =>
+              (diagnostic.tags as unknown[] | undefined)?.includes(DiagnosticTag.Unnecessary),
+            ),
+        ).toBe(true);
+        const valueActions = await server.request("textDocument/codeAction", {
           textDocument: { uri },
           range: {
             start: { line: 1, character: 4 },
@@ -4928,9 +5179,30 @@ Response.Write usedValue
           },
           context: { diagnostics: vbDiagnostics },
         });
-        const serialized = JSON.stringify(actions);
+        const serialized = JSON.stringify(valueActions);
         expect(serialized).toContain("Remove unused declaration unusedValue");
         expect(serialized).toContain('"newText":""');
+
+        const unusedArgDiagnostic = vbDiagnostics.find((diagnostic) =>
+          String(diagnostic.message).includes("unusedArg"),
+        );
+        expect(unusedArgDiagnostic).toBeDefined();
+        const parameterActions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: unusedArgDiagnostic?.range,
+          context: { diagnostics: unusedArgDiagnostic ? [unusedArgDiagnostic] : [] },
+        });
+        const parameterAction = (parameterActions as Array<Record<string, unknown>>).find(
+          (action) => JSON.stringify(action).includes("unusedArg"),
+        );
+        const parameterEdit = ((
+          parameterAction?.edit as { changes?: Record<string, TextEdit[]> } | undefined
+        )?.changes?.[uri] ?? [])[0];
+        expect(parameterEdit).toBeDefined();
+        const updated = parameterEdit ? applyTextEdit(source, parameterEdit) : source;
+        expect(updated).toContain("Sub Save(usedArg)");
+        expect(updated).not.toContain("ByRef unusedArg");
+        expect(updated).not.toContain("ByRef )");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -5843,6 +6115,7 @@ function demo(unusedParam) {
         expect(serialized).toContain("asp-lsp-typescript-unused");
         expect(serialized).toContain("unusedLocal");
         expect(serialized).toContain('"severity":4');
+        expect(serialized).toContain(`"tags":[${DiagnosticTag.Unnecessary}]`);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -8260,6 +8533,29 @@ function notifyRangedReplacement(
     ],
   });
   return current.slice(0, start) + replacement + current.slice(end);
+}
+
+function applyTextEdit(text: string, edit: TextEdit): string {
+  const start = offsetAt(text, edit.range.start);
+  const end = offsetAt(text, edit.range.end);
+  return text.slice(0, start) + edit.newText + text.slice(end);
+}
+
+function offsetAt(text: string, position: { line: number; character: number }): number {
+  let line = 0;
+  let character = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (line === position.line && character === position.character) {
+      return index;
+    }
+    if (text[index] === "\n") {
+      line += 1;
+      character = 0;
+    } else {
+      character += 1;
+    }
+  }
+  return text.length;
 }
 
 function positionAt(text: string, offset: number): { line: number; character: number } {

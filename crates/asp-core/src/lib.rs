@@ -54,7 +54,8 @@ pub fn handle_json(input: &str) -> Result<String, String> {
             let parsed = request
                 .get("parsed")
                 .ok_or_else(|| "parsed is required".to_string())?;
-            let symbols = collect_symbols_from_parsed(parsed);
+            let context = request.get("context").unwrap_or(&Value::Null);
+            let symbols = collect_symbols_from_parsed(parsed, context);
             Value::Array(symbols)
         }
         "summarizeAspFileAnalysis" => {
@@ -67,8 +68,9 @@ pub fn handle_json(input: &str) -> Result<String, String> {
             let parsed = request
                 .get("parsed")
                 .ok_or_else(|| "parsed is required".to_string())?;
-            let symbols = collect_symbols_from_parsed(parsed);
-            let diagnostics = diagnose_vbscript(parsed, &symbols);
+            let context = request.get("context").unwrap_or(&Value::Null);
+            let symbols = collect_symbols_from_parsed(parsed, context);
+            let diagnostics = diagnose_vbscript(parsed, &symbols, context);
             json!({ "diagnostics": diagnostics, "symbols": symbols })
         }
         _ => return Err(format!("unknown operation: {operation}")),
@@ -227,6 +229,11 @@ fn parse_asp_document(uri: &str, text: &str, settings: &Value) -> Value {
         .iter()
         .filter_map(|node| node.get("include").cloned())
         .collect::<Vec<_>>();
+    let server_objects = cst
+        .get("serverObjects")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let default_language = default_language_from_directives(&directives, settings);
     json!({
         "uri": uri,
@@ -235,6 +242,7 @@ fn parse_asp_document(uri: &str, text: &str, settings: &Value) -> Value {
         "regions": regions,
         "directives": directives,
         "includes": includes,
+        "serverObjects": server_objects,
         "defaultLanguage": default_language,
         "diagnostics": diagnostics,
     })
@@ -331,6 +339,7 @@ fn parse_asp_cst(text: &str, settings: &Value) -> Value {
         "text": text,
         "tokens": tokens,
         "children": nodes,
+        "serverObjects": scan.server_objects,
         "errors": errors,
     })
 }
@@ -347,6 +356,7 @@ struct AspScan {
     inline_regions: Vec<Region>,
     tag_regions: Vec<Region>,
     includes: Vec<IncludeRef>,
+    server_objects: Vec<Value>,
     diagnostics: Vec<DiagnosticSpan>,
 }
 
@@ -398,13 +408,30 @@ fn scan_html_and_asp(index: &TextIndex<'_>, settings: &Value) -> AspScan {
         inline_regions: Vec::new(),
         tag_regions: Vec::new(),
         includes: Vec::new(),
+        server_objects: Vec::new(),
         diagnostics: Vec::new(),
     };
+    let mut script_language = normalize_script_language(
+        settings
+            .get("defaultLanguage")
+            .and_then(Value::as_str)
+            .unwrap_or("VBScript"),
+    );
     let mut cursor = 0usize;
     while cursor < index.len() {
         if index.starts_with(cursor, "<%") {
-            let region = parse_asp_region_at(index, cursor, index.len(), settings, &mut scan);
+            let region = parse_asp_region_at(
+                index,
+                cursor,
+                index.len(),
+                settings,
+                &mut scan,
+                &script_language,
+            );
             cursor = region.end;
+            if let Some(language) = script_language_from_directive_region(index, &region) {
+                script_language = language;
+            }
             scan.inline_regions.push(region);
             continue;
         }
@@ -422,19 +449,23 @@ fn scan_html_and_asp(index: &TextIndex<'_>, settings: &Value) -> AspScan {
             cursor += 1;
             continue;
         }
-        let Some(tag) = read_html_tag(index, cursor) else {
+        let Some(tag) = read_html_tag(index, cursor, &script_language) else {
             cursor += 1;
             continue;
         };
         if !tag.closing {
             scan.tag_regions
                 .extend(style_attribute_regions_from_tag(&tag));
+            if let Some(server_object) = server_object_from_tag(index, &tag) {
+                scan.server_objects.push(server_object);
+            }
             let nested = scan_asp_regions_in_range(
                 index,
                 tag.attributes_start,
                 tag.attributes_end,
                 settings,
                 &mut scan,
+                &script_language,
             );
             scan.inline_regions.extend(nested);
         }
@@ -442,8 +473,14 @@ fn scan_html_and_asp(index: &TextIndex<'_>, settings: &Value) -> AspScan {
             if let Some((close_start, close_end)) = find_element_close(index, &tag.name, tag.end) {
                 scan.tag_regions
                     .push(element_region_from_tag(&tag, close_start, close_end));
-                let nested =
-                    scan_asp_regions_in_range(index, tag.end, close_start, settings, &mut scan);
+                let nested = scan_asp_regions_in_range(
+                    index,
+                    tag.end,
+                    close_start,
+                    settings,
+                    &mut scan,
+                    &script_language,
+                );
                 scan.inline_regions.extend(nested);
                 cursor = close_end;
                 continue;
@@ -460,6 +497,7 @@ fn scan_asp_regions_in_range(
     end: usize,
     settings: &Value,
     scan: &mut AspScan,
+    script_language: &str,
 ) -> Vec<Region> {
     let mut regions = Vec::new();
     let mut cursor = start;
@@ -470,7 +508,7 @@ fn scan_asp_regions_in_range(
         if next >= end {
             break;
         }
-        let region = parse_asp_region_at(index, next, end, settings, scan);
+        let region = parse_asp_region_at(index, next, end, settings, scan, script_language);
         cursor = region.end.max(next + 2);
         regions.push(region);
     }
@@ -483,8 +521,9 @@ fn parse_asp_region_at(
     max_end: usize,
     settings: &Value,
     scan: &mut AspScan,
+    script_language: &str,
 ) -> Region {
-    let close = find_asp_close(index, start + 2, max_end);
+    let close = find_asp_close(index, start + 2, max_end, script_language);
     if close.is_none() {
         scan.diagnostics.push(DiagnosticSpan {
             message: missing_asp_close_message(settings),
@@ -522,6 +561,25 @@ fn parse_asp_region_at(
     }
 }
 
+fn script_language_from_directive_region(index: &TextIndex<'_>, region: &Region) -> Option<String> {
+    if region.kind != "asp-directive" {
+        return None;
+    }
+    let raw = index.slice(region.content_start, region.content_end).trim();
+    let normalized = raw.strip_prefix('@').unwrap_or(raw).trim();
+    let mut parts = normalized.split_whitespace();
+    let first = parts.next().unwrap_or("Page");
+    let attribute_text = if first.contains('=') {
+        normalized.to_string()
+    } else {
+        parts.collect::<Vec<_>>().join(" ")
+    };
+    parse_attributes(&attribute_text)
+        .get("language")
+        .and_then(Value::as_str)
+        .map(normalize_script_language)
+}
+
 fn missing_asp_close_message(settings: &Value) -> String {
     let locale = settings
         .get("resolvedLocale")
@@ -534,9 +592,14 @@ fn missing_asp_close_message(settings: &Value) -> String {
     }
 }
 
-fn find_asp_close(index: &TextIndex<'_>, offset: usize, max_end: usize) -> Option<usize> {
+fn find_asp_close(
+    index: &TextIndex<'_>,
+    offset: usize,
+    max_end: usize,
+    script_language: &str,
+) -> Option<usize> {
     let mut vb_quote: Option<char> = None;
-    let mut vb_line_comment = false;
+    let mut vb_line_comment: Option<&'static str> = None;
     let mut vb_block_comment = false;
     let mut js_quote: Option<char> = None;
     let mut js_line_comment = false;
@@ -545,35 +608,42 @@ fn find_asp_close(index: &TextIndex<'_>, offset: usize, max_end: usize) -> Optio
     while cursor < max_end {
         let char = index.char_at(cursor).unwrap_or('\0');
         let next = index.char_at(cursor + 1).unwrap_or('\0');
-        if vb_line_comment {
-            if char == '\r' || char == '\n' {
-                vb_line_comment = false;
-            }
-        } else if vb_block_comment {
-            if char == '*' && next == '/' {
-                vb_block_comment = false;
-                cursor += 1;
-            }
-        } else if let Some(quote) = vb_quote {
-            if char == quote {
-                if quote == '"' && next == '"' {
-                    cursor += 1;
-                } else {
-                    vb_quote = None;
+        if script_language == "VBScript" {
+            if let Some(kind) = vb_line_comment {
+                if kind == "apostrophe" && char == '%' && next == '>' {
+                    return Some(cursor);
                 }
+                if char == '\r' || char == '\n' {
+                    vb_line_comment = None;
+                }
+            } else if vb_block_comment {
+                if char == '*' && next == '/' {
+                    vb_block_comment = false;
+                    cursor += 1;
+                }
+            } else if let Some(quote) = vb_quote {
+                if char == quote {
+                    if quote == '"' && next == '"' {
+                        cursor += 1;
+                    } else {
+                        vb_quote = None;
+                    }
+                }
+            } else if char == '%' && next == '>' {
+                return Some(cursor);
+            } else if char == '\'' {
+                vb_line_comment = Some("apostrophe");
+            } else if char == '/' && next == '*' {
+                vb_block_comment = true;
+                cursor += 1;
+            } else if char == '/' && next == '/' {
+                vb_line_comment = Some("slash");
+                cursor += 1;
+            } else if char == '"' {
+                vb_quote = Some(char);
             }
-        } else if char == '%' && next == '>' {
-            return Some(cursor);
-        } else if char == '\'' {
-            vb_line_comment = true;
-        } else if char == '/' && next == '*' {
-            vb_block_comment = true;
             cursor += 1;
-        } else if char == '/' && next == '/' {
-            vb_line_comment = true;
-            cursor += 1;
-        } else if char == '"' {
-            vb_quote = Some(char);
+            continue;
         }
 
         if js_line_comment {
@@ -652,7 +722,7 @@ fn parse_include_comment(index: &TextIndex<'_>, start: usize, end: usize) -> Opt
     })
 }
 
-fn read_html_tag(index: &TextIndex<'_>, start: usize) -> Option<HtmlTag> {
+fn read_html_tag(index: &TextIndex<'_>, start: usize, script_language: &str) -> Option<HtmlTag> {
     if index.char_at(start) != Some('<')
         || index.starts_with(start, "<!--")
         || index.char_at(start + 1) == Some('%')
@@ -674,10 +744,11 @@ fn read_html_tag(index: &TextIndex<'_>, start: usize) -> Option<HtmlTag> {
         cursor += 1;
     }
     let name = index.slice(name_start, cursor).to_ascii_lowercase();
-    let tag_end = find_tag_end(index, cursor)?;
+    let tag_end = find_tag_end(index, cursor, script_language)?;
     let attributes_start = cursor;
     let attributes_end = tag_end;
-    let attribute_spans = parse_attribute_spans(index, attributes_start, attributes_end);
+    let attribute_spans =
+        parse_attribute_spans(index, attributes_start, attributes_end, script_language);
     let mut attributes = JsonMap::new();
     for attribute in &attribute_spans {
         attributes.insert(attribute.name.clone(), attribute.value.clone());
@@ -700,7 +771,7 @@ fn read_html_tag(index: &TextIndex<'_>, start: usize) -> Option<HtmlTag> {
     })
 }
 
-fn find_tag_end(index: &TextIndex<'_>, offset: usize) -> Option<usize> {
+fn find_tag_end(index: &TextIndex<'_>, offset: usize, script_language: &str) -> Option<usize> {
     let mut quote: Option<char> = None;
     let mut cursor = offset;
     while cursor < index.len() {
@@ -712,7 +783,7 @@ fn find_tag_end(index: &TextIndex<'_>, offset: usize) -> Option<usize> {
         } else if ch == '"' || ch == '\'' {
             quote = Some(ch);
         } else if index.starts_with(cursor, "<%") {
-            let close = find_asp_close(index, cursor + 2, index.len())?;
+            let close = find_asp_close(index, cursor + 2, index.len(), script_language)?;
             cursor = close + 1;
         } else if ch == '>' {
             return Some(cursor);
@@ -722,7 +793,12 @@ fn find_tag_end(index: &TextIndex<'_>, offset: usize) -> Option<usize> {
     None
 }
 
-fn parse_attribute_spans(index: &TextIndex<'_>, start: usize, end: usize) -> Vec<AttributeSpan> {
+fn parse_attribute_spans(
+    index: &TextIndex<'_>,
+    start: usize,
+    end: usize,
+    script_language: &str,
+) -> Vec<AttributeSpan> {
     let mut attributes = Vec::new();
     let mut cursor = start;
     while cursor < end {
@@ -734,7 +810,7 @@ fn parse_attribute_spans(index: &TextIndex<'_>, start: usize, end: usize) -> Vec
             cursor += 1;
         }
         if index.starts_with(cursor, "<%") {
-            cursor = find_asp_close(index, cursor + 2, end)
+            cursor = find_asp_close(index, cursor + 2, end, script_language)
                 .map(|offset| offset + 2)
                 .unwrap_or(end);
             continue;
@@ -818,6 +894,75 @@ fn style_attribute_regions_from_tag(tag: &HtmlTag) -> Vec<Region> {
         .collect()
 }
 
+fn server_object_from_tag(index: &TextIndex<'_>, tag: &HtmlTag) -> Option<Value> {
+    if tag.name != "object" {
+        return None;
+    }
+    let runat_server = tag
+        .attributes
+        .get("runat")
+        .and_then(Value::as_str)
+        .map(|value| value.eq_ignore_ascii_case("server"))
+        .unwrap_or(false);
+    if !runat_server {
+        return None;
+    }
+    let id_span = attribute_span_by_name(tag, "id")?;
+    let id = id_span.value.as_str()?.to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let prog_id_span = attribute_span_by_name(tag, "progid");
+    let class_id_span = attribute_span_by_name(tag, "classid");
+    let prog_id = prog_id_span
+        .and_then(|attribute| attribute.value.as_str())
+        .map(str::to_string);
+    let class_id = class_id_span
+        .and_then(|attribute| attribute.value.as_str())
+        .map(str::to_string);
+    let mut object = JsonMap::new();
+    object.insert("range".to_string(), index.range(tag.start, tag.end));
+    object.insert("offset".to_string(), json!(tag.start));
+    object.insert("id".to_string(), Value::String(id));
+    object.insert(
+        "idRange".to_string(),
+        index.range(id_span.value_start, id_span.value_end),
+    );
+    if let Some(value) = prog_id {
+        object.insert("progId".to_string(), Value::String(value));
+    }
+    if let Some(attribute) = prog_id_span {
+        if attribute.value.is_string() {
+            object.insert(
+                "progIdRange".to_string(),
+                index.range(attribute.value_start, attribute.value_end),
+            );
+        }
+    }
+    if let Some(value) = class_id {
+        object.insert("classId".to_string(), Value::String(value));
+    }
+    if let Some(attribute) = class_id_span {
+        if attribute.value.is_string() {
+            object.insert(
+                "classIdRange".to_string(),
+                index.range(attribute.value_start, attribute.value_end),
+            );
+        }
+    }
+    object.insert(
+        "attributes".to_string(),
+        Value::Object(tag.attributes.clone()),
+    );
+    Some(Value::Object(object))
+}
+
+fn attribute_span_by_name<'a>(tag: &'a HtmlTag, name: &str) -> Option<&'a AttributeSpan> {
+    tag.attribute_spans
+        .iter()
+        .find(|attribute| attribute.name.eq_ignore_ascii_case(name))
+}
+
 fn element_region_from_tag(tag: &HtmlTag, close_start: usize, close_end: usize) -> Region {
     if tag.name == "style" {
         return Region {
@@ -886,7 +1031,7 @@ fn find_element_close(
             .to_ascii_lowercase()
             .starts_with(&close)
         {
-            let end = find_tag_end(index, cursor + 2)?;
+            let end = find_tag_end(index, cursor + 2, "VBScript")?;
             return Some((cursor, end + 1));
         }
         cursor += 1;
@@ -939,7 +1084,7 @@ fn find_script_close(
             .to_ascii_lowercase()
             .starts_with(&close)
         {
-            let end = find_tag_end(index, cursor + 2)?;
+            let end = find_tag_end(index, cursor + 2, "VBScript")?;
             return Some((cursor, end + 1));
         }
         if char == '"' || char == '\'' || char == '`' {
@@ -989,7 +1134,7 @@ fn find_style_close(
             .to_ascii_lowercase()
             .starts_with(&close)
         {
-            let end = find_tag_end(index, cursor + 2)?;
+            let end = find_tag_end(index, cursor + 2, "VBScript")?;
             return Some((cursor, end + 1));
         }
         if char == '"' || char == '\'' {
@@ -1025,7 +1170,7 @@ fn directive_from_region(index: &TextIndex<'_>, region: &Region) -> Value {
 
 fn parse_attributes(text: &str) -> Value {
     let index = TextIndex::new(text);
-    let spans = parse_attribute_spans(&index, 0, index.len());
+    let spans = parse_attribute_spans(&index, 0, index.len(), "VBScript");
     let mut object = JsonMap::new();
     for span in spans {
         object.insert(span.name.clone(), span.value.clone());
@@ -2168,7 +2313,7 @@ fn value_to_vb_token(value: &Value) -> Option<VbToken> {
     })
 }
 
-fn collect_symbols_from_parsed(parsed: &Value) -> Vec<Value> {
+fn collect_symbols_from_parsed(parsed: &Value, context: &Value) -> Vec<Value> {
     let uri = parsed
         .get("uri")
         .and_then(Value::as_str)
@@ -2193,9 +2338,26 @@ fn collect_symbols_from_parsed(parsed: &Value) -> Vec<Value> {
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as usize;
             let cst = parse_vbscript_cst(text_index.slice(start, end), text, start);
-            collect_symbols_from_node(&cst, uri, &text_index, None, None, &mut symbols);
+            let document_tokens = cst
+                .get("tokens")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            collect_symbols_from_node(
+                &cst,
+                uri,
+                &text_index,
+                &document_tokens,
+                None,
+                None,
+                None,
+                &mut symbols,
+            );
         }
     }
+    add_server_object_symbols(parsed, &mut symbols);
+    apply_type_annotations(parsed, &text_index, &mut symbols);
+    add_implicit_assignment_symbols(parsed, &text_index, context, &mut symbols);
     symbols
 }
 
@@ -2203,8 +2365,10 @@ fn collect_symbols_from_node(
     node: &Value,
     uri: &str,
     text_index: &TextIndex<'_>,
+    document_tokens: &[Value],
     member_of: Option<String>,
     scope_name: Option<String>,
+    scope_range: Option<Value>,
     symbols: &mut Vec<Value>,
 ) {
     let kind = node.get("kind").and_then(Value::as_str).unwrap_or_default();
@@ -2213,12 +2377,17 @@ fn collect_symbols_from_node(
     if kind == "Class" {
         if let Some(name) = node.get("nameToken").and_then(token_name) {
             let range = token_range(text_index, node.get("nameToken").unwrap());
-            symbols.push(json!({
+            let mut symbol = json!({
                 "name": name,
                 "kind": "class",
                 "range": range,
                 "sourceUri": uri,
-            }));
+                "scopeRange": text_index.range(value_usize(node, "start"), value_usize(node, "end")),
+            });
+            if let Some(documentation) = documentation_for_node(node, document_tokens) {
+                symbol["documentation"] = documentation;
+            }
+            symbols.push(symbol);
             current_member = Some(name.to_string());
         }
     } else if kind == "Procedure" || kind == "Property" {
@@ -2229,6 +2398,8 @@ fn collect_symbols_from_node(
                 .unwrap_or("sub");
             let symbol_kind = if kind == "Property" {
                 "property"
+            } else if member_of.is_some() {
+                "method"
             } else if procedure_kind == "function" {
                 "function"
             } else {
@@ -2244,7 +2415,12 @@ fn collect_symbols_from_node(
             symbol.insert("sourceUri".to_string(), Value::String(uri.to_string()));
             if let Some(owner) = &member_of {
                 symbol.insert("memberOf".to_string(), Value::String(owner.clone()));
+                symbol.insert("containerName".to_string(), Value::String(owner.clone()));
             }
+            symbol.insert(
+                "scopeRange".to_string(),
+                text_index.range(value_usize(node, "start"), value_usize(node, "end")),
+            );
             if let Some(visibility) = node.get("visibility").and_then(Value::as_str) {
                 symbol.insert(
                     "visibility".to_string(),
@@ -2271,8 +2447,22 @@ fn collect_symbols_from_node(
             if !parameters.is_empty() {
                 symbol.insert("parameters".to_string(), Value::Array(parameters));
             }
+            if let Some(parameter_details) = node.get("parameterMetadata").cloned() {
+                symbol.insert("parameterDetails".to_string(), parameter_details);
+            }
+            if procedure_kind == "function" || procedure_kind == "sub" {
+                symbol.insert(
+                    "procedureKind".to_string(),
+                    Value::String(procedure_kind.to_string()),
+                );
+            }
+            if let Some(documentation) = documentation_for_node(node, document_tokens) {
+                symbol.insert("documentation".to_string(), documentation);
+            }
             symbols.push(Value::Object(symbol));
             current_scope = Some(name.to_string());
+            let current_scope_range =
+                Some(text_index.range(value_usize(node, "start"), value_usize(node, "end")));
             if let Some(parameters) = node.get("parameterMetadata").and_then(Value::as_array) {
                 for parameter in parameters {
                     if let Some(token) = parameter.get("token") {
@@ -2283,7 +2473,7 @@ fn collect_symbols_from_node(
                                 "range": token_range(text_index, token),
                                 "sourceUri": uri,
                                 "scopeName": current_scope,
-                                "memberOf": member_of,
+                                "scopeRange": current_scope_range,
                                 "parameterMode": parameter.get("mode").and_then(Value::as_str).unwrap_or("byref"),
                                 "optional": parameter.get("optional").and_then(Value::as_bool).unwrap_or(false),
                             }));
@@ -2296,14 +2486,34 @@ fn collect_symbols_from_node(
         if let Some(identifiers) = node.get("identifiers").and_then(Value::as_array) {
             for token in identifiers {
                 if let Some(name) = token_name(token) {
+                    let symbol_member_of = if scope_name.is_some() {
+                        None
+                    } else {
+                        member_of.clone()
+                    };
+                    let symbol_kind = if kind == "ConstantDeclaration" {
+                        "constant"
+                    } else if symbol_member_of.is_some() {
+                        "field"
+                    } else {
+                        "variable"
+                    };
+                    let local_scope_range = scope_range.clone().or_else(|| {
+                        symbol_member_of.as_ref().map(|_| {
+                            text_index.range(value_usize(node, "start"), value_usize(node, "end"))
+                        })
+                    });
                     symbols.push(json!({
                         "name": name,
-                        "kind": if kind == "ConstantDeclaration" { "constant" } else { "variable" },
+                        "kind": symbol_kind,
                         "range": token_range(text_index, token),
                         "sourceUri": uri,
-                        "memberOf": member_of,
+                        "memberOf": symbol_member_of,
+                        "containerName": symbol_member_of,
                         "scopeName": scope_name,
+                        "scopeRange": local_scope_range,
                         "visibility": node.get("visibility").and_then(Value::as_str),
+                        "documentation": documentation_for_node(node, document_tokens),
                     }));
                 }
             }
@@ -2315,38 +2525,430 @@ fn collect_symbols_from_node(
                 child,
                 uri,
                 text_index,
+                document_tokens,
                 current_member.clone(),
                 current_scope.clone(),
+                scope_range.clone().or_else(|| {
+                    if kind == "Procedure" || kind == "Property" {
+                        Some(text_index.range(value_usize(node, "start"), value_usize(node, "end")))
+                    } else {
+                        None
+                    }
+                }),
                 symbols,
             );
         }
     }
 }
 
-fn diagnose_vbscript(parsed: &Value, symbols: &[Value]) -> Vec<Value> {
+fn documentation_for_node(node: &Value, document_tokens: &[Value]) -> Option<Value> {
+    let offset = value_usize(node, "start");
+    let mut index = document_tokens
+        .iter()
+        .position(|token| value_usize(token, "start") >= offset)
+        .unwrap_or(document_tokens.len());
+    while index > 0 && is_whitespace_or_newline_value(&document_tokens[index - 1]) {
+        index -= 1;
+    }
+    let mut comments = Vec::new();
+    while index > 0 {
+        let token = &document_tokens[index - 1];
+        if token.get("kind").and_then(Value::as_str) != Some("comment") {
+            break;
+        }
+        comments.push(
+            token
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        );
+        index -= 1;
+        while index > 0 && is_whitespace_or_newline_value(&document_tokens[index - 1]) {
+            index -= 1;
+        }
+    }
+    comments.reverse();
+    if comments.is_empty() {
+        return None;
+    }
+    if comments.iter().all(|comment| comment.starts_with("'''")) {
+        return xml_documentation(&comments);
+    }
+    plain_documentation(&comments)
+}
+
+fn is_whitespace_or_newline_value(token: &Value) -> bool {
+    matches!(
+        token.get("kind").and_then(Value::as_str),
+        Some("whitespace" | "newline")
+    )
+}
+
+fn plain_documentation(comments: &[&str]) -> Option<Value> {
+    let summary = comments
+        .iter()
+        .map(|comment| {
+            comment
+                .strip_prefix('\'')
+                .unwrap_or(comment)
+                .trim_end()
+                .to_string()
+        })
+        .filter(|line| !line.trim_start().starts_with('@'))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    if summary.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "format": "plain",
+        "summary": summary,
+        "params": {},
+        "exceptions": [],
+        "see": [],
+        "seealso": [],
+    }))
+}
+
+fn xml_documentation(comments: &[&str]) -> Option<Value> {
+    let xml = comments
+        .iter()
+        .map(|comment| comment.strip_prefix("'''").unwrap_or(comment).trim())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let summary = xml_tag_text(&xml, "summary");
+    let remarks = xml_tag_text(&xml, "remarks");
+    let returns = xml_tag_text(&xml, "returns");
+    let value = xml_tag_text(&xml, "value");
+    let example = xml_tag_text(&xml, "example");
+    let code = xml_tag_text(&xml, "code");
+    let params = xml_param_texts(&xml);
+    if summary.is_none()
+        && remarks.is_none()
+        && returns.is_none()
+        && value.is_none()
+        && example.is_none()
+        && code.is_none()
+        && params.is_empty()
+    {
+        return None;
+    }
+    Some(json!({
+        "format": "xml",
+        "summary": summary,
+        "remarks": remarks,
+        "returns": returns,
+        "value": value,
+        "example": example,
+        "code": code,
+        "params": params,
+        "exceptions": [],
+        "see": [],
+        "seealso": [],
+    }))
+}
+
+fn xml_tag_text(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)? + start;
+    Some(xml[start..end].trim().to_string()).filter(|value| !value.is_empty())
+}
+
+fn xml_param_texts(xml: &str) -> JsonMap {
+    let mut params = JsonMap::new();
+    let mut cursor = 0usize;
+    while let Some(param_start) = xml[cursor..].find("<param") {
+        let start = cursor + param_start;
+        let Some(open_end) = xml[start..].find('>') else {
+            break;
+        };
+        let open_end = start + open_end;
+        let open = &xml[start..=open_end];
+        let Some(name_start) = open.find("name=\"").map(|offset| offset + "name=\"".len()) else {
+            cursor = open_end + 1;
+            continue;
+        };
+        let Some(name_end) = open[name_start..]
+            .find('"')
+            .map(|offset| name_start + offset)
+        else {
+            cursor = open_end + 1;
+            continue;
+        };
+        let Some(close_start) = xml[open_end + 1..]
+            .find("</param>")
+            .map(|offset| open_end + 1 + offset)
+        else {
+            cursor = open_end + 1;
+            continue;
+        };
+        let name = open[name_start..name_end].trim();
+        let text = xml[open_end + 1..close_start].trim();
+        if !name.is_empty() && !text.is_empty() {
+            params.insert(name.to_string(), Value::String(text.to_string()));
+        }
+        cursor = close_start + "</param>".len();
+    }
+    params
+}
+
+fn add_server_object_symbols(parsed: &Value, symbols: &mut Vec<Value>) {
+    let Some(objects) = parsed.get("serverObjects").and_then(Value::as_array) else {
+        return;
+    };
+    let mut existing = symbols
+        .iter()
+        .filter_map(|symbol| symbol.get("name").and_then(Value::as_str))
+        .map(|name| name.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    for object in objects {
+        let Some(id) = object.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        if !is_vb_identifier(id) || existing.contains(&id.to_ascii_lowercase()) {
+            continue;
+        }
+        existing.insert(id.to_ascii_lowercase());
+        let mut symbol = JsonMap::new();
+        symbol.insert("name".to_string(), Value::String(id.to_string()));
+        symbol.insert("kind".to_string(), Value::String("variable".to_string()));
+        symbol.insert(
+            "range".to_string(),
+            object.get("idRange").cloned().unwrap_or_else(
+                || json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}}),
+            ),
+        );
+        symbol.insert(
+            "sourceUri".to_string(),
+            parsed
+                .get("uri")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new())),
+        );
+        if let Some(prog_id) = object.get("progId").and_then(Value::as_str) {
+            symbol.insert("typeName".to_string(), Value::String(prog_id.to_string()));
+            symbol.insert(
+                "type".to_string(),
+                json!({ "name": prog_id, "object": true }),
+            );
+            symbol.insert("explicitType".to_string(), Value::Bool(true));
+        }
+        symbols.push(Value::Object(symbol));
+    }
+}
+
+fn add_implicit_assignment_symbols(
+    parsed: &Value,
+    text_index: &TextIndex<'_>,
+    context: &Value,
+    symbols: &mut Vec<Value>,
+) {
+    let text = parsed
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if text.to_ascii_lowercase().contains("option explicit") {
+        return;
+    }
+    let uri = parsed
+        .get("uri")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut existing = symbols
+        .iter()
+        .chain(
+            context
+                .get("symbols")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten(),
+        )
+        .filter_map(|symbol| symbol.get("name").and_then(Value::as_str))
+        .map(|name| name.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    if let Some(regions) = parsed.get("regions").and_then(Value::as_array) {
+        for region in regions {
+            if region.get("language").and_then(Value::as_str) != Some("vbscript") {
+                continue;
+            }
+            let start = region
+                .get("contentStart")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let end = region
+                .get("contentEnd")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let tokens = tokenize_vbscript(text_index.slice(start, end), start);
+            let significant = tokens
+                .iter()
+                .filter(|token| {
+                    token.kind != "whitespace" && token.kind != "comment" && token.kind != "newline"
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut index = 0usize;
+            while index < significant.len() {
+                let statement_end = statement_end_index(&significant, index);
+                let statement = &significant[index..=statement_end];
+                let target_index = if lower_token(statement.first()) == "set" {
+                    1
+                } else {
+                    0
+                };
+                let Some(target) = statement.get(target_index) else {
+                    index = statement_end + 1;
+                    continue;
+                };
+                let has_assignment = statement
+                    .iter()
+                    .enumerate()
+                    .any(|(item_index, token)| item_index > target_index && token.text == "=");
+                if target.kind == "identifier"
+                    && has_assignment
+                    && statement
+                        .get(target_index + 1)
+                        .map(|token| token.text.as_str())
+                        != Some(".")
+                    && !is_builtin_name(&target.text)
+                    && !is_implicit_keyword_name(&target.text)
+                    && !existing.contains(&target.text.to_ascii_lowercase())
+                {
+                    existing.insert(target.text.to_ascii_lowercase());
+                    symbols.push(json!({
+                        "name": target.text,
+                        "kind": "variable",
+                        "range": text_index.range(target.start, target.end),
+                        "sourceUri": uri,
+                        "implicit": true,
+                    }));
+                }
+                index = statement_end + 1;
+            }
+        }
+    }
+}
+
+fn apply_type_annotations(parsed: &Value, text_index: &TextIndex<'_>, symbols: &mut [Value]) {
+    let Some(regions) = parsed.get("regions").and_then(Value::as_array) else {
+        return;
+    };
+    for region in regions {
+        if region.get("language").and_then(Value::as_str) != Some("vbscript") {
+            continue;
+        }
+        let start = region
+            .get("contentStart")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let end = region
+            .get("contentEnd")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        for token in tokenize_vbscript(text_index.slice(start, end), start)
+            .into_iter()
+            .filter(|token| token.kind == "comment")
+        {
+            let text = token.text.trim_start_matches('\'').trim();
+            if let Some((name, type_name)) = parse_named_type_annotation(text, "@type") {
+                set_annotated_symbol_type(symbols, &name, &type_name, None);
+                continue;
+            }
+            if let Some((name, type_name)) = parse_named_type_annotation(text, "@param") {
+                set_annotated_symbol_type(symbols, &name, &type_name, Some("parameter"));
+                continue;
+            }
+            if let Some(type_name) = text
+                .strip_prefix("@returns")
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if let Some(next_name) = next_procedure_name(parsed, token.start) {
+                    set_annotated_symbol_type(symbols, &next_name, type_name, None);
+                }
+            }
+        }
+    }
+}
+
+fn parse_named_type_annotation(text: &str, marker: &str) -> Option<(String, String)> {
+    let rest = text.strip_prefix(marker)?.trim();
+    let (name, type_name) = rest.split_once(" As ")?;
+    let name = name.rsplit('.').next().unwrap_or(name).trim().to_string();
+    let type_name = type_name.trim().to_string();
+    (!name.is_empty() && !type_name.is_empty()).then_some((name, type_name))
+}
+
+fn set_annotated_symbol_type(
+    symbols: &mut [Value],
+    name: &str,
+    type_name: &str,
+    kind: Option<&str>,
+) {
+    for symbol in symbols {
+        if symbol.get("name").and_then(Value::as_str) != Some(name) {
+            continue;
+        }
+        if kind.is_some() && symbol.get("kind").and_then(Value::as_str) != kind {
+            continue;
+        }
+        if let Some(object) = symbol.as_object_mut() {
+            object.insert("typeName".to_string(), Value::String(type_name.to_string()));
+            object.insert("type".to_string(), json!({ "name": type_name }));
+            object.insert("explicitType".to_string(), Value::Bool(true));
+        }
+    }
+}
+
+fn next_procedure_name(parsed: &Value, offset: usize) -> Option<String> {
+    let text = parsed
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let index = TextIndex::new(text);
+    let tokens = tokenize_vbscript(index.slice(offset, index.len()), offset);
+    for window in tokens.windows(2) {
+        let first = lower_token(window.first());
+        let second = window.get(1);
+        if (first == "function" || first == "sub")
+            && second.map(|token| token.kind.as_str()) == Some("identifier")
+        {
+            return second.map(|token| token.text.clone());
+        }
+    }
+    None
+}
+
+fn diagnose_vbscript(parsed: &Value, symbols: &[Value], context: &Value) -> Vec<Value> {
     let mut diagnostics = Vec::new();
     let text = parsed
         .get("text")
         .and_then(Value::as_str)
         .unwrap_or_default();
     let text_index = TextIndex::new(text);
-    if !text.to_ascii_lowercase().contains("option explicit") {
-        return diagnostics;
-    }
+    let has_option_explicit = text.to_ascii_lowercase().contains("option explicit");
     let declared = symbols
         .iter()
+        .chain(
+            context
+                .get("symbols")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten(),
+        )
         .filter_map(|symbol| symbol.get("name").and_then(Value::as_str))
         .map(|name| name.to_ascii_lowercase())
         .collect::<HashSet<_>>();
-    let builtins = [
-        "request",
-        "response",
-        "session",
-        "application",
-        "server",
-        "asperror",
-    ];
-    let builtin_set = builtins.into_iter().collect::<HashSet<_>>();
+    let declaration_ranges = symbols
+        .iter()
+        .filter_map(|symbol| symbol.get("range"))
+        .map(range_key)
+        .collect::<HashSet<_>>();
+    let mut used = HashSet::<String>::new();
     if let Some(regions) = parsed.get("regions").and_then(Value::as_array) {
         for region in regions {
             if region.get("language").and_then(Value::as_str) != Some("vbscript") {
@@ -2371,7 +2973,14 @@ fn diagnose_vbscript(parsed: &Value, symbols: &[Value]) -> Vec<Value> {
                     continue;
                 }
                 let lower = token.text.to_ascii_lowercase();
-                if declared.contains(&lower) || builtin_set.contains(lower.as_str()) {
+                let token_range = text_index.range(token.start, token.end);
+                if !declaration_ranges.contains(&range_key(&token_range)) {
+                    used.insert(lower.clone());
+                }
+                if !has_option_explicit {
+                    continue;
+                }
+                if declared.contains(&lower) || is_builtin_name(&token.text) {
                     continue;
                 }
                 diagnostics.push(json!({
@@ -2384,13 +2993,183 @@ fn diagnose_vbscript(parsed: &Value, symbols: &[Value]) -> Vec<Value> {
             }
         }
     }
+    if context
+        .get("unusedDiagnostics")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        for symbol in symbols {
+            let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let kind = symbol
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !matches!(
+                kind,
+                "variable" | "constant" | "parameter" | "function" | "sub" | "method" | "property"
+            ) || symbol.get("implicit").and_then(Value::as_bool) == Some(true)
+            {
+                continue;
+            }
+            if used.contains(&name.to_ascii_lowercase()) {
+                continue;
+            }
+            let Some(range) = symbol.get("range") else {
+                continue;
+            };
+            diagnostics.push(json!({
+                "severity": 4,
+                "range": range,
+                "message": format!("'{name}' is declared but never used."),
+                "source": "asp-lsp-vbscript-unused",
+                "code": "vbscript:unused",
+                "tags": [1],
+                "data": {
+                    "kind": kind,
+                    "name": name,
+                },
+            }));
+        }
+    }
     diagnostics
+}
+
+fn range_key(range: &Value) -> String {
+    serde_json::to_string(range).unwrap_or_default()
 }
 
 fn previous_significant_token(tokens: &[VbToken], index: usize) -> Option<&VbToken> {
     tokens[..index].iter().rev().find(|token| {
         token.kind != "whitespace" && token.kind != "comment" && token.kind != "newline"
     })
+}
+
+fn next_significant_token(tokens: &[VbToken], index: usize) -> Option<&VbToken> {
+    tokens[index + 1..].iter().find(|token| {
+        token.kind != "whitespace" && token.kind != "comment" && token.kind != "newline"
+    })
+}
+
+fn collect_external_refs(parsed: &Value, symbols: &[Value]) -> Vec<Value> {
+    let text = parsed
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let text_index = TextIndex::new(text);
+    let declared = symbols
+        .iter()
+        .filter_map(|symbol| symbol.get("name").and_then(Value::as_str))
+        .map(|name| name.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let declaration_ranges = symbols
+        .iter()
+        .filter_map(|symbol| symbol.get("range"))
+        .map(range_key)
+        .collect::<HashSet<_>>();
+    let mut refs = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(regions) = parsed.get("regions").and_then(Value::as_array) {
+        for region in regions {
+            if region.get("language").and_then(Value::as_str) != Some("vbscript") {
+                continue;
+            }
+            let start = region
+                .get("contentStart")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let end = region
+                .get("contentEnd")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let tokens = tokenize_vbscript(text_index.slice(start, end), start);
+            for (index, token) in tokens.iter().enumerate() {
+                if token.kind != "identifier" {
+                    continue;
+                }
+                if previous_significant_token(&tokens, index).map(|token| token.text.as_str())
+                    == Some(".")
+                {
+                    continue;
+                }
+                let lower = token.text.to_ascii_lowercase();
+                let token_range = text_index.range(token.start, token.end);
+                if declaration_ranges.contains(&range_key(&token_range))
+                    || declared.contains(&lower)
+                    || is_builtin_name(&token.text)
+                {
+                    continue;
+                }
+                let next = next_significant_token(&tokens, index);
+                let member_name = if next.map(|token| token.text.as_str()) == Some(".") {
+                    next_significant_token(&tokens, index + 1)
+                        .filter(|token| token.kind == "identifier")
+                        .map(|token| token.text.clone())
+                } else {
+                    None
+                };
+                let key = format!(
+                    "{}|{}|{}",
+                    lower,
+                    member_name
+                        .as_ref()
+                        .map(|value| value.to_ascii_lowercase())
+                        .unwrap_or_default(),
+                    range_key(&token_range)
+                );
+                if !seen.insert(key) {
+                    continue;
+                }
+                refs.push(json!({
+                    "name": token.text,
+                    "range": token_range,
+                    "kindHint": if next.map(|token| token.text.as_str()) == Some("(") { Value::String("function".to_string()) } else { Value::Null },
+                    "memberName": member_name,
+                }));
+            }
+        }
+    }
+    refs
+}
+
+fn external_ref_usages(refs: &[Value]) -> Vec<Value> {
+    let mut usages: JsonMap = JsonMap::new();
+    for reference in refs {
+        let Some(name) = reference.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let member = reference.get("memberName").and_then(Value::as_str);
+        let key = member
+            .map(|member| {
+                format!(
+                    "{}.{}",
+                    name.to_ascii_lowercase(),
+                    member.to_ascii_lowercase()
+                )
+            })
+            .unwrap_or_else(|| name.to_ascii_lowercase());
+        let entry = usages.entry(key.clone()).or_insert_with(|| {
+            json!({
+                "key": key,
+                "name": name,
+                "memberName": member,
+                "kindHint": reference.get("kindHint").cloned().unwrap_or(Value::Null),
+                "count": 0,
+                "ranges": [],
+            })
+        });
+        if let Some(object) = entry.as_object_mut() {
+            let count = object.get("count").and_then(Value::as_u64).unwrap_or(0) + 1;
+            object.insert("count".to_string(), json!(count));
+            if let Some(ranges) = object.get_mut("ranges").and_then(Value::as_array_mut) {
+                ranges.push(reference.get("range").cloned().unwrap_or_else(
+                    || json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}}),
+                ));
+            }
+        }
+    }
+    usages.into_values().collect()
 }
 
 fn summarize_asp_file(parsed: &Value) -> Value {
@@ -2423,7 +3202,7 @@ fn summarize_asp_file(parsed: &Value) -> Value {
             })
         })
         .collect::<Vec<_>>();
-    let symbols = collect_symbols_from_parsed(parsed);
+    let symbols = collect_symbols_from_parsed(parsed, &Value::Null);
     let public_symbols = symbols
         .iter()
         .filter(|symbol| symbol.get("visibility").and_then(Value::as_str) != Some("private"))
@@ -2441,17 +3220,24 @@ fn summarize_asp_file(parsed: &Value) -> Value {
             })
         })
         .collect::<Vec<_>>();
+    let external_refs = collect_external_refs(parsed, &symbols);
+    let external_ref_usages = external_ref_usages(&external_refs);
     let vbscript = if regions
         .iter()
         .any(|region| region.get("language").and_then(Value::as_str) == Some("vbscript"))
+        || parsed
+            .get("serverObjects")
+            .and_then(Value::as_array)
+            .map(|objects| !objects.is_empty())
+            .unwrap_or(false)
     {
         Some(json!({
             "fingerprint": fingerprint(text),
             "localSymbols": symbols,
             "publicSymbols": public_symbols,
             "exports": exports,
-            "externalRefs": [],
-            "externalRefUsages": [],
+            "externalRefs": external_refs,
+            "externalRefUsages": external_ref_usages,
             "typeFacts": [],
         }))
     } else {
@@ -2633,6 +3419,39 @@ fn is_identifier_part(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
+fn is_vb_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    is_identifier_start(first) && chars.all(is_identifier_part)
+}
+
+fn is_builtin_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "request"
+            | "response"
+            | "session"
+            | "application"
+            | "server"
+            | "asperror"
+            | "true"
+            | "false"
+            | "nothing"
+            | "empty"
+            | "null"
+            | "me"
+    )
+}
+
+fn is_implicit_keyword_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "true" | "false" | "nothing" | "empty" | "null" | "me"
+    )
+}
+
 fn lower_token(token: Option<&VbToken>) -> String {
     token
         .map(|token| token.text.to_ascii_lowercase())
@@ -2645,4 +3464,93 @@ fn unquote_vb_string(value: &str) -> String {
         .and_then(|value| value.strip_suffix('"'))
         .map(|value| value.replace("\"\"", "\""))
         .unwrap_or_else(|| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn handle_value(request: Value) -> Value {
+        serde_json::from_str(&handle_json(&request.to_string()).expect("handle json"))
+            .expect("json result")
+    }
+
+    #[test]
+    fn parses_server_objects_and_javascript_close_rules() {
+        let source = r#"<%@ Language=JScript %>
+<object runat="server" id="Catalog" progid="ADODB.Recordset"></object>
+<% var marker = '%>'; Response.Write(marker); %>"#;
+        let result = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        assert_eq!(result["serverObjects"][0]["id"], "Catalog");
+        assert_eq!(result["serverObjects"][0]["progId"], "ADODB.Recordset");
+        assert_eq!(result["regions"][2]["language"], "jscript");
+    }
+
+    #[test]
+    fn closes_vbscript_apostrophe_comments_at_asp_delimiter() {
+        let source = "<%\n' comment %>\n<div>html</div>";
+        let result = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        assert_eq!(
+            result["regions"][0]["contentEnd"],
+            source.find("%>").unwrap()
+        );
+        assert_eq!(result["regions"][1]["language"], "html");
+    }
+
+    #[test]
+    fn returns_symbol_docs_types_unused_and_external_refs() {
+        let source = r#"<%
+' Plain docs
+' @type title As String
+Dim title
+Sub Save(usedArg, unusedArg)
+  Response.Write usedArg
+End Sub
+Response.Write MissingValue
+%>"#;
+        let parsed = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        let analysis = handle_value(json!({
+            "operation": "analyzeVbscript",
+            "parsed": parsed,
+            "context": { "unusedDiagnostics": true },
+        }));
+        let symbols = analysis["symbols"].as_array().expect("symbols");
+        let title = symbols
+            .iter()
+            .find(|symbol| symbol["name"] == "title")
+            .expect("title symbol");
+        assert_eq!(title["typeName"], "String");
+        assert_eq!(title["documentation"]["format"], "plain");
+        assert!(analysis["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .iter()
+            .any(
+                |diagnostic| diagnostic["source"] == "asp-lsp-vbscript-unused"
+                    && diagnostic["tags"][0] == 1
+            ));
+        let summary = handle_value(json!({
+            "operation": "summarizeAspFileAnalysis",
+            "parsed": parsed,
+        }));
+        assert_eq!(
+            summary["vbscript"]["externalRefUsages"][0]["name"],
+            "MissingValue"
+        );
+    }
 }

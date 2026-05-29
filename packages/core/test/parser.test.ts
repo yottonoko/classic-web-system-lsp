@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CompletionItemKind, InsertTextFormat } from "vscode-languageserver-types";
+import { CompletionItemKind, DiagnosticTag, InsertTextFormat } from "vscode-languageserver-types";
 import {
   analyzeVbscript,
   buildVbTypeEnvironment,
@@ -338,10 +338,9 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(parsed.diagnostics[0]?.message).toContain("閉じ区切り");
   });
 
-  it("keeps ASP delimiters inside script strings and comments from ending regions", () => {
+  it("keeps ASP delimiters inside script strings from ending regions", () => {
     const source = `<%
 Response.Write "%>"
-' comment with %>
 Response.Write "done"
 %>
 <%@ LANGUAGE="JScript" %><% var text = '%>'; Response.Write(text); %>`;
@@ -354,6 +353,20 @@ Response.Write "done"
     expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).toContain(
       'Response.Write "done"',
     );
+  });
+
+  it("closes ASP regions at delimiters on VBScript comment lines", () => {
+    const source = `<%
+' comment with %>
+<div>done</div>`;
+    const parsed = parseAspDocument("file:///site/vb-comment-close.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    const block = parsed.regions.find((region) => region.kind === "asp-block");
+    expect(block).toBeDefined();
+    expect(block?.end).toBe(source.indexOf("%>") + "%>".length);
+    expect(source.slice(block?.contentStart, block?.contentEnd)).toContain("' comment with ");
+    expect(source.slice(block?.contentStart, block?.contentEnd)).not.toContain("<div>");
+    expect(parsed.regions.some((region) => region.kind === "html")).toBe(true);
   });
 
   it("keeps ASP delimiters inside script comments from ending regions", () => {
@@ -560,6 +573,92 @@ Response.
     const memberCompletions = getVbscriptCompletions(parsed, { line: 2, character: 9 });
     expect(memberCompletions.some((item) => item.label === "Write")).toBe(true);
     expect(memberCompletions.some((item) => item.label === "If Then")).toBe(false);
+  });
+
+  it("completes matching End block labels for open VBScript blocks", () => {
+    const source = `<%
+Function Render()
+If ready Then
+end
+%>`;
+    const parsed = parseAspDocument("file:///site/end-completion.asp", source);
+    const endOffset = source.lastIndexOf("end") + "end".length;
+    const completions = getVbscriptCompletions(parsed, positionAt(source, endOffset));
+    expect(completions.map((item) => item.label)).toEqual(
+      expect.arrayContaining(["End If", "End Function"]),
+    );
+    expect(completions.find((item) => item.label === "End If")).toMatchObject({
+      kind: CompletionItemKind.Snippet,
+      detail: "VBScript syntax snippet",
+      textEdit: {
+        newText: "End If",
+      },
+    });
+
+    const suffixSource = `<%
+Function Render()
+End F
+%>`;
+    const suffixParsed = parseAspDocument("file:///site/end-function-completion.asp", suffixSource);
+    const suffixCompletions = getVbscriptCompletions(
+      suffixParsed,
+      positionAt(suffixSource, suffixSource.indexOf("End F") + "End F".length),
+    );
+    expect(suffixCompletions.find((item) => item.label === "End Function")).toMatchObject({
+      filterText: "Function",
+      textEdit: {
+        newText: "End Function",
+      },
+    });
+
+    const blockedSource = `<%
+Function Render()
+Do
+end
+%>`;
+    const blockedParsed = parseAspDocument(
+      "file:///site/end-blocked-completion.asp",
+      blockedSource,
+    );
+    const blockedEndOffset = blockedSource.lastIndexOf("end") + "end".length;
+    const blockedCompletions = getVbscriptCompletions(
+      blockedParsed,
+      positionAt(blockedSource, blockedEndOffset),
+    );
+    expect(blockedCompletions.some((item) => item.label === "End Function")).toBe(false);
+
+    const disabled = getVbscriptCompletions(parsed, positionAt(source, endOffset), {
+      syntaxSnippets: false,
+    });
+    expect(disabled.some((item) => item.label === "End If")).toBe(false);
+  });
+
+  it("treats server-side object tags as typed VBScript globals", () => {
+    const source = `<object runat="server" id="rs" progid="ADODB.Recordset"></object>
+<%
+rs.
+%>`;
+    const parsed = parseAspDocument("file:///site/server-object.asp", source);
+    expect(parsed.serverObjects).toHaveLength(1);
+    expect(parsed.serverObjects[0]).toMatchObject({
+      id: "rs",
+      progId: "ADODB.Recordset",
+    });
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.find((symbol) => symbol.name === "rs")).toMatchObject({
+      kind: "variable",
+      typeName: "ADODB.Recordset",
+      explicitType: true,
+    });
+    const completions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("rs.") + "rs.".length),
+      { symbols },
+    );
+    expect(completions.some((item) => item.label === "MoveNext")).toBe(true);
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("rs.")), { symbols }),
+    ).toContain("Dim rs As ADODB.Recordset");
   });
 
   it("identifies fixed and dynamic VBScript arrays as Array symbols", () => {
@@ -1145,6 +1244,11 @@ End Class
     expect(diagnostics.some((diagnostic) => diagnostic.message.includes("unusedArg"))).toBe(true);
     expect(diagnostics.some((diagnostic) => diagnostic.message.includes("Lonely"))).toBe(true);
     expect(diagnostics.every((diagnostic) => diagnostic.severity === 4)).toBe(true);
+    expect(
+      diagnostics
+        .filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-unused")
+        .every((diagnostic) => diagnostic.tags?.includes(DiagnosticTag.Unnecessary)),
+    ).toBe(true);
   });
 
   it("reports VBScript identifier casing hints", () => {
@@ -1927,9 +2031,7 @@ Response.Write BuildName("Ada")
   });
 
   it("uses regular comment blocks as fallback VBScript documentation", () => {
-    const parsed = parseAspDocument(
-      "file:///site/default.asp",
-      `<%
+    const source = `<%
 ' Build a display name.
 ' Used by dashboard headers.
 Function BuildName(first)
@@ -1940,32 +2042,127 @@ Response.Write BuildName("Ada")
 ' @type customerId As String
 ' Customer id from the request.
 Dim customerId
+Dim trailingValue ' Trailing value docs.
+Const TrailingConst = 10 ' Trailing constant docs.
+Dim firstValue, secondValue ' Ambiguous trailing docs.
+Response.Write "not docs" ' Inline code comment before declaration.
+Dim inlineNeighbor
 
 ' Plain fallback.
 ''' <summary>XML summary wins.</summary>
 Function XmlDocumented()
 End Function
-%>`,
-    );
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
     const symbols = collectVbscriptSymbols(parsed);
-    const functionHover = getVbscriptHover(parsed, { line: 3, character: 10 }, { symbols });
-    expect(functionHover).toContain("Build a display name.");
-    expect(functionHover).toContain("Used by dashboard headers.");
-
-    const completion = getVbscriptCompletions(parsed, { line: 6, character: 20 }, { symbols }).find(
-      (item) => item.label === "BuildName",
+    const functionHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("BuildName(first)")),
+      { symbols },
     );
+    expect(functionHover).toContain("Build a display name\\.");
+    expect(functionHover).toContain("Used by dashboard headers\\.");
+
+    const completion = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf('BuildName("Ada")') + "BuildName".length),
+      { symbols },
+    ).find((item) => item.label === "BuildName");
     expect(
       String(resolveVbscriptCompletionItem(completion!, parsed, { symbols }).documentation),
-    ).toContain("Build a display name.");
+    ).toContain("Build a display name\\.");
 
-    const variableHover = getVbscriptHover(parsed, { line: 10, character: 4 }, { symbols });
-    expect(variableHover).toContain("Customer id from the request.");
+    const variableHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("Dim customerId") + "Dim ".length),
+      { symbols },
+    );
+    expect(variableHover).not.toContain("Customer id from the request.");
     expect(variableHover).not.toContain("@type customerId");
 
-    const xmlHover = getVbscriptHover(parsed, { line: 14, character: 10 }, { symbols });
+    const trailingValueHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("trailingValue")),
+      { symbols },
+    );
+    expect(trailingValueHover).toContain("Trailing value docs\\.");
+
+    const trailingConstHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("TrailingConst")),
+      { symbols },
+    );
+    expect(trailingConstHover).toContain("Trailing constant docs\\.");
+
+    const firstValueHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("firstValue")),
+      { symbols },
+    );
+    const secondValueHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("secondValue")),
+      { symbols },
+    );
+    expect(firstValueHover).not.toContain("Ambiguous trailing docs.");
+    expect(secondValueHover).not.toContain("Ambiguous trailing docs.");
+
+    const inlineNeighborHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("inlineNeighbor")),
+      { symbols },
+    );
+    expect(inlineNeighborHover).not.toContain("Inline code comment before declaration.");
+
+    const xmlHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("XmlDocumented()")),
+      { symbols },
+    );
     expect(xmlHover).toContain("XML summary wins.");
     expect(xmlHover).not.toContain("Plain fallback.");
+  });
+
+  it("keeps plain comment docs escaped and tagless triple-quote docs as markdown", () => {
+    const source = `<%
+''' **Markdown** docs with \`code\`.
+''' Second markdown line.
+Function MarkdownDocumented()
+End Function
+
+' **Plain** docs with <summary>tag</summary>.
+' Second plain line.
+Function PlainDocumented()
+End Function
+Dim trailingPlain ' trailing **plain** <value>
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const markdownHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("MarkdownDocumented()")),
+      { symbols },
+    );
+    expect(markdownHover).toContain("**Markdown** docs with `code`.  \nSecond markdown line.");
+
+    const plainHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("PlainDocumented()")),
+      { symbols },
+    );
+    expect(plainHover).toContain("\\*\\*Plain\\*\\* docs");
+    expect(plainHover).toContain("&lt;summary&gt;tag&lt;/summary&gt;");
+    expect(plainHover).toContain("&lt;/summary&gt;\\.  \nSecond plain line\\.");
+    expect(plainHover).not.toContain("**Plain** docs");
+    expect(plainHover).not.toContain("<summary>tag</summary>");
+
+    const trailingHover = getVbscriptHover(
+      parsed,
+      positionAt(source, source.indexOf("trailingPlain")),
+      { symbols },
+    );
+    expect(trailingHover).toContain("\\*\\*plain\\*\\*");
+    expect(trailingHover).toContain("&lt;value&gt;");
   });
 
   it("generates VBScript documentation and type annotations for undocumented functions", () => {
@@ -2226,7 +2423,8 @@ End Function
 %>`,
     );
     const singleHover = getVbscriptHover(single, { line: 2, character: 10 });
-    expect(singleHover).toContain("<summary>Not documentation.</summary>");
+    expect(singleHover).toContain("&lt;summary&gt;Not documentation\\.&lt;/summary&gt;");
+    expect(singleHover).not.toContain("<summary>Not documentation.</summary>");
 
     const broken = parseAspDocument(
       "file:///site/default.asp",
@@ -2305,6 +2503,63 @@ End Sub
         (item) => item.label === "BuildName",
       ),
     ).toBe(true);
+  });
+
+  it("limits comment completions to documentation annotations and hovers annotation tags", () => {
+    const plainAnnotation = markedDocument(`<%
+' @▮
+Response.Write "ok"
+%>`);
+    const plainLabels = getVbscriptCompletions(
+      parseAspDocument("file:///site/default.asp", plainAnnotation.text),
+      plainAnnotation.position,
+    ).map((item) => item.label);
+    expect(plainLabels).toEqual(expect.arrayContaining(["@type", "@param", "@returns"]));
+    expect(plainLabels).not.toContain("Write");
+    expect(plainLabels).not.toContain("Response");
+    const plainTypeCompletion = getVbscriptCompletions(
+      parseAspDocument("file:///site/default.asp", plainAnnotation.text),
+      plainAnnotation.position,
+    ).find((item) => item.label === "@type");
+    expect(plainTypeCompletion?.detail).toBe("VBScript type annotation");
+    expect(String(plainTypeCompletion?.documentation)).toContain("' @type name As Type");
+
+    const docAnnotation = markedDocument(`<%
+''' @▮
+Function BuildName(first)
+End Function
+%>`);
+    const docLabels = getVbscriptCompletions(
+      parseAspDocument("file:///site/default.asp", docAnnotation.text),
+      docAnnotation.position,
+    ).map((item) => item.label);
+    expect(docLabels).toEqual(expect.arrayContaining(["@type", "@param", "@returns"]));
+    expect(docLabels).not.toContain("Function");
+
+    const ordinaryComment = markedDocument(`<%
+' Response.▮
+Response.Write "ok"
+%>`);
+    expect(
+      getVbscriptCompletions(
+        parseAspDocument("file:///site/default.asp", ordinaryComment.text),
+        ordinaryComment.position,
+      ).map((item) => item.label),
+    ).not.toContain("Write");
+
+    const hoverSource = `<%
+' @type customerId As String
+''' @returns BuildName String
+Function BuildName()
+End Function
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", hoverSource);
+    expect(
+      getVbscriptHover(parsed, positionAt(hoverSource, hoverSource.indexOf("@type") + 1)),
+    ).toContain("' @type name As Type");
+    expect(
+      getVbscriptHover(parsed, positionAt(hoverSource, hoverSource.indexOf("@returns") + 1)),
+    ).toContain("' @returns [procedure] Type");
   });
 
   it("tracks common VBScript statements and conservative external COM members", () => {
@@ -2451,7 +2706,11 @@ flags = count > 1 And True
 ' @type items As Array
 Dim items
 items = Array("a", "b")
+' @type sharedName As String
+Dim sharedName
 Sub Save(Optional ByVal firstName, ByRef lastName, defaultName)
+  ' @type sharedName As Number
+  Dim sharedName
 End Sub
 %>`,
     );
@@ -2460,6 +2719,13 @@ End Sub
     expect(symbols.find((symbol) => symbol.name === "count")?.typeName).toBe("Number");
     expect(symbols.find((symbol) => symbol.name === "flags")?.typeName).toBe("Boolean");
     expect(symbols.find((symbol) => symbol.name === "items")?.typeName).toBe("Array");
+    expect(
+      symbols.find((symbol) => symbol.name === "sharedName" && !symbol.scopeName)?.typeName,
+    ).toBe("String");
+    expect(
+      symbols.find((symbol) => symbol.name === "sharedName" && symbol.scopeName === "Save")
+        ?.typeName,
+    ).toBe("Number");
     expect(symbols.find((symbol) => symbol.name === "Save")?.parameters).toEqual([
       "firstName",
       "lastName",
@@ -2645,11 +2911,18 @@ Dim unknownGlobal
 Const UnknownConst = MissingValue
 Function UnknownReturn()
 End Function
+Dim sharedValue
 Sub Render()
+  sharedValue = 1
   Dim localValue
+  implicitLocal = 1
 End Sub
 %>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
+    const sourceRange = {
+      start: { line: 0, character: 0 },
+      end: positionAt(source, source.length),
+    };
     const symbols = collectVbscriptSymbols(parsed);
     expect(symbols.find((symbol) => symbol.name === "rowClass")?.typeName).toBe("String | Number");
     expect(symbols.find((symbol) => symbol.name === "unknownGlobal")?.typeName).toBe("Variant");
@@ -2659,17 +2932,23 @@ End Sub
       symbols.find((symbol) => symbol.name === "localValue" && symbol.scopeName === "Render")
         ?.typeName,
     ).toBe("Variant");
+    expect(
+      symbols.find((symbol) => symbol.name === "implicitLocal" && symbol.scopeName === "Render")
+        ?.typeName,
+    ).toBe("Number");
+    expect(
+      symbols.find((symbol) => symbol.name === "sharedValue" && symbol.scopeName === "Render"),
+    ).toBeUndefined();
+    expect(
+      symbols.find((symbol) => symbol.name === "sharedValue" && !symbol.scopeName)?.typeName,
+    ).toBe("Number");
 
-    const hints = getVbscriptInlayHints(
-      parsed,
-      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
-      { symbols },
-    );
+    const hints = getVbscriptInlayHints(parsed, sourceRange, { symbols });
     expect(hints.some((hint) => hint.label === " (global) As String | Number")).toBe(true);
     expect(hints.some((hint) => hint.label === " (global) As Variant")).toBe(true);
     const hintsWithoutGlobalMarkers = getVbscriptInlayHints(
       parsed,
-      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      sourceRange,
       { symbols },
       { globalVariableMarkers: "off" },
     );
@@ -2687,7 +2966,7 @@ End Sub
     ).toBe(true);
     const hintsWithLocalMarkers = getVbscriptInlayHints(
       parsed,
-      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      sourceRange,
       { symbols },
       { globalVariableMarkers: "all" },
     );
@@ -2698,9 +2977,16 @@ End Sub
           hint.position.line === positionAt(source, source.indexOf("localValue")).line,
       ),
     ).toBe(true);
+    expect(
+      hintsWithLocalMarkers.some(
+        (hint) =>
+          hint.label === " (local) As Number" &&
+          hint.position.line === positionAt(source, source.indexOf("implicitLocal")).line,
+      ),
+    ).toBe(true);
     const localOnlyHints = getVbscriptInlayHints(
       parsed,
-      { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
+      sourceRange,
       { symbols },
       { globalVariableMarkers: "local" },
     );
@@ -2712,6 +2998,13 @@ End Sub
           hint.position.line === positionAt(source, source.indexOf("localValue")).line,
       ),
     ).toBe(true);
+    expect(
+      localOnlyHints.some(
+        (hint) =>
+          hint.label === " (local) As Number" &&
+          hint.position.line === positionAt(source, source.indexOf("implicitLocal")).line,
+      ),
+    ).toBe(true);
 
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
@@ -2719,6 +3012,12 @@ End Sub
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("UnknownConst")), { symbols }),
     ).toContain("(global) Const UnknownConst As Variant");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("sharedValue =")), { symbols }),
+    ).toContain("(global) Dim sharedValue As Number");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("implicitLocal")), { symbols }),
+    ).toContain("(local) Dim implicitLocal As Number");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
     ).not.toContain("VBScript variable");
@@ -2777,6 +3076,7 @@ Response.Write a
   it("uses uncertain markers only before include-aware implicit variable analysis is available", () => {
     const includeSource = `<%
 a = 1
+sharedTitle = "include"
 Sub Render()
   b = "local"
 End Sub
@@ -2785,50 +3085,189 @@ End Sub
     const includeSymbols = collectVbscriptSymbols(includeParsed);
     const includeHints = getVbscriptInlayHints(
       includeParsed,
-      { start: { line: 0, character: 0 }, end: { line: 6, character: 0 } },
+      { start: { line: 0, character: 0 }, end: positionAt(includeSource, includeSource.length) },
       { symbols: includeSymbols },
       { globalVariableMarkers: "all" },
     );
     expect(includeHints.filter((hint) => hint.label === " (global) As Number")).toHaveLength(1);
+    expect(includeHints.filter((hint) => hint.label === " (global) As String")).toHaveLength(1);
     expect(includeHints.filter((hint) => hint.label === " (local) As String")).toHaveLength(1);
     expect(JSON.stringify(includeHints)).not.toContain("(?)");
     expect(
-      getVbscriptHover(includeParsed, { line: 1, character: 0 }, { symbols: includeSymbols }),
+      getVbscriptHover(includeParsed, positionAt(includeSource, includeSource.indexOf("a =")), {
+        symbols: includeSymbols,
+      }),
     ).toContain("(global) Dim a As Number");
     expect(
-      getVbscriptHover(includeParsed, { line: 3, character: 2 }, { symbols: includeSymbols }),
+      getVbscriptHover(includeParsed, positionAt(includeSource, includeSource.indexOf("b =")), {
+        symbols: includeSymbols,
+      }),
     ).toContain("(local) Dim b As String");
 
     const pageSource = `<!-- #include file="shared.inc" -->
 <%
+Response.Write sharedTitle
 a = 1
+Sub Render()
+  b = "page local"
+End Sub
+Response.Write b
 %>`;
     const pageParsed = parseAspDocument("file:///site/default.asp", pageSource);
     const pageSymbols = collectVbscriptSymbols(pageParsed);
     const pageHints = getVbscriptInlayHints(
       pageParsed,
-      { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+      { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
       { symbols: pageSymbols },
+      { globalVariableMarkers: "all" },
     );
     expect(pageHints.some((hint) => hint.label === " (?) As Number")).toBe(true);
+    expect(pageHints.some((hint) => hint.label === " (local) As String")).toBe(true);
     expect(JSON.stringify(pageHints)).not.toContain("(global) As Number");
 
     const includeAwarePageHints = getVbscriptInlayHints(
       pageParsed,
-      { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+      { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
       { symbols: [...pageSymbols, ...includeSymbols], documents: [pageParsed, includeParsed] },
       { globalVariableMarkers: "all" },
     );
-    expect(includeAwarePageHints.some((hint) => hint.label === " (global) As Number")).toBe(true);
+    expect(JSON.stringify(includeAwarePageHints)).not.toContain("(global) As Number");
+    expect(includeAwarePageHints.some((hint) => hint.label === " (local) As String")).toBe(true);
     expect(JSON.stringify(includeAwarePageHints)).not.toContain("(?)");
+    expect(
+      getVbscriptHover(pageParsed, positionAt(pageSource, pageSource.indexOf("sharedTitle")), {
+        symbols: [...pageSymbols, ...includeSymbols],
+        documents: [pageParsed, includeParsed],
+      }),
+    ).toContain("(global) Dim sharedTitle As String");
+    expect(
+      getVbscriptHover(pageParsed, positionAt(pageSource, pageSource.lastIndexOf("b")), {
+        symbols: [...pageSymbols, ...includeSymbols],
+        documents: [pageParsed, includeParsed],
+      }),
+    ).toBeUndefined();
 
     const disabled = getVbscriptInlayHints(
       includeParsed,
-      { start: { line: 0, character: 0 }, end: { line: 6, character: 0 } },
+      { start: { line: 0, character: 0 }, end: positionAt(includeSource, includeSource.length) },
       { symbols: includeSymbols },
       { globalVariableMarkers: "off" },
     );
     expect(JSON.stringify(disabled)).not.toContain("(?)");
+  });
+
+  it("resolves assignments after includes to include-defined implicit globals", () => {
+    const includeSource = `<%
+sharedTitle = "include"
+%>`;
+    const includeParsed = parseAspDocument("file:///site/shared.inc", includeSource);
+    const includeSymbols = collectVbscriptSymbols(includeParsed);
+    const pageSource = `<!-- #include file="shared.inc" -->
+<%
+sharedTitle = "page"
+%>`;
+    const pageParsed = parseAspDocument("file:///site/default.asp", pageSource);
+    const pageSymbols = collectVbscriptSymbols(pageParsed);
+    const context = {
+      symbols: [...pageSymbols, ...includeSymbols],
+      documents: [pageParsed, includeParsed],
+    };
+
+    expect(
+      getVbscriptDefinition(
+        pageParsed,
+        positionAt(pageSource, pageSource.indexOf("sharedTitle =")),
+        context,
+      )?.sourceUri,
+    ).toBe(includeParsed.uri);
+    expect(
+      getVbscriptInlayHints(
+        pageParsed,
+        { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
+        context,
+        { globalVariableMarkers: "all" },
+      ).some((hint) => hint.label === " (global) As String"),
+    ).toBe(false);
+
+    const beforeIncludeSource = `<%
+sharedTitle = "page"
+%>
+<!-- #include file="shared.inc" -->`;
+    const beforeIncludeParsed = parseAspDocument("file:///site/before.asp", beforeIncludeSource);
+    const beforeIncludeSymbols = collectVbscriptSymbols(beforeIncludeParsed);
+    expect(
+      getVbscriptDefinition(
+        beforeIncludeParsed,
+        positionAt(beforeIncludeSource, beforeIncludeSource.indexOf("sharedTitle =")),
+        {
+          symbols: [...beforeIncludeSymbols, ...includeSymbols],
+          documents: [beforeIncludeParsed, includeParsed],
+        },
+      )?.sourceUri,
+    ).toBe(beforeIncludeParsed.uri);
+    expect(
+      getVbscriptInlayHints(
+        beforeIncludeParsed,
+        {
+          start: { line: 0, character: 0 },
+          end: positionAt(beforeIncludeSource, beforeIncludeSource.length),
+        },
+        {
+          symbols: [...beforeIncludeSymbols, ...includeSymbols],
+          documents: [beforeIncludeParsed, includeParsed],
+        },
+        { globalVariableMarkers: "all" },
+      ).some((hint) => hint.label === " (global) As String"),
+    ).toBe(true);
+  });
+
+  it("resolves procedure assignments after includes to include-defined implicit globals", () => {
+    const includeSource = `<%
+sharedTitle = "include"
+%>`;
+    const includeParsed = parseAspDocument("file:///site/shared.inc", includeSource);
+    const includeSymbols = collectVbscriptSymbols(includeParsed);
+    const pageSource = `<!-- #include file="shared.inc" -->
+<%
+Function Render()
+  sharedTitle = "function"
+End Function
+Class Widget
+  Public Sub Save()
+    sharedTitle = "method"
+  End Sub
+End Class
+%>`;
+    const pageParsed = parseAspDocument("file:///site/default.asp", pageSource);
+    const pageSymbols = collectVbscriptSymbols(pageParsed);
+    const context = {
+      symbols: [...pageSymbols, ...includeSymbols],
+      documents: [pageParsed, includeParsed],
+    };
+
+    expect(
+      getVbscriptDefinition(
+        pageParsed,
+        positionAt(pageSource, pageSource.indexOf("sharedTitle =")),
+        context,
+      )?.sourceUri,
+    ).toBe(includeParsed.uri);
+    expect(
+      getVbscriptDefinition(
+        pageParsed,
+        positionAt(pageSource, pageSource.lastIndexOf("sharedTitle =")),
+        context,
+      )?.sourceUri,
+    ).toBe(includeParsed.uri);
+
+    const hints = getVbscriptInlayHints(
+      pageParsed,
+      { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
+      context,
+      { globalVariableMarkers: "all" },
+    );
+    expect(JSON.stringify(hints)).not.toContain("(local) As String");
+    expect(JSON.stringify(hints)).not.toContain("(global) As String");
   });
 
   it("adds semantic token types and modifiers for VBScript symbols", () => {

@@ -19,6 +19,7 @@ import {
   CompletionItemKind,
   createConnection,
   DiagnosticSeverity,
+  DiagnosticTag,
   DocumentHighlightKind,
   DocumentSymbol,
   FileChangeType,
@@ -1977,6 +1978,7 @@ function refreshCachedDocumentIncremental(
     updated.impact.language === "vbscript" &&
     isOrdinaryVbscriptCommentEdit(previous, cached, change);
   seedIncludeDiagnosticsAfterIncrementalChange(previous, cached, settings, change, updated.impact);
+  seedVbProjectDocumentsAfterStableIncludeGraph(previous, cached, settings);
   seedVbReuseAfterIncrementalChange(previous, cached, settings, change, updated.impact);
   seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
   cache.set(document.uri, cached);
@@ -3311,6 +3313,33 @@ function sameIncludeRefs(left: AspParsedDocument, right: AspParsedDocument): boo
   });
 }
 
+function seedVbProjectDocumentsAfterStableIncludeGraph(
+  previous: CachedDocument,
+  cached: CachedDocument,
+  settings: AspSettings,
+): void {
+  if (
+    previous.parsed.defaultLanguage !== cached.parsed.defaultLanguage ||
+    !sameIncludeRefs(previous.parsed, cached.parsed)
+  ) {
+    return;
+  }
+  const previousDocuments = previous.analysis?.vbProjectDocuments;
+  if (
+    !previousDocuments ||
+    previousDocuments.collectionKey !== vbProjectDocumentCollectionKey(previous, settings)
+  ) {
+    return;
+  }
+  analysisFor(cached).vbProjectDocuments = {
+    collectionKey: vbProjectDocumentCollectionKey(cached, settings),
+    documents: [
+      cached.parsed,
+      ...previousDocuments.documents.filter((document) => document.uri !== previous.source.uri),
+    ],
+  };
+}
+
 function seedVbReuseAfterIncrementalChange(
   previous: CachedDocument,
   cached: CachedDocument,
@@ -3496,6 +3525,7 @@ function vbscriptRegionContentFingerprint(parsed: AspParsedDocument): string {
       path: include.path,
       mode: include.mode,
     })),
+    serverObjects: serverObjectDeclarationsFingerprint(parsed),
     regions: parsed.regions
       .filter((region) => region.language === "vbscript")
       .map((region) => ({
@@ -3503,6 +3533,14 @@ function vbscriptRegionContentFingerprint(parsed: AspParsedDocument): string {
         text: textFingerprint(parsed.text.slice(region.contentStart, region.contentEnd)),
       })),
   });
+}
+
+function serverObjectDeclarationsFingerprint(parsed: AspParsedDocument): unknown {
+  return parsed.serverObjects.map((serverObject) => ({
+    id: serverObject.id,
+    progId: serverObject.progId,
+    classId: serverObject.classId,
+  }));
 }
 
 function shiftDiagnosticForIncrementalChange(
@@ -5415,11 +5453,45 @@ function cachedVbProjectContext(
   const key = vbProjectContextCacheKey(documents.documents, settings);
   const globalCached = vbProjectContextCache.get(key);
   if (!globalCached) {
-    return undefined;
+    return buildCachedVbProjectContextFromDocuments(cached, documents.documents, settings);
   }
   globalCached.lastUsed = Date.now();
   analysisFor(cached).vbProjectContext = { key, rootKey, context: globalCached.context };
   return { ...globalCached.context, locale: settings.resolvedLocale };
+}
+
+function buildCachedVbProjectContextFromDocuments(
+  cached: CachedDocument,
+  documents: AspParsedDocument[],
+  settings: AspSettings,
+): VbProjectContext {
+  const contextSettings = vbProjectContextSettings(settings);
+  const summaries = documents.map((document) =>
+    document.uri === cached.parsed.uri
+      ? cachedFileAnalysisSummary(cached, contextSettings)
+      : summarizeAspFileAnalysis(document, contextSettings),
+  );
+  const symbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
+  symbols.push(...configuredVbscriptGlobals(cached, settings));
+  const context: VbProjectContext = {
+    documents,
+    symbols,
+    typeEnvironment: mergeVbTypeEnvironment(
+      buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
+      summaries.flatMap((summary) => summary.vbscript?.typeFacts ?? []),
+      symbols,
+    ),
+    externalRefUsages: summaries.flatMap((summary) => summary.vbscript?.externalRefUsages ?? []),
+    ...contextSettings,
+  };
+  const key = vbProjectContextCacheKey(documents, settings);
+  rememberVbProjectContext(key, context);
+  analysisFor(cached).vbProjectContext = {
+    key,
+    rootKey: vbProjectRootContextCacheKey(cached, settings),
+    context,
+  };
+  return { ...context, locale: settings.resolvedLocale };
 }
 
 function buildImmediateLocalVbProjectContext(
@@ -5933,6 +6005,12 @@ function vbProjectDocumentFingerprint(document: AspParsedDocument): unknown {
       path: include.path,
       mode: include.mode,
     })),
+    serverObjects: document.serverObjects.map((serverObject) => ({
+      offset: serverObject.offset,
+      id: serverObject.id,
+      progId: serverObject.progId,
+      classId: serverObject.classId,
+    })),
     regions: document.regions
       .filter((region) => region.language === "vbscript")
       .map((region) => ({
@@ -6111,7 +6189,11 @@ async function collectCachedVbProjectDocumentsAsync(
 function vbProjectDocumentCollectionKey(cached: CachedDocument, settings: AspSettings): string {
   return JSON.stringify({
     uri: cached.source.uri,
-    text: textFingerprint(cached.parsed.text),
+    defaultLanguage: cached.parsed.defaultLanguage,
+    includes: cached.parsed.includes.map((include) => ({
+      path: include.path,
+      mode: include.mode,
+    })),
     resolution: includeResolutionSettingsKey(settings),
   });
 }
@@ -6743,6 +6825,7 @@ function tsDiagnosticToLsp(
     message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
     code: diagnostic.code,
     source: override.source ?? "asp-lsp-typescript",
+    tags: diagnostic.reportsUnnecessary === true ? [DiagnosticTag.Unnecessary] : undefined,
   };
 }
 
@@ -9678,19 +9761,18 @@ function removeVbscriptParameterEdit(
   symbol: VbSymbol,
 ): TextEdit | undefined {
   const line = lineText(cached.source, symbol.range.start.line);
-  const startOffset = cached.source.offsetAt(symbol.range.start);
   const endOffset = cached.source.offsetAt(symbol.range.end);
   const lineStart = cached.source.offsetAt({ line: symbol.range.start.line, character: 0 });
   const lineEnd = lineStart + line.length;
-  let removeStart = startOffset;
+  let removeStart = parameterRemovalStartOffset(cached.source, symbol, lineStart);
   let removeEnd = endOffset;
   const after = cached.source.getText({
-    start: symbol.range.end,
+    start: cached.source.positionAt(removeEnd),
     end: cached.source.positionAt(lineEnd),
   });
   const before = cached.source.getText({
     start: cached.source.positionAt(lineStart),
-    end: symbol.range.start,
+    end: cached.source.positionAt(removeStart),
   });
   const afterComma = /^\s*,\s*/.exec(after);
   const beforeComma = /,\s*$/.exec(before);
@@ -9709,6 +9791,31 @@ function removeVbscriptParameterEdit(
     },
     newText: "",
   };
+}
+
+function parameterRemovalStartOffset(
+  document: TextDocument,
+  symbol: VbSymbol,
+  lineStart: number,
+): number {
+  const startOffset = document.offsetAt(symbol.range.start);
+  const before = document.getText({
+    start: document.positionAt(lineStart),
+    end: symbol.range.start,
+  });
+  const segmentStart = Math.max(before.lastIndexOf("("), before.lastIndexOf(",")) + 1;
+  const segmentPrefix = before.slice(segmentStart);
+  const keywordPrefix = /(?:^|\s)((?:(?:Optional|ByRef|ByVal)\s+)+)$/i.exec(segmentPrefix);
+  if (!keywordPrefix?.[1]) {
+    return startOffset;
+  }
+  return (
+    lineStart +
+    segmentStart +
+    keywordPrefix.index +
+    keywordPrefix[0].length -
+    keywordPrefix[1].length
+  );
 }
 
 async function vbscriptIncludeSuggestionActionsAsync(
