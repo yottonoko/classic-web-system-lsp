@@ -586,10 +586,17 @@ fn find_asp_close(index: &TextIndex<'_>, offset: usize, max_end: usize) -> Optio
                 cursor += 1;
             }
         } else if let Some(quote) = js_quote {
-            if char == '\\' && quote != '`' {
+            // TS 版 (asp-scanner.ts find_asp_close) と挙動を一致させる。
+            if quote == '\'' && (char == '\r' || char == '\n') {
+                js_quote = None;
+            } else if char == '\\' {
                 cursor += 1;
             } else if char == quote {
-                js_quote = None;
+                if quote == '"' && next == '"' {
+                    cursor += 1;
+                } else {
+                    js_quote = None;
+                }
             }
         } else if char == '%' && next == '>' {
             return Some(cursor);
