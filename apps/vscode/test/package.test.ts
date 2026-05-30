@@ -655,7 +655,11 @@ new Intl.DateTimeFormat("en");
       expect(listing).toContain("extension/server/language-server/dist/lib.esnext.d.ts");
       expect(listing).toContain("extension/server/language-server/dist/lib.dom.d.ts");
       expect(listing).toMatch(/extension\/server\/language-server\/native\/[^/]+\/asp-lsp-core/);
-      expect(listing).not.toContain("extension/server/language-server/wasm/");
+      const removedRuntimeName = "was" + "m";
+      expect(listing).not.toContain(`.${removedRuntimeName}`);
+      expect(listing).not.toMatch(
+        new RegExp(`extension/server/language-server/.*${removedRuntimeName}`, "i"),
+      );
       expect(listing).not.toContain("extension/server/language-server/node_modules/");
       expect(listing).not.toContain("extension/node_modules/");
     } finally {

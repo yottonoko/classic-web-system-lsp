@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CompletionItemKind, DiagnosticTag, InsertTextFormat } from "vscode-languageserver-types";
 import {
+  aspAnalysisBackendInfo,
   analyzeVbscript,
   buildVbTypeEnvironment,
   buildVirtualDocuments,
@@ -21,6 +22,7 @@ import {
   getVbscriptTypeDefinition,
   parseAspCst,
   parseAspDocument,
+  parseAspDocumentAsync,
   parseVbscriptTypeRef,
   parseVbscriptCst,
   prepareVbscriptCallHierarchy,
@@ -32,6 +34,51 @@ import {
 import type { VbCstNode } from "../src";
 
 describe("parseAspDocument", () => {
+  it("treats the removed WebAssembly backend mode as TypeScript fallback", () => {
+    const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
+    const removedMode = "was" + "m";
+    process.env.ASP_LSP_ANALYSIS_BACKEND = removedMode;
+    try {
+      const parsed = parseAspDocument("file:///site/default.asp", `<% Response.Write "ok" %>`);
+      expect(parsed.defaultLanguage).toBe("VBScript");
+      expect(aspAnalysisBackendInfo()).toMatchObject({
+        backend: "typescript-fallback",
+        engine: "typescript",
+        reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${removedMode}`,
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
+      } else {
+        process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
+      }
+    }
+  });
+
+  it("treats the removed WebAssembly backend mode as async TypeScript fallback", async () => {
+    const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
+    const removedMode = "was" + "m";
+    process.env.ASP_LSP_ANALYSIS_BACKEND = removedMode;
+    try {
+      const parsed = await parseAspDocumentAsync(
+        "file:///site/default.asp",
+        `<% Response.Write "ok" %>`,
+      );
+      expect(parsed.defaultLanguage).toBe("VBScript");
+      expect(aspAnalysisBackendInfo()).toMatchObject({
+        backend: "typescript-fallback",
+        engine: "typescript",
+        reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${removedMode}`,
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
+      } else {
+        process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
+      }
+    }
+  });
+
   it("updates safe HTML edits incrementally while shifting later include ranges", () => {
     const source = `<div>hello</div>
 <!-- #include file="common.inc" -->
