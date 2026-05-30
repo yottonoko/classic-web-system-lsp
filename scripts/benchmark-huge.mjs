@@ -4,10 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
-import {
-  embeddedOperationNames,
-  runEmbeddedOperationForParsed,
-} from "./embedded-language-benchmark.mjs";
+import { embeddedOperationNames, runEmbeddedOperation } from "./embedded-language-benchmark.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -45,11 +42,9 @@ await runBenchmark("parseAspDocument", async () => {
   }
 });
 
-const parsedDocuments = await Promise.all(
-  sources.map((source) => parseAspDocumentAsync(source.uri, source.text)),
-);
-await runBenchmark("buildVirtualDocuments", () => {
-  for (const parsed of parsedDocuments) {
+await runBenchmark("buildVirtualDocuments", async () => {
+  for (const source of sources) {
+    const parsed = await parseAspDocumentAsync(source.uri, source.text);
     buildVirtualDocuments(parsed);
   }
 });
@@ -67,9 +62,9 @@ await runBenchmark("analyzeVbscript", async () => {
 });
 
 for (const operation of embeddedOperationNames) {
-  await runBenchmark(operation, () => {
-    for (const parsed of parsedDocuments) {
-      runEmbeddedOperationForParsed(operation, parsed, core);
+  await runBenchmark(operation, async () => {
+    for (const source of sources) {
+      await runEmbeddedOperation(operation, source, core);
     }
   });
 }
