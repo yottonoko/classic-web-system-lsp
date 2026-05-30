@@ -20,6 +20,7 @@ import {
   tryNativeParseAspCstAsync,
   tryNativeParseAspDocument,
   tryNativeParseAspDocumentAsync,
+  tryNativeParseAspDocumentVbscriptAsync,
 } from "./native-backend";
 export { normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 
@@ -45,6 +46,47 @@ export async function parseAspDocumentAsync(
     return native;
   }
   return parseAspDocumentTypeScript(uri, text, settings);
+}
+
+const hydratedVbscriptDocuments = new WeakSet<AspParsedDocument>();
+
+/// 浅い CST（native parseAspDocumentShallow 由来）に VB CST サブツリーを attach して
+/// full 相当へ復元する。`parsed.cst` を直接 walk する消費者（参照解決など）で必要。
+/// すでに VB CST を持つ（TS フル parse 由来）か native 無効なら何もしない。
+export async function hydrateVbscriptCst(
+  parsed: AspParsedDocument,
+  settings: AspSettings = {},
+): Promise<AspParsedDocument> {
+  if (hydratedVbscriptDocuments.has(parsed) || cstHasVbscript(parsed.cst)) {
+    return parsed;
+  }
+  const segments = await tryNativeParseAspDocumentVbscriptAsync(parsed.uri, parsed.text, settings);
+  if (segments) {
+    const vbscriptByStart = new Map(segments.map((segment) => [segment.start, segment.vbscript]));
+    attachVbscriptByStart(parsed.cst, vbscriptByStart);
+  }
+  hydratedVbscriptDocuments.add(parsed);
+  return parsed;
+}
+
+function cstHasVbscript(node: AspCstNode): boolean {
+  if (node.vbscript) {
+    return true;
+  }
+  return (node.children ?? []).some((child) => cstHasVbscript(child));
+}
+
+function attachVbscriptByStart(
+  node: AspCstNode,
+  vbscriptByStart: Map<number, AspCstNode["vbscript"]>,
+): void {
+  const vbscript = vbscriptByStart.get(node.start);
+  if (vbscript) {
+    node.vbscript = vbscript;
+  }
+  for (const child of node.children ?? []) {
+    attachVbscriptByStart(child, vbscriptByStart);
+  }
 }
 
 function parseAspDocumentTypeScript(

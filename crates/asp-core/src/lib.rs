@@ -109,6 +109,36 @@ impl CoreState {
                     "serverObjectCount": parsed.get("serverObjects").and_then(Value::as_array).map_or(0, Vec::len),
                 })
             }
+            "parseAspDocumentShallow" => {
+                // 浅いドキュメント（CST スケルトン）を返す。重い VB CST/トークンは
+                // parseAspDocumentVbscript で必要時に取得する（境界転送コスト削減のため）。
+                let uri = request
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let text = request
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let settings = request.get("settings").unwrap_or(&Value::Null);
+                let parsed = self.cached_parse_asp_document(request, uri, text, settings);
+                shallow_document(&parsed)
+            }
+            "parseAspDocumentVbscript" => {
+                // 各 CST ノードに付く VB CST サブツリーを node.start で索引付けして返す。
+                // TS 側はこれを浅い CST に attach して full 相当に復元する。
+                let uri = request
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let text = request
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let settings = request.get("settings").unwrap_or(&Value::Null);
+                let parsed = self.cached_parse_asp_document(request, uri, text, settings);
+                document_vbscript_segments(&parsed)
+            }
             "collectVbscriptSymbols" => {
                 let parsed = request
                     .get("parsed")
@@ -276,7 +306,10 @@ fn semantic_cache_key(request: &Value, context: &Value, operation: &str) -> Opti
 fn serialized_result_cache_key(request: &Value) -> Option<String> {
     let operation = request.get("operation").and_then(Value::as_str)?;
     match operation {
-        "parseAspDocument" | "parseAspDocumentLight" => {
+        "parseAspDocument"
+        | "parseAspDocumentLight"
+        | "parseAspDocumentShallow"
+        | "parseAspDocumentVbscript" => {
             let document_key = request.get("cacheKey").and_then(Value::as_str)?;
             Some(format!("{document_key}\0{operation}"))
         }
@@ -459,6 +492,63 @@ fn parse_asp_document(uri: &str, text: &str, settings: &Value) -> Value {
         "defaultLanguage": default_language,
         "diagnostics": diagnostics,
     })
+}
+
+/// 浅いドキュメント投影。CST から重い `vbscript` サブツリーと `tokens` を取り除き、
+/// 構造（kind/span/regionKind/language/children）だけ残す。regions/directives/includes
+/// などのトップレベル情報はそのまま。
+fn shallow_document(full: &Value) -> Value {
+    let mut shallow = full.clone();
+    // ドキュメント全文は TS 側が入力として保持しているため転送しない（受信側で再注入）。
+    if let Some(object) = shallow.as_object_mut() {
+        object.remove("text");
+    }
+    if let Some(cst) = shallow.get_mut("cst") {
+        strip_cst_heavy(cst);
+    }
+    shallow
+}
+
+fn strip_cst_heavy(node: &mut Value) {
+    if let Some(object) = node.as_object_mut() {
+        object.remove("vbscript");
+        // ノード単位の text 断片はソースから start/end で復元可能なため転送しない。
+        object.remove("text");
+        if let Some(tokens) = object.get_mut("tokens") {
+            *tokens = Value::Array(Vec::new());
+        }
+        if let Some(Value::Array(children)) = object.get_mut("children") {
+            for child in children.iter_mut() {
+                strip_cst_heavy(child);
+            }
+        }
+    }
+}
+
+/// CST 内の `vbscript` サブツリーを node.start で索引付けして列挙する。
+/// 戻り値: `[{ "start": <usize>, "vbscript": <VbCstNode> }, ...]`
+fn document_vbscript_segments(full: &Value) -> Value {
+    let mut segments = Vec::new();
+    if let Some(cst) = full.get("cst") {
+        collect_vbscript_segments(cst, &mut segments);
+    }
+    Value::Array(segments)
+}
+
+fn collect_vbscript_segments(node: &Value, out: &mut Vec<Value>) {
+    if let Some(object) = node.as_object() {
+        if let Some(vbscript) = object.get("vbscript") {
+            out.push(json!({
+                "start": object.get("start").cloned().unwrap_or(Value::Null),
+                "vbscript": vbscript.clone(),
+            }));
+        }
+        if let Some(Value::Array(children)) = object.get("children") {
+            for child in children {
+                collect_vbscript_segments(child, out);
+            }
+        }
+    }
 }
 
 fn parse_asp_cst(text: &str, settings: &Value) -> Value {

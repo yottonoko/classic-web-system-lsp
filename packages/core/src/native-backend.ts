@@ -48,27 +48,41 @@ export function tryNativeParseAspDocument(
   return nativeOperation<AspParsedDocument>({ operation: "parseAspDocument", uri, text, settings });
 }
 
-export function tryNativeParseAspDocumentAsync(
+export async function tryNativeParseAspDocumentAsync(
   uri: string,
   text: string,
   settings: AspSettings,
 ): Promise<AspParsedDocument | undefined> {
-  return nativeOperationAsync<AspParsedDocument>({
-    operation: "parseAspDocument",
+  // 浅いドキュメント（CST スケルトン）を取得する。重い VB CST は必要時に
+  // tryNativeParseAspDocumentVbscriptAsync で取得して attach する。
+  const shallow = await nativeOperationAsync<AspParsedDocument>({
+    operation: "parseAspDocumentShallow",
     uri,
     text,
     settings,
     cacheKey: nativeDocumentCacheKey(uri, text, settings),
   });
+  if (!shallow) {
+    return undefined;
+  }
+  // ドキュメント全文は転送省略しているため、入力テキストを再注入する。
+  shallow.text = text;
+  return shallow;
 }
 
-export function tryNativeParseAspDocumentLightAsync(
+/// CST ノードに付く VB CST サブツリーを node.start で索引付けして取得する。
+export interface NativeVbscriptSegment {
+  start: number;
+  vbscript: VbCstNode;
+}
+
+export function tryNativeParseAspDocumentVbscriptAsync(
   uri: string,
   text: string,
   settings: AspSettings,
-): Promise<unknown | undefined> {
-  return nativeOperationAsync<unknown>({
-    operation: "parseAspDocumentLight",
+): Promise<NativeVbscriptSegment[] | undefined> {
+  return nativeOperationAsync<NativeVbscriptSegment[]>({
+    operation: "parseAspDocumentVbscript",
     uri,
     text,
     settings,

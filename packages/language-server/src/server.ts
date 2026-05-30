@@ -98,6 +98,7 @@ import {
   getVbscriptSemanticTokens,
   getVbscriptSignatureHelp,
   getVbscriptTypeDefinition,
+  hydrateVbscriptCst,
   parseAspDocument,
   parseAspDocumentAsync,
   parseVbscriptTypeRef,
@@ -5701,6 +5702,8 @@ async function cachedForWorkspaceVbReferenceSummary(
   try {
     const text = await readTextFileAsync(summary.fileName, settings.legacyEncoding);
     const parsed = await parseAspDocumentAsync(summary.uri, text, settings);
+    // 参照解決などは parsed.cst を直接 walk するため、浅い CST を VB CST で full 化する。
+    await hydrateVbscriptCst(parsed, settings);
     return createCachedDocument(
       TextDocument.create(summary.uri, "classic-asp", 0, text),
       parsed,
