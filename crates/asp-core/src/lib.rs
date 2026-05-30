@@ -1,5 +1,6 @@
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 type JsonMap = Map<String, Value>;
 
@@ -1312,7 +1313,9 @@ struct VbNode {
 }
 
 fn parse_vbscript_cst(text: &str, source_text: &str, base_offset: usize) -> Value {
-    let tokens = tokenize_vbscript(text, base_offset);
+    let index = TextIndex::new(text);
+    let text_len = index.len();
+    let tokens = tokenize_vbscript(&index, base_offset);
     let significant = tokens
         .iter()
         .filter(|token| token.kind != "whitespace" && token.kind != "comment")
@@ -1321,9 +1324,9 @@ fn parse_vbscript_cst(text: &str, source_text: &str, base_offset: usize) -> Valu
     let mut document = VbNode {
         kind: "Document".to_string(),
         start: base_offset,
-        end: base_offset + TextIndex::new(text).len(),
+        end: base_offset + text_len,
         content_start: Some(base_offset),
-        content_end: Some(base_offset + TextIndex::new(text).len()),
+        content_end: Some(base_offset + text_len),
         name_token: None,
         tokens: tokens.clone(),
         children: Vec::new(),
@@ -1578,13 +1581,12 @@ fn parse_vbscript_cst(text: &str, source_text: &str, base_offset: usize) -> Valu
     close_unclosed(
         &mut document,
         &mut stack,
-        base_offset + TextIndex::new(text).len(),
+        base_offset + text_len,
     );
     vb_node_to_value(&document)
 }
 
-fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
-    let index = TextIndex::new(text);
+fn tokenize_vbscript(index: &TextIndex<'_>, base_offset: usize) -> Vec<VbToken> {
     let mut tokens = Vec::new();
     let mut cursor = 0usize;
     while cursor < index.len() {
@@ -1598,7 +1600,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             }
             tokens.push(vb_token(
                 "newline",
-                &index,
+                index,
                 start,
                 cursor,
                 base_offset,
@@ -1616,7 +1618,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             }
             tokens.push(vb_token(
                 "whitespace",
-                &index,
+                index,
                 start,
                 cursor,
                 base_offset,
@@ -1634,7 +1636,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             }
             tokens.push(vb_token(
                 "comment",
-                &index,
+                index,
                 start,
                 cursor,
                 base_offset,
@@ -1642,7 +1644,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             ));
             continue;
         }
-        if is_rem_comment_start(&index, cursor) {
+        if is_rem_comment_start(index, cursor) {
             cursor += 3;
             while cursor < index.len() {
                 let c = index.char_at(cursor).unwrap_or('\0');
@@ -1653,7 +1655,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             }
             tokens.push(vb_token(
                 "comment",
-                &index,
+                index,
                 start,
                 cursor,
                 base_offset,
@@ -1677,7 +1679,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             let text_value = index.slice(start, cursor).to_string();
             tokens.push(vb_token(
                 "string",
-                &index,
+                index,
                 start,
                 cursor,
                 base_offset,
@@ -1696,7 +1698,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             } else {
                 "identifier"
             };
-            tokens.push(vb_token(kind, &index, start, cursor, base_offset, None));
+            tokens.push(vb_token(kind, index, start, cursor, base_offset, None));
             continue;
         }
         if ch.is_ascii_digit() {
@@ -1707,11 +1709,11 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             } {
                 cursor += 1;
             }
-            tokens.push(vb_token("number", &index, start, cursor, base_offset, None));
+            tokens.push(vb_token("number", index, start, cursor, base_offset, None));
             continue;
         }
         cursor += 1;
-        tokens.push(vb_token("symbol", &index, start, cursor, base_offset, None));
+        tokens.push(vb_token("symbol", index, start, cursor, base_offset, None));
     }
     tokens
 }
@@ -1733,16 +1735,19 @@ fn vb_token(
     }
 }
 
-fn vb_keywords() -> HashSet<&'static str> {
-    [
-        "and", "as", "byref", "byval", "call", "case", "class", "const", "dim", "do", "each",
-        "else", "elseif", "empty", "end", "exit", "explicit", "false", "for", "function", "get",
-        "if", "in", "is", "let", "loop", "me", "mod", "new", "next", "not", "nothing", "null",
-        "option", "or", "preserve", "private", "property", "public", "redim", "rem", "select",
-        "set", "step", "sub", "then", "to", "true", "until", "wend", "while", "with",
-    ]
-    .into_iter()
-    .collect()
+fn vb_keywords() -> &'static HashSet<&'static str> {
+    static KEYWORDS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    KEYWORDS.get_or_init(|| {
+        [
+            "and", "as", "byref", "byval", "call", "case", "class", "const", "dim", "do", "each",
+            "else", "elseif", "empty", "end", "exit", "explicit", "false", "for", "function", "get",
+            "if", "in", "is", "let", "loop", "me", "mod", "new", "next", "not", "nothing", "null",
+            "option", "or", "preserve", "private", "property", "public", "redim", "rem", "select",
+            "set", "step", "sub", "then", "to", "true", "until", "wend", "while", "with",
+        ]
+        .into_iter()
+        .collect()
+    })
 }
 
 fn is_rem_comment_start(index: &TextIndex<'_>, offset: usize) -> bool {
@@ -2455,7 +2460,8 @@ fn diagnose_vbscript(parsed: &Value, symbols: &[Value]) -> Vec<Value> {
                 .get("contentEnd")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as usize;
-            let tokens = tokenize_vbscript(text_index.slice(start, end), start);
+            let region_index = TextIndex::new(text_index.slice(start, end));
+            let tokens = tokenize_vbscript(&region_index, start);
             for (index, token) in tokens.iter().enumerate() {
                 if token.kind != "identifier" {
                     continue;

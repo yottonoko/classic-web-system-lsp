@@ -2214,11 +2214,31 @@ function docCommentBlockBoundary(tokens: VbToken[], startIndex: number, directio
   return boundary;
 }
 
+// The native analyzeVbscript ignores cross-document/project context, so fall back to
+// the TypeScript analyzer whenever the context carries project-wide information.
+// An empty context object alone does not force the fallback.
+function requiresTsSemanticContext(context: VbProjectContext): boolean {
+  if ((context.symbols?.length ?? 0) > 0) {
+    return true;
+  }
+  if ((context.documents?.length ?? 0) > 1) {
+    return true;
+  }
+  if ((context.externalRefUsages?.length ?? 0) > 0) {
+    return true;
+  }
+  const typeEnvironment = context.typeEnvironment;
+  if (typeEnvironment && (typeEnvironment.types.length > 0 || typeEnvironment.symbols.length > 0)) {
+    return true;
+  }
+  return false;
+}
+
 export function analyzeVbscript(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
-  if (process.env.ASP_LSP_NATIVE_SEMANTICS === "1") {
+  if (process.env.ASP_LSP_NATIVE_SEMANTICS === "1" && !requiresTsSemanticContext(context)) {
     const native = tryNativeAnalyzeVbscript(parsed, context);
     if (native) {
       return native;
