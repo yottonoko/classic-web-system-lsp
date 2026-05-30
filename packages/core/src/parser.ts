@@ -20,6 +20,7 @@ import {
   tryNativeParseAspCstAsync,
   tryNativeParseAspDocument,
   tryNativeParseAspDocumentAsync,
+  tryNativeParseAspDocumentSkeletonAsync,
   tryNativeParseAspDocumentVbscriptAsync,
 } from "./native-backend";
 export { normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
@@ -48,6 +49,18 @@ export async function parseAspDocumentAsync(
   return parseAspDocumentTypeScript(uri, text, settings);
 }
 
+export async function parseAspDocumentSkeletonAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): Promise<AspParsedDocument> {
+  const native = await tryNativeParseAspDocumentSkeletonAsync(uri, text, settings);
+  if (native) {
+    return native;
+  }
+  return parseAspDocumentSkeletonTypeScript(uri, text, settings);
+}
+
 const hydratedVbscriptDocuments = new WeakSet<AspParsedDocument>();
 
 /// 浅い CST（native parseAspDocumentShallow 由来）に VB CST サブツリーを attach して
@@ -68,6 +81,8 @@ export async function hydrateVbscriptCst(
     for (const child of parsed.cst.children ?? []) {
       attachVbscriptByStart(child, vbscriptByStart);
     }
+  } else {
+    attachVbscriptFromTypeScriptParser(parsed.cst, parsed.text);
   }
   hydratedVbscriptDocuments.add(parsed);
   return parsed;
@@ -90,6 +105,19 @@ function attachVbscriptByStart(
   }
   for (const child of node.children ?? []) {
     attachVbscriptByStart(child, vbscriptByStart);
+  }
+}
+
+function attachVbscriptFromTypeScriptParser(node: AspCstNode, sourceText: string): void {
+  if (node.language === "vbscript" && !node.vbscript) {
+    node.vbscript = parseVbscriptCst(
+      sourceText.slice(node.contentStart, node.contentEnd),
+      sourceText,
+      node.contentStart,
+    );
+  }
+  for (const child of node.children ?? []) {
+    attachVbscriptFromTypeScriptParser(child, sourceText);
   }
 }
 
@@ -137,20 +165,153 @@ function parseAspDocumentTypeScript(
   };
 }
 
+function parseAspDocumentSkeletonTypeScript(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): AspParsedDocument {
+  const diagnostics: AspParsedDocument["diagnostics"] = [];
+  const scan = scanHtmlAndAsp(text, diagnostics, settings);
+  const { inlineRegions, tagRegions, includes, serverObjects } = scan;
+  const directives = inlineRegions
+    .filter((region) => region.kind === "asp-directive")
+    .map((region): AspDirective => {
+      const raw = text.slice(region.contentStart, region.contentEnd).trim();
+      const normalized = raw.startsWith("@") ? raw.slice(1).trim() : raw;
+      const [first = "Page", ...rest] = normalized.split(/\s+/);
+      const hasExplicitName = !first.includes("=");
+      const name = hasExplicitName ? first : "Page";
+      const attributeText = hasExplicitName ? rest.join(" ") : normalized;
+      return {
+        offset: region.start,
+        range: rangeFromOffsets(text, region.start, region.end),
+        name,
+        attributes: parseAttributes(attributeText),
+      };
+    });
+  const directiveLanguage = directives
+    .map((directive) => directive.attributes.language ?? directive.attributes.LANGUAGE)
+    .find((value): value is string => typeof value === "string");
+  const defaultLanguage = normalizeScriptLanguage(
+    directiveLanguage ?? settings.defaultLanguage ?? "VBScript",
+  );
+  const scriptRegions = tagRegions.map((region): AspRegion => {
+    if (region.kind !== "server-script") {
+      return region;
+    }
+    return {
+      ...region,
+      language:
+        normalizeScriptLanguage(
+          String(region.attributes?.language ?? defaultLanguage),
+        ).toLowerCase() === "jscript"
+          ? "jscript"
+          : "vbscript",
+    };
+  });
+  const regions = buildRegions(text, [...inlineRegions, ...scriptRegions], defaultLanguage);
+  const nodes: AspCstNode[] = [
+    ...regions.map(skeletonRegionToNode),
+    ...includes.map((include) => skeletonIncludeToNode(text, include)),
+  ].sort(
+    (left, right) => left.start - right.start || left.end - left.start - (right.end - right.start),
+  );
+  for (const directive of directives) {
+    const node = nodes.find(
+      (item) => item.start === directive.offset && item.kind === "AspDirective",
+    );
+    if (node) {
+      node.directive = directive;
+      node.attributes = directive.attributes;
+    }
+  }
+  const cst: AspCstNode = {
+    kind: "Document",
+    start: 0,
+    end: text.length,
+    contentStart: 0,
+    contentEnd: text.length,
+    tokens: [],
+    children: nodes,
+    serverObjects,
+    errors: diagnostics.map((diagnostic) => ({
+      message: diagnostic.message,
+      start: offsetFromRange(text, diagnostic.range.start),
+      end: offsetFromRange(text, diagnostic.range.end),
+    })),
+  };
+  return {
+    uri,
+    text,
+    cst,
+    regions,
+    directives,
+    includes,
+    serverObjects,
+    defaultLanguage,
+    diagnostics,
+  };
+}
+
 export function updateAspParsedDocument(
   previous: AspParsedDocument,
   changes: readonly AspIncrementalChange[],
   settings: AspSettings = {},
 ): AspIncrementalUpdateResult {
+  const attempt = tryUpdateAspParsedDocumentIncremental(previous, changes, "full");
+  if (attempt.status === "updated") {
+    return attempt.result;
+  }
+  return {
+    parsed: parseAspDocument(previous.uri, attempt.nextText, settings),
+    impact: editImpact("full", attempt.reason, previous.text, attempt.nextText, attempt.change),
+  };
+}
+
+export async function updateAspParsedDocumentSkeletonAsync(
+  previous: AspParsedDocument,
+  changes: readonly AspIncrementalChange[],
+  settings: AspSettings = {},
+): Promise<AspIncrementalUpdateResult> {
+  const attempt = tryUpdateAspParsedDocumentIncremental(previous, changes, "skeleton");
+  if (attempt.status === "updated") {
+    return attempt.result;
+  }
+  return {
+    parsed: await parseAspDocumentSkeletonAsync(previous.uri, attempt.nextText, settings),
+    impact: editImpact("full", attempt.reason, previous.text, attempt.nextText, attempt.change),
+  };
+}
+
+type ParsedDocumentBuildMode = "full" | "skeleton";
+
+interface IncrementalUpdateSuccess {
+  status: "updated";
+  result: AspIncrementalUpdateResult;
+}
+
+interface IncrementalUpdateFallback {
+  status: "fallback";
+  reason: string;
+  change?: AspIncrementalChange;
+  nextText: string;
+}
+
+function tryUpdateAspParsedDocumentIncremental(
+  previous: AspParsedDocument,
+  changes: readonly AspIncrementalChange[],
+  buildMode: ParsedDocumentBuildMode,
+): IncrementalUpdateSuccess | IncrementalUpdateFallback {
   const fallback = (
     reason: string,
     change = changes[0],
     nextText = applyIncrementalChanges(previous.text, changes),
-  ): AspIncrementalUpdateResult => ({
-    parsed: parseAspDocument(previous.uri, nextText, settings),
-    impact: editImpact("full", reason, previous.text, nextText, change),
+  ): IncrementalUpdateFallback => ({
+    status: "fallback",
+    reason,
+    change,
+    nextText,
   });
-
   if (changes.length !== 1) {
     return fallback("multiple changes");
   }
@@ -214,17 +375,28 @@ export function updateAspParsedDocument(
     range: shiftAspRangeAfterChange(diagnostic.range, previous.text, nextText, change),
   }));
   return {
-    parsed: buildParsedDocument(
-      previous.uri,
-      nextText,
-      shiftedRegions,
-      shiftedDirectives,
-      shiftedIncludes,
-      shiftedServerObjects,
-      previous.defaultLanguage,
-      shiftedDiagnostics,
-    ),
-    impact: editImpact("incremental", "safe content edit", previous.text, nextText, change, region),
+    status: "updated",
+    result: {
+      parsed: buildParsedDocument(
+        previous.uri,
+        nextText,
+        shiftedRegions,
+        shiftedDirectives,
+        shiftedIncludes,
+        shiftedServerObjects,
+        previous.defaultLanguage,
+        shiftedDiagnostics,
+        buildMode,
+      ),
+      impact: editImpact(
+        "incremental",
+        "safe content edit",
+        previous.text,
+        nextText,
+        change,
+        region,
+      ),
+    },
   };
 }
 
@@ -263,10 +435,17 @@ function buildParsedDocument(
   serverObjects: AspServerObject[],
   defaultLanguage: "VBScript" | "JScript",
   diagnostics: AspParsedDocument["diagnostics"],
+  buildMode: ParsedDocumentBuildMode = "full",
 ): AspParsedDocument {
   const nodes: AspCstNode[] = [
-    ...regions.map((region) => regionToNode(text, region)),
-    ...includes.map((include) => includeToNode(text, include)),
+    ...regions.map((region) =>
+      buildMode === "skeleton" ? skeletonRegionToNode(region) : regionToNode(text, region),
+    ),
+    ...includes.map((include) =>
+      buildMode === "skeleton"
+        ? skeletonIncludeToNode(text, include)
+        : includeToNode(text, include),
+    ),
   ].sort(
     (left, right) => left.start - right.start || left.end - left.start - (right.end - right.start),
   );
@@ -285,8 +464,7 @@ function buildParsedDocument(
     end: text.length,
     contentStart: 0,
     contentEnd: text.length,
-    text,
-    tokens: nodes.flatMap((node) => node.tokens),
+    tokens: buildMode === "skeleton" ? [] : nodes.flatMap((node) => node.tokens),
     children: nodes,
     serverObjects,
     errors: diagnostics.map((diagnostic) => ({
@@ -295,6 +473,9 @@ function buildParsedDocument(
       end: offsetFromRange(text, diagnostic.range.end),
     })),
   };
+  if (buildMode === "full") {
+    cst.text = text;
+  }
   return {
     uri,
     text,
@@ -737,6 +918,37 @@ function regionToNode(text: string, region: AspRegion): AspCstNode {
   return node;
 }
 
+function skeletonRegionToNode(region: AspRegion): AspCstNode {
+  const kind: AspCstNode["kind"] =
+    region.kind === "html"
+      ? "HtmlText"
+      : region.kind === "asp-expression"
+        ? "AspExpression"
+        : region.kind === "asp-directive"
+          ? "AspDirective"
+          : region.kind === "style"
+            ? "StyleElement"
+            : region.kind === "client-script"
+              ? "ClientScriptElement"
+              : region.kind === "server-script"
+                ? "ServerScriptElement"
+                : region.kind === "style-attribute"
+                  ? "StyleAttribute"
+                  : "AspBlock";
+  return {
+    kind,
+    start: region.start,
+    end: region.end,
+    contentStart: region.contentStart,
+    contentEnd: region.contentEnd,
+    language: region.language,
+    tokens: [],
+    children: [],
+    attributes: region.attributes,
+    regionKind: region.kind,
+  };
+}
+
 function includeToNode(text: string, include: AspInclude): AspCstNode {
   return {
     kind: "IncludeDirective",
@@ -754,6 +966,21 @@ function includeToNode(text: string, include: AspInclude): AspCstNode {
         text: text.slice(include.offset, offsetFromRange(text, include.range.end)),
       },
     ],
+    children: [],
+    include,
+  };
+}
+
+function skeletonIncludeToNode(text: string, include: AspInclude): AspCstNode {
+  const end = offsetFromRange(text, include.range.end);
+  return {
+    kind: "IncludeDirective",
+    start: include.offset,
+    end,
+    contentStart: include.offset,
+    contentEnd: end,
+    language: "html",
+    tokens: [],
     children: [],
     include,
   };

@@ -87,6 +87,25 @@ export async function tryNativeParseAspDocumentAsync(
   return shallow;
 }
 
+export async function tryNativeParseAspDocumentSkeletonAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings,
+): Promise<AspParsedDocument | undefined> {
+  const skeleton = await nativeOperationAsync<AspParsedDocument>({
+    operation: "parseAspDocumentSkeleton",
+    uri,
+    text,
+    settings,
+    cacheKey: nativeDocumentCacheKey(uri, text, settings),
+  });
+  if (!skeleton) {
+    return undefined;
+  }
+  skeleton.text = text;
+  return skeleton;
+}
+
 /// CST ノードに付く VB CST サブツリーを node.start で索引付けして取得する。
 export interface NativeVbscriptSegment {
   start: number;

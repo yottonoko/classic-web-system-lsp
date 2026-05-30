@@ -8,20 +8,18 @@ import {
   parseAspCst,
   parseAspDocument,
   parseAspDocumentAsync,
+  parseAspDocumentSkeletonAsync,
 } from "../src/index";
 import type { AspCstNode } from "../src/types";
 
-// Force the source-checkout native binary to load. Without this the backend resolver
-// disables native in src/dist checkouts, so the tests below would silently run on the
-// TypeScript fallback (see native-backend.ts sourceCheckoutCoreDist).
 const previousSourceNative = process.env.ASP_LSP_ENABLE_SOURCE_NATIVE;
 const previousBackend = process.env.ASP_LSP_ANALYSIS_BACKEND;
-process.env.ASP_LSP_ENABLE_SOURCE_NATIVE = "1";
-process.env.ASP_LSP_ANALYSIS_BACKEND = "native";
+const previousNativeCorePath = process.env.ASP_LSP_NATIVE_CORE_PATH;
 
 afterAll(() => {
   restoreEnv("ASP_LSP_ENABLE_SOURCE_NATIVE", previousSourceNative);
   restoreEnv("ASP_LSP_ANALYSIS_BACKEND", previousBackend);
+  restoreEnv("ASP_LSP_NATIVE_CORE_PATH", previousNativeCorePath);
 });
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -42,14 +40,32 @@ const platform =
         : process.platform;
 const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
 const executable = process.platform === "win32" ? "asp-lsp-core.exe" : "asp-lsp-core";
-const nativeBinary = path.join(
+const packagedNativeBinary = path.join(
   import.meta.dirname,
   "..",
   "native",
   `${platform}-${arch}`,
   executable,
 );
+const sourceNativeBinary = path.join(
+  import.meta.dirname,
+  "..",
+  "..",
+  "..",
+  "target",
+  "debug",
+  executable,
+);
+const nativeBinary = fs.existsSync(sourceNativeBinary) ? sourceNativeBinary : packagedNativeBinary;
 const hasNative = fs.existsSync(nativeBinary);
+
+// Force a real native binary to load. Source checkouts normally disable native from src/dist
+// paths, and stale packaged binaries should not mask the Rust code under test.
+process.env.ASP_LSP_ENABLE_SOURCE_NATIVE = "1";
+process.env.ASP_LSP_ANALYSIS_BACKEND = "native";
+if (hasNative) {
+  process.env.ASP_LSP_NATIVE_CORE_PATH = nativeBinary;
+}
 
 // Missing artifact => skip (CI/build may not have produced it). Present artifact that fails to
 // load, or a silent TypeScript fallback, is a real failure (asserted via backend === "native").
@@ -129,6 +145,31 @@ End Class
     // バイナリ列指向経路で VB CST を hydrate し、フル parse とトークン一致を確認する。
     await hydrateVbscriptCst(shallow);
     expect(collectVbTokens(shallow.cst)).toEqual(fullTokens);
+  });
+
+  it("returns native embedded skeleton parses and hydrates VBScript on demand", async () => {
+    const source = `<%@ Language=VBScript %>
+<style>.x{color:red}</style>
+<script>const value = 1;</script>
+<%
+Dim total
+total = 1
+%>`;
+    const uri = "file:///site/native-skeleton.asp";
+    const full = parseAspDocument(uri, source);
+    const skeleton = await parseAspDocumentSkeletonAsync(uri, source);
+    expect(aspAnalysisBackendInfo().backend).toBe("native");
+    expect(skeleton.text).toBe(source);
+    expect(skeleton.regions).toEqual(full.regions);
+    expect(skeleton.directives).toEqual(full.directives);
+    expect(skeleton.includes).toEqual(full.includes);
+    expect(skeleton.serverObjects).toEqual(full.serverObjects);
+    expect(skeleton.defaultLanguage).toBe(full.defaultLanguage);
+    expect(skeleton.diagnostics).toEqual(full.diagnostics);
+    expect(collectVbTokens(skeleton.cst)).toHaveLength(0);
+
+    await hydrateVbscriptCst(skeleton);
+    expect(collectVbTokens(skeleton.cst)).toEqual(collectVbTokens(full.cst));
   });
 
   it("emits Array type information for VBScript array declarations", () => {

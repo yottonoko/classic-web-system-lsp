@@ -47,6 +47,8 @@ interface DecodedSemanticToken {
 }
 
 const rpcTimeoutMs = 30_000;
+const nativeCorePath = resolveNativeCorePath();
+const itWithNativeCore = nativeCorePath ? it : it.skip;
 const semanticTokenType = {
   keyword: 0,
   variable: 1,
@@ -1656,7 +1658,7 @@ Response.Write known
       }
     });
 
-    it("falls back to full parsing for boundary-sensitive document edits", async () => {
+    it("falls back to skeleton parsing for boundary-sensitive document edits", async () => {
       const server = new RpcServer();
       try {
         await server.start();
@@ -1691,7 +1693,7 @@ Response.Write known
         source = notifyRangedReplacement(server, uri, source, 0, "safe", "safe <%");
 
         await server.waitForNotification("textDocument/publishDiagnostics");
-        await waitForLogContaining(server, "analysis.parse.full");
+        await waitForLogContaining(server, "analysis.parse.skeleton");
         const impactLog = await waitForLogContaining(server, "analysis.parse.impact");
         expect(JSON.stringify(impactLog.params)).toContain("boundary text inserted");
         expect(source).toContain("safe <%");
@@ -1741,7 +1743,7 @@ Response.Write known
         });
 
         await server.waitForNotification("textDocument/publishDiagnostics");
-        await waitForLogContaining(server, "analysis.parse.full");
+        await waitForLogContaining(server, "analysis.parse.skeleton");
         const impactLog = await waitForLogContaining(server, "analysis.parse.impact");
         const logs = JSON.stringify([
           impactLog,
@@ -6608,6 +6610,76 @@ Response.Write enabled
       }
     });
 
+    itWithNativeCore(
+      "uses native skeleton parses for foreground embedded diagnostics",
+      async () => {
+        const server = new RpcServer({
+          env: {
+            ASP_LSP_ANALYSIS_BACKEND: "native",
+            ASP_LSP_ENABLE_SOURCE_NATIVE: "1",
+            ASP_LSP_NATIVE_CORE_PATH: nativeCorePath ?? "",
+          },
+        });
+        try {
+          await server.start();
+          await server.request("initialize", {
+            processId: process.pid,
+            rootUri: "file:///tmp",
+            capabilities: {},
+          });
+          server.notify("workspace/didChangeConfiguration", {
+            settings: {
+              aspLsp: {
+                debug: { output: "verbose" },
+                diagnostics: { debounceMs: 0 },
+              },
+            },
+          });
+          const uri = "file:///tmp/native-skeleton-diagnostics.asp";
+          let source = `<div>before</div>
+<style>.x{color:}</style>
+<script>const broken = ;</script>
+<% Option Explicit
+Response.Write missingName
+%>`;
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri,
+              languageId: "classic-asp",
+              version: 1,
+              text: source,
+            },
+          });
+
+          await waitForLogContaining(server, "analysis.parse.skeleton");
+          await waitForDiagnosticsContaining(server, "asp-lsp-css");
+          await waitForDiagnosticsContaining(server, "Expression expected");
+          await waitForDiagnosticsContaining(server, "missingName");
+          await waitForLogContaining(server, "check.vbscript.hydrate");
+          server.takePendingNotifications("window/logMessage");
+          server.takePendingNotifications("textDocument/publishDiagnostics");
+
+          source = notifyRangedReplacement(
+            server,
+            uri,
+            source,
+            2,
+            "before",
+            "before<!-- shifted -->\nshifted",
+          );
+
+          await waitForLogContaining(server, "analysis.parse.skeleton");
+          await waitForDiagnosticsContaining(server, "asp-lsp-css");
+          expect(source).toContain("before<!-- shifted -->\nshifted");
+
+          await server.request("shutdown", null);
+          server.notify("exit", undefined);
+        } finally {
+          server.stop();
+        }
+      },
+    );
+
     it("publishes staged diagnostics from parser to final layers", async () => {
       const server = new RpcServer();
       try {
@@ -8330,6 +8402,41 @@ class RpcServer {
       }
     }
   }
+}
+
+function resolveNativeCorePath(): string | undefined {
+  const platform =
+    process.platform === "win32"
+      ? "win32"
+      : process.platform === "darwin"
+        ? "darwin"
+        : process.platform === "linux"
+          ? "linux"
+          : process.platform;
+  const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
+  const executable = process.platform === "win32" ? "asp-lsp-core.exe" : "asp-lsp-core";
+  const sourceNativeBinary = path.join(
+    import.meta.dirname,
+    "..",
+    "..",
+    "..",
+    "target",
+    "debug",
+    executable,
+  );
+  if (fs.existsSync(sourceNativeBinary)) {
+    return sourceNativeBinary;
+  }
+  const packagedNativeBinary = path.join(
+    import.meta.dirname,
+    "..",
+    "..",
+    "core",
+    "native",
+    `${platform}-${arch}`,
+    executable,
+  );
+  return fs.existsSync(packagedNativeBinary) ? packagedNativeBinary : undefined;
 }
 
 function markedDocument(source: string): MarkedDocument {

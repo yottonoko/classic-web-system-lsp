@@ -101,6 +101,7 @@ import {
   hydrateVbscriptCst,
   parseAspDocument,
   parseAspDocumentAsync,
+  parseAspDocumentSkeletonAsync,
   parseVbscriptTypeRef,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
@@ -108,6 +109,7 @@ import {
   summarizeAspFileAnalysis,
   summarizeAspFileAnalysisFromTextAsync,
   updateAspParsedDocument,
+  updateAspParsedDocumentSkeletonAsync,
   type AspFormattingOptions,
   type AspEmbeddedLanguage,
   type AspEditImpact,
@@ -266,6 +268,7 @@ interface RegionIndex {
 interface CachedDocument {
   source: TextDocument;
   parsed: AspParsedDocument;
+  parseDepth: "skeleton" | "full";
   virtuals: Map<string, VirtualDocument>;
   identity: DocumentIdentity;
   generation: number;
@@ -1034,15 +1037,25 @@ documents.onDidChangeContent((event) => {
   measureDebugStep(settings, event.document.uri, "documentChange.keepCachedDocument", () => {
     // Keep the previous parsed document available for updateAspParsedDocument.
   });
-  const cached = measureDebugStep(
+  void measureDebugStepAsync(
     settings,
     event.document.uri,
     "documentChange.scheduleDiagnostics",
-    () => scheduleDiagnostics(event.document),
-  );
-  if (shouldScheduleProjectUpdateForDocumentChange(cached)) {
-    scheduleProjectUpdate("document.change");
-  }
+    () => scheduleDiagnosticsAsync(event.document),
+  )
+    .then((cached) => {
+      if (
+        documents.get(event.document.uri)?.version === cached.identity.version &&
+        shouldScheduleProjectUpdateForDocumentChange(cached)
+      ) {
+        scheduleProjectUpdate("document.change");
+      }
+    })
+    .catch((error: unknown) =>
+      connection.console.warn(
+        `[asp-lsp] documentChange.scheduleDiagnostics.failed: ${errorMessage(error)}`,
+      ),
+    );
 });
 documents.onDidSave(async (event) => {
   noteForegroundActivity();
@@ -1635,9 +1648,10 @@ connection.languages.inlayHint.on((params): InlayHint[] =>
 
 connection.languages.diagnostics.on(async (params) => {
   noteForegroundActivity();
-  const cached =
-    getFreshCached(params.textDocument.uri) ??
-    (await getIndexedCachedAsync(params.textDocument.uri, globalSettings));
+  const document = documents.get(params.textDocument.uri);
+  const cached = document
+    ? await ensureFreshDiagnosticsCachedDocumentAsync(document)
+    : await getIndexedCachedAsync(params.textDocument.uri, globalSettings);
   return {
     kind: "full" as const,
     items: cached ? await diagnosticsForCachedAsync(cached, cachedSettings(cached.source.uri)) : [],
@@ -1662,7 +1676,7 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
     items: await diagnosticsForIndexed(entry, cachedSettings(entry.uri), token),
   }));
   const openItems = await mapWithConcurrency(documents.all(), concurrency, async (document) => {
-    const cached = ensureFreshCachedDocument(document);
+    const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
     return cached
       ? {
           kind: "full" as const,
@@ -1947,7 +1961,16 @@ connection.languages.semanticTokens.onDelta((params): SemanticTokens | SemanticT
 
 function validate(document: TextDocument): void {
   cancelScheduledDiagnostics(document.uri);
-  const cached = ensureFreshCachedDocument(document);
+  void validateAsync(document).catch((error: unknown) =>
+    connection.console.warn(`[asp-lsp] validate.failed: ${errorMessage(error)}`),
+  );
+}
+
+async function validateAsync(document: TextDocument): Promise<void> {
+  const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
+  if (documents.get(document.uri)?.version !== cached.identity.version) {
+    return;
+  }
   startStagedDiagnostics(cached, cachedSettings(document.uri), true, {
     preservePreviousDiagnosticsUntilFinal: hasPublishedDiagnostics(document.uri),
   });
@@ -1971,11 +1994,43 @@ function refreshCachedDocument(document: TextDocument, impactReason?: string): C
   if (impactReason) {
     logDebugSummary(
       settings,
-      `[asp-lsp] analysis.parse.impact: ${document.uri}, mode=full, reason=${impactReason}`,
+      `[asp-lsp] analysis.parse.impact: ${document.uri}, mode=skeleton, reason=${impactReason}`,
     );
   }
   const cacheStartedAt = process.hrtime.bigint();
   const cached = createCachedDocument(document, parsed, settings);
+  cache.set(document.uri, cached);
+  finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
+  finishAnalysisLog(settings, document.uri, startedAt, "skeleton");
+  return cached;
+}
+
+async function refreshCachedDocumentSkeletonAsync(
+  document: TextDocument,
+  impactReason?: string,
+): Promise<CachedDocument> {
+  const startedAt = process.hrtime.bigint();
+  const settingsStartedAt = startedAt;
+  const settings = cachedSettings(document.uri);
+  startAnalysisLog(settings, document.uri);
+  finishDebugStep(settings, document.uri, "analysis.settings", settingsStartedAt);
+  const parseStartedAt = process.hrtime.bigint();
+  const parsed = await parseAspDocumentSkeletonAsync(document.uri, document.getText(), settings);
+  finishDebugStep(settings, document.uri, "analysis.parse.skeleton", parseStartedAt);
+  finishDebugStep(
+    settings,
+    document.uri,
+    "analysis.virtualDocuments.lazy",
+    process.hrtime.bigint(),
+  );
+  if (impactReason) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] analysis.parse.impact: ${document.uri}, mode=full, reason=${impactReason}`,
+    );
+  }
+  const cacheStartedAt = process.hrtime.bigint();
+  const cached = createCachedDocument(document, parsed, settings, [], "skeleton");
   cache.set(document.uri, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
   finishAnalysisLog(settings, document.uri, startedAt, "full");
@@ -2015,9 +2070,71 @@ function refreshCachedDocumentIncremental(
     updated.impact.kind === "incremental"
       ? [...previous.editHistory, updated.impact].slice(-8)
       : [];
-  const cached = createCachedDocument(document, updated.parsed, settings, editHistory);
+  const cached = createCachedDocument(
+    document,
+    updated.parsed,
+    settings,
+    editHistory,
+    updated.impact.kind === "incremental" ? previous.parseDepth : "full",
+  );
   cached.lastEditImpact = updated.impact;
   cached.lastIncrementalChange = change;
+  cached.lastEditIsOrdinaryVbscriptComment =
+    updated.impact.kind === "incremental" &&
+    updated.impact.language === "vbscript" &&
+    isOrdinaryVbscriptCommentEdit(previous, cached, change);
+  seedIncludeDiagnosticsAfterIncrementalChange(previous, cached, settings, change, updated.impact);
+  seedVbProjectDocumentsAfterStableIncludeGraph(previous, cached, settings);
+  seedVbReuseAfterIncrementalChange(previous, cached, settings, change, updated.impact);
+  seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
+  seedJsDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
+  cache.set(document.uri, cached);
+  finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
+  finishAnalysisLog(settings, document.uri, startedAt, updated.impact.kind);
+  return cached;
+}
+
+async function refreshCachedDiagnosticsDocumentIncrementalAsync(
+  previous: CachedDocument,
+  document: TextDocument,
+  settings: AspSettings,
+  change: AspIncrementalChange,
+): Promise<CachedDocument> {
+  const startedAt = process.hrtime.bigint();
+  const settingsStartedAt = startedAt;
+  startAnalysisLog(settings, document.uri);
+  finishDebugStep(settings, document.uri, "analysis.settings", settingsStartedAt);
+  const parseStartedAt = process.hrtime.bigint();
+  const updated = await updateAspParsedDocumentSkeletonAsync(previous.parsed, [change], settings);
+  finishDebugStep(
+    settings,
+    document.uri,
+    updated.impact.kind === "incremental"
+      ? "analysis.parse.incremental"
+      : "analysis.parse.skeleton",
+    parseStartedAt,
+  );
+  logDebugSummary(
+    settings,
+    `[asp-lsp] analysis.parse.impact: ${document.uri}, mode=${updated.impact.kind}, reason=${updated.impact.reason}`,
+  );
+  finishDebugStep(
+    settings,
+    document.uri,
+    "analysis.virtualDocuments.lazy",
+    process.hrtime.bigint(),
+  );
+  const cacheStartedAt = process.hrtime.bigint();
+  const editHistory =
+    updated.impact.kind === "incremental"
+      ? [...previous.editHistory, updated.impact].slice(-8)
+      : [];
+  const cached = createCachedDocument(document, updated.parsed, settings, editHistory, "skeleton");
+  cached.lastEditImpact = updated.impact;
+  cached.lastIncrementalChange = change;
+  if (updated.impact.kind === "incremental" && updated.impact.language === "vbscript") {
+    await hydrateCachedVbscriptCstAsync(cached, settings, "analysis");
+  }
   cached.lastEditIsOrdinaryVbscriptComment =
     updated.impact.kind === "incremental" &&
     updated.impact.language === "vbscript" &&
@@ -2042,7 +2159,12 @@ function ensureFreshCachedDocument(document: TextDocument): CachedDocument {
     existing.parseSettingsIdentity === parseSettingsIdentity(settings)
   ) {
     updateCachedDocumentRuntimeIdentity(existing, settings);
-    return existing;
+    if (existing.parseDepth === "full") {
+      return existing;
+    }
+    const upgraded = refreshCachedDocument(document);
+    upgraded.analysis = existing.analysis;
+    return upgraded;
   }
   if (existing && existing.parseSettingsIdentity === parseSettingsIdentity(settings)) {
     const pending = pendingDocumentChanges.get(document.uri);
@@ -2058,6 +2180,41 @@ function ensureFreshCachedDocument(document: TextDocument): CachedDocument {
   return refreshCachedDocument(document);
 }
 
+async function ensureFreshDiagnosticsCachedDocumentAsync(
+  document: TextDocument,
+): Promise<CachedDocument> {
+  const existing = cache.get(document.uri);
+  const settings = cachedSettings(document.uri);
+  if (
+    existing &&
+    sameDocumentIdentity(existing.identity, documentIdentityFor(document)) &&
+    existing.parseSettingsIdentity === parseSettingsIdentity(settings)
+  ) {
+    updateCachedDocumentRuntimeIdentity(existing, settings);
+    return existing;
+  }
+  if (existing && existing.parseSettingsIdentity === parseSettingsIdentity(settings)) {
+    const pending = pendingDocumentChanges.get(document.uri);
+    if (pending?.version === document.version) {
+      pendingDocumentChanges.delete(document.uri);
+      if (pending.ranged && pending.changes.length === 1) {
+        return refreshCachedDiagnosticsDocumentIncrementalAsync(
+          existing,
+          document,
+          settings,
+          pending.changes[0],
+        );
+      }
+      return refreshCachedDocumentSkeletonAsync(
+        document,
+        pending?.reason ?? "non-incremental document change",
+      );
+    }
+  }
+  pendingDocumentChanges.delete(document.uri);
+  return refreshCachedDocumentSkeletonAsync(document);
+}
+
 function getFreshCached(uri: string): CachedDocument | undefined {
   const document = documents.get(uri);
   return document ? ensureFreshCachedDocument(document) : getCached(uri);
@@ -2068,10 +2225,12 @@ function createCachedDocument(
   parsed: AspParsedDocument,
   settings: AspSettings,
   editHistory: AspEditImpact[] = [],
+  parseDepth: CachedDocument["parseDepth"] = "full",
 ): CachedDocument {
   const cached: CachedDocument = {
     source: document,
     parsed,
+    parseDepth,
     virtuals: new Map<string, VirtualDocument>(),
     identity: documentIdentityFor(document),
     generation: ++documentCacheGeneration,
@@ -2154,7 +2313,7 @@ function finishAnalysisLog(
   settings: AspSettings,
   uri: string,
   startedAt: bigint,
-  mode: AspEditImpact["kind"] = "full",
+  mode: AspEditImpact["kind"] | "skeleton" = "full",
 ): void {
   const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
   logDebugSummary(
@@ -2163,10 +2322,13 @@ function finishAnalysisLog(
   );
 }
 
-function scheduleDiagnostics(document: TextDocument): CachedDocument {
+async function scheduleDiagnosticsAsync(document: TextDocument): Promise<CachedDocument> {
   cancelScheduledDiagnostics(document.uri);
   const settings = cachedSettings(document.uri);
-  const cached = ensureFreshCachedDocument(document);
+  const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
+  if (documents.get(document.uri)?.version !== cached.identity.version) {
+    return cached;
+  }
   const state = startStagedDiagnostics(cached, settings, false, {
     preservePreviousDiagnosticsUntilFinal: hasPublishedDiagnostics(document.uri),
   });
@@ -2283,6 +2445,7 @@ async function runStagedDiagnostics(
     cancellation,
     "foreground",
   );
+  shareStagedAnalysisWithCurrentCache(cached, state);
   publishStagedDiagnosticsLayer(cached, settings, state, "project");
   if (!isCurrentStagedDiagnostics(cached, state)) {
     logStaleStagedDiagnostics(settings, state, "final");
@@ -2290,6 +2453,23 @@ async function runStagedDiagnostics(
   }
   const finalItems = publishStagedDiagnosticsLayer(cached, settings, state, "final");
   finishCheckLog(cached, settings, state.startedAt, finalItems.length);
+}
+
+function shareStagedAnalysisWithCurrentCache(
+  cached: CachedDocument,
+  state: StagedDiagnosticsState,
+): void {
+  const current = cache.get(state.uri);
+  if (
+    !current ||
+    !cached.analysis ||
+    current === cached ||
+    current.identity.version !== cached.identity.version ||
+    current.diagnosticsIdentity !== state.diagnosticsIdentity
+  ) {
+    return;
+  }
+  current.analysis = cached.analysis;
 }
 
 function publishStagedDiagnosticsLayer(
@@ -2360,12 +2540,13 @@ function isCurrentStagedDiagnostics(
 ): boolean {
   const document = documents.get(state.uri);
   const active = stagedDiagnosticsByUri.get(state.uri);
+  const current = cache.get(state.uri);
   return (
     active?.generation === state.generation &&
     document?.version === state.version &&
-    cache.get(state.uri)?.generation === state.documentGeneration &&
-    cached.generation === state.documentGeneration &&
-    cache.get(state.uri)?.diagnosticsIdentity === state.diagnosticsIdentity
+    current?.identity.version === state.version &&
+    cached.identity.version === state.version &&
+    current?.diagnosticsIdentity === state.diagnosticsIdentity
   );
 }
 
@@ -2754,7 +2935,7 @@ async function flushPendingProjectUpdatesAsync(
   const startedAt = process.hrtime.bigint();
   let refreshed = 0;
   for (const document of documents.all()) {
-    const cached = ensureFreshCachedDocument(document);
+    const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
     await collectCachedVbProjectDocumentsAsync(cached, cachedSettings(document.uri));
     for (const virtual of jsVirtualDocuments(cached)) {
       createJsLanguageService(virtual, cachedSettings(document.uri));
@@ -3240,6 +3421,7 @@ async function vbDiagnosticsAsync(
       () => cachedItems.items,
     );
   }
+  await hydrateCachedVbscriptCstAsync(cached, settings, stepPrefix);
   const context = await measureDebugStepAsync(
     settings,
     cached.source.uri,
@@ -3306,6 +3488,26 @@ async function analyzeVbscriptAsync(
         ),
     })
   ).diagnostics;
+}
+
+async function hydrateCachedVbscriptCstAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix: string,
+): Promise<void> {
+  if (cached.parseDepth !== "skeleton" || cstHasVbscript(cached.parsed.cst)) {
+    return;
+  }
+  await measureDebugStepAsync(settings, cached.source.uri, `${stepPrefix}.vbscript.hydrate`, () =>
+    hydrateVbscriptCst(cached.parsed, settings),
+  );
+}
+
+function cstHasVbscript(node: AspCstNode): boolean {
+  if (node.vbscript) {
+    return true;
+  }
+  return node.children.some((child) => cstHasVbscript(child));
 }
 
 async function runVbDiagnosticsWorker(
@@ -5590,6 +5792,7 @@ async function buildVbProjectContextAsync(
   cached: CachedDocument,
   settings: AspSettings,
 ): Promise<VbProjectContext> {
+  await hydrateCachedVbscriptCstAsync(cached, settings, "analysis");
   const rootKey = vbProjectRootContextCacheKey(cached, settings);
   const project = await collectCachedVbProjectAnalysisAsync(cached, settings);
   const documents = project.documents;
@@ -6045,7 +6248,7 @@ async function ensureIncludeGraphForOpenDocumentsAsync(
 ): Promise<void> {
   const changedUris = new Set([...publicChangedFiles].map(pathToFileUri));
   for (const document of documents.all()) {
-    const cached = ensureFreshCachedDocument(document);
+    const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
     const existing = includeForwardDependencies.get(cached.source.uri);
     if (existing && setsIntersect(existing, changedUris)) {
       continue;

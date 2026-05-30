@@ -134,6 +134,18 @@ impl CoreState {
                     "serverObjectCount": parsed.get("serverObjects").and_then(Value::as_array).map_or(0, Vec::len),
                 })
             }
+            "parseAspDocumentSkeleton" => {
+                let uri = request
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let text = request
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let settings = request.get("settings").unwrap_or(&Value::Null);
+                parse_asp_document_skeleton(uri, text, settings)
+            }
             "parseAspDocumentShallow" => {
                 // 浅いドキュメント（CST スケルトン）を返す。重い VB CST/トークンは
                 // parseAspDocumentVbscript で必要時に取得する（境界転送コスト削減のため）。
@@ -333,6 +345,7 @@ fn serialized_result_cache_key(request: &Value) -> Option<String> {
     match operation {
         "parseAspDocument"
         | "parseAspDocumentLight"
+        | "parseAspDocumentSkeleton"
         | "parseAspDocumentShallow"
         | "parseAspDocumentVbscript" => {
             let document_key = request.get("cacheKey").and_then(Value::as_str)?;
@@ -514,6 +527,99 @@ fn parse_asp_document(uri: &str, text: &str, settings: &Value) -> Value {
         "directives": directives,
         "includes": includes,
         "serverObjects": server_objects,
+        "defaultLanguage": default_language,
+        "diagnostics": diagnostics,
+    })
+}
+
+fn parse_asp_document_skeleton(uri: &str, text: &str, settings: &Value) -> Value {
+    let index = TextIndex::new(text);
+    let scan = scan_html_and_asp(&index, settings);
+    let directives = scan
+        .inline_regions
+        .iter()
+        .filter(|region| region.kind == "asp-directive")
+        .map(|region| directive_from_region(&index, region))
+        .collect::<Vec<_>>();
+    let default_language = default_language_from_directives(&directives, settings);
+    let mut embedded = scan.inline_regions.clone();
+    embedded.extend(scan.tag_regions.clone().into_iter().map(|mut region| {
+        if region.kind == "server-script" {
+            let language = region
+                .attributes
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or(default_language.as_str());
+            region.language = if normalize_script_language(language) == "JScript" {
+                "jscript".to_string()
+            } else {
+                "vbscript".to_string()
+            };
+        }
+        region
+    }));
+    let regions = build_regions(&index, embedded, &default_language);
+    let mut nodes = regions
+        .iter()
+        .map(region_to_skeleton_node)
+        .collect::<Vec<_>>();
+    nodes.extend(
+        scan.includes
+            .iter()
+            .map(|include| include_to_skeleton_node(&index, include)),
+    );
+    nodes.sort_by(|left, right| {
+        let ls = value_usize(left, "start");
+        let rs = value_usize(right, "start");
+        let le = value_usize(left, "end");
+        let re = value_usize(right, "end");
+        (ls, le.saturating_sub(ls)).cmp(&(rs, re.saturating_sub(rs)))
+    });
+    attach_directives_to_nodes(&directives, &mut nodes);
+    let top_level_regions = nodes
+        .iter()
+        .filter_map(region_from_node)
+        .collect::<Vec<_>>();
+    let errors = scan
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            json!({
+                "message": diagnostic.message,
+                "start": diagnostic.start,
+                "end": diagnostic.end,
+            })
+        })
+        .collect::<Vec<_>>();
+    let diagnostics = scan
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            json!({
+                "severity": 1,
+                "range": index.range(diagnostic.start, diagnostic.end),
+                "message": diagnostic.message,
+                "source": "asp-lsp",
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "uri": uri,
+        "cst": {
+            "kind": "Document",
+            "start": 0,
+            "end": index.len(),
+            "contentStart": 0,
+            "contentEnd": index.len(),
+            "tokens": [],
+            "children": nodes,
+            "serverObjects": scan.server_objects.clone(),
+            "errors": errors,
+        },
+        "regions": top_level_regions,
+        "directives": directives,
+        "includes": scan.includes.iter().map(include_to_value).collect::<Vec<_>>(),
+        "serverObjects": scan.server_objects,
         "defaultLanguage": default_language,
         "diagnostics": diagnostics,
     })
@@ -1712,6 +1818,68 @@ fn region_to_node(index: &TextIndex<'_>, region: &Region) -> Value {
     Value::Object(object)
 }
 
+fn region_to_skeleton_node(region: &Region) -> Value {
+    let kind = if region.kind == "html" {
+        "HtmlText"
+    } else if region.kind == "asp-expression" {
+        "AspExpression"
+    } else if region.kind == "asp-directive" {
+        "AspDirective"
+    } else if region.kind == "style" {
+        "StyleElement"
+    } else if region.kind == "client-script" {
+        "ClientScriptElement"
+    } else if region.kind == "server-script" {
+        "ServerScriptElement"
+    } else if region.kind == "style-attribute" {
+        "StyleAttribute"
+    } else {
+        "AspBlock"
+    };
+    let mut object = JsonMap::new();
+    object.insert("kind".to_string(), Value::String(kind.to_string()));
+    object.insert("start".to_string(), json!(region.start));
+    object.insert("end".to_string(), json!(region.end));
+    object.insert("contentStart".to_string(), json!(region.content_start));
+    object.insert("contentEnd".to_string(), json!(region.content_end));
+    object.insert(
+        "language".to_string(),
+        Value::String(region.language.clone()),
+    );
+    object.insert("tokens".to_string(), Value::Array(Vec::new()));
+    object.insert("children".to_string(), Value::Array(Vec::new()));
+    if !region.attributes.is_empty() {
+        object.insert(
+            "attributes".to_string(),
+            Value::Object(region.attributes.clone()),
+        );
+    }
+    object.insert("regionKind".to_string(), Value::String(region.kind.clone()));
+    Value::Object(object)
+}
+
+fn attach_directives_to_nodes(directives: &[Value], nodes: &mut [Value]) {
+    for directive in directives {
+        let offset = directive.get("offset").and_then(Value::as_u64).unwrap_or(0);
+        for node in nodes.iter_mut() {
+            if value_usize(node, "start") as u64 == offset
+                && node.get("kind").and_then(Value::as_str) == Some("AspDirective")
+            {
+                if let Some(object) = node.as_object_mut() {
+                    object.insert("directive".to_string(), directive.clone());
+                    object.insert(
+                        "attributes".to_string(),
+                        directive
+                            .get("attributes")
+                            .cloned()
+                            .unwrap_or_else(|| json!({})),
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn include_to_node(index: &TextIndex<'_>, include: &IncludeRef) -> Value {
     let end = include
         .range
@@ -1732,6 +1900,25 @@ fn include_to_node(index: &TextIndex<'_>, include: &IncludeRef) -> Value {
             "end": end,
             "text": index.slice(include.offset, end),
         }],
+        "children": [],
+        "include": include_to_value(include),
+    })
+}
+
+fn include_to_skeleton_node(index: &TextIndex<'_>, include: &IncludeRef) -> Value {
+    let end = include
+        .range
+        .get("end")
+        .and_then(|position| offset_from_position(index, position))
+        .unwrap_or(include.offset);
+    json!({
+        "kind": "IncludeDirective",
+        "start": include.offset,
+        "end": end,
+        "contentStart": include.offset,
+        "contentEnd": end,
+        "language": "html",
+        "tokens": [],
         "children": [],
         "include": include_to_value(include),
     })
@@ -4033,6 +4220,57 @@ mod tests {
             .expect("tokens range");
         assert_eq!(tokens.len(), 2);
         assert!(tokens[0].as_u64().unwrap() <= tokens[1].as_u64().unwrap());
+    }
+
+    #[test]
+    fn parses_embedded_skeleton_without_heavy_cst_payload() {
+        fn visit_nodes(node: &Value, callback: &mut impl FnMut(&Value)) {
+            callback(node);
+            for child in node
+                .get("children")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                visit_nodes(child, callback);
+            }
+        }
+
+        let source = r#"<%@ Language=JScript %>
+<!--#include file="shared.inc"-->
+<object runat="server" id="Catalog" progid="ADODB.Recordset"></object>
+<style>.x{color:red}</style>
+<script>const value = 1;</script>
+<% var marker = '%>'; Response.Write(marker); %>"#;
+        let full = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        let skeleton = handle_value(json!({
+            "operation": "parseAspDocumentSkeleton",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        for key in [
+            "uri",
+            "regions",
+            "directives",
+            "includes",
+            "serverObjects",
+            "defaultLanguage",
+            "diagnostics",
+        ] {
+            assert_eq!(skeleton[key], full[key]);
+        }
+        assert!(skeleton.get("text").is_none());
+        visit_nodes(&skeleton["cst"], &mut |node| {
+            assert!(node.get("vbscript").is_none());
+            assert!(node.get("text").is_none());
+            assert_eq!(node["tokens"].as_array().map_or(0, Vec::len), 0);
+        });
     }
 
     #[test]
