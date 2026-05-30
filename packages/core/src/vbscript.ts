@@ -3736,7 +3736,9 @@ function addSymbolsFromVbNode(
     const variableDocumentation =
       identifiers.length === 1 ? documentationForNode(node, docCommentLookup) : undefined;
     for (const identifier of identifiers) {
-      const array = node.arrayDeclarations?.find((item) => item.name === identifier);
+      const array = node.arrayDeclarations?.find(
+        (item) => item.name.start === identifier.start && item.name.end === identifier.end,
+      );
       symbols.push({
         name: identifier.text,
         kind: memberOf && baseKind === "variable" ? "field" : baseKind,

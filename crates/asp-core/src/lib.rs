@@ -1294,6 +1294,7 @@ struct VbNode {
     declaration_kind: Option<String>,
     visibility: Option<String>,
     identifiers: Vec<VbToken>,
+    array_declarations: Vec<Value>,
     parameters: Vec<VbToken>,
     parameter_metadata: Vec<Value>,
     type_name: Option<String>,
@@ -1324,6 +1325,7 @@ fn parse_vbscript_cst(text: &str, source_text: &str, base_offset: usize) -> Valu
         declaration_kind: None,
         visibility: None,
         identifiers: Vec::new(),
+        array_declarations: Vec::new(),
         parameters: Vec::new(),
         parameter_metadata: Vec::new(),
         type_name: None,
@@ -1783,6 +1785,7 @@ fn create_block_node(kind: &str, start: &VbToken, name: &VbToken, stack: &[VbNod
         declaration_kind: None,
         visibility: None,
         identifiers: Vec::new(),
+        array_declarations: Vec::new(),
         parameters: Vec::new(),
         parameter_metadata: Vec::new(),
         type_name: None,
@@ -1831,6 +1834,7 @@ fn create_procedure_node(
         declaration_kind: None,
         visibility,
         identifiers: Vec::new(),
+        array_declarations: Vec::new(),
         parameters,
         parameter_metadata,
         type_name: None,
@@ -1891,6 +1895,7 @@ fn create_declaration_node(
 ) -> VbNode {
     let end_index = statement_end_index(tokens, start_index.saturating_sub(1));
     let mut identifiers = Vec::new();
+    let mut array_declarations = Vec::new();
     let mut can_read_identifier = true;
     for index in start_index..=end_index {
         let Some(current) = tokens.get(index) else {
@@ -1904,6 +1909,9 @@ fn create_declaration_node(
             break;
         } else if current.kind == "identifier" && can_read_identifier {
             identifiers.push(current.clone());
+            if let Some(array) = read_array_declaration(tokens, index, end_index, declaration_kind) {
+                array_declarations.push(array);
+            }
             can_read_identifier = false;
         }
     }
@@ -1921,6 +1929,7 @@ fn create_declaration_node(
         declaration_kind: Some(declaration_kind.to_string()),
         visibility,
         identifiers,
+        array_declarations,
         parameters: Vec::new(),
         parameter_metadata: Vec::new(),
         type_name: None,
@@ -1929,6 +1938,78 @@ fn create_declaration_node(
         scope_start: None,
         scope_end: None,
     }
+}
+
+fn read_array_declaration(
+    tokens: &[VbToken],
+    identifier_index: usize,
+    end_index: usize,
+    declaration_kind: &str,
+) -> Option<Value> {
+    let open_index = identifier_index + 1;
+    if tokens.get(open_index).map(|token| token.text.as_str()) != Some("(") {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut close_index = None;
+    let mut index = open_index;
+    while index <= end_index {
+        match tokens.get(index).map(|token| token.text.as_str()) {
+            Some("(") => depth += 1,
+            Some(")") => {
+                depth -= 1;
+                if depth == 0 {
+                    close_index = Some(index);
+                    break;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    let close_index = close_index?;
+    let dimensions = array_dimension_texts(&tokens[open_index + 1..close_index]);
+    let kind = if declaration_kind == "redim" || dimensions.is_empty() {
+        "dynamic"
+    } else {
+        "fixed"
+    };
+    let name = tokens.get(identifier_index)?;
+    Some(json!({
+        "name": vb_token_to_value(name),
+        "kind": kind,
+        "dimensions": dimensions,
+    }))
+}
+
+// significant トークン列を受け取る前提（空白・コメントは呼び出し前に除去済み）。
+// トップレベルのカンマで次元を分割し、各トークンの text を連結して返す。
+fn array_dimension_texts(tokens: &[VbToken]) -> Vec<String> {
+    fn flush(current: &mut Vec<String>, dimensions: &mut Vec<String>) {
+        let text = current.concat();
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            dimensions.push(trimmed.to_string());
+        }
+        current.clear();
+    }
+    let mut dimensions = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut depth = 0i32;
+    for token in tokens {
+        if token.text == "(" {
+            depth += 1;
+        } else if token.text == ")" {
+            depth = (depth - 1).max(0);
+        }
+        if token.text == "," && depth == 0 {
+            flush(&mut current, &mut dimensions);
+            continue;
+        }
+        current.push(token.text.clone());
+    }
+    flush(&mut current, &mut dimensions);
+    dimensions
 }
 
 fn create_statement_node(
@@ -1953,6 +2034,7 @@ fn create_statement_node(
         declaration_kind: None,
         visibility: None,
         identifiers: Vec::new(),
+        array_declarations: Vec::new(),
         parameters: Vec::new(),
         parameter_metadata: Vec::new(),
         type_name: None,
@@ -2117,6 +2199,12 @@ fn vb_node_to_value(node: &VbNode) -> Value {
         object.insert(
             "identifiers".to_string(),
             Value::Array(node.identifiers.iter().map(vb_token_to_value).collect()),
+        );
+    }
+    if !node.array_declarations.is_empty() {
+        object.insert(
+            "arrayDeclarations".to_string(),
+            Value::Array(node.array_declarations.clone()),
         );
     }
     if !node.parameters.is_empty() {
