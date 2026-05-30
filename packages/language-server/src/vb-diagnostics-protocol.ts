@@ -11,8 +11,20 @@ import type {
 } from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver-types";
 
+export type VbDiagnosticsWorkerDocument = Pick<
+  AspParsedDocument,
+  | "uri"
+  | "text"
+  | "regions"
+  | "directives"
+  | "includes"
+  | "serverObjects"
+  | "defaultLanguage"
+  | "diagnostics"
+>;
+
 export interface VbDiagnosticsWorkerContext {
-  documents?: AspParsedDocument[];
+  documents?: VbDiagnosticsWorkerDocument[];
   symbols?: VbSymbol[];
   externalRefUsages?: VbExternalRefUsage[];
   typeChecking?: "basic" | "strict";

@@ -11,6 +11,7 @@ import {
 } from "./disk-analysis-cache";
 import type {
   VbDiagnosticsWorkerContext,
+  VbDiagnosticsWorkerDocument,
   VbDiagnosticsWorkerResponse,
 } from "./vb-diagnostics-protocol";
 import { analyse, detect } from "chardet";
@@ -3601,7 +3602,7 @@ function shouldUseVbDiagnosticsWorker(_mode: AnalysisExecutionMode): boolean {
 
 function cloneableVbProjectContext(context: VbProjectContext): VbDiagnosticsWorkerContext {
   return {
-    documents: context.documents,
+    documents: context.documents?.map(vbDiagnosticsWorkerDocument),
     symbols: context.symbols,
     externalRefUsages: context.externalRefUsages,
     typeChecking: context.typeChecking,
@@ -3612,6 +3613,19 @@ function cloneableVbProjectContext(context: VbProjectContext): VbDiagnosticsWork
     unusedDiagnostics: context.unusedDiagnostics,
     syntaxSnippets: context.syntaxSnippets,
     locale: context.locale,
+  };
+}
+
+function vbDiagnosticsWorkerDocument(document: AspParsedDocument): VbDiagnosticsWorkerDocument {
+  return {
+    uri: document.uri,
+    text: document.text,
+    regions: document.regions,
+    directives: document.directives,
+    includes: document.includes,
+    serverObjects: document.serverObjects,
+    defaultLanguage: document.defaultLanguage,
+    diagnostics: document.diagnostics,
   };
 }
 

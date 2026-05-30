@@ -1,10 +1,13 @@
 import { parentPort } from "node:worker_threads";
 import { analyzeVbscriptFromTextAsync, aspAnalysisBackendInfo } from "@asp-lsp/core";
 import type {
+  VbDiagnosticsWorkerContext,
+  VbDiagnosticsWorkerDocument,
   VbDiagnosticsWorkerRequest,
   VbDiagnosticsWorkerResponse,
   VbDiagnosticsWorkerTiming,
 } from "./vb-diagnostics-protocol";
+import type { AspParsedDocument, VbProjectContext } from "@asp-lsp/core";
 
 if (!parentPort) {
   throw new Error("VBScript diagnostics worker requires a parent port.");
@@ -15,7 +18,7 @@ parentPort.on("message", async (request: VbDiagnosticsWorkerRequest) => {
   try {
     const diagnostics = (
       await analyzeVbscriptFromTextAsync(request.uri, request.text, request.settings, {
-        ...request.context,
+        ...analysisContext(request.context),
         debugStep: (name, action) => {
           const startedAt = process.hrtime.bigint();
           try {
@@ -46,6 +49,28 @@ parentPort.on("message", async (request: VbDiagnosticsWorkerRequest) => {
     } satisfies VbDiagnosticsWorkerResponse);
   }
 });
+
+function analysisContext(context: VbDiagnosticsWorkerContext): VbProjectContext {
+  return {
+    ...context,
+    documents: context.documents?.map(workerDocumentToParsedDocument),
+  };
+}
+
+function workerDocumentToParsedDocument(document: VbDiagnosticsWorkerDocument): AspParsedDocument {
+  return {
+    ...document,
+    cst: {
+      kind: "Document",
+      start: 0,
+      end: document.text.length,
+      contentStart: 0,
+      contentEnd: document.text.length,
+      tokens: [],
+      children: [],
+    },
+  };
+}
 
 function serializeWorkerError(error: unknown): VbDiagnosticsWorkerResponse["error"] {
   if (error instanceof Error) {
