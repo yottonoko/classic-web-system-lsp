@@ -385,7 +385,7 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(parsed.diagnostics[0]?.message).toContain("閉じ区切り");
   });
 
-  it("keeps ASP delimiters inside script strings from ending regions", () => {
+  it("closes ASP regions at raw delimiters inside script strings", () => {
     const source = `<%
 Response.Write "%>"
 Response.Write "done"
@@ -397,9 +397,23 @@ Response.Write "done"
       (region) => region.kind === "asp-block" || region.kind === "asp-directive",
     );
     expect(blocks).toHaveLength(3);
+    expect(blocks[0].end).toBe(source.indexOf("%>") + "%>".length);
     expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).toContain(
+      'Response.Write "',
+    );
+    expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).not.toContain(
       'Response.Write "done"',
     );
+    expect(source.slice(blocks[2].contentStart, blocks[2].contentEnd)).toContain("var text = '");
+    expect(source.slice(blocks[2].contentStart, blocks[2].contentEnd)).not.toContain(
+      "Response.Write(text)",
+    );
+    const html = parsed.regions
+      .filter((region) => region.kind === "html")
+      .map((region) => source.slice(region.start, region.end))
+      .join("");
+    expect(html).toContain('Response.Write "done"');
+    expect(html).toContain("Response.Write(text)");
   });
 
   it("closes ASP regions at delimiters on VBScript comment lines", () => {
@@ -460,7 +474,7 @@ Response.Write("block")
     expect(html).toContain('Response.Write("block")');
   });
 
-  it("keeps ASP delimiters inside script comments from ending regions", () => {
+  it("closes ASP regions at raw delimiters inside non-primary comment syntax", () => {
     const source = `<%
 /* block comment with %> */
 // line comment with %>
@@ -470,12 +484,16 @@ Response.Write "done"
     expect(parsed.diagnostics).toHaveLength(0);
     const blocks = parsed.regions.filter((region) => region.kind === "asp-block");
     expect(blocks).toHaveLength(1);
+    expect(blocks[0].end).toBe(source.indexOf("%>") + "%>".length);
     expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).toContain(
+      "/* block comment with ",
+    );
+    expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).not.toContain(
       'Response.Write "done"',
     );
   });
 
-  it("keeps script and style closing tags inside strings or comments from ending regions", () => {
+  it("closes script and style regions at raw closing tags inside strings or comments", () => {
     const source = `<script>
 const literal = "</script>";
 // </script>
@@ -489,10 +507,33 @@ const ok = true;
     const parsed = parseAspDocument("file:///site/tags.asp", source);
     const script = parsed.regions.find((region) => region.kind === "client-script");
     const style = parsed.regions.find((region) => region.kind === "style");
-    expect(script && source.slice(script.contentStart, script.contentEnd)).toContain(
+    expect(script?.end).toBe(source.indexOf("</script>") + "</script>".length);
+    expect(style?.end).toBe(source.indexOf("</style>") + "</style>".length);
+    expect(script && source.slice(script.contentStart, script.contentEnd)).not.toContain(
       "const ok = true;",
     );
-    expect(style && source.slice(style.contentStart, style.contentEnd)).toContain("color: red");
+    expect(style && source.slice(style.contentStart, style.contentEnd)).not.toContain("color: red");
+  });
+
+  it("closes server-side JScript regions at raw script end tags inside strings", () => {
+    const source = `<%@ LANGUAGE="JScript" %>
+<script runat="server" language="JScript">
+function render() {
+  var literal = "</script>";
+  Response.Write(literal);
+}
+</script>`;
+    const parsed = parseAspDocument("file:///site/server-jscript-script-close.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    const script = parsed.regions.find((region) => region.kind === "server-script");
+    expect(script?.language).toBe("jscript");
+    expect(script?.end).toBe(source.indexOf("</script>") + "</script>".length);
+    expect(script && source.slice(script.contentStart, script.contentEnd)).toContain(
+      'var literal = "',
+    );
+    expect(script && source.slice(script.contentStart, script.contentEnd)).not.toContain(
+      "Response.Write(literal)",
+    );
   });
 
   it("keeps explicit server script language even when page default is different", () => {

@@ -192,20 +192,28 @@ Response.Write "done"
     );
     expect(nativeBlocks).toHaveLength(3);
     const firstBlock = source.slice(nativeBlocks[0].contentStart, nativeBlocks[0].contentEnd);
-    expect(firstBlock).toContain("' comment with ");
+    expect(nativeBlocks[0].end).toBe(source.indexOf("%>") + "%>".length);
+    expect(firstBlock).toContain('Response.Write "');
+    expect(firstBlock).not.toContain("' comment with ");
     expect(firstBlock).not.toContain('Response.Write "done"');
+    const jscriptBlock = source.slice(nativeBlocks[2].contentStart, nativeBlocks[2].contentEnd);
+    expect(jscriptBlock).toContain("var text = '");
+    expect(jscriptBlock).not.toContain("Response.Write(text)");
   });
 
-  it("closes JScript comments at the same ASP delimiter offsets as the TypeScript parser", () => {
+  it("closes JScript strings and comments at the same ASP delimiter offsets as the TypeScript parser", () => {
     const source = `<%@ LANGUAGE="JScript" %>
 <%
-var text = '%>';
 // line comment with %>
 Response.Write("line")
 %>
 <%
 /* block comment with %> */
 Response.Write("block")
+%>
+<%
+var text = '%>';
+Response.Write(text)
 %>`;
     const uri = "file:///site/native-jscript-comment-delimiters.asp";
     const native = withBackend("native", () => parseAspCst(uri, source));
@@ -214,16 +222,18 @@ Response.Write("block")
     const nativeBlocks = native.children.filter(
       (child) => child.kind === "AspBlock" || child.kind === "AspDirective",
     );
-    expect(nativeBlocks).toHaveLength(3);
+    expect(nativeBlocks).toHaveLength(4);
     const lineBlock = source.slice(nativeBlocks[1].contentStart, nativeBlocks[1].contentEnd);
     const blockCommentBlock = source.slice(
       nativeBlocks[2].contentStart,
       nativeBlocks[2].contentEnd,
     );
-    expect(lineBlock).toContain("var text = '%>';");
     expect(lineBlock).toContain("// line comment with ");
     expect(lineBlock).not.toContain('Response.Write("line")');
     expect(blockCommentBlock).toContain("/* block comment with ");
     expect(blockCommentBlock).not.toContain('Response.Write("block")');
+    const stringBlock = source.slice(nativeBlocks[3].contentStart, nativeBlocks[3].contentEnd);
+    expect(stringBlock).toContain("var text = '");
+    expect(stringBlock).not.toContain("Response.Write(text)");
   });
 });

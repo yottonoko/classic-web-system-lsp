@@ -1149,94 +1149,14 @@ fn find_asp_close(
     index: &TextIndex<'_>,
     offset: usize,
     max_end: usize,
-    script_language: &str,
+    _script_language: &str,
 ) -> Option<usize> {
-    let mut vb_quote: Option<char> = None;
-    let mut vb_line_comment: Option<&'static str> = None;
-    let mut vb_block_comment = false;
-    let mut js_quote: Option<char> = None;
-    let mut js_line_comment = false;
-    let mut js_block_comment = false;
     let mut cursor = offset;
     while cursor < max_end {
         let char = index.char_at(cursor).unwrap_or('\0');
         let next = index.char_at(cursor + 1).unwrap_or('\0');
-        if script_language == "VBScript" {
-            if let Some(kind) = vb_line_comment {
-                if kind == "apostrophe" && char == '%' && next == '>' {
-                    return Some(cursor);
-                }
-                if char == '\r' || char == '\n' {
-                    vb_line_comment = None;
-                }
-            } else if vb_block_comment {
-                if char == '*' && next == '/' {
-                    vb_block_comment = false;
-                    cursor += 1;
-                }
-            } else if let Some(quote) = vb_quote {
-                if char == quote {
-                    if quote == '"' && next == '"' {
-                        cursor += 1;
-                    } else {
-                        vb_quote = None;
-                    }
-                }
-            } else if char == '%' && next == '>' {
-                return Some(cursor);
-            } else if char == '\'' {
-                vb_line_comment = Some("apostrophe");
-            } else if char == '/' && next == '*' {
-                vb_block_comment = true;
-                cursor += 1;
-            } else if char == '/' && next == '/' {
-                vb_line_comment = Some("slash");
-                cursor += 1;
-            } else if char == '"' {
-                vb_quote = Some(char);
-            }
-            cursor += 1;
-            continue;
-        }
-
-        if js_line_comment {
-            if char == '%' && next == '>' {
-                return Some(cursor);
-            }
-            if char == '\r' || char == '\n' {
-                js_line_comment = false;
-            }
-        } else if js_block_comment {
-            if char == '%' && next == '>' {
-                return Some(cursor);
-            }
-            if char == '*' && next == '/' {
-                js_block_comment = false;
-                cursor += 1;
-            }
-        } else if let Some(quote) = js_quote {
-            // TS 版 (asp-scanner.ts find_asp_close) と挙動を一致させる。
-            if quote == '\'' && (char == '\r' || char == '\n') {
-                js_quote = None;
-            } else if char == '\\' {
-                cursor += 1;
-            } else if char == quote {
-                if quote == '"' && next == '"' {
-                    cursor += 1;
-                } else {
-                    js_quote = None;
-                }
-            }
-        } else if char == '%' && next == '>' {
+        if char == '%' && next == '>' {
             return Some(cursor);
-        } else if char == '"' || char == '\'' || char == '`' {
-            js_quote = Some(char);
-        } else if char == '/' && next == '/' {
-            js_line_comment = true;
-            cursor += 1;
-        } else if char == '/' && next == '*' {
-            js_block_comment = true;
-            cursor += 1;
         }
         cursor += 1;
     }
@@ -1583,12 +1503,6 @@ fn find_element_close(
     tag_name: &str,
     offset: usize,
 ) -> Option<(usize, usize)> {
-    if tag_name == "script" {
-        return find_script_close(index, tag_name, offset);
-    }
-    if tag_name == "style" {
-        return find_style_close(index, tag_name, offset);
-    }
     let close = format!("</{tag_name}");
     let mut cursor = offset;
     while cursor < index.len() {
@@ -1599,115 +1513,6 @@ fn find_element_close(
         {
             let end = find_tag_end(index, cursor + 2, "VBScript")?;
             return Some((cursor, end + 1));
-        }
-        cursor += 1;
-    }
-    None
-}
-
-fn find_script_close(
-    index: &TextIndex<'_>,
-    tag_name: &str,
-    offset: usize,
-) -> Option<(usize, usize)> {
-    let close = format!("</{tag_name}");
-    let mut quote: Option<char> = None;
-    let mut line_comment = false;
-    let mut block_comment = false;
-    let mut cursor = offset;
-    while cursor < index.len() {
-        let char = index.char_at(cursor).unwrap_or('\0');
-        let next = index.char_at(cursor + 1).unwrap_or('\0');
-        if line_comment {
-            if char == '\r' || char == '\n' {
-                line_comment = false;
-            }
-            cursor += 1;
-            continue;
-        }
-        if block_comment {
-            if char == '*' && next == '/' {
-                block_comment = false;
-                cursor += 2;
-                continue;
-            }
-            cursor += 1;
-            continue;
-        }
-        if let Some(current_quote) = quote {
-            if char == '\\' && current_quote != '`' {
-                cursor += 2;
-                continue;
-            }
-            if char == current_quote {
-                quote = None;
-            }
-            cursor += 1;
-            continue;
-        }
-        if index
-            .slice(cursor, index.len())
-            .to_ascii_lowercase()
-            .starts_with(&close)
-        {
-            let end = find_tag_end(index, cursor + 2, "VBScript")?;
-            return Some((cursor, end + 1));
-        }
-        if char == '"' || char == '\'' || char == '`' {
-            quote = Some(char);
-        } else if char == '/' && next == '/' {
-            line_comment = true;
-            cursor += 1;
-        } else if char == '/' && next == '*' {
-            block_comment = true;
-            cursor += 1;
-        }
-        cursor += 1;
-    }
-    None
-}
-
-fn find_style_close(
-    index: &TextIndex<'_>,
-    tag_name: &str,
-    offset: usize,
-) -> Option<(usize, usize)> {
-    let close = format!("</{tag_name}");
-    let mut quote: Option<char> = None;
-    let mut block_comment = false;
-    let mut cursor = offset;
-    while cursor < index.len() {
-        let char = index.char_at(cursor).unwrap_or('\0');
-        let next = index.char_at(cursor + 1).unwrap_or('\0');
-        if block_comment {
-            if char == '*' && next == '/' {
-                block_comment = false;
-                cursor += 2;
-                continue;
-            }
-            cursor += 1;
-            continue;
-        }
-        if let Some(current_quote) = quote {
-            if char == current_quote {
-                quote = None;
-            }
-            cursor += 1;
-            continue;
-        }
-        if index
-            .slice(cursor, index.len())
-            .to_ascii_lowercase()
-            .starts_with(&close)
-        {
-            let end = find_tag_end(index, cursor + 2, "VBScript")?;
-            return Some((cursor, end + 1));
-        }
-        if char == '"' || char == '\'' {
-            quote = Some(char);
-        } else if char == '/' && next == '*' {
-            block_comment = true;
-            cursor += 1;
         }
         cursor += 1;
     }
@@ -4244,6 +4049,10 @@ mod tests {
         assert_eq!(result["serverObjects"][0]["id"], "Catalog");
         assert_eq!(result["serverObjects"][0]["progId"], "ADODB.Recordset");
         assert_eq!(result["regions"][2]["language"], "jscript");
+        assert_eq!(
+            result["regions"][2]["contentEnd"],
+            source.find("%>';").unwrap()
+        );
     }
 
     #[test]
@@ -4289,6 +4098,39 @@ Response.Write("block")
         );
         assert_eq!(result["regions"][3]["language"], "html");
         assert_eq!(result["regions"][5]["language"], "html");
+    }
+
+    #[test]
+    fn closes_server_script_at_raw_script_end_tag() {
+        let source = r#"<%@ LANGUAGE="JScript" %>
+<script runat="server" language="JScript">
+function render() {
+  var literal = "</script>";
+  Response.Write(literal);
+}
+</script>"#;
+        let result = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        let server_script = result["regions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|region| region["kind"] == "server-script")
+            .unwrap();
+        assert_eq!(server_script["language"], "jscript");
+        assert_eq!(
+            server_script["end"],
+            source.find("</script>").unwrap() + "</script>".len()
+        );
+        assert!(
+            !source[server_script["contentStart"].as_u64().unwrap() as usize
+                ..server_script["contentEnd"].as_u64().unwrap() as usize]
+                .contains("Response.Write(literal)")
+        );
     }
 
     #[test]

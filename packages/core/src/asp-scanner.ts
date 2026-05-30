@@ -202,104 +202,11 @@ function findAspClose(
   text: string,
   offset: number,
   maxEnd: number,
-  scriptLanguage: AspScriptScanLanguage,
+  _scriptLanguage: AspScriptScanLanguage,
 ): number {
-  let vbQuote: string | undefined;
-  let vbLineComment: "apostrophe" | "slash" | undefined;
-  let vbBlockComment = false;
-  let vbSkipNext = false;
-  let jsQuote: string | undefined;
-  let jsLineComment = false;
-  let jsBlockComment = false;
-  let jsSkipNext = false;
   for (let index = offset; index < maxEnd; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-
-    if (scriptLanguage === "VBScript") {
-      if (vbSkipNext) {
-        vbSkipNext = false;
-      } else if (vbLineComment) {
-        if (vbLineComment === "apostrophe" && char === "%" && next === ">") {
-          return index;
-        }
-        if (char === "\r" || char === "\n") {
-          vbLineComment = undefined;
-        }
-      } else if (vbBlockComment) {
-        if (char === "*" && next === "/") {
-          vbBlockComment = false;
-          vbSkipNext = true;
-        }
-      } else if (vbQuote) {
-        if (char === vbQuote) {
-          if (vbQuote === '"' && next === '"') {
-            vbSkipNext = true;
-          } else {
-            vbQuote = undefined;
-          }
-        }
-      } else if (char === "%") {
-        if (next === ">") {
-          return index;
-        }
-      } else if (char === '"' || char === "'" || char === "`") {
-        if (char === "'") {
-          vbLineComment = "apostrophe";
-        } else {
-          vbQuote = char;
-        }
-      } else if (char === "/" && next === "/") {
-        vbLineComment = "slash";
-        vbSkipNext = true;
-      } else if (char === "/" && next === "*") {
-        vbBlockComment = true;
-        vbSkipNext = true;
-      }
-      continue;
-    }
-
-    if (jsSkipNext) {
-      jsSkipNext = false;
-    } else if (jsLineComment) {
-      if (char === "%" && next === ">") {
-        return index;
-      }
-      if (char === "\r" || char === "\n") {
-        jsLineComment = false;
-      }
-    } else if (jsBlockComment) {
-      if (char === "%" && next === ">") {
-        return index;
-      }
-      if (char === "*" && next === "/") {
-        jsBlockComment = false;
-        jsSkipNext = true;
-      }
-    } else if (jsQuote) {
-      if (jsQuote === "'" && (char === "\r" || char === "\n")) {
-        jsQuote = undefined;
-      } else if (char === "\\") {
-        jsSkipNext = true;
-      } else if (char === jsQuote) {
-        if (jsQuote === '"' && next === '"') {
-          jsSkipNext = true;
-        } else {
-          jsQuote = undefined;
-        }
-      }
-    } else if (char === "%") {
-      if (next === ">") {
-        return index;
-      }
-    } else if (char === '"' || char === "'" || char === "`") {
-      jsQuote = char;
-    } else if (char === "/" && next === "/") {
-      jsLineComment = true;
-      jsSkipNext = true;
-    } else if (char === "/" && next === "*") {
-      jsBlockComment = true;
-      jsSkipNext = true;
+    if (text[index] === "%" && text[index + 1] === ">") {
+      return index;
     }
   }
   return -1;
@@ -598,104 +505,10 @@ function findElementClose(
   tagName: "script" | "style",
   offset: number,
 ): { start: number; end: number } | undefined {
-  return tagName === "script"
-    ? findScriptClose(text, tagName, offset)
-    : findStyleClose(text, tagName, offset);
-}
-
-function findScriptClose(
-  text: string,
-  tagName: string,
-  offset: number,
-): { start: number; end: number } | undefined {
-  let quote: string | undefined;
-  let lineComment = false;
-  let blockComment = false;
   for (let index = offset; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-    if (lineComment) {
-      if (char === "\r" || char === "\n") {
-        lineComment = false;
-      }
-      continue;
-    }
-    if (blockComment) {
-      if (char === "*" && next === "/") {
-        blockComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (quote) {
-      if (char === "\\" && quote !== "`") {
-        index += 1;
-        continue;
-      }
-      if (char === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
     if (isClosingTagAt(text, index, tagName)) {
       const closeEnd = findTagEnd(text, index + 2);
       return closeEnd === -1 ? undefined : { start: index, end: closeEnd + 1 };
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      continue;
-    }
-    if (char === "/" && next === "/") {
-      lineComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      blockComment = true;
-      index += 1;
-    }
-  }
-  return undefined;
-}
-
-function findStyleClose(
-  text: string,
-  tagName: string,
-  offset: number,
-): { start: number; end: number } | undefined {
-  let quote: string | undefined;
-  let blockComment = false;
-  for (let index = offset; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-    if (blockComment) {
-      if (char === "*" && next === "/") {
-        blockComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (quote) {
-      if (char === "\\") {
-        index += 1;
-        continue;
-      }
-      if (char === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
-    if (isClosingTagAt(text, index, tagName)) {
-      const closeEnd = findTagEnd(text, index + 2);
-      return closeEnd === -1 ? undefined : { start: index, end: closeEnd + 1 };
-    }
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      blockComment = true;
-      index += 1;
     }
   }
   return undefined;
