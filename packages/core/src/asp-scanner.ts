@@ -262,10 +262,16 @@ function findAspClose(
     if (jsSkipNext) {
       jsSkipNext = false;
     } else if (jsLineComment) {
+      if (char === "%" && next === ">") {
+        return index;
+      }
       if (char === "\r" || char === "\n") {
         jsLineComment = false;
       }
     } else if (jsBlockComment) {
+      if (char === "%" && next === ">") {
+        return index;
+      }
       if (char === "*" && next === "/") {
         jsBlockComment = false;
         jsSkipNext = true;

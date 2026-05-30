@@ -195,4 +195,35 @@ Response.Write "done"
     expect(firstBlock).toContain("' comment with ");
     expect(firstBlock).not.toContain('Response.Write "done"');
   });
+
+  it("closes JScript comments at the same ASP delimiter offsets as the TypeScript parser", () => {
+    const source = `<%@ LANGUAGE="JScript" %>
+<%
+var text = '%>';
+// line comment with %>
+Response.Write("line")
+%>
+<%
+/* block comment with %> */
+Response.Write("block")
+%>`;
+    const uri = "file:///site/native-jscript-comment-delimiters.asp";
+    const native = withBackend("native", () => parseAspCst(uri, source));
+    const fallback = withBackend("typescript", () => parseAspCst(uri, source));
+    expect(collectRegions(native)).toEqual(collectRegions(fallback));
+    const nativeBlocks = native.children.filter(
+      (child) => child.kind === "AspBlock" || child.kind === "AspDirective",
+    );
+    expect(nativeBlocks).toHaveLength(3);
+    const lineBlock = source.slice(nativeBlocks[1].contentStart, nativeBlocks[1].contentEnd);
+    const blockCommentBlock = source.slice(
+      nativeBlocks[2].contentStart,
+      nativeBlocks[2].contentEnd,
+    );
+    expect(lineBlock).toContain("var text = '%>';");
+    expect(lineBlock).toContain("// line comment with ");
+    expect(lineBlock).not.toContain('Response.Write("line")');
+    expect(blockCommentBlock).toContain("/* block comment with ");
+    expect(blockCommentBlock).not.toContain('Response.Write("block")');
+  });
 });

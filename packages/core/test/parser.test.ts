@@ -432,6 +432,34 @@ Response.Write "done"
     expect(html).toContain("テキスト");
   });
 
+  it("closes JScript ASP regions at delimiters inside comments", () => {
+    const source = `<%@ LANGUAGE="JScript" %>
+<%
+// line comment with %>
+Response.Write("line")
+%>
+<%
+/* block comment with %> */
+Response.Write("block")
+%>`;
+    const parsed = parseAspDocument("file:///site/jscript-comment-close.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    const blocks = parsed.regions.filter((region) => region.kind === "asp-block");
+    expect(blocks).toHaveLength(2);
+    const lineBlock = source.slice(blocks[0].contentStart, blocks[0].contentEnd);
+    const blockCommentBlock = source.slice(blocks[1].contentStart, blocks[1].contentEnd);
+    expect(lineBlock).toContain("// line comment with ");
+    expect(lineBlock).not.toContain('Response.Write("line")');
+    expect(blockCommentBlock).toContain("/* block comment with ");
+    expect(blockCommentBlock).not.toContain('Response.Write("block")');
+    const html = parsed.regions
+      .filter((region) => region.kind === "html")
+      .map((region) => source.slice(region.start, region.end))
+      .join("");
+    expect(html).toContain('Response.Write("line")');
+    expect(html).toContain('Response.Write("block")');
+  });
+
   it("keeps ASP delimiters inside script comments from ending regions", () => {
     const source = `<%
 /* block comment with %> */

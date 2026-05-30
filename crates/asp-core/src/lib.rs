@@ -1200,10 +1200,16 @@ fn find_asp_close(
         }
 
         if js_line_comment {
+            if char == '%' && next == '>' {
+                return Some(cursor);
+            }
             if char == '\r' || char == '\n' {
                 js_line_comment = false;
             }
         } else if js_block_comment {
+            if char == '%' && next == '>' {
+                return Some(cursor);
+            }
             if char == '*' && next == '/' {
                 js_block_comment = false;
                 cursor += 1;
@@ -4254,6 +4260,35 @@ mod tests {
             source.find("%>").unwrap()
         );
         assert_eq!(result["regions"][1]["language"], "html");
+    }
+
+    #[test]
+    fn closes_jscript_comments_at_asp_delimiter() {
+        let source = r#"<%@ LANGUAGE="JScript" %>
+<%
+// line comment %>
+Response.Write("line")
+%>
+<%
+/* block comment %> */
+Response.Write("block")
+%>"#;
+        let result = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        assert_eq!(
+            result["regions"][2]["contentEnd"],
+            source.find("%>\nResponse.Write(\"line\")").unwrap()
+        );
+        assert_eq!(
+            result["regions"][4]["contentEnd"],
+            source.find("%> */").unwrap()
+        );
+        assert_eq!(result["regions"][3]["language"], "html");
+        assert_eq!(result["regions"][5]["language"], "html");
     }
 
     #[test]

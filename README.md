@@ -5,6 +5,7 @@ Classic ASP language server and VS Code extension.
 The implementation treats `.asp`, `.asa`, and `.inc` files as mixed documents:
 
 - Classic ASP server script regions: `<% %>`, `<%= %>`, `<%@ %>`, and `<script runat="server">`
+- Classic ASP/IIS compatibility is the highest priority for server script boundary scanning
 - HTML regions delegated to `vscode-html-languageservice`
 - CSS regions and `style=""` attributes delegated to `vscode-css-languageservice`
 - client JavaScript regions delegated to the TypeScript language service
@@ -178,6 +179,7 @@ Example `aspLsp.vbscript.comTypes` and `aspLsp.vbscript.globals` entries:
 ## Current v1 Limits
 
 - VBScript analysis is intentionally conservative. It uses an error-tolerant CST and opt-in strict type checks rather than a full VBScript compiler. `Execute`/`Eval`, dynamic includes, COM late binding, and unusual line continuations are modeled only when they can be inferred statically.
+- ASP region scanning follows Classic ASP/IIS script block boundaries before embedded language comment syntax. In `<% ... %>` regions, `%>` closes the ASP block even when it appears in VBScript apostrophe comments or JScript comments; quoted string literals remain protected. `<script runat="server">` regions are bounded by the script tag instead.
 - VBScript XML documentation comments must use VB.NET-style triple quotes (`'''`). Single-quote XML comments are treated as ordinary comments.
 - XML documentation comments are editor documentation only and hover labels them that way. Existing `' @type`, `' @param ... As ...`, and `' @returns ...` annotations remain the source for explicit type metadata.
 - Unused diagnostics are hints. Classic ASP runtime entry points such as `Application_OnStart`, public class members, include-cross references, and names inside strings/comments are excluded from VBScript unused checks.
