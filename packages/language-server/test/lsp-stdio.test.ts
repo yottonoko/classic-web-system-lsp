@@ -1151,6 +1151,101 @@ function boot() {
       }
     });
 
+    it("reuses CSS context across diagnostics and CSS feature requests", async () => {
+      const marked = markedDocument(`<style>
+.card { color: red; }
+.broken { color: }
+.next { colo▮ }
+</style>`);
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/css-context-cache.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        const diagnostics = await waitForDiagnosticsContaining(server, "asp-lsp-css");
+        const cssDiagnostic = (
+          (
+            diagnostics.params as {
+              diagnostics?: Array<{
+                source?: string;
+                range: { start: { line: number; character: number } };
+              }>;
+            }
+          )?.diagnostics ?? []
+        ).find((diagnostic) => diagnostic.source === "asp-lsp-css");
+        expect(cssDiagnostic?.range.start.line).toBe(2);
+        await waitForLogContaining(server, "css.context.create");
+        server.takePendingNotifications("window/logMessage");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(marked.text, marked.text.indexOf("color: red") + 1),
+        });
+        expect(JSON.stringify(hover)).toContain("Sets the color");
+        expect((hover as { range?: { start: { line: number } } }).range?.start.line).toBe(1);
+        await waitForLogContaining(server, "css.context.reuse");
+        server.takePendingNotifications("window/logMessage");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+        });
+        const colorItem = completionItems(completions).find((item) => item.label === "color");
+        expect(colorItem).toBeDefined();
+        expect(completionEditRange(colorItem)?.start.line).toBe(3);
+        await waitForLogContaining(server, "css.context.reuse");
+        server.takePendingNotifications("window/logMessage");
+
+        const noCssUri = "file:///tmp/css-context-cache-no-css.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: noCssUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<% Response.Write "ok" %>`,
+          },
+        });
+        await waitForDiagnosticsPublished(server, noCssUri);
+        const firstColors = await server.request("textDocument/documentColor", {
+          textDocument: { uri: noCssUri },
+        });
+        const nextColors = await server.request("textDocument/documentColor", {
+          textDocument: { uri: noCssUri },
+        });
+        expect(firstColors).toEqual([]);
+        expect(nextColors).toEqual([]);
+        expect(JSON.stringify(server.takePendingNotifications("window/logMessage"))).not.toContain(
+          "css.context.",
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("keeps JavaScript diagnostics stable when virtual file names are normalized", async () => {
       const server = new RpcServer();
       try {

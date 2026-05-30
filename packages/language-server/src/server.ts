@@ -76,7 +76,7 @@ import {
   analyzeVbscriptFromTextAsync,
   aspAnalysisBackendInfo,
   buildVbTypeEnvironment,
-  buildVirtualDocument,
+  buildVirtualDocuments,
   collectVbscriptSymbols,
   createLocalizer,
   formatAspDocument,
@@ -134,7 +134,7 @@ import {
   type VbType,
   type VbTypeEnvironment,
 } from "@asp-lsp/core";
-import { getCSSLanguageService } from "vscode-css-languageservice";
+import { getCSSLanguageService, type Stylesheet } from "vscode-css-languageservice";
 import {
   getLanguageService as getHtmlLanguageService,
   TokenType,
@@ -269,7 +269,9 @@ interface CachedDocument {
   source: TextDocument;
   parsed: AspParsedDocument;
   parseDepth: "skeleton" | "full";
-  virtuals: Map<string, VirtualDocument>;
+  virtuals: Map<AspEmbeddedLanguage, VirtualDocument>;
+  virtualsMaterialized: boolean;
+  cssContext?: CachedCssContext;
   identity: DocumentIdentity;
   generation: number;
   parseSettingsIdentity: string;
@@ -284,6 +286,13 @@ interface CachedDocument {
   lastIncrementalChange?: AspIncrementalChange;
   lastEditIsOrdinaryVbscriptComment?: boolean;
   analysis?: CachedAnalysis;
+}
+
+interface CachedCssContext {
+  key: string;
+  virtual: VirtualDocument;
+  document: TextDocument;
+  stylesheet: Stylesheet;
 }
 
 interface CachedAnalysis {
@@ -1338,19 +1347,16 @@ connection.onHover((params) =>
       return htmlService.doHover(doc, params.position, htmlService.parseHTMLDocument(doc));
     }
     if (region.language === "css") {
-      const virtual = getCachedVirtual(cached, "css");
-      if (!virtual) {
+      const context = cssContext(cached);
+      if (!context) {
         return null;
       }
+      const { document, stylesheet, virtual } = context;
       const virtualPosition = virtual.sourceMap.toVirtualPosition(params.position);
       if (!virtualPosition) {
         return null;
       }
-      const doc = toTextDocument(virtual);
-      return remapHover(
-        virtual,
-        cssService.doHover(doc, virtualPosition, cssService.parseStylesheet(doc)),
-      );
+      return remapHover(virtual, cssService.doHover(document, virtualPosition, stylesheet));
     }
     return null;
   }),
@@ -2164,6 +2170,7 @@ function ensureFreshCachedDocument(document: TextDocument): CachedDocument {
     }
     const upgraded = refreshCachedDocument(document);
     upgraded.analysis = existing.analysis;
+    upgraded.cssContext = existing.cssContext;
     return upgraded;
   }
   if (existing && existing.parseSettingsIdentity === parseSettingsIdentity(settings)) {
@@ -2231,7 +2238,8 @@ function createCachedDocument(
     source: document,
     parsed,
     parseDepth,
-    virtuals: new Map<string, VirtualDocument>(),
+    virtuals: new Map<AspEmbeddedLanguage, VirtualDocument>(),
+    virtualsMaterialized: false,
     identity: documentIdentityFor(document),
     generation: ++documentCacheGeneration,
     parseSettingsIdentity: parseSettingsIdentity(settings),
@@ -3170,23 +3178,40 @@ function getCachedVirtual(
   cached: CachedDocument,
   language: AspEmbeddedLanguage,
 ): VirtualDocument | undefined {
-  const existing = cached.virtuals.get(language);
-  if (existing) {
-    return existing;
+  if (!cached.virtualsMaterialized) {
+    cached.virtuals = buildVirtualDocuments(cached.parsed);
+    cached.virtualsMaterialized = true;
   }
-  const regions = cached.parsed.regions.filter((region) => region.language === language);
-  if (regions.length === 0 && language !== "html") {
+  return cached.virtuals.get(language);
+}
+
+function cssContext(cached: CachedDocument): CachedCssContext | undefined {
+  const virtual = getCachedVirtual(cached, "css");
+  if (!virtual) {
     return undefined;
   }
-  const virtual = buildVirtualDocument(
-    cached.parsed.uri,
-    cached.parsed.text,
-    language,
-    regions,
-    cached.parsed.regions,
-  );
-  cached.virtuals.set(language, virtual);
-  return virtual;
+  const key = cssContextKey(virtual);
+  const reusable = cached.cssContext;
+  if (reusable?.key === key) {
+    const context = reusable.virtual === virtual ? reusable : { ...reusable, virtual };
+    cached.cssContext = context;
+    logDebugSummary(cachedSettings(cached.source.uri), `[asp-lsp] css.context.reuse: ${key}`);
+    return context;
+  }
+  const document = toTextDocument(virtual);
+  const context: CachedCssContext = {
+    key,
+    virtual,
+    document,
+    stylesheet: cssService.parseStylesheet(document),
+  };
+  cached.cssContext = context;
+  logDebugSummary(cachedSettings(cached.source.uri), `[asp-lsp] css.context.create: ${key}`);
+  return context;
+}
+
+function cssContextKey(virtual: VirtualDocument): string {
+  return `${virtual.uri}|${virtual.languageId}|${textFingerprint(virtual.text)}`;
 }
 
 function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
@@ -3232,19 +3257,19 @@ function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
 
 function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
   const analysis = analysisFor(cached);
-  if (analysis.cssDiagnostics) {
-    return analysis.cssDiagnostics.items;
-  }
-  const virtual = getCachedVirtual(cached, "css");
-  if (!virtual) {
+  const context = cssContext(cached);
+  if (!context) {
     return [];
   }
-  const doc = toTextDocument(virtual);
+  if (analysis.cssDiagnostics?.key === context.key) {
+    return analysis.cssDiagnostics.items;
+  }
+  const { document, stylesheet, virtual } = context;
   const diagnostics = cssService
-    .doValidation(doc, cssService.parseStylesheet(doc))
+    .doValidation(document, stylesheet)
     .map((diagnostic) => remapDiagnostic(virtual, diagnostic, "asp-lsp-css"))
     .filter(isDiagnostic);
-  analysis.cssDiagnostics = { key: "css", items: diagnostics, text: cached.parsed.text };
+  analysis.cssDiagnostics = { key: context.key, items: diagnostics, text: cached.parsed.text };
   return diagnostics;
 }
 
@@ -4124,17 +4149,17 @@ function cssCompletion(
   params: TextDocumentPositionParams,
   language: "css",
 ): CompletionItem[] {
-  const virtual = getCachedVirtual(cached, language);
-  if (!virtual) {
+  const context = cssContext(cached);
+  if (!context || context.virtual.languageId !== language) {
     return [];
   }
+  const { document, stylesheet, virtual } = context;
   const position = virtual.sourceMap.toVirtualPosition(params.position);
   if (!position) {
     return [];
   }
-  const doc = toTextDocument(virtual);
   return cssService
-    .doComplete(doc, position, cssService.parseStylesheet(doc))
+    .doComplete(document, position, stylesheet)
     .items.map((item) => remapCompletionItem(virtual, item))
     .filter((item): item is CompletionItem => Boolean(item));
 }
@@ -4341,13 +4366,13 @@ function htmlRename(
 }
 
 function cssPrepareRename(cached: CachedDocument, position: Position): Range | null {
-  const virtual = getCachedVirtual(cached, "css");
+  const context = cssContext(cached);
+  const virtual = context?.virtual;
   const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
-  if (!virtual || !virtualPosition) {
+  if (!context || !virtual || !virtualPosition) {
     return null;
   }
-  const doc = toTextDocument(virtual);
-  const range = cssService.prepareRename(doc, virtualPosition, cssService.parseStylesheet(doc));
+  const range = cssService.prepareRename(context.document, virtualPosition, context.stylesheet);
   return range ? (sourceRangeFromVirtualRange(virtual, range) ?? null) : null;
 }
 
@@ -4356,15 +4381,15 @@ function cssRename(
   position: Position,
   newName: string,
 ): WorkspaceEdit | null {
-  const virtual = getCachedVirtual(cached, "css");
+  const context = cssContext(cached);
+  const virtual = context?.virtual;
   const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
-  if (!virtual || !virtualPosition) {
+  if (!context || !virtual || !virtualPosition) {
     return null;
   }
-  const doc = toTextDocument(virtual);
   return remapWorkspaceEdit(
     virtual,
-    cssService.doRename(doc, virtualPosition, newName, cssService.parseStylesheet(doc)),
+    cssService.doRename(context.document, virtualPosition, newName, context.stylesheet),
     cached.source.uri,
   );
 }
@@ -4764,12 +4789,12 @@ function htmlDocumentHighlights(cached: CachedDocument, position: Position): Doc
 }
 
 function cssDocumentHighlights(cached: CachedDocument, position: Position): DocumentHighlight[] {
-  const virtual = getCachedVirtual(cached, "css");
+  const context = cssContext(cached);
+  const virtual = context?.virtual;
   const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
-  if (!virtual || !virtualPosition) {
+  if (!context || !virtual || !virtualPosition) {
     return [];
   }
-  const doc = toTextDocument(virtual);
   const service = cssService as {
     findDocumentHighlights?: (
       document: TextDocument,
@@ -4779,7 +4804,7 @@ function cssDocumentHighlights(cached: CachedDocument, position: Position): Docu
   };
   return (
     service
-      .findDocumentHighlights?.(doc, virtualPosition, cssService.parseStylesheet(doc))
+      .findDocumentHighlights?.(context.document, virtualPosition, context.stylesheet)
       .map((highlight) => {
         const range = sourceRangeFromVirtualRange(virtual, highlight.range);
         return range ? { ...highlight, range } : undefined;
@@ -5446,16 +5471,16 @@ function definitionLikeLocation(
     return jsLocations(cached, position, mode);
   }
   if (region.language === "css" && mode !== "implementation") {
-    const virtual = getCachedVirtual(cached, "css");
+    const context = cssContext(cached);
+    const virtual = context?.virtual;
     const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
-    if (!virtual || !virtualPosition) {
+    if (!context || !virtual || !virtualPosition) {
       return null;
     }
-    const doc = toTextDocument(virtual);
     const location = cssService.findDefinition(
-      doc,
+      context.document,
       virtualPosition,
-      cssService.parseStylesheet(doc),
+      context.stylesheet,
     );
     return location ? (remapLocation(virtual, location) ?? null) : null;
   }
@@ -5596,13 +5621,13 @@ function jsWorkspaceSymbols(cached: CachedDocument): SymbolInformation[] {
 }
 
 function cssDocumentSymbols(cached: CachedDocument): DocumentSymbol[] {
-  const virtual = getCachedVirtual(cached, "css");
-  if (!virtual) {
+  const context = cssContext(cached);
+  if (!context) {
     return [];
   }
-  const doc = toTextDocument(virtual);
+  const { document, stylesheet, virtual } = context;
   return cssService
-    .findDocumentSymbols2(doc, cssService.parseStylesheet(doc))
+    .findDocumentSymbols2(document, stylesheet)
     .map((symbol) => remapDocumentSymbol(virtual, symbol))
     .filter((symbol): symbol is DocumentSymbol => Boolean(symbol));
 }
@@ -5706,12 +5731,13 @@ function rangeContaining(left: Range, right: Range): Range {
 }
 
 function cssFoldingRanges(cached: CachedDocument): FoldingRange[] {
-  const virtual = getCachedVirtual(cached, "css");
-  if (!virtual) {
+  const context = cssContext(cached);
+  if (!context) {
     return [];
   }
+  const { document, virtual } = context;
   return cssService
-    .getFoldingRanges(toTextDocument(virtual), {})
+    .getFoldingRanges(document, {})
     .map((range) => remapFoldingRange(virtual, range))
     .filter((range): range is FoldingRange => Boolean(range));
 }
@@ -7039,13 +7065,13 @@ function selectionRangeAt(cached: CachedDocument, position: Position): Selection
     }
   }
   if (region?.language === "css") {
-    const virtual = getCachedVirtual(cached, "css");
+    const context = cssContext(cached);
+    const virtual = context?.virtual;
     const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
-    if (virtual && virtualPosition) {
-      const doc = toTextDocument(virtual);
+    if (context && virtual && virtualPosition) {
       return remapSelectionRange(
         virtual,
-        cssService.getSelectionRanges(doc, [virtualPosition], cssService.parseStylesheet(doc))[0],
+        cssService.getSelectionRanges(context.document, [virtualPosition], context.stylesheet)[0],
       );
     }
   }
@@ -7115,13 +7141,13 @@ function expandSelectionRangeToContain(range: SelectionRange, childRange: Range)
 }
 
 function cssDocumentColors(cached: CachedDocument): ColorInformation[] {
-  const virtual = getCachedVirtual(cached, "css");
-  if (!virtual) {
+  const context = cssContext(cached);
+  if (!context) {
     return [];
   }
-  const doc = toTextDocument(virtual);
+  const { document, stylesheet, virtual } = context;
   return cssService
-    .findDocumentColors(doc, cssService.parseStylesheet(doc))
+    .findDocumentColors(document, stylesheet)
     .map((color) => {
       const range = sourceRangeFromVirtualRange(virtual, color.range);
       return range ? { ...color, range } : undefined;
@@ -7134,18 +7160,18 @@ function cssColorPresentations(
   color: Color,
   range: Range,
 ): ColorPresentation[] {
-  const virtual = getCachedVirtual(cached, "css");
-  if (!virtual) {
+  const context = cssContext(cached);
+  if (!context) {
     return [];
   }
+  const { document, stylesheet, virtual } = context;
   const start = virtual.sourceMap.toVirtualPosition(range.start);
   const end = virtual.sourceMap.toVirtualPosition(range.end);
   if (!start || !end) {
     return [];
   }
-  const doc = toTextDocument(virtual);
   return cssService
-    .getColorPresentations(doc, cssService.parseStylesheet(doc), color, { start, end })
+    .getColorPresentations(document, stylesheet, color, { start, end })
     .map((presentation) => ({
       ...presentation,
       textEdit: presentation.textEdit
@@ -10670,15 +10696,15 @@ function cssCodeActions(
   range: Range,
   context: CodeActionContext,
 ): CodeAction[] {
-  const virtual = getCachedVirtual(cached, "css");
+  const css = cssContext(cached);
+  const virtual = css?.virtual;
   const start = virtual?.sourceMap.toVirtualPosition(range.start);
   const end = virtual?.sourceMap.toVirtualPosition(range.end);
-  if (!virtual || !start || !end) {
+  if (!css || !virtual || !start || !end) {
     return [];
   }
-  const doc = toTextDocument(virtual);
   return cssService
-    .doCodeActions2(doc, { start, end }, context, cssService.parseStylesheet(doc))
+    .doCodeActions2(css.document, { start, end }, context, css.stylesheet)
     .map((action) => remapCssCodeAction(virtual, action, cached.source.uri))
     .filter((action): action is CodeAction => Boolean(action));
 }
