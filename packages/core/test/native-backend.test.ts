@@ -2,6 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  analyzeVbscript,
+  analyzeVbscriptAsync,
+  analyzeVbscriptFromTextAsync,
   aspAnalysisBackendInfo,
   collectVbscriptSymbols,
   hydrateVbscriptCst,
@@ -117,6 +120,33 @@ describeNative("native analysis backend", () => {
   it("loads the native core instead of the TypeScript fallback", () => {
     parseAspDocument("file:///site/native.asp", "<% Dim x %>");
     expect(aspAnalysisBackendInfo().backend).toBe("native");
+  });
+
+  it("keeps async VBScript analysis on TypeScript semantics for project context", async () => {
+    const include = parseAspDocument(
+      "file:///site/inc/shared.inc",
+      `<%
+Function SharedName()
+End Function
+%>`,
+    );
+    const page = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Response.Write SharedName()
+%>`,
+    );
+    const symbols = [include, page].flatMap((document) => collectVbscriptSymbols(document));
+    const context = { documents: [include, page], symbols };
+    const syncDiagnostics = analyzeVbscript(include, context).diagnostics;
+    expect(syncDiagnostics).toHaveLength(0);
+
+    const asyncDiagnostics = (await analyzeVbscriptAsync(include, context)).diagnostics;
+    const fromTextDiagnostics = (
+      await analyzeVbscriptFromTextAsync(include.uri, include.text, {}, context)
+    ).diagnostics;
+    expect(asyncDiagnostics).toEqual(syncDiagnostics);
+    expect(fromTextDiagnostics).toEqual(syncDiagnostics);
   });
 
   it("reconstructs the VB CST via the binary columnar hydration path", async () => {

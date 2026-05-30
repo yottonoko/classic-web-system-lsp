@@ -2561,7 +2561,7 @@ export async function analyzeVbscriptAsync(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
-  if (nativeSemanticsEnabled()) {
+  if (nativeSemanticsEnabled() && !requiresTsSemanticContext(context)) {
     const native = await tryNativeAnalyzeVbscriptAsync(parsed, context);
     if (native) {
       return native;
@@ -2576,7 +2576,7 @@ export async function analyzeVbscriptFromTextAsync(
   settings: AspSettings = {},
   context: VbProjectContext = {},
 ): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
-  if (nativeSemanticsEnabled()) {
+  if (nativeSemanticsEnabled() && !requiresTsSemanticContext(context)) {
     const native = await tryNativeAnalyzeVbscriptFromTextAsync(uri, text, settings, context);
     if (native) {
       return native;

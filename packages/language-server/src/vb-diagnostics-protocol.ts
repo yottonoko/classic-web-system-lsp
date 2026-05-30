@@ -27,7 +27,8 @@ export interface VbDiagnosticsWorkerContext {
 
 export interface VbDiagnosticsWorkerRequest {
   id: number;
-  parsed: AspParsedDocument;
+  uri: string;
+  text: string;
   settings: AspSettings;
   context: VbDiagnosticsWorkerContext;
   cancellationGeneration?: number;

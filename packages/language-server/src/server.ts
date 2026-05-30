@@ -3555,7 +3555,8 @@ async function runVbDiagnosticsWorker(
   const response = await pool.run(
     {
       id,
-      parsed: cached.parsed,
+      uri: cached.source.uri,
+      text: cached.source.getText(),
       settings,
       context,
       cancellationGeneration: backgroundAnalysisGeneration,

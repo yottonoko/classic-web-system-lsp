@@ -14,25 +14,20 @@ parentPort.on("message", async (request: VbDiagnosticsWorkerRequest) => {
   const timings: VbDiagnosticsWorkerTiming[] = [];
   try {
     const diagnostics = (
-      await analyzeVbscriptFromTextAsync(
-        request.parsed.uri,
-        request.parsed.text,
-        request.settings,
-        {
-          ...request.context,
-          debugStep: (name, action) => {
-            const startedAt = process.hrtime.bigint();
-            try {
-              return action();
-            } finally {
-              timings.push({
-                name,
-                elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
-              });
-            }
-          },
+      await analyzeVbscriptFromTextAsync(request.uri, request.text, request.settings, {
+        ...request.context,
+        debugStep: (name, action) => {
+          const startedAt = process.hrtime.bigint();
+          try {
+            return action();
+          } finally {
+            timings.push({
+              name,
+              elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+            });
+          }
         },
-      )
+      })
     ).diagnostics;
     const backend = aspAnalysisBackendInfo();
     timings.push({

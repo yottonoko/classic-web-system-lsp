@@ -6908,14 +6908,11 @@ Response.Write missingName
     it("runs VBScript project diagnostics through the worker pool", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vb-worker-"));
       const page = path.join(tempDir, "default.asp");
-      fs.writeFileSync(
-        page,
-        `<%
+      const workerSource = `<%
 Dim unusedValue
 Response.Write "ok"
-%>`,
-        "utf8",
-      );
+%>`;
+      fs.writeFileSync(page, workerSource, "utf8");
       const server = new RpcServer();
       try {
         await server.start();
@@ -6942,6 +6939,8 @@ Response.Write "ok"
         await waitForLogContaining(server, "vbscript.worker.dispatch");
         await waitForLogContaining(server, "check.workspace.vbscript.diagnostics.worker");
         await waitForLogContaining(server, "vbscript.worker.complete");
+        const payloadLog = await waitForLogContaining(server, "worker.payload.bytes");
+        expect(payloadBytesFromLog(payloadLog)).toBeLessThan(109_500);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -8788,6 +8787,15 @@ function expectElapsedLogWithoutHeat(message: JsonRpcMessage): void {
   const text = JSON.stringify(message.params);
   expect(text).toMatch(/in \d+\.\d ms/);
   expect(text).not.toContain("heat=duration-");
+}
+
+function payloadBytesFromLog(message: JsonRpcMessage): number {
+  const text = JSON.stringify(message.params);
+  const payload = /payload=(\d+)/.exec(text)?.[1];
+  if (!payload) {
+    throw new Error(`Missing payload bytes in log: ${text}`);
+  }
+  return Number(payload);
 }
 
 function notifyRangedReplacement(
