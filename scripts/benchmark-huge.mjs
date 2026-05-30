@@ -25,9 +25,9 @@ if (!fs.existsSync(coreDist)) {
 execFileSync(process.execPath, [generator], { stdio: "inherit" });
 
 const {
-  analyzeVbscriptAsync,
+  analyzeVbscriptFromTextAsync,
   buildVirtualDocuments,
-  collectVbscriptSymbolsAsync,
+  collectVbscriptSymbolsFromTextAsync,
   parseAspDocumentAsync,
 } = require(coreDist);
 
@@ -50,14 +50,14 @@ await runBenchmark("buildVirtualDocuments", () => {
 });
 
 await runBenchmark("collectVbscriptSymbols", async () => {
-  for (const parsed of parsedDocuments) {
-    await collectVbscriptSymbolsAsync(parsed);
+  for (const source of sources) {
+    await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
   }
 });
 
 await runBenchmark("analyzeVbscript", async () => {
-  for (const parsed of parsedDocuments) {
-    await analyzeVbscriptAsync(parsed, analyzeContext());
+  for (const source of sources) {
+    await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
   }
 });
 

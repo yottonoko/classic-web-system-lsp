@@ -1,6 +1,7 @@
 import type {
   AspLocale,
   AspParsedDocument,
+  AspSettings,
   AspVbscriptComType,
   AspVbscriptIdentifierCase,
   AspVbscriptIdentifierKind,
@@ -27,6 +28,7 @@ export interface VbDiagnosticsWorkerContext {
 export interface VbDiagnosticsWorkerRequest {
   id: number;
   parsed: AspParsedDocument;
+  settings: AspSettings;
   context: VbDiagnosticsWorkerContext;
   cancellationGeneration?: number;
 }

@@ -73,7 +73,7 @@ import type {
 } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
-  analyzeVbscriptAsync as analyzeVbscriptCoreAsync,
+  analyzeVbscriptFromTextAsync,
   aspAnalysisBackendInfo,
   buildVbTypeEnvironment,
   buildVirtualDocument,
@@ -3156,7 +3156,7 @@ async function analyzeVbscriptAsync(
     }
   }
   return (
-    await analyzeVbscriptCoreAsync(cached.parsed, {
+    await analyzeVbscriptFromTextAsync(cached.source.uri, cached.source.getText(), settings, {
       ...context,
       debugStep: (name, action) =>
         measureDebugStep(
@@ -3190,6 +3190,7 @@ async function runVbDiagnosticsWorker(
     {
       id,
       parsed: cached.parsed,
+      settings,
       context,
       cancellationGeneration: backgroundAnalysisGeneration,
     },

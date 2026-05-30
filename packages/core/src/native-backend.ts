@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { AspParsedDocument, AspSettings, VbCstNode } from "./types";
@@ -67,6 +68,7 @@ export function tryNativeParseAspDocumentAsync(
     uri,
     text,
     settings,
+    cacheKey: nativeDocumentCacheKey(uri, text, settings),
   });
 }
 
@@ -75,7 +77,13 @@ export function tryNativeParseAspDocumentLightAsync(
   text: string,
   settings: AspSettings,
 ): Promise<unknown | undefined> {
-  return nativeOperationAsync<unknown>({ operation: "parseAspDocumentLight", uri, text, settings });
+  return nativeOperationAsync<unknown>({
+    operation: "parseAspDocumentLight",
+    uri,
+    text,
+    settings,
+    cacheKey: nativeDocumentCacheKey(uri, text, settings),
+  });
 }
 
 export function tryNativeParseAspCst(
@@ -148,6 +156,7 @@ export function tryNativeCollectVbscriptSymbolsFromTextAsync(
     text,
     settings,
     context: cloneableContext(context),
+    cacheKey: nativeDocumentCacheKey(uri, text, settings),
   });
 }
 
@@ -185,6 +194,7 @@ export function tryNativeAnalyzeVbscriptFromTextAsync(
     text,
     settings,
     context: cloneableContext(context),
+    cacheKey: nativeDocumentCacheKey(uri, text, settings),
   });
 }
 
@@ -222,6 +232,7 @@ export function tryNativeSummarizeAspFileAnalysisFromTextAsync(
     text,
     settings,
     context: cloneableContext(context),
+    cacheKey: nativeDocumentCacheKey(uri, text, settings),
   });
 }
 
@@ -350,7 +361,7 @@ function nativeWorkerPoolSize(): number {
 }
 
 class NativeCoreWorkerPool {
-  readonly workers: NativeCoreWorker[] = [];
+  readonly workers: Array<NativeCoreWorker | undefined> = [];
 
   constructor(
     readonly binary: string,
@@ -358,30 +369,53 @@ class NativeCoreWorkerPool {
   ) {}
 
   get closed(): boolean {
-    return this.workers.length > 0 && this.workers.every((worker) => worker.closed);
+    const createdWorkers = this.workers.filter(
+      (worker): worker is NativeCoreWorker => worker !== undefined,
+    );
+    return createdWorkers.length > 0 && createdWorkers.every((worker) => worker.closed);
   }
 
   request<T>(request: NativeRequest): Promise<T> {
-    const worker = this.nextWorker();
+    const worker = this.nextWorker(request);
     return worker.request<T>(request);
   }
 
   dispose(): void {
     for (const worker of this.workers) {
-      worker.dispose();
+      worker?.dispose();
     }
     this.workers.length = 0;
   }
 
-  private nextWorker(): NativeCoreWorker {
-    const openWorkers = this.workers.filter((worker) => !worker.closed);
+  private nextWorker(request: NativeRequest): NativeCoreWorker {
+    const cacheKey = typeof request.cacheKey === "string" ? request.cacheKey : undefined;
+    if (cacheKey) {
+      return this.workerAt(hashString(cacheKey) % this.size);
+    }
+    const openWorkers = this.openWorkers();
     if (openWorkers.length < this.size) {
-      const worker = new NativeCoreWorker(this.binary);
-      this.workers.push(worker);
-      return worker;
+      const slot = this.workers.findIndex((worker) => worker === undefined || worker.closed);
+      return this.workerAt(slot >= 0 ? slot : this.workers.length);
     }
     return openWorkers.reduce((best, candidate) =>
       candidate.pendingCount < best.pendingCount ? candidate : best,
+    );
+  }
+
+  private workerAt(slot: number): NativeCoreWorker {
+    const normalizedSlot = slot % this.size;
+    const worker = this.workers[normalizedSlot];
+    if (worker && !worker.closed) {
+      return worker;
+    }
+    const nextWorker = new NativeCoreWorker(this.binary);
+    this.workers[normalizedSlot] = nextWorker;
+    return nextWorker;
+  }
+
+  private openWorkers(): NativeCoreWorker[] {
+    return this.workers.filter(
+      (worker): worker is NativeCoreWorker => worker !== undefined && !worker.closed,
     );
   }
 }
@@ -529,6 +563,25 @@ function refStream(stream: unknown): void {
 
 function unrefStream(stream: unknown): void {
   (stream as { unref?: () => void }).unref?.();
+}
+
+function nativeDocumentCacheKey(uri: string, text: string, settings: AspSettings): string {
+  const hash = createHash("sha256");
+  hash.update(uri);
+  hash.update("\0");
+  hash.update(text);
+  hash.update("\0");
+  hash.update(JSON.stringify(settings));
+  return hash.digest("base64url");
+}
+
+function hashString(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
 
 function runWasm<T>(wasmPath: string, request: NativeRequest): T | undefined {

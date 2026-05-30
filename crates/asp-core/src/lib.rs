@@ -1,150 +1,186 @@
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 type JsonMap = Map<String, Value>;
 
 pub fn handle_json(input: &str) -> Result<String, String> {
     let request: Value = serde_json::from_str(input).map_err(|error| error.to_string())?;
-    let result = handle_value(&request)?;
+    let result = CoreState::default().handle_value(&request)?;
     serde_json::to_string(&result).map_err(|error| error.to_string())
 }
 
 pub fn handle_value(request: &Value) -> Result<Value, String> {
-    let operation = request
-        .get("operation")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "operation is required".to_string())?;
-    let result = match operation {
-        "backendInfo" => json!({
-            "backend": "native",
-            "engine": "asp-lsp-core",
-            "version": env!("CARGO_PKG_VERSION"),
-        }),
-        "parseVbscriptCst" => {
-            let text = request
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let source_text = request
-                .get("sourceText")
-                .and_then(Value::as_str)
-                .unwrap_or(text);
-            let base_offset = request
-                .get("baseOffset")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            parse_vbscript_cst(text, source_text, base_offset)
+    CoreState::default().handle_value(request)
+}
+
+#[derive(Default)]
+pub struct CoreState {
+    parsed_cache: HashMap<String, Value>,
+}
+
+impl CoreState {
+    pub fn handle_value(&mut self, request: &Value) -> Result<Value, String> {
+        let operation = request
+            .get("operation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "operation is required".to_string())?;
+        let result = match operation {
+            "backendInfo" => json!({
+                "backend": "native",
+                "engine": "asp-lsp-core",
+                "version": env!("CARGO_PKG_VERSION"),
+            }),
+            "parseVbscriptCst" => {
+                let text = request
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let source_text = request
+                    .get("sourceText")
+                    .and_then(Value::as_str)
+                    .unwrap_or(text);
+                let base_offset = request
+                    .get("baseOffset")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                parse_vbscript_cst(text, source_text, base_offset)
+            }
+            "parseAspCst" => {
+                let text = request
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let settings = request.get("settings").unwrap_or(&Value::Null);
+                parse_asp_cst(text, settings)
+            }
+            "parseAspDocument" => {
+                let uri = request
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let text = request
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let settings = request.get("settings").unwrap_or(&Value::Null);
+                self.cached_parse_asp_document(request, uri, text, settings)
+            }
+            "parseAspDocumentLight" => {
+                let uri = request
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let text = request
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let settings = request.get("settings").unwrap_or(&Value::Null);
+                let parsed = self.cached_parse_asp_document(request, uri, text, settings);
+                json!({
+                    "uri": parsed.get("uri").cloned().unwrap_or(Value::Null),
+                    "defaultLanguage": parsed.get("defaultLanguage").cloned().unwrap_or(Value::Null),
+                    "regionCount": parsed.get("regions").and_then(Value::as_array).map_or(0, Vec::len),
+                    "includeCount": parsed.get("includes").and_then(Value::as_array).map_or(0, Vec::len),
+                    "diagnosticCount": parsed.get("diagnostics").and_then(Value::as_array).map_or(0, Vec::len),
+                    "serverObjectCount": parsed.get("serverObjects").and_then(Value::as_array).map_or(0, Vec::len),
+                })
+            }
+            "collectVbscriptSymbols" => {
+                let parsed = request
+                    .get("parsed")
+                    .ok_or_else(|| "parsed is required".to_string())?;
+                let context = request.get("context").unwrap_or(&Value::Null);
+                let symbols = collect_symbols_from_parsed(parsed, context);
+                Value::Array(symbols)
+            }
+            "collectVbscriptSymbolsFromText" => {
+                let uri = request
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let text = request
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let settings = request.get("settings").unwrap_or(&Value::Null);
+                let context = request.get("context").unwrap_or(&Value::Null);
+                let parsed = self.cached_parse_asp_document(request, uri, text, settings);
+                let symbols = collect_symbols_from_parsed(&parsed, context);
+                Value::Array(symbols)
+            }
+            "summarizeAspFileAnalysis" => {
+                let parsed = request
+                    .get("parsed")
+                    .ok_or_else(|| "parsed is required".to_string())?;
+                summarize_asp_file(parsed)
+            }
+            "summarizeAspFileAnalysisFromText" => {
+                let uri = request
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let text = request
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let settings = request.get("settings").unwrap_or(&Value::Null);
+                let parsed = self.cached_parse_asp_document(request, uri, text, settings);
+                summarize_asp_file(&parsed)
+            }
+            "analyzeVbscript" => {
+                let parsed = request
+                    .get("parsed")
+                    .ok_or_else(|| "parsed is required".to_string())?;
+                let context = request.get("context").unwrap_or(&Value::Null);
+                let symbols = collect_symbols_from_parsed(parsed, context);
+                let diagnostics = diagnose_vbscript(parsed, &symbols, context);
+                json!({ "diagnostics": diagnostics, "symbols": symbols })
+            }
+            "analyzeVbscriptFromText" => {
+                let uri = request
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let text = request
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let settings = request.get("settings").unwrap_or(&Value::Null);
+                let context = request.get("context").unwrap_or(&Value::Null);
+                let parsed = self.cached_parse_asp_document(request, uri, text, settings);
+                let symbols = collect_symbols_from_parsed(&parsed, context);
+                let diagnostics = diagnose_vbscript(&parsed, &symbols, context);
+                json!({ "diagnostics": diagnostics, "symbols": symbols })
+            }
+            _ => return Err(format!("unknown operation: {operation}")),
+        };
+        Ok(result)
+    }
+
+    fn cached_parse_asp_document(
+        &mut self,
+        request: &Value,
+        uri: &str,
+        text: &str,
+        settings: &Value,
+    ) -> Value {
+        let Some(cache_key) = request.get("cacheKey").and_then(Value::as_str) else {
+            return parse_asp_document(uri, text, settings);
+        };
+        if !self.parsed_cache.contains_key(cache_key) {
+            if self.parsed_cache.len() >= 128 {
+                self.parsed_cache.clear();
+            }
+            self.parsed_cache.insert(
+                cache_key.to_string(),
+                parse_asp_document(uri, text, settings),
+            );
         }
-        "parseAspCst" => {
-            let text = request
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let settings = request.get("settings").unwrap_or(&Value::Null);
-            parse_asp_cst(text, settings)
-        }
-        "parseAspDocument" => {
-            let uri = request
-                .get("uri")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let text = request
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let settings = request.get("settings").unwrap_or(&Value::Null);
-            parse_asp_document(uri, text, settings)
-        }
-        "parseAspDocumentLight" => {
-            let uri = request
-                .get("uri")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let text = request
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let settings = request.get("settings").unwrap_or(&Value::Null);
-            let parsed = parse_asp_document(uri, text, settings);
-            json!({
-                "uri": parsed.get("uri").cloned().unwrap_or(Value::Null),
-                "defaultLanguage": parsed.get("defaultLanguage").cloned().unwrap_or(Value::Null),
-                "regionCount": parsed.get("regions").and_then(Value::as_array).map_or(0, Vec::len),
-                "includeCount": parsed.get("includes").and_then(Value::as_array).map_or(0, Vec::len),
-                "diagnosticCount": parsed.get("diagnostics").and_then(Value::as_array).map_or(0, Vec::len),
-                "serverObjectCount": parsed.get("serverObjects").and_then(Value::as_array).map_or(0, Vec::len),
-            })
-        }
-        "collectVbscriptSymbols" => {
-            let parsed = request
-                .get("parsed")
-                .ok_or_else(|| "parsed is required".to_string())?;
-            let context = request.get("context").unwrap_or(&Value::Null);
-            let symbols = collect_symbols_from_parsed(parsed, context);
-            Value::Array(symbols)
-        }
-        "collectVbscriptSymbolsFromText" => {
-            let uri = request
-                .get("uri")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let text = request
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let settings = request.get("settings").unwrap_or(&Value::Null);
-            let context = request.get("context").unwrap_or(&Value::Null);
-            let parsed = parse_asp_document(uri, text, settings);
-            let symbols = collect_symbols_from_parsed(&parsed, context);
-            Value::Array(symbols)
-        }
-        "summarizeAspFileAnalysis" => {
-            let parsed = request
-                .get("parsed")
-                .ok_or_else(|| "parsed is required".to_string())?;
-            summarize_asp_file(parsed)
-        }
-        "summarizeAspFileAnalysisFromText" => {
-            let uri = request
-                .get("uri")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let text = request
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let settings = request.get("settings").unwrap_or(&Value::Null);
-            let parsed = parse_asp_document(uri, text, settings);
-            summarize_asp_file(&parsed)
-        }
-        "analyzeVbscript" => {
-            let parsed = request
-                .get("parsed")
-                .ok_or_else(|| "parsed is required".to_string())?;
-            let context = request.get("context").unwrap_or(&Value::Null);
-            let symbols = collect_symbols_from_parsed(parsed, context);
-            let diagnostics = diagnose_vbscript(parsed, &symbols, context);
-            json!({ "diagnostics": diagnostics, "symbols": symbols })
-        }
-        "analyzeVbscriptFromText" => {
-            let uri = request
-                .get("uri")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let text = request
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let settings = request.get("settings").unwrap_or(&Value::Null);
-            let context = request.get("context").unwrap_or(&Value::Null);
-            let parsed = parse_asp_document(uri, text, settings);
-            let symbols = collect_symbols_from_parsed(&parsed, context);
-            let diagnostics = diagnose_vbscript(&parsed, &symbols, context);
-            json!({ "diagnostics": diagnostics, "symbols": symbols })
-        }
-        _ => return Err(format!("unknown operation: {operation}")),
-    };
-    Ok(result)
+        self.parsed_cache
+            .get(cache_key)
+            .cloned()
+            .unwrap_or_else(|| parse_asp_document(uri, text, settings))
+    }
 }
 
 #[no_mangle]

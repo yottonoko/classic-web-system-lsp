@@ -29,12 +29,13 @@ fn main() {
 fn run_jsonl() -> Result<(), String> {
     let stdin = io::stdin();
     let mut stdout = io::BufWriter::new(io::stdout());
+    let mut state = asp_lsp_core::CoreState::default();
     for line in stdin.lock().lines() {
         let line = line.map_err(|error| format!("failed to read stdin: {error}"))?;
         if line.trim().is_empty() {
             continue;
         }
-        let response = handle_jsonl_request(&line);
+        let response = handle_jsonl_request(&mut state, &line);
         writeln!(stdout, "{response}")
             .map_err(|error| format!("failed to write stdout: {error}"))?;
         stdout
@@ -44,7 +45,7 @@ fn run_jsonl() -> Result<(), String> {
     Ok(())
 }
 
-fn handle_jsonl_request(line: &str) -> String {
+fn handle_jsonl_request(state: &mut asp_lsp_core::CoreState, line: &str) -> String {
     let envelope: serde_json::Value = match serde_json::from_str(line) {
         Ok(value) => value,
         Err(error) => {
@@ -61,7 +62,7 @@ fn handle_jsonl_request(line: &str) -> String {
             return json!({ "id": id, "ok": false, "error": "request is required" }).to_string()
         }
     };
-    match asp_lsp_core::handle_value(request) {
+    match state.handle_value(request) {
         Ok(result) => json!({ "id": id, "ok": true, "result": result }).to_string(),
         Err(error) => json!({ "id": id, "ok": false, "error": error }).to_string(),
     }
