@@ -587,7 +587,7 @@ ReDim resizedItems(5)
     });
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("fixedItems") + 2), { symbols }),
-    ).toContain("Dim fixedItems(10) As Array");
+    ).toContain("Dim fixedItems(10) As Array(10)");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("dynamicItems") + 2), {
         symbols,
@@ -599,7 +599,7 @@ ReDim resizedItems(5)
       { symbols },
     );
     const arrayHintPositions = hints
-      .filter((hint) => hint.label === " (global) As Array")
+      .filter((hint) => typeof hint.label === "string" && hint.label.includes(" As Array"))
       .map((hint) => hint.position);
     expect(arrayHintPositions).toEqual(
       expect.arrayContaining([
@@ -608,11 +608,26 @@ ReDim resizedItems(5)
         positionAt(source, source.indexOf("resizedItems(5)") + "resizedItems(5)".length),
       ]),
     );
-    expect(hints.find((hint) => hint.label === " (global) As Array")).not.toEqual(
-      expect.objectContaining({
-        position: positionAt(source, source.indexOf("fixedItems") + "fixedItems".length),
-      }),
+    // The fixed-size array shows its dimensions and the hint sits after the array suffix.
+    expect(hints.find((hint) => hint.label === " (global) As Array(10)")?.position).toEqual(
+      positionAt(source, source.indexOf("fixedItems(10)") + "fixedItems(10)".length),
     );
+  });
+
+  it("renders fixed multi-dimensional arrays as Array(rows, cols)", () => {
+    const source = `<%
+Dim matrix(2, 3)
+%>`;
+    const parsed = parseAspDocument("file:///site/array-display.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    // The canonical type stays "Array"; only the displayed type carries dimensions.
+    expect(symbols.find((symbol) => symbol.name === "matrix")).toMatchObject({
+      typeName: "Array",
+      array: { kind: "fixed", dimensions: ["2", "3"] },
+    });
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("matrix") + 2), { symbols }),
+    ).toContain("Dim matrix(2, 3) As Array(2, 3)");
   });
 
   it("collects only public VBScript symbols for include summaries", () => {
