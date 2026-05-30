@@ -4,6 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
+import {
+  embeddedOperationNames,
+  runEmbeddedOperationForParsed,
+} from "./embedded-language-benchmark.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -25,13 +29,14 @@ if (!fs.existsSync(coreDist)) {
 
 execFileSync(process.execPath, [generator], { stdio: "inherit" });
 
+const core = require(coreDist);
 const {
   analyzeVbscriptFromTextAsync,
   buildVirtualDocuments,
   collectVbscriptSymbolsFromTextAsync,
   parseAspDocumentAsync,
   tryNativeParseAspDocumentLightAsync,
-} = require(coreDist);
+} = core;
 
 const sourceRefs = collectBenchmarkSourceRefs();
 const sourceStats = summarizeSources(sourceRefs);
@@ -61,6 +66,14 @@ await runBenchmark("analyzeVbscript", () =>
     await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
   }),
 );
+
+for (const operation of embeddedOperationNames) {
+  await runBenchmark(operation, () =>
+    measureAcrossParsedSources(sourceRefs, (parsed) => {
+      runEmbeddedOperationForParsed(operation, parsed, core);
+    }),
+  );
+}
 
 console.log("");
 console.log(`Include Tree Classic ASP benchmark`);

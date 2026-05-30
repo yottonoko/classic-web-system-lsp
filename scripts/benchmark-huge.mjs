@@ -4,6 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
+import {
+  embeddedOperationNames,
+  runEmbeddedOperationForParsed,
+} from "./embedded-language-benchmark.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -11,7 +15,7 @@ const sampleRoot = path.join(root, "samples", "classic-asp-huge-benchmark");
 const generator = path.join(sampleRoot, "generate.mjs");
 const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
-const warmupIterations = readPositiveInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const analyzeStepTotals = new Map();
 const results = [];
@@ -24,12 +28,13 @@ if (!fs.existsSync(coreDist)) {
 
 execFileSync(process.execPath, [generator], { stdio: "inherit" });
 
+const core = require(coreDist);
 const {
   analyzeVbscriptFromTextAsync,
   buildVirtualDocuments,
   collectVbscriptSymbolsFromTextAsync,
   parseAspDocumentAsync,
-} = require(coreDist);
+} = core;
 
 const sources = collectBenchmarkSources();
 const sourceStats = summarizeSources(sources);
@@ -60,6 +65,14 @@ await runBenchmark("analyzeVbscript", async () => {
     await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
   }
 });
+
+for (const operation of embeddedOperationNames) {
+  await runBenchmark(operation, () => {
+    for (const parsed of parsedDocuments) {
+      runEmbeddedOperationForParsed(operation, parsed, core);
+    }
+  });
+}
 
 console.log("");
 console.log(`Huge Classic ASP benchmark`);
@@ -200,6 +213,18 @@ function readPositiveInteger(name, fallback) {
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer.`);
+  }
+  return value;
+}
+
+function readNonNegativeInteger(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
   }
   return value;
 }

@@ -6,6 +6,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
+import { embeddedOperationNames } from "./embedded-language-benchmark.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -13,7 +14,7 @@ const sampleRoot = path.join(root, "samples", "classic-asp-large-benchmark");
 const generator = path.join(sampleRoot, "generate.mjs");
 const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
-const warmupIterations = readPositiveInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const workerCount = readPositiveInteger(
   "ASP_LSP_BENCH_WORKERS",
@@ -47,6 +48,9 @@ async function main() {
     await runBenchmark("analyzeVbscript", () =>
       runParallelOperation(workerPool, "analyzeVbscript", sources),
     );
+    for (const operation of embeddedOperationNames) {
+      await runBenchmark(operation, () => runParallelOperation(workerPool, operation, sources));
+    }
   } finally {
     await workerPool.close();
   }
@@ -193,6 +197,18 @@ function readPositiveInteger(name, fallback) {
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer.`);
+  }
+  return value;
+}
+
+function readNonNegativeInteger(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
   }
   return value;
 }
