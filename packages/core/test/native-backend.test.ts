@@ -12,6 +12,7 @@ import {
   parseAspDocument,
   parseAspDocumentAsync,
   parseAspDocumentSkeletonAsync,
+  summarizeAspFileAnalysis,
 } from "../src/index";
 import type { AspCstNode } from "../src/types";
 
@@ -230,6 +231,55 @@ Dim a(1), plain, matrix(2, 3)
     });
     // A bare identifier in a multi-name Dim must not be typed as an array.
     expect(symbols.find((symbol) => symbol.name === "plain")?.typeName).not.toBe("Array");
+  });
+
+  it("keeps native VBScript diagnostics equivalent between parsed and from-text entrypoints", async () => {
+    const source = `<%
+' @returns String
+Function BuildName(unusedArg)
+  implicitLocal = 1
+  BuildName = MissingFactory(implicitLocal)
+End Function
+%>`;
+    const uri = "file:///site/native-vb-analysis.asp";
+    const parsed = parseAspDocument(uri, source);
+    const direct = analyzeVbscript(parsed, { unusedDiagnostics: true });
+    const fromText = await analyzeVbscriptFromTextAsync(
+      uri,
+      source,
+      {},
+      { unusedDiagnostics: true },
+    );
+    expect(aspAnalysisBackendInfo().backend).toBe("native");
+    expect(fromText).toEqual(direct);
+    expect(direct.symbols).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "BuildName", typeName: "String", explicitType: true }),
+        expect.objectContaining({ name: "implicitLocal", implicit: true }),
+      ]),
+    );
+    expect(direct.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "asp-lsp-vbscript-unused", code: "vbscript:unused" }),
+      ]),
+    );
+
+    const strictSource = `<%
+Option Explicit
+Response.Write MissingValue
+%>`;
+    const strictUri = "file:///site/native-vb-strict.asp";
+    const strictParsed = parseAspDocument(strictUri, strictSource);
+    expect(await analyzeVbscriptFromTextAsync(strictUri, strictSource)).toEqual(
+      analyzeVbscript(strictParsed),
+    );
+    expect(analyzeVbscript(strictParsed).diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "vbscript:undeclared" })]),
+    );
+
+    expect(summarizeAspFileAnalysis(parsed).vbscript?.externalRefs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "MissingFactory" })]),
+    );
   });
 
   it("matches the TypeScript parser token offsets, including non-ASCII prefixes", () => {

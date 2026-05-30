@@ -181,7 +181,9 @@ impl CoreState {
                     .get("parsed")
                     .ok_or_else(|| "parsed is required".to_string())?;
                 let context = request.get("context").unwrap_or(&Value::Null);
-                let symbols = self.cached_collect_symbols(request, parsed, context);
+                let analysis = VbAnalysisCache::new(parsed);
+                let symbols =
+                    self.cached_collect_symbols_with_analysis(request, parsed, context, &analysis);
                 Value::Array(symbols)
             }
             "collectVbscriptSymbolsFromText" => {
@@ -196,7 +198,9 @@ impl CoreState {
                 let settings = request.get("settings").unwrap_or(&Value::Null);
                 let context = request.get("context").unwrap_or(&Value::Null);
                 let parsed = self.cached_parse_asp_document(request, uri, text, settings);
-                let symbols = self.cached_collect_symbols(request, &parsed, context);
+                let analysis = VbAnalysisCache::new(&parsed);
+                let symbols =
+                    self.cached_collect_symbols_with_analysis(request, &parsed, context, &analysis);
                 Value::Array(symbols)
             }
             "summarizeAspFileAnalysis" => {
@@ -223,8 +227,12 @@ impl CoreState {
                     .get("parsed")
                     .ok_or_else(|| "parsed is required".to_string())?;
                 let context = request.get("context").unwrap_or(&Value::Null);
-                let symbols = self.cached_collect_symbols(request, parsed, context);
-                let diagnostics = self.cached_diagnostics(request, parsed, &symbols, context);
+                let analysis = VbAnalysisCache::new(parsed);
+                let symbols =
+                    self.cached_collect_symbols_with_analysis(request, parsed, context, &analysis);
+                let diagnostics = self.cached_diagnostics_with_analysis(
+                    request, parsed, &symbols, context, &analysis,
+                );
                 json!({ "diagnostics": diagnostics, "symbols": symbols })
             }
             "analyzeVbscriptFromText" => {
@@ -239,8 +247,12 @@ impl CoreState {
                 let settings = request.get("settings").unwrap_or(&Value::Null);
                 let context = request.get("context").unwrap_or(&Value::Null);
                 let parsed = self.cached_parse_asp_document(request, uri, text, settings);
-                let symbols = self.cached_collect_symbols(request, &parsed, context);
-                let diagnostics = self.cached_diagnostics(request, &parsed, &symbols, context);
+                let analysis = VbAnalysisCache::new(&parsed);
+                let symbols =
+                    self.cached_collect_symbols_with_analysis(request, &parsed, context, &analysis);
+                let diagnostics = self.cached_diagnostics_with_analysis(
+                    request, &parsed, &symbols, context, &analysis,
+                );
                 json!({ "diagnostics": diagnostics, "symbols": symbols })
             }
             _ => return Err(format!("unknown operation: {operation}")),
@@ -273,19 +285,20 @@ impl CoreState {
             .unwrap_or_else(|| parse_asp_document(uri, text, settings))
     }
 
-    fn cached_collect_symbols(
+    fn cached_collect_symbols_with_analysis(
         &mut self,
         request: &Value,
         parsed: &Value,
         context: &Value,
+        analysis: &VbAnalysisCache<'_>,
     ) -> Vec<Value> {
         let Some(cache_key) = semantic_cache_key(request, context, "symbols") else {
-            return collect_symbols_from_parsed(parsed, context);
+            return collect_symbols_from_analysis(parsed, context, analysis);
         };
         if let Some(symbols) = self.symbol_cache.get(&cache_key) {
             return symbols.clone();
         }
-        let symbols = collect_symbols_from_parsed(parsed, context);
+        let symbols = collect_symbols_from_analysis(parsed, context, analysis);
         if self.symbol_cache.len() >= DAEMON_CACHE_ENTRY_LIMIT {
             self.symbol_cache.clear();
             self.diagnostics_cache.clear();
@@ -294,20 +307,21 @@ impl CoreState {
         symbols
     }
 
-    fn cached_diagnostics(
+    fn cached_diagnostics_with_analysis(
         &mut self,
         request: &Value,
         parsed: &Value,
         symbols: &[Value],
         context: &Value,
+        analysis: &VbAnalysisCache<'_>,
     ) -> Vec<Value> {
         let Some(cache_key) = semantic_cache_key(request, context, "diagnostics") else {
-            return diagnose_vbscript(parsed, symbols, context);
+            return diagnose_vbscript_with_analysis(parsed, symbols, context, analysis);
         };
         if let Some(diagnostics) = self.diagnostics_cache.get(&cache_key) {
             return diagnostics.clone();
         }
-        let diagnostics = diagnose_vbscript(parsed, symbols, context);
+        let diagnostics = diagnose_vbscript_with_analysis(parsed, symbols, context, analysis);
         if self.diagnostics_cache.len() >= DAEMON_CACHE_ENTRY_LIMIT {
             self.diagnostics_cache.clear();
         }
@@ -2009,13 +2023,23 @@ struct VbNode {
 
 fn parse_vbscript_cst(text: &str, source_text: &str, base_offset: usize) -> Value {
     let index = TextIndex::new(text);
-    let text_len = index.len();
     let tokens = tokenize_vbscript(&index, base_offset);
     let significant = tokens
         .iter()
         .filter(|token| token.kind != "whitespace" && token.kind != "comment")
         .cloned()
         .collect::<Vec<_>>();
+    parse_vbscript_cst_from_tokens(text, source_text, base_offset, &tokens, &significant)
+}
+
+fn parse_vbscript_cst_from_tokens(
+    text: &str,
+    source_text: &str,
+    base_offset: usize,
+    tokens: &[VbToken],
+    significant: &[VbToken],
+) -> Value {
+    let text_len = TextIndex::new(text).len();
     let mut document = VbNode {
         kind: "Document".to_string(),
         start: base_offset,
@@ -2023,7 +2047,7 @@ fn parse_vbscript_cst(text: &str, source_text: &str, base_offset: usize) -> Valu
         content_start: Some(base_offset),
         content_end: Some(base_offset + text_len),
         name_token: None,
-        tokens: tokens.clone(),
+        tokens: tokens.to_vec(),
         children: Vec::new(),
         procedure_kind: None,
         property_accessor: None,
@@ -2939,51 +2963,117 @@ fn value_to_vb_token(value: &Value) -> Option<VbToken> {
     })
 }
 
-fn collect_symbols_from_parsed(parsed: &Value, context: &Value) -> Vec<Value> {
+struct VbRegionAnalysis {
+    end: usize,
+    cst: Value,
+    tokens: Vec<VbToken>,
+    significant: Vec<VbToken>,
+}
+
+struct VbAnalysisCache<'a> {
+    text: &'a str,
+    text_index: TextIndex<'a>,
+    regions: Vec<VbRegionAnalysis>,
+}
+
+impl<'a> VbAnalysisCache<'a> {
+    fn new(parsed: &'a Value) -> Self {
+        let text = parsed
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let text_index = TextIndex::new(text);
+        let mut regions = Vec::new();
+        if let Some(parsed_regions) = parsed.get("regions").and_then(Value::as_array) {
+            for region in parsed_regions {
+                if region.get("language").and_then(Value::as_str) != Some("vbscript") {
+                    continue;
+                }
+                let start = region
+                    .get("contentStart")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let end = region
+                    .get("contentEnd")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let region_text = text_index.slice(start, end);
+                let region_index = TextIndex::new(region_text);
+                let tokens = tokenize_vbscript(&region_index, start);
+                let significant = tokens
+                    .iter()
+                    .filter(|token| token.kind != "whitespace" && token.kind != "comment")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let cst =
+                    parse_vbscript_cst_from_tokens(region_text, text, start, &tokens, &significant);
+                regions.push(VbRegionAnalysis {
+                    end,
+                    cst,
+                    tokens,
+                    significant,
+                });
+            }
+        }
+        Self {
+            text,
+            text_index,
+            regions,
+        }
+    }
+
+    fn next_procedure_name(&self, offset: usize) -> Option<String> {
+        for region in self.regions.iter().filter(|region| offset <= region.end) {
+            let tokens = region
+                .significant
+                .iter()
+                .filter(|token| token.start >= offset)
+                .collect::<Vec<_>>();
+            for window in tokens.windows(2) {
+                let first = lower_token(window.first().copied());
+                let second = window.get(1).copied();
+                if (first == "function" || first == "sub")
+                    && second.map(|token| token.kind.as_str()) == Some("identifier")
+                {
+                    return second.map(|token| token.text.clone());
+                }
+            }
+        }
+        None
+    }
+}
+
+fn collect_symbols_from_analysis(
+    parsed: &Value,
+    context: &Value,
+    analysis: &VbAnalysisCache<'_>,
+) -> Vec<Value> {
     let uri = parsed
         .get("uri")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let text = parsed
-        .get("text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let text_index = TextIndex::new(text);
     let mut symbols = Vec::new();
-    if let Some(regions) = parsed.get("regions").and_then(Value::as_array) {
-        for region in regions {
-            if region.get("language").and_then(Value::as_str) != Some("vbscript") {
-                continue;
-            }
-            let start = region
-                .get("contentStart")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            let end = region
-                .get("contentEnd")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            let cst = parse_vbscript_cst(text_index.slice(start, end), text, start);
-            let empty_tokens = Vec::new();
-            let document_tokens = cst
-                .get("tokens")
-                .and_then(Value::as_array)
-                .unwrap_or(&empty_tokens);
-            collect_symbols_from_node(
-                &cst,
-                uri,
-                &text_index,
-                &document_tokens,
-                None,
-                None,
-                None,
-                &mut symbols,
-            );
-        }
+    for region in &analysis.regions {
+        let empty_tokens = Vec::new();
+        let document_tokens = region
+            .cst
+            .get("tokens")
+            .and_then(Value::as_array)
+            .unwrap_or(&empty_tokens);
+        collect_symbols_from_node(
+            &region.cst,
+            uri,
+            &analysis.text_index,
+            &document_tokens,
+            None,
+            None,
+            None,
+            &mut symbols,
+        );
     }
     add_server_object_symbols(parsed, &mut symbols);
-    apply_type_annotations(parsed, &text_index, &mut symbols);
-    add_implicit_assignment_symbols(parsed, &text_index, context, &mut symbols);
+    apply_type_annotations(analysis, &mut symbols);
+    add_implicit_assignment_symbols(parsed, context, analysis, &mut symbols);
     strip_null_fields_from_values(&mut symbols);
     symbols
 }
@@ -3429,15 +3519,15 @@ fn add_server_object_symbols(parsed: &Value, symbols: &mut Vec<Value>) {
 
 fn add_implicit_assignment_symbols(
     parsed: &Value,
-    text_index: &TextIndex<'_>,
     context: &Value,
+    analysis: &VbAnalysisCache<'_>,
     symbols: &mut Vec<Value>,
 ) {
-    let text = parsed
-        .get("text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if text.to_ascii_lowercase().contains("option explicit") {
+    if analysis
+        .text
+        .to_ascii_lowercase()
+        .contains("option explicit")
+    {
         return;
     }
     let uri = parsed
@@ -3456,88 +3546,58 @@ fn add_implicit_assignment_symbols(
         .filter_map(|symbol| symbol.get("name").and_then(Value::as_str))
         .map(|name| name.to_ascii_lowercase())
         .collect::<HashSet<_>>();
-    if let Some(regions) = parsed.get("regions").and_then(Value::as_array) {
-        for region in regions {
-            if region.get("language").and_then(Value::as_str) != Some("vbscript") {
+    for region in &analysis.regions {
+        let significant = &region.significant;
+        let mut index = 0usize;
+        while index < significant.len() {
+            if significant[index].kind == "newline" || significant[index].text == ":" {
+                index += 1;
                 continue;
             }
-            let start = region
-                .get("contentStart")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            let end = region
-                .get("contentEnd")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            let region_index = TextIndex::new(text_index.slice(start, end));
-            let tokens = tokenize_vbscript(&region_index, start);
-            let significant = tokens
-                .iter()
-                .filter(|token| {
-                    token.kind != "whitespace" && token.kind != "comment" && token.kind != "newline"
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            let mut index = 0usize;
-            while index < significant.len() {
-                let statement_end = statement_end_index(&significant, index);
-                let statement = &significant[index..=statement_end];
-                let target_index = if lower_token(statement.first()) == "set" {
-                    1
-                } else {
-                    0
-                };
-                let Some(target) = statement.get(target_index) else {
-                    index = statement_end + 1;
-                    continue;
-                };
-                let has_assignment = statement
-                    .iter()
-                    .enumerate()
-                    .any(|(item_index, token)| item_index > target_index && token.text == "=");
-                if target.kind == "identifier"
-                    && has_assignment
-                    && statement
-                        .get(target_index + 1)
-                        .map(|token| token.text.as_str())
-                        != Some(".")
-                    && !is_builtin_name(&target.text)
-                    && !is_implicit_keyword_name(&target.text)
-                    && !existing.contains(&target.text.to_ascii_lowercase())
-                {
-                    existing.insert(target.text.to_ascii_lowercase());
-                    symbols.push(json!({
-                        "name": target.text,
-                        "kind": "variable",
-                        "range": text_index.range(target.start, target.end),
-                        "sourceUri": uri,
-                        "implicit": true,
-                    }));
-                }
+            let statement_end = statement_end_index(&significant, index);
+            let statement = &significant[index..=statement_end];
+            let target_index = if lower_token(statement.first()) == "set" {
+                1
+            } else {
+                0
+            };
+            let Some(target) = statement.get(target_index) else {
                 index = statement_end + 1;
+                continue;
+            };
+            let has_assignment = statement
+                .iter()
+                .enumerate()
+                .any(|(item_index, token)| item_index > target_index && token.text == "=");
+            if target.kind == "identifier"
+                && has_assignment
+                && statement
+                    .get(target_index + 1)
+                    .map(|token| token.text.as_str())
+                    != Some(".")
+                && !is_builtin_name(&target.text)
+                && !is_implicit_keyword_name(&target.text)
+                && !existing.contains(&target.text.to_ascii_lowercase())
+            {
+                existing.insert(target.text.to_ascii_lowercase());
+                symbols.push(json!({
+                    "name": target.text,
+                    "kind": "variable",
+                    "range": analysis.text_index.range(target.start, target.end),
+                    "sourceUri": uri,
+                    "implicit": true,
+                }));
             }
+            index = statement_end + 1;
         }
     }
 }
 
-fn apply_type_annotations(parsed: &Value, text_index: &TextIndex<'_>, symbols: &mut [Value]) {
-    let Some(regions) = parsed.get("regions").and_then(Value::as_array) else {
-        return;
-    };
-    for region in regions {
-        if region.get("language").and_then(Value::as_str) != Some("vbscript") {
-            continue;
-        }
-        let start = region
-            .get("contentStart")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize;
-        let end = region
-            .get("contentEnd")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize;
-        let region_index = TextIndex::new(text_index.slice(start, end));
-        for token in tokenize_vbscript(&region_index, start)
+fn apply_type_annotations(analysis: &VbAnalysisCache<'_>, symbols: &mut [Value]) {
+    for region in &analysis.regions {
+        for token in region
+            .tokens
+            .iter()
             .into_iter()
             .filter(|token| token.kind == "comment")
         {
@@ -3555,7 +3615,7 @@ fn apply_type_annotations(parsed: &Value, text_index: &TextIndex<'_>, symbols: &
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
             {
-                if let Some(next_name) = next_procedure_name(parsed, token.start) {
+                if let Some(next_name) = analysis.next_procedure_name(token.start) {
                     set_annotated_symbol_type(symbols, &next_name, type_name, None);
                 }
             }
@@ -3592,34 +3652,17 @@ fn set_annotated_symbol_type(
     }
 }
 
-fn next_procedure_name(parsed: &Value, offset: usize) -> Option<String> {
-    let text = parsed
-        .get("text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let index = TextIndex::new(text);
-    let tail_index = TextIndex::new(index.slice(offset, index.len()));
-    let tokens = tokenize_vbscript(&tail_index, offset);
-    for window in tokens.windows(2) {
-        let first = lower_token(window.first());
-        let second = window.get(1);
-        if (first == "function" || first == "sub")
-            && second.map(|token| token.kind.as_str()) == Some("identifier")
-        {
-            return second.map(|token| token.text.clone());
-        }
-    }
-    None
-}
-
-fn diagnose_vbscript(parsed: &Value, symbols: &[Value], context: &Value) -> Vec<Value> {
+fn diagnose_vbscript_with_analysis(
+    _parsed: &Value,
+    symbols: &[Value],
+    context: &Value,
+    analysis: &VbAnalysisCache<'_>,
+) -> Vec<Value> {
     let mut diagnostics = Vec::new();
-    let text = parsed
-        .get("text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let text_index = TextIndex::new(text);
-    let has_option_explicit = text.to_ascii_lowercase().contains("option explicit");
+    let has_option_explicit = analysis
+        .text
+        .to_ascii_lowercase()
+        .contains("option explicit");
     let declared = symbols
         .iter()
         .chain(
@@ -3638,52 +3681,37 @@ fn diagnose_vbscript(parsed: &Value, symbols: &[Value], context: &Value) -> Vec<
         .filter_map(range_tuple)
         .collect::<HashSet<_>>();
     let mut used = HashSet::<String>::new();
-    if let Some(regions) = parsed.get("regions").and_then(Value::as_array) {
-        for region in regions {
-            if region.get("language").and_then(Value::as_str) != Some("vbscript") {
+    for region in &analysis.regions {
+        for (index, token) in region.tokens.iter().enumerate() {
+            if token.kind != "identifier" {
                 continue;
             }
-            let start = region
-                .get("contentStart")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            let end = region
-                .get("contentEnd")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            let region_index = TextIndex::new(text_index.slice(start, end));
-            let tokens = tokenize_vbscript(&region_index, start);
-            for (index, token) in tokens.iter().enumerate() {
-                if token.kind != "identifier" {
-                    continue;
-                }
-                if previous_significant_token(&tokens, index).map(|token| token.text.as_str())
-                    == Some(".")
-                {
-                    continue;
-                }
-                let lower = token.text.to_ascii_lowercase();
-                let token_range = text_index.range(token.start, token.end);
-                if range_tuple(&token_range)
-                    .map(|range| !declaration_ranges.contains(&range))
-                    .unwrap_or(true)
-                {
-                    used.insert(lower.clone());
-                }
-                if !has_option_explicit {
-                    continue;
-                }
-                if declared.contains(&lower) || is_builtin_name(&token.text) {
-                    continue;
-                }
-                diagnostics.push(json!({
-                    "severity": 1,
-                    "range": text_index.range(token.start, token.end),
-                    "message": format!("'{name}' is not declared.", name = token.text),
-                    "source": "asp-lsp",
-                    "code": "vbscript:undeclared",
-                }));
+            if previous_significant_token(&region.tokens, index).map(|token| token.text.as_str())
+                == Some(".")
+            {
+                continue;
             }
+            let lower = token.text.to_ascii_lowercase();
+            let token_range = analysis.text_index.range(token.start, token.end);
+            if range_tuple(&token_range)
+                .map(|range| !declaration_ranges.contains(&range))
+                .unwrap_or(true)
+            {
+                used.insert(lower.clone());
+            }
+            if !has_option_explicit {
+                continue;
+            }
+            if declared.contains(&lower) || is_builtin_name(&token.text) {
+                continue;
+            }
+            diagnostics.push(json!({
+                "severity": 1,
+                "range": analysis.text_index.range(token.start, token.end),
+                "message": format!("'{name}' is not declared.", name = token.text),
+                "source": "asp-lsp",
+                "code": "vbscript:undeclared",
+            }));
         }
     }
     if context
@@ -3754,12 +3782,10 @@ fn next_significant_token(tokens: &[VbToken], index: usize) -> Option<&VbToken> 
     })
 }
 
-fn collect_external_refs(parsed: &Value, symbols: &[Value]) -> Vec<Value> {
-    let text = parsed
-        .get("text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let text_index = TextIndex::new(text);
+fn collect_external_refs_with_analysis(
+    symbols: &[Value],
+    analysis: &VbAnalysisCache<'_>,
+) -> Vec<Value> {
     let declared = symbols
         .iter()
         .filter_map(|symbol| symbol.get("name").and_then(Value::as_str))
@@ -3772,67 +3798,52 @@ fn collect_external_refs(parsed: &Value, symbols: &[Value]) -> Vec<Value> {
         .collect::<HashSet<_>>();
     let mut refs = Vec::new();
     let mut seen = HashSet::new();
-    if let Some(regions) = parsed.get("regions").and_then(Value::as_array) {
-        for region in regions {
-            if region.get("language").and_then(Value::as_str) != Some("vbscript") {
+    for region in &analysis.regions {
+        for (index, token) in region.tokens.iter().enumerate() {
+            if token.kind != "identifier" {
                 continue;
             }
-            let start = region
-                .get("contentStart")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            let end = region
-                .get("contentEnd")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            let region_index = TextIndex::new(text_index.slice(start, end));
-            let tokens = tokenize_vbscript(&region_index, start);
-            for (index, token) in tokens.iter().enumerate() {
-                if token.kind != "identifier" {
-                    continue;
-                }
-                if previous_significant_token(&tokens, index).map(|token| token.text.as_str())
-                    == Some(".")
-                {
-                    continue;
-                }
-                let lower = token.text.to_ascii_lowercase();
-                let token_range = text_index.range(token.start, token.end);
-                if range_tuple(&token_range)
-                    .map(|range| declaration_ranges.contains(&range))
-                    .unwrap_or(false)
-                    || declared.contains(&lower)
-                    || is_builtin_name(&token.text)
-                {
-                    continue;
-                }
-                let next = next_significant_token(&tokens, index);
-                let member_name = if next.map(|token| token.text.as_str()) == Some(".") {
-                    next_significant_token(&tokens, index + 1)
-                        .filter(|token| token.kind == "identifier")
-                        .map(|token| token.text.clone())
-                } else {
-                    None
-                };
-                let key = format!(
-                    "{}|{}|{}",
-                    lower,
-                    member_name
-                        .as_ref()
-                        .map(|value| value.to_ascii_lowercase())
-                        .unwrap_or_default(),
-                    range_key(&token_range)
-                );
-                if !seen.insert(key) {
-                    continue;
-                }
-                refs.push(json!({
-                    "name": token.text,
-                    "range": token_range,
-                    "kindHint": if next.map(|token| token.text.as_str()) == Some("(") { Value::String("function".to_string()) } else { Value::Null },
-                    "memberName": member_name,
-                }));
+            if previous_significant_token(&region.tokens, index).map(|token| token.text.as_str())
+                == Some(".")
+            {
+                continue;
             }
+            let lower = token.text.to_ascii_lowercase();
+            let token_range = analysis.text_index.range(token.start, token.end);
+            if range_tuple(&token_range)
+                .map(|range| declaration_ranges.contains(&range))
+                .unwrap_or(false)
+                || declared.contains(&lower)
+                || is_builtin_name(&token.text)
+            {
+                continue;
+            }
+            let next = next_significant_token(&region.tokens, index);
+            let member_name = if next.map(|token| token.text.as_str()) == Some(".") {
+                next_significant_token(&region.tokens, index + 1)
+                    .filter(|token| token.kind == "identifier")
+                    .map(|token| token.text.clone())
+            } else {
+                None
+            };
+            let key = format!(
+                "{}|{}|{}",
+                lower,
+                member_name
+                    .as_ref()
+                    .map(|value| value.to_ascii_lowercase())
+                    .unwrap_or_default(),
+                range_key(&token_range)
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            refs.push(json!({
+                "name": token.text,
+                "range": token_range,
+                "kindHint": if next.map(|token| token.text.as_str()) == Some("(") { Value::String("function".to_string()) } else { Value::Null },
+                "memberName": member_name,
+            }));
         }
     }
     refs
@@ -3907,7 +3918,8 @@ fn summarize_asp_file(parsed: &Value) -> Value {
             })
         })
         .collect::<Vec<_>>();
-    let symbols = collect_symbols_from_parsed(parsed, &Value::Null);
+    let analysis = VbAnalysisCache::new(parsed);
+    let symbols = collect_symbols_from_analysis(parsed, &Value::Null, &analysis);
     let public_symbols = symbols
         .iter()
         .filter(|symbol| symbol.get("visibility").and_then(Value::as_str) != Some("private"))
@@ -3925,7 +3937,7 @@ fn summarize_asp_file(parsed: &Value) -> Value {
             })
         })
         .collect::<Vec<_>>();
-    let external_refs = collect_external_refs(parsed, &symbols);
+    let external_refs = collect_external_refs_with_analysis(&symbols, &analysis);
     let external_ref_usages = external_ref_usages(&external_refs);
     let vbscript = if regions
         .iter()
