@@ -2,6 +2,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 
 type JsonMap = Map<String, Value>;
+const DAEMON_CACHE_ENTRY_LIMIT: usize = 4096;
 
 pub fn handle_json(input: &str) -> Result<String, String> {
     let request: Value = serde_json::from_str(input).map_err(|error| error.to_string())?;
@@ -32,7 +33,7 @@ impl CoreState {
         let result = self.handle_value(request)?;
         let serialized = serde_json::to_string(&result).map_err(|error| error.to_string())?;
         if let Some(cache_key) = serialized_key {
-            if self.serialized_result_cache.len() >= 256 {
+            if self.serialized_result_cache.len() >= DAEMON_CACHE_ENTRY_LIMIT {
                 self.serialized_result_cache.clear();
             }
             self.serialized_result_cache
@@ -190,7 +191,7 @@ impl CoreState {
             return parse_asp_document(uri, text, settings);
         };
         if !self.parsed_cache.contains_key(cache_key) {
-            if self.parsed_cache.len() >= 128 {
+            if self.parsed_cache.len() >= DAEMON_CACHE_ENTRY_LIMIT {
                 self.clear_caches();
             }
             self.parsed_cache.insert(
@@ -217,7 +218,7 @@ impl CoreState {
             return symbols.clone();
         }
         let symbols = collect_symbols_from_parsed(parsed, context);
-        if self.symbol_cache.len() >= 256 {
+        if self.symbol_cache.len() >= DAEMON_CACHE_ENTRY_LIMIT {
             self.symbol_cache.clear();
             self.diagnostics_cache.clear();
         }
@@ -239,7 +240,7 @@ impl CoreState {
             return diagnostics.clone();
         }
         let diagnostics = diagnose_vbscript(parsed, symbols, context);
-        if self.diagnostics_cache.len() >= 256 {
+        if self.diagnostics_cache.len() >= DAEMON_CACHE_ENTRY_LIMIT {
             self.diagnostics_cache.clear();
         }
         self.diagnostics_cache
