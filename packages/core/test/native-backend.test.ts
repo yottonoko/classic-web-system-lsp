@@ -4,8 +4,10 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   aspAnalysisBackendInfo,
   collectVbscriptSymbols,
+  hydrateVbscriptCst,
   parseAspCst,
   parseAspDocument,
+  parseAspDocumentAsync,
 } from "../src/index";
 import type { AspCstNode } from "../src/types";
 
@@ -99,6 +101,34 @@ describeNative("native analysis backend", () => {
   it("loads the native core instead of the TypeScript fallback", () => {
     parseAspDocument("file:///site/native.asp", "<% Dim x %>");
     expect(aspAnalysisBackendInfo().backend).toBe("native");
+  });
+
+  it("reconstructs the VB CST via the binary columnar hydration path", async () => {
+    const source = `<%
+Class Foo
+  Public Sub Bar(x, y)
+    Dim total
+    total = x + y * 2
+    Response.Write "値: " & total
+  End Sub
+End Class
+%>
+<p>テキスト 😀</p>
+<% Dim arr(3) : Set obj = Server.CreateObject("ADODB.Recordset") %>`;
+    const uri = "file:///site/native-hydrate.asp";
+    // 同期フル parse（native, JSON 経路で VB CST を完全に持つ）を基準にする。
+    const full = parseAspDocument(uri, source);
+    expect(aspAnalysisBackendInfo().backend).toBe("native");
+    const fullTokens = collectVbTokens(full.cst);
+    expect(fullTokens.length).toBeGreaterThan(0);
+
+    // 非同期 shallow parse は VB CST を持たない。
+    const shallow = await parseAspDocumentAsync(uri, source);
+    expect(collectVbTokens(shallow.cst)).toHaveLength(0);
+
+    // バイナリ列指向経路で VB CST を hydrate し、フル parse とトークン一致を確認する。
+    await hydrateVbscriptCst(shallow);
+    expect(collectVbTokens(shallow.cst)).toEqual(fullTokens);
   });
 
   it("emits Array type information for VBScript array declarations", () => {

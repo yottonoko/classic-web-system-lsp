@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:chil
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { AspParsedDocument, AspSettings, VbCstNode } from "./types";
+import type { AspParsedDocument, AspSettings, VbCstNode, VbToken } from "./types";
 import type { FileAnalysisSummary, VbProjectContext, VbSymbol } from "./vbscript-types";
 import type { Diagnostic } from "vscode-languageserver-types";
 
@@ -26,6 +26,23 @@ interface NativeJsonlResponse<T> {
   result?: T;
   error?: string;
 }
+
+// --frames プロトコルの応答フレーム種別タグ（body 先頭の 1 バイト）。
+const FRAME_KIND_JSON = 0;
+const FRAME_KIND_VBSCRIPT_COLUMNAR = 1;
+
+// VB トークン種別の整数コード表。crates/asp-core 側のエンコーダと一致させること。
+const VB_TOKEN_KINDS: readonly VbToken["kind"][] = [
+  "identifier",
+  "keyword",
+  "string",
+  "number",
+  "symbol",
+  "comment",
+  "whitespace",
+  "newline",
+  "unknown",
+];
 
 let cachedNativePath: string | undefined | null;
 let nextNativeRequestId = 1;
@@ -76,18 +93,165 @@ export interface NativeVbscriptSegment {
   vbscript: VbCstNode;
 }
 
-export function tryNativeParseAspDocumentVbscriptAsync(
+export async function tryNativeParseAspDocumentVbscriptAsync(
   uri: string,
   text: string,
   settings: AspSettings,
 ): Promise<NativeVbscriptSegment[] | undefined> {
-  return nativeOperationAsync<NativeVbscriptSegment[]>({
+  // 応答は列指向バイナリ（FRAME_KIND_VBSCRIPT_COLUMNAR）。token text はソースから復元する。
+  const payload = await nativeOperationAsync<Uint8Array>({
     operation: "parseAspDocumentVbscript",
     uri,
     text,
     settings,
     cacheKey: nativeDocumentCacheKey(uri, text, settings),
   });
+  if (!payload) {
+    return undefined;
+  }
+  const buffer = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+  return decodeVbscriptColumnar(buffer, text);
+}
+
+interface ColumnarVbNode {
+  kind: VbCstNode["kind"];
+  start: number;
+  end: number;
+  contentStart?: number;
+  contentEnd?: number;
+  nameToken?: number;
+  tokens: [number, number];
+  identifiers?: number[];
+  parameters?: number[];
+  children: ColumnarVbNode[];
+  procedureKind?: VbCstNode["procedureKind"];
+  propertyAccessor?: VbCstNode["propertyAccessor"];
+  declarationKind?: VbCstNode["declarationKind"];
+  visibility?: VbCstNode["visibility"];
+  typeName?: string;
+  memberOf?: string;
+  scopeName?: string;
+  scopeStart?: number;
+  scopeEnd?: number;
+  arrayDeclarations?: VbCstNode["arrayDeclarations"];
+  parameterMetadata?: VbCstNode["parameterMetadata"];
+}
+
+/// 列指向バイナリ payload（segmentCount から始まる）を VbCstNode セグメント列へ復元する。
+function decodeVbscriptColumnar(buf: Buffer, source: string): NativeVbscriptSegment[] {
+  let offset = 0;
+  const readU32 = (): number => {
+    const value = buf.readUInt32LE(offset);
+    offset += 4;
+    return value;
+  };
+  const segmentCount = readU32();
+  const segments: NativeVbscriptSegment[] = [];
+  for (let s = 0; s < segmentCount; s += 1) {
+    const nodeStart = readU32();
+    const poolCount = readU32();
+    const kindCodes = buf.subarray(offset, offset + poolCount);
+    offset += poolCount;
+    const starts: number[] = [];
+    for (let i = 0; i < poolCount; i += 1) {
+      starts.push(buf.readUInt32LE(offset));
+      offset += 4;
+    }
+    const ends: number[] = [];
+    for (let i = 0; i < poolCount; i += 1) {
+      ends.push(buf.readUInt32LE(offset));
+      offset += 4;
+    }
+    const valueCount = readU32();
+    const valueByIndex = new Map<number, string>();
+    for (let i = 0; i < valueCount; i += 1) {
+      const tokenIndex = readU32();
+      const byteLen = readU32();
+      valueByIndex.set(tokenIndex, buf.toString("utf8", offset, offset + byteLen));
+      offset += byteLen;
+    }
+    const treeJsonLen = readU32();
+    const tree = JSON.parse(buf.toString("utf8", offset, offset + treeJsonLen)) as ColumnarVbNode;
+    offset += treeJsonLen;
+
+    const pool: VbToken[] = [];
+    for (let i = 0; i < poolCount; i += 1) {
+      const start = starts[i];
+      const end = ends[i];
+      const token: VbToken = {
+        kind: VB_TOKEN_KINDS[kindCodes[i]] ?? "unknown",
+        start,
+        end,
+        text: source.slice(start, end),
+      };
+      const value = valueByIndex.get(i);
+      if (value !== undefined) {
+        token.value = value;
+      }
+      pool.push(token);
+    }
+    segments.push({ start: nodeStart, vbscript: rebuildVbNode(tree, pool) });
+  }
+  return segments;
+}
+
+function rebuildVbNode(node: ColumnarVbNode, pool: VbToken[]): VbCstNode {
+  const result: VbCstNode = {
+    kind: node.kind,
+    start: node.start,
+    end: node.end,
+    tokens: pool.slice(node.tokens[0], node.tokens[1]),
+    children: node.children.map((child) => rebuildVbNode(child, pool)),
+  };
+  if (node.contentStart !== undefined) {
+    result.contentStart = node.contentStart;
+  }
+  if (node.contentEnd !== undefined) {
+    result.contentEnd = node.contentEnd;
+  }
+  if (node.nameToken !== undefined) {
+    result.nameToken = pool[node.nameToken];
+  }
+  if (node.identifiers) {
+    result.identifiers = node.identifiers.map((index) => pool[index]);
+  }
+  if (node.parameters) {
+    result.parameters = node.parameters.map((index) => pool[index]);
+  }
+  if (node.procedureKind) {
+    result.procedureKind = node.procedureKind;
+  }
+  if (node.propertyAccessor) {
+    result.propertyAccessor = node.propertyAccessor;
+  }
+  if (node.declarationKind) {
+    result.declarationKind = node.declarationKind;
+  }
+  if (node.visibility) {
+    result.visibility = node.visibility;
+  }
+  if (node.typeName !== undefined) {
+    result.typeName = node.typeName;
+  }
+  if (node.memberOf !== undefined) {
+    result.memberOf = node.memberOf;
+  }
+  if (node.scopeName !== undefined) {
+    result.scopeName = node.scopeName;
+  }
+  if (node.scopeStart !== undefined) {
+    result.scopeStart = node.scopeStart;
+  }
+  if (node.scopeEnd !== undefined) {
+    result.scopeEnd = node.scopeEnd;
+  }
+  if (node.arrayDeclarations) {
+    result.arrayDeclarations = node.arrayDeclarations;
+  }
+  if (node.parameterMetadata) {
+    result.parameterMetadata = node.parameterMetadata;
+  }
+  return result;
 }
 
 export function tryNativeParseAspCst(
@@ -433,7 +597,7 @@ class NativeCoreWorker {
       reject: (error: Error) => void;
     }
   >();
-  private stdoutChunks: string[] = [];
+  private stdoutBuffer: Buffer = Buffer.alloc(0);
   private stderr = "";
 
   get pendingCount(): number {
@@ -442,11 +606,11 @@ class NativeCoreWorker {
 
   constructor(binary: string) {
     this.binary = binary;
-    this.child = spawn(binary, ["--jsonl"], { stdio: "pipe" });
+    // --frames: stdin は改行区切り JSON のまま、stdout は length-prefixed バイナリフレーム。
+    this.child = spawn(binary, ["--frames"], { stdio: "pipe" });
     this.unref();
-    this.child.stdout.setEncoding("utf8");
     this.child.stderr.setEncoding("utf8");
-    this.child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
+    this.child.stdout.on("data", (chunk: Buffer) => this.handleStdout(chunk));
     this.child.stderr.on("data", (chunk: string) => {
       this.stderr = `${this.stderr}${chunk}`.slice(-4096);
     });
@@ -493,24 +657,43 @@ class NativeCoreWorker {
     this.rejectAll(new Error("native worker disposed"));
   }
 
-  private handleStdout(chunk: string): void {
-    if (!chunk.includes("\n")) {
-      this.stdoutChunks.push(chunk);
+  private handleStdout(chunk: Buffer): void {
+    this.stdoutBuffer =
+      this.stdoutBuffer.length === 0 ? chunk : Buffer.concat([this.stdoutBuffer, chunk]);
+    // フレーム = [u32 LE bodyLen][body]。body[0] が種別タグ。
+    while (this.stdoutBuffer.length >= 4) {
+      const bodyLen = this.stdoutBuffer.readUInt32LE(0);
+      if (this.stdoutBuffer.length < 4 + bodyLen) {
+        break;
+      }
+      const body = this.stdoutBuffer.subarray(4, 4 + bodyLen);
+      this.stdoutBuffer = this.stdoutBuffer.subarray(4 + bodyLen);
+      this.processFrame(body);
+    }
+  }
+
+  private processFrame(body: Buffer): void {
+    const kind = body[0];
+    if (kind === FRAME_KIND_JSON) {
+      this.handleResponse(body.toString("utf8", 1));
       return;
     }
-    const stdout = `${this.stdoutChunks.join("")}${chunk}`;
-    this.stdoutChunks = [];
-    const lines = stdout.split("\n");
-    const incomplete = lines.pop();
-    if (incomplete) {
-      this.stdoutChunks.push(incomplete);
-    }
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (line) {
-        this.handleResponse(line);
+    if (kind === FRAME_KIND_VBSCRIPT_COLUMNAR) {
+      // body = [u8 kind][u32 id][columnar payload]
+      const id = body.readUInt32LE(1);
+      const payload = body.subarray(5);
+      const pending = this.pending.get(id);
+      if (!pending) {
+        return;
       }
+      this.pending.delete(id);
+      pending.resolve(payload);
+      if (this.pending.size === 0) {
+        this.unref();
+      }
+      return;
     }
+    this.rejectAll(new Error(`unknown native frame kind ${kind}`));
   }
 
   private handleResponse(line: string): void {

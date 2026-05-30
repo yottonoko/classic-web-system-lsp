@@ -43,6 +43,31 @@ impl CoreState {
         Ok(serialized)
     }
 
+    pub fn handle_vbscript_columnar_frame_body(
+        &mut self,
+        id: u32,
+        request: &Value,
+    ) -> Result<Vec<u8>, String> {
+        let operation = request
+            .get("operation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "operation is required".to_string())?;
+        if operation != "parseAspDocumentVbscript" {
+            return Err(format!("unsupported columnar operation: {operation}"));
+        }
+        let uri = request
+            .get("uri")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let text = request
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let settings = request.get("settings").unwrap_or(&Value::Null);
+        let parsed = self.cached_parse_asp_document(request, uri, text, settings);
+        encode_document_vbscript_columnar_frame_body(id, &parsed)
+    }
+
     pub fn handle_value(&mut self, request: &Value) -> Result<Value, String> {
         let operation = request
             .get("operation")
@@ -549,6 +574,231 @@ fn collect_vbscript_segments(node: &Value, out: &mut Vec<Value>) {
             }
         }
     }
+}
+
+fn encode_document_vbscript_columnar_frame_body(id: u32, full: &Value) -> Result<Vec<u8>, String> {
+    let mut body = vec![1u8];
+    write_u32(&mut body, id);
+    let segments = document_vbscript_segments(full);
+    let segments = segments
+        .as_array()
+        .ok_or_else(|| "vbscript segments must be an array".to_string())?;
+    write_u32(&mut body, usize_to_u32(segments.len(), "segmentCount")?);
+    for segment in segments {
+        let node_start = value_to_u32(
+            segment.get("start").unwrap_or(&Value::Null),
+            "segment nodeStart",
+        )?;
+        let vbscript = segment
+            .get("vbscript")
+            .ok_or_else(|| "segment vbscript is required".to_string())?;
+        let mut pool = ColumnarTokenPool::default();
+        let tree = encode_vb_node_columnar(vbscript, &mut pool)?;
+        write_u32(&mut body, node_start);
+        write_u32(&mut body, usize_to_u32(pool.kind_codes.len(), "poolCount")?);
+        body.extend_from_slice(&pool.kind_codes);
+        for start in &pool.starts {
+            write_u32(&mut body, *start);
+        }
+        for end in &pool.ends {
+            write_u32(&mut body, *end);
+        }
+        write_u32(&mut body, usize_to_u32(pool.values.len(), "valueCount")?);
+        for (token_index, value) in &pool.values {
+            write_u32(&mut body, *token_index);
+            let bytes = value.as_bytes();
+            write_u32(&mut body, usize_to_u32(bytes.len(), "token value byteLen")?);
+            body.extend_from_slice(bytes);
+        }
+        let tree_json = serde_json::to_vec(&tree).map_err(|error| error.to_string())?;
+        write_u32(&mut body, usize_to_u32(tree_json.len(), "treeJsonLen")?);
+        body.extend_from_slice(&tree_json);
+    }
+    Ok(body)
+}
+
+#[derive(Default)]
+struct ColumnarTokenPool {
+    kind_codes: Vec<u8>,
+    starts: Vec<u32>,
+    ends: Vec<u32>,
+    values: Vec<(u32, String)>,
+}
+
+impl ColumnarTokenPool {
+    fn append(&mut self, token: &Value) -> Result<u32, String> {
+        let index = usize_to_u32(self.kind_codes.len(), "tokenIndex")?;
+        let kind = token
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        self.kind_codes.push(vb_token_kind_code(kind));
+        self.starts.push(value_to_u32(
+            token.get("start").unwrap_or(&Value::Null),
+            "token start",
+        )?);
+        self.ends.push(value_to_u32(
+            token.get("end").unwrap_or(&Value::Null),
+            "token end",
+        )?);
+        if let Some(value) = token.get("value").and_then(Value::as_str) {
+            self.values.push((index, value.to_string()));
+        }
+        Ok(index)
+    }
+}
+
+fn encode_vb_node_columnar(node: &Value, pool: &mut ColumnarTokenPool) -> Result<Value, String> {
+    let object = node
+        .as_object()
+        .ok_or_else(|| "VB CST node must be an object".to_string())?;
+    let mut encoded = JsonMap::new();
+    encoded.insert(
+        "kind".to_string(),
+        Value::String(
+            object
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ),
+    );
+    encoded.insert(
+        "start".to_string(),
+        json!(value_to_u32(
+            object.get("start").unwrap_or(&Value::Null),
+            "node start"
+        )?),
+    );
+    encoded.insert(
+        "end".to_string(),
+        json!(value_to_u32(
+            object.get("end").unwrap_or(&Value::Null),
+            "node end"
+        )?),
+    );
+    insert_optional_u32_from_value(&mut encoded, object, "contentStart")?;
+    insert_optional_u32_from_value(&mut encoded, object, "contentEnd")?;
+
+    let token_lo = usize_to_u32(pool.kind_codes.len(), "tokens lo")?;
+    if let Some(tokens) = object.get("tokens").and_then(Value::as_array) {
+        for token in tokens {
+            pool.append(token)?;
+        }
+    }
+    let token_hi = usize_to_u32(pool.kind_codes.len(), "tokens hi")?;
+    if let Some(token) = object.get("nameToken") {
+        encoded.insert("nameToken".to_string(), json!(pool.append(token)?));
+    }
+    encoded.insert("tokens".to_string(), json!([token_lo, token_hi]));
+
+    let identifiers = append_token_array(object, pool, "identifiers")?;
+    if !identifiers.is_empty() {
+        encoded.insert(
+            "identifiers".to_string(),
+            Value::Array(identifiers.into_iter().map(|index| json!(index)).collect()),
+        );
+    }
+    let parameters = append_token_array(object, pool, "parameters")?;
+    if !parameters.is_empty() {
+        encoded.insert(
+            "parameters".to_string(),
+            Value::Array(parameters.into_iter().map(|index| json!(index)).collect()),
+        );
+    }
+
+    let children = object
+        .get("children")
+        .and_then(Value::as_array)
+        .map(|children| {
+            children
+                .iter()
+                .map(|child| encode_vb_node_columnar(child, pool))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    encoded.insert("children".to_string(), Value::Array(children));
+
+    for key in [
+        "procedureKind",
+        "propertyAccessor",
+        "declarationKind",
+        "visibility",
+        "typeName",
+        "memberOf",
+        "scopeName",
+    ] {
+        if let Some(value) = object.get(key).and_then(Value::as_str) {
+            encoded.insert(key.to_string(), Value::String(value.to_string()));
+        }
+    }
+    insert_optional_u32_from_value(&mut encoded, object, "scopeStart")?;
+    insert_optional_u32_from_value(&mut encoded, object, "scopeEnd")?;
+    for key in ["arrayDeclarations", "parameterMetadata"] {
+        if object
+            .get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty())
+        {
+            encoded.insert(
+                key.to_string(),
+                object.get(key).cloned().unwrap_or(Value::Null),
+            );
+        }
+    }
+    Ok(Value::Object(encoded))
+}
+
+fn append_token_array(
+    object: &JsonMap,
+    pool: &mut ColumnarTokenPool,
+    key: &str,
+) -> Result<Vec<u32>, String> {
+    let Some(tokens) = object.get(key).and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    tokens.iter().map(|token| pool.append(token)).collect()
+}
+
+fn insert_optional_u32_from_value(
+    out: &mut JsonMap,
+    object: &JsonMap,
+    key: &str,
+) -> Result<(), String> {
+    if let Some(value) = object.get(key) {
+        out.insert(key.to_string(), json!(value_to_u32(value, key)?));
+    }
+    Ok(())
+}
+
+fn vb_token_kind_code(kind: &str) -> u8 {
+    match kind {
+        "identifier" => 0,
+        "keyword" => 1,
+        "string" => 2,
+        "number" => 3,
+        "symbol" => 4,
+        "comment" => 5,
+        "whitespace" => 6,
+        "newline" => 7,
+        _ => 8,
+    }
+}
+
+fn value_to_u32(value: &Value, label: &str) -> Result<u32, String> {
+    let raw = value
+        .as_u64()
+        .ok_or_else(|| format!("{label} must be an unsigned integer"))?;
+    u32::try_from(raw).map_err(|_| format!("{label} exceeds u32"))
+}
+
+fn usize_to_u32(value: usize, label: &str) -> Result<u32, String> {
+    u32::try_from(value).map_err(|_| format!("{label} exceeds u32"))
+}
+
+fn write_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
 }
 
 fn parse_asp_cst(text: &str, settings: &Value) -> Value {
@@ -3894,6 +4144,48 @@ mod tests {
     fn handle_value(request: Value) -> Value {
         serde_json::from_str(&handle_json(&request.to_string()).expect("handle json"))
             .expect("json result")
+    }
+
+    fn read_test_u32(bytes: &[u8], offset: &mut usize) -> u32 {
+        let value = u32::from_le_bytes(bytes[*offset..*offset + 4].try_into().expect("u32"));
+        *offset += 4;
+        value
+    }
+
+    #[test]
+    fn encodes_vbscript_segments_as_columnar_frame_body() {
+        let parsed = parse_asp_document("file:///default.asp", "<%\nDim x\n%>", &json!({}));
+        let body =
+            encode_document_vbscript_columnar_frame_body(7, &parsed).expect("columnar frame body");
+        assert_eq!(body[0], 1);
+
+        let mut offset = 1;
+        assert_eq!(read_test_u32(&body, &mut offset), 7);
+        assert_eq!(read_test_u32(&body, &mut offset), 1);
+        let _node_start = read_test_u32(&body, &mut offset);
+        let pool_count = read_test_u32(&body, &mut offset);
+        assert!(pool_count > 0);
+
+        offset += pool_count as usize;
+        offset += pool_count as usize * 4;
+        offset += pool_count as usize * 4;
+        let value_count = read_test_u32(&body, &mut offset);
+        for _ in 0..value_count {
+            let _token_index = read_test_u32(&body, &mut offset);
+            let byte_len = read_test_u32(&body, &mut offset);
+            offset += byte_len as usize;
+        }
+        let tree_json_len = read_test_u32(&body, &mut offset) as usize;
+        let tree: Value =
+            serde_json::from_slice(&body[offset..offset + tree_json_len]).expect("tree json");
+        assert!(tree.get("kind").and_then(Value::as_str).is_some());
+        assert!(tree.get("children").and_then(Value::as_array).is_some());
+        let tokens = tree
+            .get("tokens")
+            .and_then(Value::as_array)
+            .expect("tokens range");
+        assert_eq!(tokens.len(), 2);
+        assert!(tokens[0].as_u64().unwrap() <= tokens[1].as_u64().unwrap());
     }
 
     #[test]

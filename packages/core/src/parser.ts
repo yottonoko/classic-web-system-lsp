@@ -63,7 +63,11 @@ export async function hydrateVbscriptCst(
   const segments = await tryNativeParseAspDocumentVbscriptAsync(parsed.uri, parsed.text, settings);
   if (segments) {
     const vbscriptByStart = new Map(segments.map((segment) => [segment.start, segment.vbscript]));
-    attachVbscriptByStart(parsed.cst, vbscriptByStart);
+    // VB CST は region ノード（Document 直下の子）に付く。ルート Document は最初の region と
+    // start が衝突しうるため除外し、子から照合・attach する。
+    for (const child of parsed.cst.children ?? []) {
+      attachVbscriptByStart(child, vbscriptByStart);
+    }
   }
   hydratedVbscriptDocuments.add(parsed);
   return parsed;
