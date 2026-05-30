@@ -18,3 +18,4 @@ samples/classic-asp-huge-benchmark/includes/*.inc
 samples/classic-asp-huge-benchmark/includes/generated/
 samples/classic-asp-include-tree-benchmark/default.asp
 samples/classic-asp-include-tree-benchmark/includes/
+.claude/

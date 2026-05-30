@@ -2524,11 +2524,31 @@ function docCommentBlockBoundary(tokens: VbToken[], startIndex: number, directio
   return boundary;
 }
 
+// The native analyzeVbscript ignores cross-document/project context, so fall back to
+// the TypeScript analyzer whenever the context carries project-wide information.
+// An empty context object alone does not force the fallback.
+function requiresTsSemanticContext(context: VbProjectContext): boolean {
+  if ((context.symbols?.length ?? 0) > 0) {
+    return true;
+  }
+  if ((context.documents?.length ?? 0) > 1) {
+    return true;
+  }
+  if ((context.externalRefUsages?.length ?? 0) > 0) {
+    return true;
+  }
+  const typeEnvironment = context.typeEnvironment;
+  if (typeEnvironment && (typeEnvironment.types.length > 0 || typeEnvironment.symbols.length > 0)) {
+    return true;
+  }
+  return false;
+}
+
 export function analyzeVbscript(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
-  if (nativeSemanticsEnabled()) {
+  if (nativeSemanticsEnabled() && !requiresTsSemanticContext(context)) {
     const native = tryNativeAnalyzeVbscript(parsed, context);
     if (native) {
       return native;
@@ -2799,8 +2819,8 @@ function vbscriptHoverSignature(
   symbol: VbSymbol,
   context: VbProjectContext,
 ): string {
-  const type = symbolTypeRef(symbol);
-  const typeSuffix = type ? ` As ${formatTypeRef(type)}` : "";
+  const typeDisplay = symbolTypeDisplay(symbol);
+  const typeSuffix = typeDisplay ? ` As ${typeDisplay}` : "";
   const arraySuffix = symbolArraySuffix(symbol);
   const visibility = symbol.visibility ? `${titleCaseKeyword(symbol.visibility)} ` : "";
   const parameters = `(${parameterLabels(symbol).join(", ")})`;
@@ -2845,6 +2865,20 @@ function symbolArraySuffix(symbol: VbSymbol): string {
     return "";
   }
   return `(${symbol.array.dimensions.join(", ")})`;
+}
+
+// Render the displayed type name. Fixed-size arrays show their dimensions, e.g. Array(10),
+// while the canonical symbol.type / symbol.typeName stay "Array" for type resolution.
+function symbolTypeDisplay(symbol: VbSymbol): string | undefined {
+  const type = symbolTypeRef(symbol);
+  if (!type) {
+    return undefined;
+  }
+  const base = formatTypeRef(type);
+  if (base === "Array" && symbol.array?.kind === "fixed" && symbol.array.dimensions.length > 0) {
+    return `Array(${symbol.array.dimensions.join(", ")})`;
+  }
+  return base;
 }
 
 function parameterLabels(symbol: VbSymbol): string[] {
@@ -3377,7 +3411,7 @@ export function getVbscriptInlayHints(
       }
       hints.push({
         position: variableTypeHintPosition(parsed, symbol),
-        label: `${scopeInlayPrefix(parsed, symbol, context, settings.globalVariableMarkers)} As ${symbol.typeName}`,
+        label: `${scopeInlayPrefix(parsed, symbol, context, settings.globalVariableMarkers)} As ${symbolTypeDisplay(symbol) ?? symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: false,
         paddingRight: true,
@@ -4254,7 +4288,9 @@ function addSymbolsFromVbNode(
     const variableDocumentation =
       identifiers.length === 1 ? documentationForNode(parsed, node, docCommentLookup) : undefined;
     for (const identifier of identifiers) {
-      const array = node.arrayDeclarations?.find((item) => item.name === identifier);
+      const array = node.arrayDeclarations?.find(
+        (item) => item.name.start === identifier.start && item.name.end === identifier.end,
+      );
       const documentation =
         variableDocumentation ??
         (identifiers.length === 1
@@ -7100,7 +7136,7 @@ function symbolToCompletion(
   const detail = symbol.memberOf
     ? `${symbol.kind}${createLocalizer(locale).t("vb.symbol.owner", { owner: symbol.memberOf })}`
     : symbol.typeName
-      ? `${symbol.kind} As ${symbol.typeName}`
+      ? `${symbol.kind} As ${symbolTypeDisplay(symbol) ?? symbol.typeName}`
       : symbol.kind;
   return {
     label: symbol.name,

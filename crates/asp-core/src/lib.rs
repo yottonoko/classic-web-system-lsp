@@ -1,5 +1,6 @@
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 type JsonMap = Map<String, Value>;
 const DAEMON_CACHE_ENTRY_LIMIT: usize = 4096;
@@ -868,10 +869,17 @@ fn find_asp_close(
                 cursor += 1;
             }
         } else if let Some(quote) = js_quote {
-            if char == '\\' && quote != '`' {
+            // TS 版 (asp-scanner.ts find_asp_close) と挙動を一致させる。
+            if quote == '\'' && (char == '\r' || char == '\n') {
+                js_quote = None;
+            } else if char == '\\' {
                 cursor += 1;
             } else if char == quote {
-                js_quote = None;
+                if quote == '"' && next == '"' {
+                    cursor += 1;
+                } else {
+                    js_quote = None;
+                }
             }
         } else if char == '%' && next == '>' {
             return Some(cursor);
@@ -1651,6 +1659,7 @@ struct VbNode {
     declaration_kind: Option<String>,
     visibility: Option<String>,
     identifiers: Vec<VbToken>,
+    array_declarations: Vec<Value>,
     parameters: Vec<VbToken>,
     parameter_metadata: Vec<Value>,
     type_name: Option<String>,
@@ -1661,7 +1670,9 @@ struct VbNode {
 }
 
 fn parse_vbscript_cst(text: &str, source_text: &str, base_offset: usize) -> Value {
-    let tokens = tokenize_vbscript(text, base_offset);
+    let index = TextIndex::new(text);
+    let text_len = index.len();
+    let tokens = tokenize_vbscript(&index, base_offset);
     let significant = tokens
         .iter()
         .filter(|token| token.kind != "whitespace" && token.kind != "comment")
@@ -1670,9 +1681,9 @@ fn parse_vbscript_cst(text: &str, source_text: &str, base_offset: usize) -> Valu
     let mut document = VbNode {
         kind: "Document".to_string(),
         start: base_offset,
-        end: base_offset + TextIndex::new(text).len(),
+        end: base_offset + text_len,
         content_start: Some(base_offset),
-        content_end: Some(base_offset + TextIndex::new(text).len()),
+        content_end: Some(base_offset + text_len),
         name_token: None,
         tokens: tokens.clone(),
         children: Vec::new(),
@@ -1681,6 +1692,7 @@ fn parse_vbscript_cst(text: &str, source_text: &str, base_offset: usize) -> Valu
         declaration_kind: None,
         visibility: None,
         identifiers: Vec::new(),
+        array_declarations: Vec::new(),
         parameters: Vec::new(),
         parameter_metadata: Vec::new(),
         type_name: None,
@@ -1923,16 +1935,11 @@ fn parse_vbscript_cst(text: &str, source_text: &str, base_offset: usize) -> Valu
         let node = create_statement_node("Expression", token, &significant, i, None);
         push_child(&mut document, &mut stack, node);
     }
-    close_unclosed(
-        &mut document,
-        &mut stack,
-        base_offset + TextIndex::new(text).len(),
-    );
+    close_unclosed(&mut document, &mut stack, base_offset + text_len);
     vb_node_to_value(&document)
 }
 
-fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
-    let index = TextIndex::new(text);
+fn tokenize_vbscript(index: &TextIndex<'_>, base_offset: usize) -> Vec<VbToken> {
     let mut tokens = Vec::new();
     let mut cursor = 0usize;
     while cursor < index.len() {
@@ -1944,14 +1951,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             } else {
                 cursor += 1;
             }
-            tokens.push(vb_token(
-                "newline",
-                &index,
-                start,
-                cursor,
-                base_offset,
-                None,
-            ));
+            tokens.push(vb_token("newline", index, start, cursor, base_offset, None));
             continue;
         }
         if ch == ' ' || ch == '\t' {
@@ -1964,7 +1964,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             }
             tokens.push(vb_token(
                 "whitespace",
-                &index,
+                index,
                 start,
                 cursor,
                 base_offset,
@@ -1980,17 +1980,10 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
                 }
                 cursor += 1;
             }
-            tokens.push(vb_token(
-                "comment",
-                &index,
-                start,
-                cursor,
-                base_offset,
-                None,
-            ));
+            tokens.push(vb_token("comment", index, start, cursor, base_offset, None));
             continue;
         }
-        if is_rem_comment_start(&index, cursor) {
+        if is_rem_comment_start(index, cursor) {
             cursor += 3;
             while cursor < index.len() {
                 let c = index.char_at(cursor).unwrap_or('\0');
@@ -1999,14 +1992,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
                 }
                 cursor += 1;
             }
-            tokens.push(vb_token(
-                "comment",
-                &index,
-                start,
-                cursor,
-                base_offset,
-                None,
-            ));
+            tokens.push(vb_token("comment", index, start, cursor, base_offset, None));
             continue;
         }
         if ch == '"' {
@@ -2025,7 +2011,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             let text_value = index.slice(start, cursor).to_string();
             tokens.push(vb_token(
                 "string",
-                &index,
+                index,
                 start,
                 cursor,
                 base_offset,
@@ -2044,7 +2030,7 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             } else {
                 "identifier"
             };
-            tokens.push(vb_token(kind, &index, start, cursor, base_offset, None));
+            tokens.push(vb_token(kind, index, start, cursor, base_offset, None));
             continue;
         }
         if ch.is_ascii_digit() {
@@ -2055,11 +2041,11 @@ fn tokenize_vbscript(text: &str, base_offset: usize) -> Vec<VbToken> {
             } {
                 cursor += 1;
             }
-            tokens.push(vb_token("number", &index, start, cursor, base_offset, None));
+            tokens.push(vb_token("number", index, start, cursor, base_offset, None));
             continue;
         }
         cursor += 1;
-        tokens.push(vb_token("symbol", &index, start, cursor, base_offset, None));
+        tokens.push(vb_token("symbol", index, start, cursor, base_offset, None));
     }
     tokens
 }
@@ -2081,16 +2067,19 @@ fn vb_token(
     }
 }
 
-fn vb_keywords() -> HashSet<&'static str> {
-    [
-        "and", "as", "byref", "byval", "call", "case", "class", "const", "dim", "do", "each",
-        "else", "elseif", "empty", "end", "exit", "explicit", "false", "for", "function", "get",
-        "if", "in", "is", "let", "loop", "me", "mod", "new", "next", "not", "nothing", "null",
-        "option", "or", "preserve", "private", "property", "public", "redim", "rem", "select",
-        "set", "step", "sub", "then", "to", "true", "until", "wend", "while", "with",
-    ]
-    .into_iter()
-    .collect()
+fn vb_keywords() -> &'static HashSet<&'static str> {
+    static KEYWORDS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    KEYWORDS.get_or_init(|| {
+        [
+            "and", "as", "byref", "byval", "call", "case", "class", "const", "dim", "do", "each",
+            "else", "elseif", "empty", "end", "exit", "explicit", "false", "for", "function",
+            "get", "if", "in", "is", "let", "loop", "me", "mod", "new", "next", "not", "nothing",
+            "null", "option", "or", "preserve", "private", "property", "public", "redim", "rem",
+            "select", "set", "step", "sub", "then", "to", "true", "until", "wend", "while", "with",
+        ]
+        .into_iter()
+        .collect()
+    })
 }
 
 fn is_rem_comment_start(index: &TextIndex<'_>, offset: usize) -> bool {
@@ -2140,6 +2129,7 @@ fn create_block_node(kind: &str, start: &VbToken, name: &VbToken, stack: &[VbNod
         declaration_kind: None,
         visibility: None,
         identifiers: Vec::new(),
+        array_declarations: Vec::new(),
         parameters: Vec::new(),
         parameter_metadata: Vec::new(),
         type_name: None,
@@ -2188,6 +2178,7 @@ fn create_procedure_node(
         declaration_kind: None,
         visibility,
         identifiers: Vec::new(),
+        array_declarations: Vec::new(),
         parameters,
         parameter_metadata,
         type_name: None,
@@ -2248,6 +2239,7 @@ fn create_declaration_node(
 ) -> VbNode {
     let end_index = statement_end_index(tokens, start_index.saturating_sub(1));
     let mut identifiers = Vec::new();
+    let mut array_declarations = Vec::new();
     let mut can_read_identifier = true;
     for index in start_index..=end_index {
         let Some(current) = tokens.get(index) else {
@@ -2261,6 +2253,10 @@ fn create_declaration_node(
             break;
         } else if current.kind == "identifier" && can_read_identifier {
             identifiers.push(current.clone());
+            if let Some(array) = read_array_declaration(tokens, index, end_index, declaration_kind)
+            {
+                array_declarations.push(array);
+            }
             can_read_identifier = false;
         }
     }
@@ -2278,6 +2274,7 @@ fn create_declaration_node(
         declaration_kind: Some(declaration_kind.to_string()),
         visibility,
         identifiers,
+        array_declarations,
         parameters: Vec::new(),
         parameter_metadata: Vec::new(),
         type_name: None,
@@ -2286,6 +2283,78 @@ fn create_declaration_node(
         scope_start: None,
         scope_end: None,
     }
+}
+
+fn read_array_declaration(
+    tokens: &[VbToken],
+    identifier_index: usize,
+    end_index: usize,
+    declaration_kind: &str,
+) -> Option<Value> {
+    let open_index = identifier_index + 1;
+    if tokens.get(open_index).map(|token| token.text.as_str()) != Some("(") {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut close_index = None;
+    let mut index = open_index;
+    while index <= end_index {
+        match tokens.get(index).map(|token| token.text.as_str()) {
+            Some("(") => depth += 1,
+            Some(")") => {
+                depth -= 1;
+                if depth == 0 {
+                    close_index = Some(index);
+                    break;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    let close_index = close_index?;
+    let dimensions = array_dimension_texts(&tokens[open_index + 1..close_index]);
+    let kind = if declaration_kind == "redim" || dimensions.is_empty() {
+        "dynamic"
+    } else {
+        "fixed"
+    };
+    let name = tokens.get(identifier_index)?;
+    Some(json!({
+        "name": vb_token_to_value(name),
+        "kind": kind,
+        "dimensions": dimensions,
+    }))
+}
+
+// significant トークン列を受け取る前提（空白・コメントは呼び出し前に除去済み）。
+// トップレベルのカンマで次元を分割し、各トークンの text を連結して返す。
+fn array_dimension_texts(tokens: &[VbToken]) -> Vec<String> {
+    fn flush(current: &mut Vec<String>, dimensions: &mut Vec<String>) {
+        let text = current.concat();
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            dimensions.push(trimmed.to_string());
+        }
+        current.clear();
+    }
+    let mut dimensions = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut depth = 0i32;
+    for token in tokens {
+        if token.text == "(" {
+            depth += 1;
+        } else if token.text == ")" {
+            depth = (depth - 1).max(0);
+        }
+        if token.text == "," && depth == 0 {
+            flush(&mut current, &mut dimensions);
+            continue;
+        }
+        current.push(token.text.clone());
+    }
+    flush(&mut current, &mut dimensions);
+    dimensions
 }
 
 fn create_statement_node(
@@ -2310,6 +2379,7 @@ fn create_statement_node(
         declaration_kind: None,
         visibility: None,
         identifiers: Vec::new(),
+        array_declarations: Vec::new(),
         parameters: Vec::new(),
         parameter_metadata: Vec::new(),
         type_name: None,
@@ -2474,6 +2544,12 @@ fn vb_node_to_value(node: &VbNode) -> Value {
         object.insert(
             "identifiers".to_string(),
             Value::Array(node.identifiers.iter().map(vb_token_to_value).collect()),
+        );
+    }
+    if !node.array_declarations.is_empty() {
+        object.insert(
+            "arrayDeclarations".to_string(),
+            Value::Array(node.array_declarations.clone()),
         );
     }
     if !node.parameters.is_empty() {
@@ -3019,7 +3095,8 @@ fn add_implicit_assignment_symbols(
                 .get("contentEnd")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as usize;
-            let tokens = tokenize_vbscript(text_index.slice(start, end), start);
+            let region_index = TextIndex::new(text_index.slice(start, end));
+            let tokens = tokenize_vbscript(&region_index, start);
             let significant = tokens
                 .iter()
                 .filter(|token| {
@@ -3085,7 +3162,8 @@ fn apply_type_annotations(parsed: &Value, text_index: &TextIndex<'_>, symbols: &
             .get("contentEnd")
             .and_then(Value::as_u64)
             .unwrap_or(0) as usize;
-        for token in tokenize_vbscript(text_index.slice(start, end), start)
+        let region_index = TextIndex::new(text_index.slice(start, end));
+        for token in tokenize_vbscript(&region_index, start)
             .into_iter()
             .filter(|token| token.kind == "comment")
         {
@@ -3146,7 +3224,8 @@ fn next_procedure_name(parsed: &Value, offset: usize) -> Option<String> {
         .and_then(Value::as_str)
         .unwrap_or_default();
     let index = TextIndex::new(text);
-    let tokens = tokenize_vbscript(index.slice(offset, index.len()), offset);
+    let tail_index = TextIndex::new(index.slice(offset, index.len()));
+    let tokens = tokenize_vbscript(&tail_index, offset);
     for window in tokens.windows(2) {
         let first = lower_token(window.first());
         let second = window.get(1);
@@ -3198,7 +3277,8 @@ fn diagnose_vbscript(parsed: &Value, symbols: &[Value], context: &Value) -> Vec<
                 .get("contentEnd")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as usize;
-            let tokens = tokenize_vbscript(text_index.slice(start, end), start);
+            let region_index = TextIndex::new(text_index.slice(start, end));
+            let tokens = tokenize_vbscript(&region_index, start);
             for (index, token) in tokens.iter().enumerate() {
                 if token.kind != "identifier" {
                     continue;
@@ -3331,7 +3411,8 @@ fn collect_external_refs(parsed: &Value, symbols: &[Value]) -> Vec<Value> {
                 .get("contentEnd")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as usize;
-            let tokens = tokenize_vbscript(text_index.slice(start, end), start);
+            let region_index = TextIndex::new(text_index.slice(start, end));
+            let tokens = tokenize_vbscript(&region_index, start);
             for (index, token) in tokens.iter().enumerate() {
                 if token.kind != "identifier" {
                     continue;
