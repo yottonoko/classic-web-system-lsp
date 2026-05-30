@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import { embeddedOperationNames, runEmbeddedOperation } from "./embedded-language-benchmark.mjs";
+import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -13,6 +14,7 @@ const generator = path.join(sampleRoot, "generate.mjs");
 const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const benchmarkCacheMode = readBenchmarkCacheMode();
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const analyzeStepTotals = new Map();
 const results = [];
@@ -36,34 +38,34 @@ const {
 const sources = collectBenchmarkSources();
 const sourceStats = summarizeSources(sources);
 
-await runBenchmark("parseAspDocument", async () => {
-  for (const source of sources) {
+await runBenchmark("parseAspDocument", async (run) => {
+  for (const source of sourcesForRun("parseAspDocument", run)) {
     await parseAspDocumentAsync(source.uri, source.text);
   }
 });
 
-await runBenchmark("buildVirtualDocuments", async () => {
-  for (const source of sources) {
+await runBenchmark("buildVirtualDocuments", async (run) => {
+  for (const source of sourcesForRun("buildVirtualDocuments", run)) {
     const parsed = await parseAspDocumentAsync(source.uri, source.text);
     buildVirtualDocuments(parsed);
   }
 });
 
-await runBenchmark("collectVbscriptSymbols", async () => {
-  for (const source of sources) {
+await runBenchmark("collectVbscriptSymbols", async (run) => {
+  for (const source of sourcesForRun("collectVbscriptSymbols", run)) {
     await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
   }
 });
 
-await runBenchmark("analyzeVbscript", async () => {
-  for (const source of sources) {
+await runBenchmark("analyzeVbscript", async (run) => {
+  for (const source of sourcesForRun("analyzeVbscript", run)) {
     await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
   }
 });
 
 for (const operation of embeddedOperationNames) {
-  await runBenchmark(operation, async () => {
-    for (const source of sources) {
+  await runBenchmark(operation, async (run) => {
+    for (const source of sourcesForRun(operation, run)) {
       await runEmbeddedOperation(operation, source, core);
     }
   });
@@ -74,6 +76,7 @@ console.log(`Huge Classic ASP benchmark`);
 console.log(`Files: ${sourceStats.files}`);
 console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
 console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
+console.log(`Cache mode: ${benchmarkCacheMode}`);
 console.log(`Warmups: ${warmupIterations}`);
 console.log(`Iterations: ${benchmarkIterations}`);
 console.log("");
@@ -86,6 +89,10 @@ if (collectDebugSteps) {
   );
   console.log("");
   printDebugStepTotals(analyzeStepTotals);
+}
+
+function sourcesForRun(operation, run) {
+  return benchmarkSourcesForRun(sources, benchmarkCacheMode, operation, run);
 }
 
 function collectBenchmarkSources() {
@@ -125,13 +132,13 @@ function summarizeSources(items) {
 
 async function runBenchmark(name, fn) {
   for (let index = 0; index < warmupIterations; index += 1) {
-    await fn();
+    await fn({ phase: "warmup", index });
   }
 
   const samples = [];
   for (let index = 0; index < benchmarkIterations; index += 1) {
     const start = performance.now();
-    await fn();
+    await fn({ phase: "measure", index });
     samples.push(performance.now() - start);
   }
 

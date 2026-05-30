@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
 import { embeddedOperationNames } from "./embedded-language-benchmark.mjs";
+import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -15,6 +16,7 @@ const generator = path.join(sampleRoot, "generate.mjs");
 const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const benchmarkCacheMode = readBenchmarkCacheMode();
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const workerCount = readPositiveInteger(
   "ASP_LSP_BENCH_WORKERS",
@@ -34,22 +36,34 @@ async function main() {
 
   const sources = collectBenchmarkSources();
   const sourceStats = summarizeSources(sources);
+  const sourcesForRun = (operation, run) =>
+    benchmarkSourcesForRun(sources, benchmarkCacheMode, operation, run);
   const workerPool = new BenchmarkWorkerPool(workerCount);
   try {
-    await runBenchmark("parseAspDocument", () =>
-      runParallelOperation(workerPool, "parseAspDocument", sources),
+    await runBenchmark("parseAspDocument", (run) =>
+      runParallelOperation(workerPool, "parseAspDocument", sourcesForRun("parseAspDocument", run)),
     );
-    await runBenchmark("buildVirtualDocuments", () =>
-      runParallelOperation(workerPool, "buildVirtualDocuments", sources),
+    await runBenchmark("buildVirtualDocuments", (run) =>
+      runParallelOperation(
+        workerPool,
+        "buildVirtualDocuments",
+        sourcesForRun("buildVirtualDocuments", run),
+      ),
     );
-    await runBenchmark("collectVbscriptSymbols", () =>
-      runParallelOperation(workerPool, "collectVbscriptSymbols", sources),
+    await runBenchmark("collectVbscriptSymbols", (run) =>
+      runParallelOperation(
+        workerPool,
+        "collectVbscriptSymbols",
+        sourcesForRun("collectVbscriptSymbols", run),
+      ),
     );
-    await runBenchmark("analyzeVbscript", () =>
-      runParallelOperation(workerPool, "analyzeVbscript", sources),
+    await runBenchmark("analyzeVbscript", (run) =>
+      runParallelOperation(workerPool, "analyzeVbscript", sourcesForRun("analyzeVbscript", run)),
     );
     for (const operation of embeddedOperationNames) {
-      await runBenchmark(operation, () => runParallelOperation(workerPool, operation, sources));
+      await runBenchmark(operation, (run) =>
+        runParallelOperation(workerPool, operation, sourcesForRun(operation, run)),
+      );
     }
   } finally {
     await workerPool.close();
@@ -60,6 +74,7 @@ async function main() {
   console.log(`Files: ${sourceStats.files}`);
   console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
   console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
+  console.log(`Cache mode: ${benchmarkCacheMode}`);
   console.log(`Warmups: ${warmupIterations}`);
   console.log(`Iterations: ${benchmarkIterations}`);
   console.log(`Workers: ${workerCount}`);
@@ -128,13 +143,13 @@ async function runParallelOperation(pool, operation, inputs) {
 
 async function runBenchmark(name, fn) {
   for (let index = 0; index < warmupIterations; index += 1) {
-    await fn();
+    await fn({ phase: "warmup", index });
   }
 
   const samples = [];
   for (let index = 0; index < benchmarkIterations; index += 1) {
     const start = performance.now();
-    await fn();
+    await fn({ phase: "measure", index });
     samples.push(performance.now() - start);
   }
 

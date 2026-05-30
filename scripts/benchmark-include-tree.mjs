@@ -8,6 +8,7 @@ import {
   embeddedOperationNames,
   runEmbeddedOperationForParsed,
 } from "./embedded-language-benchmark.mjs";
+import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -16,6 +17,7 @@ const generator = path.join(sampleRoot, "generate.mjs");
 const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const benchmarkCacheMode = readBenchmarkCacheMode();
 const benchmarkConcurrency = readPositiveInteger("ASP_LSP_BENCH_CONCURRENCY", 4);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const analyzeStepTotals = new Map();
@@ -41,35 +43,35 @@ const {
 const sourceRefs = collectBenchmarkSourceRefs();
 const sourceStats = summarizeSources(sourceRefs);
 
-await runBenchmark("parseAspDocument", () =>
-  measureAcrossSources(sourceRefs, async (source) => {
+await runBenchmark("parseAspDocument", (run) =>
+  measureAcrossSources(sourcesForRun("parseAspDocument", run), async (source) => {
     if (!(await tryNativeParseAspDocumentLightAsync(source.uri, source.text, {}))) {
       await parseAspDocumentAsync(source.uri, source.text);
     }
   }),
 );
 
-await runBenchmark("buildVirtualDocuments", () =>
-  measureAcrossParsedSources(sourceRefs, (parsed) => {
+await runBenchmark("buildVirtualDocuments", (run) =>
+  measureAcrossParsedSources(sourcesForRun("buildVirtualDocuments", run), (parsed) => {
     buildVirtualDocuments(parsed);
   }),
 );
 
-await runBenchmark("collectVbscriptSymbols", () =>
-  measureAcrossSources(sourceRefs, async (source) => {
+await runBenchmark("collectVbscriptSymbols", (run) =>
+  measureAcrossSources(sourcesForRun("collectVbscriptSymbols", run), async (source) => {
     await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
   }),
 );
 
-await runBenchmark("analyzeVbscript", () =>
-  measureAcrossSources(sourceRefs, async (source) => {
+await runBenchmark("analyzeVbscript", (run) =>
+  measureAcrossSources(sourcesForRun("analyzeVbscript", run), async (source) => {
     await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
   }),
 );
 
 for (const operation of embeddedOperationNames) {
-  await runBenchmark(operation, () =>
-    measureAcrossParsedSources(sourceRefs, (parsed) => {
+  await runBenchmark(operation, (run) =>
+    measureAcrossParsedSources(sourcesForRun(operation, run), (parsed) => {
       runEmbeddedOperationForParsed(operation, parsed, core);
     }),
   );
@@ -80,6 +82,7 @@ console.log(`Include Tree Classic ASP benchmark`);
 console.log(`Files: ${sourceStats.files}`);
 console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
 console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
+console.log(`Cache mode: ${benchmarkCacheMode}`);
 console.log(`Warmups: ${warmupIterations}`);
 console.log(`Iterations: ${benchmarkIterations}`);
 console.log(`Concurrency: ${benchmarkConcurrency}`);
@@ -93,6 +96,10 @@ if (collectDebugSteps) {
   );
   console.log("");
   printDebugStepTotals(analyzeStepTotals);
+}
+
+function sourcesForRun(operation, run) {
+  return benchmarkSourcesForRun(sourceRefs, benchmarkCacheMode, operation, run);
 }
 
 function collectBenchmarkSourceRefs() {
@@ -175,12 +182,12 @@ async function runBounded(items, callback) {
 
 async function runBenchmark(name, fn) {
   for (let index = 0; index < warmupIterations; index += 1) {
-    await fn();
+    await fn({ phase: "warmup", index });
   }
 
   const samples = [];
   for (let index = 0; index < benchmarkIterations; index += 1) {
-    samples.push(await fn());
+    samples.push(await fn({ phase: "measure", index }));
   }
 
   samples.sort((left, right) => left - right);

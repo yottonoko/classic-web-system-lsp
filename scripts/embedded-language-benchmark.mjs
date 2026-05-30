@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
+import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const coreDist = path.join(root, "packages", "core", "dist", "index.js");
@@ -518,14 +519,19 @@ async function main() {
   const sourceStats = summarizeSources(sources);
   const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
   const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
+  const benchmarkCacheMode = readBenchmarkCacheMode();
   const benchmarkConcurrency = readPositiveInteger("ASP_LSP_BENCH_CONCURRENCY", 4);
   const results = [];
 
   for (const operation of embeddedOperationNames) {
-    await runBenchmark(results, operation, benchmarkIterations, warmupIterations, async () =>
-      measureAcrossSources(sources, benchmarkConcurrency, async (source) => {
-        await runEmbeddedOperation(operation, source, core);
-      }),
+    await runBenchmark(results, operation, benchmarkIterations, warmupIterations, async (run) =>
+      measureAcrossSources(
+        benchmarkSourcesForRun(sources, benchmarkCacheMode, operation, run),
+        benchmarkConcurrency,
+        async (source) => {
+          await runEmbeddedOperation(operation, source, core);
+        },
+      ),
     );
   }
 
@@ -535,6 +541,7 @@ async function main() {
   console.log(`Files: ${sourceStats.files}`);
   console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
   console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
+  console.log(`Cache mode: ${benchmarkCacheMode}`);
   console.log(`Warmups: ${warmupIterations}`);
   console.log(`Iterations: ${benchmarkIterations}`);
   console.log(`Concurrency: ${benchmarkConcurrency}`);
@@ -565,11 +572,11 @@ async function runBounded(items, concurrency, callback) {
 
 async function runBenchmark(results, name, iterations, warmups, fn) {
   for (let index = 0; index < warmups; index += 1) {
-    await fn();
+    await fn({ phase: "warmup", index });
   }
   const samples = [];
   for (let index = 0; index < iterations; index += 1) {
-    samples.push(await fn());
+    samples.push(await fn({ phase: "measure", index }));
   }
   samples.sort((left, right) => left - right);
   const total = samples.reduce((sum, value) => sum + value, 0);
