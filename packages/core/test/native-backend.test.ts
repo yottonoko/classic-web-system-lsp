@@ -191,8 +191,8 @@ Response.Write "done"
       (child) => child.kind === "AspBlock" || child.kind === "AspDirective",
     );
     expect(nativeBlocks).toHaveLength(3);
-    expect(source.slice(nativeBlocks[0].contentStart, nativeBlocks[0].contentEnd)).toContain(
-      'Response.Write "done"',
-    );
+    const firstBlock = source.slice(nativeBlocks[0].contentStart, nativeBlocks[0].contentEnd);
+    expect(firstBlock).toContain("' comment with ");
+    expect(firstBlock).not.toContain('Response.Write "done"');
   });
 });

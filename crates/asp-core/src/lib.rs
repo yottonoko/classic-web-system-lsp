@@ -3138,6 +3138,7 @@ fn collect_symbols_from_node(
         if let Some(identifiers) = node.get("identifiers").and_then(Value::as_array) {
             for token in identifiers {
                 if let Some(name) = token_name(token) {
+                    let array_declaration = array_declaration_for_token(node, token);
                     let symbol_member_of = if scope_name.is_some() {
                         None
                     } else {
@@ -3155,7 +3156,7 @@ fn collect_symbols_from_node(
                             text_index.range(value_usize(node, "start"), value_usize(node, "end"))
                         })
                     });
-                    symbols.push(json!({
+                    let mut symbol = json!({
                         "name": name,
                         "kind": symbol_kind,
                         "range": token_range(text_index, token),
@@ -3166,7 +3167,29 @@ fn collect_symbols_from_node(
                         "scopeRange": local_scope_range,
                         "visibility": node.get("visibility").and_then(Value::as_str),
                         "documentation": documentation_for_node(node, document_tokens),
-                    }));
+                    });
+                    if let Some(array) = array_declaration {
+                        if let Some(object) = symbol.as_object_mut() {
+                            object
+                                .insert("typeName".to_string(), Value::String("Array".to_string()));
+                            object.insert("type".to_string(), json!({ "name": "Array" }));
+                            object.insert("explicitType".to_string(), Value::Bool(true));
+                            object.insert(
+                                "array".to_string(),
+                                json!({
+                                    "kind": array
+                                        .get("kind")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("dynamic"),
+                                    "dimensions": array
+                                        .get("dimensions")
+                                        .cloned()
+                                        .unwrap_or_else(|| Value::Array(Vec::new())),
+                                }),
+                            );
+                        }
+                    }
+                    symbols.push(symbol);
                 }
             }
         }
@@ -3191,6 +3214,19 @@ fn collect_symbols_from_node(
             );
         }
     }
+}
+
+fn array_declaration_for_token<'a>(node: &'a Value, token: &Value) -> Option<&'a Value> {
+    let token_start = value_usize(token, "start");
+    let token_end = value_usize(token, "end");
+    node.get("arrayDeclarations")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|array| {
+            array.get("name").is_some_and(|name| {
+                value_usize(name, "start") == token_start && value_usize(name, "end") == token_end
+            })
+        })
 }
 
 fn documentation_for_node(node: &Value, document_tokens: &[Value]) -> Option<Value> {

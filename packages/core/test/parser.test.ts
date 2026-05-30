@@ -416,6 +416,22 @@ Response.Write "done"
     expect(parsed.regions.some((region) => region.kind === "html")).toBe(true);
   });
 
+  it("keeps HTML text after inline VBScript comment delimiters", () => {
+    const source = `<div>
+<%' あいうえお %>
+テキスト
+</div>`;
+    const parsed = parseAspDocument("file:///site/inline-vb-comment-close.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    const block = parsed.regions.find((region) => region.kind === "asp-block");
+    expect(block?.end).toBe(source.indexOf("%>") + "%>".length);
+    const html = parsed.regions
+      .filter((region) => region.kind === "html")
+      .map((region) => source.slice(region.start, region.end))
+      .join("");
+    expect(html).toContain("テキスト");
+  });
+
   it("keeps ASP delimiters inside script comments from ending regions", () => {
     const source = `<%
 /* block comment with %> */
