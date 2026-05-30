@@ -189,6 +189,7 @@ let workspaceIndexDirty = true;
 let workspaceIndexTruncated = false;
 let workspaceVbReferenceIndex: WorkspaceVbReferenceIndex | undefined;
 let jsLanguageServiceCacheTick = 0;
+let lightweightJsUnusedCacheTick = 0;
 let jsScriptSnapshotSequence = 0;
 let semanticTokenResultCounter = 0;
 let documentCacheGeneration = 0;
@@ -207,6 +208,8 @@ let openFileProjectMaintenanceTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingProjectUpdateReason: string | undefined;
 let pendingOpenFileMaintenanceReason: string | undefined;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
+const maxLightweightJsUnusedCacheEntries = 32;
+const lightweightJsUnusedDiagnosticsCache = new Map<string, LightweightJsUnusedCacheEntry>();
 const hiddenJavaScriptGlobalCompletions = new Set(["__dirname", "__filename"]);
 const browserJavaScriptLibs = ["lib.esnext.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"];
 
@@ -288,8 +291,8 @@ interface CachedAnalysis {
   htmlDiagnostics?: DiagnosticCacheEntry;
   cssDiagnostics?: DiagnosticCacheEntry;
   vbDiagnostics?: DiagnosticCacheEntry;
-  jsSyntaxDiagnostics?: DiagnosticCacheEntry;
-  jsSlowDiagnostics?: DiagnosticCacheEntry;
+  jsSyntaxDiagnostics?: CachedJsDiagnosticsEntry;
+  jsSlowDiagnostics?: CachedJsDiagnosticsEntry;
   vbProjectContext?: { key: string; rootKey: string; context: VbProjectContext };
   localVbProjectContext?: { key: string; context: VbProjectContext };
   immediateLocalVbProjectContext?: { key: string; context: VbProjectContext };
@@ -336,6 +339,45 @@ interface DiagnosticCacheEntry {
   key: string;
   items: Diagnostic[];
   text: string;
+}
+
+interface CachedTsDiagnostic {
+  code: number;
+  category: ts.DiagnosticCategory;
+  messageText: string;
+  start?: number;
+  length?: number;
+  reportsUnnecessary?: boolean;
+}
+
+interface CachedJsDiagnostic {
+  diagnostic: CachedTsDiagnostic;
+  severity?: DiagnosticSeverity;
+  source?: string;
+}
+
+interface CachedJsVirtualDiagnostics {
+  virtualKey: string;
+  diagnostics: CachedJsDiagnostic[];
+}
+
+interface CachedJsDiagnosticsEntry {
+  key: string;
+  virtuals: CachedJsVirtualDiagnostics[];
+}
+
+interface LightweightJsUnusedCacheEntry {
+  diagnostics: CachedTsDiagnostic[];
+  lastUsed: number;
+}
+
+interface TsDiagnosticLike {
+  code: number;
+  category: ts.DiagnosticCategory;
+  messageText: string | ts.DiagnosticMessageChain;
+  start?: number;
+  length?: number;
+  reportsUnnecessary?: unknown;
 }
 
 type DiagnosticLayerKey = "fast" | "include" | "syntax" | "project" | "final";
@@ -1984,6 +2026,7 @@ function refreshCachedDocumentIncremental(
   seedVbProjectDocumentsAfterStableIncludeGraph(previous, cached, settings);
   seedVbReuseAfterIncrementalChange(previous, cached, settings, change, updated.impact);
   seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
+  seedJsDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
   cache.set(document.uri, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
   finishAnalysisLog(settings, document.uri, startedAt, updated.impact.kind);
@@ -2448,7 +2491,7 @@ function embeddedSyntaxDiagnostics(
   );
   diagnostics.push(
     ...measureDebugStep(settings, cached.source.uri, `${stepPrefix}.javascriptSyntax`, () =>
-      jsSyntaxDiagnostics(cached),
+      jsSyntaxDiagnostics(cached, settings, stepPrefix),
     ),
   );
   return diagnostics;
@@ -3024,22 +3067,46 @@ function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
   return diagnostics;
 }
 
-function jsSyntaxDiagnostics(cached: CachedDocument): Diagnostic[] {
-  return jsVirtualDocuments(cached).flatMap((virtual) => {
-    const sourceFile = ts.createSourceFile(
-      jsVirtualFileName(virtual.uri),
-      virtual.text,
-      ts.ScriptTarget.ESNext,
-      true,
-      ts.ScriptKind.JS,
+function jsSyntaxDiagnostics(
+  cached: CachedDocument,
+  settings: AspSettings,
+  stepPrefix: string,
+): Diagnostic[] {
+  const analysis = analysisFor(cached);
+  const key = jsDiagnosticsCacheKey(cached, settings);
+  const cachedItems = analysis.jsSyntaxDiagnostics;
+  if (cachedItems?.key === key) {
+    return measureDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.javascriptSyntax.reuse`,
+      () => cachedJsDiagnosticsToLsp(cached, cachedItems),
     );
-    const parseDiagnostics =
-      (sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] })
-        .parseDiagnostics ?? [];
-    return parseDiagnostics
-      .map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic))
-      .filter(isDiagnostic);
-  });
+  }
+  const virtuals = jsVirtualDocuments(cached);
+  const entry: CachedJsDiagnosticsEntry = {
+    key,
+    virtuals: virtuals.map((virtual) => {
+      const sourceFile = ts.createSourceFile(
+        jsVirtualFileName(virtual.uri),
+        virtual.text,
+        ts.ScriptTarget.ESNext,
+        true,
+        ts.ScriptKind.JS,
+      );
+      const parseDiagnostics =
+        (sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] })
+          .parseDiagnostics ?? [];
+      return {
+        virtualKey: jsDiagnosticsVirtualKey(virtual),
+        diagnostics: parseDiagnostics.map((diagnostic) => ({
+          diagnostic: cacheTsDiagnostic(diagnostic),
+        })),
+      };
+    }),
+  };
+  analysis.jsSyntaxDiagnostics = entry;
+  return cachedJsDiagnosticsToLsp(cached, entry);
 }
 
 function jsSlowDiagnostics(
@@ -3047,42 +3114,113 @@ function jsSlowDiagnostics(
   settings: AspSettings,
   stepPrefix: string,
 ): Diagnostic[] {
-  return jsVirtualDocuments(cached).flatMap((virtual) => {
-    const semantic = measureDebugStep(
+  const analysis = analysisFor(cached);
+  const key = jsDiagnosticsCacheKey(cached, settings);
+  const cachedItems = analysis.jsSlowDiagnostics;
+  if (cachedItems?.key === key) {
+    return measureDebugStep(
       settings,
       cached.source.uri,
-      `${stepPrefix}.javascriptSemantic`,
-      () => {
-        if (settings.checkJs !== true) {
-          return [];
-        }
-        const project = createJsLanguageService(virtual, settings);
-        return project.service.getSemanticDiagnostics(jsProjectFileName(virtual, project));
-      },
+      `${stepPrefix}.javascriptDiagnostics.reuse`,
+      () => cachedJsDiagnosticsToLsp(cached, cachedItems),
     );
-    const unused = measureDebugStep(
-      settings,
-      cached.source.uri,
-      `${stepPrefix}.javascriptUnused`,
-      () =>
-        settings.javascript?.unusedDiagnostics === false
-          ? []
-          : lightweightJsUnusedDiagnostics(virtual),
-    );
-    const semanticKeys = new Set(semantic.map(tsDiagnosticKey));
-    const unusedOnly = unused.filter(
-      (diagnostic) => !semanticKeys.has(tsDiagnosticKey(diagnostic)),
-    );
-    return [
-      ...semantic.map((diagnostic) => tsDiagnosticToLsp(virtual, diagnostic)),
-      ...unusedOnly.map((diagnostic) =>
-        tsDiagnosticToLsp(virtual, diagnostic, {
-          severity: DiagnosticSeverity.Hint,
-          source: "asp-lsp-typescript-unused",
-        }),
-      ),
-    ].filter(isDiagnostic);
+  }
+  const virtuals = jsVirtualDocuments(cached);
+  const entry: CachedJsDiagnosticsEntry = {
+    key,
+    virtuals: virtuals.map((virtual) => {
+      const semantic = measureDebugStep(
+        settings,
+        cached.source.uri,
+        `${stepPrefix}.javascriptSemantic`,
+        () => {
+          if (settings.checkJs !== true) {
+            return [];
+          }
+          const project = createJsLanguageService(virtual, settings);
+          return project.service.getSemanticDiagnostics(jsProjectFileName(virtual, project));
+        },
+      );
+      const unused = measureDebugStep(
+        settings,
+        cached.source.uri,
+        `${stepPrefix}.javascriptUnused`,
+        () =>
+          settings.javascript?.unusedDiagnostics === false
+            ? []
+            : lightweightJsUnusedDiagnostics(virtual),
+      );
+      const semanticKeys = new Set(semantic.map(tsDiagnosticKey));
+      const unusedOnly = unused.filter(
+        (diagnostic) => !semanticKeys.has(tsDiagnosticKey(diagnostic)),
+      );
+      return {
+        virtualKey: jsDiagnosticsVirtualKey(virtual),
+        diagnostics: [
+          ...semantic.map((diagnostic) => ({ diagnostic: cacheTsDiagnostic(diagnostic) })),
+          ...unusedOnly.map((diagnostic) => ({
+            diagnostic: cacheTsDiagnostic(diagnostic),
+            severity: DiagnosticSeverity.Hint,
+            source: "asp-lsp-typescript-unused",
+          })),
+        ],
+      };
+    }),
+  };
+  analysis.jsSlowDiagnostics = entry;
+  return cachedJsDiagnosticsToLsp(cached, entry);
+}
+
+function jsDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    diagnostics: diagnosticsIdentity(settings),
+    jsProject: cached.jsProjectGeneration,
+    workspace: cached.workspaceGeneration,
+    virtuals: jsVirtualDocuments(cached).map(jsDiagnosticsVirtualKey),
   });
+}
+
+function jsDiagnosticsVirtualKey(virtual: VirtualDocument): string {
+  return JSON.stringify({
+    uri: virtual.uri,
+    language: virtual.languageId,
+    sourceUri: virtualSourceUri(virtual),
+    text: textFingerprint(virtual.text),
+  });
+}
+
+function cachedJsDiagnosticsToLsp(
+  cached: CachedDocument,
+  entry: CachedJsDiagnosticsEntry,
+): Diagnostic[] {
+  const virtuals = new Map(
+    jsVirtualDocuments(cached).map((virtual) => [jsDiagnosticsVirtualKey(virtual), virtual]),
+  );
+  return entry.virtuals.flatMap((cachedVirtual) => {
+    const virtual = virtuals.get(cachedVirtual.virtualKey);
+    if (!virtual) {
+      return [];
+    }
+    return cachedVirtual.diagnostics
+      .map((item) =>
+        tsDiagnosticToLsp(virtual, item.diagnostic, {
+          severity: item.severity,
+          source: item.source,
+        }),
+      )
+      .filter(isDiagnostic);
+  });
+}
+
+function cacheTsDiagnostic(diagnostic: TsDiagnosticLike): CachedTsDiagnostic {
+  return {
+    code: diagnostic.code,
+    category: diagnostic.category,
+    messageText: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+    start: diagnostic.start,
+    length: diagnostic.length,
+    reportsUnnecessary: diagnostic.reportsUnnecessary === true,
+  };
 }
 
 async function vbDiagnosticsAsync(
@@ -3516,6 +3654,28 @@ function seedSyntaxDiagnosticsAfterIncrementalChange(
   }
 }
 
+function seedJsDiagnosticsAfterIncrementalChange(
+  previous: CachedDocument,
+  cached: CachedDocument,
+  impact: AspEditImpact,
+): void {
+  if (impact.kind !== "incremental") {
+    return;
+  }
+  const previousSyntax = previous.analysis?.jsSyntaxDiagnostics;
+  const previousSlow = previous.analysis?.jsSlowDiagnostics;
+  if (!previousSyntax && !previousSlow) {
+    return;
+  }
+  const analysis = analysisFor(cached);
+  if (previousSyntax) {
+    analysis.jsSyntaxDiagnostics = previousSyntax;
+  }
+  if (previousSlow) {
+    analysis.jsSlowDiagnostics = previousSlow;
+  }
+}
+
 function vbDiagnosticsCacheKey(cached: CachedDocument, settings: AspSettings): string {
   return JSON.stringify({
     root: vbProjectRootContextCacheKey(cached, settings),
@@ -3641,7 +3801,13 @@ function shiftVbSymbolForIncrementalChange(
   };
 }
 
-function lightweightJsUnusedDiagnostics(virtual: VirtualDocument): ts.Diagnostic[] {
+function lightweightJsUnusedDiagnostics(virtual: VirtualDocument): CachedTsDiagnostic[] {
+  const cacheKey = lightweightJsUnusedDiagnosticsCacheKey(virtual);
+  const cached = lightweightJsUnusedDiagnosticsCache.get(cacheKey);
+  if (cached) {
+    cached.lastUsed = ++lightweightJsUnusedCacheTick;
+    return cached.diagnostics;
+  }
   const fileName = normalizeFileName(jsVirtualFileName(virtual.uri));
   const files = new Map([[fileName, virtual.text]]);
   const host: ts.LanguageServiceHost = {
@@ -3673,11 +3839,39 @@ function lightweightJsUnusedDiagnostics(virtual: VirtualDocument): ts.Diagnostic
   };
   const service = ts.createLanguageService(host);
   try {
-    return service
+    const diagnostics = service
       .getSemanticDiagnostics(fileName)
-      .filter((diagnostic) => tsUnusedDiagnosticCodes.has(diagnostic.code));
+      .filter((diagnostic) => tsUnusedDiagnosticCodes.has(diagnostic.code))
+      .map(cacheTsDiagnostic);
+    lightweightJsUnusedDiagnosticsCache.set(cacheKey, {
+      diagnostics,
+      lastUsed: ++lightweightJsUnusedCacheTick,
+    });
+    pruneLightweightJsUnusedDiagnosticsCache();
+    return diagnostics;
   } finally {
     service.dispose();
+  }
+}
+
+function lightweightJsUnusedDiagnosticsCacheKey(virtual: VirtualDocument): string {
+  return JSON.stringify({
+    uri: virtual.uri,
+    language: virtual.languageId,
+    sourceUri: virtualSourceUri(virtual),
+    text: textFingerprint(virtual.text),
+  });
+}
+
+function pruneLightweightJsUnusedDiagnosticsCache(): void {
+  while (lightweightJsUnusedDiagnosticsCache.size > maxLightweightJsUnusedCacheEntries) {
+    const oldest = [...lightweightJsUnusedDiagnosticsCache.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0];
+    if (!oldest) {
+      return;
+    }
+    lightweightJsUnusedDiagnosticsCache.delete(oldest[0]);
   }
 }
 
@@ -6806,7 +7000,7 @@ function remapWorkspaceEdit(
 
 function tsDiagnosticToLsp(
   virtual: VirtualDocument,
-  diagnostic: ts.Diagnostic,
+  diagnostic: TsDiagnosticLike,
   override: { severity?: DiagnosticSeverity; source?: string } = {},
 ): Diagnostic | undefined {
   if (diagnostic.start === undefined || diagnostic.length === undefined) {
@@ -6848,7 +7042,7 @@ function virtualRangeStaysWithinSegment(
   return Boolean(segment && lastOffset < segment.virtualEnd);
 }
 
-function tsDiagnosticKey(diagnostic: ts.Diagnostic): string {
+function tsDiagnosticKey(diagnostic: TsDiagnosticLike): string {
   return [diagnostic.code, diagnostic.start ?? -1, diagnostic.length ?? -1].join(":");
 }
 
@@ -8518,6 +8712,7 @@ function clearJsProjectCaches(): void {
   clearJsLanguageServiceCache();
   jsProjectConfigCache.clear();
   jsScriptSnapshots.clear();
+  lightweightJsUnusedDiagnosticsCache.clear();
   clearJsFileSystemCache();
   completionSessionCache.clear("jsProject");
 }

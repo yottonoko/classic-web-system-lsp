@@ -6124,6 +6124,84 @@ function demo(unusedParam) {
       }
     });
 
+    it("reuses JavaScript diagnostics after HTML-only source shifts", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/js-diagnostics-cache.asp";
+        let source = `<div>before</div>
+<script>
+function demo(unusedParam) {
+  const unusedLocal = 1;
+  return 1;
+}
+</script>
+<script runat="server" language="JScript">
+var broken = ;
+</script>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const firstDiagnostics = await waitForDiagnosticsContaining(
+          server,
+          "asp-lsp-typescript-unused",
+        );
+        const firstUnused = diagnosticContaining(firstDiagnostics, "unusedLocal");
+        expect(firstUnused?.range.start.line).toBe(3);
+        expect(JSON.stringify(firstDiagnostics.params)).toContain("Expression expected");
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+        server.takePendingNotifications("textDocument/publishDiagnostics");
+
+        source = notifyRangedReplacement(server, uri, source, 2, "before", "before\nshifted");
+
+        const nextDiagnostics = await waitForDiagnosticsContaining(
+          server,
+          "asp-lsp-typescript-unused",
+        );
+        const syntaxReuseLog = await waitForLogContaining(server, "check.javascriptSyntax.reuse");
+        const diagnosticsReuseLog = await waitForLogContaining(
+          server,
+          "check.javascriptDiagnostics.reuse",
+        );
+        const nextUnused = diagnosticContaining(nextDiagnostics, "unusedLocal");
+        expect(nextUnused?.range.start.line).toBe(4);
+        expect(JSON.stringify(nextDiagnostics.params)).toContain("Expression expected");
+        const logs = JSON.stringify([
+          syntaxReuseLog,
+          diagnosticsReuseLog,
+          ...server.takePendingNotifications("window/logMessage"),
+        ]);
+        expect(logs).not.toContain("check.javascriptSemantic");
+        expect(logs).not.toContain("check.javascriptUnused");
+        expect(source).toContain("before\nshifted");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns JavaScript auto import completion edits and add import quick fixes", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-auto-import-"));
       fs.writeFileSync(
