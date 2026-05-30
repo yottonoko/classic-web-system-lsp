@@ -16,9 +16,31 @@ pub fn handle_value(request: &Value) -> Result<Value, String> {
 #[derive(Default)]
 pub struct CoreState {
     parsed_cache: HashMap<String, Value>,
+    symbol_cache: HashMap<String, Vec<Value>>,
+    diagnostics_cache: HashMap<String, Vec<Value>>,
+    serialized_result_cache: HashMap<String, String>,
 }
 
 impl CoreState {
+    pub fn handle_serialized_value(&mut self, request: &Value) -> Result<String, String> {
+        let serialized_key = serialized_result_cache_key(request);
+        if let Some(cache_key) = &serialized_key {
+            if let Some(result) = self.serialized_result_cache.get(cache_key) {
+                return Ok(result.clone());
+            }
+        }
+        let result = self.handle_value(request)?;
+        let serialized = serde_json::to_string(&result).map_err(|error| error.to_string())?;
+        if let Some(cache_key) = serialized_key {
+            if self.serialized_result_cache.len() >= 256 {
+                self.serialized_result_cache.clear();
+            }
+            self.serialized_result_cache
+                .insert(cache_key, serialized.clone());
+        }
+        Ok(serialized)
+    }
+
     pub fn handle_value(&mut self, request: &Value) -> Result<Value, String> {
         let operation = request
             .get("operation")
@@ -90,7 +112,7 @@ impl CoreState {
                     .get("parsed")
                     .ok_or_else(|| "parsed is required".to_string())?;
                 let context = request.get("context").unwrap_or(&Value::Null);
-                let symbols = collect_symbols_from_parsed(parsed, context);
+                let symbols = self.cached_collect_symbols(request, parsed, context);
                 Value::Array(symbols)
             }
             "collectVbscriptSymbolsFromText" => {
@@ -105,7 +127,7 @@ impl CoreState {
                 let settings = request.get("settings").unwrap_or(&Value::Null);
                 let context = request.get("context").unwrap_or(&Value::Null);
                 let parsed = self.cached_parse_asp_document(request, uri, text, settings);
-                let symbols = collect_symbols_from_parsed(&parsed, context);
+                let symbols = self.cached_collect_symbols(request, &parsed, context);
                 Value::Array(symbols)
             }
             "summarizeAspFileAnalysis" => {
@@ -132,8 +154,8 @@ impl CoreState {
                     .get("parsed")
                     .ok_or_else(|| "parsed is required".to_string())?;
                 let context = request.get("context").unwrap_or(&Value::Null);
-                let symbols = collect_symbols_from_parsed(parsed, context);
-                let diagnostics = diagnose_vbscript(parsed, &symbols, context);
+                let symbols = self.cached_collect_symbols(request, parsed, context);
+                let diagnostics = self.cached_diagnostics(request, parsed, &symbols, context);
                 json!({ "diagnostics": diagnostics, "symbols": symbols })
             }
             "analyzeVbscriptFromText" => {
@@ -148,8 +170,8 @@ impl CoreState {
                 let settings = request.get("settings").unwrap_or(&Value::Null);
                 let context = request.get("context").unwrap_or(&Value::Null);
                 let parsed = self.cached_parse_asp_document(request, uri, text, settings);
-                let symbols = collect_symbols_from_parsed(&parsed, context);
-                let diagnostics = diagnose_vbscript(&parsed, &symbols, context);
+                let symbols = self.cached_collect_symbols(request, &parsed, context);
+                let diagnostics = self.cached_diagnostics(request, &parsed, &symbols, context);
                 json!({ "diagnostics": diagnostics, "symbols": symbols })
             }
             _ => return Err(format!("unknown operation: {operation}")),
@@ -169,7 +191,7 @@ impl CoreState {
         };
         if !self.parsed_cache.contains_key(cache_key) {
             if self.parsed_cache.len() >= 128 {
-                self.parsed_cache.clear();
+                self.clear_caches();
             }
             self.parsed_cache.insert(
                 cache_key.to_string(),
@@ -180,6 +202,90 @@ impl CoreState {
             .get(cache_key)
             .cloned()
             .unwrap_or_else(|| parse_asp_document(uri, text, settings))
+    }
+
+    fn cached_collect_symbols(
+        &mut self,
+        request: &Value,
+        parsed: &Value,
+        context: &Value,
+    ) -> Vec<Value> {
+        let Some(cache_key) = semantic_cache_key(request, context, "symbols") else {
+            return collect_symbols_from_parsed(parsed, context);
+        };
+        if let Some(symbols) = self.symbol_cache.get(&cache_key) {
+            return symbols.clone();
+        }
+        let symbols = collect_symbols_from_parsed(parsed, context);
+        if self.symbol_cache.len() >= 256 {
+            self.symbol_cache.clear();
+            self.diagnostics_cache.clear();
+        }
+        self.symbol_cache.insert(cache_key, symbols.clone());
+        symbols
+    }
+
+    fn cached_diagnostics(
+        &mut self,
+        request: &Value,
+        parsed: &Value,
+        symbols: &[Value],
+        context: &Value,
+    ) -> Vec<Value> {
+        let Some(cache_key) = semantic_cache_key(request, context, "diagnostics") else {
+            return diagnose_vbscript(parsed, symbols, context);
+        };
+        if let Some(diagnostics) = self.diagnostics_cache.get(&cache_key) {
+            return diagnostics.clone();
+        }
+        let diagnostics = diagnose_vbscript(parsed, symbols, context);
+        if self.diagnostics_cache.len() >= 256 {
+            self.diagnostics_cache.clear();
+        }
+        self.diagnostics_cache
+            .insert(cache_key, diagnostics.clone());
+        diagnostics
+    }
+
+    fn clear_caches(&mut self) {
+        self.parsed_cache.clear();
+        self.symbol_cache.clear();
+        self.diagnostics_cache.clear();
+        self.serialized_result_cache.clear();
+    }
+}
+
+fn semantic_cache_key(request: &Value, context: &Value, operation: &str) -> Option<String> {
+    let document_key = request.get("cacheKey").and_then(Value::as_str)?;
+    let context_key = match context {
+        Value::Null => String::new(),
+        Value::Object(object) if object.is_empty() => String::new(),
+        _ => {
+            let serialized = serde_json::to_string(context).ok()?;
+            if serialized.len() > 4096 {
+                return None;
+            }
+            serialized
+        }
+    };
+    Some(format!("{document_key}\0{operation}\0{context_key}"))
+}
+
+fn serialized_result_cache_key(request: &Value) -> Option<String> {
+    let operation = request.get("operation").and_then(Value::as_str)?;
+    match operation {
+        "parseAspDocument" | "parseAspDocumentLight" => {
+            let document_key = request.get("cacheKey").and_then(Value::as_str)?;
+            Some(format!("{document_key}\0{operation}"))
+        }
+        "collectVbscriptSymbolsFromText"
+        | "analyzeVbscriptFromText"
+        | "summarizeAspFileAnalysisFromText" => semantic_cache_key(
+            request,
+            request.get("context").unwrap_or(&Value::Null),
+            operation,
+        ),
+        _ => None,
     }
 }
 
@@ -2443,11 +2549,11 @@ fn collect_symbols_from_parsed(parsed: &Value, context: &Value) -> Vec<Value> {
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as usize;
             let cst = parse_vbscript_cst(text_index.slice(start, end), text, start);
+            let empty_tokens = Vec::new();
             let document_tokens = cst
                 .get("tokens")
                 .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+                .unwrap_or(&empty_tokens);
             collect_symbols_from_node(
                 &cst,
                 uri,
@@ -2463,7 +2569,31 @@ fn collect_symbols_from_parsed(parsed: &Value, context: &Value) -> Vec<Value> {
     add_server_object_symbols(parsed, &mut symbols);
     apply_type_annotations(parsed, &text_index, &mut symbols);
     add_implicit_assignment_symbols(parsed, &text_index, context, &mut symbols);
+    strip_null_fields_from_values(&mut symbols);
     symbols
+}
+
+fn strip_null_fields_from_values(values: &mut [Value]) {
+    for value in values {
+        strip_null_fields(value);
+    }
+}
+
+fn strip_null_fields(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.retain(|_, nested| {
+                strip_null_fields(nested);
+                !nested.is_null()
+            });
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_null_fields(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_symbols_from_node(
@@ -3051,7 +3181,7 @@ fn diagnose_vbscript(parsed: &Value, symbols: &[Value], context: &Value) -> Vec<
     let declaration_ranges = symbols
         .iter()
         .filter_map(|symbol| symbol.get("range"))
-        .map(range_key)
+        .filter_map(range_tuple)
         .collect::<HashSet<_>>();
     let mut used = HashSet::<String>::new();
     if let Some(regions) = parsed.get("regions").and_then(Value::as_array) {
@@ -3079,7 +3209,10 @@ fn diagnose_vbscript(parsed: &Value, symbols: &[Value], context: &Value) -> Vec<
                 }
                 let lower = token.text.to_ascii_lowercase();
                 let token_range = text_index.range(token.start, token.end);
-                if !declaration_ranges.contains(&range_key(&token_range)) {
+                if range_tuple(&token_range)
+                    .map(|range| !declaration_ranges.contains(&range))
+                    .unwrap_or(true)
+                {
                     used.insert(lower.clone());
                 }
                 if !has_option_explicit {
@@ -3145,6 +3278,15 @@ fn range_key(range: &Value) -> String {
     serde_json::to_string(range).unwrap_or_default()
 }
 
+fn range_tuple(range: &Value) -> Option<(u64, u64, u64, u64)> {
+    Some((
+        range.get("start")?.get("line")?.as_u64()?,
+        range.get("start")?.get("character")?.as_u64()?,
+        range.get("end")?.get("line")?.as_u64()?,
+        range.get("end")?.get("character")?.as_u64()?,
+    ))
+}
+
 fn previous_significant_token(tokens: &[VbToken], index: usize) -> Option<&VbToken> {
     tokens[..index].iter().rev().find(|token| {
         token.kind != "whitespace" && token.kind != "comment" && token.kind != "newline"
@@ -3171,7 +3313,7 @@ fn collect_external_refs(parsed: &Value, symbols: &[Value]) -> Vec<Value> {
     let declaration_ranges = symbols
         .iter()
         .filter_map(|symbol| symbol.get("range"))
-        .map(range_key)
+        .filter_map(range_tuple)
         .collect::<HashSet<_>>();
     let mut refs = Vec::new();
     let mut seen = HashSet::new();
@@ -3200,7 +3342,9 @@ fn collect_external_refs(parsed: &Value, symbols: &[Value]) -> Vec<Value> {
                 }
                 let lower = token.text.to_ascii_lowercase();
                 let token_range = text_index.range(token.start, token.end);
-                if declaration_ranges.contains(&range_key(&token_range))
+                if range_tuple(&token_range)
+                    .map(|range| declaration_ranges.contains(&range))
+                    .unwrap_or(false)
                     || declared.contains(&lower)
                     || is_builtin_name(&token.text)
                 {

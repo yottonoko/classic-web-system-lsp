@@ -62,8 +62,11 @@ fn handle_jsonl_request(state: &mut asp_lsp_core::CoreState, line: &str) -> Stri
             return json!({ "id": id, "ok": false, "error": "request is required" }).to_string()
         }
     };
-    match state.handle_value(request) {
-        Ok(result) => json!({ "id": id, "ok": true, "result": result }).to_string(),
+    match state.handle_serialized_value(request) {
+        Ok(result) => {
+            let id_json = serde_json::to_string(&id).unwrap_or_else(|_| "null".to_string());
+            format!(r#"{{"id":{id_json},"ok":true,"result":{result}}}"#)
+        }
         Err(error) => json!({ "id": id, "ok": false, "error": error }).to_string(),
     }
 }
