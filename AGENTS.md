@@ -49,8 +49,8 @@ node packages/language-server/dist/server.js --stdio
 
 - Do not stage unrelated files.
 - Commit messages in this repository may be English.
-- Every commit message must end with exactly one trailer:
+- Every commit message must end with exactly one `Co-authored-by` trailer for the agent that creates the commit. Do not hard-code Codex for commits created by another agent.
 
 ```text
-Co-authored-by: Codex <noreply@openai.com>
+Co-authored-by: <Agent Name> <agent@example.com>
 ```
