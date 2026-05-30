@@ -6,7 +6,7 @@ import type { AspParsedDocument, AspSettings, VbCstNode } from "./types";
 import type { FileAnalysisSummary, VbProjectContext, VbSymbol } from "./vbscript-types";
 import type { Diagnostic } from "vscode-languageserver-types";
 
-export type AspAnalysisBackendKind = "native" | "wasm" | "typescript-fallback";
+export type AspAnalysisBackendKind = "native" | "typescript-fallback";
 
 export interface AspAnalysisBackendInfo {
   backend: AspAnalysisBackendKind;
@@ -27,17 +27,7 @@ interface NativeJsonlResponse<T> {
   error?: string;
 }
 
-interface WasmExports {
-  memory: WebAssembly.Memory;
-  asp_lsp_alloc(len: number): number;
-  asp_lsp_dealloc(pointer: number, len: number): void;
-  asp_lsp_handle(pointer: number, len: number): number;
-  asp_lsp_last_output_len(): number;
-}
-
 let cachedNativePath: string | undefined | null;
-let cachedWasmPath: string | undefined | null;
-let cachedWasmExports: WasmExports | undefined;
 let nextNativeRequestId = 1;
 let nativeWorkerPool: NativeCoreWorkerPool | undefined;
 let lastBackendInfo: AspAnalysisBackendInfo = {
@@ -246,22 +236,19 @@ function nativeOperation<T>(request: NativeRequest): T | undefined {
     };
     return undefined;
   }
-  if (mode !== "wasm") {
-    const nativePath = resolveNativePath();
-    if (nativePath) {
-      const result = runNative<T>(nativePath, request);
-      if (result !== undefined || mode === "native") {
-        return result;
-      }
-    }
+  if (!isSupportedNativeMode(mode)) {
+    lastBackendInfo = {
+      backend: "typescript-fallback",
+      engine: "typescript",
+      reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${mode}`,
+    };
+    return undefined;
   }
-  if (mode !== "native") {
-    const wasmPath = resolveWasmPath();
-    if (wasmPath) {
-      const result = runWasm<T>(wasmPath, request);
-      if (result !== undefined || mode === "wasm") {
-        return result;
-      }
+  const nativePath = resolveNativePath();
+  if (nativePath) {
+    const result = runNative<T>(nativePath, request);
+    if (result !== undefined || mode === "native") {
+      return result;
     }
   }
   return undefined;
@@ -277,22 +264,19 @@ async function nativeOperationAsync<T>(request: NativeRequest): Promise<T | unde
     };
     return undefined;
   }
-  if (mode !== "wasm") {
-    const nativePath = resolveNativePath();
-    if (nativePath) {
-      const result = await runNativeAsync<T>(nativePath, request);
-      if (result !== undefined || mode === "native") {
-        return result;
-      }
-    }
+  if (!isSupportedNativeMode(mode)) {
+    lastBackendInfo = {
+      backend: "typescript-fallback",
+      engine: "typescript",
+      reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${mode}`,
+    };
+    return undefined;
   }
-  if (mode !== "native") {
-    const wasmPath = resolveWasmPath();
-    if (wasmPath) {
-      const result = runWasm<T>(wasmPath, request);
-      if (result !== undefined || mode === "wasm") {
-        return result;
-      }
+  const nativePath = resolveNativePath();
+  if (nativePath) {
+    const result = await runNativeAsync<T>(nativePath, request);
+    if (result !== undefined || mode === "native") {
+      return result;
     }
   }
   return undefined;
@@ -300,6 +284,10 @@ async function nativeOperationAsync<T>(request: NativeRequest): Promise<T | unde
 
 function backendMode(): string {
   return (process.env.ASP_LSP_ANALYSIS_BACKEND ?? "auto").toLowerCase();
+}
+
+function isSupportedNativeMode(mode: string): boolean {
+  return mode === "auto" || mode === "native";
 }
 
 function runNative<T>(binary: string, request: NativeRequest): T | undefined {
@@ -584,44 +572,6 @@ function hashString(value: string): number {
   return hash >>> 0;
 }
 
-function runWasm<T>(wasmPath: string, request: NativeRequest): T | undefined {
-  try {
-    const exports = wasmExports(wasmPath);
-    const input = Buffer.from(JSON.stringify(request), "utf8");
-    const inputPointer = exports.asp_lsp_alloc(input.byteLength);
-    new Uint8Array(exports.memory.buffer, inputPointer, input.byteLength).set(input);
-    const outputPointer = exports.asp_lsp_handle(inputPointer, input.byteLength);
-    exports.asp_lsp_dealloc(inputPointer, input.byteLength);
-    const outputLength = exports.asp_lsp_last_output_len();
-    const output = Buffer.from(
-      new Uint8Array(exports.memory.buffer, outputPointer, outputLength),
-    ).toString("utf8");
-    exports.asp_lsp_dealloc(outputPointer, outputLength);
-    lastBackendInfo = { backend: "wasm", engine: "asp-lsp-core" };
-    return parseJsonResult<T>(output);
-  } catch (error) {
-    lastBackendInfo = {
-      backend: "typescript-fallback",
-      engine: "typescript",
-      reason: error instanceof Error ? error.message : String(error),
-    };
-    if (backendMode() === "wasm") {
-      throw error;
-    }
-    return undefined;
-  }
-}
-
-function wasmExports(wasmPath: string): WasmExports {
-  if (cachedWasmExports) {
-    return cachedWasmExports;
-  }
-  const module = new WebAssembly.Module(fs.readFileSync(wasmPath));
-  const instance = new WebAssembly.Instance(module, {});
-  cachedWasmExports = instance.exports as unknown as WasmExports;
-  return cachedWasmExports;
-}
-
 function parseJsonResult<T>(raw: string): T | undefined {
   const parsed = JSON.parse(raw) as T | { error?: string };
   if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
@@ -647,24 +597,6 @@ function resolveNativePath(): string | undefined {
       ];
   cachedNativePath = candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
   return cachedNativePath ?? undefined;
-}
-
-function resolveWasmPath(): string | undefined {
-  const explicit = process.env.ASP_LSP_WASM_CORE_PATH;
-  if (explicit) {
-    return fs.existsSync(explicit) ? explicit : undefined;
-  }
-  if (cachedWasmPath !== undefined) {
-    return cachedWasmPath ?? undefined;
-  }
-  const candidates = sourceCheckoutCoreDist()
-    ? []
-    : [
-        path.join(__dirname, "..", "wasm", "asp_lsp_core.wasm"),
-        path.join(__dirname, "wasm", "asp_lsp_core.wasm"),
-      ];
-  cachedWasmPath = candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
-  return cachedWasmPath ?? undefined;
 }
 
 function runtimeTarget(): string {

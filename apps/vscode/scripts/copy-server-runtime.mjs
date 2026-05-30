@@ -37,7 +37,6 @@ fs.chmodSync(path.join(distRoot, "server.js"), 0o755);
 fs.chmodSync(path.join(distRoot, "vb-diagnostics-worker.js"), 0o755);
 copyTypeScriptLibs(distRoot);
 copyNativeCore(serverRoot);
-copyWasmCore(serverRoot);
 fs.writeFileSync(
   path.join(serverRoot, "package.json"),
   `${JSON.stringify(
@@ -90,14 +89,5 @@ function copyNativeCore(targetRoot) {
     return;
   }
   const targetDirectory = path.join(targetRoot, "native");
-  fs.cpSync(sourceRoot, targetDirectory, { recursive: true });
-}
-
-function copyWasmCore(targetRoot) {
-  const sourceRoot = path.join(repoRoot, "packages", "core", "wasm");
-  if (!fs.existsSync(sourceRoot)) {
-    return;
-  }
-  const targetDirectory = path.join(targetRoot, "wasm");
   fs.cpSync(sourceRoot, targetDirectory, { recursive: true });
 }

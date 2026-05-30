@@ -7,7 +7,6 @@
   "scripts": {
     "build": "pnpm -r run build",
     "build:native": "node scripts/build-native-core.mjs",
-    "build:wasm": "node scripts/build-wasm-core.mjs",
     "benchmark:large": "pnpm --filter @asp-lsp/core run build && node scripts/benchmark-large.mjs",
     "benchmark:huge": "pnpm --filter @asp-lsp/core run build && node scripts/benchmark-huge.mjs",
     "benchmark:include-tree": "pnpm --filter @asp-lsp/core run build && node scripts/benchmark-include-tree.mjs",
