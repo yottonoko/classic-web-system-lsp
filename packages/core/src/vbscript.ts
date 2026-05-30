@@ -212,6 +212,8 @@ const symbolKeys = new WeakMap<VbSymbol, string>();
 const typeIndexes = new WeakMap<VbTypeEnvironment, VbTypeIndex>();
 let cachedBuiltinNameSet: Set<string> | undefined;
 let cachedBuiltinTypes: VbType[] | undefined;
+const vbFromTextCacheMaxEntries = 64;
+const vbFromTextCache = new Map<string, unknown>();
 
 function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
   const localizer = createLocalizer(locale);
@@ -2582,7 +2584,23 @@ export async function analyzeVbscriptFromTextAsync(
       return native;
     }
   }
-  return analyzeVbscriptTypeScript(await parseAspDocumentAsync(uri, text, settings), context);
+  const cacheKey = vbFromTextCacheKey("analyze", uri, text, settings, context);
+  const cached = cacheKey
+    ? (vbFromTextCache.get(cacheKey) as
+        | { diagnostics: Diagnostic[]; symbols: VbSymbol[] }
+        | undefined)
+    : undefined;
+  if (cached) {
+    return cached;
+  }
+  const result = analyzeVbscriptTypeScript(
+    await parseAspDocumentAsync(uri, text, settings),
+    context,
+  );
+  if (cacheKey) {
+    setVbFromTextCache(cacheKey, result);
+  }
+  return result;
 }
 
 function analyzeVbscriptTypeScript(
@@ -3811,11 +3829,20 @@ export async function collectVbscriptSymbolsFromTextAsync(
       return native;
     }
   }
-  return collectVbscriptSymbolsTypeScript(
+  const cacheKey = vbFromTextCacheKey("collect", uri, text, settings, context);
+  const cached = cacheKey ? (vbFromTextCache.get(cacheKey) as VbSymbol[] | undefined) : undefined;
+  if (cached) {
+    return cached;
+  }
+  const result = collectVbscriptSymbolsTypeScript(
     await parseAspDocumentAsync(uri, text, settings),
     context,
     {},
   );
+  if (cacheKey) {
+    setVbFromTextCache(cacheKey, result);
+  }
+  return result;
 }
 
 function collectVbscriptSymbolsTypeScript(
@@ -3908,10 +3935,21 @@ export async function summarizeAspFileAnalysisFromTextAsync(
       return native;
     }
   }
-  return summarizeAspFileAnalysisTypeScript(
+  const cacheKey = vbFromTextCacheKey("summary", uri, text, settings, context);
+  const cached = cacheKey
+    ? (vbFromTextCache.get(cacheKey) as FileAnalysisSummary | undefined)
+    : undefined;
+  if (cached) {
+    return cached;
+  }
+  const result = summarizeAspFileAnalysisTypeScript(
     await parseAspDocumentAsync(uri, text, settings),
     context,
   );
+  if (cacheKey) {
+    setVbFromTextCache(cacheKey, result);
+  }
+  return result;
 }
 
 function summarizeAspFileAnalysisTypeScript(
@@ -3944,6 +3982,47 @@ function summarizeAspFileAnalysisTypeScript(
 
 function nativeSemanticsEnabled(): boolean {
   return process.env.ASP_LSP_NATIVE_SEMANTICS !== "0";
+}
+
+function vbFromTextCacheKey(
+  operation: string,
+  uri: string,
+  text: string,
+  settings: AspSettings,
+  context: VbProjectContext,
+): string | undefined {
+  if (context.debugStep) {
+    return undefined;
+  }
+  try {
+    const contextKey = JSON.stringify(context);
+    if (contextKey.length > 8192) {
+      return undefined;
+    }
+    return JSON.stringify({
+      operation,
+      uri,
+      text: textFingerprint(text),
+      settings,
+      context: contextKey,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function setVbFromTextCache(key: string, value: unknown): void {
+  if (vbFromTextCache.has(key)) {
+    vbFromTextCache.delete(key);
+  }
+  vbFromTextCache.set(key, value);
+  while (vbFromTextCache.size > vbFromTextCacheMaxEntries) {
+    const oldest = vbFromTextCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    vbFromTextCache.delete(oldest);
+  }
 }
 
 export function summarizeVbscriptFile(

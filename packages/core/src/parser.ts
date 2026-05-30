@@ -25,6 +25,11 @@ import {
 } from "./native-backend";
 export { normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 
+const asyncParseCacheMaxEntries = 64;
+const asyncParseCache = new Map<string, AspParsedDocument>();
+const textFingerprintCacheMaxEntries = 256;
+const textFingerprintCache = new Map<string, string>();
+
 export function parseAspDocument(
   uri: string,
   text: string,
@@ -42,11 +47,21 @@ export async function parseAspDocumentAsync(
   text: string,
   settings: AspSettings = {},
 ): Promise<AspParsedDocument> {
+  const cacheKey = parseCacheKey(uri, text, settings);
+  const cached = asyncParseCache.get(cacheKey);
+  if (cached) {
+    asyncParseCache.delete(cacheKey);
+    asyncParseCache.set(cacheKey, cached);
+    return cached;
+  }
   const native = await tryNativeParseAspDocumentAsync(uri, text, settings);
   if (native) {
+    setAsyncParseCache(cacheKey, native);
     return native;
   }
-  return parseAspDocumentTypeScript(uri, text, settings);
+  const parsed = parseAspDocumentTypeScript(uri, text, settings);
+  setAsyncParseCache(cacheKey, parsed);
+  return parsed;
 }
 
 export async function parseAspDocumentSkeletonAsync(
@@ -984,6 +999,53 @@ function skeletonIncludeToNode(text: string, include: AspInclude): AspCstNode {
     children: [],
     include,
   };
+}
+
+function parseCacheKey(uri: string, text: string, settings: AspSettings): string {
+  return JSON.stringify({
+    uri,
+    text: textFingerprint(text),
+    settings,
+    backend: process.env.ASP_LSP_ANALYSIS_BACKEND ?? "auto",
+  });
+}
+
+function setAsyncParseCache(key: string, parsed: AspParsedDocument): void {
+  if (asyncParseCache.has(key)) {
+    asyncParseCache.delete(key);
+  }
+  asyncParseCache.set(key, parsed);
+  while (asyncParseCache.size > asyncParseCacheMaxEntries) {
+    const oldest = asyncParseCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    asyncParseCache.delete(oldest);
+  }
+}
+
+function textFingerprint(text: string): string {
+  const cached = textFingerprintCache.get(text);
+  if (cached) {
+    textFingerprintCache.delete(text);
+    textFingerprintCache.set(text, cached);
+    return cached;
+  }
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const fingerprint = `${text.length}:${(hash >>> 0).toString(16)}`;
+  textFingerprintCache.set(text, fingerprint);
+  while (textFingerprintCache.size > textFingerprintCacheMaxEntries) {
+    const oldest = textFingerprintCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    textFingerprintCache.delete(oldest);
+  }
+  return fingerprint;
 }
 
 function nodeToRegion(node: AspCstNode): AspRegion | undefined {

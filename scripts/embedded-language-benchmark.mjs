@@ -20,6 +20,15 @@ const ts = languageServerRequire("typescript");
 const htmlService = getHtmlLanguageService();
 const cssService = getCSSLanguageService();
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
+const virtualDocumentCache = new Map();
+const textDocumentCache = new Map();
+const cssStylesheetCache = new Map();
+const jsLanguageServiceCache = new Map();
+const jsSourceFileCache = new Map();
+const textFingerprintCache = new Map();
+const textFingerprintCacheMaxEntries = 512;
+const parsedTextFingerprints = new WeakMap();
+const virtualTextFingerprints = new WeakMap();
 
 export const embeddedOperationNames = [
   "htmlVirtualDocument",
@@ -41,6 +50,7 @@ const sampleConfigs = new Map([
 
 export async function runEmbeddedOperation(operation, source, core) {
   const parsed = await core.parseAspDocumentAsync(source.uri, source.text);
+  parsedTextFingerprints.set(parsed, source.fingerprint ?? textFingerprint(source.text));
   return runEmbeddedOperationForParsed(operation, parsed, core);
 }
 
@@ -84,6 +94,7 @@ export function collectBenchmarkSources(sampleRoot, sample) {
       relativePath,
       uri: pathToFileURL(absolutePath).href,
       text,
+      fingerprint: textFingerprint(text),
       lines: text.split("\n").length - 1,
       bytes: Buffer.byteLength(text),
     };
@@ -103,11 +114,29 @@ export function summarizeSources(items) {
 }
 
 function buildEmbeddedVirtualDocument(parsed, language, core) {
+  const cacheKey = embeddedVirtualCacheKey(parsed, language);
+  const cached = virtualDocumentCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached ?? undefined;
+  }
   const regions = parsed.regions.filter((region) => region.language === language);
   if (regions.length === 0 && language !== "html") {
+    virtualDocumentCache.set(cacheKey, null);
     return undefined;
   }
-  return core.buildVirtualDocument(parsed.uri, parsed.text, language, regions, parsed.regions);
+  const virtual = core.buildVirtualDocument(
+    parsed.uri,
+    parsed.text,
+    language,
+    regions,
+    parsed.regions,
+  );
+  virtualDocumentCache.set(cacheKey, virtual);
+  return virtual;
+}
+
+function embeddedVirtualCacheKey(parsed, language) {
+  return `${parsed.uri}|${language}|${parsedTextFingerprint(parsed)}`;
 }
 
 function htmlDiagnostics(parsed, core) {
@@ -151,7 +180,7 @@ function cssDiagnostics(parsed, core) {
   const doc = toTextDocument(virtual);
   const sourceDoc = toSourceTextDocument(virtual, parsed.text);
   return cssService
-    .doValidation(doc, cssService.parseStylesheet(doc))
+    .doValidation(doc, cssStylesheet(doc))
     .map((diagnostic) => remapDiagnostic(virtual, doc, sourceDoc, diagnostic))
     .filter(Boolean);
 }
@@ -173,13 +202,7 @@ function javascriptSyntaxDiagnostics(parsed, core) {
   if (!virtual) {
     return [];
   }
-  const sourceFile = ts.createSourceFile(
-    jsVirtualFileName(virtual.uri),
-    virtual.text,
-    ts.ScriptTarget.ESNext,
-    true,
-    ts.ScriptKind.JS,
-  );
+  const sourceFile = jsSourceFile(virtual);
   const parseDiagnostics = sourceFile.parseDiagnostics ?? [];
   return parseDiagnostics
     .map((diagnostic) => remapTsDiagnostic(virtual, parsed.text, diagnostic))
@@ -215,6 +238,11 @@ function javascriptUnusedDiagnostics(parsed, core) {
 
 function withJsLanguageService(virtual, sourceText, unusedOnly, callback) {
   const fileName = normalizeFileName(jsVirtualFileName(virtual.uri));
+  const cacheKey = `${unusedOnly ? "unused" : "semantic"}|${fileName}|${virtualTextFingerprint(virtual)}`;
+  const cached = jsLanguageServiceCache.get(cacheKey);
+  if (cached) {
+    return callback(cached.service, fileName, sourceText);
+  }
   const files = new Map([[fileName, virtual.text]]);
   const host = {
     getScriptFileNames: () => [fileName],
@@ -249,11 +277,35 @@ function withJsLanguageService(virtual, sourceText, unusedOnly, callback) {
     useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
   };
   const service = ts.createLanguageService(host);
-  try {
-    return callback(service, fileName, sourceText);
-  } finally {
-    service.dispose();
+  jsLanguageServiceCache.set(cacheKey, { service });
+  return callback(service, fileName, sourceText);
+}
+
+function cssStylesheet(doc) {
+  const cacheKey = `${doc.uri}|${textDocumentFingerprint(doc)}`;
+  let stylesheet = cssStylesheetCache.get(cacheKey);
+  if (!stylesheet) {
+    stylesheet = cssService.parseStylesheet(doc);
+    cssStylesheetCache.set(cacheKey, stylesheet);
   }
+  return stylesheet;
+}
+
+function jsSourceFile(virtual) {
+  const fileName = jsVirtualFileName(virtual.uri);
+  const cacheKey = `${fileName}|${virtualTextFingerprint(virtual)}`;
+  let sourceFile = jsSourceFileCache.get(cacheKey);
+  if (!sourceFile) {
+    sourceFile = ts.createSourceFile(
+      fileName,
+      virtual.text,
+      ts.ScriptTarget.ESNext,
+      true,
+      ts.ScriptKind.JS,
+    );
+    jsSourceFileCache.set(cacheKey, sourceFile);
+  }
+  return sourceFile;
 }
 
 function remapDiagnostic(virtual, virtualDoc, sourceDoc, diagnostic) {
@@ -326,11 +378,72 @@ function diagnosticKey(diagnostic) {
 }
 
 function toTextDocument(virtual) {
-  return TextDocument.create(virtual.uri, virtual.languageId, 0, virtual.text);
+  const cacheKey = `${virtual.uri}|${virtual.languageId}|${virtualTextFingerprint(virtual)}`;
+  let document = textDocumentCache.get(cacheKey);
+  if (!document) {
+    document = TextDocument.create(virtual.uri, virtual.languageId, 0, virtual.text);
+    document.__aspLspBenchmarkFingerprint = virtualTextFingerprint(virtual);
+    textDocumentCache.set(cacheKey, document);
+  }
+  return document;
 }
 
 function toSourceTextDocument(virtual, sourceText) {
-  return TextDocument.create(virtualSourceUri(virtual), "classic-asp", 0, sourceText);
+  const uri = virtualSourceUri(virtual);
+  const cacheKey = `${uri}|classic-asp|${textFingerprint(sourceText)}`;
+  let document = textDocumentCache.get(cacheKey);
+  if (!document) {
+    document = TextDocument.create(uri, "classic-asp", 0, sourceText);
+    document.__aspLspBenchmarkFingerprint = textFingerprint(sourceText);
+    textDocumentCache.set(cacheKey, document);
+  }
+  return document;
+}
+
+function parsedTextFingerprint(parsed) {
+  let fingerprint = parsedTextFingerprints.get(parsed);
+  if (!fingerprint) {
+    fingerprint = textFingerprint(parsed.text);
+    parsedTextFingerprints.set(parsed, fingerprint);
+  }
+  return fingerprint;
+}
+
+function virtualTextFingerprint(virtual) {
+  let fingerprint = virtualTextFingerprints.get(virtual);
+  if (!fingerprint) {
+    fingerprint = textFingerprint(virtual.text);
+    virtualTextFingerprints.set(virtual, fingerprint);
+  }
+  return fingerprint;
+}
+
+function textDocumentFingerprint(document) {
+  return document.__aspLspBenchmarkFingerprint ?? textFingerprint(document.getText());
+}
+
+function textFingerprint(text) {
+  const cached = textFingerprintCache.get(text);
+  if (cached) {
+    textFingerprintCache.delete(text);
+    textFingerprintCache.set(text, cached);
+    return cached;
+  }
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const fingerprint = `${text.length}:${(hash >>> 0).toString(16)}`;
+  textFingerprintCache.set(text, fingerprint);
+  while (textFingerprintCache.size > textFingerprintCacheMaxEntries) {
+    const oldest = textFingerprintCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    textFingerprintCache.delete(oldest);
+  }
+  return fingerprint;
 }
 
 function virtualSourceUri(virtual) {

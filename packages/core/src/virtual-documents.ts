@@ -12,6 +12,10 @@ import type {
 export function buildVirtualDocuments(
   parsed: AspParsedDocument,
 ): Map<AspEmbeddedLanguage, VirtualDocument> {
+  const cached = virtualDocumentsByParsed.get(parsed);
+  if (cached) {
+    return cached;
+  }
   const regionsByLanguage = new Map<AspEmbeddedLanguage, AspRegion[]>();
   for (const region of parsed.regions) {
     const regions = regionsByLanguage.get(region.language);
@@ -39,6 +43,7 @@ export function buildVirtualDocuments(
       ),
     );
   }
+  virtualDocumentsByParsed.set(parsed, result);
   return result;
 }
 
@@ -50,6 +55,11 @@ const virtualDocumentLanguages: AspEmbeddedLanguage[] = [
   "jscript",
   "asp-directive",
 ];
+
+const virtualDocumentsByParsed = new WeakMap<
+  AspParsedDocument,
+  Map<AspEmbeddedLanguage, VirtualDocument>
+>();
 
 export function buildVirtualDocument(
   uri: string,
