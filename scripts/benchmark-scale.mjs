@@ -22,18 +22,20 @@ const nativeBinary = path.join(
   "release",
   process.platform === "win32" ? "asp-lsp-core.exe" : "asp-lsp-core",
 );
-const multipliers = [1, 2, 4, 8];
+const allMultipliers = [1, 2, 4, 8];
 const baseTargetLines = 10_000;
 const extraIncludeCount = 3;
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 1);
 const benchmarkConcurrency = readPositiveInteger("ASP_LSP_BENCH_CONCURRENCY", 1);
-const operationNames = [
+const allOperationNames = [
   "parseAspDocument",
   "buildVirtualDocuments",
   "collectVbscriptSymbols",
   "analyzeVbscript",
   ...embeddedOperationNames,
 ];
+const multipliers = selectedMultipliers();
+const operationNames = selectedOperationNames();
 const mainFiles = [
   {
     file: "default.asp",
@@ -173,6 +175,52 @@ function selectedCacheModes() {
     return ["cold", "hot"];
   }
   return [readBenchmarkCacheMode()];
+}
+
+function selectedMultipliers() {
+  const raw = process.env.ASP_LSP_BENCH_SCALES;
+  if (raw === undefined || raw === "") {
+    return allMultipliers;
+  }
+  const selected = raw
+    .split(",")
+    .map((part) => part.trim().replace(/x$/i, ""))
+    .filter(Boolean)
+    .map((part) => Number(part));
+  if (selected.length === 0) {
+    throw new Error("ASP_LSP_BENCH_SCALES must include at least one scale.");
+  }
+  for (const multiplier of selected) {
+    if (!allMultipliers.includes(multiplier)) {
+      throw new Error(
+        `ASP_LSP_BENCH_SCALES contains unsupported scale ${multiplier}. Expected one of ${allMultipliers.join(", ")}.`,
+      );
+    }
+  }
+  return [...new Set(selected)];
+}
+
+function selectedOperationNames() {
+  const raw = process.env.ASP_LSP_BENCH_OPERATIONS;
+  if (raw === undefined || raw === "") {
+    return allOperationNames;
+  }
+  const selected = raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (selected.length === 0) {
+    throw new Error("ASP_LSP_BENCH_OPERATIONS must include at least one operation.");
+  }
+  const supported = new Set(allOperationNames);
+  for (const operation of selected) {
+    if (!supported.has(operation)) {
+      throw new Error(
+        `ASP_LSP_BENCH_OPERATIONS contains unsupported operation ${operation}. Expected one of ${allOperationNames.join(", ")}.`,
+      );
+    }
+  }
+  return [...new Set(selected)];
 }
 
 function warmupsForCacheMode(cacheMode) {
@@ -498,6 +546,7 @@ function writeScaleReport(payload) {
       iterations: benchmarkIterations,
       concurrency: benchmarkConcurrency,
       multipliers,
+      operations: operationNames,
       nodeOptions: process.env.NODE_OPTIONS ?? "",
     },
     ...payload,
