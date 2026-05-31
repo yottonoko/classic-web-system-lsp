@@ -7445,6 +7445,7 @@ newProjectGlobal;
           },
         });
         await waitForDiagnosticsContaining(server, "newProjectGlobal");
+        await waitForLogContaining(server, "javascriptSemantic.worker");
         await waitForLogContaining(server, "LSP check completed");
         server.takePendingNotifications("window/logMessage");
 

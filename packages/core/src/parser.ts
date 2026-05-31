@@ -43,6 +43,13 @@ export function parseAspDocument(
   return parseAspDocumentTypeScript(uri, text, settings);
 }
 
+/**
+ * Parses an ASP document for async/server workflows.
+ *
+ * Native-enabled async callers may receive a skeleton CST without attached VBScript CST subtrees.
+ * Call `needsVbscriptCstHydration` and then `await hydrateVbscriptCst` before walking
+ * `parsed.cst` for VBScript tokens or declarations.
+ */
 export async function parseAspDocumentAsync(
   uri: string,
   text: string,
@@ -84,14 +91,23 @@ export async function parseAspDocumentSkeletonAsync(
 
 const hydratedVbscriptDocuments = new WeakSet<AspParsedDocument>();
 
-/// 浅い CST（native parseAspDocumentShallow 由来）に VB CST サブツリーを attach して
-/// full 相当へ復元する。`parsed.cst` を直接 walk する消費者（参照解決など）で必要。
-/// すでに VB CST を持つ（TS フル parse 由来）か native 無効なら何もしない。
+export function needsVbscriptCstHydration(parsed: AspParsedDocument): boolean {
+  return (
+    parsed.regions.some((region) => region.language === "vbscript") && !cstHasVbscript(parsed.cst)
+  );
+}
+
+/**
+ * Attaches VBScript CST subtrees to an async/skeleton parse.
+ *
+ * Consumers that directly walk `parsed.cst` for VBScript references, tokens, or declarations
+ * should await this first. Full sync parses and documents without VBScript are returned as-is.
+ */
 export async function hydrateVbscriptCst(
   parsed: AspParsedDocument,
   settings: AspSettings = {},
 ): Promise<AspParsedDocument> {
-  if (hydratedVbscriptDocuments.has(parsed) || cstHasVbscript(parsed.cst)) {
+  if (hydratedVbscriptDocuments.has(parsed) || !needsVbscriptCstHydration(parsed)) {
     return parsed;
   }
   const segments = await tryNativeParseAspDocumentVbscriptAsync(parsed.uri, parsed.text, settings);

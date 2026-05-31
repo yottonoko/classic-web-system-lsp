@@ -651,6 +651,7 @@ new Intl.DateTimeFormat("en");
       expect(listing).toContain("extension/package.nls.ja.json");
       expect(listing).toContain("extension/assets/icon.png");
       expect(listing).toContain("extension/server/language-server/dist/server.js");
+      expect(listing).toContain("extension/server/language-server/dist/js-diagnostics-worker.js");
       expect(listing).toContain("extension/server/language-server/dist/vb-diagnostics-worker.js");
       expect(listing).toContain("extension/server/language-server/dist/lib.esnext.d.ts");
       expect(listing).toContain("extension/server/language-server/dist/lib.dom.d.ts");

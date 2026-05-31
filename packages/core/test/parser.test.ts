@@ -7,6 +7,7 @@ import {
   buildVirtualDocuments,
   collectVbscriptPublicSymbols,
   collectVbscriptSymbols,
+  collectVbscriptSymbolsAsync,
   formatAspDocument,
   formatAspRange,
   getClassicAspLineCommentEdits,
@@ -20,18 +21,29 @@ import {
   getVbscriptSemanticTokens,
   getVbscriptSignatureHelp,
   getVbscriptTypeDefinition,
+  hydrateVbscriptCst,
+  needsVbscriptCstHydration,
   parseAspCst,
   parseAspDocument,
   parseAspDocumentAsync,
+  parseAspDocumentSkeletonAsync,
   parseVbscriptTypeRef,
   parseVbscriptCst,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
   shiftAspRangeAfterChange,
   summarizeAspFileAnalysis,
+  summarizeAspFileAnalysisAsync,
   updateAspParsedDocument,
 } from "../src";
-import type { VbCstNode } from "../src";
+import type { AspCstNode, VbCstNode } from "../src";
+
+function collectVbTokenTexts(node: AspCstNode): string[] {
+  return [
+    ...(node.vbscript?.tokens.map((token) => token.text) ?? []),
+    ...node.children.flatMap((child) => collectVbTokenTexts(child)),
+  ];
+}
 
 describe("parseAspDocument", () => {
   it("treats the removed WebAssembly backend mode as TypeScript fallback", () => {
@@ -75,6 +87,72 @@ describe("parseAspDocument", () => {
         delete process.env.ASP_LSP_ANALYSIS_BACKEND;
       } else {
         process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
+      }
+    }
+  });
+
+  it("marks skeleton parses as needing VBScript CST hydration before direct CST walks", async () => {
+    const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
+    process.env.ASP_LSP_ANALYSIS_BACKEND = "typescript";
+    try {
+      const parsed = await parseAspDocumentSkeletonAsync(
+        "file:///site/skeleton.asp",
+        `<%
+Dim Greeting
+Greeting = "hello"
+%>`,
+      );
+      expect(needsVbscriptCstHydration(parsed)).toBe(true);
+      expect(collectVbTokenTexts(parsed.cst)).toHaveLength(0);
+
+      await hydrateVbscriptCst(parsed);
+      expect(needsVbscriptCstHydration(parsed)).toBe(false);
+      expect(collectVbTokenTexts(parsed.cst)).toEqual(
+        expect.arrayContaining(["Dim", "Greeting", '"hello"']),
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
+      } else {
+        process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
+      }
+    }
+  });
+
+  it("keeps async VBScript summary and symbol helpers usable for skeleton parses", async () => {
+    const previousBackend = process.env.ASP_LSP_ANALYSIS_BACKEND;
+    const previousNativeSemantics = process.env.ASP_LSP_NATIVE_SEMANTICS;
+    process.env.ASP_LSP_ANALYSIS_BACKEND = "typescript";
+    process.env.ASP_LSP_NATIVE_SEMANTICS = "0";
+    try {
+      const parsed = await parseAspDocumentSkeletonAsync(
+        "file:///site/async-analysis-skeleton.asp",
+        `<%
+Function BuildTitle(name)
+  BuildTitle = "Hello " & name
+End Function
+%>`,
+      );
+      expect(needsVbscriptCstHydration(parsed)).toBe(true);
+
+      const symbols = await collectVbscriptSymbolsAsync(parsed);
+      const summary = await summarizeAspFileAnalysisAsync(parsed);
+
+      expect(symbols.find((symbol) => symbol.name === "BuildTitle")?.kind).toBe("function");
+      expect(
+        summary.vbscript?.localSymbols.find((symbol) => symbol.name === "BuildTitle")?.kind,
+      ).toBe("function");
+      expect(needsVbscriptCstHydration(parsed)).toBe(false);
+    } finally {
+      if (previousBackend === undefined) {
+        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
+      } else {
+        process.env.ASP_LSP_ANALYSIS_BACKEND = previousBackend;
+      }
+      if (previousNativeSemantics === undefined) {
+        delete process.env.ASP_LSP_NATIVE_SEMANTICS;
+      } else {
+        process.env.ASP_LSP_NATIVE_SEMANTICS = previousNativeSemantics;
       }
     }
   });

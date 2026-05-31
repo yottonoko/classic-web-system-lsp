@@ -14,6 +14,13 @@ const workerEntry = path.join(
   "dist",
   "vb-diagnostics-worker.js",
 );
+const jsWorkerEntry = path.join(
+  repoRoot,
+  "packages",
+  "language-server",
+  "dist",
+  "js-diagnostics-worker.js",
+);
 const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
 const require = createRequire(import.meta.url);
 const languageServerManifest = JSON.parse(
@@ -26,14 +33,19 @@ if (!fs.existsSync(serverEntry)) {
 if (!fs.existsSync(workerEntry)) {
   throw new Error(`Build @asp-lsp/language-server before packaging: ${workerEntry}`);
 }
+if (!fs.existsSync(jsWorkerEntry)) {
+  throw new Error(`Build @asp-lsp/language-server before packaging: ${jsWorkerEntry}`);
+}
 
 fs.rmSync(path.join(extensionRoot, "server"), { recursive: true, force: true });
 const distRoot = path.join(serverRoot, "dist");
 fs.mkdirSync(distRoot, { recursive: true });
 
 await bundleNodeEntry(serverEntry, path.join(distRoot, "server.js"));
+await bundleNodeEntry(jsWorkerEntry, path.join(distRoot, "js-diagnostics-worker.js"));
 await bundleNodeEntry(workerEntry, path.join(distRoot, "vb-diagnostics-worker.js"));
 fs.chmodSync(path.join(distRoot, "server.js"), 0o755);
+fs.chmodSync(path.join(distRoot, "js-diagnostics-worker.js"), 0o755);
 fs.chmodSync(path.join(distRoot, "vb-diagnostics-worker.js"), 0o755);
 copyTypeScriptLibs(distRoot);
 copyNativeCore(serverRoot);

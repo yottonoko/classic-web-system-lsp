@@ -23,7 +23,7 @@ import type {
   TextEdit,
 } from "vscode-languageserver-types";
 import { offsetAt, positionAt, rangeFromOffsets } from "./position";
-import { parseAspDocument } from "./parser";
+import { hydrateVbscriptCst, needsVbscriptCstHydration, parseAspDocument } from "./parser";
 import { createLocalizer } from "./localize";
 import builtinCatalogData from "./vbscript-builtin-catalog.json";
 import {
@@ -3013,13 +3013,14 @@ export async function collectVbscriptSymbolsAsync(
   context: VbProjectContext = {},
   options: VbSymbolCollectionOptions = {},
 ): Promise<VbSymbol[]> {
+  const analysisParsed = await ensureVbscriptCstForAsyncAnalysis(parsed);
   if (nativeSemanticsEnabled() && canUseNativeSymbolCollection(options)) {
-    const native = await tryNativeCollectVbscriptSymbolsAsync(parsed, context);
+    const native = await tryNativeCollectVbscriptSymbolsAsync(analysisParsed, context);
     if (native) {
       return native;
     }
   }
-  return collectVbscriptSymbolsTypeScript(parsed, context, options);
+  return collectVbscriptSymbolsTypeScript(analysisParsed, context, options);
 }
 
 export async function collectVbscriptSymbolsFromTextAsync(
@@ -3121,13 +3122,14 @@ export async function summarizeAspFileAnalysisAsync(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): Promise<FileAnalysisSummary> {
+  const analysisParsed = await ensureVbscriptCstForAsyncAnalysis(parsed);
   if (nativeSemanticsEnabled()) {
-    const native = await tryNativeSummarizeAspFileAnalysisAsync(parsed, context);
+    const native = await tryNativeSummarizeAspFileAnalysisAsync(analysisParsed, context);
     if (native) {
       return native;
     }
   }
-  return summarizeAspFileAnalysisTypeScript(parsed, context);
+  return summarizeAspFileAnalysisTypeScript(analysisParsed, context);
 }
 
 export async function summarizeAspFileAnalysisFromTextAsync(
@@ -3182,6 +3184,17 @@ function summarizeAspFileAnalysisTypeScript(
     diagnostics: parsed.diagnostics,
     vbscript,
   };
+}
+
+async function ensureVbscriptCstForAsyncAnalysis(
+  parsed: AspParsedDocument,
+): Promise<AspParsedDocument> {
+  if (!needsVbscriptCstHydration(parsed)) {
+    return parsed;
+  }
+  // Async parsed documents may be skeletons. Parsed-document analysis paths must be safe
+  // for server callers even when they later fall back from native semantics to TypeScript.
+  return hydrateVbscriptCst(parsed);
 }
 
 function nativeSemanticsEnabled(): boolean {
