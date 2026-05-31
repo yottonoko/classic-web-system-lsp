@@ -7,6 +7,7 @@ import {
   analyzeVbscriptFromTextAsync,
   aspAnalysisBackendInfo,
   collectVbscriptSymbols,
+  collectVbscriptSymbolsAsync,
   collectVbscriptSymbolsFromTextAsync,
   hydrateVbscriptCst,
   parseAspCst,
@@ -241,6 +242,107 @@ unknownlower()
     expect(fromTextDiagnostics.map((diagnostic) => diagnostic.code)).toEqual(
       expect.arrayContaining(["objectNeedsSet", "missingMember", "argumentCountMismatch"]),
     );
+  });
+
+  it("passes project context to native collectVbscriptSymbols", async () => {
+    const source = `<%
+Dim widget
+widget = Server.CreateObject("Custom.Widget")
+result = widget.Ping("x")
+%>`;
+    const context = {
+      comTypes: {
+        "Custom.Widget": {
+          members: {
+            Ping: {
+              kind: "method" as const,
+              returnType: "Boolean",
+              parameters: [{ name: "name", type: "String" }],
+            },
+          },
+        },
+      },
+    };
+    const parsed = parseAspDocument("file:///site/native-context-collect.asp", source);
+    expect(aspAnalysisBackendInfo().backend).toBe("native");
+
+    const collected = collectVbscriptSymbols(parsed, context);
+    const collectedAsync = await collectVbscriptSymbolsAsync(parsed, context);
+    const analyzed = analyzeVbscript(parsed, context).symbols;
+    expect(collected.find((symbol) => symbol.name === "result")?.typeName).toBe("Boolean");
+    expect(collectedAsync.find((symbol) => symbol.name === "result")?.typeName).toBe("Boolean");
+    expect(analyzed.find((symbol) => symbol.name === "result")?.typeName).toBe("Boolean");
+  });
+
+  it("uses the shared builtin catalog in native type facts and strict member diagnostics", () => {
+    const source = `<%
+Dim rs
+Set rs = Server.CreateObject("ADODB.Recordset")
+rs.MissingMember
+%>`;
+    const uri = "file:///site/native-builtin-catalog.asp";
+    const native = withBackend("native", () => parseAspDocument(uri, source));
+    const fallback = withBackend("typescript", () => parseAspDocument(uri, source));
+
+    const nativeSummary = summarizeAspFileAnalysis(native);
+    const fallbackSummary = summarizeAspFileAnalysis(fallback);
+    const nativeRecordset = nativeSummary.vbscript?.typeFacts.find(
+      (type) => type.name === "ADODB.Recordset",
+    );
+    const fallbackRecordset = fallbackSummary.vbscript?.typeFacts.find(
+      (type) => type.name === "ADODB.Recordset",
+    );
+    expect(nativeRecordset?.members.map((member) => member.name)).toEqual(
+      fallbackRecordset?.members.map((member) => member.name),
+    );
+    expect(
+      analyzeVbscript(native, { typeChecking: "strict" }).diagnostics.map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toContain("missingMember");
+  });
+
+  it("matches TypeScript summary exports and fingerprints in native mode", () => {
+    const source = `<%
+Dim ExplicitValue
+' @type TypedValue As ADODB.Recordset
+Dim TypedValue
+InferredValue = Server.CreateObject("ADODB.Recordset")
+Function PublicFactory()
+  Set PublicFactory = Server.CreateObject("ADODB.Recordset")
+End Function
+%>`;
+    const uri = "file:///site/native-summary.asp";
+    const native = withBackend("native", () => parseAspDocument(uri, source));
+    const fallback = withBackend("typescript", () => parseAspDocument(uri, source));
+    const nativeSummary = summarizeAspFileAnalysis(native);
+    const fallbackSummary = summarizeAspFileAnalysis(fallback);
+
+    expect(nativeSummary.vbscript?.publicSymbols.map((symbol) => symbol.name)).toEqual(
+      fallbackSummary.vbscript?.publicSymbols.map((symbol) => symbol.name),
+    );
+    expect(nativeSummary.vbscript?.exports).toEqual(fallbackSummary.vbscript?.exports);
+
+    const htmlA = `日本語😀<p>a</p>\n<% Dim ExplicitValue %>`;
+    const htmlB = `日本語😀<p>b changed</p>\n<% Dim ExplicitValue %>`;
+    const vbChanged = `日本語😀<p>a</p>\n<% Dim ExplicitValue : ExplicitValue = 1 %>`;
+    const nativeHtmlA = withBackend("native", () =>
+      summarizeAspFileAnalysis(parseAspDocument(uri, htmlA)),
+    );
+    const nativeHtmlB = withBackend("native", () =>
+      summarizeAspFileAnalysis(parseAspDocument(uri, htmlB)),
+    );
+    const nativeVbChanged = withBackend("native", () =>
+      summarizeAspFileAnalysis(parseAspDocument(uri, vbChanged)),
+    );
+    const fallbackHtmlA = withBackend("typescript", () =>
+      summarizeAspFileAnalysis(parseAspDocument(uri, htmlA)),
+    );
+
+    expect(nativeHtmlA.languageRegions).toEqual(fallbackHtmlA.languageRegions);
+    expect(nativeHtmlA.vbscript?.fingerprint).toBe(fallbackHtmlA.vbscript?.fingerprint);
+    expect(nativeHtmlA.vbscript?.fingerprint).toBe(nativeHtmlB.vbscript?.fingerprint);
+    expect(nativeHtmlA.vbscript?.fingerprint).not.toBe(nativeVbChanged.vbscript?.fingerprint);
   });
 
   it("keeps async VBScript analysis on TypeScript semantics for project context", async () => {

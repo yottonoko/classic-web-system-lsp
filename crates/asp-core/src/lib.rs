@@ -4,6 +4,8 @@ use std::sync::OnceLock;
 
 type JsonMap = Map<String, Value>;
 const DAEMON_CACHE_ENTRY_LIMIT: usize = 4096;
+const VBSCRIPT_BUILTIN_CATALOG_JSON: &str =
+    include_str!("../../../packages/core/src/vbscript-builtin-catalog.json");
 
 pub fn handle_json(input: &str) -> Result<String, String> {
     let request: Value = serde_json::from_str(input).map_err(|error| error.to_string())?;
@@ -4508,7 +4510,7 @@ fn build_type_facts(
         .and_then(|env| env.get("types"))
         .and_then(Value::as_array)
         .cloned()
-        .unwrap_or_default();
+        .unwrap_or_else(builtin_type_facts);
     merge_configured_com_types(&mut facts, context);
     for class_symbol in symbols
         .iter()
@@ -4563,6 +4565,116 @@ fn build_type_facts(
         }
     }
     facts
+}
+
+fn builtin_type_facts() -> Vec<Value> {
+    static FACTS: OnceLock<Vec<Value>> = OnceLock::new();
+    FACTS.get_or_init(create_builtin_type_facts).clone()
+}
+
+fn create_builtin_type_facts() -> Vec<Value> {
+    let mut facts = [
+        "String", "Byte", "Integer", "Long", "Single", "Double", "Currency", "Decimal", "Number",
+        "Boolean", "Date", "Empty", "Null", "Object", "Variant", "Nothing", "Array", "Unknown",
+        "Error",
+    ]
+    .into_iter()
+    .map(|name| {
+        json!({
+            "name": name,
+            "kind": "intrinsic",
+            "members": [],
+        })
+    })
+    .collect::<Vec<_>>();
+
+    let catalog: Value = serde_json::from_str(VBSCRIPT_BUILTIN_CATALOG_JSON)
+        .expect("shared VBScript builtin catalog must be valid JSON");
+    append_builtin_type_section(&mut facts, &catalog, "classicAspObjects", "classicAsp");
+    append_builtin_type_section(&mut facts, &catalog, "externalObjects", "com");
+    facts
+}
+
+fn append_builtin_type_section(facts: &mut Vec<Value>, catalog: &Value, key: &str, kind: &str) {
+    let Some(objects) = catalog.get(key).and_then(Value::as_object) else {
+        return;
+    };
+    for object_spec in objects.values() {
+        let Some(type_name) = object_spec.get("typeName").and_then(Value::as_str) else {
+            continue;
+        };
+        let members = object_spec
+            .get("members")
+            .and_then(Value::as_array)
+            .map(|members| {
+                members
+                    .iter()
+                    .filter_map(builtin_catalog_member_to_type_fact)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        facts.push(json!({
+            "name": type_name,
+            "kind": kind,
+            "members": members,
+        }));
+    }
+}
+
+fn builtin_catalog_member_to_type_fact(member: &Value) -> Option<Value> {
+    let name = member.get("name").and_then(Value::as_str)?;
+    let kind = member
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("property");
+    let type_name = member
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("Variant");
+    let mut object = JsonMap::new();
+    object.insert("name".to_string(), Value::String(name.to_string()));
+    object.insert("kind".to_string(), Value::String(kind.to_string()));
+    object.insert("type".to_string(), type_ref_to_value(&type_ref(type_name)));
+    if let Some(signature) = member.get("signature").and_then(Value::as_str) {
+        object.insert(
+            "signature".to_string(),
+            signature_from_label(signature, type_name),
+        );
+    }
+    Some(Value::Object(object))
+}
+
+fn signature_from_label(label: &str, return_type: &str) -> Value {
+    json!({
+        "parameters": parameters_from_signature(label),
+        "returnType": type_ref_to_value(&type_ref(return_type)),
+    })
+}
+
+fn parameters_from_signature(signature: &str) -> Vec<Value> {
+    let parameter_text = if let Some(open) = signature.find('(') {
+        signature
+            .rfind(')')
+            .filter(|close| *close > open)
+            .map(|close| signature[open + 1..close].to_string())
+            .unwrap_or_default()
+    } else {
+        signature
+            .split_whitespace()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    parameter_text
+        .split(',')
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|name| {
+            json!({
+                "name": name.trim_start_matches('[').trim_end_matches(']'),
+            })
+        })
+        .collect()
 }
 
 fn type_member_from_symbol(symbol: &Value) -> Option<Value> {
@@ -5495,6 +5607,120 @@ fn sanitize_public_summary_symbol(symbol: &Value) -> Value {
     sanitized
 }
 
+fn export_summaries_for_symbols(symbols: &[Value]) -> Vec<Value> {
+    symbols
+        .iter()
+        .filter(|symbol| symbol.get("memberOf").and_then(Value::as_str).is_none())
+        .map(|symbol| export_summary_for_symbol(symbol, symbols))
+        .collect()
+}
+
+fn export_summary_for_symbol(symbol: &Value, symbols: &[Value]) -> Value {
+    let name = symbol
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut object = JsonMap::new();
+    object.insert("name".to_string(), Value::String(name.to_string()));
+    object.insert(
+        "kind".to_string(),
+        symbol
+            .get("kind")
+            .cloned()
+            .unwrap_or(Value::String("variable".to_string())),
+    );
+    object.insert(
+        "range".to_string(),
+        symbol.get("range").cloned().unwrap_or_else(
+            || json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}}),
+        ),
+    );
+    if let Some(type_name) = symbol.get("typeName").and_then(Value::as_str) {
+        object.insert("typeName".to_string(), Value::String(type_name.to_string()));
+    }
+    if let Some(member_of) = symbol.get("memberOf").and_then(Value::as_str) {
+        object.insert("memberOf".to_string(), Value::String(member_of.to_string()));
+    }
+    if let Some(visibility) = symbol.get("visibility").and_then(Value::as_str) {
+        object.insert(
+            "visibility".to_string(),
+            Value::String(visibility.to_string()),
+        );
+    }
+    let members = symbols
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .get("memberOf")
+                .and_then(Value::as_str)
+                .map(|member_of| member_of.eq_ignore_ascii_case(name))
+                .unwrap_or(false)
+        })
+        .map(|candidate| export_summary_for_symbol(candidate, symbols))
+        .collect::<Vec<_>>();
+    if !members.is_empty() {
+        object.insert("members".to_string(), Value::Array(members));
+    }
+    Value::Object(object)
+}
+
+fn vbscript_summary_fingerprint(index: &TextIndex<'_>, parsed: &Value) -> String {
+    let server_regions = parsed
+        .get("regions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|region| region.get("language").and_then(Value::as_str) == Some("vbscript"))
+        .map(|region| {
+            let start = region
+                .get("contentStart")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let end = region
+                .get("contentEnd")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            serde_json::to_string(index.slice(start, end)).unwrap_or_else(|_| "\"\"".to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let server_objects = parsed
+        .get("serverObjects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(server_object_declaration_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    fingerprint(&format!(
+        "{{\"serverRegions\":[{server_regions}],\"serverObjects\":[{server_objects}]}}"
+    ))
+}
+
+fn server_object_declaration_json(server_object: &Value) -> String {
+    let id = server_object
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut parts = vec![format!(
+        "\"id\":{}",
+        serde_json::to_string(id).unwrap_or_else(|_| "\"\"".to_string())
+    )];
+    if let Some(prog_id) = server_object.get("progId").and_then(Value::as_str) {
+        parts.push(format!(
+            "\"progId\":{}",
+            serde_json::to_string(prog_id).unwrap_or_else(|_| "\"\"".to_string())
+        ));
+    }
+    if let Some(class_id) = server_object.get("classId").and_then(Value::as_str) {
+        parts.push(format!(
+            "\"classId\":{}",
+            serde_json::to_string(class_id).unwrap_or_else(|_| "\"\"".to_string())
+        ));
+    }
+    format!("{{{}}}", parts.join(","))
+}
+
 fn summarize_asp_file(parsed: &Value, context: &Value) -> Value {
     let uri = parsed
         .get("uri")
@@ -5504,6 +5730,7 @@ fn summarize_asp_file(parsed: &Value, context: &Value) -> Value {
         .get("text")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let text_index = TextIndex::new(text);
     let regions = parsed
         .get("regions")
         .and_then(Value::as_array)
@@ -5514,6 +5741,7 @@ fn summarize_asp_file(parsed: &Value, context: &Value) -> Value {
         .map(|region| {
             let start = region.get("contentStart").and_then(Value::as_u64).unwrap_or(0) as usize;
             let end = region.get("contentEnd").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let content = text_index.slice(start, end);
             json!({
                 "language": region.get("language").cloned().unwrap_or(Value::String("html".to_string())),
                 "kind": region.get("kind").cloned().unwrap_or(Value::String("html".to_string())),
@@ -5521,7 +5749,7 @@ fn summarize_asp_file(parsed: &Value, context: &Value) -> Value {
                 "end": region.get("end").cloned().unwrap_or(json!(0)),
                 "contentStart": region.get("contentStart").cloned().unwrap_or(json!(0)),
                 "contentEnd": region.get("contentEnd").cloned().unwrap_or(json!(0)),
-                "fingerprint": fingerprint(text.get(start..end).unwrap_or_default()),
+                "fingerprint": fingerprint(content),
             })
         })
         .collect::<Vec<_>>();
@@ -5530,21 +5758,11 @@ fn summarize_asp_file(parsed: &Value, context: &Value) -> Value {
     let type_facts = build_type_facts(parsed, context, &symbols, &analysis);
     let public_symbols = symbols
         .iter()
+        .filter(|symbol| symbol.get("implicit").and_then(Value::as_bool) != Some(true))
         .filter(|symbol| is_public_summary_symbol(symbol))
         .map(sanitize_public_summary_symbol)
         .collect::<Vec<_>>();
-    let exports = public_symbols
-        .iter()
-        .map(|symbol| {
-            json!({
-                "name": symbol.get("name").cloned().unwrap_or(Value::String(String::new())),
-                "kind": symbol.get("kind").cloned().unwrap_or(Value::String("variable".to_string())),
-                "range": symbol.get("range").cloned().unwrap_or(json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}})),
-                "memberOf": symbol.get("memberOf").cloned().unwrap_or(Value::Null),
-                "visibility": symbol.get("visibility").cloned().unwrap_or(Value::Null),
-            })
-        })
-        .collect::<Vec<_>>();
+    let exports = export_summaries_for_symbols(&public_symbols);
     let external_refs = collect_external_refs_with_analysis(&symbols, &analysis);
     let external_ref_usages = external_ref_usages(&external_refs);
     let vbscript = if regions
@@ -5557,7 +5775,7 @@ fn summarize_asp_file(parsed: &Value, context: &Value) -> Value {
             .unwrap_or(false)
     {
         Some(json!({
-            "fingerprint": fingerprint(text),
+            "fingerprint": vbscript_summary_fingerprint(&text_index, parsed),
             "localSymbols": symbols,
             "publicSymbols": public_symbols,
             "exports": exports,
@@ -5603,12 +5821,14 @@ fn summarize_asp_file(parsed: &Value, context: &Value) -> Value {
 }
 
 fn fingerprint(text: &str) -> String {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in text.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+    let mut hash: u32 = 2_166_136_261;
+    let mut len = 0usize;
+    for unit in text.encode_utf16() {
+        hash ^= u32::from(unit);
+        hash = hash.wrapping_mul(16_777_619);
+        len += 1;
     }
-    format!("{hash:016x}:{}", text.len())
+    format!("{}:{:x}", len, hash)
 }
 
 fn region_from_node(node: &Value) -> Option<Value> {

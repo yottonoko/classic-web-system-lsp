@@ -1,0 +1,2736 @@
+{
+  "schemaVersion": 1,
+  "classicAspObjects": {
+    "request": {
+      "typeName": "Request",
+      "members": [
+        {
+          "kind": "property",
+          "name": "QueryString",
+          "type": "String",
+          "signature": "Request.QueryString(name)"
+        },
+        {
+          "kind": "property",
+          "name": "Form",
+          "type": "String",
+          "signature": "Request.Form(name)"
+        },
+        {
+          "kind": "property",
+          "name": "Cookies",
+          "type": "Variant",
+          "signature": "Request.Cookies(name)"
+        },
+        {
+          "kind": "property",
+          "name": "ServerVariables",
+          "type": "String",
+          "signature": "Request.ServerVariables(name)"
+        },
+        {
+          "kind": "property",
+          "name": "ClientCertificate",
+          "type": "Variant"
+        },
+        {
+          "kind": "property",
+          "name": "TotalBytes",
+          "type": "Number"
+        },
+        {
+          "kind": "method",
+          "name": "BinaryRead",
+          "type": "Array",
+          "signature": "Request.BinaryRead(count)"
+        }
+      ]
+    },
+    "response": {
+      "typeName": "Response",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Cookies"
+        },
+        {
+          "kind": "property",
+          "name": "Buffer",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "CacheControl",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Charset",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "ContentType",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Expires",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "ExpiresAbsolute",
+          "type": "Date"
+        },
+        {
+          "kind": "property",
+          "name": "IsClientConnected",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Pics",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Status",
+          "type": "String"
+        },
+        {
+          "kind": "method",
+          "name": "AddHeader",
+          "type": "Variant",
+          "signature": "Response.AddHeader(name, value)"
+        },
+        {
+          "kind": "method",
+          "name": "AppendToLog",
+          "type": "Variant",
+          "signature": "Response.AppendToLog string"
+        },
+        {
+          "kind": "method",
+          "name": "BinaryWrite",
+          "type": "Variant",
+          "signature": "Response.BinaryWrite(data)"
+        },
+        {
+          "kind": "method",
+          "name": "Clear",
+          "type": "Variant",
+          "signature": "Response.Clear"
+        },
+        {
+          "kind": "method",
+          "name": "End",
+          "type": "Variant",
+          "signature": "Response.End"
+        },
+        {
+          "kind": "method",
+          "name": "Flush",
+          "type": "Variant",
+          "signature": "Response.Flush"
+        },
+        {
+          "kind": "method",
+          "name": "Redirect",
+          "type": "Variant",
+          "signature": "Response.Redirect url"
+        },
+        {
+          "kind": "method",
+          "name": "Write",
+          "type": "Variant",
+          "signature": "Response.Write value"
+        }
+      ]
+    },
+    "application": {
+      "typeName": "Application",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Contents"
+        },
+        {
+          "kind": "property",
+          "name": "StaticObjects"
+        },
+        {
+          "kind": "method",
+          "name": "Contents.Remove",
+          "type": "Variant",
+          "signature": "Application.Contents.Remove(name)"
+        },
+        {
+          "kind": "method",
+          "name": "Contents.RemoveAll",
+          "type": "Variant",
+          "signature": "Application.Contents.RemoveAll()"
+        },
+        {
+          "kind": "method",
+          "name": "Lock",
+          "type": "Variant",
+          "signature": "Application.Lock"
+        },
+        {
+          "kind": "method",
+          "name": "Unlock",
+          "type": "Variant",
+          "signature": "Application.Unlock"
+        }
+      ]
+    },
+    "session": {
+      "typeName": "Session",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Contents"
+        },
+        {
+          "kind": "property",
+          "name": "StaticObjects"
+        },
+        {
+          "kind": "property",
+          "name": "CodePage",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "LCID",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "SessionID",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Timeout",
+          "type": "Number"
+        },
+        {
+          "kind": "method",
+          "name": "Abandon",
+          "type": "Variant",
+          "signature": "Session.Abandon"
+        },
+        {
+          "kind": "method",
+          "name": "Contents.Remove",
+          "type": "Variant",
+          "signature": "Session.Contents.Remove(name)"
+        },
+        {
+          "kind": "method",
+          "name": "Contents.RemoveAll",
+          "type": "Variant",
+          "signature": "Session.Contents.RemoveAll()"
+        }
+      ]
+    },
+    "server": {
+      "typeName": "Server",
+      "members": [
+        {
+          "kind": "property",
+          "name": "ScriptTimeout",
+          "type": "Number"
+        },
+        {
+          "kind": "method",
+          "name": "CreateObject",
+          "type": "Object",
+          "signature": "Server.CreateObject(progId)"
+        },
+        {
+          "kind": "method",
+          "name": "Execute",
+          "type": "Variant",
+          "signature": "Server.Execute(path)"
+        },
+        {
+          "kind": "method",
+          "name": "GetLastError",
+          "type": "ASPError",
+          "signature": "Server.GetLastError()"
+        },
+        {
+          "kind": "method",
+          "name": "HTMLEncode",
+          "type": "String",
+          "signature": "Server.HTMLEncode(value)"
+        },
+        {
+          "kind": "method",
+          "name": "MapPath",
+          "type": "String",
+          "signature": "Server.MapPath(path)"
+        },
+        {
+          "kind": "method",
+          "name": "Transfer",
+          "type": "Variant",
+          "signature": "Server.Transfer(path)"
+        },
+        {
+          "kind": "method",
+          "name": "URLEncode",
+          "type": "String",
+          "signature": "Server.URLEncode(value)"
+        }
+      ]
+    },
+    "asperror": {
+      "typeName": "ASPError",
+      "members": [
+        {
+          "kind": "property",
+          "name": "ASPCode",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "ASPDescription",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Category",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Column",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Description",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "File",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Line",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Number",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Source",
+          "type": "String"
+        }
+      ]
+    }
+  },
+  "externalObjects": {
+    "scripting.filesystemobject": {
+      "typeName": "Scripting.FileSystemObject",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Drives",
+          "type": "Variant"
+        },
+        {
+          "kind": "method",
+          "name": "BuildPath",
+          "type": "String",
+          "signature": "Scripting.FileSystemObject.BuildPath(path, name)"
+        },
+        {
+          "kind": "method",
+          "name": "CopyFile",
+          "type": "Variant",
+          "signature": "Scripting.FileSystemObject.CopyFile(source, destination)"
+        },
+        {
+          "kind": "method",
+          "name": "CopyFolder",
+          "type": "Variant",
+          "signature": "Scripting.FileSystemObject.CopyFolder(source, destination)"
+        },
+        {
+          "kind": "method",
+          "name": "CreateFolder",
+          "type": "Scripting.Folder",
+          "signature": "Scripting.FileSystemObject.CreateFolder(path)"
+        },
+        {
+          "kind": "method",
+          "name": "CreateTextFile",
+          "type": "Scripting.TextStream",
+          "signature": "Scripting.FileSystemObject.CreateTextFile(filename, overwrite, unicode)"
+        },
+        {
+          "kind": "method",
+          "name": "DeleteFile",
+          "type": "Variant",
+          "signature": "Scripting.FileSystemObject.DeleteFile(fileSpec, force)"
+        },
+        {
+          "kind": "method",
+          "name": "DeleteFolder",
+          "type": "Variant",
+          "signature": "Scripting.FileSystemObject.DeleteFolder(folderSpec, force)"
+        },
+        {
+          "kind": "method",
+          "name": "DriveExists",
+          "type": "Boolean",
+          "signature": "Scripting.FileSystemObject.DriveExists(driveSpec)"
+        },
+        {
+          "kind": "method",
+          "name": "FileExists",
+          "type": "Boolean",
+          "signature": "Scripting.FileSystemObject.FileExists(fileSpec)"
+        },
+        {
+          "kind": "method",
+          "name": "FolderExists",
+          "type": "Boolean",
+          "signature": "Scripting.FileSystemObject.FolderExists(folderSpec)"
+        },
+        {
+          "kind": "method",
+          "name": "GetAbsolutePathName",
+          "type": "String",
+          "signature": "Scripting.FileSystemObject.GetAbsolutePathName(pathSpec)"
+        },
+        {
+          "kind": "method",
+          "name": "GetBaseName",
+          "type": "String",
+          "signature": "Scripting.FileSystemObject.GetBaseName(path)"
+        },
+        {
+          "kind": "method",
+          "name": "GetDrive",
+          "type": "Scripting.Drive",
+          "signature": "Scripting.FileSystemObject.GetDrive(driveSpec)"
+        },
+        {
+          "kind": "method",
+          "name": "GetDriveName",
+          "type": "String",
+          "signature": "Scripting.FileSystemObject.GetDriveName(path)"
+        },
+        {
+          "kind": "method",
+          "name": "GetExtensionName",
+          "type": "String",
+          "signature": "Scripting.FileSystemObject.GetExtensionName(path)"
+        },
+        {
+          "kind": "method",
+          "name": "GetFile",
+          "type": "Scripting.File",
+          "signature": "Scripting.FileSystemObject.GetFile(filePath)"
+        },
+        {
+          "kind": "method",
+          "name": "GetFileName",
+          "type": "String",
+          "signature": "Scripting.FileSystemObject.GetFileName(path)"
+        },
+        {
+          "kind": "method",
+          "name": "GetFolder",
+          "type": "Scripting.Folder",
+          "signature": "Scripting.FileSystemObject.GetFolder(path)"
+        },
+        {
+          "kind": "method",
+          "name": "GetParentFolderName",
+          "type": "String",
+          "signature": "Scripting.FileSystemObject.GetParentFolderName(path)"
+        },
+        {
+          "kind": "method",
+          "name": "GetSpecialFolder",
+          "type": "Scripting.Folder",
+          "signature": "Scripting.FileSystemObject.GetSpecialFolder(specialFolder)"
+        },
+        {
+          "kind": "method",
+          "name": "GetTempName",
+          "type": "String",
+          "signature": "Scripting.FileSystemObject.GetTempName()"
+        },
+        {
+          "kind": "method",
+          "name": "MoveFile",
+          "type": "Variant",
+          "signature": "Scripting.FileSystemObject.MoveFile(source, destination)"
+        },
+        {
+          "kind": "method",
+          "name": "MoveFolder",
+          "type": "Variant",
+          "signature": "Scripting.FileSystemObject.MoveFolder(source, destination)"
+        },
+        {
+          "kind": "method",
+          "name": "OpenTextFile",
+          "type": "Scripting.TextStream",
+          "signature": "Scripting.FileSystemObject.OpenTextFile(filename, iomode, create, format)"
+        }
+      ]
+    },
+    "scripting.textstream": {
+      "typeName": "Scripting.TextStream",
+      "members": [
+        {
+          "kind": "property",
+          "name": "AtEndOfLine",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "AtEndOfStream",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Column",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Line",
+          "type": "Number"
+        },
+        {
+          "kind": "method",
+          "name": "Close",
+          "type": "Variant",
+          "signature": "Scripting.TextStream.Close"
+        },
+        {
+          "kind": "method",
+          "name": "Read",
+          "type": "String",
+          "signature": "Scripting.TextStream.Read(characters)"
+        },
+        {
+          "kind": "method",
+          "name": "ReadAll",
+          "type": "String",
+          "signature": "Scripting.TextStream.ReadAll()"
+        },
+        {
+          "kind": "method",
+          "name": "ReadLine",
+          "type": "String",
+          "signature": "Scripting.TextStream.ReadLine()"
+        },
+        {
+          "kind": "method",
+          "name": "Skip",
+          "type": "Variant",
+          "signature": "Scripting.TextStream.Skip(characters)"
+        },
+        {
+          "kind": "method",
+          "name": "SkipLine",
+          "type": "Variant",
+          "signature": "Scripting.TextStream.SkipLine()"
+        },
+        {
+          "kind": "method",
+          "name": "Write",
+          "type": "Variant",
+          "signature": "Scripting.TextStream.Write(text)"
+        },
+        {
+          "kind": "method",
+          "name": "WriteBlankLines",
+          "type": "Variant",
+          "signature": "Scripting.TextStream.WriteBlankLines(lines)"
+        },
+        {
+          "kind": "method",
+          "name": "WriteLine",
+          "type": "Variant",
+          "signature": "Scripting.TextStream.WriteLine(text)"
+        }
+      ]
+    },
+    "scripting.drive": {
+      "typeName": "Scripting.Drive",
+      "members": [
+        {
+          "kind": "property",
+          "name": "AvailableSpace",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "DriveLetter",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "DriveType",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "FileSystem",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "FreeSpace",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "IsReady",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Path",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "RootFolder",
+          "type": "Scripting.Folder"
+        },
+        {
+          "kind": "property",
+          "name": "SerialNumber",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "ShareName",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "TotalSize",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "VolumeName",
+          "type": "String"
+        }
+      ]
+    },
+    "scripting.file": {
+      "typeName": "Scripting.File",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Attributes",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "DateCreated",
+          "type": "Date"
+        },
+        {
+          "kind": "property",
+          "name": "DateLastAccessed",
+          "type": "Date"
+        },
+        {
+          "kind": "property",
+          "name": "DateLastModified",
+          "type": "Date"
+        },
+        {
+          "kind": "property",
+          "name": "Drive",
+          "type": "Scripting.Drive"
+        },
+        {
+          "kind": "property",
+          "name": "Name",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "ParentFolder",
+          "type": "Scripting.Folder"
+        },
+        {
+          "kind": "property",
+          "name": "Path",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "ShortName",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "ShortPath",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Size",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Type",
+          "type": "String"
+        },
+        {
+          "kind": "method",
+          "name": "Copy",
+          "type": "Variant",
+          "signature": "Scripting.File.Copy(destination, overwrite)"
+        },
+        {
+          "kind": "method",
+          "name": "Delete",
+          "type": "Variant",
+          "signature": "Scripting.File.Delete(force)"
+        },
+        {
+          "kind": "method",
+          "name": "Move",
+          "type": "Variant",
+          "signature": "Scripting.File.Move(destination)"
+        },
+        {
+          "kind": "method",
+          "name": "OpenAsTextStream",
+          "type": "Scripting.TextStream",
+          "signature": "Scripting.File.OpenAsTextStream(iomode, format)"
+        }
+      ]
+    },
+    "scripting.folder": {
+      "typeName": "Scripting.Folder",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Files",
+          "type": "Variant"
+        },
+        {
+          "kind": "property",
+          "name": "SubFolders",
+          "type": "Variant"
+        },
+        {
+          "kind": "property",
+          "name": "Attributes",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "DateCreated",
+          "type": "Date"
+        },
+        {
+          "kind": "property",
+          "name": "DateLastAccessed",
+          "type": "Date"
+        },
+        {
+          "kind": "property",
+          "name": "DateLastModified",
+          "type": "Date"
+        },
+        {
+          "kind": "property",
+          "name": "Drive",
+          "type": "Scripting.Drive"
+        },
+        {
+          "kind": "property",
+          "name": "IsRootFolder",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Name",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "ParentFolder",
+          "type": "Scripting.Folder"
+        },
+        {
+          "kind": "property",
+          "name": "Path",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "ShortName",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "ShortPath",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Size",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Type",
+          "type": "String"
+        },
+        {
+          "kind": "method",
+          "name": "Copy",
+          "type": "Variant",
+          "signature": "Scripting.Folder.Copy(destination, overwrite)"
+        },
+        {
+          "kind": "method",
+          "name": "CreateTextFile",
+          "type": "Scripting.TextStream",
+          "signature": "Scripting.Folder.CreateTextFile(filename, overwrite, unicode)"
+        },
+        {
+          "kind": "method",
+          "name": "Delete",
+          "type": "Variant",
+          "signature": "Scripting.Folder.Delete(force)"
+        },
+        {
+          "kind": "method",
+          "name": "Move",
+          "type": "Variant",
+          "signature": "Scripting.Folder.Move(destination)"
+        }
+      ]
+    },
+    "scripting.dictionary": {
+      "typeName": "Scripting.Dictionary",
+      "members": [
+        {
+          "kind": "property",
+          "name": "CompareMode",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Count",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Item",
+          "type": "Variant"
+        },
+        {
+          "kind": "property",
+          "name": "Key",
+          "type": "Variant"
+        },
+        {
+          "kind": "method",
+          "name": "Add",
+          "type": "Variant",
+          "signature": "Scripting.Dictionary.Add(key, item)"
+        },
+        {
+          "kind": "method",
+          "name": "Exists",
+          "type": "Boolean",
+          "signature": "Scripting.Dictionary.Exists(key)"
+        },
+        {
+          "kind": "method",
+          "name": "Items",
+          "type": "Array",
+          "signature": "Scripting.Dictionary.Items()"
+        },
+        {
+          "kind": "method",
+          "name": "Keys",
+          "type": "Array",
+          "signature": "Scripting.Dictionary.Keys()"
+        },
+        {
+          "kind": "method",
+          "name": "Remove",
+          "type": "Variant",
+          "signature": "Scripting.Dictionary.Remove(key)"
+        },
+        {
+          "kind": "method",
+          "name": "RemoveAll",
+          "type": "Variant",
+          "signature": "Scripting.Dictionary.RemoveAll()"
+        }
+      ]
+    },
+    "mswc.adrotator": {
+      "typeName": "MSWC.AdRotator",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Border",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Clickable",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "TargetFrame",
+          "type": "String"
+        },
+        {
+          "kind": "method",
+          "name": "GetAdvertisement",
+          "type": "String",
+          "signature": "MSWC.AdRotator.GetAdvertisement(scheduleFile)"
+        }
+      ]
+    },
+    "mswc.browsertype": {
+      "typeName": "MSWC.BrowserType",
+      "members": [
+        {
+          "kind": "property",
+          "name": "ActiveXControls",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Backgroundsounds",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Beta",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Browser",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Cdf",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Cookies",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Frames",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Javaapplets",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Javascript",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "MajorVer",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "MinorVer",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Platform",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Tables",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Vbscript",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Version",
+          "type": "String"
+        }
+      ]
+    },
+    "mswc.nextlink": {
+      "typeName": "MSWC.NextLink",
+      "members": [
+        {
+          "kind": "method",
+          "name": "GetListCount",
+          "type": "Number",
+          "signature": "MSWC.NextLink.GetListCount(listFile)"
+        },
+        {
+          "kind": "method",
+          "name": "GetListIndex",
+          "type": "Number",
+          "signature": "MSWC.NextLink.GetListIndex(listFile)"
+        },
+        {
+          "kind": "method",
+          "name": "GetNextDescription",
+          "type": "String",
+          "signature": "MSWC.NextLink.GetNextDescription(listFile)"
+        },
+        {
+          "kind": "method",
+          "name": "GetNextURL",
+          "type": "String",
+          "signature": "MSWC.NextLink.GetNextURL(listFile)"
+        },
+        {
+          "kind": "method",
+          "name": "GetNthDescription",
+          "type": "String",
+          "signature": "MSWC.NextLink.GetNthDescription(listFile, index)"
+        },
+        {
+          "kind": "method",
+          "name": "GetNthURL",
+          "type": "String",
+          "signature": "MSWC.NextLink.GetNthURL(listFile, index)"
+        },
+        {
+          "kind": "method",
+          "name": "GetPreviousDescription",
+          "type": "String",
+          "signature": "MSWC.NextLink.GetPreviousDescription(listFile)"
+        },
+        {
+          "kind": "method",
+          "name": "GetPreviousURL",
+          "type": "String",
+          "signature": "MSWC.NextLink.GetPreviousURL(listFile)"
+        }
+      ]
+    },
+    "mswc.contentrotator": {
+      "typeName": "MSWC.ContentRotator",
+      "members": [
+        {
+          "kind": "method",
+          "name": "ChooseContent",
+          "type": "String",
+          "signature": "MSWC.ContentRotator.ChooseContent(contentSchedule)"
+        },
+        {
+          "kind": "method",
+          "name": "GetAllContent",
+          "type": "String",
+          "signature": "MSWC.ContentRotator.GetAllContent(contentSchedule)"
+        }
+      ]
+    },
+    "adodb.command": {
+      "typeName": "ADODB.Command",
+      "members": [
+        {
+          "kind": "property",
+          "name": "ActiveConnection",
+          "type": "Object"
+        },
+        {
+          "kind": "property",
+          "name": "CommandText",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "CommandTimeout",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "CommandType",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Name",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Prepared",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "State",
+          "type": "Number"
+        },
+        {
+          "kind": "method",
+          "name": "Cancel",
+          "type": "Variant",
+          "signature": "ADODB.Command.Cancel()"
+        },
+        {
+          "kind": "method",
+          "name": "CreateParameter",
+          "type": "ADODB.Parameter",
+          "signature": "ADODB.Command.CreateParameter(name, type, direction, size, value)"
+        },
+        {
+          "kind": "method",
+          "name": "Execute",
+          "type": "ADODB.Recordset",
+          "signature": "ADODB.Command.Execute(recordsAffected, parameters, options)"
+        },
+        {
+          "kind": "property",
+          "name": "Parameters",
+          "type": "Object"
+        },
+        {
+          "kind": "property",
+          "name": "Properties",
+          "type": "Object"
+        }
+      ]
+    },
+    "adodb.connection": {
+      "typeName": "ADODB.Connection",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Attributes",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "CommandTimeout",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "ConnectionString",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "ConnectionTimeout",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "CursorLocation",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "DefaultDatabase",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "IsolationLevel",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Mode",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Provider",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "State",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Version",
+          "type": "String"
+        },
+        {
+          "kind": "method",
+          "name": "BeginTrans",
+          "type": "Number",
+          "signature": "ADODB.Connection.BeginTrans()"
+        },
+        {
+          "kind": "method",
+          "name": "Cancel",
+          "type": "Variant",
+          "signature": "ADODB.Connection.Cancel()"
+        },
+        {
+          "kind": "method",
+          "name": "Close",
+          "type": "Variant",
+          "signature": "ADODB.Connection.Close()"
+        },
+        {
+          "kind": "method",
+          "name": "CommitTrans",
+          "type": "Variant",
+          "signature": "ADODB.Connection.CommitTrans()"
+        },
+        {
+          "kind": "method",
+          "name": "Execute",
+          "type": "ADODB.Recordset",
+          "signature": "ADODB.Connection.Execute(commandText, recordsAffected, options)"
+        },
+        {
+          "kind": "method",
+          "name": "Open",
+          "type": "Variant",
+          "signature": "ADODB.Connection.Open(connectionString, userId, password, options)"
+        },
+        {
+          "kind": "method",
+          "name": "OpenSchema",
+          "type": "ADODB.Recordset",
+          "signature": "ADODB.Connection.OpenSchema(schema, restrictions, schemaId)"
+        },
+        {
+          "kind": "method",
+          "name": "RollbackTrans",
+          "type": "Variant",
+          "signature": "ADODB.Connection.RollbackTrans()"
+        },
+        {
+          "kind": "event",
+          "name": "BeginTransComplete"
+        },
+        {
+          "kind": "event",
+          "name": "CommitTransComplete"
+        },
+        {
+          "kind": "event",
+          "name": "ConnectComplete"
+        },
+        {
+          "kind": "event",
+          "name": "Disconnect"
+        },
+        {
+          "kind": "event",
+          "name": "ExecuteComplete"
+        },
+        {
+          "kind": "event",
+          "name": "InfoMessage"
+        },
+        {
+          "kind": "event",
+          "name": "RollbackTransComplete"
+        },
+        {
+          "kind": "event",
+          "name": "WillConnect"
+        },
+        {
+          "kind": "event",
+          "name": "WillExecute"
+        },
+        {
+          "kind": "property",
+          "name": "Errors",
+          "type": "Object"
+        },
+        {
+          "kind": "property",
+          "name": "Properties",
+          "type": "Object"
+        }
+      ]
+    },
+    "adodb.error": {
+      "typeName": "ADODB.Error",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Description",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "HelpContext",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "HelpFile",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "NativeError",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Number",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Source",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "SQLState",
+          "type": "String"
+        }
+      ]
+    },
+    "adodb.field": {
+      "typeName": "ADODB.Field",
+      "members": [
+        {
+          "kind": "property",
+          "name": "ActualSize",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Attributes",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "DefinedSize",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Name",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "NumericScale",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "OriginalValue",
+          "type": "Variant"
+        },
+        {
+          "kind": "property",
+          "name": "Precision",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Status",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Type",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "UnderlyingValue",
+          "type": "Variant"
+        },
+        {
+          "kind": "property",
+          "name": "Value",
+          "type": "Variant"
+        },
+        {
+          "kind": "method",
+          "name": "AppendChunk",
+          "type": "Variant",
+          "signature": "ADODB.Field.AppendChunk(data)"
+        },
+        {
+          "kind": "method",
+          "name": "GetChunk",
+          "type": "Variant",
+          "signature": "ADODB.Field.GetChunk(length)"
+        },
+        {
+          "kind": "property",
+          "name": "Properties",
+          "type": "Object"
+        }
+      ]
+    },
+    "adodb.parameter": {
+      "typeName": "ADODB.Parameter",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Attributes",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Direction",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Name",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "NumericScale",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Precision",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Size",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Type",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Value",
+          "type": "Variant"
+        },
+        {
+          "kind": "method",
+          "name": "AppendChunk",
+          "type": "Variant",
+          "signature": "ADODB.Parameter.AppendChunk(value)"
+        },
+        {
+          "kind": "method",
+          "name": "Delete",
+          "type": "Variant",
+          "signature": "ADODB.Parameter.Delete()"
+        }
+      ]
+    },
+    "adodb.property": {
+      "typeName": "ADODB.Property",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Attributes",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Name",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Type",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Value",
+          "type": "Variant"
+        }
+      ]
+    },
+    "adodb.record": {
+      "typeName": "ADODB.Record",
+      "members": [
+        {
+          "kind": "property",
+          "name": "ActiveConnection",
+          "type": "Object"
+        },
+        {
+          "kind": "property",
+          "name": "Mode",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "ParentURL",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "RecordType",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Source",
+          "type": "Variant"
+        },
+        {
+          "kind": "property",
+          "name": "State",
+          "type": "Number"
+        },
+        {
+          "kind": "method",
+          "name": "Cancel",
+          "type": "Variant",
+          "signature": "ADODB.Record.Cancel()"
+        },
+        {
+          "kind": "method",
+          "name": "Close",
+          "type": "Variant",
+          "signature": "ADODB.Record.Close()"
+        },
+        {
+          "kind": "method",
+          "name": "CopyRecord",
+          "type": "String",
+          "signature": "ADODB.Record.CopyRecord(source, destination, userName, password, options, async)"
+        },
+        {
+          "kind": "method",
+          "name": "DeleteRecord",
+          "type": "Variant",
+          "signature": "ADODB.Record.DeleteRecord(source, async)"
+        },
+        {
+          "kind": "method",
+          "name": "GetChildren",
+          "type": "ADODB.Recordset",
+          "signature": "ADODB.Record.GetChildren()"
+        },
+        {
+          "kind": "method",
+          "name": "MoveRecord",
+          "type": "String",
+          "signature": "ADODB.Record.MoveRecord(source, destination, userName, password, options, async)"
+        },
+        {
+          "kind": "method",
+          "name": "Open",
+          "type": "Variant",
+          "signature": "ADODB.Record.Open(source, activeConnection, mode, createOptions, options, userName, password)"
+        },
+        {
+          "kind": "property",
+          "name": "Properties",
+          "type": "Object"
+        },
+        {
+          "kind": "property",
+          "name": "Fields",
+          "type": "Object"
+        }
+      ]
+    },
+    "adodb.recordset": {
+      "typeName": "ADODB.Recordset",
+      "members": [
+        {
+          "kind": "property",
+          "name": "AbsolutePage",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "AbsolutePosition",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "ActiveCommand",
+          "type": "ADODB.Command"
+        },
+        {
+          "kind": "property",
+          "name": "ActiveConnection",
+          "type": "Object"
+        },
+        {
+          "kind": "property",
+          "name": "BOF",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Bookmark",
+          "type": "Variant"
+        },
+        {
+          "kind": "property",
+          "name": "CacheSize",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "CursorLocation",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "CursorType",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "DataMember",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "DataSource",
+          "type": "Object"
+        },
+        {
+          "kind": "property",
+          "name": "EditMode",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "EOF",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "Filter",
+          "type": "Variant"
+        },
+        {
+          "kind": "property",
+          "name": "Index",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "LockType",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "MarshalOptions",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "MaxRecords",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "PageCount",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "PageSize",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "RecordCount",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Sort",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Source",
+          "type": "Variant"
+        },
+        {
+          "kind": "property",
+          "name": "State",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Status",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "StayInSync",
+          "type": "Boolean"
+        },
+        {
+          "kind": "method",
+          "name": "AddNew",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.AddNew(fieldList, values)"
+        },
+        {
+          "kind": "method",
+          "name": "Cancel",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.Cancel()"
+        },
+        {
+          "kind": "method",
+          "name": "CancelBatch",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.CancelBatch(affectRecords)"
+        },
+        {
+          "kind": "method",
+          "name": "CancelUpdate",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.CancelUpdate()"
+        },
+        {
+          "kind": "method",
+          "name": "Clone",
+          "type": "ADODB.Recordset",
+          "signature": "ADODB.Recordset.Clone(lockType)"
+        },
+        {
+          "kind": "method",
+          "name": "Close",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.Close()"
+        },
+        {
+          "kind": "method",
+          "name": "CompareBookmarks",
+          "type": "Number",
+          "signature": "ADODB.Recordset.CompareBookmarks(bookmark1, bookmark2)"
+        },
+        {
+          "kind": "method",
+          "name": "Delete",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.Delete(affectRecords)"
+        },
+        {
+          "kind": "method",
+          "name": "Find",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.Find(criteria, skipRecords, searchDirection, start)"
+        },
+        {
+          "kind": "method",
+          "name": "GetRows",
+          "type": "Array",
+          "signature": "ADODB.Recordset.GetRows(rows, start, fields)"
+        },
+        {
+          "kind": "method",
+          "name": "GetString",
+          "type": "String",
+          "signature": "ADODB.Recordset.GetString(stringFormat, numRows, columnDelimiter, rowDelimiter, nullExpr)"
+        },
+        {
+          "kind": "method",
+          "name": "Move",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.Move(numRecords, start)"
+        },
+        {
+          "kind": "method",
+          "name": "MoveFirst",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.MoveFirst()"
+        },
+        {
+          "kind": "method",
+          "name": "MoveLast",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.MoveLast()"
+        },
+        {
+          "kind": "method",
+          "name": "MoveNext",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.MoveNext()"
+        },
+        {
+          "kind": "method",
+          "name": "MovePrevious",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.MovePrevious()"
+        },
+        {
+          "kind": "method",
+          "name": "NextRecordset",
+          "type": "ADODB.Recordset",
+          "signature": "ADODB.Recordset.NextRecordset(recordsAffected)"
+        },
+        {
+          "kind": "method",
+          "name": "Open",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.Open(source, activeConnection, cursorType, lockType, options)"
+        },
+        {
+          "kind": "method",
+          "name": "Requery",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.Requery(options)"
+        },
+        {
+          "kind": "method",
+          "name": "Resync",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.Resync(affectRecords, resyncValues)"
+        },
+        {
+          "kind": "method",
+          "name": "Save",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.Save(destination, persistFormat)"
+        },
+        {
+          "kind": "method",
+          "name": "Seek",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.Seek(keyValues, seekOption)"
+        },
+        {
+          "kind": "method",
+          "name": "Supports",
+          "type": "Boolean",
+          "signature": "ADODB.Recordset.Supports(cursorOptions)"
+        },
+        {
+          "kind": "method",
+          "name": "Update",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.Update(fields, values)"
+        },
+        {
+          "kind": "method",
+          "name": "UpdateBatch",
+          "type": "Variant",
+          "signature": "ADODB.Recordset.UpdateBatch(affectRecords)"
+        },
+        {
+          "kind": "event",
+          "name": "EndOfRecordset"
+        },
+        {
+          "kind": "event",
+          "name": "FetchComplete"
+        },
+        {
+          "kind": "event",
+          "name": "FetchProgress"
+        },
+        {
+          "kind": "event",
+          "name": "FieldChangeComplete"
+        },
+        {
+          "kind": "event",
+          "name": "MoveComplete"
+        },
+        {
+          "kind": "event",
+          "name": "RecordChangeComplete"
+        },
+        {
+          "kind": "event",
+          "name": "RecordsetChangeComplete"
+        },
+        {
+          "kind": "event",
+          "name": "WillChangeField"
+        },
+        {
+          "kind": "event",
+          "name": "WillChangeRecord"
+        },
+        {
+          "kind": "event",
+          "name": "WillChangeRecordset"
+        },
+        {
+          "kind": "event",
+          "name": "WillMove"
+        },
+        {
+          "kind": "property",
+          "name": "Fields",
+          "type": "Object"
+        },
+        {
+          "kind": "property",
+          "name": "Properties",
+          "type": "Object"
+        }
+      ]
+    },
+    "adodb.stream": {
+      "typeName": "ADODB.Stream",
+      "members": [
+        {
+          "kind": "property",
+          "name": "CharSet",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "EOS",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "LineSeparator",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Mode",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Position",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Size",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "State",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Type",
+          "type": "Number"
+        },
+        {
+          "kind": "method",
+          "name": "Cancel",
+          "type": "Variant",
+          "signature": "ADODB.Stream.Cancel()"
+        },
+        {
+          "kind": "method",
+          "name": "Close",
+          "type": "Variant",
+          "signature": "ADODB.Stream.Close()"
+        },
+        {
+          "kind": "method",
+          "name": "CopyTo",
+          "type": "Variant",
+          "signature": "ADODB.Stream.CopyTo(destination, charNumber)"
+        },
+        {
+          "kind": "method",
+          "name": "Flush",
+          "type": "Variant",
+          "signature": "ADODB.Stream.Flush()"
+        },
+        {
+          "kind": "method",
+          "name": "LoadFromFile",
+          "type": "Variant",
+          "signature": "ADODB.Stream.LoadFromFile(filename)"
+        },
+        {
+          "kind": "method",
+          "name": "Open",
+          "type": "Variant",
+          "signature": "ADODB.Stream.Open(source, mode, openOptions, userName, password)"
+        },
+        {
+          "kind": "method",
+          "name": "Read",
+          "type": "Variant",
+          "signature": "ADODB.Stream.Read(numBytes)"
+        },
+        {
+          "kind": "method",
+          "name": "ReadText",
+          "type": "String",
+          "signature": "ADODB.Stream.ReadText(numChars)"
+        },
+        {
+          "kind": "method",
+          "name": "SaveToFile",
+          "type": "Variant",
+          "signature": "ADODB.Stream.SaveToFile(filename, saveOptions)"
+        },
+        {
+          "kind": "method",
+          "name": "SetEOS",
+          "type": "Variant",
+          "signature": "ADODB.Stream.SetEOS()"
+        },
+        {
+          "kind": "method",
+          "name": "SkipLine",
+          "type": "Variant",
+          "signature": "ADODB.Stream.SkipLine()"
+        },
+        {
+          "kind": "method",
+          "name": "Write",
+          "type": "Variant",
+          "signature": "ADODB.Stream.Write(buffer)"
+        },
+        {
+          "kind": "method",
+          "name": "WriteText",
+          "type": "Variant",
+          "signature": "ADODB.Stream.WriteText(data, options)"
+        }
+      ]
+    }
+  },
+  "constants": [
+    {
+      "label": "adBigInt",
+      "type": "Number"
+    },
+    {
+      "label": "adBinary",
+      "type": "Number"
+    },
+    {
+      "label": "adBoolean",
+      "type": "Number"
+    },
+    {
+      "label": "adChar",
+      "type": "Number"
+    },
+    {
+      "label": "adCurrency",
+      "type": "Number"
+    },
+    {
+      "label": "adDate",
+      "type": "Number"
+    },
+    {
+      "label": "adDBTimeStamp",
+      "type": "Number"
+    },
+    {
+      "label": "adDecimal",
+      "type": "Number"
+    },
+    {
+      "label": "adDouble",
+      "type": "Number"
+    },
+    {
+      "label": "adGUID",
+      "type": "Number"
+    },
+    {
+      "label": "adIDispatch",
+      "type": "Number"
+    },
+    {
+      "label": "adInteger",
+      "type": "Number"
+    },
+    {
+      "label": "adLongVarBinary",
+      "type": "Number"
+    },
+    {
+      "label": "adLongVarChar",
+      "type": "Number"
+    },
+    {
+      "label": "adLongVarWChar",
+      "type": "Number"
+    },
+    {
+      "label": "adNumeric",
+      "type": "Number"
+    },
+    {
+      "label": "adSingle",
+      "type": "Number"
+    },
+    {
+      "label": "adSmallInt",
+      "type": "Number"
+    },
+    {
+      "label": "adUnsignedTinyInt",
+      "type": "Number"
+    },
+    {
+      "label": "adVarBinary",
+      "type": "Number"
+    },
+    {
+      "label": "adVarChar",
+      "type": "Number"
+    },
+    {
+      "label": "adVariant",
+      "type": "Number"
+    },
+    {
+      "label": "adVarWChar",
+      "type": "Number"
+    },
+    {
+      "label": "adWChar",
+      "type": "Number"
+    }
+  ],
+  "runtimeEvents": [
+    {
+      "label": "Application_OnStart",
+      "documentation": {
+        "summary": {
+          "en": "Runs when the ASP application starts before the first session is created.",
+          "ja": "ASP application が開始し、最初の session が作られる前に実行されます。"
+        },
+        "remarks": {
+          "en": "Define this event in Global.asa for application-wide initialization.",
+          "ja": "Global.asa に定義し、application 全体の初期化に使います。"
+        }
+      }
+    },
+    {
+      "label": "Application_OnEnd",
+      "documentation": {
+        "summary": {
+          "en": "Runs when the ASP application ends.",
+          "ja": "ASP application が終了するときに実行されます。"
+        },
+        "remarks": {
+          "en": "Use this event for application-wide cleanup that does not depend on an active response.",
+          "ja": "有効な response に依存しない application 全体の後始末に使います。"
+        }
+      }
+    },
+    {
+      "label": "Session_OnStart",
+      "documentation": {
+        "summary": {
+          "en": "Runs when a new user session starts.",
+          "ja": "新しい user session が開始するときに実行されます。"
+        },
+        "remarks": {
+          "en": "Define this event in Global.asa to initialize per-user session state.",
+          "ja": "Global.asa に定義し、user ごとの session state を初期化します。"
+        }
+      }
+    },
+    {
+      "label": "Session_OnEnd",
+      "documentation": {
+        "summary": {
+          "en": "Runs when a user session ends or times out.",
+          "ja": "user session が終了するか timeout したときに実行されます。"
+        },
+        "remarks": {
+          "en": "Use this event for session cleanup; response output is not available.",
+          "ja": "session の後始末に使います。response output は利用できません。"
+        }
+      }
+    }
+  ],
+  "functions": [
+    {
+      "label": "CStr",
+      "signature": "CStr(value)",
+      "returnType": "String",
+      "summary": "Converts a value to String."
+    },
+    {
+      "label": "CByte",
+      "signature": "CByte(value)",
+      "returnType": "Number",
+      "summary": "Converts a value to Byte."
+    },
+    {
+      "label": "CInt",
+      "signature": "CInt(value)",
+      "returnType": "Number",
+      "summary": "Converts a value to Integer."
+    },
+    {
+      "label": "CLng",
+      "signature": "CLng(value)",
+      "returnType": "Number",
+      "summary": "Converts a value to Long."
+    },
+    {
+      "label": "CSng",
+      "signature": "CSng(value)",
+      "returnType": "Number",
+      "summary": "Converts a value to Single."
+    },
+    {
+      "label": "CDbl",
+      "signature": "CDbl(value)",
+      "returnType": "Number",
+      "summary": "Converts a value to Double."
+    },
+    {
+      "label": "CCur",
+      "signature": "CCur(value)",
+      "returnType": "Currency",
+      "summary": "Converts a value to Currency."
+    },
+    {
+      "label": "CDec",
+      "signature": "CDec(value)",
+      "returnType": "Decimal",
+      "summary": "Converts a value to Decimal."
+    },
+    {
+      "label": "CBool",
+      "signature": "CBool(value)",
+      "returnType": "Boolean",
+      "summary": "Converts a value to Boolean."
+    },
+    {
+      "label": "CDate",
+      "signature": "CDate(value)",
+      "returnType": "Date",
+      "summary": "Converts a value to Date."
+    },
+    {
+      "label": "CVar",
+      "signature": "CVar(value)",
+      "returnType": "Variant",
+      "summary": "Converts a value to Variant."
+    },
+    {
+      "label": "CVErr",
+      "signature": "CVErr(errorNumber)",
+      "returnType": "Error",
+      "summary": "Converts an error number to an Error subtype."
+    },
+    {
+      "label": "Asc",
+      "signature": "Asc(string)",
+      "returnType": "Number",
+      "summary": "Returns the ANSI character code for a string."
+    },
+    {
+      "label": "Chr",
+      "signature": "Chr(charCode)",
+      "returnType": "String",
+      "summary": "Returns the character for an ANSI code."
+    },
+    {
+      "label": "Hex",
+      "signature": "Hex(number)",
+      "returnType": "String",
+      "summary": "Returns the hexadecimal value of a number."
+    },
+    {
+      "label": "Oct",
+      "signature": "Oct(number)",
+      "returnType": "String",
+      "summary": "Returns the octal value of a number."
+    },
+    {
+      "label": "Array",
+      "signature": "Array(values)",
+      "returnType": "Array",
+      "summary": "Creates a Variant array."
+    },
+    {
+      "label": "Filter",
+      "signature": "Filter(inputStrings, value, include, compare)",
+      "returnType": "Array",
+      "summary": "Returns matching entries from a string array."
+    },
+    {
+      "label": "Join",
+      "signature": "Join(list, delimiter)",
+      "returnType": "String",
+      "summary": "Joins array entries into a string."
+    },
+    {
+      "label": "LBound",
+      "signature": "LBound(array, dimension)",
+      "returnType": "Number",
+      "summary": "Returns the smallest available subscript for an array dimension."
+    },
+    {
+      "label": "Split",
+      "signature": "Split(expression, delimiter, count, compare)",
+      "returnType": "Array",
+      "summary": "Splits a string into an array."
+    },
+    {
+      "label": "UBound",
+      "signature": "UBound(array, dimension)",
+      "returnType": "Number",
+      "summary": "Returns the largest available subscript for an array dimension."
+    },
+    {
+      "label": "LCase",
+      "signature": "LCase(value)",
+      "returnType": "String",
+      "summary": "Converts a string to lowercase."
+    },
+    {
+      "label": "UCase",
+      "signature": "UCase(value)",
+      "returnType": "String",
+      "summary": "Converts a string to uppercase."
+    },
+    {
+      "label": "Trim",
+      "signature": "Trim(value)",
+      "returnType": "String",
+      "summary": "Removes leading and trailing spaces."
+    },
+    {
+      "label": "LTrim",
+      "signature": "LTrim(value)",
+      "returnType": "String",
+      "summary": "Removes leading spaces."
+    },
+    {
+      "label": "RTrim",
+      "signature": "RTrim(value)",
+      "returnType": "String",
+      "summary": "Removes trailing spaces."
+    },
+    {
+      "label": "Len",
+      "signature": "Len(value)",
+      "returnType": "Number",
+      "summary": "Returns the number of characters in a string."
+    },
+    {
+      "label": "InStr",
+      "signature": "InStr(start, string1, string2, compare)",
+      "returnType": "Number",
+      "summary": "Returns the position of one string within another."
+    },
+    {
+      "label": "InStrRev",
+      "signature": "InStrRev(string1, string2, start, compare)",
+      "returnType": "Number",
+      "summary": "Returns the position of one string within another from the end."
+    },
+    {
+      "label": "Replace",
+      "signature": "Replace(expression, find, replaceWith, start, count, compare)",
+      "returnType": "String",
+      "summary": "Returns a string with replacements applied."
+    },
+    {
+      "label": "Left",
+      "signature": "Left(value, length)",
+      "returnType": "String",
+      "summary": "Returns the left part of a string."
+    },
+    {
+      "label": "Right",
+      "signature": "Right(value, length)",
+      "returnType": "String",
+      "summary": "Returns the right part of a string."
+    },
+    {
+      "label": "Mid",
+      "signature": "Mid(value, start, length)",
+      "returnType": "String",
+      "summary": "Returns part of a string."
+    },
+    {
+      "label": "Space",
+      "signature": "Space(number)",
+      "returnType": "String",
+      "summary": "Returns a string of spaces."
+    },
+    {
+      "label": "StrComp",
+      "signature": "StrComp(string1, string2, compare)",
+      "returnType": "Number",
+      "summary": "Compares two strings."
+    },
+    {
+      "label": "String",
+      "signature": "String(number, character)",
+      "returnType": "String",
+      "summary": "Returns a repeated character string."
+    },
+    {
+      "label": "StrReverse",
+      "signature": "StrReverse(value)",
+      "returnType": "String",
+      "summary": "Reverses a string."
+    },
+    {
+      "label": "Date",
+      "signature": "Date()",
+      "returnType": "Date",
+      "summary": "Returns the current system date."
+    },
+    {
+      "label": "Now",
+      "signature": "Now()",
+      "returnType": "Date",
+      "summary": "Returns the current date and time."
+    },
+    {
+      "label": "Time",
+      "signature": "Time()",
+      "returnType": "Date",
+      "summary": "Returns the current system time."
+    },
+    {
+      "label": "Timer",
+      "signature": "Timer()",
+      "returnType": "Number",
+      "summary": "Returns the number of seconds since midnight."
+    },
+    {
+      "label": "DateAdd",
+      "signature": "DateAdd(interval, number, date)",
+      "returnType": "Date",
+      "summary": "Returns a date with an interval added."
+    },
+    {
+      "label": "DateDiff",
+      "signature": "DateDiff(interval, date1, date2, firstDayOfWeek, firstWeekOfYear)",
+      "returnType": "Number",
+      "summary": "Returns the number of intervals between two dates."
+    },
+    {
+      "label": "DatePart",
+      "signature": "DatePart(interval, date, firstDayOfWeek, firstWeekOfYear)",
+      "returnType": "Number",
+      "summary": "Returns part of a date."
+    },
+    {
+      "label": "DateSerial",
+      "signature": "DateSerial(year, month, day)",
+      "returnType": "Date",
+      "summary": "Returns a date from year, month, and day values."
+    },
+    {
+      "label": "DateValue",
+      "signature": "DateValue(date)",
+      "returnType": "Date",
+      "summary": "Returns a date value."
+    },
+    {
+      "label": "Day",
+      "signature": "Day(date)",
+      "returnType": "Number",
+      "summary": "Returns the day of the month."
+    },
+    {
+      "label": "FormatDateTime",
+      "signature": "FormatDateTime(date, namedFormat)",
+      "returnType": "String",
+      "summary": "Formats a date or time expression."
+    },
+    {
+      "label": "Hour",
+      "signature": "Hour(time)",
+      "returnType": "Number",
+      "summary": "Returns the hour of the day."
+    },
+    {
+      "label": "IsDate",
+      "signature": "IsDate(value)",
+      "returnType": "Boolean",
+      "summary": "Returns whether a value can be converted to a date."
+    },
+    {
+      "label": "Minute",
+      "signature": "Minute(time)",
+      "returnType": "Number",
+      "summary": "Returns the minute of the hour."
+    },
+    {
+      "label": "Month",
+      "signature": "Month(date)",
+      "returnType": "Number",
+      "summary": "Returns the month of the year."
+    },
+    {
+      "label": "MonthName",
+      "signature": "MonthName(month, abbreviate)",
+      "returnType": "String",
+      "summary": "Returns the name of a month."
+    },
+    {
+      "label": "Second",
+      "signature": "Second(time)",
+      "returnType": "Number",
+      "summary": "Returns the second of the minute."
+    },
+    {
+      "label": "TimeSerial",
+      "signature": "TimeSerial(hour, minute, second)",
+      "returnType": "Date",
+      "summary": "Returns a time from hour, minute, and second values."
+    },
+    {
+      "label": "TimeValue",
+      "signature": "TimeValue(time)",
+      "returnType": "Date",
+      "summary": "Returns a time value."
+    },
+    {
+      "label": "Weekday",
+      "signature": "Weekday(date, firstDayOfWeek)",
+      "returnType": "Number",
+      "summary": "Returns the weekday number."
+    },
+    {
+      "label": "WeekdayName",
+      "signature": "WeekdayName(weekday, abbreviate, firstDayOfWeek)",
+      "returnType": "String",
+      "summary": "Returns the name of a weekday."
+    },
+    {
+      "label": "Year",
+      "signature": "Year(date)",
+      "returnType": "Number",
+      "summary": "Returns the year."
+    },
+    {
+      "label": "FormatCurrency",
+      "signature": "FormatCurrency(expression, digitsAfterDecimal, includeLeadingDigit, useParensForNegativeNumbers, groupDigits)",
+      "returnType": "String",
+      "summary": "Formats an expression as currency."
+    },
+    {
+      "label": "FormatNumber",
+      "signature": "FormatNumber(expression, digitsAfterDecimal, includeLeadingDigit, useParensForNegativeNumbers, groupDigits)",
+      "returnType": "String",
+      "summary": "Formats an expression as a number."
+    },
+    {
+      "label": "FormatPercent",
+      "signature": "FormatPercent(expression, digitsAfterDecimal, includeLeadingDigit, useParensForNegativeNumbers, groupDigits)",
+      "returnType": "String",
+      "summary": "Formats an expression as a percentage."
+    },
+    {
+      "label": "Abs",
+      "signature": "Abs(number)",
+      "returnType": "Number",
+      "summary": "Returns the absolute value of a number."
+    },
+    {
+      "label": "Atn",
+      "signature": "Atn(number)",
+      "returnType": "Number",
+      "summary": "Returns the arctangent of a number."
+    },
+    {
+      "label": "Cos",
+      "signature": "Cos(number)",
+      "returnType": "Number",
+      "summary": "Returns the cosine of an angle."
+    },
+    {
+      "label": "Exp",
+      "signature": "Exp(number)",
+      "returnType": "Number",
+      "summary": "Returns e raised to a power."
+    },
+    {
+      "label": "Fix",
+      "signature": "Fix(number)",
+      "returnType": "Number",
+      "summary": "Returns the integer part of a number."
+    },
+    {
+      "label": "Int",
+      "signature": "Int(number)",
+      "returnType": "Number",
+      "summary": "Returns the integer part of a number."
+    },
+    {
+      "label": "Log",
+      "signature": "Log(number)",
+      "returnType": "Number",
+      "summary": "Returns the natural logarithm of a number."
+    },
+    {
+      "label": "Rnd",
+      "signature": "Rnd(number)",
+      "returnType": "Number",
+      "summary": "Returns a random number."
+    },
+    {
+      "label": "Round",
+      "signature": "Round(number, decimalPlaces)",
+      "returnType": "Number",
+      "summary": "Rounds a number."
+    },
+    {
+      "label": "Sgn",
+      "signature": "Sgn(number)",
+      "returnType": "Number",
+      "summary": "Returns the sign of a number."
+    },
+    {
+      "label": "Sin",
+      "signature": "Sin(number)",
+      "returnType": "Number",
+      "summary": "Returns the sine of an angle."
+    },
+    {
+      "label": "Sqr",
+      "signature": "Sqr(number)",
+      "returnType": "Number",
+      "summary": "Returns the square root of a number."
+    },
+    {
+      "label": "Tan",
+      "signature": "Tan(number)",
+      "returnType": "Number",
+      "summary": "Returns the tangent of an angle."
+    },
+    {
+      "label": "CreateObject",
+      "signature": "CreateObject(progId)",
+      "returnType": "Object",
+      "summary": "Creates an automation object."
+    },
+    {
+      "label": "Eval",
+      "signature": "Eval(expression)",
+      "returnType": "Variant",
+      "summary": "Evaluates an expression."
+    },
+    {
+      "label": "IsArray",
+      "signature": "IsArray(value)",
+      "returnType": "Boolean",
+      "summary": "Returns whether a value is an array."
+    },
+    {
+      "label": "IsNull",
+      "signature": "IsNull(value)",
+      "returnType": "Boolean",
+      "summary": "Returns whether a value is Null."
+    },
+    {
+      "label": "IsEmpty",
+      "signature": "IsEmpty(value)",
+      "returnType": "Boolean",
+      "summary": "Returns whether a variable is Empty."
+    },
+    {
+      "label": "IsNumeric",
+      "signature": "IsNumeric(value)",
+      "returnType": "Boolean",
+      "summary": "Returns whether a value can be evaluated as a number."
+    },
+    {
+      "label": "IsObject",
+      "signature": "IsObject(value)",
+      "returnType": "Boolean",
+      "summary": "Returns whether a value is an automation object."
+    },
+    {
+      "label": "RGB",
+      "signature": "RGB(red, green, blue)",
+      "returnType": "Number",
+      "summary": "Returns an RGB color value."
+    },
+    {
+      "label": "ScriptEngine",
+      "signature": "ScriptEngine()",
+      "returnType": "String",
+      "summary": "Returns the script engine name."
+    },
+    {
+      "label": "ScriptEngineBuildVersion",
+      "signature": "ScriptEngineBuildVersion()",
+      "returnType": "Number",
+      "summary": "Returns the script engine build version."
+    },
+    {
+      "label": "ScriptEngineMajorVersion",
+      "signature": "ScriptEngineMajorVersion()",
+      "returnType": "Number",
+      "summary": "Returns the script engine major version."
+    },
+    {
+      "label": "ScriptEngineMinorVersion",
+      "signature": "ScriptEngineMinorVersion()",
+      "returnType": "Number",
+      "summary": "Returns the script engine minor version."
+    },
+    {
+      "label": "TypeName",
+      "signature": "TypeName(value)",
+      "returnType": "String",
+      "summary": "Returns the subtype name for a variable."
+    },
+    {
+      "label": "VarType",
+      "signature": "VarType(value)",
+      "returnType": "Number",
+      "summary": "Returns the subtype code for a variable."
+    }
+  ]
+}

@@ -349,16 +349,24 @@ export function tryNativeParseVbscriptCstAsync(
 
 export function tryNativeCollectVbscriptSymbols(
   parsed: AspParsedDocument,
-  _context: VbProjectContext,
+  context: VbProjectContext,
 ): VbSymbol[] | undefined {
-  return nativeOperation<VbSymbol[]>({ operation: "collectVbscriptSymbols", parsed });
+  return nativeOperation<VbSymbol[]>({
+    operation: "collectVbscriptSymbols",
+    parsed,
+    context: cloneableContext(context),
+  });
 }
 
 export function tryNativeCollectVbscriptSymbolsAsync(
   parsed: AspParsedDocument,
-  _context: VbProjectContext,
+  context: VbProjectContext,
 ): Promise<VbSymbol[] | undefined> {
-  return nativeOperationAsync<VbSymbol[]>({ operation: "collectVbscriptSymbols", parsed });
+  return nativeOperationAsync<VbSymbol[]>({
+    operation: "collectVbscriptSymbols",
+    parsed,
+    context: cloneableContext(context),
+  });
 }
 
 export function tryNativeCollectVbscriptSymbolsFromTextAsync(
