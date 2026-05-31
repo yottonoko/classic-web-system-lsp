@@ -7,12 +7,14 @@ import {
   analyzeVbscriptFromTextAsync,
   aspAnalysisBackendInfo,
   collectVbscriptSymbols,
+  collectVbscriptSymbolsFromTextAsync,
   hydrateVbscriptCst,
   parseAspCst,
   parseAspDocument,
   parseAspDocumentAsync,
   parseAspDocumentSkeletonAsync,
   summarizeAspFileAnalysis,
+  summarizeAspFileAnalysisFromTextAsync,
 } from "../src/index";
 import type { AspCstNode } from "../src/types";
 
@@ -123,7 +125,7 @@ describeNative("native analysis backend", () => {
     expect(aspAnalysisBackendInfo().backend).toBe("native");
   });
 
-  it("keeps TypeScript type inference on native-parsed documents", () => {
+  it("keeps native type inference on parsed and from-text documents", async () => {
     const source = `<%
 Class FirstThing
   Public SharedName
@@ -150,7 +152,8 @@ End Class
 Dim typed
 typed = "oops"
 %>`;
-    const parsed = parseAspDocument("file:///site/native-inference.asp", source);
+    const uri = "file:///site/native-inference.asp";
+    const parsed = parseAspDocument(uri, source);
     expect(aspAnalysisBackendInfo().backend).toBe("native");
 
     const symbols = collectVbscriptSymbols(parsed);
@@ -177,6 +180,67 @@ typed = "oops"
         .find((type) => type.name === "Holder")
         ?.members.find((member) => member.name === "Value")?.type?.name,
     ).toBe("String | Number");
+
+    const fromTextSymbols = await collectVbscriptSymbolsFromTextAsync(uri, source);
+    expect(fromTextSymbols.find((symbol) => symbol.name === "x")?.typeName).toBe("Number | String");
+    const fromTextSummary = await summarizeAspFileAnalysisFromTextAsync(uri, source);
+    expect(
+      fromTextSummary.vbscript?.typeFacts
+        .find((type) => type.name === "Holder")
+        ?.members.find((member) => member.name === "Value")?.type?.name,
+    ).toBe("String | Number");
+  });
+
+  it("emits native strict type diagnostics for custom COM types", async () => {
+    const source = `<%
+Dim widget
+widget = Server.CreateObject("Custom.Widget")
+widget.Missing
+widget.Ping("a", "b")
+Set title = "hello"
+' @type typedValue As Number
+Dim typedValue
+typedValue = "hello"
+unknownlower()
+%>`;
+    const uri = "file:///site/native-strict.asp";
+    const context = {
+      typeChecking: "strict" as const,
+      comTypes: {
+        "Custom.Widget": {
+          members: {
+            Ping: {
+              kind: "method" as const,
+              returnType: "Boolean",
+              parameters: [{ name: "name", type: "String" }],
+            },
+          },
+        },
+      },
+    };
+    const parsed = parseAspDocument(uri, source);
+    expect(aspAnalysisBackendInfo().backend).toBe("native");
+
+    const diagnostics = analyzeVbscript(parsed, context).diagnostics;
+    const codes = diagnostics
+      .filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-type")
+      .map((diagnostic) => diagnostic.code);
+    expect(codes).toEqual(
+      expect.arrayContaining([
+        "objectNeedsSet",
+        "missingMember",
+        "argumentCountMismatch",
+        "setScalar",
+        "typeMismatch",
+        "unknownCall",
+      ]),
+    );
+
+    const fromTextDiagnostics = (await analyzeVbscriptFromTextAsync(uri, source, {}, context))
+      .diagnostics;
+    expect(fromTextDiagnostics.map((diagnostic) => diagnostic.code)).toEqual(
+      expect.arrayContaining(["objectNeedsSet", "missingMember", "argumentCountMismatch"]),
+    );
   });
 
   it("keeps async VBScript analysis on TypeScript semantics for project context", async () => {

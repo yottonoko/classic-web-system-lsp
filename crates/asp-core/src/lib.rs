@@ -206,7 +206,8 @@ impl CoreState {
                 let parsed = request
                     .get("parsed")
                     .ok_or_else(|| "parsed is required".to_string())?;
-                summarize_asp_file(parsed)
+                let context = request.get("context").unwrap_or(&Value::Null);
+                summarize_asp_file(parsed, context)
             }
             "summarizeAspFileAnalysisFromText" => {
                 let uri = request
@@ -218,8 +219,9 @@ impl CoreState {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 let settings = request.get("settings").unwrap_or(&Value::Null);
+                let context = request.get("context").unwrap_or(&Value::Null);
                 let parsed = parse_asp_document_analysis_skeleton(uri, text, settings);
-                summarize_asp_file(&parsed)
+                summarize_asp_file(&parsed, context)
             }
             "analyzeVbscript" => {
                 let parsed = request
@@ -3088,8 +3090,10 @@ fn collect_symbols_from_analysis(
         );
     }
     add_server_object_symbols(parsed, &mut symbols);
-    apply_type_annotations(analysis, &mut symbols);
     add_implicit_assignment_symbols(parsed, context, analysis, &mut symbols);
+    apply_type_annotations(analysis, &mut symbols);
+    infer_assigned_types(parsed, context, analysis, &mut symbols);
+    apply_variant_fallback_types(&mut symbols);
     strip_null_fields_from_values(&mut symbols);
     symbols
 }
@@ -3610,6 +3614,67 @@ fn add_implicit_assignment_symbols(
 }
 
 fn apply_type_annotations(analysis: &VbAnalysisCache<'_>, symbols: &mut [Value]) {
+    let annotations = parse_type_annotations(analysis);
+    for annotation in annotations.types {
+        set_annotated_symbol_type_at(
+            symbols,
+            &analysis.text_index,
+            &annotation.name,
+            &annotation.type_name,
+            None,
+            annotation.offset,
+        );
+    }
+    for annotation in annotations.params {
+        set_annotated_parameter_type(
+            symbols,
+            &annotation.name,
+            &annotation.type_name,
+            annotation.procedure_name.as_deref(),
+        );
+    }
+    for annotation in annotations.returns {
+        set_annotated_symbol_type(symbols, &annotation.name, &annotation.type_name, None);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TypeAnnotation {
+    name: String,
+    type_name: String,
+    offset: usize,
+}
+
+#[derive(Clone, Debug)]
+struct ParameterTypeAnnotation {
+    name: String,
+    type_name: String,
+    procedure_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ReturnTypeAnnotation {
+    name: String,
+    type_name: String,
+}
+
+#[derive(Clone, Debug)]
+struct MemberTypeAnnotation {
+    type_name: String,
+    member_name: String,
+    member_type: String,
+}
+
+#[derive(Default)]
+struct TypeAnnotations {
+    types: Vec<TypeAnnotation>,
+    params: Vec<ParameterTypeAnnotation>,
+    returns: Vec<ReturnTypeAnnotation>,
+    members: Vec<MemberTypeAnnotation>,
+}
+
+fn parse_type_annotations(analysis: &VbAnalysisCache<'_>) -> TypeAnnotations {
+    let mut annotations = TypeAnnotations::default();
     for region in &analysis.regions {
         for token in region
             .tokens
@@ -3619,32 +3684,102 @@ fn apply_type_annotations(analysis: &VbAnalysisCache<'_>, symbols: &mut [Value])
         {
             let text = token.text.trim_start_matches('\'').trim();
             if let Some((name, type_name)) = parse_named_type_annotation(text, "@type") {
-                set_annotated_symbol_type(symbols, &name, &type_name, None);
+                annotations.types.push(TypeAnnotation {
+                    name,
+                    type_name,
+                    offset: token.start,
+                });
                 continue;
             }
             if let Some((name, type_name)) = parse_named_type_annotation(text, "@param") {
-                set_annotated_symbol_type(symbols, &name, &type_name, Some("parameter"));
+                let (procedure_name, name) = name
+                    .split_once('.')
+                    .map(|(procedure, parameter)| {
+                        (Some(procedure.to_string()), parameter.to_string())
+                    })
+                    .unwrap_or((None, name));
+                annotations.params.push(ParameterTypeAnnotation {
+                    name,
+                    type_name,
+                    procedure_name,
+                });
                 continue;
             }
-            if let Some(type_name) = text
-                .strip_prefix("@returns")
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                if let Some(next_name) = analysis.next_procedure_name(token.start) {
-                    set_annotated_symbol_type(symbols, &next_name, type_name, None);
+            if let Some((procedure_name, type_name)) = parse_returns_type_annotation(text) {
+                let name = procedure_name.or_else(|| analysis.next_procedure_name(token.start));
+                if let Some(name) = name {
+                    annotations
+                        .returns
+                        .push(ReturnTypeAnnotation { name, type_name });
                 }
+                continue;
+            }
+            if let Some((type_name, member_name, member_type)) = parse_member_type_annotation(text)
+            {
+                annotations.members.push(MemberTypeAnnotation {
+                    type_name,
+                    member_name,
+                    member_type,
+                });
             }
         }
     }
+    annotations
 }
 
 fn parse_named_type_annotation(text: &str, marker: &str) -> Option<(String, String)> {
-    let rest = text.strip_prefix(marker)?.trim();
-    let (name, type_name) = rest.split_once(" As ")?;
-    let name = name.rsplit('.').next().unwrap_or(name).trim().to_string();
+    let rest = strip_prefix_ascii_case_insensitive(text, marker)?.trim();
+    let (name, type_name) = split_once_ascii_case_insensitive(rest, " as ")?;
+    let name = name.trim().to_string();
     let type_name = type_name.trim().to_string();
     (!name.is_empty() && !type_name.is_empty()).then_some((name, type_name))
+}
+
+fn parse_returns_type_annotation(text: &str) -> Option<(Option<String>, String)> {
+    let body = strip_prefix_ascii_case_insensitive(text, "@returns")?.trim();
+    if body.is_empty() {
+        return Some((None, "Variant".to_string()));
+    }
+    let first_space = body.find(char::is_whitespace);
+    let Some(first_space) = first_space else {
+        return Some((None, body.to_string()));
+    };
+    let rest = body[first_space..].trim();
+    if rest.starts_with('|') {
+        Some((None, body.to_string()))
+    } else {
+        Some((Some(body[..first_space].to_string()), rest.to_string()))
+    }
+}
+
+fn parse_member_type_annotation(text: &str) -> Option<(String, String, String)> {
+    let rest = strip_prefix_ascii_case_insensitive(text, "@member")?.trim();
+    let (target, member_type) = split_once_ascii_case_insensitive(rest, " as ")?;
+    let (type_name, member_name) = target.rsplit_once('.')?;
+    let type_name = type_name.trim().to_string();
+    let member_name = member_name.trim().to_string();
+    let member_type = member_type.trim().to_string();
+    (!type_name.is_empty() && !member_name.is_empty() && !member_type.is_empty()).then_some((
+        type_name,
+        member_name,
+        member_type,
+    ))
+}
+
+fn strip_prefix_ascii_case_insensitive<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    text.get(..prefix.len())
+        .filter(|head| head.eq_ignore_ascii_case(prefix))
+        .map(|_| &text[prefix.len()..])
+}
+
+fn split_once_ascii_case_insensitive<'a>(
+    text: &'a str,
+    separator: &str,
+) -> Option<(&'a str, &'a str)> {
+    let lower_text = text.to_ascii_lowercase();
+    let lower_separator = separator.to_ascii_lowercase();
+    let index = lower_text.find(&lower_separator)?;
+    Some((&text[..index], &text[index + separator.len()..]))
 }
 
 fn set_annotated_symbol_type(
@@ -3666,6 +3801,1062 @@ fn set_annotated_symbol_type(
             object.insert("explicitType".to_string(), Value::Bool(true));
         }
     }
+}
+
+fn set_annotated_symbol_type_at(
+    symbols: &mut [Value],
+    text_index: &TextIndex<'_>,
+    name: &str,
+    type_name: &str,
+    kind: Option<&str>,
+    offset: usize,
+) {
+    if let Some(index) = visible_symbol_index(symbols, text_index, name, offset, kind) {
+        set_symbol_type(&mut symbols[index], type_name, true);
+        return;
+    }
+    set_annotated_symbol_type(symbols, name, type_name, kind);
+}
+
+fn set_annotated_parameter_type(
+    symbols: &mut [Value],
+    name: &str,
+    type_name: &str,
+    procedure_name: Option<&str>,
+) {
+    for symbol in symbols {
+        if symbol.get("name").and_then(Value::as_str) != Some(name) {
+            continue;
+        }
+        if symbol.get("kind").and_then(Value::as_str) != Some("parameter") {
+            continue;
+        }
+        if procedure_name.is_some()
+            && !string_value_eq_ignore_ascii_case(
+                symbol.get("scopeName").and_then(Value::as_str),
+                procedure_name,
+            )
+        {
+            continue;
+        }
+        set_symbol_type(symbol, type_name, true);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NativeTypeRef {
+    name: String,
+    object: bool,
+    union_types: Vec<NativeTypeRef>,
+}
+
+fn type_ref(name: &str) -> NativeTypeRef {
+    parse_type_ref(name)
+}
+
+fn parse_type_ref(text: &str) -> NativeTypeRef {
+    let parts = text
+        .split('|')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(single_type_ref)
+        .collect::<Vec<_>>();
+    if parts.len() > 1 {
+        union_type_ref(parts)
+    } else {
+        parts
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| single_type_ref("Variant"))
+    }
+}
+
+fn single_type_ref(name: &str) -> NativeTypeRef {
+    let normalized = if name.trim().is_empty() {
+        "Variant"
+    } else {
+        name.trim()
+    };
+    NativeTypeRef {
+        name: normalized.to_string(),
+        object: is_object_type_name(normalized),
+        union_types: Vec::new(),
+    }
+}
+
+fn union_type_ref(types: Vec<NativeTypeRef>) -> NativeTypeRef {
+    let mut unique = Vec::<NativeTypeRef>::new();
+    for type_ref in types {
+        let flattened = if type_ref.union_types.is_empty() {
+            vec![type_ref]
+        } else {
+            type_ref.union_types
+        };
+        for item in flattened {
+            let key = format_type_ref(&item).to_ascii_lowercase();
+            if !unique
+                .iter()
+                .any(|existing| format_type_ref(existing).to_ascii_lowercase() == key)
+            {
+                unique.push(item);
+            }
+        }
+    }
+    if unique.is_empty() {
+        return type_ref("Variant");
+    }
+    if unique.len() == 1 {
+        return unique.remove(0);
+    }
+    NativeTypeRef {
+        name: unique
+            .iter()
+            .map(format_type_ref)
+            .collect::<Vec<_>>()
+            .join(" | "),
+        object: unique.iter().all(|item| item.object),
+        union_types: unique,
+    }
+}
+
+fn format_type_ref(type_ref: &NativeTypeRef) -> String {
+    if type_ref.union_types.is_empty() {
+        type_ref.name.clone()
+    } else {
+        type_ref
+            .union_types
+            .iter()
+            .map(format_type_ref)
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+}
+
+fn type_ref_to_value(type_ref: &NativeTypeRef) -> Value {
+    let mut object = JsonMap::new();
+    object.insert("name".to_string(), Value::String(format_type_ref(type_ref)));
+    object.insert("object".to_string(), Value::Bool(type_ref.object));
+    if !type_ref.union_types.is_empty() {
+        object.insert(
+            "unionTypes".to_string(),
+            Value::Array(type_ref.union_types.iter().map(type_ref_to_value).collect()),
+        );
+    }
+    Value::Object(object)
+}
+
+fn type_ref_from_value(value: &Value) -> Option<NativeTypeRef> {
+    value
+        .get("name")
+        .and_then(Value::as_str)
+        .map(parse_type_ref)
+}
+
+fn symbol_type_ref(symbol: &Value) -> Option<NativeTypeRef> {
+    symbol
+        .get("type")
+        .and_then(type_ref_from_value)
+        .or_else(|| symbol.get("typeName").and_then(Value::as_str).map(type_ref))
+}
+
+fn set_symbol_type(symbol: &mut Value, type_name: &str, explicit: bool) {
+    set_symbol_type_ref(symbol, parse_type_ref(type_name), explicit);
+}
+
+fn set_symbol_type_ref(symbol: &mut Value, type_ref: NativeTypeRef, explicit: bool) {
+    if let Some(object) = symbol.as_object_mut() {
+        object.insert(
+            "typeName".to_string(),
+            Value::String(format_type_ref(&type_ref)),
+        );
+        object.insert("type".to_string(), type_ref_to_value(&type_ref));
+        if explicit || object.get("explicitType").and_then(Value::as_bool) == Some(true) {
+            object.insert("explicitType".to_string(), Value::Bool(true));
+        }
+    }
+}
+
+fn merge_type_refs(
+    left: Option<NativeTypeRef>,
+    right: Option<NativeTypeRef>,
+) -> Option<NativeTypeRef> {
+    match (left, right) {
+        (None, None) => None,
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (Some(left), Some(right)) => {
+            if format_type_ref(&left).eq_ignore_ascii_case(&format_type_ref(&right)) {
+                Some(left)
+            } else {
+                Some(union_type_ref(vec![left, right]))
+            }
+        }
+    }
+}
+
+fn expand_union_type(type_ref: &NativeTypeRef) -> Vec<NativeTypeRef> {
+    if type_ref.union_types.is_empty() {
+        vec![type_ref.clone()]
+    } else {
+        type_ref.union_types.clone()
+    }
+}
+
+fn type_without_nothing(type_ref: &NativeTypeRef) -> Option<NativeTypeRef> {
+    let types = expand_union_type(type_ref)
+        .into_iter()
+        .filter(|item| !item.name.eq_ignore_ascii_case("nothing"))
+        .collect::<Vec<_>>();
+    if types.is_empty() {
+        None
+    } else {
+        Some(union_type_ref(types))
+    }
+}
+
+fn is_loose_type(type_ref: &NativeTypeRef) -> bool {
+    expand_union_type(type_ref).iter().any(|item| {
+        item.name.eq_ignore_ascii_case("variant") || item.name.eq_ignore_ascii_case("unknown")
+    })
+}
+
+fn is_clearly_scalar_type(type_ref: &NativeTypeRef) -> bool {
+    expand_union_type(type_ref).iter().all(|item| {
+        matches!(
+            item.name.to_ascii_lowercase().as_str(),
+            "string"
+                | "byte"
+                | "integer"
+                | "long"
+                | "single"
+                | "double"
+                | "currency"
+                | "decimal"
+                | "number"
+                | "boolean"
+                | "date"
+                | "empty"
+                | "null"
+                | "error"
+        )
+    })
+}
+
+fn is_clearly_object_type(type_ref: &NativeTypeRef, type_facts: &[Value]) -> bool {
+    if is_loose_type(type_ref)
+        || expand_union_type(type_ref)
+            .iter()
+            .any(|item| item.name.eq_ignore_ascii_case("nothing"))
+    {
+        return false;
+    }
+    expand_union_type(type_ref).iter().all(|item| {
+        item.object
+            || (find_type_fact(type_facts, &item.name).is_some() && !is_clearly_scalar_type(item))
+    })
+}
+
+fn is_compatible_type(left: &NativeTypeRef, right: &NativeTypeRef, type_facts: &[Value]) -> bool {
+    if is_loose_type(left) || is_loose_type(right) {
+        return true;
+    }
+    expand_union_type(right).iter().all(|right_type| {
+        expand_union_type(left)
+            .iter()
+            .any(|left_type| is_compatible_single_type(left_type, right_type, type_facts))
+    })
+}
+
+fn is_compatible_single_type(
+    left: &NativeTypeRef,
+    right: &NativeTypeRef,
+    type_facts: &[Value],
+) -> bool {
+    if right.name.eq_ignore_ascii_case("nothing") {
+        return true;
+    }
+    if left.name.eq_ignore_ascii_case(&right.name) {
+        return true;
+    }
+    if is_numeric_type_name(&left.name) && is_numeric_type_name(&right.name) {
+        return true;
+    }
+    left.name.eq_ignore_ascii_case("object") && is_clearly_object_type(right, type_facts)
+}
+
+fn is_numeric_type_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "byte" | "integer" | "long" | "single" | "double" | "currency" | "decimal" | "number"
+    )
+}
+
+fn apply_variant_fallback_types(symbols: &mut [Value]) {
+    for symbol in symbols {
+        if symbol_type_ref(symbol).is_some() {
+            continue;
+        }
+        let kind = symbol
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let is_typed_symbol = matches!(
+            kind,
+            "variable" | "constant" | "field" | "parameter" | "function" | "property"
+        ) || (kind == "method"
+            && symbol.get("procedureKind").and_then(Value::as_str) != Some("sub"));
+        if is_typed_symbol {
+            set_symbol_type(symbol, "Variant", false);
+        }
+    }
+}
+
+fn is_object_type_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "object"
+        || (!matches!(
+            lower.as_str(),
+            "string"
+                | "byte"
+                | "integer"
+                | "long"
+                | "single"
+                | "double"
+                | "currency"
+                | "decimal"
+                | "number"
+                | "boolean"
+                | "date"
+                | "empty"
+                | "null"
+                | "variant"
+                | "unknown"
+                | "error"
+        ))
+}
+
+fn canonical_builtin_type_name(name: &str) -> String {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    format!(
+        "{}{}",
+        first.to_uppercase(),
+        chars.as_str().to_ascii_lowercase()
+    )
+}
+
+fn visible_symbol_index(
+    symbols: &[Value],
+    text_index: &TextIndex<'_>,
+    name: &str,
+    offset: usize,
+    kind: Option<&str>,
+) -> Option<usize> {
+    let mut best: Option<(usize, i32, usize)> = None;
+    for (index, symbol) in symbols.iter().enumerate() {
+        if !string_value_eq_ignore_ascii_case(
+            symbol.get("name").and_then(Value::as_str),
+            Some(name),
+        ) {
+            continue;
+        }
+        if kind.is_some() && symbol.get("kind").and_then(Value::as_str) != kind {
+            continue;
+        }
+        let scope_contains = symbol
+            .get("scopeRange")
+            .map(|range| range_contains_offset(range, text_index, offset))
+            .unwrap_or(false);
+        let global = symbol.get("scopeName").and_then(Value::as_str).is_none()
+            && symbol.get("memberOf").and_then(Value::as_str).is_none();
+        if !scope_contains && !global {
+            continue;
+        }
+        let score = if scope_contains { 2 } else { 1 };
+        let size = symbol
+            .get("scopeRange")
+            .and_then(range_tuple)
+            .map(|(start_line, start_char, end_line, end_char)| {
+                ((end_line.saturating_sub(start_line)) as usize * 100_000)
+                    + end_char.saturating_sub(start_char) as usize
+            })
+            .unwrap_or(usize::MAX);
+        if best
+            .map(|(_, best_score, best_size)| {
+                score > best_score || (score == best_score && size < best_size)
+            })
+            .unwrap_or(true)
+        {
+            best = Some((index, score, size));
+        }
+    }
+    best.map(|(index, _, _)| index)
+}
+
+fn string_value_eq_ignore_ascii_case(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn range_contains_offset(range: &Value, text_index: &TextIndex<'_>, offset: usize) -> bool {
+    let Some(start) = offset_from_position(text_index, range.get("start").unwrap_or(&Value::Null))
+    else {
+        return false;
+    };
+    let Some(end) = offset_from_position(text_index, range.get("end").unwrap_or(&Value::Null))
+    else {
+        return false;
+    };
+    start <= offset && offset <= end
+}
+
+fn infer_variable_type_ref(
+    name: &str,
+    symbols: &[Value],
+    analysis: &VbAnalysisCache<'_>,
+    offset: usize,
+) -> Option<NativeTypeRef> {
+    visible_symbol_index(symbols, &analysis.text_index, name, offset, None)
+        .and_then(|index| symbol_type_ref(&symbols[index]))
+}
+
+fn infer_assigned_types(
+    parsed: &Value,
+    context: &Value,
+    analysis: &VbAnalysisCache<'_>,
+    symbols: &mut [Value],
+) {
+    for _ in 0..2 {
+        let type_facts = build_type_facts(parsed, context, symbols, analysis);
+        for region in &analysis.regions {
+            let significant = &region.significant;
+            let mut index = 0usize;
+            while index < significant.len() {
+                if significant[index].kind == "newline" || significant[index].text == ":" {
+                    index += 1;
+                    continue;
+                }
+                let statement_end = statement_end_index(significant, index);
+                let statement = &significant[index..=statement_end];
+                infer_statement_assignment_type(statement, symbols, analysis, &type_facts);
+                index = statement_end + 1;
+            }
+        }
+    }
+}
+
+fn infer_statement_assignment_type(
+    statement: &[VbToken],
+    symbols: &mut [Value],
+    analysis: &VbAnalysisCache<'_>,
+    type_facts: &[Value],
+) {
+    let first = lower_token(statement.first());
+    let target_index = if first == "set" { 1 } else { 0 };
+    let Some(target) = statement.get(target_index) else {
+        return;
+    };
+    let Some(equals_index) = statement.iter().position(|token| token.text == "=") else {
+        return;
+    };
+    if target.kind != "identifier"
+        || statement
+            .get(target_index + 1)
+            .map(|token| token.text.as_str())
+            == Some(".")
+    {
+        return;
+    }
+    let Some(symbol_index) = visible_symbol_index(
+        symbols,
+        &analysis.text_index,
+        &target.text,
+        target.start,
+        None,
+    ) else {
+        return;
+    };
+    if symbols[symbol_index]
+        .get("explicitType")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return;
+    }
+    let expression_type = infer_expression_type(
+        statement.get(equals_index + 1..).unwrap_or_default(),
+        symbols,
+        analysis,
+        type_facts,
+        target.start,
+    );
+    let Some(expression_type) = expression_type else {
+        return;
+    };
+    let existing_type = symbol_type_ref(&symbols[symbol_index]);
+    let next_type = if existing_type.as_ref().map(is_loose_type).unwrap_or(true) {
+        expression_type
+    } else {
+        merge_type_refs(existing_type, Some(expression_type)).unwrap_or_else(|| type_ref("Variant"))
+    };
+    set_symbol_type_ref(&mut symbols[symbol_index], next_type, false);
+}
+
+fn infer_expression_type(
+    tokens: &[VbToken],
+    symbols: &[Value],
+    analysis: &VbAnalysisCache<'_>,
+    type_facts: &[Value],
+    offset: usize,
+) -> Option<NativeTypeRef> {
+    let expression = trim_outer_parens(tokens);
+    if let Some((left, operator, right)) = split_by_lowest_precedence_operator(&expression) {
+        let left_type = infer_expression_type(&left, symbols, analysis, type_facts, offset);
+        let right_type = infer_expression_type(&right, symbols, analysis, type_facts, offset);
+        return infer_binary_expression_type(&operator, left_type.as_ref(), right_type.as_ref());
+    }
+    let first = expression.first()?;
+    if first.kind == "string" {
+        return Some(type_ref("String"));
+    }
+    if first.kind == "number" {
+        return Some(type_ref("Number"));
+    }
+    if first.text == "#" && expression.last().map(|token| token.text.as_str()) == Some("#") {
+        return Some(type_ref("Date"));
+    }
+    let lower = first.text.to_ascii_lowercase();
+    if lower == "true" || lower == "false" {
+        return Some(type_ref("Boolean"));
+    }
+    if matches!(lower.as_str(), "nothing" | "null" | "empty") {
+        return Some(type_ref(&canonical_builtin_type_name(&lower)));
+    }
+    if lower == "array" && expression.get(1).map(|token| token.text.as_str()) == Some("(") {
+        return Some(type_ref("Array"));
+    }
+    if lower == "new" {
+        if let Some(name) = expression.get(1).filter(|token| token.kind == "identifier") {
+            return Some(type_ref(&name.text));
+        }
+    }
+    if let Some(create_index) =
+        find_create_object_call(&expression, 0, expression.len().saturating_sub(1))
+    {
+        if let Some(string_token) = expression[create_index..]
+            .iter()
+            .find(|token| token.kind == "string")
+        {
+            let type_name = string_token
+                .value
+                .clone()
+                .unwrap_or_else(|| unquote_vb_string(&string_token.text));
+            return Some(type_ref(&type_name));
+        }
+    }
+    if first.kind == "identifier"
+        && expression.get(1).map(|token| token.text.as_str()) == Some(".")
+        && expression.get(2).map(|token| token.kind.as_str()) == Some("identifier")
+    {
+        let owner_type = infer_variable_type_ref(&first.text, symbols, analysis, offset);
+        if let Some(owner_type) = owner_type {
+            return member_return_type(&owner_type, &expression[2].text, type_facts)
+                .or_else(|| member_type(&owner_type, &expression[2].text, type_facts));
+        }
+    }
+    if first.kind == "identifier" {
+        let called = expression.get(1).map(|token| token.text.as_str()) == Some("(");
+        if called {
+            if let Some(symbol) =
+                visible_symbol_index(symbols, &analysis.text_index, &first.text, offset, None)
+                    .and_then(|index| symbols.get(index))
+            {
+                let kind = symbol
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if matches!(kind, "function" | "method" | "property") {
+                    return symbol_type_ref(symbol);
+                }
+            }
+        }
+        return infer_variable_type_ref(&first.text, symbols, analysis, offset);
+    }
+    None
+}
+
+fn trim_outer_parens(tokens: &[VbToken]) -> Vec<VbToken> {
+    let mut result = tokens.to_vec();
+    while result.first().map(|token| token.text.as_str()) == Some("(")
+        && result.last().map(|token| token.text.as_str()) == Some(")")
+    {
+        let close_index = matching_close_paren(&result, 0);
+        if close_index != Some(result.len() - 1) {
+            break;
+        }
+        result = result[1..result.len() - 1].to_vec();
+    }
+    result
+}
+
+fn split_by_lowest_precedence_operator(
+    tokens: &[VbToken],
+) -> Option<(Vec<VbToken>, String, Vec<VbToken>)> {
+    const GROUPS: &[&[&str]] = &[
+        &["or", "xor", "eqv", "imp"],
+        &["and"],
+        &["=", "<>", "<", ">", "<=", ">=", "is"],
+        &["&"],
+        &["+", "-"],
+        &["mod"],
+        &["*", "/"],
+        &["\\"],
+        &["^"],
+    ];
+    for group in GROUPS {
+        let mut depth = 0i32;
+        for index in (0..tokens.len()).rev() {
+            let token = &tokens[index];
+            if token.text == ")" {
+                depth += 1;
+                continue;
+            }
+            if token.text == "(" {
+                depth -= 1;
+                continue;
+            }
+            let operator = token.text.to_ascii_lowercase();
+            if depth == 0
+                && group.contains(&operator.as_str())
+                && index > 0
+                && index + 1 < tokens.len()
+            {
+                return Some((
+                    tokens[..index].to_vec(),
+                    operator,
+                    tokens[index + 1..].to_vec(),
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn infer_binary_expression_type(
+    operator: &str,
+    left: Option<&NativeTypeRef>,
+    right: Option<&NativeTypeRef>,
+) -> Option<NativeTypeRef> {
+    if matches!(
+        operator,
+        "=" | "<>" | "<" | ">" | "<=" | ">=" | "is" | "and" | "or" | "xor" | "eqv" | "imp"
+    ) {
+        return Some(type_ref("Boolean"));
+    }
+    if operator == "&" {
+        return Some(type_ref("String"));
+    }
+    if operator == "+"
+        && (type_includes_name(left, "String") || type_includes_name(right, "String"))
+    {
+        return Some(type_ref("String"));
+    }
+    if matches!(operator, "+" | "-" | "*" | "/" | "\\" | "mod" | "^") {
+        return Some(type_ref("Number"));
+    }
+    left.cloned().or_else(|| right.cloned())
+}
+
+fn type_includes_name(type_ref: Option<&NativeTypeRef>, name: &str) -> bool {
+    type_ref
+        .map(|type_ref| {
+            expand_union_type(type_ref)
+                .iter()
+                .any(|item| item.name.eq_ignore_ascii_case(name))
+        })
+        .unwrap_or(false)
+}
+
+fn matching_close_paren(tokens: &[VbToken], open_index: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for (index, token) in tokens.iter().enumerate().skip(open_index) {
+        if token.text == "(" {
+            depth += 1;
+        } else if token.text == ")" {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+fn build_type_facts(
+    parsed: &Value,
+    context: &Value,
+    symbols: &[Value],
+    analysis: &VbAnalysisCache<'_>,
+) -> Vec<Value> {
+    let mut facts = context
+        .get("typeEnvironment")
+        .and_then(|env| env.get("types"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    merge_configured_com_types(&mut facts, context);
+    for class_symbol in symbols
+        .iter()
+        .filter(|symbol| symbol.get("kind").and_then(Value::as_str) == Some("class"))
+    {
+        let Some(class_name) = class_symbol.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        merge_type_fact(
+            &mut facts,
+            json!({
+                "name": class_name,
+                "kind": "class",
+                "members": [],
+            }),
+        );
+    }
+    for symbol in symbols {
+        let Some(owner) = symbol.get("memberOf").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(member) = type_member_from_symbol(symbol) {
+            merge_member_into_type(&mut facts, owner, member);
+        }
+    }
+    for annotation in parse_type_annotations(analysis).members {
+        merge_member_into_type(
+            &mut facts,
+            &annotation.type_name,
+            json!({
+                "name": annotation.member_name,
+                "kind": "property",
+                "type": type_ref_to_value(&type_ref(&annotation.member_type)),
+            }),
+        );
+    }
+    for server_object in parsed
+        .get("serverObjects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(prog_id) = server_object.get("progId").and_then(Value::as_str) {
+            merge_type_fact(
+                &mut facts,
+                json!({
+                    "name": prog_id,
+                    "kind": "com",
+                    "members": [],
+                }),
+            );
+        }
+    }
+    facts
+}
+
+fn type_member_from_symbol(symbol: &Value) -> Option<Value> {
+    let name = symbol.get("name").and_then(Value::as_str)?;
+    let kind = symbol
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("property");
+    let member_kind = if kind == "method" {
+        "method"
+    } else if kind == "field" {
+        "field"
+    } else {
+        "property"
+    };
+    let member_type = symbol_type_ref(symbol).unwrap_or_else(|| type_ref("Variant"));
+    let mut member = JsonMap::new();
+    member.insert("name".to_string(), Value::String(name.to_string()));
+    member.insert("kind".to_string(), Value::String(member_kind.to_string()));
+    member.insert("type".to_string(), type_ref_to_value(&member_type));
+    if matches!(kind, "method" | "property") {
+        member.insert(
+            "signature".to_string(),
+            json!({
+                "parameters": parameter_details(symbol),
+                "returnType": type_ref_to_value(&member_type),
+            }),
+        );
+    }
+    Some(Value::Object(member))
+}
+
+fn parameter_details(symbol: &Value) -> Vec<Value> {
+    if let Some(details) = symbol.get("parameterDetails").and_then(Value::as_array) {
+        if !details.is_empty() {
+            return details.clone();
+        }
+    }
+    symbol
+        .get("parameters")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|name| json!({ "name": name, "mode": "byref" }))
+        .collect()
+}
+
+fn merge_configured_com_types(facts: &mut Vec<Value>, context: &Value) {
+    let Some(com_types) = context.get("comTypes").and_then(Value::as_object) else {
+        return;
+    };
+    for (type_name, config) in com_types {
+        let members = config
+            .get("members")
+            .and_then(Value::as_object)
+            .map(|members| {
+                members
+                    .iter()
+                    .map(|(member_name, member)| configured_com_member(member_name, member))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        merge_type_fact(
+            facts,
+            json!({
+                "name": type_name,
+                "kind": "com",
+                "members": members,
+            }),
+        );
+    }
+}
+
+fn configured_com_member(member_name: &str, member: &Value) -> Value {
+    if let Some(type_name) = member.as_str() {
+        return json!({
+            "name": member_name,
+            "kind": "property",
+            "type": type_ref_to_value(&type_ref(type_name)),
+        });
+    }
+    let kind = member
+        .get("kind")
+        .and_then(Value::as_str)
+        .or_else(|| member.get("parameters").map(|_| "method"))
+        .unwrap_or("property");
+    let return_type = member
+        .get("returnType")
+        .or_else(|| member.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("Variant");
+    let parameters = member
+        .get("parameters")
+        .and_then(Value::as_array)
+        .map(|parameters| {
+            parameters
+                .iter()
+                .enumerate()
+                .map(|(index, parameter)| configured_com_parameter(index, parameter))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut result = JsonMap::new();
+    result.insert("name".to_string(), Value::String(member_name.to_string()));
+    result.insert("kind".to_string(), Value::String(kind.to_string()));
+    result.insert(
+        "type".to_string(),
+        type_ref_to_value(&type_ref(return_type)),
+    );
+    if !parameters.is_empty() {
+        result.insert(
+            "signature".to_string(),
+            json!({
+                "parameters": parameters,
+                "returnType": type_ref_to_value(&type_ref(return_type)),
+            }),
+        );
+    }
+    Value::Object(result)
+}
+
+fn configured_com_parameter(index: usize, parameter: &Value) -> Value {
+    if let Some(type_name) = parameter.as_str() {
+        return json!({
+            "name": format!("arg{}", index + 1),
+            "type": type_ref_to_value(&type_ref(type_name)),
+        });
+    }
+    let mut result = JsonMap::new();
+    result.insert(
+        "name".to_string(),
+        Value::String(
+            parameter
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("arg{}", index + 1)),
+        ),
+    );
+    if let Some(type_name) = parameter.get("type").and_then(Value::as_str) {
+        result.insert("type".to_string(), type_ref_to_value(&type_ref(type_name)));
+    }
+    Value::Object(result)
+}
+
+fn merge_type_fact(facts: &mut Vec<Value>, incoming: Value) {
+    let Some(name) = incoming.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    let incoming_members = incoming
+        .get("members")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut existing_index = None;
+    for (index, fact) in facts.iter().enumerate() {
+        if fact
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|existing| existing.eq_ignore_ascii_case(name))
+            .unwrap_or(false)
+        {
+            existing_index = Some(index);
+            break;
+        }
+    }
+    if let Some(index) = existing_index {
+        if facts[index].get("kind").is_none() {
+            if let Some(kind) = incoming.get("kind") {
+                facts[index]["kind"] = kind.clone();
+            }
+        }
+        for member in incoming_members {
+            merge_member_into_type(facts, name, member);
+        }
+        return;
+    }
+    facts.push(incoming);
+}
+
+fn merge_member_into_type(facts: &mut Vec<Value>, type_name: &str, member: Value) {
+    if !facts.iter().any(|fact| {
+        fact.get("name")
+            .and_then(Value::as_str)
+            .map(|existing| existing.eq_ignore_ascii_case(type_name))
+            .unwrap_or(false)
+    }) {
+        facts.push(json!({
+            "name": type_name,
+            "kind": "class",
+            "members": [],
+        }));
+    }
+    let Some(fact) = facts.iter_mut().find(|fact| {
+        fact.get("name")
+            .and_then(Value::as_str)
+            .map(|existing| existing.eq_ignore_ascii_case(type_name))
+            .unwrap_or(false)
+    }) else {
+        return;
+    };
+    let Some(member_name) = member.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    let object = fact.as_object_mut().expect("type fact object");
+    let members = object
+        .entry("members".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(members) = members.as_array_mut() else {
+        return;
+    };
+    if let Some(existing) = members.iter_mut().find(|existing| {
+        existing
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|existing| existing.eq_ignore_ascii_case(member_name))
+            .unwrap_or(false)
+    }) {
+        *existing = member;
+    } else {
+        members.push(member);
+    }
+}
+
+fn find_type_fact<'a>(facts: &'a [Value], type_name: &str) -> Option<&'a Value> {
+    facts.iter().find(|fact| {
+        fact.get("name")
+            .and_then(Value::as_str)
+            .map(|name| name.eq_ignore_ascii_case(type_name))
+            .unwrap_or(false)
+    })
+}
+
+fn find_type_member<'a>(
+    facts: &'a [Value],
+    type_name: &str,
+    member_name: &str,
+) -> Option<&'a Value> {
+    find_type_fact(facts, type_name)?
+        .get("members")?
+        .as_array()?
+        .iter()
+        .find(|member| {
+            member
+                .get("name")
+                .and_then(Value::as_str)
+                .map(|name| name.eq_ignore_ascii_case(member_name))
+                .unwrap_or(false)
+        })
+}
+
+fn member_type(
+    owner_type: &NativeTypeRef,
+    member_name: &str,
+    facts: &[Value],
+) -> Option<NativeTypeRef> {
+    let owner_type = type_without_nothing(owner_type).unwrap_or_else(|| owner_type.clone());
+    expand_union_type(&owner_type)
+        .iter()
+        .map(|candidate| {
+            find_type_member(facts, &candidate.name, member_name)
+                .and_then(|member| member.get("type"))
+                .and_then(type_ref_from_value)
+        })
+        .reduce(|merged, item| merge_type_refs(merged, item))
+        .flatten()
+}
+
+fn member_return_type(
+    owner_type: &NativeTypeRef,
+    member_name: &str,
+    facts: &[Value],
+) -> Option<NativeTypeRef> {
+    let owner_type = type_without_nothing(owner_type).unwrap_or_else(|| owner_type.clone());
+    expand_union_type(&owner_type)
+        .iter()
+        .map(|candidate| {
+            find_type_member(facts, &candidate.name, member_name)
+                .and_then(|member| member.get("signature"))
+                .and_then(|signature| signature.get("returnType"))
+                .and_then(type_ref_from_value)
+        })
+        .reduce(|merged, item| merge_type_refs(merged, item))
+        .flatten()
+}
+
+fn type_has_member(owner_type: &NativeTypeRef, member_name: &str, facts: &[Value]) -> bool {
+    let owner_type = type_without_nothing(owner_type).unwrap_or_else(|| owner_type.clone());
+    expand_union_type(&owner_type).iter().all(|candidate| {
+        find_type_fact(facts, &candidate.name)
+            .map(|_| find_type_member(facts, &candidate.name, member_name).is_some())
+            .unwrap_or(true)
+    })
 }
 
 fn diagnose_vbscript_with_analysis(
@@ -3725,15 +4916,26 @@ fn diagnose_vbscript_with_analysis(
                 "severity": 1,
                 "range": analysis.text_index.range(token.start, token.end),
                 "message": format!("'{name}' is not declared.", name = token.text),
-                "source": "asp-lsp",
+                "source": "asp-lsp-vbscript",
                 "code": "vbscript:undeclared",
             }));
         }
     }
-    if context
-        .get("unusedDiagnostics")
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
+    let project_context_unused = context
+        .get("documents")
+        .and_then(Value::as_array)
+        .map(|documents| documents.len() > 1)
+        .unwrap_or(false)
+        || context
+            .get("externalRefUsages")
+            .and_then(Value::as_array)
+            .map(|usages| !usages.is_empty())
+            .unwrap_or(false);
+    if !project_context_unused
+        && context
+            .get("unusedDiagnostics")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
     {
         for symbol in symbols {
             let Some(name) = symbol.get("name").and_then(Value::as_str) else {
@@ -3770,7 +4972,364 @@ fn diagnose_vbscript_with_analysis(
             }));
         }
     }
+    if context.get("typeChecking").and_then(Value::as_str) == Some("strict") {
+        diagnostics.extend(diagnose_type_issues(_parsed, symbols, context, analysis));
+    }
     diagnostics
+}
+
+fn diagnose_type_issues(
+    parsed: &Value,
+    symbols: &[Value],
+    context: &Value,
+    analysis: &VbAnalysisCache<'_>,
+) -> Vec<Value> {
+    let type_facts = build_type_facts(parsed, context, symbols, analysis);
+    let mut diagnostics = Vec::new();
+    for region in &analysis.regions {
+        let significant = &region.significant;
+        let mut index = 0usize;
+        while index < significant.len() {
+            if significant[index].kind == "newline" || significant[index].text == ":" {
+                index += 1;
+                continue;
+            }
+            let statement_end = statement_end_index(significant, index);
+            let statement = &significant[index..=statement_end];
+            diagnostics.extend(diagnose_assignment_types(
+                statement,
+                symbols,
+                analysis,
+                &type_facts,
+            ));
+            diagnostics.extend(diagnose_call_types(
+                statement,
+                symbols,
+                analysis,
+                &type_facts,
+            ));
+            diagnostics.extend(diagnose_member_access(
+                statement,
+                symbols,
+                analysis,
+                &type_facts,
+            ));
+            index = statement_end + 1;
+        }
+    }
+    diagnostics
+}
+
+fn diagnose_assignment_types(
+    statement: &[VbToken],
+    symbols: &[Value],
+    analysis: &VbAnalysisCache<'_>,
+    type_facts: &[Value],
+) -> Vec<Value> {
+    let first = lower_token(statement.first());
+    let is_set = first == "set";
+    let target_index = if is_set { 1 } else { 0 };
+    let Some(target) = statement.get(target_index) else {
+        return Vec::new();
+    };
+    let Some(equals_index) = statement.iter().position(|token| token.text == "=") else {
+        return Vec::new();
+    };
+    if target.kind != "identifier"
+        || statement
+            .get(target_index + 1)
+            .map(|token| token.text.as_str())
+            == Some(".")
+    {
+        return Vec::new();
+    }
+    let lhs_type = infer_variable_type_ref(&target.text, symbols, analysis, target.start);
+    let rhs_type = infer_expression_type(
+        statement.get(equals_index + 1..).unwrap_or_default(),
+        symbols,
+        analysis,
+        type_facts,
+        target.start,
+    );
+    let mut diagnostics = Vec::new();
+    if let Some(rhs_type) = &rhs_type {
+        if is_set && is_clearly_scalar_type(rhs_type) {
+            diagnostics.push(type_warning(
+                analysis,
+                target.start,
+                statement
+                    .last()
+                    .map(|token| token.end)
+                    .unwrap_or(target.end),
+                format!(
+                    "Set assigns an object reference, but '{name}' receives {type_name}.",
+                    name = target.text,
+                    type_name = format_type_ref(rhs_type)
+                ),
+                "setScalar",
+                json!({ "name": target.text, "type": format_type_ref(rhs_type) }),
+            ));
+        }
+        if !is_set && is_clearly_object_type(rhs_type, type_facts) {
+            diagnostics.push(type_warning(
+                analysis,
+                target.start,
+                statement
+                    .last()
+                    .map(|token| token.end)
+                    .unwrap_or(target.end),
+                format!(
+                    "Object assignment to '{name}' should use Set.",
+                    name = target.text
+                ),
+                "objectNeedsSet",
+                json!({ "name": target.text, "type": format_type_ref(rhs_type) }),
+            ));
+        }
+    }
+    if let (Some(lhs_type), Some(rhs_type)) = (&lhs_type, &rhs_type) {
+        if !is_compatible_type(lhs_type, rhs_type, type_facts) {
+            diagnostics.push(type_warning(
+                analysis,
+                target.start,
+                statement
+                    .last()
+                    .map(|token| token.end)
+                    .unwrap_or(target.end),
+                format!(
+                    "Type mismatch: '{name}' is {expected}, but assigned {actual}.",
+                    name = target.text,
+                    expected = format_type_ref(lhs_type),
+                    actual = format_type_ref(rhs_type)
+                ),
+                "typeMismatch",
+                json!({
+                    "name": target.text,
+                    "expected": format_type_ref(lhs_type),
+                    "actual": format_type_ref(rhs_type),
+                }),
+            ));
+        }
+    }
+    diagnostics
+}
+
+fn diagnose_call_types(
+    statement: &[VbToken],
+    symbols: &[Value],
+    analysis: &VbAnalysisCache<'_>,
+    type_facts: &[Value],
+) -> Vec<Value> {
+    let mut diagnostics = Vec::new();
+    for index in 0..statement.len() {
+        if statement.get(index).map(|token| token.text.as_str()) != Some("(")
+            || statement
+                .get(index.saturating_sub(1))
+                .map(|token| token.kind.as_str())
+                != Some("identifier")
+        {
+            continue;
+        }
+        let Some(name) = call_name_before(statement, index) else {
+            continue;
+        };
+        let signature =
+            signature_for_call(&name, statement[index].start, symbols, analysis, type_facts);
+        if signature.is_none() {
+            let call_name = name.rsplit('.').next().unwrap_or(&name);
+            if !is_likely_dynamic_call(call_name) {
+                diagnostics.push(type_warning(
+                    analysis,
+                    statement[index - 1].start,
+                    statement[index - 1].end,
+                    format!("Call target '{name}' is not known."),
+                    "unknownCall",
+                    json!({ "name": name }),
+                ));
+            }
+            continue;
+        }
+        let signature = signature.unwrap();
+        let close_index = matching_close_paren(statement, index).unwrap_or(statement.len());
+        let argument_count =
+            count_arguments(statement.get(index + 1..close_index).unwrap_or_default());
+        let expected = signature
+            .get("parameters")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        if argument_count != expected {
+            diagnostics.push(type_warning(
+                analysis,
+                statement[index - 1].start,
+                statement[index - 1].end,
+                format!(
+                    "Argument count mismatch for '{name}': expected {expected}, got {argument_count}."
+                ),
+                "argumentCountMismatch",
+                json!({ "name": name, "expected": expected, "actual": argument_count }),
+            ));
+        }
+    }
+    diagnostics
+}
+
+fn diagnose_member_access(
+    statement: &[VbToken],
+    symbols: &[Value],
+    analysis: &VbAnalysisCache<'_>,
+    type_facts: &[Value],
+) -> Vec<Value> {
+    let mut diagnostics = Vec::new();
+    for index in 1..statement.len().saturating_sub(1) {
+        if statement.get(index).map(|token| token.text.as_str()) != Some(".")
+            || statement.get(index + 1).map(|token| token.kind.as_str()) != Some("identifier")
+        {
+            continue;
+        }
+        let owner = &statement[index - 1];
+        let member = &statement[index + 1];
+        if owner.kind != "identifier" {
+            continue;
+        }
+        let Some(owner_type) = infer_variable_type_ref(&owner.text, symbols, analysis, owner.start)
+        else {
+            continue;
+        };
+        if is_loose_type(&owner_type) {
+            continue;
+        }
+        if !type_has_member(&owner_type, &member.text, type_facts) {
+            let owner_type_name = format_type_ref(&owner_type);
+            diagnostics.push(type_warning(
+                analysis,
+                member.start,
+                member.end,
+                format!(
+                    "Type '{type_name}' has no member '{member_name}'.",
+                    type_name = owner_type_name,
+                    member_name = member.text
+                ),
+                "missingMember",
+                json!({ "type": owner_type_name, "member": member.text }),
+            ));
+        }
+    }
+    diagnostics
+}
+
+fn type_warning(
+    analysis: &VbAnalysisCache<'_>,
+    start: usize,
+    end: usize,
+    message: String,
+    code: &str,
+    data: Value,
+) -> Value {
+    json!({
+        "severity": 2,
+        "range": analysis.text_index.range(start, end),
+        "message": message,
+        "source": "asp-lsp-vbscript-type",
+        "code": code,
+        "data": data,
+    })
+}
+
+fn call_name_before(tokens: &[VbToken], open_paren_index: usize) -> Option<String> {
+    let before = tokens.get(open_paren_index.checked_sub(1)?)?;
+    if before.kind != "identifier" {
+        return None;
+    }
+    if open_paren_index >= 3
+        && tokens
+            .get(open_paren_index - 2)
+            .map(|token| token.text.as_str())
+            == Some(".")
+        && tokens
+            .get(open_paren_index - 3)
+            .map(|token| token.kind.as_str())
+            == Some("identifier")
+    {
+        return Some(format!(
+            "{}.{}",
+            tokens[open_paren_index - 3].text,
+            before.text
+        ));
+    }
+    Some(before.text.clone())
+}
+
+fn signature_for_call(
+    name: &str,
+    offset: usize,
+    symbols: &[Value],
+    analysis: &VbAnalysisCache<'_>,
+    type_facts: &[Value],
+) -> Option<Value> {
+    if let Some((owner, member)) = name.split_once('.') {
+        let owner_type = infer_variable_type_ref(owner, symbols, analysis, offset)?;
+        return member_signature(&owner_type, member, type_facts);
+    }
+    let symbol = visible_symbol_index(symbols, &analysis.text_index, name, offset, None)
+        .and_then(|index| symbols.get(index))?;
+    let kind = symbol
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if kind != "function" && kind != "sub" {
+        return None;
+    }
+    Some(json!({
+        "parameters": parameter_details(symbol),
+        "returnType": symbol_type_ref(symbol).map(|type_ref| type_ref_to_value(&type_ref)),
+    }))
+}
+
+fn member_signature(
+    owner_type: &NativeTypeRef,
+    member_name: &str,
+    facts: &[Value],
+) -> Option<Value> {
+    let owner_type = type_without_nothing(owner_type).unwrap_or_else(|| owner_type.clone());
+    let signatures = expand_union_type(&owner_type)
+        .iter()
+        .map(|candidate| {
+            find_type_member(facts, &candidate.name, member_name)
+                .and_then(|member| member.get("signature"))
+                .cloned()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    signatures.first().cloned()
+}
+
+fn count_arguments(tokens: &[VbToken]) -> usize {
+    let meaningful = tokens
+        .iter()
+        .filter(|token| token.text != ")" && token.kind != "newline")
+        .collect::<Vec<_>>();
+    if meaningful.is_empty() {
+        return 0;
+    }
+    let mut depth = 0i32;
+    let mut count = 1usize;
+    for token in meaningful {
+        if token.text == "(" {
+            depth += 1;
+        } else if token.text == ")" && depth > 0 {
+            depth -= 1;
+        } else if token.text == "," && depth == 0 {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn is_likely_dynamic_call(name: &str) -> bool {
+    name.chars()
+        .next()
+        .map(|ch| ch.is_ascii_uppercase())
+        .unwrap_or(false)
 }
 
 fn range_key(range: &Value) -> String {
@@ -3904,7 +5463,39 @@ fn external_ref_usages(refs: &[Value]) -> Vec<Value> {
     usages.into_values().collect()
 }
 
-fn summarize_asp_file(parsed: &Value) -> Value {
+fn is_public_summary_symbol(symbol: &Value) -> bool {
+    if symbol.get("visibility").and_then(Value::as_str) == Some("private")
+        || symbol.get("scopeName").and_then(Value::as_str).is_some()
+        || symbol.get("kind").and_then(Value::as_str) == Some("parameter")
+    {
+        return false;
+    }
+    let kind = symbol
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if symbol.get("memberOf").and_then(Value::as_str).is_some() {
+        return matches!(kind, "field" | "method" | "property");
+    }
+    matches!(kind, "variable" | "constant" | "function" | "sub" | "class")
+}
+
+fn sanitize_public_summary_symbol(symbol: &Value) -> Value {
+    if symbol.get("explicitType").and_then(Value::as_bool) == Some(true)
+        || symbol.get("type").is_none()
+        || symbol.get("typeName").and_then(Value::as_str) == Some("Variant")
+    {
+        return symbol.clone();
+    }
+    let mut sanitized = symbol.clone();
+    set_symbol_type(&mut sanitized, "Variant", false);
+    if let Some(object) = sanitized.as_object_mut() {
+        object.insert("explicitType".to_string(), Value::Bool(false));
+    }
+    sanitized
+}
+
+fn summarize_asp_file(parsed: &Value, context: &Value) -> Value {
     let uri = parsed
         .get("uri")
         .and_then(Value::as_str)
@@ -3935,11 +5526,12 @@ fn summarize_asp_file(parsed: &Value) -> Value {
         })
         .collect::<Vec<_>>();
     let analysis = VbAnalysisCache::new(parsed);
-    let symbols = collect_symbols_from_analysis(parsed, &Value::Null, &analysis);
+    let symbols = collect_symbols_from_analysis(parsed, context, &analysis);
+    let type_facts = build_type_facts(parsed, context, &symbols, &analysis);
     let public_symbols = symbols
         .iter()
-        .filter(|symbol| symbol.get("visibility").and_then(Value::as_str) != Some("private"))
-        .cloned()
+        .filter(|symbol| is_public_summary_symbol(symbol))
+        .map(sanitize_public_summary_symbol)
         .collect::<Vec<_>>();
     let exports = public_symbols
         .iter()
@@ -3971,7 +5563,7 @@ fn summarize_asp_file(parsed: &Value) -> Value {
             "exports": exports,
             "externalRefs": external_refs,
             "externalRefUsages": external_ref_usages,
-            "typeFacts": [],
+            "typeFacts": type_facts,
         }))
     } else {
         None
@@ -4586,5 +6178,121 @@ Response.Write MissingValue
             summary["vbscript"]["externalRefUsages"][0]["name"],
             "MissingValue"
         );
+    }
+
+    #[test]
+    fn infers_native_vbscript_types_and_type_facts() {
+        let source = r#"<%
+Class Holder
+  Public Value
+End Class
+' @member Holder.Value As String | Number
+x = 1
+x = "a"
+implicitValue = 1
+Dim unknownGlobal
+Function MakeValue(flag)
+  If flag Then
+    MakeValue = 1
+  Else
+    MakeValue = "x"
+  End If
+End Function
+%>"#;
+        let parsed = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///types.asp",
+            "text": source,
+            "settings": {},
+        }));
+        let analysis = handle_value(json!({
+            "operation": "analyzeVbscript",
+            "parsed": parsed.clone(),
+            "context": {},
+        }));
+        let symbols = analysis["symbols"].as_array().expect("symbols");
+        let symbol_type = |name: &str| {
+            symbols
+                .iter()
+                .find(|symbol| symbol["name"] == name)
+                .and_then(|symbol| symbol["typeName"].as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(symbol_type("x"), "Number | String");
+        assert_eq!(symbol_type("implicitValue"), "Number");
+        assert_eq!(symbol_type("unknownGlobal"), "Variant");
+        assert_eq!(symbol_type("MakeValue"), "Number | String");
+
+        let summary = handle_value(json!({
+            "operation": "summarizeAspFileAnalysis",
+            "parsed": parsed,
+            "context": {},
+        }));
+        let holder = summary["vbscript"]["typeFacts"]
+            .as_array()
+            .expect("type facts")
+            .iter()
+            .find(|fact| fact["name"] == "Holder")
+            .expect("Holder type fact");
+        let value = holder["members"]
+            .as_array()
+            .expect("members")
+            .iter()
+            .find(|member| member["name"] == "Value")
+            .expect("Value member");
+        assert_eq!(value["type"]["name"], "String | Number");
+    }
+
+    #[test]
+    fn emits_native_strict_type_diagnostics_for_custom_com() {
+        let source = r#"<%
+Dim widget
+widget = Server.CreateObject("Custom.Widget")
+widget.Missing
+widget.Ping("a", "b")
+Set title = "hello"
+' @type typedValue As Number
+Dim typedValue
+typedValue = "hello"
+unknownlower()
+%>"#;
+        let parsed = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///strict.asp",
+            "text": source,
+            "settings": {},
+        }));
+        let analysis = handle_value(json!({
+            "operation": "analyzeVbscript",
+            "parsed": parsed,
+            "context": {
+                "typeChecking": "strict",
+                "comTypes": {
+                    "Custom.Widget": {
+                        "members": {
+                            "Ping": {
+                                "kind": "method",
+                                "returnType": "Boolean",
+                                "parameters": [{ "name": "name", "type": "String" }]
+                            }
+                        }
+                    }
+                }
+            },
+        }));
+        let codes = analysis["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .iter()
+            .filter(|diagnostic| diagnostic["source"] == "asp-lsp-vbscript-type")
+            .map(|diagnostic| diagnostic["code"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"objectNeedsSet"), "{codes:?}");
+        assert!(codes.contains(&"missingMember"), "{codes:?}");
+        assert!(codes.contains(&"argumentCountMismatch"), "{codes:?}");
+        assert!(codes.contains(&"setScalar"), "{codes:?}");
+        assert!(codes.contains(&"typeMismatch"), "{codes:?}");
+        assert!(codes.contains(&"unknownCall"), "{codes:?}");
     }
 }

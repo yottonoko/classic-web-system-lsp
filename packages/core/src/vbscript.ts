@@ -28,8 +28,13 @@ import { createLocalizer } from "./localize";
 import {
   tryNativeAnalyzeVbscript,
   tryNativeAnalyzeVbscriptAsync,
+  tryNativeAnalyzeVbscriptFromTextAsync,
   tryNativeCollectVbscriptSymbols,
   tryNativeCollectVbscriptSymbolsAsync,
+  tryNativeCollectVbscriptSymbolsFromTextAsync,
+  tryNativeSummarizeAspFileAnalysis,
+  tryNativeSummarizeAspFileAnalysisAsync,
+  tryNativeSummarizeAspFileAnalysisFromTextAsync,
 } from "./native-backend";
 import type {
   AspCstNode,
@@ -2521,41 +2526,14 @@ function docCommentBlockBoundary(tokens: VbToken[], startIndex: number, directio
   return boundary;
 }
 
-// The native analyzeVbscript ignores cross-document/project context, so fall back to
-// the TypeScript analyzer whenever the context carries project-wide information.
-// An empty context object alone does not force the fallback.
-function requiresTsSemanticContext(context: VbProjectContext): boolean {
-  if ((context.symbols?.length ?? 0) > 0) {
-    return true;
-  }
-  if ((context.documents?.length ?? 0) > 1) {
-    return true;
-  }
-  if ((context.externalRefUsages?.length ?? 0) > 0) {
-    return true;
-  }
-  const typeEnvironment = context.typeEnvironment;
-  if (typeEnvironment && (typeEnvironment.types.length > 0 || typeEnvironment.symbols.length > 0)) {
-    return true;
-  }
-  return false;
-}
-
 export function analyzeVbscript(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
-  if (
-    nativeSemanticsEnabled() &&
-    !requiresTsSemanticContext(context) &&
-    context.typeChecking !== "strict"
-  ) {
+  if (nativeSemanticsEnabled()) {
     const native = tryNativeAnalyzeVbscript(parsed, context);
     if (native) {
-      return {
-        diagnostics: native.diagnostics,
-        symbols: collectVbscriptSymbolsTypeScript(parsed, context, {}),
-      };
+      return localizeNativeAnalysisResult(native, context);
     }
   }
   return analyzeVbscriptTypeScript(parsed, context);
@@ -2565,17 +2543,10 @@ export async function analyzeVbscriptAsync(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
-  if (
-    nativeSemanticsEnabled() &&
-    !requiresTsSemanticContext(context) &&
-    context.typeChecking !== "strict"
-  ) {
+  if (nativeSemanticsEnabled()) {
     const native = await tryNativeAnalyzeVbscriptAsync(parsed, context);
     if (native) {
-      return {
-        diagnostics: native.diagnostics,
-        symbols: collectVbscriptSymbolsTypeScript(parsed, context, {}),
-      };
+      return localizeNativeAnalysisResult(native, context);
     }
   }
   return analyzeVbscriptTypeScript(parsed, context);
@@ -2594,14 +2565,58 @@ export async function analyzeVbscriptFromTextAsync(
   if (cached) {
     return cached;
   }
-  const result = analyzeVbscriptTypeScript(
-    parseAspDocumentTypeScriptOnly(uri, text, settings),
-    context,
-  );
+  const native = nativeSemanticsEnabled()
+    ? await tryNativeAnalyzeVbscriptFromTextAsync(uri, text, settings, context)
+    : undefined;
+  const result = native
+    ? localizeNativeAnalysisResult(native, context)
+    : analyzeVbscriptTypeScript(parseAspDocumentTypeScriptOnly(uri, text, settings), context);
   if (cacheKey) {
     setVbFromTextCache(cacheKey, text, result);
   }
   return result;
+}
+
+function localizeNativeAnalysisResult(
+  result: { diagnostics: Diagnostic[]; symbols: VbSymbol[] },
+  context: VbProjectContext,
+): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
+  return {
+    diagnostics: localizeNativeTypeDiagnostics(result.diagnostics, context.locale),
+    symbols: result.symbols,
+  };
+}
+
+function localizeNativeTypeDiagnostics(
+  diagnostics: Diagnostic[],
+  locale: AspLocale | undefined,
+): Diagnostic[] {
+  if (!locale) {
+    return diagnostics;
+  }
+  const localizer = createLocalizer(locale);
+  const keyByCode = {
+    setScalar: "vb.diagnostic.setScalar",
+    objectNeedsSet: "vb.diagnostic.objectNeedsSet",
+    typeMismatch: "vb.diagnostic.typeMismatch",
+    unknownCall: "vb.diagnostic.unknownCall",
+    argumentCountMismatch: "vb.diagnostic.argumentCountMismatch",
+    missingMember: "vb.diagnostic.missingMember",
+  } as const;
+  return diagnostics.map((diagnostic) => {
+    if (diagnostic.source !== "asp-lsp-vbscript-type") {
+      return diagnostic;
+    }
+    const code = typeof diagnostic.code === "string" ? diagnostic.code : undefined;
+    const key = code ? keyByCode[code as keyof typeof keyByCode] : undefined;
+    if (!key) {
+      return diagnostic;
+    }
+    return {
+      ...diagnostic,
+      message: localizer.t(key, (diagnostic.data ?? {}) as Record<string, string | number>),
+    };
+  });
 }
 
 function analyzeVbscriptTypeScript(
@@ -3819,11 +3834,16 @@ export async function collectVbscriptSymbolsFromTextAsync(
   if (cached) {
     return cached;
   }
-  const result = collectVbscriptSymbolsTypeScript(
-    parseAspDocumentTypeScriptOnly(uri, text, settings),
-    context,
-    {},
-  );
+  const native = nativeSemanticsEnabled()
+    ? await tryNativeCollectVbscriptSymbolsFromTextAsync(uri, text, settings, context)
+    : undefined;
+  const result =
+    native ??
+    collectVbscriptSymbolsTypeScript(
+      parseAspDocumentTypeScriptOnly(uri, text, settings),
+      context,
+      {},
+    );
   if (cacheKey) {
     setVbFromTextCache(cacheKey, text, result);
   }
@@ -3862,8 +3882,8 @@ interface VbSymbolCollectionOptions {
 function canUseNativeSymbolCollection(options: VbSymbolCollectionOptions): boolean {
   return (
     options.implicitAssignments !== false &&
-    options.inferTypes === false &&
-    options.variantFallback === false
+    options.inferTypes !== false &&
+    options.variantFallback !== false
   );
 }
 
@@ -3889,6 +3909,12 @@ export function summarizeAspFileAnalysis(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): FileAnalysisSummary {
+  if (nativeSemanticsEnabled()) {
+    const native = tryNativeSummarizeAspFileAnalysis(parsed, context);
+    if (native) {
+      return native;
+    }
+  }
   return summarizeAspFileAnalysisTypeScript(parsed, context);
 }
 
@@ -3896,6 +3922,12 @@ export async function summarizeAspFileAnalysisAsync(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): Promise<FileAnalysisSummary> {
+  if (nativeSemanticsEnabled()) {
+    const native = await tryNativeSummarizeAspFileAnalysisAsync(parsed, context);
+    if (native) {
+      return native;
+    }
+  }
   return summarizeAspFileAnalysisTypeScript(parsed, context);
 }
 
@@ -3910,10 +3942,15 @@ export async function summarizeAspFileAnalysisFromTextAsync(
   if (cached) {
     return cached;
   }
-  const result = summarizeAspFileAnalysisTypeScript(
-    parseAspDocumentTypeScriptOnly(uri, text, settings),
-    context,
-  );
+  const native = nativeSemanticsEnabled()
+    ? await tryNativeSummarizeAspFileAnalysisFromTextAsync(uri, text, settings, context)
+    : undefined;
+  const result =
+    native ??
+    summarizeAspFileAnalysisTypeScript(
+      parseAspDocumentTypeScriptOnly(uri, text, settings),
+      context,
+    );
   if (cacheKey) {
     setVbFromTextCache(cacheKey, text, result);
   }
