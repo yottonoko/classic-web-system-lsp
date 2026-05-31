@@ -39,6 +39,7 @@
     "format": "oxfmt .",
     "format:check": "oxfmt . --check",
     "package:vsix": "pnpm --filter classic-asp-lsp run package:vsix",
+    "package:vsix:no-native": "pnpm --filter classic-asp-lsp run package:vsix:no-native",
     "test": "pnpm -r run test"
   },
   "devDependencies": {

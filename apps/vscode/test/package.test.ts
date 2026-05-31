@@ -22,6 +22,26 @@ describe("VS Code extension package", () => {
     expect(manifest.devDependencies?.["@asp-lsp/language-server"]).toBeUndefined();
   });
 
+  it("declares a no-native VSIX packaging script", () => {
+    const rootManifest = JSON.parse(fs.readFileSync("../../package.json", "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+
+    expect(rootManifest.scripts?.["package:vsix:no-native"]).toBe(
+      "pnpm --filter classic-asp-lsp run package:vsix:no-native",
+    );
+    expect(manifest.scripts?.["build:no-native"]).toContain(
+      "node scripts/copy-server-runtime.mjs --no-native",
+    );
+    expect(manifest.scripts?.["package:vsix:no-native"]).toContain("pnpm run build:no-native");
+    expect(manifest.scripts?.["package:vsix:no-native"]).not.toContain("build:native");
+    expect(extensionSource).toContain("package:vsix:no-native");
+  });
+
   it("contributes commands, task definition and IIS debug settings", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       repository?: { url?: string };
