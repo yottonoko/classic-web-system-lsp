@@ -9,6 +9,7 @@ import {
   DiskAnalysisCache,
   type DiskAnalysisBuilderState,
   type DiskAnalysisSourceMetadata,
+  type DiskSummaryCacheEntry,
 } from "./disk-analysis-cache";
 import type {
   JsDiagnosticsWorkerResponse,
@@ -324,6 +325,10 @@ interface CachedAnalysis {
     collectionKey: string;
     documents: AspParsedDocument[];
   };
+  vbProjectSummaryGraph?: {
+    collectionKey: string;
+    graph: VbProjectSummaryGraph;
+  };
   vbFileSummary?: {
     key: string;
     summary: FileAnalysisSummary;
@@ -504,14 +509,19 @@ interface VbProjectContextCacheEntry {
   lastUsed: number;
 }
 
-interface IncludeDocumentCacheEntry {
+interface IncludeSummaryCacheEntry {
   key: string;
   fileName: string;
   uri: string;
-  parsed: AspParsedDocument;
+  source: DiskAnalysisSourceMetadata;
   summary: FileAnalysisSummary;
   publicFingerprint: string;
   publicSignature: FilePublicSignature;
+  parsed?: AspParsedDocument;
+}
+
+interface IncludeDocumentCacheEntry extends IncludeSummaryCacheEntry {
+  parsed: AspParsedDocument;
 }
 
 interface IncludePublicSummaryState {
@@ -524,9 +534,23 @@ interface IncludePublicSummaryState {
 
 interface VbProjectAnalysis {
   documents: AspParsedDocument[];
+  summaries: FileAnalysisSummary[];
+  summaryGraphKey: string;
+  complete: boolean;
   symbols: VbSymbol[];
   typeEnvironment: VbTypeEnvironment;
   externalRefUsages: VbExternalRefUsage[];
+}
+
+interface VbProjectSummaryGraph {
+  rootSummary: FileAnalysisSummary;
+  summaries: FileAnalysisSummary[];
+  documents: AspParsedDocument[];
+  key: string;
+  complete: boolean;
+  missingFiles: string[];
+  truncatedReason?: string;
+  textLength: number;
 }
 
 interface WorkspaceVbReferenceSummary {
@@ -638,7 +662,7 @@ class AspProjectBuilderState {
     );
   }
 
-  updateIncludeSummary(entry: IncludeDocumentCacheEntry, settings: AspSettings): void {
+  updateIncludeSummary(entry: IncludeSummaryCacheEntry, settings: AspSettings): void {
     const signature = entry.publicSignature;
     const previous = this.files.get(entry.uri);
     this.files.set(entry.uri, {
@@ -916,7 +940,12 @@ function aspFileOperationFilter() {
 
 class IncludeDocumentLoader {
   private readonly cache = new Map<string, IncludeDocumentCacheEntry>();
+  private readonly summaryCache = new Map<string, IncludeSummaryCacheEntry>();
   private readonly inFlight = new Map<string, Promise<IncludeDocumentCacheEntry | undefined>>();
+  private readonly summaryInFlight = new Map<
+    string,
+    Promise<IncludeSummaryCacheEntry | undefined>
+  >();
   private readonly generations = new Map<string, number>();
 
   async readAsync(
@@ -924,10 +953,11 @@ class IncludeDocumentLoader {
     settings: AspSettings,
   ): Promise<IncludeDocumentCacheEntry | undefined> {
     const normalized = normalizeFileName(fileName);
-    const key = await includeDocumentCacheKeyAsync(normalized, settings);
-    if (!key) {
+    const identity = await includeDocumentSourceIdentityAsync(normalized, settings);
+    if (!identity) {
       return undefined;
     }
+    const { key, source, text, diskBacked } = identity;
     const existing = this.cache.get(normalized);
     if (existing?.key === key) {
       return existing;
@@ -941,11 +971,23 @@ class IncludeDocumentLoader {
     let promise: Promise<IncludeDocumentCacheEntry | undefined> | undefined;
     promise = (async () => {
       try {
-        const text = await readTextFileAsync(normalized, settings.legacyEncoding);
-        const entry = await createIncludeDocumentCacheEntryAsync(normalized, text, settings, key);
+        const nextText = text ?? (await readTextFileAsync(normalized, settings.legacyEncoding));
+        const entry = await createIncludeDocumentCacheEntryAsync(
+          normalized,
+          nextText,
+          settings,
+          key,
+          source,
+        );
         if (this.generation(normalized) === generation) {
           this.cache.set(normalized, entry);
+          this.summaryCache.set(normalized, entry);
           rememberIncludePublicSummary(entry, settings);
+          if (diskBacked) {
+            void diskAnalysisCache
+              .writeSummary(diskSummaryCacheEntry(entry, settings))
+              .catch((error) => logDiskAnalysisCacheError("diskSummary.write", error));
+          }
         }
         return entry;
       } finally {
@@ -958,6 +1000,84 @@ class IncludeDocumentLoader {
     return promise;
   }
 
+  async readSummaryAsync(
+    fileName: string,
+    settings: AspSettings,
+    options: { allowRead?: boolean } = {},
+  ): Promise<IncludeSummaryCacheEntry | undefined> {
+    const normalized = normalizeFileName(fileName);
+    const identity = await includeDocumentSourceIdentityAsync(normalized, settings);
+    if (!identity) {
+      return undefined;
+    }
+    const { key, source, text, diskBacked } = identity;
+    const existing = this.summaryCache.get(normalized);
+    if (existing?.key === key) {
+      return existing;
+    }
+    const existingDocument = this.cache.get(normalized);
+    if (existingDocument?.key === key) {
+      this.summaryCache.set(normalized, existingDocument);
+      return existingDocument;
+    }
+    const inFlightKey = `${normalized}:${key}`;
+    const pending = this.summaryInFlight.get(inFlightKey);
+    if (pending) {
+      return pending;
+    }
+    const generation = this.generation(normalized);
+    let promise: Promise<IncludeSummaryCacheEntry | undefined> | undefined;
+    promise = (async () => {
+      try {
+        if (diskBacked) {
+          const cachedSummary = await diskAnalysisCache
+            .readSummary({ source, settingsKey: includeSummarySettingsKey(settings) })
+            .catch((error) => {
+              logDiskAnalysisCacheError("diskSummary.read", error);
+              return undefined;
+            });
+          if (cachedSummary) {
+            const entry = includeSummaryCacheEntryFromDisk(normalized, key, cachedSummary);
+            if (this.generation(normalized) === generation) {
+              this.summaryCache.set(normalized, entry);
+              rememberIncludePublicSummary(entry, settings);
+              logDebugSummary(settings, `[asp-lsp] diskSummary.hit: ${entry.uri}`);
+            }
+            return entry;
+          }
+          logDebugSummary(settings, `[asp-lsp] diskSummary.miss: ${pathToFileUri(normalized)}`);
+        }
+        if (options.allowRead === false) {
+          return undefined;
+        }
+        const nextText = text ?? (await readTextFileAsync(normalized, settings.legacyEncoding));
+        const entry = await createIncludeDocumentCacheEntryAsync(
+          normalized,
+          nextText,
+          settings,
+          key,
+          source,
+        );
+        if (this.generation(normalized) === generation) {
+          this.cache.set(normalized, entry);
+          this.summaryCache.set(normalized, entry);
+          rememberIncludePublicSummary(entry, settings);
+          if (diskBacked) {
+            await diskAnalysisCache.writeSummary(diskSummaryCacheEntry(entry, settings));
+            logDebugSummary(settings, `[asp-lsp] diskSummary.write: ${entry.uri}`);
+          }
+        }
+        return entry;
+      } finally {
+        if (this.summaryInFlight.get(inFlightKey) === promise) {
+          this.summaryInFlight.delete(inFlightKey);
+        }
+      }
+    })();
+    this.summaryInFlight.set(inFlightKey, promise);
+    return promise;
+  }
+
   cachedPublicSummary(fileName: string): IncludePublicSummaryState | undefined {
     return includePublicSummaries.get(normalizeFileName(fileName));
   }
@@ -967,9 +1087,15 @@ class IncludeDocumentLoader {
       const normalized = normalizeFileName(fileName);
       this.generations.set(normalized, this.generation(normalized) + 1);
       this.cache.delete(normalized);
+      this.summaryCache.delete(normalized);
       for (const key of this.inFlight.keys()) {
         if (key.startsWith(`${normalized}:`)) {
           this.inFlight.delete(key);
+        }
+      }
+      for (const key of this.summaryInFlight.keys()) {
+        if (key.startsWith(`${normalized}:`)) {
+          this.summaryInFlight.delete(key);
         }
       }
     }
@@ -977,7 +1103,9 @@ class IncludeDocumentLoader {
 
   clear(): void {
     this.cache.clear();
+    this.summaryCache.clear();
     this.inFlight.clear();
+    this.summaryInFlight.clear();
     this.generations.clear();
   }
 
@@ -994,6 +1122,7 @@ const pendingDocumentChanges = new Map<string, PendingDocumentChange>();
 const inFlightDocumentRefreshes = new Map<string, InFlightDocumentRefresh>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 const includeDocumentLoader = new IncludeDocumentLoader();
+const pendingIncludeSummaryRefreshes = new Map<string, Promise<void>>();
 const aspProjectBuilderState = new AspProjectBuilderState();
 const completionSessionCache = new CompletionSessionCache();
 const maxVbProjectContextCacheEntries = 32;
@@ -1310,7 +1439,11 @@ connection.onCompletion((params) =>
       return items;
     };
     if (region.language === "vbscript") {
-      const warmedContext = cachedVbProjectContextLookup(cached, settings);
+      const warmedContext =
+        cachedVbProjectContextLookup(cached, settings) ??
+        (cached.parsed.includes.length > 0
+          ? await summaryBackedVbProjectContextLookupAsync(cached, settings)
+          : undefined);
       const contextIdentity = cached.parsed.includes.length > 0 ? warmedContext?.key : undefined;
       const cachedCompletion = completionSessionCache.get(
         cached,
@@ -1508,7 +1641,10 @@ connection.onPrepareRename(async (params) => {
     getVbscriptRenameRange(
       cached.parsed,
       params.position,
-      await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+      await buildFullVbProjectContextForWorkspaceOperationAsync(
+        cached,
+        cachedSettings(cached.source.uri),
+      ),
     ) ?? null
   );
 });
@@ -1536,7 +1672,10 @@ connection.onRenameRequest(async (params: RenameParams): Promise<WorkspaceEdit |
   if (!isVbscriptPosition(cached, params.position)) {
     return null;
   }
-  const context = await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri));
+  const context = await buildFullVbProjectContextForWorkspaceOperationAsync(
+    cached,
+    cachedSettings(cached.source.uri),
+  );
   const range = getVbscriptRenameRange(cached.parsed, params.position, context);
   if (!range || !/^[A-Za-z][A-Za-z0-9_]*$/.test(params.newName)) {
     return null;
@@ -1840,7 +1979,10 @@ connection.languages.callHierarchy.onPrepare(async (params): Promise<CallHierarc
   return prepareVbscriptCallHierarchy(
     cached.parsed,
     params.position,
-    await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+    await buildFullVbProjectContextForWorkspaceOperationAsync(
+      cached,
+      cachedSettings(cached.source.uri),
+    ),
     cached.source.uri,
   ).map(itemWithContainedSelectionRange);
 });
@@ -1858,7 +2000,10 @@ connection.languages.callHierarchy.onIncomingCalls(
     }
     return getVbscriptIncomingCalls(
       params.item,
-      await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+      await buildFullVbProjectContextForWorkspaceOperationAsync(
+        cached,
+        cachedSettings(cached.source.uri),
+      ),
     ).map(incomingCallWithContainedSelectionRange);
   },
 );
@@ -1876,7 +2021,10 @@ connection.languages.callHierarchy.onOutgoingCalls(
     }
     return getVbscriptOutgoingCalls(
       params.item,
-      await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+      await buildFullVbProjectContextForWorkspaceOperationAsync(
+        cached,
+        cachedSettings(cached.source.uri),
+      ),
     ).map(outgoingCallWithContainedSelectionRange);
   },
 );
@@ -6200,7 +6348,11 @@ async function buildVbProjectContextAsync(
   const project = await collectCachedVbProjectAnalysisAsync(cached, settings);
   const documents = project.documents;
   const contextSettings = vbProjectContextSettings(settings);
-  const key = vbProjectContextCacheKey(documents, settings);
+  const key = JSON.stringify({
+    graph: project.summaryGraphKey,
+    settings: contextSettings,
+    globals: settings.vbscript?.globals,
+  });
   if (cached.analysis?.vbProjectContext?.key === key) {
     return { ...cached.analysis.vbProjectContext.context, locale: settings.resolvedLocale };
   }
@@ -6220,6 +6372,51 @@ async function buildVbProjectContextAsync(
   };
   rememberVbProjectContext(key, context);
   analysisFor(cached).vbProjectContext = { key, rootKey, context };
+  return { ...context, locale: settings.resolvedLocale };
+}
+
+async function buildFullVbProjectContextForWorkspaceOperationAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<VbProjectContext> {
+  await hydrateCachedVbscriptCstAsync(cached, settings, "workspaceOperation");
+  const documents = await collectFullVbProjectDocumentsForWorkspaceOperationAsync(cached, settings);
+  const contextSettings = vbProjectContextSettings(settings);
+  const key = JSON.stringify({
+    mode: "workspaceOperation",
+    documents: documents.map((document) => ({
+      uri: document.uri,
+      vbscript: vbProjectDocumentFingerprint(document),
+    })),
+    settings: contextSettings,
+    globals: settings.vbscript?.globals,
+  });
+  const globalCached = vbProjectContextCache.get(key);
+  if (globalCached) {
+    globalCached.lastUsed = Date.now();
+    return { ...globalCached.context, locale: settings.resolvedLocale };
+  }
+  const summaries = await Promise.all(
+    documents.map((document) =>
+      document.uri === cached.source.uri
+        ? cachedFileAnalysisSummaryAsync(cached, contextSettings, settings)
+        : summarizeAspFileAnalysisAsync(document, contextSettings),
+    ),
+  );
+  const symbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
+  symbols.push(...configuredVbscriptGlobals(cached, settings));
+  const context: VbProjectContext = {
+    documents,
+    symbols,
+    typeEnvironment: mergeVbTypeEnvironment(
+      buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
+      summaries.flatMap((summary) => summary.vbscript?.typeFacts ?? []),
+      symbols,
+    ),
+    externalRefUsages: summaries.flatMap((summary) => summary.vbscript?.externalRefUsages ?? []),
+    ...contextSettings,
+  };
+  rememberVbProjectContext(key, context);
   return { ...context, locale: settings.resolvedLocale };
 }
 
@@ -6249,6 +6446,7 @@ async function bestEffortVbProjectContextAsync(
 ): Promise<VbProjectContext> {
   return (
     cachedVbProjectContext(cached, settings) ??
+    (await summaryBackedVbProjectContextLookupAsync(cached, settings))?.context ??
     (await buildImmediateLocalVbProjectContextAsync(cached, settings))
   );
 }
@@ -6258,6 +6456,14 @@ function cachedVbProjectContext(
   settings: AspSettings,
 ): VbProjectContext | undefined {
   return cachedVbProjectContextLookup(cached, settings)?.context;
+}
+
+async function summaryBackedVbProjectContextLookupAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<CachedVbProjectContextLookup | undefined> {
+  await buildVbProjectContextAsync(cached, settings);
+  return cachedVbProjectContextLookup(cached, settings);
 }
 
 function cachedVbProjectContextLookup(
@@ -6271,6 +6477,24 @@ function cachedVbProjectContextLookup(
       key: existing.key,
       context: { ...existing.context, locale: settings.resolvedLocale },
     };
+  }
+  const summaryGraph = cached.analysis?.vbProjectSummaryGraph;
+  if (summaryGraph?.collectionKey === vbProjectDocumentCollectionKey(cached, settings)) {
+    const contextSettings = vbProjectContextSettings(settings);
+    const key = JSON.stringify({
+      graph: summaryGraph.graph.key,
+      settings: contextSettings,
+      globals: settings.vbscript?.globals,
+    });
+    const globalCached = vbProjectContextCache.get(key);
+    if (globalCached) {
+      globalCached.lastUsed = Date.now();
+      analysisFor(cached).vbProjectContext = { key, rootKey, context: globalCached.context };
+      return {
+        key,
+        context: { ...globalCached.context, locale: settings.resolvedLocale },
+      };
+    }
   }
   const documents = cached.analysis?.vbProjectDocuments;
   if (documents?.collectionKey !== vbProjectDocumentCollectionKey(cached, settings)) {
@@ -6364,7 +6588,7 @@ async function workspaceVbscriptReferencesForPosition(
   options: VbReferenceOptions = {},
 ): Promise<VbReference[]> {
   const settings = cachedSettings(cached.source.uri);
-  const context = await buildVbProjectContextAsync(cached, settings);
+  const context = await buildFullVbProjectContextForWorkspaceOperationAsync(cached, settings);
   const symbol = getVbscriptDefinition(cached.parsed, position, context);
   return symbol ? workspaceVbscriptReferencesForSymbol(cached, symbol, settings, options) : [];
 }
@@ -6375,7 +6599,7 @@ async function workspaceVbscriptReferencesForSymbol(
   settings: AspSettings,
   options: VbReferenceOptions = {},
 ): Promise<VbReference[]> {
-  const context = await buildVbProjectContextAsync(cached, settings);
+  const context = await buildFullVbProjectContextForWorkspaceOperationAsync(cached, settings);
   const target = equivalentVbSymbol(context.symbols ?? [], symbol) ?? symbol;
   const references = new Map<string, VbReference>();
   addVbReferences(references, getVbscriptReferencesForSymbol(target, context, options));
@@ -6395,7 +6619,10 @@ async function workspaceVbscriptReferencesForSymbol(
     if (!candidateCached) {
       continue;
     }
-    const candidateContext = await buildVbProjectContextAsync(candidateCached, settings);
+    const candidateContext = await buildFullVbProjectContextForWorkspaceOperationAsync(
+      candidateCached,
+      settings,
+    );
     const candidateTarget = equivalentVbSymbol(candidateContext.symbols ?? [], target);
     if (candidateTarget) {
       addVbReferences(
@@ -6655,7 +6882,9 @@ async function refreshIncludePublicBoundariesForAspChangesAsync(
     const next =
       change.type === FileChangeType.Deleted
         ? undefined
-        : await includeDocumentLoader.readAsync(fileName, cachedSettings(uri));
+        : await includeDocumentLoader.readSummaryAsync(fileName, cachedSettings(uri), {
+            allowRead: true,
+          });
     const nextFingerprint = next?.publicFingerprint ?? "missing";
     if (previous?.publicFingerprint === nextFingerprint) {
       logDebugSummary(
@@ -6894,18 +7123,16 @@ async function collectCachedVbProjectAnalysisAsync(
   cached: CachedDocument,
   settings: AspSettings,
 ): Promise<VbProjectAnalysis> {
-  const documents = await collectCachedVbProjectDocumentsAsync(cached, settings);
-  const key = vbProjectContextCacheKey(documents, settings);
+  const graph = await collectCachedVbProjectSummaryGraphAsync(cached, settings, {
+    allowReadMissing: false,
+  });
+  const key = vbProjectAnalysisCacheKey(graph, settings);
   const existing = cached.analysis?.vbProjectAnalysis;
   if (existing?.key === key) {
     return existing.analysis;
   }
   const contextSettings = vbProjectContextSettings(settings);
-  const summaries = await Promise.all(
-    documents.map((document) =>
-      fileAnalysisSummaryForProjectDocumentAsync(cached, document, settings, contextSettings),
-    ),
-  );
+  const summaries = graph.summaries;
   const symbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
   symbols.push(...configuredVbscriptGlobals(cached, settings));
   const typeEnvironment = mergeVbTypeEnvironment(
@@ -6914,7 +7141,10 @@ async function collectCachedVbProjectAnalysisAsync(
     symbols,
   );
   const analysis = {
-    documents,
+    documents: graph.documents,
+    summaries,
+    summaryGraphKey: graph.key,
+    complete: graph.complete,
     symbols,
     typeEnvironment,
     externalRefUsages: summaries.flatMap((summary) => summary.vbscript?.externalRefUsages ?? []),
@@ -6923,19 +7153,12 @@ async function collectCachedVbProjectAnalysisAsync(
   return analysis;
 }
 
-async function fileAnalysisSummaryForProjectDocumentAsync(
-  cached: CachedDocument,
-  document: AspParsedDocument,
-  settings: AspSettings,
-  context: VbProjectContext,
-): Promise<FileAnalysisSummary> {
-  if (document.uri !== cached.parsed.uri) {
-    const entry = await includeDocumentLoader.readAsync(uriToFileName(document.uri), settings);
-    if (entry?.parsed === document || entry?.key) {
-      return entry.summary;
-    }
-  }
-  return cachedFileAnalysisSummaryAsync(cached, context, settings);
+function vbProjectAnalysisCacheKey(graph: VbProjectSummaryGraph, settings: AspSettings): string {
+  return JSON.stringify({
+    graph: graph.key,
+    context: vbProjectContextSettings(settings),
+    globals: settings.vbscript?.globals,
+  });
 }
 
 async function cachedFileAnalysisSummaryAsync(
@@ -7006,14 +7229,289 @@ async function collectCachedVbProjectDocumentsAsync(
   cached: CachedDocument,
   settings: AspSettings,
 ): Promise<AspParsedDocument[]> {
-  const collectionKey = vbProjectDocumentCollectionKey(cached, settings);
-  const existing = cached.analysis?.vbProjectDocuments;
-  if (existing?.collectionKey === collectionKey) {
-    return existing.documents;
+  const graph = await collectCachedVbProjectSummaryGraphAsync(cached, settings, {
+    allowReadMissing: true,
+  });
+  return graph.documents;
+}
+
+async function collectFullVbProjectDocumentsForWorkspaceOperationAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<AspParsedDocument[]> {
+  const limits = vbProjectContextLimits(settings);
+  const documents: AspParsedDocument[] = [cached.parsed];
+  const visited = new Set<string>([cached.source.uri]);
+  let textLength = cached.parsed.text.length;
+  let truncatedReason: string | undefined;
+
+  const noteTruncated = (reason: string): void => {
+    truncatedReason ??= reason;
+  };
+
+  const visit = async (document: AspParsedDocument, depth: number): Promise<void> => {
+    if (depth > 20) {
+      noteTruncated("depth>20");
+      return;
+    }
+    for (const include of document.includes) {
+      const resolved = await resolveIncludePathDetailsAsync(
+        document.uri,
+        include.path,
+        include.mode,
+        settings,
+      );
+      const includeUri = pathToFileUri(resolved.fileName);
+      recordIncludeDependency(cached.source.uri, includeUri);
+      if (!resolved.exists || visited.has(includeUri)) {
+        continue;
+      }
+      if (documents.length >= limits.maxDocuments) {
+        noteTruncated(`documents>${limits.maxDocuments}`);
+        continue;
+      }
+      const size = await fileSizeAsync(resolved.fileName);
+      if (size !== undefined && textLength + size > limits.maxTextLength) {
+        noteTruncated(`text>${limits.maxTextLength}`);
+        continue;
+      }
+      const entry = await includeDocumentLoader.readAsync(resolved.fileName, settings);
+      if (!entry) {
+        continue;
+      }
+      visited.add(entry.uri);
+      documents.push(entry.parsed);
+      textLength += entry.parsed.text.length;
+      await visit(entry.parsed, depth + 1);
+      await yieldToEventLoop();
+    }
+  };
+
+  await visit(cached.parsed, 0);
+  if (truncatedReason) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vbProject.workspaceOperation.documents.truncated: ${cached.source.uri}, documents=${documents.length}, text=${textLength}, reason=${truncatedReason}`,
+    );
   }
-  const documents = await collectVbProjectDocumentsAsync(cached.parsed, settings);
-  analysisFor(cached).vbProjectDocuments = { collectionKey, documents };
   return documents;
+}
+
+async function collectCachedVbProjectSummaryGraphAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+  options: { allowReadMissing: boolean },
+): Promise<VbProjectSummaryGraph> {
+  const collectionKey = vbProjectDocumentCollectionKey(cached, settings);
+  const existing = cached.analysis?.vbProjectSummaryGraph;
+  if (
+    existing?.collectionKey === collectionKey &&
+    (existing.graph.complete || !options.allowReadMissing)
+  ) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vbProject.summaryGraph.reuse: complete=${existing.graph.complete}, summaries=${existing.graph.summaries.length}`,
+    );
+    return existing.graph;
+  }
+  const graph = await collectVbProjectSummaryGraphAsync(cached, settings, options);
+  analysisFor(cached).vbProjectSummaryGraph = { collectionKey, graph };
+  analysisFor(cached).vbProjectDocuments = {
+    collectionKey,
+    documents: graph.documents,
+  };
+  return graph;
+}
+
+async function collectVbProjectSummaryGraphAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+  options: { allowReadMissing: boolean },
+): Promise<VbProjectSummaryGraph> {
+  const limits = vbProjectContextLimits(settings);
+  const contextSettings = vbProjectContextSettings(settings);
+  const rootSummary = await cachedFileAnalysisSummaryAsync(cached, contextSettings, settings);
+  const summaries: FileAnalysisSummary[] = [rootSummary];
+  const projectDocuments: AspParsedDocument[] = [cached.parsed];
+  const visited = new Set<string>([cached.source.uri]);
+  const missingFiles: string[] = [];
+  let textLength = cached.parsed.text.length;
+  let truncatedReason: string | undefined;
+  resetIncludeDependencies(cached.source.uri);
+
+  const noteTruncated = (reason: string): void => {
+    truncatedReason ??= reason;
+  };
+
+  const visitSummary = async (owner: FileAnalysisSummary, depth: number): Promise<void> => {
+    if (depth > 20) {
+      noteTruncated("depth>20");
+      return;
+    }
+    for (const include of owner.includeRefs) {
+      const resolved = await resolveIncludePathDetailsAsync(
+        owner.uri,
+        include.path,
+        include.mode,
+        settings,
+      );
+      const includeUri = pathToFileUri(resolved.fileName);
+      recordIncludeDependency(cached.source.uri, includeUri);
+      if (!resolved.exists || visited.has(includeUri)) {
+        continue;
+      }
+      if (summaries.length >= limits.maxDocuments) {
+        noteTruncated(`documents>${limits.maxDocuments}`);
+        continue;
+      }
+      const size = await fileSizeAsync(resolved.fileName);
+      if (size !== undefined && textLength + size > limits.maxTextLength) {
+        noteTruncated(`text>${limits.maxTextLength}`);
+        continue;
+      }
+      const entry = await includeDocumentLoader.readSummaryAsync(resolved.fileName, settings, {
+        allowRead: options.allowReadMissing,
+      });
+      if (!entry) {
+        missingFiles.push(normalizeFileName(resolved.fileName));
+        if (!options.allowReadMissing) {
+          scheduleIncludeSummaryRefresh(
+            cached.source.uri,
+            resolved.fileName,
+            settings,
+            "summaryGraph.missing",
+          );
+        }
+        continue;
+      }
+      visited.add(entry.uri);
+      textLength += entry.source.size;
+      summaries.push(entry.summary);
+      if (entry.parsed && documents.get(entry.uri)) {
+        projectDocuments.push(entry.parsed);
+      }
+      await visitSummary(entry.summary, depth + 1);
+    }
+  };
+
+  await visitSummary(rootSummary, 0);
+  const graph = {
+    rootSummary,
+    summaries,
+    documents: projectDocuments,
+    key: vbProjectSummaryGraphKey(rootSummary, summaries, {
+      complete: missingFiles.length === 0 && !truncatedReason,
+      missingFiles,
+      truncatedReason,
+      textLength,
+      settings,
+    }),
+    complete: missingFiles.length === 0 && !truncatedReason,
+    missingFiles,
+    truncatedReason,
+    textLength,
+  };
+  if (missingFiles.length > 0) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vbProject.summaryGraph.missing: ${cached.source.uri}, files=${missingFiles.length}`,
+    );
+  }
+  if (truncatedReason) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vbProject.summaryGraph.truncated: ${cached.source.uri}, summaries=${summaries.length}, text=${textLength}, reason=${truncatedReason}`,
+    );
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vbProject.documents.truncated: ${cached.source.uri}, documents=${summaries.length}, text=${textLength}, reason=${truncatedReason}`,
+    );
+  } else {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vbProject.summaryGraph.built: ${cached.source.uri}, summaries=${summaries.length}, text=${textLength}, complete=${missingFiles.length === 0}`,
+    );
+  }
+  return graph;
+}
+
+function vbProjectSummaryGraphKey(
+  rootSummary: FileAnalysisSummary,
+  summaries: FileAnalysisSummary[],
+  state: {
+    complete: boolean;
+    missingFiles: string[];
+    truncatedReason?: string;
+    textLength: number;
+    settings: AspSettings;
+  },
+): string {
+  return JSON.stringify({
+    root: rootSummary.fingerprint,
+    summaries: summaries.map((summary) => ({
+      uri: summary.uri,
+      fingerprint: summary.fingerprint,
+      publicSignature: filePublicSignature(summary).fingerprint,
+    })),
+    complete: state.complete,
+    missingFiles: state.missingFiles,
+    truncatedReason: state.truncatedReason,
+    textLength: state.textLength,
+    limits: vbProjectContextLimits(state.settings),
+    resolution: includeResolutionSettingsKey(state.settings),
+  });
+}
+
+function scheduleIncludeSummaryRefresh(
+  ownerUri: string,
+  fileName: string,
+  settings: AspSettings,
+  reason: string,
+): void {
+  const normalized = normalizeFileName(fileName);
+  const key = JSON.stringify({
+    fileName: normalized,
+    settings: includeSummarySettingsKey(settings),
+  });
+  if (pendingIncludeSummaryRefreshes.has(key)) {
+    return;
+  }
+  const promise = includeDocumentLoader
+    .readSummaryAsync(normalized, settings, { allowRead: true })
+    .then((entry) => {
+      if (!entry) {
+        return;
+      }
+      const affected = new Set<string>();
+      if (documents.get(ownerUri)) {
+        affected.add(ownerUri);
+      }
+      for (const dependent of includeReverseDependencies.get(entry.uri) ?? []) {
+        if (documents.get(dependent)) {
+          affected.add(dependent);
+        }
+      }
+      if (affected.size === 0) {
+        return;
+      }
+      invalidateCachedAnalysisForUris(affected, reason);
+      for (const document of documents.all().filter((item) => affected.has(item.uri))) {
+        validate(document);
+      }
+    })
+    .catch((error) =>
+      connection.console.warn(
+        `[asp-lsp] includeSummary.refresh.failed: ${pathToFileUri(normalized)}, reason=${errorMessage(error)}`,
+      ),
+    )
+    .finally(() => {
+      pendingIncludeSummaryRefreshes.delete(key);
+    });
+  pendingIncludeSummaryRefreshes.set(key, promise);
+  logDebugSummary(
+    settings,
+    `[asp-lsp] includeSummary.refresh.scheduled: ${pathToFileUri(normalized)}`,
+  );
 }
 
 function vbProjectDocumentCollectionKey(cached: CachedDocument, settings: AspSettings): string {
@@ -7045,101 +7543,55 @@ function positiveIntegerFromEnv(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
-async function collectVbProjectDocumentsAsync(
-  root: AspParsedDocument,
+interface IncludeDocumentSourceIdentity {
+  key: string;
+  source: DiskAnalysisSourceMetadata;
+  text?: string;
+  diskBacked: boolean;
+}
+
+async function includeDocumentSourceIdentityAsync(
+  fileName: string,
   settings: AspSettings,
-): Promise<AspParsedDocument[]> {
-  const limits = vbProjectContextLimits(settings);
-  const documents: AspParsedDocument[] = [];
-  const visited = new Set<string>();
-  let totalTextLength = root.text.length;
-  let truncatedReason: string | undefined;
-  resetIncludeDependencies(root.uri);
-  const noteTruncated = (reason: string): void => {
-    truncatedReason ??= reason;
-  };
-  const visit = async (document: AspParsedDocument, depth: number): Promise<void> => {
-    if (depth > 20 || visited.has(document.uri)) {
-      if (depth > 20) {
-        noteTruncated("depth>20");
-      }
-      return;
-    }
-    if (documents.length >= limits.maxDocuments) {
-      noteTruncated(`documents>${limits.maxDocuments}`);
-      return;
-    }
-    visited.add(document.uri);
-    documents.push(document);
-    for (const include of document.includes) {
-      const resolved = await resolveIncludePathDetailsAsync(
-        document.uri,
-        include.path,
-        include.mode,
-        settings,
-      );
-      const uri = pathToFileUri(resolved.fileName);
-      recordIncludeDependency(root.uri, uri);
-      if (!resolved.exists || visited.has(uri)) {
-        continue;
-      }
-      if (documents.length >= limits.maxDocuments) {
-        noteTruncated(`documents>${limits.maxDocuments}`);
-        continue;
-      }
-      const size = await fileSizeAsync(resolved.fileName);
-      if (size !== undefined && totalTextLength + size > limits.maxTextLength) {
-        noteTruncated(`text>${limits.maxTextLength}`);
-        continue;
-      }
-      const next = await readParsedIncludeDocumentAsync(resolved.fileName, settings);
-      totalTextLength += next.text.length;
-      await visit(next, depth + 1);
-    }
-  };
-  await visit(root, 0);
-  if (truncatedReason) {
-    logDebugSummary(
-      settings,
-      `[asp-lsp] vbProject.documents.truncated: ${root.uri}, documents=${documents.length}, text=${totalTextLength}, reason=${truncatedReason}`,
-    );
+): Promise<IncludeDocumentSourceIdentity | undefined> {
+  const uri = pathToFileUri(fileName);
+  const openDocument = documents.get(uri);
+  if (openDocument) {
+    const text = openDocument.getText();
+    const source = {
+      fileName,
+      mtimeMs: openDocument.version,
+      size: text.length,
+    };
+    return {
+      key: JSON.stringify({
+        fileName,
+        openVersion: openDocument.version,
+        text: textFingerprint(text),
+        settings: includeDocumentSettingsIdentity(settings),
+      }),
+      source,
+      text,
+      diskBacked: false,
+    };
   }
-  return documents;
-}
-
-async function readParsedIncludeDocumentAsync(
-  fileName: string,
-  settings: AspSettings,
-): Promise<AspParsedDocument> {
-  const entry = await includeDocumentLoader.readAsync(fileName, settings);
-  if (!entry) {
-    throw new Error(`Include document does not exist: ${fileName}`);
-  }
-  return entry.parsed;
-}
-
-async function readParsedIncludeDocumentForCycleAsync(
-  fileName: string,
-  settings: AspSettings,
-): Promise<AspParsedDocument> {
-  const text = await readTextFileAsync(fileName, settings.legacyEncoding);
-  return parseAspDocument(pathToFileUri(fileName), text, settings);
-}
-
-async function includeDocumentCacheKeyAsync(
-  fileName: string,
-  settings: AspSettings,
-): Promise<string | undefined> {
   const stat = await fs.promises.stat(fileName).catch(() => undefined);
   if (!stat?.isFile()) {
     return undefined;
   }
-  return JSON.stringify({
+  const source = {
     fileName,
     mtimeMs: stat.mtimeMs,
     size: stat.size,
-    settings: includeDocumentSettingsIdentity(settings),
-  });
+  };
+  return {
+    key: JSON.stringify({
+      ...source,
+      settings: includeDocumentSettingsIdentity(settings),
+    }),
+    source,
+    diskBacked: true,
+  };
 }
 
 function includeDocumentSettingsIdentity(settings: AspSettings): string {
@@ -7151,11 +7603,47 @@ function includeDocumentSettingsIdentity(settings: AspSettings): string {
   });
 }
 
+function includeSummarySettingsKey(settings: AspSettings): string {
+  return includeDocumentSettingsIdentity(settings);
+}
+
+function includeSummaryCacheEntryFromDisk(
+  fileName: string,
+  key: string,
+  entry: DiskSummaryCacheEntry,
+): IncludeSummaryCacheEntry {
+  const publicSignature =
+    (entry.publicSignature as FilePublicSignature | undefined) ??
+    filePublicSignature(entry.summary);
+  return {
+    key,
+    fileName,
+    uri: entry.summary.uri,
+    source: entry.source,
+    summary: entry.summary,
+    publicFingerprint: publicSignature.fingerprint,
+    publicSignature,
+  };
+}
+
+function diskSummaryCacheEntry(
+  entry: IncludeSummaryCacheEntry,
+  settings: AspSettings,
+): DiskSummaryCacheEntry {
+  return {
+    source: entry.source,
+    settingsKey: includeSummarySettingsKey(settings),
+    summary: entry.summary,
+    publicSignature: entry.publicSignature,
+  };
+}
+
 async function createIncludeDocumentCacheEntryAsync(
   fileName: string,
   text: string,
   settings: AspSettings,
   key: string,
+  source: DiskAnalysisSourceMetadata,
 ): Promise<IncludeDocumentCacheEntry> {
   const parsed = await parseAspDocumentAsync(pathToFileUri(fileName), text, settings);
   await hydrateVbscriptCst(parsed, settings);
@@ -7165,6 +7653,7 @@ async function createIncludeDocumentCacheEntryAsync(
     key,
     fileName,
     uri: parsed.uri,
+    source,
     parsed,
     summary,
     publicFingerprint: publicSignature.fingerprint,
@@ -7173,7 +7662,7 @@ async function createIncludeDocumentCacheEntryAsync(
 }
 
 function rememberIncludePublicSummary(
-  entry: IncludeDocumentCacheEntry,
+  entry: IncludeSummaryCacheEntry,
   settings?: AspSettings,
 ): void {
   includePublicSummaries.set(entry.fileName, {
@@ -7433,6 +7922,7 @@ async function findIncludeCycleAsync(
   const stackIndexes = new Map<string, number>();
   let totalTextLength = 0;
   let truncatedReason: string | undefined;
+  let missingSummary = false;
   const noteTruncated = (reason: string): void => {
     truncatedReason ??= reason;
   };
@@ -7467,16 +7957,23 @@ async function findIncludeCycleAsync(
     visited.add(normalized);
     stackIndexes.set(normalized, stack.length);
     stack.push(normalized);
-    const parsed = await readParsedIncludeDocumentForCycleAsync(normalized, settings).catch(
-      () => undefined,
-    );
+    const entry = await includeDocumentLoader
+      .readSummaryAsync(normalized, settings, { allowRead: false })
+      .catch(() => undefined);
     await yieldToEventLoop();
-    if (!parsed || cancellation.isCancellationRequested()) {
+    if (!entry || cancellation.isCancellationRequested()) {
+      missingSummary = true;
+      scheduleIncludeSummaryRefresh(
+        pathToFileUri(owner),
+        normalized,
+        settings,
+        "includeCycle.missingSummary",
+      );
       stack.pop();
       stackIndexes.delete(normalized);
       return undefined;
     }
-    for (const include of parsed.includes) {
+    for (const include of entry.summary.includeRefs) {
       const next = await resolveIncludePathAsync(
         pathToFileUri(normalized),
         include.path,
@@ -7496,7 +7993,7 @@ async function findIncludeCycleAsync(
     return undefined;
   };
   const cycle = await search(start, 0);
-  if (!cancellation.isCancellationRequested()) {
+  if (!cancellation.isCancellationRequested() && !missingSummary) {
     includeCycleCache.set(cacheKey, cycle ?? null);
     if (truncatedReason) {
       logDebugSummary(
@@ -7913,16 +8410,20 @@ async function diskAnalysisIncludeDependencyKey(
 ): Promise<string> {
   const dependencies: unknown[] = [];
   const visited = new Set<string>();
-  const visit = async (document: AspParsedDocument, depth: number): Promise<void> => {
+  const visitRefs = async (
+    ownerUri: string,
+    includeRefs: FileAnalysisSummary["includeRefs"],
+    depth: number,
+  ): Promise<void> => {
     if (depth > 20 || cancellation.isCancellationRequested()) {
       return;
     }
-    for (const include of document.includes) {
+    for (const include of includeRefs) {
       if (cancellation.isCancellationRequested()) {
         return;
       }
       const resolved = await resolveIncludePathDetailsAsync(
-        document.uri,
+        ownerUri,
         include.path,
         include.mode,
         settings,
@@ -7931,7 +8432,7 @@ async function diskAnalysisIncludeDependencyKey(
       const stat = await fs.promises.stat(normalizedFileName).catch(() => undefined);
       const exists = stat?.isFile() === true;
       dependencies.push({
-        owner: normalizeFileName(uriToFileName(document.uri)),
+        owner: normalizeFileName(uriToFileName(ownerUri)),
         path: include.path,
         mode: include.mode,
         fileName: normalizedFileName,
@@ -7946,15 +8447,22 @@ async function diskAnalysisIncludeDependencyKey(
       }
       visited.add(normalizedFileName);
       const entry = await includeDocumentLoader
-        .readAsync(normalizedFileName, settings)
+        .readSummaryAsync(normalizedFileName, settings, { allowRead: false })
         .catch(() => undefined);
       if (entry) {
-        await visit(entry.parsed, depth + 1);
+        await visitRefs(entry.summary.uri, entry.summary.includeRefs, depth + 1);
+      } else {
+        scheduleIncludeSummaryRefresh(
+          root.uri,
+          normalizedFileName,
+          settings,
+          "diskKey.missingSummary",
+        );
       }
       await yieldToEventLoop();
     }
   };
-  await visit(root, 0);
+  await visitRefs(root.uri, root.includes, 0);
   return textFingerprint(JSON.stringify(dependencies));
 }
 
@@ -10699,7 +11207,10 @@ async function vbscriptNamingDiagnosticActionsAsync(
   ) {
     return [];
   }
-  const context = await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri));
+  const context = await buildFullVbProjectContextForWorkspaceOperationAsync(
+    cached,
+    cachedSettings(cached.source.uri),
+  );
   const symbol = context.symbols?.find(
     (candidate) =>
       candidate.sourceUri === cached.source.uri && sameRange(candidate.range, diagnostic.range),

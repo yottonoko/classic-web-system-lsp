@@ -2898,7 +2898,7 @@ Response.Write IncludedOnly()
       }
     });
 
-    it("uses local VB completion fallback while include-heavy context refreshes after edits", async () => {
+    it("reuses summary-backed VB completion for include-heavy files after edits", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-heavy-include-edit-"));
       const owner = path.join(tempDir, "default.asp");
       const includeDirectives: string[] = [];
@@ -2962,7 +2962,8 @@ Response.Write Sha
           textDocument: { uri },
           position: completionPosition(),
         });
-        expect(completionLabels(immediateCompletions)).not.toContain("SharedExport29");
+        expect(completionLabels(immediateCompletions)).toContain("SharedExport29");
+        await waitForLogContaining(server, "vbProject.summaryGraph.built");
 
         await waitForLogContaining(server, "LSP check completed");
         const refreshedCompletions = await server.request("textDocument/completion", {
@@ -4935,6 +4936,90 @@ End Function
         const second = await server.request("workspace/diagnostic", { previousResultIds: [] });
         expect(JSON.stringify(second)).toContain("include.missing");
         await waitForLogContaining(server, "diskCache.miss");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("restores include summaries from disk cache after server restart", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-summary-cache-"));
+      const cacheDir = path.join(tempDir, ".cache");
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "shared.inc");
+      fs.writeFileSync(
+        owner,
+        '<!-- #include file="shared.inc" -->\n<%\nResponse.Write Sha\n%>',
+        "utf8",
+      );
+      fs.writeFileSync(
+        include,
+        `<%
+Function SharedCached()
+End Function
+%>`,
+        "utf8",
+      );
+      const uri = `file://${owner}`;
+      const settings = {
+        aspLsp: {
+          debug: { output: "verbose" },
+          cache: { enabled: true, directory: cacheDir },
+          diagnostics: { debounceMs: 0 },
+          workspace: { backgroundAnalysis: false },
+        },
+      };
+      let server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(owner, "utf8"),
+          },
+        });
+        await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: { line: 2, character: "Response.Write Sha".length },
+        });
+        await waitForLogContaining(server, "diskSummary.write");
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+        server.stop();
+
+        server = new RpcServer();
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(owner, "utf8"),
+          },
+        });
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: { line: 2, character: "Response.Write Sha".length },
+        });
+        expect(completionLabels(completions)).toContain("SharedCached");
+        await waitForLogContaining(server, "diskSummary.hit");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
