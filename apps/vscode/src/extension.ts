@@ -449,6 +449,7 @@ class AspLspTaskProvider implements vscode.TaskProvider {
       this.task("test", "pnpm", ["run", "test"]),
       this.task("build", "pnpm", ["run", "build"]),
       this.task("package VSIX", "pnpm", ["run", "package:vsix"]),
+      this.task("package VSIX (no native)", "pnpm", ["run", "package:vsix:no-native"]),
     ];
   }
 
