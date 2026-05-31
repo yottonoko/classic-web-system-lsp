@@ -2979,7 +2979,7 @@ Response.Write Sha
       }
     });
 
-    it("caps large VB project contexts and keeps edit-time inlay hints current", async () => {
+    it("caps large VB project contexts from settings and keeps edit-time inlay hints current", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-capped-include-edit-"));
       const owner = path.join(tempDir, "default.asp");
       const includeDirectives: string[] = [];
@@ -3007,12 +3007,7 @@ Response.Write localValue
       const uri = `file://${owner}`;
       fs.writeFileSync(owner, source, "utf8");
 
-      const server = new RpcServer({
-        env: {
-          ASP_LSP_VB_PROJECT_MAX_DOCUMENTS: "4",
-          ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH: "1048576",
-        },
-      });
+      const server = new RpcServer();
       try {
         await server.start();
         await server.request("initialize", {
@@ -3026,6 +3021,10 @@ Response.Write localValue
               debug: { output: "summary" },
               diagnostics: { debounceMs: 0 },
               inlayHints: { globalVariableMarkers: "all" },
+              workspace: {
+                vbProjectMaxDocuments: 4,
+                vbProjectMaxTextLength: 1048576,
+              },
             },
           },
         });

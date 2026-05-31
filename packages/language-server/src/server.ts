@@ -6748,15 +6748,19 @@ function vbProjectDocumentCollectionKey(cached: CachedDocument, settings: AspSet
       path: include.path,
       mode: include.mode,
     })),
-    limits: vbProjectContextLimits(),
+    limits: vbProjectContextLimits(settings),
     resolution: includeResolutionSettingsKey(settings),
   });
 }
 
-function vbProjectContextLimits(): VbProjectContextLimits {
+function vbProjectContextLimits(settings: AspSettings): VbProjectContextLimits {
   return {
-    maxDocuments: positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_DOCUMENTS", 32),
-    maxTextLength: positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", 1024 * 1024),
+    maxDocuments:
+      settings.workspace?.vbProjectMaxDocuments ??
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_DOCUMENTS", 32),
+    maxTextLength:
+      settings.workspace?.vbProjectMaxTextLength ??
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", 1024 * 1024),
   };
 }
 
@@ -6769,7 +6773,7 @@ async function collectVbProjectDocumentsAsync(
   root: AspParsedDocument,
   settings: AspSettings,
 ): Promise<AspParsedDocument[]> {
-  const limits = vbProjectContextLimits();
+  const limits = vbProjectContextLimits(settings);
   const documents: AspParsedDocument[] = [];
   const visited = new Set<string>();
   let totalTextLength = root.text.length;
@@ -7149,7 +7153,7 @@ async function findIncludeCycleAsync(
     includeCycleCache.set(cacheKey, null);
     return undefined;
   }
-  const limits = vbProjectContextLimits();
+  const limits = vbProjectContextLimits(settings);
   const visited = new Set<string>();
   const stack: string[] = [];
   const stackIndexes = new Map<string, number>();
@@ -7234,7 +7238,7 @@ function includeCycleCacheKey(owner: string, start: string, settings: AspSetting
   return JSON.stringify({
     owner: normalizeFileName(owner),
     start: normalizeFileName(start),
-    limits: vbProjectContextLimits(),
+    limits: vbProjectContextLimits(settings),
     resolution: includeResolutionSettingsKey(settings),
   });
 }
@@ -8230,7 +8234,19 @@ function normalizeWorkspaceSettings(
         : undefined,
       defaultBusyAnalysisConcurrency(),
     ),
+    vbProjectMaxDocuments: positiveIntegerSetting(
+      record.vbProjectMaxDocuments,
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_DOCUMENTS", 32),
+    ),
+    vbProjectMaxTextLength: positiveIntegerSetting(
+      record.vbProjectMaxTextLength,
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", 1024 * 1024),
+    ),
   };
+}
+
+function positiveIntegerSetting(value: unknown, fallback: number): number {
+  return typeof value === "number" && value > 0 ? Math.floor(value) : fallback;
 }
 
 function normalizeCacheSettings(
