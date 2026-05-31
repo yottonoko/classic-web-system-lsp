@@ -6221,6 +6221,76 @@ function demo(unusedParam) {
       }
     });
 
+    it("maps JavaScript semantic diagnostics directly to source ranges", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              checkJs: true,
+              diagnostics: { debounceMs: 0 },
+              javascript: { ignoreProjectConfig: true },
+            },
+          },
+        });
+        const uri = "file:///tmp/js-semantic-range.asp";
+        const source = `<div>before</div>
+<script>
+const fromAsp = <%= Request("id") %>;
+missingThing.toFixed();
+</script>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await waitForDiagnosticsContaining(server, "missingThing");
+        const semanticDiagnostics =
+          (
+            diagnostics.params as {
+              diagnostics?: Array<{
+                message?: string;
+                range: {
+                  start: { line: number; character: number };
+                  end: { line: number; character: number };
+                };
+                source?: string;
+              }>;
+            }
+          ).diagnostics?.filter((diagnostic) => diagnostic.source === "asp-lsp-typescript") ?? [];
+        const missingThing = semanticDiagnostics.find((diagnostic) =>
+          diagnostic.message?.includes("missingThing"),
+        );
+        expect(missingThing?.range).toEqual({
+          start: { line: 3, character: 0 },
+          end: { line: 3, character: "missingThing".length },
+        });
+        const aspStart = source.indexOf("<%=");
+        const aspEnd = source.indexOf("%>", aspStart) + "%>".length;
+        expect(
+          semanticDiagnostics.every((diagnostic) => {
+            const start = offsetAt(source, diagnostic.range.start);
+            const end = offsetAt(source, diagnostic.range.end);
+            return end <= aspStart || start >= aspEnd;
+          }),
+        ).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("reuses JavaScript diagnostics after HTML-only source shifts", async () => {
       const server = new RpcServer();
       try {

@@ -54,6 +54,45 @@ export function clearEmbeddedBenchmarkCaches() {
   textFingerprintCache.clear();
 }
 
+export function prewarmEmbeddedBenchmarkServices() {
+  const fileName = normalizeFileName(path.join(root, ".benchmark-prewarm.js"));
+  const text = "const value = document.title;\nvalue.toLowerCase();\n";
+  const files = new Map([[fileName, text]]);
+  const host = {
+    getScriptFileNames: () => [fileName],
+    getScriptVersion: () => "0",
+    getScriptSnapshot: (requested) => {
+      const content = files.get(normalizeFileName(requested)) ?? ts.sys.readFile(requested);
+      return content === undefined ? undefined : ts.ScriptSnapshot.fromString(content);
+    },
+    getScriptKind: () => ts.ScriptKind.JS,
+    getCurrentDirectory: () => root,
+    getCompilationSettings: () => ({
+      allowJs: true,
+      checkJs: true,
+      noEmit: true,
+      noLib: false,
+      target: ts.ScriptTarget.ESNext,
+      module: ts.ModuleKind.CommonJS,
+      types: [],
+    }),
+    getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+    fileExists: (requested) =>
+      files.has(normalizeFileName(requested)) || ts.sys.fileExists(requested),
+    readFile: (requested) => files.get(normalizeFileName(requested)) ?? ts.sys.readFile(requested),
+    readDirectory: ts.sys.readDirectory,
+    directoryExists: ts.sys.directoryExists,
+    getDirectories: ts.sys.getDirectories,
+    useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
+  };
+  const service = ts.createLanguageService(host);
+  try {
+    service.getSemanticDiagnostics(fileName);
+  } finally {
+    service.dispose();
+  }
+}
+
 const sampleConfigs = new Map([
   ["large", { directory: "classic-asp-large-benchmark", recursive: false }],
   ["huge", { directory: "classic-asp-huge-benchmark", recursive: false }],
@@ -365,15 +404,10 @@ function remapTsDiagnostic(virtual, sourceText, diagnostic) {
   if (diagnostic.start === undefined || diagnostic.length === undefined) {
     return undefined;
   }
-  const virtualDoc = toTextDocument(virtual);
   const sourceDoc = toSourceTextDocument(virtual, sourceText);
-  const range = remapVirtualOffsets(
-    virtual,
-    virtualDoc,
-    sourceDoc,
-    diagnostic.start,
-    diagnostic.start + diagnostic.length,
-  );
+  const start = diagnostic.start;
+  const end = diagnostic.start + diagnostic.length;
+  const range = sourceRangeFromVirtualOffsets(sourceDoc, virtual, start, end);
   if (!range) {
     return undefined;
   }
@@ -382,6 +416,20 @@ function remapTsDiagnostic(virtual, sourceText, diagnostic) {
     message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
     code: diagnostic.code,
     source: "asp-lsp-typescript",
+  };
+}
+
+function sourceRangeFromVirtualOffsets(sourceDoc, virtual, start, end) {
+  const lastOffset = Math.max(start, end - 1);
+  const segment = sourceMapSegmentAtVirtualOffset(virtual, start);
+  if (!segment || lastOffset >= segment.virtualEnd) {
+    return undefined;
+  }
+  const sourceStart = segment.sourceStart + (start - segment.virtualStart);
+  const sourceEnd = segment.sourceStart + (end - segment.virtualStart);
+  return {
+    start: sourceDoc.positionAt(sourceStart),
+    end: sourceDoc.positionAt(sourceEnd),
   };
 }
 
@@ -407,9 +455,21 @@ function virtualRangeStaysWithinSegment(virtual, start, end) {
 }
 
 function sourceMapSegmentAtVirtualOffset(virtual, virtualOffset) {
-  return virtual.sourceMap.segments.find(
-    (segment) => virtualOffset >= segment.virtualStart && virtualOffset < segment.virtualEnd,
-  );
+  const segments = virtual.sourceMap.segments;
+  let low = 0;
+  let high = segments.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const segment = segments[middle];
+    if (virtualOffset < segment.virtualStart) {
+      high = middle - 1;
+    } else if (virtualOffset >= segment.virtualEnd) {
+      low = middle + 1;
+    } else {
+      return segment;
+    }
+  }
+  return undefined;
 }
 
 function toTextDocument(virtual) {
@@ -556,6 +616,7 @@ async function main() {
   const benchmarkCacheMode = readBenchmarkCacheMode();
   const benchmarkConcurrency = readPositiveInteger("ASP_LSP_BENCH_CONCURRENCY", 4);
   const results = [];
+  prewarmEmbeddedBenchmarkServices();
 
   for (const operation of embeddedOperationNames) {
     await runBenchmark(results, operation, benchmarkIterations, warmupIterations, async (run) =>

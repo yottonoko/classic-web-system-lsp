@@ -9,6 +9,7 @@ import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cach
 import {
   clearEmbeddedBenchmarkCaches,
   embeddedOperationNames,
+  prewarmEmbeddedBenchmarkServices,
   runEmbeddedOperation,
   summarizeSources,
 } from "./embedded-language-benchmark.mjs";
@@ -87,12 +88,13 @@ async function main() {
   const cacheModes = selectedCacheModes();
   const records = [];
   const summaries = [];
+  prewarmEmbeddedBenchmarkServices();
 
   try {
-    for (const backend of backends) {
-      for (const cacheMode of cacheModes) {
-        const warmupIterations = warmupsForCacheMode(cacheMode);
-        for (const multiplier of multipliers) {
+    for (const cacheMode of cacheModes) {
+      const warmupIterations = warmupsForCacheMode(cacheMode);
+      for (const multiplier of multipliers) {
+        for (const backend of backends) {
           const sampleRoot = path.join(tempRoot, `${backend.id}-${cacheMode}-${multiplier}x`);
           generateScaleSample(sampleRoot, multiplier);
           const sources = collectScaleSources(sampleRoot);

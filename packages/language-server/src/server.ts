@@ -3410,7 +3410,7 @@ function cachedJsDiagnosticsToLsp(
     }
     return cachedVirtual.diagnostics
       .map((item) =>
-        tsDiagnosticToLsp(virtual, item.diagnostic, {
+        tsDiagnosticToLsp(cached.source, virtual, item.diagnostic, {
           severity: item.severity,
           source: item.source,
         }),
@@ -7243,6 +7243,7 @@ function remapWorkspaceEdit(
 }
 
 function tsDiagnosticToLsp(
+  sourceDocument: TextDocument,
   virtual: VirtualDocument,
   diagnostic: TsDiagnosticLike,
   override: { severity?: DiagnosticSeverity; source?: string } = {},
@@ -7250,16 +7251,10 @@ function tsDiagnosticToLsp(
   if (diagnostic.start === undefined || diagnostic.length === undefined) {
     return undefined;
   }
-  const virtualDoc = toTextDocument(virtual);
-  const start = virtualDoc.positionAt(diagnostic.start);
-  const end = virtualDoc.positionAt(diagnostic.start + diagnostic.length);
-  const sourceStart = virtual.sourceMap.toSourcePosition(start);
-  const sourceEnd = virtual.sourceMap.toSourcePosition(end);
-  if (
-    !sourceStart ||
-    !sourceEnd ||
-    !virtualRangeStaysWithinSegment(virtual, diagnostic.start, diagnostic.start + diagnostic.length)
-  ) {
+  const start = diagnostic.start;
+  const end = diagnostic.start + diagnostic.length;
+  const range = sourceRangeFromVirtualOffsets(sourceDocument, virtual, start, end);
+  if (!range) {
     return undefined;
   }
   return {
@@ -7268,11 +7263,30 @@ function tsDiagnosticToLsp(
       (diagnostic.category === ts.DiagnosticCategory.Error
         ? DiagnosticSeverity.Error
         : DiagnosticSeverity.Warning),
-    range: { start: sourceStart, end: sourceEnd },
+    range,
     message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
     code: diagnostic.code,
     source: override.source ?? "asp-lsp-typescript",
     tags: diagnostic.reportsUnnecessary === true ? [DiagnosticTag.Unnecessary] : undefined,
+  };
+}
+
+function sourceRangeFromVirtualOffsets(
+  sourceDocument: TextDocument,
+  virtual: VirtualDocument,
+  start: number,
+  end: number,
+): Range | undefined {
+  const lastOffset = Math.max(start, end - 1);
+  const segment = sourceMapSegmentAtVirtualOffset(virtual, start);
+  if (!segment || lastOffset >= segment.virtualEnd) {
+    return undefined;
+  }
+  const sourceStart = segment.sourceStart + (start - segment.virtualStart);
+  const sourceEnd = segment.sourceStart + (end - segment.virtualStart);
+  return {
+    start: sourceDocument.positionAt(sourceStart),
+    end: sourceDocument.positionAt(sourceEnd),
   };
 }
 
