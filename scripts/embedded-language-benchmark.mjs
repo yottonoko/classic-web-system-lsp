@@ -21,7 +21,8 @@ const ts = languageServerRequire("typescript");
 const htmlService = getHtmlLanguageService();
 const cssService = getCSSLanguageService();
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
-const virtualDocumentCache = new Map();
+let virtualDocumentsByParsed = new WeakMap();
+let diagnosticsByParsed = new WeakMap();
 const textDocumentCache = new Map();
 const cssStylesheetCache = new Map();
 const jsLanguageServiceCache = new Map();
@@ -44,7 +45,8 @@ export const embeddedOperationNames = [
 ];
 
 export function clearEmbeddedBenchmarkCaches() {
-  virtualDocumentCache.clear();
+  virtualDocumentsByParsed = new WeakMap();
+  diagnosticsByParsed = new WeakMap();
   textDocumentCache.clear();
   cssStylesheetCache.clear();
   jsLanguageServiceCache.clear();
@@ -124,14 +126,16 @@ export function summarizeSources(items) {
 }
 
 function buildEmbeddedVirtualDocument(parsed, language, core) {
-  const cacheKey = embeddedVirtualCacheKey(parsed, language);
-  const cached = virtualDocumentCache.get(cacheKey);
-  if (cached !== undefined) {
-    return cached ?? undefined;
+  let documents = virtualDocumentsByParsed.get(parsed);
+  if (!documents) {
+    documents = new Map();
+    virtualDocumentsByParsed.set(parsed, documents);
+  } else if (documents.has(language)) {
+    return documents.get(language) ?? undefined;
   }
   const regions = parsed.regions.filter((region) => region.language === language);
   if (regions.length === 0 && language !== "html") {
-    virtualDocumentCache.set(cacheKey, null);
+    documents.set(language, null);
     return undefined;
   }
   const virtual = core.buildVirtualDocument(
@@ -141,15 +145,15 @@ function buildEmbeddedVirtualDocument(parsed, language, core) {
     regions,
     parsed.regions,
   );
-  virtualDocumentCache.set(cacheKey, virtual);
+  documents.set(language, virtual);
   return virtual;
 }
 
-function embeddedVirtualCacheKey(parsed, language) {
-  return `${parsed.uri}|${language}|${parsedTextFingerprint(parsed)}`;
+function htmlDiagnostics(parsed, core) {
+  return cachedDiagnostics(parsed, "htmlDiagnostics", () => htmlDiagnosticsUncached(parsed, core));
 }
 
-function htmlDiagnostics(parsed, core) {
+function htmlDiagnosticsUncached(parsed, core) {
   const virtual = buildEmbeddedVirtualDocument(parsed, "html", core);
   if (!virtual) {
     return [];
@@ -183,6 +187,10 @@ function htmlDiagnostics(parsed, core) {
 }
 
 function cssDiagnostics(parsed, core) {
+  return cachedDiagnostics(parsed, "cssDiagnostics", () => cssDiagnosticsUncached(parsed, core));
+}
+
+function cssDiagnosticsUncached(parsed, core) {
   const virtual = buildEmbeddedVirtualDocument(parsed, "css", core);
   if (!virtual) {
     return [];
@@ -196,11 +204,19 @@ function cssDiagnostics(parsed, core) {
 }
 
 function javascriptDiagnostics(parsed, core) {
-  const syntax = javascriptSyntaxDiagnostics(parsed, core);
-  return [...syntax, ...javascriptSemanticDiagnostics(parsed, core, true)];
+  return cachedDiagnostics(parsed, "javascriptDiagnostics", () => [
+    ...javascriptSyntaxDiagnostics(parsed, core),
+    ...javascriptSemanticDiagnostics(parsed, core, true),
+  ]);
 }
 
 function javascriptSyntaxDiagnostics(parsed, core) {
+  return cachedDiagnostics(parsed, "javascriptSyntaxDiagnostics", () =>
+    javascriptSyntaxDiagnosticsUncached(parsed, core),
+  );
+}
+
+function javascriptSyntaxDiagnosticsUncached(parsed, core) {
   const virtual = buildEmbeddedVirtualDocument(parsed, "javascript", core);
   if (!virtual) {
     return [];
@@ -213,6 +229,14 @@ function javascriptSyntaxDiagnostics(parsed, core) {
 }
 
 function javascriptSemanticDiagnostics(parsed, core, includeUnused = false) {
+  return cachedDiagnostics(
+    parsed,
+    includeUnused ? "javascriptSemanticDiagnosticsWithUnused" : "javascriptSemanticDiagnostics",
+    () => javascriptSemanticDiagnosticsUncached(parsed, core, includeUnused),
+  );
+}
+
+function javascriptSemanticDiagnosticsUncached(parsed, core, includeUnused = false) {
   const virtual = buildEmbeddedVirtualDocument(parsed, "javascript", core);
   if (!virtual) {
     return [];
@@ -226,6 +250,12 @@ function javascriptSemanticDiagnostics(parsed, core, includeUnused = false) {
 }
 
 function javascriptUnusedDiagnostics(parsed, core) {
+  return cachedDiagnostics(parsed, "javascriptUnusedDiagnostics", () =>
+    javascriptUnusedDiagnosticsUncached(parsed, core),
+  );
+}
+
+function javascriptUnusedDiagnosticsUncached(parsed, core) {
   const virtual = buildEmbeddedVirtualDocument(parsed, "javascript", core);
   if (!virtual) {
     return [];
@@ -237,6 +267,19 @@ function javascriptUnusedDiagnostics(parsed, core) {
       .map((diagnostic) => remapTsDiagnostic(virtual, parsed.text, diagnostic))
       .filter(Boolean),
   );
+}
+
+function cachedDiagnostics(parsed, operation, compute) {
+  let diagnostics = diagnosticsByParsed.get(parsed);
+  if (!diagnostics) {
+    diagnostics = new Map();
+    diagnosticsByParsed.set(parsed, diagnostics);
+  } else if (diagnostics.has(operation)) {
+    return diagnostics.get(operation);
+  }
+  const result = compute();
+  diagnostics.set(operation, result);
+  return result;
 }
 
 function withJsLanguageService(virtual, sourceText, unusedOnly, callback) {

@@ -142,13 +142,12 @@ function attachVbscriptFromTypeScriptParser(node: AspCstNode, sourceText: string
   }
 }
 
-/** @internal */
-export function parseAspDocumentTypeScript(
+function parseAspDocumentTypeScript(
   uri: string,
   text: string,
   settings: AspSettings = {},
 ): AspParsedDocument {
-  const cst = parseAspCst(uri, text, settings);
+  const cst = parseAspCstTypeScript(uri, text, settings);
   const diagnostics =
     cst.errors?.map((error) => ({
       severity: DiagnosticSeverity.Error,

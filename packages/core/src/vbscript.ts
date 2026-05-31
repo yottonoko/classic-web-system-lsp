@@ -23,7 +23,7 @@ import type {
   TextEdit,
 } from "vscode-languageserver-types";
 import { offsetAt, positionAt, rangeFromOffsets } from "./position";
-import { parseAspDocumentAsync, parseAspDocumentTypeScript } from "./parser";
+import { parseAspDocument, parseAspDocumentAsync } from "./parser";
 import { createLocalizer } from "./localize";
 import {
   tryNativeAnalyzeVbscript,
@@ -211,7 +211,7 @@ const typeIndexes = new WeakMap<VbTypeEnvironment, VbTypeIndex>();
 let cachedBuiltinNameSet: Set<string> | undefined;
 let cachedBuiltinTypes: VbType[] | undefined;
 const vbFromTextCacheMaxEntries = 64;
-const vbFromTextCache = new Map<string, unknown>();
+const vbFromTextCache = new Map<string, { text: string; value: unknown }>();
 
 function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
   const localizer = createLocalizer(locale);
@@ -2578,9 +2578,7 @@ export async function analyzeVbscriptFromTextAsync(
 ): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
   const cacheKey = vbFromTextCacheKey("analyze", uri, text, settings, context);
   const cached = cacheKey
-    ? (vbFromTextCache.get(cacheKey) as
-        | { diagnostics: Diagnostic[]; symbols: VbSymbol[] }
-        | undefined)
+    ? getVbFromTextCache<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }>(cacheKey, text)
     : undefined;
   if (cached) {
     return cached;
@@ -2590,7 +2588,7 @@ export async function analyzeVbscriptFromTextAsync(
     context,
   );
   if (cacheKey) {
-    setVbFromTextCache(cacheKey, result);
+    setVbFromTextCache(cacheKey, text, result);
   }
   return result;
 }
@@ -3816,7 +3814,7 @@ export async function collectVbscriptSymbolsFromTextAsync(
   context: VbProjectContext = {},
 ): Promise<VbSymbol[]> {
   const cacheKey = vbFromTextCacheKey("collect", uri, text, settings, context);
-  const cached = cacheKey ? (vbFromTextCache.get(cacheKey) as VbSymbol[] | undefined) : undefined;
+  const cached = cacheKey ? getVbFromTextCache<VbSymbol[]>(cacheKey, text) : undefined;
   if (cached) {
     return cached;
   }
@@ -3826,7 +3824,7 @@ export async function collectVbscriptSymbolsFromTextAsync(
     {},
   );
   if (cacheKey) {
-    setVbFromTextCache(cacheKey, result);
+    setVbFromTextCache(cacheKey, text, result);
   }
   return result;
 }
@@ -3922,9 +3920,7 @@ export async function summarizeAspFileAnalysisFromTextAsync(
     }
   }
   const cacheKey = vbFromTextCacheKey("summary", uri, text, settings, context);
-  const cached = cacheKey
-    ? (vbFromTextCache.get(cacheKey) as FileAnalysisSummary | undefined)
-    : undefined;
+  const cached = cacheKey ? getVbFromTextCache<FileAnalysisSummary>(cacheKey, text) : undefined;
   if (cached) {
     return cached;
   }
@@ -3933,7 +3929,7 @@ export async function summarizeAspFileAnalysisFromTextAsync(
     context,
   );
   if (cacheKey) {
-    setVbFromTextCache(cacheKey, result);
+    setVbFromTextCache(cacheKey, text, result);
   }
   return result;
 }
@@ -3974,8 +3970,18 @@ function parseAspDocumentTypeScriptOnly(
   uri: string,
   text: string,
   settings: AspSettings,
-): ReturnType<typeof parseAspDocumentTypeScript> {
-  return parseAspDocumentTypeScript(uri, text, settings);
+): ReturnType<typeof parseAspDocument> {
+  const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
+  process.env.ASP_LSP_ANALYSIS_BACKEND = "typescript";
+  try {
+    return parseAspDocument(uri, text, settings);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ASP_LSP_ANALYSIS_BACKEND;
+    } else {
+      process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
+    }
+  }
 }
 
 function vbFromTextCacheKey(
@@ -3996,7 +4002,6 @@ function vbFromTextCacheKey(
     return JSON.stringify({
       operation,
       uri,
-      text: textFingerprint(text),
       settings,
       context: contextKey,
     });
@@ -4005,11 +4010,16 @@ function vbFromTextCacheKey(
   }
 }
 
-function setVbFromTextCache(key: string, value: unknown): void {
+function getVbFromTextCache<T>(key: string, text: string): T | undefined {
+  const cached = vbFromTextCache.get(key);
+  return cached?.text === text ? (cached.value as T) : undefined;
+}
+
+function setVbFromTextCache(key: string, text: string, value: unknown): void {
   if (vbFromTextCache.has(key)) {
     vbFromTextCache.delete(key);
   }
-  vbFromTextCache.set(key, value);
+  vbFromTextCache.set(key, { text, value });
   while (vbFromTextCache.size > vbFromTextCacheMaxEntries) {
     const oldest = vbFromTextCache.keys().next().value;
     if (oldest === undefined) {
