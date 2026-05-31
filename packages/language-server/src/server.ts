@@ -590,6 +590,11 @@ interface CachedVbProjectContextLookup {
   context: VbProjectContext;
 }
 
+interface VbProjectContextLimits {
+  maxDocuments: number;
+  maxTextLength: number;
+}
+
 class AspProjectBuilderState {
   private readonly files = new Map<string, AspProjectFileBuilderState>();
   private readonly affectedQueue = new Map<string, Set<string>>();
@@ -2990,6 +2995,11 @@ const neverCancelled: AnalysisCancellation = {
 async function fileExistsAsync(fileName: string): Promise<boolean> {
   const stat = await fs.promises.stat(fileName).catch(() => undefined);
   return Boolean(stat?.isFile());
+}
+
+async function fileSizeAsync(fileName: string): Promise<number | undefined> {
+  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  return stat?.isFile() ? stat.size : undefined;
 }
 
 async function pathExistsAsync(fileName: string): Promise<boolean> {
@@ -7014,19 +7024,49 @@ function vbProjectDocumentCollectionKey(cached: CachedDocument, settings: AspSet
       path: include.path,
       mode: include.mode,
     })),
+    limits: vbProjectContextLimits(settings),
     resolution: includeResolutionSettingsKey(settings),
   });
+}
+
+function vbProjectContextLimits(settings: AspSettings): VbProjectContextLimits {
+  return {
+    maxDocuments:
+      settings.workspace?.vbProjectMaxDocuments ??
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_DOCUMENTS", 32),
+    maxTextLength:
+      settings.workspace?.vbProjectMaxTextLength ??
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", 1024 * 1024),
+  };
+}
+
+function positiveIntegerFromEnv(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
 async function collectVbProjectDocumentsAsync(
   root: AspParsedDocument,
   settings: AspSettings,
 ): Promise<AspParsedDocument[]> {
+  const limits = vbProjectContextLimits(settings);
   const documents: AspParsedDocument[] = [];
   const visited = new Set<string>();
+  let totalTextLength = root.text.length;
+  let truncatedReason: string | undefined;
   resetIncludeDependencies(root.uri);
+  const noteTruncated = (reason: string): void => {
+    truncatedReason ??= reason;
+  };
   const visit = async (document: AspParsedDocument, depth: number): Promise<void> => {
     if (depth > 20 || visited.has(document.uri)) {
+      if (depth > 20) {
+        noteTruncated("depth>20");
+      }
+      return;
+    }
+    if (documents.length >= limits.maxDocuments) {
+      noteTruncated(`documents>${limits.maxDocuments}`);
       return;
     }
     visited.add(document.uri);
@@ -7043,11 +7083,27 @@ async function collectVbProjectDocumentsAsync(
       if (!resolved.exists || visited.has(uri)) {
         continue;
       }
+      if (documents.length >= limits.maxDocuments) {
+        noteTruncated(`documents>${limits.maxDocuments}`);
+        continue;
+      }
+      const size = await fileSizeAsync(resolved.fileName);
+      if (size !== undefined && totalTextLength + size > limits.maxTextLength) {
+        noteTruncated(`text>${limits.maxTextLength}`);
+        continue;
+      }
       const next = await readParsedIncludeDocumentAsync(resolved.fileName, settings);
+      totalTextLength += next.text.length;
       await visit(next, depth + 1);
     }
   };
   await visit(root, 0);
+  if (truncatedReason) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vbProject.documents.truncated: ${root.uri}, documents=${documents.length}, text=${totalTextLength}, reason=${truncatedReason}`,
+    );
+  }
   return documents;
 }
 
@@ -7060,6 +7116,14 @@ async function readParsedIncludeDocumentAsync(
     throw new Error(`Include document does not exist: ${fileName}`);
   }
   return entry.parsed;
+}
+
+async function readParsedIncludeDocumentForCycleAsync(
+  fileName: string,
+  settings: AspSettings,
+): Promise<AspParsedDocument> {
+  const text = await readTextFileAsync(fileName, settings.legacyEncoding);
+  return parseAspDocument(pathToFileUri(fileName), text, settings);
 }
 
 async function includeDocumentCacheKeyAsync(
@@ -7363,11 +7427,20 @@ async function findIncludeCycleAsync(
     includeCycleCache.set(cacheKey, null);
     return undefined;
   }
+  const limits = vbProjectContextLimits(settings);
   const visited = new Set<string>();
   const stack: string[] = [];
   const stackIndexes = new Map<string, number>();
+  let totalTextLength = 0;
+  let truncatedReason: string | undefined;
+  const noteTruncated = (reason: string): void => {
+    truncatedReason ??= reason;
+  };
   const search = async (fileName: string, depth: number): Promise<string[] | undefined> => {
     if (depth > 20 || cancellation.isCancellationRequested()) {
+      if (depth > 20) {
+        noteTruncated("depth>20");
+      }
       return undefined;
     }
     const normalized = normalizeFileName(fileName);
@@ -7381,10 +7454,20 @@ async function findIncludeCycleAsync(
     if (visited.has(normalized)) {
       return undefined;
     }
+    if (visited.size >= limits.maxDocuments) {
+      noteTruncated(`documents>${limits.maxDocuments}`);
+      return undefined;
+    }
+    const size = await fileSizeAsync(normalized);
+    if (size !== undefined && totalTextLength + size > limits.maxTextLength) {
+      noteTruncated(`text>${limits.maxTextLength}`);
+      return undefined;
+    }
+    totalTextLength += size ?? 0;
     visited.add(normalized);
     stackIndexes.set(normalized, stack.length);
     stack.push(normalized);
-    const parsed = await readParsedIncludeDocumentAsync(normalized, settings).catch(
+    const parsed = await readParsedIncludeDocumentForCycleAsync(normalized, settings).catch(
       () => undefined,
     );
     await yieldToEventLoop();
@@ -7415,6 +7498,12 @@ async function findIncludeCycleAsync(
   const cycle = await search(start, 0);
   if (!cancellation.isCancellationRequested()) {
     includeCycleCache.set(cacheKey, cycle ?? null);
+    if (truncatedReason) {
+      logDebugSummary(
+        settings,
+        `[asp-lsp] includeCycle.truncated: owner=${pathToFileUri(owner)}, start=${pathToFileUri(start)}, files=${visited.size}, text=${totalTextLength}, reason=${truncatedReason}`,
+      );
+    }
   }
   return cycle;
 }
@@ -7423,6 +7512,7 @@ function includeCycleCacheKey(owner: string, start: string, settings: AspSetting
   return JSON.stringify({
     owner: normalizeFileName(owner),
     start: normalizeFileName(start),
+    limits: vbProjectContextLimits(settings),
     resolution: includeResolutionSettingsKey(settings),
   });
 }
@@ -8426,7 +8516,19 @@ function normalizeWorkspaceSettings(
         : undefined,
       defaultBusyAnalysisConcurrency(),
     ),
+    vbProjectMaxDocuments: positiveIntegerSetting(
+      record.vbProjectMaxDocuments,
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_DOCUMENTS", 32),
+    ),
+    vbProjectMaxTextLength: positiveIntegerSetting(
+      record.vbProjectMaxTextLength,
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", 1024 * 1024),
+    ),
   };
+}
+
+function positiveIntegerSetting(value: unknown, fallback: number): number {
+  return typeof value === "number" && value > 0 ? Math.floor(value) : fallback;
 }
 
 function normalizeCacheSettings(
