@@ -345,6 +345,12 @@ interface PendingDocumentChange {
   ranged: boolean;
 }
 
+interface InFlightDocumentRefresh {
+  identity: DocumentIdentity;
+  parseSettingsIdentity: string;
+  promise: Promise<CachedDocument>;
+}
+
 interface WatchedAspFileChange {
   fileName: string;
   type: FileChangeType;
@@ -567,6 +573,11 @@ interface CompletionCacheEntry {
 interface CachedVbProjectContextLookup {
   key: string;
   context: VbProjectContext;
+}
+
+interface VbProjectContextLimits {
+  maxDocuments: number;
+  maxTextLength: number;
 }
 
 class AspProjectBuilderState {
@@ -965,6 +976,7 @@ const diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const stagedDiagnosticsByUri = new Map<string, StagedDiagnosticsState>();
 const publishedDiagnosticsByUri = new Map<string, PublishedDiagnosticsState>();
 const pendingDocumentChanges = new Map<string, PendingDocumentChange>();
+const inFlightDocumentRefreshes = new Map<string, InFlightDocumentRefresh>();
 const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 const includeDocumentLoader = new IncludeDocumentLoader();
 const aspProjectBuilderState = new AspProjectBuilderState();
@@ -1112,6 +1124,7 @@ documents.onDidClose((event) => {
   cancelScheduledDiagnostics(event.document.uri);
   documentOpenContentVersions.delete(event.document.uri);
   pendingDocumentChanges.delete(event.document.uri);
+  inFlightDocumentRefreshes.delete(event.document.uri);
   cache.delete(event.document.uri);
   clearSemanticTokensForUri(event.document.uri);
   stagedDiagnosticsByUri.delete(event.document.uri);
@@ -2245,39 +2258,80 @@ async function ensureFreshDiagnosticsCachedDocumentAsync(
 ): Promise<CachedDocument> {
   const existing = cache.get(document.uri);
   const settings = cachedSettings(document.uri);
+  const identity = documentIdentityFor(document);
+  const parseIdentity = parseSettingsIdentity(settings);
+  const inFlight = inFlightDocumentRefreshes.get(document.uri);
+  if (
+    inFlight &&
+    sameDocumentIdentity(inFlight.identity, identity) &&
+    inFlight.parseSettingsIdentity === parseIdentity
+  ) {
+    return inFlight.promise;
+  }
   if (
     existing &&
-    sameDocumentIdentity(existing.identity, documentIdentityFor(document)) &&
-    existing.parseSettingsIdentity === parseSettingsIdentity(settings)
+    sameDocumentIdentity(existing.identity, identity) &&
+    existing.parseSettingsIdentity === parseIdentity
   ) {
     updateCachedDocumentRuntimeIdentity(existing, settings);
     return existing;
   }
-  if (existing && existing.parseSettingsIdentity === parseSettingsIdentity(settings)) {
+  if (existing && existing.parseSettingsIdentity === parseIdentity) {
     const pending = pendingDocumentChanges.get(document.uri);
     if (pending?.version === document.version) {
       pendingDocumentChanges.delete(document.uri);
       if (pending.ranged && pending.changes.length === 1) {
-        return refreshCachedDiagnosticsDocumentIncrementalAsync(
-          existing,
+        return rememberInFlightDocumentRefresh(
           document,
-          settings,
-          pending.changes[0],
+          parseIdentity,
+          refreshCachedDiagnosticsDocumentIncrementalAsync(
+            existing,
+            document,
+            settings,
+            pending.changes[0],
+          ),
         );
       }
-      return refreshCachedDocumentSkeletonAsync(
+      return rememberInFlightDocumentRefresh(
         document,
-        pending?.reason ?? "non-incremental document change",
+        parseIdentity,
+        refreshCachedDocumentSkeletonAsync(
+          document,
+          pending?.reason ?? "non-incremental document change",
+        ),
       );
     }
   }
   pendingDocumentChanges.delete(document.uri);
-  return refreshCachedDocumentSkeletonAsync(document);
+  return rememberInFlightDocumentRefresh(
+    document,
+    parseIdentity,
+    refreshCachedDocumentSkeletonAsync(document),
+  );
 }
 
 function getFreshCached(uri: string): CachedDocument | undefined {
   const document = documents.get(uri);
   return document ? ensureFreshCachedDocument(document) : getCached(uri);
+}
+
+function rememberInFlightDocumentRefresh(
+  document: TextDocument,
+  parseSettingsIdentityValue: string,
+  promise: Promise<CachedDocument>,
+): Promise<CachedDocument> {
+  const entry: InFlightDocumentRefresh = {
+    identity: documentIdentityFor(document),
+    parseSettingsIdentity: parseSettingsIdentityValue,
+    promise,
+  };
+  inFlightDocumentRefreshes.set(document.uri, entry);
+  void promise.finally(() => {
+    if (inFlightDocumentRefreshes.get(document.uri) === entry) {
+      inFlightDocumentRefreshes.delete(document.uri);
+    }
+  });
+  return promise;
 }
 
 function createCachedDocument(
@@ -2893,6 +2947,11 @@ const neverCancelled: AnalysisCancellation = {
 async function fileExistsAsync(fileName: string): Promise<boolean> {
   const stat = await fs.promises.stat(fileName).catch(() => undefined);
   return Boolean(stat?.isFile());
+}
+
+async function fileSizeAsync(fileName: string): Promise<number | undefined> {
+  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  return stat?.isFile() ? stat.size : undefined;
 }
 
 async function pathExistsAsync(fileName: string): Promise<boolean> {
@@ -6689,19 +6748,45 @@ function vbProjectDocumentCollectionKey(cached: CachedDocument, settings: AspSet
       path: include.path,
       mode: include.mode,
     })),
+    limits: vbProjectContextLimits(),
     resolution: includeResolutionSettingsKey(settings),
   });
+}
+
+function vbProjectContextLimits(): VbProjectContextLimits {
+  return {
+    maxDocuments: positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_DOCUMENTS", 32),
+    maxTextLength: positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", 1024 * 1024),
+  };
+}
+
+function positiveIntegerFromEnv(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
 async function collectVbProjectDocumentsAsync(
   root: AspParsedDocument,
   settings: AspSettings,
 ): Promise<AspParsedDocument[]> {
+  const limits = vbProjectContextLimits();
   const documents: AspParsedDocument[] = [];
   const visited = new Set<string>();
+  let totalTextLength = root.text.length;
+  let truncatedReason: string | undefined;
   resetIncludeDependencies(root.uri);
+  const noteTruncated = (reason: string): void => {
+    truncatedReason ??= reason;
+  };
   const visit = async (document: AspParsedDocument, depth: number): Promise<void> => {
     if (depth > 20 || visited.has(document.uri)) {
+      if (depth > 20) {
+        noteTruncated("depth>20");
+      }
+      return;
+    }
+    if (documents.length >= limits.maxDocuments) {
+      noteTruncated(`documents>${limits.maxDocuments}`);
       return;
     }
     visited.add(document.uri);
@@ -6718,10 +6803,27 @@ async function collectVbProjectDocumentsAsync(
       if (!resolved.exists || visited.has(uri)) {
         continue;
       }
-      await visit(await readParsedIncludeDocumentAsync(resolved.fileName, settings), depth + 1);
+      if (documents.length >= limits.maxDocuments) {
+        noteTruncated(`documents>${limits.maxDocuments}`);
+        continue;
+      }
+      const size = await fileSizeAsync(resolved.fileName);
+      if (size !== undefined && totalTextLength + size > limits.maxTextLength) {
+        noteTruncated(`text>${limits.maxTextLength}`);
+        continue;
+      }
+      const next = await readParsedIncludeDocumentAsync(resolved.fileName, settings);
+      totalTextLength += next.text.length;
+      await visit(next, depth + 1);
     }
   };
   await visit(root, 0);
+  if (truncatedReason) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vbProject.documents.truncated: ${root.uri}, documents=${documents.length}, text=${totalTextLength}, reason=${truncatedReason}`,
+    );
+  }
   return documents;
 }
 
@@ -6734,6 +6836,14 @@ async function readParsedIncludeDocumentAsync(
     throw new Error(`Include document does not exist: ${fileName}`);
   }
   return entry.parsed;
+}
+
+async function readParsedIncludeDocumentForCycleAsync(
+  fileName: string,
+  settings: AspSettings,
+): Promise<AspParsedDocument> {
+  const text = await readTextFileAsync(fileName, settings.legacyEncoding);
+  return parseAspDocument(pathToFileUri(fileName), text, settings);
 }
 
 async function includeDocumentCacheKeyAsync(
@@ -7039,11 +7149,20 @@ async function findIncludeCycleAsync(
     includeCycleCache.set(cacheKey, null);
     return undefined;
   }
+  const limits = vbProjectContextLimits();
   const visited = new Set<string>();
   const stack: string[] = [];
   const stackIndexes = new Map<string, number>();
+  let totalTextLength = 0;
+  let truncatedReason: string | undefined;
+  const noteTruncated = (reason: string): void => {
+    truncatedReason ??= reason;
+  };
   const search = async (fileName: string, depth: number): Promise<string[] | undefined> => {
     if (depth > 20 || cancellation.isCancellationRequested()) {
+      if (depth > 20) {
+        noteTruncated("depth>20");
+      }
       return undefined;
     }
     const normalized = normalizeFileName(fileName);
@@ -7057,10 +7176,20 @@ async function findIncludeCycleAsync(
     if (visited.has(normalized)) {
       return undefined;
     }
+    if (visited.size >= limits.maxDocuments) {
+      noteTruncated(`documents>${limits.maxDocuments}`);
+      return undefined;
+    }
+    const size = await fileSizeAsync(normalized);
+    if (size !== undefined && totalTextLength + size > limits.maxTextLength) {
+      noteTruncated(`text>${limits.maxTextLength}`);
+      return undefined;
+    }
+    totalTextLength += size ?? 0;
     visited.add(normalized);
     stackIndexes.set(normalized, stack.length);
     stack.push(normalized);
-    const parsed = await readParsedIncludeDocumentAsync(normalized, settings).catch(
+    const parsed = await readParsedIncludeDocumentForCycleAsync(normalized, settings).catch(
       () => undefined,
     );
     await yieldToEventLoop();
@@ -7091,6 +7220,12 @@ async function findIncludeCycleAsync(
   const cycle = await search(start, 0);
   if (!cancellation.isCancellationRequested()) {
     includeCycleCache.set(cacheKey, cycle ?? null);
+    if (truncatedReason) {
+      logDebugSummary(
+        settings,
+        `[asp-lsp] includeCycle.truncated: owner=${pathToFileUri(owner)}, start=${pathToFileUri(start)}, files=${visited.size}, text=${totalTextLength}, reason=${truncatedReason}`,
+      );
+    }
   }
   return cycle;
 }
@@ -7099,6 +7234,7 @@ function includeCycleCacheKey(owner: string, start: string, settings: AspSetting
   return JSON.stringify({
     owner: normalizeFileName(owner),
     start: normalizeFileName(start),
+    limits: vbProjectContextLimits(),
     resolution: includeResolutionSettingsKey(settings),
   });
 }

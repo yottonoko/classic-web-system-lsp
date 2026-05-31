@@ -2979,6 +2979,103 @@ Response.Write Sha
       }
     });
 
+    it("caps large VB project contexts and keeps edit-time inlay hints current", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-capped-include-edit-"));
+      const owner = path.join(tempDir, "default.asp");
+      const includeDirectives: string[] = [];
+      for (let index = 0; index < 8; index += 1) {
+        const includeName = `shared-${index}.inc`;
+        if (index === 0) {
+          includeDirectives.push(`<!-- #include file="${includeName}" -->`);
+        }
+        const nextInclude = index < 7 ? `<!-- #include file="shared-${index + 1}.inc" -->\n` : "";
+        fs.writeFileSync(
+          path.join(tempDir, includeName),
+          `${nextInclude}<%
+Function SharedExport${index}()
+End Function
+%>`,
+          "utf8",
+        );
+      }
+      let source = `${includeDirectives.join("\n")}
+<%
+Dim localValue
+localValue = 1
+Response.Write localValue
+%>`;
+      const uri = `file://${owner}`;
+      fs.writeFileSync(owner, source, "utf8");
+
+      const server = new RpcServer({
+        env: {
+          ASP_LSP_VB_PROJECT_MAX_DOCUMENTS: "4",
+          ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH: "1048576",
+        },
+      });
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "summary" },
+              diagnostics: { debounceMs: 0 },
+              inlayHints: { globalVariableMarkers: "all" },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await waitForLogContaining(server, "vbProject.documents.truncated");
+        await waitForLogContaining(server, "includeCycle.truncated");
+
+        const initialHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: {
+            start: { line: 0, character: 0 },
+            end: positionAt(source, source.length),
+          },
+        });
+        expect(JSON.stringify(initialHints)).toContain("As Number");
+
+        source = notifyRangedReplacement(
+          server,
+          uri,
+          source,
+          2,
+          "localValue = 1",
+          'localValue = "one"',
+        );
+        const editedHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: {
+            start: { line: 0, character: 0 },
+            end: positionAt(source, source.length),
+          },
+        });
+        const serializedEditedHints = JSON.stringify(editedHints);
+        expect(serializedEditedHints).toContain("As String");
+        expect(serializedEditedHints).not.toContain("As Number");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("invalidates VB completion cache after watched include export changes", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-completion-"));
       const owner = path.join(tempDir, "default.asp");
