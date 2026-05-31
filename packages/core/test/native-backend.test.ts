@@ -123,6 +123,62 @@ describeNative("native analysis backend", () => {
     expect(aspAnalysisBackendInfo().backend).toBe("native");
   });
 
+  it("keeps TypeScript type inference on native-parsed documents", () => {
+    const source = `<%
+Class FirstThing
+  Public SharedName
+  Public OnlyFirst
+End Class
+Class SecondThing
+  Public SharedName
+End Class
+x = 1
+x = "a"
+Dim unknownGlobal
+Function MakeValue(flag)
+  If flag Then
+    MakeValue = 1
+  Else
+    MakeValue = "x"
+  End If
+End Function
+' @member Holder.Value As String | Number
+Class Holder
+  Public Value
+End Class
+' @type typed As Number
+Dim typed
+typed = "oops"
+%>`;
+    const parsed = parseAspDocument("file:///site/native-inference.asp", source);
+    expect(aspAnalysisBackendInfo().backend).toBe("native");
+
+    const symbols = collectVbscriptSymbols(parsed);
+    expect(symbols.find((symbol) => symbol.name === "x")?.typeName).toBe("Number | String");
+    expect(symbols.find((symbol) => symbol.name === "unknownGlobal")?.typeName).toBe("Variant");
+    expect(symbols.find((symbol) => symbol.name === "MakeValue")?.typeName).toBe("Number | String");
+
+    const analyzed = analyzeVbscript(parsed);
+    expect(analyzed.symbols.find((symbol) => symbol.name === "x")?.typeName).toBe(
+      "Number | String",
+    );
+    expect(
+      analyzeVbscript(parsed, { typeChecking: "strict" }).diagnostics.some((diagnostic) =>
+        diagnostic.message.includes("is Number, but assigned String"),
+      ),
+    ).toBe(true);
+
+    const summary = summarizeAspFileAnalysis(parsed);
+    expect(summary.vbscript?.localSymbols.find((symbol) => symbol.name === "x")?.typeName).toBe(
+      "Number | String",
+    );
+    expect(
+      summary.vbscript?.typeFacts
+        .find((type) => type.name === "Holder")
+        ?.members.find((member) => member.name === "Value")?.type?.name,
+    ).toBe("String | Number");
+  });
+
   it("keeps async VBScript analysis on TypeScript semantics for project context", async () => {
     const include = parseAspDocument(
       "file:///site/inc/shared.inc",
@@ -235,7 +291,11 @@ Dim a(1), plain, matrix(2, 3)
 %>`;
     const parsed = parseAspDocument("file:///site/native-arrays.asp", source);
     expect(aspAnalysisBackendInfo().backend).toBe("native");
-    const symbols = collectVbscriptSymbols(parsed);
+    const symbols = collectVbscriptSymbols(
+      parsed,
+      {},
+      { inferTypes: false, variantFallback: false },
+    );
     expect(symbols.find((symbol) => symbol.name === "fixedItems")).toMatchObject({
       typeName: "Array",
       array: { kind: "fixed", dimensions: ["10"] },

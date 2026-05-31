@@ -23,16 +23,13 @@ import type {
   TextEdit,
 } from "vscode-languageserver-types";
 import { offsetAt, positionAt, rangeFromOffsets } from "./position";
-import { parseAspDocument, parseAspDocumentAsync } from "./parser";
+import { parseAspDocument } from "./parser";
 import { createLocalizer } from "./localize";
 import {
   tryNativeAnalyzeVbscript,
   tryNativeAnalyzeVbscriptAsync,
   tryNativeCollectVbscriptSymbols,
   tryNativeCollectVbscriptSymbolsAsync,
-  tryNativeSummarizeAspFileAnalysis,
-  tryNativeSummarizeAspFileAnalysisAsync,
-  tryNativeSummarizeAspFileAnalysisFromTextAsync,
 } from "./native-backend";
 import type {
   AspCstNode,
@@ -2548,10 +2545,17 @@ export function analyzeVbscript(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
-  if (nativeSemanticsEnabled() && !requiresTsSemanticContext(context)) {
+  if (
+    nativeSemanticsEnabled() &&
+    !requiresTsSemanticContext(context) &&
+    context.typeChecking !== "strict"
+  ) {
     const native = tryNativeAnalyzeVbscript(parsed, context);
     if (native) {
-      return native;
+      return {
+        diagnostics: native.diagnostics,
+        symbols: collectVbscriptSymbolsTypeScript(parsed, context, {}),
+      };
     }
   }
   return analyzeVbscriptTypeScript(parsed, context);
@@ -2561,10 +2565,17 @@ export async function analyzeVbscriptAsync(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
-  if (nativeSemanticsEnabled() && !requiresTsSemanticContext(context)) {
+  if (
+    nativeSemanticsEnabled() &&
+    !requiresTsSemanticContext(context) &&
+    context.typeChecking !== "strict"
+  ) {
     const native = await tryNativeAnalyzeVbscriptAsync(parsed, context);
     if (native) {
-      return native;
+      return {
+        diagnostics: native.diagnostics,
+        symbols: collectVbscriptSymbolsTypeScript(parsed, context, {}),
+      };
     }
   }
   return analyzeVbscriptTypeScript(parsed, context);
@@ -3774,12 +3785,7 @@ export function collectVbscriptSymbols(
   context: VbProjectContext = {},
   options: VbSymbolCollectionOptions = {},
 ): VbSymbol[] {
-  if (
-    nativeSemanticsEnabled() &&
-    options.implicitAssignments !== false &&
-    options.inferTypes !== false &&
-    options.variantFallback !== false
-  ) {
+  if (nativeSemanticsEnabled() && canUseNativeSymbolCollection(options)) {
     const native = tryNativeCollectVbscriptSymbols(parsed, context);
     if (native) {
       return native;
@@ -3793,12 +3799,7 @@ export async function collectVbscriptSymbolsAsync(
   context: VbProjectContext = {},
   options: VbSymbolCollectionOptions = {},
 ): Promise<VbSymbol[]> {
-  if (
-    nativeSemanticsEnabled() &&
-    options.implicitAssignments !== false &&
-    options.inferTypes !== false &&
-    options.variantFallback !== false
-  ) {
+  if (nativeSemanticsEnabled() && canUseNativeSymbolCollection(options)) {
     const native = await tryNativeCollectVbscriptSymbolsAsync(parsed, context);
     if (native) {
       return native;
@@ -3858,6 +3859,14 @@ interface VbSymbolCollectionOptions {
   variantFallback?: boolean;
 }
 
+function canUseNativeSymbolCollection(options: VbSymbolCollectionOptions): boolean {
+  return (
+    options.implicitAssignments !== false &&
+    options.inferTypes === false &&
+    options.variantFallback === false
+  );
+}
+
 interface VbDocCommentLookup {
   tokens: VbToken[];
   nextIndex: number;
@@ -3880,12 +3889,6 @@ export function summarizeAspFileAnalysis(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): FileAnalysisSummary {
-  if (nativeSemanticsEnabled()) {
-    const native = tryNativeSummarizeAspFileAnalysis(parsed, context);
-    if (native) {
-      return native;
-    }
-  }
   return summarizeAspFileAnalysisTypeScript(parsed, context);
 }
 
@@ -3893,12 +3896,6 @@ export async function summarizeAspFileAnalysisAsync(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): Promise<FileAnalysisSummary> {
-  if (nativeSemanticsEnabled()) {
-    const native = await tryNativeSummarizeAspFileAnalysisAsync(parsed, context);
-    if (native) {
-      return native;
-    }
-  }
   return summarizeAspFileAnalysisTypeScript(parsed, context);
 }
 
@@ -3908,24 +3905,13 @@ export async function summarizeAspFileAnalysisFromTextAsync(
   settings: AspSettings = {},
   context: VbProjectContext = {},
 ): Promise<FileAnalysisSummary> {
-  if (nativeSemanticsEnabled()) {
-    const native = await tryNativeSummarizeAspFileAnalysisFromTextAsync(
-      uri,
-      text,
-      settings,
-      context,
-    );
-    if (native) {
-      return native;
-    }
-  }
   const cacheKey = vbFromTextCacheKey("summary", uri, text, settings, context);
   const cached = cacheKey ? getVbFromTextCache<FileAnalysisSummary>(cacheKey, text) : undefined;
   if (cached) {
     return cached;
   }
   const result = summarizeAspFileAnalysisTypeScript(
-    await parseAspDocumentAsync(uri, text, settings),
+    parseAspDocumentTypeScriptOnly(uri, text, settings),
     context,
   );
   if (cacheKey) {
