@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { CompletionItemKind, DiagnosticTag, InsertTextFormat } from "vscode-languageserver-types";
 import {
+  aspAnalysisBackendInfo,
   analyzeVbscript,
   buildVbTypeEnvironment,
   buildVirtualDocuments,
   collectVbscriptPublicSymbols,
   collectVbscriptSymbols,
+  collectVbscriptSymbolsAsync,
   formatAspDocument,
   formatAspRange,
   getClassicAspLineCommentEdits,
@@ -19,19 +21,169 @@ import {
   getVbscriptSemanticTokens,
   getVbscriptSignatureHelp,
   getVbscriptTypeDefinition,
+  hydrateVbscriptCst,
+  needsVbscriptCstHydration,
   parseAspCst,
   parseAspDocument,
+  parseAspDocumentAsync,
+  parseAspDocumentSkeletonAsync,
   parseVbscriptTypeRef,
   parseVbscriptCst,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
   shiftAspRangeAfterChange,
   summarizeAspFileAnalysis,
+  summarizeAspFileAnalysisAsync,
   updateAspParsedDocument,
 } from "../src";
-import type { VbCstNode } from "../src";
+import type { AspCstNode, VbCstNode } from "../src";
+
+function collectVbTokenTexts(node: AspCstNode): string[] {
+  return [
+    ...(node.vbscript?.tokens.map((token) => token.text) ?? []),
+    ...node.children.flatMap((child) => collectVbTokenTexts(child)),
+  ];
+}
 
 describe("parseAspDocument", () => {
+  it("treats the removed WebAssembly backend mode as TypeScript fallback", () => {
+    const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
+    const removedMode = "was" + "m";
+    process.env.ASP_LSP_ANALYSIS_BACKEND = removedMode;
+    try {
+      const parsed = parseAspDocument("file:///site/default.asp", `<% Response.Write "ok" %>`);
+      expect(parsed.defaultLanguage).toBe("VBScript");
+      expect(aspAnalysisBackendInfo()).toMatchObject({
+        backend: "typescript-fallback",
+        engine: "typescript",
+        reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${removedMode}`,
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
+      } else {
+        process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
+      }
+    }
+  });
+
+  it("treats the removed WebAssembly backend mode as async TypeScript fallback", async () => {
+    const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
+    const removedMode = "was" + "m";
+    process.env.ASP_LSP_ANALYSIS_BACKEND = removedMode;
+    try {
+      const parsed = await parseAspDocumentAsync(
+        "file:///site/default.asp",
+        `<% Response.Write "ok" %>`,
+      );
+      expect(parsed.defaultLanguage).toBe("VBScript");
+      expect(aspAnalysisBackendInfo()).toMatchObject({
+        backend: "typescript-fallback",
+        engine: "typescript",
+        reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${removedMode}`,
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
+      } else {
+        process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
+      }
+    }
+  });
+
+  it("marks skeleton parses as needing VBScript CST hydration before direct CST walks", async () => {
+    const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
+    process.env.ASP_LSP_ANALYSIS_BACKEND = "typescript";
+    try {
+      const parsed = await parseAspDocumentSkeletonAsync(
+        "file:///site/skeleton.asp",
+        `<%
+Dim Greeting
+Greeting = "hello"
+%>`,
+      );
+      expect(needsVbscriptCstHydration(parsed)).toBe(true);
+      expect(collectVbTokenTexts(parsed.cst)).toHaveLength(0);
+
+      await hydrateVbscriptCst(parsed);
+      expect(needsVbscriptCstHydration(parsed)).toBe(false);
+      expect(collectVbTokenTexts(parsed.cst)).toEqual(
+        expect.arrayContaining(["Dim", "Greeting", '"hello"']),
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
+      } else {
+        process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
+      }
+    }
+  });
+
+  it("keeps async VBScript summary and symbol helpers usable for skeleton parses", async () => {
+    const previousBackend = process.env.ASP_LSP_ANALYSIS_BACKEND;
+    const previousNativeSemantics = process.env.ASP_LSP_NATIVE_SEMANTICS;
+    process.env.ASP_LSP_ANALYSIS_BACKEND = "typescript";
+    process.env.ASP_LSP_NATIVE_SEMANTICS = "0";
+    try {
+      const parsed = await parseAspDocumentSkeletonAsync(
+        "file:///site/async-analysis-skeleton.asp",
+        `<%
+Function BuildTitle(name)
+  BuildTitle = "Hello " & name
+End Function
+%>`,
+      );
+      expect(needsVbscriptCstHydration(parsed)).toBe(true);
+
+      const symbols = await collectVbscriptSymbolsAsync(parsed);
+      const summary = await summarizeAspFileAnalysisAsync(parsed);
+
+      expect(symbols.find((symbol) => symbol.name === "BuildTitle")?.kind).toBe("function");
+      expect(
+        summary.vbscript?.localSymbols.find((symbol) => symbol.name === "BuildTitle")?.kind,
+      ).toBe("function");
+      expect(needsVbscriptCstHydration(parsed)).toBe(false);
+    } finally {
+      if (previousBackend === undefined) {
+        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
+      } else {
+        process.env.ASP_LSP_ANALYSIS_BACKEND = previousBackend;
+      }
+      if (previousNativeSemantics === undefined) {
+        delete process.env.ASP_LSP_NATIVE_SEMANTICS;
+      } else {
+        process.env.ASP_LSP_NATIVE_SEMANTICS = previousNativeSemantics;
+      }
+    }
+  });
+
+  it("reports a TypeScript fallback when the native binary is unavailable", () => {
+    const previousBackend = process.env.ASP_LSP_ANALYSIS_BACKEND;
+    const previousNativeCorePath = process.env.ASP_LSP_NATIVE_CORE_PATH;
+    process.env.ASP_LSP_ANALYSIS_BACKEND = "auto";
+    process.env.ASP_LSP_NATIVE_CORE_PATH = "/__asp_lsp_missing__/asp-lsp-core";
+    try {
+      const parsed = parseAspDocument("file:///site/default.asp", `<% Response.Write "ok" %>`);
+      expect(parsed.defaultLanguage).toBe("VBScript");
+      expect(aspAnalysisBackendInfo()).toMatchObject({
+        backend: "typescript-fallback",
+        engine: "typescript",
+        reason: "native binary not found",
+      });
+    } finally {
+      if (previousBackend === undefined) {
+        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
+      } else {
+        process.env.ASP_LSP_ANALYSIS_BACKEND = previousBackend;
+      }
+      if (previousNativeCorePath === undefined) {
+        delete process.env.ASP_LSP_NATIVE_CORE_PATH;
+      } else {
+        process.env.ASP_LSP_NATIVE_CORE_PATH = previousNativeCorePath;
+      }
+    }
+  });
+
   it("updates safe HTML edits incrementally while shifting later include ranges", () => {
     const source = `<div>hello</div>
 <!-- #include file="common.inc" -->
@@ -338,7 +490,7 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(parsed.diagnostics[0]?.message).toContain("閉じ区切り");
   });
 
-  it("keeps ASP delimiters inside script strings from ending regions", () => {
+  it("closes ASP regions at raw delimiters inside script strings", () => {
     const source = `<%
 Response.Write "%>"
 Response.Write "done"
@@ -350,9 +502,23 @@ Response.Write "done"
       (region) => region.kind === "asp-block" || region.kind === "asp-directive",
     );
     expect(blocks).toHaveLength(3);
+    expect(blocks[0].end).toBe(source.indexOf("%>") + "%>".length);
     expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).toContain(
+      'Response.Write "',
+    );
+    expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).not.toContain(
       'Response.Write "done"',
     );
+    expect(source.slice(blocks[2].contentStart, blocks[2].contentEnd)).toContain("var text = '");
+    expect(source.slice(blocks[2].contentStart, blocks[2].contentEnd)).not.toContain(
+      "Response.Write(text)",
+    );
+    const html = parsed.regions
+      .filter((region) => region.kind === "html")
+      .map((region) => source.slice(region.start, region.end))
+      .join("");
+    expect(html).toContain('Response.Write "done"');
+    expect(html).toContain("Response.Write(text)");
   });
 
   it("closes ASP regions at delimiters on VBScript comment lines", () => {
@@ -369,7 +535,51 @@ Response.Write "done"
     expect(parsed.regions.some((region) => region.kind === "html")).toBe(true);
   });
 
-  it("keeps ASP delimiters inside script comments from ending regions", () => {
+  it("keeps HTML text after inline VBScript comment delimiters", () => {
+    const source = `<div>
+<%' あいうえお %>
+テキスト
+</div>`;
+    const parsed = parseAspDocument("file:///site/inline-vb-comment-close.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    const block = parsed.regions.find((region) => region.kind === "asp-block");
+    expect(block?.end).toBe(source.indexOf("%>") + "%>".length);
+    const html = parsed.regions
+      .filter((region) => region.kind === "html")
+      .map((region) => source.slice(region.start, region.end))
+      .join("");
+    expect(html).toContain("テキスト");
+  });
+
+  it("closes JScript ASP regions at delimiters inside comments", () => {
+    const source = `<%@ LANGUAGE="JScript" %>
+<%
+// line comment with %>
+Response.Write("line")
+%>
+<%
+/* block comment with %> */
+Response.Write("block")
+%>`;
+    const parsed = parseAspDocument("file:///site/jscript-comment-close.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    const blocks = parsed.regions.filter((region) => region.kind === "asp-block");
+    expect(blocks).toHaveLength(2);
+    const lineBlock = source.slice(blocks[0].contentStart, blocks[0].contentEnd);
+    const blockCommentBlock = source.slice(blocks[1].contentStart, blocks[1].contentEnd);
+    expect(lineBlock).toContain("// line comment with ");
+    expect(lineBlock).not.toContain('Response.Write("line")');
+    expect(blockCommentBlock).toContain("/* block comment with ");
+    expect(blockCommentBlock).not.toContain('Response.Write("block")');
+    const html = parsed.regions
+      .filter((region) => region.kind === "html")
+      .map((region) => source.slice(region.start, region.end))
+      .join("");
+    expect(html).toContain('Response.Write("line")');
+    expect(html).toContain('Response.Write("block")');
+  });
+
+  it("closes ASP regions at raw delimiters inside non-primary comment syntax", () => {
     const source = `<%
 /* block comment with %> */
 // line comment with %>
@@ -379,12 +589,16 @@ Response.Write "done"
     expect(parsed.diagnostics).toHaveLength(0);
     const blocks = parsed.regions.filter((region) => region.kind === "asp-block");
     expect(blocks).toHaveLength(1);
+    expect(blocks[0].end).toBe(source.indexOf("%>") + "%>".length);
     expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).toContain(
+      "/* block comment with ",
+    );
+    expect(source.slice(blocks[0].contentStart, blocks[0].contentEnd)).not.toContain(
       'Response.Write "done"',
     );
   });
 
-  it("keeps script and style closing tags inside strings or comments from ending regions", () => {
+  it("closes script and style regions at raw closing tags inside strings or comments", () => {
     const source = `<script>
 const literal = "</script>";
 // </script>
@@ -398,10 +612,33 @@ const ok = true;
     const parsed = parseAspDocument("file:///site/tags.asp", source);
     const script = parsed.regions.find((region) => region.kind === "client-script");
     const style = parsed.regions.find((region) => region.kind === "style");
-    expect(script && source.slice(script.contentStart, script.contentEnd)).toContain(
+    expect(script?.end).toBe(source.indexOf("</script>") + "</script>".length);
+    expect(style?.end).toBe(source.indexOf("</style>") + "</style>".length);
+    expect(script && source.slice(script.contentStart, script.contentEnd)).not.toContain(
       "const ok = true;",
     );
-    expect(style && source.slice(style.contentStart, style.contentEnd)).toContain("color: red");
+    expect(style && source.slice(style.contentStart, style.contentEnd)).not.toContain("color: red");
+  });
+
+  it("closes server-side JScript regions at raw script end tags inside strings", () => {
+    const source = `<%@ LANGUAGE="JScript" %>
+<script runat="server" language="JScript">
+function render() {
+  var literal = "</script>";
+  Response.Write(literal);
+}
+</script>`;
+    const parsed = parseAspDocument("file:///site/server-jscript-script-close.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    const script = parsed.regions.find((region) => region.kind === "server-script");
+    expect(script?.language).toBe("jscript");
+    expect(script?.end).toBe(source.indexOf("</script>") + "</script>".length);
+    expect(script && source.slice(script.contentStart, script.contentEnd)).toContain(
+      'var literal = "',
+    );
+    expect(script && source.slice(script.contentStart, script.contentEnd)).not.toContain(
+      "Response.Write(literal)",
+    );
   });
 
   it("keeps explicit server script language even when page default is different", () => {
@@ -686,7 +923,7 @@ ReDim resizedItems(5)
     });
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("fixedItems") + 2), { symbols }),
-    ).toContain("Dim fixedItems(10) As Array");
+    ).toContain("Dim fixedItems(10) As Array(10)");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("dynamicItems") + 2), {
         symbols,
@@ -698,7 +935,7 @@ ReDim resizedItems(5)
       { symbols },
     );
     const arrayHintPositions = hints
-      .filter((hint) => hint.label === " (global) As Array")
+      .filter((hint) => typeof hint.label === "string" && hint.label.includes(" As Array"))
       .map((hint) => hint.position);
     expect(arrayHintPositions).toEqual(
       expect.arrayContaining([
@@ -707,11 +944,26 @@ ReDim resizedItems(5)
         positionAt(source, source.indexOf("resizedItems(5)") + "resizedItems(5)".length),
       ]),
     );
-    expect(hints.find((hint) => hint.label === " (global) As Array")).not.toEqual(
-      expect.objectContaining({
-        position: positionAt(source, source.indexOf("fixedItems") + "fixedItems".length),
-      }),
+    // The fixed-size array shows its dimensions and the hint sits after the array suffix.
+    expect(hints.find((hint) => hint.label === " (global) As Array(10)")?.position).toEqual(
+      positionAt(source, source.indexOf("fixedItems(10)") + "fixedItems(10)".length),
     );
+  });
+
+  it("renders fixed multi-dimensional arrays as Array(rows, cols)", () => {
+    const source = `<%
+Dim matrix(2, 3)
+%>`;
+    const parsed = parseAspDocument("file:///site/array-display.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    // The canonical type stays "Array"; only the displayed type carries dimensions.
+    expect(symbols.find((symbol) => symbol.name === "matrix")).toMatchObject({
+      typeName: "Array",
+      array: { kind: "fixed", dimensions: ["2", "3"] },
+    });
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("matrix") + 2), { symbols }),
+    ).toContain("Dim matrix(2, 3) As Array(2, 3)");
   });
 
   it("collects only public VBScript symbols for include summaries", () => {

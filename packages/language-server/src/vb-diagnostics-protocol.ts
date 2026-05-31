@@ -1,6 +1,7 @@
 import type {
   AspLocale,
   AspParsedDocument,
+  AspSettings,
   AspVbscriptComType,
   AspVbscriptIdentifierCase,
   AspVbscriptIdentifierKind,
@@ -10,8 +11,20 @@ import type {
 } from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver-types";
 
+export type VbDiagnosticsWorkerDocument = Pick<
+  AspParsedDocument,
+  | "uri"
+  | "text"
+  | "regions"
+  | "directives"
+  | "includes"
+  | "serverObjects"
+  | "defaultLanguage"
+  | "diagnostics"
+>;
+
 export interface VbDiagnosticsWorkerContext {
-  documents?: AspParsedDocument[];
+  documents?: VbDiagnosticsWorkerDocument[];
   symbols?: VbSymbol[];
   externalRefUsages?: VbExternalRefUsage[];
   typeChecking?: "basic" | "strict";
@@ -26,7 +39,9 @@ export interface VbDiagnosticsWorkerContext {
 
 export interface VbDiagnosticsWorkerRequest {
   id: number;
-  parsed: AspParsedDocument;
+  uri: string;
+  text: string;
+  settings: AspSettings;
   context: VbDiagnosticsWorkerContext;
   cancellationGeneration?: number;
 }

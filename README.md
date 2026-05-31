@@ -5,6 +5,7 @@ Classic ASP language server and VS Code extension.
 The implementation treats `.asp`, `.asa`, and `.inc` files as mixed documents:
 
 - Classic ASP server script regions: `<% %>`, `<%= %>`, `<%@ %>`, and `<script runat="server">`
+- Classic ASP/IIS compatibility is the highest priority for server script boundary scanning
 - HTML regions delegated to `vscode-html-languageservice`
 - CSS regions and `style=""` attributes delegated to `vscode-css-languageservice`
 - client JavaScript regions delegated to the TypeScript language service
@@ -21,6 +22,7 @@ pnpm run format:check
 pnpm run test
 pnpm run build
 pnpm run package:vsix
+pnpm run package:vsix:no-native
 ```
 
 The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, completion resolve, pull/workspace diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, selection ranges, inlay hints, call hierarchy, type hierarchy, monikers, inline values, linked editing, will-save/save hooks, file operations, code actions, CodeLens, formatting, workspace indexing, and virtual include roots.
@@ -76,6 +78,7 @@ pnpm run package:vsix --out classic-asp-lsp.vsix
 ```
 
 The VSIX build bundles the standalone language server into `apps/vscode/server/language-server/dist/server.js` before packaging, so the extension does not ship a nested `node_modules` tree.
+Use `pnpm run package:vsix:no-native` to build a VSIX without the Rust native core.
 
 ## Samples
 
@@ -178,6 +181,7 @@ Example `aspLsp.vbscript.comTypes` and `aspLsp.vbscript.globals` entries:
 ## Current v1 Limits
 
 - VBScript analysis is intentionally conservative. It uses an error-tolerant CST and opt-in strict type checks rather than a full VBScript compiler. `Execute`/`Eval`, dynamic includes, COM late binding, and unusual line continuations are modeled only when they can be inferred statically.
+- ASP region scanning follows Classic ASP/IIS script block boundaries before embedded language syntax. In `<% ... %>` regions, raw `%>` closes the ASP block even when it appears in VBScript/JScript strings or comments. Use Classic ASP escaping such as `%\>` when literal output needs that character sequence. `<script runat="server">` regions are bounded by the first matching script end tag.
 - VBScript XML documentation comments must use VB.NET-style triple quotes (`'''`). Single-quote XML comments are treated as ordinary comments.
 - XML documentation comments are editor documentation only and hover labels them that way. Existing `' @type`, `' @param ... As ...`, and `' @returns ...` annotations remain the source for explicit type metadata.
 - Unused diagnostics are hints. Classic ASP runtime entry points such as `Application_OnStart`, public class members, include-cross references, and names inside strings/comments are excluded from VBScript unused checks.

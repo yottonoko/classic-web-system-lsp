@@ -28,10 +28,12 @@
   "main": "./dist/extension.js",
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/bundle-extension.mjs && node scripts/copy-server-runtime.mjs",
+    "build:no-native": "tsc -p tsconfig.json && node scripts/bundle-extension.mjs && node scripts/copy-server-runtime.mjs --no-native",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "oxlint src test --deny-warnings --no-error-on-unmatched-pattern",
-    "package:vsix": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --no-dependencies --follow-symlinks",
-    "test": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
+    "package:vsix": "pnpm --dir ../.. run build:native && pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --no-dependencies --follow-symlinks",
+    "package:vsix:no-native": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build:no-native && vsce package --no-dependencies --follow-symlinks",
+    "test": "pnpm --dir ../.. run build:native && pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
   },
   "dependencies": {
     "@asp-lsp/core": "workspace:*",
@@ -597,6 +599,18 @@
           "minimum": 0,
           "default": 0,
           "description": "%configuration.workspace.busyAnalysisConcurrency.description%"
+        },
+        "aspLsp.workspace.vbProjectMaxDocuments": {
+          "type": "number",
+          "minimum": 1,
+          "default": 32,
+          "description": "%configuration.workspace.vbProjectMaxDocuments.description%"
+        },
+        "aspLsp.workspace.vbProjectMaxTextLength": {
+          "type": "number",
+          "minimum": 1,
+          "default": 1048576,
+          "description": "%configuration.workspace.vbProjectMaxTextLength.description%"
         },
         "aspLsp.iis.url": {
           "type": "string",

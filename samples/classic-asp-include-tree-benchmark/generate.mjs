@@ -64,6 +64,7 @@ function pushIncludeDirectives(lines, depth, pathParts) {
 function pushBenchmarkBlock(lines, depth, pathParts, block) {
   const nodeId = pathParts.length === 0 ? "root" : pathParts.join("_");
   const padded = String(block).padStart(4, "0");
+  const selector = `tree-${nodeId.replaceAll("_", "-")}-${padded}`;
   lines.push(`<!-- include tree node ${nodeId} block ${padded} -->`);
   lines.push(`<section class="include-tree-node" data-depth="${depth}" data-node="${nodeId}">`);
   lines.push(`  <h2>Include tree node ${nodeId}</h2>`);
@@ -77,8 +78,36 @@ function pushBenchmarkBlock(lines, depth, pathParts, block) {
   lines.push(`End If`);
   lines.push(`%>`);
   lines.push(`  <p>Static include tree benchmark markup for ${nodeId}.</p>`);
+  lines.push(`  <span class="${selector}" data-depth="<%= includeTreeDepth %>"></span>`);
   lines.push(`</section>`);
   lines.push(``);
+}
+
+function pushNodeEmbeddedAssets(lines, depth, pathParts) {
+  const nodeId = pathParts.length === 0 ? "root" : pathParts.join("_");
+  const className = `tree-node-${nodeId.replaceAll("_", "-")}`;
+  lines.push(`<style>`);
+  lines.push(`  .include-tree-benchmark[data-node="${nodeId}"] .${className} {`);
+  lines.push(`    color: hsl(${(depth * 61 + pathParts.length) % 360} 60% 30%);`);
+  lines.push(`    padding-left: ${depth + pathParts.length}px;`);
+  lines.push(`  }`);
+  lines.push(
+    `  .include-tree-benchmark[data-node="${nodeId}"] .${className}::after { content: "${nodeId}"; }`,
+  );
+  lines.push(`</style>`);
+  lines.push(`<script>`);
+  lines.push(`  (function () {`);
+  lines.push(`    const key = "${nodeId}";`);
+  lines.push(
+    `    const store = (window.aspLspIncludeTreeBenchmark = window.aspLspIncludeTreeBenchmark || {});`,
+  );
+  lines.push(
+    `    store[key] = { depth: ${depth}, pathLength: ${pathParts.length}, children: ${branchFactor} };`,
+  );
+  lines.push(`    document.documentElement.dataset.aspLspIncludeTreeLastNode = key;`);
+  lines.push(`  })();`);
+  lines.push(`</script>`);
+  lines.push(`<span class="${className}" data-depth="<%= includeTreeDepth %>"></span>`);
 }
 
 function buildNodeFile(relativePath, depth, pathParts) {
@@ -88,10 +117,13 @@ function buildNodeFile(relativePath, depth, pathParts) {
   lines.push(`Dim includeTreeDepth`);
   lines.push(`includeTreeDepth = ${depth}`);
   lines.push(`%>`);
-  lines.push(`<div class="include-tree-benchmark" data-depth="${depth}">`);
+  lines.push(
+    `<div class="include-tree-benchmark" data-depth="${depth}" data-node="${pathParts.length === 0 ? "root" : pathParts.join("_")}">`,
+  );
+  pushNodeEmbeddedAssets(lines, depth, pathParts);
 
   let block = 1;
-  while (lines.length + 14 < targetLines) {
+  while (lines.length + 15 < targetLines) {
     pushBenchmarkBlock(lines, depth, pathParts, block);
     block += 1;
   }

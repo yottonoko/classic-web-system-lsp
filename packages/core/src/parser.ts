@@ -15,14 +15,155 @@ import type {
 import { offsetAt, rangeFromOffsets } from "./position";
 import { scanHtmlAndAsp, normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 import { parseVbscriptCst } from "./vbscript-cst";
+import {
+  shouldUseNativeAsyncSkeletonParse,
+  tryNativeParseAspCst,
+  tryNativeParseAspCstAsync,
+  tryNativeParseAspDocument,
+  tryNativeParseAspDocumentAsync,
+  tryNativeParseAspDocumentSkeletonAsync,
+  tryNativeParseAspDocumentVbscriptAsync,
+} from "./native-backend";
 export { normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
+
+const asyncParseCacheMaxEntries = 64;
+const asyncParseCache = new Map<string, AspParsedDocument>();
+const textFingerprintCacheMaxEntries = 256;
+const textFingerprintCache = new Map<string, string>();
 
 export function parseAspDocument(
   uri: string,
   text: string,
   settings: AspSettings = {},
 ): AspParsedDocument {
-  const cst = parseAspCst(uri, text, settings);
+  const native = tryNativeParseAspDocument(uri, text, settings);
+  if (native) {
+    return native;
+  }
+  return parseAspDocumentTypeScript(uri, text, settings);
+}
+
+/**
+ * Parses an ASP document for async/server workflows.
+ *
+ * Native-enabled async callers may receive a skeleton CST without attached VBScript CST subtrees.
+ * Call `needsVbscriptCstHydration` and then `await hydrateVbscriptCst` before walking
+ * `parsed.cst` for VBScript tokens or declarations.
+ */
+export async function parseAspDocumentAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): Promise<AspParsedDocument> {
+  const cacheKey = parseCacheKey(uri, text, settings);
+  const cached = asyncParseCache.get(cacheKey);
+  if (cached) {
+    asyncParseCache.delete(cacheKey);
+    asyncParseCache.set(cacheKey, cached);
+    return cached;
+  }
+  if (shouldUseNativeAsyncSkeletonParse()) {
+    const parsed = parseAspDocumentSkeletonTypeScript(uri, text, settings);
+    setAsyncParseCache(cacheKey, parsed);
+    return parsed;
+  }
+  const native = await tryNativeParseAspDocumentAsync(uri, text, settings);
+  if (native) {
+    setAsyncParseCache(cacheKey, native);
+    return native;
+  }
+  const parsed = parseAspDocumentTypeScript(uri, text, settings);
+  setAsyncParseCache(cacheKey, parsed);
+  return parsed;
+}
+
+export async function parseAspDocumentSkeletonAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): Promise<AspParsedDocument> {
+  const native = await tryNativeParseAspDocumentSkeletonAsync(uri, text, settings);
+  if (native) {
+    return native;
+  }
+  return parseAspDocumentSkeletonTypeScript(uri, text, settings);
+}
+
+const hydratedVbscriptDocuments = new WeakSet<AspParsedDocument>();
+
+export function needsVbscriptCstHydration(parsed: AspParsedDocument): boolean {
+  return (
+    parsed.regions.some((region) => region.language === "vbscript") && !cstHasVbscript(parsed.cst)
+  );
+}
+
+/**
+ * Attaches VBScript CST subtrees to an async/skeleton parse.
+ *
+ * Consumers that directly walk `parsed.cst` for VBScript references, tokens, or declarations
+ * should await this first. Full sync parses and documents without VBScript are returned as-is.
+ */
+export async function hydrateVbscriptCst(
+  parsed: AspParsedDocument,
+  settings: AspSettings = {},
+): Promise<AspParsedDocument> {
+  if (hydratedVbscriptDocuments.has(parsed) || !needsVbscriptCstHydration(parsed)) {
+    return parsed;
+  }
+  const segments = await tryNativeParseAspDocumentVbscriptAsync(parsed.uri, parsed.text, settings);
+  if (segments) {
+    const vbscriptByStart = new Map(segments.map((segment) => [segment.start, segment.vbscript]));
+    // VB CST は region ノード（Document 直下の子）に付く。ルート Document は最初の region と
+    // start が衝突しうるため除外し、子から照合・attach する。
+    for (const child of parsed.cst.children ?? []) {
+      attachVbscriptByStart(child, vbscriptByStart);
+    }
+  } else {
+    attachVbscriptFromTypeScriptParser(parsed.cst, parsed.text);
+  }
+  hydratedVbscriptDocuments.add(parsed);
+  return parsed;
+}
+
+function cstHasVbscript(node: AspCstNode): boolean {
+  if (node.vbscript) {
+    return true;
+  }
+  return (node.children ?? []).some((child) => cstHasVbscript(child));
+}
+
+function attachVbscriptByStart(
+  node: AspCstNode,
+  vbscriptByStart: Map<number, AspCstNode["vbscript"]>,
+): void {
+  const vbscript = vbscriptByStart.get(node.start);
+  if (vbscript) {
+    node.vbscript = vbscript;
+  }
+  for (const child of node.children ?? []) {
+    attachVbscriptByStart(child, vbscriptByStart);
+  }
+}
+
+function attachVbscriptFromTypeScriptParser(node: AspCstNode, sourceText: string): void {
+  if (node.language === "vbscript" && !node.vbscript) {
+    node.vbscript = parseVbscriptCst(
+      sourceText.slice(node.contentStart, node.contentEnd),
+      sourceText,
+      node.contentStart,
+    );
+  }
+  for (const child of node.children ?? []) {
+    attachVbscriptFromTypeScriptParser(child, sourceText);
+  }
+}
+
+function parseAspDocumentTypeScript(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): AspParsedDocument {
+  const cst = parseAspCstTypeScript(uri, text, settings);
   const diagnostics =
     cst.errors?.map((error) => ({
       severity: DiagnosticSeverity.Error,
@@ -61,20 +202,156 @@ export function parseAspDocument(
   };
 }
 
+function parseAspDocumentSkeletonTypeScript(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): AspParsedDocument {
+  const diagnostics: AspParsedDocument["diagnostics"] = [];
+  const scan = scanHtmlAndAsp(text, diagnostics, settings);
+  const { inlineRegions, tagRegions, includes, serverObjects } = scan;
+  const directives = inlineRegions
+    .filter((region) => region.kind === "asp-directive")
+    .map((region): AspDirective => {
+      const raw = text.slice(region.contentStart, region.contentEnd).trim();
+      const normalized = raw.startsWith("@") ? raw.slice(1).trim() : raw;
+      const [first = "Page", ...rest] = normalized.split(/\s+/);
+      const hasExplicitName = !first.includes("=");
+      const name = hasExplicitName ? first : "Page";
+      const attributeText = hasExplicitName ? rest.join(" ") : normalized;
+      return {
+        offset: region.start,
+        range: rangeFromOffsets(text, region.start, region.end),
+        name,
+        attributes: parseAttributes(attributeText),
+      };
+    });
+  const directiveLanguage = directives
+    .map((directive) => directive.attributes.language ?? directive.attributes.LANGUAGE)
+    .find((value): value is string => typeof value === "string");
+  const defaultLanguage = normalizeScriptLanguage(
+    directiveLanguage ?? settings.defaultLanguage ?? "VBScript",
+  );
+  const scriptRegions = tagRegions.map((region): AspRegion => {
+    if (region.kind !== "server-script") {
+      return region;
+    }
+    return {
+      ...region,
+      language:
+        normalizeScriptLanguage(
+          String(region.attributes?.language ?? defaultLanguage),
+        ).toLowerCase() === "jscript"
+          ? "jscript"
+          : "vbscript",
+    };
+  });
+  const regions = buildRegions(text, [...inlineRegions, ...scriptRegions], defaultLanguage);
+  const nodes: AspCstNode[] = [
+    ...regions.map(skeletonRegionToNode),
+    ...includes.map((include) => skeletonIncludeToNode(text, include)),
+  ].sort(
+    (left, right) => left.start - right.start || left.end - left.start - (right.end - right.start),
+  );
+  for (const directive of directives) {
+    const node = nodes.find(
+      (item) => item.start === directive.offset && item.kind === "AspDirective",
+    );
+    if (node) {
+      node.directive = directive;
+      node.attributes = directive.attributes;
+    }
+  }
+  const topLevelRegions = nodes
+    .map(nodeToRegion)
+    .filter((region): region is AspRegion => region !== undefined);
+  const cst: AspCstNode = {
+    kind: "Document",
+    start: 0,
+    end: text.length,
+    contentStart: 0,
+    contentEnd: text.length,
+    tokens: [],
+    children: nodes,
+    serverObjects,
+    errors: diagnostics.map((diagnostic) => ({
+      message: diagnostic.message,
+      start: offsetFromRange(text, diagnostic.range.start),
+      end: offsetFromRange(text, diagnostic.range.end),
+    })),
+  };
+  return {
+    uri,
+    text,
+    cst,
+    regions: topLevelRegions,
+    directives,
+    includes,
+    serverObjects,
+    defaultLanguage,
+    diagnostics,
+  };
+}
+
 export function updateAspParsedDocument(
   previous: AspParsedDocument,
   changes: readonly AspIncrementalChange[],
   settings: AspSettings = {},
 ): AspIncrementalUpdateResult {
+  const attempt = tryUpdateAspParsedDocumentIncremental(previous, changes, "full");
+  if (attempt.status === "updated") {
+    return attempt.result;
+  }
+  return {
+    parsed: parseAspDocument(previous.uri, attempt.nextText, settings),
+    impact: editImpact("full", attempt.reason, previous.text, attempt.nextText, attempt.change),
+  };
+}
+
+export async function updateAspParsedDocumentSkeletonAsync(
+  previous: AspParsedDocument,
+  changes: readonly AspIncrementalChange[],
+  settings: AspSettings = {},
+): Promise<AspIncrementalUpdateResult> {
+  const attempt = tryUpdateAspParsedDocumentIncremental(previous, changes, "skeleton");
+  if (attempt.status === "updated") {
+    return attempt.result;
+  }
+  return {
+    parsed: await parseAspDocumentSkeletonAsync(previous.uri, attempt.nextText, settings),
+    impact: editImpact("full", attempt.reason, previous.text, attempt.nextText, attempt.change),
+  };
+}
+
+type ParsedDocumentBuildMode = "full" | "skeleton";
+
+interface IncrementalUpdateSuccess {
+  status: "updated";
+  result: AspIncrementalUpdateResult;
+}
+
+interface IncrementalUpdateFallback {
+  status: "fallback";
+  reason: string;
+  change?: AspIncrementalChange;
+  nextText: string;
+}
+
+function tryUpdateAspParsedDocumentIncremental(
+  previous: AspParsedDocument,
+  changes: readonly AspIncrementalChange[],
+  buildMode: ParsedDocumentBuildMode,
+): IncrementalUpdateSuccess | IncrementalUpdateFallback {
   const fallback = (
     reason: string,
     change = changes[0],
     nextText = applyIncrementalChanges(previous.text, changes),
-  ): AspIncrementalUpdateResult => ({
-    parsed: parseAspDocument(previous.uri, nextText, settings),
-    impact: editImpact("full", reason, previous.text, nextText, change),
+  ): IncrementalUpdateFallback => ({
+    status: "fallback",
+    reason,
+    change,
+    nextText,
   });
-
   if (changes.length !== 1) {
     return fallback("multiple changes");
   }
@@ -138,17 +415,28 @@ export function updateAspParsedDocument(
     range: shiftAspRangeAfterChange(diagnostic.range, previous.text, nextText, change),
   }));
   return {
-    parsed: buildParsedDocument(
-      previous.uri,
-      nextText,
-      shiftedRegions,
-      shiftedDirectives,
-      shiftedIncludes,
-      shiftedServerObjects,
-      previous.defaultLanguage,
-      shiftedDiagnostics,
-    ),
-    impact: editImpact("incremental", "safe content edit", previous.text, nextText, change, region),
+    status: "updated",
+    result: {
+      parsed: buildParsedDocument(
+        previous.uri,
+        nextText,
+        shiftedRegions,
+        shiftedDirectives,
+        shiftedIncludes,
+        shiftedServerObjects,
+        previous.defaultLanguage,
+        shiftedDiagnostics,
+        buildMode,
+      ),
+      impact: editImpact(
+        "incremental",
+        "safe content edit",
+        previous.text,
+        nextText,
+        change,
+        region,
+      ),
+    },
   };
 }
 
@@ -187,10 +475,17 @@ function buildParsedDocument(
   serverObjects: AspServerObject[],
   defaultLanguage: "VBScript" | "JScript",
   diagnostics: AspParsedDocument["diagnostics"],
+  buildMode: ParsedDocumentBuildMode = "full",
 ): AspParsedDocument {
   const nodes: AspCstNode[] = [
-    ...regions.map((region) => regionToNode(text, region)),
-    ...includes.map((include) => includeToNode(text, include)),
+    ...regions.map((region) =>
+      buildMode === "skeleton" ? skeletonRegionToNode(region) : regionToNode(text, region),
+    ),
+    ...includes.map((include) =>
+      buildMode === "skeleton"
+        ? skeletonIncludeToNode(text, include)
+        : includeToNode(text, include),
+    ),
   ].sort(
     (left, right) => left.start - right.start || left.end - left.start - (right.end - right.start),
   );
@@ -209,8 +504,7 @@ function buildParsedDocument(
     end: text.length,
     contentStart: 0,
     contentEnd: text.length,
-    text,
-    tokens: nodes.flatMap((node) => node.tokens),
+    tokens: buildMode === "skeleton" ? [] : nodes.flatMap((node) => node.tokens),
     children: nodes,
     serverObjects,
     errors: diagnostics.map((diagnostic) => ({
@@ -219,6 +513,9 @@ function buildParsedDocument(
       end: offsetFromRange(text, diagnostic.range.end),
     })),
   };
+  if (buildMode === "full") {
+    cst.text = text;
+  }
   return {
     uri,
     text,
@@ -526,6 +823,26 @@ function shiftOffsetAfterChange(
 }
 
 export function parseAspCst(uri: string, text: string, settings: AspSettings = {}): AspCstNode {
+  const native = tryNativeParseAspCst(text, settings);
+  if (native) {
+    return native;
+  }
+  return parseAspCstTypeScript(uri, text, settings);
+}
+
+export async function parseAspCstAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): Promise<AspCstNode> {
+  const native = await tryNativeParseAspCstAsync(text, settings);
+  if (native) {
+    return native;
+  }
+  return parseAspCstTypeScript(uri, text, settings);
+}
+
+function parseAspCstTypeScript(uri: string, text: string, settings: AspSettings = {}): AspCstNode {
   const diagnostics: AspParsedDocument["diagnostics"] = [];
   const scan = scanHtmlAndAsp(text, diagnostics, settings);
   const { inlineRegions, tagRegions, includes, serverObjects } = scan;
@@ -641,6 +958,40 @@ function regionToNode(text: string, region: AspRegion): AspCstNode {
   return node;
 }
 
+function skeletonRegionToNode(region: AspRegion): AspCstNode {
+  const kind: AspCstNode["kind"] =
+    region.kind === "html"
+      ? "HtmlText"
+      : region.kind === "asp-expression"
+        ? "AspExpression"
+        : region.kind === "asp-directive"
+          ? "AspDirective"
+          : region.kind === "style"
+            ? "StyleElement"
+            : region.kind === "client-script"
+              ? "ClientScriptElement"
+              : region.kind === "server-script"
+                ? "ServerScriptElement"
+                : region.kind === "style-attribute"
+                  ? "StyleAttribute"
+                  : "AspBlock";
+  const node: AspCstNode = {
+    kind,
+    start: region.start,
+    end: region.end,
+    contentStart: region.contentStart,
+    contentEnd: region.contentEnd,
+    language: region.language,
+    tokens: [],
+    children: [],
+    regionKind: region.kind,
+  };
+  if (region.attributes && Object.keys(region.attributes).length > 0) {
+    node.attributes = region.attributes;
+  }
+  return node;
+}
+
 function includeToNode(text: string, include: AspInclude): AspCstNode {
   return {
     kind: "IncludeDirective",
@@ -663,19 +1014,84 @@ function includeToNode(text: string, include: AspInclude): AspCstNode {
   };
 }
 
+function skeletonIncludeToNode(text: string, include: AspInclude): AspCstNode {
+  const end = offsetFromRange(text, include.range.end);
+  return {
+    kind: "IncludeDirective",
+    start: include.offset,
+    end,
+    contentStart: include.offset,
+    contentEnd: end,
+    language: "html",
+    tokens: [],
+    children: [],
+    include,
+  };
+}
+
+function parseCacheKey(uri: string, text: string, settings: AspSettings): string {
+  return JSON.stringify({
+    uri,
+    text: textFingerprint(text),
+    settings,
+    backend: process.env.ASP_LSP_ANALYSIS_BACKEND ?? "auto",
+  });
+}
+
+function setAsyncParseCache(key: string, parsed: AspParsedDocument): void {
+  if (asyncParseCache.has(key)) {
+    asyncParseCache.delete(key);
+  }
+  asyncParseCache.set(key, parsed);
+  while (asyncParseCache.size > asyncParseCacheMaxEntries) {
+    const oldest = asyncParseCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    asyncParseCache.delete(oldest);
+  }
+}
+
+function textFingerprint(text: string): string {
+  const cached = textFingerprintCache.get(text);
+  if (cached) {
+    textFingerprintCache.delete(text);
+    textFingerprintCache.set(text, cached);
+    return cached;
+  }
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const fingerprint = `${text.length}:${(hash >>> 0).toString(16)}`;
+  textFingerprintCache.set(text, fingerprint);
+  while (textFingerprintCache.size > textFingerprintCacheMaxEntries) {
+    const oldest = textFingerprintCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    textFingerprintCache.delete(oldest);
+  }
+  return fingerprint;
+}
+
 function nodeToRegion(node: AspCstNode): AspRegion | undefined {
   if (!node.regionKind || !node.language) {
     return undefined;
   }
-  return {
+  const region: AspRegion = {
     kind: node.regionKind,
     language: node.language,
     start: node.start,
     end: node.end,
     contentStart: node.contentStart,
     contentEnd: node.contentEnd,
-    attributes: node.attributes,
   };
+  if (node.attributes && Object.keys(node.attributes).length > 0) {
+    region.attributes = node.attributes;
+  }
+  return region;
 }
 
 function regionTokens(text: string, region: AspRegion): AspToken[] {

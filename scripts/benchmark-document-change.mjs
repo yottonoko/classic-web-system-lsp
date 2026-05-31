@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
+import { readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const sampleConfigs = new Map([
@@ -25,7 +26,8 @@ const includeTreeServerOldSpaceMb = readPositiveInteger(
 const generator = path.join(sampleRoot, "generate.mjs");
 const serverPath = path.join(root, "packages", "language-server", "dist", "server.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
-const warmupIterations = readPositiveInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const benchmarkCacheMode = readBenchmarkCacheMode();
 const rapidBurstSize = readPositiveInteger("ASP_LSP_BENCH_BURST_SIZE", 5);
 const rapidDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEBOUNCE_MS", 80);
 const defaultDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEFAULT_DEBOUNCE_MS", 250);
@@ -136,6 +138,7 @@ async function main() {
   console.log(`Files: ${sourceStats.files}`);
   console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
   console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
+  console.log(`Cache mode: ${benchmarkCacheMode}`);
   console.log(`Warmups: ${warmupIterations}`);
   console.log(`Iterations: ${benchmarkIterations}`);
   console.log(`Change kinds: ${changeKinds.join(", ")}`);
@@ -164,11 +167,15 @@ async function main() {
 
   console.log("");
   console.log("Workspace cache benchmark");
+  console.log(`Cache mode: ${benchmarkCacheMode}`);
   console.log("");
   printWorkspaceCacheTable(await runWorkspaceCacheBenchmarks());
 }
 
 async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarget) {
+  if (benchmarkCacheMode === "cold") {
+    return runColdScenario(changeKind, changeMode, backgroundAnalysis, editTarget);
+  }
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-change-bench-"));
   const cacheDir = path.join(tempDir, "cache");
   const sourcePath = path.join(sampleRoot, "default.asp");
@@ -280,6 +287,154 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
     server.stop();
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+async function runColdScenario(changeKind, changeMode, backgroundAnalysis, editTarget) {
+  const { burstSize, debounceMs } = changeModeSettings(changeMode);
+  for (let index = 0; index < warmupIterations; index += 1) {
+    await measureColdScenarioIteration(
+      changeKind,
+      changeMode,
+      backgroundAnalysis,
+      editTarget,
+      index,
+    );
+  }
+
+  const samples = [];
+  const openMetricSamples = {};
+  const debugStepTotals = new Map();
+  const debugEventTotals = new Map();
+  for (let index = 0; index < benchmarkIterations; index += 1) {
+    const { openMetrics, sample } = await measureColdScenarioIteration(
+      changeKind,
+      changeMode,
+      backgroundAnalysis,
+      editTarget,
+      warmupIterations + index,
+    );
+    samples.push(sample);
+    addOpenMetricSamples(openMetricSamples, openMetrics);
+    for (const [step, elapsedMs] of sample.stepTimings) {
+      debugStepTotals.set(step, (debugStepTotals.get(step) ?? 0) + elapsedMs);
+    }
+    addCounters(debugEventTotals, sample.eventCounts);
+  }
+
+  return {
+    changeKind,
+    changeMode,
+    editTarget,
+    backgroundAnalysis,
+    burstSize,
+    debounceMs,
+    openMetrics: openMetricSamples,
+    samples,
+    debugStepTotals,
+    debugEventTotals,
+  };
+}
+
+async function measureColdScenarioIteration(
+  changeKind,
+  changeMode,
+  backgroundAnalysis,
+  editTarget,
+  iteration,
+) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-change-bench-cold-"));
+  const cacheDir = path.join(tempDir, "cache");
+  const sourcePath = path.join(sampleRoot, "default.asp");
+  const uri = pathToFileURL(coldIterationPath(sourcePath, iteration)).href;
+  const { burstSize, debounceMs } = changeModeSettings(changeMode);
+  const state = {
+    text: appendMutableBenchmarkRegion(
+      fs.readFileSync(sourcePath, "utf8"),
+      burstSize + 8,
+      editTarget,
+    ),
+    version: 1,
+  };
+  const editOffset = mutableEditOffset(state.text);
+  const server = new RpcServer();
+
+  try {
+    await server.start();
+    await server.request("initialize", {
+      processId: process.pid,
+      rootUri: pathToFileURL(sampleRoot).href,
+      capabilities: {},
+    });
+    server.notify("workspace/didChangeConfiguration", {
+      settings: {
+        aspLsp: {
+          cache: { enabled: true, directory: cacheDir },
+          debug: { output: "verbose" },
+          diagnostics: { debounceMs },
+          workspace: { backgroundAnalysis },
+        },
+      },
+    });
+    const openStartedAt = performance.now();
+    server.notify("textDocument/didOpen", {
+      textDocument: {
+        uri,
+        languageId: "classic-asp",
+        version: state.version,
+        text: state.text,
+      },
+    });
+    await server.waitForNotification("textDocument/publishDiagnostics");
+    const openFirstDiagnosticsMs = performance.now() - openStartedAt;
+    const openLogs = [];
+    await waitForFinalCheckLog(server, uri, openLogs);
+    const openFinalDiagnosticsMs = performance.now() - openStartedAt;
+    const openFeatureMetrics = await measureOpenLanguageFeatures(
+      server,
+      uri,
+      state.text,
+      editTarget,
+    );
+    drainBenchmarkNotifications(server);
+    const sample = await measureDocumentChange(
+      server,
+      uri,
+      state,
+      editOffset,
+      changeKind,
+      burstSize,
+      editTarget,
+    );
+    await server.request("shutdown", null);
+    server.notify("exit", undefined);
+    return {
+      openMetrics: {
+        firstDiagnosticsMs: openFirstDiagnosticsMs,
+        finalDiagnosticsMs: openFinalDiagnosticsMs,
+        ...openFeatureMetrics,
+      },
+      sample,
+    };
+  } finally {
+    server.stop();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function addOpenMetricSamples(target, metrics) {
+  for (const [key, value] of Object.entries(metrics)) {
+    if (value === undefined) {
+      continue;
+    }
+    const samples = target[key] ?? [];
+    samples.push(value);
+    target[key] = samples;
+  }
+}
+
+function coldIterationPath(sourcePath, iteration) {
+  const extension = path.extname(sourcePath);
+  return `${sourcePath.slice(0, -extension.length)}.__asp_lsp_change_cold_${iteration}${extension}`;
 }
 
 async function measureDocumentChange(
@@ -415,12 +570,53 @@ function semanticTokenRange(text, position) {
 async function runWorkspaceCacheBenchmarks() {
   const results = [];
   if (backgroundModes.includes(false)) {
-    results.push(await runColdWarmWorkspaceCacheScenario());
+    results.push(
+      benchmarkCacheMode === "cold"
+        ? await runColdWorkspaceCacheScenario(false)
+        : await runColdWarmWorkspaceCacheScenario(),
+    );
   }
   if (backgroundModes.includes(true)) {
-    results.push(await runBackgroundWorkspaceCacheScenario());
+    results.push(
+      benchmarkCacheMode === "cold"
+        ? await runColdWorkspaceCacheScenario(true)
+        : await runBackgroundWorkspaceCacheScenario(),
+    );
   }
   return results;
+}
+
+async function runColdWorkspaceCacheScenario(backgroundAnalysis) {
+  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer(backgroundAnalysis);
+  try {
+    if (backgroundAnalysis) {
+      const startedAt = performance.now();
+      const logs = [];
+      await waitForLogContaining(server, "backgroundAnalysis.completed", logs);
+      logs.push(...server.takePendingNotifications("window/logMessage"));
+      return {
+        scenario: "background=on",
+        cacheDir,
+        rows: [
+          {
+            metric: "cold background warmup",
+            elapsedMs: performance.now() - startedAt,
+            diagnosticCount: 0,
+            eventCounts: collectDebugEventCounts(logs),
+          },
+        ],
+      };
+    }
+    const cold = await measureWorkspaceDiagnostics(server, "diskCache.write");
+    return {
+      scenario: "background=off",
+      cacheDir,
+      rows: [{ metric: "cold workspace diagnostics", ...cold }],
+    };
+  } finally {
+    await stopWorkspaceCacheServer(server);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function runColdWarmWorkspaceCacheScenario() {
@@ -745,12 +941,12 @@ function printScenarioTable(scenarioResults) {
     rows.push([
       scenarioName,
       "didOpen->firstDiagnostics",
-      ...statsCells([scenario.openMetrics.firstDiagnosticsMs]),
+      ...statsCells(openMetricSamples(scenario, "firstDiagnosticsMs")),
     ]);
     rows.push([
       scenarioName,
       "didOpen->finalDiagnostics",
-      ...statsCells([scenario.openMetrics.finalDiagnosticsMs]),
+      ...statsCells(openMetricSamples(scenario, "finalDiagnosticsMs")),
     ]);
     for (const [metric, label] of [
       ["hoverMs", "post-open hover"],
@@ -760,9 +956,9 @@ function printScenarioTable(scenarioResults) {
       ["codeLensMs", "post-open codeLens"],
       ["codeLensResolveMs", "post-open codeLens/resolve"],
     ]) {
-      const value = scenario.openMetrics[metric];
-      if (value !== undefined) {
-        rows.push([scenarioName, label, ...statsCells([value])]);
+      const samples = openMetricSamples(scenario, metric);
+      if (samples.length > 0) {
+        rows.push([scenarioName, label, ...statsCells(samples)]);
       }
     }
     rows.push([
@@ -799,6 +995,14 @@ function printScenarioTable(scenarioResults) {
     }
   }
   printRows(rows);
+}
+
+function openMetricSamples(scenario, metric) {
+  const value = scenario.openMetrics[metric];
+  if (value === undefined) {
+    return [];
+  }
+  return Array.isArray(value) ? value : [value];
 }
 
 function printDebugStepTotals(scenarioResults) {

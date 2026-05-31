@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { getClassicAspLineCommentEdits } from "@asp-lsp/core";
+import { getClassicAspLineCommentEdits, type AspAnalysisBackendInfo } from "@asp-lsp/core";
 import {
   CloseAction,
   ErrorAction,
@@ -15,6 +15,7 @@ const maxCrashRestartCount = 4;
 const crashRestartWindowMs = 3 * 60 * 1000;
 const reindexWorkspaceServerCommand = "aspLsp.server.reindexWorkspace";
 const clearCacheServerCommand = "aspLsp.server.clearCache";
+const backendStatusMethod = "aspLsp/backendStatus";
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
@@ -26,12 +27,10 @@ let crashRestartTimestamps: number[] = [];
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   isDeactivating = false;
-  const localizer = extensionLocalizer();
   outputChannel = vscode.window.createOutputChannel("Classic ASP LSP", "asp-lsp-output");
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  statusBarItem.text = "$(code) ASP LSP";
-  statusBarItem.tooltip = localizer("status.tooltip");
   statusBarItem.command = "aspLsp.openOutput";
+  updateBackendStatus();
   statusBarItem.show();
   context.subscriptions.push(
     outputChannel,
@@ -93,7 +92,14 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     serverOptions,
     clientOptions,
   );
+  const backendStatusSubscription = nextClient.onNotification(
+    backendStatusMethod,
+    (status: unknown) => {
+      updateBackendStatus(asBackendStatus(status));
+    },
+  );
   client = nextClient;
+  updateBackendStatus();
   try {
     await nextClient.start();
   } catch (error) {
@@ -102,7 +108,8 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     }
     throw error;
   }
-  context.subscriptions.push(nextClient);
+  void requestBackendStatus(nextClient);
+  context.subscriptions.push(nextClient, backendStatusSubscription);
 }
 
 export async function deactivate(): Promise<void> {
@@ -227,11 +234,68 @@ async function restartServerOnce(context: vscode.ExtensionContext): Promise<void
   try {
     await client?.stop();
     client = undefined;
+    updateBackendStatus();
     crashRestartTimestamps = [];
   } finally {
     isManualRestarting = false;
   }
   await startClient(context);
+}
+
+async function requestBackendStatus(languageClient: LanguageClient): Promise<void> {
+  try {
+    const status = asBackendStatus(await languageClient.sendRequest(backendStatusMethod, null));
+    if (client === languageClient) {
+      updateBackendStatus(status);
+    }
+  } catch {
+    if (client === languageClient) {
+      updateBackendStatus();
+    }
+  }
+}
+
+function updateBackendStatus(status?: AspAnalysisBackendInfo): void {
+  if (!statusBarItem) {
+    return;
+  }
+  const localizer = extensionLocalizer();
+  if (!status || status.reason === "not loaded") {
+    statusBarItem.text = "$(code) ASP LSP: ...";
+    statusBarItem.tooltip = [localizer("status.tooltip"), localizer("status.backend.pending")].join(
+      "\n",
+    );
+    return;
+  }
+  const isNative = status.backend === "native";
+  statusBarItem.text = isNative ? "$(code) ASP LSP: Native" : "$(code) ASP LSP: TS";
+  const backendLine = localizer(isNative ? "status.backend.native" : "status.backend.typescript", {
+    engine: status.engine,
+  });
+  statusBarItem.tooltip = [
+    localizer("status.tooltip"),
+    backendLine,
+    ...(status.reason ? [localizer("status.backend.reason", { reason: status.reason })] : []),
+  ].join("\n");
+}
+
+function asBackendStatus(value: unknown): AspAnalysisBackendInfo | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const candidate = value as Partial<AspAnalysisBackendInfo>;
+  if (
+    (candidate.backend === "native" || candidate.backend === "typescript-fallback") &&
+    typeof candidate.engine === "string"
+  ) {
+    return {
+      backend: candidate.backend,
+      engine: candidate.engine,
+      version: typeof candidate.version === "string" ? candidate.version : undefined,
+      reason: typeof candidate.reason === "string" ? candidate.reason : undefined,
+    };
+  }
+  return undefined;
 }
 
 function createLanguageClientErrorHandler(): ErrorHandler {
@@ -327,14 +391,24 @@ async function createLaunchConfig(): Promise<void> {
 
 type ExtensionMessageKey =
   | "status.tooltip"
+  | "status.backend.pending"
+  | "status.backend.native"
+  | "status.backend.typescript"
+  | "status.backend.reason"
   | "debug.iis.name"
   | "debug.iisExpress.name"
   | "launch.noWorkspace"
   | "launch.created";
 
+type ExtensionMessageArgs = Record<string, string>;
+
 const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>> = {
   en: {
     "status.tooltip": "Classic ASP Language Server",
+    "status.backend.pending": "Backend: detecting",
+    "status.backend.native": "Backend: Native ({engine})",
+    "status.backend.typescript": "Backend: TypeScript ({engine})",
+    "status.backend.reason": "Reason: {reason}",
     "debug.iis.name": "Debug Classic ASP URL",
     "debug.iisExpress.name": "Debug Classic ASP IIS Express URL",
     "launch.noWorkspace": "Open a workspace before creating launch.json.",
@@ -342,6 +416,10 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
   },
   ja: {
     "status.tooltip": "Classic ASP Language Server",
+    "status.backend.pending": "Backend: 判定中",
+    "status.backend.native": "Backend: Native ({engine})",
+    "status.backend.typescript": "Backend: TypeScript ({engine})",
+    "status.backend.reason": "Reason: {reason}",
     "debug.iis.name": "Classic ASP URL をデバッグ",
     "debug.iisExpress.name": "Classic ASP IIS Express URL をデバッグ",
     "launch.noWorkspace": "launch.json を作成する前に workspace を開いてください。",
@@ -349,13 +427,19 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
   },
 };
 
-function extensionLocalizer(): (key: ExtensionMessageKey) => string {
+function extensionLocalizer(): (key: ExtensionMessageKey, args?: ExtensionMessageArgs) => string {
   const configLocale = vscode.workspace.getConfiguration("aspLsp").get<string>("locale") ?? "auto";
   const locale =
     configLocale === "ja" || (configLocale !== "en" && vscode.env.language.startsWith("ja"))
       ? "ja"
       : "en";
-  return (key) => extensionMessages[locale][key] ?? extensionMessages.en[key];
+  return (key, args) => {
+    let message = extensionMessages[locale][key] ?? extensionMessages.en[key];
+    for (const [name, value] of Object.entries(args ?? {})) {
+      message = message.replaceAll(`{${name}}`, value);
+    }
+    return message;
+  };
 }
 
 class AspLspTaskProvider implements vscode.TaskProvider {
@@ -365,6 +449,7 @@ class AspLspTaskProvider implements vscode.TaskProvider {
       this.task("test", "pnpm", ["run", "test"]),
       this.task("build", "pnpm", ["run", "build"]),
       this.task("package VSIX", "pnpm", ["run", "package:vsix"]),
+      this.task("package VSIX (no native)", "pnpm", ["run", "package:vsix:no-native"]),
     ];
   }
 

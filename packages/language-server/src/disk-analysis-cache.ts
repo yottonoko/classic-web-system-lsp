@@ -2,11 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { decode, encode } from "cbor-x";
+import type { FileAnalysisSummary } from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver-types";
 
-const formatVersion = 2;
+const formatVersion = 3;
 const defaultTtlHours = 24 * 14;
 const defaultMaxSizeMb = 128;
+type DiskCacheEntryKind = "diagnostics" | "summary";
 
 export interface DiskAnalysisCacheOptions {
   enabled: boolean;
@@ -33,6 +35,11 @@ export interface DiskAnalysisCacheEntry extends DiskAnalysisCacheLookup {
   builderState?: DiskAnalysisBuilderState;
 }
 
+export interface DiskSummaryCacheEntry extends DiskAnalysisCacheLookup {
+  summary: FileAnalysisSummary;
+  publicSignature?: unknown;
+}
+
 export interface DiskAnalysisBuilderState {
   publicSignature?: unknown;
   includeDeps?: unknown[];
@@ -41,11 +48,22 @@ export interface DiskAnalysisBuilderState {
 }
 
 interface PersistedDiskAnalysisEntry extends DiskAnalysisCacheEntry {
+  kind: "diagnostics";
   formatVersion: number;
   toolVersion: string;
   namespace: string;
   writtenAt: number;
 }
+
+interface PersistedDiskSummaryEntry extends DiskSummaryCacheEntry {
+  kind: "summary";
+  formatVersion: number;
+  toolVersion: string;
+  namespace: string;
+  writtenAt: number;
+}
+
+type PersistedDiskEntry = PersistedDiskAnalysisEntry | PersistedDiskSummaryEntry;
 
 export class DiskAnalysisCache {
   private readonly root: string;
@@ -77,8 +95,19 @@ export class DiskAnalysisCache {
     if (!this.enabled) {
       return undefined;
     }
-    const entry = await this.readEntry(this.fileNameForLookup(lookup));
-    if (!entry || !this.matches(entry, lookup)) {
+    const entry = await this.readEntry(this.fileNameForLookup(lookup, "diagnostics"));
+    if (!entry || entry.kind !== "diagnostics" || !this.matches(entry, lookup, "diagnostics")) {
+      return undefined;
+    }
+    return entry;
+  }
+
+  async readSummary(lookup: DiskAnalysisCacheLookup): Promise<DiskSummaryCacheEntry | undefined> {
+    if (!this.enabled) {
+      return undefined;
+    }
+    const entry = await this.readEntry(this.fileNameForLookup(lookup, "summary"));
+    if (!entry || entry.kind !== "summary" || !this.matches(entry, lookup, "summary")) {
       return undefined;
     }
     return entry;
@@ -91,12 +120,29 @@ export class DiskAnalysisCache {
     await fs.promises.mkdir(this.root, { recursive: true });
     const payload: PersistedDiskAnalysisEntry = {
       ...entry,
+      kind: "diagnostics",
       formatVersion,
       toolVersion: this.options.toolVersion,
       namespace: this.options.namespace,
       writtenAt: Date.now(),
     };
-    await fs.promises.writeFile(this.fileNameForLookup(entry), encode(payload));
+    await fs.promises.writeFile(this.fileNameForLookup(entry, "diagnostics"), encode(payload));
+  }
+
+  async writeSummary(entry: DiskSummaryCacheEntry): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
+    await fs.promises.mkdir(this.root, { recursive: true });
+    const payload: PersistedDiskSummaryEntry = {
+      ...entry,
+      kind: "summary",
+      formatVersion,
+      toolVersion: this.options.toolVersion,
+      namespace: this.options.namespace,
+      writtenAt: Date.now(),
+    };
+    await fs.promises.writeFile(this.fileNameForLookup(entry, "summary"), encode(payload));
   }
 
   async clear(): Promise<void> {
@@ -135,8 +181,13 @@ export class DiskAnalysisCache {
     }
   }
 
-  private matches(entry: PersistedDiskAnalysisEntry, lookup: DiskAnalysisCacheLookup): boolean {
+  private matches(
+    entry: PersistedDiskEntry,
+    lookup: DiskAnalysisCacheLookup,
+    kind: DiskCacheEntryKind,
+  ): boolean {
     return (
+      entry.kind === kind &&
       entry.formatVersion === formatVersion &&
       entry.toolVersion === this.options.toolVersion &&
       entry.namespace === this.options.namespace &&
@@ -148,20 +199,21 @@ export class DiskAnalysisCache {
     );
   }
 
-  private async readEntry(fileName: string): Promise<PersistedDiskAnalysisEntry | undefined> {
+  private async readEntry(fileName: string): Promise<PersistedDiskEntry | undefined> {
     try {
-      return decode(await fs.promises.readFile(fileName)) as PersistedDiskAnalysisEntry;
+      return decode(await fs.promises.readFile(fileName)) as PersistedDiskEntry;
     } catch {
       await fs.promises.rm(fileName, { force: true }).catch(() => undefined);
       return undefined;
     }
   }
 
-  private fileNameForLookup(lookup: DiskAnalysisCacheLookup): string {
+  private fileNameForLookup(lookup: DiskAnalysisCacheLookup, kind: DiskCacheEntryKind): string {
     return path.join(
       this.root,
       `${stableHash(
         JSON.stringify({
+          kind,
           namespace: this.options.namespace,
           fileName: lookup.source.fileName,
           settingsKey: lookup.settingsKey,

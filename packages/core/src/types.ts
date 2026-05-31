@@ -162,6 +162,8 @@ export interface AspWorkspaceSettings {
   backgroundAnalysis?: boolean;
   idleAnalysisConcurrency?: number;
   busyAnalysisConcurrency?: number;
+  vbProjectMaxDocuments?: number;
+  vbProjectMaxTextLength?: number;
 }
 
 export interface AspVbscriptComType {

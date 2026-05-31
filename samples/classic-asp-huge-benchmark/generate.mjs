@@ -80,6 +80,28 @@ function pushBenchmarkBlock(lines, layer, block, role) {
   lines.push(`<section class="${prefix}-block" data-layer="${layer}" data-block="${padded}">`);
   lines.push(`  <h2>${role} block ${padded}</h2>`);
   lines.push(`  <p>Static benchmark markup for ${prefix} block ${padded}.</p>`);
+  lines.push(`  <style>`);
+  lines.push(`    .${prefix}-block[data-block="${padded}"] .benchmark-meter {`);
+  lines.push(`      --benchmark-layer: ${layer};`);
+  lines.push(`      color: hsl(${(layer * 47 + block) % 360} 64% 32%);`);
+  lines.push(
+    `      border-left: ${1 + (block % 4)}px solid hsl(${(layer * 31 + block) % 360} 56% 52%);`,
+  );
+  lines.push(`    }`);
+  lines.push(
+    `    .${prefix}-block[data-block="${padded}"] .benchmark-meter::before { content: "${prefix}-${padded}"; }`,
+  );
+  lines.push(`  </style>`);
+  lines.push(`  <script>`);
+  lines.push(`    (function () {`);
+  lines.push(`      const key = "${prefix}-${padded}";`);
+  lines.push(`      const store = (window.aspLspBenchmark = window.aspLspBenchmark || {});`);
+  lines.push(
+    `      store[key] = { layer: ${layer}, block: ${block}, role: "${role}", even: ${block % 2 === 0} };`,
+  );
+  lines.push(`      document.documentElement.dataset.aspLspLastBenchmark = key;`);
+  lines.push(`    })();`);
+  lines.push(`  </script>`);
   lines.push(`<%`);
   lines.push(`Dim ${prefix}Index${padded}`);
   lines.push(`${prefix}Index${padded} = ${block}`);
@@ -97,6 +119,7 @@ function pushBenchmarkBlock(lines, layer, block, role) {
   lines.push(`    <li><%= Server.HTMLEncode("${prefix}-item-${padded}-a") %></li>`);
   lines.push(`    <li><%= Server.HTMLEncode("${prefix}-item-${padded}-b") %></li>`);
   lines.push(`  </ul>`);
+  lines.push(`  <div class="benchmark-meter" data-score="<%= ${prefix}Index${padded} %>"></div>`);
   lines.push(`</section>`);
   lines.push(``);
 }
@@ -112,7 +135,7 @@ function buildMainFile(spec) {
   lines.push(`  <h1><%= Server.HTMLEncode(layer${spec.layer}BenchmarkTitle) %></h1>`);
 
   let block = 1;
-  while (lines.length + 20 < targetLines) {
+  while (lines.length + 38 < targetLines) {
     pushBenchmarkBlock(lines, spec.layer, block, spec.role);
     block += 1;
   }

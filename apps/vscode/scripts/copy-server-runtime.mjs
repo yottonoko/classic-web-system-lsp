@@ -7,6 +7,7 @@ const extensionRoot = path.resolve(import.meta.dirname, "..");
 const repoRoot = path.resolve(extensionRoot, "..", "..");
 const serverRoot = path.join(extensionRoot, "server", "language-server");
 const serverEntry = path.join(repoRoot, "packages", "language-server", "dist", "server.js");
+const includeNativeCore = !process.argv.includes("--no-native");
 const workerEntry = path.join(
   repoRoot,
   "packages",
@@ -14,8 +15,18 @@ const workerEntry = path.join(
   "dist",
   "vb-diagnostics-worker.js",
 );
+const jsWorkerEntry = path.join(
+  repoRoot,
+  "packages",
+  "language-server",
+  "dist",
+  "js-diagnostics-worker.js",
+);
 const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
 const require = createRequire(import.meta.url);
+const languageServerManifest = JSON.parse(
+  fs.readFileSync(path.join(repoRoot, "packages", "language-server", "package.json"), "utf8"),
+);
 
 if (!fs.existsSync(serverEntry)) {
   throw new Error(`Build @asp-lsp/language-server before packaging: ${serverEntry}`);
@@ -23,22 +34,30 @@ if (!fs.existsSync(serverEntry)) {
 if (!fs.existsSync(workerEntry)) {
   throw new Error(`Build @asp-lsp/language-server before packaging: ${workerEntry}`);
 }
+if (!fs.existsSync(jsWorkerEntry)) {
+  throw new Error(`Build @asp-lsp/language-server before packaging: ${jsWorkerEntry}`);
+}
 
 fs.rmSync(path.join(extensionRoot, "server"), { recursive: true, force: true });
 const distRoot = path.join(serverRoot, "dist");
 fs.mkdirSync(distRoot, { recursive: true });
 
 await bundleNodeEntry(serverEntry, path.join(distRoot, "server.js"));
+await bundleNodeEntry(jsWorkerEntry, path.join(distRoot, "js-diagnostics-worker.js"));
 await bundleNodeEntry(workerEntry, path.join(distRoot, "vb-diagnostics-worker.js"));
 fs.chmodSync(path.join(distRoot, "server.js"), 0o755);
+fs.chmodSync(path.join(distRoot, "js-diagnostics-worker.js"), 0o755);
 fs.chmodSync(path.join(distRoot, "vb-diagnostics-worker.js"), 0o755);
 copyTypeScriptLibs(distRoot);
+if (includeNativeCore) {
+  copyNativeCore(serverRoot);
+}
 fs.writeFileSync(
   path.join(serverRoot, "package.json"),
   `${JSON.stringify(
     {
       name: "@asp-lsp/language-server-bundled",
-      version: "0.1.1",
+      version: languageServerManifest.version,
       private: true,
       main: "dist/server.js",
     },
@@ -77,4 +96,13 @@ function copyTypeScriptLibs(targetDirectory) {
       fs.copyFileSync(path.join(sourceDirectory, entry), path.join(targetDirectory, entry));
     }
   }
+}
+
+function copyNativeCore(targetRoot) {
+  const sourceRoot = path.join(repoRoot, "packages", "core", "native");
+  if (!fs.existsSync(sourceRoot)) {
+    return;
+  }
+  const targetDirectory = path.join(targetRoot, "native");
+  fs.cpSync(sourceRoot, targetDirectory, { recursive: true });
 }

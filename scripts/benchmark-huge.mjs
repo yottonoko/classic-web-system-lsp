@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
+import { embeddedOperationNames, runEmbeddedOperation } from "./embedded-language-benchmark.mjs";
+import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -11,7 +13,8 @@ const sampleRoot = path.join(root, "samples", "classic-asp-huge-benchmark");
 const generator = path.join(sampleRoot, "generate.mjs");
 const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
-const warmupIterations = readPositiveInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
+const benchmarkCacheMode = readBenchmarkCacheMode();
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const analyzeStepTotals = new Map();
 const results = [];
@@ -24,46 +27,56 @@ if (!fs.existsSync(coreDist)) {
 
 execFileSync(process.execPath, [generator], { stdio: "inherit" });
 
+const core = require(coreDist);
 const {
-  analyzeVbscript,
+  analyzeVbscriptFromTextAsync,
   buildVirtualDocuments,
-  collectVbscriptSymbols,
-  parseAspDocument,
-} = require(coreDist);
+  collectVbscriptSymbolsFromTextAsync,
+  parseAspDocumentAsync,
+} = core;
 
 const sources = collectBenchmarkSources();
 const sourceStats = summarizeSources(sources);
 
-runBenchmark("parseAspDocument", () => {
-  for (const source of sources) {
-    parseAspDocument(source.uri, source.text);
+await runBenchmark("parseAspDocument", async (run) => {
+  for (const source of sourcesForRun("parseAspDocument", run)) {
+    await parseAspDocumentAsync(source.uri, source.text);
   }
 });
 
-const parsedDocuments = sources.map((source) => parseAspDocument(source.uri, source.text));
-runBenchmark("buildVirtualDocuments", () => {
-  for (const parsed of parsedDocuments) {
+await runBenchmark("buildVirtualDocuments", async (run) => {
+  for (const source of sourcesForRun("buildVirtualDocuments", run)) {
+    const parsed = await parseAspDocumentAsync(source.uri, source.text);
     buildVirtualDocuments(parsed);
   }
 });
 
-runBenchmark("collectVbscriptSymbols", () => {
-  for (const parsed of parsedDocuments) {
-    collectVbscriptSymbols(parsed);
+await runBenchmark("collectVbscriptSymbols", async (run) => {
+  for (const source of sourcesForRun("collectVbscriptSymbols", run)) {
+    await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
   }
 });
 
-runBenchmark("analyzeVbscript", () => {
-  for (const parsed of parsedDocuments) {
-    analyzeVbscript(parsed, analyzeContext());
+await runBenchmark("analyzeVbscript", async (run) => {
+  for (const source of sourcesForRun("analyzeVbscript", run)) {
+    await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
   }
 });
+
+for (const operation of embeddedOperationNames) {
+  await runBenchmark(operation, async (run) => {
+    for (const source of sourcesForRun(operation, run)) {
+      await runEmbeddedOperation(operation, source, core);
+    }
+  });
+}
 
 console.log("");
 console.log(`Huge Classic ASP benchmark`);
 console.log(`Files: ${sourceStats.files}`);
 console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
 console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
+console.log(`Cache mode: ${benchmarkCacheMode}`);
 console.log(`Warmups: ${warmupIterations}`);
 console.log(`Iterations: ${benchmarkIterations}`);
 console.log("");
@@ -76,6 +89,10 @@ if (collectDebugSteps) {
   );
   console.log("");
   printDebugStepTotals(analyzeStepTotals);
+}
+
+function sourcesForRun(operation, run) {
+  return benchmarkSourcesForRun(sources, benchmarkCacheMode, operation, run);
 }
 
 function collectBenchmarkSources() {
@@ -113,15 +130,15 @@ function summarizeSources(items) {
   );
 }
 
-function runBenchmark(name, fn) {
+async function runBenchmark(name, fn) {
   for (let index = 0; index < warmupIterations; index += 1) {
-    fn();
+    await fn({ phase: "warmup", index });
   }
 
   const samples = [];
   for (let index = 0; index < benchmarkIterations; index += 1) {
     const start = performance.now();
-    fn();
+    await fn({ phase: "measure", index });
     samples.push(performance.now() - start);
   }
 
@@ -198,6 +215,18 @@ function readPositiveInteger(name, fallback) {
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer.`);
+  }
+  return value;
+}
+
+function readNonNegativeInteger(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
   }
   return value;
 }

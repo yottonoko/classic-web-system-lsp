@@ -23,13 +23,27 @@ import type {
   TextEdit,
 } from "vscode-languageserver-types";
 import { offsetAt, positionAt, rangeFromOffsets } from "./position";
+import { hydrateVbscriptCst, needsVbscriptCstHydration, parseAspDocument } from "./parser";
 import { createLocalizer } from "./localize";
+import builtinCatalogData from "./vbscript-builtin-catalog.json";
+import {
+  tryNativeAnalyzeVbscript,
+  tryNativeAnalyzeVbscriptAsync,
+  tryNativeAnalyzeVbscriptFromTextAsync,
+  tryNativeCollectVbscriptSymbols,
+  tryNativeCollectVbscriptSymbolsAsync,
+  tryNativeCollectVbscriptSymbolsFromTextAsync,
+  tryNativeSummarizeAspFileAnalysis,
+  tryNativeSummarizeAspFileAnalysisAsync,
+  tryNativeSummarizeAspFileAnalysisFromTextAsync,
+} from "./native-backend";
 import type {
   AspCstNode,
   AspInlayHintMarkerMode,
   AspLocale,
   AspParsedDocument,
   AspRegion,
+  AspSettings,
   AspVbscriptComType,
   AspVbscriptIdentifierCase,
   AspVbscriptIdentifierKind,
@@ -199,6 +213,8 @@ const symbolKeys = new WeakMap<VbSymbol, string>();
 const typeIndexes = new WeakMap<VbTypeEnvironment, VbTypeIndex>();
 let cachedBuiltinNameSet: Set<string> | undefined;
 let cachedBuiltinTypes: VbType[] | undefined;
+const vbFromTextCacheMaxEntries = 64;
+const vbFromTextCache = new Map<string, { text: string; value: unknown }>();
 
 function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
   const localizer = createLocalizer(locale);
@@ -445,574 +461,48 @@ interface BuiltinConstant {
   documentation: BuiltinDocumentationSpec;
 }
 
-const classicAspObjectCatalog: Record<string, BuiltinObjectSpec> = {
-  request: {
-    typeName: "Request",
-    members: [
-      property("QueryString", "String", "Request.QueryString(name)"),
-      property("Form", "String", "Request.Form(name)"),
-      property("Cookies", "Variant", "Request.Cookies(name)"),
-      property("ServerVariables", "String", "Request.ServerVariables(name)"),
-      property("ClientCertificate", "Variant"),
-      property("TotalBytes", "Number"),
-      method("BinaryRead", "Array", "Request.BinaryRead(count)"),
-    ],
-  },
-  response: {
-    typeName: "Response",
-    members: [
-      property("Cookies"),
-      property("Buffer", "Boolean"),
-      property("CacheControl", "String"),
-      property("Charset", "String"),
-      property("ContentType", "String"),
-      property("Expires", "Number"),
-      property("ExpiresAbsolute", "Date"),
-      property("IsClientConnected", "Boolean"),
-      property("Pics", "String"),
-      property("Status", "String"),
-      method("AddHeader", "Variant", "Response.AddHeader(name, value)"),
-      method("AppendToLog", "Variant", "Response.AppendToLog string"),
-      method("BinaryWrite", "Variant", "Response.BinaryWrite(data)"),
-      method("Clear", "Variant", "Response.Clear"),
-      method("End", "Variant", "Response.End"),
-      method("Flush", "Variant", "Response.Flush"),
-      method("Redirect", "Variant", "Response.Redirect url"),
-      method("Write", "Variant", "Response.Write value"),
-    ],
-  },
-  application: {
-    typeName: "Application",
-    members: [
-      property("Contents"),
-      property("StaticObjects"),
-      method("Contents.Remove", "Variant", "Application.Contents.Remove(name)"),
-      method("Contents.RemoveAll", "Variant", "Application.Contents.RemoveAll()"),
-      method("Lock", "Variant", "Application.Lock"),
-      method("Unlock", "Variant", "Application.Unlock"),
-    ],
-  },
-  session: {
-    typeName: "Session",
-    members: [
-      property("Contents"),
-      property("StaticObjects"),
-      property("CodePage", "Number"),
-      property("LCID", "Number"),
-      property("SessionID", "String"),
-      property("Timeout", "Number"),
-      method("Abandon", "Variant", "Session.Abandon"),
-      method("Contents.Remove", "Variant", "Session.Contents.Remove(name)"),
-      method("Contents.RemoveAll", "Variant", "Session.Contents.RemoveAll()"),
-    ],
-  },
-  server: {
-    typeName: "Server",
-    members: [
-      property("ScriptTimeout", "Number"),
-      method("CreateObject", "Object", "Server.CreateObject(progId)"),
-      method("Execute", "Variant", "Server.Execute(path)"),
-      method("GetLastError", "ASPError", "Server.GetLastError()"),
-      method("HTMLEncode", "String", "Server.HTMLEncode(value)"),
-      method("MapPath", "String", "Server.MapPath(path)"),
-      method("Transfer", "Variant", "Server.Transfer(path)"),
-      method("URLEncode", "String", "Server.URLEncode(value)"),
-    ],
-  },
-  asperror: {
-    typeName: "ASPError",
-    members: [
-      property("ASPCode", "String"),
-      property("ASPDescription", "String"),
-      property("Category", "String"),
-      property("Column", "Number"),
-      property("Description", "String"),
-      property("File", "String"),
-      property("Line", "Number"),
-      property("Number", "Number"),
-      property("Source", "String"),
-    ],
-  },
-};
+interface BuiltinCatalogMemberSpec {
+  name: string;
+  kind: VbBuiltinMemberKind;
+  type?: string;
+  signature?: string;
+}
 
-const externalObjectCatalog: Record<string, BuiltinObjectSpec> = {
-  "scripting.filesystemobject": {
-    typeName: "Scripting.FileSystemObject",
-    members: [
-      property("Drives", "Variant"),
-      method("BuildPath", "String", "Scripting.FileSystemObject.BuildPath(path, name)"),
-      method("CopyFile", "Variant", "Scripting.FileSystemObject.CopyFile(source, destination)"),
-      method("CopyFolder", "Variant", "Scripting.FileSystemObject.CopyFolder(source, destination)"),
-      method("CreateFolder", "Scripting.Folder", "Scripting.FileSystemObject.CreateFolder(path)"),
-      method(
-        "CreateTextFile",
-        "Scripting.TextStream",
-        "Scripting.FileSystemObject.CreateTextFile(filename, overwrite, unicode)",
-      ),
-      method("DeleteFile", "Variant", "Scripting.FileSystemObject.DeleteFile(fileSpec, force)"),
-      method(
-        "DeleteFolder",
-        "Variant",
-        "Scripting.FileSystemObject.DeleteFolder(folderSpec, force)",
-      ),
-      method("DriveExists", "Boolean", "Scripting.FileSystemObject.DriveExists(driveSpec)"),
-      method("FileExists", "Boolean", "Scripting.FileSystemObject.FileExists(fileSpec)"),
-      method("FolderExists", "Boolean", "Scripting.FileSystemObject.FolderExists(folderSpec)"),
-      method(
-        "GetAbsolutePathName",
-        "String",
-        "Scripting.FileSystemObject.GetAbsolutePathName(pathSpec)",
-      ),
-      method("GetBaseName", "String", "Scripting.FileSystemObject.GetBaseName(path)"),
-      method("GetDrive", "Scripting.Drive", "Scripting.FileSystemObject.GetDrive(driveSpec)"),
-      method("GetDriveName", "String", "Scripting.FileSystemObject.GetDriveName(path)"),
-      method("GetExtensionName", "String", "Scripting.FileSystemObject.GetExtensionName(path)"),
-      method("GetFile", "Scripting.File", "Scripting.FileSystemObject.GetFile(filePath)"),
-      method("GetFileName", "String", "Scripting.FileSystemObject.GetFileName(path)"),
-      method("GetFolder", "Scripting.Folder", "Scripting.FileSystemObject.GetFolder(path)"),
-      method(
-        "GetParentFolderName",
-        "String",
-        "Scripting.FileSystemObject.GetParentFolderName(path)",
-      ),
-      method(
-        "GetSpecialFolder",
-        "Scripting.Folder",
-        "Scripting.FileSystemObject.GetSpecialFolder(specialFolder)",
-      ),
-      method("GetTempName", "String", "Scripting.FileSystemObject.GetTempName()"),
-      method("MoveFile", "Variant", "Scripting.FileSystemObject.MoveFile(source, destination)"),
-      method("MoveFolder", "Variant", "Scripting.FileSystemObject.MoveFolder(source, destination)"),
-      method(
-        "OpenTextFile",
-        "Scripting.TextStream",
-        "Scripting.FileSystemObject.OpenTextFile(filename, iomode, create, format)",
-      ),
-    ],
-  },
-  "scripting.textstream": {
-    typeName: "Scripting.TextStream",
-    members: [
-      property("AtEndOfLine", "Boolean"),
-      property("AtEndOfStream", "Boolean"),
-      property("Column", "Number"),
-      property("Line", "Number"),
-      method("Close", "Variant", "Scripting.TextStream.Close"),
-      method("Read", "String", "Scripting.TextStream.Read(characters)"),
-      method("ReadAll", "String", "Scripting.TextStream.ReadAll()"),
-      method("ReadLine", "String", "Scripting.TextStream.ReadLine()"),
-      method("Skip", "Variant", "Scripting.TextStream.Skip(characters)"),
-      method("SkipLine", "Variant", "Scripting.TextStream.SkipLine()"),
-      method("Write", "Variant", "Scripting.TextStream.Write(text)"),
-      method("WriteBlankLines", "Variant", "Scripting.TextStream.WriteBlankLines(lines)"),
-      method("WriteLine", "Variant", "Scripting.TextStream.WriteLine(text)"),
-    ],
-  },
-  "scripting.drive": {
-    typeName: "Scripting.Drive",
-    members: [
-      property("AvailableSpace", "Number"),
-      property("DriveLetter", "String"),
-      property("DriveType", "Number"),
-      property("FileSystem", "String"),
-      property("FreeSpace", "Number"),
-      property("IsReady", "Boolean"),
-      property("Path", "String"),
-      property("RootFolder", "Scripting.Folder"),
-      property("SerialNumber", "Number"),
-      property("ShareName", "String"),
-      property("TotalSize", "Number"),
-      property("VolumeName", "String"),
-    ],
-  },
-  "scripting.file": {
-    typeName: "Scripting.File",
-    members: [
-      property("Attributes", "Number"),
-      property("DateCreated", "Date"),
-      property("DateLastAccessed", "Date"),
-      property("DateLastModified", "Date"),
-      property("Drive", "Scripting.Drive"),
-      property("Name", "String"),
-      property("ParentFolder", "Scripting.Folder"),
-      property("Path", "String"),
-      property("ShortName", "String"),
-      property("ShortPath", "String"),
-      property("Size", "Number"),
-      property("Type", "String"),
-      method("Copy", "Variant", "Scripting.File.Copy(destination, overwrite)"),
-      method("Delete", "Variant", "Scripting.File.Delete(force)"),
-      method("Move", "Variant", "Scripting.File.Move(destination)"),
-      method(
-        "OpenAsTextStream",
-        "Scripting.TextStream",
-        "Scripting.File.OpenAsTextStream(iomode, format)",
-      ),
-    ],
-  },
-  "scripting.folder": {
-    typeName: "Scripting.Folder",
-    members: [
-      property("Files", "Variant"),
-      property("SubFolders", "Variant"),
-      property("Attributes", "Number"),
-      property("DateCreated", "Date"),
-      property("DateLastAccessed", "Date"),
-      property("DateLastModified", "Date"),
-      property("Drive", "Scripting.Drive"),
-      property("IsRootFolder", "Boolean"),
-      property("Name", "String"),
-      property("ParentFolder", "Scripting.Folder"),
-      property("Path", "String"),
-      property("ShortName", "String"),
-      property("ShortPath", "String"),
-      property("Size", "Number"),
-      property("Type", "String"),
-      method("Copy", "Variant", "Scripting.Folder.Copy(destination, overwrite)"),
-      method(
-        "CreateTextFile",
-        "Scripting.TextStream",
-        "Scripting.Folder.CreateTextFile(filename, overwrite, unicode)",
-      ),
-      method("Delete", "Variant", "Scripting.Folder.Delete(force)"),
-      method("Move", "Variant", "Scripting.Folder.Move(destination)"),
-    ],
-  },
-  "scripting.dictionary": {
-    typeName: "Scripting.Dictionary",
-    members: [
-      property("CompareMode", "Number"),
-      property("Count", "Number"),
-      property("Item", "Variant"),
-      property("Key", "Variant"),
-      method("Add", "Variant", "Scripting.Dictionary.Add(key, item)"),
-      method("Exists", "Boolean", "Scripting.Dictionary.Exists(key)"),
-      method("Items", "Array", "Scripting.Dictionary.Items()"),
-      method("Keys", "Array", "Scripting.Dictionary.Keys()"),
-      method("Remove", "Variant", "Scripting.Dictionary.Remove(key)"),
-      method("RemoveAll", "Variant", "Scripting.Dictionary.RemoveAll()"),
-    ],
-  },
-  "mswc.adrotator": {
-    typeName: "MSWC.AdRotator",
-    members: [
-      property("Border", "Number"),
-      property("Clickable", "Boolean"),
-      property("TargetFrame", "String"),
-      method("GetAdvertisement", "String", "MSWC.AdRotator.GetAdvertisement(scheduleFile)"),
-    ],
-  },
-  "mswc.browsertype": {
-    typeName: "MSWC.BrowserType",
-    members: [
-      property("ActiveXControls", "Boolean"),
-      property("Backgroundsounds", "Boolean"),
-      property("Beta", "Boolean"),
-      property("Browser", "String"),
-      property("Cdf", "Boolean"),
-      property("Cookies", "Boolean"),
-      property("Frames", "Boolean"),
-      property("Javaapplets", "Boolean"),
-      property("Javascript", "Boolean"),
-      property("MajorVer", "Number"),
-      property("MinorVer", "Number"),
-      property("Platform", "String"),
-      property("Tables", "Boolean"),
-      property("Vbscript", "Boolean"),
-      property("Version", "String"),
-    ],
-  },
-  "mswc.nextlink": {
-    typeName: "MSWC.NextLink",
-    members: [
-      method("GetListCount", "Number", "MSWC.NextLink.GetListCount(listFile)"),
-      method("GetListIndex", "Number", "MSWC.NextLink.GetListIndex(listFile)"),
-      method("GetNextDescription", "String", "MSWC.NextLink.GetNextDescription(listFile)"),
-      method("GetNextURL", "String", "MSWC.NextLink.GetNextURL(listFile)"),
-      method("GetNthDescription", "String", "MSWC.NextLink.GetNthDescription(listFile, index)"),
-      method("GetNthURL", "String", "MSWC.NextLink.GetNthURL(listFile, index)"),
-      method("GetPreviousDescription", "String", "MSWC.NextLink.GetPreviousDescription(listFile)"),
-      method("GetPreviousURL", "String", "MSWC.NextLink.GetPreviousURL(listFile)"),
-    ],
-  },
-  "mswc.contentrotator": {
-    typeName: "MSWC.ContentRotator",
-    members: [
-      method("ChooseContent", "String", "MSWC.ContentRotator.ChooseContent(contentSchedule)"),
-      method("GetAllContent", "String", "MSWC.ContentRotator.GetAllContent(contentSchedule)"),
-    ],
-  },
-  "adodb.command": {
-    typeName: "ADODB.Command",
-    members: [
-      property("ActiveConnection", "Object"),
-      property("CommandText", "String"),
-      property("CommandTimeout", "Number"),
-      property("CommandType", "Number"),
-      property("Name", "String"),
-      property("Prepared", "Boolean"),
-      property("State", "Number"),
-      method("Cancel", "Variant", "ADODB.Command.Cancel()"),
-      method(
-        "CreateParameter",
-        "ADODB.Parameter",
-        "ADODB.Command.CreateParameter(name, type, direction, size, value)",
-      ),
-      method(
-        "Execute",
-        "ADODB.Recordset",
-        "ADODB.Command.Execute(recordsAffected, parameters, options)",
-      ),
-      property("Parameters", "Object"),
-      property("Properties", "Object"),
-    ],
-  },
-  "adodb.connection": {
-    typeName: "ADODB.Connection",
-    members: [
-      property("Attributes", "Number"),
-      property("CommandTimeout", "Number"),
-      property("ConnectionString", "String"),
-      property("ConnectionTimeout", "Number"),
-      property("CursorLocation", "Number"),
-      property("DefaultDatabase", "String"),
-      property("IsolationLevel", "Number"),
-      property("Mode", "Number"),
-      property("Provider", "String"),
-      property("State", "Number"),
-      property("Version", "String"),
-      method("BeginTrans", "Number", "ADODB.Connection.BeginTrans()"),
-      method("Cancel", "Variant", "ADODB.Connection.Cancel()"),
-      method("Close", "Variant", "ADODB.Connection.Close()"),
-      method("CommitTrans", "Variant", "ADODB.Connection.CommitTrans()"),
-      method(
-        "Execute",
-        "ADODB.Recordset",
-        "ADODB.Connection.Execute(commandText, recordsAffected, options)",
-      ),
-      method(
-        "Open",
-        "Variant",
-        "ADODB.Connection.Open(connectionString, userId, password, options)",
-      ),
-      method(
-        "OpenSchema",
-        "ADODB.Recordset",
-        "ADODB.Connection.OpenSchema(schema, restrictions, schemaId)",
-      ),
-      method("RollbackTrans", "Variant", "ADODB.Connection.RollbackTrans()"),
-      event("BeginTransComplete"),
-      event("CommitTransComplete"),
-      event("ConnectComplete"),
-      event("Disconnect"),
-      event("ExecuteComplete"),
-      event("InfoMessage"),
-      event("RollbackTransComplete"),
-      event("WillConnect"),
-      event("WillExecute"),
-      property("Errors", "Object"),
-      property("Properties", "Object"),
-    ],
-  },
-  "adodb.error": {
-    typeName: "ADODB.Error",
-    members: [
-      property("Description", "String"),
-      property("HelpContext", "Number"),
-      property("HelpFile", "String"),
-      property("NativeError", "Number"),
-      property("Number", "Number"),
-      property("Source", "String"),
-      property("SQLState", "String"),
-    ],
-  },
-  "adodb.field": {
-    typeName: "ADODB.Field",
-    members: [
-      property("ActualSize", "Number"),
-      property("Attributes", "Number"),
-      property("DefinedSize", "Number"),
-      property("Name", "String"),
-      property("NumericScale", "Number"),
-      property("OriginalValue", "Variant"),
-      property("Precision", "Number"),
-      property("Status", "Number"),
-      property("Type", "Number"),
-      property("UnderlyingValue", "Variant"),
-      property("Value", "Variant"),
-      method("AppendChunk", "Variant", "ADODB.Field.AppendChunk(data)"),
-      method("GetChunk", "Variant", "ADODB.Field.GetChunk(length)"),
-      property("Properties", "Object"),
-    ],
-  },
-  "adodb.parameter": {
-    typeName: "ADODB.Parameter",
-    members: [
-      property("Attributes", "Number"),
-      property("Direction", "Number"),
-      property("Name", "String"),
-      property("NumericScale", "Number"),
-      property("Precision", "Number"),
-      property("Size", "Number"),
-      property("Type", "Number"),
-      property("Value", "Variant"),
-      method("AppendChunk", "Variant", "ADODB.Parameter.AppendChunk(value)"),
-      method("Delete", "Variant", "ADODB.Parameter.Delete()"),
-    ],
-  },
-  "adodb.property": {
-    typeName: "ADODB.Property",
-    members: [
-      property("Attributes", "Number"),
-      property("Name", "String"),
-      property("Type", "Number"),
-      property("Value", "Variant"),
-    ],
-  },
-  "adodb.record": {
-    typeName: "ADODB.Record",
-    members: [
-      property("ActiveConnection", "Object"),
-      property("Mode", "Number"),
-      property("ParentURL", "String"),
-      property("RecordType", "Number"),
-      property("Source", "Variant"),
-      property("State", "Number"),
-      method("Cancel", "Variant", "ADODB.Record.Cancel()"),
-      method("Close", "Variant", "ADODB.Record.Close()"),
-      method(
-        "CopyRecord",
-        "String",
-        "ADODB.Record.CopyRecord(source, destination, userName, password, options, async)",
-      ),
-      method("DeleteRecord", "Variant", "ADODB.Record.DeleteRecord(source, async)"),
-      method("GetChildren", "ADODB.Recordset", "ADODB.Record.GetChildren()"),
-      method(
-        "MoveRecord",
-        "String",
-        "ADODB.Record.MoveRecord(source, destination, userName, password, options, async)",
-      ),
-      method(
-        "Open",
-        "Variant",
-        "ADODB.Record.Open(source, activeConnection, mode, createOptions, options, userName, password)",
-      ),
-      property("Properties", "Object"),
-      property("Fields", "Object"),
-    ],
-  },
-  "adodb.recordset": {
-    typeName: "ADODB.Recordset",
-    members: [
-      property("AbsolutePage", "Number"),
-      property("AbsolutePosition", "Number"),
-      property("ActiveCommand", "ADODB.Command"),
-      property("ActiveConnection", "Object"),
-      property("BOF", "Boolean"),
-      property("Bookmark", "Variant"),
-      property("CacheSize", "Number"),
-      property("CursorLocation", "Number"),
-      property("CursorType", "Number"),
-      property("DataMember", "String"),
-      property("DataSource", "Object"),
-      property("EditMode", "Number"),
-      property("EOF", "Boolean"),
-      property("Filter", "Variant"),
-      property("Index", "String"),
-      property("LockType", "Number"),
-      property("MarshalOptions", "Number"),
-      property("MaxRecords", "Number"),
-      property("PageCount", "Number"),
-      property("PageSize", "Number"),
-      property("RecordCount", "Number"),
-      property("Sort", "String"),
-      property("Source", "Variant"),
-      property("State", "Number"),
-      property("Status", "Number"),
-      property("StayInSync", "Boolean"),
-      method("AddNew", "Variant", "ADODB.Recordset.AddNew(fieldList, values)"),
-      method("Cancel", "Variant", "ADODB.Recordset.Cancel()"),
-      method("CancelBatch", "Variant", "ADODB.Recordset.CancelBatch(affectRecords)"),
-      method("CancelUpdate", "Variant", "ADODB.Recordset.CancelUpdate()"),
-      method("Clone", "ADODB.Recordset", "ADODB.Recordset.Clone(lockType)"),
-      method("Close", "Variant", "ADODB.Recordset.Close()"),
-      method(
-        "CompareBookmarks",
-        "Number",
-        "ADODB.Recordset.CompareBookmarks(bookmark1, bookmark2)",
-      ),
-      method("Delete", "Variant", "ADODB.Recordset.Delete(affectRecords)"),
-      method(
-        "Find",
-        "Variant",
-        "ADODB.Recordset.Find(criteria, skipRecords, searchDirection, start)",
-      ),
-      method("GetRows", "Array", "ADODB.Recordset.GetRows(rows, start, fields)"),
-      method(
-        "GetString",
-        "String",
-        "ADODB.Recordset.GetString(stringFormat, numRows, columnDelimiter, rowDelimiter, nullExpr)",
-      ),
-      method("Move", "Variant", "ADODB.Recordset.Move(numRecords, start)"),
-      method("MoveFirst", "Variant", "ADODB.Recordset.MoveFirst()"),
-      method("MoveLast", "Variant", "ADODB.Recordset.MoveLast()"),
-      method("MoveNext", "Variant", "ADODB.Recordset.MoveNext()"),
-      method("MovePrevious", "Variant", "ADODB.Recordset.MovePrevious()"),
-      method("NextRecordset", "ADODB.Recordset", "ADODB.Recordset.NextRecordset(recordsAffected)"),
-      method(
-        "Open",
-        "Variant",
-        "ADODB.Recordset.Open(source, activeConnection, cursorType, lockType, options)",
-      ),
-      method("Requery", "Variant", "ADODB.Recordset.Requery(options)"),
-      method("Resync", "Variant", "ADODB.Recordset.Resync(affectRecords, resyncValues)"),
-      method("Save", "Variant", "ADODB.Recordset.Save(destination, persistFormat)"),
-      method("Seek", "Variant", "ADODB.Recordset.Seek(keyValues, seekOption)"),
-      method("Supports", "Boolean", "ADODB.Recordset.Supports(cursorOptions)"),
-      method("Update", "Variant", "ADODB.Recordset.Update(fields, values)"),
-      method("UpdateBatch", "Variant", "ADODB.Recordset.UpdateBatch(affectRecords)"),
-      event("EndOfRecordset"),
-      event("FetchComplete"),
-      event("FetchProgress"),
-      event("FieldChangeComplete"),
-      event("MoveComplete"),
-      event("RecordChangeComplete"),
-      event("RecordsetChangeComplete"),
-      event("WillChangeField"),
-      event("WillChangeRecord"),
-      event("WillChangeRecordset"),
-      event("WillMove"),
-      property("Fields", "Object"),
-      property("Properties", "Object"),
-    ],
-  },
-  "adodb.stream": {
-    typeName: "ADODB.Stream",
-    members: [
-      property("CharSet", "String"),
-      property("EOS", "Boolean"),
-      property("LineSeparator", "Number"),
-      property("Mode", "Number"),
-      property("Position", "Number"),
-      property("Size", "Number"),
-      property("State", "Number"),
-      property("Type", "Number"),
-      method("Cancel", "Variant", "ADODB.Stream.Cancel()"),
-      method("Close", "Variant", "ADODB.Stream.Close()"),
-      method("CopyTo", "Variant", "ADODB.Stream.CopyTo(destination, charNumber)"),
-      method("Flush", "Variant", "ADODB.Stream.Flush()"),
-      method("LoadFromFile", "Variant", "ADODB.Stream.LoadFromFile(filename)"),
-      method("Open", "Variant", "ADODB.Stream.Open(source, mode, openOptions, userName, password)"),
-      method("Read", "Variant", "ADODB.Stream.Read(numBytes)"),
-      method("ReadText", "String", "ADODB.Stream.ReadText(numChars)"),
-      method("SaveToFile", "Variant", "ADODB.Stream.SaveToFile(filename, saveOptions)"),
-      method("SetEOS", "Variant", "ADODB.Stream.SetEOS()"),
-      method("SkipLine", "Variant", "ADODB.Stream.SkipLine()"),
-      method("Write", "Variant", "ADODB.Stream.Write(buffer)"),
-      method("WriteText", "Variant", "ADODB.Stream.WriteText(data, options)"),
-    ],
-  },
-};
+interface BuiltinCatalogObjectSpec {
+  typeName: string;
+  members: BuiltinCatalogMemberSpec[];
+}
+
+interface BuiltinCatalogConstantSpec {
+  label: string;
+  type: string;
+}
+
+interface BuiltinCatalogRuntimeEventSpec {
+  label: string;
+  documentation: BuiltinDocumentationSpec;
+}
+
+interface BuiltinCatalogFunctionSpec {
+  label: string;
+  signature: string;
+  returnType: string;
+  summary: string;
+}
+
+interface BuiltinCatalogSpec {
+  schemaVersion: 1;
+  classicAspObjects: Record<string, BuiltinCatalogObjectSpec>;
+  externalObjects: Record<string, BuiltinCatalogObjectSpec>;
+  constants: BuiltinCatalogConstantSpec[];
+  runtimeEvents: BuiltinCatalogRuntimeEventSpec[];
+  functions: BuiltinCatalogFunctionSpec[];
+}
+
+const builtinCatalog = builtinCatalogData as BuiltinCatalogSpec;
+
+const classicAspObjectCatalog = objectCatalogFromData(builtinCatalog.classicAspObjects);
+const externalObjectCatalog = objectCatalogFromData(builtinCatalog.externalObjects);
 
 const classicAspBuiltinSignatures = objectSignatures(classicAspObjectCatalog);
 const memberCompletions = objectCompletions(classicAspObjectCatalog);
@@ -1048,117 +538,37 @@ const classicAspTypeNames = new Set([
   "asperror",
 ]);
 
-const builtinConstants: BuiltinConstant[] = [
-  "adBigInt",
-  "adBinary",
-  "adBoolean",
-  "adChar",
-  "adCurrency",
-  "adDate",
-  "adDBTimeStamp",
-  "adDecimal",
-  "adDouble",
-  "adGUID",
-  "adIDispatch",
-  "adInteger",
-  "adLongVarBinary",
-  "adLongVarChar",
-  "adLongVarWChar",
-  "adNumeric",
-  "adSingle",
-  "adSmallInt",
-  "adUnsignedTinyInt",
-  "adVarBinary",
-  "adVarChar",
-  "adVariant",
-  "adVarWChar",
-  "adWChar",
-].map((label) => ({
-  label,
-  type: "Number",
-  documentation: builtinConstantDocumentation(label),
+const builtinConstants: BuiltinConstant[] = builtinCatalog.constants.map((item) => ({
+  label: item.label,
+  type: item.type,
+  documentation: builtinConstantDocumentation(item.label),
 }));
 
-const classicAspRuntimeEvents = [
-  {
-    label: "Application_OnStart",
-    documentation: documentation(
-      "Runs when the ASP application starts before the first session is created.",
-      "ASP application が開始し、最初の session が作られる前に実行されます。",
-      {
-        remarks: text(
-          "Define this event in Global.asa for application-wide initialization.",
-          "Global.asa に定義し、application 全体の初期化に使います。",
-        ),
-      },
-    ),
-  },
-  {
-    label: "Application_OnEnd",
-    documentation: documentation(
-      "Runs when the ASP application ends.",
-      "ASP application が終了するときに実行されます。",
-      {
-        remarks: text(
-          "Use this event for application-wide cleanup that does not depend on an active response.",
-          "有効な response に依存しない application 全体の後始末に使います。",
-        ),
-      },
-    ),
-  },
-  {
-    label: "Session_OnStart",
-    documentation: documentation(
-      "Runs when a new user session starts.",
-      "新しい user session が開始するときに実行されます。",
-      {
-        remarks: text(
-          "Define this event in Global.asa to initialize per-user session state.",
-          "Global.asa に定義し、user ごとの session state を初期化します。",
-        ),
-      },
-    ),
-  },
-  {
-    label: "Session_OnEnd",
-    documentation: documentation(
-      "Runs when a user session ends or times out.",
-      "user session が終了するか timeout したときに実行されます。",
-      {
-        remarks: text(
-          "Use this event for session cleanup; response output is not available.",
-          "session の後始末に使います。response output は利用できません。",
-        ),
-      },
-    ),
-  },
-];
+const classicAspRuntimeEvents = builtinCatalog.runtimeEvents;
 
-function property(name: string, type = "Variant", signature?: string): BuiltinMemberSpec {
-  return builtinMember("property", name, type, signature);
+function objectCatalogFromData(
+  catalog: Record<string, BuiltinCatalogObjectSpec>,
+): Record<string, BuiltinObjectSpec> {
+  return Object.fromEntries(
+    Object.entries(catalog).map(([name, objectSpec]) => [
+      name,
+      {
+        typeName: objectSpec.typeName,
+        members: objectSpec.members.map(completeBuiltinMemberSpec),
+      },
+    ]),
+  );
 }
 
-function method(name: string, type = "Variant", signature?: string): BuiltinMemberSpec {
-  return builtinMember("method", name, type, signature);
-}
-
-function event(name: string): BuiltinMemberSpec {
-  return builtinMember("event", name, "Variant");
-}
-
-function builtinMember(
-  kind: VbBuiltinMemberKind,
-  name: string,
-  type = "Variant",
-  signature?: string,
-): BuiltinMemberSpec {
+function completeBuiltinMemberSpec(member: BuiltinCatalogMemberSpec): BuiltinMemberSpec {
+  const type = member.type ?? "Variant";
   return {
-    name,
-    kind,
+    ...member,
     type,
-    signature,
-    parameters: signature ? parametersFromSignature(signature).map(completeParameterSpec) : [],
-    documentation: builtinMemberDocumentation(kind, name, type, signature),
+    parameters: member.signature
+      ? parametersFromSignature(member.signature).map(completeParameterSpec)
+      : [],
+    documentation: builtinMemberDocumentation(member.kind, member.name, type, member.signature),
   };
 }
 
@@ -1764,218 +1174,22 @@ interface BuiltinFunction {
   documentation: BuiltinDocumentationSpec;
 }
 
-const builtinFunctions: BuiltinFunction[] = (
-  [
-    ["CStr", "CStr(value)", "String", "Converts a value to String."],
-    ["CByte", "CByte(value)", "Number", "Converts a value to Byte."],
-    ["CInt", "CInt(value)", "Number", "Converts a value to Integer."],
-    ["CLng", "CLng(value)", "Number", "Converts a value to Long."],
-    ["CSng", "CSng(value)", "Number", "Converts a value to Single."],
-    ["CDbl", "CDbl(value)", "Number", "Converts a value to Double."],
-    ["CCur", "CCur(value)", "Currency", "Converts a value to Currency."],
-    ["CDec", "CDec(value)", "Decimal", "Converts a value to Decimal."],
-    ["CBool", "CBool(value)", "Boolean", "Converts a value to Boolean."],
-    ["CDate", "CDate(value)", "Date", "Converts a value to Date."],
-    ["CVar", "CVar(value)", "Variant", "Converts a value to Variant."],
-    ["CVErr", "CVErr(errorNumber)", "Error", "Converts an error number to an Error subtype."],
-    ["Asc", "Asc(string)", "Number", "Returns the ANSI character code for a string."],
-    ["Chr", "Chr(charCode)", "String", "Returns the character for an ANSI code."],
-    ["Hex", "Hex(number)", "String", "Returns the hexadecimal value of a number."],
-    ["Oct", "Oct(number)", "String", "Returns the octal value of a number."],
-    ["Array", "Array(values)", "Array", "Creates a Variant array."],
-    [
-      "Filter",
-      "Filter(inputStrings, value, include, compare)",
-      "Array",
-      "Returns matching entries from a string array.",
-    ],
-    ["Join", "Join(list, delimiter)", "String", "Joins array entries into a string."],
-    [
-      "LBound",
-      "LBound(array, dimension)",
-      "Number",
-      "Returns the smallest available subscript for an array dimension.",
-    ],
-    [
-      "Split",
-      "Split(expression, delimiter, count, compare)",
-      "Array",
-      "Splits a string into an array.",
-    ],
-    [
-      "UBound",
-      "UBound(array, dimension)",
-      "Number",
-      "Returns the largest available subscript for an array dimension.",
-    ],
-    ["LCase", "LCase(value)", "String", "Converts a string to lowercase."],
-    ["UCase", "UCase(value)", "String", "Converts a string to uppercase."],
-    ["Trim", "Trim(value)", "String", "Removes leading and trailing spaces."],
-    ["LTrim", "LTrim(value)", "String", "Removes leading spaces."],
-    ["RTrim", "RTrim(value)", "String", "Removes trailing spaces."],
-    ["Len", "Len(value)", "Number", "Returns the number of characters in a string."],
-    [
-      "InStr",
-      "InStr(start, string1, string2, compare)",
-      "Number",
-      "Returns the position of one string within another.",
-    ],
-    [
-      "InStrRev",
-      "InStrRev(string1, string2, start, compare)",
-      "Number",
-      "Returns the position of one string within another from the end.",
-    ],
-    [
-      "Replace",
-      "Replace(expression, find, replaceWith, start, count, compare)",
-      "String",
-      "Returns a string with replacements applied.",
-    ],
-    ["Left", "Left(value, length)", "String", "Returns the left part of a string."],
-    ["Right", "Right(value, length)", "String", "Returns the right part of a string."],
-    ["Mid", "Mid(value, start, length)", "String", "Returns part of a string."],
-    ["Space", "Space(number)", "String", "Returns a string of spaces."],
-    ["StrComp", "StrComp(string1, string2, compare)", "Number", "Compares two strings."],
-    ["String", "String(number, character)", "String", "Returns a repeated character string."],
-    ["StrReverse", "StrReverse(value)", "String", "Reverses a string."],
-    ["Date", "Date()", "Date", "Returns the current system date."],
-    ["Now", "Now()", "Date", "Returns the current date and time."],
-    ["Time", "Time()", "Date", "Returns the current system time."],
-    ["Timer", "Timer()", "Number", "Returns the number of seconds since midnight."],
-    [
-      "DateAdd",
-      "DateAdd(interval, number, date)",
-      "Date",
-      "Returns a date with an interval added.",
-    ],
-    [
-      "DateDiff",
-      "DateDiff(interval, date1, date2, firstDayOfWeek, firstWeekOfYear)",
-      "Number",
-      "Returns the number of intervals between two dates.",
-    ],
-    [
-      "DatePart",
-      "DatePart(interval, date, firstDayOfWeek, firstWeekOfYear)",
-      "Number",
-      "Returns part of a date.",
-    ],
-    [
-      "DateSerial",
-      "DateSerial(year, month, day)",
-      "Date",
-      "Returns a date from year, month, and day values.",
-    ],
-    ["DateValue", "DateValue(date)", "Date", "Returns a date value."],
-    ["Day", "Day(date)", "Number", "Returns the day of the month."],
-    [
-      "FormatDateTime",
-      "FormatDateTime(date, namedFormat)",
-      "String",
-      "Formats a date or time expression.",
-    ],
-    ["Hour", "Hour(time)", "Number", "Returns the hour of the day."],
-    ["IsDate", "IsDate(value)", "Boolean", "Returns whether a value can be converted to a date."],
-    ["Minute", "Minute(time)", "Number", "Returns the minute of the hour."],
-    ["Month", "Month(date)", "Number", "Returns the month of the year."],
-    ["MonthName", "MonthName(month, abbreviate)", "String", "Returns the name of a month."],
-    ["Second", "Second(time)", "Number", "Returns the second of the minute."],
-    [
-      "TimeSerial",
-      "TimeSerial(hour, minute, second)",
-      "Date",
-      "Returns a time from hour, minute, and second values.",
-    ],
-    ["TimeValue", "TimeValue(time)", "Date", "Returns a time value."],
-    ["Weekday", "Weekday(date, firstDayOfWeek)", "Number", "Returns the weekday number."],
-    [
-      "WeekdayName",
-      "WeekdayName(weekday, abbreviate, firstDayOfWeek)",
-      "String",
-      "Returns the name of a weekday.",
-    ],
-    ["Year", "Year(date)", "Number", "Returns the year."],
-    [
-      "FormatCurrency",
-      "FormatCurrency(expression, digitsAfterDecimal, includeLeadingDigit, useParensForNegativeNumbers, groupDigits)",
-      "String",
-      "Formats an expression as currency.",
-    ],
-    [
-      "FormatNumber",
-      "FormatNumber(expression, digitsAfterDecimal, includeLeadingDigit, useParensForNegativeNumbers, groupDigits)",
-      "String",
-      "Formats an expression as a number.",
-    ],
-    [
-      "FormatPercent",
-      "FormatPercent(expression, digitsAfterDecimal, includeLeadingDigit, useParensForNegativeNumbers, groupDigits)",
-      "String",
-      "Formats an expression as a percentage.",
-    ],
-    ["Abs", "Abs(number)", "Number", "Returns the absolute value of a number."],
-    ["Atn", "Atn(number)", "Number", "Returns the arctangent of a number."],
-    ["Cos", "Cos(number)", "Number", "Returns the cosine of an angle."],
-    ["Exp", "Exp(number)", "Number", "Returns e raised to a power."],
-    ["Fix", "Fix(number)", "Number", "Returns the integer part of a number."],
-    ["Int", "Int(number)", "Number", "Returns the integer part of a number."],
-    ["Log", "Log(number)", "Number", "Returns the natural logarithm of a number."],
-    ["Rnd", "Rnd(number)", "Number", "Returns a random number."],
-    ["Round", "Round(number, decimalPlaces)", "Number", "Rounds a number."],
-    ["Sgn", "Sgn(number)", "Number", "Returns the sign of a number."],
-    ["Sin", "Sin(number)", "Number", "Returns the sine of an angle."],
-    ["Sqr", "Sqr(number)", "Number", "Returns the square root of a number."],
-    ["Tan", "Tan(number)", "Number", "Returns the tangent of an angle."],
-    ["CreateObject", "CreateObject(progId)", "Object", "Creates an automation object."],
-    ["Eval", "Eval(expression)", "Variant", "Evaluates an expression."],
-    ["IsArray", "IsArray(value)", "Boolean", "Returns whether a value is an array."],
-    ["IsNull", "IsNull(value)", "Boolean", "Returns whether a value is Null."],
-    ["IsEmpty", "IsEmpty(value)", "Boolean", "Returns whether a variable is Empty."],
-    [
-      "IsNumeric",
-      "IsNumeric(value)",
-      "Boolean",
-      "Returns whether a value can be evaluated as a number.",
-    ],
-    ["IsObject", "IsObject(value)", "Boolean", "Returns whether a value is an automation object."],
-    ["RGB", "RGB(red, green, blue)", "Number", "Returns an RGB color value."],
-    ["ScriptEngine", "ScriptEngine()", "String", "Returns the script engine name."],
-    [
-      "ScriptEngineBuildVersion",
-      "ScriptEngineBuildVersion()",
-      "Number",
-      "Returns the script engine build version.",
-    ],
-    [
-      "ScriptEngineMajorVersion",
-      "ScriptEngineMajorVersion()",
-      "Number",
-      "Returns the script engine major version.",
-    ],
-    [
-      "ScriptEngineMinorVersion",
-      "ScriptEngineMinorVersion()",
-      "Number",
-      "Returns the script engine minor version.",
-    ],
-    ["TypeName", "TypeName(value)", "String", "Returns the subtype name for a variable."],
-    ["VarType", "VarType(value)", "Number", "Returns the subtype code for a variable."],
-  ] satisfies Array<readonly [string, string, string, string]>
-).map(([label, signature, returnType, documentation]) => ({
-  label,
-  signature,
-  returnType,
-  parameters: parametersFromSignature(signature).map((parameter) =>
-    completeParameterSpec({
-      ...parameter,
-      documentation:
-        builtinFunctionDocumentationOverride(label).parameters?.[parameter.name.toLowerCase()] ??
-        genericParameterDocumentation(parameter.name),
-    }),
-  ),
-  documentation: builtinFunctionDocumentation(label, documentation, returnType, signature),
-}));
+const builtinFunctions: BuiltinFunction[] = builtinCatalog.functions.map(
+  ({ label, signature, returnType, summary }) => ({
+    label,
+    signature,
+    returnType,
+    parameters: parametersFromSignature(signature).map((parameter) =>
+      completeParameterSpec({
+        ...parameter,
+        documentation:
+          builtinFunctionDocumentationOverride(label).parameters?.[parameter.name.toLowerCase()] ??
+          genericParameterDocumentation(parameter.name),
+      }),
+    ),
+    documentation: builtinFunctionDocumentation(label, summary, returnType, signature),
+  }),
+);
 
 export function getVbscriptCompletions(
   parsed: AspParsedDocument,
@@ -2515,10 +1729,103 @@ export function analyzeVbscript(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
+  if (nativeSemanticsEnabled()) {
+    const native = tryNativeAnalyzeVbscript(parsed, context);
+    if (native) {
+      return localizeNativeAnalysisResult(native, context);
+    }
+  }
+  return analyzeVbscriptTypeScript(parsed, context);
+}
+
+export async function analyzeVbscriptAsync(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
+  if (nativeSemanticsEnabled()) {
+    const native = await tryNativeAnalyzeVbscriptAsync(parsed, context);
+    if (native) {
+      return localizeNativeAnalysisResult(native, context);
+    }
+  }
+  return analyzeVbscriptTypeScript(parsed, context);
+}
+
+export async function analyzeVbscriptFromTextAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+  context: VbProjectContext = {},
+): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
+  const cacheKey = vbFromTextCacheKey("analyze", uri, text, settings, context);
+  const cached = cacheKey
+    ? getVbFromTextCache<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }>(cacheKey, text)
+    : undefined;
+  if (cached) {
+    return cached;
+  }
+  const native = nativeSemanticsEnabled()
+    ? await tryNativeAnalyzeVbscriptFromTextAsync(uri, text, settings, context)
+    : undefined;
+  const result = native
+    ? localizeNativeAnalysisResult(native, context)
+    : analyzeVbscriptTypeScript(parseAspDocumentTypeScriptOnly(uri, text, settings), context);
+  if (cacheKey) {
+    setVbFromTextCache(cacheKey, text, result);
+  }
+  return result;
+}
+
+function localizeNativeAnalysisResult(
+  result: { diagnostics: Diagnostic[]; symbols: VbSymbol[] },
+  context: VbProjectContext,
+): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
+  return {
+    diagnostics: localizeNativeTypeDiagnostics(result.diagnostics, context.locale),
+    symbols: result.symbols,
+  };
+}
+
+function localizeNativeTypeDiagnostics(
+  diagnostics: Diagnostic[],
+  locale: AspLocale | undefined,
+): Diagnostic[] {
+  if (!locale) {
+    return diagnostics;
+  }
+  const localizer = createLocalizer(locale);
+  const keyByCode = {
+    setScalar: "vb.diagnostic.setScalar",
+    objectNeedsSet: "vb.diagnostic.objectNeedsSet",
+    typeMismatch: "vb.diagnostic.typeMismatch",
+    unknownCall: "vb.diagnostic.unknownCall",
+    argumentCountMismatch: "vb.diagnostic.argumentCountMismatch",
+    missingMember: "vb.diagnostic.missingMember",
+  } as const;
+  return diagnostics.map((diagnostic) => {
+    if (diagnostic.source !== "asp-lsp-vbscript-type") {
+      return diagnostic;
+    }
+    const code = typeof diagnostic.code === "string" ? diagnostic.code : undefined;
+    const key = code ? keyByCode[code as keyof typeof keyByCode] : undefined;
+    if (!key) {
+      return diagnostic;
+    }
+    return {
+      ...diagnostic,
+      message: localizer.t(key, (diagnostic.data ?? {}) as Record<string, string | number>),
+    };
+  });
+}
+
+function analyzeVbscriptTypeScript(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
   const symbols = measureVbDebugStep(
     context,
     "symbols",
-    () => context.symbols ?? collectVbscriptSymbols(parsed, context),
+    () => context.symbols ?? collectVbscriptSymbolsTypeScript(parsed, context, {}),
   );
   const diagnostics: Diagnostic[] = [];
   diagnostics.push(
@@ -2745,8 +2052,8 @@ function vbscriptHoverSignature(
   symbol: VbSymbol,
   context: VbProjectContext,
 ): string {
-  const type = symbolTypeRef(symbol);
-  const typeSuffix = type ? ` As ${formatTypeRef(type)}` : "";
+  const typeDisplay = symbolTypeDisplay(symbol);
+  const typeSuffix = typeDisplay ? ` As ${typeDisplay}` : "";
   const arraySuffix = symbolArraySuffix(symbol);
   const visibility = symbol.visibility ? `${titleCaseKeyword(symbol.visibility)} ` : "";
   const parameters = `(${parameterLabels(symbol).join(", ")})`;
@@ -2791,6 +2098,20 @@ function symbolArraySuffix(symbol: VbSymbol): string {
     return "";
   }
   return `(${symbol.array.dimensions.join(", ")})`;
+}
+
+// Render the displayed type name. Fixed-size arrays show their dimensions, e.g. Array(10),
+// while the canonical symbol.type / symbol.typeName stay "Array" for type resolution.
+function symbolTypeDisplay(symbol: VbSymbol): string | undefined {
+  const type = symbolTypeRef(symbol);
+  if (!type) {
+    return undefined;
+  }
+  const base = formatTypeRef(type);
+  if (base === "Array" && symbol.array?.kind === "fixed" && symbol.array.dimensions.length > 0) {
+    return `Array(${symbol.array.dimensions.join(", ")})`;
+  }
+  return base;
 }
 
 function parameterLabels(symbol: VbSymbol): string[] {
@@ -3323,7 +2644,7 @@ export function getVbscriptInlayHints(
       }
       hints.push({
         position: variableTypeHintPosition(parsed, symbol),
-        label: `${scopeInlayPrefix(parsed, symbol, context, settings.globalVariableMarkers)} As ${symbol.typeName}`,
+        label: `${scopeInlayPrefix(parsed, symbol, context, settings.globalVariableMarkers)} As ${symbolTypeDisplay(symbol) ?? symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: false,
         paddingRight: true,
@@ -3678,6 +2999,62 @@ export function collectVbscriptSymbols(
   context: VbProjectContext = {},
   options: VbSymbolCollectionOptions = {},
 ): VbSymbol[] {
+  if (nativeSemanticsEnabled() && canUseNativeSymbolCollection(options)) {
+    const native = tryNativeCollectVbscriptSymbols(parsed, context);
+    if (native) {
+      return native;
+    }
+  }
+  return collectVbscriptSymbolsTypeScript(parsed, context, options);
+}
+
+export async function collectVbscriptSymbolsAsync(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+  options: VbSymbolCollectionOptions = {},
+): Promise<VbSymbol[]> {
+  const analysisParsed = await ensureVbscriptCstForAsyncAnalysis(parsed);
+  if (nativeSemanticsEnabled() && canUseNativeSymbolCollection(options)) {
+    const native = await tryNativeCollectVbscriptSymbolsAsync(analysisParsed, context);
+    if (native) {
+      return native;
+    }
+  }
+  return collectVbscriptSymbolsTypeScript(analysisParsed, context, options);
+}
+
+export async function collectVbscriptSymbolsFromTextAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+  context: VbProjectContext = {},
+): Promise<VbSymbol[]> {
+  const cacheKey = vbFromTextCacheKey("collect", uri, text, settings, context);
+  const cached = cacheKey ? getVbFromTextCache<VbSymbol[]>(cacheKey, text) : undefined;
+  if (cached) {
+    return cached;
+  }
+  const native = nativeSemanticsEnabled()
+    ? await tryNativeCollectVbscriptSymbolsFromTextAsync(uri, text, settings, context)
+    : undefined;
+  const result =
+    native ??
+    collectVbscriptSymbolsTypeScript(
+      parseAspDocumentTypeScriptOnly(uri, text, settings),
+      context,
+      {},
+    );
+  if (cacheKey) {
+    setVbFromTextCache(cacheKey, text, result);
+  }
+  return result;
+}
+
+function collectVbscriptSymbolsTypeScript(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+  options: VbSymbolCollectionOptions,
+): VbSymbol[] {
   const symbols: VbSymbol[] = [];
   for (const node of vbDocuments(parsed)) {
     addSymbolsFromVbNode(parsed, node, symbols, createDocCommentLookup(node));
@@ -3702,6 +3079,14 @@ interface VbSymbolCollectionOptions {
   variantFallback?: boolean;
 }
 
+function canUseNativeSymbolCollection(options: VbSymbolCollectionOptions): boolean {
+  return (
+    options.implicitAssignments !== false &&
+    options.inferTypes !== false &&
+    options.variantFallback !== false
+  );
+}
+
 interface VbDocCommentLookup {
   tokens: VbToken[];
   nextIndex: number;
@@ -3724,10 +3109,63 @@ export function summarizeAspFileAnalysis(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): FileAnalysisSummary {
+  if (nativeSemanticsEnabled()) {
+    const native = tryNativeSummarizeAspFileAnalysis(parsed, context);
+    if (native) {
+      return native;
+    }
+  }
+  return summarizeAspFileAnalysisTypeScript(parsed, context);
+}
+
+export async function summarizeAspFileAnalysisAsync(
+  parsed: AspParsedDocument,
+  context: VbProjectContext = {},
+): Promise<FileAnalysisSummary> {
+  const analysisParsed = await ensureVbscriptCstForAsyncAnalysis(parsed);
+  if (nativeSemanticsEnabled()) {
+    const native = await tryNativeSummarizeAspFileAnalysisAsync(analysisParsed, context);
+    if (native) {
+      return native;
+    }
+  }
+  return summarizeAspFileAnalysisTypeScript(analysisParsed, context);
+}
+
+export async function summarizeAspFileAnalysisFromTextAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+  context: VbProjectContext = {},
+): Promise<FileAnalysisSummary> {
+  const cacheKey = vbFromTextCacheKey("summary", uri, text, settings, context);
+  const cached = cacheKey ? getVbFromTextCache<FileAnalysisSummary>(cacheKey, text) : undefined;
+  if (cached) {
+    return cached;
+  }
+  const native = nativeSemanticsEnabled()
+    ? await tryNativeSummarizeAspFileAnalysisFromTextAsync(uri, text, settings, context)
+    : undefined;
+  const result =
+    native ??
+    summarizeAspFileAnalysisTypeScript(
+      parseAspDocumentTypeScriptOnly(uri, text, settings),
+      context,
+    );
+  if (cacheKey) {
+    setVbFromTextCache(cacheKey, text, result);
+  }
+  return result;
+}
+
+function summarizeAspFileAnalysisTypeScript(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+): FileAnalysisSummary {
   const vbscript =
     parsed.regions.some((region) => region.language === "vbscript") ||
     parsed.serverObjects.length > 0
-      ? summarizeVbscriptFile(parsed, context)
+      ? summarizeVbscriptFileTypeScript(parsed, context)
       : undefined;
   return {
     uri: parsed.uri,
@@ -3748,11 +3186,96 @@ export function summarizeAspFileAnalysis(
   };
 }
 
+async function ensureVbscriptCstForAsyncAnalysis(
+  parsed: AspParsedDocument,
+): Promise<AspParsedDocument> {
+  if (!needsVbscriptCstHydration(parsed)) {
+    return parsed;
+  }
+  // Async parsed documents may be skeletons. Parsed-document analysis paths must be safe
+  // for server callers even when they later fall back from native semantics to TypeScript.
+  return hydrateVbscriptCst(parsed);
+}
+
+function nativeSemanticsEnabled(): boolean {
+  return process.env.ASP_LSP_NATIVE_SEMANTICS !== "0";
+}
+
+function parseAspDocumentTypeScriptOnly(
+  uri: string,
+  text: string,
+  settings: AspSettings,
+): ReturnType<typeof parseAspDocument> {
+  const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
+  process.env.ASP_LSP_ANALYSIS_BACKEND = "typescript";
+  try {
+    return parseAspDocument(uri, text, settings);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ASP_LSP_ANALYSIS_BACKEND;
+    } else {
+      process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
+    }
+  }
+}
+
+function vbFromTextCacheKey(
+  operation: string,
+  uri: string,
+  text: string,
+  settings: AspSettings,
+  context: VbProjectContext,
+): string | undefined {
+  if (context.debugStep) {
+    return undefined;
+  }
+  try {
+    const contextKey = JSON.stringify(context);
+    if (contextKey.length > 8192) {
+      return undefined;
+    }
+    return JSON.stringify({
+      operation,
+      uri,
+      settings,
+      context: contextKey,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function getVbFromTextCache<T>(key: string, text: string): T | undefined {
+  const cached = vbFromTextCache.get(key);
+  return cached?.text === text ? (cached.value as T) : undefined;
+}
+
+function setVbFromTextCache(key: string, text: string, value: unknown): void {
+  if (vbFromTextCache.has(key)) {
+    vbFromTextCache.delete(key);
+  }
+  vbFromTextCache.set(key, { text, value });
+  while (vbFromTextCache.size > vbFromTextCacheMaxEntries) {
+    const oldest = vbFromTextCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    vbFromTextCache.delete(oldest);
+  }
+}
+
 export function summarizeVbscriptFile(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): VbLocalSummary {
-  const localSymbols = collectVbscriptSymbols(parsed, context);
+  return summarizeVbscriptFileTypeScript(parsed, context);
+}
+
+function summarizeVbscriptFileTypeScript(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+): VbLocalSummary {
+  const localSymbols = collectVbscriptSymbolsTypeScript(parsed, context, {});
   const publicSymbols = publicSymbolsFromLocalSymbols(localSymbols);
   const typeEnvironment = buildVbTypeEnvironment(parsed, { ...context, symbols: localSymbols });
   const externalRefs = collectVbscriptExternalRefs(parsed, localSymbols);
@@ -4083,7 +3606,9 @@ function addSymbolsFromVbNode(
     const variableDocumentation =
       identifiers.length === 1 ? documentationForNode(parsed, node, docCommentLookup) : undefined;
     for (const identifier of identifiers) {
-      const array = node.arrayDeclarations?.find((item) => item.name === identifier);
+      const array = node.arrayDeclarations?.find(
+        (item) => item.name.start === identifier.start && item.name.end === identifier.end,
+      );
       const documentation =
         variableDocumentation ??
         (identifiers.length === 1
@@ -6929,7 +6454,7 @@ function symbolToCompletion(
   const detail = symbol.memberOf
     ? `${symbol.kind}${createLocalizer(locale).t("vb.symbol.owner", { owner: symbol.memberOf })}`
     : symbol.typeName
-      ? `${symbol.kind} As ${symbol.typeName}`
+      ? `${symbol.kind} As ${symbolTypeDisplay(symbol) ?? symbol.typeName}`
       : symbol.kind;
   return {
     label: symbol.name,
