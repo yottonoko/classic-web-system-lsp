@@ -57,25 +57,26 @@ export function aspAnalysisBackendInfo(): AspAnalysisBackendInfo {
   return lastBackendInfo;
 }
 
+function setTypeScriptFallback(reason: string): void {
+  lastBackendInfo = {
+    backend: "typescript-fallback",
+    engine: "typescript",
+    reason,
+  };
+}
+
 export function shouldUseNativeAsyncSkeletonParse(): boolean {
   const mode = backendMode();
   if (mode === "typescript" || mode === "off") {
-    lastBackendInfo = {
-      backend: "typescript-fallback",
-      engine: "typescript",
-      reason: `disabled by ASP_LSP_ANALYSIS_BACKEND=${mode}`,
-    };
+    setTypeScriptFallback(`disabled by ASP_LSP_ANALYSIS_BACKEND=${mode}`);
     return false;
   }
   if (!isSupportedNativeMode(mode)) {
-    lastBackendInfo = {
-      backend: "typescript-fallback",
-      engine: "typescript",
-      reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${mode}`,
-    };
+    setTypeScriptFallback(`unsupported ASP_LSP_ANALYSIS_BACKEND=${mode}`);
     return false;
   }
   if (!resolveNativePath()) {
+    setTypeScriptFallback("native binary not found");
     return false;
   }
   lastBackendInfo = {
@@ -455,27 +456,21 @@ export function tryNativeSummarizeAspFileAnalysisFromTextAsync(
 function nativeOperation<T>(request: NativeRequest): T | undefined {
   const mode = backendMode();
   if (mode === "typescript" || mode === "off") {
-    lastBackendInfo = {
-      backend: "typescript-fallback",
-      engine: "typescript",
-      reason: `disabled by ASP_LSP_ANALYSIS_BACKEND=${mode}`,
-    };
+    setTypeScriptFallback(`disabled by ASP_LSP_ANALYSIS_BACKEND=${mode}`);
     return undefined;
   }
   if (!isSupportedNativeMode(mode)) {
-    lastBackendInfo = {
-      backend: "typescript-fallback",
-      engine: "typescript",
-      reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${mode}`,
-    };
+    setTypeScriptFallback(`unsupported ASP_LSP_ANALYSIS_BACKEND=${mode}`);
     return undefined;
   }
   const nativePath = resolveNativePath();
-  if (nativePath) {
-    const result = runNative<T>(nativePath, request);
-    if (result !== undefined || mode === "native") {
-      return result;
-    }
+  if (!nativePath) {
+    setTypeScriptFallback("native binary not found");
+    return undefined;
+  }
+  const result = runNative<T>(nativePath, request);
+  if (result !== undefined || mode === "native") {
+    return result;
   }
   return undefined;
 }
@@ -483,27 +478,21 @@ function nativeOperation<T>(request: NativeRequest): T | undefined {
 async function nativeOperationAsync<T>(request: NativeRequest): Promise<T | undefined> {
   const mode = backendMode();
   if (mode === "typescript" || mode === "off") {
-    lastBackendInfo = {
-      backend: "typescript-fallback",
-      engine: "typescript",
-      reason: `disabled by ASP_LSP_ANALYSIS_BACKEND=${mode}`,
-    };
+    setTypeScriptFallback(`disabled by ASP_LSP_ANALYSIS_BACKEND=${mode}`);
     return undefined;
   }
   if (!isSupportedNativeMode(mode)) {
-    lastBackendInfo = {
-      backend: "typescript-fallback",
-      engine: "typescript",
-      reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${mode}`,
-    };
+    setTypeScriptFallback(`unsupported ASP_LSP_ANALYSIS_BACKEND=${mode}`);
     return undefined;
   }
   const nativePath = resolveNativePath();
-  if (nativePath) {
-    const result = await runNativeAsync<T>(nativePath, request);
-    if (result !== undefined || mode === "native") {
-      return result;
-    }
+  if (!nativePath) {
+    setTypeScriptFallback("native binary not found");
+    return undefined;
+  }
+  const result = await runNativeAsync<T>(nativePath, request);
+  if (result !== undefined || mode === "native") {
+    return result;
   }
   return undefined;
 }

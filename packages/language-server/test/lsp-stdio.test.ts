@@ -123,6 +123,50 @@ describe(
       }
     });
 
+    it("reports backend status over a custom request and notification", async () => {
+      const server = new RpcServer({ env: { ASP_LSP_ANALYSIS_BACKEND: "typescript" } });
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+
+        const initialStatus = await server.request("aspLsp/backendStatus", null);
+        expect(initialStatus).toMatchObject({
+          backend: "typescript-fallback",
+          engine: "typescript",
+        });
+
+        const uri = "file:///tmp/backend-status.asp";
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<% Response.Write "ok" %>`,
+          },
+        });
+
+        const notification = await server.waitForNotification("aspLsp/backendStatus");
+        expect(notification.params).toMatchObject({
+          backend: "typescript-fallback",
+          engine: "typescript",
+          reason: "disabled by ASP_LSP_ANALYSIS_BACKEND=typescript",
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns VBScript member completions for partial member names over JSON-RPC", async () => {
       const document = markedDocument(`<%
 Server.HTMLEe▮
