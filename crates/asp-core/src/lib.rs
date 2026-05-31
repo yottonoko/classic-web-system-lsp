@@ -148,7 +148,7 @@ impl CoreState {
             }
             "parseAspDocumentShallow" => {
                 // 浅いドキュメント（CST スケルトン）を返す。重い VB CST/トークンは
-                // parseAspDocumentVbscript で必要時に取得する（境界転送コスト削減のため）。
+                // parseAspDocumentVbscript で必要時に取得する。
                 let uri = request
                     .get("uri")
                     .and_then(Value::as_str)
@@ -158,8 +158,7 @@ impl CoreState {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 let settings = request.get("settings").unwrap_or(&Value::Null);
-                let parsed = self.cached_parse_asp_document(request, uri, text, settings);
-                shallow_document(&parsed)
+                parse_asp_document_skeleton(uri, text, settings)
             }
             "parseAspDocumentVbscript" => {
                 // 各 CST ノードに付く VB CST サブツリーを node.start で索引付けして返す。
@@ -197,7 +196,7 @@ impl CoreState {
                     .unwrap_or_default();
                 let settings = request.get("settings").unwrap_or(&Value::Null);
                 let context = request.get("context").unwrap_or(&Value::Null);
-                let parsed = self.cached_parse_asp_document(request, uri, text, settings);
+                let parsed = parse_asp_document_analysis_skeleton(uri, text, settings);
                 let analysis = VbAnalysisCache::new(&parsed);
                 let symbols =
                     self.cached_collect_symbols_with_analysis(request, &parsed, context, &analysis);
@@ -219,7 +218,7 @@ impl CoreState {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 let settings = request.get("settings").unwrap_or(&Value::Null);
-                let parsed = self.cached_parse_asp_document(request, uri, text, settings);
+                let parsed = parse_asp_document_analysis_skeleton(uri, text, settings);
                 summarize_asp_file(&parsed)
             }
             "analyzeVbscript" => {
@@ -246,7 +245,7 @@ impl CoreState {
                     .unwrap_or_default();
                 let settings = request.get("settings").unwrap_or(&Value::Null);
                 let context = request.get("context").unwrap_or(&Value::Null);
-                let parsed = self.cached_parse_asp_document(request, uri, text, settings);
+                let parsed = parse_asp_document_analysis_skeleton(uri, text, settings);
                 let analysis = VbAnalysisCache::new(&parsed);
                 let symbols =
                     self.cached_collect_symbols_with_analysis(request, &parsed, context, &analysis);
@@ -417,10 +416,27 @@ struct TextIndex<'a> {
     text: &'a str,
     utf16_to_byte: Vec<usize>,
     line_starts: Vec<usize>,
+    ascii: bool,
 }
 
 impl<'a> TextIndex<'a> {
     fn new(text: &'a str) -> Self {
+        if text.is_ascii() {
+            let line_starts = std::iter::once(0)
+                .chain(
+                    text.as_bytes()
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(byte, ch)| (*ch == b'\n').then_some(byte + 1)),
+                )
+                .collect();
+            return Self {
+                text,
+                utf16_to_byte: Vec::new(),
+                line_starts,
+                ascii: true,
+            };
+        }
         let mut utf16_to_byte = Vec::with_capacity(text.len() + 1);
         let mut line_starts = vec![0];
         let mut utf16 = 0;
@@ -439,18 +455,27 @@ impl<'a> TextIndex<'a> {
             text,
             utf16_to_byte,
             line_starts,
+            ascii: false,
         }
     }
 
     fn len(&self) -> usize {
-        self.utf16_to_byte.len().saturating_sub(1)
+        if self.ascii {
+            self.text.len()
+        } else {
+            self.utf16_to_byte.len().saturating_sub(1)
+        }
     }
 
     fn byte_at(&self, offset: usize) -> usize {
-        self.utf16_to_byte
-            .get(offset.min(self.len()))
-            .copied()
-            .unwrap_or(self.text.len())
+        if self.ascii {
+            offset.min(self.text.len())
+        } else {
+            self.utf16_to_byte
+                .get(offset.min(self.len()))
+                .copied()
+                .unwrap_or(self.text.len())
+        }
     }
 
     fn slice(&self, start: usize, end: usize) -> &'a str {
@@ -639,35 +664,12 @@ fn parse_asp_document_skeleton(uri: &str, text: &str, settings: &Value) -> Value
     })
 }
 
-/// 浅いドキュメント投影。CST から重い `vbscript` サブツリーと `tokens` を取り除き、
-/// 構造（kind/span/regionKind/language/children）だけ残す。regions/directives/includes
-/// などのトップレベル情報はそのまま。
-fn shallow_document(full: &Value) -> Value {
-    let mut shallow = full.clone();
-    // ドキュメント全文は TS 側が入力として保持しているため転送しない（受信側で再注入）。
-    if let Some(object) = shallow.as_object_mut() {
-        object.remove("text");
+fn parse_asp_document_analysis_skeleton(uri: &str, text: &str, settings: &Value) -> Value {
+    let mut parsed = parse_asp_document_skeleton(uri, text, settings);
+    if let Some(object) = parsed.as_object_mut() {
+        object.insert("text".to_string(), Value::String(text.to_string()));
     }
-    if let Some(cst) = shallow.get_mut("cst") {
-        strip_cst_heavy(cst);
-    }
-    shallow
-}
-
-fn strip_cst_heavy(node: &mut Value) {
-    if let Some(object) = node.as_object_mut() {
-        object.remove("vbscript");
-        // ノード単位の text 断片はソースから start/end で復元可能なため転送しない。
-        object.remove("text");
-        if let Some(tokens) = object.get_mut("tokens") {
-            *tokens = Value::Array(Vec::new());
-        }
-        if let Some(Value::Array(children)) = object.get_mut("children") {
-            for child in children.iter_mut() {
-                strip_cst_heavy(child);
-            }
-        }
-    }
+    parsed
 }
 
 /// CST 内の `vbscript` サブツリーを node.start で索引付けして列挙する。
@@ -4284,6 +4286,13 @@ mod tests {
             "text": source,
             "settings": {},
         }));
+        let shallow = handle_value(json!({
+            "operation": "parseAspDocumentShallow",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        assert_eq!(shallow, skeleton);
         for key in [
             "uri",
             "regions",

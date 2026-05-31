@@ -23,15 +23,13 @@ import type {
   TextEdit,
 } from "vscode-languageserver-types";
 import { offsetAt, positionAt, rangeFromOffsets } from "./position";
-import { parseAspDocumentAsync } from "./parser";
+import { parseAspDocumentAsync, parseAspDocumentTypeScript } from "./parser";
 import { createLocalizer } from "./localize";
 import {
   tryNativeAnalyzeVbscript,
   tryNativeAnalyzeVbscriptAsync,
-  tryNativeAnalyzeVbscriptFromTextAsync,
   tryNativeCollectVbscriptSymbols,
   tryNativeCollectVbscriptSymbolsAsync,
-  tryNativeCollectVbscriptSymbolsFromTextAsync,
   tryNativeSummarizeAspFileAnalysis,
   tryNativeSummarizeAspFileAnalysisAsync,
   tryNativeSummarizeAspFileAnalysisFromTextAsync,
@@ -2578,12 +2576,6 @@ export async function analyzeVbscriptFromTextAsync(
   settings: AspSettings = {},
   context: VbProjectContext = {},
 ): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
-  if (nativeSemanticsEnabled() && !requiresTsSemanticContext(context)) {
-    const native = await tryNativeAnalyzeVbscriptFromTextAsync(uri, text, settings, context);
-    if (native) {
-      return native;
-    }
-  }
   const cacheKey = vbFromTextCacheKey("analyze", uri, text, settings, context);
   const cached = cacheKey
     ? (vbFromTextCache.get(cacheKey) as
@@ -2594,7 +2586,7 @@ export async function analyzeVbscriptFromTextAsync(
     return cached;
   }
   const result = analyzeVbscriptTypeScript(
-    await parseAspDocumentAsync(uri, text, settings),
+    parseAspDocumentTypeScriptOnly(uri, text, settings),
     context,
   );
   if (cacheKey) {
@@ -3823,19 +3815,13 @@ export async function collectVbscriptSymbolsFromTextAsync(
   settings: AspSettings = {},
   context: VbProjectContext = {},
 ): Promise<VbSymbol[]> {
-  if (nativeSemanticsEnabled()) {
-    const native = await tryNativeCollectVbscriptSymbolsFromTextAsync(uri, text, settings, context);
-    if (native) {
-      return native;
-    }
-  }
   const cacheKey = vbFromTextCacheKey("collect", uri, text, settings, context);
   const cached = cacheKey ? (vbFromTextCache.get(cacheKey) as VbSymbol[] | undefined) : undefined;
   if (cached) {
     return cached;
   }
   const result = collectVbscriptSymbolsTypeScript(
-    await parseAspDocumentAsync(uri, text, settings),
+    parseAspDocumentTypeScriptOnly(uri, text, settings),
     context,
     {},
   );
@@ -3982,6 +3968,14 @@ function summarizeAspFileAnalysisTypeScript(
 
 function nativeSemanticsEnabled(): boolean {
   return process.env.ASP_LSP_NATIVE_SEMANTICS !== "0";
+}
+
+function parseAspDocumentTypeScriptOnly(
+  uri: string,
+  text: string,
+  settings: AspSettings,
+): ReturnType<typeof parseAspDocumentTypeScript> {
+  return parseAspDocumentTypeScript(uri, text, settings);
 }
 
 function vbFromTextCacheKey(

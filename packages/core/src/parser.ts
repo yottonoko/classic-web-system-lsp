@@ -16,6 +16,7 @@ import { offsetAt, rangeFromOffsets } from "./position";
 import { scanHtmlAndAsp, normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 import { parseVbscriptCst } from "./vbscript-cst";
 import {
+  shouldUseNativeAsyncSkeletonParse,
   tryNativeParseAspCst,
   tryNativeParseAspCstAsync,
   tryNativeParseAspDocument,
@@ -53,6 +54,11 @@ export async function parseAspDocumentAsync(
     asyncParseCache.delete(cacheKey);
     asyncParseCache.set(cacheKey, cached);
     return cached;
+  }
+  if (shouldUseNativeAsyncSkeletonParse()) {
+    const parsed = parseAspDocumentSkeletonTypeScript(uri, text, settings);
+    setAsyncParseCache(cacheKey, parsed);
+    return parsed;
   }
   const native = await tryNativeParseAspDocumentAsync(uri, text, settings);
   if (native) {
@@ -136,7 +142,8 @@ function attachVbscriptFromTypeScriptParser(node: AspCstNode, sourceText: string
   }
 }
 
-function parseAspDocumentTypeScript(
+/** @internal */
+export function parseAspDocumentTypeScript(
   uri: string,
   text: string,
   settings: AspSettings = {},
@@ -240,6 +247,9 @@ function parseAspDocumentSkeletonTypeScript(
       node.attributes = directive.attributes;
     }
   }
+  const topLevelRegions = nodes
+    .map(nodeToRegion)
+    .filter((region): region is AspRegion => region !== undefined);
   const cst: AspCstNode = {
     kind: "Document",
     start: 0,
@@ -259,7 +269,7 @@ function parseAspDocumentSkeletonTypeScript(
     uri,
     text,
     cst,
-    regions,
+    regions: topLevelRegions,
     directives,
     includes,
     serverObjects,
@@ -950,7 +960,7 @@ function skeletonRegionToNode(region: AspRegion): AspCstNode {
                 : region.kind === "style-attribute"
                   ? "StyleAttribute"
                   : "AspBlock";
-  return {
+  const node: AspCstNode = {
     kind,
     start: region.start,
     end: region.end,
@@ -959,9 +969,12 @@ function skeletonRegionToNode(region: AspRegion): AspCstNode {
     language: region.language,
     tokens: [],
     children: [],
-    attributes: region.attributes,
     regionKind: region.kind,
   };
+  if (region.attributes && Object.keys(region.attributes).length > 0) {
+    node.attributes = region.attributes;
+  }
+  return node;
 }
 
 function includeToNode(text: string, include: AspInclude): AspCstNode {
@@ -1052,15 +1065,18 @@ function nodeToRegion(node: AspCstNode): AspRegion | undefined {
   if (!node.regionKind || !node.language) {
     return undefined;
   }
-  return {
+  const region: AspRegion = {
     kind: node.regionKind,
     language: node.language,
     start: node.start,
     end: node.end,
     contentStart: node.contentStart,
     contentEnd: node.contentEnd,
-    attributes: node.attributes,
   };
+  if (node.attributes && Object.keys(node.attributes).length > 0) {
+    region.attributes = node.attributes;
+  }
+  return region;
 }
 
 function regionTokens(text: string, region: AspRegion): AspToken[] {

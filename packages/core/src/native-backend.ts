@@ -57,6 +57,35 @@ export function aspAnalysisBackendInfo(): AspAnalysisBackendInfo {
   return lastBackendInfo;
 }
 
+export function shouldUseNativeAsyncSkeletonParse(): boolean {
+  const mode = backendMode();
+  if (mode === "typescript" || mode === "off") {
+    lastBackendInfo = {
+      backend: "typescript-fallback",
+      engine: "typescript",
+      reason: `disabled by ASP_LSP_ANALYSIS_BACKEND=${mode}`,
+    };
+    return false;
+  }
+  if (!isSupportedNativeMode(mode)) {
+    lastBackendInfo = {
+      backend: "typescript-fallback",
+      engine: "typescript",
+      reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${mode}`,
+    };
+    return false;
+  }
+  if (!resolveNativePath()) {
+    return false;
+  }
+  lastBackendInfo = {
+    backend: "native",
+    engine: "asp-lsp-core",
+    reason: "async skeleton parsed in-process before native VBScript hydration",
+  };
+  return true;
+}
+
 export function tryNativeParseAspDocument(
   uri: string,
   text: string,
@@ -799,7 +828,12 @@ function parseJsonResult<T>(raw: string): T | undefined {
 function resolveNativePath(): string | undefined {
   const explicit = process.env.ASP_LSP_NATIVE_CORE_PATH;
   if (explicit) {
-    return fs.existsSync(explicit) ? explicit : undefined;
+    if (cachedNativePath === explicit) {
+      return explicit;
+    }
+    const exists = fs.existsSync(explicit);
+    cachedNativePath = exists ? explicit : null;
+    return exists ? explicit : undefined;
   }
   if (cachedNativePath !== undefined) {
     return cachedNativePath ?? undefined;

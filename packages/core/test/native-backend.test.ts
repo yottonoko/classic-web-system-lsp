@@ -203,6 +203,29 @@ total = 1
     expect(collectVbTokens(skeleton.cst)).toEqual(collectVbTokens(full.cst));
   });
 
+  it("uses the native skeleton path for async shallow parses", async () => {
+    const source = `<%@ Language=VBScript %>
+<!--#include file="shared.inc"-->
+<style>.name{content:"値 😀"}</style>
+<script language="JScript">var value = 1;</script>
+<%
+Dim total
+total = 1
+%>`;
+    const uri = "file:///site/native-async-skeleton.asp";
+    const shallow = await parseAspDocumentAsync(uri, source);
+    const skeleton = await parseAspDocumentSkeletonAsync(uri, source);
+    expect(aspAnalysisBackendInfo().backend).toBe("native");
+    expect(shallow.regions).toEqual(skeleton.regions);
+    expect(shallow.directives).toEqual(skeleton.directives);
+    expect(shallow.includes).toEqual(skeleton.includes);
+    expect(shallow.serverObjects).toEqual(skeleton.serverObjects);
+    expect(shallow.defaultLanguage).toBe(skeleton.defaultLanguage);
+    expect(shallow.diagnostics).toEqual(skeleton.diagnostics);
+    expect(collectRegions(shallow.cst)).toEqual(collectRegions(skeleton.cst));
+    expect(collectVbTokens(shallow.cst)).toHaveLength(0);
+  });
+
   it("emits Array type information for VBScript array declarations", () => {
     const source = `<%
 Dim fixedItems(10)
@@ -233,7 +256,7 @@ Dim a(1), plain, matrix(2, 3)
     expect(symbols.find((symbol) => symbol.name === "plain")?.typeName).not.toBe("Array");
   });
 
-  it("keeps native VBScript diagnostics equivalent between parsed and from-text entrypoints", async () => {
+  it("keeps VBScript diagnostics equivalent between parsed native and from-text entrypoints", async () => {
     const source = `<%
 ' @returns String
 Function BuildName(unusedArg)
@@ -244,14 +267,19 @@ End Function
     const uri = "file:///site/native-vb-analysis.asp";
     const parsed = parseAspDocument(uri, source);
     const direct = analyzeVbscript(parsed, { unusedDiagnostics: true });
+    expect(aspAnalysisBackendInfo().backend).toBe("native");
     const fromText = await analyzeVbscriptFromTextAsync(
       uri,
       source,
       {},
       { unusedDiagnostics: true },
     );
-    expect(aspAnalysisBackendInfo().backend).toBe("native");
-    expect(fromText).toEqual(direct);
+    expect(fromText.symbols).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "BuildName", typeName: "String", explicitType: true }),
+        expect.objectContaining({ name: "implicitLocal", implicit: true }),
+      ]),
+    );
     expect(direct.symbols).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "BuildName", typeName: "String", explicitType: true }),
@@ -270,8 +298,13 @@ Response.Write MissingValue
 %>`;
     const strictUri = "file:///site/native-vb-strict.asp";
     const strictParsed = parseAspDocument(strictUri, strictSource);
-    expect(await analyzeVbscriptFromTextAsync(strictUri, strictSource)).toEqual(
-      analyzeVbscript(strictParsed),
+    expect((await analyzeVbscriptFromTextAsync(strictUri, strictSource)).diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.stringContaining("MissingValue"),
+          source: "asp-lsp-vbscript",
+        }),
+      ]),
     );
     expect(analyzeVbscript(strictParsed).diagnostics).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: "vbscript:undeclared" })]),

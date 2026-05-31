@@ -197,14 +197,7 @@ function cssDiagnostics(parsed, core) {
 
 function javascriptDiagnostics(parsed, core) {
   const syntax = javascriptSyntaxDiagnostics(parsed, core);
-  const semantic = javascriptSemanticDiagnostics(parsed, core);
-  const unused = javascriptUnusedDiagnostics(parsed, core);
-  const semanticKeys = new Set(semantic.map(diagnosticKey));
-  return [
-    ...syntax,
-    ...semantic,
-    ...unused.filter((diagnostic) => !semanticKeys.has(diagnosticKey(diagnostic))),
-  ];
+  return [...syntax, ...javascriptSemanticDiagnostics(parsed, core, true)];
 }
 
 function javascriptSyntaxDiagnostics(parsed, core) {
@@ -219,12 +212,12 @@ function javascriptSyntaxDiagnostics(parsed, core) {
     .filter(Boolean);
 }
 
-function javascriptSemanticDiagnostics(parsed, core) {
+function javascriptSemanticDiagnostics(parsed, core, includeUnused = false) {
   const virtual = buildEmbeddedVirtualDocument(parsed, "javascript", core);
   if (!virtual) {
     return [];
   }
-  return withJsLanguageService(virtual, parsed.text, false, (service, fileName) =>
+  return withJsLanguageService(virtual, parsed.text, includeUnused, (service, fileName) =>
     service
       .getSemanticDiagnostics(fileName)
       .map((diagnostic) => remapTsDiagnostic(virtual, parsed.text, diagnostic))
@@ -374,17 +367,6 @@ function sourceMapSegmentAtVirtualOffset(virtual, virtualOffset) {
   return virtual.sourceMap.segments.find(
     (segment) => virtualOffset >= segment.virtualStart && virtualOffset < segment.virtualEnd,
   );
-}
-
-function diagnosticKey(diagnostic) {
-  const range = diagnostic.range;
-  return [
-    diagnostic.code ?? "",
-    range?.start?.line ?? -1,
-    range?.start?.character ?? -1,
-    range?.end?.line ?? -1,
-    range?.end?.character ?? -1,
-  ].join(":");
 }
 
 function toTextDocument(virtual) {
