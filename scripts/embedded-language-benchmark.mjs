@@ -43,6 +43,15 @@ export const embeddedOperationNames = [
   "javascriptDiagnostics",
 ];
 
+export function clearEmbeddedBenchmarkCaches() {
+  virtualDocumentCache.clear();
+  textDocumentCache.clear();
+  cssStylesheetCache.clear();
+  jsLanguageServiceCache.clear();
+  jsSourceFileCache.clear();
+  textFingerprintCache.clear();
+}
+
 const sampleConfigs = new Map([
   ["large", { directory: "classic-asp-large-benchmark", recursive: false }],
   ["huge", { directory: "classic-asp-huge-benchmark", recursive: false }],
