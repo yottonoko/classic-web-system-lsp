@@ -557,10 +557,16 @@ interface CompletionCacheEntry {
   baseKey: string;
   uri: string;
   language: AspEmbeddedLanguage;
+  contextIdentity?: string;
   prefix: string;
   offset: number;
   documentVersion: number;
   items: CompletionItem[];
+}
+
+interface CachedVbProjectContextLookup {
+  key: string;
+  context: VbProjectContext;
 }
 
 class AspProjectBuilderState {
@@ -749,9 +755,15 @@ class CompletionSessionCache {
     settings: AspSettings,
     region: AspRegion,
     position: Position,
+    contextIdentity?: string,
   ): CompletionItem[] | undefined {
     const entry = this.entries.get(this.baseKey(cached, settings, region));
-    if (!entry || entry.uri !== cached.source.uri || entry.language !== region.language) {
+    if (
+      !entry ||
+      entry.uri !== cached.source.uri ||
+      entry.language !== region.language ||
+      entry.contextIdentity !== contextIdentity
+    ) {
       return undefined;
     }
     const offset = cached.source.offsetAt(position);
@@ -779,6 +791,7 @@ class CompletionSessionCache {
     region: AspRegion,
     position: Position,
     items: CompletionItem[],
+    contextIdentity?: string,
   ): void {
     const offset = cached.source.offsetAt(position);
     const prefix = completionPrefixAt(cached.source.getText(), offset);
@@ -790,6 +803,7 @@ class CompletionSessionCache {
       baseKey,
       uri: cached.source.uri,
       language: region.language,
+      contextIdentity,
       prefix,
       offset,
       documentVersion: cached.source.version,
@@ -813,6 +827,23 @@ class CompletionSessionCache {
       logDebugSummary(globalSettings, `[asp-lsp] completion.cache.invalidate: reason=${reason}`);
     }
     this.entries.clear();
+  }
+
+  clearUris(uris: Set<string>, reason: string): void {
+    let removed = 0;
+    for (const [key, entry] of this.entries) {
+      if (!uris.has(entry.uri)) {
+        continue;
+      }
+      this.entries.delete(key);
+      removed += 1;
+    }
+    if (removed > 0) {
+      logDebugSummary(
+        globalSettings,
+        `[asp-lsp] completion.cache.invalidate: reason=${reason}, files=${uris.size}, entries=${removed}`,
+      );
+    }
   }
 
   private baseKey(cached: CachedDocument, settings: AspSettings, region: AspRegion): string {
@@ -1246,18 +1277,26 @@ connection.onCompletion((params) =>
     if (!region) {
       return [];
     }
-    const cachedCompletion = completionSessionCache.get(cached, settings, region, params.position);
-    if (cachedCompletion) {
-      return cachedCompletion;
-    }
-    const remember = (items: CompletionItem[]): CompletionItem[] => {
-      completionSessionCache.set(cached, settings, region, params.position, items);
+    const remember = (items: CompletionItem[], contextIdentity?: string): CompletionItem[] => {
+      completionSessionCache.set(cached, settings, region, params.position, items, contextIdentity);
       return items;
     };
     if (region.language === "vbscript") {
-      const warmedContext = cachedVbProjectContext(cached, settings);
+      const warmedContext = cachedVbProjectContextLookup(cached, settings);
+      const contextIdentity = cached.parsed.includes.length > 0 ? warmedContext?.key : undefined;
+      const cachedCompletion = completionSessionCache.get(
+        cached,
+        settings,
+        region,
+        params.position,
+        contextIdentity,
+      );
+      if (cachedCompletion) {
+        return cachedCompletion;
+      }
       const shouldCache = Boolean(warmedContext) || cached.parsed.includes.length === 0;
-      const context = warmedContext ?? buildImmediateLocalVbProjectContext(cached, settings);
+      const context =
+        warmedContext?.context ?? buildImmediateLocalVbProjectContext(cached, settings);
       const completions = getVbscriptCompletions(cached.parsed, params.position, context);
       const items = withCompletionData(
         completions.length > 0
@@ -1265,7 +1304,11 @@ connection.onCompletion((params) =>
           : fallbackVbMemberCompletions(cached, params.position, context),
         { kind: "vbscript", uri: cached.source.uri },
       );
-      return shouldCache ? remember(items) : items;
+      return shouldCache ? remember(items, contextIdentity) : items;
+    }
+    const cachedCompletion = completionSessionCache.get(cached, settings, region, params.position);
+    if (cachedCompletion) {
+      return cachedCompletion;
     }
     if (region.language === "html") {
       const virtual = getCachedVirtual(cached, "html");
@@ -3758,15 +3801,16 @@ function seedVbReuseAfterIncrementalChange(
   impact: AspEditImpact,
 ): void {
   const canReuseVbscriptChange =
-    impact.language === "vbscript" && cached.lastEditIsOrdinaryVbscriptComment === true;
-  if (
-    impact.kind !== "incremental" ||
-    (impact.language === "vbscript" && !canReuseVbscriptChange) ||
-    impact.language === "jscript" ||
-    (!canReuseVbscriptChange &&
-      vbscriptRegionContentFingerprint(previous.parsed) !==
-        vbscriptRegionContentFingerprint(cached.parsed))
-  ) {
+    impact.kind === "incremental" &&
+    impact.language === "vbscript" &&
+    cached.lastEditIsOrdinaryVbscriptComment === true;
+  const canReuseUnchangedVbscript =
+    impact.language !== "vbscript" &&
+    impact.language !== "jscript" &&
+    sameIncludeRefs(previous.parsed, cached.parsed) &&
+    vbscriptRegionContentFingerprint(previous.parsed) ===
+      vbscriptRegionContentFingerprint(cached.parsed);
+  if (!canReuseVbscriptChange && !canReuseUnchangedVbscript) {
     return;
   }
   const analysis = analysisFor(cached);
@@ -5909,10 +5953,20 @@ function cachedVbProjectContext(
   cached: CachedDocument,
   settings: AspSettings,
 ): VbProjectContext | undefined {
+  return cachedVbProjectContextLookup(cached, settings)?.context;
+}
+
+function cachedVbProjectContextLookup(
+  cached: CachedDocument,
+  settings: AspSettings,
+): CachedVbProjectContextLookup | undefined {
   const rootKey = vbProjectRootContextCacheKey(cached, settings);
   const existing = cached.analysis?.vbProjectContext;
   if (existing?.rootKey === rootKey) {
-    return { ...existing.context, locale: settings.resolvedLocale };
+    return {
+      key: existing.key,
+      context: { ...existing.context, locale: settings.resolvedLocale },
+    };
   }
   const documents = cached.analysis?.vbProjectDocuments;
   if (documents?.collectionKey !== vbProjectDocumentCollectionKey(cached, settings)) {
@@ -5921,45 +5975,14 @@ function cachedVbProjectContext(
   const key = vbProjectContextCacheKey(documents.documents, settings);
   const globalCached = vbProjectContextCache.get(key);
   if (!globalCached) {
-    return buildCachedVbProjectContextFromDocuments(cached, documents.documents, settings);
+    return undefined;
   }
   globalCached.lastUsed = Date.now();
   analysisFor(cached).vbProjectContext = { key, rootKey, context: globalCached.context };
-  return { ...globalCached.context, locale: settings.resolvedLocale };
-}
-
-function buildCachedVbProjectContextFromDocuments(
-  cached: CachedDocument,
-  documents: AspParsedDocument[],
-  settings: AspSettings,
-): VbProjectContext {
-  const contextSettings = vbProjectContextSettings(settings);
-  const summaries = documents.map((document) =>
-    document.uri === cached.parsed.uri
-      ? cachedFileAnalysisSummary(cached, contextSettings)
-      : summarizeAspFileAnalysis(document, contextSettings),
-  );
-  const symbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
-  symbols.push(...configuredVbscriptGlobals(cached, settings));
-  const context: VbProjectContext = {
-    documents,
-    symbols,
-    typeEnvironment: mergeVbTypeEnvironment(
-      buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
-      summaries.flatMap((summary) => summary.vbscript?.typeFacts ?? []),
-      symbols,
-    ),
-    externalRefUsages: summaries.flatMap((summary) => summary.vbscript?.externalRefUsages ?? []),
-    ...contextSettings,
-  };
-  const key = vbProjectContextCacheKey(documents, settings);
-  rememberVbProjectContext(key, context);
-  analysisFor(cached).vbProjectContext = {
+  return {
     key,
-    rootKey: vbProjectRootContextCacheKey(cached, settings),
-    context,
+    context: { ...globalCached.context, locale: settings.resolvedLocale },
   };
-  return { ...context, locale: settings.resolvedLocale };
 }
 
 function buildImmediateLocalVbProjectContext(
@@ -6398,6 +6421,7 @@ function clearIncludeGraph(): void {
 function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.invalidate"): void {
   if (uris.size > 0) {
     vbProjectContextCache.clear();
+    completionSessionCache.clearUris(uris, reason);
     logInvalidation("analysis", `${reason}, files=${uris.size}`);
   }
   for (const uri of uris) {

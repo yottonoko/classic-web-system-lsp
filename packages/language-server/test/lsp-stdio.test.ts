@@ -2898,6 +2898,173 @@ Response.Write IncludedOnly()
       }
     });
 
+    it("uses local VB completion fallback while include-heavy context refreshes after edits", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-heavy-include-edit-"));
+      const owner = path.join(tempDir, "default.asp");
+      const includeDirectives: string[] = [];
+      for (let index = 0; index < 30; index += 1) {
+        const includeName = `shared-${index}.inc`;
+        includeDirectives.push(`<!-- #include file="${includeName}" -->`);
+        fs.writeFileSync(
+          path.join(tempDir, includeName),
+          `<%
+Function SharedExport${index}()
+End Function
+%>`,
+          "utf8",
+        );
+      }
+      let source = `${includeDirectives.join("\n")}
+<%
+Dim localValue
+Response.Write Sha
+%>`;
+      const uri = `file://${owner}`;
+      fs.writeFileSync(owner, source, "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await waitForLogContaining(server, "LSP check completed");
+
+        const completionPosition = () =>
+          positionAt(source, source.indexOf("Response.Write Sha") + "Response.Write Sha".length);
+        const warmedCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: completionPosition(),
+        });
+        expect(completionLabels(warmedCompletions)).toContain("SharedExport29");
+        server.takePendingNotifications("window/logMessage");
+
+        source = notifyRangedReplacement(server, uri, source, 2, "localValue", "localOther");
+        const immediateCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: completionPosition(),
+        });
+        expect(completionLabels(immediateCompletions)).not.toContain("SharedExport29");
+
+        await waitForLogContaining(server, "LSP check completed");
+        const refreshedCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: completionPosition(),
+        });
+        expect(completionLabels(refreshedCompletions)).toContain("SharedExport29");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("invalidates VB completion cache after watched include export changes", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-completion-"));
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "shared.inc");
+      fs.writeFileSync(
+        include,
+        `<%
+Function SharedOld()
+End Function
+%>`,
+        "utf8",
+      );
+      const source = `<!-- #include file="shared.inc" -->
+<%
+Response.Write Sha
+%>`;
+      const uri = `file://${owner}`;
+      fs.writeFileSync(owner, source, "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await waitForLogContaining(server, "LSP check completed");
+
+        const position = positionAt(
+          source,
+          source.indexOf("Response.Write Sha") + "Response.Write Sha".length,
+        );
+        const oldCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position,
+        });
+        expect(completionLabels(oldCompletions)).toContain("SharedOld");
+        server.takePendingNotifications("window/logMessage");
+
+        fs.writeFileSync(
+          include,
+          `<%
+Function SharedNew()
+End Function
+%>`,
+          "utf8",
+        );
+        server.notify("workspace/didChangeWatchedFiles", {
+          changes: [{ uri: `file://${include}`, type: 2 }],
+        });
+        await waitForLogContaining(server, "completion.cache.invalidate");
+        await waitForLogContaining(server, "LSP check completed");
+
+        const newCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position,
+        });
+        const labels = completionLabels(newCompletions);
+        expect(labels).toContain("SharedNew");
+        expect(labels).not.toContain("SharedOld");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns hover, inlay hints and semantic tokens for implicit VBScript variables", async () => {
       const source = `<%
 a = 1
