@@ -1623,20 +1623,34 @@ fn find_element_close(
     tag_name: &str,
     offset: usize,
 ) -> Option<(usize, usize)> {
-    let close = format!("</{tag_name}");
     let mut cursor = offset;
-    while cursor < index.len() {
-        if index
-            .slice(cursor, index.len())
-            .to_ascii_lowercase()
-            .starts_with(&close)
-        {
-            let end = find_tag_end(index, cursor + 2, "VBScript")?;
-            return Some((cursor, end + 1));
+    while let Some(candidate) = find_string(index, "<", cursor) {
+        if is_element_close_at(index, candidate, tag_name) {
+            let end = find_tag_end(index, candidate + 2, "VBScript")?;
+            return Some((candidate, end + 1));
         }
-        cursor += 1;
+        cursor = candidate + 1;
     }
     None
+}
+
+fn is_element_close_at(index: &TextIndex<'_>, offset: usize, tag_name: &str) -> bool {
+    if index.char_at(offset) != Some('<') || index.char_at(offset + 1) != Some('/') {
+        return false;
+    }
+    let name_start = offset + 2;
+    let mut relative = 0usize;
+    for expected in tag_name.chars() {
+        let Some(actual) = index.char_at(name_start + relative) else {
+            return false;
+        };
+        if !actual.eq_ignore_ascii_case(&expected) {
+            return false;
+        }
+        relative += expected.len_utf16();
+    }
+    let next = index.char_at(name_start + relative).unwrap_or('\0');
+    next == '>' || is_html_ws(next)
 }
 
 fn directive_from_region(index: &TextIndex<'_>, region: &Region) -> Value {
@@ -4198,6 +4212,10 @@ mod tests {
         value
     }
 
+    fn utf16_offset(text: &str, byte_offset: usize) -> usize {
+        text[..byte_offset].encode_utf16().count()
+    }
+
     #[test]
     fn encodes_vbscript_segments_as_columnar_frame_body() {
         let parsed = parse_asp_document("file:///default.asp", "<%\nDim x\n%>", &json!({}));
@@ -4283,6 +4301,137 @@ mod tests {
             assert!(node.get("text").is_none());
             assert_eq!(node["tokens"].as_array().map_or(0, Vec::len), 0);
         });
+    }
+
+    #[test]
+    fn closes_mixed_case_script_and_style_end_tags() {
+        let source = r#"<SCRIPT>const value = 1;</SCRIPT><Style>.x{color:red}</Style>"#;
+        let result = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        let regions = result["regions"].as_array().unwrap();
+        let script = regions
+            .iter()
+            .find(|region| region["kind"] == "client-script")
+            .unwrap();
+        let style = regions
+            .iter()
+            .find(|region| region["kind"] == "style")
+            .unwrap();
+        assert_eq!(
+            script["end"],
+            utf16_offset(source, source.find("</SCRIPT>").unwrap()) + "</SCRIPT>".len()
+        );
+        assert_eq!(
+            style["end"],
+            utf16_offset(source, source.find("</Style>").unwrap()) + "</Style>".len()
+        );
+    }
+
+    #[test]
+    fn accepts_whitespace_after_element_close_name() {
+        let source = r#"<script>const value = 1;</script ><style>.x{color:red}</style data-x="1">"#;
+        let result = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        let regions = result["regions"].as_array().unwrap();
+        let script = regions
+            .iter()
+            .find(|region| region["kind"] == "client-script")
+            .unwrap();
+        let style = regions
+            .iter()
+            .find(|region| region["kind"] == "style")
+            .unwrap();
+        assert_eq!(
+            script["end"],
+            utf16_offset(source, source.find("</script >").unwrap()) + "</script >".len()
+        );
+        assert_eq!(
+            style["end"],
+            utf16_offset(source, source.find(r#"</style data-x="1">"#).unwrap())
+                + r#"</style data-x="1">"#.len()
+        );
+    }
+
+    #[test]
+    fn does_not_close_on_element_close_name_prefix() {
+        let source = r#"<script>const text = "</scriptx>"; window.ok = true;</script>"#;
+        let result = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        let script = result["regions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|region| region["kind"] == "client-script")
+            .unwrap();
+        let content = &source[script["contentStart"].as_u64().unwrap() as usize
+            ..script["contentEnd"].as_u64().unwrap() as usize];
+        assert!(content.contains("window.ok"));
+        assert_eq!(script["end"], source.len());
+    }
+
+    #[test]
+    fn closes_client_script_at_raw_end_tag_inside_string() {
+        let source = r#"<script>const literal = "</script>"; window.after = true;</script>"#;
+        let result = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        let script = result["regions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|region| region["kind"] == "client-script")
+            .unwrap();
+        assert_eq!(
+            script["end"],
+            source.find("</script>").unwrap() + "</script>".len()
+        );
+        let content = &source[script["contentStart"].as_u64().unwrap() as usize
+            ..script["contentEnd"].as_u64().unwrap() as usize];
+        assert!(!content.contains("window.after"));
+    }
+
+    #[test]
+    fn keeps_utf16_offsets_with_non_ascii_before_element_close() {
+        let source = r#"日本語😀<script>const value = 1;</SCRIPT>"#;
+        let result = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        let script = result["regions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|region| region["kind"] == "client-script")
+            .unwrap();
+        assert_eq!(
+            script["contentStart"],
+            utf16_offset(source, source.find("const value").unwrap())
+        );
+        assert_eq!(
+            script["contentEnd"],
+            utf16_offset(source, source.find("</SCRIPT>").unwrap())
+        );
+        assert_eq!(
+            script["end"],
+            utf16_offset(source, source.find("</SCRIPT>").unwrap()) + "</SCRIPT>".len()
+        );
     }
 
     #[test]

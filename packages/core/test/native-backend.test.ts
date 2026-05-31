@@ -357,4 +357,27 @@ Response.Write(text)
     expect(stringBlock).toContain("var text = '");
     expect(stringBlock).not.toContain("Response.Write(text)");
   });
+
+  it("matches the TypeScript parser for script and style close boundaries", () => {
+    const source = `日本語😀
+<script>const prefix = "</scriptx>"; const afterPrefix = true;</SCRIPT>
+<style>.x { color: red; }</style data-x="1">
+<script>const raw = "</script>"; const afterRaw = false;</script>`;
+    const uri = "file:///site/native-element-close-boundaries.asp";
+    const native = withBackend("native", () => parseAspCst(uri, source));
+    const fallback = withBackend("typescript", () => parseAspCst(uri, source));
+    expect(collectRegions(native)).toEqual(collectRegions(fallback));
+
+    const scripts = native.children.filter((child) => child.kind === "ClientScriptElement");
+    expect(scripts).toHaveLength(2);
+    const prefixScript = source.slice(scripts[0].contentStart, scripts[0].contentEnd);
+    const rawScript = source.slice(scripts[1].contentStart, scripts[1].contentEnd);
+    expect(prefixScript).toContain("afterPrefix");
+    expect(rawScript).toContain('const raw = "');
+    expect(rawScript).not.toContain("afterRaw");
+
+    const style = native.children.find((child) => child.kind === "StyleElement");
+    expect(style).toBeTruthy();
+    expect(source.slice(style!.start, style!.end)).toContain('</style data-x="1">');
+  });
 });
