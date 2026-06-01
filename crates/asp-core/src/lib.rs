@@ -1,5 +1,6 @@
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 type JsonMap = Map<String, Value>;
@@ -387,6 +388,10 @@ pub extern "C" fn asp_lsp_alloc(len: usize) -> *mut u8 {
     pointer
 }
 
+/// # Safety
+///
+/// `pointer` must have been returned by `asp_lsp_alloc` or `asp_lsp_handle` with the same `len`,
+/// and it must not be used again after this call.
 #[no_mangle]
 pub unsafe extern "C" fn asp_lsp_dealloc(pointer: *mut u8, len: usize) {
     if !pointer.is_null() {
@@ -394,8 +399,13 @@ pub unsafe extern "C" fn asp_lsp_dealloc(pointer: *mut u8, len: usize) {
     }
 }
 
-static mut LAST_OUTPUT_LEN: usize = 0;
+static LAST_OUTPUT_LEN: AtomicUsize = AtomicUsize::new(0);
 
+/// # Safety
+///
+/// `pointer` must be valid for `len` bytes. The returned pointer must be freed with
+/// `asp_lsp_dealloc` using the length returned by `asp_lsp_last_output_len`. Callers must read
+/// that length before making another `asp_lsp_handle` call on the same native module instance.
 #[no_mangle]
 pub unsafe extern "C" fn asp_lsp_handle(pointer: *const u8, len: usize) -> *mut u8 {
     let bytes = std::slice::from_raw_parts(pointer, len);
@@ -406,13 +416,17 @@ pub unsafe extern "C" fn asp_lsp_handle(pointer: *const u8, len: usize) -> *mut 
     let output_bytes = output.as_bytes();
     let out = asp_lsp_alloc(output_bytes.len());
     std::ptr::copy_nonoverlapping(output_bytes.as_ptr(), out, output_bytes.len());
-    LAST_OUTPUT_LEN = output_bytes.len();
+    LAST_OUTPUT_LEN.store(output_bytes.len(), Ordering::Relaxed);
     out
 }
 
+/// # Safety
+///
+/// The returned length describes the most recent `asp_lsp_handle` result for this native module
+/// instance. Callers must pair it with that result pointer before issuing another handle call.
 #[no_mangle]
 pub unsafe extern "C" fn asp_lsp_last_output_len() -> usize {
-    LAST_OUTPUT_LEN
+    LAST_OUTPUT_LEN.load(Ordering::Relaxed)
 }
 
 #[derive(Clone)]
@@ -2086,7 +2100,7 @@ fn parse_vbscript_cst_from_tokens(
     let mut stack: Vec<VbNode> = Vec::new();
     for i in 0..significant.len() {
         let token = &significant[i];
-        if !is_statement_start(&significant, i) {
+        if !is_statement_start(significant, i) {
             continue;
         }
         let first = lower_token(Some(token));
@@ -2124,7 +2138,7 @@ fn parse_vbscript_cst_from_tokens(
                         &declaration_start,
                         token,
                         name,
-                        collect_parameter_metadata(&significant, i + declaration_offset + 2),
+                        collect_parameter_metadata(significant, i + declaration_offset + 2),
                         &stack,
                         None,
                         visibility.clone(),
@@ -2144,7 +2158,7 @@ fn parse_vbscript_cst_from_tokens(
                             "property",
                             token,
                             name,
-                            collect_parameter_metadata(&significant, i + declaration_offset + 3),
+                            collect_parameter_metadata(significant, i + declaration_offset + 3),
                             &stack,
                             Some(accessor),
                             visibility.clone(),
@@ -2157,20 +2171,20 @@ fn parse_vbscript_cst_from_tokens(
             continue;
         }
         if first == "loop" {
-            close_block(&mut document, &mut stack, &"loop".to_string(), token.end);
+            close_block(&mut document, &mut stack, "loop", token.end);
             continue;
         }
         if first == "wend" {
-            close_block(&mut document, &mut stack, &"wend".to_string(), token.end);
+            close_block(&mut document, &mut stack, "wend", token.end);
             continue;
         }
         if first == "next" {
-            close_block(&mut document, &mut stack, &"next".to_string(), token.end);
+            close_block(&mut document, &mut stack, "next", token.end);
             continue;
         }
         if first == "if" {
-            let node = create_statement_node("If", token, &significant, i, None);
-            let multiline = is_multiline_if(&significant, i);
+            let node = create_statement_node("If", token, significant, i, None);
+            let multiline = is_multiline_if(significant, i);
             push_child(&mut document, &mut stack, node.clone());
             if multiline {
                 stack.push(node);
@@ -2178,14 +2192,14 @@ fn parse_vbscript_cst_from_tokens(
             continue;
         }
         if first == "select" && second == "case" {
-            let node = create_statement_node("Select", token, &significant, i, None);
+            let node = create_statement_node("Select", token, significant, i, None);
             push_child(&mut document, &mut stack, node.clone());
             stack.push(node);
             continue;
         }
         if first == "do" || first == "while" {
             let kind = if first == "do" { "DoLoop" } else { "While" };
-            let node = create_statement_node(kind, token, &significant, i, None);
+            let node = create_statement_node(kind, token, significant, i, None);
             push_child(&mut document, &mut stack, node.clone());
             stack.push(node);
             continue;
@@ -2195,7 +2209,7 @@ fn parse_vbscript_cst_from_tokens(
                 token,
                 "VariableDeclaration",
                 &first,
-                &significant,
+                significant,
                 i + 1,
                 None,
             );
@@ -2211,7 +2225,7 @@ fn parse_vbscript_cst_from_tokens(
                 token,
                 "VariableDeclaration",
                 &first,
-                &significant,
+                significant,
                 i + 1,
                 visibility.clone(),
             );
@@ -2223,7 +2237,7 @@ fn parse_vbscript_cst_from_tokens(
                 token,
                 "ConstantDeclaration",
                 "const",
-                &significant,
+                significant,
                 i + 1,
                 None,
             );
@@ -2236,7 +2250,7 @@ fn parse_vbscript_cst_from_tokens(
                 .filter(|token| token.kind == "identifier")
             {
                 let mut node =
-                    create_statement_node("ForEach", token, &significant, i, Some(name.clone()));
+                    create_statement_node("ForEach", token, significant, i, Some(name.clone()));
                 node.declaration_kind = Some("forEach".to_string());
                 node.identifiers.push(name.clone());
                 push_child(&mut document, &mut stack, node.clone());
@@ -2250,7 +2264,7 @@ fn parse_vbscript_cst_from_tokens(
                 .filter(|token| token.kind == "identifier")
             {
                 let mut node =
-                    create_statement_node("With", token, &significant, i, Some(name.clone()));
+                    create_statement_node("With", token, significant, i, Some(name.clone()));
                 node.scope_end = Some(base_offset + TextIndex::new(source_text).len());
                 push_child(&mut document, &mut stack, node.clone());
                 stack.push(node);
@@ -2262,19 +2276,19 @@ fn parse_vbscript_cst_from_tokens(
             && significant.get(i + 2).map(|t| t.text.as_str()) == Some("=")
         {
             let variable = significant[i + 1].clone();
-            let end_index = statement_end_index(&significant, i);
-            if let Some(new_index) = find_keyword(&significant, i + 3, end_index, "new") {
+            let end_index = statement_end_index(significant, i);
+            if let Some(new_index) = find_keyword(significant, i + 3, end_index, "new") {
                 if let Some(name) = significant
                     .get(new_index + 1)
                     .filter(|token| token.kind == "identifier")
                 {
                     let mut node =
-                        create_statement_node("SetNew", token, &significant, i, Some(variable));
+                        create_statement_node("SetNew", token, significant, i, Some(variable));
                     node.type_name = Some(name.text.clone());
                     push_child(&mut document, &mut stack, node);
                 }
             } else if let Some(create_index) =
-                find_create_object_call(&significant, i + 3, end_index)
+                find_create_object_call(significant, i + 3, end_index)
             {
                 if let Some(string_token) = significant[create_index..=end_index]
                     .iter()
@@ -2283,7 +2297,7 @@ fn parse_vbscript_cst_from_tokens(
                     let mut node = create_statement_node(
                         "CreateObject",
                         token,
-                        &significant,
+                        significant,
                         i,
                         Some(variable),
                     );
@@ -2299,22 +2313,22 @@ fn parse_vbscript_cst_from_tokens(
             continue;
         }
         if first == "call" {
-            let end_index = statement_end_index(&significant, i);
+            let end_index = statement_end_index(significant, i);
             let name = significant[i + 1..=end_index]
                 .iter()
                 .find(|token| token.kind == "identifier")
                 .cloned();
-            let node = create_statement_node("Call", token, &significant, i, name);
+            let node = create_statement_node("Call", token, significant, i, name);
             push_child(&mut document, &mut stack, node);
             continue;
         }
-        if token.kind == "identifier" && statement_has_symbol(&significant, i, "=") {
+        if token.kind == "identifier" && statement_has_symbol(significant, i, "=") {
             let node =
-                create_statement_node("Assignment", token, &significant, i, Some(token.clone()));
+                create_statement_node("Assignment", token, significant, i, Some(token.clone()));
             push_child(&mut document, &mut stack, node);
             continue;
         }
-        let node = create_statement_node("Expression", token, &significant, i, None);
+        let node = create_statement_node("Expression", token, significant, i, None);
         push_child(&mut document, &mut stack, node);
     }
     close_unclosed(&mut document, &mut stack, base_offset + text_len);
@@ -2818,7 +2832,6 @@ fn attach_closed_node(document: &mut VbNode, stack: &mut [VbNode], node: VbNode)
             .find(|child| child.start == node.start && child.kind == node.kind)
         {
             *existing = node;
-            return;
         }
     } else if let Some(existing) = document
         .children
@@ -2827,7 +2840,6 @@ fn attach_closed_node(document: &mut VbNode, stack: &mut [VbNode], node: VbNode)
         .find(|child| child.start == node.start && child.kind == node.kind)
     {
         *existing = node;
-        return;
     }
 }
 
@@ -3084,7 +3096,7 @@ fn collect_symbols_from_analysis(
             &region.cst,
             uri,
             &analysis.text_index,
-            &document_tokens,
+            document_tokens,
             None,
             None,
             None,
@@ -3123,6 +3135,7 @@ fn strip_null_fields(value: &mut Value) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_symbols_from_node(
     node: &Value,
     uri: &str,
@@ -3606,7 +3619,7 @@ fn add_implicit_assignment_symbols(
                 index += 1;
                 continue;
             }
-            let statement_end = statement_end_index(&significant, index);
+            let statement_end = statement_end_index(significant, index);
             let statement = &significant[index..=statement_end];
             let target_index = if lower_token(statement.first()) == "set" {
                 1
@@ -3708,12 +3721,7 @@ struct TypeAnnotations {
 fn parse_type_annotations(analysis: &VbAnalysisCache<'_>) -> TypeAnnotations {
     let mut annotations = TypeAnnotations::default();
     for region in &analysis.regions {
-        for token in region
-            .tokens
-            .iter()
-            .into_iter()
-            .filter(|token| token.kind == "comment")
-        {
+        for token in region.tokens.iter().filter(|token| token.kind == "comment") {
             let text = token.text.trim_start_matches('\'').trim();
             if let Some((name, type_name)) = parse_named_type_annotation(text, "@type") {
                 annotations.types.push(TypeAnnotation {
@@ -4999,7 +5007,7 @@ fn member_type(
                 .and_then(|member| member.get("type"))
                 .and_then(type_ref_from_value)
         })
-        .reduce(|merged, item| merge_type_refs(merged, item))
+        .reduce(merge_type_refs)
         .flatten()
 }
 
@@ -5017,7 +5025,7 @@ fn member_return_type(
                 .and_then(|signature| signature.get("returnType"))
                 .and_then(type_ref_from_value)
         })
-        .reduce(|merged, item| merge_type_refs(merged, item))
+        .reduce(merge_type_refs)
         .flatten()
 }
 

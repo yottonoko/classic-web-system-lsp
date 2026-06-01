@@ -792,12 +792,6 @@ class RpcServer {
     });
   }
 
-  takePendingNotifications(method: string): JsonRpcMessage[] {
-    const pending = this.pendingNotifications.get(method) ?? [];
-    this.pendingNotifications.set(method, []);
-    return pending;
-  }
-
   stop(): void {
     this.child?.kill();
   }

@@ -95,9 +95,6 @@ export class VbDiagnosticsWorkerPool {
         continue;
       }
       slot.task = task;
-      task.request = {
-        ...task.request,
-      };
       const startedAt = process.hrtime.bigint();
       slot.worker.postMessage(task.request);
       task.resolve = timedWorkerResolve(task, startedAt, this.queue.length, task.resolve);

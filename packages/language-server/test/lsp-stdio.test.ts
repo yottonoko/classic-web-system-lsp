@@ -3902,6 +3902,14 @@ Dim afterValue
           }),
         );
 
+        const boundaryTokens = await server.request("textDocument/semanticTokens/range", {
+          textDocument: { uri },
+          range: { start: { line: 5, character: 0 }, end: { line: 6, character: 0 } },
+        });
+        const decodedBoundary = decodeSemanticTokens((boundaryTokens as { data?: number[] }).data);
+        expect(decodedBoundary.length).toBeGreaterThan(0);
+        expect(decodedBoundary.every((token) => token.line === 5)).toBe(true);
+
         await server.request("shutdown", null);
         server.notify("exit", undefined);
       } finally {
@@ -9524,12 +9532,21 @@ class RpcServer {
     }
     return new Promise((resolve, reject) => {
       const callbacks = this.notifications.get(method) ?? [];
-      callbacks.push(resolve);
+      let timer: ReturnType<typeof setTimeout>;
+      const callback = (notification: JsonRpcMessage) => {
+        clearTimeout(timer);
+        resolve(notification);
+      };
+      callbacks.push(callback);
       this.notifications.set(method, callbacks);
-      setTimeout(
-        () => reject(new Error(`Timed out waiting for ${method}: ${this.stderr}`)),
-        rpcTimeoutMs,
-      );
+      timer = setTimeout(() => {
+        const activeCallbacks = this.notifications.get(method) ?? [];
+        this.notifications.set(
+          method,
+          activeCallbacks.filter((active) => active !== callback),
+        );
+        reject(new Error(`Timed out waiting for ${method}: ${this.stderr}`));
+      }, rpcTimeoutMs);
     });
   }
 

@@ -495,15 +495,6 @@ function toSourceTextDocument(virtual, sourceText) {
   return document;
 }
 
-function parsedTextFingerprint(parsed) {
-  let fingerprint = parsedTextFingerprints.get(parsed);
-  if (!fingerprint) {
-    fingerprint = textFingerprint(parsed.text);
-    parsedTextFingerprints.set(parsed, fingerprint);
-  }
-  return fingerprint;
-}
-
 function virtualTextFingerprint(virtual) {
   let fingerprint = virtualTextFingerprints.get(virtual);
   if (!fingerprint) {

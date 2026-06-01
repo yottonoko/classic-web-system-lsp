@@ -1954,7 +1954,7 @@ export async function analyzeVbscriptFromTextAsync(
   settings: AspSettings = {},
   context: VbProjectContext = {},
 ): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
-  const cacheKey = vbFromTextCacheKey("analyze", uri, text, settings, context);
+  const cacheKey = vbFromTextCacheKey("analyze", uri, settings, context);
   const cached = cacheKey
     ? getVbFromTextCache<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }>(cacheKey, text)
     : undefined;
@@ -2720,7 +2720,6 @@ export function getVbscriptSignatureHelp(
     call.name,
     offset,
     symbols,
-    typeEnvironment,
     context.locale,
   );
   if (builtinSignatureInfo && builtinSignatureInfo.length > 0) {
@@ -3258,7 +3257,7 @@ export async function collectVbscriptSymbolsFromTextAsync(
   settings: AspSettings = {},
   context: VbProjectContext = {},
 ): Promise<VbSymbol[]> {
-  const cacheKey = vbFromTextCacheKey("collect", uri, text, settings, context);
+  const cacheKey = vbFromTextCacheKey("collect", uri, settings, context);
   const cached = cacheKey ? getVbFromTextCache<VbSymbol[]>(cacheKey, text) : undefined;
   if (cached) {
     return cached;
@@ -3367,7 +3366,7 @@ export async function summarizeAspFileAnalysisFromTextAsync(
   settings: AspSettings = {},
   context: VbProjectContext = {},
 ): Promise<FileAnalysisSummary> {
-  const cacheKey = vbFromTextCacheKey("summary", uri, text, settings, context);
+  const cacheKey = vbFromTextCacheKey("summary", uri, settings, context);
   const cached = cacheKey ? getVbFromTextCache<FileAnalysisSummary>(cacheKey, text) : undefined;
   if (cached) {
     return cached;
@@ -3451,7 +3450,6 @@ function parseAspDocumentTypeScriptOnly(
 function vbFromTextCacheKey(
   operation: string,
   uri: string,
-  text: string,
   settings: AspSettings,
   context: VbProjectContext,
 ): string | undefined {
@@ -7015,7 +7013,6 @@ function builtinSignatureInformationForCall(
   name: string,
   offset: number,
   symbols: VbSymbol[],
-  env: VbTypeEnvironment,
   locale: AspLocale | undefined,
 ) {
   const [owner, memberName] = name.includes(".") ? name.split(".", 2) : [undefined, name];

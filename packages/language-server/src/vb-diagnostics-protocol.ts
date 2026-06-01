@@ -44,7 +44,6 @@ export interface VbDiagnosticsWorkerRequest {
   text: string;
   settings: AspSettings;
   context: VbDiagnosticsWorkerContext;
-  cancellationGeneration?: number;
 }
 
 export interface VbDiagnosticsWorkerTiming {

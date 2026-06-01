@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,7 +8,6 @@ import { Worker } from "node:worker_threads";
 import { embeddedOperationNames } from "./embedded-language-benchmark.mjs";
 import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
 
-const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
 const sampleRoot = path.join(root, "samples", "classic-asp-large-benchmark");
 const generator = path.join(sampleRoot, "generate.mjs");

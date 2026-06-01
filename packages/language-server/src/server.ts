@@ -3813,7 +3813,6 @@ async function jsSemanticDiagnosticsAsync(
   if (shouldUseJsDiagnosticsWorker(mode)) {
     try {
       const response = await runJsDiagnosticsWorker(
-        cached,
         virtual,
         settings,
         cancellation,
@@ -3845,7 +3844,6 @@ async function jsSemanticDiagnosticsAsync(
 }
 
 async function runJsDiagnosticsWorker(
-  cached: CachedDocument,
   virtual: VirtualDocument,
   settings: AspSettings,
   cancellation: AnalysisCancellation,
@@ -4146,7 +4144,6 @@ async function runVbDiagnosticsWorker(
       text: cached.source.getText(),
       settings,
       context,
-      cancellationGeneration: backgroundAnalysisGeneration,
     },
     { isCancellationRequested: () => cancellation.isCancellationRequested() },
   );
@@ -8706,7 +8703,7 @@ async function ensureWorkspaceIndexAsync(
     if (token?.isCancellationRequested || scannedFiles >= maxFiles) {
       break;
     }
-    scannedFiles = await indexWorkspaceRootAsync(root, settings, {
+    scannedFiles = await indexWorkspaceRootAsync(root, {
       scannedFiles,
       maxFiles,
       chunkSize,
@@ -8724,7 +8721,6 @@ async function ensureWorkspaceIndexAsync(
 
 async function indexWorkspaceRootAsync(
   root: string,
-  settings: AspSettings,
   state: {
     scannedFiles: number;
     maxFiles: number;
@@ -12960,7 +12956,7 @@ async function buildSemanticTokensWithContextAsync(
   }
   for (const semanticToken of getVbscriptSemanticTokens(cached.parsed, vbContext, range)) {
     const offset = cached.source.offsetAt(semanticToken.range.start);
-    if (offset < rangeStart || offset > rangeEnd) {
+    if (offset < rangeStart || offset >= rangeEnd) {
       continue;
     }
     tokens.push({
@@ -13009,7 +13005,7 @@ function addSemanticTokenInSourceRange(
   rangeEnd: number,
   tokenModifiers?: readonly string[],
 ): void {
-  if (offset < rangeStart || offset > rangeEnd) {
+  if (offset < rangeStart || offset >= rangeEnd) {
     return;
   }
   addSemanticToken(tokens, document, offset, length, tokenType, tokenModifiers);
@@ -13025,7 +13021,7 @@ function regionsInSourceRange(
   let high = regions.length;
   while (low < high) {
     const middle = Math.floor((low + high) / 2);
-    if (regions[middle].end < rangeStart) {
+    if (regions[middle].end <= rangeStart) {
       low = middle + 1;
     } else {
       high = middle;
@@ -13034,7 +13030,7 @@ function regionsInSourceRange(
   const result: AspRegion[] = [];
   for (let index = low; index < regions.length; index += 1) {
     const region = regions[index];
-    if (region.start > rangeEnd) {
+    if (region.start >= rangeEnd) {
       break;
     }
     result.push(region);
@@ -13168,7 +13164,7 @@ function addRangeSemanticToken(
   rangeEnd: number,
 ): void {
   const offset = document.offsetAt(range.start);
-  if (offset < rangeStart || offset > rangeEnd || range.start.line !== range.end.line) {
+  if (offset < rangeStart || offset >= rangeEnd || range.start.line !== range.end.line) {
     return;
   }
   addSemanticToken(tokens, document, offset, document.offsetAt(range.end) - offset, tokenType);
@@ -13588,12 +13584,12 @@ function semanticVirtualSpansForSourceRange(
   for (const segment of virtual.sourceMap.segments) {
     const sourceStart = Math.max(segment.sourceStart, rangeStart);
     const sourceEnd = Math.min(segment.sourceEnd, rangeEnd);
-    if (sourceStart > sourceEnd) {
+    if (sourceStart >= sourceEnd) {
       continue;
     }
     const virtualStart = segment.virtualStart + (sourceStart - segment.sourceStart);
     const virtualEnd = segment.virtualStart + (sourceEnd - segment.sourceStart);
-    spans.push({ start: virtualStart, length: Math.max(1, virtualEnd - virtualStart + 1) });
+    spans.push({ start: virtualStart, length: virtualEnd - virtualStart });
   }
   return spans.length > 0 ? spans : [{ start: 0, length: virtual.text.length }];
 }
@@ -13604,7 +13600,7 @@ function virtualOverlapsSourceRange(
   rangeEnd: number,
 ): boolean {
   return virtual.sourceMap.segments.some(
-    (segment) => segment.sourceEnd >= rangeStart && segment.sourceStart <= rangeEnd,
+    (segment) => segment.sourceEnd > rangeStart && segment.sourceStart < rangeEnd,
   );
 }
 
@@ -13621,7 +13617,7 @@ function virtualSpansForSourceRange(
   for (const segment of virtual.sourceMap.segments) {
     const sourceStart = Math.max(segment.sourceStart, rangeStart);
     const sourceEnd = Math.min(segment.sourceEnd, rangeEnd);
-    if (sourceStart > sourceEnd) {
+    if (sourceStart >= sourceEnd) {
       continue;
     }
     const virtualStart = segment.virtualStart + (sourceStart - segment.sourceStart);
