@@ -1526,6 +1526,33 @@ console.log(label, fromServer, client, document.querySelector(".card"));
             tokenMatches(source, token, "querySelector", semanticTokenType.method),
           ),
         ).toBe(true);
+        expect(
+          decoded.some((token) => tokenMatches(source, token, "color", semanticTokenType.property)),
+        ).toBe(true);
+        const styleAspExpression = positionAt(
+          source,
+          source.indexOf("<%=", source.indexOf("color")),
+        );
+        expect(
+          decoded.some(
+            (token) =>
+              token.line === styleAspExpression.line &&
+              token.character === styleAspExpression.character &&
+              token.tokenType === semanticTokenType.keyword,
+          ),
+        ).toBe(true);
+        const scriptAspExpression = positionAt(
+          source,
+          source.indexOf("<%=", source.indexOf("const clientValue")),
+        );
+        expect(
+          decoded.some(
+            (token) =>
+              token.line === scriptAspExpression.line &&
+              token.character === scriptAspExpression.character &&
+              token.tokenType === semanticTokenType.keyword,
+          ),
+        ).toBe(true);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -2774,6 +2801,82 @@ Response.Write Shared▮Title()
               token.tokenType === semanticTokenType.function,
           ),
         ).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("does not add fallback VBScript semantic tokens inside strings or comments", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-semantic-"));
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "common.inc");
+      fs.writeFileSync(
+        include,
+        `<%
+Function SharedTitle()
+End Function
+%>`,
+        "utf8",
+      );
+      const source = `<!-- #include file="common.inc" -->
+<%
+Response.Write "SharedTitle"
+' SharedTitle should stay a comment
+Rem SharedTitle should stay a comment
+Response.Write SharedTitle()
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${owner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        await waitForCompletionContaining(
+          server,
+          {
+            uri: `file://${owner}`,
+            position: positionAt(source, source.lastIndexOf("SharedTitle") + "Shared".length),
+          },
+          "SharedTitle",
+        );
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri: `file://${owner}` },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        const hasFunctionTokenAt = (offset: number) => {
+          const position = positionAt(source, offset);
+          return decoded.some(
+            (token) =>
+              token.line === position.line &&
+              token.character === position.character &&
+              token.tokenType === semanticTokenType.function,
+          );
+        };
+
+        expect(hasFunctionTokenAt(source.indexOf("SharedTitle"))).toBe(false);
+        expect(hasFunctionTokenAt(source.indexOf("SharedTitle", source.indexOf("' ")))).toBe(false);
+        expect(hasFunctionTokenAt(source.indexOf("SharedTitle", source.indexOf("Rem ")))).toBe(
+          false,
+        );
+        expect(hasFunctionTokenAt(source.lastIndexOf("SharedTitle"))).toBe(true);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

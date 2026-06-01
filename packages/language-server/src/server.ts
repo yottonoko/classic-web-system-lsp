@@ -12919,7 +12919,8 @@ function addFallbackVbSemanticTokens(
   rangeStart: number,
   rangeEnd: number,
 ): void {
-  const namesInRange = vbIdentifierNamesInSourceRange(cached, rangeStart, rangeEnd);
+  const identifierTokens = vbIdentifierTokensInSourceRange(cached, rangeStart, rangeEnd);
+  const namesInRange = new Set(identifierTokens.map((token) => token.text.toLowerCase()));
   const candidates = (context.symbols ?? []).filter(
     (symbol) =>
       symbol.sourceUri !== cached.parsed.uri &&
@@ -12932,27 +12933,15 @@ function addFallbackVbSemanticTokens(
     if (!tokenType) {
       continue;
     }
-    const pattern = new RegExp(`\\b${escapeRegExp(symbol.name)}\\b`, "gi");
-    const searchStart = Math.max(0, rangeStart - symbol.name.length);
-    const searchEnd = Math.min(cached.parsed.text.length, rangeEnd + symbol.name.length);
-    const searchText = cached.parsed.text.slice(searchStart, searchEnd);
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(searchText))) {
-      const start = searchStart + match.index;
-      const end = start + match[0].length;
-      if (
-        end < rangeStart ||
-        start > rangeEnd ||
-        !isWholeWordAt(cached.parsed.text, start, end) ||
-        !isVbscriptOffset(cached.parsed, start)
-      ) {
+    for (const token of identifierTokens) {
+      if (token.text.toLowerCase() !== symbol.name.toLowerCase()) {
         continue;
       }
-      const position = cached.source.positionAt(start);
+      const position = cached.source.positionAt(token.start);
       tokens.push({
         line: position.line,
         character: position.character,
-        length: match[0].length,
+        length: token.text.length,
         tokenType,
         tokenModifiers: fallbackVbSemanticTokenModifiers(symbol),
       });
@@ -12960,31 +12949,28 @@ function addFallbackVbSemanticTokens(
   }
 }
 
-function vbIdentifierNamesInSourceRange(
+function vbIdentifierTokensInSourceRange(
   cached: CachedDocument,
   rangeStart: number,
   rangeEnd: number,
-): Set<string> {
-  const names = new Set<string>();
-  const pattern = /\b[A-Za-z_][A-Za-z0-9_]*\b/g;
-  for (const region of regionsInSourceRange(cached.parsed, rangeStart, rangeEnd)) {
-    if (region.language !== "vbscript") {
+): VbToken[] {
+  const tokens: VbToken[] = [];
+  for (const child of cached.parsed.cst.children) {
+    if (
+      child.language !== "vbscript" ||
+      !child.vbscript ||
+      child.contentEnd < rangeStart ||
+      child.contentStart > rangeEnd
+    ) {
       continue;
     }
-    const start = Math.max(region.contentStart, rangeStart);
-    const end = Math.min(region.contentEnd, rangeEnd);
-    const text = cached.parsed.text.slice(start, end);
-    pattern.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text))) {
-      names.add(match[0].toLowerCase());
+    for (const token of child.vbscript.tokens) {
+      if (token.kind === "identifier" && token.end >= rangeStart && token.start <= rangeEnd) {
+        tokens.push(token);
+      }
     }
   }
-  return names;
-}
-
-function isWholeWordAt(text: string, start: number, end: number): boolean {
-  return !/[A-Za-z0-9_]/.test(text.charAt(start - 1)) && !/[A-Za-z0-9_]/.test(text.charAt(end));
+  return tokens;
 }
 
 function fallbackVbSemanticTokenType(kind: VbSymbolKind): string | undefined {
@@ -13008,10 +12994,6 @@ function fallbackVbSemanticTokenModifiers(symbol: VbSymbol): readonly string[] |
     return ["private"];
   }
   return undefined;
-}
-
-function isVbscriptOffset(parsed: AspParsedDocument, offset: number): boolean {
-  return findRegionAt(parsed, offset)?.language === "vbscript";
 }
 
 function addRangeSemanticToken(

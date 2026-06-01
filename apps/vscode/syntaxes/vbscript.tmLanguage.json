@@ -11,6 +11,16 @@
           "name": "comment.line.rem.vbscript"
         },
         {
+          "match": "\"[^\"]*\"",
+          "name": "string.quoted.double.vbscript"
+        },
+        { "include": "#documentation-comment" },
+        { "include": "#annotation-comment" },
+        {
+          "match": "'[^\\n\\r]*",
+          "name": "comment.line.apostrophe.vbscript"
+        },
+        {
           "match": "(?i)\\b(?:(Public|Private)\\s+)?(Function|Sub)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
           "captures": {
             "1": { "name": "keyword.control.visibility.vbscript" },
@@ -41,16 +51,6 @@
         {
           "match": "\\b(Request|Response|Session|Application|Server|ASPError)\\b",
           "name": "support.class.asp"
-        },
-        {
-          "match": "\"[^\"]*\"",
-          "name": "string.quoted.double.vbscript"
-        },
-        { "include": "#documentation-comment" },
-        { "include": "#annotation-comment" },
-        {
-          "match": "'[^\\n\\r]*",
-          "name": "comment.line.apostrophe.vbscript"
         },
         {
           "match": "\\b\\d+(?:\\.\\d+)?\\b",

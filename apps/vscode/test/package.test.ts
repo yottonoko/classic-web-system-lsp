@@ -55,6 +55,7 @@ describe("VS Code extension package", () => {
           scopeName?: string;
           path?: string;
           injectTo?: string[];
+          embeddedLanguages?: Record<string, string>;
         }>;
         configurationDefaults?: {
           "editor.tokenColorCustomizations"?: {
@@ -333,6 +334,13 @@ describe("VS Code extension package", () => {
         rule.scope?.startsWith("constant.numeric.duration.heat.duration-"),
       ),
     ).toBe(false);
+    const classicAspGrammar = manifest.contributes?.grammars?.find(
+      (grammar) => grammar.scopeName === "text.html.classic-asp",
+    );
+    expect(classicAspGrammar?.embeddedLanguages?.["source.vbscript.embedded.asp"]).toBe("vbscript");
+    expect(classicAspGrammar?.embeddedLanguages?.["source.vbscript.embedded.asp.expression"]).toBe(
+      "vbscript",
+    );
   });
 
   it("keeps package localization keys resolved", () => {
@@ -365,6 +373,7 @@ describe("VS Code extension package", () => {
         "vbscript-basic"?: {
           patterns?: Array<{
             captures?: Record<string, { name?: string }>;
+            include?: string;
             match?: string;
             name?: string;
           }>;
@@ -401,6 +410,27 @@ describe("VS Code extension package", () => {
     expect(typePattern?.match).toContain("String");
     expect(typePattern?.match).toContain("Variant");
     expect(typePattern?.match).toContain("Number");
+    const stringIndex = patterns.findIndex(
+      (pattern) => pattern.name === "string.quoted.double.vbscript",
+    );
+    const documentationIndex = patterns.findIndex(
+      (pattern) => pattern.include === "#documentation-comment",
+    );
+    const annotationIndex = patterns.findIndex(
+      (pattern) => pattern.include === "#annotation-comment",
+    );
+    const apostropheIndex = patterns.findIndex(
+      (pattern) => pattern.name === "comment.line.apostrophe.vbscript",
+    );
+    const keywordIndex = patterns.findIndex(
+      (pattern) => pattern.name === "keyword.control.vbscript",
+    );
+    expect(stringIndex).toBeLessThan(patterns.indexOf(functionDeclarationPattern!));
+    expect(documentationIndex).toBeLessThan(patterns.indexOf(functionDeclarationPattern!));
+    expect(annotationIndex).toBeLessThan(patterns.indexOf(functionDeclarationPattern!));
+    expect(apostropheIndex).toBeLessThan(patterns.indexOf(functionDeclarationPattern!));
+    expect(stringIndex).toBeLessThan(keywordIndex);
+    expect(apostropheIndex).toBeLessThan(keywordIndex);
     expect(patterns.indexOf(functionDeclarationPattern!)).toBeLessThan(
       patterns.findIndex((pattern) => pattern.name === "keyword.control.vbscript"),
     );

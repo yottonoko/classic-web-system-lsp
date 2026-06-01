@@ -81,6 +81,7 @@
         "path": "./syntaxes/classic-asp.tmLanguage.json",
         "embeddedLanguages": {
           "source.vbscript.embedded.asp": "vbscript",
+          "source.vbscript.embedded.asp.expression": "vbscript",
           "source.js": "javascript",
           "source.css": "css",
           "text.html.basic": "html"
