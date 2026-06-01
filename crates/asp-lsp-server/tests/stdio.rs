@@ -589,6 +589,132 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     assert!(child.wait().expect("wait server").success());
 }
 
+#[test]
+fn serves_embedded_read_requests_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .env("ASP_LSP_EMBEDDED_SIDECAR_PATH", embedded_sidecar_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let uri = "file:///tmp/embedded-read.asp";
+
+    initialize(&mut stdin, &mut reader);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<div class=\"box\">\n<style>\n.box {\n  color: red;\n}\n</style>\n</div>",
+                },
+            },
+        }),
+    );
+
+    let completion = request(
+        &mut stdin,
+        &mut reader,
+        20,
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 3, "character": 5 },
+        }),
+    );
+    assert!(completion["result"]
+        .as_array()
+        .expect("embedded completion items")
+        .iter()
+        .any(|item| item["label"] == json!("color")));
+
+    let hover = request(
+        &mut stdin,
+        &mut reader,
+        21,
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 3, "character": 4 },
+        }),
+    );
+    assert!(hover["result"].to_string().contains("color"));
+
+    let symbols = request(
+        &mut stdin,
+        &mut reader,
+        22,
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert!(!symbols["result"]
+        .as_array()
+        .expect("embedded document symbols")
+        .is_empty());
+
+    let folding_ranges = request(
+        &mut stdin,
+        &mut reader,
+        23,
+        "textDocument/foldingRange",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert!(
+        folding_ranges["result"]
+            .as_array()
+            .expect("embedded folding ranges")
+            .iter()
+            .any(|range| range["startLine"] == json!(2) && range["endLine"] == json!(3)),
+        "folding ranges: {folding_ranges}"
+    );
+
+    let colors = request(
+        &mut stdin,
+        &mut reader,
+        24,
+        "textDocument/documentColor",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert!(colors["result"]
+        .as_array()
+        .expect("embedded colors")
+        .iter()
+        .any(|color| color["range"]["start"]["line"] == json!(3)));
+
+    let linked = request(
+        &mut stdin,
+        &mut reader,
+        25,
+        "textDocument/linkedEditingRange",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 2 },
+        }),
+    );
+    let linked_ranges = linked["result"]["ranges"]
+        .as_array()
+        .expect("linked editing ranges");
+    assert!(linked_ranges.len() >= 2);
+    assert!(linked_ranges
+        .iter()
+        .any(|range| range["start"]["line"] == json!(0)));
+    assert!(linked_ranges
+        .iter()
+        .any(|range| range["start"]["line"] == json!(6)));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
 fn initialize(
     stdin: &mut std::process::ChildStdin,
     reader: &mut BufReader<std::process::ChildStdout>,

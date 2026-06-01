@@ -117,9 +117,122 @@ pub struct MappedVirtualDocument {
 
 impl MappedVirtualDocument {
     pub fn remap_diagnostic(&self, diagnostic: Value) -> Option<Value> {
-        let range = diagnostic.get("range")?;
+        let range = self.remap_range(diagnostic.get("range")?)?;
+        let mut diagnostic = diagnostic.as_object()?.clone();
+        diagnostic.insert("range".to_string(), range);
+        Some(Value::Object(diagnostic))
+    }
+
+    pub fn virtual_position_for_source_position(&self, position: TextPosition) -> Option<Value> {
+        let source_offset = position_to_utf16_offset(
+            &self.source_text,
+            position.line.try_into().ok()?,
+            position.character.try_into().ok()?,
+        )?;
+        let segment = self.source_map.iter().find(|segment| {
+            source_offset >= segment.source_start && source_offset <= segment.source_end
+        })?;
+        let virtual_offset = segment.virtual_start + (source_offset - segment.source_start);
+        let (line, character) = utf16_position_at(&self.document.text, virtual_offset)?;
+        Some(serde_json::json!({ "line": line, "character": character }))
+    }
+
+    pub fn remap_lsp_value(&self, value: Value) -> Value {
+        self.remap_value(value)
+    }
+
+    fn remap_value(&self, value: Value) -> Value {
+        match value {
+            Value::Array(items) => Value::Array(
+                items
+                    .into_iter()
+                    .map(|item| self.remap_value(item))
+                    .collect(),
+            ),
+            Value::Object(mut object) => {
+                if is_lsp_range_object(&object) {
+                    return self
+                        .remap_range(&Value::Object(object))
+                        .unwrap_or(Value::Null);
+                }
+                for (key, value) in object.iter_mut() {
+                    if matches!(
+                        key.as_str(),
+                        "range" | "selectionRange" | "targetSelectionRange"
+                    ) {
+                        continue;
+                    }
+                    let remapped = self.remap_value(std::mem::take(value));
+                    *value = remapped;
+                }
+                if let Some(range) = object
+                    .get("range")
+                    .and_then(|range| self.remap_range(range))
+                {
+                    object.insert("range".to_string(), range);
+                }
+                if let Some(range) = object
+                    .get("selectionRange")
+                    .and_then(|range| self.remap_range(range))
+                {
+                    object.insert("selectionRange".to_string(), range);
+                }
+                if let Some(range) = object
+                    .get("targetSelectionRange")
+                    .and_then(|range| self.remap_range(range))
+                {
+                    object.insert("targetSelectionRange".to_string(), range);
+                }
+                if let Some(range) = self.remap_folding_range(&object) {
+                    object.insert(
+                        "startLine".to_string(),
+                        range.pointer("/start/line").cloned().unwrap_or(Value::Null),
+                    );
+                    object.insert(
+                        "endLine".to_string(),
+                        range.pointer("/end/line").cloned().unwrap_or(Value::Null),
+                    );
+                }
+                if object.get("uri").and_then(Value::as_str) == Some(self.document.uri.as_str()) {
+                    object.insert("uri".to_string(), Value::String(self.source_uri()));
+                }
+                Value::Object(object)
+            }
+            value => value,
+        }
+    }
+
+    fn remap_range(&self, range: &Value) -> Option<Value> {
         let start_offset = self.virtual_offset(range.get("start")?)?;
         let end_offset = self.virtual_offset(range.get("end")?)?;
+        self.remap_virtual_offsets(start_offset, end_offset)
+    }
+
+    fn remap_folding_range(&self, object: &serde_json::Map<String, Value>) -> Option<Value> {
+        let start_line = object.get("startLine")?.as_u64()?;
+        let end_line = object.get("endLine")?.as_u64()?;
+        let start_character = object
+            .get("startCharacter")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let end_character = object
+            .get("endCharacter")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let start_offset = position_to_utf16_offset(
+            &self.document.text,
+            start_line.try_into().ok()?,
+            start_character.try_into().ok()?,
+        )?;
+        let end_offset = position_to_utf16_offset(
+            &self.document.text,
+            end_line.try_into().ok()?,
+            end_character.try_into().ok()?,
+        )?;
+        self.remap_virtual_offsets(start_offset, end_offset)
+    }
+
+    fn remap_virtual_offsets(&self, start_offset: usize, end_offset: usize) -> Option<Value> {
         let segment = self.source_map.iter().find(|segment| {
             let last_offset = start_offset.max(end_offset.saturating_sub(1));
             start_offset >= segment.virtual_start && last_offset < segment.virtual_end
@@ -128,15 +241,10 @@ impl MappedVirtualDocument {
         let source_end = segment.source_start + (end_offset - segment.virtual_start);
         let (start_line, start_character) = utf16_position_at(&self.source_text, source_start)?;
         let (end_line, end_character) = utf16_position_at(&self.source_text, source_end)?;
-        let mut diagnostic = diagnostic.as_object()?.clone();
-        diagnostic.insert(
-            "range".to_string(),
-            serde_json::json!({
-                "start": { "line": start_line, "character": start_character },
-                "end": { "line": end_line, "character": end_character },
-            }),
-        );
-        Some(Value::Object(diagnostic))
+        Some(serde_json::json!({
+            "start": { "line": start_line, "character": start_character },
+            "end": { "line": end_line, "character": end_character },
+        }))
     }
 
     fn virtual_offset(&self, position: &Value) -> Option<usize> {
@@ -145,6 +253,14 @@ impl MappedVirtualDocument {
             position.get("line")?.as_u64()?.try_into().ok()?,
             position.get("character")?.as_u64()?.try_into().ok()?,
         )
+    }
+
+    fn source_uri(&self) -> String {
+        self.document
+            .uri
+            .strip_suffix(&format!(".{}.virtual", self.document.language_id))
+            .unwrap_or(&self.document.uri)
+            .to_string()
     }
 }
 
@@ -459,6 +575,23 @@ impl Ide {
         )
     }
 
+    pub fn embedded_virtual_document_at(
+        &self,
+        uri: &str,
+        position: TextPosition,
+    ) -> Result<Option<(MappedVirtualDocument, Value)>, String> {
+        Ok(self
+            .embedded_virtual_documents(uri)?
+            .into_iter()
+            .find_map(|mapped| {
+                if mapped.document.language_id == "vbscript" {
+                    return None;
+                }
+                let position = mapped.virtual_position_for_source_position(position)?;
+                Some((mapped, position))
+            }))
+    }
+
     fn vb_context(&self, uri: &str, position: TextPosition) -> Result<Option<VbContext>, String> {
         let Some(document) = self.documents.get(uri) else {
             return Ok(None);
@@ -597,6 +730,19 @@ fn is_vbscript_offset(parsed: &Value, offset: usize) -> bool {
                 && value_usize(region, "contentStart").is_ok_and(|start| offset >= start)
                 && value_usize(region, "contentEnd").is_ok_and(|end| offset <= end)
         })
+}
+
+fn is_lsp_range_object(object: &serde_json::Map<String, Value>) -> bool {
+    object
+        .get("start")
+        .and_then(|start| start.get("line"))
+        .and_then(Value::as_u64)
+        .is_some()
+        && object
+            .get("end")
+            .and_then(|end| end.get("line"))
+            .and_then(Value::as_u64)
+            .is_some()
 }
 
 fn identifier_at_offset(text: &str, offset: usize) -> Option<String> {

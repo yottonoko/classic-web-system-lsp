@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use asp_ide::{Ide, TextPosition, TextRange};
-use asp_sidecar_protocol::{EmbeddedRequest, EmbeddedResponse};
+use asp_ide::{Ide, MappedVirtualDocument, TextPosition, TextRange};
+use asp_sidecar_protocol::{EmbeddedRequest, EmbeddedResponse, VirtualDocument};
 use crossbeam_channel::RecvTimeoutError;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use serde_json::{json, Value};
@@ -187,6 +187,90 @@ impl ServerState {
         Ok(diagnostics)
     }
 
+    fn embedded_position_feature(
+        &mut self,
+        uri: &str,
+        operation: &str,
+        position: TextPosition,
+    ) -> Result<Option<Value>, String> {
+        let Some((mapped, virtual_position)) =
+            self.ide.embedded_virtual_document_at(uri, position)?
+        else {
+            return Ok(None);
+        };
+        let open_virtuals = self.open_virtual_documents(uri)?;
+        let result = self.embedded_request(
+            &mapped,
+            open_virtuals,
+            operation,
+            json!({ "position": virtual_position }),
+        )?;
+        Ok(result.map(|value| mapped.remap_lsp_value(value)))
+    }
+
+    fn embedded_document_feature(&mut self, uri: &str, operation: &str) -> Result<Value, String> {
+        let virtuals = self.ide.embedded_virtual_documents(uri)?;
+        let open_virtuals = virtuals
+            .iter()
+            .map(|mapped| mapped.document.clone())
+            .collect::<Vec<_>>();
+        let mut items = Vec::new();
+        for mapped in virtuals {
+            if mapped.document.language_id == "vbscript" {
+                continue;
+            }
+            let Some(result) =
+                self.embedded_request(&mapped, open_virtuals.clone(), operation, Value::Null)?
+            else {
+                continue;
+            };
+            match mapped.remap_lsp_value(result) {
+                Value::Array(values) => items.extend(values),
+                Value::Null => {}
+                value => items.push(value),
+            }
+        }
+        Ok(Value::Array(items))
+    }
+
+    fn embedded_request(
+        &mut self,
+        mapped: &MappedVirtualDocument,
+        open_virtuals: Vec<VirtualDocument>,
+        operation: &str,
+        params: Value,
+    ) -> Result<Option<Value>, String> {
+        let request_id = self.next_sidecar_request_id();
+        let response = match self.sidecar.request(EmbeddedRequest {
+            id: request_id,
+            operation: operation.to_string(),
+            active_virtual: mapped.document.clone(),
+            open_virtuals,
+            settings: self.settings.clone(),
+            workspace_roots: self.workspace_roots.clone(),
+            project_generation: 0,
+            params,
+        }) {
+            Ok(response) => response,
+            Err(error) => {
+                if !error.contains("embedded sidecar dist/sidecar.js was not found") {
+                    eprintln!("embedded sidecar {operation} failed: {error}");
+                }
+                return Ok(None);
+            }
+        };
+        Ok(response.result)
+    }
+
+    fn open_virtual_documents(&self, uri: &str) -> Result<Vec<VirtualDocument>, String> {
+        Ok(self
+            .ide
+            .embedded_virtual_documents(uri)?
+            .into_iter()
+            .map(|mapped| mapped.document)
+            .collect())
+    }
+
     fn next_sidecar_request_id(&mut self) -> u64 {
         self.sidecar_request_id += 1;
         self.sidecar_request_id
@@ -365,7 +449,10 @@ fn handle_request(
         "textDocument/completion" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
-            let result = state.ide.completion(&uri, position)?;
+            let result = merge_lsp_arrays(
+                state.ide.completion(&uri, position)?,
+                state.embedded_position_feature(&uri, "completion", position)?,
+            );
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -383,6 +470,13 @@ fn handle_request(
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
             let result = state.ide.hover(&uri, position)?;
+            let result = if result.is_null() {
+                state
+                    .embedded_position_feature(&uri, "hover", position)?
+                    .unwrap_or(Value::Null)
+            } else {
+                result
+            };
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -396,6 +490,13 @@ fn handle_request(
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
             let result = state.ide.definition(&uri, position)?;
+            let result = if result.is_null() {
+                state
+                    .embedded_position_feature(&uri, "definition", position)?
+                    .unwrap_or(Value::Null)
+            } else {
+                result
+            };
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -414,7 +515,10 @@ fn handle_request(
         }
         "textDocument/documentSymbol" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
-            let result = state.ide.document_symbols(&uri)?;
+            let result = merge_lsp_arrays(
+                state.ide.document_symbols(&uri)?,
+                Some(state.embedded_document_feature(&uri, "documentSymbols")?),
+            );
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -423,7 +527,10 @@ fn handle_request(
         }
         "textDocument/foldingRange" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
-            let result = state.ide.folding_ranges(&uri)?;
+            let result = merge_lsp_arrays(
+                state.ide.folding_ranges(&uri)?,
+                Some(state.embedded_document_feature(&uri, "foldingRanges")?),
+            );
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -434,6 +541,27 @@ fn handle_request(
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
             let result = state.ide.document_highlights(&uri, position)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/documentColor" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let result = state.embedded_document_feature(&uri, "documentColors")?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/linkedEditingRange" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let result = state
+                .embedded_position_feature(&uri, "linkedEditingRanges", position)?
+                .unwrap_or(Value::Null);
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -560,6 +688,8 @@ fn server_capabilities() -> Value {
         "documentSymbolProvider": true,
         "foldingRangeProvider": true,
         "documentHighlightProvider": true,
+        "colorProvider": true,
+        "linkedEditingRangeProvider": true,
         "textDocumentSync": {
             "openClose": true,
             "change": 2,
@@ -616,6 +746,20 @@ fn request_position(params: &Value) -> Result<TextPosition, String> {
         .get("position")
         .and_then(text_position)
         .ok_or_else(|| "position is required".to_string())
+}
+
+fn merge_lsp_arrays(left: Value, right: Option<Value>) -> Value {
+    let mut items = match left {
+        Value::Array(items) => items,
+        Value::Null => Vec::new(),
+        value => vec![value],
+    };
+    match right {
+        Some(Value::Array(values)) => items.extend(values),
+        Some(Value::Null) | None => {}
+        Some(value) => items.push(value),
+    }
+    Value::Array(items)
 }
 
 fn text_position(value: &Value) -> Option<TextPosition> {

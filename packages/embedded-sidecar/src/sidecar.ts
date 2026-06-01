@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { getCSSLanguageService } from "vscode-css-languageservice";
 import {
@@ -8,7 +8,21 @@ import {
   TokenType,
 } from "vscode-html-languageservice";
 import { TextDocument } from "vscode-languageserver-textdocument";
-import { DiagnosticSeverity, DiagnosticTag, type Diagnostic } from "vscode-languageserver-types";
+import {
+  CompletionItemKind,
+  DiagnosticSeverity,
+  DiagnosticTag,
+  MarkupKind,
+  type CompletionItem,
+  type Diagnostic,
+  type DocumentSymbol,
+  type FoldingRange,
+  type Hover,
+  type Location,
+  type Position,
+  type Range,
+  type SymbolInformation,
+} from "vscode-languageserver-types";
 
 const frameKindJson = 1;
 const browserJavaScriptLibs = ["lib.esnext.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"];
@@ -115,6 +129,27 @@ async function handleRequest(request: EmbeddedRequest): Promise<unknown> {
   if (request.operation === "diagnostics") {
     return diagnostics(request);
   }
+  if (request.operation === "completion") {
+    return completion(request);
+  }
+  if (request.operation === "hover") {
+    return hover(request);
+  }
+  if (request.operation === "definition") {
+    return definition(request);
+  }
+  if (request.operation === "documentSymbols") {
+    return documentSymbols(request);
+  }
+  if (request.operation === "foldingRanges") {
+    return foldingRanges(request);
+  }
+  if (request.operation === "documentColors") {
+    return documentColors(request);
+  }
+  if (request.operation === "linkedEditingRanges") {
+    return linkedEditingRanges(request);
+  }
   if (request.operation === "shutdown") {
     process.exit(0);
   }
@@ -133,6 +168,107 @@ async function diagnostics(request: EmbeddedRequest): Promise<Diagnostic[]> {
     return jsDiagnostics(request);
   }
   return [];
+}
+
+async function completion(request: EmbeddedRequest): Promise<CompletionItem[]> {
+  const document = toTextDocument(request.activeVirtual);
+  const position = requestPosition(request);
+  const language = request.activeVirtual.languageId;
+  if (language === "html") {
+    const htmlDocument = htmlService.parseHTMLDocument(document);
+    return htmlService.doComplete(document, position, htmlDocument).items;
+  }
+  if (language === "css") {
+    const stylesheet = cssService.parseStylesheet(document);
+    return cssService.doComplete(document, position, stylesheet).items;
+  }
+  if (language === "javascript" || language === "jscript") {
+    return jsCompletion(request, document, position);
+  }
+  return [];
+}
+
+async function hover(request: EmbeddedRequest): Promise<Hover | null> {
+  const document = toTextDocument(request.activeVirtual);
+  const position = requestPosition(request);
+  const language = request.activeVirtual.languageId;
+  if (language === "html") {
+    const htmlDocument = htmlService.parseHTMLDocument(document);
+    return htmlService.doHover(document, position, htmlDocument);
+  }
+  if (language === "css") {
+    const stylesheet = cssService.parseStylesheet(document);
+    return cssService.doHover(document, position, stylesheet);
+  }
+  if (language === "javascript" || language === "jscript") {
+    return jsHover(request, document, position);
+  }
+  return null;
+}
+
+async function definition(request: EmbeddedRequest): Promise<Location | Location[] | null> {
+  const document = toTextDocument(request.activeVirtual);
+  const position = requestPosition(request);
+  const language = request.activeVirtual.languageId;
+  if (language === "css") {
+    const stylesheet = cssService.parseStylesheet(document);
+    return cssService.findDefinition(document, position, stylesheet);
+  }
+  if (language === "javascript" || language === "jscript") {
+    return jsDefinition(request, document, position);
+  }
+  return null;
+}
+
+async function documentSymbols(
+  request: EmbeddedRequest,
+): Promise<DocumentSymbol[] | SymbolInformation[]> {
+  const document = toTextDocument(request.activeVirtual);
+  const language = request.activeVirtual.languageId;
+  if (language === "html") {
+    const htmlDocument = htmlService.parseHTMLDocument(document);
+    return htmlService.findDocumentSymbols2(document, htmlDocument);
+  }
+  if (language === "css") {
+    const stylesheet = cssService.parseStylesheet(document);
+    return cssService.findDocumentSymbols2(document, stylesheet);
+  }
+  return [];
+}
+
+async function foldingRanges(request: EmbeddedRequest): Promise<FoldingRange[]> {
+  const document = toTextDocument(request.activeVirtual);
+  const language = request.activeVirtual.languageId;
+  if (language === "html") {
+    return htmlService.getFoldingRanges(document);
+  }
+  if (language === "css") {
+    return cssService.getFoldingRanges(document);
+  }
+  return [];
+}
+
+async function documentColors(request: EmbeddedRequest): Promise<unknown[]> {
+  const document = toTextDocument(request.activeVirtual);
+  if (request.activeVirtual.languageId !== "css") {
+    return [];
+  }
+  const stylesheet = cssService.parseStylesheet(document);
+  return cssService.findDocumentColors(document, stylesheet);
+}
+
+async function linkedEditingRanges(request: EmbeddedRequest): Promise<{ ranges: Range[] } | null> {
+  const document = toTextDocument(request.activeVirtual);
+  if (request.activeVirtual.languageId !== "html") {
+    return null;
+  }
+  const htmlDocument = htmlService.parseHTMLDocument(document);
+  const ranges = htmlService.findLinkedEditingRanges(
+    document,
+    requestPosition(request),
+    htmlDocument,
+  );
+  return ranges ? { ranges } : null;
 }
 
 function htmlDiagnostics(virtual: VirtualDocument): Diagnostic[] {
@@ -164,6 +300,78 @@ function cssDiagnostics(virtual: VirtualDocument): Diagnostic[] {
   return cssService
     .doValidation(document, stylesheet)
     .map((diagnostic) => ({ ...diagnostic, source: "asp-lsp-css" }));
+}
+
+function jsCompletion(
+  request: EmbeddedRequest,
+  document: TextDocument,
+  position: Position,
+): CompletionItem[] {
+  const project = createLanguageServiceProject(request);
+  try {
+    const fileName = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
+    const entries = project.service.getCompletionsAtPosition(
+      fileName,
+      document.offsetAt(position),
+      {},
+    );
+    return (
+      entries?.entries.map((entry) => ({
+        label: entry.name,
+        kind: tsCompletionItemKind(entry.kind),
+        sortText: entry.sortText,
+      })) ?? []
+    );
+  } finally {
+    project.service.dispose();
+  }
+}
+
+function jsHover(
+  request: EmbeddedRequest,
+  document: TextDocument,
+  position: Position,
+): Hover | null {
+  const project = createLanguageServiceProject(request);
+  try {
+    const fileName = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
+    const info = project.service.getQuickInfoAtPosition(fileName, document.offsetAt(position));
+    if (!info) {
+      return null;
+    }
+    const display = ts.displayPartsToString(info.displayParts ?? []);
+    const documentation = ts.displayPartsToString(info.documentation ?? []);
+    return {
+      contents: {
+        kind: MarkupKind.Markdown,
+        value: documentation ? `\`\`\`javascript\n${display}\n\`\`\`\n\n${documentation}` : display,
+      },
+      range: {
+        start: document.positionAt(info.textSpan.start),
+        end: document.positionAt(info.textSpan.start + info.textSpan.length),
+      },
+    };
+  } finally {
+    project.service.dispose();
+  }
+}
+
+function jsDefinition(
+  request: EmbeddedRequest,
+  document: TextDocument,
+  position: Position,
+): Location[] {
+  const project = createLanguageServiceProject(request);
+  try {
+    const fileName = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
+    return (
+      project.service
+        .getDefinitionAtPosition(fileName, document.offsetAt(position))
+        ?.flatMap((definition) => tsDefinitionToLocation(request, definition)) ?? []
+    );
+  } finally {
+    project.service.dispose();
+  }
 }
 
 async function jsDiagnostics(request: EmbeddedRequest): Promise<Diagnostic[]> {
@@ -349,6 +557,60 @@ function projectConfig(
   };
 }
 
+function tsDefinitionToLocation(
+  request: EmbeddedRequest,
+  definition: ts.DefinitionInfo,
+): Location[] {
+  const activeFile = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
+  const definitionFile = normalizeFileName(definition.fileName);
+  if (definitionFile === activeFile) {
+    const document = toTextDocument(request.activeVirtual);
+    return [
+      {
+        uri: request.activeVirtual.uri,
+        range: {
+          start: document.positionAt(definition.textSpan.start),
+          end: document.positionAt(definition.textSpan.start + definition.textSpan.length),
+        },
+      },
+    ];
+  }
+  const text = cachedReadFile(definitionFile);
+  if (text === undefined) {
+    return [];
+  }
+  const document = TextDocument.create(fileNameToUri(definitionFile), "javascript", 0, text);
+  return [
+    {
+      uri: document.uri,
+      range: {
+        start: document.positionAt(definition.textSpan.start),
+        end: document.positionAt(definition.textSpan.start + definition.textSpan.length),
+      },
+    },
+  ];
+}
+
+function tsCompletionItemKind(kind: string): CompletionItemKind {
+  switch (kind) {
+    case ts.ScriptElementKind.functionElement:
+    case ts.ScriptElementKind.memberFunctionElement:
+      return CompletionItemKind.Function;
+    case ts.ScriptElementKind.classElement:
+      return CompletionItemKind.Class;
+    case ts.ScriptElementKind.constElement:
+      return CompletionItemKind.Constant;
+    case ts.ScriptElementKind.memberVariableElement:
+    case ts.ScriptElementKind.variableElement:
+    case ts.ScriptElementKind.letElement:
+      return CompletionItemKind.Variable;
+    case ts.ScriptElementKind.keyword:
+      return CompletionItemKind.Keyword;
+    default:
+      return CompletionItemKind.Property;
+  }
+}
+
 function defaultProjectConfig(
   ownerFile: string,
   workspaceRoots: string[],
@@ -406,12 +668,29 @@ function toTextDocument(virtual: VirtualDocument): TextDocument {
   return TextDocument.create(virtual.uri, virtual.languageId, 0, virtual.text);
 }
 
+function requestPosition(request: EmbeddedRequest): Position {
+  const position = (request.params as { position?: unknown } | undefined)?.position;
+  if (!position || typeof position !== "object") {
+    throw new Error("params.position is required");
+  }
+  const line = (position as { line?: unknown }).line;
+  const character = (position as { character?: unknown }).character;
+  if (typeof line !== "number" || typeof character !== "number") {
+    throw new Error("params.position must be an LSP position");
+  }
+  return { line, character };
+}
+
 function virtualSourceUri(virtual: VirtualDocument): string {
   return virtual.uri.replace(`.${virtual.languageId}.virtual`, "");
 }
 
 function uriToFileName(uri: string): string {
   return uri.startsWith("file://") ? fileURLToPath(uri) : uri;
+}
+
+function fileNameToUri(fileName: string): string {
+  return pathToFileURL(fileName).toString();
 }
 
 function jsVirtualFileName(uri: string): string {
