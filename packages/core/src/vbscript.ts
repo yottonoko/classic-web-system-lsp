@@ -2360,11 +2360,7 @@ export function getVbscriptSemanticTokens(
       });
       continue;
     }
-    const symbol = resolveSymbolAt(
-      parsed,
-      token.start + Math.floor(token.text.length / 2),
-      symbols,
-    );
+    const symbol = resolveSymbolForToken(parsed, token, symbols);
     if (symbol && !isBuiltinName(symbol.name)) {
       const tokenType = semanticTokenTypeForSymbol(symbol);
       if (!tokenType) {
@@ -6640,7 +6636,7 @@ function tokensInOffsetRange<T extends { start: number; end: number }>(
 }
 
 function identifierTokenAt(parsed: AspParsedDocument, offset: number): VbToken | undefined {
-  return identifierTokens(parsed).find((token) => offset >= token.start && offset <= token.end);
+  return tokenAtOffset(identifierTokens(parsed), offset);
 }
 
 function previousSignificantToken(parsed: AspParsedDocument, offset: number): VbToken | undefined {
@@ -6680,6 +6676,26 @@ function findPreviousSignificantToken(tokens: VbToken[], offset: number): VbToke
     }
   }
   return found;
+}
+
+function tokenAtOffset<T extends { start: number; end: number }>(
+  tokens: readonly T[],
+  offset: number,
+): T | undefined {
+  let low = 0;
+  let high = tokens.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const token = tokens[middle];
+    if (offset < token.start) {
+      high = middle - 1;
+    } else if (offset > token.end) {
+      low = middle + 1;
+    } else {
+      return token;
+    }
+  }
+  return undefined;
 }
 
 function callExpressionAt(

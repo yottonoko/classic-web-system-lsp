@@ -1979,10 +1979,80 @@ Response.Write missingName
           diagnosticsReuseLog,
           ...server.takePendingNotifications("window/logMessage"),
         ]);
+        expect(logs).not.toContain("analysis.vbscript.hydrate");
         expect(logs).not.toContain("check.vbscript.diagnostics.symbols");
         expect(logs).not.toContain("check.vbscript.projectContext");
         expect(logs).not.toContain("projectUpdate.scheduled");
         expect(source).toContain("' benchmark y");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("reuses and shifts HTML and CSS diagnostics after VBScript edits", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/embedded-diagnostics-reuse-after-vb-edit.asp";
+        let source = `<%
+Dim value
+Response.Write value
+%>
+<style>
+.broken { color: }
+</style>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const firstDiagnostics = await waitForDiagnosticsContaining(server, "asp-lsp-css");
+        await waitForLogContaining(server, "LSP check completed");
+        const firstCss = diagnosticFromSource(firstDiagnostics, "asp-lsp-css");
+        expect(firstCss?.range.start.line).toBe(5);
+        server.takePendingNotifications("window/logMessage");
+        server.takePendingNotifications("textDocument/publishDiagnostics");
+
+        source = notifyRangedReplacement(
+          server,
+          uri,
+          source,
+          2,
+          "Dim value",
+          "Dim value\nDim nextValue",
+        );
+
+        const nextDiagnostics = await waitForDiagnosticsContaining(server, "asp-lsp-css");
+        const htmlReuseLog = await waitForLogContaining(server, "htmlDiagnostics.reuse");
+        const cssReuseLog = await waitForLogContaining(server, "cssDiagnostics.reuse");
+        const nextCss = diagnosticFromSource(nextDiagnostics, "asp-lsp-css");
+        expect(nextCss?.range.start.line).toBe(6);
+        const logs = JSON.stringify([
+          htmlReuseLog,
+          cssReuseLog,
+          ...server.takePendingNotifications("window/logMessage"),
+        ]);
+        expect(logs).not.toContain("css.context.create");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -9590,6 +9660,19 @@ function diagnosticContaining(message: JsonRpcMessage, expected: string) {
       }
     )?.diagnostics ?? [];
   return diagnostics.find((diagnostic) => diagnostic.message?.includes(expected));
+}
+
+function diagnosticFromSource(message: JsonRpcMessage, source: string) {
+  const diagnostics =
+    (
+      message.params as {
+        diagnostics?: Array<{
+          source?: string;
+          range: { start: { line: number; character: number } };
+        }>;
+      }
+    )?.diagnostics ?? [];
+  return diagnostics.find((diagnostic) => diagnostic.source === source);
 }
 
 async function waitForCompletionContaining(

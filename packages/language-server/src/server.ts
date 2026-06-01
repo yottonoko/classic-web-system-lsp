@@ -2377,11 +2377,11 @@ function refreshCachedDocumentIncremental(
   cached.lastEditIsOrdinaryVbscriptComment =
     updated.impact.kind === "incremental" &&
     updated.impact.language === "vbscript" &&
-    isOrdinaryVbscriptCommentEdit(previous, cached, change);
+    isOrdinaryVbscriptCommentEdit(previous, change);
   seedIncludeDiagnosticsAfterIncrementalChange(previous, cached, settings, change, updated.impact);
   seedVbProjectDocumentsAfterStableIncludeGraph(previous, cached, settings);
   seedVbReuseAfterIncrementalChange(previous, cached, settings, change, updated.impact);
-  seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
+  seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, change, updated.impact);
   seedJsDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
   cache.set(document.uri, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
@@ -2428,17 +2428,14 @@ async function refreshCachedDiagnosticsDocumentIncrementalAsync(
   const cached = createCachedDocument(document, updated.parsed, settings, editHistory, "skeleton");
   cached.lastEditImpact = updated.impact;
   cached.lastIncrementalChange = change;
-  if (updated.impact.kind === "incremental" && updated.impact.language === "vbscript") {
-    await hydrateCachedVbscriptCstAsync(cached, settings, "analysis");
-  }
   cached.lastEditIsOrdinaryVbscriptComment =
     updated.impact.kind === "incremental" &&
     updated.impact.language === "vbscript" &&
-    isOrdinaryVbscriptCommentEdit(previous, cached, change);
+    isOrdinaryVbscriptCommentEdit(previous, change);
   seedIncludeDiagnosticsAfterIncrementalChange(previous, cached, settings, change, updated.impact);
   seedVbProjectDocumentsAfterStableIncludeGraph(previous, cached, settings);
   seedVbReuseAfterIncrementalChange(previous, cached, settings, change, updated.impact);
-  seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
+  seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, change, updated.impact);
   seedJsDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
   cache.set(document.uri, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
@@ -3550,6 +3547,14 @@ function cssContext(cached: CachedDocument): CachedCssContext | undefined {
     return undefined;
   }
   const key = cssContextKey(virtual);
+  return cssContextForVirtual(cached, virtual, key);
+}
+
+function cssContextForVirtual(
+  cached: CachedDocument,
+  virtual: VirtualDocument,
+  key: string,
+): CachedCssContext {
   const reusable = cached.cssContext;
   if (reusable?.key === key) {
     const context = reusable.virtual === virtual ? reusable : { ...reusable, virtual };
@@ -3576,6 +3581,10 @@ function cssContextKey(virtual: VirtualDocument): string {
 function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
   const analysis = analysisFor(cached);
   if (analysis.htmlDiagnostics) {
+    logDebugSummary(
+      cachedSettings(cached.source.uri),
+      `[asp-lsp] htmlDiagnostics.reuse: ${cached.source.uri}`,
+    );
     return analysis.htmlDiagnostics.items;
   }
   const virtual = getCachedVirtual(cached, "html");
@@ -3616,17 +3625,23 @@ function htmlDiagnostics(cached: CachedDocument): Diagnostic[] {
 
 function cssDiagnostics(cached: CachedDocument): Diagnostic[] {
   const analysis = analysisFor(cached);
-  const context = cssContext(cached);
-  if (!context) {
+  const virtual = getCachedVirtual(cached, "css");
+  if (!virtual) {
     return [];
   }
-  if (analysis.cssDiagnostics?.key === context.key) {
+  const key = cssContextKey(virtual);
+  if (analysis.cssDiagnostics?.key === key) {
+    logDebugSummary(
+      cachedSettings(cached.source.uri),
+      `[asp-lsp] cssDiagnostics.reuse: ${cached.source.uri}`,
+    );
     return analysis.cssDiagnostics.items;
   }
-  const { document, stylesheet, virtual } = context;
+  const context = cssContextForVirtual(cached, virtual, key);
+  const { document, stylesheet, virtual: contextVirtual } = context;
   const diagnostics = cssService
     .doValidation(document, stylesheet)
-    .map((diagnostic) => remapDiagnostic(virtual, diagnostic, "asp-lsp-css"))
+    .map((diagnostic) => remapDiagnostic(contextVirtual, diagnostic, "asp-lsp-css"))
     .filter(isDiagnostic);
   analysis.cssDiagnostics = { key: context.key, items: diagnostics, text: cached.parsed.text };
   return diagnostics;
@@ -4294,7 +4309,6 @@ function seedVbReuseAfterIncrementalChange(
 
 function isOrdinaryVbscriptCommentEdit(
   previous: CachedDocument,
-  cached: CachedDocument,
   change: AspIncrementalChange,
 ): boolean {
   if (change.text.includes("\n") || change.text.includes("\r")) {
@@ -4305,13 +4319,14 @@ function isOrdinaryVbscriptCommentEdit(
     change.rangeLength === undefined
       ? previous.source.offsetAt(change.range.end)
       : startOffset + change.rangeLength;
-  const insertedEndOffset = startOffset + change.text.length;
-  return (
-    isOrdinaryVbscriptCommentToken(vbTokenCoveringRange(previous.parsed, startOffset, endOffset)) &&
-    isOrdinaryVbscriptCommentToken(
-      vbTokenCoveringRange(cached.parsed, startOffset, insertedEndOffset),
-    )
-  );
+  const token = vbTokenCoveringRange(previous.parsed, startOffset, endOffset);
+  if (!isOrdinaryVbscriptCommentToken(token)) {
+    return false;
+  }
+  const relativeStart = startOffset - token.start;
+  const relativeEnd = endOffset - token.start;
+  const nextText = `${token.text.slice(0, relativeStart)}${change.text}${token.text.slice(relativeEnd)}`;
+  return isOrdinaryVbscriptCommentText(nextText);
 }
 
 function vbTokenCoveringRange(
@@ -4371,25 +4386,67 @@ function tokenCoveringRange(
   return candidate && candidate.end >= endOffset ? candidate : undefined;
 }
 
-function isOrdinaryVbscriptCommentToken(token: VbToken | undefined): boolean {
-  return token?.kind === "comment" && !token.text.startsWith("'''");
+function isOrdinaryVbscriptCommentToken(token: VbToken | undefined): token is VbToken {
+  return token?.kind === "comment" && isOrdinaryVbscriptCommentText(token.text);
+}
+
+function isOrdinaryVbscriptCommentText(text: string): boolean {
+  return text.startsWith("'") && !text.startsWith("'''");
 }
 
 function seedSyntaxDiagnosticsAfterIncrementalChange(
   previous: CachedDocument,
   cached: CachedDocument,
+  change: AspIncrementalChange,
   impact: AspEditImpact,
 ): void {
-  if (impact.kind !== "incremental" || impact.delta !== 0) {
+  if (impact.kind !== "incremental") {
     return;
   }
   const analysis = analysisFor(cached);
   if (impact.language !== "html" && previous.analysis?.htmlDiagnostics) {
-    analysis.htmlDiagnostics = previous.analysis.htmlDiagnostics;
+    analysis.htmlDiagnostics = {
+      ...previous.analysis.htmlDiagnostics,
+      text: cached.parsed.text,
+      items: shiftDiagnosticsForIncrementalChange(
+        previous.analysis.htmlDiagnostics.items,
+        previous.source.uri,
+        previous.parsed.text,
+        cached.parsed.text,
+        change,
+        impact,
+      ),
+    };
   }
   if (impact.language !== "css" && previous.analysis?.cssDiagnostics) {
-    analysis.cssDiagnostics = previous.analysis.cssDiagnostics;
+    analysis.cssDiagnostics = {
+      ...previous.analysis.cssDiagnostics,
+      text: cached.parsed.text,
+      items: shiftDiagnosticsForIncrementalChange(
+        previous.analysis.cssDiagnostics.items,
+        previous.source.uri,
+        previous.parsed.text,
+        cached.parsed.text,
+        change,
+        impact,
+      ),
+    };
   }
+}
+
+function shiftDiagnosticsForIncrementalChange(
+  diagnostics: Diagnostic[],
+  rootUri: string,
+  previousText: string,
+  nextText: string,
+  change: AspIncrementalChange,
+  impact: AspEditImpact,
+): Diagnostic[] {
+  return impact.delta === 0
+    ? diagnostics
+    : diagnostics.map((diagnostic) =>
+        shiftDiagnosticForIncrementalChange(diagnostic, rootUri, previousText, nextText, change),
+      );
 }
 
 function seedJsDiagnosticsAfterIncrementalChange(
@@ -12920,23 +12977,29 @@ function addFallbackVbSemanticTokens(
   rangeEnd: number,
 ): void {
   const identifierTokens = vbIdentifierTokensInSourceRange(cached, rangeStart, rangeEnd);
-  const namesInRange = new Set(identifierTokens.map((token) => token.text.toLowerCase()));
+  const tokensByLowerName = new Map<string, VbToken[]>();
+  for (const token of identifierTokens) {
+    const lowerName = token.text.toLowerCase();
+    const tokensForName = tokensByLowerName.get(lowerName);
+    if (tokensForName) {
+      tokensForName.push(token);
+    } else {
+      tokensByLowerName.set(lowerName, [token]);
+    }
+  }
   const candidates = (context.symbols ?? []).filter(
     (symbol) =>
       symbol.sourceUri !== cached.parsed.uri &&
       !symbol.scopeName &&
       !symbol.memberOf &&
-      namesInRange.has(symbol.name.toLowerCase()),
+      tokensByLowerName.has(symbol.name.toLowerCase()),
   );
   for (const symbol of candidates) {
     const tokenType = fallbackVbSemanticTokenType(symbol.kind);
     if (!tokenType) {
       continue;
     }
-    for (const token of identifierTokens) {
-      if (token.text.toLowerCase() !== symbol.name.toLowerCase()) {
-        continue;
-      }
+    for (const token of tokensByLowerName.get(symbol.name.toLowerCase()) ?? []) {
       const position = cached.source.positionAt(token.start);
       tokens.push({
         line: position.line,
