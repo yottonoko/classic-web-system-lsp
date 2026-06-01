@@ -549,7 +549,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
                     "uri": uri,
                     "languageId": "classic-asp",
                     "version": 1,
-                    "text": "<%\nFunction BuildName(first)\nBuildName=first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\nClass Customer\nEnd Class\n%>",
+                    "text": "<%\nFunction BuildName(first)\nBuildName=first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\nClass Customer\nPublic Function DisplayName()\nDisplayName = BuildName(\"C\")\nEnd Function\nEnd Class\n%>",
                 },
             },
         }),
@@ -625,11 +625,18 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         "textDocument/documentSymbol",
         json!({ "textDocument": { "uri": uri } }),
     );
-    assert!(document_symbols["result"]
+    let document_symbol_items = document_symbols["result"]
         .as_array()
-        .expect("document symbols")
+        .expect("document symbols");
+    assert!(document_symbol_items
         .iter()
         .any(|symbol| symbol["name"] == json!("BuildName")));
+    assert!(document_symbol_items
+        .iter()
+        .any(|symbol| symbol["name"] == json!("Customer.DisplayName")));
+    assert!(!document_symbol_items
+        .iter()
+        .any(|symbol| symbol["name"] == json!("customerName")));
 
     let folding_ranges = request(
         &mut stdin,

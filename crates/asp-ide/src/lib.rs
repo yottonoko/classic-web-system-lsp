@@ -573,23 +573,30 @@ impl Ide {
         let items = symbols
             .into_iter()
             .filter(|symbol| {
+                symbol
+                    .get("sourceUri")
+                    .and_then(Value::as_str)
+                    .map_or(true, |source_uri| source_uri == uri)
+            })
+            .filter(|symbol| {
                 matches!(
                     symbol.get("kind").and_then(Value::as_str),
-                    Some("function" | "sub" | "class" | "property" | "variable" | "constant")
+                    Some("function" | "sub" | "class" | "method" | "property")
                 )
             })
             .filter_map(|symbol| {
                 let name = symbol.get("name")?.as_str()?;
-                let range = symbol
-                    .get("scopeRange")
-                    .or_else(|| symbol.get("range"))?
-                    .clone();
-                let selection_range = symbol.get("range")?.clone();
+                let display_name = symbol
+                    .get("memberOf")
+                    .and_then(Value::as_str)
+                    .map(|owner| format!("{owner}.{name}"))
+                    .unwrap_or_else(|| name.to_string());
+                let range = symbol.get("range")?.clone();
                 Some(serde_json::json!({
-                    "name": name,
-                    "kind": symbol_kind(&symbol),
+                    "name": display_name,
+                    "kind": document_symbol_kind(&symbol),
                     "range": range,
-                    "selectionRange": selection_range,
+                    "selectionRange": range,
                 }))
             })
             .collect::<Vec<_>>();
@@ -1758,6 +1765,14 @@ fn symbol_kind(symbol: &Value) -> u32 {
         Some("constant") => 14,
         Some("variable" | "parameter") => 13,
         _ => 13,
+    }
+}
+
+fn document_symbol_kind(symbol: &Value) -> u32 {
+    match symbol.get("kind").and_then(Value::as_str) {
+        Some("class") => 5,
+        Some("property") => 7,
+        _ => 12,
     }
 }
 
