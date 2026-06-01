@@ -1244,9 +1244,20 @@ fn handle_request(
         | "textDocument/rangeFormatting"
         | "textDocument/onTypeFormatting" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
-            let range = (request.method == "textDocument/rangeFormatting")
-                .then(|| request_range(&request.params))
-                .transpose()?;
+            let range = match request.method.as_str() {
+                "textDocument/rangeFormatting" => Some(request_range(&request.params)?),
+                "textDocument/onTypeFormatting" => {
+                    let position = request_position(&request.params)?;
+                    Some(TextRange {
+                        start: TextPosition {
+                            line: position.line,
+                            character: 0,
+                        },
+                        end: position,
+                    })
+                }
+                _ => None,
+            };
             let options = request.params.get("options").unwrap_or(&Value::Null);
             let result = state
                 .ide

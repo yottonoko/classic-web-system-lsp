@@ -958,15 +958,16 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         "textDocument/onTypeFormatting",
         json!({
             "textDocument": { "uri": uri },
-            "position": { "line": 5, "character": 24 },
+            "position": { "line": 2, "character": 15 },
             "ch": ">",
             "options": { "tabSize": 2, "insertSpaces": true },
         }),
     );
-    assert!(on_type_formatting["result"][0]["newText"]
+    let on_type_text = on_type_formatting["result"][0]["newText"]
         .as_str()
-        .expect("on type formatted text")
-        .contains("  Response.Write BuildName(\"B\")"));
+        .expect("on type formatted text");
+    assert_eq!(on_type_text, "BuildName = first");
+    assert!(!on_type_text.contains("<%"));
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
