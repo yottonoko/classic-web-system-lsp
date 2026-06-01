@@ -549,7 +549,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
                     "uri": uri,
                     "languageId": "classic-asp",
                     "version": 1,
-                    "text": "<%\nFunction BuildName(first)\nBuildName=first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\nClass Customer\nPublic Function DisplayName()\nDisplayName = BuildName(\"C\")\nEnd Function\nEnd Class\nSub LocalOne()\nDim scopedName\nscopedName = \"A\"\nEnd Sub\nSub LocalTwo()\nDim scopedName\nscopedName = \"B\"\nEnd Sub\n%>",
+                    "text": "<%\nFunction BuildName(first)\nBuildName=first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\nClass Customer\nPublic Function DisplayName()\nDisplayName = BuildName(\"C\")\nEnd Function\nPublic Sub RenderSelf()\nMe.DisplayName()\nEnd Sub\nEnd Class\nSub LocalOne()\nDim scopedName\nscopedName = \"A\"\nEnd Sub\nSub LocalTwo()\nDim scopedName\nscopedName = \"B\"\nEnd Sub\n%>",
                 },
             },
         }),
@@ -688,7 +688,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         "textDocument/references",
         json!({
             "textDocument": { "uri": uri },
-            "position": { "line": 16, "character": 1 },
+            "position": { "line": 19, "character": 1 },
             "context": { "includeDeclaration": true },
         }),
     );
@@ -697,7 +697,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         .expect("scoped references");
     assert_eq!(scoped_reference_items.len(), 2);
     assert!(!scoped_reference_items.iter().any(|reference| {
-        matches!(reference["range"]["start"]["line"].as_u64(), Some(19 | 20))
+        matches!(reference["range"]["start"]["line"].as_u64(), Some(22 | 23))
     }));
     let second_scoped_references = request(
         &mut stdin,
@@ -706,7 +706,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         "textDocument/references",
         json!({
             "textDocument": { "uri": uri },
-            "position": { "line": 20, "character": 1 },
+            "position": { "line": 23, "character": 1 },
             "context": { "includeDeclaration": true },
         }),
     );
@@ -715,7 +715,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         .expect("second scoped references");
     assert_eq!(second_scoped_reference_items.len(), 2);
     assert!(!second_scoped_reference_items.iter().any(|reference| {
-        matches!(reference["range"]["start"]["line"].as_u64(), Some(15 | 16))
+        matches!(reference["range"]["start"]["line"].as_u64(), Some(18 | 19))
     }));
 
     let prepare_rename = request(
@@ -756,7 +756,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         "textDocument/rename",
         json!({
             "textDocument": { "uri": uri },
-            "position": { "line": 16, "character": 1 },
+            "position": { "line": 19, "character": 1 },
             "newName": "scopedValue",
         }),
     );
@@ -766,7 +766,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     assert_eq!(scoped_rename_edits.len(), 2);
     assert!(!scoped_rename_edits
         .iter()
-        .any(|edit| { matches!(edit["range"]["start"]["line"].as_u64(), Some(19 | 20)) }));
+        .any(|edit| { matches!(edit["range"]["start"]["line"].as_u64(), Some(22 | 23)) }));
     let second_scoped_rename = request(
         &mut stdin,
         &mut reader,
@@ -774,7 +774,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         "textDocument/rename",
         json!({
             "textDocument": { "uri": uri },
-            "position": { "line": 20, "character": 1 },
+            "position": { "line": 23, "character": 1 },
             "newName": "secondScopedValue",
         }),
     );
@@ -784,7 +784,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     assert_eq!(second_scoped_rename_edits.len(), 2);
     assert!(!second_scoped_rename_edits
         .iter()
-        .any(|edit| { matches!(edit["range"]["start"]["line"].as_u64(), Some(15 | 16)) }));
+        .any(|edit| { matches!(edit["range"]["start"]["line"].as_u64(), Some(18 | 19)) }));
 
     let workspace_symbols = request(
         &mut stdin,
@@ -964,6 +964,49 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         json!({ "item": render_hierarchy["result"][0].clone() }),
     );
     assert!(outgoing_calls["result"].to_string().contains("BuildName"));
+    let display_hierarchy = request(
+        &mut stdin,
+        &mut reader,
+        44,
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 10, "character": 18 },
+        }),
+    );
+    assert!(display_hierarchy["result"]
+        .to_string()
+        .contains("Customer.DisplayName"));
+    let display_incoming_calls = request(
+        &mut stdin,
+        &mut reader,
+        45,
+        "callHierarchy/incomingCalls",
+        json!({ "item": display_hierarchy["result"][0].clone() }),
+    );
+    assert!(display_incoming_calls["result"]
+        .to_string()
+        .contains("Customer.RenderSelf"));
+    let self_hierarchy = request(
+        &mut stdin,
+        &mut reader,
+        46,
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 13, "character": 13 },
+        }),
+    );
+    let self_outgoing_calls = request(
+        &mut stdin,
+        &mut reader,
+        47,
+        "callHierarchy/outgoingCalls",
+        json!({ "item": self_hierarchy["result"][0].clone() }),
+    );
+    assert!(self_outgoing_calls["result"]
+        .to_string()
+        .contains("Customer.DisplayName"));
 
     let type_hierarchy = request(
         &mut stdin,

@@ -1046,18 +1046,15 @@ impl Ide {
             let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
             let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
             for call in call_sites_in_vbscript(text, &parsed) {
-                let Some(resolved) = resolve_symbol_for_identifier(
-                    document_uri,
-                    text,
-                    &workspace_symbols,
-                    &call.name,
-                ) else {
+                let Some(resolved) =
+                    resolve_call_target_symbol(document_uri, text, &workspace_symbols, &call)
+                else {
                     continue;
                 };
                 if !same_symbol(resolved, target) {
                     continue;
                 };
-                if is_symbol_declaration_range(resolved, document_uri, &call.name.range) {
+                if is_symbol_declaration_range(resolved, document_uri, &call.member.range) {
                     continue;
                 }
                 let Some(caller) = enclosing_callable_symbol(text, &symbols, call.offset) else {
@@ -1100,14 +1097,14 @@ impl Ide {
                 continue;
             }
             let Some(callee) =
-                resolve_symbol_for_identifier(item_uri, text, &workspace_symbols, &call.name)
+                resolve_call_target_symbol(item_uri, text, &workspace_symbols, &call)
             else {
                 continue;
             };
             if same_symbol(callee, source) || !is_callable_symbol(callee) {
                 continue;
             }
-            if is_symbol_declaration_range(callee, item_uri, &call.name.range) {
+            if is_symbol_declaration_range(callee, item_uri, &call.member.range) {
                 continue;
             }
             let Some(to) = hierarchy_item_from_symbol(item_uri, callee) else {
@@ -1430,7 +1427,8 @@ struct IdentifierOccurrence {
 }
 
 struct CallSite {
-    name: IdentifierOccurrence,
+    owner: Option<IdentifierOccurrence>,
+    member: IdentifierOccurrence,
     offset: usize,
     range: Value,
 }
@@ -1521,6 +1519,13 @@ fn identifier_prefix_at(text: &str, offset: usize) -> String {
         .collect()
 }
 
+fn previous_non_whitespace_char_before(text: &str, offset: usize) -> Option<(usize, char)> {
+    utf16_chars(text)
+        .into_iter()
+        .filter(|(char_offset, character)| *char_offset < offset && !character.is_whitespace())
+        .last()
+}
+
 fn identifier_ranges(text: &str, parsed: &Value, name: &str) -> Vec<Value> {
     let lower_name = name.to_lowercase();
     identifiers_in_vbscript(text, parsed)
@@ -1533,15 +1538,37 @@ fn identifier_ranges(text: &str, parsed: &Value, name: &str) -> Vec<Value> {
 fn call_sites_in_vbscript(text: &str, parsed: &Value) -> Vec<CallSite> {
     identifiers_in_vbscript(text, parsed)
         .into_iter()
-        .filter_map(|identifier| {
-            let offset = next_non_whitespace_offset(text, identifier.end, '(')?;
+        .filter_map(|member| {
+            let offset = next_non_whitespace_offset(text, member.end, '(')?;
+            let owner = member_call_owner(text, &member);
+            let range = owner
+                .as_ref()
+                .and_then(|owner| range_from_offsets(text, owner.start, member.end))
+                .unwrap_or_else(|| member.range.clone());
             Some(CallSite {
-                range: identifier.range.clone(),
-                name: identifier,
+                owner,
+                member,
                 offset,
+                range,
             })
         })
         .collect()
+}
+
+fn member_call_owner(text: &str, member: &IdentifierOccurrence) -> Option<IdentifierOccurrence> {
+    let (dot_offset, '.') = previous_non_whitespace_char_before(text, member.start)? else {
+        return None;
+    };
+    let (owner_char_offset, _) = previous_non_whitespace_char_before(text, dot_offset)?;
+    let (start, end) = identifier_offsets_at(text, owner_char_offset)?;
+    let range = range_from_offsets(text, start, end)?;
+    let name = slice_utf16(text, start, end).ok()?.to_string();
+    Some(IdentifierOccurrence {
+        name,
+        start,
+        end,
+        range,
+    })
 }
 
 fn identifiers_in_vbscript(text: &str, parsed: &Value) -> Vec<IdentifierOccurrence> {
@@ -1695,6 +1722,86 @@ fn resolve_symbol_for_identifier<'a>(
     visible_symbol_by_name(document_uri, text, symbols, &identifier.name, offset)
 }
 
+fn resolve_call_target_symbol<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &'a [Value],
+    call: &CallSite,
+) -> Option<&'a Value> {
+    if let Some(owner) = &call.owner {
+        let type_name = if owner.name.eq_ignore_ascii_case("me") {
+            current_class_name_at(document_uri, text, symbols, call.offset)
+        } else {
+            infer_variable_type_name(document_uri, text, symbols, owner, call.offset)
+        }?;
+        return resolve_member_symbol(symbols, &type_name, &call.member.name)
+            .filter(|symbol| is_callable_symbol(symbol));
+    }
+    resolve_symbol_for_identifier(document_uri, text, symbols, &call.member)
+        .filter(|symbol| is_callable_symbol(symbol))
+}
+
+fn current_class_name_at<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &'a [Value],
+    offset: usize,
+) -> Option<&'a str> {
+    symbols
+        .iter()
+        .filter(|symbol| {
+            symbol.get("kind").and_then(Value::as_str) == Some("class")
+                && symbol
+                    .get("sourceUri")
+                    .and_then(Value::as_str)
+                    .is_some_and(|source_uri| source_uri == document_uri)
+                && symbol
+                    .get("scopeRange")
+                    .is_some_and(|range| range_contains_offset(text, range, offset))
+        })
+        .filter_map(|symbol| {
+            let scope = symbol.get("scopeRange")?;
+            let size = range_size(scope).unwrap_or(usize::MAX);
+            Some((symbol.get("name")?.as_str()?, size))
+        })
+        .min_by_key(|(_, size)| *size)
+        .map(|(name, _)| name)
+}
+
+fn infer_variable_type_name<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &'a [Value],
+    identifier: &IdentifierOccurrence,
+    offset: usize,
+) -> Option<&'a str> {
+    resolve_symbol_for_identifier(document_uri, text, symbols, identifier)
+        .or_else(|| visible_symbol_by_name(document_uri, text, symbols, &identifier.name, offset))
+        .and_then(symbol_type_name)
+}
+
+fn symbol_type_name(symbol: &Value) -> Option<&str> {
+    symbol
+        .get("type")
+        .and_then(|type_ref| type_ref.get("name"))
+        .and_then(Value::as_str)
+        .or_else(|| symbol.get("typeName").and_then(Value::as_str))
+}
+
+fn resolve_member_symbol<'a>(
+    symbols: &'a [Value],
+    type_name: &str,
+    member_name: &str,
+) -> Option<&'a Value> {
+    symbols.iter().find(|symbol| {
+        symbol_name_eq(symbol, member_name)
+            && symbol
+                .get("memberOf")
+                .and_then(Value::as_str)
+                .is_some_and(|owner| owner.eq_ignore_ascii_case(type_name))
+    })
+}
+
 fn visible_symbol_by_name<'a>(
     document_uri: &str,
     text: &str,
@@ -1825,21 +1932,21 @@ fn is_type_hierarchy_symbol(symbol: &Value) -> bool {
 }
 
 fn hierarchy_item_from_symbol(uri: &str, symbol: &Value) -> Option<Value> {
-    let name = symbol.get("name")?.as_str()?;
+    let display_name = hierarchy_symbol_name(symbol)?;
     let range = symbol
         .get("scopeRange")
         .or_else(|| symbol.get("range"))?
         .clone();
     let selection_range = symbol.get("range")?.clone();
     Some(serde_json::json!({
-        "name": name,
+        "name": display_name,
         "kind": symbol_kind(symbol),
         "uri": symbol.get("sourceUri").and_then(Value::as_str).unwrap_or(uri),
         "range": range,
         "selectionRange": selection_range,
         "data": {
             "uri": symbol.get("sourceUri").and_then(Value::as_str).unwrap_or(uri),
-            "name": name,
+            "name": display_name,
         },
     }))
 }
