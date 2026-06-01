@@ -602,6 +602,21 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         json!({ "line": 1, "character": 9 })
     );
 
+    let type_definition = request(
+        &mut stdin,
+        &mut reader,
+        43,
+        "textDocument/typeDefinition",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 20, "character": 2 },
+        }),
+    );
+    assert_eq!(type_definition["result"]["uri"], json!(uri));
+    assert_eq!(
+        type_definition["result"]["range"]["start"],
+        json!({ "line": 9, "character": 6 })
+    );
     let signature = request(
         &mut stdin,
         &mut reader,

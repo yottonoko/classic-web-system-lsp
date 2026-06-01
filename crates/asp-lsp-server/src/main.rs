@@ -995,10 +995,7 @@ fn handle_request(
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
-        "textDocument/definition"
-        | "textDocument/declaration"
-        | "textDocument/typeDefinition"
-        | "textDocument/implementation" => {
+        "textDocument/definition" | "textDocument/declaration" | "textDocument/implementation" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
             let result = state.ide.definition(&uri, position)?;
@@ -1009,6 +1006,16 @@ fn handle_request(
             } else {
                 result
             };
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/typeDefinition" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let result = state.ide.type_definition(&uri, position)?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())

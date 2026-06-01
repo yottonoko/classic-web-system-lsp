@@ -560,6 +560,51 @@ impl Ide {
         Ok(serde_json::json!({ "uri": target_uri, "range": range }))
     }
 
+    pub fn type_definition(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some((occurrence, context)) = self.identifier_context_at_position(uri, position)?
+        else {
+            return Ok(Value::Null);
+        };
+        let workspace_symbols = self.workspace_vb_symbols()?;
+        let resolved_symbol = resolve_semantic_symbol(
+            uri,
+            &context.text,
+            &workspace_symbols,
+            &occurrence,
+        )
+        .or_else(|| {
+            resolve_symbol_for_identifier(uri, &context.text, &workspace_symbols, &occurrence)
+        });
+        let type_name = resolved_symbol
+            .and_then(class_type_name_from_symbol)
+            .or_else(|| resolved_symbol.and_then(member_owner_name_from_symbol))
+            .or_else(|| {
+                member_access_owner_type_name(uri, &context.text, &workspace_symbols, &occurrence)
+            })
+            .or_else(|| {
+                member_access_subject_type_name(
+                    uri,
+                    &context.text,
+                    &workspace_symbols,
+                    &occurrence,
+                    context.offset,
+                )
+            });
+        let Some(class_symbol) =
+            type_name.and_then(|type_name| resolve_class_symbol(&workspace_symbols, type_name))
+        else {
+            return Ok(Value::Null);
+        };
+        let Some(range) = class_symbol.get("range").cloned() else {
+            return Ok(Value::Null);
+        };
+        let target_uri = class_symbol
+            .get("sourceUri")
+            .and_then(Value::as_str)
+            .unwrap_or(uri);
+        Ok(serde_json::json!({ "uri": target_uri, "range": range }))
+    }
+
     pub fn signature_help(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
         let Some(context) = self.vb_context(uri, position)? else {
             return Ok(Value::Null);
@@ -1306,6 +1351,27 @@ impl Ide {
         uri: &str,
         position: TextPosition,
     ) -> Result<Option<(Value, VbContext)>, String> {
+        let Some((occurrence, context)) = self.identifier_context_at_position(uri, position)?
+        else {
+            return Ok(None);
+        };
+        let workspace_symbols = self.workspace_vb_symbols()?;
+        let symbol =
+            resolve_symbol_for_identifier(uri, &context.text, &workspace_symbols, &occurrence)
+                .cloned()
+                .or_else(|| {
+                    self.workspace_symbol_by_name(&occurrence.name)
+                        .ok()
+                        .flatten()
+                });
+        Ok(symbol.map(|symbol| (symbol, context)))
+    }
+
+    fn identifier_context_at_position(
+        &self,
+        uri: &str,
+        position: TextPosition,
+    ) -> Result<Option<(IdentifierOccurrence, VbContext)>, String> {
         let Some(context) = self.vb_context(uri, position)? else {
             return Ok(None);
         };
@@ -1318,18 +1384,15 @@ impl Ide {
         let Some(range) = range_from_offsets(&context.text, start, end) else {
             return Ok(None);
         };
-        let occurrence = IdentifierOccurrence {
-            name: word.clone(),
-            start,
-            end,
-            range,
-        };
-        let workspace_symbols = self.workspace_vb_symbols()?;
-        let symbol =
-            resolve_symbol_for_identifier(uri, &context.text, &workspace_symbols, &occurrence)
-                .cloned()
-                .or_else(|| self.workspace_symbol_by_name(&word).ok().flatten());
-        Ok(symbol.map(|symbol| (symbol, context)))
+        Ok(Some((
+            IdentifierOccurrence {
+                name: word,
+                start,
+                end,
+                range,
+            },
+            context,
+        )))
     }
 
     fn workspace_symbol_by_name(&self, name: &str) -> Result<Option<Value>, String> {
@@ -1830,12 +1893,85 @@ fn infer_variable_type_name<'a>(
         .and_then(symbol_type_name)
 }
 
+fn member_access_owner_type_name<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &'a [Value],
+    identifier: &IdentifierOccurrence,
+) -> Option<&'a str> {
+    let owner = member_call_owner(text, identifier)?;
+    let offset = identifier.start + ((identifier.end.saturating_sub(identifier.start)) / 2);
+    if owner.name.eq_ignore_ascii_case("me") {
+        current_class_name_at(document_uri, text, symbols, offset)
+    } else {
+        infer_variable_type_name(document_uri, text, symbols, &owner, offset)
+    }
+}
+
+fn member_access_subject_type_name<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &'a [Value],
+    identifier: &IdentifierOccurrence,
+    offset: usize,
+) -> Option<&'a str> {
+    next_non_whitespace_offset(text, identifier.end, '.')?;
+    if identifier.name.eq_ignore_ascii_case("me") {
+        current_class_name_at(document_uri, text, symbols, offset)
+    } else {
+        infer_variable_type_name(document_uri, text, symbols, identifier, offset)
+    }
+}
+
 fn symbol_type_name(symbol: &Value) -> Option<&str> {
     symbol
         .get("type")
-        .and_then(|type_ref| type_ref.get("name"))
+        .and_then(class_type_name_from_type_ref)
+        .or_else(|| {
+            symbol
+                .get("typeName")
+                .and_then(Value::as_str)
+                .and_then(single_type_name_without_nothing)
+        })
+}
+
+fn class_type_name_from_symbol(symbol: &Value) -> Option<&str> {
+    symbol_type_name(symbol)
+}
+
+fn member_owner_name_from_symbol(symbol: &Value) -> Option<&str> {
+    let has_type = symbol.get("type").is_some() || symbol.get("typeName").is_some();
+    (!has_type)
+        .then(|| symbol.get("memberOf").and_then(Value::as_str))
+        .flatten()
+}
+
+fn class_type_name_from_type_ref(type_ref: &Value) -> Option<&str> {
+    if let Some(union_types) = type_ref.get("unionTypes").and_then(Value::as_array) {
+        let mut types = union_types.iter().filter_map(class_type_name_from_type_ref);
+        let type_name = types.next()?;
+        return types.next().is_none().then_some(type_name);
+    }
+    type_ref
+        .get("name")
         .and_then(Value::as_str)
-        .or_else(|| symbol.get("typeName").and_then(Value::as_str))
+        .and_then(single_type_name_without_nothing)
+}
+
+fn single_type_name_without_nothing(type_name: &str) -> Option<&str> {
+    let mut names = type_name
+        .split('|')
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("nothing"));
+    let name = names.next()?;
+    names.next().is_none().then_some(name)
+}
+
+fn resolve_class_symbol<'a>(symbols: &'a [Value], type_name: &str) -> Option<&'a Value> {
+    symbols.iter().find(|symbol| {
+        symbol.get("kind").and_then(Value::as_str) == Some("class")
+            && symbol_name_eq(symbol, type_name)
+    })
 }
 
 fn resolve_member_symbol<'a>(
