@@ -7277,6 +7277,56 @@ missingThing.toFixed();
       }
     });
 
+    it("does not duplicate the active virtual document in JavaScript worker payloads", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              checkJs: true,
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+              javascript: { ignoreProjectConfig: true },
+            },
+          },
+        });
+
+        const filler = "x".repeat(24_000);
+        const uri = "file:///tmp/js-worker-payload.asp";
+        const source = `<script>
+const payloadMarker = "${filler}";
+missingPayloadName.toFixed();
+</script>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        const diagnostics = await waitForDiagnosticsContaining(server, "missingPayloadName");
+        expect(JSON.stringify(diagnostics.params)).toContain("asp-lsp-typescript");
+        const workerLog = await waitForLogContaining(server, "javascript.diagnostics.worker");
+        const payloadBytes = jsWorkerPayloadBytesFromLog(workerLog);
+
+        expect(payloadBytes).toBeGreaterThan(filler.length);
+        expect(payloadBytes).toBeLessThan(source.length * 1.7);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("reuses JavaScript diagnostics after HTML-only source shifts", async () => {
       const server = new RpcServer();
       try {
@@ -9887,6 +9937,15 @@ function payloadBytesFromLog(message: JsonRpcMessage): number {
   const payload = /payload=(\d+)/.exec(text)?.[1];
   if (!payload) {
     throw new Error(`Missing payload bytes in log: ${text}`);
+  }
+  return Number(payload);
+}
+
+function jsWorkerPayloadBytesFromLog(message: JsonRpcMessage): number {
+  const text = JSON.stringify(message.params);
+  const payload = /payloadBytes=(\d+)/.exec(text)?.[1];
+  if (!payload) {
+    throw new Error(`Missing JavaScript worker payload bytes in log: ${text}`);
   }
   return Number(payload);
 }

@@ -23,6 +23,7 @@ const directoryExistsCache = new Map<string, boolean>();
 const directoriesCache = new Map<string, string[]>();
 const readDirectoryCache = new Map<string, string[]>();
 const realpathCache = new Map<string, string>();
+const fileStatCache = new Map<string, CachedFileStat | undefined>();
 const configCache = new Map<string, { config: JsProjectConfig; lastUsed: number }>();
 let cacheTick = 0;
 let currentProjectGeneration: number | undefined;
@@ -37,6 +38,11 @@ interface JsProjectConfig {
   fileNames: string[];
   options: ts.CompilerOptions;
   currentDirectory: string;
+}
+
+interface CachedFileStat {
+  mtimeMs: number;
+  size: number;
 }
 
 parentPort.on("message", (request: JsDiagnosticsWorkerRequest) => {
@@ -68,6 +74,7 @@ function resetCachesForProjectGeneration(projectGeneration: number): void {
   directoriesCache.clear();
   readDirectoryCache.clear();
   realpathCache.clear();
+  fileStatCache.clear();
   configCache.clear();
 }
 
@@ -174,7 +181,7 @@ function collectProjectFiles(
     if (text === undefined) {
       continue;
     }
-    const stat = fs.statSync(normalized, { throwIfNoEntry: false });
+    const stat = cachedFileStat(normalized);
     files.set(normalized, {
       fileName: normalized,
       text,
@@ -340,7 +347,7 @@ function configCacheKey(
   const environmentFiles = [configPath, nearestPackageJson(path.dirname(ownerFile))]
     .filter((fileName): fileName is string => Boolean(fileName))
     .map((fileName) => {
-      const stat = fs.statSync(fileName, { throwIfNoEntry: false });
+      const stat = cachedFileStat(fileName);
       return stat ? `${normalizeFileName(fileName)}:${stat.mtimeMs}:${stat.size}` : fileName;
     });
   return JSON.stringify({
@@ -370,6 +377,17 @@ function nearestPackageJson(directory: string): string | undefined {
     }
     current = parent;
   }
+}
+
+function cachedFileStat(fileName: string): CachedFileStat | undefined {
+  const normalized = normalizeFileName(fileName);
+  if (fileStatCache.has(normalized)) {
+    return fileStatCache.get(normalized);
+  }
+  const stat = fs.statSync(normalized, { throwIfNoEntry: false });
+  const cached = stat ? { mtimeMs: stat.mtimeMs, size: stat.size } : undefined;
+  fileStatCache.set(normalized, cached);
+  return cached;
 }
 
 function pruneConfigCache(): void {

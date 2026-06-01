@@ -32,6 +32,7 @@ const rapidBurstSize = readPositiveInteger("ASP_LSP_BENCH_BURST_SIZE", 5);
 const rapidDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEBOUNCE_MS", 80);
 const defaultDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEFAULT_DEBOUNCE_MS", 250);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
+const benchmarkCheckJs = readBoolean("ASP_LSP_BENCH_CHECKJS");
 const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", defaultTimeoutMs);
 const changeKinds = readChangeKinds();
 const changeModes = readChangeModes();
@@ -144,6 +145,7 @@ async function main() {
   console.log(`Change kinds: ${changeKinds.join(", ")}`);
   console.log(`Change modes: ${changeModes.join(", ")}`);
   console.log(`Edit targets: ${editTargets.join(", ")}`);
+  console.log(`Check JS: ${benchmarkCheckJs ? "on" : "off"}`);
   console.log(`Default debounce: ${defaultDebounceMs} ms`);
   console.log(`Rapid burst size: ${rapidBurstSize}`);
   console.log(`Rapid debounce: ${rapidDebounceMs} ms`);
@@ -204,6 +206,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
       settings: {
         aspLsp: {
           cache: { enabled: true, directory: cacheDir },
+          checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
           workspace: { backgroundAnalysis },
@@ -369,6 +372,7 @@ async function measureColdScenarioIteration(
       settings: {
         aspLsp: {
           cache: { enabled: true, directory: cacheDir },
+          checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
           workspace: { backgroundAnalysis },
@@ -679,6 +683,7 @@ async function startWorkspaceCacheServer(backgroundAnalysis) {
     settings: {
       aspLsp: {
         cache: { enabled: true, directory: cacheDir },
+        checkJs: benchmarkCheckJs,
         debug: { output: "verbose" },
         workspace: { backgroundAnalysis },
       },
@@ -1174,10 +1179,13 @@ function readEditTargets() {
   const values = raw
     .split(",")
     .map((value) => value.trim())
+    .map((value) => (value === "javascript" ? "client-js" : value))
     .filter(Boolean);
   for (const value of values) {
     if (value !== "vbscript" && value !== "html" && value !== "css" && value !== "client-js") {
-      throw new Error("ASP_LSP_BENCH_EDIT_TARGET must be vbscript, html, css, client-js, or all.");
+      throw new Error(
+        "ASP_LSP_BENCH_EDIT_TARGET must be vbscript, html, css, client-js, javascript, or all.",
+      );
     }
   }
   return values.length > 0 ? values : ["vbscript"];

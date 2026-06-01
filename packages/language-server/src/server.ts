@@ -3745,6 +3745,10 @@ async function jsSlowDiagnosticsAsync(
     );
   }
   const virtuals = jsVirtualDocuments(cached);
+  const workerOpenVirtuals =
+    settings.checkJs === true && shouldUseJsDiagnosticsWorker(mode)
+      ? await openJsDiagnosticsWorkerVirtualDocumentsAsync()
+      : undefined;
   const entry: CachedJsDiagnosticsEntry = {
     key,
     virtuals: await Promise.all(
@@ -3757,7 +3761,14 @@ async function jsSlowDiagnosticsAsync(
             if (settings.checkJs !== true) {
               return [];
             }
-            return jsSemanticDiagnosticsAsync(cached, virtual, settings, cancellation, mode);
+            return jsSemanticDiagnosticsAsync(
+              cached,
+              virtual,
+              settings,
+              cancellation,
+              mode,
+              workerOpenVirtuals,
+            );
           },
         );
         const unused = measureDebugStep(
@@ -3797,10 +3808,18 @@ async function jsSemanticDiagnosticsAsync(
   settings: AspSettings,
   cancellation: AnalysisCancellation,
   mode: AnalysisExecutionMode,
+  workerOpenVirtuals?: readonly JsDiagnosticsWorkerVirtualDocument[],
 ): Promise<CachedTsDiagnostic[]> {
   if (shouldUseJsDiagnosticsWorker(mode)) {
     try {
-      const response = await runJsDiagnosticsWorker(cached, virtual, settings, cancellation, mode);
+      const response = await runJsDiagnosticsWorker(
+        cached,
+        virtual,
+        settings,
+        cancellation,
+        mode,
+        workerOpenVirtuals,
+      );
       if (cancellation.isCancellationRequested() || response.cancelled) {
         return [];
       }
@@ -3831,14 +3850,23 @@ async function runJsDiagnosticsWorker(
   settings: AspSettings,
   cancellation: AnalysisCancellation,
   mode: AnalysisExecutionMode,
+  workerOpenVirtuals?: readonly JsDiagnosticsWorkerVirtualDocument[],
 ): Promise<JsDiagnosticsWorkerResponse> {
   const pool = getJsDiagnosticsWorkerPool(settings, mode);
   const id = ++jsDiagnosticsWorkerRequestId;
+  const activeVirtual = jsDiagnosticsWorkerVirtualDocument(virtual);
+  const activeVirtualFileName = normalizeFileName(jsVirtualFileName(activeVirtual.uri));
+  const openVirtuals = (
+    workerOpenVirtuals ?? (await openJsDiagnosticsWorkerVirtualDocumentsAsync())
+  ).filter(
+    (openVirtual) =>
+      normalizeFileName(jsVirtualFileName(openVirtual.uri)) !== activeVirtualFileName,
+  );
   return pool.run(
     {
       id,
-      activeVirtual: jsDiagnosticsWorkerVirtualDocument(virtual),
-      openVirtuals: await openJsDiagnosticsWorkerVirtualDocumentsAsync(),
+      activeVirtual,
+      openVirtuals,
       settings,
       workspaceRoots,
       projectGeneration: jsProjectGeneration,
@@ -3892,6 +3920,18 @@ function logJsWorkerTimings(
   stepPrefix: string,
   response: JsDiagnosticsWorkerResponse,
 ): void {
+  logDebugSummary(
+    settings,
+    `[asp-lsp] worker.queue.wait: ${uri}, request=${response.id}, ${formatElapsedMs(response.queueWaitMs ?? 0)}, queueLength=${response.queueLengthAtDispatch ?? 0}, cancelled=${response.cancelled === true}`,
+  );
+  logDebugSummary(
+    settings,
+    `[asp-lsp] worker.run.duration: ${uri}, request=${response.id}, ${formatElapsedMs(response.runMs ?? 0)}`,
+  );
+  logDebugSummary(
+    settings,
+    `[asp-lsp] worker.payload.bytes: ${uri}, request=${response.id}, payload=${response.payloadBytes ?? 0}, result=${response.resultBytes ?? 0}`,
+  );
   for (const timing of response.timings ?? []) {
     logDebugElapsed(settings, uri, `${stepPrefix}.${timing.name}.worker`, timing.elapsedMs);
   }
