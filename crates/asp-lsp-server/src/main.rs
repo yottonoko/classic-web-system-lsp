@@ -120,6 +120,10 @@ impl ServerState {
         Ok(())
     }
 
+    fn refresh_workspace_index(&mut self) -> Result<(), String> {
+        self.set_workspace_roots(self.workspace_roots.clone())
+    }
+
     fn next_diagnostics_timeout(&self) -> Option<Duration> {
         self.diagnostics.next_timeout()
     }
@@ -1187,6 +1191,19 @@ fn handle_request(
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
+        "textDocument/willSaveWaitUntil" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let result = if format_on_save_enabled(&state.settings) {
+                state.ide.formatting_edits(&uri)
+            } else {
+                Value::Array(Vec::new())
+            };
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
         "textDocument/linkedEditingRange" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
@@ -1240,6 +1257,16 @@ fn handle_notification(
             let uri = pointer_string(&notification.params, "/textDocument/uri");
             update_changed_document(connection, state, uri, &notification.params)?;
         }
+        "textDocument/didSave" => {
+            let uri = pointer_string(&notification.params, "/textDocument/uri");
+            if let Some(text) = notification.params.get("text").and_then(Value::as_str) {
+                state
+                    .ide
+                    .replace_document_text(uri.clone(), text.to_string());
+            }
+            state.publish_fast_diagnostics(connection, &uri)?;
+            state.schedule_diagnostics(uri);
+        }
         "textDocument/didClose" => {
             let uri = pointer_string(&notification.params, "/textDocument/uri");
             state.ide.close_document(&uri);
@@ -1259,6 +1286,9 @@ fn handle_notification(
                 }
             }
             publish_backend_status(connection, state)?;
+        }
+        "workspace/didCreateFiles" | "workspace/didRenameFiles" | "workspace/didDeleteFiles" => {
+            state.refresh_workspace_index()?;
         }
         _ => {}
     }
@@ -1381,7 +1411,16 @@ fn server_capabilities() -> Value {
         "textDocumentSync": {
             "openClose": true,
             "change": 2,
+            "willSave": true,
+            "willSaveWaitUntil": true,
             "save": { "includeText": true },
+        },
+        "workspace": {
+            "fileOperations": {
+                "didCreate": { "filters": file_operation_filters() },
+                "didRename": { "filters": file_operation_filters() },
+                "didDelete": { "filters": file_operation_filters() },
+            },
         },
         "executeCommandProvider": {
             "commands": [
@@ -1393,6 +1432,15 @@ fn server_capabilities() -> Value {
         },
         "positionEncoding": "utf-16",
     })
+}
+
+fn file_operation_filters() -> Vec<Value> {
+    vec![json!({
+        "scheme": "file",
+        "pattern": {
+            "glob": "**/*.{asp,asa,inc}",
+        },
+    })]
 }
 
 fn settings_from_initialize(params: &Value) -> Value {
@@ -1561,6 +1609,14 @@ fn language_server_version() -> String {
                 .map(str::to_string)
         })
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
+fn format_on_save_enabled(settings: &Value) -> bool {
+    settings
+        .get("format")
+        .and_then(|format| format.get("onSave"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn log_debug_summary(

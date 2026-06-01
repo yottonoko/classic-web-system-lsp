@@ -214,6 +214,80 @@ fn applies_full_replacement_change_over_stdio_lsp() {
 }
 
 #[test]
+fn refreshes_diagnostics_on_will_save_and_save_hooks() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let uri = "file:///tmp/save-hooks.asp";
+
+    initialize_with_settings(
+        &mut stdin,
+        &mut reader,
+        json!({ "format": { "onSave": true } }),
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nOption Explicit\nmissingName = 1\n%>",
+                },
+            },
+        }),
+    );
+    read_until(&mut reader, |message| {
+        message["method"] == json!("textDocument/publishDiagnostics")
+            && message.to_string().contains("missingName")
+    });
+
+    let will_save = request(
+        &mut stdin,
+        &mut reader,
+        30,
+        "textDocument/willSaveWaitUntil",
+        json!({
+            "textDocument": { "uri": uri },
+            "reason": 1,
+        }),
+    );
+    assert_eq!(will_save["result"], json!([]));
+
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didSave",
+            "params": {
+                "textDocument": { "uri": uri },
+                "text": "<%\nOption Explicit\nDim declaredName\ndeclaredName = 1\n%>",
+            },
+        }),
+    );
+
+    let diagnostics = read_until(&mut reader, |message| {
+        message["method"] == json!("textDocument/publishDiagnostics")
+            && message["params"]["uri"] == json!(uri)
+            && !message.to_string().contains("missingName")
+    });
+    assert_eq!(diagnostics["params"]["diagnostics"], json!([]));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
 fn publishes_fast_parser_then_debounced_vbscript_diagnostics() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
         .stdin(Stdio::piped())
@@ -953,6 +1027,86 @@ fn indexes_unopened_workspace_files_for_vbscript_references() {
 }
 
 #[test]
+fn refreshes_workspace_index_after_file_operations() {
+    let root = std::env::temp_dir().join(format!(
+        "asp-lsp-rust-file-operations-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let root_uri = format!("file://{}", root.to_string_lossy());
+    let include_uri = format!("{root_uri}/helpers.inc");
+    let page_uri = format!("{root_uri}/default.asp");
+
+    initialize_with_root(&mut stdin, &mut reader, &root_uri);
+    fs::write(
+        root.join("helpers.inc"),
+        "<%\nFunction BuildName(first)\nBuildName = first\nEnd Function\n%>",
+    )
+    .expect("write include");
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didCreateFiles",
+            "params": {
+                "files": [{ "uri": include_uri }],
+            },
+        }),
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": page_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<!-- #include file=\"helpers.inc\" -->\n<%\nResponse.Write BuildName(\"Ada\")\n%>",
+                },
+            },
+        }),
+    );
+    read_until(&mut reader, |message| {
+        message["method"] == json!("textDocument/publishDiagnostics")
+    });
+
+    let references = request(
+        &mut stdin,
+        &mut reader,
+        30,
+        "textDocument/references",
+        json!({
+            "textDocument": { "uri": page_uri },
+            "position": { "line": 2, "character": 16 },
+            "context": { "includeDeclaration": true },
+        }),
+    );
+    let serialized = references.to_string();
+    assert!(
+        serialized.contains("helpers.inc"),
+        "references after file operation: {serialized}"
+    );
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn serves_workspace_diagnostics_with_disk_cache() {
     let root = std::env::temp_dir().join(format!(
         "asp-lsp-rust-workspace-diagnostics-{}",
@@ -1201,6 +1355,18 @@ fn initialize_with_settings_and_root(
         json!(2)
     );
     assert_eq!(
+        initialize["result"]["capabilities"]["textDocumentSync"]["willSave"],
+        json!(true)
+    );
+    assert_eq!(
+        initialize["result"]["capabilities"]["textDocumentSync"]["willSaveWaitUntil"],
+        json!(true)
+    );
+    assert_eq!(
+        initialize["result"]["capabilities"]["textDocumentSync"]["save"]["includeText"],
+        json!(true)
+    );
+    assert_eq!(
         initialize["result"]["capabilities"]["completionProvider"]["triggerCharacters"],
         json!(["<", ".", "\"", "'", ":", "#", "(", " "])
     );
@@ -1212,6 +1378,21 @@ fn initialize_with_settings_and_root(
             "aspLsp.server.clearDiskCache",
             "aspLsp.server.clearProcessCache",
         ])
+    );
+    assert_eq!(
+        initialize["result"]["capabilities"]["workspace"]["fileOperations"]["didCreate"]["filters"]
+            [0]["pattern"]["glob"],
+        json!("**/*.{asp,asa,inc}")
+    );
+    assert_eq!(
+        initialize["result"]["capabilities"]["workspace"]["fileOperations"]["didRename"]["filters"]
+            [0]["pattern"]["glob"],
+        json!("**/*.{asp,asa,inc}")
+    );
+    assert_eq!(
+        initialize["result"]["capabilities"]["workspace"]["fileOperations"]["didDelete"]["filters"]
+            [0]["pattern"]["glob"],
+        json!("**/*.{asp,asa,inc}")
     );
 
     write_message(
