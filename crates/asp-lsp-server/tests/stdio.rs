@@ -549,7 +549,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
                     "uri": uri,
                     "languageId": "classic-asp",
                     "version": 1,
-                    "text": "<%\nFunction BuildName(first)\nBuildName=first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\nClass Customer\nPublic Function DisplayName()\nDisplayName = BuildName(\"C\")\nEnd Function\nPublic Sub RenderSelf()\nMe.DisplayName()\nEnd Sub\nEnd Class\nSub RenderTyped()\nDim typedCustomer\nSet typedCustomer = New Customer\ntypedCustomer.DisplayName()\nEnd Sub\nSub LocalOne()\nDim scopedName\nscopedName = \"A\"\nEnd Sub\nSub LocalTwo()\nDim scopedName\nscopedName = \"B\"\nEnd Sub\n%>",
+                    "text": "<%\nFunction BuildName(first)\nBuildName=first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\nClass Customer\nPublic Function DisplayName()\nDisplayName = BuildName(\"C\")\nEnd Function\nPublic Sub RenderSelf()\nMe.DisplayName()\nEnd Sub\nEnd Class\nSub RenderTyped()\nDim typedCustomer\nSet typedCustomer = New Customer\ntypedCustomer.DisplayName()\nEnd Sub\nSub LocalOne()\nDim scopedName\nscopedName = \"A\"\nEnd Sub\nSub LocalTwo()\nDim scopedName\nscopedName = \"B\"\nEnd Sub\nDim repeatedName\nSub ParamScope(repeatedName)\nResponse.Write repeatedName\nEnd Sub\n%>",
                 },
             },
         }),
@@ -817,6 +817,9 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     assert!(decoded
         .iter()
         .any(|token| token.line == 1 && token.character == 19 && token.token_type == 2));
+    assert!(decoded
+        .iter()
+        .any(|token| token.line == 32 && token.character == 15 && token.token_type == 2));
     let semantic_delta = request(
         &mut stdin,
         &mut reader,

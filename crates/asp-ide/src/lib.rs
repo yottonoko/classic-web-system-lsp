@@ -729,7 +729,7 @@ impl Ide {
         };
         let text = document.text(&self.db);
         let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
-        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+        let symbols = self.workspace_vb_symbols()?;
         let range_offsets = range.and_then(|range| {
             Some((
                 position_to_utf16_offset(
@@ -754,11 +754,18 @@ impl Ide {
                     continue;
                 }
             }
-            let Some((token_type, token_modifiers)) = symbols
-                .iter()
-                .find(|symbol| symbol_name_eq(symbol, &identifier.name))
-                .and_then(semantic_symbol_kind)
-                .or_else(|| builtin_semantic_token(text, &identifier, &parsed))
+            if is_classic_asp_object_name(&identifier.name) {
+                tokens.push(SemanticToken {
+                    range: identifier.range,
+                    token_type: 1,
+                    token_modifiers: 1 << 3,
+                });
+                continue;
+            }
+            let Some((token_type, token_modifiers)) =
+                resolve_semantic_symbol(uri, text, &symbols, &identifier)
+                    .and_then(semantic_symbol_kind)
+                    .or_else(|| builtin_semantic_token(text, &identifier, &parsed))
             else {
                 continue;
             };
@@ -1741,6 +1748,24 @@ fn resolve_call_target_symbol<'a>(
         .filter(|symbol| is_callable_symbol(symbol))
 }
 
+fn resolve_semantic_symbol<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &'a [Value],
+    identifier: &IdentifierOccurrence,
+) -> Option<&'a Value> {
+    if let Some(owner) = member_call_owner(text, identifier) {
+        let offset = identifier.start + ((identifier.end.saturating_sub(identifier.start)) / 2);
+        let type_name = if owner.name.eq_ignore_ascii_case("me") {
+            current_class_name_at(document_uri, text, symbols, offset)
+        } else {
+            infer_variable_type_name(document_uri, text, symbols, &owner, offset)
+        }?;
+        return resolve_member_symbol(symbols, &type_name, &identifier.name);
+    }
+    resolve_symbol_for_identifier(document_uri, text, symbols, identifier)
+}
+
 fn current_class_name_at<'a>(
     document_uri: &str,
     text: &str,
@@ -2186,7 +2211,7 @@ fn builtin_semantic_token(
     }
     if matches!(
         name.as_str(),
-        "response" | "request" | "server" | "session" | "application"
+        "response" | "request" | "server" | "session" | "application" | "asperror"
     ) {
         return Some((1, 1 << 3));
     }
@@ -2194,6 +2219,13 @@ fn builtin_semantic_token(
         return Some((5, 1 << 3));
     }
     None
+}
+
+fn is_classic_asp_object_name(name: &str) -> bool {
+    matches!(
+        name.to_lowercase().as_str(),
+        "request" | "response" | "session" | "application" | "server" | "asperror"
+    )
 }
 
 fn previous_identifier_is(text: &str, parsed: &Value, offset: usize, expected: &str) -> bool {
