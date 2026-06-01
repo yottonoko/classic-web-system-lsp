@@ -104,6 +104,7 @@ export interface AspVbscriptSettings {
   globals?: Record<string, string | AspVbscriptGlobal>;
   unusedDiagnostics?: boolean;
   includeSuggestions?: boolean;
+  includeSuggestionMaxFiles?: number;
   syntaxSnippets?: boolean;
 }
 

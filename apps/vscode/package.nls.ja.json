@@ -37,6 +37,7 @@
   "configuration.vbscript.globals.type.description": "global object type です。Union type は | で指定します。",
   "configuration.vbscript.unusedDiagnostics.description": "未使用の VBScript declaration を hint diagnostic として報告します。",
   "configuration.vbscript.includeSuggestions.description": "workspace file 内で見つかった未宣言 VBScript symbol に対して Classic ASP include directive を提案します。",
+  "configuration.vbscript.includeSuggestionMaxFiles.description": "未宣言 symbol の include 提案で scan する workspace file 数の上限です。0 にすると scan を無効化します。",
   "configuration.vbscript.syntaxSnippets.description": "よく使う制御構文と宣言 block の VBScript syntax snippet completion を有効にします。",
   "configuration.inlayHints.variableTypes.description": "推論された VBScript variable type の inlay hint を表示します。",
   "configuration.inlayHints.parameterNames.description": "VBScript procedure call site に parameter name inlay hint を表示します。",

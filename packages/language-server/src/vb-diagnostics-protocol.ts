@@ -25,6 +25,7 @@ export type VbDiagnosticsWorkerDocument = Pick<
 
 export interface VbDiagnosticsWorkerContext {
   documents?: VbDiagnosticsWorkerDocument[];
+  includeSummaryUris?: string[];
   symbols?: VbSymbol[];
   externalRefUsages?: VbExternalRefUsage[];
   typeChecking?: "basic" | "strict";

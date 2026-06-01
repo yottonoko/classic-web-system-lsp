@@ -6797,6 +6797,84 @@ Response.Write Shared▮Helper
       }
     });
 
+    it("bounds undeclared-symbol include suggestion scans", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-suggest-cap-"));
+      fs.writeFileSync(
+        path.join(tempDir, "a.inc"),
+        `<%
+Function FirstHelper()
+End Function
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "b.inc"),
+        `<%
+Function SecondHelper()
+End Function
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "zzz-target.inc"),
+        `<%
+Function LateHelper()
+End Function
+%>`,
+        "utf8",
+      );
+      const marked = markedDocument(`<%
+Option Explicit
+Response.Write Late▮Helper
+%>`);
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "summary" },
+              vbscript: { includeSuggestionMaxFiles: 2 },
+            },
+          },
+        });
+        const uri = `file://${path.join(tempDir, "default.asp")}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        const diagnostics = await waitForDiagnosticsContaining(server, "LateHelper");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: { start: marked.position, end: marked.position },
+          context: {
+            diagnostics: (diagnostics.params as { diagnostics: unknown[] }).diagnostics,
+          },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Declare LateHelper with Dim");
+        expect(serialized).not.toContain("zzz-target.inc");
+        expect(JSON.stringify(server.takePendingNotifications("window/logMessage"))).toContain(
+          "vb.includeSuggestion.truncated",
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("reports JavaScript unused diagnostics as hints even when checkJs is off", async () => {
       const server = new RpcServer();
       try {

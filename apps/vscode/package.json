@@ -504,6 +504,12 @@
           "default": true,
           "description": "%configuration.vbscript.includeSuggestions.description%"
         },
+        "aspLsp.vbscript.includeSuggestionMaxFiles": {
+          "type": "number",
+          "minimum": 0,
+          "default": 128,
+          "description": "%configuration.vbscript.includeSuggestionMaxFiles.description%"
+        },
         "aspLsp.vbscript.syntaxSnippets": {
           "type": "boolean",
           "default": true,

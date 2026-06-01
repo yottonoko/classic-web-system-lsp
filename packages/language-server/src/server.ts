@@ -4078,6 +4078,7 @@ function shouldUseVbDiagnosticsWorker(_mode: AnalysisExecutionMode): boolean {
 function cloneableVbProjectContext(context: VbProjectContext): VbDiagnosticsWorkerContext {
   return {
     documents: context.documents?.map(vbDiagnosticsWorkerDocument),
+    includeSummaryUris: context.includeSummaryUris,
     symbols: context.symbols,
     externalRefUsages: context.externalRefUsages,
     typeChecking: context.typeChecking,
@@ -9214,6 +9215,10 @@ function normalizeVbscriptSettings(
         : undefined,
     unusedDiagnostics: record.unusedDiagnostics !== false,
     includeSuggestions: record.includeSuggestions !== false,
+    includeSuggestionMaxFiles:
+      typeof record.includeSuggestionMaxFiles === "number" && record.includeSuggestionMaxFiles >= 0
+        ? Math.floor(record.includeSuggestionMaxFiles)
+        : 128,
     syntaxSnippets: record.syntaxSnippets !== false,
   };
 }
@@ -11564,6 +11569,10 @@ async function vbscriptIncludeSuggestionActionsAsync(
   if (settings.vbscript?.includeSuggestions === false) {
     return [];
   }
+  const maxFiles = settings.vbscript?.includeSuggestionMaxFiles ?? 128;
+  if (maxFiles <= 0) {
+    return [];
+  }
   await ensureWorkspaceIndexAsync(settings);
   const ownerFile = normalizeFileName(uriToFileName(cached.source.uri));
   const includedFiles = new Set(
@@ -11575,56 +11584,47 @@ async function vbscriptIncludeSuggestionActionsAsync(
       ),
     ),
   );
-  const candidates = new Map<string, CachedDocument>();
-  for (const entry of await mapWithConcurrency(
-    [...workspaceIndex.values()],
-    analysisConcurrency(settings),
-    async (indexed) => ({
-      indexed,
-      cached: await cachedFromIndexedAsync(indexed, cachedSettings(indexed.uri)),
-    }),
-  )) {
-    const { indexed, cached: indexedCached } = entry;
-    if (normalizeFileName(indexed.fileName) !== ownerFile) {
-      candidates.set(normalizeFileName(indexed.fileName), indexedCached);
-    }
-  }
+  const candidates = new Map<string, () => Promise<WorkspaceVbReferenceSummary | undefined>>();
   for (const document of documents.all()) {
     const fileName = normalizeFileName(uriToFileName(document.uri));
-    if (fileName !== ownerFile) {
-      const opened = await ensureFreshCachedDocumentAsync(document);
-      if (opened) {
-        candidates.set(fileName, opened);
-      }
+    if (fileName !== ownerFile && !includedFiles.has(fileName)) {
+      candidates.set(fileName, async () => {
+        const opened = await ensureFreshCachedDocumentAsync(document);
+        return opened ? workspaceVbReferenceSummaryForCachedAsync(opened, settings) : undefined;
+      });
     }
   }
-  const matches = (
-    await Promise.all(
-      [...candidates.entries()]
-        .filter(([fileName]) => !includedFiles.has(fileName))
-        .map(async ([fileName, candidate]) => {
-          await hydrateCachedVbscriptCstAsync(
-            candidate,
-            cachedSettings(candidate.source.uri),
-            "codeAction",
-          );
-          const hasSymbol = (await collectVbscriptSymbolsAsync(candidate.parsed)).some(
-            (symbol) =>
-              symbol.sourceUri === candidate.source.uri &&
-              !symbol.memberOf &&
-              symbol.name.toLowerCase() === symbolName.toLowerCase(),
-          );
-          return hasSymbol ? { fileName, candidate } : undefined;
-        }),
-    )
-  )
-    .filter((item): item is { fileName: string; candidate: CachedDocument } => Boolean(item))
-    .sort(
-      (left, right) => includeCandidateRank(left.fileName) - includeCandidateRank(right.fileName),
-    )
-    .slice(0, 5);
-  const insert = includeInsertionPoint(cached);
+  for (const indexed of [...workspaceIndex.values()].sort(
+    (left, right) =>
+      includeCandidateRank(left.fileName) - includeCandidateRank(right.fileName) ||
+      left.fileName.localeCompare(right.fileName),
+  )) {
+    const fileName = normalizeFileName(indexed.fileName);
+    if (fileName !== ownerFile && !includedFiles.has(fileName) && !candidates.has(fileName)) {
+      candidates.set(fileName, () => workspaceVbReferenceSummaryForIndexed(indexed, settings));
+    }
+  }
+  const matches: Array<{ fileName: string }> = [];
+  let scanned = 0;
+  for (const [fileName, loadSummary] of candidates) {
+    if (scanned >= maxFiles || matches.length >= 5) {
+      break;
+    }
+    scanned += 1;
+    const summary = await loadSummary();
+    if (summaryHasPublicVbSymbol(summary?.summary, symbolName)) {
+      matches.push({ fileName });
+    }
+    await yieldToEventLoop();
+  }
+  if (scanned < candidates.size) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vb.includeSuggestion.truncated: ${cached.source.uri}, scanned=${scanned}, candidates=${candidates.size}, maxFiles=${maxFiles}, matches=${matches.length}`,
+    );
+  }
   const localizer = localizerForUri(cached.source.uri);
+  const insert = includeInsertionPoint(cached);
   return matches.map(({ fileName }) => {
     const include = includeSuggestionPath(cached.source.uri, fileName, settings);
     return {
@@ -11646,6 +11646,22 @@ async function vbscriptIncludeSuggestionActionsAsync(
       },
     } satisfies CodeAction;
   });
+}
+
+function summaryHasPublicVbSymbol(
+  summary: FileAnalysisSummary | undefined,
+  symbolName: string,
+): boolean {
+  const lowerName = symbolName.toLowerCase();
+  return (
+    summary?.vbscript?.localSymbols.some(
+      (symbol) =>
+        !symbol.memberOf &&
+        !symbol.scopeName &&
+        symbol.kind !== "parameter" &&
+        symbol.name.toLowerCase() === lowerName,
+    ) === true
+  );
 }
 
 function includeCandidateRank(fileName: string): number {
