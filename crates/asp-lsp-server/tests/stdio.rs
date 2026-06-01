@@ -1,4 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
@@ -262,6 +263,55 @@ fn publishes_fast_parser_then_debounced_vbscript_diagnostics() {
 }
 
 #[test]
+fn publishes_embedded_sidecar_diagnostics_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .env("ASP_LSP_EMBEDDED_SIDECAR_PATH", embedded_sidecar_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+
+    initialize_with_settings(
+        &mut stdin,
+        &mut reader,
+        json!({ "checkJs": true, "diagnostics": { "debounceMs": 0 } }),
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": "file:///tmp/embedded.asp",
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<style>.broken { color: }</style>\n<script>missingThing()</script>",
+                },
+            },
+        }),
+    );
+
+    let diagnostics = read_until(&mut reader, |message| {
+        message["method"] == json!("textDocument/publishDiagnostics")
+            && message.to_string().contains("asp-lsp-css")
+            && message.to_string().contains("asp-lsp-typescript")
+    });
+    assert_eq!(
+        diagnostics["params"]["uri"],
+        json!("file:///tmp/embedded.asp")
+    );
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
 fn republishes_open_document_diagnostics_after_settings_change() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
         .stdin(Stdio::piped())
@@ -502,4 +552,14 @@ fn read_message(reader: &mut BufReader<std::process::ChildStdout>) -> Value {
     let mut body = vec![0; content_length.expect("content length")];
     std::io::Read::read_exact(reader, &mut body).expect("read body");
     serde_json::from_slice(&body).expect("json message")
+}
+
+fn embedded_sidecar_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("packages")
+        .join("embedded-sidecar")
+        .join("dist")
+        .join("sidecar.js")
 }

@@ -767,6 +767,10 @@ new Intl.DateTimeFormat("en");
       expect(listing).toContain("extension/server/language-server/dist/vb-diagnostics-worker.js");
       expect(listing).toContain("extension/server/language-server/dist/lib.esnext.d.ts");
       expect(listing).toContain("extension/server/language-server/dist/lib.dom.d.ts");
+      expect(listing).toContain("extension/server/sidecar/dist/sidecar.js");
+      expect(listing).toContain("extension/server/sidecar/dist/lib.esnext.d.ts");
+      expect(listing).toContain("extension/server/sidecar/dist/lib.dom.d.ts");
+      expect(listing).toContain("extension/server/sidecar/package.json");
       expect(listing).toMatch(/extension\/server\/language-server\/native\/[^/]+\/asp-lsp-core/);
       const removedRuntimeName = "was" + "m";
       expect(listing).not.toContain(`.${removedRuntimeName}`);
@@ -778,7 +782,7 @@ new Intl.DateTimeFormat("en");
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });
 
 class RpcServer {

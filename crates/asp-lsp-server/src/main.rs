@@ -1,12 +1,18 @@
 use std::collections::HashMap;
+use std::env;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use asp_ide::{Ide, TextPosition, TextRange};
+use asp_sidecar_protocol::{EmbeddedRequest, EmbeddedResponse};
 use crossbeam_channel::RecvTimeoutError;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use serde_json::{json, Value};
 
 const BACKEND_STATUS_METHOD: &str = "aspLsp/backendStatus";
+const FRAME_KIND_JSON: u8 = 1;
 
 fn main() {
     if let Err(error) = run() {
@@ -22,6 +28,7 @@ fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let mut state = ServerState::default();
     state.set_settings(settings_from_initialize(&initialize_params))?;
+    state.set_workspace_roots(workspace_roots_from_initialize(&initialize_params));
     connection
         .initialize_finish(
             initialize_id,
@@ -34,7 +41,7 @@ fn run() -> Result<(), String> {
             }),
         )
         .map_err(|error| error.to_string())?;
-    publish_backend_status(&connection, &state.ide)?;
+    publish_backend_status(&connection, &state)?;
 
     loop {
         match receive_message(&connection, state.next_diagnostics_timeout()) {
@@ -76,12 +83,21 @@ fn receive_message(
 struct ServerState {
     ide: Ide,
     diagnostics: DiagnosticScheduler,
+    sidecar: EmbeddedSidecar,
+    settings: Value,
+    workspace_roots: Vec<String>,
+    sidecar_request_id: u64,
 }
 
 impl ServerState {
     fn set_settings(&mut self, settings: Value) -> Result<Vec<(String, Vec<Value>)>, String> {
         self.diagnostics.set_debounce_from_settings(&settings);
+        self.settings = settings.clone();
         self.ide.set_settings(settings)
+    }
+
+    fn set_workspace_roots(&mut self, roots: Vec<String>) {
+        self.workspace_roots = roots;
     }
 
     fn next_diagnostics_timeout(&self) -> Option<Duration> {
@@ -98,15 +114,176 @@ impl ServerState {
 
     fn publish_due_diagnostics(&mut self, connection: &Connection) -> Result<(), String> {
         for uri in self.diagnostics.take_due() {
-            let diagnostics = self.ide.diagnostics(&uri)?;
+            let diagnostics = self.full_diagnostics(&uri)?;
             send_diagnostics(connection, &uri, diagnostics)?;
         }
         Ok(())
     }
 
+    fn backend_status(&self) -> Value {
+        let mut status = self.ide.backend_status();
+        if let Some(object) = status.as_object_mut() {
+            object.insert(
+                "sidecar".to_string(),
+                json!({
+                    "status": if self.sidecar.is_running() { "running" } else { "not-started" },
+                }),
+            );
+        }
+        status
+    }
+
     fn publish_fast_diagnostics(&self, connection: &Connection, uri: &str) -> Result<(), String> {
         let diagnostics = self.ide.parser_diagnostics(uri)?;
         send_diagnostics(connection, uri, diagnostics)
+    }
+
+    fn full_diagnostics(&mut self, uri: &str) -> Result<Vec<Value>, String> {
+        let mut diagnostics = self.ide.diagnostics(uri)?;
+        diagnostics.extend(self.embedded_diagnostics(uri)?);
+        Ok(diagnostics)
+    }
+
+    fn embedded_diagnostics(&mut self, uri: &str) -> Result<Vec<Value>, String> {
+        let virtuals = self.ide.embedded_virtual_documents(uri)?;
+        let open_virtuals = virtuals
+            .iter()
+            .map(|mapped| mapped.document.clone())
+            .collect::<Vec<_>>();
+        let mut diagnostics = Vec::new();
+        for mapped in virtuals {
+            if mapped.document.language_id == "vbscript" {
+                continue;
+            }
+            let request_id = self.next_sidecar_request_id();
+            let response = match self.sidecar.request(EmbeddedRequest {
+                id: request_id,
+                operation: "diagnostics".to_string(),
+                active_virtual: mapped.document.clone(),
+                open_virtuals: open_virtuals.clone(),
+                settings: self.settings.clone(),
+                workspace_roots: self.workspace_roots.clone(),
+                project_generation: 0,
+                params: Value::Null,
+            }) {
+                Ok(response) => response,
+                Err(error) => {
+                    if !error.contains("embedded sidecar dist/sidecar.js was not found") {
+                        eprintln!("embedded sidecar diagnostics failed: {error}");
+                    }
+                    continue;
+                }
+            };
+            let items = response
+                .result
+                .and_then(|result| result.as_array().cloned())
+                .unwrap_or_default();
+            diagnostics.extend(
+                items
+                    .into_iter()
+                    .filter_map(|diagnostic| mapped.remap_diagnostic(diagnostic)),
+            );
+        }
+        Ok(diagnostics)
+    }
+
+    fn next_sidecar_request_id(&mut self) -> u64 {
+        self.sidecar_request_id += 1;
+        self.sidecar_request_id
+    }
+}
+
+struct EmbeddedSidecar {
+    process: Option<EmbeddedSidecarProcess>,
+}
+
+impl Default for EmbeddedSidecar {
+    fn default() -> Self {
+        Self { process: None }
+    }
+}
+
+impl EmbeddedSidecar {
+    fn is_running(&self) -> bool {
+        self.process.is_some()
+    }
+
+    fn request(&mut self, request: EmbeddedRequest) -> Result<EmbeddedResponse, String> {
+        self.request_inner(&request).or_else(|error| {
+            self.process = None;
+            self.request_inner(&request)
+                .map_err(|retry_error| format!("{error}; retry failed: {retry_error}"))
+        })
+    }
+
+    fn request_inner(&mut self, request: &EmbeddedRequest) -> Result<EmbeddedResponse, String> {
+        if self.process.is_none() {
+            self.process = Some(EmbeddedSidecarProcess::start()?);
+        }
+        let response = self
+            .process
+            .as_mut()
+            .ok_or_else(|| "embedded sidecar was not started".to_string())?
+            .request(request);
+        match response {
+            Ok(response) => {
+                if response.ok {
+                    Ok(response)
+                } else {
+                    Err(response
+                        .error
+                        .unwrap_or_else(|| "embedded sidecar failed".to_string()))
+                }
+            }
+            Err(error) => {
+                self.process = None;
+                Err(error)
+            }
+        }
+    }
+}
+
+struct EmbeddedSidecarProcess {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: ChildStdout,
+}
+
+impl EmbeddedSidecarProcess {
+    fn start() -> Result<Self, String> {
+        let sidecar_path = resolve_sidecar_path()?;
+        let mut child = Command::new("node")
+            .arg(sidecar_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|error| format!("failed to start embedded sidecar: {error}"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "embedded sidecar stdin is unavailable".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "embedded sidecar stdout is unavailable".to_string())?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout,
+        })
+    }
+
+    fn request(&mut self, request: &EmbeddedRequest) -> Result<EmbeddedResponse, String> {
+        write_sidecar_frame(&mut self.stdin, request)?;
+        read_sidecar_frame(&mut self.stdout)
+    }
+}
+
+impl Drop for EmbeddedSidecarProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -181,7 +358,7 @@ fn handle_request(
         BACKEND_STATUS_METHOD => {
             connection
                 .sender
-                .send(Response::new_ok(request.id, state.ide.backend_status()).into())
+                .send(Response::new_ok(request.id, state.backend_status()).into())
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
@@ -190,7 +367,7 @@ fn handle_request(
                 .sender
                 .send(Response::new_ok(request.id, json!({ "ok": true })).into())
                 .map_err(|error| error.to_string())?;
-            publish_backend_status(connection, &state.ide)?;
+            publish_backend_status(connection, state)?;
             Ok(false)
         }
         _ => {
@@ -243,7 +420,7 @@ fn handle_notification(
                     send_diagnostics(connection, &uri, diagnostics)?;
                 }
             }
-            publish_backend_status(connection, &state.ide)?;
+            publish_backend_status(connection, state)?;
         }
         _ => {}
     }
@@ -315,6 +492,25 @@ fn settings_from_initialize(params: &Value) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+fn workspace_roots_from_initialize(params: &Value) -> Vec<String> {
+    if let Some(folders) = params.get("workspaceFolders").and_then(Value::as_array) {
+        return folders
+            .iter()
+            .filter_map(|folder| {
+                folder
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+    }
+    params
+        .get("rootUri")
+        .and_then(Value::as_str)
+        .map(|uri| vec![uri.to_string()])
+        .unwrap_or_default()
+}
+
 fn text_range(value: &Value) -> Option<TextRange> {
     Some(TextRange {
         start: text_position(value.get("start")?)?,
@@ -346,10 +542,10 @@ fn send_diagnostics(
         .map_err(|error| error.to_string())
 }
 
-fn publish_backend_status(connection: &Connection, ide: &Ide) -> Result<(), String> {
+fn publish_backend_status(connection: &Connection, state: &ServerState) -> Result<(), String> {
     connection
         .sender
-        .send(Notification::new(BACKEND_STATUS_METHOD.to_string(), ide.backend_status()).into())
+        .send(Notification::new(BACKEND_STATUS_METHOD.to_string(), state.backend_status()).into())
         .map_err(|error| error.to_string())
 }
 
@@ -359,4 +555,103 @@ fn pointer_string(params: &Value, pointer: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+fn write_sidecar_frame(stdin: &mut ChildStdin, request: &EmbeddedRequest) -> Result<(), String> {
+    let payload = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    let length = payload
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| "embedded sidecar frame is too large".to_string())?;
+    let length: u32 = length
+        .try_into()
+        .map_err(|_| "embedded sidecar frame is too large".to_string())?;
+    stdin
+        .write_all(&length.to_le_bytes())
+        .and_then(|_| stdin.write_all(&[FRAME_KIND_JSON]))
+        .and_then(|_| stdin.write_all(&payload))
+        .and_then(|_| stdin.flush())
+        .map_err(|error| error.to_string())
+}
+
+fn read_sidecar_frame(stdout: &mut ChildStdout) -> Result<EmbeddedResponse, String> {
+    let mut header = [0; 4];
+    stdout
+        .read_exact(&mut header)
+        .map_err(|error| format!("embedded sidecar response header failed: {error}"))?;
+    let length = u32::from_le_bytes(header) as usize;
+    if length == 0 {
+        return Err("embedded sidecar returned an empty frame".to_string());
+    }
+    let mut frame = vec![0; length];
+    stdout
+        .read_exact(&mut frame)
+        .map_err(|error| format!("embedded sidecar response body failed: {error}"))?;
+    if frame[0] != FRAME_KIND_JSON {
+        return Err(format!("unknown embedded sidecar frame kind: {}", frame[0]));
+    }
+    serde_json::from_slice(&frame[1..]).map_err(|error| error.to_string())
+}
+
+fn resolve_sidecar_path() -> Result<PathBuf, String> {
+    if let Ok(path) = env::var("ASP_LSP_EMBEDDED_SIDECAR_PATH") {
+        return Ok(PathBuf::from(path));
+    }
+    let exe = env::current_exe().map_err(|error| error.to_string())?;
+    for candidate in sidecar_path_candidates(&exe) {
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("embedded sidecar dist/sidecar.js was not found".to_string())
+}
+
+fn sidecar_path_candidates(exe: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = exe.parent() {
+        candidates.push(
+            dir.join("server")
+                .join("sidecar")
+                .join("dist")
+                .join("sidecar.js"),
+        );
+        candidates.push(
+            dir.join("..")
+                .join("..")
+                .join("sidecar")
+                .join("dist")
+                .join("sidecar.js"),
+        );
+        candidates.push(
+            dir.join("..")
+                .join("sidecar")
+                .join("dist")
+                .join("sidecar.js"),
+        );
+        candidates.push(
+            dir.join("..")
+                .join("..")
+                .join("packages")
+                .join("embedded-sidecar")
+                .join("dist")
+                .join("sidecar.js"),
+        );
+    }
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(
+            cwd.join("packages")
+                .join("embedded-sidecar")
+                .join("dist")
+                .join("sidecar.js"),
+        );
+        candidates.push(
+            cwd.join("apps")
+                .join("vscode")
+                .join("server")
+                .join("sidecar")
+                .join("dist")
+                .join("sidecar.js"),
+        );
+    }
+    candidates
 }

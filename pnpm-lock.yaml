@@ -55,11 +55,36 @@ importers:
         specifier: ^3.17.5
         version: 3.17.5
 
+  packages/embedded-sidecar:
+    dependencies:
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vscode-css-languageservice:
+        specifier: ^6.3.10
+        version: 6.3.10
+      vscode-html-languageservice:
+        specifier: ^5.6.2
+        version: 5.6.2
+      vscode-languageserver-textdocument:
+        specifier: ^1.0.12
+        version: 1.0.12
+      vscode-languageserver-types:
+        specifier: ^3.17.5
+        version: 3.17.5
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.12.4
+
   packages/language-server:
     dependencies:
       '@asp-lsp/core':
         specifier: workspace:*
         version: link:../core
+      '@asp-lsp/embedded-sidecar':
+        specifier: workspace:*
+        version: link:../embedded-sidecar
       cbor-x:
         specifier: ^1.6.4
         version: 1.6.4

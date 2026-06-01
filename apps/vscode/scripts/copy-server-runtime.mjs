@@ -6,7 +6,9 @@ import { rolldown } from "rolldown";
 const extensionRoot = path.resolve(import.meta.dirname, "..");
 const repoRoot = path.resolve(extensionRoot, "..", "..");
 const serverRoot = path.join(extensionRoot, "server", "language-server");
+const sidecarRoot = path.join(extensionRoot, "server", "sidecar");
 const serverEntry = path.join(repoRoot, "packages", "language-server", "dist", "server.js");
+const sidecarEntry = path.join(repoRoot, "packages", "embedded-sidecar", "dist", "sidecar.js");
 const includeNativeCore = !process.argv.includes("--no-native");
 const workerEntry = path.join(
   repoRoot,
@@ -37,18 +39,26 @@ if (!fs.existsSync(workerEntry)) {
 if (!fs.existsSync(jsWorkerEntry)) {
   throw new Error(`Build @asp-lsp/language-server before packaging: ${jsWorkerEntry}`);
 }
+if (!fs.existsSync(sidecarEntry)) {
+  throw new Error(`Build @asp-lsp/embedded-sidecar before packaging: ${sidecarEntry}`);
+}
 
 fs.rmSync(path.join(extensionRoot, "server"), { recursive: true, force: true });
 const distRoot = path.join(serverRoot, "dist");
+const sidecarDistRoot = path.join(sidecarRoot, "dist");
 fs.mkdirSync(distRoot, { recursive: true });
+fs.mkdirSync(sidecarDistRoot, { recursive: true });
 
 await bundleNodeEntry(serverEntry, path.join(distRoot, "server.js"));
 await bundleNodeEntry(jsWorkerEntry, path.join(distRoot, "js-diagnostics-worker.js"));
 await bundleNodeEntry(workerEntry, path.join(distRoot, "vb-diagnostics-worker.js"));
+await bundleNodeEntry(sidecarEntry, path.join(sidecarDistRoot, "sidecar.js"));
 fs.chmodSync(path.join(distRoot, "server.js"), 0o755);
 fs.chmodSync(path.join(distRoot, "js-diagnostics-worker.js"), 0o755);
 fs.chmodSync(path.join(distRoot, "vb-diagnostics-worker.js"), 0o755);
+fs.chmodSync(path.join(sidecarDistRoot, "sidecar.js"), 0o755);
 copyTypeScriptLibs(distRoot);
+copyTypeScriptLibs(sidecarDistRoot);
 if (includeNativeCore) {
   copyNativeCore(serverRoot);
   copyRustServer(extensionRoot);
@@ -61,6 +71,19 @@ fs.writeFileSync(
       version: languageServerManifest.version,
       private: true,
       main: "dist/server.js",
+    },
+    null,
+    2,
+  )}\n`,
+);
+fs.writeFileSync(
+  path.join(sidecarRoot, "package.json"),
+  `${JSON.stringify(
+    {
+      name: "@asp-lsp/embedded-sidecar-bundled",
+      version: languageServerManifest.version,
+      private: true,
+      main: "dist/sidecar.js",
     },
     null,
     2,

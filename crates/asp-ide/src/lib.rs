@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use asp_sidecar_protocol::{SourceMapSegment, VirtualDocument};
 use ropey::Rope;
 use salsa::Setter;
 use serde_json::Value;
@@ -105,6 +106,46 @@ pub struct Ide {
     db: IdeDatabase,
     documents: HashMap<String, OpenDocument>,
     settings: WorkspaceSettingsState,
+}
+
+#[derive(Clone, Debug)]
+pub struct MappedVirtualDocument {
+    pub document: VirtualDocument,
+    pub source_map: Vec<SourceMapSegment>,
+    source_text: String,
+}
+
+impl MappedVirtualDocument {
+    pub fn remap_diagnostic(&self, diagnostic: Value) -> Option<Value> {
+        let range = diagnostic.get("range")?;
+        let start_offset = self.virtual_offset(range.get("start")?)?;
+        let end_offset = self.virtual_offset(range.get("end")?)?;
+        let segment = self.source_map.iter().find(|segment| {
+            let last_offset = start_offset.max(end_offset.saturating_sub(1));
+            start_offset >= segment.virtual_start && last_offset < segment.virtual_end
+        })?;
+        let source_start = segment.source_start + (start_offset - segment.virtual_start);
+        let source_end = segment.source_start + (end_offset - segment.virtual_start);
+        let (start_line, start_character) = utf16_position_at(&self.source_text, source_start)?;
+        let (end_line, end_character) = utf16_position_at(&self.source_text, source_end)?;
+        let mut diagnostic = diagnostic.as_object()?.clone();
+        diagnostic.insert(
+            "range".to_string(),
+            serde_json::json!({
+                "start": { "line": start_line, "character": start_character },
+                "end": { "line": end_line, "character": end_character },
+            }),
+        );
+        Some(Value::Object(diagnostic))
+    }
+
+    fn virtual_offset(&self, position: &Value) -> Option<usize> {
+        position_to_utf16_offset(
+            &self.document.text,
+            position.get("line")?.as_u64()?.try_into().ok()?,
+            position.get("character")?.as_u64()?.try_into().ok()?,
+        )
+    }
 }
 
 impl Default for Ide {
@@ -253,6 +294,21 @@ impl Ide {
         Ok(())
     }
 
+    pub fn embedded_virtual_documents(
+        &self,
+        uri: &str,
+    ) -> Result<Vec<MappedVirtualDocument>, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Vec::new());
+        };
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        build_virtual_documents(
+            source_file_uri(&self.db, document),
+            document.text(&self.db),
+            &parsed,
+        )
+    }
+
     pub fn diagnostics_for_open_documents(&self) -> Result<Vec<(String, Vec<Value>)>, String> {
         self.documents
             .iter()
@@ -298,6 +354,10 @@ impl OpenDocument {
         self.source_file.set_text(db).to(text);
     }
 
+    fn text<'db>(&self, db: &'db IdeDatabase) -> &'db String {
+        self.source_file.text(db)
+    }
+
     fn edit(&mut self, db: &mut IdeDatabase, range: TextRange, text: &str) -> Result<(), String> {
         let start = self.position_to_char(range.start)?;
         let end = self.position_to_char(range.end)?;
@@ -321,6 +381,432 @@ impl OpenDocument {
             .map_err(|_| "character is too large".to_string())?;
         Ok(line_start + utf16_character_to_char_offset(&line_text, character)?)
     }
+}
+
+fn source_file_uri(db: &IdeDatabase, document: &OpenDocument) -> String {
+    document.source_file.uri(db).clone()
+}
+
+#[derive(Clone)]
+struct EmbeddedRegion {
+    language: String,
+    kind: String,
+    start: usize,
+    end: usize,
+    content_start: usize,
+    content_end: usize,
+}
+
+fn build_virtual_documents(
+    uri: String,
+    source_text: &str,
+    parsed: &Value,
+) -> Result<Vec<MappedVirtualDocument>, String> {
+    let mut regions = parsed
+        .get("regions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(embedded_region)
+        .collect::<Result<Vec<_>, _>>()?;
+    regions.sort_by_key(|region| (region.start, region.end));
+    let mut documents = Vec::new();
+    for language in ["html", "css", "javascript", "jscript"] {
+        let language_regions = regions
+            .iter()
+            .filter(|region| region.language == language)
+            .cloned()
+            .collect::<Vec<_>>();
+        if language != "html" && language_regions.is_empty() {
+            continue;
+        }
+        documents.push(if language == "html" {
+            build_masked_virtual_document(&uri, source_text, language, &language_regions)?
+        } else {
+            build_concatenated_virtual_document(
+                &uri,
+                source_text,
+                language,
+                &language_regions,
+                &regions,
+            )?
+        });
+    }
+    Ok(documents)
+}
+
+fn embedded_region(value: &Value) -> Result<EmbeddedRegion, String> {
+    Ok(EmbeddedRegion {
+        language: value
+            .get("language")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        kind: value
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        start: value_usize(value, "start")?,
+        end: value_usize(value, "end")?,
+        content_start: value_usize(value, "contentStart")?,
+        content_end: value_usize(value, "contentEnd")?,
+    })
+}
+
+fn value_usize(value: &Value, key: &str) -> Result<usize, String> {
+    value
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|value| value.try_into().ok())
+        .ok_or_else(|| format!("region.{key} must be a non-negative integer"))
+}
+
+fn build_masked_virtual_document(
+    uri: &str,
+    source_text: &str,
+    language: &str,
+    regions: &[EmbeddedRegion],
+) -> Result<MappedVirtualDocument, String> {
+    let mut chunks = Vec::new();
+    let mut segments = Vec::new();
+    let mut cursor = 0;
+    for region in regions {
+        if cursor < region.content_start {
+            chunks.push(mask_utf16_range(
+                source_text,
+                cursor,
+                region.content_start,
+                " ",
+            )?);
+        }
+        let content = slice_utf16(source_text, region.content_start, region.content_end)?;
+        chunks.push(content);
+        segments.push(SourceMapSegment {
+            virtual_start: region.content_start,
+            virtual_end: region.content_end,
+            source_start: region.content_start,
+            source_end: region.content_end,
+        });
+        cursor = region.content_end;
+    }
+    let source_len = utf16_len(source_text);
+    if cursor < source_len {
+        chunks.push(mask_utf16_range(source_text, cursor, source_len, " ")?);
+    }
+    let text = chunks.join("");
+    Ok(mapped_virtual_document(
+        uri,
+        language,
+        text,
+        segments,
+        source_text,
+    ))
+}
+
+fn build_concatenated_virtual_document(
+    uri: &str,
+    source_text: &str,
+    language: &str,
+    regions: &[EmbeddedRegion],
+    all_regions: &[EmbeddedRegion],
+) -> Result<MappedVirtualDocument, String> {
+    let mut text = String::new();
+    let mut segments = Vec::new();
+    for region in regions {
+        let prefix = if language == "css" {
+            if region.kind == "style-attribute" {
+                "__asp_lsp__{"
+            } else {
+                "\n"
+            }
+        } else {
+            ""
+        };
+        let suffix = if language == "css" && region.kind == "style-attribute" {
+            "}\n"
+        } else {
+            "\n"
+        };
+        text.push_str(prefix);
+        let virtual_start = utf16_len(&text);
+        let content = masked_region_content(source_text, region, all_regions, language)?;
+        text.push_str(&content);
+        let virtual_end = utf16_len(&text);
+        text.push_str(suffix);
+        segments.extend(source_map_segments_for_region(
+            region,
+            all_regions,
+            virtual_start,
+        ));
+        debug_assert_eq!(
+            virtual_end - virtual_start,
+            region.content_end - region.content_start
+        );
+    }
+    Ok(mapped_virtual_document(
+        uri,
+        language,
+        text,
+        segments,
+        source_text,
+    ))
+}
+
+fn source_map_segments_for_region(
+    owner: &EmbeddedRegion,
+    all_regions: &[EmbeddedRegion],
+    virtual_start: usize,
+) -> Vec<SourceMapSegment> {
+    let mut segments = Vec::new();
+    let mut cursor = owner.content_start;
+    for hole in all_regions.iter().filter(|region| {
+        is_asp_hole(region)
+            && region.start >= owner.content_start
+            && region.end <= owner.content_end
+            && region.start != owner.start
+    }) {
+        if cursor < hole.start {
+            segments.push(source_map_segment(owner, virtual_start, cursor, hole.start));
+        }
+        cursor = cursor.max(hole.end);
+    }
+    if cursor < owner.content_end {
+        segments.push(source_map_segment(
+            owner,
+            virtual_start,
+            cursor,
+            owner.content_end,
+        ));
+    }
+    segments
+}
+
+fn source_map_segment(
+    owner: &EmbeddedRegion,
+    virtual_start: usize,
+    source_start: usize,
+    source_end: usize,
+) -> SourceMapSegment {
+    let offset = source_start - owner.content_start;
+    SourceMapSegment {
+        virtual_start: virtual_start + offset,
+        virtual_end: virtual_start + offset + (source_end - source_start),
+        source_start,
+        source_end,
+    }
+}
+
+fn masked_region_content(
+    source_text: &str,
+    owner: &EmbeddedRegion,
+    all_regions: &[EmbeddedRegion],
+    language: &str,
+) -> Result<String, String> {
+    let mut chunks = Vec::new();
+    let mut cursor = owner.content_start;
+    for nested in all_regions.iter().filter(|nested| {
+        nested.start >= owner.content_start
+            && nested.end <= owner.content_end
+            && nested.start != owner.start
+    }) {
+        if nested.end <= cursor || nested.language == language {
+            continue;
+        }
+        if cursor < nested.start {
+            chunks.push(slice_utf16(source_text, cursor, nested.start)?);
+        }
+        chunks.push(nested_region_mask(source_text, owner, nested, language)?);
+        cursor = nested.end;
+    }
+    if cursor < owner.content_end {
+        chunks.push(slice_utf16(source_text, cursor, owner.content_end)?);
+    }
+    Ok(chunks.join(""))
+}
+
+fn nested_region_mask(
+    source_text: &str,
+    owner: &EmbeddedRegion,
+    nested: &EmbeddedRegion,
+    language: &str,
+) -> Result<String, String> {
+    if !is_asp_hole(nested) {
+        return mask_utf16_range(source_text, nested.start, nested.end, " ");
+    }
+    if language == "css" {
+        return mask_utf16_range(source_text, nested.start, nested.end, "x");
+    }
+    if language == "javascript" || language == "jscript" {
+        let previous = previous_significant_char(source_text, owner.content_start, nested.start)?;
+        if nested.kind == "asp-block"
+            && !matches!(
+                previous,
+                Some(
+                    '=' | '('
+                        | '['
+                        | ','
+                        | ':'
+                        | '?'
+                        | '!'
+                        | '~'
+                        | '+'
+                        | '-'
+                        | '*'
+                        | '/'
+                        | '%'
+                        | '&'
+                        | '|'
+                        | '^'
+                        | '<'
+                        | '>'
+                )
+            )
+        {
+            return mask_utf16_range(source_text, nested.start, nested.end, " ");
+        }
+        return first_value_placeholder_range(source_text, nested.start, nested.end, "0");
+    }
+    mask_utf16_range(source_text, nested.start, nested.end, " ")
+}
+
+fn is_asp_hole(region: &EmbeddedRegion) -> bool {
+    matches!(
+        region.kind.as_str(),
+        "asp-block" | "asp-expression" | "asp-directive"
+    )
+}
+
+fn previous_significant_char(text: &str, start: usize, end: usize) -> Result<Option<char>, String> {
+    Ok(slice_utf16(text, start, end)?
+        .chars()
+        .rev()
+        .find(|character| !character.is_whitespace()))
+}
+
+fn first_value_placeholder_range(
+    text: &str,
+    start: usize,
+    end: usize,
+    value: &str,
+) -> Result<String, String> {
+    let content = slice_utf16(text, start, end)?;
+    let mut placed = false;
+    Ok(content
+        .chars()
+        .map(|character| {
+            if character == '\r' || character == '\n' {
+                character.to_string()
+            } else if !placed {
+                placed = true;
+                value.to_string()
+            } else {
+                " ".repeat(character.len_utf16())
+            }
+        })
+        .collect())
+}
+
+fn mapped_virtual_document(
+    uri: &str,
+    language: &str,
+    text: String,
+    source_map: Vec<SourceMapSegment>,
+    source_text: &str,
+) -> MappedVirtualDocument {
+    MappedVirtualDocument {
+        document: VirtualDocument {
+            uri: format!("{uri}.{language}.virtual"),
+            language_id: language.to_string(),
+            text,
+        },
+        source_map,
+        source_text: source_text.to_string(),
+    }
+}
+
+fn slice_utf16(text: &str, start: usize, end: usize) -> Result<String, String> {
+    let start_byte = utf16_to_byte_offset(text, start)?;
+    let end_byte = utf16_to_byte_offset(text, end)?;
+    Ok(text[start_byte..end_byte].to_string())
+}
+
+fn mask_utf16_range(text: &str, start: usize, end: usize, fill: &str) -> Result<String, String> {
+    let content = slice_utf16(text, start, end)?;
+    Ok(content
+        .chars()
+        .map(|character| match character {
+            '\r' | '\n' => character.to_string(),
+            _ => fill.repeat(character.len_utf16()),
+        })
+        .collect())
+}
+
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+fn utf16_to_byte_offset(text: &str, target_units: usize) -> Result<usize, String> {
+    let mut units = 0;
+    for (byte_index, character) in text.char_indices() {
+        if units == target_units {
+            return Ok(byte_index);
+        }
+        units += character.len_utf16();
+        if units > target_units {
+            return Err("offset splits a UTF-16 surrogate pair".to_string());
+        }
+    }
+    if units == target_units {
+        Ok(text.len())
+    } else {
+        Err(format!("offset {target_units} is out of bounds"))
+    }
+}
+
+fn position_to_utf16_offset(
+    text: &str,
+    target_line: usize,
+    target_character: usize,
+) -> Option<usize> {
+    let mut line = 0;
+    let mut character = 0;
+    let mut offset = 0;
+    for current in text.chars() {
+        if line == target_line && character == target_character {
+            return Some(offset);
+        }
+        if current == '\n' {
+            line += 1;
+            character = 0;
+        } else {
+            character += current.len_utf16();
+        }
+        offset += current.len_utf16();
+    }
+    (line == target_line && character == target_character).then_some(offset)
+}
+
+fn utf16_position_at(text: &str, target_offset: usize) -> Option<(usize, usize)> {
+    let mut line = 0;
+    let mut character = 0;
+    let mut offset = 0;
+    for current in text.chars() {
+        if offset == target_offset {
+            return Some((line, character));
+        }
+        offset += current.len_utf16();
+        if offset > target_offset {
+            return None;
+        }
+        if current == '\n' {
+            line += 1;
+            character = 0;
+        } else {
+            character += current.len_utf16();
+        }
+    }
+    (offset == target_offset).then_some((line, character))
 }
 
 struct WorkspaceSettingsState {
