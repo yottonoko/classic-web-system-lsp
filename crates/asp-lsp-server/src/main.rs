@@ -1195,7 +1195,7 @@ fn handle_request(
             Ok(false)
         }
         "codeLens/resolve" => {
-            let result = resolve_code_lens(&state.ide, request.params)?;
+            let result = resolve_code_lens(&state.ide, &state.settings, request.params)?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -1846,7 +1846,7 @@ fn merge_lsp_arrays(left: Value, right: Option<Value>) -> Value {
     Value::Array(items)
 }
 
-fn resolve_code_lens(ide: &Ide, mut lens: Value) -> Result<Value, String> {
+fn resolve_code_lens(ide: &Ide, settings: &Value, mut lens: Value) -> Result<Value, String> {
     let Some(data) = lens.get("data").cloned() else {
         return Ok(lens);
     };
@@ -1868,7 +1868,7 @@ fn resolve_code_lens(ide: &Ide, mut lens: Value) -> Result<Value, String> {
     object.insert(
         "command".to_string(),
         json!({
-            "title": format!("{reference_count} references"),
+            "title": localize_code_lens_references(settings_locale(settings), reference_count),
             "command": "aspLsp.showReferences",
             "arguments": [
                 uri,
@@ -1877,12 +1877,25 @@ fn resolve_code_lens(ide: &Ide, mut lens: Value) -> Result<Value, String> {
             ],
         }),
     );
-    if reference_count == 1 {
-        if let Some(command) = lens.pointer_mut("/command/title") {
-            *command = Value::String("1 reference".to_string());
-        }
-    }
     Ok(lens)
+}
+
+fn settings_locale(settings: &Value) -> &'static str {
+    if settings.get("locale").and_then(Value::as_str) == Some("ja") {
+        "ja"
+    } else {
+        "en"
+    }
+}
+
+fn localize_code_lens_references(locale: &str, count: usize) -> String {
+    if locale == "ja" {
+        format!("{count} 件の参照")
+    } else if count == 1 {
+        "1 reference".to_string()
+    } else {
+        format!("{count} references")
+    }
 }
 
 fn text_position(value: &Value) -> Option<TextPosition> {

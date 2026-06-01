@@ -418,6 +418,10 @@ impl Ide {
             .collect();
     }
 
+    fn locale(&self) -> &'static str {
+        locale_from_settings_json(self.settings.input.json(&self.db))
+    }
+
     pub fn diagnostics(&self, uri: &str) -> Result<Vec<Value>, String> {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Vec::new());
@@ -1147,6 +1151,7 @@ impl Ide {
             return Ok(Value::Array(Vec::new()));
         };
         let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let locale = self.locale();
         let mut lenses = Vec::new();
         for symbol in vb_symbols(&self.db, document.source_file, self.settings.input)? {
             if matches!(
@@ -1176,10 +1181,14 @@ impl Ide {
             .flatten()
         {
             if let Some(range) = include.get("range").cloned() {
+                let name = include
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("include");
                 lenses.push(serde_json::json!({
                     "range": range,
                     "command": {
-                        "title": "Open include",
+                        "title": localize_code_lens_include(locale, name),
                         "command": "vscode.open",
                         "arguments": [resolve_include_target(uri, include)],
                     },
@@ -1194,6 +1203,7 @@ impl Ide {
             return Ok(Value::Array(Vec::new()));
         };
         let text = document.text(&self.db);
+        let locale = self.locale();
         let Some(start) = position_to_utf16_offset(
             text,
             range.start.line.try_into().unwrap_or(0),
@@ -1213,7 +1223,7 @@ impl Ide {
 
         if is_vbscript_offset(&parsed, start) {
             let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
-            if let Some(action) = documentation_code_action(uri, text, &symbols, start) {
+            if let Some(action) = documentation_code_action(uri, text, &symbols, start, locale) {
                 actions.push(action);
             }
         }
@@ -1227,7 +1237,7 @@ impl Ide {
             };
             if !selected.trim().is_empty() && selected == selected.trim() {
                 actions.push(serde_json::json!({
-                    "title": "Extract variable",
+                    "title": localize_static(locale, "server.refactor.extractVbscriptVariable"),
                     "kind": "refactor.extract",
                     "edit": {
                         "changes": {
@@ -2345,6 +2355,7 @@ fn documentation_code_action(
     text: &str,
     symbols: &[Value],
     offset: usize,
+    locale: &str,
 ) -> Option<Value> {
     let symbol = documentation_symbol_at(uri, text, symbols, offset)?;
     let owner = if symbol.get("kind").and_then(Value::as_str) == Some("parameter") {
@@ -2399,7 +2410,7 @@ fn documentation_code_action(
         };
 
     Some(serde_json::json!({
-        "title": "Generate VBScript documentation",
+        "title": localize_static(locale, "server.quickfix.generateVbscriptDocumentation"),
         "kind": "quickfix",
         "edit": {
             "changes": {
@@ -2695,6 +2706,39 @@ fn line_start_byte_offset(text: &str, target_line: u32) -> Option<usize> {
 fn contains_case_insensitive(text: &str, needle: &str) -> bool {
     text.to_ascii_lowercase()
         .contains(&needle.to_ascii_lowercase())
+}
+
+fn locale_from_settings_json(settings_json: &str) -> &'static str {
+    let Ok(settings) = serde_json::from_str::<Value>(settings_json) else {
+        return "en";
+    };
+    if settings.get("locale").and_then(Value::as_str) == Some("ja") {
+        "ja"
+    } else {
+        "en"
+    }
+}
+
+fn localize_static(locale: &str, key: &str) -> String {
+    match (locale, key) {
+        ("ja", "server.quickfix.generateVbscriptDocumentation") => {
+            "VBScript documentation を生成".to_string()
+        }
+        ("ja", "server.refactor.extractVbscriptVariable") => "VBScript 変数に抽出".to_string(),
+        (_, "server.quickfix.generateVbscriptDocumentation") => {
+            "Generate VBScript documentation".to_string()
+        }
+        (_, "server.refactor.extractVbscriptVariable") => "Extract VBScript variable".to_string(),
+        _ => key.to_string(),
+    }
+}
+
+fn localize_code_lens_include(locale: &str, name: &str) -> String {
+    if locale == "ja" {
+        format!("{name} を include")
+    } else {
+        format!("include {name}")
+    }
 }
 
 fn preferred_new_line(text: &str) -> &str {
