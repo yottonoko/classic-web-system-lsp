@@ -549,7 +549,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
                     "uri": uri,
                     "languageId": "classic-asp",
                     "version": 1,
-                    "text": "<%\nFunction BuildName(first)\nBuildName=first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\n%>",
+                    "text": "<%\nFunction BuildName(first)\nBuildName=first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\nClass Customer\nEnd Class\n%>",
                 },
             },
         }),
@@ -839,6 +839,17 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         }),
     );
     assert!(call_hierarchy["result"].to_string().contains("BuildName"));
+    let variable_call_hierarchy = request(
+        &mut stdin,
+        &mut reader,
+        38,
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 4, "character": 5 },
+        }),
+    );
+    assert_eq!(variable_call_hierarchy["result"], json!([]));
     let incoming_calls = request(
         &mut stdin,
         &mut reader,
@@ -878,10 +889,21 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         "textDocument/prepareTypeHierarchy",
         json!({
             "textDocument": { "uri": uri },
+            "position": { "line": 9, "character": 8 },
+        }),
+    );
+    assert!(type_hierarchy["result"].to_string().contains("Customer"));
+    let callable_type_hierarchy = request(
+        &mut stdin,
+        &mut reader,
+        39,
+        "textDocument/prepareTypeHierarchy",
+        json!({
+            "textDocument": { "uri": uri },
             "position": { "line": 5, "character": 16 },
         }),
     );
-    assert!(type_hierarchy["result"].to_string().contains("BuildName"));
+    assert_eq!(callable_type_hierarchy["result"], json!([]));
 
     let monikers = request(
         &mut stdin,

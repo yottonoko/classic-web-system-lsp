@@ -1001,10 +1001,26 @@ impl Ide {
         }]))
     }
 
-    pub fn hierarchy_item(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+    pub fn call_hierarchy_item(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        self.hierarchy_item_matching(uri, position, is_callable_symbol)
+    }
+
+    pub fn type_hierarchy_item(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        self.hierarchy_item_matching(uri, position, is_type_hierarchy_symbol)
+    }
+
+    fn hierarchy_item_matching(
+        &self,
+        uri: &str,
+        position: TextPosition,
+        predicate: impl Fn(&Value) -> bool,
+    ) -> Result<Value, String> {
         let Some((symbol, _context)) = self.symbol_at_position(uri, position)? else {
             return Ok(Value::Array(Vec::new()));
         };
+        if !predicate(&symbol) {
+            return Ok(Value::Array(Vec::new()));
+        }
         Ok(hierarchy_item_from_symbol(uri, &symbol)
             .map(|item| Value::Array(vec![item]))
             .unwrap_or_else(|| Value::Array(Vec::new())))
@@ -1595,6 +1611,10 @@ fn is_callable_symbol(symbol: &Value) -> bool {
         symbol.get("kind").and_then(Value::as_str),
         Some("function" | "sub" | "method" | "property")
     )
+}
+
+fn is_type_hierarchy_symbol(symbol: &Value) -> bool {
+    matches!(symbol.get("kind").and_then(Value::as_str), Some("class"))
 }
 
 fn hierarchy_item_from_symbol(uri: &str, symbol: &Value) -> Option<Value> {

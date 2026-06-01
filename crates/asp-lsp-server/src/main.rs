@@ -1187,10 +1187,20 @@ fn handle_request(
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
-        "textDocument/prepareCallHierarchy" | "textDocument/prepareTypeHierarchy" => {
+        "textDocument/prepareCallHierarchy" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
-            let result = state.ide.hierarchy_item(&uri, position)?;
+            let result = state.ide.call_hierarchy_item(&uri, position)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/prepareTypeHierarchy" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let result = state.ide.type_hierarchy_item(&uri, position)?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
