@@ -508,6 +508,17 @@ impl Ide {
             return Ok(Value::Array(Vec::new()));
         };
         let prefix = identifier_prefix_at(&context.text, context.offset);
+        if let Some(type_name) = member_completion_type_name(
+            uri,
+            &context.text,
+            &context.symbols,
+            context.offset,
+            &prefix,
+        ) {
+            return Ok(Value::Array(builtin_member_completion_items(
+                type_name, &prefix,
+            )));
+        }
         let mut items = Vec::new();
         for symbol in &context.symbols {
             let Some(name) = symbol.get("name").and_then(Value::as_str) else {
@@ -538,10 +549,15 @@ impl Ide {
         let Some(label) = item.get("label").and_then(Value::as_str) else {
             return Ok(item);
         };
-        let Some(builtin) = builtin_completion_detail(label) else {
+        let Some(object) = item.as_object() else {
             return Ok(item);
         };
-        let Some(object) = item.as_object() else {
+        let builtin = item
+            .pointer("/data/owner")
+            .and_then(Value::as_str)
+            .and_then(|owner| builtin_member_completion_detail(owner, label))
+            .or_else(|| builtin_completion_detail(label));
+        let Some(builtin) = builtin else {
             return Ok(item);
         };
         let mut item = object.clone();
@@ -2077,6 +2093,33 @@ fn infer_variable_type_name<'a>(
         .and_then(symbol_type_name)
 }
 
+fn member_completion_type_name<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &'a [Value],
+    offset: usize,
+    prefix: &str,
+) -> Option<&'a str> {
+    let prefix_start = offset.saturating_sub(utf16_len(prefix));
+    let (dot_offset, '.') = previous_non_whitespace_char_before(text, prefix_start)? else {
+        return None;
+    };
+    let (owner_offset, _) = previous_non_whitespace_char_before(text, dot_offset)?;
+    let (start, end) = identifier_offsets_at(text, owner_offset)?;
+    let owner = slice_utf16(text, start, end).ok()?;
+    if let Some(type_name) = classic_asp_builtin_type_name(&owner) {
+        return Some(type_name);
+    }
+    let range = range_from_offsets(text, start, end)?;
+    let identifier = IdentifierOccurrence {
+        name: owner,
+        start,
+        end,
+        range,
+    };
+    infer_variable_type_name(document_uri, text, symbols, &identifier, offset)
+}
+
 fn member_access_owner_type_name<'a>(
     document_uri: &str,
     text: &str,
@@ -2653,6 +2696,40 @@ fn builtin_completion_items(prefix: &str) -> Vec<Value> {
     items
 }
 
+fn builtin_member_completion_items(type_name: &str, prefix: &str) -> Vec<Value> {
+    let Some(object) = builtin_object_spec(type_name) else {
+        return Vec::new();
+    };
+    let owner = object
+        .get("typeName")
+        .and_then(Value::as_str)
+        .unwrap_or(type_name);
+    object
+        .get("members")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|member| {
+            let label = member.get("name").and_then(Value::as_str)?;
+            if !completion_prefix_matches(label, prefix) {
+                return None;
+            }
+            let kind = member
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(completion_kind_for_builtin_member)
+                .unwrap_or(10);
+            let detail = builtin_member_detail(member);
+            Some(serde_json::json!({
+                "label": label,
+                "kind": kind,
+                "detail": detail,
+                "data": { "kind": "vbscript-builtin-member", "owner": owner },
+            }))
+        })
+        .collect()
+}
+
 fn completion_prefix_matches(label: &str, prefix: &str) -> bool {
     prefix.is_empty() || label.to_lowercase().starts_with(&prefix.to_lowercase())
 }
@@ -2718,6 +2795,76 @@ fn builtin_completion_detail(label: &str) -> Option<BuiltinCompletionDetail> {
         detail: Value::String(format!("Classic ASP {type_name} object")),
         documentation: builtin_markdown(&signature, "Built-in Classic ASP runtime object."),
     })
+}
+
+fn builtin_member_completion_detail(owner: &str, label: &str) -> Option<BuiltinCompletionDetail> {
+    let member = builtin_member_spec(owner, label)?;
+    let detail = builtin_member_detail(member);
+    let signature = member
+        .get("signature")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{owner}.{label}"));
+    let type_name = member
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("Variant");
+    let summary = format!("Built-in Classic ASP {owner} member.");
+    Some(BuiltinCompletionDetail {
+        detail,
+        documentation: builtin_markdown(&format!("{signature} As {type_name}"), &summary),
+    })
+}
+
+fn builtin_member_detail(member: &Value) -> Value {
+    let kind = member
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("property");
+    let Some(type_name) = member.get("type").and_then(Value::as_str) else {
+        return Value::String(kind.to_string());
+    };
+    Value::String(format!("{kind} As {type_name}"))
+}
+
+fn builtin_member_spec(type_name: &str, label: &str) -> Option<&'static Value> {
+    builtin_object_spec(type_name)?
+        .get("members")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|member| {
+            member
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(label))
+        })
+}
+
+fn builtin_object_spec(type_name: &str) -> Option<&'static Value> {
+    ["classicAspObjects", "externalObjects"]
+        .into_iter()
+        .find_map(|section| {
+            builtin_catalog()
+                .get(section)?
+                .as_object()?
+                .values()
+                .find(|object| {
+                    object
+                        .get("typeName")
+                        .and_then(Value::as_str)
+                        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(type_name))
+                })
+        })
+}
+
+fn completion_kind_for_builtin_member(kind: &str) -> u32 {
+    match kind {
+        "method" => 2,
+        "property" => 10,
+        "field" => 5,
+        "event" => 23,
+        _ => 10,
+    }
 }
 
 fn classic_asp_builtin_type_name(label: &str) -> Option<&'static str> {

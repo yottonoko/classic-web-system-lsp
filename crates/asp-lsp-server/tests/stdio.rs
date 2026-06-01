@@ -605,6 +605,40 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         .expect("DatePart documentation")
         .contains("Returns part of a date."));
 
+    let member_completion = request(
+        &mut stdin,
+        &mut reader,
+        47,
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 7, "character": 9 },
+        }),
+    );
+    let response_write = member_completion["result"]
+        .as_array()
+        .expect("Response member completion items")
+        .iter()
+        .find(|item| item["label"] == json!("Write"))
+        .expect("Response.Write completion")
+        .clone();
+    let resolved_response_write = request(
+        &mut stdin,
+        &mut reader,
+        48,
+        "completionItem/resolve",
+        response_write,
+    );
+    assert_eq!(
+        resolved_response_write["result"]["detail"],
+        json!("method As Variant"),
+        "resolved Response.Write: {resolved_response_write}"
+    );
+    assert!(resolved_response_write["result"]["documentation"]["value"]
+        .as_str()
+        .expect("Response.Write documentation")
+        .contains("Response.Write value"));
+
     let hover = request(
         &mut stdin,
         &mut reader,
