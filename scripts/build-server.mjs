@@ -25,6 +25,9 @@ function readTarget() {
   if (index !== -1 && process.argv[index + 1]) {
     return process.argv[index + 1];
   }
+  if (process.env.ASP_LSP_PACKAGE_TARGET) {
+    return process.env.ASP_LSP_PACKAGE_TARGET;
+  }
   return `${platformName()}-${archName()}`;
 }
 

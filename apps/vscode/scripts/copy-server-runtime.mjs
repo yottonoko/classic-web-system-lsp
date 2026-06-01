@@ -76,16 +76,29 @@ function copyTypeScriptLibs(targetDirectory) {
 }
 
 function copyRustServer(targetRoot) {
-  const executable = process.platform === "win32" ? "asp-lsp-server.exe" : "asp-lsp-server";
-  const source = path.join(repoRoot, "target", "release", executable);
+  const target = readTarget();
+  const sourceExecutable = process.platform === "win32" ? "asp-lsp-server.exe" : "asp-lsp-server";
+  const targetExecutable = target.startsWith("win32-") ? "asp-lsp-server.exe" : "asp-lsp-server";
+  const source = path.join(repoRoot, "target", "release", sourceExecutable);
   if (!fs.existsSync(source)) {
     return;
   }
-  const targetDirectory = path.join(targetRoot, "server", "bin", runtimeTarget());
+  const targetDirectory = path.join(targetRoot, "server", "bin", target);
   fs.mkdirSync(targetDirectory, { recursive: true });
-  const target = path.join(targetDirectory, executable);
-  fs.copyFileSync(source, target);
-  fs.chmodSync(target, 0o755);
+  const targetPath = path.join(targetDirectory, targetExecutable);
+  fs.copyFileSync(source, targetPath);
+  fs.chmodSync(targetPath, 0o755);
+}
+
+function readTarget() {
+  const index = process.argv.indexOf("--target");
+  if (index !== -1 && process.argv[index + 1]) {
+    return process.argv[index + 1];
+  }
+  if (process.env.ASP_LSP_PACKAGE_TARGET) {
+    return process.env.ASP_LSP_PACKAGE_TARGET;
+  }
+  return runtimeTarget();
 }
 
 function runtimeTarget() {

@@ -25,6 +25,8 @@ describe("VS Code extension package", () => {
     };
     const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
     const releaseWorkflow = fs.readFileSync("../../.github/workflows/release-vsix.yml", "utf8");
+    const buildServerScript = fs.readFileSync("../../scripts/build-server.mjs", "utf8");
+    const copyServerRuntimeScript = fs.readFileSync("scripts/copy-server-runtime.mjs", "utf8");
 
     expect(rootManifest.scripts?.["package:vsix:no-native"]).toBe(
       "pnpm --filter classic-asp-lsp run package:vsix:no-native",
@@ -52,6 +54,9 @@ describe("VS Code extension package", () => {
     expect(releaseWorkflow).toContain("Package VSIX without Rust server binary");
     expect(releaseWorkflow).not.toContain("# - os: ubuntu-latest");
     expect(releaseWorkflow).not.toContain("#   target: linux-x64");
+    expect(releaseWorkflow).toContain("ASP_LSP_PACKAGE_TARGET: ${{ matrix.target }}");
+    expect(buildServerScript).toContain("ASP_LSP_PACKAGE_TARGET");
+    expect(copyServerRuntimeScript).toContain("ASP_LSP_PACKAGE_TARGET");
   });
 
   it("contributes commands, task definition and IIS debug settings", () => {
