@@ -31,13 +31,12 @@
     "build:no-native": "tsc -p tsconfig.json && node scripts/bundle-extension.mjs && node scripts/copy-server-runtime.mjs --no-native",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "oxlint src test --deny-warnings --no-error-on-unmatched-pattern",
-    "package:vsix": "pnpm --dir ../.. run build:server && pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm --filter @asp-lsp/embedded-sidecar run build && pnpm run build && vsce package --no-dependencies --follow-symlinks",
-    "package:vsix:no-native": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm --filter @asp-lsp/embedded-sidecar run build && pnpm run build:no-native && vsce package --no-dependencies --follow-symlinks",
-    "test": "pnpm --dir ../.. run build:server && pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm --filter @asp-lsp/embedded-sidecar run build && pnpm run build && vitest run --passWithNoTests"
+    "package:vsix": "pnpm --dir ../.. run build:server && pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/embedded-sidecar run build && pnpm run build && vsce package --no-dependencies --follow-symlinks",
+    "package:vsix:no-native": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/embedded-sidecar run build && pnpm run build:no-native && vsce package --no-dependencies --follow-symlinks",
+    "test": "pnpm --dir ../.. run build:server && pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/embedded-sidecar run build && pnpm run build && vitest run --passWithNoTests"
   },
   "dependencies": {
     "@asp-lsp/core": "workspace:*",
-    "@asp-lsp/language-server": "workspace:*",
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {

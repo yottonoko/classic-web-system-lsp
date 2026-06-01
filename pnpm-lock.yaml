@@ -32,9 +32,6 @@ importers:
       '@asp-lsp/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@asp-lsp/language-server':
-        specifier: workspace:*
-        version: link:../../packages/language-server
       vscode-languageclient:
         specifier: ^9.0.1
         version: 9.0.1

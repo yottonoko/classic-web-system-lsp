@@ -117,27 +117,16 @@ function createServerOptions(
   serverLaunch: ServerLaunchPath,
   env: NodeJS.ProcessEnv,
 ): ServerOptions {
-  if (serverLaunch.kind === "binary") {
-    return {
-      run: {
-        command: serverLaunch.path,
-        transport: TransportKind.stdio,
-        options: { env },
-      },
-      debug: {
-        command: serverLaunch.path,
-        transport: TransportKind.stdio,
-        options: { env },
-      },
-    };
-  }
-
   return {
-    run: { module: serverLaunch.path, transport: TransportKind.ipc, options: { env } },
+    run: {
+      command: serverLaunch.path,
+      transport: TransportKind.stdio,
+      options: { env },
+    },
     debug: {
-      module: serverLaunch.path,
-      transport: TransportKind.ipc,
-      options: { execArgv: ["--nolazy", "--inspect=6009"], env },
+      command: serverLaunch.path,
+      transport: TransportKind.stdio,
+      options: { env },
     },
   };
 }

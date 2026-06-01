@@ -50,13 +50,14 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 ## Standalone Server
 
 ```sh
-pnpm --filter @asp-lsp/language-server run start -- --stdio
+pnpm run build:server
+target/release/asp-lsp-server --stdio
 ```
 
-After building, the server entrypoint is:
+For iterative development, Cargo can run the Rust server directly:
 
 ```sh
-node packages/language-server/dist/server.js --stdio
+cargo run -p asp-lsp-server -- --stdio
 ```
 
 ## VS Code Development
@@ -78,7 +79,7 @@ pnpm run package:vsix --out classic-asp-lsp.vsix
 ```
 
 The VSIX build bundles the Rust language server plus the embedded Node sidecar before packaging, so the extension does not ship a nested `node_modules` tree.
-Use `pnpm run package:vsix:no-native` to build a VSIX without the platform Rust server binary.
+Use `pnpm run package:vsix:no-native` to build a VSIX without the platform Rust server binary; that build requires a development Rust server binary at launch time.
 
 ## Samples
 

@@ -1,24 +1,18 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { getServerLaunchPath, getServerModulePath } from "../src/server-path";
-
-interface JsonRpcMessage {
-  id?: number;
-  method?: string;
-  params?: unknown;
-  result?: unknown;
-}
+import { getServerLaunchPath } from "../src/server-path";
 
 describe("VS Code extension package", () => {
-  it("keeps the language server as a runtime dependency", () => {
+  it("does not keep the old Node language server as a runtime dependency", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
     };
-    expect(manifest.dependencies?.["@asp-lsp/language-server"]).toBe("workspace:*");
+    expect(manifest.dependencies?.["@asp-lsp/core"]).toBe("workspace:*");
+    expect(manifest.dependencies?.["@asp-lsp/language-server"]).toBeUndefined();
     expect(manifest.devDependencies?.["@asp-lsp/language-server"]).toBeUndefined();
   });
 
@@ -38,6 +32,9 @@ describe("VS Code extension package", () => {
       "node scripts/copy-server-runtime.mjs --no-native",
     );
     expect(manifest.scripts?.["package:vsix:no-native"]).toContain("pnpm run build:no-native");
+    expect(manifest.scripts?.["package:vsix:no-native"]).not.toContain("@asp-lsp/language-server");
+    expect(manifest.scripts?.["package:vsix"]).not.toContain("@asp-lsp/language-server");
+    expect(manifest.scripts?.test).not.toContain("@asp-lsp/language-server");
     expect(manifest.scripts?.["package:vsix:no-native"]).not.toContain("build:native");
     expect(manifest.scripts?.["package:vsix"]).not.toContain("build:native");
     expect(manifest.scripts?.test).not.toContain("build:native");
@@ -641,15 +638,6 @@ describe("VS Code extension package", () => {
     );
   });
 
-  it("resolves the packaged language server module path", () => {
-    const root = process.cwd();
-    const serverModule = getServerModulePath({
-      asAbsolutePath: (relativePath) => path.join(root, relativePath),
-    });
-    expect(serverModule).toBe(path.join(root, "server", "language-server", "dist", "server.js"));
-    expect(fs.existsSync(serverModule)).toBe(true);
-  });
-
   it("resolves the Rust server binary by default", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-server-path-"));
     const executableName = process.platform === "win32" ? "asp-lsp-server.exe" : "asp-lsp-server";
@@ -670,69 +658,27 @@ describe("VS Code extension package", () => {
     expect(launch).toEqual({ kind: "binary", path: binary });
   });
 
-  it("falls back to the legacy server when no Rust server binary is available", () => {
+  it("fails clearly when no Rust server binary is available", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-server-path-"));
-    const serverModule = path.join(root, "server", "language-server", "dist", "server.js");
-    fs.mkdirSync(path.dirname(serverModule), { recursive: true });
-    fs.writeFileSync(serverModule, "");
-    const launch = getServerLaunchPath({
-      asAbsolutePath: (relativePath) => path.join(root, relativePath),
-    });
-
-    expect(launch).toEqual({
-      kind: "nodeModule",
-      path: serverModule,
-    });
-    fs.rmSync(root, { recursive: true, force: true });
-  });
-
-  it("bundles TypeScript browser libs for JavaScript language features", async () => {
-    const serverModule = path.join(process.cwd(), "server", "language-server", "dist", "server.js");
-    expect(fs.existsSync(path.join(path.dirname(serverModule), "lib.esnext.d.ts"))).toBe(true);
-    expect(fs.existsSync(path.join(path.dirname(serverModule), "lib.dom.d.ts"))).toBe(true);
-
-    const server = new RpcServer(serverModule);
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-bundled-js-"));
     try {
-      await server.start();
-      const uri = `file://${path.join(tempDir, "default.asp")}`;
-      await server.request("initialize", {
-        processId: process.pid,
-        rootUri: `file://${tempDir}`,
-        capabilities: {},
-      });
-      server.notify("workspace/didChangeConfiguration", {
-        settings: { aspLsp: { checkJs: true, diagnostics: { debounceMs: 0 } } },
-      });
-      server.notify("textDocument/didOpen", {
-        textDocument: {
-          uri,
-          languageId: "classic-asp",
-          version: 1,
-          text: `<script>
-document.querySelector("#clientClock");
-new Intl.DateTimeFormat("en");
-</script>`,
-        },
-      });
-      await server.waitForNotification("textDocument/publishDiagnostics");
-
-      const diagnostics = await server.request("textDocument/diagnostic", {
-        textDocument: { uri },
-      });
-      const serialized = JSON.stringify(diagnostics);
-      expect(serialized).not.toContain("Cannot find name 'document'");
-      expect(serialized).not.toContain("Cannot find name 'Intl'");
-
-      await server.request("shutdown", null);
-      server.notify("exit", undefined);
+      expect(() =>
+        getServerLaunchPath({
+          asAbsolutePath: (relativePath) => path.join(root, relativePath),
+        }),
+      ).toThrow("Rust language server binary not found");
     } finally {
-      server.stop();
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("packages a VSIX with the language server entrypoint", () => {
+  it("bundles TypeScript browser libs for the embedded sidecar", () => {
+    const sidecarDirectory = path.join(process.cwd(), "server", "sidecar", "dist");
+    expect(fs.existsSync(path.join(sidecarDirectory, "sidecar.js"))).toBe(true);
+    expect(fs.existsSync(path.join(sidecarDirectory, "lib.esnext.d.ts"))).toBe(true);
+    expect(fs.existsSync(path.join(sidecarDirectory, "lib.dom.d.ts"))).toBe(true);
+  });
+
+  it("packages a VSIX with the Rust server and embedded sidecar", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vsix-"));
     const vsixPath = path.join(tempDir, "classic-asp-lsp.vsix");
     try {
@@ -749,136 +695,20 @@ new Intl.DateTimeFormat("en");
       expect(listing).toContain("extension/package.nls.json");
       expect(listing).toContain("extension/package.nls.ja.json");
       expect(listing).toContain("extension/assets/icon.png");
-      expect(listing).toContain("extension/server/language-server/dist/server.js");
-      expect(listing).toContain("extension/server/language-server/dist/js-diagnostics-worker.js");
-      expect(listing).toContain("extension/server/language-server/dist/vb-diagnostics-worker.js");
-      expect(listing).toContain("extension/server/language-server/dist/lib.esnext.d.ts");
-      expect(listing).toContain("extension/server/language-server/dist/lib.dom.d.ts");
       expect(listing).toContain("extension/server/sidecar/dist/sidecar.js");
       expect(listing).toContain("extension/server/sidecar/dist/lib.esnext.d.ts");
       expect(listing).toContain("extension/server/sidecar/dist/lib.dom.d.ts");
       expect(listing).toContain("extension/server/sidecar/package.json");
       expect(listing).toMatch(/extension\/server\/bin\/[^/]+\/asp-lsp-server/);
-      expect(listing).not.toContain("extension/server/language-server/native/");
+      expect(listing).not.toContain("extension/server/language-server/");
       const removedRuntimeName = "was" + "m";
       expect(listing).not.toContain(`.${removedRuntimeName}`);
       expect(listing).not.toMatch(
         new RegExp(`extension/server/language-server/.*${removedRuntimeName}`, "i"),
       );
-      expect(listing).not.toContain("extension/server/language-server/node_modules/");
       expect(listing).not.toContain("extension/node_modules/");
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   }, 30_000);
 });
-
-class RpcServer {
-  private child: ChildProcessWithoutNullStreams | undefined;
-  private nextId = 1;
-  private buffer = Buffer.alloc(0);
-  private stderr = "";
-  private responses = new Map<number, (message: JsonRpcMessage) => void>();
-  private notifications = new Map<string, Array<(message: JsonRpcMessage) => void>>();
-  private pendingNotifications = new Map<string, JsonRpcMessage[]>();
-
-  constructor(private readonly serverModule: string) {}
-
-  async start(): Promise<void> {
-    this.child = spawn(process.execPath, [this.serverModule, "--stdio"], {
-      cwd: process.cwd(),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    this.child.stdout.on("data", (chunk: Buffer) => this.read(chunk));
-    this.child.stderr.on("data", (chunk: Buffer) => {
-      this.stderr += chunk.toString("utf8");
-    });
-  }
-
-  request(method: string, params: unknown): Promise<unknown> {
-    const id = this.nextId;
-    this.nextId += 1;
-    this.write({ jsonrpc: "2.0", id, method, params });
-    return new Promise((resolve, reject) => {
-      this.responses.set(id, (message) => resolve(message.result));
-      setTimeout(
-        () => reject(new Error(`Timed out waiting for ${method}: ${this.stderr}`)),
-        30_000,
-      );
-    });
-  }
-
-  notify(method: string, params: unknown): void {
-    this.write({ jsonrpc: "2.0", method, params });
-  }
-
-  waitForNotification(method: string): Promise<JsonRpcMessage> {
-    const pending = this.pendingNotifications.get(method);
-    const message = pending?.shift();
-    if (message) {
-      return Promise.resolve(message);
-    }
-    return new Promise((resolve, reject) => {
-      const callbacks = this.notifications.get(method) ?? [];
-      callbacks.push(resolve);
-      this.notifications.set(method, callbacks);
-      setTimeout(
-        () => reject(new Error(`Timed out waiting for ${method}: ${this.stderr}`)),
-        30_000,
-      );
-    });
-  }
-
-  takePendingNotifications(method: string): JsonRpcMessage[] {
-    const pending = this.pendingNotifications.get(method) ?? [];
-    this.pendingNotifications.set(method, []);
-    return pending;
-  }
-
-  stop(): void {
-    this.child?.kill();
-  }
-
-  private write(message: unknown): void {
-    const body = JSON.stringify(message);
-    this.child?.stdin.write(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`);
-  }
-
-  private read(chunk: Buffer): void {
-    this.buffer = Buffer.concat([this.buffer, chunk]);
-    while (true) {
-      const headerEnd = this.buffer.indexOf("\r\n\r\n");
-      if (headerEnd === -1) {
-        return;
-      }
-      const header = this.buffer.slice(0, headerEnd).toString("utf8");
-      const length = /Content-Length:\s*(\d+)/i.exec(header)?.[1];
-      if (!length) {
-        throw new Error(`Missing Content-Length header: ${header}`);
-      }
-      const bodyStart = headerEnd + 4;
-      const bodyEnd = bodyStart + Number(length);
-      if (this.buffer.length < bodyEnd) {
-        return;
-      }
-      const message = JSON.parse(
-        this.buffer.slice(bodyStart, bodyEnd).toString("utf8"),
-      ) as JsonRpcMessage;
-      this.buffer = this.buffer.slice(bodyEnd);
-      if (message.id !== undefined) {
-        this.responses.get(message.id)?.(message);
-        this.responses.delete(message.id);
-      } else if (message.method) {
-        const callbacks = this.notifications.get(message.method) ?? [];
-        const callback = callbacks.shift();
-        if (callback) {
-          callback(message);
-        } else {
-          const pending = this.pendingNotifications.get(message.method) ?? [];
-          pending.push(message);
-          this.pendingNotifications.set(message.method, pending);
-        }
-      }
-    }
-  }
-}
