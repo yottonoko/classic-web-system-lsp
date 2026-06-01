@@ -1,4 +1,4 @@
-use asp_ide::Ide;
+use asp_ide::{Ide, TextPosition, TextRange};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use serde_json::{json, Value};
 
@@ -17,7 +17,7 @@ fn run() -> Result<(), String> {
         .initialize_start()
         .map_err(|error| error.to_string())?;
     let mut ide = Ide::default();
-    ide.set_settings(settings_from_initialize(&initialize_params));
+    ide.set_settings(settings_from_initialize(&initialize_params))?;
     connection
         .initialize_finish(
             initialize_id,
@@ -54,7 +54,7 @@ fn server_capabilities() -> Value {
     json!({
         "textDocumentSync": {
             "openClose": true,
-            "change": 1,
+            "change": 2,
             "save": { "includeText": true },
         },
         "executeCommandProvider": {
@@ -136,16 +136,7 @@ fn handle_notification(
         }
         "textDocument/didChange" => {
             let uri = pointer_string(&notification.params, "/textDocument/uri");
-            let text = notification
-                .params
-                .get("contentChanges")
-                .and_then(Value::as_array)
-                .and_then(|changes| changes.last())
-                .and_then(|change| change.get("text"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            publish_document_diagnostics(connection, ide, uri, text)?;
+            publish_changed_document_diagnostics(connection, ide, uri, &notification.params)?;
         }
         "textDocument/didClose" => {
             let uri = pointer_string(&notification.params, "/textDocument/uri");
@@ -154,12 +145,14 @@ fn handle_notification(
         }
         "workspace/didChangeConfiguration" => {
             if let Some(settings) = notification.params.get("settings") {
-                ide.set_settings(
+                for (uri, diagnostics) in ide.set_settings(
                     settings
                         .get("aspLsp")
                         .cloned()
                         .unwrap_or_else(|| settings.clone()),
-                );
+                )? {
+                    send_diagnostics(connection, &uri, diagnostics)?;
+                }
             }
             publish_backend_status(connection, ide)?;
         }
@@ -168,14 +161,55 @@ fn handle_notification(
     Ok(())
 }
 
+fn publish_changed_document_diagnostics(
+    connection: &Connection,
+    ide: &mut Ide,
+    uri: String,
+    params: &Value,
+) -> Result<(), String> {
+    let Some(changes) = params.get("contentChanges").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    let mut latest_diagnostics = None;
+    for change in changes {
+        let text = change
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        latest_diagnostics = Some(
+            if let Some(range) = change.get("range").and_then(text_range) {
+                ide.change_document_incremental(uri.clone(), range, text)?
+            } else {
+                ide.change_document_full(uri.clone(), text)?
+            },
+        );
+    }
+    send_diagnostics(connection, &uri, latest_diagnostics.unwrap_or_default())
+}
+
 fn publish_document_diagnostics(
     connection: &Connection,
     ide: &mut Ide,
     uri: String,
     text: String,
 ) -> Result<(), String> {
-    let diagnostics = ide.change_document(uri.clone(), text)?;
+    let diagnostics = ide.change_document_full(uri.clone(), text)?;
     send_diagnostics(connection, &uri, diagnostics)
+}
+
+fn text_range(value: &Value) -> Option<TextRange> {
+    Some(TextRange {
+        start: text_position(value.get("start")?)?,
+        end: text_position(value.get("end")?)?,
+    })
+}
+
+fn text_position(value: &Value) -> Option<TextPosition> {
+    Some(TextPosition {
+        line: value.get("line")?.as_u64()?.try_into().ok()?,
+        character: value.get("character")?.as_u64()?.try_into().ok()?,
+    })
 }
 
 fn send_diagnostics(

@@ -8,4 +8,6 @@ license = "MIT OR Apache-2.0"
 asp-analysis = { workspace = true }
 asp-sidecar-protocol = { workspace = true }
 asp-syntax = { workspace = true }
+ropey = { workspace = true }
+salsa = { workspace = true }
 serde_json = { workspace = true }

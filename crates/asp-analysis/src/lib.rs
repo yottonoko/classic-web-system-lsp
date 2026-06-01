@@ -58,6 +58,14 @@ impl Analyzer {
     }
 }
 
+pub fn analyze_document_once(
+    uri: &str,
+    text: &str,
+    settings: &Value,
+) -> Result<Vec<Value>, String> {
+    Analyzer::default().analyze_document(uri, text, settings)
+}
+
 pub fn backend_status() -> Value {
     json!({
         "backend": "native",
