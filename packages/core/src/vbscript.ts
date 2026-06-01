@@ -2957,7 +2957,12 @@ function isUncertainIncludeImplicitSymbol(
 }
 
 function hasIncludeAwareDocuments(parsed: AspParsedDocument, context: VbProjectContext): boolean {
-  return context.documents?.some((document) => document.uri !== parsed.uri) ?? false;
+  return (
+    context.documents?.some((document) => document.uri !== parsed.uri) === true ||
+    context.symbols?.some(
+      (symbol) => symbol.sourceUri !== parsed.uri && !symbol.sourceUri.includes("#runtime-global"),
+    ) === true
+  );
 }
 
 function isGlobalVariableLikeSymbol(symbol: VbSymbol): boolean {

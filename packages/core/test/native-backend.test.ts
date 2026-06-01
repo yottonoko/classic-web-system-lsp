@@ -9,6 +9,8 @@ import {
   collectVbscriptSymbols,
   collectVbscriptSymbolsAsync,
   collectVbscriptSymbolsFromTextAsync,
+  getVbscriptHover,
+  getVbscriptInlayHints,
   hydrateVbscriptCst,
   parseAspCst,
   parseAspDocument,
@@ -200,6 +202,58 @@ typed = "oops"
         .find((type) => type.name === "Holder")
         ?.members.find((member) => member.name === "Value")?.type?.name,
     ).toBe("String | Number");
+  });
+
+  it("normalizes native callable parameter details for hover and inlay hints", () => {
+    const source = `<%
+Function BuildName(ByVal UserName, Optional Title)
+  BuildName = UserName & Title
+End Function
+Class Person
+  Public Function Greet(ByVal FirstName, LastName)
+    Greet = FirstName & LastName
+  End Function
+  Public Property Let NickName(ByVal value)
+  End Property
+End Class
+Dim p
+Set p = New Person
+Response.Write BuildName("a", "b")
+Response.Write p.Greet("a", "b")
+%>`;
+    const parsed = parseAspDocument("file:///site/native-parameters.asp", source);
+    expect(aspAnalysisBackendInfo().backend).toBe("native");
+    const symbols = collectVbscriptSymbols(parsed);
+    const buildName = symbols.find((symbol) => symbol.name === "BuildName");
+    const greet = symbols.find((symbol) => symbol.name === "Greet");
+    const nickName = symbols.find((symbol) => symbol.name === "NickName");
+    expect(buildName?.parameterDetails).toEqual([
+      { name: "UserName", mode: "byval" },
+      { name: "Title", mode: "byref", optional: true },
+    ]);
+    expect(greet?.parameterDetails).toEqual([
+      { name: "FirstName", mode: "byval" },
+      { name: "LastName", mode: "byref" },
+    ]);
+    expect(nickName?.parameterDetails).toEqual([{ name: "value", mode: "byval" }]);
+    expect(JSON.stringify([buildName, greet, nickName])).not.toContain('"token"');
+    expect(JSON.stringify([buildName, greet, nickName])).not.toContain("undefined");
+
+    const hover = getVbscriptHover(parsed, { line: 1, character: 9 }, { symbols });
+    expect(hover).toContain("Function BuildName(ByVal UserName, Optional ByRef Title) As String");
+    expect(hover).not.toContain("undefined");
+
+    const hints = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 16, character: 0 } },
+      { symbols },
+    );
+    const serializedHints = JSON.stringify(hints);
+    expect(serializedHints).toContain("UserName:");
+    expect(serializedHints).toContain("Title:");
+    expect(serializedHints).toContain("FirstName:");
+    expect(serializedHints).toContain("LastName:");
+    expect(serializedHints).not.toContain("undefined");
   });
 
   it("emits native strict type diagnostics for custom COM types", async () => {

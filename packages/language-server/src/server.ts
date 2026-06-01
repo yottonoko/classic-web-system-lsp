@@ -544,6 +544,10 @@ interface VbProjectAnalysis {
   externalRefUsages: VbExternalRefUsage[];
 }
 
+interface VbProjectContextBuildOptions {
+  allowReadMissing: boolean;
+}
+
 interface VbProjectSummaryGraph {
   rootSummary: FileAnalysisSummary;
   summaries: FileAnalysisSummary[];
@@ -1445,10 +1449,9 @@ connection.onCompletion((params) =>
     };
     if (region.language === "vbscript") {
       const warmedContext =
-        cachedVbProjectContextLookup(cached, settings) ??
-        (cached.parsed.includes.length > 0
-          ? await summaryBackedVbProjectContextLookupAsync(cached, settings)
-          : undefined);
+        cached.parsed.includes.length > 0
+          ? await interactiveVbProjectContextLookupAsync(cached, settings)
+          : cachedVbProjectContextLookup(cached, settings);
       const contextIdentity = cached.parsed.includes.length > 0 ? warmedContext?.key : undefined;
       const cachedCompletion = completionSessionCache.get(
         cached,
@@ -1524,7 +1527,7 @@ connection.onCompletionResolve((item) =>
             item,
             cached.parsed,
             withSourceUriFormatter(
-              await immediateVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+              await interactiveVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
             ),
           )
         : item;
@@ -1706,7 +1709,7 @@ connection.onDocumentHighlight(async (params): Promise<DocumentHighlight[]> => {
     return getVbscriptDocumentHighlights(
       cached.parsed,
       params.position,
-      await bestEffortVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+      await interactiveVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
     );
   }
   if (region && isJavaScriptLikeRegion(region)) {
@@ -1736,7 +1739,7 @@ connection.onSignatureHelp(async (params): Promise<SignatureHelp | null> => {
     getVbscriptSignatureHelp(
       cached.parsed,
       params.position,
-      await immediateVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+      await interactiveVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
     ) ?? null
   );
 });
@@ -1881,7 +1884,7 @@ connection.languages.inlayHint.on(
         ...getVbscriptInlayHints(
           cached.parsed,
           params.range,
-          await bestEffortVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+          await interactiveVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
           cachedSettings(cached.source.uri).inlayHints,
         ),
         ...(await jsInlayHintsAsync(cached, params.range)),
@@ -5774,7 +5777,7 @@ async function aspHoverAsync(
   params: TextDocumentPositionParams,
 ): Promise<Hover | null> {
   const settings = cachedSettings(cached.source.uri);
-  const context = withSourceUriFormatter(await immediateVbProjectContextAsync(cached, settings));
+  const context = withSourceUriFormatter(await interactiveVbProjectContextAsync(cached, settings));
   const value = getVbscriptHover(cached.parsed, params.position, context);
   const fallback = value ?? fallbackVbscriptHover(cached, params.position, context);
   return fallback ? { contents: { kind: "markdown", value: fallback } } : null;
@@ -5968,7 +5971,10 @@ async function definitionLikeLocation(
     return null;
   }
   if (region.language === "vbscript") {
-    const context = await immediateVbProjectContextAsync(cached, cachedSettings(cached.source.uri));
+    const context = await interactiveVbProjectContextAsync(
+      cached,
+      cachedSettings(cached.source.uri),
+    );
     const symbol =
       mode === "typeDefinition"
         ? getVbscriptTypeDefinition(cached.parsed, position, context)
@@ -6349,10 +6355,11 @@ function tsReferenceToLocation(
 async function buildVbProjectContextAsync(
   cached: CachedDocument,
   settings: AspSettings,
+  options: VbProjectContextBuildOptions = { allowReadMissing: false },
 ): Promise<VbProjectContext> {
   await hydrateCachedVbscriptCstAsync(cached, settings, "analysis");
   const rootKey = vbProjectRootContextCacheKey(cached, settings);
-  const project = await collectCachedVbProjectAnalysisAsync(cached, settings);
+  const project = await collectCachedVbProjectAnalysisAsync(cached, settings, options);
   const documents = project.documents;
   const contextSettings = vbProjectContextSettings(settings);
   const key = JSON.stringify({
@@ -6427,14 +6434,24 @@ async function buildFullVbProjectContextForWorkspaceOperationAsync(
   return { ...context, locale: settings.resolvedLocale };
 }
 
-async function immediateVbProjectContextAsync(
+async function interactiveVbProjectContextAsync(
   cached: CachedDocument,
   settings: AspSettings,
 ): Promise<VbProjectContext> {
   return (
-    cachedVbProjectContext(cached, settings) ??
+    (await interactiveVbProjectContextLookupAsync(cached, settings))?.context ??
     (await buildImmediateLocalVbProjectContextAsync(cached, settings))
   );
+}
+
+async function interactiveVbProjectContextLookupAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<CachedVbProjectContextLookup | undefined> {
+  if (cached.parsed.includes.length === 0) {
+    return cachedVbProjectContextLookup(cached, settings);
+  }
+  return summaryBackedVbProjectContextLookupAsync(cached, settings, { allowReadMissing: true });
 }
 
 function bestEffortVbProjectContext(
@@ -6472,8 +6489,9 @@ function withSourceUriFormatter(context: VbProjectContext): VbProjectContext {
 async function summaryBackedVbProjectContextLookupAsync(
   cached: CachedDocument,
   settings: AspSettings,
+  options: VbProjectContextBuildOptions = { allowReadMissing: false },
 ): Promise<CachedVbProjectContextLookup | undefined> {
-  await buildVbProjectContextAsync(cached, settings);
+  await buildVbProjectContextAsync(cached, settings, options);
   return cachedVbProjectContextLookup(cached, settings);
 }
 
@@ -7158,10 +7176,9 @@ function configuredVbscriptGlobals(cached: CachedDocument, settings: AspSettings
 async function collectCachedVbProjectAnalysisAsync(
   cached: CachedDocument,
   settings: AspSettings,
+  options: VbProjectContextBuildOptions = { allowReadMissing: false },
 ): Promise<VbProjectAnalysis> {
-  const graph = await collectCachedVbProjectSummaryGraphAsync(cached, settings, {
-    allowReadMissing: false,
-  });
+  const graph = await collectCachedVbProjectSummaryGraphAsync(cached, settings, options);
   const key = vbProjectAnalysisCacheKey(graph, settings);
   const existing = cached.analysis?.vbProjectAnalysis;
   if (existing?.key === key) {
@@ -7423,7 +7440,7 @@ async function collectVbProjectSummaryGraphAsync(
       visited.add(entry.uri);
       textLength += entry.source.size;
       summaries.push(entry.summary);
-      if (entry.parsed && documents.get(entry.uri)) {
+      if (entry.parsed) {
         projectDocuments.push(entry.parsed);
       }
       await visitSummary(entry.summary, depth + 1);
@@ -12615,7 +12632,7 @@ async function buildSemanticTokensAsync(
 ): Promise<SemanticTokens> {
   return buildSemanticTokensWithContextAsync(
     cached,
-    await bestEffortVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+    await interactiveVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
     range,
   );
 }

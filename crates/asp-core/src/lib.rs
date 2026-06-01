@@ -3209,8 +3209,12 @@ fn collect_symbols_from_node(
             if !parameters.is_empty() {
                 symbol.insert("parameters".to_string(), Value::Array(parameters));
             }
-            if let Some(parameter_details) = node.get("parameterMetadata").cloned() {
-                symbol.insert("parameterDetails".to_string(), parameter_details);
+            if let Some(parameter_details) = node.get("parameterMetadata").and_then(Value::as_array)
+            {
+                let details = parameter_details_for_symbol(parameter_details);
+                if !details.is_empty() {
+                    symbol.insert("parameterDetails".to_string(), Value::Array(details));
+                }
             }
             if procedure_kind == "function" || procedure_kind == "sub" {
                 symbol.insert(
@@ -3324,6 +3328,32 @@ fn collect_symbols_from_node(
             );
         }
     }
+}
+
+fn parameter_details_for_symbol(parameters: &[Value]) -> Vec<Value> {
+    parameters
+        .iter()
+        .filter_map(|parameter| {
+            let token = parameter.get("token")?;
+            let name = token_name(token)?;
+            let mut detail = JsonMap::new();
+            detail.insert("name".to_string(), Value::String(name.to_string()));
+            detail.insert(
+                "mode".to_string(),
+                Value::String(
+                    parameter
+                        .get("mode")
+                        .and_then(Value::as_str)
+                        .unwrap_or("byref")
+                        .to_string(),
+                ),
+            );
+            if parameter.get("optional").and_then(Value::as_bool) == Some(true) {
+                detail.insert("optional".to_string(), Value::Bool(true));
+            }
+            Some(Value::Object(detail))
+        })
+        .collect()
 }
 
 fn array_declaration_for_token<'a>(node: &'a Value, token: &Value) -> Option<&'a Value> {

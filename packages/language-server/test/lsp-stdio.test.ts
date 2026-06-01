@@ -4518,6 +4518,71 @@ a = 2
       }
     });
 
+    it("reads include summaries for the first inlay request without diagnostics warmup", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-first-inlay-"));
+      const include = path.join(tempDir, "shared.inc");
+      fs.writeFileSync(include, `<%\na = 1\nsharedTitle = "include"\n%>`, "utf8");
+      const source = `<!-- #include file="shared.inc" -->
+<%
+Response.Write sharedTitle
+a = 2
+Sub Render()
+  b = "local"
+End Sub
+%>`;
+      const uri = pathToFileURL(path.join(tempDir, "default.asp")).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              diagnostics: { debounceMs: 10_000 },
+              inlayHints: { globalVariableMarkers: "all" },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        const firstHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: {
+            start: { line: 0, character: 0 },
+            end: positionAt(source, source.length),
+          },
+        });
+        const serializedHints = JSON.stringify(firstHints);
+        expect(serializedHints).not.toContain("(?)");
+        expect(serializedHints).not.toContain("(global) As Number");
+        expect(serializedHints).toContain("(local) As String");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("sharedTitle")),
+        });
+        expect(JSON.stringify(hover)).toContain("(global) Dim sharedTitle As String");
+        expect(JSON.stringify(hover)).toContain("shared.inc");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("jumps from assignments to include-defined implicit globals", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-global-"));
       const include = path.join(tempDir, "shared.inc");
@@ -5927,6 +5992,73 @@ Response.Write ${testCase.referenceName}
         }
       }
     });
+
+    itWithNativeCore(
+      "returns native parameter naming quick fixes without undefined names",
+      async () => {
+        const source = `<%
+Function BuildName(User_Name)
+  Response.Write USER_NAME
+End Function
+%>`;
+        const server = new RpcServer({
+          env: {
+            ASP_LSP_ANALYSIS_BACKEND: "native",
+            ASP_LSP_ENABLE_SOURCE_NATIVE: "1",
+            ASP_LSP_NATIVE_CORE_PATH: nativeCorePath ?? "",
+          },
+        });
+        try {
+          await server.start();
+          await server.request("initialize", {
+            processId: process.pid,
+            rootUri: "file:///tmp",
+            capabilities: {},
+          });
+          server.notify("workspace/didChangeConfiguration", {
+            settings: {
+              aspLsp: {
+                diagnostics: { debounceMs: 0 },
+                vbscript: { identifierCase: "lowercase" },
+              },
+            },
+          });
+          const uri = "file:///tmp/native-vb-parameter-naming.asp";
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri,
+              languageId: "classic-asp",
+              version: 1,
+              text: source,
+            },
+          });
+          const namingDiagnostic = {
+            range: {
+              start: { line: 1, character: 19 },
+              end: { line: 1, character: 28 },
+            },
+            message: "User_Name should be username.",
+            source: "asp-lsp-vbscript-naming",
+            code: "identifierCase",
+            data: { name: "User_Name", expectedName: "username" },
+          };
+          const actions = await server.request("textDocument/codeAction", {
+            textDocument: { uri },
+            range: namingDiagnostic.range,
+            context: { diagnostics: [namingDiagnostic] },
+          });
+          const serialized = JSON.stringify(actions);
+          expect(serialized).toContain("Rename User_Name to username");
+          expect(serialized).toContain('"newText":"username"');
+          expect(serialized).not.toContain("undefined");
+
+          await server.request("shutdown", null);
+          server.notify("exit", undefined);
+        } finally {
+          server.stop();
+        }
+      },
+    );
 
     it("accepts legacy VBScript identifier casing setting aliases", async () => {
       const source = `<%
