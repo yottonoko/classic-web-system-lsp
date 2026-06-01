@@ -92,8 +92,12 @@ describe(
         expect(initializeText).toContain("completionProvider");
         expect(initializeText).toContain('"aspLsp.server.reindexWorkspace"');
         expect(initializeText).toContain('"aspLsp.server.clearCache"');
+        expect(initializeText).toContain('"aspLsp.server.clearDiskCache"');
+        expect(initializeText).toContain('"aspLsp.server.clearProcessCache"');
         expect(initializeText).not.toContain('"aspLsp.reindexWorkspace"');
         expect(initializeText).not.toContain('"aspLsp.clearCache"');
+        expect(initializeText).not.toContain('"aspLsp.clearDiskCache"');
+        expect(initializeText).not.toContain('"aspLsp.clearProcessCache"');
         expect(initializeText).not.toContain("diagnosticProvider");
 
         const uri = "file:///tmp/default.asp";
@@ -5036,9 +5040,31 @@ End Function
         expect(JSON.stringify(second)).toContain("missingName");
         await waitForLogContaining(server, "diskCache.hit");
 
-        await server.request("workspace/executeCommand", { command: "aspLsp.server.clearCache" });
+        const processClear = await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.clearProcessCache",
+        });
+        expect(processClear).toEqual({ ok: true, cleared: "process" });
         server.takePendingNotifications("window/logMessage");
-        await server.request("workspace/diagnostic", { previousResultIds: [] });
+        const third = await server.request("workspace/diagnostic", { previousResultIds: [] });
+        expect(JSON.stringify(third)).toContain("missingName");
+        await waitForLogContaining(server, "diskCache.hit");
+
+        const diskClear = await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.clearDiskCache",
+        });
+        expect(diskClear).toEqual({ ok: true, cleared: "disk" });
+        server.takePendingNotifications("window/logMessage");
+        const fourth = await server.request("workspace/diagnostic", { previousResultIds: [] });
+        expect(JSON.stringify(fourth)).toContain("missingName");
+        await waitForLogContaining(server, "diskCache.miss");
+
+        const allClear = await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.clearCache",
+        });
+        expect(allClear).toEqual({ ok: true, cleared: "all" });
+        server.takePendingNotifications("window/logMessage");
+        const fifth = await server.request("workspace/diagnostic", { previousResultIds: [] });
+        expect(JSON.stringify(fifth)).toContain("missingName");
         await waitForLogContaining(server, "diskCache.miss");
 
         await server.request("shutdown", null);

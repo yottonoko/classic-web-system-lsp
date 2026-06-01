@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -672,6 +672,14 @@
       {
         "command": "aspLsp.clearCache",
         "title": "%command.clearCache.title%"
+      },
+      {
+        "command": "aspLsp.clearDiskCache",
+        "title": "%command.clearDiskCache.title%"
+      },
+      {
+        "command": "aspLsp.clearProcessCache",
+        "title": "%command.clearProcessCache.title%"
       },
       {
         "command": "aspLsp.openOutput",

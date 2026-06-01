@@ -92,6 +92,8 @@ describe("VS Code extension package", () => {
     ).toBe("%command.restartServer.title%");
     expect(commands).toContain("aspLsp.reindexWorkspace");
     expect(commands).toContain("aspLsp.clearCache");
+    expect(commands).toContain("aspLsp.clearDiskCache");
+    expect(commands).toContain("aspLsp.clearProcessCache");
     expect(commands).toContain("aspLsp.openOutput");
     expect(commands).toContain("aspLsp.debugIisUrl");
     expect(commands).toContain("aspLsp.debugIisExpressUrl");
@@ -346,6 +348,11 @@ describe("VS Code extension package", () => {
     expect(keys).toContain("configuration.locale.description");
     expect(nls["command.restartServer.title"]).toBe("Classic ASP: Restart Language Server");
     expect(nlsJa["command.restartServer.title"]).toBe("Classic ASP: Language Server を再起動");
+    expect(nls["command.clearCache.title"]).toBe("Classic ASP: Clear All Analysis Caches");
+    expect(nls["command.clearDiskCache.title"]).toBe("Classic ASP: Clear Disk Analysis Cache");
+    expect(nls["command.clearProcessCache.title"]).toBe(
+      "Classic ASP: Clear Process Analysis Cache",
+    );
     for (const key of keys) {
       expect(nls[key], key).toBeTruthy();
       expect(nlsJa[key], key).toBeTruthy();

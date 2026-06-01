@@ -188,10 +188,14 @@ const defaultScanChunkSize = 200;
 const defaultDiagnosticsDebounceMs = 250;
 const reindexWorkspaceCommand = "aspLsp.reindexWorkspace";
 const clearCacheCommand = "aspLsp.clearCache";
+const clearDiskCacheCommand = "aspLsp.clearDiskCache";
+const clearProcessCacheCommand = "aspLsp.clearProcessCache";
 const reindexWorkspaceServerCommand = "aspLsp.server.reindexWorkspace";
 const clearCacheServerCommand = "aspLsp.server.clearCache";
+const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
+const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const backendStatusMethod = "aspLsp/backendStatus";
-const languageServerVersion = "0.1.6";
+const languageServerVersion = "0.3.6";
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
 const backgroundAnalysisIdleDelayMs = 5_000;
@@ -1191,7 +1195,12 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         ],
       },
       executeCommandProvider: {
-        commands: [reindexWorkspaceServerCommand, clearCacheServerCommand],
+        commands: [
+          reindexWorkspaceServerCommand,
+          clearCacheServerCommand,
+          clearDiskCacheServerCommand,
+          clearProcessCacheServerCommand,
+        ],
       },
       codeLensProvider: { resolveProvider: true },
       colorProvider: true,
@@ -1966,11 +1975,21 @@ connection.onExecuteCommand(async (params) => {
     return { ok: true };
   }
   if (params.command === clearCacheCommand || params.command === clearCacheServerCommand) {
-    await diskAnalysisCache.clear();
-    vbProjectContextCache.clear();
-    clearJsProjectCaches();
-    logDebugSummary(globalSettings, "[asp-lsp] diskCache.clear");
-    return { ok: true };
+    await clearDiskAnalysisCacheByCommand();
+    await clearProcessCachesByCommand("command.clearCache");
+    logDebugSummary(globalSettings, "[asp-lsp] cache.clear");
+    return { ok: true, cleared: "all" };
+  }
+  if (params.command === clearDiskCacheCommand || params.command === clearDiskCacheServerCommand) {
+    await clearDiskAnalysisCacheByCommand();
+    return { ok: true, cleared: "disk" };
+  }
+  if (
+    params.command === clearProcessCacheCommand ||
+    params.command === clearProcessCacheServerCommand
+  ) {
+    await clearProcessCachesByCommand("command.clearProcessCache");
+    return { ok: true, cleared: "process" };
   }
   return {
     ok: false,
@@ -8716,6 +8735,78 @@ function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
   workspaceIndex.clear();
   workspaceVbReferenceIndex = undefined;
   logInvalidation("workspaceIndex", reason, workspaceGeneration);
+}
+
+async function clearDiskAnalysisCacheByCommand(): Promise<void> {
+  await diskAnalysisCache.clear();
+  logDebugSummary(globalSettings, "[asp-lsp] diskCache.clear");
+}
+
+async function clearProcessCachesByCommand(reason: string): Promise<void> {
+  const openedUris = openDocumentUris();
+  cancelBackgroundAnalysis();
+  if (projectUpdateTimer) {
+    clearTimeout(projectUpdateTimer);
+    projectUpdateTimer = undefined;
+  }
+  if (openFileProjectMaintenanceTimer) {
+    clearTimeout(openFileProjectMaintenanceTimer);
+    openFileProjectMaintenanceTimer = undefined;
+  }
+  pendingProjectUpdateReason = undefined;
+  pendingOpenFileMaintenanceReason = undefined;
+  for (const uri of openedUris) {
+    cancelScheduledDiagnostics(uri);
+    clearSemanticTokensForUri(uri);
+  }
+  cache.clear();
+  inFlightDocumentRefreshes.clear();
+  pendingIncludeSummaryRefreshes.clear();
+  vbProjectContextCache.clear();
+  completionSessionCache.clear(reason);
+  clearWorkspaceIndexProcessCaches(reason);
+  clearIncludeCaches();
+  clearJsProjectCaches();
+  await closeDiagnosticsWorkerPools(reason);
+  requestVisualRefresh(reason);
+  for (const document of documents.all()) {
+    validate(document);
+  }
+  scheduleBackgroundAnalysis(reason);
+  logDebugSummary(globalSettings, "[asp-lsp] processCache.clear");
+}
+
+function clearWorkspaceIndexProcessCaches(reason: string): void {
+  workspaceIndexDirty = true;
+  workspaceIndexTruncated = false;
+  workspaceIndex.clear();
+  workspaceVbReferenceIndex = undefined;
+  logDebugSummary(globalSettings, `[asp-lsp] processCache.workspaceIndex.clear: ${reason}`);
+}
+
+async function closeDiagnosticsWorkerPools(reason: string): Promise<void> {
+  const jsPool = jsDiagnosticsWorkerPool;
+  const vbPool = vbDiagnosticsWorkerPool;
+  jsDiagnosticsWorkerPool = undefined;
+  vbDiagnosticsWorkerPool = undefined;
+  if (jsPool) {
+    try {
+      await jsPool.close();
+    } catch (error) {
+      connection.console.warn(
+        `[asp-lsp] jsWorkerPool.close.failed: reason=${reason}, error=${errorMessage(error)}`,
+      );
+    }
+  }
+  if (vbPool) {
+    try {
+      await vbPool.close();
+    } catch (error) {
+      connection.console.warn(
+        `[asp-lsp] vbWorkerPool.close.failed: reason=${reason}, error=${errorMessage(error)}`,
+      );
+    }
+  }
 }
 
 function isExcludedWorkspaceDirectory(name: string, fullPath: string): boolean {
