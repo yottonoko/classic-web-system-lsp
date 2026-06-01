@@ -1,9 +1,13 @@
 use asp_syntax::FileKind;
 use serde_json::{json, Value};
 
+mod core_bridge;
+
+pub use core_bridge::{handle_json, handle_value, CoreState};
+
 #[derive(Default)]
 pub struct Analyzer {
-    core: asp_lsp_core::CoreState,
+    core: CoreState,
 }
 
 impl Analyzer {
@@ -177,7 +181,7 @@ pub fn backend_status() -> Value {
     json!({
         "backend": "native",
         "engine": "asp-lsp-server",
-        "core": "asp-lsp-core",
+        "core": "asp-analysis",
         "version": env!("CARGO_PKG_VERSION"),
         "sidecar": { "status": "not-started" },
     })
