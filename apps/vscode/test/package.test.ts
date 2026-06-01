@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { getServerModulePath } from "../src/server-path";
+import { getServerLaunchPath, getServerModulePath } from "../src/server-path";
 
 interface JsonRpcMessage {
   id?: number;
@@ -105,9 +105,16 @@ describe("VS Code extension package", () => {
         default: "auto",
       }),
     );
+    expect(configuration["aspLsp.useLegacyServer"]).toEqual(
+      expect.objectContaining({
+        type: "boolean",
+        default: true,
+      }),
+    );
     const analysisBackendSource = fs.readFileSync("src/extension.ts", "utf8");
     expect(analysisBackendSource).toContain("ASP_LSP_ANALYSIS_BACKEND");
     expect(analysisBackendSource).toContain("aspLsp.analysisBackend");
+    expect(analysisBackendSource).toContain("aspLsp.useLegacyServer");
     expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(
       true,
     );
@@ -652,6 +659,44 @@ describe("VS Code extension package", () => {
     });
     expect(serverModule).toBe(path.join(root, "server", "language-server", "dist", "server.js"));
     expect(fs.existsSync(serverModule)).toBe(true);
+  });
+
+  it("keeps the Rust server behind the legacy opt-in setting", () => {
+    const root = process.cwd();
+    const launch = getServerLaunchPath(
+      {
+        asAbsolutePath: (relativePath) => path.join(root, relativePath),
+      },
+      { useLegacyServer: true },
+    );
+
+    expect(launch).toEqual({
+      kind: "nodeModule",
+      path: path.join(root, "server", "language-server", "dist", "server.js"),
+    });
+  });
+
+  it("resolves the Rust server binary when legacy server is disabled", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-server-path-"));
+    const executableName = process.platform === "win32" ? "asp-lsp-server.exe" : "asp-lsp-server";
+    const binary = path.join(
+      root,
+      "server",
+      "bin",
+      `${process.platform}-${process.arch}`,
+      executableName,
+    );
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    fs.writeFileSync(binary, "");
+
+    const launch = getServerLaunchPath(
+      {
+        asAbsolutePath: (relativePath) => path.join(root, relativePath),
+      },
+      { useLegacyServer: false },
+    );
+
+    expect(launch).toEqual({ kind: "binary", path: binary });
   });
 
   it("bundles TypeScript browser libs for JavaScript language features", async () => {

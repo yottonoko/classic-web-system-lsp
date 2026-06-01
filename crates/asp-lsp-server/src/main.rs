@@ -103,6 +103,11 @@ impl ServerState {
         }
         Ok(())
     }
+
+    fn publish_fast_diagnostics(&self, connection: &Connection, uri: &str) -> Result<(), String> {
+        let diagnostics = self.ide.parser_diagnostics(uri)?;
+        send_diagnostics(connection, uri, diagnostics)
+    }
 }
 
 struct DiagnosticScheduler {
@@ -215,11 +220,11 @@ fn handle_notification(
         "textDocument/didOpen" => {
             let uri = pointer_string(&notification.params, "/textDocument/uri");
             let text = pointer_string(&notification.params, "/textDocument/text");
-            publish_document_diagnostics(connection, state, uri, text)?;
+            open_document(connection, state, uri, text)?;
         }
         "textDocument/didChange" => {
             let uri = pointer_string(&notification.params, "/textDocument/uri");
-            update_changed_document(state, uri, &notification.params)?;
+            update_changed_document(connection, state, uri, &notification.params)?;
         }
         "textDocument/didClose" => {
             let uri = pointer_string(&notification.params, "/textDocument/uri");
@@ -246,6 +251,7 @@ fn handle_notification(
 }
 
 fn update_changed_document(
+    connection: &Connection,
     state: &mut ServerState,
     uri: String,
     params: &Value,
@@ -265,18 +271,21 @@ fn update_changed_document(
             state.ide.replace_document_text(uri.clone(), text);
         }
     }
+    state.publish_fast_diagnostics(connection, &uri)?;
     state.schedule_diagnostics(uri);
     Ok(())
 }
 
-fn publish_document_diagnostics(
+fn open_document(
     connection: &Connection,
     state: &mut ServerState,
     uri: String,
     text: String,
 ) -> Result<(), String> {
-    let diagnostics = state.ide.change_document_full(uri.clone(), text)?;
-    send_diagnostics(connection, &uri, diagnostics)
+    state.ide.replace_document_text(uri.clone(), text);
+    state.publish_fast_diagnostics(connection, &uri)?;
+    state.schedule_diagnostics(uri);
+    Ok(())
 }
 
 fn server_capabilities() -> Value {

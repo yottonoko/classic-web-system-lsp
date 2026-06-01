@@ -212,6 +212,56 @@ fn applies_full_replacement_change_over_stdio_lsp() {
 }
 
 #[test]
+fn publishes_fast_parser_then_debounced_vbscript_diagnostics() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+
+    initialize_with_settings(
+        &mut stdin,
+        &mut reader,
+        json!({ "diagnostics": { "debounceMs": 80 } }),
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": "file:///tmp/default.asp",
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nOption Explicit\nmissingName = 1\n%>",
+                },
+            },
+        }),
+    );
+
+    let fast = read_until(&mut reader, |message| {
+        message["method"] == json!("textDocument/publishDiagnostics")
+            && message["params"]["uri"] == json!("file:///tmp/default.asp")
+    });
+    assert_eq!(fast["params"]["diagnostics"], json!([]));
+
+    let semantic = read_until(&mut reader, |message| {
+        message["method"] == json!("textDocument/publishDiagnostics")
+            && message.to_string().contains("missingName")
+    });
+    assert_eq!(semantic["params"]["uri"], json!("file:///tmp/default.asp"));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
 fn republishes_open_document_diagnostics_after_settings_change() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
         .stdin(Stdio::piped())

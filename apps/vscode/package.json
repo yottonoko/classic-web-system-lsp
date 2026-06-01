@@ -208,6 +208,11 @@
           "default": "auto",
           "description": "%configuration.analysisBackend.description%"
         },
+        "aspLsp.useLegacyServer": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.useLegacyServer.description%"
+        },
         "aspLsp.diagnostics.debounceMs": {
           "type": "number",
           "minimum": 0,

@@ -5,6 +5,7 @@
   "configuration.defaultLanguage.description": "Default server-side script language for Classic ASP pages.",
   "configuration.checkJs.description": "Enable semantic checking for client JavaScript regions.",
   "configuration.analysisBackend.description": "Select the analysis backend. Auto uses the native backend when available and falls back to TypeScript.",
+  "configuration.useLegacyServer.description": "Use the legacy Node language server. Disable to opt in to the Rust language server when a native executable is available.",
   "configuration.diagnostics.debounceMs.description": "Delay, in milliseconds, before publishing diagnostics after text changes. Set to 0 to publish immediately.",
   "configuration.debug.output.description": "Controls asp-lsp debug timing logs in the VS Code Output channel. Off disables logs, summary logs operation start and completion, and verbose adds per-step timings.",
   "configuration.javascript.unusedDiagnostics.description": "Report unused JavaScript and JScript locals and parameters as hint diagnostics.",

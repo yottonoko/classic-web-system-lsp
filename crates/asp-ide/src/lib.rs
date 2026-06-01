@@ -19,6 +19,69 @@ struct WorkspaceSettings {
 }
 
 #[salsa::tracked(returns(clone))]
+fn parse_asp(
+    db: &dyn salsa::Database,
+    source_file: SourceFile,
+    settings: WorkspaceSettings,
+) -> Result<Value, String> {
+    let settings_value =
+        serde_json::from_str(settings.json(db)).map_err(|error| error.to_string())?;
+    asp_analysis::parse_asp_skeleton_once(
+        source_file.uri(db),
+        source_file.text(db),
+        &settings_value,
+    )
+}
+
+#[salsa::tracked(returns(clone))]
+fn parser_diagnostics(
+    db: &dyn salsa::Database,
+    source_file: SourceFile,
+    settings: WorkspaceSettings,
+) -> Result<Vec<Value>, String> {
+    let settings_value =
+        serde_json::from_str(settings.json(db)).map_err(|error| error.to_string())?;
+    asp_analysis::parser_diagnostics_once(
+        source_file.uri(db),
+        source_file.text(db),
+        &settings_value,
+    )
+}
+
+#[salsa::tracked(returns(clone))]
+fn vb_symbols(
+    db: &dyn salsa::Database,
+    source_file: SourceFile,
+    settings: WorkspaceSettings,
+) -> Result<Vec<Value>, String> {
+    let settings_value =
+        serde_json::from_str(settings.json(db)).map_err(|error| error.to_string())?;
+    asp_analysis::vb_symbols_once(source_file.uri(db), source_file.text(db), &settings_value)
+}
+
+#[salsa::tracked(returns(clone))]
+fn vb_diagnostics(
+    db: &dyn salsa::Database,
+    source_file: SourceFile,
+    settings: WorkspaceSettings,
+) -> Result<Vec<Value>, String> {
+    let settings_value =
+        serde_json::from_str(settings.json(db)).map_err(|error| error.to_string())?;
+    asp_analysis::vb_diagnostics_once(source_file.uri(db), source_file.text(db), &settings_value)
+}
+
+#[salsa::tracked(returns(clone))]
+fn include_refs(
+    db: &dyn salsa::Database,
+    source_file: SourceFile,
+    settings: WorkspaceSettings,
+) -> Result<Vec<Value>, String> {
+    let settings_value =
+        serde_json::from_str(settings.json(db)).map_err(|error| error.to_string())?;
+    asp_analysis::include_refs_once(source_file.uri(db), source_file.text(db), &settings_value)
+}
+
+#[salsa::tracked(returns(clone))]
 fn document_diagnostics(
     db: &dyn salsa::Database,
     source_file: SourceFile,
@@ -121,6 +184,73 @@ impl Ide {
             return Ok(Vec::new());
         };
         document_diagnostics(&self.db, document.source_file, self.settings.input)
+    }
+
+    pub fn parse_asp(&self, uri: &str) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Null);
+        };
+        parse_asp(&self.db, document.source_file, self.settings.input)
+    }
+
+    pub fn parser_diagnostics(&self, uri: &str) -> Result<Vec<Value>, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Vec::new());
+        };
+        parser_diagnostics(&self.db, document.source_file, self.settings.input)
+    }
+
+    pub fn vb_symbols(&self, uri: &str) -> Result<Vec<Value>, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Vec::new());
+        };
+        vb_symbols(&self.db, document.source_file, self.settings.input)
+    }
+
+    pub fn vb_diagnostics(&self, uri: &str) -> Result<Vec<Value>, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Vec::new());
+        };
+        vb_diagnostics(&self.db, document.source_file, self.settings.input)
+    }
+
+    pub fn include_closure(&self, uri: &str) -> Result<Vec<Value>, String> {
+        if !self.documents.contains_key(uri) {
+            return Ok(Vec::new());
+        }
+
+        let mut closure = Vec::new();
+        let mut visited = Vec::new();
+        self.collect_include_closure(uri, &mut visited, &mut closure)?;
+        Ok(closure)
+    }
+
+    fn direct_include_refs(&self, uri: &str) -> Result<Vec<Value>, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Vec::new());
+        };
+        include_refs(&self.db, document.source_file, self.settings.input)
+    }
+
+    fn collect_include_closure(
+        &self,
+        uri: &str,
+        visited: &mut Vec<String>,
+        closure: &mut Vec<Value>,
+    ) -> Result<(), String> {
+        if visited.iter().any(|visited_uri| visited_uri == uri) {
+            return Ok(());
+        }
+        visited.push(uri.to_string());
+
+        for include in self.direct_include_refs(uri)? {
+            let next_uri = resolve_include_uri(uri, &include);
+            closure.push(include);
+            if let Some(next_uri) = next_uri {
+                self.collect_include_closure(&next_uri, visited, closure)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn diagnostics_for_open_documents(&self) -> Result<Vec<(String, Vec<Value>)>, String> {
@@ -228,6 +358,47 @@ fn utf16_character_to_char_offset(line_text: &str, target_units: usize) -> Resul
     }
 }
 
+fn resolve_include_uri(from_uri: &str, include: &Value) -> Option<String> {
+    let path = include.get("path").and_then(Value::as_str)?;
+    let mode = include
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("file");
+    if !from_uri.starts_with("file://") {
+        return None;
+    }
+    let base = from_uri.strip_prefix("file://")?;
+    let resolved = if mode == "virtual" || path.starts_with('/') {
+        path.to_string()
+    } else {
+        let Some((directory, _)) = base.rsplit_once('/') else {
+            return None;
+        };
+        format!("{directory}/{path}")
+    };
+    Some(format!("file://{}", normalize_path_segments(&resolved)))
+}
+
+fn normalize_path_segments(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut segments = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            segment => segments.push(segment),
+        }
+    }
+    let normalized = segments.join("/");
+    if absolute {
+        format!("/{normalized}")
+    } else {
+        normalized
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Ide, TextPosition, TextRange};
@@ -248,6 +419,57 @@ mod tests {
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|message| message.contains("missingName"))
         }));
+    }
+
+    #[test]
+    fn exposes_step_one_query_boundaries() {
+        let mut ide = Ide::default();
+        ide.set_open_document(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"shared.inc\"-->\n<%\nSub BuildTitle()\nEnd Sub\n%>".to_string(),
+        );
+        ide.set_open_document(
+            "file:///site/shared.inc".to_string(),
+            "<!--#include file=\"nested.inc\"-->\n<%\nDim SharedValue\n%>".to_string(),
+        );
+        ide.set_open_document(
+            "file:///site/nested.inc".to_string(),
+            "<%\nDim NestedValue\n%>".to_string(),
+        );
+
+        let parsed = ide
+            .parse_asp("file:///site/default.asp")
+            .expect("parse asp");
+        assert_eq!(parsed["uri"], "file:///site/default.asp");
+
+        let includes = ide
+            .include_closure("file:///site/default.asp")
+            .expect("include closure");
+        assert!(includes.iter().any(|include| {
+            include
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|path| path == "shared.inc")
+        }));
+        assert!(includes.iter().any(|include| {
+            include
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|path| path == "nested.inc")
+        }));
+
+        let symbols = ide.vb_symbols("file:///site/default.asp").expect("symbols");
+        assert!(symbols.iter().any(|symbol| {
+            symbol
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| name == "BuildTitle")
+        }));
+
+        let diagnostics = ide
+            .vb_diagnostics("file:///site/default.asp")
+            .expect("vb diagnostics");
+        assert_eq!(diagnostics, Vec::<serde_json::Value>::new());
     }
 
     #[test]
