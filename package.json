@@ -5,7 +5,7 @@
   "description": "Classic ASP language server and VS Code extension.",
   "license": "MIT OR Apache-2.0",
   "scripts": {
-    "build": "pnpm -r run build",
+    "build": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/embedded-sidecar run build && pnpm --filter classic-asp-lsp run build",
     "build:server": "node scripts/build-server.mjs",
     "benchmark:large": "pnpm --filter @asp-lsp/core run build && node scripts/benchmark-large.mjs",
     "benchmark:large:cold": "ASP_LSP_BENCH_CACHE_MODE=cold pnpm run benchmark:large",

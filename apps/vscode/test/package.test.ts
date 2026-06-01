@@ -31,6 +31,11 @@ describe("VS Code extension package", () => {
     expect(manifest.scripts?.["build:no-native"]).toContain(
       "node scripts/copy-server-runtime.mjs --no-native",
     );
+    expect(rootManifest.scripts?.build).toBe(
+      "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/embedded-sidecar run build && pnpm --filter classic-asp-lsp run build",
+    );
+    expect(manifest.scripts?.build).toContain("node ../../scripts/clean-dist.mjs");
+    expect(manifest.scripts?.["build:no-native"]).toContain("node ../../scripts/clean-dist.mjs");
     expect(manifest.scripts?.["package:vsix:no-native"]).toContain("pnpm run build:no-native");
     expect(manifest.scripts?.["package:vsix:no-native"]).not.toContain("@asp-lsp/language-server");
     expect(manifest.scripts?.["package:vsix"]).not.toContain("@asp-lsp/language-server");

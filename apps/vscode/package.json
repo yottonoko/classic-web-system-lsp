@@ -27,8 +27,8 @@
   "publisher": "yottonoko",
   "main": "./dist/extension.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/bundle-extension.mjs && node scripts/copy-server-runtime.mjs",
-    "build:no-native": "tsc -p tsconfig.json && node scripts/bundle-extension.mjs && node scripts/copy-server-runtime.mjs --no-native",
+    "build": "node ../../scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/bundle-extension.mjs && node scripts/copy-server-runtime.mjs",
+    "build:no-native": "node ../../scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/bundle-extension.mjs && node scripts/copy-server-runtime.mjs --no-native",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "oxlint src test --deny-warnings --no-error-on-unmatched-pattern",
     "package:vsix": "pnpm --dir ../.. run build:server && pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/embedded-sidecar run build && pnpm run build && vsce package --no-dependencies --follow-symlinks",

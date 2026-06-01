@@ -8,15 +8,15 @@ import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cach
 
 const root = path.resolve(import.meta.dirname, "..");
 const coreDist = path.join(root, "packages", "core", "dist", "index.js");
-const languageServerRequire = createRequire(
-  path.join(root, "packages", "language-server", "package.json"),
+const embeddedSidecarRequire = createRequire(
+  path.join(root, "packages", "embedded-sidecar", "package.json"),
 );
-const { getCSSLanguageService } = languageServerRequire("vscode-css-languageservice");
-const { getLanguageService: getHtmlLanguageService, TokenType } = languageServerRequire(
+const { getCSSLanguageService } = embeddedSidecarRequire("vscode-css-languageservice");
+const { getLanguageService: getHtmlLanguageService, TokenType } = embeddedSidecarRequire(
   "vscode-html-languageservice",
 );
-const { TextDocument } = languageServerRequire("vscode-languageserver-textdocument");
-const ts = languageServerRequire("typescript");
+const { TextDocument } = embeddedSidecarRequire("vscode-languageserver-textdocument");
+const ts = embeddedSidecarRequire("typescript");
 
 const htmlService = getHtmlLanguageService();
 const cssService = getCSSLanguageService();
