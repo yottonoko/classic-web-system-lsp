@@ -9,7 +9,7 @@ import {
   type LanguageClientOptions,
   type ServerOptions,
 } from "vscode-languageclient/node";
-import { getServerModulePath } from "./server-path";
+import { getServerLaunchPath, type ServerLaunchPath } from "./server-path";
 
 const maxCrashRestartCount = 4;
 const crashRestartWindowMs = 3 * 60 * 1000;
@@ -78,19 +78,11 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   if (isDeactivating) {
     return;
   }
-  const serverModule = getServerModulePath(context);
   const env = {
     ...process.env,
     ASP_LSP_ANALYSIS_BACKEND: configuredAnalysisBackend(),
   };
-  const serverOptions: ServerOptions = {
-    run: { module: serverModule, transport: TransportKind.ipc, options: { env } },
-    debug: {
-      module: serverModule,
-      transport: TransportKind.ipc,
-      options: { execArgv: ["--nolazy", "--inspect=6009"], env },
-    },
-  };
+  const serverOptions = createServerOptions(getServerLaunchPath(context), env);
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "classic-asp" }],
     outputChannel,
@@ -127,6 +119,35 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   }
   void requestBackendStatus(nextClient);
   context.subscriptions.push(nextClient, backendStatusSubscription);
+}
+
+function createServerOptions(
+  serverLaunch: ServerLaunchPath,
+  env: NodeJS.ProcessEnv,
+): ServerOptions {
+  if (serverLaunch.kind === "binary") {
+    return {
+      run: {
+        command: serverLaunch.path,
+        transport: TransportKind.stdio,
+        options: { env },
+      },
+      debug: {
+        command: serverLaunch.path,
+        transport: TransportKind.stdio,
+        options: { env },
+      },
+    };
+  }
+
+  return {
+    run: { module: serverLaunch.path, transport: TransportKind.ipc, options: { env } },
+    debug: {
+      module: serverLaunch.path,
+      transport: TransportKind.ipc,
+      options: { execArgv: ["--nolazy", "--inspect=6009"], env },
+    },
+  };
 }
 
 function configuredAnalysisBackend(): string {

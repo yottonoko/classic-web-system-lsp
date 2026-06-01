@@ -51,6 +51,7 @@ fs.chmodSync(path.join(distRoot, "vb-diagnostics-worker.js"), 0o755);
 copyTypeScriptLibs(distRoot);
 if (includeNativeCore) {
   copyNativeCore(serverRoot);
+  copyRustServer(extensionRoot);
 }
 fs.writeFileSync(
   path.join(serverRoot, "package.json"),
@@ -105,4 +106,44 @@ function copyNativeCore(targetRoot) {
   }
   const targetDirectory = path.join(targetRoot, "native");
   fs.cpSync(sourceRoot, targetDirectory, { recursive: true });
+}
+
+function copyRustServer(targetRoot) {
+  const executable = process.platform === "win32" ? "asp-lsp-server.exe" : "asp-lsp-server";
+  const source = path.join(repoRoot, "target", "release", executable);
+  if (!fs.existsSync(source)) {
+    return;
+  }
+  const targetDirectory = path.join(targetRoot, "server", "bin", runtimeTarget());
+  fs.mkdirSync(targetDirectory, { recursive: true });
+  const target = path.join(targetDirectory, executable);
+  fs.copyFileSync(source, target);
+  fs.chmodSync(target, 0o755);
+}
+
+function runtimeTarget() {
+  return `${platformName()}-${archName()}`;
+}
+
+function platformName() {
+  if (process.platform === "win32") {
+    return "win32";
+  }
+  if (process.platform === "darwin") {
+    return "darwin";
+  }
+  if (process.platform === "linux") {
+    return "linux";
+  }
+  return process.platform;
+}
+
+function archName() {
+  if (process.arch === "x64" || process.arch === "arm64") {
+    return process.arch;
+  }
+  if (os.arch() === "x64" || os.arch() === "arm64") {
+    return os.arch();
+  }
+  return process.arch;
 }
