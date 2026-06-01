@@ -850,25 +850,29 @@ impl Ide {
         let text = document.text(&self.db);
         let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
         let symbols = self.workspace_vb_symbols()?;
+        let semantic_symbols = SemanticSymbolIndex::new(&symbols);
+        let text_index = Utf16LineIndex::new(text);
         let range_offsets = range.and_then(|range| {
             Some((
-                position_to_utf16_offset(
-                    text,
+                text_index.offset_at(
                     range.start.line.try_into().ok()?,
                     range.start.character.try_into().ok()?,
                 )?,
-                position_to_utf16_offset(
-                    text,
+                text_index.offset_at(
                     range.end.line.try_into().ok()?,
                     range.end.character.try_into().ok()?,
                 )?,
             ))
         });
         let mut tokens = Vec::new();
-        tokens.extend(asp_delimiter_semantic_tokens(text, &parsed));
+        tokens.extend(asp_delimiter_semantic_tokens_indexed(
+            text,
+            &parsed,
+            &text_index,
+        ));
         tokens.extend(include_semantic_tokens(text, &parsed));
-        tokens.extend(operator_semantic_tokens(text, &parsed));
-        for identifier in identifiers_in_vbscript(text, &parsed) {
+        tokens.extend(operator_semantic_tokens_indexed(text, &parsed, &text_index));
+        for identifier in identifiers_in_vbscript_indexed(text, &parsed, &text_index) {
             if let Some((start, end)) = range_offsets {
                 if identifier.start < start || identifier.end > end {
                     continue;
@@ -883,7 +887,7 @@ impl Ide {
                 continue;
             }
             let Some((token_type, token_modifiers)) =
-                resolve_semantic_symbol(uri, text, &symbols, &identifier)
+                resolve_semantic_symbol_indexed(uri, text, &semantic_symbols, &identifier)
                     .and_then(semantic_symbol_kind)
                     .or_else(|| builtin_semantic_token(text, &identifier, &parsed))
             else {
@@ -1897,6 +1901,15 @@ fn member_call_owner(text: &str, member: &IdentifierOccurrence) -> Option<Identi
 }
 
 fn identifiers_in_vbscript(text: &str, parsed: &Value) -> Vec<IdentifierOccurrence> {
+    let text_index = Utf16LineIndex::new(text);
+    identifiers_in_vbscript_indexed(text, parsed, &text_index)
+}
+
+fn identifiers_in_vbscript_indexed(
+    text: &str,
+    parsed: &Value,
+    text_index: &Utf16LineIndex,
+) -> Vec<IdentifierOccurrence> {
     let regions = vbscript_regions(parsed);
     let chars = utf16_chars(text);
     let mut identifiers = Vec::new();
@@ -1945,7 +1958,7 @@ fn identifiers_in_vbscript(text: &str, parsed: &Value) -> Vec<IdentifierOccurren
             .get(index)
             .map(|(offset, _)| *offset)
             .unwrap_or_else(|| utf16_len(text));
-        if let Some(range) = range_from_offsets(text, start_offset, end_offset) {
+        if let Some(range) = range_from_offsets_indexed(text_index, start_offset, end_offset) {
             identifiers.push(IdentifierOccurrence {
                 name: text_name,
                 start: start_offset,
@@ -1974,12 +1987,66 @@ fn vbscript_regions(parsed: &Value) -> Vec<(usize, usize)> {
 }
 
 fn range_from_offsets(text: &str, start_offset: usize, end_offset: usize) -> Option<Value> {
-    let (start_line, start_character) = utf16_position_at(text, start_offset)?;
-    let (end_line, end_character) = utf16_position_at(text, end_offset)?;
+    let text_index = Utf16LineIndex::new(text);
+    range_from_offsets_indexed(&text_index, start_offset, end_offset)
+}
+
+fn range_from_offsets_indexed(
+    text_index: &Utf16LineIndex,
+    start_offset: usize,
+    end_offset: usize,
+) -> Option<Value> {
+    let (start_line, start_character) = text_index.position_at(start_offset)?;
+    let (end_line, end_character) = text_index.position_at(end_offset)?;
     Some(serde_json::json!({
         "start": { "line": start_line, "character": start_character },
         "end": { "line": end_line, "character": end_character },
     }))
+}
+
+struct Utf16LineIndex {
+    line_starts: Vec<usize>,
+    text_len: usize,
+}
+
+impl Utf16LineIndex {
+    fn new(text: &str) -> Self {
+        let mut line_starts = vec![0];
+        let mut offset = 0;
+        for character in text.chars() {
+            offset += character.len_utf16();
+            if character == '\n' {
+                line_starts.push(offset);
+            }
+        }
+        Self {
+            line_starts,
+            text_len: offset,
+        }
+    }
+
+    fn offset_at(&self, line: usize, character: usize) -> Option<usize> {
+        let line_start = *self.line_starts.get(line)?;
+        let offset = line_start.checked_add(character)?;
+        let next_line_start = self
+            .line_starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(self.text_len);
+        (offset <= next_line_start).then_some(offset)
+    }
+
+    fn position_at(&self, offset: usize) -> Option<(usize, usize)> {
+        if offset > self.text_len {
+            return None;
+        }
+        let line = match self.line_starts.binary_search(&offset) {
+            Ok(line) => line,
+            Err(0) => return None,
+            Err(line) => line - 1,
+        };
+        Some((line, offset - self.line_starts[line]))
+    }
 }
 
 fn utf16_chars(text: &str) -> Vec<(usize, char)> {
@@ -2001,6 +2068,109 @@ fn symbol_name_eq(symbol: &Value, name: &str) -> bool {
         .get("name")
         .and_then(Value::as_str)
         .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+}
+
+struct SemanticSymbolIndex<'a> {
+    by_name: HashMap<String, Vec<&'a Value>>,
+    by_name_and_range: HashMap<String, Vec<&'a Value>>,
+    members: HashMap<String, Vec<&'a Value>>,
+    classes: Vec<&'a Value>,
+}
+
+impl<'a> SemanticSymbolIndex<'a> {
+    fn new(symbols: &'a [Value]) -> Self {
+        let mut by_name: HashMap<String, Vec<&Value>> = HashMap::new();
+        let mut by_name_and_range: HashMap<String, Vec<&Value>> = HashMap::new();
+        let mut members: HashMap<String, Vec<&Value>> = HashMap::new();
+        let mut classes = Vec::new();
+        for symbol in symbols {
+            if let Some(name) = symbol.get("name").and_then(Value::as_str) {
+                let normalized_name = normalized_symbol_name(name);
+                by_name
+                    .entry(normalized_name.clone())
+                    .or_default()
+                    .push(symbol);
+                if let Some(range_key) = symbol.get("range").and_then(range_key) {
+                    by_name_and_range
+                        .entry(format!("{normalized_name}|{range_key}"))
+                        .or_default()
+                        .push(symbol);
+                }
+                if let Some(owner) = symbol.get("memberOf").and_then(Value::as_str) {
+                    members
+                        .entry(member_key(owner, name))
+                        .or_default()
+                        .push(symbol);
+                }
+            }
+            if symbol.get("kind").and_then(Value::as_str) == Some("class") {
+                classes.push(symbol);
+            }
+        }
+        Self {
+            by_name,
+            by_name_and_range,
+            members,
+            classes,
+        }
+    }
+
+    fn symbols_named(&self, name: &str) -> impl Iterator<Item = &'a Value> + '_ {
+        self.by_name
+            .get(&normalized_symbol_name(name))
+            .into_iter()
+            .flatten()
+            .copied()
+    }
+
+    fn symbols_named_at_range(
+        &self,
+        name: &str,
+        range: &Value,
+    ) -> impl Iterator<Item = &'a Value> + '_ {
+        range_key(range)
+            .and_then(|range_key| {
+                self.by_name_and_range
+                    .get(&format!("{}|{range_key}", normalized_symbol_name(name)))
+            })
+            .into_iter()
+            .flatten()
+            .copied()
+    }
+
+    fn member_symbols(
+        &self,
+        type_name: &str,
+        member_name: &str,
+    ) -> impl Iterator<Item = &'a Value> + '_ {
+        self.members
+            .get(&member_key(type_name, member_name))
+            .into_iter()
+            .flatten()
+            .copied()
+    }
+}
+
+fn normalized_symbol_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
+fn member_key(owner: &str, name: &str) -> String {
+    format!(
+        "{}\0{}",
+        normalized_symbol_name(owner),
+        normalized_symbol_name(name)
+    )
+}
+
+fn range_key(range: &Value) -> Option<String> {
+    Some(format!(
+        "{}:{}:{}:{}",
+        range.pointer("/start/line")?.as_u64()?,
+        range.pointer("/start/character")?.as_u64()?,
+        range.pointer("/end/line")?.as_u64()?,
+        range.pointer("/end/character")?.as_u64()?
+    ))
 }
 
 fn symbol_identifier_ranges(
@@ -2047,6 +2217,32 @@ fn resolve_symbol_for_identifier<'a>(
     visible_symbol_by_name(document_uri, text, symbols, &identifier.name, offset)
 }
 
+fn resolve_symbol_for_identifier_indexed<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &SemanticSymbolIndex<'a>,
+    identifier: &IdentifierOccurrence,
+) -> Option<&'a Value> {
+    if let Some(symbol) = symbols
+        .symbols_named_at_range(&identifier.name, &identifier.range)
+        .find(|symbol| {
+            symbol_name_eq(symbol, &identifier.name)
+                && symbol
+                    .get("sourceUri")
+                    .and_then(Value::as_str)
+                    .map_or(true, |source_uri| source_uri == document_uri)
+                && symbol
+                    .get("range")
+                    .is_some_and(|range| same_range(range, &identifier.range))
+        })
+    {
+        return Some(symbol);
+    }
+
+    let offset = identifier.start + ((identifier.end.saturating_sub(identifier.start)) / 2);
+    visible_symbol_by_name_indexed(document_uri, text, symbols, &identifier.name, offset)
+}
+
 fn resolve_call_target_symbol<'a>(
     document_uri: &str,
     text: &str,
@@ -2084,6 +2280,24 @@ fn resolve_semantic_symbol<'a>(
     resolve_symbol_for_identifier(document_uri, text, symbols, identifier)
 }
 
+fn resolve_semantic_symbol_indexed<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &SemanticSymbolIndex<'a>,
+    identifier: &IdentifierOccurrence,
+) -> Option<&'a Value> {
+    if let Some(owner) = member_call_owner(text, identifier) {
+        let offset = identifier.start + ((identifier.end.saturating_sub(identifier.start)) / 2);
+        let type_name = if owner.name.eq_ignore_ascii_case("me") {
+            current_class_name_at_indexed(document_uri, text, symbols, offset)
+        } else {
+            infer_variable_type_name_indexed(document_uri, text, symbols, &owner, offset)
+        }?;
+        return resolve_member_symbol_indexed(symbols, &type_name, &identifier.name);
+    }
+    resolve_symbol_for_identifier_indexed(document_uri, text, symbols, identifier)
+}
+
 fn current_class_name_at<'a>(
     document_uri: &str,
     text: &str,
@@ -2111,6 +2325,34 @@ fn current_class_name_at<'a>(
         .map(|(name, _)| name)
 }
 
+fn current_class_name_at_indexed<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &SemanticSymbolIndex<'a>,
+    offset: usize,
+) -> Option<&'a str> {
+    symbols
+        .classes
+        .iter()
+        .copied()
+        .filter(|symbol| {
+            symbol
+                .get("sourceUri")
+                .and_then(Value::as_str)
+                .is_some_and(|source_uri| source_uri == document_uri)
+                && symbol
+                    .get("scopeRange")
+                    .is_some_and(|range| range_contains_offset(text, range, offset))
+        })
+        .filter_map(|symbol| {
+            let scope = symbol.get("scopeRange")?;
+            let size = range_size(scope).unwrap_or(usize::MAX);
+            Some((symbol.get("name")?.as_str()?, size))
+        })
+        .min_by_key(|(_, size)| *size)
+        .map(|(name, _)| name)
+}
+
 fn infer_variable_type_name<'a>(
     document_uri: &str,
     text: &str,
@@ -2120,6 +2362,20 @@ fn infer_variable_type_name<'a>(
 ) -> Option<&'a str> {
     resolve_symbol_for_identifier(document_uri, text, symbols, identifier)
         .or_else(|| visible_symbol_by_name(document_uri, text, symbols, &identifier.name, offset))
+        .and_then(symbol_type_name)
+}
+
+fn infer_variable_type_name_indexed<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &SemanticSymbolIndex<'a>,
+    identifier: &IdentifierOccurrence,
+    offset: usize,
+) -> Option<&'a str> {
+    resolve_symbol_for_identifier_indexed(document_uri, text, symbols, identifier)
+        .or_else(|| {
+            visible_symbol_by_name_indexed(document_uri, text, symbols, &identifier.name, offset)
+        })
         .and_then(symbol_type_name)
 }
 
@@ -2245,6 +2501,22 @@ fn resolve_member_symbol<'a>(
     })
 }
 
+fn resolve_member_symbol_indexed<'a>(
+    symbols: &SemanticSymbolIndex<'a>,
+    type_name: &str,
+    member_name: &str,
+) -> Option<&'a Value> {
+    symbols
+        .member_symbols(type_name, member_name)
+        .find(|symbol| {
+            symbol_name_eq(symbol, member_name)
+                && symbol
+                    .get("memberOf")
+                    .and_then(Value::as_str)
+                    .is_some_and(|owner| owner.eq_ignore_ascii_case(type_name))
+        })
+}
+
 fn visible_symbol_by_name<'a>(
     document_uri: &str,
     text: &str,
@@ -2255,6 +2527,46 @@ fn visible_symbol_by_name<'a>(
     symbols
         .iter()
         .filter(|symbol| symbol_name_eq(symbol, name))
+        .filter_map(|symbol| {
+            let same_document = symbol
+                .get("sourceUri")
+                .and_then(Value::as_str)
+                .map_or(true, |source_uri| source_uri == document_uri);
+            let global = symbol.get("scopeName").and_then(Value::as_str).is_none()
+                && symbol.get("memberOf").and_then(Value::as_str).is_none();
+            if !same_document {
+                return global.then_some((symbol, 1, usize::MAX));
+            }
+            let scope_contains = symbol
+                .get("scopeRange")
+                .is_some_and(|range| range_contains_offset(text, range, offset));
+            if !scope_contains && !global {
+                return None;
+            }
+            let score = if scope_contains { 2 } else { 1 };
+            let size = symbol
+                .get("scopeRange")
+                .and_then(range_size)
+                .unwrap_or(usize::MAX);
+            Some((symbol, score, size))
+        })
+        .max_by(|(_, left_score, left_size), (_, right_score, right_size)| {
+            left_score
+                .cmp(right_score)
+                .then_with(|| right_size.cmp(left_size))
+        })
+        .map(|(symbol, _, _)| symbol)
+}
+
+fn visible_symbol_by_name_indexed<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &SemanticSymbolIndex<'a>,
+    name: &str,
+    offset: usize,
+) -> Option<&'a Value> {
+    symbols
+        .symbols_named(name)
         .filter_map(|symbol| {
             let same_document = symbol
                 .get("sourceUri")
@@ -3702,7 +4014,11 @@ fn include_semantic_tokens(_text: &str, parsed: &Value) -> Vec<SemanticToken> {
     tokens
 }
 
-fn asp_delimiter_semantic_tokens(text: &str, parsed: &Value) -> Vec<SemanticToken> {
+fn asp_delimiter_semantic_tokens_indexed(
+    _text: &str,
+    parsed: &Value,
+    text_index: &Utf16LineIndex,
+) -> Vec<SemanticToken> {
     parsed
         .get("regions")
         .and_then(Value::as_array)
@@ -3713,7 +4029,7 @@ fn asp_delimiter_semantic_tokens(text: &str, parsed: &Value) -> Vec<SemanticToke
             let start = value_usize(region, "start").ok()?.checked_add(2)?;
             let end = start.checked_add(1)?;
             Some(SemanticToken {
-                range: range_from_offsets(text, start, end)?,
+                range: range_from_offsets_indexed(text_index, start, end)?,
                 token_type: 0,
                 token_modifiers: 0,
             })
@@ -3721,7 +4037,11 @@ fn asp_delimiter_semantic_tokens(text: &str, parsed: &Value) -> Vec<SemanticToke
         .collect()
 }
 
-fn operator_semantic_tokens(text: &str, parsed: &Value) -> Vec<SemanticToken> {
+fn operator_semantic_tokens_indexed(
+    text: &str,
+    parsed: &Value,
+    text_index: &Utf16LineIndex,
+) -> Vec<SemanticToken> {
     let operators = ["&", "+", "-", "*", "/", "\\", "^", "=", "<", ">"];
     let mut tokens = Vec::new();
     let chars = utf16_chars(text);
@@ -3731,7 +4051,9 @@ fn operator_semantic_tokens(text: &str, parsed: &Value) -> Vec<SemanticToken> {
         {
             continue;
         }
-        if let Some(range) = range_from_offsets(text, offset, offset + character.len_utf16()) {
+        if let Some(range) =
+            range_from_offsets_indexed(text_index, offset, offset + character.len_utf16())
+        {
             tokens.push(SemanticToken {
                 range,
                 token_type: 9,

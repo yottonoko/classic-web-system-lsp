@@ -189,10 +189,44 @@ split the workload before relying on it for regression proof.
 
 ## Step 7B Queue
 
-1. Optimize or stage a faster `semanticTokens/full` path for large documents.
-2. Implement or explicitly remove/disable Rust `workspace.backgroundAnalysis`
+1. Implement or explicitly remove/disable Rust `workspace.backgroundAnalysis`
    behavior so benchmark output does not imply a warmup that never occurs.
-3. Make include-tree benchmark memory-bounded enough to run under a documented
+2. Make include-tree benchmark memory-bounded enough to run under a documented
    heap limit.
-4. Add a stronger Node/Rust comparison report after the above fixes, using
+3. Add a stronger Node/Rust comparison report after the above fixes, using
    stable iterations and both hot/cold cache modes.
+
+## Step 7B Semantic Tokens
+
+The first Step 7B hardening pass optimized Rust semantic token generation by
+building reusable lookup/index structures during one request:
+
+- symbol lookup is indexed by lower-cased name, declaration range, class, and
+  member owner/name instead of scanning all workspace symbols for each
+  identifier;
+- UTF-16 offset to LSP position conversion now uses a per-document line index
+  for semantic token ranges instead of rescanning the document for each token.
+
+Command:
+
+```sh
+ASP_LSP_BENCH_ITERATIONS=1 \
+ASP_LSP_BENCH_WARMUPS=0 \
+ASP_LSP_BENCH_CHANGE_KIND=replace \
+ASP_LSP_BENCH_CHANGE_MODE=default \
+ASP_LSP_BENCH_BACKGROUND=off \
+ASP_LSP_BENCH_DEBUG_STEPS=1 \
+pnpm run benchmark:change:large
+```
+
+Result:
+
+| Metric                         | Step 7A ms | Step 7B ms | Change    |
+| ------------------------------ | ---------- | ---------- | --------- |
+| post-open semanticTokens/full  | 15139.90   | 9251.38    | -38.9%    |
+| post-open semanticTokens/range | 7817.06    | 3048.13    | -61.0%    |
+| didChange->finalDiagnostics    | 1398.17    | 1375.70    | unchanged |
+
+The remaining `semanticTokens/full` cost is still high enough to keep future
+optimization open, but Step 7B has a concrete performance win without changing
+the LSP result shape.
