@@ -2341,7 +2341,7 @@ fn serves_embedded_read_requests_over_stdio_lsp() {
                     "uri": uri,
                     "languageId": "classic-asp",
                     "version": 1,
-                    "text": "<div class=\"box\">\n<style>\n.box {\n  color: red;\n}\n</style>\n</div>",
+                    "text": "<div class=\"box\">\n<style>\n.box {\n  color: red;\n  --accent: blue;\n  background: var(--accent);\n}\n</style>\n<script>\nfunction greet(name) {\n  return name;\n}\ngreet(\"Ada\");\n</script>\n</div>",
                 },
             },
         }),
@@ -2363,6 +2363,22 @@ fn serves_embedded_read_requests_over_stdio_lsp() {
         .iter()
         .any(|item| item["label"] == json!("color")));
 
+    let js_completion = request(
+        &mut stdin,
+        &mut reader,
+        27,
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 12, "character": 2 },
+        }),
+    );
+    assert!(js_completion["result"]
+        .as_array()
+        .expect("embedded JS completion items")
+        .iter()
+        .any(|item| item["label"] == json!("greet")));
+
     let hover = request(
         &mut stdin,
         &mut reader,
@@ -2375,6 +2391,66 @@ fn serves_embedded_read_requests_over_stdio_lsp() {
     );
     assert!(hover["result"].to_string().contains("color"));
 
+    let js_hover = request(
+        &mut stdin,
+        &mut reader,
+        28,
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 12, "character": 2 },
+        }),
+    );
+    assert!(js_hover["result"].to_string().contains("greet"));
+
+    let css_definition = request(
+        &mut stdin,
+        &mut reader,
+        29,
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 19 },
+        }),
+    );
+    assert_eq!(css_definition["result"]["uri"], json!(uri));
+    assert_eq!(
+        css_definition["result"]["range"]["start"],
+        json!({ "line": 4, "character": 2 })
+    );
+
+    let js_definition = request(
+        &mut stdin,
+        &mut reader,
+        30,
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 12, "character": 2 },
+        }),
+    );
+    let js_definitions = js_definition["result"]
+        .as_array()
+        .expect("embedded JS definition locations");
+    assert_eq!(js_definitions.len(), 1);
+    assert_eq!(js_definitions[0]["uri"], json!(uri));
+    assert_eq!(
+        js_definitions[0]["range"]["start"],
+        json!({ "line": 9, "character": 9 })
+    );
+
+    let html_definition = request(
+        &mut stdin,
+        &mut reader,
+        31,
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 2 },
+        }),
+    );
+    assert_eq!(html_definition["result"], Value::Null);
+
     let symbols = request(
         &mut stdin,
         &mut reader,
@@ -2386,6 +2462,11 @@ fn serves_embedded_read_requests_over_stdio_lsp() {
         .as_array()
         .expect("embedded document symbols")
         .is_empty());
+    assert!(!symbols["result"]
+        .as_array()
+        .expect("embedded document symbols")
+        .iter()
+        .any(|symbol| symbol["name"] == json!("greet")));
 
     let folding_ranges = request(
         &mut stdin,
@@ -2399,9 +2480,14 @@ fn serves_embedded_read_requests_over_stdio_lsp() {
             .as_array()
             .expect("embedded folding ranges")
             .iter()
-            .any(|range| range["startLine"] == json!(2) && range["endLine"] == json!(3)),
+            .any(|range| range["startLine"] == json!(2) && range["endLine"] == json!(5)),
         "folding ranges: {folding_ranges}"
     );
+    assert!(!folding_ranges["result"]
+        .as_array()
+        .expect("embedded folding ranges")
+        .iter()
+        .any(|range| range["startLine"] == json!(9)));
 
     let colors = request(
         &mut stdin,
@@ -2445,7 +2531,7 @@ fn serves_embedded_read_requests_over_stdio_lsp() {
     let linked = request(
         &mut stdin,
         &mut reader,
-        26,
+        32,
         "textDocument/linkedEditingRange",
         json!({
             "textDocument": { "uri": uri },
@@ -2461,7 +2547,19 @@ fn serves_embedded_read_requests_over_stdio_lsp() {
         .any(|range| range["start"]["line"] == json!(0)));
     assert!(linked_ranges
         .iter()
-        .any(|range| range["start"]["line"] == json!(6)));
+        .any(|range| range["start"]["line"] == json!(14)));
+
+    let css_linked = request(
+        &mut stdin,
+        &mut reader,
+        33,
+        "textDocument/linkedEditingRange",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 3, "character": 4 },
+        }),
+    );
+    assert_eq!(css_linked["result"], Value::Null);
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
