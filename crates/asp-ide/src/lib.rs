@@ -943,6 +943,8 @@ impl Ide {
             return Ok(Value::Array(Vec::new()));
         };
         let text = document.text(&self.db);
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
         let ranges = positions
             .iter()
             .map(|position| {
@@ -951,16 +953,16 @@ impl Ide {
                     position.line.try_into().unwrap_or(0),
                     position.character.try_into().unwrap_or(0),
                 );
-                let range = offset
-                    .and_then(|offset| identifier_range_at_offset(text, offset))
-                    .unwrap_or_else(|| {
-                        serde_json::json!({
-                            "start": { "line": position.line, "character": position.character },
-                            "end": { "line": position.line, "character": position.character },
-                        })
-                    });
-                let parent = line_range(text, position.line).unwrap_or_else(|| range.clone());
-                serde_json::json!({ "range": range, "parent": { "range": parent } })
+                selection_range_chain(
+                    text,
+                    &parsed,
+                    &symbols,
+                    offset,
+                    TextPosition {
+                        line: position.line,
+                        character: position.character,
+                    },
+                )
             })
             .collect::<Vec<_>>();
         Ok(Value::Array(ranges))
@@ -3505,6 +3507,126 @@ fn line_range(text: &str, target_line: u32) -> Option<Value> {
         "start": { "line": start_line, "character": start_character },
         "end": { "line": end_line, "character": end_character },
     }))
+}
+
+fn selection_range_chain(
+    text: &str,
+    parsed: &Value,
+    symbols: &[Value],
+    offset: Option<usize>,
+    position: TextPosition,
+) -> Value {
+    let point_range = serde_json::json!({
+        "start": { "line": position.line, "character": position.character },
+        "end": { "line": position.line, "character": position.character },
+    });
+    let mut ranges = Vec::new();
+    if let Some(offset) = offset {
+        if let Some(range) = identifier_range_at_offset(text, offset) {
+            ranges.push(range);
+        } else {
+            ranges.push(point_range.clone());
+        }
+        if let Some(range) = statement_range_at_position(text, position.line) {
+            ranges.push(range);
+        }
+        if let Some(range) = line_range(text, position.line) {
+            ranges.push(range);
+        }
+        ranges.extend(enclosing_scope_ranges(text, symbols, offset));
+        if let Some(range) = vbscript_region_range_at_offset(text, parsed, offset) {
+            ranges.push(range);
+        }
+    } else {
+        ranges.push(point_range.clone());
+    }
+    if let Some(range) = range_from_offsets(text, 0, utf16_len(text)) {
+        ranges.push(range);
+    }
+    build_selection_range_chain(unique_sorted_ranges(ranges).unwrap_or_else(|| vec![point_range]))
+}
+
+fn statement_range_at_position(text: &str, line: u32) -> Option<Value> {
+    let line_range = line_range(text, line)?;
+    let start = range_start_offset(text, &line_range)?;
+    let end = range_end_offset(text, &line_range)?;
+    let line_text = slice_utf16(text, start, end).ok()?;
+    let leading = line_text
+        .chars()
+        .take_while(|character| character.is_whitespace())
+        .map(char::len_utf16)
+        .sum::<usize>();
+    let trailing = line_text
+        .chars()
+        .rev()
+        .take_while(|character| character.is_whitespace())
+        .map(char::len_utf16)
+        .sum::<usize>();
+    (start + leading < end.saturating_sub(trailing))
+        .then(|| range_from_offsets(text, start + leading, end - trailing))
+        .flatten()
+}
+
+fn enclosing_scope_ranges(text: &str, symbols: &[Value], offset: usize) -> Vec<Value> {
+    let mut ranges = symbols
+        .iter()
+        .filter_map(|symbol| symbol.get("scopeRange"))
+        .filter(|range| range_contains_offset(text, range, offset))
+        .cloned()
+        .collect::<Vec<_>>();
+    ranges.sort_by_key(|range| range_size(range).unwrap_or(usize::MAX));
+    ranges
+}
+
+fn vbscript_region_range_at_offset(text: &str, parsed: &Value, offset: usize) -> Option<Value> {
+    parsed
+        .get("regions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|region| region.get("language").and_then(Value::as_str) == Some("vbscript"))
+        .find_map(|region| {
+            let start = value_usize(region, "contentStart").ok()?;
+            let end = value_usize(region, "contentEnd").ok()?;
+            (start <= offset && offset <= end)
+                .then(|| range_from_offsets(text, start, end))
+                .flatten()
+        })
+}
+
+fn unique_sorted_ranges(ranges: Vec<Value>) -> Option<Vec<Value>> {
+    let mut ranges = ranges
+        .into_iter()
+        .filter(|range| range.get("start").is_some() && range.get("end").is_some())
+        .collect::<Vec<_>>();
+    ranges.sort_by_key(|range| range_size(range).unwrap_or(usize::MAX));
+    let mut unique = Vec::new();
+    for range in ranges {
+        if !unique.iter().any(|existing| same_range(existing, &range)) {
+            unique.push(range);
+        }
+    }
+    (!unique.is_empty()).then_some(unique)
+}
+
+fn build_selection_range_chain(ranges: Vec<Value>) -> Value {
+    let mut parent = None;
+    for range in ranges.into_iter().rev() {
+        let mut object = serde_json::Map::new();
+        object.insert("range".to_string(), range);
+        if let Some(parent) = parent {
+            object.insert("parent".to_string(), parent);
+        }
+        parent = Some(Value::Object(object));
+    }
+    parent.unwrap_or_else(|| {
+        serde_json::json!({
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 },
+            },
+        })
+    })
 }
 
 fn next_non_whitespace_offset(text: &str, start: usize, expected: char) -> Option<usize> {

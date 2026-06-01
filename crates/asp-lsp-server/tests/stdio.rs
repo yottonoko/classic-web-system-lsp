@@ -933,12 +933,23 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         "textDocument/selectionRange",
         json!({
             "textDocument": { "uri": uri },
-            "positions": [{ "line": 5, "character": 16 }],
+            "positions": [
+                { "line": 5, "character": 16 },
+                { "line": 2, "character": 2 },
+            ],
         }),
     );
     assert_eq!(
         selection["result"][0]["range"]["start"],
         json!({ "line": 5, "character": 15 })
+    );
+    assert_eq!(
+        selection["result"][1]["parent"]["parent"]["range"]["start"],
+        json!({ "line": 1, "character": 0 })
+    );
+    assert_eq!(
+        selection["result"][1]["parent"]["parent"]["range"]["end"]["line"],
+        json!(3)
     );
 
     let inlay_hints = request(
