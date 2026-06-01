@@ -19,7 +19,7 @@ const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const backendStatusMethod = "aspLsp/backendStatus";
 
-type AspAnalysisBackendKind = "native" | "typescript-fallback";
+type AspAnalysisBackendKind = "rust" | "typescript-fallback";
 
 interface AspAnalysisBackendInfo {
   backend: AspAnalysisBackendKind;
@@ -295,9 +295,9 @@ function updateBackendStatus(status?: AspAnalysisBackendInfo): void {
     );
     return;
   }
-  const isNative = status.backend === "native";
-  statusBarItem.text = isNative ? "$(code) ASP LSP: Native" : "$(code) ASP LSP: TS";
-  const backendLine = localizer(isNative ? "status.backend.native" : "status.backend.typescript", {
+  const isRust = status.backend === "rust";
+  statusBarItem.text = isRust ? "$(code) ASP LSP: Rust" : "$(code) ASP LSP: TS";
+  const backendLine = localizer(isRust ? "status.backend.rust" : "status.backend.typescript", {
     engine: status.engine,
   });
   statusBarItem.tooltip = [
@@ -313,7 +313,7 @@ function asBackendStatus(value: unknown): AspAnalysisBackendInfo | undefined {
   }
   const candidate = value as Partial<AspAnalysisBackendInfo>;
   if (
-    (candidate.backend === "native" || candidate.backend === "typescript-fallback") &&
+    (candidate.backend === "rust" || candidate.backend === "typescript-fallback") &&
     typeof candidate.engine === "string"
   ) {
     return {
@@ -420,7 +420,7 @@ async function createLaunchConfig(): Promise<void> {
 type ExtensionMessageKey =
   | "status.tooltip"
   | "status.backend.pending"
-  | "status.backend.native"
+  | "status.backend.rust"
   | "status.backend.typescript"
   | "status.backend.reason"
   | "debug.iis.name"
@@ -434,7 +434,7 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
   en: {
     "status.tooltip": "Classic ASP Language Server",
     "status.backend.pending": "Backend: detecting",
-    "status.backend.native": "Backend: Native ({engine})",
+    "status.backend.rust": "Backend: Rust ({engine})",
     "status.backend.typescript": "Backend: TypeScript ({engine})",
     "status.backend.reason": "Reason: {reason}",
     "debug.iis.name": "Debug Classic ASP URL",
@@ -445,7 +445,7 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
   ja: {
     "status.tooltip": "Classic ASP Language Server",
     "status.backend.pending": "Backend: 判定中",
-    "status.backend.native": "Backend: Native ({engine})",
+    "status.backend.rust": "Backend: Rust ({engine})",
     "status.backend.typescript": "Backend: TypeScript ({engine})",
     "status.backend.reason": "Reason: {reason}",
     "debug.iis.name": "Classic ASP URL をデバッグ",
@@ -477,7 +477,7 @@ class AspLspTaskProvider implements vscode.TaskProvider {
       this.task("test", "pnpm", ["run", "test"]),
       this.task("build", "pnpm", ["run", "build"]),
       this.task("package VSIX", "pnpm", ["run", "package:vsix"]),
-      this.task("package VSIX (no native)", "pnpm", ["run", "package:vsix:no-native"]),
+      this.task("package VSIX (no Rust server)", "pnpm", ["run", "package:vsix:no-native"]),
     ];
   }
 

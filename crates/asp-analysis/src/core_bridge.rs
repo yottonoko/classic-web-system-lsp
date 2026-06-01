@@ -52,7 +52,7 @@ impl CoreState {
             .ok_or_else(|| "operation is required".to_string())?;
         let result = match operation {
             "backendInfo" => json!({
-                "backend": "native",
+                "backend": "rust",
                 "engine": "asp-analysis",
                 "version": env!("CARGO_PKG_VERSION"),
             }),

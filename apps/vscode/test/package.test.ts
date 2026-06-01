@@ -39,6 +39,7 @@ describe("VS Code extension package", () => {
     expect(manifest.scripts?.["package:vsix"]).not.toContain("build:native");
     expect(manifest.scripts?.test).not.toContain("build:native");
     expect(extensionSource).toContain("package:vsix:no-native");
+    expect(extensionSource).toContain("package VSIX (no Rust server)");
   });
 
   it("contributes commands, task definition and IIS debug settings", () => {
@@ -101,6 +102,11 @@ describe("VS Code extension package", () => {
     expect(launchSource).not.toContain("ASP_LSP_ANALYSIS_BACKEND");
     expect(launchSource).not.toContain("aspLsp.analysisBackend");
     expect(launchSource).not.toContain("aspLsp.useLegacyServer");
+    expect(launchSource).toContain('candidate.backend === "rust"');
+    expect(launchSource).toContain("ASP LSP: Rust");
+    expect(launchSource).toContain("Backend: Rust ({engine})");
+    expect(launchSource).not.toContain("ASP LSP: Native");
+    expect(launchSource).not.toContain("Backend: Native");
     expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(
       true,
     );

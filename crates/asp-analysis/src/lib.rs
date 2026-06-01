@@ -179,7 +179,7 @@ pub fn analyze_document_once(
 
 pub fn backend_status() -> Value {
     json!({
-        "backend": "native",
+        "backend": "rust",
         "engine": "asp-lsp-server",
         "core": "asp-analysis",
         "version": env!("CARGO_PKG_VERSION"),
