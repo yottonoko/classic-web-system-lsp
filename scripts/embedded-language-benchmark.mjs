@@ -45,6 +45,9 @@ export const embeddedOperationNames = [
 ];
 
 export function clearEmbeddedBenchmarkCaches() {
+  for (const cached of jsLanguageServiceCache.values()) {
+    cached.service.dispose();
+  }
   virtualDocumentsByParsed = new WeakMap();
   diagnosticsByParsed = new WeakMap();
   textDocumentCache.clear();

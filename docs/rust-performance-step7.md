@@ -189,9 +189,7 @@ split the workload before relying on it for regression proof.
 
 ## Step 7B Queue
 
-1. Make include-tree benchmark memory-bounded enough to run under a documented
-   heap limit.
-2. Add a stronger Node/Rust comparison report after the above fixes, using
+1. Add a stronger Node/Rust comparison report after the above fixes, using
    stable iterations and both hot/cold cache modes.
 
 ## Step 7B Semantic Tokens
@@ -267,3 +265,64 @@ Interpretation:
   latency band.
   The benchmark stops counting after the first expected cache-hit log, so the
   table proves the hit path is reached rather than enumerating every file hit.
+
+## Step 7B Include Tree Bounded Harness
+
+`benchmark:include-tree` now bounds the selected include-tree sources before
+loading file text. The default evidence profile caps the run at 64 files and
+4 MiB of source text; both values can be raised with
+`ASP_LSP_BENCH_MAX_FILES` and `ASP_LSP_BENCH_MAX_BYTES`. Embedded benchmark
+caches are also released between batches, including disposal of TypeScript
+language services, so JavaScript diagnostics do not retain services for every
+processed include file.
+
+Default bounded command:
+
+```sh
+NODE_OPTIONS=--max-old-space-size=4096 \
+ASP_LSP_BENCH_ITERATIONS=1 \
+ASP_LSP_BENCH_WARMUPS=0 \
+ASP_LSP_BENCH_CONCURRENCY=2 \
+pnpm run benchmark:include-tree
+```
+
+Default bounded result:
+
+| Metric     | Value                               |
+| ---------- | ----------------------------------- |
+| Files      | 58 of 3906                          |
+| Lines      | 116,000                             |
+| Bytes      | 4,169,810                           |
+| Heap limit | 4096 MiB                            |
+| Result     | completed                           |
+| Slowest op | 4918.59 ms, JS semantic diagnostics |
+
+Expanded bounded command:
+
+```sh
+NODE_OPTIONS=--max-old-space-size=4096 \
+ASP_LSP_BENCH_ITERATIONS=1 \
+ASP_LSP_BENCH_WARMUPS=0 \
+ASP_LSP_BENCH_CONCURRENCY=2 \
+ASP_LSP_BENCH_MAX_FILES=256 \
+ASP_LSP_BENCH_MAX_BYTES=16777216 \
+pnpm run benchmark:include-tree
+```
+
+Expanded bounded result:
+
+| Metric     | Value                                |
+| ---------- | ------------------------------------ |
+| Files      | 229 of 3906                          |
+| Lines      | 458,000                              |
+| Bytes      | 16,768,185                           |
+| Heap limit | 4096 MiB                             |
+| Result     | completed                            |
+| Slowest op | 18999.05 ms, JS semantic diagnostics |
+
+Interpretation:
+
+- The include-tree benchmark is now usable as a short Step 7 proof instead of
+  failing with Node heap exhaustion before results are printed.
+- The full generated tree remains available through higher
+  `ASP_LSP_BENCH_MAX_*` values when a longer stress run is desired.

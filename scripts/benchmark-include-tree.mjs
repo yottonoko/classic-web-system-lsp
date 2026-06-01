@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import {
+  clearEmbeddedBenchmarkCaches,
   embeddedOperationNames,
   runEmbeddedOperationForParsed,
 } from "./embedded-language-benchmark.mjs";
@@ -20,6 +21,8 @@ const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
 const benchmarkConcurrency = readPositiveInteger("ASP_LSP_BENCH_CONCURRENCY", 4);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
+const maxBenchmarkFiles = readPositiveInteger("ASP_LSP_BENCH_MAX_FILES", 64);
+const maxBenchmarkBytes = readPositiveInteger("ASP_LSP_BENCH_MAX_BYTES", 4 * 1024 * 1024);
 const analyzeStepTotals = new Map();
 const results = [];
 
@@ -39,7 +42,8 @@ const {
   parseAspDocumentAsync,
 } = core;
 
-const sourceRefs = collectBenchmarkSourceRefs();
+const sourceSelection = selectBenchmarkSources(collectRelativePaths());
+const sourceRefs = collectBenchmarkSourceRefs(sourceSelection.relativePaths);
 const sourceStats = summarizeSources(sourceRefs);
 
 await runBenchmark("parseAspDocument", (run) =>
@@ -68,15 +72,23 @@ await runBenchmark("analyzeVbscript", (run) =>
 
 for (const operation of embeddedOperationNames) {
   await runBenchmark(operation, (run) =>
-    measureAcrossParsedSources(sourcesForRun(operation, run), (parsed) => {
-      runEmbeddedOperationForParsed(operation, parsed, core);
-    }),
+    measureAcrossParsedSources(
+      sourcesForRun(operation, run),
+      (parsed) => {
+        runEmbeddedOperationForParsed(operation, parsed, core);
+      },
+      clearEmbeddedBenchmarkCaches,
+    ),
   );
+  clearEmbeddedBenchmarkCaches();
 }
 
 console.log("");
 console.log(`Include Tree Classic ASP benchmark`);
 console.log(`Files: ${sourceStats.files}`);
+console.log(`Candidate files: ${sourceSelection.candidateFiles}`);
+console.log(`File limit: ${maxBenchmarkFiles}`);
+console.log(`Byte limit: ${formatBytes(maxBenchmarkBytes)}`);
 console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
 console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
 console.log(`Cache mode: ${benchmarkCacheMode}`);
@@ -99,8 +111,29 @@ function sourcesForRun(operation, run) {
   return benchmarkSourcesForRun(sourceRefs, benchmarkCacheMode, operation, run);
 }
 
-function collectBenchmarkSourceRefs() {
-  return collectRelativePaths().map((relativePath) => {
+function selectBenchmarkSources(relativePaths) {
+  const selected = [];
+  let selectedBytes = 0;
+  for (const relativePath of relativePaths) {
+    if (selected.length >= maxBenchmarkFiles) {
+      continue;
+    }
+    const absolutePath = path.join(sampleRoot, relativePath);
+    const bytes = fs.statSync(absolutePath).size;
+    if (selected.length > 0 && selectedBytes + bytes > maxBenchmarkBytes) {
+      continue;
+    }
+    selected.push(relativePath);
+    selectedBytes += bytes;
+  }
+  return {
+    relativePaths: selected,
+    candidateFiles: relativePaths.length,
+  };
+}
+
+function collectBenchmarkSourceRefs(relativePaths) {
+  return relativePaths.map((relativePath) => {
     const absolutePath = path.join(sampleRoot, relativePath);
     const text = fs.readFileSync(absolutePath, "utf8");
     return {
@@ -153,28 +186,24 @@ async function measureAcrossSources(sources, callback) {
   return performance.now() - start;
 }
 
-async function measureAcrossParsedSources(parsedDocuments, callback) {
+async function measureAcrossParsedSources(parsedDocuments, callback, afterBatch) {
   const start = performance.now();
-  await runBounded(parsedDocuments, async (source) => {
-    const parsed = await parseAspDocumentAsync(source.uri, source.text);
-    await callback(parsed);
-  });
+  await runBounded(
+    parsedDocuments,
+    async (source) => {
+      const parsed = await parseAspDocumentAsync(source.uri, source.text);
+      await callback(parsed);
+    },
+    afterBatch,
+  );
   return performance.now() - start;
 }
 
-async function runBounded(items, callback) {
-  let next = 0;
-  const workers = Array.from({ length: Math.min(benchmarkConcurrency, items.length) }, async () => {
-    for (;;) {
-      const index = next;
-      next += 1;
-      if (index >= items.length) {
-        return;
-      }
-      await callback(items[index]);
-    }
-  });
-  await Promise.all(workers);
+async function runBounded(items, callback, afterBatch) {
+  for (let start = 0; start < items.length; start += benchmarkConcurrency) {
+    await Promise.all(items.slice(start, start + benchmarkConcurrency).map(callback));
+    afterBatch?.();
+  }
 }
 
 async function runBenchmark(name, fn) {
@@ -250,6 +279,10 @@ function printDebugStepTotals(totals) {
 
 function formatMillis(value) {
   return value.toFixed(2);
+}
+
+function formatBytes(value) {
+  return `${value.toLocaleString("en-US")} bytes`;
 }
 
 function readPositiveInteger(name, fallback) {
