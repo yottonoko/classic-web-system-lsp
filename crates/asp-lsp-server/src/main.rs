@@ -392,6 +392,41 @@ impl ServerState {
         Ok(Value::Array(items))
     }
 
+    fn embedded_color_presentations(
+        &mut self,
+        uri: &str,
+        color: Value,
+        range: TextRange,
+    ) -> Result<Value, String> {
+        let virtuals = self.ide.embedded_virtual_documents(uri)?;
+        let open_virtuals = virtuals
+            .iter()
+            .map(|mapped| mapped.document.clone())
+            .collect::<Vec<_>>();
+        for mapped in virtuals {
+            if mapped.document.language_id != "css" {
+                continue;
+            }
+            let Some(virtual_range) = mapped.virtual_range_for_source_range(range) else {
+                continue;
+            };
+            let Some(result) = self.embedded_request(
+                &mapped,
+                open_virtuals.clone(),
+                "colorPresentations",
+                json!({
+                    "color": color,
+                    "range": virtual_range,
+                }),
+            )?
+            else {
+                continue;
+            };
+            return Ok(mapped.remap_lsp_value(result));
+        }
+        Ok(Value::Array(Vec::new()))
+    }
+
     fn embedded_request(
         &mut self,
         mapped: &MappedVirtualDocument,
@@ -1101,6 +1136,17 @@ fn handle_request(
         "textDocument/documentColor" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let result = state.embedded_document_feature(&uri, "documentColors")?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/colorPresentation" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let range = request_range(&request.params)?;
+            let color = request.params.get("color").cloned().unwrap_or(Value::Null);
+            let result = state.embedded_color_presentations(&uri, color, range)?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())

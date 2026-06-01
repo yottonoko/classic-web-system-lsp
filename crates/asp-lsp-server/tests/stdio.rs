@@ -1653,11 +1653,37 @@ fn serves_embedded_read_requests_over_stdio_lsp() {
         .expect("embedded colors")
         .iter()
         .any(|color| color["range"]["start"]["line"] == json!(3)));
+    let color = colors["result"]
+        .as_array()
+        .expect("embedded colors")
+        .iter()
+        .find(|color| color["range"]["start"]["line"] == json!(3))
+        .expect("CSS color")
+        .clone();
+
+    let presentations = request(
+        &mut stdin,
+        &mut reader,
+        25,
+        "textDocument/colorPresentation",
+        json!({
+            "textDocument": { "uri": uri },
+            "color": color["color"].clone(),
+            "range": color["range"].clone(),
+        }),
+    );
+    assert!(presentations["result"]
+        .as_array()
+        .expect("embedded color presentations")
+        .iter()
+        .any(|presentation| presentation["label"]
+            .as_str()
+            .is_some_and(|label| label.contains("rgb") || label.contains("#") || label == "red")));
 
     let linked = request(
         &mut stdin,
         &mut reader,
-        25,
+        26,
         "textDocument/linkedEditingRange",
         json!({
             "textDocument": { "uri": uri },

@@ -138,6 +138,31 @@ impl MappedVirtualDocument {
         Some(serde_json::json!({ "line": line, "character": character }))
     }
 
+    pub fn virtual_range_for_source_range(&self, range: TextRange) -> Option<Value> {
+        let source_start = position_to_utf16_offset(
+            &self.source_text,
+            range.start.line.try_into().ok()?,
+            range.start.character.try_into().ok()?,
+        )?;
+        let source_end = position_to_utf16_offset(
+            &self.source_text,
+            range.end.line.try_into().ok()?,
+            range.end.character.try_into().ok()?,
+        )?;
+        let segment = self.source_map.iter().find(|segment| {
+            let last_offset = source_start.max(source_end.saturating_sub(1));
+            source_start >= segment.source_start && last_offset < segment.source_end
+        })?;
+        let virtual_start = segment.virtual_start + (source_start - segment.source_start);
+        let virtual_end = segment.virtual_start + (source_end - segment.source_start);
+        let (start_line, start_character) = utf16_position_at(&self.document.text, virtual_start)?;
+        let (end_line, end_character) = utf16_position_at(&self.document.text, virtual_end)?;
+        Some(serde_json::json!({
+            "start": { "line": start_line, "character": start_character },
+            "end": { "line": end_line, "character": end_character },
+        }))
+    }
+
     pub fn remap_lsp_value(&self, value: Value) -> Value {
         self.remap_value(value)
     }

@@ -10,6 +10,8 @@ import {
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
   CompletionItemKind,
+  type Color,
+  type ColorPresentation,
   DiagnosticSeverity,
   DiagnosticTag,
   MarkupKind,
@@ -147,6 +149,9 @@ async function handleRequest(request: EmbeddedRequest): Promise<unknown> {
   if (request.operation === "documentColors") {
     return documentColors(request);
   }
+  if (request.operation === "colorPresentations") {
+    return colorPresentations(request);
+  }
   if (request.operation === "linkedEditingRanges") {
     return linkedEditingRanges(request);
   }
@@ -255,6 +260,20 @@ async function documentColors(request: EmbeddedRequest): Promise<unknown[]> {
   }
   const stylesheet = cssService.parseStylesheet(document);
   return cssService.findDocumentColors(document, stylesheet);
+}
+
+async function colorPresentations(request: EmbeddedRequest): Promise<ColorPresentation[]> {
+  const document = toTextDocument(request.activeVirtual);
+  if (request.activeVirtual.languageId !== "css") {
+    return [];
+  }
+  const stylesheet = cssService.parseStylesheet(document);
+  return cssService.getColorPresentations(
+    document,
+    stylesheet,
+    requestColor(request),
+    requestRange(request),
+  );
 }
 
 async function linkedEditingRanges(request: EmbeddedRequest): Promise<{ ranges: Range[] } | null> {
@@ -679,6 +698,49 @@ function requestPosition(request: EmbeddedRequest): Position {
     throw new Error("params.position must be an LSP position");
   }
   return { line, character };
+}
+
+function requestRange(request: EmbeddedRequest): Range {
+  const range = (request.params as { range?: unknown } | undefined)?.range;
+  if (!range || typeof range !== "object") {
+    throw new Error("params.range is required");
+  }
+  const start = (range as { start?: unknown }).start;
+  const end = (range as { end?: unknown }).end;
+  if (!isPosition(start) || !isPosition(end)) {
+    throw new Error("params.range must be an LSP range");
+  }
+  return { start, end };
+}
+
+function requestColor(request: EmbeddedRequest): Color {
+  const color = (request.params as { color?: unknown } | undefined)?.color;
+  if (!color || typeof color !== "object") {
+    throw new Error("params.color is required");
+  }
+  const red = (color as { red?: unknown }).red;
+  const green = (color as { green?: unknown }).green;
+  const blue = (color as { blue?: unknown }).blue;
+  const alpha = (color as { alpha?: unknown }).alpha;
+  if (
+    typeof red !== "number" ||
+    typeof green !== "number" ||
+    typeof blue !== "number" ||
+    typeof alpha !== "number"
+  ) {
+    throw new Error("params.color must be an LSP color");
+  }
+  return { red, green, blue, alpha };
+}
+
+function isPosition(value: unknown): value is Position {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  return (
+    typeof (value as { line?: unknown }).line === "number" &&
+    typeof (value as { character?: unknown }).character === "number"
+  );
 }
 
 function virtualSourceUri(virtual: VirtualDocument): string {
