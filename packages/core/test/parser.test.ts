@@ -870,6 +870,74 @@ end
     expect(disabled.some((item) => item.label === "End If")).toBe(false);
   });
 
+  it("completes matching End labels for VBScript procedures, classes and members", () => {
+    const subSource = `<%
+Sub Render()
+end s
+%>`;
+    const subParsed = parseAspDocument("file:///site/end-sub-completion.asp", subSource);
+    const subCompletions = getVbscriptCompletions(
+      subParsed,
+      positionAt(subSource, subSource.indexOf("end s") + "end s".length),
+    );
+    expect(subCompletions.find((item) => item.label === "End Sub")).toMatchObject({
+      filterText: "Sub",
+      textEdit: {
+        newText: "End Sub",
+      },
+    });
+
+    const classSource = `<%
+Class Widget
+end c
+%>`;
+    const classParsed = parseAspDocument("file:///site/end-class-completion.asp", classSource);
+    const classCompletions = getVbscriptCompletions(
+      classParsed,
+      positionAt(classSource, classSource.indexOf("end c") + "end c".length),
+    );
+    expect(classCompletions.find((item) => item.label === "End Class")).toMatchObject({
+      filterText: "Class",
+      textEdit: {
+        newText: "End Class",
+      },
+    });
+
+    const methodSource = `<%
+Class Widget
+Public Function Render()
+end f
+End Class
+%>`;
+    const methodParsed = parseAspDocument(
+      "file:///site/end-class-method-completion.asp",
+      methodSource,
+    );
+    const methodCompletions = getVbscriptCompletions(
+      methodParsed,
+      positionAt(methodSource, methodSource.indexOf("end f") + "end f".length),
+    );
+    expect(methodCompletions.map((item) => item.label)).toEqual(["End Function"]);
+    expect(methodCompletions[0]?.filterText).toBe("Function");
+
+    const propertySource = `<%
+Class Widget
+Property Get Name()
+end p
+End Class
+%>`;
+    const propertyParsed = parseAspDocument(
+      "file:///site/end-property-completion.asp",
+      propertySource,
+    );
+    const propertyCompletions = getVbscriptCompletions(
+      propertyParsed,
+      positionAt(propertySource, propertySource.indexOf("end p") + "end p".length),
+    );
+    expect(propertyCompletions.map((item) => item.label)).toEqual(["End Property"]);
+    expect(propertyCompletions[0]?.filterText).toBe("Property");
+  });
+
   it("completes VBScript block continuation and closing keywords only when usable", () => {
     const thenSource = `<%
 If ready 
