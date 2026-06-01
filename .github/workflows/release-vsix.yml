@@ -73,6 +73,7 @@ jobs:
           echo "name=classic-asp-lsp-${tag_name}-${{ matrix.target }}.vsix" >> "$GITHUB_OUTPUT"
 
       - name: Package VSIX
+        shell: bash
         run: pnpm run package:vsix --target "${{ matrix.target }}" --out "$GITHUB_WORKSPACE/${{ steps.vsix.outputs.name }}"
 
       - name: Upload VSIX artifact
