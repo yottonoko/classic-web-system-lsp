@@ -1084,9 +1084,53 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let documentation_text = documentation_edit["newText"]
         .as_str()
         .expect("documentation new text");
+    assert!(documentation_text.contains("' @param BuildName.first As Variant"));
+    assert!(documentation_text.contains("' @returns BuildName Variant"));
     assert!(documentation_text.contains("''' <summary>TODO: Describe BuildName.</summary>"));
     assert!(documentation_text.contains("''' <param name=\"first\">TODO: Describe first.</param>"));
     assert!(documentation_text.contains("''' <returns>TODO: Describe return value.</returns>"));
+
+    let variable_documentation_actions = request(
+        &mut stdin,
+        &mut reader,
+        48,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 4, "character": 4 },
+                "end": { "line": 4, "character": 16 },
+            },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    let variable_documentation_text =
+        documentation_action_new_text(&variable_documentation_actions, uri);
+    assert!(variable_documentation_text.contains("' @type customerName As Variant"));
+    assert!(
+        variable_documentation_text.contains("''' <summary>TODO: Describe customerName.</summary>")
+    );
+    assert!(variable_documentation_text.contains("''' <value>TODO: Describe customerName.</value>"));
+
+    let parameter_documentation_actions = request(
+        &mut stdin,
+        &mut reader,
+        49,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 31, "character": 15 },
+                "end": { "line": 31, "character": 27 },
+            },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    let parameter_documentation_text =
+        documentation_action_new_text(&parameter_documentation_actions, uri);
+    assert!(parameter_documentation_text.contains("' @param ParamScope.repeatedName As Variant"));
+    assert!(parameter_documentation_text
+        .contains("''' <param name=\"repeatedName\">TODO: Describe repeatedName.</param>"));
 
     let call_hierarchy = request(
         &mut stdin,
@@ -1350,7 +1394,7 @@ fn omits_vbscript_documentation_action_for_documented_callable_over_stdio_lsp() 
                     "uri": uri,
                     "languageId": "classic-asp",
                     "version": 1,
-                    "text": "<%\n''' <summary>Already documented.</summary>\nFunction DocumentedName(first)\nDocumentedName = first\nEnd Function\n%>",
+                    "text": "<%\n''' <summary>Already documented.</summary>\n''' <param name=\"first\">Already documented.</param>\n''' <returns>Already documented.</returns>\n' @param DocumentedName.first As Variant\n' @returns DocumentedName Variant\nFunction DocumentedName(first)\nDocumentedName = first\nEnd Function\n%>",
                 },
             },
         }),
@@ -1364,8 +1408,8 @@ fn omits_vbscript_documentation_action_for_documented_callable_over_stdio_lsp() 
         json!({
             "textDocument": { "uri": uri },
             "range": {
-                "start": { "line": 2, "character": 9 },
-                "end": { "line": 2, "character": 23 },
+                "start": { "line": 6, "character": 9 },
+                "end": { "line": 6, "character": 23 },
             },
             "context": { "diagnostics": [] },
         }),
@@ -1375,6 +1419,82 @@ fn omits_vbscript_documentation_action_for_documented_callable_over_stdio_lsp() 
         .expect("code actions")
         .iter()
         .any(|action| action["title"] == json!("Generate VBScript documentation")));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
+fn generates_vbscript_documentation_for_class_and_property_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let uri = "file:///tmp/broad-docs.asp";
+
+    initialize(&mut stdin, &mut reader);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nClass Customer\n  Public Name\n  Public Property Get DisplayName()\n    DisplayName = Name\n  End Property\nEnd Class\n%>",
+                },
+            },
+        }),
+    );
+
+    let class_actions = request(
+        &mut stdin,
+        &mut reader,
+        3,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 1, "character": 6 },
+                "end": { "line": 1, "character": 14 },
+            },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    let class_documentation_text = documentation_action_new_text(&class_actions, uri);
+    assert!(class_documentation_text.contains("''' <summary>TODO: Describe Customer.</summary>"));
+
+    let property_actions = request(
+        &mut stdin,
+        &mut reader,
+        4,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 3, "character": 22 },
+                "end": { "line": 3, "character": 33 },
+            },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    let property_documentation_text = documentation_action_new_text(&property_actions, uri);
+    assert!(property_documentation_text.contains("' @returns DisplayName Variant"));
+    assert!(
+        property_documentation_text.contains("''' <summary>TODO: Describe DisplayName.</summary>")
+    );
+    assert!(
+        property_documentation_text.contains("''' <returns>TODO: Describe return value.</returns>")
+    );
+    assert!(property_documentation_text.contains("''' <value>TODO: Describe DisplayName.</value>"));
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
@@ -2084,6 +2204,18 @@ fn request(
         "{method} returned an error: {response}"
     );
     response
+}
+
+fn documentation_action_new_text(actions: &Value, uri: &str) -> String {
+    actions["result"]
+        .as_array()
+        .expect("documentation actions")
+        .iter()
+        .find(|action| action["title"] == json!("Generate VBScript documentation"))
+        .expect("documentation code action")["edit"]["changes"][uri][0]["newText"]
+        .as_str()
+        .expect("documentation new text")
+        .to_string()
 }
 
 #[derive(Debug)]

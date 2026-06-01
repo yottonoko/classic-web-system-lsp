@@ -2347,20 +2347,56 @@ fn documentation_code_action(
     offset: usize,
 ) -> Option<Value> {
     let symbol = documentation_symbol_at(uri, text, symbols, offset)?;
-    let declaration_line = symbol.pointer("/range/start/line")?.as_u64()?;
+    let owner = if symbol.get("kind").and_then(Value::as_str) == Some("parameter") {
+        callable_owner_for_parameter(symbol, symbols)?
+    } else {
+        symbol
+    };
+    let declaration_line = owner.pointer("/range/start/line")?.as_u64()?;
     let declaration_line = u32::try_from(declaration_line).ok()?;
     let indent = line_indent(text, declaration_line);
     let new_line = preferred_new_line(text);
-    let lines = documentation_xml_lines(symbol);
-    if lines.is_empty() {
+    let existing_block = documentation_comment_block_before(text, declaration_line);
+    let existing_block_text = existing_block
+        .as_ref()
+        .map(|(_, block_text)| block_text.as_str());
+    let annotation_lines = documentation_annotation_lines(text, symbol, owner, symbols);
+    let xml_lines = documentation_xml_lines(symbol, owner, existing_block_text);
+    if annotation_lines.is_empty() && xml_lines.is_empty() {
         return None;
     }
-    let mut new_text = lines
-        .into_iter()
-        .map(|line| format!("{indent}{line}"))
-        .collect::<Vec<_>>()
-        .join(new_line);
-    new_text.push_str(new_line);
+    let (range_start_line, range_end_line, new_text) =
+        if let Some((block_start_line, block_text)) = existing_block {
+            let mut parts = Vec::new();
+            parts.extend(
+                annotation_lines
+                    .iter()
+                    .map(|line| format!("{indent}{line}")),
+            );
+            parts.push(block_text.trim_end_matches(['\r', '\n']).to_string());
+            parts.extend(xml_lines.iter().map(|line| format!("{indent}{line}")));
+            (
+                block_start_line,
+                declaration_line,
+                format!("{}{}", parts.join(new_line), new_line),
+            )
+        } else {
+            let mut lines = annotation_lines;
+            lines.extend(xml_lines);
+            (
+                declaration_line,
+                declaration_line,
+                format!(
+                    "{}{}",
+                    lines
+                        .into_iter()
+                        .map(|line| format!("{indent}{line}"))
+                        .collect::<Vec<_>>()
+                        .join(new_line),
+                    new_line
+                ),
+            )
+        };
 
     Some(serde_json::json!({
         "title": "Generate VBScript documentation",
@@ -2369,8 +2405,8 @@ fn documentation_code_action(
             "changes": {
                 uri: [{
                     "range": {
-                        "start": { "line": declaration_line, "character": 0 },
-                        "end": { "line": declaration_line, "character": 0 },
+                        "start": { "line": range_start_line, "character": 0 },
+                        "end": { "line": range_end_line, "character": 0 },
                     },
                     "newText": new_text,
                 }],
@@ -2389,7 +2425,7 @@ fn documentation_symbol_at<'a>(
         .iter()
         .filter(|symbol| symbol_source_uri_matches(symbol, uri))
         .filter(|symbol| is_documentation_action_symbol(symbol))
-        .filter(|symbol| symbol.get("documentation").is_none_or(Value::is_null))
+        .filter(|symbol| symbol.get("implicit").and_then(Value::as_bool) != Some(true))
         .filter(|symbol| {
             symbol
                 .get("range")
@@ -2406,22 +2442,131 @@ fn documentation_symbol_at<'a>(
 fn is_documentation_action_symbol(symbol: &Value) -> bool {
     matches!(
         symbol.get("kind").and_then(Value::as_str),
-        Some("function" | "sub" | "method" | "property")
+        Some(
+            "class"
+                | "function"
+                | "sub"
+                | "method"
+                | "property"
+                | "variable"
+                | "field"
+                | "constant"
+                | "parameter"
+        )
     )
 }
 
-fn documentation_xml_lines(symbol: &Value) -> Vec<String> {
+fn callable_owner_for_parameter<'a>(parameter: &Value, symbols: &'a [Value]) -> Option<&'a Value> {
+    let scope = parameter.get("scopeRange")?;
+    symbols.iter().find(|candidate| {
+        is_callable_symbol(candidate)
+            && candidate
+                .get("scopeRange")
+                .is_some_and(|candidate_scope| same_range(candidate_scope, scope))
+            && candidate.get("sourceUri") == parameter.get("sourceUri")
+    })
+}
+
+fn documentation_xml_lines(
+    symbol: &Value,
+    owner: &Value,
+    existing_block_text: Option<&str>,
+) -> Vec<String> {
     let Some(name) = symbol.get("name").and_then(Value::as_str) else {
         return Vec::new();
     };
-    let mut lines = vec![format!("''' <summary>TODO: Describe {name}.</summary>")];
-    for parameter in documentation_parameter_names(symbol) {
-        lines.push(format!(
-            "''' <param name=\"{parameter}\">TODO: Describe {parameter}.</param>"
-        ));
+    let mut lines = Vec::new();
+    if symbol.get("kind").and_then(Value::as_str) == Some("parameter") {
+        if !documentation_has_param(owner, name, existing_block_text) {
+            lines.push(format!(
+                "''' <param name=\"{name}\">TODO: Describe {name}.</param>"
+            ));
+        }
+        return lines;
     }
-    if documentation_symbol_has_return_value(symbol) {
-        lines.push("''' <returns>TODO: Describe return value.</returns>".to_string());
+    if !documentation_has_text(owner, "summary", existing_block_text) {
+        lines.push(format!("''' <summary>TODO: Describe {name}.</summary>"));
+    }
+    if is_callable_symbol(symbol) {
+        for parameter in documentation_parameter_names(symbol) {
+            if !documentation_has_param(owner, &parameter, existing_block_text) {
+                lines.push(format!(
+                    "''' <param name=\"{parameter}\">TODO: Describe {parameter}.</param>"
+                ));
+            }
+        }
+        if documentation_symbol_has_return_value(symbol)
+            && !documentation_has_text(owner, "returns", existing_block_text)
+        {
+            lines.push("''' <returns>TODO: Describe return value.</returns>".to_string());
+        }
+    }
+    if documentation_symbol_has_value(symbol)
+        && !documentation_has_text(owner, "value", existing_block_text)
+    {
+        lines.push(format!("''' <value>TODO: Describe {name}.</value>"));
+    }
+    lines
+}
+
+fn documentation_annotation_lines(
+    text: &str,
+    symbol: &Value,
+    owner: &Value,
+    symbols: &[Value],
+) -> Vec<String> {
+    let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    match symbol.get("kind").and_then(Value::as_str) {
+        Some("parameter") => {
+            let owner_name = owner
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let marker = format!("@param {owner_name}.{name}");
+            if !contains_case_insensitive(text, &marker) {
+                lines.push(format!(
+                    "' @param {owner_name}.{name} As {}",
+                    documentation_symbol_type_name(symbol)
+                ));
+            }
+        }
+        Some("variable" | "field" | "constant") => {
+            let marker = format!("@type {name}");
+            if !contains_case_insensitive(text, &marker) {
+                lines.push(format!(
+                    "' @type {name} As {}",
+                    documentation_symbol_type_name(symbol)
+                ));
+            }
+        }
+        Some("function" | "sub" | "method" | "property") => {
+            for parameter in documentation_parameter_names(symbol) {
+                let marker = format!("@param {name}.{parameter}");
+                if !contains_case_insensitive(text, &marker) {
+                    let parameter_symbol =
+                        parameter_symbol_for_callable(symbol, &parameter, symbols);
+                    lines.push(format!(
+                        "' @param {name}.{parameter} As {}",
+                        parameter_symbol
+                            .map(documentation_symbol_type_name)
+                            .unwrap_or_else(|| "Variant".to_string())
+                    ));
+                }
+            }
+            let marker = format!("@returns {name}");
+            if documentation_symbol_has_return_value(symbol)
+                && !contains_case_insensitive(text, &marker)
+            {
+                lines.push(format!(
+                    "' @returns {name} {}",
+                    documentation_symbol_type_name(symbol)
+                ));
+            }
+        }
+        _ => {}
     }
     lines
 }
@@ -2454,6 +2599,102 @@ fn documentation_symbol_has_return_value(symbol: &Value) -> bool {
         Some("property") => symbol.get("propertyAccessor").and_then(Value::as_str) == Some("get"),
         _ => false,
     }
+}
+
+fn documentation_symbol_has_value(symbol: &Value) -> bool {
+    matches!(
+        symbol.get("kind").and_then(Value::as_str),
+        Some("variable" | "field" | "constant" | "property")
+    )
+}
+
+fn documentation_has_text(symbol: &Value, key: &str, existing_block_text: Option<&str>) -> bool {
+    symbol
+        .get("documentation")
+        .and_then(|documentation| documentation.get(key))
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
+        || existing_block_text.is_some_and(|text| {
+            contains_case_insensitive(text, &format!("<{key}>"))
+                && contains_case_insensitive(text, &format!("</{key}>"))
+        })
+}
+
+fn documentation_has_param(symbol: &Value, name: &str, existing_block_text: Option<&str>) -> bool {
+    symbol
+        .pointer(&format!("/documentation/params/{name}"))
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
+        || existing_block_text.is_some_and(|text| {
+            contains_case_insensitive(text, "<param")
+                && contains_case_insensitive(text, &format!("name=\"{name}\""))
+                && contains_case_insensitive(text, "</param>")
+        })
+}
+
+fn documentation_symbol_type_name(symbol: &Value) -> String {
+    symbol_type_name(symbol).unwrap_or("Variant").to_string()
+}
+
+fn parameter_symbol_for_callable<'a>(
+    callable: &Value,
+    parameter_name: &str,
+    symbols: &'a [Value],
+) -> Option<&'a Value> {
+    let scope = callable.get("scopeRange")?;
+    symbols.iter().find(|candidate| {
+        candidate.get("kind").and_then(Value::as_str) == Some("parameter")
+            && candidate
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.eq_ignore_ascii_case(parameter_name))
+            && candidate.get("sourceUri") == callable.get("sourceUri")
+            && candidate
+                .get("scopeRange")
+                .is_some_and(|candidate_scope| same_range(candidate_scope, scope))
+    })
+}
+
+fn documentation_comment_block_before(text: &str, declaration_line: u32) -> Option<(u32, String)> {
+    let lines = text.split_inclusive('\n').collect::<Vec<_>>();
+    let mut line = declaration_line.checked_sub(1)?;
+    let mut start_line = None;
+    loop {
+        let current = lines.get(usize::try_from(line).ok()?)?;
+        if !current.trim_start().starts_with('\'') {
+            break;
+        }
+        start_line = Some(line);
+        if line == 0 {
+            break;
+        }
+        line -= 1;
+    }
+    let start_line = start_line?;
+    let start_offset = line_start_byte_offset(text, start_line)?;
+    let end_offset = line_start_byte_offset(text, declaration_line)?;
+    Some((start_line, text[start_offset..end_offset].to_string()))
+}
+
+fn line_start_byte_offset(text: &str, target_line: u32) -> Option<usize> {
+    if target_line == 0 {
+        return Some(0);
+    }
+    let mut line = 0u32;
+    for (offset, character) in text.char_indices() {
+        if character == '\n' {
+            line += 1;
+            if line == target_line {
+                return Some(offset + 1);
+            }
+        }
+    }
+    (line == target_line).then_some(text.len())
+}
+
+fn contains_case_insensitive(text: &str, needle: &str) -> bool {
+    text.to_ascii_lowercase()
+        .contains(&needle.to_ascii_lowercase())
 }
 
 fn preferred_new_line(text: &str) -> &str {
