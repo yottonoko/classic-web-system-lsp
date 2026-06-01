@@ -29,13 +29,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "asp-lsp-core"
-version = "0.3.0"
-dependencies = [
- "asp-analysis",
-]
-
-[[package]]
 name = "asp-lsp-server"
 version = "0.1.0"
 dependencies = [

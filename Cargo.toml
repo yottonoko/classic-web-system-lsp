@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "crates/asp-analysis",
-  "crates/asp-core",
   "crates/asp-ide",
   "crates/asp-lsp-server",
   "crates/asp-sidecar-protocol",
@@ -11,7 +10,6 @@ resolver = "2"
 
 [workspace.dependencies]
 asp-analysis = { path = "crates/asp-analysis" }
-asp-lsp-core = { path = "crates/asp-core" }
 asp-ide = { path = "crates/asp-ide" }
 asp-sidecar-protocol = { path = "crates/asp-sidecar-protocol" }
 asp-syntax = { path = "crates/asp-syntax" }

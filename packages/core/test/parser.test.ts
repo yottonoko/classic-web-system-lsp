@@ -161,7 +161,7 @@ End Function
     const previousBackend = process.env.ASP_LSP_ANALYSIS_BACKEND;
     const previousNativeCorePath = process.env.ASP_LSP_NATIVE_CORE_PATH;
     process.env.ASP_LSP_ANALYSIS_BACKEND = "auto";
-    process.env.ASP_LSP_NATIVE_CORE_PATH = "/__asp_lsp_missing__/asp-lsp-core";
+    process.env.ASP_LSP_NATIVE_CORE_PATH = "/__asp_lsp_missing__/retired-native-backend";
     try {
       const parsed = parseAspDocument("file:///site/default.asp", `<% Response.Write "ok" %>`);
       expect(parsed.defaultLanguage).toBe("VBScript");
