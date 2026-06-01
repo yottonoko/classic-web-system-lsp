@@ -450,6 +450,145 @@ fn coalesces_debounced_document_changes() {
     assert!(child.wait().expect("wait server").success());
 }
 
+#[test]
+fn serves_vbscript_read_requests_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let uri = "file:///tmp/read.asp";
+
+    initialize(&mut stdin, &mut reader);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nFunction BuildName(first)\nBuildName = first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\n%>",
+                },
+            },
+        }),
+    );
+
+    let completion = request(
+        &mut stdin,
+        &mut reader,
+        10,
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 8 },
+        }),
+    );
+    assert!(completion["result"]
+        .as_array()
+        .expect("completion items")
+        .iter()
+        .any(|item| item["label"] == json!("customerName")));
+
+    let hover = request(
+        &mut stdin,
+        &mut reader,
+        11,
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 16 },
+        }),
+    );
+    assert!(hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("hover markdown")
+        .contains("Function BuildName(first)"));
+
+    let definition = request(
+        &mut stdin,
+        &mut reader,
+        12,
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 16 },
+        }),
+    );
+    assert_eq!(definition["result"]["uri"], json!(uri));
+    assert_eq!(
+        definition["result"]["range"]["start"],
+        json!({ "line": 1, "character": 9 })
+    );
+
+    let signature = request(
+        &mut stdin,
+        &mut reader,
+        13,
+        "textDocument/signatureHelp",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 26 },
+        }),
+    );
+    assert!(signature["result"]["signatures"][0]["label"]
+        .as_str()
+        .expect("signature label")
+        .contains("BuildName(first)"));
+    assert_eq!(signature["result"]["activeParameter"], json!(0));
+
+    let document_symbols = request(
+        &mut stdin,
+        &mut reader,
+        14,
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert!(document_symbols["result"]
+        .as_array()
+        .expect("document symbols")
+        .iter()
+        .any(|symbol| symbol["name"] == json!("BuildName")));
+
+    let folding_ranges = request(
+        &mut stdin,
+        &mut reader,
+        15,
+        "textDocument/foldingRange",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert!(folding_ranges["result"]
+        .as_array()
+        .expect("folding ranges")
+        .iter()
+        .any(|range| range["startLine"] == json!(1) && range["endLine"] == json!(3)));
+
+    let highlights = request(
+        &mut stdin,
+        &mut reader,
+        16,
+        "textDocument/documentHighlight",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 1 },
+        }),
+    );
+    assert!(
+        highlights["result"].as_array().expect("highlights").len() >= 2,
+        "expected declaration and use highlights"
+    );
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
 fn initialize(
     stdin: &mut std::process::ChildStdin,
     reader: &mut BufReader<std::process::ChildStdout>,
@@ -514,6 +653,30 @@ fn shutdown(
     );
     let shutdown = read_until(reader, |message| message["id"] == json!(2));
     assert_eq!(shutdown["id"], json!(2));
+}
+
+fn request(
+    stdin: &mut std::process::ChildStdin,
+    reader: &mut BufReader<std::process::ChildStdout>,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Value {
+    write_message(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        }),
+    );
+    let response = read_until(reader, |message| message["id"] == json!(id));
+    assert!(
+        response.get("error").is_none(),
+        "{method} returned an error: {response}"
+    );
+    response
 }
 
 fn write_message(stdin: &mut std::process::ChildStdin, message: &Value) {

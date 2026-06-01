@@ -362,6 +362,84 @@ fn handle_request(
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
+        "textDocument/completion" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let result = state.ide.completion(&uri, position)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "completionItem/resolve" => {
+            connection
+                .sender
+                .send(Response::new_ok(request.id, request.params).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/hover" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let result = state.ide.hover(&uri, position)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/definition"
+        | "textDocument/declaration"
+        | "textDocument/typeDefinition"
+        | "textDocument/implementation" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let result = state.ide.definition(&uri, position)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/signatureHelp" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let result = state.ide.signature_help(&uri, position)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/documentSymbol" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let result = state.ide.document_symbols(&uri)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/foldingRange" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let result = state.ide.folding_ranges(&uri)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/documentHighlight" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let result = state.ide.document_highlights(&uri, position)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
         "workspace/executeCommand" => {
             connection
                 .sender
@@ -467,6 +545,21 @@ fn open_document(
 
 fn server_capabilities() -> Value {
     json!({
+        "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": [".", " "],
+        },
+        "signatureHelpProvider": {
+            "triggerCharacters": ["(", ",", " "],
+        },
+        "hoverProvider": true,
+        "definitionProvider": true,
+        "declarationProvider": true,
+        "typeDefinitionProvider": true,
+        "implementationProvider": true,
+        "documentSymbolProvider": true,
+        "foldingRangeProvider": true,
+        "documentHighlightProvider": true,
         "textDocumentSync": {
             "openClose": true,
             "change": 2,
@@ -516,6 +609,13 @@ fn text_range(value: &Value) -> Option<TextRange> {
         start: text_position(value.get("start")?)?,
         end: text_position(value.get("end")?)?,
     })
+}
+
+fn request_position(params: &Value) -> Result<TextPosition, String> {
+    params
+        .get("position")
+        .and_then(text_position)
+        .ok_or_else(|| "position is required".to_string())
 }
 
 fn text_position(value: &Value) -> Option<TextPosition> {

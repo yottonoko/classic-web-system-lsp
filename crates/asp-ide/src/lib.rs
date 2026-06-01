@@ -294,6 +294,156 @@ impl Ide {
         Ok(())
     }
 
+    pub fn completion(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some(context) = self.vb_context(uri, position)? else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let prefix = identifier_prefix_at(&context.text, context.offset);
+        let mut items = Vec::new();
+        for symbol in &context.symbols {
+            let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if !prefix.is_empty() && !name.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                continue;
+            }
+            items.push(serde_json::json!({
+                "label": name,
+                "kind": completion_kind(symbol),
+                "detail": symbol_detail(symbol),
+                "data": { "kind": "vbscript", "uri": uri },
+            }));
+        }
+        for keyword in [
+            "Dim", "Function", "Sub", "If", "Then", "Else", "End If", "For", "Next",
+        ] {
+            if prefix.is_empty() || keyword.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                items.push(serde_json::json!({ "label": keyword, "kind": 14 }));
+            }
+        }
+        Ok(Value::Array(items))
+    }
+
+    pub fn hover(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some((symbol, _context)) = self.symbol_at_position(uri, position)? else {
+            return Ok(Value::Null);
+        };
+        let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+            return Ok(Value::Null);
+        };
+        let signature = symbol_signature(&symbol).unwrap_or_else(|| name.to_string());
+        Ok(serde_json::json!({
+            "contents": {
+                "kind": "markdown",
+                "value": format!("```vbscript\n{signature}\n```"),
+            }
+        }))
+    }
+
+    pub fn definition(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some((symbol, _context)) = self.symbol_at_position(uri, position)? else {
+            return Ok(Value::Null);
+        };
+        let Some(range) = symbol.get("range").cloned() else {
+            return Ok(Value::Null);
+        };
+        let target_uri = symbol
+            .get("sourceUri")
+            .and_then(Value::as_str)
+            .unwrap_or(uri);
+        Ok(serde_json::json!({ "uri": target_uri, "range": range }))
+    }
+
+    pub fn signature_help(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some(context) = self.vb_context(uri, position)? else {
+            return Ok(Value::Null);
+        };
+        let Some(name) = call_name_before_offset(&context.text, context.offset) else {
+            return Ok(Value::Null);
+        };
+        let Some(symbol) = context
+            .symbols
+            .iter()
+            .find(|symbol| symbol_name_eq(symbol, &name) && is_callable_symbol(symbol))
+        else {
+            return Ok(Value::Null);
+        };
+        let label = symbol_signature(symbol).unwrap_or(name);
+        let parameters = symbol
+            .get("parameters")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|label| serde_json::json!({ "label": label }))
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "signatures": [{ "label": label, "parameters": parameters }],
+            "activeSignature": 0,
+            "activeParameter": active_parameter(&context.text, context.offset),
+        }))
+    }
+
+    pub fn document_symbols(&self, uri: &str) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+        let items = symbols
+            .into_iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.get("kind").and_then(Value::as_str),
+                    Some("function" | "sub" | "class" | "property" | "variable" | "constant")
+                )
+            })
+            .filter_map(|symbol| {
+                let name = symbol.get("name")?.as_str()?;
+                let range = symbol
+                    .get("scopeRange")
+                    .or_else(|| symbol.get("range"))?
+                    .clone();
+                let selection_range = symbol.get("range")?.clone();
+                Some(serde_json::json!({
+                    "name": name,
+                    "kind": symbol_kind(&symbol),
+                    "range": range,
+                    "selectionRange": selection_range,
+                }))
+            })
+            .collect::<Vec<_>>();
+        Ok(Value::Array(items))
+    }
+
+    pub fn folding_ranges(&self, uri: &str) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let ranges = vb_symbols(&self.db, document.source_file, self.settings.input)?
+            .into_iter()
+            .filter_map(|symbol| {
+                symbol
+                    .get("scopeRange")
+                    .and_then(folding_range_from_lsp_range)
+            })
+            .collect::<Vec<_>>();
+        Ok(Value::Array(ranges))
+    }
+
+    pub fn document_highlights(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some((symbol, context)) = self.symbol_at_position(uri, position)? else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let highlights = identifier_ranges(&context.text, name)
+            .into_iter()
+            .map(|range| serde_json::json!({ "range": range, "kind": 1 }))
+            .collect::<Vec<_>>();
+        Ok(Value::Array(highlights))
+    }
+
     pub fn embedded_virtual_documents(
         &self,
         uri: &str,
@@ -307,6 +457,49 @@ impl Ide {
             document.text(&self.db),
             &parsed,
         )
+    }
+
+    fn vb_context(&self, uri: &str, position: TextPosition) -> Result<Option<VbContext>, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(None);
+        };
+        let text = document.text(&self.db).clone();
+        let offset = position_to_utf16_offset(
+            &text,
+            usize::try_from(position.line).map_err(|_| "line is too large".to_string())?,
+            usize::try_from(position.character)
+                .map_err(|_| "character is too large".to_string())?,
+        )
+        .ok_or_else(|| "position is out of bounds".to_string())?;
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        if !is_vbscript_offset(&parsed, offset) {
+            return Ok(None);
+        }
+        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+        Ok(Some(VbContext {
+            text,
+            offset,
+            symbols,
+        }))
+    }
+
+    fn symbol_at_position(
+        &self,
+        uri: &str,
+        position: TextPosition,
+    ) -> Result<Option<(Value, VbContext)>, String> {
+        let Some(context) = self.vb_context(uri, position)? else {
+            return Ok(None);
+        };
+        let Some(word) = identifier_at_offset(&context.text, context.offset) else {
+            return Ok(None);
+        };
+        let symbol = context
+            .symbols
+            .iter()
+            .find(|symbol| symbol_name_eq(symbol, &word))
+            .cloned();
+        Ok(symbol.map(|symbol| (symbol, context)))
     }
 
     pub fn diagnostics_for_open_documents(&self) -> Result<Vec<(String, Vec<Value>)>, String> {
@@ -385,6 +578,232 @@ impl OpenDocument {
 
 fn source_file_uri(db: &IdeDatabase, document: &OpenDocument) -> String {
     document.source_file.uri(db).clone()
+}
+
+struct VbContext {
+    text: String,
+    offset: usize,
+    symbols: Vec<Value>,
+}
+
+fn is_vbscript_offset(parsed: &Value, offset: usize) -> bool {
+    parsed
+        .get("regions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|region| {
+            region.get("language").and_then(Value::as_str) == Some("vbscript")
+                && value_usize(region, "contentStart").is_ok_and(|start| offset >= start)
+                && value_usize(region, "contentEnd").is_ok_and(|end| offset <= end)
+        })
+}
+
+fn identifier_at_offset(text: &str, offset: usize) -> Option<String> {
+    let chars = utf16_chars(text);
+    let index = chars
+        .iter()
+        .position(|(char_offset, character)| {
+            offset >= *char_offset && offset <= *char_offset + character.len_utf16()
+        })
+        .unwrap_or(chars.len());
+    let mut start = index;
+    while start > 0 && is_identifier_char(chars[start - 1].1) {
+        start -= 1;
+    }
+    let mut end = index;
+    while end < chars.len() && is_identifier_char(chars[end].1) {
+        end += 1;
+    }
+    (start < end).then(|| {
+        chars[start..end]
+            .iter()
+            .map(|(_, character)| *character)
+            .collect()
+    })
+}
+
+fn identifier_prefix_at(text: &str, offset: usize) -> String {
+    let chars = utf16_chars(text);
+    let mut index = chars
+        .iter()
+        .position(|(char_offset, _)| *char_offset >= offset)
+        .unwrap_or(chars.len());
+    while index > 0 && is_identifier_char(chars[index - 1].1) {
+        index -= 1;
+    }
+    chars[index..]
+        .iter()
+        .take_while(|(char_offset, character)| {
+            *char_offset < offset && is_identifier_char(*character)
+        })
+        .map(|(_, character)| *character)
+        .collect()
+}
+
+fn identifier_ranges(text: &str, name: &str) -> Vec<Value> {
+    let lower_name = name.to_lowercase();
+    let chars = utf16_chars(text);
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if !is_identifier_char(chars[index].1) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < chars.len() && is_identifier_char(chars[index].1) {
+            index += 1;
+        }
+        let text_name = chars[start..index]
+            .iter()
+            .map(|(_, character)| *character)
+            .collect::<String>();
+        if text_name.to_lowercase() == lower_name {
+            let start_offset = chars[start].0;
+            let end_offset = chars
+                .get(index)
+                .map(|(offset, _)| *offset)
+                .unwrap_or_else(|| utf16_len(text));
+            if let (Some((start_line, start_character)), Some((end_line, end_character))) = (
+                utf16_position_at(text, start_offset),
+                utf16_position_at(text, end_offset),
+            ) {
+                ranges.push(serde_json::json!({
+                    "start": { "line": start_line, "character": start_character },
+                    "end": { "line": end_line, "character": end_character },
+                }));
+            }
+        }
+    }
+    ranges
+}
+
+fn utf16_chars(text: &str) -> Vec<(usize, char)> {
+    let mut offset = 0;
+    let mut chars = Vec::new();
+    for character in text.chars() {
+        chars.push((offset, character));
+        offset += character.len_utf16();
+    }
+    chars
+}
+
+fn is_identifier_char(character: char) -> bool {
+    character == '_' || character.is_ascii_alphanumeric()
+}
+
+fn symbol_name_eq(symbol: &Value, name: &str) -> bool {
+    symbol
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+}
+
+fn is_callable_symbol(symbol: &Value) -> bool {
+    matches!(
+        symbol.get("kind").and_then(Value::as_str),
+        Some("function" | "sub" | "method" | "property")
+    )
+}
+
+fn symbol_signature(symbol: &Value) -> Option<String> {
+    let name = symbol.get("name")?.as_str()?;
+    let kind = symbol
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("symbol");
+    let parameters = symbol
+        .get("parameters")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let type_name = symbol.get("typeName").and_then(Value::as_str);
+    let keyword = match kind {
+        "function" => "Function",
+        "sub" => "Sub",
+        "property" => "Property",
+        "class" => "Class",
+        "variable" => "Dim",
+        "constant" => "Const",
+        _ => "",
+    };
+    Some(match (keyword, type_name) {
+        ("Function", Some(type_name)) => format!("Function {name}({parameters}) As {type_name}"),
+        ("Sub", _) => format!("Sub {name}({parameters})"),
+        ("Property", Some(type_name)) => format!("Property {name}({parameters}) As {type_name}"),
+        ("Class", _) => format!("Class {name}"),
+        ("Dim", Some(type_name)) => format!("Dim {name} As {type_name}"),
+        ("Const", Some(type_name)) => format!("Const {name} As {type_name}"),
+        _ => name.to_string(),
+    })
+}
+
+fn symbol_detail(symbol: &Value) -> Value {
+    symbol_signature(symbol)
+        .map(Value::String)
+        .unwrap_or(Value::Null)
+}
+
+fn completion_kind(symbol: &Value) -> u32 {
+    match symbol.get("kind").and_then(Value::as_str) {
+        Some("function" | "sub" | "method") => 3,
+        Some("property") => 10,
+        Some("class") => 7,
+        Some("constant") => 21,
+        Some("parameter" | "variable") => 6,
+        _ => 1,
+    }
+}
+
+fn symbol_kind(symbol: &Value) -> u32 {
+    match symbol.get("kind").and_then(Value::as_str) {
+        Some("function") => 12,
+        Some("sub" | "method") => 6,
+        Some("property") => 7,
+        Some("class") => 5,
+        Some("constant") => 14,
+        Some("variable" | "parameter") => 13,
+        _ => 13,
+    }
+}
+
+fn call_name_before_offset(text: &str, offset: usize) -> Option<String> {
+    let before = slice_utf16(text, 0, offset).ok()?;
+    let open = before.rfind('(')?;
+    let name_end = before[..open].trim_end().len();
+    let name_start = before[..name_end]
+        .rfind(|character: char| !is_identifier_char(character))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    (name_start < name_end).then(|| before[name_start..name_end].to_string())
+}
+
+fn active_parameter(text: &str, offset: usize) -> usize {
+    let Some(before) = slice_utf16(text, 0, offset).ok() else {
+        return 0;
+    };
+    let Some(open) = before.rfind('(') else {
+        return 0;
+    };
+    before[open + 1..]
+        .chars()
+        .filter(|character| *character == ',')
+        .count()
+}
+
+fn folding_range_from_lsp_range(range: &Value) -> Option<Value> {
+    let start_line = range.pointer("/start/line")?.as_u64()?;
+    let end_line = range.pointer("/end/line")?.as_u64()?;
+    (end_line > start_line).then(|| {
+        serde_json::json!({
+            "startLine": start_line,
+            "endLine": end_line,
+        })
+    })
 }
 
 #[derive(Clone)]
