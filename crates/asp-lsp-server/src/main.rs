@@ -124,6 +124,30 @@ impl ServerState {
         self.set_workspace_roots(self.workspace_roots.clone())
     }
 
+    fn execute_command(&mut self, command: &str) -> Result<Value, String> {
+        match command {
+            "aspLsp.server.reindexWorkspace" => {
+                self.refresh_workspace_index()?;
+            }
+            "aspLsp.server.clearCache" => {
+                self.disk_cache.clear()?;
+                self.ide.clear_process_cache();
+                self.semantic_tokens.clear_all();
+            }
+            "aspLsp.server.clearDiskCache" => {
+                self.disk_cache.clear()?;
+            }
+            "aspLsp.server.clearProcessCache" => {
+                self.ide.clear_process_cache();
+                self.semantic_tokens.clear_all();
+            }
+            _ => {
+                return Err(format!("unknown command: {command}"));
+            }
+        }
+        Ok(json!({ "ok": true, "command": command }))
+    }
+
     fn next_diagnostics_timeout(&self) -> Option<Duration> {
         self.diagnostics.next_timeout()
     }
@@ -581,6 +605,24 @@ impl DiskAnalysisCache {
         }
     }
 
+    fn clear(&self) -> Result<(), String> {
+        let Ok(entries) = fs::read_dir(&self.root) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) == Some("cbor") {
+                fs::remove_file(&path).map_err(|error| {
+                    format!(
+                        "failed to remove disk cache entry {}: {error}",
+                        path.display()
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     fn matches(
         &self,
         entry: &PersistedDiskAnalysisEntry,
@@ -657,6 +699,11 @@ impl SemanticTokenCache {
         if let Some(result_id) = self.latest_by_uri.remove(uri) {
             self.results.remove(&result_id);
         }
+    }
+
+    fn clear_all(&mut self) {
+        self.latest_by_uri.clear();
+        self.results.clear();
     }
 
     fn store(&mut self, uri: &str, data: Vec<Value>) -> String {
@@ -1217,9 +1264,23 @@ fn handle_request(
             Ok(false)
         }
         "workspace/executeCommand" => {
+            let command = pointer_string(&request.params, "/command");
+            let result = match state.execute_command(&command) {
+                Ok(result) => result,
+                Err(error) => {
+                    connection
+                        .sender
+                        .send(
+                            Response::new_err(request.id, ErrorCode::InvalidRequest as i32, error)
+                                .into(),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    return Ok(false);
+                }
+            };
             connection
                 .sender
-                .send(Response::new_ok(request.id, json!({ "ok": true })).into())
+                .send(Response::new_ok(request.id, result).into())
                 .map_err(|error| error.to_string())?;
             publish_backend_status(connection, state)?;
             Ok(false)

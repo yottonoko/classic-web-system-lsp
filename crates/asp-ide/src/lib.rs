@@ -357,6 +357,39 @@ impl Ide {
             .collect();
     }
 
+    pub fn clear_process_cache(&mut self) {
+        let open_documents = self
+            .documents
+            .iter()
+            .map(|(uri, document)| (uri.clone(), document.text(&self.db).clone()))
+            .collect::<Vec<_>>();
+        let indexed_documents = self
+            .indexed_documents
+            .iter()
+            .map(|(uri, document)| (uri.clone(), document.text(&self.db).clone()))
+            .collect::<Vec<_>>();
+        let settings_json = self.settings.input.json(&self.db).clone();
+
+        self.db = IdeDatabase::default();
+        self.settings = WorkspaceSettingsState::new(&self.db);
+        self.settings.input.set_json(&mut self.db).to(settings_json);
+        self.documents = open_documents
+            .into_iter()
+            .map(|(uri, text)| {
+                let document = OpenDocument::new(&self.db, uri.clone(), text);
+                (uri, document)
+            })
+            .collect();
+        self.indexed_documents = indexed_documents
+            .into_iter()
+            .filter(|(uri, _)| !self.documents.contains_key(uri))
+            .map(|(uri, text)| {
+                let document = OpenDocument::new(&self.db, uri.clone(), text);
+                (uri, document)
+            })
+            .collect();
+    }
+
     pub fn diagnostics(&self, uri: &str) -> Result<Vec<Value>, String> {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Vec::new());

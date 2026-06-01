@@ -1107,6 +1107,79 @@ fn refreshes_workspace_index_after_file_operations() {
 }
 
 #[test]
+fn execute_command_reindexes_workspace_files() {
+    let root = std::env::temp_dir().join(format!(
+        "asp-lsp-rust-command-reindex-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let root_uri = format!("file://{}", root.to_string_lossy());
+    let page_uri = format!("{root_uri}/default.asp");
+
+    initialize_with_root(&mut stdin, &mut reader, &root_uri);
+    fs::write(
+        root.join("helpers.inc"),
+        "<%\nFunction BuildName(first)\nBuildName = first\nEnd Function\n%>",
+    )
+    .expect("write include");
+    let reindex = request(
+        &mut stdin,
+        &mut reader,
+        30,
+        "workspace/executeCommand",
+        json!({ "command": "aspLsp.server.reindexWorkspace" }),
+    );
+    assert_eq!(reindex["result"]["ok"], json!(true));
+
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": page_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<!-- #include file=\"helpers.inc\" -->\n<%\nResponse.Write BuildName(\"Ada\")\n%>",
+                },
+            },
+        }),
+    );
+    read_until(&mut reader, |message| {
+        message["method"] == json!("textDocument/publishDiagnostics")
+    });
+    let references = request(
+        &mut stdin,
+        &mut reader,
+        31,
+        "textDocument/references",
+        json!({
+            "textDocument": { "uri": page_uri },
+            "position": { "line": 2, "character": 16 },
+            "context": { "includeDeclaration": true },
+        }),
+    );
+    assert!(references.to_string().contains("helpers.inc"));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn serves_workspace_diagnostics_with_disk_cache() {
     let root = std::env::temp_dir().join(format!(
         "asp-lsp-rust-workspace-diagnostics-{}",
@@ -1158,14 +1231,61 @@ fn serves_workspace_diagnostics_with_disk_cache() {
         "expected cbor cache entry"
     );
 
-    let second = request(
+    let clear_disk = request(
         &mut stdin,
         &mut reader,
         31,
+        "workspace/executeCommand",
+        json!({ "command": "aspLsp.server.clearDiskCache" }),
+    );
+    assert_eq!(clear_disk["result"]["ok"], json!(true));
+    assert!(
+        !fs::read_dir(&cache_dir)
+            .expect("cache dir")
+            .flatten()
+            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
+        "expected clearDiskCache to remove cbor cache entries"
+    );
+
+    let second = request(
+        &mut stdin,
+        &mut reader,
+        32,
         "workspace/diagnostic",
         json!({ "previousResultIds": [] }),
     );
     assert_eq!(second["result"], first["result"]);
+    assert!(
+        fs::read_dir(&cache_dir)
+            .expect("cache dir")
+            .flatten()
+            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
+        "expected workspace diagnostics to repopulate disk cache"
+    );
+
+    let clear_process = request(
+        &mut stdin,
+        &mut reader,
+        33,
+        "workspace/executeCommand",
+        json!({ "command": "aspLsp.server.clearProcessCache" }),
+    );
+    assert_eq!(clear_process["result"]["ok"], json!(true));
+    let clear_all = request(
+        &mut stdin,
+        &mut reader,
+        34,
+        "workspace/executeCommand",
+        json!({ "command": "aspLsp.server.clearCache" }),
+    );
+    assert_eq!(clear_all["result"]["ok"], json!(true));
+    assert!(
+        !fs::read_dir(&cache_dir)
+            .expect("cache dir")
+            .flatten()
+            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
+        "expected clearCache to remove cbor cache entries"
+    );
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
