@@ -1393,14 +1393,14 @@ impl Ide {
         let Some((symbol, _context)) = self.symbol_at_position(uri, position)? else {
             return Ok(Value::Array(Vec::new()));
         };
-        let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+        let Some(identifier) = moniker_identifier(uri, &symbol) else {
             return Ok(Value::Array(Vec::new()));
         };
         Ok(serde_json::json!([{
             "scheme": "asp-lsp",
-            "identifier": format!("{uri}#{name}"),
+            "identifier": identifier,
             "unique": "document",
-            "kind": "export",
+            "kind": moniker_kind(&symbol),
         }]))
     }
 
@@ -2965,6 +2965,35 @@ fn hierarchy_symbol_name(symbol: &Value) -> Option<String> {
             .map(|owner| format!("{owner}.{name}"))
             .unwrap_or_else(|| name.to_string()),
     )
+}
+
+fn moniker_identifier(uri: &str, symbol: &Value) -> Option<String> {
+    let display_name = hierarchy_symbol_name(symbol)?;
+    let kind = symbol
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("symbol");
+    let line = symbol
+        .pointer("/range/start/line")
+        .and_then(Value::as_u64)?;
+    let character = symbol
+        .pointer("/range/start/character")
+        .and_then(Value::as_u64)?;
+    let source_uri = symbol
+        .get("sourceUri")
+        .and_then(Value::as_str)
+        .unwrap_or(uri);
+    Some(format!(
+        "{source_uri}#{display_name}:{kind}@{line}:{character}"
+    ))
+}
+
+fn moniker_kind(symbol: &Value) -> &'static str {
+    if symbol.get("scopeName").and_then(Value::as_str).is_some() {
+        "local"
+    } else {
+        "export"
+    }
 }
 
 fn hierarchy_item_name(item: &Value) -> Option<&str> {

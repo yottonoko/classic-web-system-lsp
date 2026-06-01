@@ -1304,6 +1304,47 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     );
     assert!(monikers["result"].to_string().contains("BuildName"));
 
+    let member_monikers = request(
+        &mut stdin,
+        &mut reader,
+        50,
+        "textDocument/moniker",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 10, "character": 17 },
+        }),
+    );
+    assert!(member_monikers["result"][0]["identifier"]
+        .as_str()
+        .expect("member moniker identifier")
+        .contains("Customer.DisplayName"));
+
+    let first_local_moniker = request(
+        &mut stdin,
+        &mut reader,
+        51,
+        "textDocument/moniker",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 24, "character": 1 },
+        }),
+    );
+    let second_local_moniker = request(
+        &mut stdin,
+        &mut reader,
+        52,
+        "textDocument/moniker",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 28, "character": 1 },
+        }),
+    );
+    assert_eq!(first_local_moniker["result"][0]["kind"], json!("local"));
+    assert_ne!(
+        first_local_moniker["result"][0]["identifier"],
+        second_local_moniker["result"][0]["identifier"]
+    );
+
     let inline_values = request(
         &mut stdin,
         &mut reader,
