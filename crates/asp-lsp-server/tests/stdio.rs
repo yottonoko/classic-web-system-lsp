@@ -571,6 +571,40 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         .iter()
         .any(|item| item["label"] == json!("customerName")));
 
+    let builtin_completion = request(
+        &mut stdin,
+        &mut reader,
+        45,
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 4, "character": 0 },
+        }),
+    );
+    let date_part = builtin_completion["result"]
+        .as_array()
+        .expect("builtin completion items")
+        .iter()
+        .find(|item| item["label"] == json!("DatePart"))
+        .expect("DatePart completion")
+        .clone();
+    let resolved_date_part = request(
+        &mut stdin,
+        &mut reader,
+        46,
+        "completionItem/resolve",
+        date_part,
+    );
+    assert_eq!(
+        resolved_date_part["result"]["detail"],
+        json!("Function DatePart(interval, date, firstDayOfWeek, firstWeekOfYear) As Number"),
+        "resolved DatePart: {resolved_date_part}"
+    );
+    assert!(resolved_date_part["result"]["documentation"]["value"]
+        .as_str()
+        .expect("DatePart documentation")
+        .contains("Returns part of a date."));
+
     let hover = request(
         &mut stdin,
         &mut reader,

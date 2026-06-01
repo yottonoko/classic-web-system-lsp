@@ -1,9 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::OnceLock};
 
 use asp_sidecar_protocol::{SourceMapSegment, VirtualDocument};
 use ropey::Rope;
 use salsa::Setter;
 use serde_json::Value;
+
+const VBSCRIPT_BUILTIN_CATALOG_JSON: &str =
+    include_str!("../../../packages/core/src/vbscript-builtin-catalog.json");
 
 #[salsa::input]
 struct SourceFile {
@@ -520,6 +523,7 @@ impl Ide {
                 "data": { "kind": "vbscript", "uri": uri },
             }));
         }
+        items.extend(builtin_completion_items(&prefix));
         for keyword in [
             "Dim", "Function", "Sub", "If", "Then", "Else", "End If", "For", "Next",
         ] {
@@ -528,6 +532,32 @@ impl Ide {
             }
         }
         Ok(Value::Array(items))
+    }
+
+    pub fn resolve_completion_item(&self, item: Value) -> Result<Value, String> {
+        let Some(label) = item.get("label").and_then(Value::as_str) else {
+            return Ok(item);
+        };
+        let Some(builtin) = builtin_completion_detail(label) else {
+            return Ok(item);
+        };
+        let Some(object) = item.as_object() else {
+            return Ok(item);
+        };
+        let mut item = object.clone();
+        if item.get("detail").is_none_or(Value::is_null) {
+            item.insert("detail".to_string(), builtin.detail);
+        }
+        if item.get("documentation").is_none_or(Value::is_null) {
+            item.insert(
+                "documentation".to_string(),
+                serde_json::json!({
+                "kind": "markdown",
+                "value": builtin.documentation,
+                }),
+            );
+        }
+        Ok(Value::Object(item))
     }
 
     pub fn hover(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
@@ -2552,6 +2582,161 @@ fn completion_kind(symbol: &Value) -> u32 {
         Some("constant") => 21,
         Some("parameter" | "variable") => 6,
         _ => 1,
+    }
+}
+
+struct BuiltinCompletionDetail {
+    detail: Value,
+    documentation: String,
+}
+
+fn builtin_catalog() -> &'static Value {
+    static CATALOG: OnceLock<Value> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        serde_json::from_str(VBSCRIPT_BUILTIN_CATALOG_JSON)
+            .expect("shared VBScript builtin catalog must be valid JSON")
+    })
+}
+
+fn builtin_completion_items(prefix: &str) -> Vec<Value> {
+    let mut items = Vec::new();
+    for label in [
+        "Request",
+        "Response",
+        "Session",
+        "Application",
+        "Server",
+        "ASPError",
+    ] {
+        if completion_prefix_matches(label, prefix) {
+            items.push(serde_json::json!({
+                "label": label,
+                "kind": if label == "ASPError" { 7 } else { 6 },
+                "data": { "kind": "vbscript-builtin" },
+            }));
+        }
+    }
+    for item in builtin_catalog()
+        .get("functions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(label) = item.get("label").and_then(Value::as_str) else {
+            continue;
+        };
+        if completion_prefix_matches(label, prefix) {
+            items.push(serde_json::json!({
+                "label": label,
+                "kind": 3,
+                "data": { "kind": "vbscript-builtin" },
+            }));
+        }
+    }
+    for item in builtin_catalog()
+        .get("constants")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(label) = item.get("label").and_then(Value::as_str) else {
+            continue;
+        };
+        if completion_prefix_matches(label, prefix) {
+            items.push(serde_json::json!({
+                "label": label,
+                "kind": 21,
+                "data": { "kind": "vbscript-builtin" },
+            }));
+        }
+    }
+    items
+}
+
+fn completion_prefix_matches(label: &str, prefix: &str) -> bool {
+    prefix.is_empty() || label.to_lowercase().starts_with(&prefix.to_lowercase())
+}
+
+fn builtin_completion_detail(label: &str) -> Option<BuiltinCompletionDetail> {
+    if let Some(function) = builtin_catalog()
+        .get("functions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|item| {
+            item.get("label")
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(label))
+        })
+    {
+        let signature = function.get("signature")?.as_str()?;
+        let return_type = function
+            .get("returnType")
+            .and_then(Value::as_str)
+            .unwrap_or("Variant");
+        let summary = function
+            .get("summary")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let signature = format!("Function {signature} As {return_type}");
+        return Some(BuiltinCompletionDetail {
+            detail: Value::String(signature.clone()),
+            documentation: builtin_markdown(&signature, summary),
+        });
+    }
+
+    if let Some(constant) = builtin_catalog()
+        .get("constants")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|item| {
+            item.get("label")
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(label))
+        })
+    {
+        let label = constant.get("label")?.as_str()?;
+        let type_name = constant
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("Variant");
+        let summary = constant
+            .get("summary")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let signature = format!("Const {label} As {type_name}");
+        return Some(BuiltinCompletionDetail {
+            detail: Value::String(signature.clone()),
+            documentation: builtin_markdown(&signature, summary),
+        });
+    }
+
+    let type_name = classic_asp_builtin_type_name(label)?;
+    let signature = format!("{type_name} object");
+    Some(BuiltinCompletionDetail {
+        detail: Value::String(format!("Classic ASP {type_name} object")),
+        documentation: builtin_markdown(&signature, "Built-in Classic ASP runtime object."),
+    })
+}
+
+fn classic_asp_builtin_type_name(label: &str) -> Option<&'static str> {
+    match label.to_ascii_lowercase().as_str() {
+        "request" => Some("Request"),
+        "response" => Some("Response"),
+        "session" => Some("Session"),
+        "application" => Some("Application"),
+        "server" => Some("Server"),
+        "asperror" => Some("ASPError"),
+        _ => None,
+    }
+}
+
+fn builtin_markdown(signature: &str, summary: &str) -> String {
+    if summary.is_empty() {
+        format!("```vbscript\n{signature}\n```")
+    } else {
+        format!("```vbscript\n{signature}\n```\n\n{summary}")
     }
 }
 

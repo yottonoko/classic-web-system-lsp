@@ -972,9 +972,10 @@ fn handle_request(
             Ok(false)
         }
         "completionItem/resolve" => {
+            let result = state.ide.resolve_completion_item(request.params)?;
             connection
                 .sender
-                .send(Response::new_ok(request.id, request.params).into())
+                .send(Response::new_ok(request.id, result).into())
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
