@@ -1005,25 +1005,95 @@ impl Ide {
         let Some((symbol, _context)) = self.symbol_at_position(uri, position)? else {
             return Ok(Value::Array(Vec::new()));
         };
-        let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+        Ok(hierarchy_item_from_symbol(uri, &symbol)
+            .map(|item| Value::Array(vec![item]))
+            .unwrap_or_else(|| Value::Array(Vec::new())))
+    }
+
+    pub fn call_hierarchy_incoming(&self, item: &Value) -> Result<Value, String> {
+        let Some(target_name) = hierarchy_item_name(item) else {
             return Ok(Value::Array(Vec::new()));
         };
-        let range = symbol
-            .get("scopeRange")
-            .or_else(|| symbol.get("range"))
-            .cloned();
-        let selection_range = symbol.get("range").cloned();
-        let (Some(range), Some(selection_range)) = (range, selection_range) else {
+        let mut calls = Vec::new();
+        for (document_uri, document) in self.workspace_documents() {
+            let text = document.text(&self.db);
+            let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+            let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+            for range in identifier_ranges(text, &parsed, target_name) {
+                let Some(occurrence_start) = range_start_offset(text, &range) else {
+                    continue;
+                };
+                let Some(caller) = enclosing_callable_symbol(text, &symbols, occurrence_start)
+                else {
+                    continue;
+                };
+                if caller.get("range") == Some(&range) {
+                    continue;
+                }
+                let Some(from) = hierarchy_item_from_symbol(document_uri, caller) else {
+                    continue;
+                };
+                merge_call_hierarchy_entry(&mut calls, "from", from, range);
+            }
+        }
+        Ok(Value::Array(calls))
+    }
+
+    pub fn call_hierarchy_outgoing(&self, item: &Value) -> Result<Value, String> {
+        let Some(item_name) = hierarchy_item_name(item) else {
             return Ok(Value::Array(Vec::new()));
         };
-        Ok(serde_json::json!([{
-            "name": name,
-            "kind": symbol_kind(&symbol),
-            "uri": uri,
-            "range": range,
-            "selectionRange": selection_range,
-            "data": { "uri": uri, "name": name },
-        }]))
+        let Some(item_uri) = hierarchy_item_uri(item) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let Some(document) = self.documents.get(item_uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let text = document.text(&self.db);
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+        let Some(scope) = symbols
+            .iter()
+            .find(|symbol| symbol_name_eq(symbol, item_name) && is_callable_symbol(symbol))
+            .and_then(|symbol| symbol.get("scopeRange").or_else(|| symbol.get("range")))
+        else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let Some(scope_start) = range_start_offset(text, scope) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let Some(scope_end) = range_end_offset(text, scope) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let callable_symbols = symbols
+            .iter()
+            .filter(|symbol| is_callable_symbol(symbol))
+            .collect::<Vec<_>>();
+        let mut calls = Vec::new();
+        for identifier in identifiers_in_vbscript(text, &parsed) {
+            if identifier.start < scope_start || identifier.end > scope_end {
+                continue;
+            }
+            let Some(callee) = callable_symbols
+                .iter()
+                .find(|symbol| symbol_name_eq(symbol, &identifier.name))
+                .copied()
+            else {
+                continue;
+            };
+            if callee.get("range") == Some(&identifier.range) {
+                continue;
+            }
+            let Some(to) = hierarchy_item_from_symbol(item_uri, callee) else {
+                continue;
+            };
+            merge_call_hierarchy_entry(&mut calls, "to", to, identifier.range);
+        }
+        Ok(Value::Array(calls))
+    }
+
+    pub fn type_hierarchy_relations(&self) -> Value {
+        Value::Array(Vec::new())
     }
 
     pub fn monikers(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
@@ -1485,6 +1555,86 @@ fn is_callable_symbol(symbol: &Value) -> bool {
     )
 }
 
+fn hierarchy_item_from_symbol(uri: &str, symbol: &Value) -> Option<Value> {
+    let name = symbol.get("name")?.as_str()?;
+    let range = symbol
+        .get("scopeRange")
+        .or_else(|| symbol.get("range"))?
+        .clone();
+    let selection_range = symbol.get("range")?.clone();
+    Some(serde_json::json!({
+        "name": name,
+        "kind": symbol_kind(symbol),
+        "uri": symbol.get("sourceUri").and_then(Value::as_str).unwrap_or(uri),
+        "range": range,
+        "selectionRange": selection_range,
+        "data": {
+            "uri": symbol.get("sourceUri").and_then(Value::as_str).unwrap_or(uri),
+            "name": name,
+        },
+    }))
+}
+
+fn hierarchy_item_name(item: &Value) -> Option<&str> {
+    item.pointer("/data/name")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("name").and_then(Value::as_str))
+}
+
+fn hierarchy_item_uri(item: &Value) -> Option<&str> {
+    item.pointer("/data/uri")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("uri").and_then(Value::as_str))
+}
+
+fn enclosing_callable_symbol<'a>(
+    text: &str,
+    symbols: &'a [Value],
+    offset: usize,
+) -> Option<&'a Value> {
+    symbols
+        .iter()
+        .filter(|symbol| is_callable_symbol(symbol))
+        .filter_map(|symbol| {
+            let range = symbol.get("scopeRange").or_else(|| symbol.get("range"))?;
+            let start = range_start_offset(text, range)?;
+            let end = range_end_offset(text, range)?;
+            (offset >= start && offset <= end).then_some((symbol, end.saturating_sub(start)))
+        })
+        .min_by_key(|(_, length)| *length)
+        .map(|(symbol, _)| symbol)
+}
+
+fn merge_call_hierarchy_entry(
+    calls: &mut Vec<Value>,
+    item_key: &str,
+    item: Value,
+    from_range: Value,
+) {
+    let Some(name) = item.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(uri) = item.get("uri").and_then(Value::as_str) else {
+        return;
+    };
+    if let Some(existing) = calls.iter_mut().find(|call| {
+        call.get(item_key)
+            .is_some_and(|candidate| candidate.get("name").and_then(Value::as_str) == Some(name))
+            && call
+                .get(item_key)
+                .is_some_and(|candidate| candidate.get("uri").and_then(Value::as_str) == Some(uri))
+    }) {
+        if let Some(ranges) = existing.get_mut("fromRanges").and_then(Value::as_array_mut) {
+            ranges.push(from_range);
+        }
+        return;
+    }
+    calls.push(serde_json::json!({
+        item_key: item,
+        "fromRanges": [from_range],
+    }));
+}
+
 fn symbol_signature(symbol: &Value) -> Option<String> {
     let name = symbol.get("name")?.as_str()?;
     let kind = symbol
@@ -1815,6 +1965,14 @@ fn range_start_offset(text: &str, range: &Value) -> Option<usize> {
             .as_u64()?
             .try_into()
             .ok()?,
+    )
+}
+
+fn range_end_offset(text: &str, range: &Value) -> Option<usize> {
+    position_to_utf16_offset(
+        text,
+        range.pointer("/end/line")?.as_u64()?.try_into().ok()?,
+        range.pointer("/end/character")?.as_u64()?.try_into().ok()?,
     )
 }
 

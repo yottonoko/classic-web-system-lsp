@@ -549,7 +549,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
                     "uri": uri,
                     "languageId": "classic-asp",
                     "version": 1,
-                    "text": "<%\nFunction BuildName(first)\nBuildName = first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\n%>",
+                    "text": "<%\nFunction BuildName(first)\nBuildName = first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\n%>",
                 },
             },
         }),
@@ -846,7 +846,30 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         "callHierarchy/incomingCalls",
         json!({ "item": call_hierarchy["result"][0].clone() }),
     );
-    assert_eq!(incoming_calls["result"], json!([]));
+    assert!(incoming_calls["result"].to_string().contains("RenderName"));
+    assert!(incoming_calls["result"].to_string().contains("BuildName"));
+
+    let render_hierarchy = request(
+        &mut stdin,
+        &mut reader,
+        36,
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 6, "character": 5 },
+        }),
+    );
+    assert!(render_hierarchy["result"]
+        .to_string()
+        .contains("RenderName"));
+    let outgoing_calls = request(
+        &mut stdin,
+        &mut reader,
+        37,
+        "callHierarchy/outgoingCalls",
+        json!({ "item": render_hierarchy["result"][0].clone() }),
+    );
+    assert!(outgoing_calls["result"].to_string().contains("BuildName"));
 
     let type_hierarchy = request(
         &mut stdin,

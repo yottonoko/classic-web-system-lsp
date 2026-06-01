@@ -1197,13 +1197,26 @@ fn handle_request(
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
-        "callHierarchy/incomingCalls"
-        | "callHierarchy/outgoingCalls"
-        | "typeHierarchy/supertypes"
-        | "typeHierarchy/subtypes" => {
+        "callHierarchy/incomingCalls" => {
+            let result = state.ide.call_hierarchy_incoming(&request.params["item"])?;
             connection
                 .sender
-                .send(Response::new_ok(request.id, Value::Array(Vec::new())).into())
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "callHierarchy/outgoingCalls" => {
+            let result = state.ide.call_hierarchy_outgoing(&request.params["item"])?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "typeHierarchy/supertypes" | "typeHierarchy/subtypes" => {
+            connection
+                .sender
+                .send(Response::new_ok(request.id, state.ide.type_hierarchy_relations()).into())
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
