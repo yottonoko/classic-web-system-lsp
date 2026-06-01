@@ -1151,48 +1151,55 @@ impl Ide {
             return Ok(Value::Array(Vec::new()));
         };
         let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let settings_json = self.settings.input.json(&self.db);
+        let show_references = code_lens_setting_bool(settings_json, "references", true);
+        let show_includes = code_lens_setting_bool(settings_json, "includes", false);
         let locale = self.locale();
         let mut lenses = Vec::new();
-        for symbol in vb_symbols(&self.db, document.source_file, self.settings.input)? {
-            if matches!(
-                symbol.get("kind").and_then(Value::as_str),
-                Some("function" | "sub" | "class" | "method" | "property")
-            ) {
-                let Some(range) = symbol.get("range").cloned() else {
-                    continue;
-                };
-                lenses.push(serde_json::json!({
-                    "range": range,
-                    "data": {
-                        "kind": "vbscript-reference",
-                        "uri": uri,
-                        "name": symbol.get("name").cloned().unwrap_or(Value::Null),
-                        "symbolKind": symbol.get("kind").cloned().unwrap_or(Value::Null),
-                        "line": symbol.pointer("/range/start/line").cloned().unwrap_or(Value::Null),
-                        "character": symbol.pointer("/range/start/character").cloned().unwrap_or(Value::Null),
-                    },
-                }));
+        if show_references {
+            for symbol in vb_symbols(&self.db, document.source_file, self.settings.input)? {
+                if matches!(
+                    symbol.get("kind").and_then(Value::as_str),
+                    Some("function" | "sub" | "class" | "method" | "property")
+                ) {
+                    let Some(range) = symbol.get("range").cloned() else {
+                        continue;
+                    };
+                    lenses.push(serde_json::json!({
+                        "range": range,
+                        "data": {
+                            "kind": "vbscript-reference",
+                            "uri": uri,
+                            "name": symbol.get("name").cloned().unwrap_or(Value::Null),
+                            "symbolKind": symbol.get("kind").cloned().unwrap_or(Value::Null),
+                            "line": symbol.pointer("/range/start/line").cloned().unwrap_or(Value::Null),
+                            "character": symbol.pointer("/range/start/character").cloned().unwrap_or(Value::Null),
+                        },
+                    }));
+                }
             }
         }
-        for include in parsed
-            .get("includes")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if let Some(range) = include.get("range").cloned() {
-                let name = include
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .unwrap_or("include");
-                lenses.push(serde_json::json!({
-                    "range": range,
-                    "command": {
-                        "title": localize_code_lens_include(locale, name),
-                        "command": "vscode.open",
-                        "arguments": [resolve_include_target(uri, include)],
-                    },
-                }));
+        if show_includes {
+            for include in parsed
+                .get("includes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(range) = include.get("range").cloned() {
+                    let name = include
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or("include");
+                    lenses.push(serde_json::json!({
+                        "range": range,
+                        "command": {
+                            "title": localize_code_lens_include(locale, name),
+                            "command": "vscode.open",
+                            "arguments": [resolve_include_target(uri, include)],
+                        },
+                    }));
+                }
             }
         }
         Ok(Value::Array(lenses))
@@ -2717,6 +2724,18 @@ fn locale_from_settings_json(settings_json: &str) -> &'static str {
     } else {
         "en"
     }
+}
+
+fn code_lens_setting_bool(settings_json: &str, key: &str, default: bool) -> bool {
+    serde_json::from_str::<Value>(settings_json)
+        .ok()
+        .and_then(|settings| {
+            settings
+                .get("codeLens")
+                .and_then(|code_lens| code_lens.get(key))
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(default)
 }
 
 fn localize_static(locale: &str, key: &str) -> String {

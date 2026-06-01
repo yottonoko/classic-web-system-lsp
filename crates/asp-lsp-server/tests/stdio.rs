@@ -1516,7 +1516,11 @@ fn localizes_vbscript_code_action_and_codelens_titles_over_stdio_lsp() {
     let mut reader = BufReader::new(stdout);
     let uri = "file:///tmp/localized.asp";
 
-    initialize_with_settings(&mut stdin, &mut reader, json!({ "locale": "ja" }));
+    initialize_with_settings(
+        &mut stdin,
+        &mut reader,
+        json!({ "locale": "ja", "codeLens": { "includes": true } }),
+    );
     write_message(
         &mut stdin,
         &json!({
@@ -1600,6 +1604,84 @@ fn localizes_vbscript_code_action_and_codelens_titles_over_stdio_lsp() {
         .as_str()
         .expect("localized reference title")
         .contains("件の参照"));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
+fn respects_vbscript_codelens_settings_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let uri = "file:///tmp/codelens-settings.asp";
+
+    initialize(&mut stdin, &mut reader);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<!-- #include file=\"helpers.inc\" -->\n<%\nFunction BuildName(first)\nBuildName = first\nEnd Function\nResponse.Write BuildName(\"A\")\n%>",
+                },
+            },
+        }),
+    );
+
+    let default_code_lens = request(
+        &mut stdin,
+        &mut reader,
+        3,
+        "textDocument/codeLens",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    let default_code_lens_items = default_code_lens["result"].as_array().expect("code lens");
+    assert!(default_code_lens_items
+        .iter()
+        .any(|lens| lens["data"]["kind"] == json!("vbscript-reference")));
+    assert!(!default_code_lens_items
+        .iter()
+        .any(|lens| lens["command"]["title"] == json!("include helpers.inc")));
+
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeConfiguration",
+            "params": {
+                "settings": { "codeLens": { "references": false, "includes": true } },
+            },
+        }),
+    );
+
+    let configured_code_lens = request(
+        &mut stdin,
+        &mut reader,
+        4,
+        "textDocument/codeLens",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    let code_lens_items = configured_code_lens["result"]
+        .as_array()
+        .expect("code lens");
+    assert!(code_lens_items
+        .iter()
+        .any(|lens| lens["command"]["title"] == json!("include helpers.inc")));
+    assert!(!code_lens_items
+        .iter()
+        .any(|lens| lens["data"]["kind"] == json!("vbscript-reference")));
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
