@@ -157,7 +157,7 @@ End Function
     }
   });
 
-  it("reports a TypeScript fallback when the native binary is unavailable", () => {
+  it("reports a TypeScript fallback when the retired native backend is requested", () => {
     const previousBackend = process.env.ASP_LSP_ANALYSIS_BACKEND;
     const previousNativeCorePath = process.env.ASP_LSP_NATIVE_CORE_PATH;
     process.env.ASP_LSP_ANALYSIS_BACKEND = "auto";
@@ -168,7 +168,7 @@ End Function
       expect(aspAnalysisBackendInfo()).toMatchObject({
         backend: "typescript-fallback",
         engine: "typescript",
-        reason: "native binary not found",
+        reason: "native backend removed after Rust LSP cutover",
       });
     } finally {
       if (previousBackend === undefined) {

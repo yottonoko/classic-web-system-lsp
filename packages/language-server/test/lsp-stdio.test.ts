@@ -47,8 +47,8 @@ interface DecodedSemanticToken {
 }
 
 const rpcTimeoutMs = 30_000;
-const nativeCorePath = resolveNativeCorePath();
-const itWithNativeCore = nativeCorePath ? it : it.skip;
+const nativeCorePath: string | undefined = undefined;
+const itWithNativeCore = it.skip;
 const semanticTokenType = {
   keyword: 0,
   variable: 1,
@@ -9459,41 +9459,6 @@ class RpcServer {
       }
     }
   }
-}
-
-function resolveNativeCorePath(): string | undefined {
-  const platform =
-    process.platform === "win32"
-      ? "win32"
-      : process.platform === "darwin"
-        ? "darwin"
-        : process.platform === "linux"
-          ? "linux"
-          : process.platform;
-  const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
-  const executable = process.platform === "win32" ? "asp-lsp-core.exe" : "asp-lsp-core";
-  const sourceNativeBinary = path.join(
-    import.meta.dirname,
-    "..",
-    "..",
-    "..",
-    "target",
-    "debug",
-    executable,
-  );
-  if (fs.existsSync(sourceNativeBinary)) {
-    return sourceNativeBinary;
-  }
-  const packagedNativeBinary = path.join(
-    import.meta.dirname,
-    "..",
-    "..",
-    "core",
-    "native",
-    `${platform}-${arch}`,
-    executable,
-  );
-  return fs.existsSync(packagedNativeBinary) ? packagedNativeBinary : undefined;
 }
 
 function markedDocument(source: string): MarkedDocument {
