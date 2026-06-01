@@ -1725,6 +1725,74 @@ function docCommentBlockBoundary(tokens: VbToken[], startIndex: number, directio
   return boundary;
 }
 
+interface VbDocCommentReference {
+  name: string;
+  range: Range;
+}
+
+function resolveDocCommentReferenceAt(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+): VbSymbol | undefined {
+  const reference = docCommentReferenceAt(parsed, offset);
+  return reference ? resolveDocCommentReference(reference.name, symbols) : undefined;
+}
+
+function docCommentReferences(parsed: AspParsedDocument): VbDocCommentReference[] {
+  return vbDocuments(parsed)
+    .flatMap((document) => document.tokens)
+    .filter(isDocCommentToken)
+    .flatMap((token) => docCommentReferencesInToken(parsed.text, token));
+}
+
+function docCommentReferenceAt(
+  parsed: AspParsedDocument,
+  offset: number,
+): VbDocCommentReference | undefined {
+  const token = commentTokenAtOffset(parsed, offset);
+  if (!token || !isDocCommentToken(token)) {
+    return undefined;
+  }
+  return docCommentReferencesInToken(parsed.text, token).find((reference) =>
+    rangeContainsOffset(parsed.text, reference.range, offset),
+  );
+}
+
+function docCommentReferencesInToken(sourceText: string, token: VbToken): VbDocCommentReference[] {
+  const references: VbDocCommentReference[] = [];
+  const pattern = /\bcref\s*=\s*(["'])(.*?)\1/gi;
+  for (const match of token.text.matchAll(pattern)) {
+    const value = match[2]?.trim();
+    if (!value) {
+      continue;
+    }
+    const valueOffset = match[0].indexOf(match[2]);
+    const start = token.start + (match.index ?? 0) + valueOffset;
+    const end = start + match[2].length;
+    references.push({
+      name: value,
+      range: rangeFromOffsets(sourceText, start, end),
+    });
+  }
+  return references;
+}
+
+function resolveDocCommentReference(name: string, symbols: VbSymbol[]): VbSymbol | undefined {
+  const normalized = name.trim();
+  const [owner, member] = normalized.includes(".")
+    ? normalized.split(".", 2)
+    : [undefined, normalized];
+  const lowerMember = member.toLowerCase();
+  const lowerOwner = owner?.toLowerCase();
+  return symbols.find((symbol) => {
+    if (symbol.kind === "parameter" || symbol.name.toLowerCase() !== lowerMember) {
+      return false;
+    }
+    return lowerOwner ? symbol.memberOf?.toLowerCase() === lowerOwner : !symbol.memberOf;
+  });
+}
+
 export function analyzeVbscript(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
@@ -1942,7 +2010,11 @@ export function getVbscriptHover(
   }
   const token = identifierTokenAt(parsed, sourceOffset);
   if (!token) {
-    return undefined;
+    const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+    const docReference = resolveDocCommentReferenceAt(parsed, sourceOffset, symbols);
+    return docReference
+      ? vbscriptSymbolHover(parsed, undefined, docReference, symbols, context)
+      : undefined;
   }
   const builtin = builtinDescription(token.text, context.locale);
   if (builtin) {
@@ -1955,19 +2027,30 @@ export function getVbscriptHover(
       context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
     return builtinMemberDescription(parsed, sourceOffset, symbols, typeEnvironment, context.locale);
   }
+  return vbscriptSymbolHover(parsed, token, symbol, symbols, context);
+}
+
+function vbscriptSymbolHover(
+  parsed: AspParsedDocument,
+  token: VbToken | undefined,
+  symbol: VbSymbol,
+  symbols: VbSymbol[],
+  context: VbProjectContext,
+): string {
   const hover = appendDocumentationMarkdown(
     markdownHover(vbscriptHoverSignature(parsed, symbol, context)),
     symbol.documentation,
     context.locale,
   );
-  const typeNote = documentationTypeNoteForDeclarationHover(
-    parsed,
-    token,
-    symbol,
-    symbols,
-    context.locale,
-  );
-  return typeNote ? `${hover}\n\n_${typeNote}_` : hover;
+  const source = sourceUriDocumentation(symbol.sourceUri, context);
+  const sourceNote = context.sourceUriFormatter
+    ? createLocalizer(context.locale).t("vb.completion.definedIn", { uri: source })
+    : undefined;
+  const sourcedHover = sourceNote ? `${hover}\n\n${sourceNote}` : hover;
+  const typeNote = token
+    ? documentationTypeNoteForDeclarationHover(parsed, token, symbol, symbols, context.locale)
+    : undefined;
+  return typeNote ? `${sourcedHover}\n\n_${typeNote}_` : sourcedHover;
 }
 
 function markdownHover(signature: string, description?: string): string {
@@ -2142,10 +2225,11 @@ export function getVbscriptDefinition(
   position: Position,
   context: VbProjectContext = {},
 ): VbSymbol | undefined {
-  return resolveSymbolAt(
-    parsed,
-    offsetAt(parsed.text, position),
-    context.symbols ?? collectVbscriptSymbols(parsed, context),
+  const offset = offsetAt(parsed.text, position);
+  const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
+  return (
+    resolveSymbolAt(parsed, offset, symbols) ??
+    resolveDocCommentReferenceAt(parsed, offset, symbols)
   );
 }
 
@@ -2204,6 +2288,16 @@ export function getVbscriptReferencesForSymbol(
           range: rangeFromOffsets(document.text, token.start, token.end),
         });
       }
+    }
+    for (const reference of docCommentReferences(document)) {
+      const resolved = resolveDocCommentReference(reference.name, symbols);
+      if (!resolved || !sameSymbol(resolved, symbol)) {
+        continue;
+      }
+      references.push({
+        uri: document.uri,
+        range: reference.range,
+      });
     }
   }
   return references;
@@ -2556,7 +2650,7 @@ export function resolveVbscriptCompletionItem(
       documentation: appendDocumentationMarkdown(
         `${signatureLabelForDocumentation(symbol)}\n\n${createLocalizer(context.locale).t(
           "vb.completion.definedIn",
-          { uri: symbol.sourceUri },
+          { uri: sourceUriDocumentation(symbol.sourceUri, context) },
         )}`,
         symbol.documentation,
         context.locale,
@@ -2589,6 +2683,10 @@ export function resolveVbscriptCompletionItem(
     };
   }
   return item;
+}
+
+function sourceUriDocumentation(uri: string, context: VbProjectContext): string {
+  return context.sourceUriFormatter?.(uri) ?? uri;
 }
 
 export function getVbscriptSelectionRanges(
@@ -3814,7 +3912,7 @@ function inferStatementTypes(
   const env = buildVbTypeEnvironment(parsed, { ...context, symbols });
   for (const statement of vbStatements(parsed)) {
     const first = lowerToken(statement[0]);
-    const targetIndex = first === "set" ? 1 : 0;
+    const targetIndex = first === "set" || first === "let" || first === "const" ? 1 : 0;
     const target = statement[targetIndex];
     const equalsIndex = statement.findIndex((token) => token.text === "=");
     if (
@@ -5116,24 +5214,24 @@ function inferSignificantExpressionType(
   offset: number,
 ): VbTypeRef | undefined {
   const expression = trimOuterParens(significant);
+  const first = expression[0];
+  if (!first) {
+    return undefined;
+  }
+  if (first.text === "#" && expression.at(-1)?.text === "#") {
+    return typeRef("Date");
+  }
   const binary = splitByLowestPrecedenceOperator(expression);
   if (binary) {
     const left = inferSignificantExpressionType(parsed, binary.left, symbols, env, offset);
     const right = inferSignificantExpressionType(parsed, binary.right, symbols, env, offset);
     return inferBinaryExpressionType(binary.operator, left, right);
   }
-  const first = expression[0];
-  if (!first) {
-    return undefined;
-  }
   if (first.kind === "string") {
     return typeRef("String");
   }
   if (first.kind === "number") {
     return typeRef("Number");
-  }
-  if (first.text === "#" && expression.at(-1)?.text === "#") {
-    return typeRef("Date");
   }
   const lower = first.text.toLowerCase();
   if (lower === "true" || lower === "false") {
@@ -6283,6 +6381,9 @@ function isUnusedDiagnosticCandidate(symbol: VbSymbol): boolean {
   }
   if (symbol.memberOf) {
     return symbol.visibility === "private";
+  }
+  if (!symbol.scopeName) {
+    return false;
   }
   return ["variable", "parameter", "constant", "function", "sub", "class"].includes(symbol.kind);
 }

@@ -53,6 +53,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     vscode.commands.registerCommand("aspLsp.createLaunchConfig", async () => createLaunchConfig()),
     vscode.tasks.registerTaskProvider("asp-lsp", new AspLspTaskProvider()),
+    vscode.workspace.onDidChangeConfiguration(async (event) => {
+      if (event.affectsConfiguration("aspLsp.analysisBackend")) {
+        await restartServer(context);
+      }
+    }),
   );
   await startClient(context);
 }
@@ -66,12 +71,16 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     return;
   }
   const serverModule = getServerModulePath(context);
+  const env = {
+    ...process.env,
+    ASP_LSP_ANALYSIS_BACKEND: configuredAnalysisBackend(),
+  };
   const serverOptions: ServerOptions = {
-    run: { module: serverModule, transport: TransportKind.ipc },
+    run: { module: serverModule, transport: TransportKind.ipc, options: { env } },
     debug: {
       module: serverModule,
       transport: TransportKind.ipc,
-      options: { execArgv: ["--nolazy", "--inspect=6009"] },
+      options: { execArgv: ["--nolazy", "--inspect=6009"], env },
     },
   };
   const clientOptions: LanguageClientOptions = {
@@ -110,6 +119,11 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   }
   void requestBackendStatus(nextClient);
   context.subscriptions.push(nextClient, backendStatusSubscription);
+}
+
+function configuredAnalysisBackend(): string {
+  const value = vscode.workspace.getConfiguration("aspLsp").get("analysisBackend");
+  return value === "native" || value === "typescript" ? value : "auto";
 }
 
 export async function deactivate(): Promise<void> {

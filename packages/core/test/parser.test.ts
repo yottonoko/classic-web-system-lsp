@@ -1477,24 +1477,37 @@ Response.Write "hello world"
     expect(result.diagnostics).toHaveLength(0);
   });
 
-  it("reports unused VBScript declarations as hints", () => {
+  it("reports scoped unused VBScript declarations as hints and leaves globals active", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
       `<%
-Dim unusedValue
-Const unusedConst = 1
+Dim globalValue
+Const GlobalConst = 1
+Sub GlobalSave()
+End Sub
+Class GlobalLonely
+End Class
 Sub Save(usedArg, unusedArg)
+  Dim unusedValue
+  Const unusedConst = 1
   Response.Write usedArg
 End Sub
-Class Lonely
-End Class
 %>`,
     );
     const diagnostics = analyzeVbscript(parsed).diagnostics;
     expect(diagnostics.some((diagnostic) => diagnostic.message.includes("unusedValue"))).toBe(true);
     expect(diagnostics.some((diagnostic) => diagnostic.message.includes("unusedConst"))).toBe(true);
     expect(diagnostics.some((diagnostic) => diagnostic.message.includes("unusedArg"))).toBe(true);
-    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("Lonely"))).toBe(true);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("globalValue"))).toBe(
+      false,
+    );
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("GlobalConst"))).toBe(
+      false,
+    );
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("GlobalSave"))).toBe(false);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("GlobalLonely"))).toBe(
+      false,
+    );
     expect(diagnostics.every((diagnostic) => diagnostic.severity === 4)).toBe(true);
     expect(
       diagnostics
@@ -1616,7 +1629,9 @@ End Function
     const parsed = parseAspDocument(
       "file:///site/default.asp",
       `<%
-Dim unusedValue
+Sub Save()
+  Dim unusedValue
+End Sub
 %>`,
     );
     const symbols = collectVbscriptSymbols(parsed);
@@ -2474,7 +2489,7 @@ Dim ▮customerName
         source: `<%
 Const ▮MaxItems = 10
 %>`,
-        expected: ["' @type MaxItems As Variant", "TODO: Describe MaxItems.", "<value>"],
+        expected: ["' @type MaxItems As Number", "TODO: Describe MaxItems.", "<value>"],
       },
       {
         source: `<%
@@ -2755,6 +2770,39 @@ End Sub
         (item) => item.label === "BuildName",
       ),
     ).toBe(true);
+  });
+
+  it("resolves VBScript XML documentation symbol references like normal references", () => {
+    const marked = markedDocument(`<%
+Function BuildName(first)
+End Function
+''' <see cref="Build▮Name" />
+Sub Save()
+End Sub
+%>`);
+    const parsed = parseAspDocument("file:///site/default.asp", marked.text);
+    const symbols = collectVbscriptSymbols(parsed);
+    const definition = getVbscriptDefinition(parsed, marked.position, { symbols });
+    expect(definition?.name).toBe("BuildName");
+    expect(getVbscriptHover(parsed, marked.position, { symbols })).toContain("Function BuildName");
+    const references = getVbscriptReferences(parsed, marked.position, {
+      symbols,
+      documents: [parsed],
+    });
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          range: expect.objectContaining({
+            start: positionAt(marked.text, marked.text.indexOf("BuildName")),
+          }),
+        }),
+        expect.objectContaining({
+          range: expect.objectContaining({
+            start: positionAt(marked.text, marked.text.indexOf('BuildName"')),
+          }),
+        }),
+      ]),
+    );
   });
 
   it("limits comment completions to documentation annotations and hovers annotation tags", () => {
@@ -3280,6 +3328,31 @@ End Sub
     ).toBe(false);
   });
 
+  it("infers VBScript Const declaration types from expressions", () => {
+    const source = `<%
+Function MakeTitle()
+  MakeTitle = "ok"
+End Function
+Const TextValue = "hello"
+Const NumericValue = 10
+Const DateValue = #2026-06-01#
+Const BooleanValue = True
+Const BuiltinValue = adInteger
+Const FunctionValue = MakeTitle()
+Const UnknownValue = MissingValue
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const typeName = (name: string) => symbols.find((symbol) => symbol.name === name)?.typeName;
+    expect(typeName("TextValue")).toBe("String");
+    expect(typeName("NumericValue")).toBe("Number");
+    expect(typeName("DateValue")).toBe("Date");
+    expect(typeName("BooleanValue")).toBe("Boolean");
+    expect(typeName("BuiltinValue")).toBe("Number");
+    expect(typeName("FunctionValue")).toBe("String");
+    expect(typeName("UnknownValue")).toBe("Variant");
+  });
+
   it("creates implicit variables without Option Explicit for hover, inlay and semantic tokens", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -3749,8 +3822,13 @@ SelectedCustomer(activeId) = currentCustomer
     ])[0];
     expect(selection.parent).toBeTruthy();
 
-    const resolved = resolveVbscriptCompletionItem({ label: "BuildName" }, parsed, { symbols });
-    expect(String(resolved.documentation)).toContain("Defined in file:///site/default.asp");
+    const resolved = resolveVbscriptCompletionItem({ label: "BuildName" }, parsed, {
+      symbols,
+      sourceUriFormatter: (uri) => `[default.asp](${uri})`,
+    });
+    expect(String(resolved.documentation)).toContain(
+      "Defined in [default.asp](file:///site/default.asp)",
+    );
   });
 
   it("builds VBScript call hierarchy items from user-defined procedures", () => {

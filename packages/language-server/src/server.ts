@@ -205,6 +205,8 @@ let jsLanguageServiceCacheTick = 0;
 let lightweightJsUnusedCacheTick = 0;
 let jsScriptSnapshotSequence = 0;
 let semanticTokenResultCounter = 0;
+let semanticTokensRefreshSupported = false;
+let inlayHintRefreshSupported = false;
 let documentCacheGeneration = 0;
 let workspaceGeneration = 0;
 let includeResolutionGeneration = 0;
@@ -1133,6 +1135,9 @@ let lastSentBackendStatusIdentity: string | undefined;
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
   clientLocale = typeof params.locale === "string" ? params.locale : "en";
+  semanticTokensRefreshSupported =
+    params.capabilities.workspace?.semanticTokens?.refreshSupport === true;
+  inlayHintRefreshSupported = params.capabilities.workspace?.inlayHint?.refreshSupport === true;
   globalSettings = normalizeSettings(globalSettings);
   workspaceRoots = [
     ...(params.workspaceFolders?.map((folder) => uriToFileName(folder.uri)) ?? []),
@@ -1518,7 +1523,9 @@ connection.onCompletionResolve((item) =>
         ? resolveVbscriptCompletionItem(
             item,
             cached.parsed,
-            await immediateVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+            withSourceUriFormatter(
+              await immediateVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+            ),
           )
         : item;
     }
@@ -5767,7 +5774,7 @@ async function aspHoverAsync(
   params: TextDocumentPositionParams,
 ): Promise<Hover | null> {
   const settings = cachedSettings(cached.source.uri);
-  const context = await immediateVbProjectContextAsync(cached, settings);
+  const context = withSourceUriFormatter(await immediateVbProjectContextAsync(cached, settings));
   const value = getVbscriptHover(cached.parsed, params.position, context);
   const fallback = value ?? fallbackVbscriptHover(cached, params.position, context);
   return fallback ? { contents: { kind: "markdown", value: fallback } } : null;
@@ -6458,6 +6465,10 @@ function cachedVbProjectContext(
   return cachedVbProjectContextLookup(cached, settings)?.context;
 }
 
+function withSourceUriFormatter(context: VbProjectContext): VbProjectContext {
+  return { ...context, sourceUriFormatter: sourceUriDocumentationLink };
+}
+
 async function summaryBackedVbProjectContextLookupAsync(
   cached: CachedDocument,
   settings: AspSettings,
@@ -7005,6 +7016,31 @@ function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.i
   }
 }
 
+function requestVisualRefresh(reason: string): void {
+  if (semanticTokensRefreshSupported) {
+    try {
+      void Promise.resolve(connection.languages.semanticTokens.refresh()).catch((error: unknown) =>
+        connection.console.warn(
+          `[asp-lsp] semanticTokens.refresh.failed: reason=${reason}, error=${errorMessage(error)}`,
+        ),
+      );
+    } catch (error) {
+      connection.console.warn(
+        `[asp-lsp] semanticTokens.refresh.failed: reason=${reason}, error=${errorMessage(error)}`,
+      );
+    }
+  }
+  if (inlayHintRefreshSupported) {
+    void connection.languages.inlayHint
+      .refresh()
+      .catch((error: unknown) =>
+        connection.console.warn(
+          `[asp-lsp] inlayHint.refresh.failed: reason=${reason}, error=${errorMessage(error)}`,
+        ),
+      );
+  }
+}
+
 function vbProjectContextSettings(
   settings: AspSettings,
 ): Omit<VbProjectContext, "documents" | "symbols" | "typeEnvironment" | "locale"> {
@@ -7495,6 +7531,7 @@ function scheduleIncludeSummaryRefresh(
         return;
       }
       invalidateCachedAnalysisForUris(affected, reason);
+      requestVisualRefresh(reason);
       for (const document of documents.all().filter((item) => affected.has(item.uri))) {
         validate(document);
       }
@@ -10929,6 +10966,31 @@ function workspaceRootFromUri(uri: string): string {
 
 function workspaceRootFromUriAsync(uri: string): Promise<string> {
   return Promise.resolve(workspaceRootFromUri(uri));
+}
+
+function sourceUriDocumentationLink(uri: string): string {
+  const fragmentStart = uri.indexOf("#");
+  const baseUri = fragmentStart === -1 ? uri : uri.slice(0, fragmentStart);
+  const fragment = fragmentStart === -1 ? "" : uri.slice(fragmentStart);
+  if (!baseUri.startsWith("file://")) {
+    return escapeMarkdownLinkText(uri);
+  }
+  const fileName = uriToFileName(baseUri);
+  const normalized = normalizeFileName(fileName);
+  const root = workspaceRoots
+    .map(normalizeFileName)
+    .filter(
+      (candidate) => normalized === candidate || normalized.startsWith(`${candidate}${path.sep}`),
+    )
+    .sort((left, right) => right.length - left.length)[0];
+  const label = (root ? path.relative(root, fileName) || path.basename(fileName) : fileName)
+    .split(path.sep)
+    .join("/");
+  return `[${escapeMarkdownLinkText(label + fragment)}](${pathToFileUri(fileName)}${fragment})`;
+}
+
+function escapeMarkdownLinkText(text: string): string {
+  return text.replace(/[\\[\]]/g, "\\$&");
 }
 
 function uriToFileName(uri: string): string {

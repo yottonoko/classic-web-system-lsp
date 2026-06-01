@@ -4005,7 +4005,8 @@ End Sub
               (item) => item.label === "BuildName",
             );
         const resolved = await server.request("completionItem/resolve", buildCompletion);
-        expect(JSON.stringify(resolved)).toContain("Defined in file:///tmp/extended-lsp.asp");
+        expect(JSON.stringify(resolved)).toContain("Defined in [extended-lsp.asp]");
+        expect(JSON.stringify(resolved)).toContain("file:///tmp/extended-lsp.asp");
 
         const selection = await server.request("textDocument/selectionRange", {
           textDocument: { uri },
@@ -5624,9 +5625,9 @@ Response.Write Request.Form("name")
 
     it("returns VBScript quick fixes for unused declarations", async () => {
       const source = `<%
-Dim unusedValue
 Const usedValue = 1
 Sub Save(usedArg, ByRef unusedArg)
+  Dim unusedValue
   Response.Write usedArg
 End Sub
 Response.Write usedValue
@@ -7371,7 +7372,9 @@ Response.Write missingName
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vb-worker-"));
       const page = path.join(tempDir, "default.asp");
       const workerSource = `<%
-Dim unusedValue
+Sub Worker()
+  Dim unusedValue
+End Sub
 Response.Write "ok"
 %>`;
       fs.writeFileSync(page, workerSource, "utf8");

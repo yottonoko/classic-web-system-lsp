@@ -145,6 +145,10 @@ Function MakeValue(flag)
     MakeValue = "x"
   End If
 End Function
+Const TextValue = "hello"
+Const NumericValue = 10
+Const BuiltinValue = adInteger
+Const FunctionValue = MakeValue(True)
 ' @member Holder.Value As String | Number
 Class Holder
   Public Value
@@ -161,6 +165,12 @@ typed = "oops"
     expect(symbols.find((symbol) => symbol.name === "x")?.typeName).toBe("Number | String");
     expect(symbols.find((symbol) => symbol.name === "unknownGlobal")?.typeName).toBe("Variant");
     expect(symbols.find((symbol) => symbol.name === "MakeValue")?.typeName).toBe("Number | String");
+    expect(symbols.find((symbol) => symbol.name === "TextValue")?.typeName).toBe("String");
+    expect(symbols.find((symbol) => symbol.name === "NumericValue")?.typeName).toBe("Number");
+    expect(symbols.find((symbol) => symbol.name === "BuiltinValue")?.typeName).toBe("Number");
+    expect(symbols.find((symbol) => symbol.name === "FunctionValue")?.typeName).toBe(
+      "Number | String",
+    );
 
     const analyzed = analyzeVbscript(parsed);
     expect(analyzed.symbols.find((symbol) => symbol.name === "x")?.typeName).toBe(

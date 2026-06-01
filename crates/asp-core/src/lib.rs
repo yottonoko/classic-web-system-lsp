@@ -4259,7 +4259,11 @@ fn infer_statement_assignment_type(
     type_facts: &[Value],
 ) {
     let first = lower_token(statement.first());
-    let target_index = if first == "set" { 1 } else { 0 };
+    let target_index = if first == "set" || first == "let" || first == "const" {
+        1
+    } else {
+        0
+    };
     let Some(target) = statement.get(target_index) else {
         return;
     };
@@ -4317,20 +4321,20 @@ fn infer_expression_type(
     offset: usize,
 ) -> Option<NativeTypeRef> {
     let expression = trim_outer_parens(tokens);
+    let first = expression.first()?;
+    if first.text == "#" && expression.last().map(|token| token.text.as_str()) == Some("#") {
+        return Some(type_ref("Date"));
+    }
     if let Some((left, operator, right)) = split_by_lowest_precedence_operator(&expression) {
         let left_type = infer_expression_type(&left, symbols, analysis, type_facts, offset);
         let right_type = infer_expression_type(&right, symbols, analysis, type_facts, offset);
         return infer_binary_expression_type(&operator, left_type.as_ref(), right_type.as_ref());
     }
-    let first = expression.first()?;
     if first.kind == "string" {
         return Some(type_ref("String"));
     }
     if first.kind == "number" {
         return Some(type_ref("Number"));
-    }
-    if first.text == "#" && expression.last().map(|token| token.text.as_str()) == Some("#") {
-        return Some(type_ref("Date"));
     }
     let lower = first.text.to_ascii_lowercase();
     if lower == "true" || lower == "false" {
@@ -4386,6 +4390,9 @@ fn infer_expression_type(
                     return symbol_type_ref(symbol);
                 }
             }
+        }
+        if let Some(constant_type) = builtin_constant_type(&first.text) {
+            return Some(constant_type);
         }
         return infer_variable_type_ref(&first.text, symbols, analysis, offset);
     }
@@ -4570,6 +4577,28 @@ fn build_type_facts(
 fn builtin_type_facts() -> Vec<Value> {
     static FACTS: OnceLock<Vec<Value>> = OnceLock::new();
     FACTS.get_or_init(create_builtin_type_facts).clone()
+}
+
+fn builtin_constant_type(name: &str) -> Option<NativeTypeRef> {
+    static CONSTANTS: OnceLock<HashMap<String, String>> = OnceLock::new();
+    CONSTANTS
+        .get_or_init(|| {
+            let catalog: Value = serde_json::from_str(VBSCRIPT_BUILTIN_CATALOG_JSON)
+                .expect("shared VBScript builtin catalog must be valid JSON");
+            catalog
+                .get("constants")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|constant| {
+                    let label = constant.get("label").and_then(Value::as_str)?;
+                    let type_name = constant.get("type").and_then(Value::as_str)?;
+                    Some((label.to_ascii_lowercase(), type_name.to_string()))
+                })
+                .collect()
+        })
+        .get(&name.to_ascii_lowercase())
+        .map(|type_name| type_ref(type_name))
 }
 
 fn create_builtin_type_facts() -> Vec<Value> {
@@ -5057,11 +5086,27 @@ fn diagnose_vbscript_with_analysis(
                 .get("kind")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            if symbol.get("implicit").and_then(Value::as_bool) == Some(true) {
+                continue;
+            }
+            if symbol.get("memberOf").and_then(Value::as_str).is_some() {
+                if symbol.get("visibility").and_then(Value::as_str) != Some("private") {
+                    continue;
+                }
+            } else if symbol.get("scopeName").and_then(Value::as_str).is_none() {
+                continue;
+            }
             if !matches!(
                 kind,
-                "variable" | "constant" | "parameter" | "function" | "sub" | "method" | "property"
-            ) || symbol.get("implicit").and_then(Value::as_bool) == Some(true)
-            {
+                "variable"
+                    | "constant"
+                    | "parameter"
+                    | "function"
+                    | "sub"
+                    | "class"
+                    | "method"
+                    | "property"
+            ) {
                 continue;
             }
             if used.contains(&name.to_ascii_lowercase()) {

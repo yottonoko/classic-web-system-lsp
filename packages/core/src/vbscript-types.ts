@@ -78,6 +78,7 @@ export interface VbProjectContext {
   unusedDiagnostics?: boolean;
   syntaxSnippets?: boolean;
   locale?: AspLocale;
+  sourceUriFormatter?: (uri: string) => string;
   debugStep?: <T>(name: string, action: () => T) => T;
 }
 

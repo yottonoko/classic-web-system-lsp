@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -196,6 +196,16 @@
           "type": "boolean",
           "default": false,
           "description": "%configuration.checkJs.description%"
+        },
+        "aspLsp.analysisBackend": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "native",
+            "typescript"
+          ],
+          "default": "auto",
+          "description": "%configuration.analysisBackend.description%"
         },
         "aspLsp.diagnostics.debounceMs": {
           "type": "number",
