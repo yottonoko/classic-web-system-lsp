@@ -2898,6 +2898,94 @@ Response.Write IncludedOnly()
       }
     });
 
+    it("keeps disk-restored include summaries include-aware for inlay markers", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-summary-"));
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "common.inc");
+      const cacheDirectory = path.join(tempDir, ".analysis-cache");
+      const source = `<!-- #include file="common.inc" -->
+<%
+implicitValue = 1
+Response.Write implicitValue
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
+      fs.writeFileSync(include, "<!-- shared markup only -->", "utf8");
+      const uri = `file://${owner}`;
+
+      const readInlayHints = async () => {
+        const server = new RpcServer();
+        try {
+          await server.start();
+          await server.request("initialize", {
+            processId: process.pid,
+            rootUri: `file://${tempDir}`,
+            capabilities: {},
+          });
+          server.notify("workspace/didChangeConfiguration", {
+            settings: {
+              aspLsp: {
+                cache: { directory: cacheDirectory },
+                debug: { output: "summary" },
+                diagnostics: { debounceMs: 0 },
+                inlayHints: { globalVariableMarkers: "all" },
+              },
+            },
+          });
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri,
+              languageId: "classic-asp",
+              version: 1,
+              text: source,
+            },
+          });
+          const inlayHints = await server.request("textDocument/inlayHint", {
+            textDocument: { uri },
+            range: {
+              start: { line: 0, character: 0 },
+              end: positionAt(source, source.length),
+            },
+          });
+          return { server, inlayHints };
+        } catch (error) {
+          server.stop();
+          throw error;
+        }
+      };
+      const shutdown = async (server: RpcServer | undefined) => {
+        if (!server) {
+          return;
+        }
+        await server.request("shutdown", null).catch(() => undefined);
+        server.notify("exit", undefined);
+        server.stop();
+      };
+
+      try {
+        let warm: Awaited<ReturnType<typeof readInlayHints>> | undefined;
+        try {
+          warm = await readInlayHints();
+          expect(JSON.stringify(warm.inlayHints)).not.toContain("(?)");
+        } finally {
+          await shutdown(warm?.server);
+        }
+
+        let restored: Awaited<ReturnType<typeof readInlayHints>> | undefined;
+        try {
+          restored = await readInlayHints();
+          const restoredLog = JSON.stringify(
+            restored.server.takePendingNotifications("window/logMessage"),
+          );
+          expect(restoredLog).toContain("diskSummary.hit");
+          expect(JSON.stringify(restored.inlayHints)).not.toContain("(?)");
+        } finally {
+          await shutdown(restored?.server);
+        }
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("reuses summary-backed VB completion for include-heavy files after edits", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-heavy-include-edit-"));
       const owner = path.join(tempDir, "default.asp");

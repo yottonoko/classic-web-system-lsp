@@ -536,6 +536,7 @@ interface IncludePublicSummaryState {
 
 interface VbProjectAnalysis {
   documents: AspParsedDocument[];
+  summaryUris: string[];
   summaries: FileAnalysisSummary[];
   summaryGraphKey: string;
   complete: boolean;
@@ -1026,8 +1027,14 @@ class IncludeDocumentLoader {
       this.summaryCache.set(normalized, existingDocument);
       return existingDocument;
     }
-    const inFlightKey = `${normalized}:${key}`;
-    const pending = this.summaryInFlight.get(inFlightKey);
+    const baseInFlightKey = `${normalized}:${key}`;
+    const readAllowed = options.allowRead !== false;
+    const readInFlightKey = `${baseInFlightKey}:read`;
+    const noReadInFlightKey = `${baseInFlightKey}:no-read`;
+    const inFlightKey = readAllowed ? readInFlightKey : noReadInFlightKey;
+    const pending = readAllowed
+      ? this.summaryInFlight.get(readInFlightKey)
+      : (this.summaryInFlight.get(readInFlightKey) ?? this.summaryInFlight.get(noReadInFlightKey));
     if (pending) {
       return pending;
     }
@@ -1053,7 +1060,7 @@ class IncludeDocumentLoader {
           }
           logDebugSummary(settings, `[asp-lsp] diskSummary.miss: ${pathToFileUri(normalized)}`);
         }
-        if (options.allowRead === false) {
+        if (!readAllowed) {
           return undefined;
         }
         const nextText = text ?? (await readTextFileAsync(normalized, settings.legacyEncoding));
@@ -6379,6 +6386,7 @@ async function buildVbProjectContextAsync(
   }
   const context = {
     documents,
+    includeSummaryUris: project.summaryUris,
     symbols: project.symbols,
     typeEnvironment: project.typeEnvironment,
     externalRefUsages: project.externalRefUsages,
@@ -6421,6 +6429,7 @@ async function buildFullVbProjectContextForWorkspaceOperationAsync(
   symbols.push(...configuredVbscriptGlobals(cached, settings));
   const context: VbProjectContext = {
     documents,
+    includeSummaryUris: summaries.map((summary) => summary.uri),
     symbols,
     typeEnvironment: mergeVbTypeEnvironment(
       buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
@@ -6567,6 +6576,7 @@ function buildImmediateLocalVbProjectContext(
   symbols.push(...configuredVbscriptGlobals(cached, settings));
   const context: VbProjectContext = {
     documents: [cached.parsed],
+    includeSummaryUris: [cached.source.uri],
     symbols,
     typeEnvironment: buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
     externalRefUsages: [],
@@ -6602,6 +6612,7 @@ async function buildImmediateLocalVbProjectContextAsync(
   symbols.push(...configuredVbscriptGlobals(cached, settings));
   const context: VbProjectContext = {
     documents: [cached.parsed],
+    includeSummaryUris: [cached.source.uri],
     symbols,
     typeEnvironment: buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
     externalRefUsages: [],
@@ -7195,6 +7206,7 @@ async function collectCachedVbProjectAnalysisAsync(
   );
   const analysis = {
     documents: graph.documents,
+    summaryUris: graph.summaries.map((summary) => summary.uri),
     summaries,
     summaryGraphKey: graph.key,
     complete: graph.complete,
@@ -12382,6 +12394,7 @@ async function localVbReferenceContextAsync(
   const symbols = await collectVbscriptSymbolsAsync(cached.parsed, contextSettings);
   return {
     documents: [cached.parsed],
+    includeSummaryUris: [cached.source.uri],
     symbols,
     typeEnvironment: buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
     externalRefUsages:

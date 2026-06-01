@@ -2958,6 +2958,7 @@ function isUncertainIncludeImplicitSymbol(
 
 function hasIncludeAwareDocuments(parsed: AspParsedDocument, context: VbProjectContext): boolean {
   return (
+    context.includeSummaryUris?.some((uri) => uri !== parsed.uri) === true ||
     context.documents?.some((document) => document.uri !== parsed.uri) === true ||
     context.symbols?.some(
       (symbol) => symbol.sourceUri !== parsed.uri && !symbol.sourceUri.includes("#runtime-global"),

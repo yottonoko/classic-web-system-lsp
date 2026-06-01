@@ -5098,6 +5098,11 @@ fn diagnose_vbscript_with_analysis(
         .map(|documents| documents.len() > 1)
         .unwrap_or(false)
         || context
+            .get("includeSummaryUris")
+            .and_then(Value::as_array)
+            .map(|uris| uris.len() > 1)
+            .unwrap_or(false)
+        || context
             .get("externalRefUsages")
             .and_then(Value::as_array)
             .map(|usages| !usages.is_empty())
