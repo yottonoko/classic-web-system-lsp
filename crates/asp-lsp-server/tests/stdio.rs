@@ -1993,9 +1993,14 @@ fn refreshes_workspace_index_after_file_operations() {
     let mut reader = BufReader::new(stdout);
     let root_uri = format!("file://{}", root.to_string_lossy());
     let include_uri = format!("{root_uri}/helpers.inc");
+    let renamed_include_uri = format!("{root_uri}/renamed.inc");
     let page_uri = format!("{root_uri}/default.asp");
 
     initialize_with_root(&mut stdin, &mut reader, &root_uri);
+    let page_with_helper =
+        "<!-- #include file=\"helpers.inc\" -->\n<%\nResponse.Write BuildName(\"Ada\")\n%>";
+    let page_with_renamed =
+        "<!-- #include file=\"renamed.inc\" -->\n<%\nResponse.Write BuildName(\"Ada\")\n%>";
     fs::write(
         root.join("helpers.inc"),
         "<%\nFunction BuildName(first)\nBuildName = first\nEnd Function\n%>",
@@ -2021,7 +2026,7 @@ fn refreshes_workspace_index_after_file_operations() {
                     "uri": page_uri,
                     "languageId": "classic-asp",
                     "version": 1,
-                    "text": "<!-- #include file=\"helpers.inc\" -->\n<%\nResponse.Write BuildName(\"Ada\")\n%>",
+                    "text": page_with_helper,
                 },
             },
         }),
@@ -2045,6 +2050,77 @@ fn refreshes_workspace_index_after_file_operations() {
     assert!(
         serialized.contains("helpers.inc"),
         "references after file operation: {serialized}"
+    );
+
+    fs::rename(root.join("helpers.inc"), root.join("renamed.inc")).expect("rename include");
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didRenameFiles",
+            "params": {
+                "files": [{ "oldUri": include_uri, "newUri": renamed_include_uri }],
+            },
+        }),
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": page_uri, "version": 2 },
+                "contentChanges": [{ "text": page_with_renamed }],
+            },
+        }),
+    );
+    let renamed_references = request(
+        &mut stdin,
+        &mut reader,
+        31,
+        "textDocument/references",
+        json!({
+            "textDocument": { "uri": page_uri },
+            "position": { "line": 2, "character": 16 },
+            "context": { "includeDeclaration": true },
+        }),
+    );
+    let renamed_serialized = renamed_references.to_string();
+    assert!(
+        renamed_serialized.contains("renamed.inc"),
+        "references after rename: {renamed_serialized}"
+    );
+    assert!(
+        !renamed_serialized.contains("helpers.inc"),
+        "references after rename should drop old include: {renamed_serialized}"
+    );
+
+    fs::remove_file(root.join("renamed.inc")).expect("delete include");
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didDeleteFiles",
+            "params": {
+                "files": [{ "uri": renamed_include_uri }],
+            },
+        }),
+    );
+    let deleted_references = request(
+        &mut stdin,
+        &mut reader,
+        32,
+        "textDocument/references",
+        json!({
+            "textDocument": { "uri": page_uri },
+            "position": { "line": 2, "character": 16 },
+            "context": { "includeDeclaration": true },
+        }),
+    );
+    let deleted_serialized = deleted_references.to_string();
+    assert!(
+        !deleted_serialized.contains("renamed.inc"),
+        "references after delete should drop deleted include: {deleted_serialized}"
     );
 
     shutdown(&mut stdin, &mut reader);
