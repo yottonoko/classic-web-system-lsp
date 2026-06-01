@@ -641,14 +641,16 @@ impl Ide {
         let Some((symbol, _context)) = self.symbol_at_position(uri, position)? else {
             return Ok(Value::Array(Vec::new()));
         };
-        let Some(name) = symbol.get("name").and_then(Value::as_str) else {
-            return Ok(Value::Array(Vec::new()));
-        };
+        let workspace_symbols = self.workspace_vb_symbols()?;
         let mut references = Vec::new();
         for (document_uri, document) in self.workspace_documents() {
+            let text = document.text(&self.db);
             let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
-            for range in identifier_ranges(document.text(&self.db), &parsed, name) {
-                if !include_declaration && range == symbol.get("range").cloned().unwrap_or_default()
+            for range in
+                symbol_identifier_ranges(document_uri, text, &parsed, &workspace_symbols, &symbol)
+            {
+                if !include_declaration
+                    && is_symbol_declaration_range(&symbol, document_uri, &range)
                 {
                     continue;
                 }
@@ -680,16 +682,16 @@ impl Ide {
         let Some((symbol, _context)) = self.symbol_at_position(uri, position)? else {
             return Ok(Value::Null);
         };
-        let Some(name) = symbol.get("name").and_then(Value::as_str) else {
-            return Ok(Value::Null);
-        };
+        let workspace_symbols = self.workspace_vb_symbols()?;
         let mut changes = serde_json::Map::new();
         for (document_uri, document) in self.workspace_documents() {
+            let text = document.text(&self.db);
             let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
-            let edits = identifier_ranges(document.text(&self.db), &parsed, name)
-                .into_iter()
-                .map(|range| serde_json::json!({ "range": range, "newText": new_name }))
-                .collect::<Vec<_>>();
+            let edits =
+                symbol_identifier_ranges(document_uri, text, &parsed, &workspace_symbols, &symbol)
+                    .into_iter()
+                    .map(|range| serde_json::json!({ "range": range, "newText": new_name }))
+                    .collect::<Vec<_>>();
             if !edits.is_empty() {
                 changes.insert(document_uri.clone(), Value::Array(edits));
             }
@@ -1280,12 +1282,23 @@ impl Ide {
         let Some(word) = identifier_at_offset(&context.text, context.offset) else {
             return Ok(None);
         };
-        let symbol = context
-            .symbols
-            .iter()
-            .find(|symbol| symbol_name_eq(symbol, &word))
-            .cloned()
-            .or_else(|| self.workspace_symbol_by_name(&word).ok().flatten());
+        let Some((start, end)) = identifier_offsets_at(&context.text, context.offset) else {
+            return Ok(None);
+        };
+        let Some(range) = range_from_offsets(&context.text, start, end) else {
+            return Ok(None);
+        };
+        let occurrence = IdentifierOccurrence {
+            name: word.clone(),
+            start,
+            end,
+            range,
+        };
+        let workspace_symbols = self.workspace_vb_symbols()?;
+        let symbol =
+            resolve_symbol_for_identifier(uri, &context.text, &workspace_symbols, &occurrence)
+                .cloned()
+                .or_else(|| self.workspace_symbol_by_name(&word).ok().flatten());
         Ok(symbol.map(|symbol| (symbol, context)))
     }
 
@@ -1299,6 +1312,18 @@ impl Ide {
             }
         }
         Ok(None)
+    }
+
+    fn workspace_vb_symbols(&self) -> Result<Vec<Value>, String> {
+        let mut symbols = Vec::new();
+        for (_uri, document) in self.workspace_documents() {
+            symbols.extend(vb_symbols(
+                &self.db,
+                document.source_file,
+                self.settings.input,
+            )?);
+        }
+        Ok(symbols)
     }
 
     fn workspace_documents(&self) -> Vec<(&String, &OpenDocument)> {
@@ -1603,6 +1628,160 @@ fn symbol_name_eq(symbol: &Value, name: &str) -> bool {
         .get("name")
         .and_then(Value::as_str)
         .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+}
+
+fn symbol_identifier_ranges(
+    document_uri: &str,
+    text: &str,
+    parsed: &Value,
+    symbols: &[Value],
+    target: &Value,
+) -> Vec<Value> {
+    let Some(target_name) = target.get("name").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    identifiers_in_vbscript(text, parsed)
+        .into_iter()
+        .filter(|identifier| identifier.name.eq_ignore_ascii_case(target_name))
+        .filter(|identifier| {
+            resolve_symbol_for_identifier(document_uri, text, symbols, identifier)
+                .is_some_and(|symbol| same_symbol(symbol, target))
+        })
+        .map(|identifier| identifier.range)
+        .collect()
+}
+
+fn resolve_symbol_for_identifier<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &'a [Value],
+    identifier: &IdentifierOccurrence,
+) -> Option<&'a Value> {
+    if let Some(symbol) = symbols.iter().find(|symbol| {
+        symbol_name_eq(symbol, &identifier.name)
+            && symbol
+                .get("sourceUri")
+                .and_then(Value::as_str)
+                .map_or(true, |source_uri| source_uri == document_uri)
+            && symbol
+                .get("range")
+                .is_some_and(|range| same_range(range, &identifier.range))
+    }) {
+        return Some(symbol);
+    }
+
+    let offset = identifier.start + ((identifier.end.saturating_sub(identifier.start)) / 2);
+    visible_symbol_by_name(document_uri, text, symbols, &identifier.name, offset)
+}
+
+fn visible_symbol_by_name<'a>(
+    document_uri: &str,
+    text: &str,
+    symbols: &'a [Value],
+    name: &str,
+    offset: usize,
+) -> Option<&'a Value> {
+    symbols
+        .iter()
+        .filter(|symbol| symbol_name_eq(symbol, name))
+        .filter_map(|symbol| {
+            let same_document = symbol
+                .get("sourceUri")
+                .and_then(Value::as_str)
+                .map_or(true, |source_uri| source_uri == document_uri);
+            let global = symbol.get("scopeName").and_then(Value::as_str).is_none()
+                && symbol.get("memberOf").and_then(Value::as_str).is_none();
+            if !same_document {
+                return global.then_some((symbol, 1, usize::MAX));
+            }
+            let scope_contains = symbol
+                .get("scopeRange")
+                .is_some_and(|range| range_contains_offset(text, range, offset));
+            if !scope_contains && !global {
+                return None;
+            }
+            let score = if scope_contains { 2 } else { 1 };
+            let size = symbol
+                .get("scopeRange")
+                .and_then(range_size)
+                .unwrap_or(usize::MAX);
+            Some((symbol, score, size))
+        })
+        .max_by(|(_, left_score, left_size), (_, right_score, right_size)| {
+            left_score
+                .cmp(right_score)
+                .then_with(|| right_size.cmp(left_size))
+        })
+        .map(|(symbol, _, _)| symbol)
+}
+
+fn same_symbol(left: &Value, right: &Value) -> bool {
+    let Some(left_uri) = left.get("sourceUri").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(right_uri) = right.get("sourceUri").and_then(Value::as_str) else {
+        return false;
+    };
+    left_uri == right_uri
+        && symbol_name_eq(
+            left,
+            right
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+        && left.get("kind").and_then(Value::as_str) == right.get("kind").and_then(Value::as_str)
+        && left
+            .get("memberOf")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .eq_ignore_ascii_case(
+                right
+                    .get("memberOf")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+        && left
+            .get("range")
+            .zip(right.get("range"))
+            .is_some_and(|(left_range, right_range)| same_range(left_range, right_range))
+}
+
+fn is_symbol_declaration_range(symbol: &Value, document_uri: &str, range: &Value) -> bool {
+    symbol
+        .get("sourceUri")
+        .and_then(Value::as_str)
+        .map_or(true, |source_uri| source_uri == document_uri)
+        && symbol
+            .get("range")
+            .is_some_and(|symbol_range| same_range(symbol_range, range))
+}
+
+fn same_range(left: &Value, right: &Value) -> bool {
+    left == right
+}
+
+fn range_contains_offset(text: &str, range: &Value, offset: usize) -> bool {
+    let Some(start) = range_start_offset(text, range) else {
+        return false;
+    };
+    let Some(end) = range_end_offset(text, range) else {
+        return false;
+    };
+    start <= offset && offset <= end
+}
+
+fn range_size(range: &Value) -> Option<usize> {
+    let start = range.get("start")?;
+    let end = range.get("end")?;
+    let start_line = start.get("line")?.as_u64()?;
+    let start_character = start.get("character")?.as_u64()?;
+    let end_line = end.get("line")?.as_u64()?;
+    let end_character = end.get("character")?.as_u64()?;
+    Some(
+        usize::try_from(end_line.saturating_sub(start_line)).ok()? * 100_000
+            + usize::try_from(end_character.saturating_sub(start_character)).ok()?,
+    )
 }
 
 fn valid_vb_identifier(name: &str) -> bool {
