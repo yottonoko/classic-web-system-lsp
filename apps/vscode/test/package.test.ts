@@ -39,6 +39,8 @@ describe("VS Code extension package", () => {
     );
     expect(manifest.scripts?.["package:vsix:no-native"]).toContain("pnpm run build:no-native");
     expect(manifest.scripts?.["package:vsix:no-native"]).not.toContain("build:native");
+    expect(manifest.scripts?.["package:vsix"]).not.toContain("build:native");
+    expect(manifest.scripts?.test).not.toContain("build:native");
     expect(extensionSource).toContain("package:vsix:no-native");
   });
 
@@ -785,7 +787,7 @@ new Intl.DateTimeFormat("en");
       expect(listing).toContain("extension/server/sidecar/dist/lib.dom.d.ts");
       expect(listing).toContain("extension/server/sidecar/package.json");
       expect(listing).toMatch(/extension\/server\/bin\/[^/]+\/asp-lsp-server/);
-      expect(listing).toMatch(/extension\/server\/language-server\/native\/[^/]+\/asp-lsp-core/);
+      expect(listing).not.toContain("extension/server/language-server/native/");
       const removedRuntimeName = "was" + "m";
       expect(listing).not.toContain(`.${removedRuntimeName}`);
       expect(listing).not.toMatch(

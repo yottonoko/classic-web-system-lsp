@@ -9,7 +9,7 @@ const serverRoot = path.join(extensionRoot, "server", "language-server");
 const sidecarRoot = path.join(extensionRoot, "server", "sidecar");
 const serverEntry = path.join(repoRoot, "packages", "language-server", "dist", "server.js");
 const sidecarEntry = path.join(repoRoot, "packages", "embedded-sidecar", "dist", "sidecar.js");
-const includeNativeCore = !process.argv.includes("--no-native");
+const includeRustServer = !process.argv.includes("--no-native");
 const workerEntry = path.join(
   repoRoot,
   "packages",
@@ -59,8 +59,7 @@ fs.chmodSync(path.join(distRoot, "vb-diagnostics-worker.js"), 0o755);
 fs.chmodSync(path.join(sidecarDistRoot, "sidecar.js"), 0o755);
 copyTypeScriptLibs(distRoot);
 copyTypeScriptLibs(sidecarDistRoot);
-if (includeNativeCore) {
-  copyNativeCore(serverRoot);
+if (includeRustServer) {
   copyRustServer(extensionRoot);
 }
 fs.writeFileSync(
@@ -120,15 +119,6 @@ function copyTypeScriptLibs(targetDirectory) {
       fs.copyFileSync(path.join(sourceDirectory, entry), path.join(targetDirectory, entry));
     }
   }
-}
-
-function copyNativeCore(targetRoot) {
-  const sourceRoot = path.join(repoRoot, "packages", "core", "native");
-  if (!fs.existsSync(sourceRoot)) {
-    return;
-  }
-  const targetDirectory = path.join(targetRoot, "native");
-  fs.cpSync(sourceRoot, targetDirectory, { recursive: true });
 }
 
 function copyRustServer(targetRoot) {
