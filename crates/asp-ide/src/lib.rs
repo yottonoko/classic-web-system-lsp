@@ -2438,6 +2438,7 @@ struct FormattingOptions {
     indent_style: Option<String>,
     ignore_vbscript_tag_indent: bool,
     uppercase_keywords: bool,
+    align_assignments: bool,
 }
 
 impl FormattingOptions {
@@ -2467,6 +2468,10 @@ impl FormattingOptions {
                 .unwrap_or(false),
             uppercase_keywords: format
                 .get("uppercaseKeywords")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            align_assignments: format
+                .get("alignAssignments")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         }
@@ -2631,7 +2636,82 @@ fn format_vbscript_block(
         }
         previous_significant = Some(formatted_line);
     }
+    if options.align_assignments {
+        formatted = align_assignments(formatted);
+    }
     Ok(formatted.join("\n"))
+}
+
+fn align_assignments(mut lines: Vec<String>) -> Vec<String> {
+    let mut group_start: Option<usize> = None;
+    let mut max_left = 0;
+    for index in 0..=lines.len() {
+        let left_len = lines
+            .get(index)
+            .and_then(|line| assignment_parts(line))
+            .map(|(left, _)| left.len());
+        let Some(left_len) = left_len else {
+            flush_assignment_group(&mut lines, group_start.take(), index, max_left);
+            max_left = 0;
+            continue;
+        };
+        if group_start.is_none() {
+            group_start = Some(index);
+        }
+        max_left = max_left.max(left_len);
+    }
+    lines
+}
+
+fn flush_assignment_group(
+    lines: &mut [String],
+    group_start: Option<usize>,
+    exclusive_end: usize,
+    max_left: usize,
+) {
+    let Some(group_start) = group_start else {
+        return;
+    };
+    if exclusive_end.saturating_sub(group_start) < 2 {
+        return;
+    }
+    for line in &mut lines[group_start..exclusive_end] {
+        let Some((left, right)) = assignment_parts(line) else {
+            continue;
+        };
+        *line = format!("{left:<max_left$} = {right}");
+    }
+}
+
+fn assignment_parts(line: &str) -> Option<(&str, &str)> {
+    let (left, right) = line.split_once(" = ")?;
+    if right.is_empty() || !is_assignment_left(left) {
+        return None;
+    }
+    Some((left, right))
+}
+
+fn is_assignment_left(left: &str) -> bool {
+    let trimmed = left.trim_start();
+    let target = strip_case_insensitive_prefix(trimmed, "Set ")
+        .map(str::trim_start)
+        .unwrap_or(trimmed);
+    is_assignment_target(target)
+}
+
+fn strip_case_insensitive_prefix<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let (candidate, rest) = text.split_at_checked(prefix.len())?;
+    candidate.eq_ignore_ascii_case(prefix).then_some(rest)
+}
+
+fn is_assignment_target(target: &str) -> bool {
+    let mut chars = target.chars();
+    chars
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        && chars.all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '.'
+        })
 }
 
 fn format_vbscript_line(line: &str, options: &FormattingOptions) -> String {

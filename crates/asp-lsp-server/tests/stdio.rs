@@ -1149,6 +1149,60 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
 }
 
 #[test]
+fn aligns_vbscript_assignments_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let uri = "file:///tmp/align.asp";
+
+    initialize_with_settings(
+        &mut stdin,
+        &mut reader,
+        json!({ "format": { "alignAssignments": true } }),
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nDim first\nDim longerName\nfirst=1\nlongerName=2\n%>",
+                },
+            },
+        }),
+    );
+
+    let formatting = request(
+        &mut stdin,
+        &mut reader,
+        10,
+        "textDocument/formatting",
+        json!({
+            "textDocument": { "uri": uri },
+            "options": { "tabSize": 2, "insertSpaces": true },
+        }),
+    );
+    assert!(formatting["result"][0]["newText"]
+        .as_str()
+        .expect("formatted text")
+        .contains("first      = 1\nlongerName = 2"));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
 fn indexes_unopened_workspace_files_for_vbscript_references() {
     let root = std::env::temp_dir().join(format!("asp-lsp-rust-index-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
