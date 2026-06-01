@@ -2317,6 +2317,76 @@ fn serves_workspace_diagnostics_with_disk_cache() {
 }
 
 #[test]
+fn warms_workspace_diagnostics_with_background_analysis() {
+    let root = std::env::temp_dir().join(format!(
+        "asp-lsp-rust-background-analysis-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    fs::write(
+        root.join("default.asp"),
+        "<%\nOption Explicit\nmissingName = 1\n%>",
+    )
+    .expect("write asp");
+    let cache_dir = root.join("cache");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let root_uri = format!("file://{}", root.to_string_lossy());
+
+    initialize_with_settings_and_root(
+        &mut stdin,
+        &mut reader,
+        json!({
+            "cache": { "enabled": true, "directory": cache_dir.to_string_lossy() },
+            "debug": { "output": "verbose" },
+            "workspace": { "backgroundAnalysis": true },
+        }),
+        &root_uri,
+    );
+
+    let started = read_until(&mut reader, |message| {
+        message["method"] == json!("window/logMessage")
+            && message.to_string().contains("backgroundAnalysis.started")
+    });
+    assert!(started.to_string().contains("1 files"));
+    let completed = read_until(&mut reader, |message| {
+        message["method"] == json!("window/logMessage")
+            && message.to_string().contains("backgroundAnalysis.completed")
+    });
+    assert!(completed.to_string().contains("diagnostics=1"));
+    assert!(
+        fs::read_dir(&cache_dir)
+            .expect("cache dir")
+            .flatten()
+            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
+        "expected background analysis to populate disk cache"
+    );
+
+    let diagnostics = request(
+        &mut stdin,
+        &mut reader,
+        30,
+        "workspace/diagnostic",
+        json!({ "previousResultIds": [] }),
+    );
+    assert!(diagnostics["result"].to_string().contains("missingName"));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn serves_embedded_read_requests_over_stdio_lsp() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
         .env("ASP_LSP_EMBEDDED_SIDECAR_PATH", embedded_sidecar_path())

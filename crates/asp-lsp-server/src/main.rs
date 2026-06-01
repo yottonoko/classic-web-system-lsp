@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -48,9 +48,10 @@ fn run() -> Result<(), String> {
         )
         .map_err(|error| error.to_string())?;
     publish_backend_status(&connection, &state)?;
+    state.configure_background_analysis(&connection)?;
 
     loop {
-        match receive_message(&connection, state.next_diagnostics_timeout()) {
+        match receive_message(&connection, state.next_server_timeout()) {
             Ok(message) => match message {
                 Message::Request(request) => {
                     if handle_request(&connection, &mut state, request)? {
@@ -66,6 +67,7 @@ fn run() -> Result<(), String> {
             Err(RecvTimeoutError::Disconnected) => break,
         }
         state.publish_due_diagnostics(&connection)?;
+        state.run_background_analysis(&connection)?;
     }
 
     drop(connection);
@@ -85,6 +87,14 @@ fn receive_message(
     }
 }
 
+fn combine_timeouts(left: Option<Duration>, right: Option<Duration>) -> Option<Duration> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(timeout), None) | (None, Some(timeout)) => Some(timeout),
+        (None, None) => None,
+    }
+}
+
 #[derive(Default)]
 struct ServerState {
     ide: Ide,
@@ -92,6 +102,7 @@ struct ServerState {
     sidecar: EmbeddedSidecar,
     disk_cache: DiskAnalysisCache,
     semantic_tokens: SemanticTokenCache,
+    background_analysis: BackgroundAnalysisQueue,
     indexed_files: Vec<IndexedFile>,
     settings: Value,
     workspace_roots: Vec<String>,
@@ -148,8 +159,11 @@ impl ServerState {
         Ok(json!({ "ok": true, "command": command }))
     }
 
-    fn next_diagnostics_timeout(&self) -> Option<Duration> {
-        self.diagnostics.next_timeout()
+    fn next_server_timeout(&self) -> Option<Duration> {
+        combine_timeouts(
+            self.diagnostics.next_timeout(),
+            self.background_analysis.next_timeout(),
+        )
     }
 
     fn schedule_diagnostics(&mut self, uri: String) {
@@ -167,6 +181,61 @@ impl ServerState {
             let diagnostic_count = diagnostics.len();
             send_diagnostics(connection, &uri, diagnostics)?;
             self.log_check_completed(connection, &uri, started_at, diagnostic_count)?;
+        }
+        Ok(())
+    }
+
+    fn configure_background_analysis(&mut self, connection: &Connection) -> Result<(), String> {
+        if !background_analysis_enabled(&self.settings) {
+            self.background_analysis.clear();
+            return Ok(());
+        }
+        let files = self
+            .indexed_files
+            .iter()
+            .filter(|file| !self.ide.is_open_document(&file.uri))
+            .cloned()
+            .collect::<VecDeque<_>>();
+        self.background_analysis.start(files);
+        if self.background_analysis.is_running() {
+            log_debug_summary(
+                connection,
+                &self.settings,
+                format!(
+                    "[asp-lsp] backgroundAnalysis.started: {} files",
+                    self.background_analysis.remaining()
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn run_background_analysis(&mut self, connection: &Connection) -> Result<(), String> {
+        if !self.background_analysis.is_running() {
+            return Ok(());
+        }
+        let batch_size = background_analysis_batch_size(&self.settings);
+        for _ in 0..batch_size {
+            let Some(file) = self.background_analysis.pop_front() else {
+                break;
+            };
+            if self.ide.is_open_document(&file.uri) {
+                continue;
+            }
+            let diagnostics = self.indexed_diagnostics(connection, &file)?;
+            self.background_analysis.record_file(diagnostics.len());
+        }
+        if self.background_analysis.is_complete() {
+            let completed = self.background_analysis.completed_files;
+            let diagnostics = self.background_analysis.diagnostics;
+            self.background_analysis.clear();
+            log_debug_summary(
+                connection,
+                &self.settings,
+                format!(
+                    "[asp-lsp] backgroundAnalysis.completed: {completed} files, diagnostics={diagnostics}"
+                ),
+            )?;
         }
         Ok(())
     }
@@ -888,6 +957,52 @@ struct DiagnosticScheduler {
     pending: HashMap<String, Instant>,
 }
 
+#[derive(Default)]
+struct BackgroundAnalysisQueue {
+    pending: VecDeque<IndexedFile>,
+    completed_files: usize,
+    diagnostics: usize,
+}
+
+impl BackgroundAnalysisQueue {
+    fn start(&mut self, files: VecDeque<IndexedFile>) {
+        self.pending = files;
+        self.completed_files = 0;
+        self.diagnostics = 0;
+    }
+
+    fn clear(&mut self) {
+        self.pending.clear();
+        self.completed_files = 0;
+        self.diagnostics = 0;
+    }
+
+    fn is_running(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    fn is_complete(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    fn remaining(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn next_timeout(&self) -> Option<Duration> {
+        self.is_running().then_some(Duration::from_millis(0))
+    }
+
+    fn pop_front(&mut self) -> Option<IndexedFile> {
+        self.pending.pop_front()
+    }
+
+    fn record_file(&mut self, diagnostics: usize) {
+        self.completed_files += 1;
+        self.diagnostics += diagnostics;
+    }
+}
+
 impl Default for DiagnosticScheduler {
     fn default() -> Self {
         Self {
@@ -1441,11 +1556,13 @@ fn handle_notification(
                 )? {
                     send_diagnostics(connection, &uri, diagnostics)?;
                 }
+                state.configure_background_analysis(connection)?;
             }
             publish_backend_status(connection, state)?;
         }
         "workspace/didCreateFiles" | "workspace/didRenameFiles" | "workspace/didDeleteFiles" => {
             state.refresh_workspace_index()?;
+            state.configure_background_analysis(connection)?;
         }
         _ => {}
     }
@@ -1606,6 +1723,24 @@ fn settings_from_initialize(params: &Value) -> Value {
         .and_then(|options| options.get("settings"))
         .cloned()
         .unwrap_or_else(|| json!({}))
+}
+
+fn background_analysis_enabled(settings: &Value) -> bool {
+    settings
+        .get("workspace")
+        .and_then(|workspace| workspace.get("backgroundAnalysis"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn background_analysis_batch_size(settings: &Value) -> usize {
+    settings
+        .get("workspace")
+        .and_then(|workspace| workspace.get("idleAnalysisConcurrency"))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1)
 }
 
 fn workspace_roots_from_initialize(params: &Value) -> Vec<String> {

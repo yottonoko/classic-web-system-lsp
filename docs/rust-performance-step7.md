@@ -189,11 +189,9 @@ split the workload before relying on it for regression proof.
 
 ## Step 7B Queue
 
-1. Implement or explicitly remove/disable Rust `workspace.backgroundAnalysis`
-   behavior so benchmark output does not imply a warmup that never occurs.
-2. Make include-tree benchmark memory-bounded enough to run under a documented
+1. Make include-tree benchmark memory-bounded enough to run under a documented
    heap limit.
-3. Add a stronger Node/Rust comparison report after the above fixes, using
+2. Add a stronger Node/Rust comparison report after the above fixes, using
    stable iterations and both hot/cold cache modes.
 
 ## Step 7B Semantic Tokens
@@ -230,3 +228,42 @@ Result:
 The remaining `semanticTokens/full` cost is still high enough to keep future
 optimization open, but Step 7B has a concrete performance win without changing
 the LSP result shape.
+
+## Step 7B Background Analysis
+
+Rust `workspace.backgroundAnalysis` now schedules indexed unopened workspace
+files for idle analysis and disk-cache warmup when the setting is enabled. The
+queue emits `backgroundAnalysis.started` and `backgroundAnalysis.completed`
+debug events, and processes at least one file per idle tick. If
+`workspace.idleAnalysisConcurrency` is set above zero, that value controls the
+per-tick batch size.
+
+Command:
+
+```sh
+ASP_LSP_BENCH_ITERATIONS=1 \
+ASP_LSP_BENCH_WARMUPS=0 \
+ASP_LSP_BENCH_CHANGE_KIND=replace \
+ASP_LSP_BENCH_CHANGE_MODE=default \
+ASP_LSP_BENCH_BACKGROUND=both \
+ASP_LSP_BENCH_DEBUG_STEPS=1 \
+pnpm run benchmark:change:large
+```
+
+Workspace cache result:
+
+| Scenario       | Metric                                | elapsed ms | disk hits | disk misses | disk writes | background starts | background completes |
+| -------------- | ------------------------------------- | ---------- | --------- | ----------- | ----------- | ----------------- | -------------------- |
+| background off | cold workspace diagnostics            | 314.43     | 0         | 1           | 1           | 0                 | 0                    |
+| background off | warm workspace diagnostics            | 53.00      | 1         | 0           | 0           | 0                 | 0                    |
+| background on  | background warmup                     | 268.19     | 0         | 20          | 20          | 1                 | 1                    |
+| background on  | post-background workspace diagnostics | 53.04      | 1         | 0           | 0           | 0                 | 0                    |
+
+Interpretation:
+
+- Background analysis now warms the disk cache before explicit
+  `workspace/diagnostic` requests.
+- The post-background workspace diagnostics path is back to the warm-cache
+  latency band.
+  The benchmark stops counting after the first expected cache-hit log, so the
+  table proves the hit path is reached rather than enumerating every file hit.
