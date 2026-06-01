@@ -210,7 +210,7 @@
         },
         "aspLsp.useLegacyServer": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "%configuration.useLegacyServer.description%"
         },
         "aspLsp.diagnostics.debounceMs": {

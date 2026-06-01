@@ -162,7 +162,7 @@ function configuredAnalysisBackend(): string {
 }
 
 function configuredUseLegacyServer(): boolean {
-  return vscode.workspace.getConfiguration("aspLsp").get("useLegacyServer") !== false;
+  return vscode.workspace.getConfiguration("aspLsp").get("useLegacyServer") === true;
 }
 
 export async function deactivate(): Promise<void> {

@@ -108,7 +108,7 @@ describe("VS Code extension package", () => {
     expect(configuration["aspLsp.useLegacyServer"]).toEqual(
       expect.objectContaining({
         type: "boolean",
-        default: true,
+        default: false,
       }),
     );
     const analysisBackendSource = fs.readFileSync("src/extension.ts", "utf8");
@@ -661,7 +661,7 @@ describe("VS Code extension package", () => {
     expect(fs.existsSync(serverModule)).toBe(true);
   });
 
-  it("keeps the Rust server behind the legacy opt-in setting", () => {
+  it("uses the legacy server when explicitly requested", () => {
     const root = process.cwd();
     const launch = getServerLaunchPath(
       {
@@ -676,7 +676,7 @@ describe("VS Code extension package", () => {
     });
   });
 
-  it("resolves the Rust server binary when legacy server is disabled", () => {
+  it("resolves the Rust server binary by default", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-server-path-"));
     const executableName = process.platform === "win32" ? "asp-lsp-server.exe" : "asp-lsp-server";
     const binary = path.join(
@@ -689,14 +689,27 @@ describe("VS Code extension package", () => {
     fs.mkdirSync(path.dirname(binary), { recursive: true });
     fs.writeFileSync(binary, "");
 
-    const launch = getServerLaunchPath(
-      {
-        asAbsolutePath: (relativePath) => path.join(root, relativePath),
-      },
-      { useLegacyServer: false },
-    );
+    const launch = getServerLaunchPath({
+      asAbsolutePath: (relativePath) => path.join(root, relativePath),
+    });
 
     expect(launch).toEqual({ kind: "binary", path: binary });
+  });
+
+  it("falls back to the legacy server when no Rust server binary is available", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-server-path-"));
+    const serverModule = path.join(root, "server", "language-server", "dist", "server.js");
+    fs.mkdirSync(path.dirname(serverModule), { recursive: true });
+    fs.writeFileSync(serverModule, "");
+    const launch = getServerLaunchPath({
+      asAbsolutePath: (relativePath) => path.join(root, relativePath),
+    });
+
+    expect(launch).toEqual({
+      kind: "nodeModule",
+      path: serverModule,
+    });
+    fs.rmSync(root, { recursive: true, force: true });
   });
 
   it("bundles TypeScript browser libs for JavaScript language features", async () => {
@@ -771,6 +784,7 @@ new Intl.DateTimeFormat("en");
       expect(listing).toContain("extension/server/sidecar/dist/lib.esnext.d.ts");
       expect(listing).toContain("extension/server/sidecar/dist/lib.dom.d.ts");
       expect(listing).toContain("extension/server/sidecar/package.json");
+      expect(listing).toMatch(/extension\/server\/bin\/[^/]+\/asp-lsp-server/);
       expect(listing).toMatch(/extension\/server\/language-server\/native\/[^/]+\/asp-lsp-core/);
       const removedRuntimeName = "was" + "m";
       expect(listing).not.toContain(`.${removedRuntimeName}`);
