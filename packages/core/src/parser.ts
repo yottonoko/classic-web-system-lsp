@@ -15,15 +15,6 @@ import type {
 import { offsetAt, rangeFromOffsets } from "./position";
 import { scanHtmlAndAsp, normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 import { parseVbscriptCst } from "./vbscript-cst";
-import {
-  shouldUseNativeAsyncSkeletonParse,
-  tryNativeParseAspCst,
-  tryNativeParseAspCstAsync,
-  tryNativeParseAspDocument,
-  tryNativeParseAspDocumentAsync,
-  tryNativeParseAspDocumentSkeletonAsync,
-  tryNativeParseAspDocumentVbscriptAsync,
-} from "./native-backend";
 export { normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 
 const asyncParseCacheMaxEntries = 64;
@@ -36,17 +27,13 @@ export function parseAspDocument(
   text: string,
   settings: AspSettings = {},
 ): AspParsedDocument {
-  const native = tryNativeParseAspDocument(uri, text, settings);
-  if (native) {
-    return native;
-  }
   return parseAspDocumentTypeScript(uri, text, settings);
 }
 
 /**
  * Parses an ASP document for async/server workflows.
  *
- * Native-enabled async callers may receive a skeleton CST without attached VBScript CST subtrees.
+ * Async callers may receive a skeleton CST without attached VBScript CST subtrees.
  * Call `needsVbscriptCstHydration` and then `await hydrateVbscriptCst` before walking
  * `parsed.cst` for VBScript tokens or declarations.
  */
@@ -62,16 +49,6 @@ export async function parseAspDocumentAsync(
     asyncParseCache.set(cacheKey, cached);
     return cached;
   }
-  if (shouldUseNativeAsyncSkeletonParse()) {
-    const parsed = parseAspDocumentSkeletonTypeScript(uri, text, settings);
-    setAsyncParseCache(cacheKey, parsed);
-    return parsed;
-  }
-  const native = await tryNativeParseAspDocumentAsync(uri, text, settings);
-  if (native) {
-    setAsyncParseCache(cacheKey, native);
-    return native;
-  }
   const parsed = parseAspDocumentTypeScript(uri, text, settings);
   setAsyncParseCache(cacheKey, parsed);
   return parsed;
@@ -82,10 +59,6 @@ export async function parseAspDocumentSkeletonAsync(
   text: string,
   settings: AspSettings = {},
 ): Promise<AspParsedDocument> {
-  const native = await tryNativeParseAspDocumentSkeletonAsync(uri, text, settings);
-  if (native) {
-    return native;
-  }
   return parseAspDocumentSkeletonTypeScript(uri, text, settings);
 }
 
@@ -105,22 +78,12 @@ export function needsVbscriptCstHydration(parsed: AspParsedDocument): boolean {
  */
 export async function hydrateVbscriptCst(
   parsed: AspParsedDocument,
-  settings: AspSettings = {},
+  _settings: AspSettings = {},
 ): Promise<AspParsedDocument> {
   if (hydratedVbscriptDocuments.has(parsed) || !needsVbscriptCstHydration(parsed)) {
     return parsed;
   }
-  const segments = await tryNativeParseAspDocumentVbscriptAsync(parsed.uri, parsed.text, settings);
-  if (segments) {
-    const vbscriptByStart = new Map(segments.map((segment) => [segment.start, segment.vbscript]));
-    // VB CST は region ノード（Document 直下の子）に付く。ルート Document は最初の region と
-    // start が衝突しうるため除外し、子から照合・attach する。
-    for (const child of parsed.cst.children ?? []) {
-      attachVbscriptByStart(child, vbscriptByStart);
-    }
-  } else {
-    attachVbscriptFromTypeScriptParser(parsed.cst, parsed.text);
-  }
+  attachVbscriptFromTypeScriptParser(parsed.cst, parsed.text);
   hydratedVbscriptDocuments.add(parsed);
   return parsed;
 }
@@ -130,19 +93,6 @@ function cstHasVbscript(node: AspCstNode): boolean {
     return true;
   }
   return (node.children ?? []).some((child) => cstHasVbscript(child));
-}
-
-function attachVbscriptByStart(
-  node: AspCstNode,
-  vbscriptByStart: Map<number, AspCstNode["vbscript"]>,
-): void {
-  const vbscript = vbscriptByStart.get(node.start);
-  if (vbscript) {
-    node.vbscript = vbscript;
-  }
-  for (const child of node.children ?? []) {
-    attachVbscriptByStart(child, vbscriptByStart);
-  }
 }
 
 function attachVbscriptFromTypeScriptParser(node: AspCstNode, sourceText: string): void {
@@ -823,10 +773,6 @@ function shiftOffsetAfterChange(
 }
 
 export function parseAspCst(uri: string, text: string, settings: AspSettings = {}): AspCstNode {
-  const native = tryNativeParseAspCst(text, settings);
-  if (native) {
-    return native;
-  }
   return parseAspCstTypeScript(uri, text, settings);
 }
 
@@ -835,10 +781,6 @@ export async function parseAspCstAsync(
   text: string,
   settings: AspSettings = {},
 ): Promise<AspCstNode> {
-  const native = await tryNativeParseAspCstAsync(text, settings);
-  if (native) {
-    return native;
-  }
   return parseAspCstTypeScript(uri, text, settings);
 }
 
@@ -1034,7 +976,6 @@ function parseCacheKey(uri: string, text: string, settings: AspSettings): string
     uri,
     text: textFingerprint(text),
     settings,
-    backend: process.env.ASP_LSP_ANALYSIS_BACKEND ?? "auto",
   });
 }
 

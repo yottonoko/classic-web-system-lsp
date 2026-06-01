@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CompletionItemKind, DiagnosticTag, InsertTextFormat } from "vscode-languageserver-types";
 import {
-  aspAnalysisBackendInfo,
   analyzeVbscript,
   buildVbTypeEnvironment,
   buildVirtualDocuments,
@@ -25,7 +24,6 @@ import {
   needsVbscriptCstHydration,
   parseAspCst,
   parseAspDocument,
-  parseAspDocumentAsync,
   parseAspDocumentSkeletonAsync,
   parseVbscriptTypeRef,
   parseVbscriptCst,
@@ -46,142 +44,43 @@ function collectVbTokenTexts(node: AspCstNode): string[] {
 }
 
 describe("parseAspDocument", () => {
-  it("treats the removed WebAssembly backend mode as TypeScript fallback", () => {
-    const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
-    const removedMode = "was" + "m";
-    process.env.ASP_LSP_ANALYSIS_BACKEND = removedMode;
-    try {
-      const parsed = parseAspDocument("file:///site/default.asp", `<% Response.Write "ok" %>`);
-      expect(parsed.defaultLanguage).toBe("VBScript");
-      expect(aspAnalysisBackendInfo()).toMatchObject({
-        backend: "typescript-fallback",
-        engine: "typescript",
-        reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${removedMode}`,
-      });
-    } finally {
-      if (previous === undefined) {
-        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
-      } else {
-        process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
-      }
-    }
-  });
-
-  it("treats the removed WebAssembly backend mode as async TypeScript fallback", async () => {
-    const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
-    const removedMode = "was" + "m";
-    process.env.ASP_LSP_ANALYSIS_BACKEND = removedMode;
-    try {
-      const parsed = await parseAspDocumentAsync(
-        "file:///site/default.asp",
-        `<% Response.Write "ok" %>`,
-      );
-      expect(parsed.defaultLanguage).toBe("VBScript");
-      expect(aspAnalysisBackendInfo()).toMatchObject({
-        backend: "typescript-fallback",
-        engine: "typescript",
-        reason: `unsupported ASP_LSP_ANALYSIS_BACKEND=${removedMode}`,
-      });
-    } finally {
-      if (previous === undefined) {
-        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
-      } else {
-        process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
-      }
-    }
-  });
-
   it("marks skeleton parses as needing VBScript CST hydration before direct CST walks", async () => {
-    const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
-    process.env.ASP_LSP_ANALYSIS_BACKEND = "typescript";
-    try {
-      const parsed = await parseAspDocumentSkeletonAsync(
-        "file:///site/skeleton.asp",
-        `<%
+    const parsed = await parseAspDocumentSkeletonAsync(
+      "file:///site/skeleton.asp",
+      `<%
 Dim Greeting
 Greeting = "hello"
 %>`,
-      );
-      expect(needsVbscriptCstHydration(parsed)).toBe(true);
-      expect(collectVbTokenTexts(parsed.cst)).toHaveLength(0);
+    );
+    expect(needsVbscriptCstHydration(parsed)).toBe(true);
+    expect(collectVbTokenTexts(parsed.cst)).toHaveLength(0);
 
-      await hydrateVbscriptCst(parsed);
-      expect(needsVbscriptCstHydration(parsed)).toBe(false);
-      expect(collectVbTokenTexts(parsed.cst)).toEqual(
-        expect.arrayContaining(["Dim", "Greeting", '"hello"']),
-      );
-    } finally {
-      if (previous === undefined) {
-        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
-      } else {
-        process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
-      }
-    }
+    await hydrateVbscriptCst(parsed);
+    expect(needsVbscriptCstHydration(parsed)).toBe(false);
+    expect(collectVbTokenTexts(parsed.cst)).toEqual(
+      expect.arrayContaining(["Dim", "Greeting", '"hello"']),
+    );
   });
 
   it("keeps async VBScript summary and symbol helpers usable for skeleton parses", async () => {
-    const previousBackend = process.env.ASP_LSP_ANALYSIS_BACKEND;
-    const previousNativeSemantics = process.env.ASP_LSP_NATIVE_SEMANTICS;
-    process.env.ASP_LSP_ANALYSIS_BACKEND = "typescript";
-    process.env.ASP_LSP_NATIVE_SEMANTICS = "0";
-    try {
-      const parsed = await parseAspDocumentSkeletonAsync(
-        "file:///site/async-analysis-skeleton.asp",
-        `<%
+    const parsed = await parseAspDocumentSkeletonAsync(
+      "file:///site/async-analysis-skeleton.asp",
+      `<%
 Function BuildTitle(name)
   BuildTitle = "Hello " & name
 End Function
 %>`,
-      );
-      expect(needsVbscriptCstHydration(parsed)).toBe(true);
+    );
+    expect(needsVbscriptCstHydration(parsed)).toBe(true);
 
-      const symbols = await collectVbscriptSymbolsAsync(parsed);
-      const summary = await summarizeAspFileAnalysisAsync(parsed);
+    const symbols = await collectVbscriptSymbolsAsync(parsed);
+    const summary = await summarizeAspFileAnalysisAsync(parsed);
 
-      expect(symbols.find((symbol) => symbol.name === "BuildTitle")?.kind).toBe("function");
-      expect(
-        summary.vbscript?.localSymbols.find((symbol) => symbol.name === "BuildTitle")?.kind,
-      ).toBe("function");
-      expect(needsVbscriptCstHydration(parsed)).toBe(false);
-    } finally {
-      if (previousBackend === undefined) {
-        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
-      } else {
-        process.env.ASP_LSP_ANALYSIS_BACKEND = previousBackend;
-      }
-      if (previousNativeSemantics === undefined) {
-        delete process.env.ASP_LSP_NATIVE_SEMANTICS;
-      } else {
-        process.env.ASP_LSP_NATIVE_SEMANTICS = previousNativeSemantics;
-      }
-    }
-  });
-
-  it("reports a TypeScript fallback when the retired native backend is requested", () => {
-    const previousBackend = process.env.ASP_LSP_ANALYSIS_BACKEND;
-    const previousNativeCorePath = process.env.ASP_LSP_NATIVE_CORE_PATH;
-    process.env.ASP_LSP_ANALYSIS_BACKEND = "auto";
-    process.env.ASP_LSP_NATIVE_CORE_PATH = "/__asp_lsp_missing__/retired-native-backend";
-    try {
-      const parsed = parseAspDocument("file:///site/default.asp", `<% Response.Write "ok" %>`);
-      expect(parsed.defaultLanguage).toBe("VBScript");
-      expect(aspAnalysisBackendInfo()).toMatchObject({
-        backend: "typescript-fallback",
-        engine: "typescript",
-        reason: "native backend removed after Rust LSP cutover",
-      });
-    } finally {
-      if (previousBackend === undefined) {
-        delete process.env.ASP_LSP_ANALYSIS_BACKEND;
-      } else {
-        process.env.ASP_LSP_ANALYSIS_BACKEND = previousBackend;
-      }
-      if (previousNativeCorePath === undefined) {
-        delete process.env.ASP_LSP_NATIVE_CORE_PATH;
-      } else {
-        process.env.ASP_LSP_NATIVE_CORE_PATH = previousNativeCorePath;
-      }
-    }
+    expect(symbols.find((symbol) => symbol.name === "BuildTitle")?.kind).toBe("function");
+    expect(
+      summary.vbscript?.localSymbols.find((symbol) => symbol.name === "BuildTitle")?.kind,
+    ).toBe("function");
+    expect(needsVbscriptCstHydration(parsed)).toBe(false);
   });
 
   it("updates safe HTML edits incrementally while shifting later include ranges", () => {

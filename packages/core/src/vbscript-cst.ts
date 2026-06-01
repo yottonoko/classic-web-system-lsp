@@ -5,7 +5,6 @@ import type {
   VbParameterMode,
   VbToken,
 } from "./types";
-import { tryNativeParseVbscriptCst } from "./native-backend";
 
 const vbKeywords = new Set([
   "and",
@@ -63,10 +62,6 @@ const vbKeywords = new Set([
 ]);
 
 export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0): VbCstNode {
-  const native = tryNativeParseVbscriptCst(text, sourceText, baseOffset);
-  if (native) {
-    return native;
-  }
   return parseVbscriptCstTypeScript(text, sourceText, baseOffset);
 }
 

@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { getClassicAspLineCommentEdits, type AspAnalysisBackendInfo } from "@asp-lsp/core";
+import { getClassicAspLineCommentEdits } from "@asp-lsp/core";
 import {
   CloseAction,
   ErrorAction,
@@ -18,6 +18,15 @@ const clearCacheServerCommand = "aspLsp.server.clearCache";
 const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const backendStatusMethod = "aspLsp/backendStatus";
+
+type AspAnalysisBackendKind = "native" | "typescript-fallback";
+
+interface AspAnalysisBackendInfo {
+  backend: AspAnalysisBackendKind;
+  engine: string;
+  version?: string;
+  reason?: string;
+}
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;

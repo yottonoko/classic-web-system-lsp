@@ -26,17 +26,6 @@ import { offsetAt, positionAt, rangeFromOffsets } from "./position";
 import { hydrateVbscriptCst, needsVbscriptCstHydration, parseAspDocument } from "./parser";
 import { createLocalizer } from "./localize";
 import builtinCatalogData from "./vbscript-builtin-catalog.json";
-import {
-  tryNativeAnalyzeVbscript,
-  tryNativeAnalyzeVbscriptAsync,
-  tryNativeAnalyzeVbscriptFromTextAsync,
-  tryNativeCollectVbscriptSymbols,
-  tryNativeCollectVbscriptSymbolsAsync,
-  tryNativeCollectVbscriptSymbolsFromTextAsync,
-  tryNativeSummarizeAspFileAnalysis,
-  tryNativeSummarizeAspFileAnalysisAsync,
-  tryNativeSummarizeAspFileAnalysisFromTextAsync,
-} from "./native-backend";
 import type {
   AspCstNode,
   AspInlayHintMarkerMode,
@@ -1797,12 +1786,6 @@ export function analyzeVbscript(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
-  if (nativeSemanticsEnabled()) {
-    const native = tryNativeAnalyzeVbscript(parsed, context);
-    if (native) {
-      return localizeNativeAnalysisResult(native, context);
-    }
-  }
   return analyzeVbscriptTypeScript(parsed, context);
 }
 
@@ -1810,13 +1793,7 @@ export async function analyzeVbscriptAsync(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): Promise<{ diagnostics: Diagnostic[]; symbols: VbSymbol[] }> {
-  if (nativeSemanticsEnabled()) {
-    const native = await tryNativeAnalyzeVbscriptAsync(parsed, context);
-    if (native) {
-      return localizeNativeAnalysisResult(native, context);
-    }
-  }
-  return analyzeVbscriptTypeScript(parsed, context);
+  return analyzeVbscriptTypeScript(await ensureVbscriptCstForAsyncAnalysis(parsed), context);
 }
 
 export async function analyzeVbscriptFromTextAsync(
@@ -1832,58 +1809,11 @@ export async function analyzeVbscriptFromTextAsync(
   if (cached) {
     return cached;
   }
-  const native = nativeSemanticsEnabled()
-    ? await tryNativeAnalyzeVbscriptFromTextAsync(uri, text, settings, context)
-    : undefined;
-  const result = native
-    ? localizeNativeAnalysisResult(native, context)
-    : analyzeVbscriptTypeScript(parseAspDocumentTypeScriptOnly(uri, text, settings), context);
+  const result = analyzeVbscriptTypeScript(parseAspDocument(uri, text, settings), context);
   if (cacheKey) {
     setVbFromTextCache(cacheKey, text, result);
   }
   return result;
-}
-
-function localizeNativeAnalysisResult(
-  result: { diagnostics: Diagnostic[]; symbols: VbSymbol[] },
-  context: VbProjectContext,
-): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
-  return {
-    diagnostics: localizeNativeTypeDiagnostics(result.diagnostics, context.locale),
-    symbols: result.symbols,
-  };
-}
-
-function localizeNativeTypeDiagnostics(
-  diagnostics: Diagnostic[],
-  locale: AspLocale | undefined,
-): Diagnostic[] {
-  if (!locale) {
-    return diagnostics;
-  }
-  const localizer = createLocalizer(locale);
-  const keyByCode = {
-    setScalar: "vb.diagnostic.setScalar",
-    objectNeedsSet: "vb.diagnostic.objectNeedsSet",
-    typeMismatch: "vb.diagnostic.typeMismatch",
-    unknownCall: "vb.diagnostic.unknownCall",
-    argumentCountMismatch: "vb.diagnostic.argumentCountMismatch",
-    missingMember: "vb.diagnostic.missingMember",
-  } as const;
-  return diagnostics.map((diagnostic) => {
-    if (diagnostic.source !== "asp-lsp-vbscript-type") {
-      return diagnostic;
-    }
-    const code = typeof diagnostic.code === "string" ? diagnostic.code : undefined;
-    const key = code ? keyByCode[code as keyof typeof keyByCode] : undefined;
-    if (!key) {
-      return diagnostic;
-    }
-    return {
-      ...diagnostic,
-      message: localizer.t(key, (diagnostic.data ?? {}) as Record<string, string | number>),
-    };
-  });
 }
 
 function analyzeVbscriptTypeScript(
@@ -3099,12 +3029,6 @@ export function collectVbscriptSymbols(
   context: VbProjectContext = {},
   options: VbSymbolCollectionOptions = {},
 ): VbSymbol[] {
-  if (nativeSemanticsEnabled() && canUseNativeSymbolCollection(options)) {
-    const native = tryNativeCollectVbscriptSymbols(parsed, context);
-    if (native) {
-      return native;
-    }
-  }
   return collectVbscriptSymbolsTypeScript(parsed, context, options);
 }
 
@@ -3114,12 +3038,6 @@ export async function collectVbscriptSymbolsAsync(
   options: VbSymbolCollectionOptions = {},
 ): Promise<VbSymbol[]> {
   const analysisParsed = await ensureVbscriptCstForAsyncAnalysis(parsed);
-  if (nativeSemanticsEnabled() && canUseNativeSymbolCollection(options)) {
-    const native = await tryNativeCollectVbscriptSymbolsAsync(analysisParsed, context);
-    if (native) {
-      return native;
-    }
-  }
   return collectVbscriptSymbolsTypeScript(analysisParsed, context, options);
 }
 
@@ -3134,16 +3052,11 @@ export async function collectVbscriptSymbolsFromTextAsync(
   if (cached) {
     return cached;
   }
-  const native = nativeSemanticsEnabled()
-    ? await tryNativeCollectVbscriptSymbolsFromTextAsync(uri, text, settings, context)
-    : undefined;
-  const result =
-    native ??
-    collectVbscriptSymbolsTypeScript(
-      parseAspDocumentTypeScriptOnly(uri, text, settings),
-      context,
-      {},
-    );
+  const result = collectVbscriptSymbolsTypeScript(
+    parseAspDocument(uri, text, settings),
+    context,
+    {},
+  );
   if (cacheKey) {
     setVbFromTextCache(cacheKey, text, result);
   }
@@ -3179,14 +3092,6 @@ interface VbSymbolCollectionOptions {
   variantFallback?: boolean;
 }
 
-function canUseNativeSymbolCollection(options: VbSymbolCollectionOptions): boolean {
-  return (
-    options.implicitAssignments !== false &&
-    options.inferTypes !== false &&
-    options.variantFallback !== false
-  );
-}
-
 interface VbDocCommentLookup {
   tokens: VbToken[];
   nextIndex: number;
@@ -3209,12 +3114,6 @@ export function summarizeAspFileAnalysis(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): FileAnalysisSummary {
-  if (nativeSemanticsEnabled()) {
-    const native = tryNativeSummarizeAspFileAnalysis(parsed, context);
-    if (native) {
-      return native;
-    }
-  }
   return summarizeAspFileAnalysisTypeScript(parsed, context);
 }
 
@@ -3223,12 +3122,6 @@ export async function summarizeAspFileAnalysisAsync(
   context: VbProjectContext = {},
 ): Promise<FileAnalysisSummary> {
   const analysisParsed = await ensureVbscriptCstForAsyncAnalysis(parsed);
-  if (nativeSemanticsEnabled()) {
-    const native = await tryNativeSummarizeAspFileAnalysisAsync(analysisParsed, context);
-    if (native) {
-      return native;
-    }
-  }
   return summarizeAspFileAnalysisTypeScript(analysisParsed, context);
 }
 
@@ -3243,15 +3136,7 @@ export async function summarizeAspFileAnalysisFromTextAsync(
   if (cached) {
     return cached;
   }
-  const native = nativeSemanticsEnabled()
-    ? await tryNativeSummarizeAspFileAnalysisFromTextAsync(uri, text, settings, context)
-    : undefined;
-  const result =
-    native ??
-    summarizeAspFileAnalysisTypeScript(
-      parseAspDocumentTypeScriptOnly(uri, text, settings),
-      context,
-    );
+  const result = summarizeAspFileAnalysisTypeScript(parseAspDocument(uri, text, settings), context);
   if (cacheKey) {
     setVbFromTextCache(cacheKey, text, result);
   }
@@ -3295,28 +3180,6 @@ async function ensureVbscriptCstForAsyncAnalysis(
   // Async parsed documents may be skeletons. Parsed-document analysis paths must be safe
   // for server callers even when they later fall back from native semantics to TypeScript.
   return hydrateVbscriptCst(parsed);
-}
-
-function nativeSemanticsEnabled(): boolean {
-  return process.env.ASP_LSP_NATIVE_SEMANTICS !== "0";
-}
-
-function parseAspDocumentTypeScriptOnly(
-  uri: string,
-  text: string,
-  settings: AspSettings,
-): ReturnType<typeof parseAspDocument> {
-  const previous = process.env.ASP_LSP_ANALYSIS_BACKEND;
-  process.env.ASP_LSP_ANALYSIS_BACKEND = "typescript";
-  try {
-    return parseAspDocument(uri, text, settings);
-  } finally {
-    if (previous === undefined) {
-      delete process.env.ASP_LSP_ANALYSIS_BACKEND;
-    } else {
-      process.env.ASP_LSP_ANALYSIS_BACKEND = previous;
-    }
-  }
 }
 
 function vbFromTextCacheKey(
