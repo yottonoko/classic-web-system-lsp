@@ -1143,8 +1143,50 @@ impl Ide {
         Ok(Value::Array(values))
     }
 
-    pub fn formatting_edits(&self, _uri: &str) -> Value {
-        Value::Array(Vec::new())
+    pub fn formatting_edits(
+        &self,
+        uri: &str,
+        range: Option<TextRange>,
+        lsp_options: &Value,
+        settings: &Value,
+    ) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let text = document.text(&self.db);
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let options = FormattingOptions::from_values(lsp_options, settings);
+        let (start, end) = if let Some(range) = range {
+            let start = position_to_utf16_offset(
+                text,
+                range.start.line.try_into().unwrap_or(0),
+                range.start.character.try_into().unwrap_or(0),
+            )
+            .map(|offset| line_start_offset(text, offset))
+            .unwrap_or(0);
+            let end = position_to_utf16_offset(
+                text,
+                range.end.line.try_into().unwrap_or(usize::MAX),
+                range.end.character.try_into().unwrap_or(usize::MAX),
+            )
+            .map(|offset| line_end_offset(text, offset))
+            .unwrap_or_else(|| utf16_len(text));
+            (start, end)
+        } else {
+            (0, utf16_len(text))
+        };
+        let formatted = format_text(text, &parsed, &options, start, end)?;
+        let original = slice_utf16(text, start, end)?;
+        if formatted == original {
+            return Ok(Value::Array(Vec::new()));
+        }
+        Ok(serde_json::json!([{
+            "range": range_from_offsets(text, start, end).unwrap_or_else(|| serde_json::json!({
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 },
+            })),
+            "newText": formatted,
+        }]))
     }
 
     pub fn embedded_virtual_documents(
@@ -1973,6 +2015,446 @@ fn range_end_offset(text: &str, range: &Value) -> Option<usize> {
         text,
         range.pointer("/end/line")?.as_u64()?.try_into().ok()?,
         range.pointer("/end/character")?.as_u64()?.try_into().ok()?,
+    )
+}
+
+#[derive(Clone)]
+struct FormattingRegion {
+    kind: String,
+    language: String,
+    start: usize,
+    end: usize,
+    content_start: usize,
+    content_end: usize,
+}
+
+struct FormattingOptions {
+    tab_size: usize,
+    insert_spaces: bool,
+    indent_size: Option<usize>,
+    indent_style: Option<String>,
+    ignore_vbscript_tag_indent: bool,
+    uppercase_keywords: bool,
+}
+
+impl FormattingOptions {
+    fn from_values(lsp_options: &Value, settings: &Value) -> Self {
+        let format = settings.get("format").unwrap_or(&Value::Null);
+        Self {
+            tab_size: lsp_options
+                .get("tabSize")
+                .and_then(Value::as_u64)
+                .and_then(|value| value.try_into().ok())
+                .unwrap_or(2),
+            insert_spaces: lsp_options
+                .get("insertSpaces")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            indent_size: format
+                .get("indentSize")
+                .and_then(Value::as_u64)
+                .and_then(|value| value.try_into().ok()),
+            indent_style: format
+                .get("indentStyle")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            ignore_vbscript_tag_indent: format
+                .get("ignoreVbscriptTagIndent")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            uppercase_keywords: format
+                .get("uppercaseKeywords")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }
+    }
+
+    fn indent_unit(&self) -> String {
+        if self.indent_style.as_deref() == Some("tab")
+            || (self.indent_style.is_none() && !self.insert_spaces)
+        {
+            "\t".to_string()
+        } else {
+            " ".repeat(self.indent_size.unwrap_or(self.tab_size))
+        }
+    }
+
+    fn indent_size(&self) -> usize {
+        self.indent_size.unwrap_or(self.tab_size)
+    }
+}
+
+fn format_text(
+    text: &str,
+    parsed: &Value,
+    options: &FormattingOptions,
+    start: usize,
+    end: usize,
+) -> Result<String, String> {
+    let mut regions = parsed
+        .get("regions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(formatting_region)
+        .filter(|region| region.end > start && region.start < end)
+        .collect::<Vec<_>>();
+    regions.sort_by_key(|region| {
+        (
+            region.start,
+            if region.kind == "html" { 1 } else { 0 },
+            std::cmp::Reverse(region.end),
+        )
+    });
+
+    let mut pieces = Vec::new();
+    let mut cursor = start;
+    for region in regions {
+        if region.end <= cursor {
+            continue;
+        }
+        if region.start > cursor {
+            pieces.push(slice_utf16(text, cursor, region.start.min(end))?);
+        }
+        let region_start = region.start.max(start);
+        let region_end = region.end.min(end);
+        if region_start < region_end {
+            pieces.push(format_region(
+                text,
+                &region,
+                options,
+                region_start,
+                region_end,
+            )?);
+        }
+        cursor = cursor.max(region_end);
+    }
+    if cursor < end {
+        pieces.push(slice_utf16(text, cursor, end)?);
+    }
+    Ok(pieces.join(""))
+}
+
+fn formatting_region(value: &Value) -> Option<FormattingRegion> {
+    Some(FormattingRegion {
+        kind: value.get("kind")?.as_str()?.to_string(),
+        language: value.get("language")?.as_str()?.to_string(),
+        start: value.get("start")?.as_u64()?.try_into().ok()?,
+        end: value.get("end")?.as_u64()?.try_into().ok()?,
+        content_start: value.get("contentStart")?.as_u64()?.try_into().ok()?,
+        content_end: value.get("contentEnd")?.as_u64()?.try_into().ok()?,
+    })
+}
+
+fn format_region(
+    text: &str,
+    region: &FormattingRegion,
+    options: &FormattingOptions,
+    start: usize,
+    end: usize,
+) -> Result<String, String> {
+    if region.language != "vbscript" && region.kind != "asp-directive" {
+        return slice_utf16(text, start, end);
+    }
+    if start != region.start || end != region.end {
+        return format_vbscript_block(&slice_utf16(text, start, end)?, options, 0);
+    }
+    if region.kind == "asp-expression" {
+        let expression = format_vbscript_line(
+            slice_utf16(text, region.content_start, region.content_end)?.trim(),
+            options,
+        );
+        return Ok(format!("<%= {expression} %>"));
+    }
+    if region.kind == "asp-directive" {
+        let directive = one_line(&slice_utf16(
+            text,
+            region.content_start,
+            region.content_end,
+        )?);
+        let normalized = directive.strip_prefix('@').unwrap_or(&directive).trim();
+        return Ok(format!("<%@ {normalized} %>"));
+    }
+    let content = slice_utf16(text, region.content_start, region.content_end)?;
+    if !content.contains('\n') && !content.contains('\r') {
+        return Ok(format!(
+            "<% {} %>",
+            format_vbscript_line(content.trim(), options)
+        ));
+    }
+    let base_indent = vbscript_tag_indent_level(text, region, options);
+    let formatted = format_vbscript_block(&content, options, base_indent)?;
+    let unit = options.indent_unit();
+    if region.kind == "asp-block" {
+        return Ok(format!("<%\n{formatted}\n{}%>", unit.repeat(base_indent)));
+    }
+    let before = slice_utf16(text, region.start, region.content_start)?;
+    let after = slice_utf16(text, region.content_end, region.end)?;
+    Ok(format!(
+        "{before}\n{formatted}\n{}{after}",
+        unit.repeat(base_indent)
+    ))
+}
+
+fn format_vbscript_block(
+    text: &str,
+    options: &FormattingOptions,
+    base_indent_level: usize,
+) -> Result<String, String> {
+    let unit = options.indent_unit();
+    let normalized = text
+        .trim_start_matches(['\r', '\n', ' ', '\t'])
+        .trim_end_matches(['\r', '\n', ' ', '\t']);
+    let mut indent_level = base_indent_level;
+    let mut formatted = Vec::new();
+    let mut previous_significant: Option<String> = None;
+    for line in normalized.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            formatted.push(String::new());
+            continue;
+        }
+        let continues_previous = previous_significant
+            .as_deref()
+            .is_some_and(is_line_continuation);
+        if !continues_previous && dedents_before_line(trimmed) {
+            indent_level = indent_level.saturating_sub(1).max(base_indent_level);
+        }
+        let line_indent = indent_level + usize::from(continues_previous);
+        let formatted_line = format_vbscript_line(trimmed, options);
+        formatted.push(format!("{}{}", unit.repeat(line_indent), formatted_line));
+        if !continues_previous && indents_after_line(trimmed) {
+            indent_level += 1;
+        }
+        previous_significant = Some(formatted_line);
+    }
+    Ok(formatted.join("\n"))
+}
+
+fn format_vbscript_line(line: &str, options: &FormattingOptions) -> String {
+    let (code, comment) = split_vbscript_comment(line);
+    let mut formatted = normalize_vbscript_code_spacing(code.trim(), options);
+    if let Some(comment) = comment {
+        if !formatted.is_empty() {
+            formatted.push(' ');
+        }
+        formatted.push_str(comment.trim_start());
+    }
+    formatted
+}
+
+fn split_vbscript_comment(line: &str) -> (&str, Option<&str>) {
+    let mut in_string = false;
+    let mut previous_was_quote = false;
+    for (index, character) in line.char_indices() {
+        if character == '"' {
+            if in_string && previous_was_quote {
+                previous_was_quote = false;
+                continue;
+            }
+            in_string = !in_string;
+            previous_was_quote = true;
+            continue;
+        }
+        previous_was_quote = false;
+        if character == '\'' && !in_string {
+            return (&line[..index], Some(&line[index..]));
+        }
+    }
+    (line, None)
+}
+
+fn normalize_vbscript_code_spacing(code: &str, options: &FormattingOptions) -> String {
+    let mut result = String::new();
+    let mut chars = code.chars().peekable();
+    let mut in_string = false;
+    let mut pending_space = false;
+    while let Some(character) = chars.next() {
+        if character == '"' {
+            result.push(character);
+            if in_string && chars.peek() == Some(&'"') {
+                result.push(chars.next().unwrap_or('"'));
+            } else {
+                in_string = !in_string;
+            }
+            continue;
+        }
+        if in_string {
+            result.push(character);
+            continue;
+        }
+        if character.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+        match character {
+            '=' | ':' => {
+                trim_trailing_space(&mut result);
+                push_space_if_needed(&mut result);
+                result.push(character);
+                result.push(' ');
+                pending_space = false;
+            }
+            ',' => {
+                trim_trailing_space(&mut result);
+                result.push(',');
+                result.push(' ');
+                pending_space = false;
+            }
+            ')' | ']' => {
+                trim_trailing_space(&mut result);
+                result.push(character);
+                pending_space = false;
+            }
+            '.' | '(' | '[' => {
+                trim_trailing_space(&mut result);
+                result.push(character);
+                pending_space = false;
+            }
+            _ => {
+                if pending_space {
+                    push_space_if_needed(&mut result);
+                    pending_space = false;
+                }
+                if options.uppercase_keywords {
+                    result.push_str(&uppercase_keyword(character, &mut chars));
+                } else {
+                    result.push(character);
+                }
+            }
+        }
+    }
+    result.trim_end().to_string()
+}
+
+fn uppercase_keyword(first: char, chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut word = first.to_string();
+    while let Some(next) = chars.peek().copied() {
+        if !is_identifier_char(next) {
+            break;
+        }
+        word.push(chars.next().unwrap_or(next));
+    }
+    if is_vbscript_keyword(&word) {
+        word.to_uppercase()
+    } else {
+        word
+    }
+}
+
+fn push_space_if_needed(result: &mut String) {
+    if !result.is_empty() && !result.ends_with(' ') {
+        result.push(' ');
+    }
+}
+
+fn trim_trailing_space(result: &mut String) {
+    while result.ends_with(' ') {
+        result.pop();
+    }
+}
+
+fn dedents_before_line(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    lower.starts_with("end ")
+        || lower == "else"
+        || lower.starts_with("elseif ")
+        || lower.starts_with("next")
+        || lower.starts_with("loop")
+        || lower.starts_with("wend")
+}
+
+fn indents_after_line(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    (lower.starts_with("class ")
+        || lower.starts_with("sub ")
+        || lower.starts_with("function ")
+        || lower.starts_with("property ")
+        || lower.starts_with("with ")
+        || lower.starts_with("for ")
+        || lower.starts_with("do")
+        || lower.starts_with("while ")
+        || lower.ends_with(" then"))
+        && !lower.starts_with("end ")
+}
+
+fn is_line_continuation(line: &str) -> bool {
+    line.trim_end().ends_with('_')
+}
+
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn vbscript_tag_indent_level(
+    text: &str,
+    region: &FormattingRegion,
+    options: &FormattingOptions,
+) -> usize {
+    if options.ignore_vbscript_tag_indent {
+        return 0;
+    }
+    let line_start = line_start_offset(text, region.start);
+    let indent = slice_utf16(text, line_start, region.start).unwrap_or_default();
+    indent_width(&indent, options) / options.indent_size().max(1)
+}
+
+fn indent_width(indent: &str, options: &FormattingOptions) -> usize {
+    indent
+        .chars()
+        .map(|character| {
+            if character == '\t' {
+                options.tab_size
+            } else {
+                1
+            }
+        })
+        .sum()
+}
+
+fn line_start_offset(text: &str, offset: usize) -> usize {
+    let mut start = 0;
+    for (char_offset, character) in utf16_chars(text) {
+        if char_offset >= offset {
+            break;
+        }
+        if character == '\n' {
+            start = char_offset + 1;
+        }
+    }
+    start
+}
+
+fn line_end_offset(text: &str, offset: usize) -> usize {
+    for (char_offset, character) in utf16_chars(text) {
+        if char_offset >= offset && character == '\n' {
+            return char_offset;
+        }
+    }
+    utf16_len(text)
+}
+
+fn is_vbscript_keyword(word: &str) -> bool {
+    matches!(
+        word.to_lowercase().as_str(),
+        "class"
+            | "dim"
+            | "do"
+            | "else"
+            | "elseif"
+            | "end"
+            | "for"
+            | "function"
+            | "if"
+            | "loop"
+            | "next"
+            | "property"
+            | "set"
+            | "sub"
+            | "then"
+            | "wend"
+            | "while"
+            | "with"
     )
 }
 

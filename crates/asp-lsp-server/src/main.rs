@@ -1244,7 +1244,13 @@ fn handle_request(
         | "textDocument/rangeFormatting"
         | "textDocument/onTypeFormatting" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
-            let result = state.ide.formatting_edits(&uri);
+            let range = (request.method == "textDocument/rangeFormatting")
+                .then(|| request_range(&request.params))
+                .transpose()?;
+            let options = request.params.get("options").unwrap_or(&Value::Null);
+            let result = state
+                .ide
+                .formatting_edits(&uri, range, options, &state.settings)?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -1254,7 +1260,9 @@ fn handle_request(
         "textDocument/willSaveWaitUntil" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let result = if format_on_save_enabled(&state.settings) {
-                state.ide.formatting_edits(&uri)
+                state
+                    .ide
+                    .formatting_edits(&uri, None, &Value::Null, &state.settings)?
             } else {
                 Value::Array(Vec::new())
             };

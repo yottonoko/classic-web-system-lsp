@@ -549,7 +549,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
                     "uri": uri,
                     "languageId": "classic-asp",
                     "version": 1,
-                    "text": "<%\nFunction BuildName(first)\nBuildName = first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\n%>",
+                    "text": "<%\nFunction BuildName(first)\nBuildName=first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\n%>",
                 },
             },
         }),
@@ -927,7 +927,10 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
             "options": { "tabSize": 2, "insertSpaces": true },
         }),
     );
-    assert_eq!(formatting["result"], json!([]));
+    assert!(formatting["result"][0]["newText"]
+        .as_str()
+        .expect("formatted text")
+        .contains("  Response.Write BuildName(\"B\")"));
 
     let range_formatting = request(
         &mut stdin,
@@ -943,7 +946,10 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
             "options": { "tabSize": 2, "insertSpaces": true },
         }),
     );
-    assert_eq!(range_formatting["result"], json!([]));
+    assert!(range_formatting["result"][0]["newText"]
+        .as_str()
+        .expect("range formatted text")
+        .contains("BuildName = first"));
 
     let on_type_formatting = request(
         &mut stdin,
@@ -957,7 +963,10 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
             "options": { "tabSize": 2, "insertSpaces": true },
         }),
     );
-    assert_eq!(on_type_formatting["result"], json!([]));
+    assert!(on_type_formatting["result"][0]["newText"]
+        .as_str()
+        .expect("on type formatted text")
+        .contains("  Response.Write BuildName(\"B\")"));
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
