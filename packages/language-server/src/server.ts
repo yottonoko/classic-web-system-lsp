@@ -182,6 +182,7 @@ const jsRealpathCache = new Map<string, string>();
 const jsFileStatCache = new Map<string, JsFileStat | undefined>();
 const semanticTokenResults = new Map<string, { uri: string; data: number[] }>();
 const latestSemanticTokenResultByUri = new Map<string, string>();
+const pendingSemanticJavascriptTokenBuilds = new Map<string, Promise<void>>();
 const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
@@ -199,6 +200,14 @@ const languageServerVersion = "0.3.6";
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
 const backgroundAnalysisIdleDelayMs = 5_000;
+const semanticTokensLargeSourceThreshold = internalTestThreshold(
+  "ASP_LSP_TEST_SEMANTIC_TOKENS_LARGE_SOURCE_THRESHOLD",
+  1024 * 1024,
+);
+const semanticTokensLargeJavascriptThreshold = internalTestThreshold(
+  "ASP_LSP_TEST_SEMANTIC_TOKENS_LARGE_JAVASCRIPT_THRESHOLD",
+  128 * 1024,
+);
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
 let workspaceRoots: string[] = [];
 let clientLocale = "en";
@@ -324,6 +333,8 @@ interface CachedAnalysis {
   vbDiagnostics?: DiagnosticCacheEntry;
   jsSyntaxDiagnostics?: CachedJsDiagnosticsEntry;
   jsSlowDiagnostics?: CachedJsDiagnosticsEntry;
+  semanticTokensFull?: CachedSemanticTokensEntry;
+  semanticJavascriptTokens?: CachedSemanticJavascriptTokensEntry;
   vbProjectContext?: { key: string; rootKey: string; context: VbProjectContext };
   localVbProjectContext?: { key: string; context: VbProjectContext };
   immediateLocalVbProjectContext?: { key: string; context: VbProjectContext };
@@ -343,6 +354,23 @@ interface CachedAnalysis {
     key: string;
     analysis: VbProjectAnalysis;
   };
+}
+
+interface CachedSemanticTokensEntry {
+  key: string;
+  data: number[];
+}
+
+interface CachedSemanticJavascriptTokensEntry {
+  key: string;
+  tokens: SemanticTokenData[];
+}
+
+interface EmbeddedSemanticTokenOptions {
+  settings: AspSettings;
+  jsVirtuals: VirtualDocument[];
+  deferLargeJavascript: boolean;
+  javascriptCacheKey: string;
 }
 
 interface DocumentIdentity {
@@ -3106,6 +3134,15 @@ function logDebugSummary(settings: AspSettings, message: string): void {
   if (isDebugSummaryEnabled(settings)) {
     connection.console.info(message);
   }
+}
+
+function internalTestThreshold(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (process.env.NODE_ENV !== "test" || !raw) {
+    return fallback;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
 function finishDebugStep(
@@ -7122,7 +7159,7 @@ function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.i
   }
 }
 
-function requestVisualRefresh(reason: string): void {
+function requestSemanticTokensRefresh(reason: string): void {
   if (semanticTokensRefreshSupported) {
     try {
       void Promise.resolve(connection.languages.semanticTokens.refresh()).catch((error: unknown) =>
@@ -7136,6 +7173,10 @@ function requestVisualRefresh(reason: string): void {
       );
     }
   }
+}
+
+function requestVisualRefresh(reason: string): void {
+  requestSemanticTokensRefresh(reason);
   if (inlayHintRefreshSupported) {
     void connection.languages.inlayHint
       .refresh()
@@ -12807,10 +12848,12 @@ async function buildSemanticTokensAsync(
   cached: CachedDocument,
   range?: Range,
 ): Promise<SemanticTokens> {
+  const settings = cachedSettings(cached.source.uri);
   return buildSemanticTokensWithContextAsync(
     cached,
-    await interactiveVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+    await interactiveVbProjectContextAsync(cached, settings),
     range,
+    settings,
   );
 }
 
@@ -12818,7 +12861,15 @@ async function buildSemanticTokensWithContextAsync(
   cached: CachedDocument,
   vbContext: VbProjectContext,
   range?: Range,
+  settings = cachedSettings(cached.source.uri),
 ): Promise<SemanticTokens> {
+  const full = !range;
+  const jsVirtuals = jsVirtualDocuments(cached);
+  const fullCacheKey = full ? semanticTokensFullCacheKey(cached, settings, jsVirtuals) : undefined;
+  const analysis = full ? analysisFor(cached) : undefined;
+  if (fullCacheKey && analysis?.semanticTokensFull?.key === fullCacheKey) {
+    return { data: [...analysis.semanticTokensFull.data] };
+  }
   const rangeStart = range ? cached.source.offsetAt(range.start) : 0;
   const rangeEnd = range ? cached.source.offsetAt(range.end) : cached.source.getText().length;
   const tokens: SemanticTokenData[] = [];
@@ -12882,21 +12933,30 @@ async function buildSemanticTokensWithContextAsync(
   }
   addFallbackVbSemanticTokens(tokens, cached, vbContext, rangeStart, rangeEnd);
   addIncludeSemanticTokens(tokens, cached, rangeStart, rangeEnd);
-  await addEmbeddedSemanticTokensAsync(tokens, cached, rangeStart, rangeEnd);
+  const javascriptCacheKey = semanticJavascriptTokensCacheKey(cached, settings, jsVirtuals);
+  const javascriptDeferred = await addEmbeddedSemanticTokensAsync(
+    tokens,
+    cached,
+    rangeStart,
+    rangeEnd,
+    {
+      settings,
+      jsVirtuals,
+      deferLargeJavascript: full,
+      javascriptCacheKey,
+    },
+  );
   const uniqueTokens = dedupeSemanticTokens(tokens).sort(
     (left, right) => left.line - right.line || left.character - right.character,
   );
-  const builder = new SemanticTokensBuilder();
-  for (const token of uniqueTokens) {
-    builder.push(
-      token.line,
-      token.character,
-      token.length,
-      semanticTokenTypes.indexOf(token.tokenType as (typeof semanticTokenTypes)[number]),
-      semanticTokenModifierBitset(token.tokenModifiers),
-    );
+  const result = semanticTokensFromData(uniqueTokens);
+  if (fullCacheKey && !javascriptDeferred) {
+    analysisFor(cached).semanticTokensFull = {
+      key: fullCacheKey,
+      data: [...result.data],
+    };
   }
-  return builder.build();
+  return result;
 }
 
 function addSemanticTokenInSourceRange(
@@ -13086,6 +13146,20 @@ function dedupeSemanticTokens(tokens: SemanticTokenData[]): SemanticTokenData[] 
   });
 }
 
+function semanticTokensFromData(tokens: readonly SemanticTokenData[]): SemanticTokens {
+  const builder = new SemanticTokensBuilder();
+  for (const token of tokens) {
+    builder.push(
+      token.line,
+      token.character,
+      token.length,
+      semanticTokenTypes.indexOf(token.tokenType as (typeof semanticTokenTypes)[number]),
+      semanticTokenModifierBitset(token.tokenModifiers),
+    );
+  }
+  return builder.build();
+}
+
 function semanticTokenModifierBitset(modifiers: readonly string[] | undefined): number {
   let bitset = 0;
   for (const modifier of modifiers ?? []) {
@@ -13145,12 +13219,64 @@ function clearSemanticTokensForUri(uri: string): void {
   }
 }
 
+function semanticTokensFullCacheKey(
+  cached: CachedDocument,
+  settings: AspSettings,
+  jsVirtuals: readonly VirtualDocument[],
+): string {
+  return JSON.stringify({
+    uri: cached.source.uri,
+    version: cached.source.version,
+    generation: cached.generation,
+    parseSettings: parseSettingsIdentity(settings),
+    diagnostics: diagnosticsIdentity(settings),
+    workspaceGeneration,
+    includeResolutionGeneration,
+    jsProjectGeneration,
+    javascript: jsVirtualFingerprints(jsVirtuals),
+  });
+}
+
+function semanticJavascriptTokensCacheKey(
+  cached: CachedDocument,
+  settings: AspSettings,
+  jsVirtuals: readonly VirtualDocument[],
+): string {
+  return JSON.stringify({
+    uri: cached.source.uri,
+    version: cached.source.version,
+    generation: cached.generation,
+    settings: jsProjectSettingsIdentity(settings),
+    jsProjectGeneration,
+    javascript: jsVirtualFingerprints(jsVirtuals),
+  });
+}
+
+function jsVirtualFingerprints(jsVirtuals: readonly VirtualDocument[]) {
+  return jsVirtuals.map((virtual) => ({
+    uri: virtual.uri,
+    languageId: virtual.languageId,
+    text: textFingerprint(virtual.text),
+  }));
+}
+
+function shouldDeferFullJavascriptSemanticTokens(
+  cached: CachedDocument,
+  jsVirtuals: readonly VirtualDocument[],
+): boolean {
+  return (
+    cached.source.getText().length >= semanticTokensLargeSourceThreshold ||
+    jsVirtuals.some((virtual) => virtual.text.length >= semanticTokensLargeJavascriptThreshold)
+  );
+}
+
 async function addEmbeddedSemanticTokensAsync(
   tokens: SemanticTokenData[],
   cached: CachedDocument,
   rangeStart: number,
   rangeEnd: number,
-): Promise<void> {
+  options: EmbeddedSemanticTokenOptions,
+): Promise<boolean> {
   const css = getCachedVirtual(cached, "css");
   if (css && virtualOverlapsSourceRange(css, rangeStart, rangeEnd)) {
     const pattern = /\b([A-Za-z-]+)\s*:/g;
@@ -13174,11 +13300,74 @@ async function addEmbeddedSemanticTokensAsync(
       }
     }
   }
-  for (const virtual of jsVirtualDocuments(cached)) {
+  if (
+    options.jsVirtuals.length > 0 &&
+    options.deferLargeJavascript &&
+    shouldDeferFullJavascriptSemanticTokens(cached, options.jsVirtuals)
+  ) {
+    const cachedJavascript = analysisFor(cached).semanticJavascriptTokens;
+    if (cachedJavascript) {
+      tokens.push(...cachedJavascript.tokens);
+      return false;
+    }
+    if (pendingSemanticJavascriptTokenBuilds.has(options.javascriptCacheKey)) {
+      const javascriptTokens = await computeJavascriptSemanticTokensAsync(
+        cached,
+        options.settings,
+        options.jsVirtuals,
+        rangeStart,
+        rangeEnd,
+      );
+      analysisFor(cached).semanticJavascriptTokens = {
+        key: options.javascriptCacheKey,
+        tokens: javascriptTokens,
+      };
+      tokens.push(...javascriptTokens);
+      return false;
+    }
+    logDebugSummary(
+      options.settings,
+      `[asp-lsp] semanticTokens.javascript.deferred: ${cached.source.uri}, virtuals=${options.jsVirtuals.length}`,
+    );
+    scheduleSemanticJavascriptTokenCache(
+      cached,
+      options.settings,
+      options.jsVirtuals,
+      options.javascriptCacheKey,
+    );
+    return true;
+  }
+  const jsVirtuals = options.jsVirtuals.filter((virtual) =>
+    virtualOverlapsSourceRange(virtual, rangeStart, rangeEnd),
+  );
+  if (jsVirtuals.length === 0) {
+    return false;
+  }
+  tokens.push(
+    ...(await computeJavascriptSemanticTokensAsync(
+      cached,
+      options.settings,
+      jsVirtuals,
+      rangeStart,
+      rangeEnd,
+    )),
+  );
+  return false;
+}
+
+async function computeJavascriptSemanticTokensAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+  jsVirtuals: readonly VirtualDocument[],
+  rangeStart: number,
+  rangeEnd: number,
+): Promise<SemanticTokenData[]> {
+  const tokens: SemanticTokenData[] = [];
+  for (const virtual of jsVirtuals) {
     if (!virtualOverlapsSourceRange(virtual, rangeStart, rangeEnd)) {
       continue;
     }
-    const project = await createJsLanguageServiceAsync(virtual, cachedSettings(cached.source.uri));
+    const project = await createJsLanguageServiceAsync(virtual, settings);
     addJavaScriptSemanticTokens(
       tokens,
       cached,
@@ -13188,6 +13377,92 @@ async function addEmbeddedSemanticTokensAsync(
       rangeStart,
       rangeEnd,
     );
+  }
+  return tokens;
+}
+
+function scheduleSemanticJavascriptTokenCache(
+  cached: CachedDocument,
+  settings: AspSettings,
+  jsVirtuals: readonly VirtualDocument[],
+  javascriptCacheKey: string,
+): void {
+  if (pendingSemanticJavascriptTokenBuilds.has(javascriptCacheKey)) {
+    return;
+  }
+  const sourceLength = cached.source.getText().length;
+  const promise = new Promise<void>((resolve) => {
+    setImmediate(() => {
+      const current = cache.get(cached.source.uri);
+      if (
+        current !== cached ||
+        current.source.version !== cached.source.version ||
+        current.generation !== cached.generation
+      ) {
+        pendingSemanticJavascriptTokenBuilds.delete(javascriptCacheKey);
+        resolve();
+        return;
+      }
+      void computeAndCacheSemanticJavascriptTokensAsync(
+        cached,
+        settings,
+        jsVirtuals,
+        javascriptCacheKey,
+        sourceLength,
+      ).finally(resolve);
+    });
+  });
+  pendingSemanticJavascriptTokenBuilds.set(javascriptCacheKey, promise);
+}
+
+async function computeAndCacheSemanticJavascriptTokensAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+  jsVirtuals: readonly VirtualDocument[],
+  javascriptCacheKey: string,
+  sourceLength: number,
+): Promise<void> {
+  try {
+    const tokens = await computeJavascriptSemanticTokensAsync(
+      cached,
+      settings,
+      jsVirtuals,
+      0,
+      sourceLength,
+    );
+    const current = cache.get(cached.source.uri);
+    if (
+      current !== cached ||
+      current.source.version !== cached.source.version ||
+      current.generation !== cached.generation
+    ) {
+      return;
+    }
+    const currentJsVirtuals = jsVirtualDocuments(current);
+    const currentSettings = cachedSettings(current.source.uri);
+    const currentJavascriptCacheKey = semanticJavascriptTokensCacheKey(
+      current,
+      currentSettings,
+      currentJsVirtuals,
+    );
+    const analysis = analysisFor(current);
+    analysis.semanticJavascriptTokens = {
+      key: currentJavascriptCacheKey,
+      tokens,
+    };
+    analysis.semanticTokensFull = undefined;
+    clearSemanticTokensForUri(current.source.uri);
+    logDebugSummary(
+      currentSettings,
+      `[asp-lsp] semanticTokens.javascript.cached: ${current.source.uri}, tokens=${tokens.length}`,
+    );
+    requestSemanticTokensRefresh("semanticTokens.javascript.cached");
+  } catch (error) {
+    connection.console.warn(
+      `[asp-lsp] semanticTokens.javascript.cache.failed: ${cached.source.uri}, error=${errorMessage(error)}`,
+    );
+  } finally {
+    pendingSemanticJavascriptTokenBuilds.delete(javascriptCacheKey);
   }
 }
 
@@ -13215,31 +13490,72 @@ function addJavaScriptSemanticTokens(
   rangeStart: number,
   rangeEnd: number,
 ): void {
-  for (const span of virtualSpansForSourceRange(virtual, rangeStart, rangeEnd)) {
-    const spans = service.getEncodedSemanticClassifications(
+  for (const span of semanticVirtualSpansForSourceRange(virtual, rangeStart, rangeEnd)) {
+    addJavaScriptSemanticTokensForSpan(
+      tokens,
+      cached,
+      virtual,
+      service,
       fileName,
       span,
-      ts.SemanticClassificationFormat.TwentyTwenty,
-    ).spans;
-    for (let index = 0; index + 2 < spans.length; index += 3) {
-      const token = jsSemanticTokenFromClassification(spans[index + 2]);
-      if (!token) {
-        continue;
-      }
-      addVirtualWordToken(
-        tokens,
-        cached.source,
-        cached,
-        virtual,
-        spans[index],
-        spans[index + 1],
-        token.tokenType,
-        rangeStart,
-        rangeEnd,
-        token.tokenModifiers,
-      );
-    }
+      rangeStart,
+      rangeEnd,
+    );
   }
+}
+
+function addJavaScriptSemanticTokensForSpan(
+  tokens: SemanticTokenData[],
+  cached: CachedDocument,
+  virtual: VirtualDocument,
+  service: ts.LanguageService,
+  fileName: string,
+  span: { start: number; length: number },
+  rangeStart: number,
+  rangeEnd: number,
+): void {
+  const spans = service.getEncodedSemanticClassifications(
+    fileName,
+    span,
+    ts.SemanticClassificationFormat.TwentyTwenty,
+  ).spans;
+  for (let index = 0; index + 2 < spans.length; index += 3) {
+    const token = jsSemanticTokenFromClassification(spans[index + 2]);
+    if (!token) {
+      continue;
+    }
+    addVirtualWordToken(
+      tokens,
+      cached.source,
+      cached,
+      virtual,
+      spans[index],
+      spans[index + 1],
+      token.tokenType,
+      rangeStart,
+      rangeEnd,
+      token.tokenModifiers,
+    );
+  }
+}
+
+function semanticVirtualSpansForSourceRange(
+  virtual: VirtualDocument,
+  rangeStart: number,
+  rangeEnd: number,
+): Array<{ start: number; length: number }> {
+  const spans: Array<{ start: number; length: number }> = [];
+  for (const segment of virtual.sourceMap.segments) {
+    const sourceStart = Math.max(segment.sourceStart, rangeStart);
+    const sourceEnd = Math.min(segment.sourceEnd, rangeEnd);
+    if (sourceStart > sourceEnd) {
+      continue;
+    }
+    const virtualStart = segment.virtualStart + (sourceStart - segment.sourceStart);
+    const virtualEnd = segment.virtualStart + (sourceEnd - segment.sourceStart);
+    spans.push({ start: virtualStart, length: Math.max(1, virtualEnd - virtualStart + 1) });
+  }
+  return spans.length > 0 ? spans : [{ start: 0, length: virtual.text.length }];
 }
 
 function virtualOverlapsSourceRange(
@@ -13270,7 +13586,7 @@ function virtualSpansForSourceRange(
     }
     const virtualStart = segment.virtualStart + (sourceStart - segment.sourceStart);
     const virtualEnd = segment.virtualStart + (sourceEnd - segment.sourceStart);
-    spans.push({ start: virtualStart, length: Math.max(1, virtualEnd - virtualStart + 1) });
+    spans.push({ start: virtualStart, length: Math.max(1, virtualEnd - virtualStart) });
   }
   return spans.length > 0 ? spans : [{ start: 0, length: virtual.text.length }];
 }

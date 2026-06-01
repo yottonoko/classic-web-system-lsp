@@ -722,6 +722,102 @@ document.querySelectorAll(".customer-row").forEach((row) => {
       }
     });
 
+    it("defers full JavaScript semantic tokens for large script tags while range stays immediate", async () => {
+      const filler = " ".repeat(512);
+      const source = `<script>
+${filler}
+class LargeDashboardWidget {
+  render(row) {
+    return row.textContent;
+  }
+}
+</script>`;
+      const server = new RpcServer({
+        env: {
+          NODE_ENV: "test",
+          ASP_LSP_TEST_SEMANTIC_TOKENS_LARGE_JAVASCRIPT_THRESHOLD: "128",
+        },
+      });
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = "file:///tmp/js-large-semantic.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const classPosition = positionAt(source, source.indexOf("LargeDashboardWidget"));
+        const rangeTokens = await server.request("textDocument/semanticTokens/range", {
+          textDocument: { uri },
+          range: {
+            start: { line: classPosition.line, character: 0 },
+            end: { line: classPosition.line + 4, character: 0 },
+          },
+        });
+        const decodedRange = decodeSemanticTokens((rangeTokens as { data?: number[] }).data);
+        expect(
+          decodedRange.some((token) =>
+            tokenMatches(source, token, "LargeDashboardWidget", semanticTokenType.class),
+          ),
+        ).toBe(true);
+        expect(
+          decodedRange.some((token) =>
+            tokenMatches(source, token, "render", semanticTokenType.method),
+          ),
+        ).toBe(true);
+
+        const firstFull = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decodedFirstFull = decodeSemanticTokens((firstFull as { data?: number[] }).data);
+        expect(
+          decodedFirstFull.some((token) =>
+            tokenMatches(source, token, "LargeDashboardWidget", semanticTokenType.class),
+          ),
+        ).toBe(false);
+        const decodedSecondFull = await waitForSemanticTokenAsync(
+          server,
+          uri,
+          source,
+          "LargeDashboardWidget",
+          semanticTokenType.class,
+        );
+        expect(
+          decodedSecondFull.some((token) =>
+            tokenMatches(source, token, "LargeDashboardWidget", semanticTokenType.class),
+          ),
+        ).toBe(true);
+        expect(
+          decodedSecondFull.some((token) =>
+            tokenMatches(source, token, "render", semanticTokenType.method),
+          ),
+        ).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("keeps browser JavaScript globals available without a project config", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-empty-js-"));
       const source = `<script>
@@ -9536,6 +9632,27 @@ function tokenMatches(
     token.character === position.character &&
     token.tokenType === tokenType
   );
+}
+
+async function waitForSemanticTokenAsync(
+  server: RpcServer,
+  uri: string,
+  source: string,
+  needle: string,
+  tokenType: number,
+): Promise<DecodedSemanticToken[]> {
+  const deadline = Date.now() + rpcTimeoutMs;
+  while (Date.now() < deadline) {
+    const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+      textDocument: { uri },
+    });
+    const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+    if (decoded.some((token) => tokenMatches(source, token, needle, tokenType))) {
+      return decoded;
+    }
+    await delay(1000);
+  }
+  throw new Error(`Timed out waiting for semantic token ${needle}.`);
 }
 
 function completionLabels(completions: unknown): string[] {
