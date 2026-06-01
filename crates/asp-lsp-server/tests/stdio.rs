@@ -937,7 +937,11 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         json!({ "item": call_hierarchy["result"][0].clone() }),
     );
     assert!(incoming_calls["result"].to_string().contains("RenderName"));
-    assert!(incoming_calls["result"].to_string().contains("BuildName"));
+    assert!(!incoming_calls["result"]
+        .as_array()
+        .expect("incoming calls")
+        .iter()
+        .any(|call| call["from"]["name"] == json!("BuildName")));
 
     let render_hierarchy = request(
         &mut stdin,

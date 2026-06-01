@@ -1036,7 +1036,8 @@ impl Ide {
     }
 
     pub fn call_hierarchy_incoming(&self, item: &Value) -> Result<Value, String> {
-        let Some(target_name) = hierarchy_item_name(item) else {
+        let workspace_symbols = self.workspace_vb_symbols()?;
+        let Some(target) = call_hierarchy_target_symbol(item, &workspace_symbols) else {
             return Ok(Value::Array(Vec::new()));
         };
         let mut calls = Vec::new();
@@ -1044,31 +1045,39 @@ impl Ide {
             let text = document.text(&self.db);
             let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
             let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
-            for range in identifier_ranges(text, &parsed, target_name) {
-                let Some(occurrence_start) = range_start_offset(text, &range) else {
+            for call in call_sites_in_vbscript(text, &parsed) {
+                let Some(resolved) = resolve_symbol_for_identifier(
+                    document_uri,
+                    text,
+                    &workspace_symbols,
+                    &call.name,
+                ) else {
                     continue;
                 };
-                let Some(caller) = enclosing_callable_symbol(text, &symbols, occurrence_start)
-                else {
+                if !same_symbol(resolved, target) {
                     continue;
                 };
-                if caller.get("range") == Some(&range) {
+                if is_symbol_declaration_range(resolved, document_uri, &call.name.range) {
                     continue;
                 }
+                let Some(caller) = enclosing_callable_symbol(text, &symbols, call.offset) else {
+                    continue;
+                };
                 let Some(from) = hierarchy_item_from_symbol(document_uri, caller) else {
                     continue;
                 };
-                merge_call_hierarchy_entry(&mut calls, "from", from, range);
+                merge_call_hierarchy_entry(&mut calls, "from", from, call.range);
             }
         }
         Ok(Value::Array(calls))
     }
 
     pub fn call_hierarchy_outgoing(&self, item: &Value) -> Result<Value, String> {
-        let Some(item_name) = hierarchy_item_name(item) else {
+        let workspace_symbols = self.workspace_vb_symbols()?;
+        let Some(source) = call_hierarchy_target_symbol(item, &workspace_symbols) else {
             return Ok(Value::Array(Vec::new()));
         };
-        let Some(item_uri) = hierarchy_item_uri(item) else {
+        let Some(item_uri) = source.get("sourceUri").and_then(Value::as_str) else {
             return Ok(Value::Array(Vec::new()));
         };
         let Some(document) = self.documents.get(item_uri) else {
@@ -1076,12 +1085,7 @@ impl Ide {
         };
         let text = document.text(&self.db);
         let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
-        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
-        let Some(scope) = symbols
-            .iter()
-            .find(|symbol| symbol_name_eq(symbol, item_name) && is_callable_symbol(symbol))
-            .and_then(|symbol| symbol.get("scopeRange").or_else(|| symbol.get("range")))
-        else {
+        let Some(scope) = source.get("scopeRange") else {
             return Ok(Value::Array(Vec::new()));
         };
         let Some(scope_start) = range_start_offset(text, scope) else {
@@ -1090,29 +1094,26 @@ impl Ide {
         let Some(scope_end) = range_end_offset(text, scope) else {
             return Ok(Value::Array(Vec::new()));
         };
-        let callable_symbols = symbols
-            .iter()
-            .filter(|symbol| is_callable_symbol(symbol))
-            .collect::<Vec<_>>();
         let mut calls = Vec::new();
-        for identifier in identifiers_in_vbscript(text, &parsed) {
-            if identifier.start < scope_start || identifier.end > scope_end {
+        for call in call_sites_in_vbscript(text, &parsed) {
+            if call.offset < scope_start || call.offset > scope_end {
                 continue;
             }
-            let Some(callee) = callable_symbols
-                .iter()
-                .find(|symbol| symbol_name_eq(symbol, &identifier.name))
-                .copied()
+            let Some(callee) =
+                resolve_symbol_for_identifier(item_uri, text, &workspace_symbols, &call.name)
             else {
                 continue;
             };
-            if callee.get("range") == Some(&identifier.range) {
+            if same_symbol(callee, source) || !is_callable_symbol(callee) {
+                continue;
+            }
+            if is_symbol_declaration_range(callee, item_uri, &call.name.range) {
                 continue;
             }
             let Some(to) = hierarchy_item_from_symbol(item_uri, callee) else {
                 continue;
             };
-            merge_call_hierarchy_entry(&mut calls, "to", to, identifier.range);
+            merge_call_hierarchy_entry(&mut calls, "to", to, call.range);
         }
         Ok(Value::Array(calls))
     }
@@ -1428,6 +1429,12 @@ struct IdentifierOccurrence {
     range: Value,
 }
 
+struct CallSite {
+    name: IdentifierOccurrence,
+    offset: usize,
+    range: Value,
+}
+
 struct SemanticToken {
     range: Value,
     token_type: u32,
@@ -1520,6 +1527,20 @@ fn identifier_ranges(text: &str, parsed: &Value, name: &str) -> Vec<Value> {
         .into_iter()
         .filter(|identifier| identifier.name.to_lowercase() == lower_name)
         .map(|identifier| identifier.range)
+        .collect()
+}
+
+fn call_sites_in_vbscript(text: &str, parsed: &Value) -> Vec<CallSite> {
+    identifiers_in_vbscript(text, parsed)
+        .into_iter()
+        .filter_map(|identifier| {
+            let offset = next_non_whitespace_offset(text, identifier.end, '(')?;
+            Some(CallSite {
+                range: identifier.range.clone(),
+                name: identifier,
+                offset,
+            })
+        })
         .collect()
 }
 
@@ -1821,6 +1842,35 @@ fn hierarchy_item_from_symbol(uri: &str, symbol: &Value) -> Option<Value> {
             "name": name,
         },
     }))
+}
+
+fn call_hierarchy_target_symbol<'a>(item: &Value, symbols: &'a [Value]) -> Option<&'a Value> {
+    let item_uri = hierarchy_item_uri(item)?;
+    let item_name = hierarchy_item_name(item)?;
+    let selection_range = item.get("selectionRange")?;
+    symbols.iter().find(|symbol| {
+        is_callable_symbol(symbol)
+            && symbol
+                .get("sourceUri")
+                .and_then(Value::as_str)
+                .is_some_and(|source_uri| source_uri == item_uri)
+            && symbol
+                .get("range")
+                .is_some_and(|range| same_range(range, selection_range))
+            && hierarchy_symbol_name(symbol)
+                .is_some_and(|symbol_name| symbol_name.eq_ignore_ascii_case(item_name))
+    })
+}
+
+fn hierarchy_symbol_name(symbol: &Value) -> Option<String> {
+    let name = symbol.get("name")?.as_str()?;
+    Some(
+        symbol
+            .get("memberOf")
+            .and_then(Value::as_str)
+            .map(|owner| format!("{owner}.{name}"))
+            .unwrap_or_else(|| name.to_string()),
+    )
 }
 
 fn hierarchy_item_name(item: &Value) -> Option<&str> {
