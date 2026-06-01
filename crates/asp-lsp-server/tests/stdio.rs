@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -584,9 +585,156 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         "expected declaration and use highlights"
     );
 
+    let references = request(
+        &mut stdin,
+        &mut reader,
+        17,
+        "textDocument/references",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 16 },
+            "context": { "includeDeclaration": true },
+        }),
+    );
+    assert!(
+        references["result"].as_array().expect("references").len() >= 2,
+        "expected declaration and use references"
+    );
+
+    let prepare_rename = request(
+        &mut stdin,
+        &mut reader,
+        18,
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 16 },
+        }),
+    );
+    assert_eq!(
+        prepare_rename["result"]["start"],
+        json!({ "line": 5, "character": 15 })
+    );
+
+    let rename = request(
+        &mut stdin,
+        &mut reader,
+        19,
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 16 },
+            "newName": "FormatName",
+        }),
+    );
+    assert!(rename["result"]["changes"][uri]
+        .as_array()
+        .expect("rename edits")
+        .iter()
+        .any(|edit| edit["newText"] == json!("FormatName")));
+
+    let workspace_symbols = request(
+        &mut stdin,
+        &mut reader,
+        20,
+        "workspace/symbol",
+        json!({ "query": "Build" }),
+    );
+    assert!(workspace_symbols["result"]
+        .as_array()
+        .expect("workspace symbols")
+        .iter()
+        .any(|symbol| symbol["name"] == json!("BuildName")));
+
+    let semantic_tokens = request(
+        &mut stdin,
+        &mut reader,
+        21,
+        "textDocument/semanticTokens/full",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    let decoded = decode_semantic_tokens(
+        semantic_tokens["result"]["data"]
+            .as_array()
+            .expect("semantic token data"),
+    );
+    assert!(decoded
+        .iter()
+        .any(|token| token.line == 5 && token.character == 15 && token.token_type == 3));
+    assert!(decoded
+        .iter()
+        .any(|token| token.line == 1 && token.character == 19 && token.token_type == 2));
+
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
     assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
+fn indexes_unopened_workspace_files_for_vbscript_references() {
+    let root = std::env::temp_dir().join(format!("asp-lsp-rust-index-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let include = root.join("helpers.inc");
+    fs::write(
+        &include,
+        "<%\nFunction BuildName(first)\nBuildName = first\nEnd Function\n%>",
+    )
+    .expect("write include");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let root_uri = format!("file://{}", root.to_string_lossy());
+    let page_uri = format!("{root_uri}/default.asp");
+
+    initialize_with_root(&mut stdin, &mut reader, &root_uri);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": page_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<!-- #include file=\"helpers.inc\" -->\n<%\nResponse.Write BuildName(\"Ada\")\n%>",
+                },
+            },
+        }),
+    );
+    read_until(&mut reader, |message| {
+        message["method"] == json!("textDocument/publishDiagnostics")
+    });
+
+    let references = request(
+        &mut stdin,
+        &mut reader,
+        30,
+        "textDocument/references",
+        json!({
+            "textDocument": { "uri": page_uri },
+            "position": { "line": 2, "character": 16 },
+            "context": { "includeDeclaration": true },
+        }),
+    );
+    let serialized = references.to_string();
+    assert!(
+        serialized.contains("helpers.inc"),
+        "references: {serialized}"
+    );
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -722,10 +870,27 @@ fn initialize(
     initialize_with_settings(stdin, reader, json!({}));
 }
 
+fn initialize_with_root(
+    stdin: &mut std::process::ChildStdin,
+    reader: &mut BufReader<std::process::ChildStdout>,
+    root_uri: &str,
+) {
+    initialize_with_settings_and_root(stdin, reader, json!({}), root_uri);
+}
+
 fn initialize_with_settings(
     stdin: &mut std::process::ChildStdin,
     reader: &mut BufReader<std::process::ChildStdout>,
     settings: Value,
+) {
+    initialize_with_settings_and_root(stdin, reader, settings, "file:///tmp");
+}
+
+fn initialize_with_settings_and_root(
+    stdin: &mut std::process::ChildStdin,
+    reader: &mut BufReader<std::process::ChildStdout>,
+    settings: Value,
+    root_uri: &str,
 ) {
     write_message(
         stdin,
@@ -735,7 +900,7 @@ fn initialize_with_settings(
             "method": "initialize",
             "params": {
                 "processId": std::process::id(),
-                "rootUri": "file:///tmp",
+                "rootUri": root_uri,
                 "capabilities": {},
                 "initializationOptions": {
                     "settings": settings,
@@ -803,6 +968,38 @@ fn request(
         "{method} returned an error: {response}"
     );
     response
+}
+
+#[derive(Debug)]
+struct DecodedSemanticToken {
+    line: u64,
+    character: u64,
+    token_type: u64,
+}
+
+fn decode_semantic_tokens(data: &[Value]) -> Vec<DecodedSemanticToken> {
+    let mut line = 0;
+    let mut character = 0;
+    let mut tokens = Vec::new();
+    for chunk in data.chunks(5) {
+        if chunk.len() < 5 {
+            continue;
+        }
+        let delta_line = chunk[0].as_u64().expect("delta line");
+        let delta_character = chunk[1].as_u64().expect("delta character");
+        line += delta_line;
+        character = if delta_line == 0 {
+            character + delta_character
+        } else {
+            delta_character
+        };
+        tokens.push(DecodedSemanticToken {
+            line,
+            character,
+            token_type: chunk[3].as_u64().expect("token type"),
+        });
+    }
+    tokens
 }
 
 fn write_message(stdin: &mut std::process::ChildStdin, message: &Value) {

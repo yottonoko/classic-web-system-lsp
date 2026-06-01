@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::env;
+use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -28,7 +29,7 @@ fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let mut state = ServerState::default();
     state.set_settings(settings_from_initialize(&initialize_params))?;
-    state.set_workspace_roots(workspace_roots_from_initialize(&initialize_params));
+    state.set_workspace_roots(workspace_roots_from_initialize(&initialize_params))?;
     connection
         .initialize_finish(
             initialize_id,
@@ -96,8 +97,11 @@ impl ServerState {
         self.ide.set_settings(settings)
     }
 
-    fn set_workspace_roots(&mut self, roots: Vec<String>) {
+    fn set_workspace_roots(&mut self, roots: Vec<String>) -> Result<(), String> {
+        self.ide
+            .replace_indexed_documents(index_workspace_files(&roots)?);
         self.workspace_roots = roots;
+        Ok(())
     }
 
     fn next_diagnostics_timeout(&self) -> Option<Duration> {
@@ -547,6 +551,79 @@ fn handle_request(
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
+        "textDocument/references" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let include_declaration = request
+                .params
+                .pointer("/context/includeDeclaration")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let result = state.ide.references(&uri, position, include_declaration)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/prepareRename" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let result = state.ide.prepare_rename(&uri, position)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/rename" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let new_name = pointer_string(&request.params, "/newName");
+            let result = state.ide.rename(&uri, position, &new_name)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "workspace/symbol" => {
+            let query = pointer_string(&request.params, "/query");
+            let result = state.ide.workspace_symbols(&query)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/semanticTokens/full" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let result = semantic_tokens_with_result_id(state.ide.semantic_tokens(&uri, None)?);
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/semanticTokens/full/delta" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let result = semantic_tokens_delta_result(state.ide.semantic_tokens(&uri, None)?);
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/semanticTokens/range" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let range = request_range(&request.params)?;
+            let result = state.ide.semantic_tokens(&uri, Some(range))?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
         "textDocument/documentColor" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let result = state.embedded_document_feature(&uri, "documentColors")?;
@@ -688,6 +765,34 @@ fn server_capabilities() -> Value {
         "documentSymbolProvider": true,
         "foldingRangeProvider": true,
         "documentHighlightProvider": true,
+        "referencesProvider": true,
+        "renameProvider": { "prepareProvider": true },
+        "workspaceSymbolProvider": true,
+        "semanticTokensProvider": {
+            "legend": {
+                "tokenTypes": [
+                    "keyword",
+                    "variable",
+                    "parameter",
+                    "function",
+                    "class",
+                    "method",
+                    "property",
+                    "comment",
+                    "string",
+                    "operator",
+                    "namespace",
+                    "interface",
+                    "enum",
+                    "enumMember",
+                    "typeAlias",
+                    "typeParameter",
+                ],
+                "tokenModifiers": ["public", "private", "readonly", "library", "byref", "byval"],
+            },
+            "full": { "delta": true },
+            "range": true,
+        },
         "colorProvider": true,
         "linkedEditingRangeProvider": true,
         "textDocumentSync": {
@@ -734,6 +839,75 @@ fn workspace_roots_from_initialize(params: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn index_workspace_files(roots: &[String]) -> Result<Vec<(String, String)>, String> {
+    let mut files = Vec::new();
+    for root in roots {
+        let Some(path) = file_uri_to_path(root) else {
+            continue;
+        };
+        collect_workspace_files(&path, &mut files)?;
+        if files.len() >= 512 {
+            break;
+        }
+    }
+    Ok(files)
+}
+
+fn collect_workspace_files(path: &Path, files: &mut Vec<(String, String)>) -> Result<(), String> {
+    if files.len() >= 512 {
+        return Ok(());
+    }
+    let Ok(metadata) = fs::metadata(path) else {
+        return Ok(());
+    };
+    if metadata.is_file() {
+        if is_asp_like_file(path) {
+            if let Ok(text) = fs::read_to_string(path) {
+                files.push((path_to_file_uri(path), text));
+            }
+        }
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(());
+    };
+    if matches!(name, ".git" | "node_modules" | "target" | "dist") {
+        return Ok(());
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        collect_workspace_files(&entry.path(), files)?;
+        if files.len() >= 512 {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn is_asp_like_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "asp" | "asa" | "inc"
+            )
+        })
+}
+
+fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+    uri.strip_prefix("file://").map(PathBuf::from)
+}
+
+fn path_to_file_uri(path: &Path) -> String {
+    format!("file://{}", path.to_string_lossy())
+}
+
 fn text_range(value: &Value) -> Option<TextRange> {
     Some(TextRange {
         start: text_position(value.get("start")?)?,
@@ -748,6 +922,13 @@ fn request_position(params: &Value) -> Result<TextPosition, String> {
         .ok_or_else(|| "position is required".to_string())
 }
 
+fn request_range(params: &Value) -> Result<TextRange, String> {
+    params
+        .get("range")
+        .and_then(text_range)
+        .ok_or_else(|| "range is required".to_string())
+}
+
 fn merge_lsp_arrays(left: Value, right: Option<Value>) -> Value {
     let mut items = match left {
         Value::Array(items) => items,
@@ -760,6 +941,25 @@ fn merge_lsp_arrays(left: Value, right: Option<Value>) -> Value {
         Some(value) => items.push(value),
     }
     Value::Array(items)
+}
+
+fn semantic_tokens_with_result_id(mut value: Value) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("resultId".to_string(), Value::String("0".to_string()));
+    }
+    value
+}
+
+fn semantic_tokens_delta_result(value: Value) -> Value {
+    let data = value
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    json!({
+        "resultId": "0",
+        "edits": [{ "start": 0, "deleteCount": 0, "data": data }],
+    })
 }
 
 fn text_position(value: &Value) -> Option<TextPosition> {

@@ -105,6 +105,7 @@ impl salsa::Database for IdeDatabase {}
 pub struct Ide {
     db: IdeDatabase,
     documents: HashMap<String, OpenDocument>,
+    indexed_documents: HashMap<String, OpenDocument>,
     settings: WorkspaceSettingsState,
 }
 
@@ -271,6 +272,7 @@ impl Default for Ide {
         Self {
             db,
             documents: HashMap::new(),
+            indexed_documents: HashMap::new(),
             settings,
         }
     }
@@ -334,6 +336,17 @@ impl Ide {
 
     pub fn close_document(&mut self, uri: &str) {
         self.documents.remove(uri);
+    }
+
+    pub fn replace_indexed_documents(&mut self, files: Vec<(String, String)>) {
+        self.indexed_documents = files
+            .into_iter()
+            .filter(|(uri, _)| !self.documents.contains_key(uri))
+            .map(|(uri, text)| {
+                let document = OpenDocument::new(&self.db, uri.clone(), text);
+                (uri, document)
+            })
+            .collect();
     }
 
     pub fn diagnostics(&self, uri: &str) -> Result<Vec<Value>, String> {
@@ -553,11 +566,168 @@ impl Ide {
         let Some(name) = symbol.get("name").and_then(Value::as_str) else {
             return Ok(Value::Array(Vec::new()));
         };
-        let highlights = identifier_ranges(&context.text, name)
+        let highlights = identifier_ranges(&context.text, &context.parsed, name)
             .into_iter()
             .map(|range| serde_json::json!({ "range": range, "kind": 1 }))
             .collect::<Vec<_>>();
         Ok(Value::Array(highlights))
+    }
+
+    pub fn references(
+        &self,
+        uri: &str,
+        position: TextPosition,
+        include_declaration: bool,
+    ) -> Result<Value, String> {
+        let Some((symbol, _context)) = self.symbol_at_position(uri, position)? else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let mut references = Vec::new();
+        for (document_uri, document) in self.workspace_documents() {
+            let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+            for range in identifier_ranges(document.text(&self.db), &parsed, name) {
+                if !include_declaration && range == symbol.get("range").cloned().unwrap_or_default()
+                {
+                    continue;
+                }
+                references.push(serde_json::json!({
+                    "uri": document_uri,
+                    "range": range,
+                }));
+            }
+        }
+        Ok(Value::Array(references))
+    }
+
+    pub fn prepare_rename(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some((_symbol, context)) = self.symbol_at_position(uri, position)? else {
+            return Ok(Value::Null);
+        };
+        Ok(identifier_range_at_offset(&context.text, context.offset).unwrap_or(Value::Null))
+    }
+
+    pub fn rename(
+        &self,
+        uri: &str,
+        position: TextPosition,
+        new_name: &str,
+    ) -> Result<Value, String> {
+        if !valid_vb_identifier(new_name) {
+            return Ok(Value::Null);
+        }
+        let Some((symbol, _context)) = self.symbol_at_position(uri, position)? else {
+            return Ok(Value::Null);
+        };
+        let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+            return Ok(Value::Null);
+        };
+        let mut changes = serde_json::Map::new();
+        for (document_uri, document) in self.workspace_documents() {
+            let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+            let edits = identifier_ranges(document.text(&self.db), &parsed, name)
+                .into_iter()
+                .map(|range| serde_json::json!({ "range": range, "newText": new_name }))
+                .collect::<Vec<_>>();
+            if !edits.is_empty() {
+                changes.insert(document_uri.clone(), Value::Array(edits));
+            }
+        }
+        Ok(serde_json::json!({ "changes": changes }))
+    }
+
+    pub fn workspace_symbols(&self, query: &str) -> Result<Value, String> {
+        let query = query.to_lowercase();
+        let mut items = Vec::new();
+        for (uri, document) in self.workspace_documents() {
+            for symbol in vb_symbols(&self.db, document.source_file, self.settings.input)? {
+                let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                if !query.is_empty() && !name.to_lowercase().contains(&query) {
+                    continue;
+                }
+                let Some(range) = symbol.get("range").cloned() else {
+                    continue;
+                };
+                items.push(serde_json::json!({
+                    "name": name,
+                    "kind": symbol_kind(&symbol),
+                    "location": { "uri": uri, "range": range },
+                }));
+            }
+        }
+        Ok(Value::Array(items))
+    }
+
+    pub fn semantic_tokens(&self, uri: &str, range: Option<TextRange>) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(serde_json::json!({ "data": [] }));
+        };
+        let text = document.text(&self.db);
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+        let range_offsets = range.and_then(|range| {
+            Some((
+                position_to_utf16_offset(
+                    text,
+                    range.start.line.try_into().ok()?,
+                    range.start.character.try_into().ok()?,
+                )?,
+                position_to_utf16_offset(
+                    text,
+                    range.end.line.try_into().ok()?,
+                    range.end.character.try_into().ok()?,
+                )?,
+            ))
+        });
+        let mut tokens = Vec::new();
+        tokens.extend(asp_delimiter_semantic_tokens(text, &parsed));
+        tokens.extend(include_semantic_tokens(text, &parsed));
+        tokens.extend(operator_semantic_tokens(text, &parsed));
+        for identifier in identifiers_in_vbscript(text, &parsed) {
+            if let Some((start, end)) = range_offsets {
+                if identifier.start < start || identifier.end > end {
+                    continue;
+                }
+            }
+            let Some((token_type, token_modifiers)) = symbols
+                .iter()
+                .find(|symbol| symbol_name_eq(symbol, &identifier.name))
+                .and_then(semantic_symbol_kind)
+                .or_else(|| builtin_semantic_token(text, &identifier, &parsed))
+            else {
+                continue;
+            };
+            tokens.push(SemanticToken {
+                range: identifier.range,
+                token_type,
+                token_modifiers,
+            });
+        }
+        if let Some((start, end)) = range_offsets {
+            tokens.retain(|token| {
+                range_start_offset(text, &token.range)
+                    .is_some_and(|offset| offset >= start && offset < end)
+            });
+        }
+        tokens.sort_by_key(|token| {
+            (
+                token
+                    .range
+                    .pointer("/start/line")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                token
+                    .range
+                    .pointer("/start/character")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            )
+        });
+        Ok(serde_json::json!({ "data": encode_semantic_tokens(&tokens) }))
     }
 
     pub fn embedded_virtual_documents(
@@ -612,6 +782,7 @@ impl Ide {
         Ok(Some(VbContext {
             text,
             offset,
+            parsed,
             symbols,
         }))
     }
@@ -631,8 +802,31 @@ impl Ide {
             .symbols
             .iter()
             .find(|symbol| symbol_name_eq(symbol, &word))
-            .cloned();
+            .cloned()
+            .or_else(|| self.workspace_symbol_by_name(&word).ok().flatten());
         Ok(symbol.map(|symbol| (symbol, context)))
+    }
+
+    fn workspace_symbol_by_name(&self, name: &str) -> Result<Option<Value>, String> {
+        for (_uri, document) in self.workspace_documents() {
+            if let Some(symbol) = vb_symbols(&self.db, document.source_file, self.settings.input)?
+                .into_iter()
+                .find(|symbol| symbol_name_eq(symbol, name))
+            {
+                return Ok(Some(symbol));
+            }
+        }
+        Ok(None)
+    }
+
+    fn workspace_documents(&self) -> Vec<(&String, &OpenDocument)> {
+        let mut documents = self.documents.iter().collect::<Vec<_>>();
+        documents.extend(
+            self.indexed_documents
+                .iter()
+                .filter(|(uri, _)| !self.documents.contains_key(*uri)),
+        );
+        documents
     }
 
     pub fn diagnostics_for_open_documents(&self) -> Result<Vec<(String, Vec<Value>)>, String> {
@@ -716,7 +910,21 @@ fn source_file_uri(db: &IdeDatabase, document: &OpenDocument) -> String {
 struct VbContext {
     text: String,
     offset: usize,
+    parsed: Value,
     symbols: Vec<Value>,
+}
+
+struct IdentifierOccurrence {
+    name: String,
+    start: usize,
+    end: usize,
+    range: Value,
+}
+
+struct SemanticToken {
+    range: Value,
+    token_type: u32,
+    token_modifiers: u32,
 }
 
 fn is_vbscript_offset(parsed: &Value, offset: usize) -> bool {
@@ -746,6 +954,16 @@ fn is_lsp_range_object(object: &serde_json::Map<String, Value>) -> bool {
 }
 
 fn identifier_at_offset(text: &str, offset: usize) -> Option<String> {
+    let (start, end) = identifier_offsets_at(text, offset)?;
+    slice_utf16(text, start, end).ok()
+}
+
+fn identifier_range_at_offset(text: &str, offset: usize) -> Option<Value> {
+    let (start, end) = identifier_offsets_at(text, offset)?;
+    range_from_offsets(text, start, end)
+}
+
+fn identifier_offsets_at(text: &str, offset: usize) -> Option<(usize, usize)> {
     let chars = utf16_chars(text);
     let index = chars
         .iter()
@@ -762,10 +980,12 @@ fn identifier_at_offset(text: &str, offset: usize) -> Option<String> {
         end += 1;
     }
     (start < end).then(|| {
-        chars[start..end]
-            .iter()
-            .map(|(_, character)| *character)
-            .collect()
+        let start_offset = chars[start].0;
+        let end_offset = chars
+            .get(end)
+            .map(|(offset, _)| *offset)
+            .unwrap_or_else(|| utf16_len(text));
+        (start_offset, end_offset)
     })
 }
 
@@ -787,12 +1007,47 @@ fn identifier_prefix_at(text: &str, offset: usize) -> String {
         .collect()
 }
 
-fn identifier_ranges(text: &str, name: &str) -> Vec<Value> {
+fn identifier_ranges(text: &str, parsed: &Value, name: &str) -> Vec<Value> {
     let lower_name = name.to_lowercase();
+    identifiers_in_vbscript(text, parsed)
+        .into_iter()
+        .filter(|identifier| identifier.name.to_lowercase() == lower_name)
+        .map(|identifier| identifier.range)
+        .collect()
+}
+
+fn identifiers_in_vbscript(text: &str, parsed: &Value) -> Vec<IdentifierOccurrence> {
+    let regions = vbscript_regions(parsed);
     let chars = utf16_chars(text);
-    let mut ranges = Vec::new();
+    let mut identifiers = Vec::new();
     let mut index = 0;
     while index < chars.len() {
+        let offset = chars[index].0;
+        if !regions
+            .iter()
+            .any(|(start, end)| offset >= *start && offset < *end)
+        {
+            index += 1;
+            continue;
+        }
+        if chars[index].1 == '"' {
+            index += 1;
+            while index < chars.len() {
+                if chars[index].1 == '"' {
+                    index += 1;
+                    break;
+                }
+                index += 1;
+            }
+            continue;
+        }
+        if chars[index].1 == '\'' {
+            index += 1;
+            while index < chars.len() && chars[index].1 != '\n' {
+                index += 1;
+            }
+            continue;
+        }
         if !is_identifier_char(chars[index].1) {
             index += 1;
             continue;
@@ -805,24 +1060,46 @@ fn identifier_ranges(text: &str, name: &str) -> Vec<Value> {
             .iter()
             .map(|(_, character)| *character)
             .collect::<String>();
-        if text_name.to_lowercase() == lower_name {
-            let start_offset = chars[start].0;
-            let end_offset = chars
-                .get(index)
-                .map(|(offset, _)| *offset)
-                .unwrap_or_else(|| utf16_len(text));
-            if let (Some((start_line, start_character)), Some((end_line, end_character))) = (
-                utf16_position_at(text, start_offset),
-                utf16_position_at(text, end_offset),
-            ) {
-                ranges.push(serde_json::json!({
-                    "start": { "line": start_line, "character": start_character },
-                    "end": { "line": end_line, "character": end_character },
-                }));
-            }
+        let start_offset = chars[start].0;
+        let end_offset = chars
+            .get(index)
+            .map(|(offset, _)| *offset)
+            .unwrap_or_else(|| utf16_len(text));
+        if let Some(range) = range_from_offsets(text, start_offset, end_offset) {
+            identifiers.push(IdentifierOccurrence {
+                name: text_name,
+                start: start_offset,
+                end: end_offset,
+                range,
+            });
         }
     }
-    ranges
+    identifiers
+}
+
+fn vbscript_regions(parsed: &Value) -> Vec<(usize, usize)> {
+    parsed
+        .get("regions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|region| region.get("language").and_then(Value::as_str) == Some("vbscript"))
+        .filter_map(|region| {
+            Some((
+                value_usize(region, "contentStart").ok()?,
+                value_usize(region, "contentEnd").ok()?,
+            ))
+        })
+        .collect()
+}
+
+fn range_from_offsets(text: &str, start_offset: usize, end_offset: usize) -> Option<Value> {
+    let (start_line, start_character) = utf16_position_at(text, start_offset)?;
+    let (end_line, end_character) = utf16_position_at(text, end_offset)?;
+    Some(serde_json::json!({
+        "start": { "line": start_line, "character": start_character },
+        "end": { "line": end_line, "character": end_character },
+    }))
 }
 
 fn utf16_chars(text: &str) -> Vec<(usize, char)> {
@@ -844,6 +1121,14 @@ fn symbol_name_eq(symbol: &Value, name: &str) -> bool {
         .get("name")
         .and_then(Value::as_str)
         .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+}
+
+fn valid_vb_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic())
+        && chars.all(is_identifier_char)
 }
 
 fn is_callable_symbol(symbol: &Value) -> bool {
@@ -950,6 +1235,184 @@ fn folding_range_from_lsp_range(range: &Value) -> Option<Value> {
             "endLine": end_line,
         })
     })
+}
+
+fn semantic_symbol_kind(symbol: &Value) -> Option<(u32, u32)> {
+    let token_type = match symbol.get("kind").and_then(Value::as_str) {
+        Some("class") => 4,
+        Some("method") => 5,
+        Some("field" | "property") => 6,
+        Some("function" | "sub") => 3,
+        Some("parameter") => 2,
+        Some("constant" | "variable") => 1,
+        _ => return None,
+    };
+    let mut modifiers = 0;
+    match symbol.get("visibility").and_then(Value::as_str) {
+        Some("public") => modifiers |= 1 << 0,
+        Some("private") => modifiers |= 1 << 1,
+        _ => {}
+    }
+    if symbol.get("kind").and_then(Value::as_str) == Some("constant") {
+        modifiers |= 1 << 2;
+    }
+    if symbol.get("kind").and_then(Value::as_str) == Some("parameter") {
+        match symbol.get("parameterMode").and_then(Value::as_str) {
+            Some("byval") => modifiers |= 1 << 5,
+            _ => modifiers |= 1 << 4,
+        }
+    }
+    Some((token_type, modifiers))
+}
+
+fn builtin_semantic_token(
+    text: &str,
+    identifier: &IdentifierOccurrence,
+    parsed: &Value,
+) -> Option<(u32, u32)> {
+    let name = identifier.name.to_lowercase();
+    if matches!(name.as_str(), "cstr" | "ubound" | "array") {
+        return Some((3, 1 << 3));
+    }
+    if matches!(
+        name.as_str(),
+        "response" | "request" | "server" | "session" | "application"
+    ) {
+        return Some((1, 1 << 3));
+    }
+    if name == "write" && previous_identifier_is(text, parsed, identifier.start, "response") {
+        return Some((5, 1 << 3));
+    }
+    None
+}
+
+fn previous_identifier_is(text: &str, parsed: &Value, offset: usize, expected: &str) -> bool {
+    let Ok(before) = slice_utf16(text, 0, offset) else {
+        return false;
+    };
+    let before = before.trim_end();
+    let Some(without_dot) = before.strip_suffix('.') else {
+        return false;
+    };
+    let owner_end = utf16_len(without_dot.trim_end());
+    let Some(owner) = identifier_at_offset(text, owner_end) else {
+        return false;
+    };
+    owner.eq_ignore_ascii_case(expected) && is_vbscript_offset(parsed, owner_end)
+}
+
+fn include_semantic_tokens(_text: &str, parsed: &Value) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+    for include in parsed
+        .get("includes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for (key, token_type) in [("directiveRange", 0), ("modeRange", 6), ("pathRange", 8)] {
+            if let Some(range) = include.get(key).cloned() {
+                tokens.push(SemanticToken {
+                    range,
+                    token_type,
+                    token_modifiers: 0,
+                });
+            }
+        }
+    }
+    tokens
+}
+
+fn asp_delimiter_semantic_tokens(text: &str, parsed: &Value) -> Vec<SemanticToken> {
+    parsed
+        .get("regions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|region| region.get("kind").and_then(Value::as_str) == Some("asp-expression"))
+        .filter_map(|region| {
+            let start = value_usize(region, "start").ok()?.checked_add(2)?;
+            let end = start.checked_add(1)?;
+            Some(SemanticToken {
+                range: range_from_offsets(text, start, end)?,
+                token_type: 0,
+                token_modifiers: 0,
+            })
+        })
+        .collect()
+}
+
+fn operator_semantic_tokens(text: &str, parsed: &Value) -> Vec<SemanticToken> {
+    let operators = ["&", "+", "-", "*", "/", "\\", "^", "=", "<", ">"];
+    let mut tokens = Vec::new();
+    let chars = utf16_chars(text);
+    for (offset, character) in chars {
+        if !operators.contains(&character.to_string().as_str())
+            || !is_vbscript_offset(parsed, offset)
+        {
+            continue;
+        }
+        if let Some(range) = range_from_offsets(text, offset, offset + character.len_utf16()) {
+            tokens.push(SemanticToken {
+                range,
+                token_type: 9,
+                token_modifiers: 0,
+            });
+        }
+    }
+    tokens
+}
+
+fn encode_semantic_tokens(tokens: &[SemanticToken]) -> Vec<u64> {
+    let mut data = Vec::new();
+    let mut previous_line = 0;
+    let mut previous_character = 0;
+    for token in tokens {
+        let Some(line) = token.range.pointer("/start/line").and_then(Value::as_u64) else {
+            continue;
+        };
+        let Some(character) = token
+            .range
+            .pointer("/start/character")
+            .and_then(Value::as_u64)
+        else {
+            continue;
+        };
+        let Some(end_character) = token
+            .range
+            .pointer("/end/character")
+            .and_then(Value::as_u64)
+        else {
+            continue;
+        };
+        let delta_line = line.saturating_sub(previous_line);
+        let delta_start = if delta_line == 0 {
+            character.saturating_sub(previous_character)
+        } else {
+            character
+        };
+        data.extend([
+            delta_line,
+            delta_start,
+            end_character.saturating_sub(character),
+            u64::from(token.token_type),
+            u64::from(token.token_modifiers),
+        ]);
+        previous_line = line;
+        previous_character = character;
+    }
+    data
+}
+
+fn range_start_offset(text: &str, range: &Value) -> Option<usize> {
+    position_to_utf16_offset(
+        text,
+        range.pointer("/start/line")?.as_u64()?.try_into().ok()?,
+        range
+            .pointer("/start/character")?
+            .as_u64()?
+            .try_into()
+            .ok()?,
+    )
 }
 
 #[derive(Clone)]
