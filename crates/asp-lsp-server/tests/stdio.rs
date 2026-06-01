@@ -273,9 +273,94 @@ fn republishes_open_document_diagnostics_after_settings_change() {
     assert!(child.wait().expect("wait server").success());
 }
 
+#[test]
+fn coalesces_debounced_document_changes() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+
+    initialize_with_settings(
+        &mut stdin,
+        &mut reader,
+        json!({ "diagnostics": { "debounceMs": 80 } }),
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": "file:///tmp/default.asp",
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nOption Explicit\nmissingName = 1\n%>",
+                },
+            },
+        }),
+    );
+    read_until(&mut reader, |message| {
+        message["method"] == json!("textDocument/publishDiagnostics")
+            && message.to_string().contains("missingName")
+    });
+
+    for (version, text) in [
+        (2, "<%\nOption Explicit\nstaleName = 1\n%>"),
+        (
+            3,
+            "<%\nOption Explicit\nDim declaredName\ndeclaredName = 1\n%>",
+        ),
+    ] {
+        write_message(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///tmp/default.asp",
+                        "version": version,
+                    },
+                    "contentChanges": [{ "text": text }],
+                },
+            }),
+        );
+    }
+
+    let diagnostics = read_message(&mut reader);
+    assert_eq!(
+        diagnostics["method"],
+        json!("textDocument/publishDiagnostics")
+    );
+    assert_eq!(
+        diagnostics["params"]["uri"],
+        json!("file:///tmp/default.asp")
+    );
+    assert!(!diagnostics.to_string().contains("staleName"));
+    assert_eq!(diagnostics["params"]["diagnostics"], json!([]));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
 fn initialize(
     stdin: &mut std::process::ChildStdin,
     reader: &mut BufReader<std::process::ChildStdout>,
+) {
+    initialize_with_settings(stdin, reader, json!({}));
+}
+
+fn initialize_with_settings(
+    stdin: &mut std::process::ChildStdin,
+    reader: &mut BufReader<std::process::ChildStdout>,
+    settings: Value,
 ) {
     write_message(
         stdin,
@@ -287,6 +372,9 @@ fn initialize(
                 "processId": std::process::id(),
                 "rootUri": "file:///tmp",
                 "capabilities": {},
+                "initializationOptions": {
+                    "settings": settings,
+                },
             },
         }),
     );

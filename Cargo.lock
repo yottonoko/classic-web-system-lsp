@@ -42,6 +42,7 @@ name = "asp-lsp-server"
 version = "0.1.0"
 dependencies = [
  "asp-ide",
+ "crossbeam-channel",
  "lsp-server",
  "lsp-types",
  "serde_json",

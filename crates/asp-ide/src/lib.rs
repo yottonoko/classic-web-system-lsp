@@ -57,15 +57,27 @@ impl Default for Ide {
 }
 
 impl Ide {
+    pub fn set_open_document(&mut self, uri: String, text: String) {
+        let document = OpenDocument::new(&self.db, uri.clone(), text);
+        self.documents.insert(uri, document);
+    }
+
     pub fn set_settings(&mut self, settings: Value) -> Result<Vec<(String, Vec<Value>)>, String> {
         self.settings.set(&mut self.db, settings)?;
         self.diagnostics_for_open_documents()
     }
 
     pub fn open_document(&mut self, uri: String, text: String) -> Result<Vec<Value>, String> {
-        let document = OpenDocument::new(&self.db, uri.clone(), text);
-        self.documents.insert(uri.clone(), document);
+        self.set_open_document(uri.clone(), text);
         self.diagnostics(&uri)
+    }
+
+    pub fn replace_document_text(&mut self, uri: String, text: String) {
+        let Some(document) = self.documents.get_mut(&uri) else {
+            self.set_open_document(uri, text);
+            return;
+        };
+        document.replace_text(&mut self.db, text);
     }
 
     pub fn change_document_full(
@@ -73,11 +85,21 @@ impl Ide {
         uri: String,
         text: String,
     ) -> Result<Vec<Value>, String> {
-        let Some(document) = self.documents.get_mut(&uri) else {
-            return self.open_document(uri, text);
-        };
-        document.replace_text(&mut self.db, text);
+        self.replace_document_text(uri.clone(), text);
         self.diagnostics(&uri)
+    }
+
+    pub fn edit_document_text(
+        &mut self,
+        uri: String,
+        range: TextRange,
+        text: String,
+    ) -> Result<(), String> {
+        let Some(document) = self.documents.get_mut(&uri) else {
+            self.set_open_document(uri, text);
+            return Ok(());
+        };
+        document.edit(&mut self.db, range, &text)
     }
 
     pub fn change_document_incremental(
@@ -86,10 +108,7 @@ impl Ide {
         range: TextRange,
         text: String,
     ) -> Result<Vec<Value>, String> {
-        let Some(document) = self.documents.get_mut(&uri) else {
-            return self.open_document(uri, text);
-        };
-        document.edit(&mut self.db, range, &text)?;
+        self.edit_document_text(uri.clone(), range, text)?;
         self.diagnostics(&uri)
     }
 
