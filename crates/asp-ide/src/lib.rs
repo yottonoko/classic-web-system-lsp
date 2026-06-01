@@ -1422,9 +1422,14 @@ impl Ide {
             range.end.character.try_into().unwrap_or(usize::MAX),
         )
         .unwrap_or_else(|| utf16_len(text));
+        let workspace_symbols = self.workspace_vb_symbols()?;
         let values = identifiers_in_vbscript(text, &parsed)
             .into_iter()
             .filter(|identifier| identifier.start >= start_offset && identifier.end <= end_offset)
+            .filter(|identifier| {
+                resolve_symbol_for_identifier(uri, text, &workspace_symbols, identifier)
+                    .is_some_and(is_inline_value_symbol)
+            })
             .map(|identifier| {
                 serde_json::json!({
                     "range": identifier.range,
@@ -2964,6 +2969,13 @@ fn hierarchy_symbol_name(symbol: &Value) -> Option<String> {
             .and_then(Value::as_str)
             .map(|owner| format!("{owner}.{name}"))
             .unwrap_or_else(|| name.to_string()),
+    )
+}
+
+fn is_inline_value_symbol(symbol: &Value) -> bool {
+    matches!(
+        symbol.get("kind").and_then(Value::as_str),
+        Some("variable" | "parameter" | "constant")
     )
 }
 

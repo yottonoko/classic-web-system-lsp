@@ -1365,7 +1365,15 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
             },
         }),
     );
-    assert!(inline_values["result"].to_string().contains("BuildName"));
+    let inline_variable_names = inline_values["result"]
+        .as_array()
+        .expect("inline values")
+        .iter()
+        .filter_map(|value| value["variableName"].as_str())
+        .collect::<Vec<_>>();
+    assert!(inline_variable_names.contains(&"first"));
+    assert!(inline_variable_names.contains(&"customerName"));
+    assert!(!inline_variable_names.contains(&"BuildName"));
 
     let formatting = request(
         &mut stdin,
