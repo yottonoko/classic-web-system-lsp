@@ -549,7 +549,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
                     "uri": uri,
                     "languageId": "classic-asp",
                     "version": 1,
-                    "text": "<%\nFunction BuildName(first)\nBuildName=first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\nClass Customer\nPublic Function DisplayName()\nDisplayName = BuildName(\"C\")\nEnd Function\nPublic Sub RenderSelf()\nMe.DisplayName()\nEnd Sub\nEnd Class\nSub RenderTyped()\nDim typedCustomer\nSet typedCustomer = New Customer\ntypedCustomer.DisplayName()\nEnd Sub\nSub LocalOne()\nDim scopedName\nscopedName = \"A\"\nEnd Sub\nSub LocalTwo()\nDim scopedName\nscopedName = \"B\"\nEnd Sub\nDim repeatedName\nSub ParamScope(repeatedName)\nResponse.Write repeatedName\nEnd Sub\n%>",
+                    "text": "<%\nFunction BuildName(first)\nBuildName=first\nEnd Function\nDim customerName\ncustomerName = BuildName(\"A\")\nSub RenderName()\nResponse.Write BuildName(\"B\")\nEnd Sub\nClass Customer\nPublic Function DisplayName()\nDisplayName = BuildName(\"C\")\nEnd Function\nPublic Sub RenderSelf()\nMe.DisplayName()\nEnd Sub\nEnd Class\nSub RenderTyped()\nDim typedCustomer\nSet typedCustomer = New Customer\ntypedCustomer.DisplayName()\nEnd Sub\nSub LocalOne()\nDim scopedName\nscopedName = \"A\"\nEnd Sub\nSub LocalTwo()\nDim scopedName\nscopedName = \"B\"\nEnd Sub\nDim repeatedName\nSub ParamScope(repeatedName)\nResponse.Write repeatedName\nEnd Sub\nFunction MakeText()\nMakeText = \"value\"\nEnd Function\n%>",
                 },
             },
         }),
@@ -882,11 +882,71 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
             "textDocument": { "uri": uri },
             "range": {
                 "start": { "line": 0, "character": 0 },
-                "end": { "line": 6, "character": 0 },
+                "end": { "line": 40, "character": 0 },
             },
         }),
     );
-    assert!(inlay_hints["result"].to_string().contains("first"));
+    let inlay_labels = inlay_hints["result"]
+        .as_array()
+        .expect("inlay hints")
+        .iter()
+        .filter_map(|hint| hint["label"].as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        inlay_labels.iter().any(|label| *label == "first:"),
+        "inlay labels: {inlay_labels:?}"
+    );
+    assert!(
+        inlay_labels.iter().any(|label| *label == "ByRef "),
+        "inlay labels: {inlay_labels:?}"
+    );
+    assert!(
+        inlay_labels
+            .iter()
+            .any(|label| label.contains(" As Customer")),
+        "inlay labels: {inlay_labels:?}"
+    );
+    assert!(
+        inlay_labels.iter().any(|label| *label == " As String"),
+        "inlay labels: {inlay_labels:?}"
+    );
+
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeConfiguration",
+            "params": {
+                "settings": {
+                    "aspLsp": {
+                        "inlayHints": {
+                            "variableTypes": false,
+                            "parameterNames": false,
+                            "functionReturnTypes": false,
+                            "implicitByRef": false,
+                        },
+                    },
+                },
+            },
+        }),
+    );
+    let disabled_inlay_hints = request(
+        &mut stdin,
+        &mut reader,
+        44,
+        "textDocument/inlayHint",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 40, "character": 0 },
+            },
+        }),
+    );
+    assert!(disabled_inlay_hints["result"]
+        .as_array()
+        .expect("disabled inlay hints")
+        .is_empty());
 
     let code_lens = request(
         &mut stdin,

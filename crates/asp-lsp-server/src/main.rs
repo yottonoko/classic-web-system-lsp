@@ -1214,7 +1214,7 @@ fn handle_request(
         "textDocument/inlayHint" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let range = request_range(&request.params)?;
-            let result = state.ide.inlay_hints(&uri, range)?;
+            let result = state.ide.inlay_hints(&uri, range, &state.settings)?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())

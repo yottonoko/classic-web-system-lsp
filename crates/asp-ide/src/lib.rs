@@ -916,13 +916,19 @@ impl Ide {
         Ok(Value::Array(ranges))
     }
 
-    pub fn inlay_hints(&self, uri: &str, range: TextRange) -> Result<Value, String> {
+    pub fn inlay_hints(
+        &self,
+        uri: &str,
+        range: TextRange,
+        settings: &Value,
+    ) -> Result<Value, String> {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Value::Array(Vec::new()));
         };
         let text = document.text(&self.db);
         let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
         let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+        let options = InlayHintOptions::from_settings(settings);
         let start_offset = position_to_utf16_offset(
             text,
             range.start.line.try_into().unwrap_or(0),
@@ -936,41 +942,157 @@ impl Ide {
         )
         .unwrap_or_else(|| utf16_len(text));
         let mut hints = Vec::new();
-        for symbol in symbols.iter().filter(|symbol| is_callable_symbol(symbol)) {
-            let Some(name) = symbol.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let parameters = symbol
-                .get("parameters")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>();
-            if parameters.is_empty() {
-                continue;
-            }
-            for occurrence in identifiers_in_vbscript(text, &parsed)
-                .into_iter()
-                .filter(|identifier| identifier.name.eq_ignore_ascii_case(name))
+
+        if options.variable_types {
+            for symbol in symbols
+                .iter()
+                .filter(|symbol| symbol_source_uri_matches(symbol, uri))
+                .filter(|symbol| {
+                    matches!(
+                        symbol.get("kind").and_then(Value::as_str),
+                        Some("variable" | "constant" | "field")
+                    )
+                })
             {
-                if occurrence.start < start_offset || occurrence.end > end_offset {
-                    continue;
-                }
-                let Some(open_offset) = next_non_whitespace_offset(text, occurrence.end, '(')
-                else {
+                let Some(type_name) = visible_inlay_type_name(symbol) else {
                     continue;
                 };
-                if let Some((line, character)) = utf16_position_at(text, open_offset + 1) {
-                    hints.push(serde_json::json!({
-                        "position": { "line": line, "character": character },
-                        "label": format!("{}:", parameters[0]),
-                        "kind": 2,
-                        "paddingRight": true,
-                    }));
+                let Some(range) = symbol.get("range") else {
+                    continue;
+                };
+                if !range_overlaps_offsets(text, range, start_offset, end_offset) {
+                    continue;
+                }
+                let Some(position) = variable_type_hint_position(text, symbol) else {
+                    continue;
+                };
+                hints.push(serde_json::json!({
+                    "position": position,
+                    "label": format!("{} As {type_name}", scope_inlay_prefix(symbol, &options.global_variable_markers)),
+                    "kind": 1,
+                    "paddingLeft": false,
+                    "paddingRight": true,
+                    "tooltip": "Inferred VBScript type",
+                }));
+            }
+        }
+
+        if options.function_return_types {
+            for symbol in symbols
+                .iter()
+                .filter(|symbol| symbol_source_uri_matches(symbol, uri))
+                .filter(|symbol| {
+                    matches!(
+                        symbol.get("kind").and_then(Value::as_str),
+                        Some("function" | "property")
+                    )
+                })
+            {
+                let Some(type_name) = visible_inlay_type_name(symbol) else {
+                    continue;
+                };
+                let Some(range) = symbol.get("range") else {
+                    continue;
+                };
+                if !range_overlaps_offsets(text, range, start_offset, end_offset) {
+                    continue;
+                }
+                let Some(position) = function_return_hint_position(text, symbol) else {
+                    continue;
+                };
+                hints.push(serde_json::json!({
+                    "position": position,
+                    "label": format!(" As {type_name}"),
+                    "kind": 1,
+                    "paddingLeft": false,
+                    "paddingRight": true,
+                    "tooltip": "Inferred VBScript return type",
+                }));
+            }
+        }
+
+        if options.implicit_by_ref {
+            for symbol in symbols
+                .iter()
+                .filter(|symbol| symbol_source_uri_matches(symbol, uri))
+                .filter(|symbol| symbol.get("kind").and_then(Value::as_str) == Some("parameter"))
+                .filter(|symbol| {
+                    symbol.get("parameterMode").and_then(Value::as_str) == Some("byref")
+                })
+            {
+                let Some(range) = symbol.get("range") else {
+                    continue;
+                };
+                let Some(start) = range_start_offset(text, range) else {
+                    continue;
+                };
+                if start < start_offset || start > end_offset {
+                    continue;
+                }
+                if has_explicit_parameter_mode_before(text, start) {
+                    continue;
+                }
+                let Some((line, character)) = utf16_position_at(text, start) else {
+                    continue;
+                };
+                hints.push(serde_json::json!({
+                    "position": { "line": line, "character": character },
+                    "label": "ByRef ",
+                    "kind": 2,
+                    "paddingRight": false,
+                    "tooltip": "Implicit VBScript ByRef parameter",
+                }));
+            }
+        }
+
+        if options.parameter_names {
+            for symbol in symbols.iter().filter(|symbol| is_callable_symbol(symbol)) {
+                let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let parameters = symbol
+                    .get("parameters")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>();
+                if parameters.is_empty() {
+                    continue;
+                }
+                for occurrence in identifiers_in_vbscript(text, &parsed)
+                    .into_iter()
+                    .filter(|identifier| identifier.name.eq_ignore_ascii_case(name))
+                {
+                    if occurrence.start < start_offset || occurrence.end > end_offset {
+                        continue;
+                    }
+                    let Some(open_offset) = next_non_whitespace_offset(text, occurrence.end, '(')
+                    else {
+                        continue;
+                    };
+                    if let Some((line, character)) = utf16_position_at(text, open_offset + 1) {
+                        hints.push(serde_json::json!({
+                            "position": { "line": line, "character": character },
+                            "label": format!("{}:", parameters[0]),
+                            "kind": 2,
+                            "paddingRight": true,
+                        }));
+                    }
                 }
             }
         }
+
+        hints.sort_by_key(|hint| {
+            (
+                hint.pointer("/position/line")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                hint.pointer("/position/character")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            )
+        });
         Ok(Value::Array(hints))
     }
 
@@ -1454,6 +1576,38 @@ pub struct TextPosition {
 pub struct TextRange {
     pub start: TextPosition,
     pub end: TextPosition,
+}
+
+struct InlayHintOptions {
+    variable_types: bool,
+    parameter_names: bool,
+    function_return_types: bool,
+    implicit_by_ref: bool,
+    global_variable_markers: String,
+}
+
+impl InlayHintOptions {
+    fn from_settings(settings: &Value) -> Self {
+        let inlay_hints = settings.get("inlayHints").unwrap_or(&Value::Null);
+        Self {
+            variable_types: inlay_hint_bool(inlay_hints, "variableTypes", true),
+            parameter_names: inlay_hint_bool(inlay_hints, "parameterNames", true),
+            function_return_types: inlay_hint_bool(inlay_hints, "functionReturnTypes", true),
+            implicit_by_ref: inlay_hint_bool(inlay_hints, "implicitByRef", true),
+            global_variable_markers: inlay_hints
+                .get("globalVariableMarkers")
+                .and_then(Value::as_str)
+                .unwrap_or("global")
+                .to_string(),
+        }
+    }
+}
+
+fn inlay_hint_bool(settings: &Value, key: &str, default: bool) -> bool {
+    settings
+        .get(key)
+        .and_then(Value::as_bool)
+        .unwrap_or(default)
 }
 
 struct OpenDocument {
@@ -2083,6 +2237,129 @@ fn range_contains_offset(text: &str, range: &Value, offset: usize) -> bool {
         return false;
     };
     start <= offset && offset <= end
+}
+
+fn range_overlaps_offsets(
+    text: &str,
+    range: &Value,
+    start_offset: usize,
+    end_offset: usize,
+) -> bool {
+    let Some(start) = range_start_offset(text, range) else {
+        return false;
+    };
+    let Some(end) = range_end_offset(text, range) else {
+        return false;
+    };
+    start <= end_offset && end >= start_offset
+}
+
+fn symbol_source_uri_matches(symbol: &Value, uri: &str) -> bool {
+    symbol
+        .get("sourceUri")
+        .and_then(Value::as_str)
+        .map_or(true, |source_uri| source_uri == uri)
+}
+
+fn visible_inlay_type_name(symbol: &Value) -> Option<&str> {
+    let type_name = symbol.get("typeName").and_then(Value::as_str)?;
+    (!type_name.eq_ignore_ascii_case("unknown")).then_some(type_name)
+}
+
+fn variable_type_hint_position(text: &str, symbol: &Value) -> Option<Value> {
+    let range = symbol.get("range")?;
+    if symbol.get("array").and_then(Value::as_bool) == Some(true) {
+        let name_end = range_end_offset(text, range)?;
+        if let Some(close_paren_end) = declaration_close_paren_end(text, name_end) {
+            let (line, character) = utf16_position_at(text, close_paren_end)?;
+            return Some(serde_json::json!({ "line": line, "character": character }));
+        }
+    }
+    range.get("end").cloned()
+}
+
+fn function_return_hint_position(text: &str, symbol: &Value) -> Option<Value> {
+    let range = symbol.get("range")?;
+    let name_end = range_end_offset(text, range)?;
+    if let Some(close_paren_end) = declaration_close_paren_end(text, name_end) {
+        let (line, character) = utf16_position_at(text, close_paren_end)?;
+        return Some(serde_json::json!({ "line": line, "character": character }));
+    }
+    range.get("end").cloned()
+}
+
+fn declaration_close_paren_end(text: &str, name_end: usize) -> Option<usize> {
+    let chars = utf16_chars(text);
+    let mut depth = 0usize;
+    let mut seen_open = false;
+    for (offset, character) in chars.into_iter().filter(|(offset, _)| *offset >= name_end) {
+        if character == '\r' || character == '\n' {
+            return None;
+        }
+        if character == '(' {
+            depth += 1;
+            seen_open = true;
+        } else if character == ')' && seen_open {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Some(offset + character.len_utf16());
+            }
+        }
+    }
+    None
+}
+
+fn scope_inlay_prefix(symbol: &Value, mode: &str) -> &'static str {
+    if mode == "off" || !is_variable_marker_symbol(symbol) {
+        return "";
+    }
+    if is_global_variable_like_symbol(symbol) {
+        return if mode == "global" || mode == "all" {
+            " (global)"
+        } else {
+            ""
+        };
+    }
+    if is_local_variable_like_symbol(symbol) {
+        return if mode == "local" || mode == "all" {
+            " (local)"
+        } else {
+            ""
+        };
+    }
+    ""
+}
+
+fn is_variable_marker_symbol(symbol: &Value) -> bool {
+    matches!(
+        symbol.get("kind").and_then(Value::as_str),
+        Some("variable" | "constant")
+    ) && symbol.get("memberOf").and_then(Value::as_str).is_none()
+}
+
+fn is_global_variable_like_symbol(symbol: &Value) -> bool {
+    is_variable_marker_symbol(symbol) && symbol.get("scopeName").and_then(Value::as_str).is_none()
+}
+
+fn is_local_variable_like_symbol(symbol: &Value) -> bool {
+    is_variable_marker_symbol(symbol) && symbol.get("scopeName").and_then(Value::as_str).is_some()
+}
+
+fn has_explicit_parameter_mode_before(text: &str, parameter_start: usize) -> bool {
+    let chars = utf16_chars(text);
+    let mut previous = Vec::new();
+    for (offset, character) in chars.into_iter().rev() {
+        if offset >= parameter_start {
+            continue;
+        }
+        if matches!(character, '(' | ',' | '\r' | '\n') {
+            break;
+        }
+        previous.push(character);
+    }
+    let previous = previous.into_iter().rev().collect::<String>();
+    let previous = previous.trim_end().to_ascii_lowercase();
+    previous.ends_with("byref") || previous.ends_with("byval")
 }
 
 fn range_size(range: &Value) -> Option<usize> {
