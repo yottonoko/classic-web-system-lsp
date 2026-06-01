@@ -69,18 +69,29 @@ fn publishes_diagnostics_over_stdio_lsp() {
         diagnostics["params"]["uri"],
         json!("file:///tmp/default.asp")
     );
+    let pulled_diagnostics = request(
+        &mut stdin,
+        &mut reader,
+        2,
+        "textDocument/diagnostic",
+        json!({ "textDocument": { "uri": "file:///tmp/default.asp" } }),
+    );
+    assert_eq!(pulled_diagnostics["result"]["kind"], json!("full"));
+    assert!(pulled_diagnostics["result"]["items"]
+        .to_string()
+        .contains("missingName"));
 
     write_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
-            "id": 2,
+            "id": 3,
             "method": "shutdown",
             "params": null,
         }),
     );
     let shutdown = read_message(&mut reader);
-    assert_eq!(shutdown["id"], json!(2));
+    assert_eq!(shutdown["id"], json!(3));
     drop(stdin);
     assert!(child.wait().expect("wait server").success());
 }
@@ -669,6 +680,28 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         definition["result"]["range"]["start"],
         json!({ "line": 1, "character": 9 })
     );
+    let declaration = request(
+        &mut stdin,
+        &mut reader,
+        60,
+        "textDocument/declaration",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 16 },
+        }),
+    );
+    assert_eq!(declaration["result"], definition["result"]);
+    let implementation = request(
+        &mut stdin,
+        &mut reader,
+        61,
+        "textDocument/implementation",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 16 },
+        }),
+    );
+    assert_eq!(implementation["result"], definition["result"]);
 
     let type_definition = request(
         &mut stdin,
@@ -925,6 +958,27 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
             "data": [],
         })
     );
+    let ranged_semantic_tokens = request(
+        &mut stdin,
+        &mut reader,
+        62,
+        "textDocument/semanticTokens/range",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 5, "character": 0 },
+                "end": { "line": 6, "character": 0 },
+            },
+        }),
+    );
+    let ranged_decoded = decode_semantic_tokens(
+        ranged_semantic_tokens["result"]["data"]
+            .as_array()
+            .expect("semantic range data"),
+    );
+    assert!(ranged_decoded
+        .iter()
+        .any(|token| token.line == 5 && token.character == 15 && token.token_type == 3));
 
     let selection = request(
         &mut stdin,
@@ -989,6 +1043,14 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         inlay_labels.iter().any(|label| *label == " As String"),
         "inlay labels: {inlay_labels:?}"
     );
+    let resolved_inlay = request(
+        &mut stdin,
+        &mut reader,
+        63,
+        "inlayHint/resolve",
+        inlay_hints["result"][0].clone(),
+    );
+    assert_eq!(resolved_inlay["result"], inlay_hints["result"][0]);
 
     write_message(
         &mut stdin,
@@ -1065,6 +1127,14 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     assert!(actions["result"]
         .to_string()
         .contains("Extract VBScript variable"));
+    let resolved_action = request(
+        &mut stdin,
+        &mut reader,
+        64,
+        "codeAction/resolve",
+        actions["result"][0].clone(),
+    );
+    assert_eq!(resolved_action["result"], actions["result"][0]);
 
     let documentation_actions = request(
         &mut stdin,
@@ -1280,6 +1350,22 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         }),
     );
     assert!(type_hierarchy["result"].to_string().contains("Customer"));
+    let supertypes = request(
+        &mut stdin,
+        &mut reader,
+        65,
+        "typeHierarchy/supertypes",
+        json!({ "item": type_hierarchy["result"][0].clone() }),
+    );
+    assert_eq!(supertypes["result"], json!([]));
+    let subtypes = request(
+        &mut stdin,
+        &mut reader,
+        66,
+        "typeHierarchy/subtypes",
+        json!({ "item": type_hierarchy["result"][0].clone() }),
+    );
+    assert_eq!(subtypes["result"], json!([]));
     let callable_type_hierarchy = request(
         &mut stdin,
         &mut reader,
