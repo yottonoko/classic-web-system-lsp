@@ -1307,7 +1307,7 @@ fn server_capabilities() -> Value {
     json!({
         "completionProvider": {
             "resolveProvider": true,
-            "triggerCharacters": [".", " "],
+            "triggerCharacters": ["<", ".", "\"", "'", ":", "#", "(", " "],
         },
         "signatureHelpProvider": {
             "triggerCharacters": ["(", ",", " "],

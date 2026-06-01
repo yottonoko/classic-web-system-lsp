@@ -1200,6 +1200,19 @@ fn initialize_with_settings_and_root(
         initialize["result"]["capabilities"]["textDocumentSync"]["change"],
         json!(2)
     );
+    assert_eq!(
+        initialize["result"]["capabilities"]["completionProvider"]["triggerCharacters"],
+        json!(["<", ".", "\"", "'", ":", "#", "(", " "])
+    );
+    assert_eq!(
+        initialize["result"]["capabilities"]["executeCommandProvider"]["commands"],
+        json!([
+            "aspLsp.server.reindexWorkspace",
+            "aspLsp.server.clearCache",
+            "aspLsp.server.clearDiskCache",
+            "aspLsp.server.clearProcessCache",
+        ])
+    );
 
     write_message(
         stdin,
