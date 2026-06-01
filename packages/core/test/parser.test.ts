@@ -870,6 +870,109 @@ end
     expect(disabled.some((item) => item.label === "End If")).toBe(false);
   });
 
+  it("completes VBScript block continuation and closing keywords only when usable", () => {
+    const thenSource = `<%
+If ready 
+%>`;
+    const thenParsed = parseAspDocument("file:///site/then-completion.asp", thenSource);
+    const thenCompletions = getVbscriptCompletions(
+      thenParsed,
+      positionAt(thenSource, thenSource.indexOf("ready") + "ready ".length),
+    );
+    expect(thenCompletions.map((item) => item.label)).toEqual(["Then"]);
+    expect(thenCompletions[0]).toMatchObject({
+      kind: CompletionItemKind.Keyword,
+      textEdit: {
+        newText: "Then",
+      },
+    });
+
+    const partialThenSource = `<%
+ElseIf ready th
+%>`;
+    const partialThenParsed = parseAspDocument(
+      "file:///site/partial-then-completion.asp",
+      partialThenSource,
+    );
+    const partialThenCompletions = getVbscriptCompletions(
+      partialThenParsed,
+      positionAt(partialThenSource, partialThenSource.indexOf("th") + "th".length),
+    );
+    expect(partialThenCompletions[0]?.textEdit).toMatchObject({
+      newText: "Then",
+    });
+
+    const completeThenSource = `<%
+If ready Then
+%>`;
+    const completeThenParsed = parseAspDocument(
+      "file:///site/complete-then-completion.asp",
+      completeThenSource,
+    );
+    const completeThenCompletions = getVbscriptCompletions(
+      completeThenParsed,
+      positionAt(completeThenSource, completeThenSource.indexOf("Then") + "Then".length),
+    );
+    expect(completeThenCompletions.some((item) => item.label === "Then")).toBe(false);
+
+    const loopSource = `<%
+Do
+lo
+%>`;
+    const loopParsed = parseAspDocument("file:///site/loop-completion.asp", loopSource);
+    const loopCompletions = getVbscriptCompletions(
+      loopParsed,
+      positionAt(loopSource, loopSource.indexOf("lo") + "lo".length),
+    );
+    expect(loopCompletions.map((item) => item.label)).toEqual(["Loop"]);
+
+    const whileSource = `<%
+While ready
+we
+%>`;
+    const whileParsed = parseAspDocument("file:///site/wend-completion.asp", whileSource);
+    const whileCompletions = getVbscriptCompletions(
+      whileParsed,
+      positionAt(whileSource, whileSource.indexOf("we") + "we".length),
+    );
+    expect(whileCompletions.map((item) => item.label)).toEqual(["Wend"]);
+
+    const forSource = `<%
+Sub Render()
+For index = 1 To 3
+n
+%>`;
+    const forParsed = parseAspDocument("file:///site/next-completion.asp", forSource);
+    const forCompletions = getVbscriptCompletions(
+      forParsed,
+      positionAt(forSource, forSource.lastIndexOf("n") + "n".length),
+    );
+    expect(forCompletions.map((item) => item.label)).toEqual(["Next"]);
+    expect(forCompletions.some((item) => item.label === "End Sub")).toBe(false);
+
+    const blockedEndSource = `<%
+Sub Render()
+For index = 1 To 3
+end
+%>`;
+    const blockedEndParsed = parseAspDocument(
+      "file:///site/blocked-end-completion.asp",
+      blockedEndSource,
+    );
+    const blockedEndCompletions = getVbscriptCompletions(
+      blockedEndParsed,
+      positionAt(blockedEndSource, blockedEndSource.lastIndexOf("end") + "end".length),
+    );
+    expect(blockedEndCompletions.some((item) => item.label === "End Sub")).toBe(false);
+
+    const disabled = getVbscriptCompletions(
+      thenParsed,
+      positionAt(thenSource, thenSource.indexOf("ready") + "ready ".length),
+      { syntaxSnippets: false },
+    );
+    expect(disabled.some((item) => item.label === "Then")).toBe(false);
+  });
+
   it("treats server-side object tags as typed VBScript globals", () => {
     const source = `<object runat="server" id="rs" progid="ADODB.Recordset"></object>
 <%
