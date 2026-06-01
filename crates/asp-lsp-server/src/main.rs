@@ -633,6 +633,120 @@ fn handle_request(
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
+        "textDocument/documentLink" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let result = state.ide.document_links(&uri)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "documentLink/resolve" | "inlayHint/resolve" | "codeAction/resolve" => {
+            connection
+                .sender
+                .send(Response::new_ok(request.id, request.params).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "codeLens/resolve" => {
+            let result = resolve_code_lens(&state.ide, request.params)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/selectionRange" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let positions = request_positions(&request.params)?;
+            let result = state.ide.selection_ranges(&uri, &positions)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/inlayHint" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let range = request_range(&request.params)?;
+            let result = state.ide.inlay_hints(&uri, range)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/codeLens" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let result = state.ide.code_lenses(&uri)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/codeAction" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let range = request_range(&request.params)?;
+            let result = state.ide.code_actions(&uri, range)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/prepareCallHierarchy" | "textDocument/prepareTypeHierarchy" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let result = state.ide.hierarchy_item(&uri, position)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "callHierarchy/incomingCalls"
+        | "callHierarchy/outgoingCalls"
+        | "typeHierarchy/supertypes"
+        | "typeHierarchy/subtypes" => {
+            connection
+                .sender
+                .send(Response::new_ok(request.id, Value::Array(Vec::new())).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/moniker" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let position = request_position(&request.params)?;
+            let result = state.ide.monikers(&uri, position)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/inlineValue" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let range = request_range(&request.params)?;
+            let result = state.ide.inline_values(&uri, range)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/formatting"
+        | "textDocument/rangeFormatting"
+        | "textDocument/onTypeFormatting" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let result = state.ide.formatting_edits(&uri);
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
         "textDocument/linkedEditingRange" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
@@ -793,8 +907,32 @@ fn server_capabilities() -> Value {
             "full": { "delta": true },
             "range": true,
         },
+        "documentLinkProvider": { "resolveProvider": true },
+        "codeActionProvider": {
+            "resolveProvider": true,
+            "codeActionKinds": [
+                "quickfix",
+                "refactor",
+                "source",
+                "source.organizeImports",
+                "source.organizeImports.aspLsp.javascript",
+            ],
+        },
+        "codeLensProvider": { "resolveProvider": true },
         "colorProvider": true,
+        "selectionRangeProvider": true,
         "linkedEditingRangeProvider": true,
+        "inlayHintProvider": { "resolveProvider": true },
+        "callHierarchyProvider": true,
+        "typeHierarchyProvider": true,
+        "monikerProvider": true,
+        "inlineValueProvider": true,
+        "documentFormattingProvider": true,
+        "documentRangeFormattingProvider": true,
+        "documentOnTypeFormattingProvider": {
+            "firstTriggerCharacter": "\n",
+            "moreTriggerCharacter": [">"],
+        },
         "textDocumentSync": {
             "openClose": true,
             "change": 2,
@@ -929,6 +1067,16 @@ fn request_range(params: &Value) -> Result<TextRange, String> {
         .ok_or_else(|| "range is required".to_string())
 }
 
+fn request_positions(params: &Value) -> Result<Vec<TextPosition>, String> {
+    params
+        .get("positions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "positions are required".to_string())?
+        .iter()
+        .map(|value| text_position(value).ok_or_else(|| "invalid position".to_string()))
+        .collect()
+}
+
 fn merge_lsp_arrays(left: Value, right: Option<Value>) -> Value {
     let mut items = match left {
         Value::Array(items) => items,
@@ -960,6 +1108,45 @@ fn semantic_tokens_delta_result(value: Value) -> Value {
         "resultId": "0",
         "edits": [{ "start": 0, "deleteCount": 0, "data": data }],
     })
+}
+
+fn resolve_code_lens(ide: &Ide, mut lens: Value) -> Result<Value, String> {
+    let Some(data) = lens.get("data").cloned() else {
+        return Ok(lens);
+    };
+    let uri = data.get("uri").and_then(Value::as_str).unwrap_or_default();
+    let line = data.get("line").and_then(Value::as_u64).unwrap_or(0);
+    let character = data.get("character").and_then(Value::as_u64).unwrap_or(0);
+    let references = ide.references(
+        uri,
+        TextPosition {
+            line: line.try_into().unwrap_or(0),
+            character: character.try_into().unwrap_or(0),
+        },
+        false,
+    )?;
+    let reference_count = references.as_array().map_or(0, Vec::len);
+    let Some(object) = lens.as_object_mut() else {
+        return Ok(lens);
+    };
+    object.insert(
+        "command".to_string(),
+        json!({
+            "title": format!("{reference_count} references"),
+            "command": "aspLsp.showReferences",
+            "arguments": [
+                uri,
+                { "line": line, "character": character },
+                references,
+            ],
+        }),
+    );
+    if reference_count == 1 {
+        if let Some(command) = lens.pointer_mut("/command/title") {
+            *command = Value::String("1 reference".to_string());
+        }
+    }
+    Ok(lens)
 }
 
 fn text_position(value: &Value) -> Option<TextPosition> {

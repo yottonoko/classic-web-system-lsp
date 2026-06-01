@@ -665,6 +665,181 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         .iter()
         .any(|token| token.line == 1 && token.character == 19 && token.token_type == 2));
 
+    let selection = request(
+        &mut stdin,
+        &mut reader,
+        22,
+        "textDocument/selectionRange",
+        json!({
+            "textDocument": { "uri": uri },
+            "positions": [{ "line": 5, "character": 16 }],
+        }),
+    );
+    assert_eq!(
+        selection["result"][0]["range"]["start"],
+        json!({ "line": 5, "character": 15 })
+    );
+
+    let inlay_hints = request(
+        &mut stdin,
+        &mut reader,
+        23,
+        "textDocument/inlayHint",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 6, "character": 0 },
+            },
+        }),
+    );
+    assert!(inlay_hints["result"].to_string().contains("first"));
+
+    let code_lens = request(
+        &mut stdin,
+        &mut reader,
+        24,
+        "textDocument/codeLens",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert!(code_lens["result"]
+        .as_array()
+        .expect("code lens")
+        .iter()
+        .any(|lens| lens["data"]["kind"] == json!("vbscript-reference")));
+    let resolved_lens = request(
+        &mut stdin,
+        &mut reader,
+        25,
+        "codeLens/resolve",
+        code_lens["result"][0].clone(),
+    );
+    assert!(resolved_lens["result"].to_string().contains("references"));
+
+    let actions = request(
+        &mut stdin,
+        &mut reader,
+        26,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 5, "character": 15 },
+                "end": { "line": 5, "character": 24 },
+            },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    assert!(actions["result"].to_string().contains("Extract variable"));
+
+    let call_hierarchy = request(
+        &mut stdin,
+        &mut reader,
+        27,
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 16 },
+        }),
+    );
+    assert!(call_hierarchy["result"].to_string().contains("BuildName"));
+    let incoming_calls = request(
+        &mut stdin,
+        &mut reader,
+        28,
+        "callHierarchy/incomingCalls",
+        json!({ "item": call_hierarchy["result"][0].clone() }),
+    );
+    assert_eq!(incoming_calls["result"], json!([]));
+
+    let type_hierarchy = request(
+        &mut stdin,
+        &mut reader,
+        29,
+        "textDocument/prepareTypeHierarchy",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 16 },
+        }),
+    );
+    assert!(type_hierarchy["result"].to_string().contains("BuildName"));
+
+    let monikers = request(
+        &mut stdin,
+        &mut reader,
+        30,
+        "textDocument/moniker",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 16 },
+        }),
+    );
+    assert!(monikers["result"].to_string().contains("BuildName"));
+
+    let inline_values = request(
+        &mut stdin,
+        &mut reader,
+        31,
+        "textDocument/inlineValue",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 6, "character": 0 },
+            },
+            "context": {
+                "frameId": 0,
+                "stoppedLocation": {
+                    "start": { "line": 5, "character": 0 },
+                    "end": { "line": 5, "character": 0 },
+                },
+            },
+        }),
+    );
+    assert!(inline_values["result"].to_string().contains("BuildName"));
+
+    let formatting = request(
+        &mut stdin,
+        &mut reader,
+        32,
+        "textDocument/formatting",
+        json!({
+            "textDocument": { "uri": uri },
+            "options": { "tabSize": 2, "insertSpaces": true },
+        }),
+    );
+    assert_eq!(formatting["result"], json!([]));
+
+    let range_formatting = request(
+        &mut stdin,
+        &mut reader,
+        33,
+        "textDocument/rangeFormatting",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 6, "character": 0 },
+            },
+            "options": { "tabSize": 2, "insertSpaces": true },
+        }),
+    );
+    assert_eq!(range_formatting["result"], json!([]));
+
+    let on_type_formatting = request(
+        &mut stdin,
+        &mut reader,
+        34,
+        "textDocument/onTypeFormatting",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 24 },
+            "ch": ">",
+            "options": { "tabSize": 2, "insertSpaces": true },
+        }),
+    );
+    assert_eq!(on_type_formatting["result"], json!([]));
+
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
     assert!(child.wait().expect("wait server").success());
@@ -730,6 +905,24 @@ fn indexes_unopened_workspace_files_for_vbscript_references() {
         serialized.contains("helpers.inc"),
         "references: {serialized}"
     );
+
+    let links = request(
+        &mut stdin,
+        &mut reader,
+        31,
+        "textDocument/documentLink",
+        json!({ "textDocument": { "uri": page_uri } }),
+    );
+    assert!(links["result"].to_string().contains("helpers.inc"));
+
+    let resolved_link = request(
+        &mut stdin,
+        &mut reader,
+        32,
+        "documentLink/resolve",
+        links["result"][0].clone(),
+    );
+    assert!(resolved_link["result"].to_string().contains("helpers.inc"));
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);

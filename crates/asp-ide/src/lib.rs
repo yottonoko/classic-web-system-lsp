@@ -730,6 +730,301 @@ impl Ide {
         Ok(serde_json::json!({ "data": encode_semantic_tokens(&tokens) }))
     }
 
+    pub fn document_links(&self, uri: &str) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let links = parsed
+            .get("includes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|include| {
+                Some(serde_json::json!({
+                    "range": include.get("pathRange")?.clone(),
+                    "target": resolve_include_target(uri, include),
+                }))
+            })
+            .collect::<Vec<_>>();
+        Ok(Value::Array(links))
+    }
+
+    pub fn selection_ranges(&self, uri: &str, positions: &[TextPosition]) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let text = document.text(&self.db);
+        let ranges = positions
+            .iter()
+            .map(|position| {
+                let offset = position_to_utf16_offset(
+                    text,
+                    position.line.try_into().unwrap_or(0),
+                    position.character.try_into().unwrap_or(0),
+                );
+                let range = offset
+                    .and_then(|offset| identifier_range_at_offset(text, offset))
+                    .unwrap_or_else(|| {
+                        serde_json::json!({
+                            "start": { "line": position.line, "character": position.character },
+                            "end": { "line": position.line, "character": position.character },
+                        })
+                    });
+                let parent = line_range(text, position.line).unwrap_or_else(|| range.clone());
+                serde_json::json!({ "range": range, "parent": { "range": parent } })
+            })
+            .collect::<Vec<_>>();
+        Ok(Value::Array(ranges))
+    }
+
+    pub fn inlay_hints(&self, uri: &str, range: TextRange) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let text = document.text(&self.db);
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+        let start_offset = position_to_utf16_offset(
+            text,
+            range.start.line.try_into().unwrap_or(0),
+            range.start.character.try_into().unwrap_or(0),
+        )
+        .unwrap_or(0);
+        let end_offset = position_to_utf16_offset(
+            text,
+            range.end.line.try_into().unwrap_or(usize::MAX),
+            range.end.character.try_into().unwrap_or(usize::MAX),
+        )
+        .unwrap_or_else(|| utf16_len(text));
+        let mut hints = Vec::new();
+        for symbol in symbols.iter().filter(|symbol| is_callable_symbol(symbol)) {
+            let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let parameters = symbol
+                .get("parameters")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            if parameters.is_empty() {
+                continue;
+            }
+            for occurrence in identifiers_in_vbscript(text, &parsed)
+                .into_iter()
+                .filter(|identifier| identifier.name.eq_ignore_ascii_case(name))
+            {
+                if occurrence.start < start_offset || occurrence.end > end_offset {
+                    continue;
+                }
+                let Some(open_offset) = next_non_whitespace_offset(text, occurrence.end, '(')
+                else {
+                    continue;
+                };
+                if let Some((line, character)) = utf16_position_at(text, open_offset + 1) {
+                    hints.push(serde_json::json!({
+                        "position": { "line": line, "character": character },
+                        "label": format!("{}:", parameters[0]),
+                        "kind": 2,
+                        "paddingRight": true,
+                    }));
+                }
+            }
+        }
+        Ok(Value::Array(hints))
+    }
+
+    pub fn code_lenses(&self, uri: &str) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let mut lenses = Vec::new();
+        for symbol in vb_symbols(&self.db, document.source_file, self.settings.input)? {
+            if matches!(
+                symbol.get("kind").and_then(Value::as_str),
+                Some("function" | "sub" | "class" | "method" | "property")
+            ) {
+                let Some(range) = symbol.get("range").cloned() else {
+                    continue;
+                };
+                lenses.push(serde_json::json!({
+                    "range": range,
+                    "data": {
+                        "kind": "vbscript-reference",
+                        "uri": uri,
+                        "name": symbol.get("name").cloned().unwrap_or(Value::Null),
+                        "symbolKind": symbol.get("kind").cloned().unwrap_or(Value::Null),
+                        "line": symbol.pointer("/range/start/line").cloned().unwrap_or(Value::Null),
+                        "character": symbol.pointer("/range/start/character").cloned().unwrap_or(Value::Null),
+                    },
+                }));
+            }
+        }
+        for include in parsed
+            .get("includes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(range) = include.get("range").cloned() {
+                lenses.push(serde_json::json!({
+                    "range": range,
+                    "command": {
+                        "title": "Open include",
+                        "command": "vscode.open",
+                        "arguments": [resolve_include_target(uri, include)],
+                    },
+                }));
+            }
+        }
+        Ok(Value::Array(lenses))
+    }
+
+    pub fn code_actions(&self, uri: &str, range: TextRange) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let text = document.text(&self.db);
+        let Some(start) = position_to_utf16_offset(
+            text,
+            range.start.line.try_into().unwrap_or(0),
+            range.start.character.try_into().unwrap_or(0),
+        ) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let Some(end) = position_to_utf16_offset(
+            text,
+            range.end.line.try_into().unwrap_or(0),
+            range.end.character.try_into().unwrap_or(0),
+        ) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        if start >= end {
+            return Ok(Value::Array(Vec::new()));
+        }
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        if !is_vbscript_offset(&parsed, start)
+            || !is_vbscript_offset(&parsed, end.saturating_sub(1))
+        {
+            return Ok(Value::Array(Vec::new()));
+        }
+        let Ok(selected) = slice_utf16(text, start, end) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        if selected.trim().is_empty() || selected != selected.trim() {
+            return Ok(Value::Array(Vec::new()));
+        }
+        Ok(serde_json::json!([{
+            "title": "Extract variable",
+            "kind": "refactor.extract",
+            "edit": {
+                "changes": {
+                    uri: [
+                        {
+                            "range": {
+                                "start": { "line": range.start.line, "character": 0 },
+                                "end": { "line": range.start.line, "character": 0 },
+                            },
+                            "newText": format!("Dim extractedValue\nextractedValue = {selected}\n"),
+                        },
+                        {
+                            "range": {
+                                "start": {
+                                    "line": range.start.line,
+                                    "character": range.start.character,
+                                },
+                                "end": {
+                                    "line": range.end.line,
+                                    "character": range.end.character,
+                                },
+                            },
+                            "newText": "extractedValue",
+                        },
+                    ],
+                },
+            },
+        }]))
+    }
+
+    pub fn hierarchy_item(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some((symbol, _context)) = self.symbol_at_position(uri, position)? else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let range = symbol
+            .get("scopeRange")
+            .or_else(|| symbol.get("range"))
+            .cloned();
+        let selection_range = symbol.get("range").cloned();
+        let (Some(range), Some(selection_range)) = (range, selection_range) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        Ok(serde_json::json!([{
+            "name": name,
+            "kind": symbol_kind(&symbol),
+            "uri": uri,
+            "range": range,
+            "selectionRange": selection_range,
+            "data": { "uri": uri, "name": name },
+        }]))
+    }
+
+    pub fn monikers(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some((symbol, _context)) = self.symbol_at_position(uri, position)? else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        Ok(serde_json::json!([{
+            "scheme": "asp-lsp",
+            "identifier": format!("{uri}#{name}"),
+            "unique": "document",
+            "kind": "export",
+        }]))
+    }
+
+    pub fn inline_values(&self, uri: &str, range: TextRange) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let text = document.text(&self.db);
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let start_offset = position_to_utf16_offset(
+            text,
+            range.start.line.try_into().unwrap_or(0),
+            range.start.character.try_into().unwrap_or(0),
+        )
+        .unwrap_or(0);
+        let end_offset = position_to_utf16_offset(
+            text,
+            range.end.line.try_into().unwrap_or(usize::MAX),
+            range.end.character.try_into().unwrap_or(usize::MAX),
+        )
+        .unwrap_or_else(|| utf16_len(text));
+        let values = identifiers_in_vbscript(text, &parsed)
+            .into_iter()
+            .filter(|identifier| identifier.start >= start_offset && identifier.end <= end_offset)
+            .map(|identifier| {
+                serde_json::json!({
+                    "range": identifier.range,
+                    "variableName": identifier.name,
+                    "caseSensitiveLookup": false,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(Value::Array(values))
+    }
+
+    pub fn formatting_edits(&self, _uri: &str) -> Value {
+        Value::Array(Vec::new())
+    }
+
     pub fn embedded_virtual_documents(
         &self,
         uri: &str,
@@ -1299,6 +1594,62 @@ fn previous_identifier_is(text: &str, parsed: &Value, offset: usize, expected: &
         return false;
     };
     owner.eq_ignore_ascii_case(expected) && is_vbscript_offset(parsed, owner_end)
+}
+
+fn resolve_include_target(uri: &str, include: &Value) -> String {
+    let path = include
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if path.starts_with("file://") {
+        return path.to_string();
+    }
+    let Some((base, _)) = uri.rsplit_once('/') else {
+        return path.to_string();
+    };
+    format!("{base}/{path}")
+}
+
+fn line_range(text: &str, target_line: u32) -> Option<Value> {
+    let mut line = 0;
+    let mut character = 0;
+    let mut start = None;
+    let mut end = None;
+    for current in text.chars() {
+        if line == target_line && start.is_none() {
+            start = Some((line, character));
+        }
+        if current == '\n' {
+            if line == target_line {
+                end = Some((line, character));
+                break;
+            }
+            line += 1;
+            character = 0;
+        } else {
+            character += current.len_utf16() as u32;
+        }
+    }
+    if line == target_line && end.is_none() {
+        end = Some((line, character));
+    }
+    let (start_line, start_character) = start?;
+    let (end_line, end_character) = end?;
+    Some(serde_json::json!({
+        "start": { "line": start_line, "character": start_character },
+        "end": { "line": end_line, "character": end_character },
+    }))
+}
+
+fn next_non_whitespace_offset(text: &str, start: usize, expected: char) -> Option<usize> {
+    let chars = utf16_chars(text);
+    for (offset, character) in chars.into_iter().filter(|(offset, _)| *offset >= start) {
+        if character.is_whitespace() {
+            continue;
+        }
+        return (character == expected).then_some(offset);
+    }
+    None
 }
 
 fn include_semantic_tokens(_text: &str, parsed: &Value) -> Vec<SemanticToken> {
