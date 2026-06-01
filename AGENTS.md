@@ -5,7 +5,8 @@ This repository contains a Classic ASP language server and a VS Code extension.
 ## Project Layout
 
 - `packages/core`: Classic ASP CST/parser, embedded region scanner, virtual documents, source maps, formatter, and VBScript helpers.
-- `packages/language-server`: LSP server entrypoint, diagnostics, completion, hover, document links, folding, and formatting routing.
+- `packages/embedded-sidecar`: Node sidecar for embedded HTML, CSS, JavaScript, and TypeScript services.
+- `crates/asp-lsp-server`: Rust LSP server entrypoint, diagnostics, completion, hover, document links, folding, and formatting routing.
 - `apps/vscode`: VS Code extension client, language registration, grammar, and extension package tests.
 
 ## Language And Style
@@ -29,10 +30,10 @@ pnpm run build
 pnpm run package:vsix
 ```
 
-The standalone server is built at `packages/language-server/dist/server.js` and runs with:
+The standalone server is built at `target/release/asp-lsp-server` and runs with:
 
 ```sh
-node packages/language-server/dist/server.js --stdio
+target/release/asp-lsp-server --stdio
 ```
 
 ## Implementation Rules
@@ -43,7 +44,7 @@ node packages/language-server/dist/server.js --stdio
 - Route new user-facing diagnostics, code action titles, CodeLens titles, completion fallback docs, and extension messages through the localizer/NLS keys. Keep upstream TypeScript/HTML/CSS service messages unchanged.
 - Treat `.inc` files as fragments. Do not assume a complete HTML document.
 - Do not let formatting edits erase or rewrite Classic ASP server regions.
-- Keep `apps/vscode` able to resolve the development server module via `node_modules/@asp-lsp/language-server/dist/server.js` and the VSIX-bundled server via `server/language-server/dist/server.js`.
+- Keep `apps/vscode` able to resolve the development Rust server via `target/release/asp-lsp-server` and the VSIX-bundled server via `server/bin/<target>/asp-lsp-server`.
 
 ## Git
 

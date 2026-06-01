@@ -24,11 +24,7 @@ const includeTreeServerOldSpaceMb = readPositiveInteger(
   16_384,
 );
 const generator = path.join(sampleRoot, "generate.mjs");
-const serverKind = readServerKind();
-const serverPath =
-  serverKind === "rust"
-    ? path.join(root, "target", "release", executableName("asp-lsp-server"))
-    : path.join(root, "packages", "language-server", "dist", "server.js");
+const serverPath = path.join(root, "target", "release", executableName("asp-lsp-server"));
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
@@ -113,11 +109,7 @@ const selectedStepNames = [
 async function main() {
   assertSampleCanRun();
   if (!fs.existsSync(serverPath)) {
-    throw new Error(
-      serverKind === "rust"
-        ? "target/release/asp-lsp-server is missing. Run `pnpm run build:server`."
-        : "packages/language-server/dist/server.js is missing. Run `pnpm --filter @asp-lsp/language-server run build`.",
-    );
+    throw new Error("target/release/asp-lsp-server is missing. Run `pnpm run build:server`.");
   }
 
   console.log(`Preparing benchmark sample: ${samplePreset} (${relativeSampleRoot})`);
@@ -140,7 +132,7 @@ async function main() {
   console.log("");
   console.log("Classic ASP document change benchmark");
   console.log(`Sample: ${samplePreset}`);
-  console.log(`Server: ${serverKind}`);
+  console.log("Server: rust");
   console.log(`Sample path: ${relativeSampleRoot}`);
   console.log(`Files: ${sourceStats.files}`);
   console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
@@ -1284,9 +1276,7 @@ class RpcServer {
   }
 
   async start() {
-    const command = serverKind === "rust" ? serverPath : process.execPath;
-    const args = serverKind === "rust" ? [] : [serverPath, "--stdio"];
-    this.child = spawn(command, args, {
+    this.child = spawn(serverPath, [], {
       cwd: root,
       env: serverEnvironment(),
       stdio: ["pipe", "pipe", "pipe"],
@@ -1412,17 +1402,6 @@ class RpcServer {
     pending.push(message);
     this.pendingNotifications.set(message.method, pending);
   }
-}
-
-function readServerKind() {
-  const value = (process.env.ASP_LSP_BENCH_SERVER ?? "node").trim().toLowerCase();
-  if (value === "rust" || value === "native") {
-    return "rust";
-  }
-  if (value === "node" || value === "typescript" || value === "ts") {
-    return "node";
-  }
-  throw new Error(`Unsupported ASP_LSP_BENCH_SERVER: ${value}`);
 }
 
 function executableName(base) {
