@@ -67,8 +67,8 @@ The extension registers:
 
 - language id: `classic-asp`
 - file extensions: `.asp`, `.asa`, `.inc`
-- packaged server path: `node_modules/@asp-lsp/language-server/dist/server.js`
-- VSIX server path: `server/language-server/dist/server.js`
+- packaged Rust server path: `target/release/asp-lsp-server`
+- VSIX Rust server path: `server/bin/<target>/asp-lsp-server`
 
 To build a local VSIX:
 
@@ -77,8 +77,8 @@ pnpm run build
 pnpm run package:vsix --out classic-asp-lsp.vsix
 ```
 
-The VSIX build bundles the standalone language server into `apps/vscode/server/language-server/dist/server.js` before packaging, so the extension does not ship a nested `node_modules` tree.
-Use `pnpm run package:vsix:no-native` to build a VSIX without the Rust native core.
+The VSIX build bundles the Rust language server plus the embedded Node sidecar before packaging, so the extension does not ship a nested `node_modules` tree.
+Use `pnpm run package:vsix:no-native` to build a VSIX without the platform Rust server binary.
 
 ## Samples
 

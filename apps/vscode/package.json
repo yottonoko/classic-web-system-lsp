@@ -198,21 +198,6 @@
           "default": false,
           "description": "%configuration.checkJs.description%"
         },
-        "aspLsp.analysisBackend": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "native",
-            "typescript"
-          ],
-          "default": "auto",
-          "description": "%configuration.analysisBackend.description%"
-        },
-        "aspLsp.useLegacyServer": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.useLegacyServer.description%"
-        },
         "aspLsp.diagnostics.debounceMs": {
           "type": "number",
           "minimum": 0,

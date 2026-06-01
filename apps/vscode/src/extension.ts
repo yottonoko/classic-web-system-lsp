@@ -61,14 +61,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     vscode.commands.registerCommand("aspLsp.createLaunchConfig", async () => createLaunchConfig()),
     vscode.tasks.registerTaskProvider("asp-lsp", new AspLspTaskProvider()),
-    vscode.workspace.onDidChangeConfiguration(async (event) => {
-      if (
-        event.affectsConfiguration("aspLsp.analysisBackend") ||
-        event.affectsConfiguration("aspLsp.useLegacyServer")
-      ) {
-        await restartServer(context);
-      }
-    }),
   );
   await startClient(context);
 }
@@ -81,14 +73,8 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   if (isDeactivating) {
     return;
   }
-  const env = {
-    ...process.env,
-    ASP_LSP_ANALYSIS_BACKEND: configuredAnalysisBackend(),
-  };
-  const serverOptions = createServerOptions(
-    getServerLaunchPath(context, { useLegacyServer: configuredUseLegacyServer() }),
-    env,
-  );
+  const env = { ...process.env };
+  const serverOptions = createServerOptions(getServerLaunchPath(context), env);
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "classic-asp" }],
     outputChannel,
@@ -154,15 +140,6 @@ function createServerOptions(
       options: { execArgv: ["--nolazy", "--inspect=6009"], env },
     },
   };
-}
-
-function configuredAnalysisBackend(): string {
-  const value = vscode.workspace.getConfiguration("aspLsp").get("analysisBackend");
-  return value === "native" || value === "typescript" ? value : "auto";
-}
-
-function configuredUseLegacyServer(): boolean {
-  return vscode.workspace.getConfiguration("aspLsp").get("useLegacyServer") === true;
 }
 
 export async function deactivate(): Promise<void> {

@@ -9,18 +9,7 @@ export type ServerLaunchPath =
   | { kind: "binary"; path: string }
   | { kind: "nodeModule"; path: string };
 
-export interface ServerLaunchOptions {
-  useLegacyServer?: boolean;
-}
-
-export function getServerLaunchPath(
-  context: ExtensionPathResolver,
-  options: ServerLaunchOptions = {},
-): ServerLaunchPath {
-  if (options.useLegacyServer) {
-    return { kind: "nodeModule", path: getServerModulePath(context) };
-  }
-
+export function getServerLaunchPath(context: ExtensionPathResolver): ServerLaunchPath {
   const bundledBinary = context.asAbsolutePath(
     path.join("server", "bin", currentPlatformTarget(), serverExecutableName()),
   );

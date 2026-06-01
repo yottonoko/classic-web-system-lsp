@@ -77,7 +77,6 @@ describe("VS Code extension package", () => {
     };
     const commands = manifest.contributes?.commands?.map((command) => command.command) ?? [];
     const keybindings = manifest.contributes?.keybindings ?? [];
-    const configuration = manifest.contributes?.configuration?.properties ?? {};
     expect(rootManifest.license).toBe("MIT OR Apache-2.0");
     expect(manifest.license).toBe("MIT OR Apache-2.0");
     expect(fs.existsSync("../../LICENSE-MIT")).toBe(true);
@@ -101,22 +100,10 @@ describe("VS Code extension package", () => {
     expect(commands).toContain("aspLsp.debugIisUrl");
     expect(commands).toContain("aspLsp.debugIisExpressUrl");
     expect(commands).toContain("aspLsp.createLaunchConfig");
-    expect(configuration["aspLsp.analysisBackend"]).toEqual(
-      expect.objectContaining({
-        enum: ["auto", "native", "typescript"],
-        default: "auto",
-      }),
-    );
-    expect(configuration["aspLsp.useLegacyServer"]).toEqual(
-      expect.objectContaining({
-        type: "boolean",
-        default: false,
-      }),
-    );
-    const analysisBackendSource = fs.readFileSync("src/extension.ts", "utf8");
-    expect(analysisBackendSource).toContain("ASP_LSP_ANALYSIS_BACKEND");
-    expect(analysisBackendSource).toContain("aspLsp.analysisBackend");
-    expect(analysisBackendSource).toContain("aspLsp.useLegacyServer");
+    const launchSource = fs.readFileSync("src/extension.ts", "utf8");
+    expect(launchSource).not.toContain("ASP_LSP_ANALYSIS_BACKEND");
+    expect(launchSource).not.toContain("aspLsp.analysisBackend");
+    expect(launchSource).not.toContain("aspLsp.useLegacyServer");
     expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(
       true,
     );
@@ -661,21 +648,6 @@ describe("VS Code extension package", () => {
     });
     expect(serverModule).toBe(path.join(root, "server", "language-server", "dist", "server.js"));
     expect(fs.existsSync(serverModule)).toBe(true);
-  });
-
-  it("uses the legacy server when explicitly requested", () => {
-    const root = process.cwd();
-    const launch = getServerLaunchPath(
-      {
-        asAbsolutePath: (relativePath) => path.join(root, relativePath),
-      },
-      { useLegacyServer: true },
-    );
-
-    expect(launch).toEqual({
-      kind: "nodeModule",
-      path: path.join(root, "server", "language-server", "dist", "server.js"),
-    });
   });
 
   it("resolves the Rust server binary by default", () => {
