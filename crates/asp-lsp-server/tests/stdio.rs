@@ -1053,6 +1053,41 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     );
     assert!(actions["result"].to_string().contains("Extract variable"));
 
+    let documentation_actions = request(
+        &mut stdin,
+        &mut reader,
+        47,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 1, "character": 9 },
+                "end": { "line": 1, "character": 18 },
+            },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    let documentation_action = documentation_actions["result"]
+        .as_array()
+        .expect("documentation actions")
+        .iter()
+        .find(|action| action["title"] == json!("Generate VBScript documentation"))
+        .expect("documentation code action");
+    let documentation_edit = &documentation_action["edit"]["changes"][uri][0];
+    assert_eq!(
+        documentation_edit["range"],
+        json!({
+            "start": { "line": 1, "character": 0 },
+            "end": { "line": 1, "character": 0 },
+        })
+    );
+    let documentation_text = documentation_edit["newText"]
+        .as_str()
+        .expect("documentation new text");
+    assert!(documentation_text.contains("''' <summary>TODO: Describe BuildName.</summary>"));
+    assert!(documentation_text.contains("''' <param name=\"first\">TODO: Describe first.</param>"));
+    assert!(documentation_text.contains("''' <returns>TODO: Describe return value.</returns>"));
+
     let call_hierarchy = request(
         &mut stdin,
         &mut reader,
@@ -1285,6 +1320,61 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         .expect("on type formatted text");
     assert_eq!(on_type_text, "BuildName = first");
     assert!(!on_type_text.contains("<%"));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
+fn omits_vbscript_documentation_action_for_documented_callable_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let uri = "file:///tmp/documented.asp";
+
+    initialize(&mut stdin, &mut reader);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\n''' <summary>Already documented.</summary>\nFunction DocumentedName(first)\nDocumentedName = first\nEnd Function\n%>",
+                },
+            },
+        }),
+    );
+
+    let actions = request(
+        &mut stdin,
+        &mut reader,
+        3,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 2, "character": 9 },
+                "end": { "line": 2, "character": 23 },
+            },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    assert!(!actions["result"]
+        .as_array()
+        .expect("code actions")
+        .iter()
+        .any(|action| action["title"] == json!("Generate VBScript documentation")));
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);

@@ -1208,51 +1208,57 @@ impl Ide {
         ) else {
             return Ok(Value::Array(Vec::new()));
         };
-        if start >= end {
-            return Ok(Value::Array(Vec::new()));
-        }
         let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
-        if !is_vbscript_offset(&parsed, start)
-            || !is_vbscript_offset(&parsed, end.saturating_sub(1))
+        let mut actions = Vec::new();
+
+        if is_vbscript_offset(&parsed, start) {
+            let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+            if let Some(action) = documentation_code_action(uri, text, &symbols, start) {
+                actions.push(action);
+            }
+        }
+
+        if start < end
+            && is_vbscript_offset(&parsed, start)
+            && is_vbscript_offset(&parsed, end.saturating_sub(1))
         {
-            return Ok(Value::Array(Vec::new()));
-        }
-        let Ok(selected) = slice_utf16(text, start, end) else {
-            return Ok(Value::Array(Vec::new()));
-        };
-        if selected.trim().is_empty() || selected != selected.trim() {
-            return Ok(Value::Array(Vec::new()));
-        }
-        Ok(serde_json::json!([{
-            "title": "Extract variable",
-            "kind": "refactor.extract",
-            "edit": {
-                "changes": {
-                    uri: [
-                        {
-                            "range": {
-                                "start": { "line": range.start.line, "character": 0 },
-                                "end": { "line": range.start.line, "character": 0 },
-                            },
-                            "newText": format!("Dim extractedValue\nextractedValue = {selected}\n"),
-                        },
-                        {
-                            "range": {
-                                "start": {
-                                    "line": range.start.line,
-                                    "character": range.start.character,
+            let Ok(selected) = slice_utf16(text, start, end) else {
+                return Ok(Value::Array(actions));
+            };
+            if !selected.trim().is_empty() && selected == selected.trim() {
+                actions.push(serde_json::json!({
+                    "title": "Extract variable",
+                    "kind": "refactor.extract",
+                    "edit": {
+                        "changes": {
+                            uri: [
+                                {
+                                    "range": {
+                                        "start": { "line": range.start.line, "character": 0 },
+                                        "end": { "line": range.start.line, "character": 0 },
+                                    },
+                                    "newText": format!("Dim extractedValue\nextractedValue = {selected}\n"),
                                 },
-                                "end": {
-                                    "line": range.end.line,
-                                    "character": range.end.character,
+                                {
+                                    "range": {
+                                        "start": {
+                                            "line": range.start.line,
+                                            "character": range.start.character,
+                                        },
+                                        "end": {
+                                            "line": range.end.line,
+                                            "character": range.end.character,
+                                        },
+                                    },
+                                    "newText": "extractedValue",
                                 },
-                            },
-                            "newText": "extractedValue",
+                            ],
                         },
-                    ],
-                },
-            },
-        }]))
+                    },
+                }));
+            }
+        }
+        Ok(Value::Array(actions))
     }
 
     pub fn call_hierarchy_item(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
@@ -2332,6 +2338,145 @@ fn symbol_source_uri_matches(symbol: &Value, uri: &str) -> bool {
         .get("sourceUri")
         .and_then(Value::as_str)
         .map_or(true, |source_uri| source_uri == uri)
+}
+
+fn documentation_code_action(
+    uri: &str,
+    text: &str,
+    symbols: &[Value],
+    offset: usize,
+) -> Option<Value> {
+    let symbol = documentation_symbol_at(uri, text, symbols, offset)?;
+    let declaration_line = symbol.pointer("/range/start/line")?.as_u64()?;
+    let declaration_line = u32::try_from(declaration_line).ok()?;
+    let indent = line_indent(text, declaration_line);
+    let new_line = preferred_new_line(text);
+    let lines = documentation_xml_lines(symbol);
+    if lines.is_empty() {
+        return None;
+    }
+    let mut new_text = lines
+        .into_iter()
+        .map(|line| format!("{indent}{line}"))
+        .collect::<Vec<_>>()
+        .join(new_line);
+    new_text.push_str(new_line);
+
+    Some(serde_json::json!({
+        "title": "Generate VBScript documentation",
+        "kind": "quickfix",
+        "edit": {
+            "changes": {
+                uri: [{
+                    "range": {
+                        "start": { "line": declaration_line, "character": 0 },
+                        "end": { "line": declaration_line, "character": 0 },
+                    },
+                    "newText": new_text,
+                }],
+            },
+        },
+    }))
+}
+
+fn documentation_symbol_at<'a>(
+    uri: &str,
+    text: &str,
+    symbols: &'a [Value],
+    offset: usize,
+) -> Option<&'a Value> {
+    symbols
+        .iter()
+        .filter(|symbol| symbol_source_uri_matches(symbol, uri))
+        .filter(|symbol| is_documentation_action_symbol(symbol))
+        .filter(|symbol| symbol.get("documentation").is_none_or(Value::is_null))
+        .filter(|symbol| {
+            symbol
+                .get("range")
+                .is_some_and(|range| range_contains_offset(text, range, offset))
+        })
+        .min_by_key(|symbol| {
+            symbol
+                .get("range")
+                .and_then(range_size)
+                .unwrap_or(usize::MAX)
+        })
+}
+
+fn is_documentation_action_symbol(symbol: &Value) -> bool {
+    matches!(
+        symbol.get("kind").and_then(Value::as_str),
+        Some("function" | "sub" | "method" | "property")
+    )
+}
+
+fn documentation_xml_lines(symbol: &Value) -> Vec<String> {
+    let Some(name) = symbol.get("name").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let mut lines = vec![format!("''' <summary>TODO: Describe {name}.</summary>")];
+    for parameter in documentation_parameter_names(symbol) {
+        lines.push(format!(
+            "''' <param name=\"{parameter}\">TODO: Describe {parameter}.</param>"
+        ));
+    }
+    if documentation_symbol_has_return_value(symbol) {
+        lines.push("''' <returns>TODO: Describe return value.</returns>".to_string());
+    }
+    lines
+}
+
+fn documentation_parameter_names(symbol: &Value) -> Vec<String> {
+    if let Some(parameters) = symbol.get("parameters").and_then(Value::as_array) {
+        let names = parameters
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if !names.is_empty() {
+            return names;
+        }
+    }
+    symbol
+        .get("parameterDetails")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|parameter| parameter.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+fn documentation_symbol_has_return_value(symbol: &Value) -> bool {
+    match symbol.get("kind").and_then(Value::as_str) {
+        Some("function") => true,
+        Some("method") => symbol.get("procedureKind").and_then(Value::as_str) != Some("sub"),
+        Some("property") => symbol.get("propertyAccessor").and_then(Value::as_str) == Some("get"),
+        _ => false,
+    }
+}
+
+fn preferred_new_line(text: &str) -> &str {
+    if text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+fn line_indent(text: &str, target_line: u32) -> String {
+    let mut line = 0;
+    for current in text.split_inclusive('\n') {
+        if line == target_line {
+            let current = current.trim_end_matches(['\r', '\n']);
+            return current
+                .chars()
+                .take_while(|character| matches!(character, ' ' | '\t'))
+                .collect();
+        }
+        line += 1;
+    }
+    String::new()
 }
 
 fn visible_inlay_type_name(symbol: &Value) -> Option<&str> {
