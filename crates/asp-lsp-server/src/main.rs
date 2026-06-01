@@ -1,19 +1,24 @@
 use std::collections::HashMap;
 use std::env;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use asp_ide::{Ide, MappedVirtualDocument, TextPosition, TextRange};
 use asp_sidecar_protocol::{EmbeddedRequest, EmbeddedResponse, VirtualDocument};
 use crossbeam_channel::RecvTimeoutError;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const BACKEND_STATUS_METHOD: &str = "aspLsp/backendStatus";
 const FRAME_KIND_JSON: u8 = 1;
+const DISK_CACHE_FORMAT_VERSION: u32 = 3;
+const DEFAULT_CACHE_TTL_HOURS: f64 = 24.0 * 14.0;
+const DEFAULT_CACHE_MAX_SIZE_MB: f64 = 128.0;
+const VSCODE_PACKAGE_JSON: &str = include_str!("../../../apps/vscode/package.json");
 
 fn main() {
     if let Err(error) = run() {
@@ -37,7 +42,7 @@ fn run() -> Result<(), String> {
                 "capabilities": server_capabilities(),
                 "serverInfo": {
                     "name": "asp-lsp-server",
-                    "version": env!("CARGO_PKG_VERSION"),
+                    "version": language_server_version(),
                 },
             }),
         )
@@ -85,6 +90,9 @@ struct ServerState {
     ide: Ide,
     diagnostics: DiagnosticScheduler,
     sidecar: EmbeddedSidecar,
+    disk_cache: DiskAnalysisCache,
+    semantic_tokens: SemanticTokenCache,
+    indexed_files: Vec<IndexedFile>,
     settings: Value,
     workspace_roots: Vec<String>,
     sidecar_request_id: u64,
@@ -94,13 +102,21 @@ impl ServerState {
     fn set_settings(&mut self, settings: Value) -> Result<Vec<(String, Vec<Value>)>, String> {
         self.diagnostics.set_debounce_from_settings(&settings);
         self.settings = settings.clone();
+        self.configure_disk_cache();
         self.ide.set_settings(settings)
     }
 
     fn set_workspace_roots(&mut self, roots: Vec<String>) -> Result<(), String> {
-        self.ide
-            .replace_indexed_documents(index_workspace_files(&roots)?);
+        let indexed_files = index_workspace_files(&roots)?;
+        self.ide.replace_indexed_documents(
+            indexed_files
+                .iter()
+                .map(|file| (file.uri.clone(), file.text.clone()))
+                .collect(),
+        );
+        self.indexed_files = indexed_files;
         self.workspace_roots = roots;
+        self.configure_disk_cache();
         Ok(())
     }
 
@@ -118,8 +134,11 @@ impl ServerState {
 
     fn publish_due_diagnostics(&mut self, connection: &Connection) -> Result<(), String> {
         for uri in self.diagnostics.take_due() {
+            let started_at = Instant::now();
             let diagnostics = self.full_diagnostics(&uri)?;
+            let diagnostic_count = diagnostics.len();
             send_diagnostics(connection, &uri, diagnostics)?;
+            self.log_check_completed(connection, &uri, started_at, diagnostic_count)?;
         }
         Ok(())
     }
@@ -137,6 +156,11 @@ impl ServerState {
         status
     }
 
+    fn configure_disk_cache(&mut self) {
+        self.disk_cache = DiskAnalysisCache::from_settings(&self.settings, &self.workspace_roots);
+        self.disk_cache.sweep();
+    }
+
     fn publish_fast_diagnostics(&self, connection: &Connection, uri: &str) -> Result<(), String> {
         let diagnostics = self.ide.parser_diagnostics(uri)?;
         send_diagnostics(connection, uri, diagnostics)
@@ -146,6 +170,109 @@ impl ServerState {
         let mut diagnostics = self.ide.diagnostics(uri)?;
         diagnostics.extend(self.embedded_diagnostics(uri)?);
         Ok(diagnostics)
+    }
+
+    fn text_document_diagnostic(&mut self, uri: &str) -> Result<Value, String> {
+        let diagnostics = self.full_diagnostics(uri)?;
+        Ok(json!({
+            "kind": "full",
+            "items": diagnostics,
+        }))
+    }
+
+    fn workspace_diagnostic(&mut self, connection: &Connection) -> Result<Value, String> {
+        let mut reports = Vec::new();
+        for uri in self.ide.open_document_uris() {
+            reports.push(json!({
+                "kind": "full",
+                "uri": uri,
+                "version": null,
+                "items": self.full_diagnostics(&uri)?,
+            }));
+        }
+        for file in self.indexed_files.clone() {
+            if self.ide.is_open_document(&file.uri) {
+                continue;
+            }
+            reports.push(json!({
+                "kind": "full",
+                "uri": file.uri,
+                "version": null,
+                "items": self.indexed_diagnostics(connection, &file)?,
+            }));
+        }
+        Ok(json!({ "items": reports }))
+    }
+
+    fn indexed_diagnostics(
+        &mut self,
+        connection: &Connection,
+        file: &IndexedFile,
+    ) -> Result<Vec<Value>, String> {
+        let lookup = DiskCacheLookup {
+            source: file.source.clone(),
+            settings_key: disk_analysis_settings_key(&self.settings),
+        };
+        if let Some(diagnostics) = self.disk_cache.read_analysis(&lookup) {
+            log_debug_summary(
+                connection,
+                &self.settings,
+                format!("[asp-lsp] diskCache.hit: {}", file.uri),
+            )?;
+            return Ok(diagnostics);
+        }
+        if self.disk_cache.enabled {
+            log_debug_summary(
+                connection,
+                &self.settings,
+                format!("[asp-lsp] diskCache.miss: {}", file.uri),
+            )?;
+        }
+        let diagnostics = self.ide.workspace_diagnostics(&file.uri)?;
+        self.disk_cache.write_analysis(&lookup, &diagnostics);
+        if self.disk_cache.enabled {
+            log_debug_summary(
+                connection,
+                &self.settings,
+                format!("[asp-lsp] diskCache.write: {}", file.uri),
+            )?;
+        }
+        Ok(diagnostics)
+    }
+
+    fn semantic_tokens_full(&mut self, uri: &str) -> Result<Value, String> {
+        let value = self.ide.semantic_tokens(uri, None)?;
+        Ok(self.semantic_tokens.full(uri, value))
+    }
+
+    fn semantic_tokens_delta(
+        &mut self,
+        uri: &str,
+        previous_result_id: &str,
+    ) -> Result<Value, String> {
+        let value = self.ide.semantic_tokens(uri, None)?;
+        Ok(self.semantic_tokens.delta(uri, previous_result_id, value))
+    }
+
+    fn clear_semantic_tokens(&mut self, uri: &str) {
+        self.semantic_tokens.clear_uri(uri);
+    }
+
+    fn log_check_completed(
+        &self,
+        connection: &Connection,
+        uri: &str,
+        started_at: Instant,
+        diagnostic_count: usize,
+    ) -> Result<(), String> {
+        log_debug_summary(
+            connection,
+            &self.settings,
+            format!(
+                "[asp-lsp] LSP check completed: {uri} {:.2}ms, diagnostics={diagnostic_count}",
+                started_at.elapsed().as_secs_f64() * 1000.0
+            ),
+        )
     }
 
     fn embedded_diagnostics(&mut self, uri: &str) -> Result<Vec<Value>, String> {
@@ -279,6 +406,301 @@ impl ServerState {
         self.sidecar_request_id += 1;
         self.sidecar_request_id
     }
+}
+
+#[derive(Clone)]
+struct IndexedFile {
+    uri: String,
+    text: String,
+    source: DiskSourceMetadata,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct DiskSourceMetadata {
+    #[serde(rename = "fileName")]
+    file_name: String,
+    #[serde(rename = "mtimeMs")]
+    mtime_ms: f64,
+    size: u64,
+}
+
+struct DiskCacheLookup {
+    source: DiskSourceMetadata,
+    settings_key: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct PersistedDiskAnalysisEntry {
+    kind: String,
+    #[serde(rename = "formatVersion")]
+    format_version: u32,
+    #[serde(rename = "toolVersion")]
+    tool_version: String,
+    namespace: String,
+    #[serde(rename = "writtenAt")]
+    written_at: f64,
+    source: DiskSourceMetadata,
+    #[serde(rename = "settingsKey")]
+    settings_key: String,
+    diagnostics: Vec<Value>,
+}
+
+struct DiskAnalysisCache {
+    enabled: bool,
+    root: PathBuf,
+    ttl_ms: f64,
+    max_size_bytes: u64,
+    namespace: String,
+    tool_version: String,
+}
+
+impl Default for DiskAnalysisCache {
+    fn default() -> Self {
+        Self::from_settings(&Value::Null, &[])
+    }
+}
+
+impl DiskAnalysisCache {
+    fn from_settings(settings: &Value, workspace_roots: &[String]) -> Self {
+        let cache = settings.get("cache").unwrap_or(&Value::Null);
+        let enabled = cache
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let root = cache
+            .get("directory")
+            .and_then(Value::as_str)
+            .filter(|directory| !directory.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| env::temp_dir().join("asp-lsp-analysis-cache"));
+        let ttl_hours = cache
+            .get("ttlHours")
+            .and_then(Value::as_f64)
+            .unwrap_or(DEFAULT_CACHE_TTL_HOURS)
+            .max(0.000001);
+        let max_size_mb = cache
+            .get("maxSizeMb")
+            .and_then(Value::as_f64)
+            .unwrap_or(DEFAULT_CACHE_MAX_SIZE_MB)
+            .max(0.000001);
+        Self {
+            enabled,
+            root,
+            ttl_ms: ttl_hours * 60.0 * 60.0 * 1000.0,
+            max_size_bytes: (max_size_mb * 1024.0 * 1024.0) as u64,
+            namespace: disk_analysis_namespace(workspace_roots),
+            tool_version: language_server_version(),
+        }
+    }
+
+    fn read_analysis(&self, lookup: &DiskCacheLookup) -> Option<Vec<Value>> {
+        if !self.enabled {
+            return None;
+        }
+        let path = self.file_name_for_lookup(lookup, "diagnostics");
+        let entry: PersistedDiskAnalysisEntry = ciborium::de::from_reader(File::open(&path).ok()?)
+            .inspect_err(|_| {
+                let _ = fs::remove_file(&path);
+            })
+            .ok()?;
+        if self.matches(&entry, lookup, "diagnostics") {
+            Some(entry.diagnostics)
+        } else {
+            None
+        }
+    }
+
+    fn write_analysis(&self, lookup: &DiskCacheLookup, diagnostics: &[Value]) {
+        if !self.enabled {
+            return;
+        }
+        if fs::create_dir_all(&self.root).is_err() {
+            return;
+        }
+        let entry = PersistedDiskAnalysisEntry {
+            kind: "diagnostics".to_string(),
+            format_version: DISK_CACHE_FORMAT_VERSION,
+            tool_version: self.tool_version.clone(),
+            namespace: self.namespace.clone(),
+            written_at: now_ms(),
+            source: lookup.source.clone(),
+            settings_key: lookup.settings_key.clone(),
+            diagnostics: diagnostics.to_vec(),
+        };
+        let Ok(file) = File::create(self.file_name_for_lookup(lookup, "diagnostics")) else {
+            return;
+        };
+        let _ = ciborium::ser::into_writer(&entry, file);
+    }
+
+    fn sweep(&self) {
+        if !self.enabled {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(&self.root) else {
+            return;
+        };
+        let now = now_ms();
+        let mut live_files = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("cbor") {
+                continue;
+            }
+            let size = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            let persisted: Option<PersistedDiskAnalysisEntry> = File::open(&path)
+                .ok()
+                .and_then(|file| ciborium::de::from_reader(file).ok());
+            let Some(persisted) = persisted else {
+                let _ = fs::remove_file(&path);
+                continue;
+            };
+            if now - persisted.written_at > self.ttl_ms {
+                let _ = fs::remove_file(&path);
+                continue;
+            }
+            live_files.push((path, size, persisted.written_at));
+        }
+        let mut total = live_files.iter().map(|(_, size, _)| *size).sum::<u64>();
+        live_files.sort_by(|left, right| {
+            left.2
+                .partial_cmp(&right.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for (path, size, _) in live_files {
+            if total <= self.max_size_bytes {
+                break;
+            }
+            if fs::remove_file(path).is_ok() {
+                total = total.saturating_sub(size);
+            }
+        }
+    }
+
+    fn matches(
+        &self,
+        entry: &PersistedDiskAnalysisEntry,
+        lookup: &DiskCacheLookup,
+        kind: &str,
+    ) -> bool {
+        entry.kind == kind
+            && entry.format_version == DISK_CACHE_FORMAT_VERSION
+            && entry.tool_version == self.tool_version
+            && entry.namespace == self.namespace
+            && entry.settings_key == lookup.settings_key
+            && entry.source.file_name == lookup.source.file_name
+            && entry.source.mtime_ms == lookup.source.mtime_ms
+            && entry.source.size == lookup.source.size
+            && now_ms() - entry.written_at <= self.ttl_ms
+    }
+
+    fn file_name_for_lookup(&self, lookup: &DiskCacheLookup, kind: &str) -> PathBuf {
+        self.root.join(format!(
+            "{}.cbor",
+            stable_hash(
+                &json!({
+                    "kind": kind,
+                    "namespace": self.namespace,
+                    "fileName": lookup.source.file_name,
+                    "settingsKey": lookup.settings_key,
+                })
+                .to_string()
+            )
+        ))
+    }
+}
+
+#[derive(Default)]
+struct SemanticTokenCache {
+    next_id: u64,
+    latest_by_uri: HashMap<String, String>,
+    results: HashMap<String, SemanticTokenResult>,
+}
+
+struct SemanticTokenResult {
+    uri: String,
+    data: Vec<Value>,
+}
+
+impl SemanticTokenCache {
+    fn full(&mut self, uri: &str, mut value: Value) -> Value {
+        let data = semantic_token_data(&value);
+        let result_id = self.store(uri, data);
+        if let Some(object) = value.as_object_mut() {
+            object.insert("resultId".to_string(), Value::String(result_id));
+        }
+        value
+    }
+
+    fn delta(&mut self, uri: &str, previous_result_id: &str, value: Value) -> Value {
+        let next = semantic_token_data(&value);
+        let previous = self
+            .results
+            .get(previous_result_id)
+            .filter(|result| result.uri == uri)
+            .map(|result| result.data.as_slice());
+        let edit = previous
+            .map(|previous| semantic_token_delta_edit(previous, &next))
+            .unwrap_or_else(|| json!({ "start": 0, "deleteCount": 0, "data": next.clone() }));
+        let result_id = self.store(uri, next);
+        json!({
+            "resultId": result_id,
+            "edits": [edit],
+        })
+    }
+
+    fn clear_uri(&mut self, uri: &str) {
+        if let Some(result_id) = self.latest_by_uri.remove(uri) {
+            self.results.remove(&result_id);
+        }
+    }
+
+    fn store(&mut self, uri: &str, data: Vec<Value>) -> String {
+        if let Some(previous) = self.latest_by_uri.get(uri) {
+            self.results.remove(previous);
+        }
+        self.next_id += 1;
+        let result_id = self.next_id.to_string();
+        self.latest_by_uri
+            .insert(uri.to_string(), result_id.clone());
+        self.results.insert(
+            result_id.clone(),
+            SemanticTokenResult {
+                uri: uri.to_string(),
+                data,
+            },
+        );
+        result_id
+    }
+}
+
+fn semantic_token_data(value: &Value) -> Vec<Value> {
+    value
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn semantic_token_delta_edit(previous: &[Value], next: &[Value]) -> Value {
+    let mut prefix = 0;
+    while prefix < previous.len() && prefix < next.len() && previous[prefix] == next[prefix] {
+        prefix += 1;
+    }
+    let mut previous_suffix = previous.len();
+    let mut next_suffix = next.len();
+    while previous_suffix > prefix
+        && next_suffix > prefix
+        && previous[previous_suffix - 1] == next[next_suffix - 1]
+    {
+        previous_suffix -= 1;
+        next_suffix -= 1;
+    }
+    json!({
+        "start": prefix,
+        "deleteCount": previous_suffix - prefix,
+        "data": next[prefix..next_suffix].to_vec(),
+    })
 }
 
 struct EmbeddedSidecar {
@@ -598,7 +1020,7 @@ fn handle_request(
         }
         "textDocument/semanticTokens/full" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
-            let result = semantic_tokens_with_result_id(state.ide.semantic_tokens(&uri, None)?);
+            let result = state.semantic_tokens_full(&uri)?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -607,7 +1029,8 @@ fn handle_request(
         }
         "textDocument/semanticTokens/full/delta" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
-            let result = semantic_tokens_delta_result(state.ide.semantic_tokens(&uri, None)?);
+            let previous_result_id = pointer_string(&request.params, "/previousResultId");
+            let result = state.semantic_tokens_delta(&uri, &previous_result_id)?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -627,6 +1050,23 @@ fn handle_request(
         "textDocument/documentColor" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let result = state.embedded_document_feature(&uri, "documentColors")?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "textDocument/diagnostic" => {
+            let uri = pointer_string(&request.params, "/textDocument/uri");
+            let result = state.text_document_diagnostic(&uri)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, result).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        "workspace/diagnostic" => {
+            let result = state.workspace_diagnostic(connection)?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -803,6 +1243,7 @@ fn handle_notification(
         "textDocument/didClose" => {
             let uri = pointer_string(&notification.params, "/textDocument/uri");
             state.ide.close_document(&uri);
+            state.clear_semantic_tokens(&uri);
             state.clear_scheduled_diagnostics(&uri);
             send_diagnostics(connection, &uri, Vec::new())?;
         }
@@ -907,6 +1348,10 @@ fn server_capabilities() -> Value {
             "full": { "delta": true },
             "range": true,
         },
+        "diagnosticProvider": {
+            "interFileDependencies": true,
+            "workspaceDiagnostics": true,
+        },
         "documentLinkProvider": { "resolveProvider": true },
         "codeActionProvider": {
             "resolveProvider": true,
@@ -977,7 +1422,7 @@ fn workspace_roots_from_initialize(params: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn index_workspace_files(roots: &[String]) -> Result<Vec<(String, String)>, String> {
+fn index_workspace_files(roots: &[String]) -> Result<Vec<IndexedFile>, String> {
     let mut files = Vec::new();
     for root in roots {
         let Some(path) = file_uri_to_path(root) else {
@@ -991,7 +1436,7 @@ fn index_workspace_files(roots: &[String]) -> Result<Vec<(String, String)>, Stri
     Ok(files)
 }
 
-fn collect_workspace_files(path: &Path, files: &mut Vec<(String, String)>) -> Result<(), String> {
+fn collect_workspace_files(path: &Path, files: &mut Vec<IndexedFile>) -> Result<(), String> {
     if files.len() >= 512 {
         return Ok(());
     }
@@ -1001,7 +1446,15 @@ fn collect_workspace_files(path: &Path, files: &mut Vec<(String, String)>) -> Re
     if metadata.is_file() {
         if is_asp_like_file(path) {
             if let Ok(text) = fs::read_to_string(path) {
-                files.push((path_to_file_uri(path), text));
+                files.push(IndexedFile {
+                    uri: path_to_file_uri(path),
+                    text,
+                    source: DiskSourceMetadata {
+                        file_name: normalize_file_name(path),
+                        mtime_ms: metadata_mtime_ms(&metadata),
+                        size: metadata.len(),
+                    },
+                });
             }
         }
         return Ok(());
@@ -1044,6 +1497,95 @@ fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
 
 fn path_to_file_uri(path: &Path) -> String {
     format!("file://{}", path.to_string_lossy())
+}
+
+fn normalize_file_name(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn metadata_mtime_ms(metadata: &fs::Metadata) -> f64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0)
+}
+
+fn disk_analysis_namespace(workspace_roots: &[String]) -> String {
+    let mut roots = workspace_roots.to_vec();
+    roots.sort();
+    stable_hash(
+        &json!({
+            "roots": roots,
+            "cwd": env::current_dir()
+                .ok()
+                .map(|path| normalize_file_name(&path))
+                .unwrap_or_default(),
+        })
+        .to_string(),
+    )
+}
+
+fn disk_analysis_settings_key(settings: &Value) -> String {
+    json!({
+        "rust": 1,
+        "settings": settings,
+    })
+    .to_string()
+}
+
+fn stable_hash(text: &str) -> String {
+    let mut hash = 2166136261_u32;
+    for unit in text.encode_utf16() {
+        hash ^= u32::from(unit);
+        hash = hash.wrapping_mul(16777619);
+    }
+    format!("{hash:08x}")
+}
+
+fn now_ms() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0)
+}
+
+fn language_server_version() -> String {
+    serde_json::from_str::<Value>(VSCODE_PACKAGE_JSON)
+        .ok()
+        .and_then(|package| {
+            package
+                .get("version")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
+fn log_debug_summary(
+    connection: &Connection,
+    settings: &Value,
+    message: String,
+) -> Result<(), String> {
+    if settings
+        .get("debug")
+        .and_then(|debug| debug.get("output"))
+        .and_then(Value::as_str)
+        != Some("verbose")
+    {
+        return Ok(());
+    }
+    connection
+        .sender
+        .send(
+            Notification::new(
+                "window/logMessage".to_string(),
+                json!({ "type": 3, "message": message }),
+            )
+            .into(),
+        )
+        .map_err(|error| error.to_string())
 }
 
 fn text_range(value: &Value) -> Option<TextRange> {
@@ -1089,25 +1631,6 @@ fn merge_lsp_arrays(left: Value, right: Option<Value>) -> Value {
         Some(value) => items.push(value),
     }
     Value::Array(items)
-}
-
-fn semantic_tokens_with_result_id(mut value: Value) -> Value {
-    if let Some(object) = value.as_object_mut() {
-        object.insert("resultId".to_string(), Value::String("0".to_string()));
-    }
-    value
-}
-
-fn semantic_tokens_delta_result(value: Value) -> Value {
-    let data = value
-        .get("data")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    json!({
-        "resultId": "0",
-        "edits": [{ "start": 0, "deleteCount": 0, "data": data }],
-    })
 }
 
 fn resolve_code_lens(ide: &Ide, mut lens: Value) -> Result<Value, String> {

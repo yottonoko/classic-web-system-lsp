@@ -664,11 +664,33 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     assert!(decoded
         .iter()
         .any(|token| token.line == 1 && token.character == 19 && token.token_type == 2));
+    let semantic_delta = request(
+        &mut stdin,
+        &mut reader,
+        22,
+        "textDocument/semanticTokens/full/delta",
+        json!({
+            "textDocument": { "uri": uri },
+            "previousResultId": semantic_tokens["result"]["resultId"],
+        }),
+    );
+    assert_ne!(
+        semantic_delta["result"]["resultId"],
+        semantic_tokens["result"]["resultId"]
+    );
+    assert_eq!(
+        semantic_delta["result"]["edits"][0],
+        json!({
+            "start": semantic_tokens["result"]["data"].as_array().expect("semantic data").len(),
+            "deleteCount": 0,
+            "data": [],
+        })
+    );
 
     let selection = request(
         &mut stdin,
         &mut reader,
-        22,
+        23,
         "textDocument/selectionRange",
         json!({
             "textDocument": { "uri": uri },
@@ -683,7 +705,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let inlay_hints = request(
         &mut stdin,
         &mut reader,
-        23,
+        24,
         "textDocument/inlayHint",
         json!({
             "textDocument": { "uri": uri },
@@ -698,7 +720,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let code_lens = request(
         &mut stdin,
         &mut reader,
-        24,
+        25,
         "textDocument/codeLens",
         json!({ "textDocument": { "uri": uri } }),
     );
@@ -710,7 +732,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let resolved_lens = request(
         &mut stdin,
         &mut reader,
-        25,
+        26,
         "codeLens/resolve",
         code_lens["result"][0].clone(),
     );
@@ -719,7 +741,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let actions = request(
         &mut stdin,
         &mut reader,
-        26,
+        27,
         "textDocument/codeAction",
         json!({
             "textDocument": { "uri": uri },
@@ -735,7 +757,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let call_hierarchy = request(
         &mut stdin,
         &mut reader,
-        27,
+        28,
         "textDocument/prepareCallHierarchy",
         json!({
             "textDocument": { "uri": uri },
@@ -746,7 +768,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let incoming_calls = request(
         &mut stdin,
         &mut reader,
-        28,
+        29,
         "callHierarchy/incomingCalls",
         json!({ "item": call_hierarchy["result"][0].clone() }),
     );
@@ -755,7 +777,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let type_hierarchy = request(
         &mut stdin,
         &mut reader,
-        29,
+        30,
         "textDocument/prepareTypeHierarchy",
         json!({
             "textDocument": { "uri": uri },
@@ -767,7 +789,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let monikers = request(
         &mut stdin,
         &mut reader,
-        30,
+        31,
         "textDocument/moniker",
         json!({
             "textDocument": { "uri": uri },
@@ -779,7 +801,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let inline_values = request(
         &mut stdin,
         &mut reader,
-        31,
+        32,
         "textDocument/inlineValue",
         json!({
             "textDocument": { "uri": uri },
@@ -801,7 +823,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let formatting = request(
         &mut stdin,
         &mut reader,
-        32,
+        33,
         "textDocument/formatting",
         json!({
             "textDocument": { "uri": uri },
@@ -813,7 +835,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let range_formatting = request(
         &mut stdin,
         &mut reader,
-        33,
+        34,
         "textDocument/rangeFormatting",
         json!({
             "textDocument": { "uri": uri },
@@ -829,7 +851,7 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     let on_type_formatting = request(
         &mut stdin,
         &mut reader,
-        34,
+        35,
         "textDocument/onTypeFormatting",
         json!({
             "textDocument": { "uri": uri },
@@ -923,6 +945,73 @@ fn indexes_unopened_workspace_files_for_vbscript_references() {
         links["result"][0].clone(),
     );
     assert!(resolved_link["result"].to_string().contains("helpers.inc"));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn serves_workspace_diagnostics_with_disk_cache() {
+    let root = std::env::temp_dir().join(format!(
+        "asp-lsp-rust-workspace-diagnostics-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    fs::write(
+        root.join("default.asp"),
+        "<%\nOption Explicit\nmissingName = 1\n%>",
+    )
+    .expect("write asp");
+    let cache_dir = root.join("cache");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let root_uri = format!("file://{}", root.to_string_lossy());
+
+    initialize_with_settings_and_root(
+        &mut stdin,
+        &mut reader,
+        json!({
+            "cache": { "enabled": true, "directory": cache_dir.to_string_lossy() },
+            "debug": { "output": "verbose" },
+        }),
+        &root_uri,
+    );
+
+    let first = request(
+        &mut stdin,
+        &mut reader,
+        30,
+        "workspace/diagnostic",
+        json!({ "previousResultIds": [] }),
+    );
+    assert!(first["result"].to_string().contains("missingName"));
+    assert!(
+        fs::read_dir(&cache_dir)
+            .expect("cache dir")
+            .flatten()
+            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
+        "expected cbor cache entry"
+    );
+
+    let second = request(
+        &mut stdin,
+        &mut reader,
+        31,
+        "workspace/diagnostic",
+        json!({ "previousResultIds": [] }),
+    );
+    assert_eq!(second["result"], first["result"]);
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);

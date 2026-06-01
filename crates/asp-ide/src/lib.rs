@@ -338,6 +338,14 @@ impl Ide {
         self.documents.remove(uri);
     }
 
+    pub fn is_open_document(&self, uri: &str) -> bool {
+        self.documents.contains_key(uri)
+    }
+
+    pub fn open_document_uris(&self) -> Vec<String> {
+        self.documents.keys().cloned().collect()
+    }
+
     pub fn replace_indexed_documents(&mut self, files: Vec<(String, String)>) {
         self.indexed_documents = files
             .into_iter()
@@ -351,6 +359,17 @@ impl Ide {
 
     pub fn diagnostics(&self, uri: &str) -> Result<Vec<Value>, String> {
         let Some(document) = self.documents.get(uri) else {
+            return Ok(Vec::new());
+        };
+        document_diagnostics(&self.db, document.source_file, self.settings.input)
+    }
+
+    pub fn workspace_diagnostics(&self, uri: &str) -> Result<Vec<Value>, String> {
+        let Some(document) = self
+            .documents
+            .get(uri)
+            .or_else(|| self.indexed_documents.get(uri))
+        else {
             return Ok(Vec::new());
         };
         document_diagnostics(&self.db, document.source_file, self.settings.input)

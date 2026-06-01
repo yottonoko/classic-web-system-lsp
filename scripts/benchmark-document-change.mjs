@@ -24,7 +24,11 @@ const includeTreeServerOldSpaceMb = readPositiveInteger(
   16_384,
 );
 const generator = path.join(sampleRoot, "generate.mjs");
-const serverPath = path.join(root, "packages", "language-server", "dist", "server.js");
+const serverKind = readServerKind();
+const serverPath =
+  serverKind === "rust"
+    ? path.join(root, "target", "release", executableName("asp-lsp-server"))
+    : path.join(root, "packages", "language-server", "dist", "server.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
@@ -110,7 +114,9 @@ async function main() {
   assertSampleCanRun();
   if (!fs.existsSync(serverPath)) {
     throw new Error(
-      "packages/language-server/dist/server.js is missing. Run `pnpm --filter @asp-lsp/language-server run build`.",
+      serverKind === "rust"
+        ? "target/release/asp-lsp-server is missing. Run `pnpm run build:server`."
+        : "packages/language-server/dist/server.js is missing. Run `pnpm --filter @asp-lsp/language-server run build`.",
     );
   }
 
@@ -134,6 +140,7 @@ async function main() {
   console.log("");
   console.log("Classic ASP document change benchmark");
   console.log(`Sample: ${samplePreset}`);
+  console.log(`Server: ${serverKind}`);
   console.log(`Sample path: ${relativeSampleRoot}`);
   console.log(`Files: ${sourceStats.files}`);
   console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
@@ -195,11 +202,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
 
   try {
     await server.start();
-    await server.request("initialize", {
-      processId: process.pid,
-      rootUri: pathToFileURL(sampleRoot).href,
-      capabilities: {},
-    });
+    await initializeServer(server);
     server.notify("workspace/didChangeConfiguration", {
       settings: {
         aspLsp: {
@@ -360,11 +363,7 @@ async function measureColdScenarioIteration(
 
   try {
     await server.start();
-    await server.request("initialize", {
-      processId: process.pid,
-      rootUri: pathToFileURL(sampleRoot).href,
-      capabilities: {},
-    });
+    await initializeServer(server);
     server.notify("workspace/didChangeConfiguration", {
       settings: {
         aspLsp: {
@@ -670,11 +669,7 @@ async function startWorkspaceCacheServer(backgroundAnalysis) {
   const cacheDir = path.join(tempDir, "cache");
   const server = new RpcServer();
   await server.start();
-  await server.request("initialize", {
-    processId: process.pid,
-    rootUri: pathToFileURL(sampleRoot).href,
-    capabilities: {},
-  });
+  await initializeServer(server);
   server.notify("workspace/didChangeConfiguration", {
     settings: {
       aspLsp: {
@@ -686,6 +681,15 @@ async function startWorkspaceCacheServer(backgroundAnalysis) {
   });
   drainBenchmarkNotifications(server);
   return { server, tempDir, cacheDir };
+}
+
+async function initializeServer(server) {
+  await server.request("initialize", {
+    processId: process.pid,
+    rootUri: pathToFileURL(sampleRoot).href,
+    capabilities: {},
+  });
+  server.notify("initialized", {});
 }
 
 async function stopWorkspaceCacheServer(server) {
@@ -1280,7 +1284,9 @@ class RpcServer {
   }
 
   async start() {
-    this.child = spawn(process.execPath, [serverPath, "--stdio"], {
+    const command = serverKind === "rust" ? serverPath : process.execPath;
+    const args = serverKind === "rust" ? [] : [serverPath, "--stdio"];
+    this.child = spawn(command, args, {
       cwd: root,
       env: serverEnvironment(),
       stdio: ["pipe", "pipe", "pipe"],
@@ -1406,6 +1412,21 @@ class RpcServer {
     pending.push(message);
     this.pendingNotifications.set(message.method, pending);
   }
+}
+
+function readServerKind() {
+  const value = (process.env.ASP_LSP_BENCH_SERVER ?? "node").trim().toLowerCase();
+  if (value === "rust" || value === "native") {
+    return "rust";
+  }
+  if (value === "node" || value === "typescript" || value === "ts") {
+    return "node";
+  }
+  throw new Error(`Unsupported ASP_LSP_BENCH_SERVER: ${value}`);
+}
+
+function executableName(base) {
+  return process.platform === "win32" ? `${base}.exe` : base;
 }
 
 await main();
