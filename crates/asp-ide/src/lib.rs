@@ -565,14 +565,22 @@ impl Ide {
     }
 
     pub fn include_closure(&self, uri: &str) -> Result<Vec<Value>, String> {
-        if !self.documents.contains_key(uri) {
+        if self.workspace_document(uri).is_none() {
             return Ok(Vec::new());
         }
 
-        let mut closure = Vec::new();
+        Ok(self
+            .include_graph(uri)?
+            .into_iter()
+            .map(|edge| edge.include.raw)
+            .collect())
+    }
+
+    fn include_graph(&self, uri: &str) -> Result<Vec<IncludeEdge>, String> {
+        let mut graph = Vec::new();
         let mut visited = Vec::new();
-        self.collect_include_closure(uri, &mut visited, &mut closure)?;
-        Ok(closure)
+        self.collect_include_graph(uri, &mut visited, &mut graph)?;
+        Ok(graph)
     }
 
     fn direct_include_refs(&self, uri: &str) -> Result<Vec<Value>, String> {
@@ -584,17 +592,17 @@ impl Ide {
     }
 
     fn direct_include_edges(&self, uri: &str) -> Result<Vec<IncludeEdge>, String> {
-        let Some(document) = self.documents.get(uri) else {
+        let Some(document) = self.workspace_document(uri) else {
             return Ok(Vec::new());
         };
         include_edges(&self.db, document.source_file, self.settings.input)
     }
 
-    fn collect_include_closure(
+    fn collect_include_graph(
         &self,
         uri: &str,
         visited: &mut Vec<String>,
-        closure: &mut Vec<Value>,
+        graph: &mut Vec<IncludeEdge>,
     ) -> Result<(), String> {
         if visited.iter().any(|visited_uri| visited_uri == uri) {
             return Ok(());
@@ -602,9 +610,10 @@ impl Ide {
         visited.push(uri.to_string());
 
         for edge in self.direct_include_edges(uri)? {
-            closure.push(edge.include.raw);
-            if let Some(next_uri) = edge.target_uri {
-                self.collect_include_closure(&next_uri, visited, closure)?;
+            let next_uri = edge.target_uri.clone();
+            graph.push(edge);
+            if let Some(next_uri) = next_uri {
+                self.collect_include_graph(&next_uri, visited, graph)?;
             }
         }
         Ok(())
@@ -1720,6 +1729,12 @@ impl Ide {
                 .filter(|(uri, _)| !self.documents.contains_key(*uri)),
         );
         documents
+    }
+
+    fn workspace_document(&self, uri: &str) -> Option<&OpenDocument> {
+        self.documents
+            .get(uri)
+            .or_else(|| self.indexed_documents.get(uri))
     }
 
     pub fn diagnostics_for_open_documents(&self) -> Result<Vec<(String, Vec<Value>)>, String> {
@@ -5238,6 +5253,18 @@ fn normalize_path_segments(path: &str) -> String {
 mod tests {
     use super::{array_field, Ide, TextPosition, TextRange};
 
+    fn include_paths(includes: &[serde_json::Value]) -> Vec<String> {
+        includes
+            .iter()
+            .filter_map(|include| {
+                include
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .collect()
+    }
+
     #[test]
     fn publishes_vbscript_diagnostics_for_open_document() {
         let mut ide = Ide::default();
@@ -5390,6 +5417,93 @@ mod tests {
         );
 
         assert_eq!(include_paths(&ide), vec!["shared.inc", "renamed.inc"]);
+    }
+
+    #[test]
+    fn traverses_step_three_workspace_include_graph_from_indexed_documents() {
+        let mut ide = Ide::default();
+        ide.set_open_document(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"shared.inc\"-->\n<%\nResponse.Write SharedValue\n%>".to_string(),
+        );
+        ide.replace_indexed_documents(vec![
+            (
+                "file:///site/shared.inc".to_string(),
+                "<!--#include file=\"nested.inc\"-->\n<%\nDim SharedValue\n%>".to_string(),
+            ),
+            (
+                "file:///site/nested.inc".to_string(),
+                "<%\nDim NestedValue\n%>".to_string(),
+            ),
+        ]);
+
+        let includes = ide
+            .include_closure("file:///site/default.asp")
+            .expect("include closure");
+        let include_paths = include_paths(&includes);
+        assert_eq!(include_paths, vec!["shared.inc", "nested.inc"]);
+        assert!(includes.iter().all(|include| {
+            include.get("targetUri").is_none()
+                && include.get("target_uri").is_none()
+                && include.get("pathRange").is_some()
+        }));
+    }
+
+    #[test]
+    fn uses_open_document_over_indexed_include_snapshot() {
+        let mut ide = Ide::default();
+        ide.set_open_document(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"shared.inc\"-->\n<%\nResponse.Write SharedValue\n%>".to_string(),
+        );
+        ide.replace_indexed_documents(vec![
+            (
+                "file:///site/shared.inc".to_string(),
+                "<!--#include file=\"old.inc\"-->\n<%\nDim SharedValue\n%>".to_string(),
+            ),
+            (
+                "file:///site/old.inc".to_string(),
+                "<%\nDim OldValue\n%>".to_string(),
+            ),
+            (
+                "file:///site/new.inc".to_string(),
+                "<%\nDim NewValue\n%>".to_string(),
+            ),
+        ]);
+
+        ide.set_open_document(
+            "file:///site/shared.inc".to_string(),
+            "<!--#include file=\"new.inc\"-->\n<%\nDim SharedValue\n%>".to_string(),
+        );
+
+        let includes = ide
+            .include_closure("file:///site/default.asp")
+            .expect("include closure");
+        assert_eq!(include_paths(&includes), vec!["shared.inc", "new.inc"]);
+    }
+
+    #[test]
+    fn terminates_workspace_include_graph_cycles() {
+        let mut ide = Ide::default();
+        ide.set_open_document(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"a.inc\"-->\n<%\nResponse.Write \"ok\"\n%>".to_string(),
+        );
+        ide.replace_indexed_documents(vec![
+            (
+                "file:///site/a.inc".to_string(),
+                "<!--#include file=\"b.inc\"-->".to_string(),
+            ),
+            (
+                "file:///site/b.inc".to_string(),
+                "<!--#include file=\"a.inc\"-->".to_string(),
+            ),
+        ]);
+
+        let includes = ide
+            .include_closure("file:///site/default.asp")
+            .expect("include closure");
+        assert_eq!(include_paths(&includes), vec!["a.inc", "b.inc", "a.inc"]);
     }
 
     #[test]

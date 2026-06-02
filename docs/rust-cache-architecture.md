@@ -41,10 +41,28 @@ an included `.inc` invalidates that file's include edge query, while unchanged
 root parse data can stay reusable. A later Step can add a workspace registry
 input and dependent-root counters once the server exposes query telemetry.
 
+## Step 3 Workspace Include Graph
+
+Step 3 widens include traversal from open buffers to the workspace registry:
+
+- `include_closure` now builds an internal include graph from open documents
+  plus indexed workspace documents.
+- Open documents take precedence over indexed snapshots for the same URI, so
+  unsaved editor text remains authoritative.
+- The graph still returns the original raw include JSON objects; internal edge
+  targets and registry metadata are not exposed through the public LSP-facing
+  shape.
+
+This makes transitive `.inc` dependencies visible after workspace indexing, even
+when only the root ASP file is open. The next incrementality step is to add an
+explicit workspace registry generation/fingerprint and query counters for
+dependent-root invalidation.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
-  typed ASP file IR, include edge, diagnostics, include, and VB queries.
+  typed ASP file IR, include edge, workspace include graph traversal,
+  diagnostics, include, and VB queries.
 - Process caches in `asp-analysis`: compatibility caches for parsed JSON,
   symbols, diagnostics, and serialized results.
 - Server caches in `asp-lsp-server`: semantic-token result cache, disk
@@ -56,8 +74,8 @@ input and dependent-root counters once the server exposes query telemetry.
 
 1. Move more `asp-ide` derived work onto typed tracked queries:
    `VirtualDocuments`, `DocumentSummary`, `VbSymbols`, and `VbDiagnostics`.
-2. Introduce a workspace file registry and full include graph query, then
-   report dependent document counts on `.inc` changes.
+2. Add a workspace registry generation/fingerprint input and report dependent
+   document counts on `.inc` changes.
 3. Add generation/fingerprint keys to embedded sidecar requests so TypeScript
    project caches cannot become stale.
 4. Expand disk cache from diagnostics-only payloads to versioned query
