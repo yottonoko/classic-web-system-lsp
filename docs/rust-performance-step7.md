@@ -13,8 +13,8 @@ ASP_LSP_BENCH_WARMUPS=0
 ```
 
 Treat these numbers as a regression triage baseline, not a statistically stable
-release benchmark. Step 7B should rerun higher-iteration measurements after the
-hot spots below are addressed.
+release benchmark. Later Step 7B sections record the follow-up hardening and
+comparison runs that address the initial weak points.
 
 ## Harness Change
 
@@ -166,11 +166,14 @@ Result:
 - Default Node heap: failed with JavaScript heap out of memory near 4 GB.
 - 8 GB Node heap: failed with JavaScript heap out of memory near 8 GB.
 
-Interpretation: include-tree benchmark is not currently usable as a short Step 7
-proof on this checkout. Step 7B should reduce the harness memory footprint or
-split the workload before relying on it for regression proof.
+Interpretation: during the initial Step 7A run, include-tree was not usable as a
+short proof on this checkout. Step 7B later reduced the harness memory footprint
+with bounded source selection before relying on it for regression proof.
 
-## Audit Findings
+## Step 7A Audit Findings
+
+These findings describe the initial Step 7A state. Step 7B closure evidence is
+recorded in the sections below.
 
 - There is no Step 7 benchmark report before this file.
 - `benchmark:change` is a Rust stdio server benchmark and prints `Server: rust`.
@@ -180,9 +183,9 @@ split the workload before relying on it for regression proof.
   latency using the same sample, cache mode, warmups, and iterations.
 - `semanticTokens/full` already has stdio parity coverage, but the large sample
   still shows it as the top Rust LSP latency target.
-- `workspace.backgroundAnalysis` is exposed in VS Code settings and benchmark
-  inputs, but Rust server background processing was not observed in source
-  search or benchmark events.
+- At Step 7A time, `workspace.backgroundAnalysis` was exposed in VS Code
+  settings and benchmark inputs, but Rust server background processing was not
+  observed in source search or benchmark events.
 - VS Code has an `aspLsp.workspace.maxIndexFiles` setting. Rust workspace
   indexing now reads that setting, with the same default of 5000 files, so
   cutover indexing capacity matches the extension configuration.
