@@ -46,6 +46,8 @@ interface EmbeddedRequest {
   settings: AspSettings;
   workspaceRoots: string[];
   projectGeneration: number;
+  projectFingerprint?: string;
+  projectResetReason?: string;
   params?: unknown;
 }
 
@@ -59,6 +61,8 @@ interface EmbeddedResponse {
 
 interface SidecarCacheStats {
   generationReset: number;
+  resetReason?: string;
+  projectFingerprint?: string;
   fileExistsHit: number;
   fileExistsMiss: number;
   readFileHit: number;
@@ -72,6 +76,10 @@ interface SidecarCacheStats {
   realpathHit: number;
   realpathMiss: number;
 }
+
+type SidecarCacheStatCounter = {
+  [Key in keyof SidecarCacheStats]-?: SidecarCacheStats[Key] extends number ? Key : never;
+}[keyof SidecarCacheStats];
 
 interface AspSettings {
   checkJs?: boolean;
@@ -97,7 +105,7 @@ interface JsProjectConfig {
 }
 
 let inputBuffer = Buffer.alloc(0);
-let currentProjectGeneration: number | undefined;
+let currentProjectCacheKey: string | undefined;
 const fileExistsCache = new Map<string, boolean>();
 const readFileCache = new Map<string, string | undefined>();
 const directoryExistsCache = new Map<string, boolean>();
@@ -138,7 +146,7 @@ async function handlePayload(payload: Buffer): Promise<void> {
   const request = JSON.parse(payload.toString("utf8")) as EmbeddedRequest;
   currentRequestStats = createCacheStats();
   try {
-    resetCachesForProjectGeneration(request.projectGeneration);
+    resetCachesForProject(request);
     const result = await handleRequest(request);
     writeResponse({ id: request.id, ok: true, result, cacheStats: currentRequestStats });
   } catch (error) {
@@ -804,12 +812,19 @@ function scriptKindForFileName(fileName: string): ts.ScriptKind {
   return ts.ScriptKind.JS;
 }
 
-function resetCachesForProjectGeneration(projectGeneration: number): void {
-  if (currentProjectGeneration === projectGeneration) {
+function resetCachesForProject(request: EmbeddedRequest): void {
+  const projectCacheKey = request.projectFingerprint ?? `generation:${request.projectGeneration}`;
+  if (currentProjectCacheKey === projectCacheKey) {
     return;
   }
-  currentProjectGeneration = projectGeneration;
+  currentProjectCacheKey = projectCacheKey;
   recordCacheStat("generationReset");
+  if (currentRequestStats) {
+    currentRequestStats.resetReason =
+      request.projectResetReason ??
+      (request.projectFingerprint ? "projectFingerprint" : "projectGeneration");
+    currentRequestStats.projectFingerprint = projectCacheKey;
+  }
   fileExistsCache.clear();
   readFileCache.clear();
   directoryExistsCache.clear();
@@ -836,7 +851,7 @@ function createCacheStats(): SidecarCacheStats {
   };
 }
 
-function recordCacheStat(stat: keyof SidecarCacheStats): void {
+function recordCacheStat(stat: SidecarCacheStatCounter): void {
   if (currentRequestStats) {
     currentRequestStats[stat] += 1;
   }

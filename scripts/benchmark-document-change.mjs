@@ -175,6 +175,10 @@ async function main() {
     console.log("Debug event counts");
     console.log("");
     printDebugEventTotals(scenarioResults);
+    console.log("");
+    console.log("Debug event details");
+    console.log("");
+    printDebugEventDetails(scenarioResults);
   }
 
   console.log("");
@@ -257,6 +261,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
     const samples = [];
     const debugStepTotals = new Map();
     const debugEventTotals = new Map();
+    const debugEventDetails = [];
     for (let index = 0; index < benchmarkIterations; index += 1) {
       const sample = await measureDocumentChange(
         server,
@@ -272,6 +277,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
         debugStepTotals.set(step, (debugStepTotals.get(step) ?? 0) + elapsedMs);
       }
       addCounters(debugEventTotals, sample.eventCounts);
+      debugEventDetails.push(...sample.eventDetails);
     }
 
     await server.request("shutdown", null);
@@ -291,6 +297,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
       samples,
       debugStepTotals,
       debugEventTotals,
+      debugEventDetails,
     };
   } finally {
     server.stop();
@@ -314,6 +321,7 @@ async function runColdScenario(changeKind, changeMode, backgroundAnalysis, editT
   const openMetricSamples = {};
   const debugStepTotals = new Map();
   const debugEventTotals = new Map();
+  const debugEventDetails = [];
   for (let index = 0; index < benchmarkIterations; index += 1) {
     const { openMetrics, sample } = await measureColdScenarioIteration(
       changeKind,
@@ -328,6 +336,7 @@ async function runColdScenario(changeKind, changeMode, backgroundAnalysis, editT
       debugStepTotals.set(step, (debugStepTotals.get(step) ?? 0) + elapsedMs);
     }
     addCounters(debugEventTotals, sample.eventCounts);
+    debugEventDetails.push(...sample.eventDetails);
   }
 
   return {
@@ -341,6 +350,7 @@ async function runColdScenario(changeKind, changeMode, backgroundAnalysis, editT
     samples,
     debugStepTotals,
     debugEventTotals,
+    debugEventDetails,
   };
 }
 
@@ -482,6 +492,7 @@ async function measureDocumentChange(
     analysisStarts: countLogsContaining(logs, `LSP analysis started: ${uri}`),
     stepTimings: collectLogTimings(logs),
     eventCounts: collectDebugEventCounts(logs),
+    eventDetails: collectDebugEventDetails(logs),
   };
 }
 
@@ -900,6 +911,17 @@ function collectDebugEventCounts(logs) {
   return counts;
 }
 
+function collectDebugEventDetails(logs) {
+  const details = [];
+  for (const log of logs) {
+    const message = logMessage(log);
+    if (message.includes("[asp-lsp] sidecarCache.generationReset")) {
+      details.push(message);
+    }
+  }
+  return details;
+}
+
 function addCounters(target, source) {
   for (const [key, value] of source) {
     target.set(key, (target.get(key) ?? 0) + value);
@@ -1101,6 +1123,17 @@ function printDebugEventTotals(scenarioResults) {
       if (count > 0) {
         rows.push([scenarioName, eventName, String(count)]);
       }
+    }
+  }
+  printRows(rows);
+}
+
+function printDebugEventDetails(scenarioResults) {
+  const rows = [["Scenario", "Detail"]];
+  for (const scenario of scenarioResults) {
+    const scenarioName = scenarioLabel(scenario);
+    for (const detail of scenario.debugEventDetails ?? []) {
+      rows.push([scenarioName, detail]);
     }
   }
   printRows(rows);

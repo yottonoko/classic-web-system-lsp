@@ -309,6 +309,66 @@ range-aware token index for `semanticTokens/full` or `semanticTokens/range`.
 Those remain follow-up work after sidecar fingerprinting and background
 scheduler hardening unless semantic-token full generation is prioritized again.
 
+## Step 9F Implementation
+
+Step 9F adds a stable sidecar project fingerprint while preserving the existing
+`projectGeneration` request field.
+
+Implementation changes:
+
+- `EmbeddedRequest` now carries optional `projectFingerprint` and
+  `projectResetReason` fields. Older sidecars can still ignore them, and the
+  Node sidecar still falls back to `projectGeneration` when no fingerprint is
+  present.
+- The Rust server computes the fingerprint from workspace roots, sidecar-owned
+  settings, indexed ASP source metadata, JS/TS project config metadata, and
+  JS/TS source metadata under workspace roots.
+- Explicit `clearCache` and `clearProcessCache` commands add a forced reset
+  nonce to the fingerprint so process-cache clears still invalidate sidecar
+  state even when project inputs are stable.
+- `workspace/didChangeWatchedFiles` now refreshes the fingerprint for JS/TS and
+  config changes even when the ASP workspace index is not affected.
+- Verbose sidecar cache reset logs include `reason=<reason>` and
+  `fingerprint=<fingerprint>`, and generic embedded requests now emit the same
+  cache hit/miss telemetry as embedded diagnostics.
+- `benchmark:change` prints a `Debug event details` table for sidecar reset
+  messages, preserving reset reason/fingerprint evidence when a scenario
+  triggers a reset.
+
+Focused evidence:
+
+```sh
+cargo fmt --all -- --check
+cargo test -p asp-sidecar-protocol
+cargo test -p asp-lsp-server sidecar_project_fingerprint_tracks_project_inputs_and_forced_resets
+cargo test -p asp-lsp-server sidecar_cache_reset_message_includes_reason_and_fingerprint
+pnpm --filter @asp-lsp/embedded-sidecar run build
+cargo test -p asp-lsp-server invalidates_embedded_sidecar_project_cache_after_watched_file_change
+pnpm run typecheck
+RUSTC_WRAPPER= ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_WARMUPS=0 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default ASP_LSP_BENCH_BACKGROUND=off ASP_LSP_BENCH_DEBUG_STEPS=1 ASP_LSP_BENCH_CHECK_JS=1 pnpm run benchmark:change:large
+RUSTC_WRAPPER= ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_WARMUPS=0 ASP_LSP_BENCH_CONCURRENCY=2 pnpm run benchmark:embedded
+```
+
+The stdio watched-file test proves updated `shared.js` diagnostics are observed
+after a watched change and the verbose sidecar reset log reports
+`reason=watchedFiles` plus a project fingerprint. The document-change benchmark
+with `checkJs=on` reports sidecar file-system cache hits without a reset during
+the unchanged project-input scenario:
+
+| Surface                  | Metric / event                     | Step 9F result |
+| ------------------------ | ---------------------------------- | -------------: |
+| `benchmark:change:large` | sidecarCache.fileExists.hit        |              1 |
+| `benchmark:change:large` | sidecarCache.readFile.hit          |              1 |
+| `benchmark:change:large` | sidecarCache.directoryExists.hit   |              1 |
+| `benchmark:change:large` | sidecarCache.readDirectory.hit     |              1 |
+| `benchmark:change:large` | didOpen final diagnostics          |     2667.67 ms |
+| `benchmark:change:large` | didChange final diagnostics        |     2113.87 ms |
+| `benchmark:embedded`     | javascriptSemanticDiagnostics mean |     3143.30 ms |
+
+`benchmark:embedded` still bypasses the Rust server and sidecar protocol, so it
+is retained as a cold embedded-service performance reference rather than
+fingerprint evidence.
+
 ## Step Execution Order
 
 Each Step must close with investigation, implementation or evidence update,

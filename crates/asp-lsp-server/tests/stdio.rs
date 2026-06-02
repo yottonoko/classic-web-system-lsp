@@ -486,6 +486,7 @@ fn invalidates_embedded_sidecar_project_cache_after_watched_file_change() {
         let message = read_message(&mut reader);
         if message["method"] == json!("window/logMessage")
             && message.to_string().contains("sidecarCache.generationReset")
+            && message.to_string().contains("reason=watchedFiles")
         {
             sidecar_cache_log = Some(message);
             continue;
@@ -503,6 +504,16 @@ fn invalidates_embedded_sidecar_project_cache_after_watched_file_change() {
             .to_string()
             .contains("operation=diagnostics"),
         "expected sidecar cache telemetry after watched file change: {sidecar_cache_log}"
+    );
+    assert!(
+        sidecar_cache_log
+            .to_string()
+            .contains("reason=watchedFiles"),
+        "expected sidecar reset reason after watched file change: {sidecar_cache_log}"
+    );
+    assert!(
+        sidecar_cache_log.to_string().contains("fingerprint="),
+        "expected sidecar project fingerprint after watched file change: {sidecar_cache_log}"
     );
     assert!(
         !refreshed["result"].to_string().contains("toFixed"),

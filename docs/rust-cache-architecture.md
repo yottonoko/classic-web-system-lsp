@@ -279,6 +279,27 @@ targets.
 The detailed implementation evidence is recorded in
 `docs/rust-analyzer-speed-step9.md`.
 
+## Step 9F Sidecar Project Fingerprint
+
+Step 9F replaces sidecar invalidation by opaque generation alone with a stable
+project fingerprint:
+
+- Rust still sends `projectGeneration`, but now also sends optional
+  `projectFingerprint` and `projectResetReason` fields.
+- The fingerprint is derived from workspace roots, sidecar-owned settings,
+  indexed ASP metadata, JS/TS config metadata, JS/TS source metadata, and a
+  forced-reset nonce for explicit process-cache clears.
+- The Node sidecar prefers `projectFingerprint` as its cache key and falls back
+  to `projectGeneration` for compatibility with older request senders.
+- Verbose telemetry now includes reset reason and fingerprint for
+  `sidecarCache.generationReset`, and generic embedded feature requests emit
+  sidecar cache hit/miss counters.
+- `benchmark:change` preserves representative sidecar reset messages in a
+  `Debug event details` table when reset evidence is present.
+
+The detailed implementation evidence is recorded in
+`docs/rust-analyzer-speed-step9.md`.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
@@ -289,16 +310,15 @@ The detailed implementation evidence is recorded in
   symbols, diagnostics, and serialized results.
 - Server caches in `asp-lsp-server`: semantic-token result cache with
   dependency fingerprints, disk query snapshot cache for
-  diagnostics/summaries/graph evidence, sidecar project generation, and
-  background-analysis warmup.
+  diagnostics/summaries/graph evidence, sidecar project
+  generation/fingerprint, and background-analysis warmup.
 - Embedded sidecar caches: TypeScript project/file reads and HTML/CSS/JS
-  document/service caches, invalidated by request `projectGeneration`.
+  document/service caches, invalidated by request `projectFingerprint` with
+  `projectGeneration` fallback.
 
 ## Next Steps
 
-1. Execute Step 9F from `docs/rust-analyzer-speed-step9.md` by adding explicit
-   sidecar project fingerprints beyond generation counters.
-2. Execute Step 9G by hardening background scheduling around open files,
+1. Execute Step 9G by hardening background scheduling around open files,
    affected roots, and bounded foreground latency.
-3. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
+2. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
    semantic diagnostics if more performance work is prioritized after cutover.

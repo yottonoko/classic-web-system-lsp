@@ -28,6 +28,10 @@ pub struct EmbeddedRequest {
     pub settings: Value,
     pub workspace_roots: Vec<String>,
     pub project_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_reset_reason: Option<String>,
     pub params: Value,
 }
 
@@ -61,11 +65,15 @@ mod tests {
             settings: json!({ "checkJs": true }),
             workspace_roots: vec!["file:///workspace".to_string()],
             project_generation: 42,
+            project_fingerprint: Some("fingerprint-a".to_string()),
+            project_reset_reason: Some("settings".to_string()),
             params: Value::Null,
         };
 
         let serialized = serde_json::to_value(request).expect("serialize request");
         assert_eq!(serialized["projectGeneration"], json!(42));
+        assert_eq!(serialized["projectFingerprint"], json!("fingerprint-a"));
+        assert_eq!(serialized["projectResetReason"], json!("settings"));
         assert!(serialized.get("project_generation").is_none());
     }
 

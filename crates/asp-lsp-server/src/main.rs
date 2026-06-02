@@ -108,6 +108,9 @@ struct ServerState {
     workspace_roots: Vec<String>,
     sidecar_request_id: u64,
     sidecar_project_generation: u64,
+    sidecar_project_fingerprint: String,
+    sidecar_project_reset_reason: String,
+    sidecar_forced_reset_generation: u64,
 }
 
 impl ServerState {
@@ -117,7 +120,7 @@ impl ServerState {
         self.diagnostics.set_debounce_from_settings(&settings);
         self.settings = settings.clone();
         self.configure_disk_cache();
-        self.bump_sidecar_project_generation();
+        self.bump_sidecar_project_generation("settings");
         if previous_max_index_files != next_max_index_files && !self.workspace_roots.is_empty() {
             self.refresh_workspace_index()?;
         }
@@ -125,6 +128,14 @@ impl ServerState {
     }
 
     fn set_workspace_roots(&mut self, roots: Vec<String>) -> Result<(), String> {
+        self.set_workspace_roots_with_reason(roots, "workspaceRoots")
+    }
+
+    fn set_workspace_roots_with_reason(
+        &mut self,
+        roots: Vec<String>,
+        reason: &str,
+    ) -> Result<(), String> {
         let indexed_files =
             index_workspace_files(&roots, workspace_max_index_files(&self.settings))?;
         self.ide.replace_indexed_documents(
@@ -136,12 +147,12 @@ impl ServerState {
         self.indexed_files = indexed_files;
         self.workspace_roots = roots;
         self.configure_disk_cache();
-        self.bump_sidecar_project_generation();
+        self.bump_sidecar_project_generation(reason);
         Ok(())
     }
 
     fn refresh_workspace_index(&mut self) -> Result<(), String> {
-        self.set_workspace_roots(self.workspace_roots.clone())
+        self.set_workspace_roots_with_reason(self.workspace_roots.clone(), "workspaceIndex")
     }
 
     fn execute_command(&mut self, command: &str) -> Result<Value, String> {
@@ -153,7 +164,7 @@ impl ServerState {
                 self.disk_cache.clear()?;
                 self.ide.clear_process_cache();
                 self.semantic_tokens.clear_all();
-                self.bump_sidecar_project_generation();
+                self.bump_sidecar_project_generation("clearCache");
             }
             "aspLsp.server.clearDiskCache" => {
                 self.disk_cache.clear()?;
@@ -161,7 +172,7 @@ impl ServerState {
             "aspLsp.server.clearProcessCache" => {
                 self.ide.clear_process_cache();
                 self.semantic_tokens.clear_all();
-                self.bump_sidecar_project_generation();
+                self.bump_sidecar_project_generation("clearProcessCache");
             }
             _ => {
                 return Err(format!("unknown command: {command}"));
@@ -467,6 +478,8 @@ impl ServerState {
                 settings: self.settings.clone(),
                 workspace_roots: self.workspace_roots.clone(),
                 project_generation: self.sidecar_project_generation,
+                project_fingerprint: Some(self.sidecar_project_fingerprint.clone()),
+                project_reset_reason: Some(self.sidecar_project_reset_reason.clone()),
                 params: Value::Null,
             }) {
                 Ok(response) => response,
@@ -499,6 +512,7 @@ impl ServerState {
 
     fn embedded_position_feature(
         &mut self,
+        connection: &Connection,
         uri: &str,
         operation: &str,
         position: TextPosition,
@@ -510,6 +524,7 @@ impl ServerState {
         };
         let open_virtuals = self.open_virtual_documents(uri)?;
         let result = self.embedded_request(
+            Some(connection),
             &mapped,
             open_virtuals,
             operation,
@@ -518,7 +533,12 @@ impl ServerState {
         Ok(result.map(|value| mapped.remap_lsp_value(value)))
     }
 
-    fn embedded_document_feature(&mut self, uri: &str, operation: &str) -> Result<Value, String> {
+    fn embedded_document_feature(
+        &mut self,
+        connection: &Connection,
+        uri: &str,
+        operation: &str,
+    ) -> Result<Value, String> {
         let virtuals = self.ide.embedded_virtual_documents(uri)?;
         let open_virtuals = virtuals
             .iter()
@@ -529,8 +549,13 @@ impl ServerState {
             if mapped.document.language_id == "vbscript" {
                 continue;
             }
-            let Some(result) =
-                self.embedded_request(&mapped, open_virtuals.clone(), operation, Value::Null)?
+            let Some(result) = self.embedded_request(
+                Some(connection),
+                &mapped,
+                open_virtuals.clone(),
+                operation,
+                Value::Null,
+            )?
             else {
                 continue;
             };
@@ -545,6 +570,7 @@ impl ServerState {
 
     fn embedded_color_presentations(
         &mut self,
+        connection: &Connection,
         uri: &str,
         color: Value,
         range: TextRange,
@@ -562,6 +588,7 @@ impl ServerState {
                 continue;
             };
             let Some(result) = self.embedded_request(
+                Some(connection),
                 &mapped,
                 open_virtuals.clone(),
                 "colorPresentations",
@@ -580,6 +607,7 @@ impl ServerState {
 
     fn embedded_request(
         &mut self,
+        connection: Option<&Connection>,
         mapped: &MappedVirtualDocument,
         open_virtuals: Vec<VirtualDocument>,
         operation: &str,
@@ -594,6 +622,8 @@ impl ServerState {
             settings: self.settings.clone(),
             workspace_roots: self.workspace_roots.clone(),
             project_generation: self.sidecar_project_generation,
+            project_fingerprint: Some(self.sidecar_project_fingerprint.clone()),
+            project_reset_reason: Some(self.sidecar_project_reset_reason.clone()),
             params,
         }) {
             Ok(response) => response,
@@ -604,6 +634,13 @@ impl ServerState {
                 return Ok(None);
             }
         };
+        log_sidecar_cache_stats(
+            connection,
+            &self.settings,
+            operation,
+            &mapped.document.language_id,
+            response.cache_stats.as_ref(),
+        )?;
         Ok(response.result)
     }
 
@@ -621,8 +658,44 @@ impl ServerState {
         self.sidecar_request_id
     }
 
-    fn bump_sidecar_project_generation(&mut self) {
+    fn bump_sidecar_project_generation(&mut self, reason: &str) {
         self.sidecar_project_generation = self.sidecar_project_generation.wrapping_add(1);
+        if matches!(reason, "clearCache" | "clearProcessCache") {
+            self.sidecar_forced_reset_generation =
+                self.sidecar_forced_reset_generation.wrapping_add(1);
+        }
+        self.sidecar_project_reset_reason = reason.to_string();
+        self.sidecar_project_fingerprint = self.compute_sidecar_project_fingerprint();
+    }
+
+    fn compute_sidecar_project_fingerprint(&self) -> String {
+        let mut roots = self.workspace_roots.clone();
+        roots.sort();
+        let mut indexed_files = self
+            .indexed_files
+            .iter()
+            .map(|file| {
+                json!({
+                    "uri": &file.uri,
+                    "fileName": &file.source.file_name,
+                    "mtimeMs": file.source.mtime_ms,
+                    "size": file.source.size,
+                })
+            })
+            .collect::<Vec<_>>();
+        indexed_files.sort_by_key(|value| value["fileName"].as_str().unwrap_or("").to_string());
+        let mut project_files = sidecar_project_files(&roots);
+        project_files.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+        stable_hash(
+            &json!({
+                "roots": roots,
+                "settings": sidecar_project_settings_key(&self.settings),
+                "indexedFiles": indexed_files,
+                "projectFiles": project_files,
+                "forcedResetGeneration": self.sidecar_forced_reset_generation,
+            })
+            .to_string(),
+        )
     }
 }
 
@@ -1289,7 +1362,7 @@ fn handle_request(
             let position = request_position(&request.params)?;
             let result = merge_lsp_arrays(
                 state.ide.completion(&uri, position)?,
-                state.embedded_position_feature(&uri, "completion", position)?,
+                state.embedded_position_feature(connection, &uri, "completion", position)?,
             );
             connection
                 .sender
@@ -1311,7 +1384,7 @@ fn handle_request(
             let result = state.ide.hover(&uri, position)?;
             let result = if result.is_null() {
                 state
-                    .embedded_position_feature(&uri, "hover", position)?
+                    .embedded_position_feature(connection, &uri, "hover", position)?
                     .unwrap_or(Value::Null)
             } else {
                 result
@@ -1328,7 +1401,7 @@ fn handle_request(
             let result = state.ide.definition(&uri, position)?;
             let result = if result.is_null() {
                 state
-                    .embedded_position_feature(&uri, "definition", position)?
+                    .embedded_position_feature(connection, &uri, "definition", position)?
                     .unwrap_or(Value::Null)
             } else {
                 result
@@ -1363,7 +1436,7 @@ fn handle_request(
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let result = merge_lsp_arrays(
                 state.ide.document_symbols(&uri)?,
-                Some(state.embedded_document_feature(&uri, "documentSymbols")?),
+                Some(state.embedded_document_feature(connection, &uri, "documentSymbols")?),
             );
             connection
                 .sender
@@ -1375,7 +1448,7 @@ fn handle_request(
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let result = merge_lsp_arrays(
                 state.ide.folding_ranges(&uri)?,
-                Some(state.embedded_document_feature(&uri, "foldingRanges")?),
+                Some(state.embedded_document_feature(connection, &uri, "foldingRanges")?),
             );
             connection
                 .sender
@@ -1469,7 +1542,7 @@ fn handle_request(
         }
         "textDocument/documentColor" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
-            let result = state.embedded_document_feature(&uri, "documentColors")?;
+            let result = state.embedded_document_feature(connection, &uri, "documentColors")?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -1480,7 +1553,7 @@ fn handle_request(
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let range = request_range(&request.params)?;
             let color = request.params.get("color").cloned().unwrap_or(Value::Null);
-            let result = state.embedded_color_presentations(&uri, color, range)?;
+            let result = state.embedded_color_presentations(connection, &uri, color, range)?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -1677,7 +1750,7 @@ fn handle_request(
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
             let result = state
-                .embedded_position_feature(&uri, "linkedEditingRanges", position)?
+                .embedded_position_feature(connection, &uri, "linkedEditingRanges", position)?
                 .unwrap_or(Value::Null);
             connection
                 .sender
@@ -1789,8 +1862,9 @@ fn handle_notification(
             if affects_workspace_index {
                 state.refresh_workspace_index()?;
                 state.configure_background_analysis(connection)?;
+            } else {
+                state.bump_sidecar_project_generation("watchedFiles");
             }
-            state.bump_sidecar_project_generation();
         }
         _ => {}
     }
@@ -2042,6 +2116,62 @@ fn index_workspace_files(roots: &[String], max_files: usize) -> Result<Vec<Index
     Ok(files)
 }
 
+fn sidecar_project_files(roots: &[String]) -> Vec<DiskSourceMetadata> {
+    const MAX_SIDECAR_PROJECT_FILES: usize = 2_000;
+    let mut files = Vec::new();
+    for root in roots {
+        let Some(path) = file_uri_to_path(root) else {
+            continue;
+        };
+        collect_sidecar_project_files(&path, &mut files, MAX_SIDECAR_PROJECT_FILES);
+        if files.len() >= MAX_SIDECAR_PROJECT_FILES {
+            break;
+        }
+    }
+    files
+}
+
+fn collect_sidecar_project_files(
+    path: &Path,
+    files: &mut Vec<DiskSourceMetadata>,
+    max_files: usize,
+) {
+    if files.len() >= max_files {
+        return;
+    }
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+    if metadata.is_file() {
+        if is_sidecar_project_file(path) {
+            files.push(DiskSourceMetadata {
+                file_name: normalize_file_name(path),
+                mtime_ms: metadata_mtime_ms(&metadata),
+                size: metadata.len(),
+            });
+        }
+        return;
+    }
+    if !metadata.is_dir() {
+        return;
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    if matches!(name, ".git" | "node_modules" | "target" | "dist") {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        collect_sidecar_project_files(&entry.path(), files, max_files);
+        if files.len() >= max_files {
+            break;
+        }
+    }
+}
+
 fn collect_workspace_files(
     path: &Path,
     files: &mut Vec<IndexedFile>,
@@ -2101,6 +2231,26 @@ fn is_asp_like_file(path: &Path) -> bool {
         })
 }
 
+fn is_sidecar_project_file(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if matches!(
+        file_name,
+        "tsconfig.json" | "jsconfig.json" | "package.json"
+    ) {
+        return true;
+    }
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts"
+            )
+        })
+}
+
 fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     uri.strip_prefix("file://").map(PathBuf::from)
 }
@@ -2141,6 +2291,14 @@ fn disk_analysis_settings_key(settings: &Value) -> String {
     json!({
         "rust": 1,
         "settings": settings,
+    })
+    .to_string()
+}
+
+fn sidecar_project_settings_key(settings: &Value) -> String {
+    json!({
+        "checkJs": settings.get("checkJs"),
+        "javascript": settings.get("javascript"),
     })
     .to_string()
 }
@@ -2393,6 +2551,69 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_project_fingerprint_tracks_project_inputs_and_forced_resets() {
+        let root = temp_cache_dir("sidecar-project-fingerprint");
+        fs::write(
+            root.join("default.asp"),
+            "<script src=\"shared.js\"></script>",
+        )
+        .expect("write asp");
+        fs::write(root.join("shared.js"), "var externalValue = \"text\";\n").expect("write js");
+
+        let mut state = super::ServerState::default();
+        state
+            .set_settings(json!({ "checkJs": true }))
+            .expect("settings");
+        state
+            .set_workspace_roots(vec![format!("file://{}", root.to_string_lossy())])
+            .expect("workspace roots");
+        let initial = state.sidecar_project_fingerprint.clone();
+
+        fs::write(root.join("shared.js"), "var externalValue = 100;\n").expect("update js");
+        state.bump_sidecar_project_generation("watchedFiles");
+        let after_js_change = state.sidecar_project_fingerprint.clone();
+        assert_ne!(after_js_change, initial);
+        assert_eq!(state.sidecar_project_reset_reason, "watchedFiles");
+
+        state
+            .set_settings(json!({ "checkJs": false }))
+            .expect("settings changed");
+        let after_settings_change = state.sidecar_project_fingerprint.clone();
+        assert_ne!(after_settings_change, after_js_change);
+        assert_eq!(state.sidecar_project_reset_reason, "settings");
+
+        state.bump_sidecar_project_generation("clearProcessCache");
+        assert_ne!(
+            state.sidecar_project_fingerprint, after_settings_change,
+            "explicit process-cache clears must force a sidecar reset even when inputs are stable"
+        );
+        assert_eq!(state.sidecar_project_reset_reason, "clearProcessCache");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sidecar_cache_reset_message_includes_reason_and_fingerprint() {
+        let stats = json!({
+            "generationReset": 1,
+            "resetReason": "watchedFiles",
+            "projectFingerprint": "abc123",
+        });
+        let message = super::sidecar_cache_stat_message(
+            "sidecarCache.generationReset",
+            "diagnostics",
+            "javascript",
+            1,
+            stats.as_object().expect("stats object"),
+        );
+        assert!(message.contains("sidecarCache.generationReset"));
+        assert!(message.contains("operation=diagnostics"));
+        assert!(message.contains("language=javascript"));
+        assert!(message.contains("reason=watchedFiles"));
+        assert!(message.contains("fingerprint=abc123"));
+    }
+
+    #[test]
     fn semantic_token_delta_reuses_cached_result_for_unchanged_fingerprint() {
         let mut cache = super::SemanticTokenCache::default();
         let full = cache.full(
@@ -2535,12 +2756,35 @@ fn log_sidecar_cache_stats(
         log_debug_summary(
             connection,
             settings,
-            format!(
-                "[asp-lsp] {event_name}: operation={operation} language={language_id} count={count}"
-            ),
+            sidecar_cache_stat_message(event_name, operation, language_id, count, stats),
         )?;
     }
     Ok(())
+}
+
+fn sidecar_cache_stat_message(
+    event_name: &str,
+    operation: &str,
+    language_id: &str,
+    count: u64,
+    stats: &serde_json::Map<String, Value>,
+) -> String {
+    let reset_context = if event_name == "sidecarCache.generationReset" {
+        let reason = stats
+            .get("resetReason")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let fingerprint = stats
+            .get("projectFingerprint")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        format!(" reason={reason} fingerprint={fingerprint}")
+    } else {
+        String::new()
+    };
+    format!(
+        "[asp-lsp] {event_name}: operation={operation} language={language_id} count={count}{reset_context}"
+    )
 }
 
 fn text_range(value: &Value) -> Option<TextRange> {
