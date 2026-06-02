@@ -58,6 +58,23 @@ when only the root ASP file is open. The next incrementality step is to add an
 explicit workspace registry generation/fingerprint and query counters for
 dependent-root invalidation.
 
+## Step 4 Embedded Sidecar Generation
+
+Step 4 wires the existing sidecar `projectGeneration` protocol field into the
+Rust server:
+
+- Rust no longer sends a fixed `0` generation for embedded sidecar requests.
+- Workspace roots, workspace file operations, watched file changes, relevant
+  settings changes, and process-cache clears bump the sidecar project
+  generation.
+- The Node sidecar already clears its TypeScript project/file-system caches
+  when `projectGeneration` changes, so external JavaScript/config changes no
+  longer need an ASP document reopen to avoid stale project state.
+
+The request wire shape is unchanged: `projectGeneration` stays camelCase and no
+new LSP-visible fields are added. A later Step can add explicit project
+fingerprints or query counters for sidecar cache hit/miss evidence.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
@@ -66,9 +83,10 @@ dependent-root invalidation.
 - Process caches in `asp-analysis`: compatibility caches for parsed JSON,
   symbols, diagnostics, and serialized results.
 - Server caches in `asp-lsp-server`: semantic-token result cache, disk
-  diagnostics cache, and background-analysis warmup.
+  diagnostics cache, sidecar project generation, and background-analysis
+  warmup.
 - Embedded sidecar caches: TypeScript project/file reads and HTML/CSS/JS
-  document/service caches.
+  document/service caches, invalidated by request `projectGeneration`.
 
 ## Next Steps
 
@@ -76,8 +94,7 @@ dependent-root invalidation.
    `VirtualDocuments`, `DocumentSummary`, `VbSymbols`, and `VbDiagnostics`.
 2. Add a workspace registry generation/fingerprint input and report dependent
    document counts on `.inc` changes.
-3. Add generation/fingerprint keys to embedded sidecar requests so TypeScript
-   project caches cannot become stale.
+3. Add explicit sidecar project fingerprints and cache hit/miss debug counters.
 4. Expand disk cache from diagnostics-only payloads to versioned query
    snapshots.
 5. Add query hit/miss benchmark evidence for large, huge, include-tree, and

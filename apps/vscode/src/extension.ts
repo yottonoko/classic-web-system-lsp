@@ -93,7 +93,7 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     synchronize: {
       configurationSection: "aspLsp",
       fileEvents: vscode.workspace.createFileSystemWatcher(
-        "**/*.{asp,asa,inc,js,jsx,mjs,cjs,ts,tsx,mts,cts,d.ts}",
+        "**/*.{asp,asa,inc,js,jsx,mjs,cjs,ts,tsx,mts,cts,d.ts,json}",
       ),
     },
     errorHandler: createLanguageClientErrorHandler(),

@@ -398,6 +398,94 @@ fn publishes_embedded_sidecar_diagnostics_over_stdio_lsp() {
 }
 
 #[test]
+fn invalidates_embedded_sidecar_project_cache_after_watched_file_change() {
+    let root = std::env::temp_dir().join(format!(
+        "asp-lsp-rust-sidecar-generation-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    fs::write(root.join("shared.js"), "var externalValue = \"text\";\n").expect("write shared js");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .env("ASP_LSP_EMBEDDED_SIDECAR_PATH", embedded_sidecar_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let root_uri = format!("file://{}", root.to_string_lossy());
+    let page_uri = format!("{root_uri}/default.asp");
+    let shared_uri = format!("{root_uri}/shared.js");
+
+    initialize_with_settings_and_root(
+        &mut stdin,
+        &mut reader,
+        json!({ "checkJs": true, "diagnostics": { "debounceMs": 0 } }),
+        &root_uri,
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": page_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<script>\nexternalValue.toFixed();\n</script>",
+                },
+            },
+        }),
+    );
+
+    let initial = request(
+        &mut stdin,
+        &mut reader,
+        20,
+        "textDocument/diagnostic",
+        json!({ "textDocument": { "uri": page_uri } }),
+    );
+    assert!(
+        initial["result"].to_string().contains("toFixed"),
+        "initial embedded diagnostics should use shared.js string type: {initial}"
+    );
+
+    fs::write(root.join("shared.js"), "var externalValue = 1;\n").expect("update shared js");
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWatchedFiles",
+            "params": {
+                "changes": [{ "uri": shared_uri, "type": 2 }],
+            },
+        }),
+    );
+
+    let refreshed = request(
+        &mut stdin,
+        &mut reader,
+        21,
+        "textDocument/diagnostic",
+        json!({ "textDocument": { "uri": page_uri } }),
+    );
+    assert!(
+        !refreshed["result"].to_string().contains("toFixed"),
+        "refreshed embedded diagnostics should observe updated shared.js: {refreshed}"
+    );
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn republishes_open_document_diagnostics_after_settings_change() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
         .stdin(Stdio::piped())

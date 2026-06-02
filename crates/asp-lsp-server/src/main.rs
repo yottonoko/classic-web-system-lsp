@@ -107,6 +107,7 @@ struct ServerState {
     settings: Value,
     workspace_roots: Vec<String>,
     sidecar_request_id: u64,
+    sidecar_project_generation: u64,
 }
 
 impl ServerState {
@@ -114,6 +115,7 @@ impl ServerState {
         self.diagnostics.set_debounce_from_settings(&settings);
         self.settings = settings.clone();
         self.configure_disk_cache();
+        self.bump_sidecar_project_generation();
         self.ide.set_settings(settings)
     }
 
@@ -128,6 +130,7 @@ impl ServerState {
         self.indexed_files = indexed_files;
         self.workspace_roots = roots;
         self.configure_disk_cache();
+        self.bump_sidecar_project_generation();
         Ok(())
     }
 
@@ -144,6 +147,7 @@ impl ServerState {
                 self.disk_cache.clear()?;
                 self.ide.clear_process_cache();
                 self.semantic_tokens.clear_all();
+                self.bump_sidecar_project_generation();
             }
             "aspLsp.server.clearDiskCache" => {
                 self.disk_cache.clear()?;
@@ -151,6 +155,7 @@ impl ServerState {
             "aspLsp.server.clearProcessCache" => {
                 self.ide.clear_process_cache();
                 self.semantic_tokens.clear_all();
+                self.bump_sidecar_project_generation();
             }
             _ => {
                 return Err(format!("unknown command: {command}"));
@@ -391,7 +396,7 @@ impl ServerState {
                 open_virtuals: open_virtuals.clone(),
                 settings: self.settings.clone(),
                 workspace_roots: self.workspace_roots.clone(),
-                project_generation: 0,
+                project_generation: self.sidecar_project_generation,
                 params: Value::Null,
             }) {
                 Ok(response) => response,
@@ -511,7 +516,7 @@ impl ServerState {
             open_virtuals,
             settings: self.settings.clone(),
             workspace_roots: self.workspace_roots.clone(),
-            project_generation: 0,
+            project_generation: self.sidecar_project_generation,
             params,
         }) {
             Ok(response) => response,
@@ -537,6 +542,10 @@ impl ServerState {
     fn next_sidecar_request_id(&mut self) -> u64 {
         self.sidecar_request_id += 1;
         self.sidecar_request_id
+    }
+
+    fn bump_sidecar_project_generation(&mut self) {
+        self.sidecar_project_generation = self.sidecar_project_generation.wrapping_add(1);
     }
 }
 
@@ -1563,6 +1572,9 @@ fn handle_notification(
         "workspace/didCreateFiles" | "workspace/didRenameFiles" | "workspace/didDeleteFiles" => {
             state.refresh_workspace_index()?;
             state.configure_background_analysis(connection)?;
+        }
+        "workspace/didChangeWatchedFiles" => {
+            state.bump_sidecar_project_generation();
         }
         _ => {}
     }
