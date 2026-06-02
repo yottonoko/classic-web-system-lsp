@@ -2382,10 +2382,30 @@ fn serves_workspace_diagnostics_with_disk_cache() {
         json!({ "command": "aspLsp.server.clearProcessCache" }),
     );
     assert_eq!(clear_process["result"]["ok"], json!(true));
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 34,
+            "method": "workspace/diagnostic",
+            "params": { "previousResultIds": [] },
+        }),
+    );
+    let disk_hit = read_until(&mut reader, |message| {
+        message["method"] == json!("window/logMessage")
+            && message.to_string().contains("diskCache.hit")
+    });
+    assert!(
+        disk_hit.to_string().contains("default.asp"),
+        "expected clearProcessCache to preserve disk snapshot identity: {disk_hit}"
+    );
+    let third = read_until(&mut reader, |message| message["id"] == json!(34));
+    assert_eq!(third["result"], second["result"]);
+
     let clear_all = request(
         &mut stdin,
         &mut reader,
-        34,
+        35,
         "workspace/executeCommand",
         json!({ "command": "aspLsp.server.clearCache" }),
     );

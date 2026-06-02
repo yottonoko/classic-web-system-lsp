@@ -75,6 +75,24 @@ The request wire shape is unchanged: `projectGeneration` stays camelCase and no
 new LSP-visible fields are added. A later Step can add explicit project
 fingerprints or query counters for sidecar cache hit/miss evidence.
 
+## Step 5 Disk Query Snapshots
+
+Step 5 changes the Rust disk cache from a diagnostics-only persisted entry into
+a versioned query snapshot envelope:
+
+- The workspace diagnostics cache now writes a `workspaceDiagnostics` query
+  snapshot payload.
+- Snapshot validation still checks source metadata, namespace, settings key,
+  tool version, TTL, and cache format version before reuse.
+- `clearProcessCache` preserves disk snapshot identity; `clearDiskCache` and
+  `clearCache` still remove persisted snapshots.
+- Watched changes for `.asp`, `.asa`, and `.inc` refresh the workspace index so
+  unopened-file snapshots do not outlive changed source text.
+
+This Step still stores the LSP diagnostics payload as JSON values. Later query
+snapshot Steps can add include-summary, document-summary, or graph fingerprints
+without duplicating the disk cache plumbing.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
@@ -83,7 +101,7 @@ fingerprints or query counters for sidecar cache hit/miss evidence.
 - Process caches in `asp-analysis`: compatibility caches for parsed JSON,
   symbols, diagnostics, and serialized results.
 - Server caches in `asp-lsp-server`: semantic-token result cache, disk
-  diagnostics cache, sidecar project generation, and background-analysis
+  query snapshot cache, sidecar project generation, and background-analysis
   warmup.
 - Embedded sidecar caches: TypeScript project/file reads and HTML/CSS/JS
   document/service caches, invalidated by request `projectGeneration`.
@@ -95,7 +113,7 @@ fingerprints or query counters for sidecar cache hit/miss evidence.
 2. Add a workspace registry generation/fingerprint input and report dependent
    document counts on `.inc` changes.
 3. Add explicit sidecar project fingerprints and cache hit/miss debug counters.
-4. Expand disk cache from diagnostics-only payloads to versioned query
-   snapshots.
+4. Add include-summary/document-summary snapshot payloads and dependency graph
+   fingerprints.
 5. Add query hit/miss benchmark evidence for large, huge, include-tree, and
    embedded workloads.

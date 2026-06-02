@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 const BACKEND_STATUS_METHOD: &str = "aspLsp/backendStatus";
 const FRAME_KIND_JSON: u8 = 1;
-const DISK_CACHE_FORMAT_VERSION: u32 = 3;
+const DISK_CACHE_FORMAT_VERSION: u32 = 4;
 const DEFAULT_CACHE_TTL_HOURS: f64 = 24.0 * 14.0;
 const DEFAULT_CACHE_MAX_SIZE_MB: f64 = 128.0;
 const VSCODE_PACKAGE_JSON: &str = include_str!("../../../apps/vscode/package.json");
@@ -315,7 +315,7 @@ impl ServerState {
             source: file.source.clone(),
             settings_key: disk_analysis_settings_key(&self.settings),
         };
-        if let Some(diagnostics) = self.disk_cache.read_analysis(&lookup) {
+        if let Some(diagnostics) = self.disk_cache.read_workspace_diagnostics(&lookup) {
             log_debug_summary(
                 connection,
                 &self.settings,
@@ -331,7 +331,8 @@ impl ServerState {
             )?;
         }
         let diagnostics = self.ide.workspace_diagnostics(&file.uri)?;
-        self.disk_cache.write_analysis(&lookup, &diagnostics);
+        self.disk_cache
+            .write_workspace_diagnostics(&lookup, &diagnostics);
         if self.disk_cache.enabled {
             log_debug_summary(
                 connection,
@@ -571,8 +572,7 @@ struct DiskCacheLookup {
 }
 
 #[derive(Deserialize, Serialize)]
-struct PersistedDiskAnalysisEntry {
-    kind: String,
+struct PersistedQuerySnapshot {
     #[serde(rename = "formatVersion")]
     format_version: u32,
     #[serde(rename = "toolVersion")]
@@ -583,7 +583,23 @@ struct PersistedDiskAnalysisEntry {
     source: DiskSourceMetadata,
     #[serde(rename = "settingsKey")]
     settings_key: String,
-    diagnostics: Vec<Value>,
+    #[serde(flatten)]
+    payload: PersistedQuerySnapshotPayload,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "queryKind", content = "payload")]
+enum PersistedQuerySnapshotPayload {
+    #[serde(rename = "workspaceDiagnostics")]
+    WorkspaceDiagnostics { items: Vec<Value> },
+}
+
+impl PersistedQuerySnapshotPayload {
+    fn query_kind(&self) -> &'static str {
+        match self {
+            Self::WorkspaceDiagnostics { .. } => "workspaceDiagnostics",
+        }
+    }
 }
 
 struct DiskAnalysisCache {
@@ -634,44 +650,64 @@ impl DiskAnalysisCache {
         }
     }
 
-    fn read_analysis(&self, lookup: &DiskCacheLookup) -> Option<Vec<Value>> {
+    fn read_workspace_diagnostics(&self, lookup: &DiskCacheLookup) -> Option<Vec<Value>> {
+        let snapshot = self.read_snapshot(lookup, "workspaceDiagnostics")?;
+        match snapshot.payload {
+            PersistedQuerySnapshotPayload::WorkspaceDiagnostics { items } => Some(items),
+        }
+    }
+
+    fn write_workspace_diagnostics(&self, lookup: &DiskCacheLookup, diagnostics: &[Value]) {
+        self.write_snapshot(
+            lookup,
+            PersistedQuerySnapshotPayload::WorkspaceDiagnostics {
+                items: diagnostics.to_vec(),
+            },
+        );
+    }
+
+    fn read_snapshot(
+        &self,
+        lookup: &DiskCacheLookup,
+        query_kind: &str,
+    ) -> Option<PersistedQuerySnapshot> {
         if !self.enabled {
             return None;
         }
-        let path = self.file_name_for_lookup(lookup, "diagnostics");
-        let entry: PersistedDiskAnalysisEntry = ciborium::de::from_reader(File::open(&path).ok()?)
+        let path = self.file_name_for_lookup(lookup, query_kind);
+        let snapshot: PersistedQuerySnapshot = ciborium::de::from_reader(File::open(&path).ok()?)
             .inspect_err(|_| {
                 let _ = fs::remove_file(&path);
             })
             .ok()?;
-        if self.matches(&entry, lookup, "diagnostics") {
-            Some(entry.diagnostics)
+        if self.matches(&snapshot, lookup, query_kind) {
+            Some(snapshot)
         } else {
             None
         }
     }
 
-    fn write_analysis(&self, lookup: &DiskCacheLookup, diagnostics: &[Value]) {
+    fn write_snapshot(&self, lookup: &DiskCacheLookup, payload: PersistedQuerySnapshotPayload) {
         if !self.enabled {
             return;
         }
         if fs::create_dir_all(&self.root).is_err() {
             return;
         }
-        let entry = PersistedDiskAnalysisEntry {
-            kind: "diagnostics".to_string(),
+        let query_kind = payload.query_kind();
+        let snapshot = PersistedQuerySnapshot {
             format_version: DISK_CACHE_FORMAT_VERSION,
             tool_version: self.tool_version.clone(),
             namespace: self.namespace.clone(),
             written_at: now_ms(),
             source: lookup.source.clone(),
             settings_key: lookup.settings_key.clone(),
-            diagnostics: diagnostics.to_vec(),
+            payload,
         };
-        let Ok(file) = File::create(self.file_name_for_lookup(lookup, "diagnostics")) else {
+        let Ok(file) = File::create(self.file_name_for_lookup(lookup, query_kind)) else {
             return;
         };
-        let _ = ciborium::ser::into_writer(&entry, file);
+        let _ = ciborium::ser::into_writer(&snapshot, file);
     }
 
     fn sweep(&self) {
@@ -689,7 +725,7 @@ impl DiskAnalysisCache {
                 continue;
             }
             let size = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-            let persisted: Option<PersistedDiskAnalysisEntry> = File::open(&path)
+            let persisted: Option<PersistedQuerySnapshot> = File::open(&path)
                 .ok()
                 .and_then(|file| ciborium::de::from_reader(file).ok());
             let Some(persisted) = persisted else {
@@ -738,11 +774,11 @@ impl DiskAnalysisCache {
 
     fn matches(
         &self,
-        entry: &PersistedDiskAnalysisEntry,
+        entry: &PersistedQuerySnapshot,
         lookup: &DiskCacheLookup,
-        kind: &str,
+        query_kind: &str,
     ) -> bool {
-        entry.kind == kind
+        entry.payload.query_kind() == query_kind
             && entry.format_version == DISK_CACHE_FORMAT_VERSION
             && entry.tool_version == self.tool_version
             && entry.namespace == self.namespace
@@ -1574,6 +1610,10 @@ fn handle_notification(
             state.configure_background_analysis(connection)?;
         }
         "workspace/didChangeWatchedFiles" => {
+            if watched_file_changes_affect_workspace_index(&notification.params) {
+                state.refresh_workspace_index()?;
+                state.configure_background_analysis(connection)?;
+            }
             state.bump_sidecar_project_generation();
         }
         _ => {}
@@ -1774,6 +1814,24 @@ fn workspace_roots_from_initialize(params: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn watched_file_changes_affect_workspace_index(params: &Value) -> bool {
+    params
+        .get("changes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|change| change.get("uri").and_then(Value::as_str))
+        .any(is_indexed_workspace_uri)
+}
+
+fn is_indexed_workspace_uri(uri: &str) -> bool {
+    let lower = uri.to_lowercase();
+    matches!(
+        lower.rsplit_once('.').map(|(_, extension)| extension),
+        Some("asp" | "asa" | "inc")
+    )
+}
+
 fn index_workspace_files(roots: &[String]) -> Result<Vec<IndexedFile>, String> {
     let mut files = Vec::new();
     for root in roots {
@@ -1913,6 +1971,123 @@ fn language_server_version() -> String {
                 .map(str::to_string)
         })
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DiskAnalysisCache, DiskCacheLookup, DiskSourceMetadata, PersistedQuerySnapshot,
+        PersistedQuerySnapshotPayload, DISK_CACHE_FORMAT_VERSION,
+    };
+    use serde_json::json;
+    use std::{env, fs, fs::File, path::PathBuf};
+
+    fn temp_cache_dir(name: &str) -> PathBuf {
+        let path = env::temp_dir().join(format!(
+            "asp-lsp-disk-snapshot-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).expect("create cache dir");
+        path
+    }
+
+    fn test_cache(root: PathBuf) -> DiskAnalysisCache {
+        DiskAnalysisCache {
+            enabled: true,
+            root,
+            ttl_ms: 60_000.0,
+            max_size_bytes: 1024 * 1024,
+            namespace: "test-namespace".to_string(),
+            tool_version: "test-version".to_string(),
+        }
+    }
+
+    fn test_lookup() -> DiskCacheLookup {
+        DiskCacheLookup {
+            source: DiskSourceMetadata {
+                file_name: "file:///site/default.asp".to_string(),
+                mtime_ms: 1234.0,
+                size: 42,
+            },
+            settings_key: "settings".to_string(),
+        }
+    }
+
+    #[test]
+    fn disk_snapshot_round_trips_workspace_diagnostics_payload() {
+        let root = temp_cache_dir("roundtrip");
+        let cache = test_cache(root.clone());
+        let lookup = test_lookup();
+        let diagnostics = vec![json!({ "message": "missingName" })];
+
+        cache.write_workspace_diagnostics(&lookup, &diagnostics);
+
+        assert_eq!(
+            cache.read_workspace_diagnostics(&lookup),
+            Some(diagnostics.clone())
+        );
+        let snapshot: PersistedQuerySnapshot = ciborium::de::from_reader(
+            File::open(cache.file_name_for_lookup(&lookup, "workspaceDiagnostics"))
+                .expect("open snapshot"),
+        )
+        .expect("decode snapshot");
+        assert_eq!(snapshot.format_version, DISK_CACHE_FORMAT_VERSION);
+        match snapshot.payload {
+            PersistedQuerySnapshotPayload::WorkspaceDiagnostics { items } => {
+                assert_eq!(items, diagnostics);
+            }
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disk_snapshot_misses_when_source_metadata_changes() {
+        let root = temp_cache_dir("metadata");
+        let cache = test_cache(root.clone());
+        let lookup = test_lookup();
+        cache.write_workspace_diagnostics(&lookup, &[json!({ "message": "missingName" })]);
+
+        let stale_lookup = DiskCacheLookup {
+            source: DiskSourceMetadata {
+                size: lookup.source.size + 1,
+                ..lookup.source.clone()
+            },
+            settings_key: lookup.settings_key.clone(),
+        };
+
+        assert_eq!(cache.read_workspace_diagnostics(&stale_lookup), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disk_snapshot_removes_corrupt_entries_on_read() {
+        let root = temp_cache_dir("corrupt");
+        let cache = test_cache(root.clone());
+        let lookup = test_lookup();
+        let path = cache.file_name_for_lookup(&lookup, "workspaceDiagnostics");
+        fs::write(&path, b"not cbor").expect("write corrupt snapshot");
+
+        assert_eq!(cache.read_workspace_diagnostics(&lookup), None);
+        assert!(!path.exists(), "corrupt snapshot should be removed");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn watched_asp_like_files_affect_workspace_index() {
+        assert!(super::watched_file_changes_affect_workspace_index(&json!({
+            "changes": [{ "uri": "file:///site/default.asp", "type": 2 }]
+        })));
+        assert!(super::watched_file_changes_affect_workspace_index(&json!({
+            "changes": [{ "uri": "file:///site/shared.INC", "type": 2 }]
+        })));
+        assert!(!super::watched_file_changes_affect_workspace_index(
+            &json!({
+                "changes": [{ "uri": "file:///site/shared.js", "type": 2 }]
+            })
+        ));
+    }
 }
 
 fn format_on_save_enabled(settings: &Value) -> bool {
