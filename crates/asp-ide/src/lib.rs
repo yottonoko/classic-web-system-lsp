@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::OnceLock};
 
 use asp_sidecar_protocol::{SourceMapSegment, VirtualDocument};
+use asp_syntax::FileKind;
 use ropey::Rope;
 use salsa::Setter;
 use serde_json::Value;
@@ -43,13 +44,11 @@ fn parser_diagnostics(
     source_file: SourceFile,
     settings: WorkspaceSettings,
 ) -> Result<Vec<Value>, String> {
-    let settings_value =
-        serde_json::from_str(settings.json(db)).map_err(|error| error.to_string())?;
-    asp_analysis::parser_diagnostics_once(
-        source_file.uri(db),
-        source_file.text(db),
-        &settings_value,
-    )
+    if !is_classic_asp_source(source_file.uri(db)) {
+        return Ok(Vec::new());
+    }
+    let parsed = parse_asp(db, source_file, settings)?;
+    Ok(array_field(&parsed, "diagnostics"))
 }
 
 #[salsa::tracked(returns(clone))]
@@ -80,9 +79,11 @@ fn include_refs(
     source_file: SourceFile,
     settings: WorkspaceSettings,
 ) -> Result<Vec<Value>, String> {
-    let settings_value =
-        serde_json::from_str(settings.json(db)).map_err(|error| error.to_string())?;
-    asp_analysis::include_refs_once(source_file.uri(db), source_file.text(db), &settings_value)
+    if !is_classic_asp_source(source_file.uri(db)) {
+        return Ok(Vec::new());
+    }
+    let parsed = parse_asp(db, source_file, settings)?;
+    Ok(array_field(&parsed, "includes"))
 }
 
 #[salsa::tracked(returns(clone))]
@@ -104,6 +105,20 @@ struct IdeDatabase {
 
 #[salsa::db]
 impl salsa::Database for IdeDatabase {}
+
+fn is_classic_asp_source(uri: &str) -> bool {
+    matches!(FileKind::from_uri(uri), FileKind::Asp | FileKind::Inc)
+}
+
+fn array_field(value: &Value, field: &str) -> Vec<Value> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect()
+}
 
 pub struct Ide {
     db: IdeDatabase,
@@ -5145,7 +5160,7 @@ fn normalize_path_segments(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ide, TextPosition, TextRange};
+    use super::{array_field, Ide, TextPosition, TextRange};
 
     #[test]
     fn publishes_vbscript_diagnostics_for_open_document() {
@@ -5185,6 +5200,10 @@ mod tests {
             .parse_asp("file:///site/default.asp")
             .expect("parse asp");
         assert_eq!(parsed["uri"], "file:///site/default.asp");
+        let parser_diagnostics = ide
+            .parser_diagnostics("file:///site/default.asp")
+            .expect("parser diagnostics");
+        assert_eq!(parser_diagnostics, array_field(&parsed, "diagnostics"));
 
         let includes = ide
             .include_closure("file:///site/default.asp")
@@ -5214,6 +5233,18 @@ mod tests {
             .vb_diagnostics("file:///site/default.asp")
             .expect("vb diagnostics");
         assert_eq!(diagnostics, Vec::<serde_json::Value>::new());
+
+        ide.set_open_document("file:///site/readme.txt".to_string(), "not asp".to_string());
+        assert_eq!(
+            ide.parser_diagnostics("file:///site/readme.txt")
+                .expect("non asp parser diagnostics"),
+            Vec::<serde_json::Value>::new()
+        );
+        assert_eq!(
+            ide.include_closure("file:///site/readme.txt")
+                .expect("non asp include closure"),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     #[test]
