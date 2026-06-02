@@ -15,6 +15,7 @@ const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
+const operationFilter = process.env.ASP_LSP_BENCH_OPERATION;
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const analyzeStepTotals = new Map();
 const results = [];
@@ -38,32 +39,43 @@ const {
 const sources = collectBenchmarkSources();
 const sourceStats = summarizeSources(sources);
 
-await runBenchmark("parseAspDocument", async (run) => {
-  for (const source of sourcesForRun("parseAspDocument", run)) {
-    await parseAspDocumentAsync(source.uri, source.text);
-  }
-});
+if (shouldRunOperation("parseAspDocument")) {
+  await runBenchmark("parseAspDocument", async (run) => {
+    for (const source of sourcesForRun("parseAspDocument", run)) {
+      await parseAspDocumentAsync(source.uri, source.text);
+    }
+  });
+}
 
-await runBenchmark("buildVirtualDocuments", async (run) => {
-  for (const source of sourcesForRun("buildVirtualDocuments", run)) {
-    const parsed = await parseAspDocumentAsync(source.uri, source.text);
-    buildVirtualDocuments(parsed);
-  }
-});
+if (shouldRunOperation("buildVirtualDocuments")) {
+  await runBenchmark("buildVirtualDocuments", async (run) => {
+    for (const source of sourcesForRun("buildVirtualDocuments", run)) {
+      const parsed = await parseAspDocumentAsync(source.uri, source.text);
+      buildVirtualDocuments(parsed);
+    }
+  });
+}
 
-await runBenchmark("collectVbscriptSymbols", async (run) => {
-  for (const source of sourcesForRun("collectVbscriptSymbols", run)) {
-    await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
-  }
-});
+if (shouldRunOperation("collectVbscriptSymbols")) {
+  await runBenchmark("collectVbscriptSymbols", async (run) => {
+    for (const source of sourcesForRun("collectVbscriptSymbols", run)) {
+      await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
+    }
+  });
+}
 
-await runBenchmark("analyzeVbscript", async (run) => {
-  for (const source of sourcesForRun("analyzeVbscript", run)) {
-    await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
-  }
-});
+if (shouldRunOperation("analyzeVbscript")) {
+  await runBenchmark("analyzeVbscript", async (run) => {
+    for (const source of sourcesForRun("analyzeVbscript", run)) {
+      await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
+    }
+  });
+}
 
 for (const operation of embeddedOperationNames) {
+  if (!shouldRunOperation(operation)) {
+    continue;
+  }
   await runBenchmark(operation, async (run) => {
     for (const source of sourcesForRun(operation, run)) {
       await runEmbeddedOperation(operation, source, core);
@@ -79,6 +91,9 @@ console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
 console.log(`Cache mode: ${benchmarkCacheMode}`);
 console.log(`Warmups: ${warmupIterations}`);
 console.log(`Iterations: ${benchmarkIterations}`);
+if (operationFilter) {
+  console.log(`Operation filter: ${operationFilter}`);
+}
 console.log("");
 printTable(results);
 if (collectDebugSteps) {
@@ -93,6 +108,10 @@ if (collectDebugSteps) {
 
 function sourcesForRun(operation, run) {
   return benchmarkSourcesForRun(sources, benchmarkCacheMode, operation, run);
+}
+
+function shouldRunOperation(operation) {
+  return !operationFilter || operationFilter === operation;
 }
 
 function collectBenchmarkSources() {

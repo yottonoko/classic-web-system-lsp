@@ -18,9 +18,9 @@ import { parseVbscriptCst } from "./vbscript-cst";
 export { normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 
 const asyncParseCacheMaxEntries = 64;
-const asyncParseCache = new Map<string, AspParsedDocument>();
-const textFingerprintCacheMaxEntries = 256;
-const textFingerprintCache = new Map<string, string>();
+const asyncParseCache = new Map<string, { text: string; parsed: AspParsedDocument }>();
+const asyncParseContentCacheMaxTexts = 64;
+const asyncParseContentCache = new Map<string, Map<string, AspParsedDocument>>();
 
 export function parseAspDocument(
   uri: string,
@@ -42,15 +42,25 @@ export async function parseAspDocumentAsync(
   text: string,
   settings: AspSettings = {},
 ): Promise<AspParsedDocument> {
-  const cacheKey = parseCacheKey(uri, text, settings);
+  const cacheKey = parseCacheKey(uri, settings);
   const cached = asyncParseCache.get(cacheKey);
-  if (cached) {
+  if (cached && cached.text === text) {
     asyncParseCache.delete(cacheKey);
     asyncParseCache.set(cacheKey, cached);
-    return cached;
+    return cached.parsed;
   }
-  const parsed = parseAspDocumentTypeScript(uri, text, settings);
-  setAsyncParseCache(cacheKey, parsed);
+  const settingsKey = parseSettingsCacheKey(settings);
+  const cachedByText = asyncParseContentCache.get(text);
+  const cachedBySettings = cachedByText?.get(settingsKey);
+  if (cachedByText && cachedBySettings) {
+    refreshAsyncParseContentCache(text, cachedByText);
+    const parsed = withParsedDocumentUri(cachedBySettings, uri);
+    setAsyncParseCache(cacheKey, text, parsed);
+    return parsed;
+  }
+  const parsed = parseAspDocumentSkeletonTypeScript(uri, text, settings);
+  setAsyncParseCache(cacheKey, text, parsed);
+  setAsyncParseContentCache(text, settingsKey, parsed);
   return parsed;
 }
 
@@ -971,19 +981,26 @@ function skeletonIncludeToNode(text: string, include: AspInclude): AspCstNode {
   };
 }
 
-function parseCacheKey(uri: string, text: string, settings: AspSettings): string {
+function parseCacheKey(uri: string, settings: AspSettings): string {
   return JSON.stringify({
     uri,
-    text: textFingerprint(text),
     settings,
   });
 }
 
-function setAsyncParseCache(key: string, parsed: AspParsedDocument): void {
+function parseSettingsCacheKey(settings: AspSettings): string {
+  return JSON.stringify(settings);
+}
+
+function withParsedDocumentUri(parsed: AspParsedDocument, uri: string): AspParsedDocument {
+  return parsed.uri === uri ? parsed : { ...parsed, uri };
+}
+
+function setAsyncParseCache(key: string, text: string, parsed: AspParsedDocument): void {
   if (asyncParseCache.has(key)) {
     asyncParseCache.delete(key);
   }
-  asyncParseCache.set(key, parsed);
+  asyncParseCache.set(key, { text, parsed });
   while (asyncParseCache.size > asyncParseCacheMaxEntries) {
     const oldest = asyncParseCache.keys().next().value;
     if (oldest === undefined) {
@@ -993,28 +1010,34 @@ function setAsyncParseCache(key: string, parsed: AspParsedDocument): void {
   }
 }
 
-function textFingerprint(text: string): string {
-  const cached = textFingerprintCache.get(text);
-  if (cached) {
-    textFingerprintCache.delete(text);
-    textFingerprintCache.set(text, cached);
-    return cached;
+function setAsyncParseContentCache(
+  text: string,
+  settingsKey: string,
+  parsed: AspParsedDocument,
+): void {
+  let cachedBySettings = asyncParseContentCache.get(text);
+  if (!cachedBySettings) {
+    cachedBySettings = new Map();
+    asyncParseContentCache.set(text, cachedBySettings);
+  } else {
+    refreshAsyncParseContentCache(text, cachedBySettings);
   }
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  const fingerprint = `${text.length}:${(hash >>> 0).toString(16)}`;
-  textFingerprintCache.set(text, fingerprint);
-  while (textFingerprintCache.size > textFingerprintCacheMaxEntries) {
-    const oldest = textFingerprintCache.keys().next().value;
+  cachedBySettings.set(settingsKey, parsed);
+  while (asyncParseContentCache.size > asyncParseContentCacheMaxTexts) {
+    const oldest = asyncParseContentCache.keys().next().value;
     if (oldest === undefined) {
       break;
     }
-    textFingerprintCache.delete(oldest);
+    asyncParseContentCache.delete(oldest);
   }
-  return fingerprint;
+}
+
+function refreshAsyncParseContentCache(
+  text: string,
+  cachedBySettings: Map<string, AspParsedDocument>,
+): void {
+  asyncParseContentCache.delete(text);
+  asyncParseContentCache.set(text, cachedBySettings);
 }
 
 function nodeToRegion(node: AspCstNode): AspRegion | undefined {
@@ -1122,7 +1145,7 @@ function buildRegions(
       (region.kind === "asp-block" || region.kind === "asp-expression")
         ? "jscript"
         : region.language;
-    const normalized = { ...region, language };
+    const normalized = language === region.language ? region : { ...region, language };
     if (region.start < coveredEnd) {
       if (
         region.kind === "asp-block" ||
@@ -1157,9 +1180,38 @@ function buildRegions(
     regions.push(htmlRegion(cursor, text.length));
   }
   const topLevelSet = new Set(topLevel);
-  return [...regions, ...accepted.filter((region) => !topLevelSet.has(region))].sort(
-    (left, right) => left.start - right.start || left.end - left.start - (right.end - right.start),
-  );
+  const nestedRegions = accepted
+    .filter((region) => !topLevelSet.has(region))
+    .sort(compareRegionsBySourceRange);
+  return mergeRegionsBySourceRange(regions, nestedRegions);
+}
+
+function mergeRegionsBySourceRange(left: AspRegion[], right: AspRegion[]): AspRegion[] {
+  const result: AspRegion[] = [];
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    if (compareRegionsBySourceRange(left[leftIndex], right[rightIndex]) <= 0) {
+      result.push(left[leftIndex]);
+      leftIndex += 1;
+    } else {
+      result.push(right[rightIndex]);
+      rightIndex += 1;
+    }
+  }
+  while (leftIndex < left.length) {
+    result.push(left[leftIndex]);
+    leftIndex += 1;
+  }
+  while (rightIndex < right.length) {
+    result.push(right[rightIndex]);
+    rightIndex += 1;
+  }
+  return result;
+}
+
+function compareRegionsBySourceRange(left: AspRegion, right: AspRegion): number {
+  return left.start - right.start || left.end - left.start - (right.end - right.start);
 }
 
 function regionHasHtmlTagWrapper(region: AspRegion): boolean {

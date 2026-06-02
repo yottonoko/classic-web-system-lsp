@@ -25,7 +25,7 @@ export function buildVirtualDocuments(
       regionsByLanguage.set(region.language, [region]);
     }
   }
-  const sortedRegions = sortRegionsBySource(parsed.regions);
+  const sortedRegions = sortedRegionsBySource(parsed.regions);
   const result = new Map<AspEmbeddedLanguage, VirtualDocument>();
   for (const language of virtualDocumentLanguages) {
     const regions = regionsByLanguage.get(language) ?? [];
@@ -51,15 +51,20 @@ const virtualDocumentLanguages: AspEmbeddedLanguage[] = [
   "html",
   "css",
   "javascript",
-  "vbscript",
   "jscript",
-  "asp-directive",
 ];
 
 const virtualDocumentsByParsed = new WeakMap<
   AspParsedDocument,
   Map<AspEmbeddedLanguage, VirtualDocument>
 >();
+const virtualDocumentBodyCacheMaxTexts = 64;
+const virtualDocumentBodyCache = new Map<string, Map<string, VirtualDocumentBody>>();
+
+interface VirtualDocumentBody {
+  text: string;
+  segments: SourceMapSegment[];
+}
 
 export function buildVirtualDocument(
   uri: string,
@@ -68,12 +73,15 @@ export function buildVirtualDocument(
   regions: AspRegion[],
   allRegions: AspRegion[] = regions,
 ): VirtualDocument {
+  if (languageId === "html") {
+    return buildMaskedDocument(uri, sourceText, languageId, regions);
+  }
   return buildVirtualDocumentWithSortedRegions(
     uri,
     sourceText,
     languageId,
     regions,
-    sortRegionsBySource(allRegions),
+    sortedRegionsBySource(allRegions),
   );
 }
 
@@ -86,6 +94,11 @@ function buildVirtualDocumentWithSortedRegions(
 ): VirtualDocument {
   if (languageId === "html") {
     return buildMaskedDocument(uri, sourceText, languageId, regions);
+  }
+  const bodyCacheKey = virtualDocumentBodyCacheKey(languageId, regions);
+  const cachedBody = getCachedVirtualDocumentBody(sourceText, bodyCacheKey);
+  if (cachedBody) {
+    return virtualDocumentFromBody(uri, sourceText, languageId, cachedBody);
   }
 
   const chunks: string[] = [];
@@ -105,16 +118,24 @@ function buildVirtualDocumentWithSortedRegions(
     segments.push(...sourceMapSegmentsForRegion(region, nestedRegions, start));
   }
   const text = chunks.join("");
-  return {
-    uri: `${uri}.${languageId}.virtual`,
-    languageId,
-    text,
-    sourceMap: createSourceMap(sourceText, text, segments),
-  };
+  const body = { text, segments };
+  setCachedVirtualDocumentBody(sourceText, bodyCacheKey, body);
+  return virtualDocumentFromBody(uri, sourceText, languageId, body);
 }
 
 function sortRegionsBySource(regions: AspRegion[]): AspRegion[] {
   return [...regions].sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function sortedRegionsBySource(regions: AspRegion[]): AspRegion[] {
+  for (let index = 1; index < regions.length; index += 1) {
+    const previous = regions[index - 1];
+    const current = regions[index];
+    if (previous.start > current.start || (previous.start === current.start && previous.end > current.end)) {
+      return sortRegionsBySource(regions);
+    }
+  }
+  return regions;
 }
 
 function sourceMapSegmentsForRegion(
@@ -331,6 +352,11 @@ function buildMaskedDocument(
   languageId: AspEmbeddedLanguage,
   regions: AspRegion[],
 ): VirtualDocument {
+  const bodyCacheKey = virtualDocumentBodyCacheKey(languageId, regions);
+  const cachedBody = getCachedVirtualDocumentBody(sourceText, bodyCacheKey);
+  if (cachedBody) {
+    return virtualDocumentFromBody(uri, sourceText, languageId, cachedBody);
+  }
   const segments: SourceMapSegment[] = [];
   const chunks: string[] = [];
   let cursor = 0;
@@ -348,12 +374,95 @@ function buildMaskedDocument(
     chunks.push(preserveLineEndingsRange(sourceText, cursor, sourceText.length, " "));
   }
   const text = chunks.join("");
+  const body = { text, segments };
+  setCachedVirtualDocumentBody(sourceText, bodyCacheKey, body);
+  return virtualDocumentFromBody(uri, sourceText, languageId, body);
+}
+
+function virtualDocumentFromBody(
+  uri: string,
+  sourceText: string,
+  languageId: AspEmbeddedLanguage,
+  body: VirtualDocumentBody,
+): VirtualDocument {
   return {
     uri: `${uri}.${languageId}.virtual`,
     languageId,
-    text,
-    sourceMap: createSourceMap(sourceText, text, segments),
+    text: body.text,
+    sourceMap: createSourceMap(sourceText, body.text, body.segments),
   };
+}
+
+function getCachedVirtualDocumentBody(
+  sourceText: string,
+  key: string,
+): VirtualDocumentBody | undefined {
+  const cachedByText = virtualDocumentBodyCache.get(sourceText);
+  if (!cachedByText) {
+    return undefined;
+  }
+  const cached = cachedByText.get(key);
+  if (!cached) {
+    return undefined;
+  }
+  virtualDocumentBodyCache.delete(sourceText);
+  virtualDocumentBodyCache.set(sourceText, cachedByText);
+  return cached;
+}
+
+function setCachedVirtualDocumentBody(
+  sourceText: string,
+  key: string,
+  body: VirtualDocumentBody,
+): void {
+  let cachedByText = virtualDocumentBodyCache.get(sourceText);
+  if (!cachedByText) {
+    cachedByText = new Map();
+    virtualDocumentBodyCache.set(sourceText, cachedByText);
+  } else {
+    virtualDocumentBodyCache.delete(sourceText);
+    virtualDocumentBodyCache.set(sourceText, cachedByText);
+  }
+  cachedByText.set(key, body);
+  while (virtualDocumentBodyCache.size > virtualDocumentBodyCacheMaxTexts) {
+    const oldest = virtualDocumentBodyCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    virtualDocumentBodyCache.delete(oldest);
+  }
+}
+
+function virtualDocumentBodyCacheKey(
+  languageId: AspEmbeddedLanguage,
+  regions: AspRegion[],
+): string {
+  if (languageId === "html" || languageId === "css" || languageId === "javascript") {
+    const first = regions[0];
+    const last = regions[regions.length - 1];
+    return first && last
+      ? `${languageId}:${regions.length}:${first.start}:${first.end}:${last.start}:${last.end}`
+      : `${languageId}:0`;
+  }
+  let hash = 2166136261;
+  for (const region of regions) {
+    hash = hashRegionPart(hash, region.start);
+    hash = hashRegionPart(hash, region.end);
+    hash = hashRegionPart(hash, region.contentStart);
+    hash = hashRegionPart(hash, region.contentEnd);
+  }
+  return `${languageId}:${regions.length}:${(hash >>> 0).toString(16)}`;
+}
+
+function hashRegionPart(hash: number, value: number): number {
+  hash ^= value & 0xff;
+  hash = Math.imul(hash, 16777619);
+  hash ^= (value >>> 8) & 0xff;
+  hash = Math.imul(hash, 16777619);
+  hash ^= (value >>> 16) & 0xff;
+  hash = Math.imul(hash, 16777619);
+  hash ^= (value >>> 24) & 0xff;
+  return Math.imul(hash, 16777619);
 }
 
 export function createSourceMap(
@@ -361,9 +470,7 @@ export function createSourceMap(
   virtualText: string,
   segments: SourceMapSegment[],
 ): SourceMap {
-  const sourceSegments = [...segments].sort(
-    (left, right) => left.sourceStart - right.sourceStart || left.sourceEnd - right.sourceEnd,
-  );
+  const sourceSegments = sourceSegmentsForLookup(segments);
   const map = {
     segments,
     toSourceOffset(offset: number): number | undefined {
@@ -392,6 +499,22 @@ export function createSourceMap(
     },
   };
   return map;
+}
+
+function sourceSegmentsForLookup(segments: SourceMapSegment[]): SourceMapSegment[] {
+  for (let index = 1; index < segments.length; index += 1) {
+    const previous = segments[index - 1];
+    const current = segments[index];
+    if (
+      previous.sourceStart > current.sourceStart ||
+      (previous.sourceStart === current.sourceStart && previous.sourceEnd > current.sourceEnd)
+    ) {
+      return [...segments].sort(
+        (left, right) => left.sourceStart - right.sourceStart || left.sourceEnd - right.sourceEnd,
+      );
+    }
+  }
+  return segments;
 }
 
 function findSegmentContaining(

@@ -76,7 +76,11 @@ export function scanHtmlAndAsp(
       continue;
     }
     if (text[cursor] !== "<") {
-      cursor += 1;
+      const nextTag = text.indexOf("<", cursor + 1);
+      if (nextTag === -1) {
+        break;
+      }
+      cursor = nextTag;
       continue;
     }
     const tag = readHtmlTag(text, cursor, scriptLanguage);
@@ -204,12 +208,8 @@ function findAspClose(
   maxEnd: number,
   _scriptLanguage: AspScriptScanLanguage,
 ): number {
-  for (let index = offset; index < maxEnd; index += 1) {
-    if (text[index] === "%" && text[index + 1] === ">") {
-      return index;
-    }
-  }
-  return -1;
+  const close = text.indexOf("%>", offset);
+  return close === -1 || close >= maxEnd ? -1 : close;
 }
 
 function readHtmlTag(
@@ -243,7 +243,15 @@ function readHtmlTag(
   }
   const attributesStart = cursor;
   const attributesEnd = tagEnd;
-  const attributeSpans = parseAttributeSpans(text, attributesStart, attributesEnd, scriptLanguage);
+  const parseAttributes =
+    !closing &&
+    (name === "script" ||
+      name === "style" ||
+      name === "object" ||
+      containsAsciiCaseInsensitive(text, attributesStart, attributesEnd, "style"));
+  const attributeSpans = parseAttributes
+    ? parseAttributeSpans(text, attributesStart, attributesEnd, scriptLanguage)
+    : [];
   const attributes: Record<string, string | true> = {};
   for (const attribute of attributeSpans) {
     attributes[attribute.name] = attribute.value;
@@ -258,7 +266,9 @@ function readHtmlTag(
     attributes,
     attributeSpans,
     closing,
-    selfClosing: text.slice(attributesStart, attributesEnd).trimEnd().endsWith("/"),
+    selfClosing: parseAttributes
+      ? text.slice(attributesStart, attributesEnd).trimEnd().endsWith("/")
+      : false,
   };
 }
 
@@ -505,13 +515,18 @@ function findElementClose(
   tagName: "script" | "style",
   offset: number,
 ): { start: number; end: number } | undefined {
-  for (let index = offset; index < text.length; index += 1) {
+  let index = offset;
+  for (;;) {
+    index = text.indexOf("</", index);
+    if (index === -1) {
+      return undefined;
+    }
     if (isClosingTagAt(text, index, tagName)) {
       const closeEnd = findTagEnd(text, index + 2);
       return closeEnd === -1 ? undefined : { start: index, end: closeEnd + 1 };
     }
+    index += 2;
   }
-  return undefined;
 }
 
 function isClosingTagAt(text: string, index: number, tagName: string): boolean {
@@ -594,4 +609,29 @@ export function parseAttributes(text: string): Record<string, string | true> {
 
 export function normalizeScriptLanguage(language: string): "VBScript" | "JScript" {
   return /^(java|j)script$/i.test(language) ? "JScript" : "VBScript";
+}
+
+function containsAsciiCaseInsensitive(
+  text: string,
+  start: number,
+  end: number,
+  needle: string,
+): boolean {
+  const needleLength = needle.length;
+  const lastStart = end - needleLength;
+  for (let index = start; index <= lastStart; index += 1) {
+    let matched = true;
+    for (let needleIndex = 0; needleIndex < needleLength; needleIndex += 1) {
+      const code = text.charCodeAt(index + needleIndex);
+      const lowerCode = code >= 65 && code <= 90 ? code + 32 : code;
+      if (lowerCode !== needle.charCodeAt(needleIndex)) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) {
+      return true;
+    }
+  }
+  return false;
 }

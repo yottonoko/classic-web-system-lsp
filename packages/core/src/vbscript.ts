@@ -203,7 +203,7 @@ const typeIndexes = new WeakMap<VbTypeEnvironment, VbTypeIndex>();
 let cachedBuiltinNameSet: Set<string> | undefined;
 let cachedBuiltinTypes: VbType[] | undefined;
 const vbFromTextCacheMaxEntries = 64;
-const vbFromTextCache = new Map<string, { text: string; value: unknown }>();
+const vbFromTextCache = new Map<string, Map<string, unknown>>();
 
 function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
   const localizer = createLocalizer(locale);
@@ -3184,7 +3184,7 @@ async function ensureVbscriptCstForAsyncAnalysis(
 
 function vbFromTextCacheKey(
   operation: string,
-  uri: string,
+  _uri: string,
   text: string,
   settings: AspSettings,
   context: VbProjectContext,
@@ -3199,7 +3199,6 @@ function vbFromTextCacheKey(
     }
     return JSON.stringify({
       operation,
-      uri,
       settings,
       context: contextKey,
     });
@@ -3209,15 +3208,28 @@ function vbFromTextCacheKey(
 }
 
 function getVbFromTextCache<T>(key: string, text: string): T | undefined {
-  const cached = vbFromTextCache.get(key);
-  return cached?.text === text ? (cached.value as T) : undefined;
+  const cachedByText = vbFromTextCache.get(key);
+  if (!cachedByText) {
+    return undefined;
+  }
+  const cached = cachedByText.get(text);
+  if (cached === undefined) {
+    return undefined;
+  }
+  vbFromTextCache.delete(key);
+  vbFromTextCache.set(key, cachedByText);
+  return cached as T;
 }
 
 function setVbFromTextCache(key: string, text: string, value: unknown): void {
-  if (vbFromTextCache.has(key)) {
+  let cachedByText = vbFromTextCache.get(key);
+  if (cachedByText) {
     vbFromTextCache.delete(key);
+  } else {
+    cachedByText = new Map();
   }
-  vbFromTextCache.set(key, { text, value });
+  cachedByText.set(text, value);
+  vbFromTextCache.set(key, cachedByText);
   while (vbFromTextCache.size > vbFromTextCacheMaxEntries) {
     const oldest = vbFromTextCache.keys().next().value;
     if (oldest === undefined) {

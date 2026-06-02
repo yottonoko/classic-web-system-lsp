@@ -1,0 +1,4 @@
+id,objective,files,focus
+P1,"Find safe speedups for parseAspDocument, buildVirtualDocuments, htmlVirtualDocument, cssVirtualDocument, javascriptVirtualDocument.","packages/core/src/parser.ts; packages/core/src/virtual-document.ts; crates/asp-ide/src/lib.rs; scripts/benchmark-huge.mjs; scripts/embedded-language-benchmark.mjs","duplicate parsing, virtual document generation, source-map allocation, benchmark/product path mismatch"
+P2,"Find safe speedups for collectVbscriptSymbols and analyzeVbscript.","crates/asp-analysis/src/core_bridge.rs; packages/core/src/vbscript.ts; packages/core/src/vbscript-cst.ts; scripts/benchmark-huge.mjs","duplicate parsing, JSON cloning, cache key misses, repeated symbols/diagnostics work"
+P3,"Design narrow verification for behavior and benchmark targets.","packages/core/test; crates/asp-lsp-server/tests; scripts/benchmark-huge.mjs; scripts/embedded-language-benchmark.mjs","tests, cargo/pnpm checks, benchmark commands, target assertions"
