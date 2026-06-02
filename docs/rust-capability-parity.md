@@ -3,9 +3,8 @@
 Step 6A/6B audit for `codex/revolution`.
 
 This file tracks the Rust server capabilities against the current stdio/package
-test evidence. Treat "weak" entries as the next Step 6B/6C queue: either prove
-the behavior with a focused test, document that the advertised behavior is
-intentionally empty, or implement the missing responder.
+test evidence. The weak entries below are non-blocking future proof targets, not
+open Step 6/7/8 cutover requirements.
 
 ## Current Evidence
 
@@ -53,10 +52,19 @@ intentionally empty, or implement the missing responder.
 | Embedded sidecar language-specific empty branches | HTML definition, JS document symbols/folding, and CSS linked editing now have explicit empty/null assertions. Non-CSS color branches are exercised through document-wide aggregation rather than isolated.  | Add isolated non-CSS color/colorPresentation empty assertions only if Step 6 requires branch-level proof.       |
 | Sidecar process crash recovery                    | Extension-level language-client crash restart handling is present, and sidecar request retry exists in Rust. Direct sidecar crash injection is not represented by a deterministic stdio test.               | Treat as future resilience hardening, not a Rust cutover blocker.                                               |
 
-## Step 6B Queue
+## Future Proof Targets
 
-1. Decide whether TS-specific embedded read features and isolated non-CSS
-   color/colorPresentation empty branches need stronger branch-level proof.
+These items are intentionally left as optional future hardening rather than
+remaining Step 6/7/8 blockers:
+
+1. Add TypeScript-specific embedded read assertions if future work needs
+   branch-level TypeScript project coverage beyond the shared JavaScript
+   language-service path.
+2. Add isolated non-CSS color/colorPresentation empty-branch assertions if
+   branch-level empty-response proof becomes useful.
+3. Add deterministic sidecar crash injection if sidecar resilience hardening is
+   prioritized beyond the current language-client restart and Rust request retry
+   behavior.
 
 ## Step 7/8 Evidence Closure
 
