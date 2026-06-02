@@ -39,6 +39,17 @@ Result:
 - `extension/server/sidecar/dist/sidecar.js` present
 - `extension/server/sidecar/package.json` present
 
+Final install smoke:
+
+```sh
+pnpm run package:vsix --out /private/tmp/classic-asp-lsp-native-final.vsix
+code-insiders --install-extension /private/tmp/classic-asp-lsp-native-final.vsix --force
+```
+
+Result:
+
+- `Extension 'classic-asp-lsp-native-final.vsix' was successfully installed.`
+
 No-native VSIX command:
 
 ```sh
@@ -71,6 +82,9 @@ Automated package coverage:
 - The same package test packages a no-native VSIX after
   `copy-server-runtime.mjs --no-native` and asserts sidecar files are present
   while `extension/server/bin/.../asp-lsp-server` is absent.
+- The package test also packages a `win32-x64` layout after
+  `copy-server-runtime.mjs --target win32-x64` and asserts
+  `extension/server/bin/win32-x64/asp-lsp-server.exe` is present.
 
 ## Legacy Cleanup
 
@@ -88,7 +102,9 @@ The release workflow currently builds one native VSIX asset:
 
 Linux and macOS native VSIX assets are intentionally out of the release matrix
 for now. Local package smoke still covers both the native VSIX command and the
-no-native VSIX command, but tag release upload is limited to Windows x64.
+no-native VSIX command, but tag release upload is limited to Windows x64. The
+automated package test directly checks the Windows x64 VSIX path and executable
+name expected by that release asset.
 
 If Linux or macOS release assets are restored later, use a runner that matches
 the target architecture. `scripts/build-server.mjs --target` only changes the

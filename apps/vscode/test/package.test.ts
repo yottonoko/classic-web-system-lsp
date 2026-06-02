@@ -809,4 +809,27 @@ describe("VS Code extension package", () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("packages a win32-x64 VSIX layout with the Windows Rust server name", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vsix-win32-x64-"));
+    const vsixPath = path.join(tempDir, "classic-asp-lsp-win32-x64.vsix");
+    try {
+      execFileSync(process.execPath, ["scripts/copy-server-runtime.mjs", "--target", "win32-x64"], {
+        stdio: "pipe",
+      });
+      execFileSync(
+        path.join("node_modules", ".bin", "vsce"),
+        ["package", "--no-dependencies", "--follow-symlinks", "--out", vsixPath],
+        { stdio: "pipe" },
+      );
+      expect(fs.existsSync(vsixPath)).toBe(true);
+      const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
+      expect(listing).toContain("extension/server/bin/win32-x64/asp-lsp-server.exe");
+      expect(listing).toContain("extension/server/sidecar/dist/sidecar.js");
+      expect(listing).toContain("extension/server/sidecar/package.json");
+      expect(listing).not.toContain("extension/server/bin/win32-x64/asp-lsp-server\n");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
