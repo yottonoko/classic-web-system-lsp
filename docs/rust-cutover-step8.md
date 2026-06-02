@@ -63,6 +63,15 @@ Result:
 - `extension/package.json` contributes `aspLsp.server.path`
 - `extension/dist/server-path.js` contains the configured-path error branch
 
+Automated package coverage:
+
+- `apps/vscode/test/package.test.ts` packages a native VSIX after
+  `copy-server-runtime.mjs` and asserts `extension/server/bin/.../asp-lsp-server`
+  plus sidecar files are present.
+- The same package test packages a no-native VSIX after
+  `copy-server-runtime.mjs --no-native` and asserts sidecar files are present
+  while `extension/server/bin/.../asp-lsp-server` is absent.
+
 ## Legacy Cleanup
 
 - VS Code backend status handling now accepts only Rust backend status.

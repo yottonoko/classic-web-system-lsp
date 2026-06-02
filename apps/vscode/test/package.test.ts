@@ -751,6 +751,7 @@ describe("VS Code extension package", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vsix-"));
     const vsixPath = path.join(tempDir, "classic-asp-lsp.vsix");
     try {
+      execFileSync(process.execPath, ["scripts/copy-server-runtime.mjs"], { stdio: "pipe" });
       execFileSync(
         path.join("node_modules", ".bin", "vsce"),
         ["package", "--no-dependencies", "--follow-symlinks", "--out", vsixPath],
@@ -777,6 +778,33 @@ describe("VS Code extension package", () => {
       );
       expect(listing).not.toContain("extension/node_modules/");
       expect(fs.readFileSync(".vscodeignore", "utf8")).not.toContain("server/language-server");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("packages a no-native VSIX with the embedded sidecar and no Rust server", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vsix-no-native-"));
+    const vsixPath = path.join(tempDir, "classic-asp-lsp-no-native.vsix");
+    try {
+      execFileSync(process.execPath, ["scripts/copy-server-runtime.mjs", "--no-native"], {
+        stdio: "pipe",
+      });
+      execFileSync(
+        path.join("node_modules", ".bin", "vsce"),
+        ["package", "--no-dependencies", "--follow-symlinks", "--out", vsixPath],
+        { stdio: "pipe" },
+      );
+      expect(fs.existsSync(vsixPath)).toBe(true);
+      const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
+      expect(listing).toContain("extension/dist/extension.js");
+      expect(listing).toContain("extension/server/sidecar/dist/sidecar.js");
+      expect(listing).toContain("extension/server/sidecar/dist/lib.esnext.d.ts");
+      expect(listing).toContain("extension/server/sidecar/dist/lib.dom.d.ts");
+      expect(listing).toContain("extension/server/sidecar/package.json");
+      expect(listing).not.toMatch(/extension\/server\/bin\/[^/]+\/asp-lsp-server/);
+      expect(listing).not.toContain("extension/server/language-server/");
+      expect(listing).not.toContain("extension/node_modules/");
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
