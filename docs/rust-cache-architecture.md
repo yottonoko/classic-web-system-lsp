@@ -174,6 +174,29 @@ changing runtime behavior. The detailed plan is recorded in
   fragment behavior, and VSIX cutover semantics remain compatibility
   constraints for every Step 9 change.
 
+## Step 9A Baseline And Query Audit
+
+Step 9A records the current query graph and benchmark baseline for the next
+implementation Steps. No runtime behavior changes are included in this Step.
+
+- `asp-ide` already has tracked inputs for `SourceFile` and
+  `WorkspaceSettings`, plus tracked parse, typed ASP IR, include edge,
+  diagnostics, and VB symbol/diagnostic queries.
+- Several high-level feature handlers still consume `parse_asp` directly. The
+  first Step 9B implementation slice should move shared parsed derivatives into
+  typed `VirtualDocuments` and `DocumentSummary` queries while preserving public
+  wrappers and result shapes.
+- The server disk cache still persists only the `workspaceDiagnostics` query
+  payload. Step 9D must extend the same envelope for summary and graph
+  snapshots instead of adding a separate cache format.
+- The sidecar still invalidates by generation counter. Step 9F must add a
+  stable project fingerprint and verbose hit/miss reason evidence without
+  changing the LSP-visible payloads.
+- Current short benchmarks continue to identify Rust semantic tokens and cold
+  JavaScript semantic diagnostics as the largest latency surfaces.
+
+The detailed baseline is recorded in `docs/rust-analyzer-speed-step9.md`.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
@@ -189,8 +212,8 @@ changing runtime behavior. The detailed plan is recorded in
 
 ## Next Steps
 
-1. Execute Step 9A from `docs/rust-analyzer-speed-step9.md` to lock the
-   current typed-query and benchmark baseline.
+1. Execute Step 9B from `docs/rust-analyzer-speed-step9.md` by adding typed
+   `VirtualDocuments` and `DocumentSummary` queries.
 2. Move more `asp-ide` derived work onto typed tracked queries:
    `VirtualDocuments`, `DocumentSummary`, `VbSymbols`, and `VbDiagnostics`.
 3. Add a workspace registry generation/fingerprint input and report dependent
