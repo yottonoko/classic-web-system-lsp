@@ -13,14 +13,14 @@ next implementation step.
 
 Current evidence points to these primary targets:
 
-| Target                                                | Current evidence                                                                                                                   | Step 9 direction                                                                                                        |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `semanticTokens/full` and `semanticTokens/full/delta` | Large sample full/delta is about 9.7s/9.6s; huge sample full is about 37-38s. Delta is still effectively as expensive as full.     | Add a reusable token index and unchanged-range/hash reuse before returning full or delta results.                       |
-| Remaining parse-derived feature work                  | `asp-ide` still has feature handlers that call `parse_asp` directly after the existing typed IR work.                              | Move shared derived state into tracked `VirtualDocuments`, `DocumentSummary`, `VbSymbols`, and `VbDiagnostics` queries. |
-| Include invalidation                                  | Workspace include traversal exists, but dependent-root invalidation and graph fingerprints are not explicit evidence surfaces yet. | Add a workspace registry fingerprint plus include reverse edges and affected-root counts.                               |
-| Disk query snapshots                                  | Persisted snapshots currently prove workspace diagnostics only.                                                                    | Extend the snapshot envelope with document summaries, include summaries, and graph fingerprints.                        |
-| Sidecar cache invalidation                            | Sidecar generation counters and telemetry exist, but project fingerprints are not explicit.                                        | Invalidate JS/TS/HTML/CSS project state from a stable project fingerprint, then report hit/miss reasons.                |
-| Background scheduling                                 | Background analysis warms workspace diagnostics, but priorities and affected-only scheduling are not yet proven.                   | Prioritize open files, affected roots, and include-heavy files without blocking foreground requests.                    |
+| Target                                                | Current evidence                                                                                                                   | Step 9 direction                                                                                         |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `semanticTokens/full` and `semanticTokens/full/delta` | Large sample full/delta is about 9.7s/9.6s; huge sample full is about 37-38s. Delta is still effectively as expensive as full.     | Add a reusable token index and unchanged-range/hash reuse before returning full or delta results.        |
+| Remaining parse-derived feature work                  | Step 9A found direct `parse_asp` feature callers after the existing typed IR work.                                                 | Step 9B moves shared parsed state into tracked `DocumentSummary` and `VirtualDocuments` queries.         |
+| Include invalidation                                  | Workspace include traversal exists, but dependent-root invalidation and graph fingerprints are not explicit evidence surfaces yet. | Add a workspace registry fingerprint plus include reverse edges and affected-root counts.                |
+| Disk query snapshots                                  | Persisted snapshots currently prove workspace diagnostics only.                                                                    | Extend the snapshot envelope with document summaries, include summaries, and graph fingerprints.         |
+| Sidecar cache invalidation                            | Sidecar generation counters and telemetry exist, but project fingerprints are not explicit.                                        | Invalidate JS/TS/HTML/CSS project state from a stable project fingerprint, then report hit/miss reasons. |
+| Background scheduling                                 | Background analysis warms workspace diagnostics, but priorities and affected-only scheduling are not yet proven.                   | Prioritize open files, affected roots, and include-heavy files without blocking foreground requests.     |
 
 ## Step 9A Baseline
 
@@ -61,6 +61,8 @@ targets:
 
 Keep the public `Ide::parse_asp` wrapper as a compatibility/test surface even
 after feature handlers stop calling the tracked root directly.
+
+Step 9B closes this migration list except for the public wrapper itself.
 
 ### Cache And Server Surface
 
@@ -125,6 +127,55 @@ Start Step 9B with the smallest high-leverage slice:
    the document summary API preserves open/indexed workspace semantics.
 5. Leave semantic-token index/delta behavior for Step 9E, while allowing Step
    9B to consume the same typed summary layer.
+
+## Step 9B Implementation
+
+Step 9B adds the typed summary layer and moves feature handlers off direct
+tracked parse calls without changing LSP payloads.
+
+Implementation changes:
+
+- `DocumentSummary` is a tracked query derived from `parse_asp` and currently
+  owns the parsed ASP skeleton.
+- `virtual_documents` is a tracked query derived from `DocumentSummary`, source
+  URI, and source text.
+- `MappedVirtualDocument`, `VirtualDocument`, and `SourceMapSegment` now support
+  equality so tracked virtual document results can be compared and reused.
+- References, rename, semantic tokens, selection ranges, inlay hints, code
+  actions, call hierarchy, inline values, formatting, and `vb_context` now read
+  parsed state through `DocumentSummary`.
+- Embedded virtual document routing now reads through the tracked
+  `virtual_documents` query.
+- The public `Ide::parse_asp` wrapper still calls the parse root directly so
+  existing parse-boundary tests and compatibility callers remain intact.
+
+Focused evidence:
+
+```sh
+cargo fmt --all -- --check
+cargo test -p asp-ide
+cargo check --workspace
+ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_WARMUPS=0 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default ASP_LSP_BENCH_BACKGROUND=off ASP_LSP_BENCH_DEBUG_STEPS=1 pnpm run benchmark:change:large
+ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_WARMUPS=0 ASP_LSP_BENCH_CONCURRENCY=2 pnpm run benchmark:embedded
+```
+
+The new `updates_step_nine_typed_summary_and_virtual_documents_after_edit`
+regression proves both the virtual document query and the VB context summary
+update after document text changes.
+
+Short Step 9B benchmark result:
+
+| Surface                  | Metric                        | Step 9A ms | Step 9B ms | Notes                                                                           |
+| ------------------------ | ----------------------------- | ---------: | ---------: | ------------------------------------------------------------------------------- |
+| `benchmark:change:large` | post-open completion          |     955.03 |       5.52 | Completion now benefits from shared summary/context reuse in this short run.    |
+| `benchmark:change:large` | semanticTokens/full           |    9634.86 |    9677.08 | Still Step 9E-owned; summary reuse alone does not remove token generation cost. |
+| `benchmark:change:large` | semanticTokens/full/delta     |    9846.08 |    9834.38 | Delta is still full-cost and remains Step 9E-owned.                             |
+| `benchmark:change:large` | warm workspace diagnostics    |      53.18 |      53.14 | Disk-cache behavior remains stable.                                             |
+| `benchmark:embedded`     | javascriptSemanticDiagnostics |    2136.05 |    2129.31 | Sidecar cold semantic diagnostics remains Step 9F-owned.                        |
+
+Step 9B does not implement semantic-token index reuse. It only moves semantic
+token generation onto the shared summary input; Step 9E remains responsible for
+avoiding full token regeneration and making delta cheaper than full.
 
 ## Step Execution Order
 

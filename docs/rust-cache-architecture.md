@@ -197,11 +197,30 @@ implementation Steps. No runtime behavior changes are included in this Step.
 
 The detailed baseline is recorded in `docs/rust-analyzer-speed-step9.md`.
 
+## Step 9B Typed Virtual Documents And Document Summary
+
+Step 9B adds the first typed shared summary layer for the remaining
+parse-derived feature handlers:
+
+- `DocumentSummary` is a tracked query derived from `parse_asp`.
+- `virtual_documents` is a tracked query derived from `DocumentSummary`, source
+  text, and source URI.
+- Feature handlers that previously parsed directly now consume
+  `DocumentSummary`; embedded virtual document routing consumes
+  `virtual_documents`.
+- The public `Ide::parse_asp` wrapper remains as a compatibility/test surface,
+  but LSP feature handlers no longer call the tracked parse root directly.
+- A focused regression test proves virtual documents and VB context update after
+  document edits.
+
+The detailed implementation evidence is recorded in
+`docs/rust-analyzer-speed-step9.md`.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
-  typed ASP file IR, include edge, workspace include graph traversal,
-  diagnostics, include, and VB queries.
+  typed ASP file IR, document summary, virtual document, include edge,
+  workspace include graph traversal, diagnostics, include, and VB queries.
 - Process caches in `asp-analysis`: compatibility caches for parsed JSON,
   symbols, diagnostics, and serialized results.
 - Server caches in `asp-lsp-server`: semantic-token result cache, disk
@@ -212,10 +231,10 @@ The detailed baseline is recorded in `docs/rust-analyzer-speed-step9.md`.
 
 ## Next Steps
 
-1. Execute Step 9B from `docs/rust-analyzer-speed-step9.md` by adding typed
-   `VirtualDocuments` and `DocumentSummary` queries.
-2. Move more `asp-ide` derived work onto typed tracked queries:
-   `VirtualDocuments`, `DocumentSummary`, `VbSymbols`, and `VbDiagnostics`.
+1. Execute Step 9C from `docs/rust-analyzer-speed-step9.md` by adding workspace
+   registry fingerprints and affected include roots.
+2. Move more summary payloads onto typed tracked queries as Step 9C-9D needs
+   them.
 3. Add a workspace registry generation/fingerprint input and report dependent
    document counts on `.inc` changes.
 4. Add explicit sidecar project fingerprints beyond generation counters.

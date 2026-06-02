@@ -57,6 +57,11 @@ struct IncludeEdge {
     target_uri: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct DocumentSummary {
+    parsed: Value,
+}
+
 #[salsa::tracked(returns(clone))]
 fn asp_file_ir(
     db: &dyn salsa::Database,
@@ -152,6 +157,30 @@ fn document_diagnostics(
     asp_analysis::analyze_document_once(source_file.uri(db), source_file.text(db), &settings_value)
 }
 
+#[salsa::tracked(returns(clone))]
+fn document_summary(
+    db: &dyn salsa::Database,
+    source_file: SourceFile,
+    settings: WorkspaceSettings,
+) -> Result<DocumentSummary, String> {
+    let parsed = parse_asp(db, source_file, settings)?;
+    Ok(DocumentSummary { parsed })
+}
+
+#[salsa::tracked(returns(clone))]
+fn virtual_documents(
+    db: &dyn salsa::Database,
+    source_file: SourceFile,
+    settings: WorkspaceSettings,
+) -> Result<Vec<MappedVirtualDocument>, String> {
+    let summary = document_summary(db, source_file, settings)?;
+    build_virtual_documents(
+        source_file.uri(db).clone(),
+        source_file.text(db),
+        &summary.parsed,
+    )
+}
+
 #[salsa::db]
 #[derive(Clone, Default)]
 struct IdeDatabase {
@@ -208,7 +237,7 @@ pub struct Ide {
     settings: WorkspaceSettingsState,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MappedVirtualDocument {
     pub document: VirtualDocument,
     pub source_map: Vec<SourceMapSegment>,
@@ -877,10 +906,14 @@ impl Ide {
         let mut references = Vec::new();
         for (document_uri, document) in self.workspace_documents() {
             let text = document.text(&self.db);
-            let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
-            for range in
-                symbol_identifier_ranges(document_uri, text, &parsed, &workspace_symbols, &symbol)
-            {
+            let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
+            for range in symbol_identifier_ranges(
+                document_uri,
+                text,
+                &summary.parsed,
+                &workspace_symbols,
+                &symbol,
+            ) {
                 if !include_declaration
                     && is_symbol_declaration_range(&symbol, document_uri, &range)
                 {
@@ -918,12 +951,17 @@ impl Ide {
         let mut changes = serde_json::Map::new();
         for (document_uri, document) in self.workspace_documents() {
             let text = document.text(&self.db);
-            let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
-            let edits =
-                symbol_identifier_ranges(document_uri, text, &parsed, &workspace_symbols, &symbol)
-                    .into_iter()
-                    .map(|range| serde_json::json!({ "range": range, "newText": new_name }))
-                    .collect::<Vec<_>>();
+            let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
+            let edits = symbol_identifier_ranges(
+                document_uri,
+                text,
+                &summary.parsed,
+                &workspace_symbols,
+                &symbol,
+            )
+            .into_iter()
+            .map(|range| serde_json::json!({ "range": range, "newText": new_name }))
+            .collect::<Vec<_>>();
             if !edits.is_empty() {
                 changes.insert(document_uri.clone(), Value::Array(edits));
             }
@@ -960,7 +998,7 @@ impl Ide {
             return Ok(serde_json::json!({ "data": [] }));
         };
         let text = document.text(&self.db);
-        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
         let symbols = self.workspace_vb_symbols()?;
         let semantic_symbols = SemanticSymbolIndex::new(&symbols);
         let text_index = Utf16LineIndex::new(text);
@@ -979,12 +1017,16 @@ impl Ide {
         let mut tokens = Vec::new();
         tokens.extend(asp_delimiter_semantic_tokens_indexed(
             text,
-            &parsed,
+            &summary.parsed,
             &text_index,
         ));
-        tokens.extend(include_semantic_tokens(text, &parsed));
-        tokens.extend(operator_semantic_tokens_indexed(text, &parsed, &text_index));
-        for identifier in identifiers_in_vbscript_indexed(text, &parsed, &text_index) {
+        tokens.extend(include_semantic_tokens(text, &summary.parsed));
+        tokens.extend(operator_semantic_tokens_indexed(
+            text,
+            &summary.parsed,
+            &text_index,
+        ));
+        for identifier in identifiers_in_vbscript_indexed(text, &summary.parsed, &text_index) {
             if let Some((start, end)) = range_offsets {
                 if identifier.start < start || identifier.end > end {
                     continue;
@@ -1001,7 +1043,7 @@ impl Ide {
             let Some((token_type, token_modifiers)) =
                 resolve_semantic_symbol_indexed(uri, text, &semantic_symbols, &identifier)
                     .and_then(semantic_symbol_kind)
-                    .or_else(|| builtin_semantic_token(text, &identifier, &parsed))
+                    .or_else(|| builtin_semantic_token(text, &identifier, &summary.parsed))
             else {
                 continue;
             };
@@ -1053,7 +1095,7 @@ impl Ide {
             return Ok(Value::Array(Vec::new()));
         };
         let text = document.text(&self.db);
-        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
         let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
         let ranges = positions
             .iter()
@@ -1065,7 +1107,7 @@ impl Ide {
                 );
                 selection_range_chain(
                     text,
-                    &parsed,
+                    &summary.parsed,
                     &symbols,
                     offset,
                     TextPosition {
@@ -1088,7 +1130,7 @@ impl Ide {
             return Ok(Value::Array(Vec::new()));
         };
         let text = document.text(&self.db);
-        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
         let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
         let options = InlayHintOptions::from_settings(settings);
         let start_offset = position_to_utf16_offset(
@@ -1222,7 +1264,7 @@ impl Ide {
                 if parameters.is_empty() {
                     continue;
                 }
-                for occurrence in identifiers_in_vbscript(text, &parsed)
+                for occurrence in identifiers_in_vbscript(text, &summary.parsed)
                     .into_iter()
                     .filter(|identifier| identifier.name.eq_ignore_ascii_case(name))
                 {
@@ -1331,10 +1373,10 @@ impl Ide {
         ) else {
             return Ok(Value::Array(Vec::new()));
         };
-        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
         let mut actions = Vec::new();
 
-        if is_vbscript_offset(&parsed, start) {
+        if is_vbscript_offset(&summary.parsed, start) {
             let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
             if let Some(action) = documentation_code_action(uri, text, &symbols, start, locale) {
                 actions.push(action);
@@ -1342,8 +1384,8 @@ impl Ide {
         }
 
         if start < end
-            && is_vbscript_offset(&parsed, start)
-            && is_vbscript_offset(&parsed, end.saturating_sub(1))
+            && is_vbscript_offset(&summary.parsed, start)
+            && is_vbscript_offset(&summary.parsed, end.saturating_sub(1))
         {
             let Ok(selected) = slice_utf16(text, start, end) else {
                 return Ok(Value::Array(actions));
@@ -1417,9 +1459,9 @@ impl Ide {
         let mut calls = Vec::new();
         for (document_uri, document) in self.workspace_documents() {
             let text = document.text(&self.db);
-            let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+            let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
             let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
-            for call in call_sites_in_vbscript(text, &parsed) {
+            for call in call_sites_in_vbscript(text, &summary.parsed) {
                 let Some(resolved) =
                     resolve_call_target_symbol(document_uri, text, &workspace_symbols, &call)
                 else {
@@ -1455,7 +1497,7 @@ impl Ide {
             return Ok(Value::Array(Vec::new()));
         };
         let text = document.text(&self.db);
-        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
         let Some(scope) = source.get("scopeRange") else {
             return Ok(Value::Array(Vec::new()));
         };
@@ -1466,7 +1508,7 @@ impl Ide {
             return Ok(Value::Array(Vec::new()));
         };
         let mut calls = Vec::new();
-        for call in call_sites_in_vbscript(text, &parsed) {
+        for call in call_sites_in_vbscript(text, &summary.parsed) {
             if call.offset < scope_start || call.offset > scope_end {
                 continue;
             }
@@ -1513,7 +1555,7 @@ impl Ide {
             return Ok(Value::Array(Vec::new()));
         };
         let text = document.text(&self.db);
-        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
         let start_offset = position_to_utf16_offset(
             text,
             range.start.line.try_into().unwrap_or(0),
@@ -1527,7 +1569,7 @@ impl Ide {
         )
         .unwrap_or_else(|| utf16_len(text));
         let workspace_symbols = self.workspace_vb_symbols()?;
-        let values = identifiers_in_vbscript(text, &parsed)
+        let values = identifiers_in_vbscript(text, &summary.parsed)
             .into_iter()
             .filter(|identifier| identifier.start >= start_offset && identifier.end <= end_offset)
             .filter(|identifier| {
@@ -1556,7 +1598,7 @@ impl Ide {
             return Ok(Value::Array(Vec::new()));
         };
         let text = document.text(&self.db);
-        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
         let options = FormattingOptions::from_values(lsp_options, settings);
         let (start, end) = if let Some(range) = range {
             let start = position_to_utf16_offset(
@@ -1577,7 +1619,7 @@ impl Ide {
         } else {
             (0, utf16_len(text))
         };
-        let formatted = format_text(text, &parsed, &options, start, end)?;
+        let formatted = format_text(text, &summary.parsed, &options, start, end)?;
         let original = slice_utf16(text, start, end)?;
         if formatted == original {
             return Ok(Value::Array(Vec::new()));
@@ -1598,12 +1640,7 @@ impl Ide {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Vec::new());
         };
-        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
-        build_virtual_documents(
-            source_file_uri(&self.db, document),
-            document.text(&self.db),
-            &parsed,
-        )
+        virtual_documents(&self.db, document.source_file, self.settings.input)
     }
 
     pub fn embedded_virtual_document_at(
@@ -1635,15 +1672,15 @@ impl Ide {
                 .map_err(|_| "character is too large".to_string())?,
         )
         .ok_or_else(|| "position is out of bounds".to_string())?;
-        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
-        if !is_vbscript_offset(&parsed, offset) {
+        let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
+        if !is_vbscript_offset(&summary.parsed, offset) {
             return Ok(None);
         }
         let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
         Ok(Some(VbContext {
             text,
             offset,
-            parsed,
+            parsed: summary.parsed,
             symbols,
         }))
     }
@@ -1841,10 +1878,6 @@ impl OpenDocument {
             .map_err(|_| "character is too large".to_string())?;
         Ok(line_start + utf16_character_to_char_offset(&line_text, character)?)
     }
-}
-
-fn source_file_uri(db: &IdeDatabase, document: &OpenDocument) -> String {
-    document.source_file.uri(db).clone()
 }
 
 struct VbContext {
@@ -5417,6 +5450,71 @@ mod tests {
         );
 
         assert_eq!(include_paths(&ide), vec!["shared.inc", "renamed.inc"]);
+    }
+
+    #[test]
+    fn updates_step_nine_typed_summary_and_virtual_documents_after_edit() {
+        let mut ide = Ide::default();
+        ide.set_open_document(
+            "file:///site/default.asp".to_string(),
+            "<script language=\"javascript\">var alpha = 1;</script>\n<%\nDim ServerName\n%>"
+                .to_string(),
+        );
+
+        let virtuals = ide
+            .embedded_virtual_documents("file:///site/default.asp")
+            .expect("virtual documents");
+        assert!(virtuals.iter().any(|mapped| {
+            mapped.document.language_id == "javascript" && mapped.document.text.contains("alpha")
+        }));
+        let context = ide
+            .vb_context(
+                "file:///site/default.asp",
+                TextPosition {
+                    line: 2,
+                    character: 5,
+                },
+            )
+            .expect("vb context")
+            .expect("inside vbscript");
+        assert!(context.symbols.iter().any(|symbol| {
+            symbol
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| name == "ServerName")
+        }));
+
+        ide.replace_document_text(
+            "file:///site/default.asp".to_string(),
+            "<script language=\"javascript\">var beta = 2;</script>\n<%\nDim OtherName\n%>"
+                .to_string(),
+        );
+
+        let virtuals = ide
+            .embedded_virtual_documents("file:///site/default.asp")
+            .expect("updated virtual documents");
+        let javascript = virtuals
+            .iter()
+            .find(|mapped| mapped.document.language_id == "javascript")
+            .expect("javascript virtual document");
+        assert!(javascript.document.text.contains("beta"));
+        assert!(!javascript.document.text.contains("alpha"));
+        let context = ide
+            .vb_context(
+                "file:///site/default.asp",
+                TextPosition {
+                    line: 2,
+                    character: 5,
+                },
+            )
+            .expect("updated vb context")
+            .expect("inside updated vbscript");
+        assert!(context.symbols.iter().any(|symbol| {
+            symbol
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| name == "OtherName")
+        }));
     }
 
     #[test]
