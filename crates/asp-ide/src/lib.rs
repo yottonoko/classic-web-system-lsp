@@ -38,17 +38,51 @@ fn parse_asp(
     )
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct AspFileIr {
+    diagnostics: Vec<Value>,
+    includes: Vec<IncludeRef>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct IncludeRef {
+    raw: Value,
+    path: Option<String>,
+    mode: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct IncludeEdge {
+    include: IncludeRef,
+    target_uri: Option<String>,
+}
+
+#[salsa::tracked(returns(clone))]
+fn asp_file_ir(
+    db: &dyn salsa::Database,
+    source_file: SourceFile,
+    settings: WorkspaceSettings,
+) -> Result<AspFileIr, String> {
+    if !is_classic_asp_source(source_file.uri(db)) {
+        return Ok(AspFileIr {
+            diagnostics: Vec::new(),
+            includes: Vec::new(),
+        });
+    }
+    let parsed = parse_asp(db, source_file, settings)?;
+    Ok(AspFileIr {
+        diagnostics: array_field(&parsed, "diagnostics"),
+        includes: include_refs_from_parsed(&parsed),
+    })
+}
+
 #[salsa::tracked(returns(clone))]
 fn parser_diagnostics(
     db: &dyn salsa::Database,
     source_file: SourceFile,
     settings: WorkspaceSettings,
 ) -> Result<Vec<Value>, String> {
-    if !is_classic_asp_source(source_file.uri(db)) {
-        return Ok(Vec::new());
-    }
-    let parsed = parse_asp(db, source_file, settings)?;
-    Ok(array_field(&parsed, "diagnostics"))
+    Ok(asp_file_ir(db, source_file, settings)?.diagnostics)
 }
 
 #[salsa::tracked(returns(clone))]
@@ -79,11 +113,32 @@ fn include_refs(
     source_file: SourceFile,
     settings: WorkspaceSettings,
 ) -> Result<Vec<Value>, String> {
-    if !is_classic_asp_source(source_file.uri(db)) {
-        return Ok(Vec::new());
-    }
-    let parsed = parse_asp(db, source_file, settings)?;
-    Ok(array_field(&parsed, "includes"))
+    Ok(asp_file_ir(db, source_file, settings)?
+        .includes
+        .into_iter()
+        .map(|include| include.raw)
+        .collect())
+}
+
+#[salsa::tracked(returns(clone))]
+fn include_edges(
+    db: &dyn salsa::Database,
+    source_file: SourceFile,
+    settings: WorkspaceSettings,
+) -> Result<Vec<IncludeEdge>, String> {
+    let from_uri = source_file.uri(db);
+    Ok(asp_file_ir(db, source_file, settings)?
+        .includes
+        .into_iter()
+        .map(|include| IncludeEdge {
+            target_uri: resolve_include_uri_from_parts(
+                from_uri,
+                include.path.as_deref(),
+                &include.mode,
+            ),
+            include,
+        })
+        .collect())
 }
 
 #[salsa::tracked(returns(clone))]
@@ -118,6 +173,32 @@ fn array_field(value: &Value, field: &str) -> Vec<Value> {
         .flatten()
         .cloned()
         .collect()
+}
+
+fn include_refs_from_parsed(parsed: &Value) -> Vec<IncludeRef> {
+    parsed
+        .get("includes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .cloned()
+        .map(IncludeRef::from_raw)
+        .collect()
+}
+
+impl IncludeRef {
+    fn from_raw(raw: Value) -> Self {
+        let path = raw
+            .get("path")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        let mode = raw
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("file")
+            .to_string();
+        Self { raw, path, mode }
+    }
 }
 
 pub struct Ide {
@@ -495,10 +576,18 @@ impl Ide {
     }
 
     fn direct_include_refs(&self, uri: &str) -> Result<Vec<Value>, String> {
+        Ok(self
+            .direct_include_edges(uri)?
+            .into_iter()
+            .map(|edge| edge.include.raw)
+            .collect())
+    }
+
+    fn direct_include_edges(&self, uri: &str) -> Result<Vec<IncludeEdge>, String> {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Vec::new());
         };
-        include_refs(&self.db, document.source_file, self.settings.input)
+        include_edges(&self.db, document.source_file, self.settings.input)
     }
 
     fn collect_include_closure(
@@ -512,10 +601,9 @@ impl Ide {
         }
         visited.push(uri.to_string());
 
-        for include in self.direct_include_refs(uri)? {
-            let next_uri = resolve_include_uri(uri, &include);
-            closure.push(include);
-            if let Some(next_uri) = next_uri {
+        for edge in self.direct_include_edges(uri)? {
+            closure.push(edge.include.raw);
+            if let Some(next_uri) = edge.target_uri {
                 self.collect_include_closure(&next_uri, visited, closure)?;
             }
         }
@@ -938,19 +1026,13 @@ impl Ide {
     }
 
     pub fn document_links(&self, uri: &str) -> Result<Value, String> {
-        let Some(document) = self.documents.get(uri) else {
-            return Ok(Value::Array(Vec::new()));
-        };
-        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
-        let links = parsed
-            .get("includes")
-            .and_then(Value::as_array)
+        let links = self
+            .direct_include_refs(uri)?
             .into_iter()
-            .flatten()
             .filter_map(|include| {
                 Some(serde_json::json!({
                     "range": include.get("pathRange")?.clone(),
-                    "target": resolve_include_target(uri, include),
+                    "target": resolve_include_target(uri, &include),
                 }))
             })
             .collect::<Vec<_>>();
@@ -1171,7 +1253,6 @@ impl Ide {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Value::Array(Vec::new()));
         };
-        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
         let settings_json = self.settings.input.json(&self.db);
         let show_references = code_lens_setting_bool(settings_json, "references", true);
         let show_includes = code_lens_setting_bool(settings_json, "includes", false);
@@ -1201,12 +1282,7 @@ impl Ide {
             }
         }
         if show_includes {
-            for include in parsed
-                .get("includes")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
+            for include in self.direct_include_refs(uri)? {
                 if let Some(range) = include.get("range").cloned() {
                     let name = include
                         .get("path")
@@ -1217,7 +1293,7 @@ impl Ide {
                         "command": {
                             "title": localize_code_lens_include(locale, name),
                             "command": "vscode.open",
-                            "arguments": [resolve_include_target(uri, include)],
+                            "arguments": [resolve_include_target(uri, &include)],
                         },
                     }));
                 }
@@ -5117,12 +5193,12 @@ fn utf16_character_to_char_offset(line_text: &str, target_units: usize) -> Resul
     }
 }
 
-fn resolve_include_uri(from_uri: &str, include: &Value) -> Option<String> {
-    let path = include.get("path").and_then(Value::as_str)?;
-    let mode = include
-        .get("mode")
-        .and_then(Value::as_str)
-        .unwrap_or("file");
+fn resolve_include_uri_from_parts(
+    from_uri: &str,
+    path: Option<&str>,
+    mode: &str,
+) -> Option<String> {
+    let path = path?;
     if !from_uri.starts_with("file://") {
         return None;
     }
@@ -5245,6 +5321,75 @@ mod tests {
                 .expect("non asp include closure"),
             Vec::<serde_json::Value>::new()
         );
+    }
+
+    #[test]
+    fn updates_step_two_typed_include_graph_after_include_edit() {
+        let mut ide = Ide::default();
+        ide.set_open_document(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"shared.inc\"-->\n<%\nResponse.Write SharedValue\n%>".to_string(),
+        );
+        ide.set_open_document(
+            "file:///site/shared.inc".to_string(),
+            "<!--#include file=\"nested.inc\"-->\n<%\nDim SharedValue\n%>".to_string(),
+        );
+        ide.set_open_document(
+            "file:///site/nested.inc".to_string(),
+            "<%\nDim NestedValue\n%>".to_string(),
+        );
+        ide.set_open_document(
+            "file:///site/renamed.inc".to_string(),
+            "<%\nDim RenamedValue\n%>".to_string(),
+        );
+
+        let links = ide
+            .document_links("file:///site/default.asp")
+            .expect("links");
+        assert_eq!(
+            links
+                .as_array()
+                .and_then(|links| links.first())
+                .and_then(|link| link.get("target"))
+                .and_then(serde_json::Value::as_str),
+            Some("file:///site/shared.inc")
+        );
+
+        ide.set_settings(serde_json::json!({
+            "codeLens": { "references": false, "includes": true }
+        }))
+        .expect("settings");
+        let lenses = ide
+            .code_lenses("file:///site/default.asp")
+            .expect("code lenses");
+        assert!(lenses.as_array().is_some_and(|lenses| {
+            lenses.iter().any(|lens| {
+                lens.pointer("/command/arguments/0")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("file:///site/shared.inc")
+            })
+        }));
+
+        let include_paths = |ide: &Ide| {
+            ide.include_closure("file:///site/default.asp")
+                .expect("include closure")
+                .into_iter()
+                .filter_map(|include| {
+                    include
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToString::to_string)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(include_paths(&ide), vec!["shared.inc", "nested.inc"]);
+
+        ide.replace_document_text(
+            "file:///site/shared.inc".to_string(),
+            "<!--#include file=\"renamed.inc\"-->\n<%\nDim SharedValue\n%>".to_string(),
+        );
+
+        assert_eq!(include_paths(&ide), vec!["shared.inc", "renamed.inc"]);
     }
 
     #[test]

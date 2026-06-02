@@ -23,10 +23,28 @@ Step 1 makes the first query dependency explicit:
 This keeps the existing `.asp/.asa/.inc` guard and result shapes, while giving
 parser diagnostics and include traversal a shared parse query.
 
+## Step 2 Typed ASP IR And Include Edges
+
+Step 2 adds the first internal typed IR layer while preserving the public JSON
+boundary:
+
+- `AspFileIr` derives from `parse_asp` and owns parser diagnostics plus typed
+  `IncludeRef` values.
+- `include_edges` derives per-file include edges from `AspFileIr` and resolves
+  each target URI once for traversal.
+- `include_closure`, document links, and include CodeLens now read direct
+  include data through the typed include queries instead of each re-reading
+  `parsed["includes"]`.
+
+This is still a per-file query graph, not a full workspace include DAG. Editing
+an included `.inc` invalidates that file's include edge query, while unchanged
+root parse data can stay reusable. A later Step can add a workspace registry
+input and dependent-root counters once the server exposes query telemetry.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
-  diagnostics, include, and VB queries.
+  typed ASP file IR, include edge, diagnostics, include, and VB queries.
 - Process caches in `asp-analysis`: compatibility caches for parsed JSON,
   symbols, diagnostics, and serialized results.
 - Server caches in `asp-lsp-server`: semantic-token result cache, disk
@@ -38,8 +56,8 @@ parser diagnostics and include traversal a shared parse query.
 
 1. Move more `asp-ide` derived work onto typed tracked queries:
    `VirtualDocuments`, `DocumentSummary`, `VbSymbols`, and `VbDiagnostics`.
-2. Introduce a workspace file registry and include graph query, then invalidate
-   only dependent documents on `.inc` changes.
+2. Introduce a workspace file registry and full include graph query, then
+   report dependent document counts on `.inc` changes.
 3. Add generation/fingerprint keys to embedded sidecar requests so TypeScript
    project caches cannot become stale.
 4. Expand disk cache from diagnostics-only payloads to versioned query
