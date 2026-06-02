@@ -300,6 +300,24 @@ project fingerprint:
 The detailed implementation evidence is recorded in
 `docs/rust-analyzer-speed-step9.md`.
 
+## Step 9G Background Scheduler Hardening
+
+Step 9G keeps background analysis bounded while making its warmup order more
+intentional:
+
+- Include-change affected roots are queued before unrelated indexed files.
+- Root ASP/ASA files and include-heavy files are prioritized over lower-value
+  include fragments.
+- Open documents remain outside the background queue so foreground diagnostics
+  keep using the open-document path.
+- Each idle pass is bounded by `workspace.idleAnalysisConcurrency`; the default
+  remains one file per pass.
+- Verbose telemetry reports priority count, batch size, per-batch
+  processed/remaining counts, and completion.
+
+The detailed implementation evidence is recorded in
+`docs/rust-analyzer-speed-step9.md`.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
@@ -318,7 +336,5 @@ The detailed implementation evidence is recorded in
 
 ## Next Steps
 
-1. Execute Step 9G by hardening background scheduling around open files,
-   affected roots, and bounded foreground latency.
-2. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
+1. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
    semantic diagnostics if more performance work is prioritized after cutover.

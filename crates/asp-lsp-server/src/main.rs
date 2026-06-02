@@ -103,6 +103,7 @@ struct ServerState {
     disk_cache: DiskAnalysisCache,
     semantic_tokens: SemanticTokenCache,
     background_analysis: BackgroundAnalysisQueue,
+    background_priority_uris: Vec<String>,
     indexed_files: Vec<IndexedFile>,
     settings: Value,
     workspace_roots: Vec<String>,
@@ -217,15 +218,20 @@ impl ServerState {
             .iter()
             .filter(|file| !self.ide.is_open_document(&file.uri))
             .cloned()
-            .collect::<VecDeque<_>>();
-        self.background_analysis.start(files);
+            .collect::<Vec<_>>();
+        let (files, priority_files) =
+            prioritize_background_analysis_files(files, &self.background_priority_uris);
+        self.background_priority_uris.clear();
+        self.background_analysis.start(files, priority_files);
         if self.background_analysis.is_running() {
             log_debug_summary(
                 connection,
                 &self.settings,
                 format!(
-                    "[asp-lsp] backgroundAnalysis.started: {} files",
-                    self.background_analysis.remaining()
+                    "[asp-lsp] backgroundAnalysis.started: {} files, priority={}, batchSize={}",
+                    self.background_analysis.remaining(),
+                    self.background_analysis.priority_files,
+                    background_analysis_batch_size(&self.settings)
                 ),
             )?;
         }
@@ -237,6 +243,7 @@ impl ServerState {
             return Ok(());
         }
         let batch_size = background_analysis_batch_size(&self.settings);
+        let mut processed = 0;
         for _ in 0..batch_size {
             let Some(file) = self.background_analysis.pop_front() else {
                 break;
@@ -246,6 +253,17 @@ impl ServerState {
             }
             let diagnostics = self.indexed_diagnostics(connection, &file)?;
             self.background_analysis.record_file(diagnostics.len());
+            processed += 1;
+        }
+        if processed > 0 {
+            log_debug_summary(
+                connection,
+                &self.settings,
+                format!(
+                    "[asp-lsp] backgroundAnalysis.batch: processed={processed}, remaining={}, batchSize={batch_size}",
+                    self.background_analysis.remaining()
+                ),
+            )?;
         }
         if self.background_analysis.is_complete() {
             let completed = self.background_analysis.completed_files;
@@ -1246,19 +1264,22 @@ struct BackgroundAnalysisQueue {
     pending: VecDeque<IndexedFile>,
     completed_files: usize,
     diagnostics: usize,
+    priority_files: usize,
 }
 
 impl BackgroundAnalysisQueue {
-    fn start(&mut self, files: VecDeque<IndexedFile>) {
+    fn start(&mut self, files: VecDeque<IndexedFile>, priority_files: usize) {
         self.pending = files;
         self.completed_files = 0;
         self.diagnostics = 0;
+        self.priority_files = priority_files;
     }
 
     fn clear(&mut self) {
         self.pending.clear();
         self.completed_files = 0;
         self.diagnostics = 0;
+        self.priority_files = 0;
     }
 
     fn is_running(&self) -> bool {
@@ -1852,12 +1873,19 @@ fn handle_notification(
             let affects_workspace_index =
                 watched_file_changes_affect_workspace_index(&notification.params);
             let changed_workspace_uris = changed_indexed_workspace_uris(&notification.params);
+            let mut affected_roots = Vec::new();
             for uri in changed_workspace_uris
                 .iter()
                 .filter(|uri| is_include_uri(uri))
             {
                 let impact = state.ide.include_impact_for_change(uri)?;
+                affected_roots.extend(impact.affected_roots.iter().cloned());
                 log_include_impact(connection, &state.settings, &impact)?;
+            }
+            if !affected_roots.is_empty() {
+                affected_roots.sort();
+                affected_roots.dedup();
+                state.background_priority_uris = affected_roots;
             }
             if affects_workspace_index {
                 state.refresh_workspace_index()?;
@@ -2114,6 +2142,47 @@ fn index_workspace_files(roots: &[String], max_files: usize) -> Result<Vec<Index
         }
     }
     Ok(files)
+}
+
+fn prioritize_background_analysis_files(
+    mut files: Vec<IndexedFile>,
+    priority_uris: &[String],
+) -> (VecDeque<IndexedFile>, usize) {
+    let priority_files = files
+        .iter()
+        .filter(|file| priority_uris.iter().any(|uri| uri == &file.uri))
+        .count();
+    files.sort_by(|left, right| {
+        background_analysis_priority(right, priority_uris)
+            .cmp(&background_analysis_priority(left, priority_uris))
+            .then_with(|| left.uri.cmp(&right.uri))
+    });
+    (VecDeque::from(files), priority_files)
+}
+
+fn background_analysis_priority(file: &IndexedFile, priority_uris: &[String]) -> usize {
+    let affected_root_score = priority_uris
+        .iter()
+        .position(|uri| uri == &file.uri)
+        .map(|index| 20_000usize.saturating_sub(index))
+        .unwrap_or(0);
+    let root_file_score = if is_root_asp_file_name(&file.source.file_name) {
+        1_000
+    } else {
+        0
+    };
+    affected_root_score + root_file_score + background_include_directive_count(&file.text) * 10
+}
+
+fn background_include_directive_count(text: &str) -> usize {
+    text.lines()
+        .filter(|line| line.to_ascii_lowercase().contains("#include"))
+        .count()
+}
+
+fn is_root_asp_file_name(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    lower.ends_with(".asp") || lower.ends_with(".asa")
 }
 
 fn sidecar_project_files(roots: &[String]) -> Vec<DiskSourceMetadata> {
@@ -2614,6 +2683,54 @@ mod tests {
     }
 
     #[test]
+    fn background_analysis_prioritizes_affected_roots_and_include_heavy_files() {
+        let files = vec![
+            super::IndexedFile {
+                uri: "file:///site/shared.inc".to_string(),
+                text: "<%\nvalue = 1\n%>".to_string(),
+                source: DiskSourceMetadata {
+                    file_name: "/site/shared.inc".to_string(),
+                    mtime_ms: 1.0,
+                    size: 10,
+                },
+            },
+            super::IndexedFile {
+                uri: "file:///site/default.asp".to_string(),
+                text: "<!-- #include file=\"shared.inc\" -->\n<% value = 1 %>".to_string(),
+                source: DiskSourceMetadata {
+                    file_name: "/site/default.asp".to_string(),
+                    mtime_ms: 2.0,
+                    size: 20,
+                },
+            },
+            super::IndexedFile {
+                uri: "file:///site/admin.asp".to_string(),
+                text: "<% value = 2 %>".to_string(),
+                source: DiskSourceMetadata {
+                    file_name: "/site/admin.asp".to_string(),
+                    mtime_ms: 3.0,
+                    size: 30,
+                },
+            },
+        ];
+
+        let (queue, priority_files) = super::prioritize_background_analysis_files(
+            files,
+            &["file:///site/admin.asp".to_string()],
+        );
+        let ordered = queue.into_iter().map(|file| file.uri).collect::<Vec<_>>();
+        assert_eq!(priority_files, 1);
+        assert_eq!(
+            ordered,
+            vec![
+                "file:///site/admin.asp",
+                "file:///site/default.asp",
+                "file:///site/shared.inc",
+            ]
+        );
+    }
+
+    #[test]
     fn semantic_token_delta_reuses_cached_result_for_unchanged_fingerprint() {
         let mut cache = super::SemanticTokenCache::default();
         let full = cache.full(
@@ -2649,6 +2766,23 @@ mod tests {
         assert_eq!(
             super::workspace_max_index_files(&json!({ "workspace": { "maxIndexFiles": 0 } })),
             5_000
+        );
+    }
+
+    #[test]
+    fn background_analysis_batch_size_uses_auto_default() {
+        assert_eq!(super::background_analysis_batch_size(&Value::Null), 1);
+        assert_eq!(
+            super::background_analysis_batch_size(
+                &json!({ "workspace": { "idleAnalysisConcurrency": 3 } })
+            ),
+            3
+        );
+        assert_eq!(
+            super::background_analysis_batch_size(
+                &json!({ "workspace": { "idleAnalysisConcurrency": 0 } })
+            ),
+            1
         );
     }
 

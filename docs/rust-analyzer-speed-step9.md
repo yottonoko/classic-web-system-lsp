@@ -369,6 +369,58 @@ the unchanged project-input scenario:
 is retained as a cold embedded-service performance reference rather than
 fingerprint evidence.
 
+## Step 9G Implementation
+
+Step 9G hardens background analysis scheduling while keeping foreground work
+bounded.
+
+Implementation changes:
+
+- Background analysis queue construction now prioritizes affected roots from
+  include-change impact telemetry.
+- Root `.asp` / `.asa` files and files with more include directives are ordered
+  ahead of lower-value `.inc` warmup work when no affected-root priority is
+  present.
+- Open documents remain excluded from background warmup so foreground
+  diagnostics continue to use the open-buffer path.
+- Each idle pass is still bounded by `workspace.idleAnalysisConcurrency`, with
+  the existing default remaining one file per pass.
+- Verbose telemetry now reports `priority=<count>` and `batchSize=<n>` on
+  `backgroundAnalysis.started`, plus `backgroundAnalysis.batch` messages for
+  processed/remaining counts.
+- `benchmark:change` now counts `backgroundAnalysis.batch` events.
+
+Focused evidence:
+
+```sh
+cargo fmt --all -- --check
+cargo test -p asp-lsp-server background_analysis_prioritizes_affected_roots_and_include_heavy_files
+cargo test -p asp-lsp-server background_analysis_batch_size_uses_auto_default
+cargo test -p asp-lsp-server warms_workspace_diagnostics_with_background_analysis
+RUSTC_WRAPPER= ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_WARMUPS=0 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default ASP_LSP_BENCH_BACKGROUND=on ASP_LSP_BENCH_DEBUG_STEPS=1 ASP_LSP_BENCH_OPTIONAL_LOG_WAIT_MS=10000 pnpm run benchmark:change:large
+```
+
+The focused priority test proves affected roots are ordered before other files,
+then include-heavy/root ASP files are warmed before low-value include fragments.
+The stdio background test proves started telemetry includes `priority=0` and a
+`batchSize` value, and that background analysis still populates the disk cache.
+
+Short background benchmark result:
+
+| Surface                  | Metric / event                        | Step 9G result |
+| ------------------------ | ------------------------------------- | -------------: |
+| `benchmark:change:large` | backgroundAnalysis.batch              |             12 |
+| `benchmark:change:large` | backgroundAnalysis.completed          |              1 |
+| `benchmark:change:large` | didChange final diagnostics           |     2228.03 ms |
+| workspace cache/on       | background warmup disk misses/writes  |          20/20 |
+| workspace cache/on       | background warmup completed           |              1 |
+| workspace cache/on       | post-background disk hits/misses      |            1/0 |
+| workspace cache/on       | post-background workspace diagnostics |     1063.59 ms |
+
+The post-background row proves the cache state is warm (`disk hits=1`,
+`misses=0`, `writes=0`). The elapsed value is still a one-iteration short run
+and should not be treated as release-grade latency.
+
 ## Step Execution Order
 
 Each Step must close with investigation, implementation or evidence update,

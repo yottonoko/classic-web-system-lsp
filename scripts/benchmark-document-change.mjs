@@ -44,6 +44,7 @@ const debugEventNames = [
   "diskCache.miss",
   "diskCache.write",
   "backgroundAnalysis.started",
+  "backgroundAnalysis.batch",
   "backgroundAnalysis.completed",
   "check.vbscript.diagnostics.reuse",
   "js.snapshot.changeRange.hit",

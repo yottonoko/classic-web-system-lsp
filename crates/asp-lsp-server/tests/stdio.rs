@@ -2528,6 +2528,8 @@ fn warms_workspace_diagnostics_with_background_analysis() {
             && message.to_string().contains("backgroundAnalysis.started")
     });
     assert!(started.to_string().contains("1 files"));
+    assert!(started.to_string().contains("priority=0"));
+    assert!(started.to_string().contains("batchSize="));
     let completed = read_until(&mut reader, |message| {
         message["method"] == json!("window/logMessage")
             && message.to_string().contains("backgroundAnalysis.completed")
