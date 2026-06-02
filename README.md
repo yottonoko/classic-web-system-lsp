@@ -79,7 +79,7 @@ pnpm run package:vsix --out classic-asp-lsp.vsix
 ```
 
 The VSIX build bundles the Rust language server plus the embedded Node sidecar before packaging, so the extension does not ship a nested `node_modules` tree.
-Use `pnpm run package:vsix:no-native` to build a VSIX without the platform Rust server binary; that build requires a development Rust server binary at launch time.
+Use `pnpm run package:vsix:no-native` to build a VSIX without the platform Rust server binary; that build can launch when `aspLsp.server.path` points to an external `asp-lsp-server` binary.
 
 ## Samples
 

@@ -183,6 +183,14 @@
           "default": "auto",
           "description": "%configuration.locale.description%"
         },
+        "aspLsp.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "%configuration.server.path.description%",
+          "tags": [
+            "advanced"
+          ]
+        },
         "aspLsp.defaultLanguage": {
           "type": "string",
           "enum": [

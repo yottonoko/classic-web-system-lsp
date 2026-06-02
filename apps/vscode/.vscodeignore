@@ -2,7 +2,6 @@ src/**
 test/**
 scripts/**
 node_modules/**
-server/language-server/node_modules/**
 tsconfig.json
 tsconfig.tsbuildinfo
 *.vsix

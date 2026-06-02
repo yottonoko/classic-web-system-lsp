@@ -7,7 +7,18 @@ export interface ExtensionPathResolver {
 
 export type ServerLaunchPath = { kind: "binary"; path: string };
 
-export function getServerLaunchPath(context: ExtensionPathResolver): ServerLaunchPath {
+export function getServerLaunchPath(
+  context: ExtensionPathResolver,
+  configuredPath?: string,
+): ServerLaunchPath {
+  const configuredBinary = configuredPath?.trim();
+  if (configuredBinary) {
+    if (fs.existsSync(configuredBinary)) {
+      return { kind: "binary", path: configuredBinary };
+    }
+    throw new Error(`Configured aspLsp.server.path does not exist: ${configuredBinary}`);
+  }
+
   const bundledBinary = context.asAbsolutePath(
     path.join("server", "bin", currentPlatformTarget(), serverExecutableName()),
   );
@@ -23,7 +34,7 @@ export function getServerLaunchPath(context: ExtensionPathResolver): ServerLaunc
   }
 
   throw new Error(
-    `Rust language server binary not found. Run \`pnpm run build:server\` or install a platform VSIX for ${currentPlatformTarget()}.`,
+    `Rust language server binary not found. Run \`pnpm run build:server\`, install a platform VSIX for ${currentPlatformTarget()}, or set aspLsp.server.path to an external asp-lsp-server binary.`,
   );
 }
 

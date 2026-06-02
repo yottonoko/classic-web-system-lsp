@@ -19,10 +19,8 @@ const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const backendStatusMethod = "aspLsp/backendStatus";
 
-type AspAnalysisBackendKind = "rust" | "typescript-fallback";
-
 interface AspAnalysisBackendInfo {
-  backend: AspAnalysisBackendKind;
+  backend: "rust";
   engine: string;
   version?: string;
   reason?: string;
@@ -83,7 +81,12 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     return;
   }
   const env = { ...process.env };
-  const serverOptions = createServerOptions(getServerLaunchPath(context), env);
+  const configuredServerPath =
+    vscode.workspace.getConfiguration("aspLsp").get<string>("server.path") ?? "";
+  const serverOptions = createServerOptions(
+    getServerLaunchPath(context, configuredServerPath),
+    env,
+  );
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "classic-asp" }],
     outputChannel,
@@ -295,9 +298,8 @@ function updateBackendStatus(status?: AspAnalysisBackendInfo): void {
     );
     return;
   }
-  const isRust = status.backend === "rust";
-  statusBarItem.text = isRust ? "$(code) ASP LSP: Rust" : "$(code) ASP LSP: TS";
-  const backendLine = localizer(isRust ? "status.backend.rust" : "status.backend.typescript", {
+  statusBarItem.text = "$(code) ASP LSP: Rust";
+  const backendLine = localizer("status.backend.rust", {
     engine: status.engine,
   });
   statusBarItem.tooltip = [
@@ -312,10 +314,7 @@ function asBackendStatus(value: unknown): AspAnalysisBackendInfo | undefined {
     return undefined;
   }
   const candidate = value as Partial<AspAnalysisBackendInfo>;
-  if (
-    (candidate.backend === "rust" || candidate.backend === "typescript-fallback") &&
-    typeof candidate.engine === "string"
-  ) {
+  if (candidate.backend === "rust" && typeof candidate.engine === "string") {
     return {
       backend: candidate.backend,
       engine: candidate.engine,
@@ -421,7 +420,6 @@ type ExtensionMessageKey =
   | "status.tooltip"
   | "status.backend.pending"
   | "status.backend.rust"
-  | "status.backend.typescript"
   | "status.backend.reason"
   | "debug.iis.name"
   | "debug.iisExpress.name"
@@ -435,7 +433,6 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.tooltip": "Classic ASP Language Server",
     "status.backend.pending": "Backend: detecting",
     "status.backend.rust": "Backend: Rust ({engine})",
-    "status.backend.typescript": "Backend: TypeScript ({engine})",
     "status.backend.reason": "Reason: {reason}",
     "debug.iis.name": "Debug Classic ASP URL",
     "debug.iisExpress.name": "Debug Classic ASP IIS Express URL",
@@ -446,7 +443,6 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.tooltip": "Classic ASP Language Server",
     "status.backend.pending": "Backend: 判定中",
     "status.backend.rust": "Backend: Rust ({engine})",
-    "status.backend.typescript": "Backend: TypeScript ({engine})",
     "status.backend.reason": "Reason: {reason}",
     "debug.iis.name": "Classic ASP URL をデバッグ",
     "debug.iisExpress.name": "Classic ASP IIS Express URL をデバッグ",

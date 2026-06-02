@@ -2,6 +2,7 @@
   "extension.description": "asp-lsp による Classic ASP language support です。",
   "configuration.title": "Classic ASP LSP",
   "configuration.locale.description": "asp-lsp が生成する diagnostics、code actions、CodeLens、extension message の表示言語です。auto は VS Code または LSP client の locale に従います。",
+  "configuration.server.path.description": "同梱 Rust server の代わりに使う外部 asp-lsp-server binary path です。no-native VSIX install や local server development に使います。",
   "configuration.defaultLanguage.description": "Classic ASP page の既定 server-side script language です。",
   "configuration.checkJs.description": "client JavaScript region の semantic checking を有効にします。",
   "configuration.diagnostics.debounceMs.description": "text change 後に diagnostics を publish するまでの待ち時間を milliseconds で指定します。0 なら即時 publish します。",

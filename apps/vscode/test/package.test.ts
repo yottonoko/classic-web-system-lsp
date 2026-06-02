@@ -22,6 +22,11 @@ describe("VS Code extension package", () => {
     };
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       scripts?: Record<string, string>;
+      contributes?: {
+        configuration?: {
+          properties?: Record<string, unknown>;
+        };
+      };
     };
     const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
     const releaseWorkflow = fs.readFileSync("../../.github/workflows/release-vsix.yml", "utf8");
@@ -48,6 +53,14 @@ describe("VS Code extension package", () => {
     expect(manifest.scripts?.test).not.toContain("build:native");
     expect(extensionSource).toContain("package:vsix:no-native");
     expect(extensionSource).toContain("package VSIX (no Rust server)");
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.server.path"]).toEqual(
+      expect.objectContaining({
+        type: "string",
+        default: "",
+        tags: ["advanced"],
+      }),
+    );
+    expect(copyServerRuntimeScript).toContain("--no-native");
     expect(releaseWorkflow).toContain("target: linux-x64");
     expect(releaseWorkflow).toContain("target: darwin-arm64");
     expect(releaseWorkflow).toContain("target: win32-x64");
@@ -119,6 +132,9 @@ describe("VS Code extension package", () => {
     expect(launchSource).not.toContain("ASP_LSP_ANALYSIS_BACKEND");
     expect(launchSource).not.toContain("aspLsp.analysisBackend");
     expect(launchSource).not.toContain("aspLsp.useLegacyServer");
+    expect(launchSource).not.toContain("typescript-fallback");
+    expect(launchSource).not.toContain("status.backend.typescript");
+    expect(launchSource).toContain('get<string>("server.path")');
     expect(launchSource).toContain('candidate.backend === "rust"');
     expect(launchSource).toContain("ASP LSP: Rust");
     expect(launchSource).toContain("Backend: Rust ({engine})");
@@ -681,7 +697,27 @@ describe("VS Code extension package", () => {
     expect(launch).toEqual({ kind: "binary", path: binary });
   });
 
-  it("fails clearly when no Rust server binary is available", () => {
+  it("resolves an external Rust server binary for no-native packages", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-server-path-"));
+    const binary = path.join(
+      root,
+      process.platform === "win32" ? "asp-lsp-server.exe" : "asp-lsp-server",
+    );
+    fs.writeFileSync(binary, "");
+    try {
+      const launch = getServerLaunchPath(
+        {
+          asAbsolutePath: (relativePath) => path.join(root, relativePath),
+        },
+        binary,
+      );
+      expect(launch).toEqual({ kind: "binary", path: binary });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails clearly when no Rust server binary is configured or packaged", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-server-path-"));
     try {
       expect(() =>
@@ -689,6 +725,14 @@ describe("VS Code extension package", () => {
           asAbsolutePath: (relativePath) => path.join(root, relativePath),
         }),
       ).toThrow("Rust language server binary not found");
+      expect(() =>
+        getServerLaunchPath(
+          {
+            asAbsolutePath: (relativePath) => path.join(root, relativePath),
+          },
+          path.join(root, "missing", "asp-lsp-server"),
+        ),
+      ).toThrow("Configured aspLsp.server.path does not exist");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -730,6 +774,7 @@ describe("VS Code extension package", () => {
         new RegExp(`extension/server/language-server/.*${removedRuntimeName}`, "i"),
       );
       expect(listing).not.toContain("extension/node_modules/");
+      expect(fs.readFileSync(".vscodeignore", "utf8")).not.toContain("server/language-server");
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

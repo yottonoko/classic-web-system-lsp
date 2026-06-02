@@ -2,6 +2,7 @@
   "extension.description": "Classic ASP language support backed by asp-lsp.",
   "configuration.title": "Classic ASP LSP",
   "configuration.locale.description": "Display language for asp-lsp generated diagnostics, code actions, CodeLens, and extension messages. Auto follows the VS Code or LSP client locale.",
+  "configuration.server.path.description": "External asp-lsp-server binary path used instead of a bundled Rust server. Use this for no-native VSIX installs or local server development.",
   "configuration.defaultLanguage.description": "Default server-side script language for Classic ASP pages.",
   "configuration.checkJs.description": "Enable semantic checking for client JavaScript regions.",
   "configuration.diagnostics.debounceMs.description": "Delay, in milliseconds, before publishing diagnostics after text changes. Set to 0 to publish immediately.",
