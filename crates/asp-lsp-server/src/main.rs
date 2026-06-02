@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use asp_ide::{Ide, MappedVirtualDocument, TextPosition, TextRange};
+use asp_ide::{Ide, IncludeImpact, MappedVirtualDocument, TextPosition, TextRange};
 use asp_sidecar_protocol::{EmbeddedRequest, EmbeddedResponse, VirtualDocument};
 use crossbeam_channel::RecvTimeoutError;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
@@ -1631,7 +1631,17 @@ fn handle_notification(
             state.configure_background_analysis(connection)?;
         }
         "workspace/didChangeWatchedFiles" => {
-            if watched_file_changes_affect_workspace_index(&notification.params) {
+            let affects_workspace_index =
+                watched_file_changes_affect_workspace_index(&notification.params);
+            let changed_workspace_uris = changed_indexed_workspace_uris(&notification.params);
+            for uri in changed_workspace_uris
+                .iter()
+                .filter(|uri| is_include_uri(uri))
+            {
+                let impact = state.ide.include_impact_for_change(uri)?;
+                log_include_impact(connection, &state.settings, &impact)?;
+            }
+            if affects_workspace_index {
                 state.refresh_workspace_index()?;
                 state.configure_background_analysis(connection)?;
             }
@@ -1836,13 +1846,19 @@ fn workspace_roots_from_initialize(params: &Value) -> Vec<String> {
 }
 
 fn watched_file_changes_affect_workspace_index(params: &Value) -> bool {
+    !changed_indexed_workspace_uris(params).is_empty()
+}
+
+fn changed_indexed_workspace_uris(params: &Value) -> Vec<String> {
     params
         .get("changes")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|change| change.get("uri").and_then(Value::as_str))
-        .any(is_indexed_workspace_uri)
+        .filter(|uri| is_indexed_workspace_uri(uri))
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn is_indexed_workspace_uri(uri: &str) -> bool {
@@ -1851,6 +1867,10 @@ fn is_indexed_workspace_uri(uri: &str) -> bool {
         lower.rsplit_once('.').map(|(_, extension)| extension),
         Some("asp" | "asa" | "inc")
     )
+}
+
+fn is_include_uri(uri: &str) -> bool {
+    uri.to_lowercase().ends_with(".inc")
 }
 
 fn workspace_max_index_files(settings: &Value) -> usize {
@@ -2014,6 +2034,7 @@ mod tests {
         DiskAnalysisCache, DiskCacheLookup, DiskSourceMetadata, PersistedQuerySnapshot,
         PersistedQuerySnapshotPayload, DISK_CACHE_FORMAT_VERSION,
     };
+    use asp_ide::IncludeImpact;
     use serde_json::{json, Value};
     use std::{env, fs, fs::File, path::PathBuf};
 
@@ -2122,6 +2143,38 @@ mod tests {
                 "changes": [{ "uri": "file:///site/shared.js", "type": 2 }]
             })
         ));
+        assert_eq!(
+            super::changed_indexed_workspace_uris(&json!({
+                "changes": [
+                    { "uri": "file:///site/default.asp", "type": 2 },
+                    { "uri": "file:///site/shared.inc", "type": 2 },
+                    { "uri": "file:///site/client.js", "type": 2 },
+                ]
+            })),
+            vec!["file:///site/default.asp", "file:///site/shared.inc"]
+        );
+        assert!(super::is_include_uri("file:///site/shared.INC"));
+        assert!(!super::is_include_uri("file:///site/default.asp"));
+    }
+
+    #[test]
+    fn include_impact_message_reports_counts_and_fingerprint() {
+        let impact = IncludeImpact {
+            changed_uri: "file:///site/shared.inc".to_string(),
+            graph_fingerprint: "abc123".to_string(),
+            affected_roots: vec!["file:///site/default.asp".to_string()],
+            affected_documents: vec![
+                "file:///site/default.asp".to_string(),
+                "file:///site/nested.inc".to_string(),
+            ],
+        };
+
+        let message = super::include_impact_message(&impact);
+        assert!(message.contains("includeGraph.affected"));
+        assert!(message.contains("changed=file:///site/shared.inc"));
+        assert!(message.contains("roots=1"));
+        assert!(message.contains("documents=2"));
+        assert!(message.contains("fingerprint=abc123"));
     }
 
     #[test]
@@ -2185,6 +2238,24 @@ fn log_debug_summary(
             .into(),
         )
         .map_err(|error| error.to_string())
+}
+
+fn log_include_impact(
+    connection: &Connection,
+    settings: &Value,
+    impact: &IncludeImpact,
+) -> Result<(), String> {
+    log_debug_summary(connection, settings, include_impact_message(impact))
+}
+
+fn include_impact_message(impact: &IncludeImpact) -> String {
+    format!(
+        "[asp-lsp] includeGraph.affected: changed={}, roots={}, documents={}, fingerprint={}",
+        impact.changed_uri,
+        impact.affected_roots.len(),
+        impact.affected_documents.len(),
+        impact.graph_fingerprint
+    )
 }
 
 fn log_sidecar_cache_stats(

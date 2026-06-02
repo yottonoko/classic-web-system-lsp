@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::OnceLock};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    sync::OnceLock,
+};
 
 use asp_sidecar_protocol::{SourceMapSegment, VirtualDocument};
 use asp_syntax::FileKind;
@@ -21,6 +24,12 @@ struct SourceFile {
 struct WorkspaceSettings {
     #[returns(ref)]
     json: String,
+}
+
+#[salsa::input]
+struct WorkspaceRegistry {
+    #[returns(ref)]
+    fingerprint: String,
 }
 
 #[salsa::tracked(returns(clone))]
@@ -235,6 +244,15 @@ pub struct Ide {
     documents: HashMap<String, OpenDocument>,
     indexed_documents: HashMap<String, OpenDocument>,
     settings: WorkspaceSettingsState,
+    workspace_registry: WorkspaceRegistryState,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IncludeImpact {
+    pub changed_uri: String,
+    pub graph_fingerprint: String,
+    pub affected_roots: Vec<String>,
+    pub affected_documents: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -422,11 +440,13 @@ impl Default for Ide {
     fn default() -> Self {
         let db = IdeDatabase::default();
         let settings = WorkspaceSettingsState::new(&db);
+        let workspace_registry = WorkspaceRegistryState::new(&db);
         Self {
             db,
             documents: HashMap::new(),
             indexed_documents: HashMap::new(),
             settings,
+            workspace_registry,
         }
     }
 }
@@ -435,6 +455,7 @@ impl Ide {
     pub fn set_open_document(&mut self, uri: String, text: String) {
         let document = OpenDocument::new(&self.db, uri.clone(), text);
         self.documents.insert(uri, document);
+        self.update_workspace_registry();
     }
 
     pub fn set_settings(&mut self, settings: Value) -> Result<Vec<(String, Vec<Value>)>, String> {
@@ -453,6 +474,7 @@ impl Ide {
             return;
         };
         document.replace_text(&mut self.db, text);
+        self.update_workspace_registry();
     }
 
     pub fn change_document_full(
@@ -474,7 +496,9 @@ impl Ide {
             self.set_open_document(uri, text);
             return Ok(());
         };
-        document.edit(&mut self.db, range, &text)
+        document.edit(&mut self.db, range, &text)?;
+        self.update_workspace_registry();
+        Ok(())
     }
 
     pub fn change_document_incremental(
@@ -489,6 +513,7 @@ impl Ide {
 
     pub fn close_document(&mut self, uri: &str) {
         self.documents.remove(uri);
+        self.update_workspace_registry();
     }
 
     pub fn is_open_document(&self, uri: &str) -> bool {
@@ -508,6 +533,7 @@ impl Ide {
                 (uri, document)
             })
             .collect();
+        self.update_workspace_registry();
     }
 
     pub fn clear_process_cache(&mut self) {
@@ -526,6 +552,7 @@ impl Ide {
         self.db = IdeDatabase::default();
         self.settings = WorkspaceSettingsState::new(&self.db);
         self.settings.input.set_json(&mut self.db).to(settings_json);
+        self.workspace_registry = WorkspaceRegistryState::new(&self.db);
         self.documents = open_documents
             .into_iter()
             .map(|(uri, text)| {
@@ -541,6 +568,7 @@ impl Ide {
                 (uri, document)
             })
             .collect();
+        self.update_workspace_registry();
     }
 
     fn locale(&self) -> &'static str {
@@ -605,11 +633,72 @@ impl Ide {
             .collect())
     }
 
+    pub fn workspace_registry_fingerprint(&self) -> String {
+        self.workspace_registry.input.fingerprint(&self.db).clone()
+    }
+
+    pub fn include_impact_for_change(&self, changed_uri: &str) -> Result<IncludeImpact, String> {
+        let reverse_edges = self.include_reverse_edges()?;
+        let mut affected_documents = BTreeSet::new();
+        let mut queue = VecDeque::from([changed_uri.to_string()]);
+        while let Some(uri) = queue.pop_front() {
+            let Some(sources) = reverse_edges.get(&uri) else {
+                continue;
+            };
+            for source in sources {
+                if affected_documents.insert(source.clone()) {
+                    queue.push_back(source.clone());
+                }
+            }
+        }
+
+        let affected_roots = affected_documents
+            .iter()
+            .filter(|uri| FileKind::from_uri(uri) == FileKind::Asp)
+            .cloned()
+            .collect::<Vec<_>>();
+        Ok(IncludeImpact {
+            changed_uri: changed_uri.to_string(),
+            graph_fingerprint: self.include_graph_fingerprint(&reverse_edges),
+            affected_roots,
+            affected_documents: affected_documents.into_iter().collect(),
+        })
+    }
+
     fn include_graph(&self, uri: &str) -> Result<Vec<IncludeEdge>, String> {
         let mut graph = Vec::new();
         let mut visited = Vec::new();
         self.collect_include_graph(uri, &mut visited, &mut graph)?;
         Ok(graph)
+    }
+
+    fn include_reverse_edges(&self) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+        let mut reverse_edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (uri, _) in self.workspace_documents() {
+            for edge in self.direct_include_edges(uri)? {
+                if let Some(target_uri) = edge.target_uri {
+                    reverse_edges
+                        .entry(target_uri)
+                        .or_default()
+                        .insert(uri.clone());
+                }
+            }
+        }
+        Ok(reverse_edges)
+    }
+
+    fn include_graph_fingerprint(
+        &self,
+        reverse_edges: &BTreeMap<String, BTreeSet<String>>,
+    ) -> String {
+        let mut parts = vec![self.workspace_registry_fingerprint()];
+        for (target, sources) in reverse_edges {
+            parts.push(target.clone());
+            for source in sources {
+                parts.push(source.clone());
+            }
+        }
+        stable_text_hash(&parts.join("\n"))
     }
 
     fn direct_include_refs(&self, uri: &str) -> Result<Vec<Value>, String> {
@@ -1772,6 +1861,31 @@ impl Ide {
         self.documents
             .get(uri)
             .or_else(|| self.indexed_documents.get(uri))
+    }
+
+    fn update_workspace_registry(&mut self) {
+        let fingerprint = self.compute_workspace_registry_fingerprint();
+        self.workspace_registry
+            .input
+            .set_fingerprint(&mut self.db)
+            .to(fingerprint);
+    }
+
+    fn compute_workspace_registry_fingerprint(&self) -> String {
+        let mut entries = self
+            .workspace_documents()
+            .into_iter()
+            .map(|(uri, document)| {
+                format!(
+                    "{}\0{:?}\0{}",
+                    uri,
+                    FileKind::from_uri(uri),
+                    stable_text_hash(document.text(&self.db))
+                )
+            })
+            .collect::<Vec<_>>();
+        entries.sort();
+        stable_text_hash(&entries.join("\n"))
     }
 
     pub fn diagnostics_for_open_documents(&self) -> Result<Vec<(String, Vec<Value>)>, String> {
@@ -5223,6 +5337,26 @@ impl WorkspaceSettingsState {
     }
 }
 
+struct WorkspaceRegistryState {
+    input: WorkspaceRegistry,
+}
+
+impl WorkspaceRegistryState {
+    fn new(db: &IdeDatabase) -> Self {
+        let input = WorkspaceRegistry::new(db, String::new());
+        Self { input }
+    }
+}
+
+fn stable_text_hash(text: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
 fn utf16_character_to_char_offset(line_text: &str, target_units: usize) -> Result<usize, String> {
     let mut units = 0;
     for (char_index, character) in line_text.chars().enumerate() {
@@ -5578,6 +5712,54 @@ mod tests {
             .include_closure("file:///site/default.asp")
             .expect("include closure");
         assert_eq!(include_paths(&includes), vec!["shared.inc", "new.inc"]);
+    }
+
+    #[test]
+    fn reports_step_nine_include_impact_from_reverse_edges() {
+        let mut ide = Ide::default();
+        ide.set_open_document(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"shared.inc\"-->\n<%\nResponse.Write SharedValue\n%>".to_string(),
+        );
+        ide.replace_indexed_documents(vec![
+            (
+                "file:///site/admin.asp".to_string(),
+                "<!--#include file=\"admin.inc\"-->".to_string(),
+            ),
+            (
+                "file:///site/shared.inc".to_string(),
+                "<!--#include file=\"nested.inc\"-->\n<%\nDim SharedValue\n%>".to_string(),
+            ),
+            (
+                "file:///site/nested.inc".to_string(),
+                "<%\nDim NestedValue\n%>".to_string(),
+            ),
+            (
+                "file:///site/admin.inc".to_string(),
+                "<%\nDim AdminValue\n%>".to_string(),
+            ),
+        ]);
+
+        let impact = ide
+            .include_impact_for_change("file:///site/nested.inc")
+            .expect("include impact");
+        assert_eq!(impact.affected_roots, vec!["file:///site/default.asp"]);
+        assert_eq!(
+            impact.affected_documents,
+            vec!["file:///site/default.asp", "file:///site/shared.inc"]
+        );
+        assert!(!impact.graph_fingerprint.is_empty());
+        let before = impact.graph_fingerprint;
+
+        ide.replace_document_text(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"other.inc\"-->\n<%\nResponse.Write SharedValue\n%>".to_string(),
+        );
+        let impact = ide
+            .include_impact_for_change("file:///site/nested.inc")
+            .expect("updated include impact");
+        assert!(impact.affected_roots.is_empty());
+        assert_ne!(impact.graph_fingerprint, before);
     }
 
     #[test]

@@ -216,11 +216,30 @@ parse-derived feature handlers:
 The detailed implementation evidence is recorded in
 `docs/rust-analyzer-speed-step9.md`.
 
+## Step 9C Workspace Registry And Include Impact
+
+Step 9C adds explicit workspace registry and include-impact evidence:
+
+- `WorkspaceRegistry` is a Salsa input carrying a fingerprint of the effective
+  workspace document set. Open documents remain authoritative over indexed
+  snapshots when the fingerprint is computed.
+- `Ide::include_impact_for_change` builds reverse include edges and reports the
+  transitive documents plus root ASP files affected by a changed include.
+- `workspace/didChangeWatchedFiles` reports verbose
+  `includeGraph.affected` telemetry for `.inc` changes before refreshing the
+  workspace index, so the previous graph can identify dependent roots.
+- Unit tests cover transitive reverse-edge affected roots, workspace URI
+  filtering, and telemetry message shape.
+
+The detailed implementation evidence is recorded in
+`docs/rust-analyzer-speed-step9.md`.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
-  typed ASP file IR, document summary, virtual document, include edge,
-  workspace include graph traversal, diagnostics, include, and VB queries.
+  typed ASP file IR, document summary, virtual document, workspace registry
+  fingerprint, include edge, reverse include impact, workspace include graph
+  traversal, diagnostics, include, and VB queries.
 - Process caches in `asp-analysis`: compatibility caches for parsed JSON,
   symbols, diagnostics, and serialized results.
 - Server caches in `asp-lsp-server`: semantic-token result cache, disk
@@ -231,14 +250,12 @@ The detailed implementation evidence is recorded in
 
 ## Next Steps
 
-1. Execute Step 9C from `docs/rust-analyzer-speed-step9.md` by adding workspace
-   registry fingerprints and affected include roots.
-2. Move more summary payloads onto typed tracked queries as Step 9C-9D needs
+1. Execute Step 9D from `docs/rust-analyzer-speed-step9.md` by extending disk
+   snapshots with document/include summaries and graph fingerprints.
+2. Move more summary payloads onto typed tracked queries as Step 9D needs
    them.
-3. Add a workspace registry generation/fingerprint input and report dependent
-   document counts on `.inc` changes.
-4. Add explicit sidecar project fingerprints beyond generation counters.
-5. Add include-summary/document-summary snapshot payloads and dependency graph
+3. Add explicit sidecar project fingerprints beyond generation counters.
+4. Add include-summary/document-summary snapshot payloads and dependency graph
    fingerprints.
-6. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
+5. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
    semantic diagnostics if more performance work is prioritized after cutover.

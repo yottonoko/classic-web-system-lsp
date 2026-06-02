@@ -17,7 +17,7 @@ Current evidence points to these primary targets:
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `semanticTokens/full` and `semanticTokens/full/delta` | Large sample full/delta is about 9.7s/9.6s; huge sample full is about 37-38s. Delta is still effectively as expensive as full.     | Add a reusable token index and unchanged-range/hash reuse before returning full or delta results.        |
 | Remaining parse-derived feature work                  | Step 9A found direct `parse_asp` feature callers after the existing typed IR work.                                                 | Step 9B moves shared parsed state into tracked `DocumentSummary` and `VirtualDocuments` queries.         |
-| Include invalidation                                  | Workspace include traversal exists, but dependent-root invalidation and graph fingerprints are not explicit evidence surfaces yet. | Add a workspace registry fingerprint plus include reverse edges and affected-root counts.                |
+| Include invalidation                                  | Workspace include traversal exists, but dependent-root invalidation and graph fingerprints are not explicit evidence surfaces yet. | Step 9C adds a workspace registry fingerprint plus include reverse edges and affected-root counts.       |
 | Disk query snapshots                                  | Persisted snapshots currently prove workspace diagnostics only.                                                                    | Extend the snapshot envelope with document summaries, include summaries, and graph fingerprints.         |
 | Sidecar cache invalidation                            | Sidecar generation counters and telemetry exist, but project fingerprints are not explicit.                                        | Invalidate JS/TS/HTML/CSS project state from a stable project fingerprint, then report hit/miss reasons. |
 | Background scheduling                                 | Background analysis warms workspace diagnostics, but priorities and affected-only scheduling are not yet proven.                   | Prioritize open files, affected roots, and include-heavy files without blocking foreground requests.     |
@@ -176,6 +176,49 @@ Short Step 9B benchmark result:
 Step 9B does not implement semantic-token index reuse. It only moves semantic
 token generation onto the shared summary input; Step 9E remains responsible for
 avoiding full token regeneration and making delta cheaper than full.
+
+## Step 9C Implementation
+
+Step 9C adds explicit workspace-registry and reverse-edge evidence for include
+changes.
+
+Implementation changes:
+
+- `WorkspaceRegistry` is a Salsa input that stores a fingerprint of the current
+  effective workspace document set.
+- The fingerprint is recomputed when open documents, indexed documents, or
+  open-document text change. It uses the same open-over-indexed precedence as
+  workspace analysis.
+- `Ide::include_impact_for_change` builds reverse include edges from current
+  direct include queries, walks them transitively, and returns affected
+  documents plus affected root ASP files.
+- The Rust server logs verbose `includeGraph.affected` telemetry for watched
+  `.inc` changes before refreshing the workspace index. The message includes
+  changed URI, affected root count, affected document count, and graph
+  fingerprint.
+
+Focused evidence:
+
+```sh
+cargo fmt --all -- --check
+cargo test -p asp-ide reports_step_nine_include_impact_from_reverse_edges
+cargo test -p asp-lsp-server include_impact_message_reports_counts_and_fingerprint
+cargo check --workspace
+NODE_OPTIONS=--max-old-space-size=4096 ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_WARMUPS=0 ASP_LSP_BENCH_CONCURRENCY=2 pnpm run benchmark:include-tree
+```
+
+The `asp-ide` regression proves transitive reverse-edge impact:
+`default.asp -> shared.inc -> nested.inc` reports `default.asp` as the affected
+root when `nested.inc` changes, then reports no affected roots after the open
+root switches to a different include. Server unit coverage proves watched-file
+URI filtering and the `includeGraph.affected` telemetry count/fingerprint
+message shape.
+
+Short include-tree benchmark result:
+
+| Surface                  | Files |   Lines | Slowest measured operation      | Step 9A ms | Step 9C ms |
+| ------------------------ | ----: | ------: | ------------------------------- | ---------: | ---------: |
+| `benchmark:include-tree` |    58 | 116,000 | `javascriptSemanticDiagnostics` |    4905.89 |    4839.87 |
 
 ## Step Execution Order
 
