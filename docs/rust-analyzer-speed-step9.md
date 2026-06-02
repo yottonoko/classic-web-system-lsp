@@ -258,6 +258,57 @@ Step 9D intentionally keeps persisted summaries as evidence/warm payloads. LSP
 requests still use current Salsa inputs and source metadata, so stale persisted
 summaries cannot answer definitions, references, diagnostics, or formatting.
 
+## Step 9E Implementation
+
+Step 9E adds an unchanged semantic-token delta fast path without changing the
+LSP response shape.
+
+Implementation changes:
+
+- `Ide::semantic_tokens_fingerprint` reports a stable per-document semantic
+  token fingerprint from the URI, source text hash, workspace registry
+  fingerprint, and serialized settings.
+- The server stores that fingerprint with each semantic-token `resultId`.
+- `textDocument/semanticTokens/full/delta` first checks whether the requested
+  previous result belongs to the same URI and still has the same fingerprint.
+  When it does, the server returns a protocol delta from the cached token data
+  instead of regenerating the full token array.
+- Changed fingerprints fall back to normal semantic-token generation and delta
+  edit calculation.
+
+Focused evidence:
+
+```sh
+cargo fmt --all -- --check
+cargo test -p asp-lsp-server semantic_token_delta_reuses_cached_result_for_unchanged_fingerprint
+cargo check --workspace
+cargo test -p asp-lsp-server serves_vbscript_read_requests_over_stdio_lsp
+RUSTC_WRAPPER= ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_WARMUPS=0 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default ASP_LSP_BENCH_BACKGROUND=off ASP_LSP_BENCH_DEBUG_STEPS=1 pnpm run benchmark:change:large
+RUSTC_WRAPPER= ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_WARMUPS=0 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default ASP_LSP_BENCH_BACKGROUND=off ASP_LSP_BENCH_DEBUG_STEPS=1 pnpm run benchmark:change:huge
+```
+
+The new server unit test proves unchanged fingerprints reuse the cached token
+data and changed fingerprints do not. The existing stdio semantic-token test
+continues to prove full/range/delta wire shape and `resultId` behavior.
+
+Short document-change benchmark result:
+
+| Surface                     | Metric                     | Step 9A ms | Step 9E ms | Notes                                                                                              |
+| --------------------------- | -------------------------- | ---------: | ---------: | -------------------------------------------------------------------------------------------------- |
+| `benchmark:change:large`    | semanticTokens/full        |    9634.86 |   11163.18 | Full token generation is still expensive and remains a later optimization target.                  |
+| `benchmark:change:large`    | semanticTokens/full/delta  |    9846.08 |       0.84 | Unchanged fingerprint delta now returns from the cached previous token result.                     |
+| `benchmark:change:large`    | semanticTokens/range       |    2968.71 |    3126.84 | Range requests still generate tokens for the requested range.                                      |
+| `benchmark:change:huge`     | semanticTokens/full        |   37852.17 |   42787.90 | Full token generation is intentionally unchanged by this Step.                                     |
+| `benchmark:change:huge`     | semanticTokens/full/delta  |   45659.18 |       1.54 | The unchanged delta path is now effectively constant-time for the huge short-run sample.           |
+| `benchmark:change:huge`     | semanticTokens/range       |   11763.68 |   12229.07 | Range requests remain outside the unchanged full-delta cache.                                      |
+| `workspace cache large/off` | warm workspace diagnostics |      53.18 |     532.33 | This one-iteration run rebuilt with `RUSTC_WRAPPER=` and should not be read as a cache regression. |
+| `workspace cache huge/off`  | warm workspace diagnostics |      54.53 |    1059.41 | Same short-run caveat; Step 9E does not modify disk-cache lookup behavior.                         |
+
+Step 9E optimizes unchanged full-delta requests only. It does not yet cache a
+range-aware token index for `semanticTokens/full` or `semanticTokens/range`.
+Those remain follow-up work after sidecar fingerprinting and background
+scheduler hardening unless semantic-token full generation is prioritized again.
+
 ## Step Execution Order
 
 Each Step must close with investigation, implementation or evidence update,

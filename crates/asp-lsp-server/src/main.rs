@@ -399,8 +399,9 @@ impl ServerState {
     }
 
     fn semantic_tokens_full(&mut self, uri: &str) -> Result<Value, String> {
+        let fingerprint = self.ide.semantic_tokens_fingerprint(uri);
         let value = self.ide.semantic_tokens(uri, None)?;
-        Ok(self.semantic_tokens.full(uri, value))
+        Ok(self.semantic_tokens.full(uri, value, fingerprint))
     }
 
     fn semantic_tokens_delta(
@@ -408,8 +409,17 @@ impl ServerState {
         uri: &str,
         previous_result_id: &str,
     ) -> Result<Value, String> {
+        let fingerprint = self.ide.semantic_tokens_fingerprint(uri);
+        if let Some(value) =
+            self.semantic_tokens
+                .delta_from_cached(uri, previous_result_id, fingerprint.as_deref())
+        {
+            return Ok(value);
+        }
         let value = self.ide.semantic_tokens(uri, None)?;
-        Ok(self.semantic_tokens.delta(uri, previous_result_id, value))
+        Ok(self
+            .semantic_tokens
+            .delta(uri, previous_result_id, value, fingerprint))
     }
 
     fn clear_semantic_tokens(&mut self, uri: &str) {
@@ -942,19 +952,26 @@ struct SemanticTokenCache {
 struct SemanticTokenResult {
     uri: String,
     data: Vec<Value>,
+    fingerprint: Option<String>,
 }
 
 impl SemanticTokenCache {
-    fn full(&mut self, uri: &str, mut value: Value) -> Value {
+    fn full(&mut self, uri: &str, mut value: Value, fingerprint: Option<String>) -> Value {
         let data = semantic_token_data(&value);
-        let result_id = self.store(uri, data);
+        let result_id = self.store(uri, data, fingerprint);
         if let Some(object) = value.as_object_mut() {
             object.insert("resultId".to_string(), Value::String(result_id));
         }
         value
     }
 
-    fn delta(&mut self, uri: &str, previous_result_id: &str, value: Value) -> Value {
+    fn delta(
+        &mut self,
+        uri: &str,
+        previous_result_id: &str,
+        value: Value,
+        fingerprint: Option<String>,
+    ) -> Value {
         let next = semantic_token_data(&value);
         let previous = self
             .results
@@ -964,11 +981,32 @@ impl SemanticTokenCache {
         let edit = previous
             .map(|previous| semantic_token_delta_edit(previous, &next))
             .unwrap_or_else(|| json!({ "start": 0, "deleteCount": 0, "data": next.clone() }));
-        let result_id = self.store(uri, next);
+        let result_id = self.store(uri, next, fingerprint);
         json!({
             "resultId": result_id,
             "edits": [edit],
         })
+    }
+
+    fn delta_from_cached(
+        &mut self,
+        uri: &str,
+        previous_result_id: &str,
+        fingerprint: Option<&str>,
+    ) -> Option<Value> {
+        let previous = self
+            .results
+            .get(previous_result_id)
+            .filter(|result| result.uri == uri)
+            .filter(|result| result.fingerprint.as_deref() == fingerprint)?;
+        let previous_data = previous.data.clone();
+        let fingerprint = previous.fingerprint.clone();
+        let edit = semantic_token_delta_edit(&previous_data, &previous_data);
+        let result_id = self.store(uri, previous_data, fingerprint);
+        Some(json!({
+            "resultId": result_id,
+            "edits": [edit],
+        }))
     }
 
     fn clear_uri(&mut self, uri: &str) {
@@ -982,7 +1020,7 @@ impl SemanticTokenCache {
         self.results.clear();
     }
 
-    fn store(&mut self, uri: &str, data: Vec<Value>) -> String {
+    fn store(&mut self, uri: &str, data: Vec<Value>, fingerprint: Option<String>) -> String {
         if let Some(previous) = self.latest_by_uri.get(uri) {
             self.results.remove(previous);
         }
@@ -995,6 +1033,7 @@ impl SemanticTokenCache {
             SemanticTokenResult {
                 uri: uri.to_string(),
                 data,
+                fingerprint,
             },
         );
         result_id
@@ -2351,6 +2390,32 @@ mod tests {
         assert!(message.contains("roots=1"));
         assert!(message.contains("documents=2"));
         assert!(message.contains("fingerprint=abc123"));
+    }
+
+    #[test]
+    fn semantic_token_delta_reuses_cached_result_for_unchanged_fingerprint() {
+        let mut cache = super::SemanticTokenCache::default();
+        let full = cache.full(
+            "file:///site/default.asp",
+            json!({ "data": [0, 0, 3, 1, 0] }),
+            Some("fingerprint-a".to_string()),
+        );
+        let first_id = full["resultId"].as_str().expect("result id").to_string();
+
+        let delta = cache
+            .delta_from_cached("file:///site/default.asp", &first_id, Some("fingerprint-a"))
+            .expect("cached delta");
+        assert_ne!(delta["resultId"], first_id);
+        assert_eq!(
+            delta["edits"][0],
+            json!({ "start": 5, "deleteCount": 0, "data": [] })
+        );
+        assert!(
+            cache
+                .delta_from_cached("file:///site/default.asp", &first_id, Some("fingerprint-b"))
+                .is_none(),
+            "changed fingerprint must not use cached delta"
+        );
     }
 
     #[test]

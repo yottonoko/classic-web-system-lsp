@@ -255,6 +255,30 @@ diagnostics:
 The detailed implementation evidence is recorded in
 `docs/rust-analyzer-speed-step9.md`.
 
+## Step 9E Semantic Token Delta Reuse
+
+Step 9E adds the first semantic-token reuse layer at the server result-cache
+boundary:
+
+- `Ide::semantic_tokens_fingerprint` hashes the document URI, document text,
+  workspace registry fingerprint, and serialized settings into a stable token
+  dependency fingerprint.
+- `SemanticTokenCache` stores that fingerprint with each full or delta
+  `resultId`.
+- `textDocument/semanticTokens/full/delta` can now return an unchanged delta
+  from the previous cached token data when the URI and fingerprint still match.
+- Changed fingerprints still regenerate tokens before producing a protocol
+  delta, so stale token data is not reused across text, workspace, or settings
+  changes.
+
+The short Step 9E benchmark reduces unchanged full-delta requests from
+multi-second full-token cost to 0.84 ms on the large sample and 1.54 ms on the
+huge sample. Full and range token generation remain high-cost follow-up
+targets.
+
+The detailed implementation evidence is recorded in
+`docs/rust-analyzer-speed-step9.md`.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
@@ -263,16 +287,18 @@ The detailed implementation evidence is recorded in
   traversal, diagnostics, include, and VB queries.
 - Process caches in `asp-analysis`: compatibility caches for parsed JSON,
   symbols, diagnostics, and serialized results.
-- Server caches in `asp-lsp-server`: semantic-token result cache, disk
-  query snapshot cache for diagnostics/summaries/graph evidence, sidecar
-  project generation, and background-analysis warmup.
+- Server caches in `asp-lsp-server`: semantic-token result cache with
+  dependency fingerprints, disk query snapshot cache for
+  diagnostics/summaries/graph evidence, sidecar project generation, and
+  background-analysis warmup.
 - Embedded sidecar caches: TypeScript project/file reads and HTML/CSS/JS
   document/service caches, invalidated by request `projectGeneration`.
 
 ## Next Steps
 
-1. Execute Step 9E from `docs/rust-analyzer-speed-step9.md` by adding semantic
-   token index and delta reuse.
-2. Add explicit sidecar project fingerprints beyond generation counters.
+1. Execute Step 9F from `docs/rust-analyzer-speed-step9.md` by adding explicit
+   sidecar project fingerprints beyond generation counters.
+2. Execute Step 9G by hardening background scheduling around open files,
+   affected roots, and bounded foreground latency.
 3. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
    semantic diagnostics if more performance work is prioritized after cutover.

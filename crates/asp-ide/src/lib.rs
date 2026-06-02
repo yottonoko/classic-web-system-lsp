@@ -1205,6 +1205,17 @@ impl Ide {
         Ok(serde_json::json!({ "data": encode_semantic_tokens(&tokens) }))
     }
 
+    pub fn semantic_tokens_fingerprint(&self, uri: &str) -> Option<String> {
+        let document = self.documents.get(uri)?;
+        Some(stable_text_hash(&format!(
+            "{}\0{}\0{}\0{}",
+            uri,
+            stable_text_hash(document.text(&self.db)),
+            self.workspace_registry_fingerprint(),
+            self.settings.input.json(&self.db),
+        )))
+    }
+
     pub fn document_links(&self, uri: &str) -> Result<Value, String> {
         let links = self
             .direct_include_refs(uri)?
