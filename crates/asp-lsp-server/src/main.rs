@@ -112,15 +112,21 @@ struct ServerState {
 
 impl ServerState {
     fn set_settings(&mut self, settings: Value) -> Result<Vec<(String, Vec<Value>)>, String> {
+        let previous_max_index_files = workspace_max_index_files(&self.settings);
+        let next_max_index_files = workspace_max_index_files(&settings);
         self.diagnostics.set_debounce_from_settings(&settings);
         self.settings = settings.clone();
         self.configure_disk_cache();
         self.bump_sidecar_project_generation();
+        if previous_max_index_files != next_max_index_files && !self.workspace_roots.is_empty() {
+            self.refresh_workspace_index()?;
+        }
         self.ide.set_settings(settings)
     }
 
     fn set_workspace_roots(&mut self, roots: Vec<String>) -> Result<(), String> {
-        let indexed_files = index_workspace_files(&roots)?;
+        let indexed_files =
+            index_workspace_files(&roots, workspace_max_index_files(&self.settings))?;
         self.ide.replace_indexed_documents(
             indexed_files
                 .iter()
@@ -1847,22 +1853,36 @@ fn is_indexed_workspace_uri(uri: &str) -> bool {
     )
 }
 
-fn index_workspace_files(roots: &[String]) -> Result<Vec<IndexedFile>, String> {
+fn workspace_max_index_files(settings: &Value) -> usize {
+    settings
+        .get("workspace")
+        .and_then(|workspace| workspace.get("maxIndexFiles"))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(5_000)
+}
+
+fn index_workspace_files(roots: &[String], max_files: usize) -> Result<Vec<IndexedFile>, String> {
     let mut files = Vec::new();
     for root in roots {
         let Some(path) = file_uri_to_path(root) else {
             continue;
         };
-        collect_workspace_files(&path, &mut files)?;
-        if files.len() >= 512 {
+        collect_workspace_files(&path, &mut files, max_files)?;
+        if files.len() >= max_files {
             break;
         }
     }
     Ok(files)
 }
 
-fn collect_workspace_files(path: &Path, files: &mut Vec<IndexedFile>) -> Result<(), String> {
-    if files.len() >= 512 {
+fn collect_workspace_files(
+    path: &Path,
+    files: &mut Vec<IndexedFile>,
+    max_files: usize,
+) -> Result<(), String> {
+    if files.len() >= max_files {
         return Ok(());
     }
     let Ok(metadata) = fs::metadata(path) else {
@@ -1897,8 +1917,8 @@ fn collect_workspace_files(path: &Path, files: &mut Vec<IndexedFile>) -> Result<
         return Ok(());
     };
     for entry in entries.flatten() {
-        collect_workspace_files(&entry.path(), files)?;
-        if files.len() >= 512 {
+        collect_workspace_files(&entry.path(), files, max_files)?;
+        if files.len() >= max_files {
             break;
         }
     }
@@ -1994,7 +2014,7 @@ mod tests {
         DiskAnalysisCache, DiskCacheLookup, DiskSourceMetadata, PersistedQuerySnapshot,
         PersistedQuerySnapshotPayload, DISK_CACHE_FORMAT_VERSION,
     };
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::{env, fs, fs::File, path::PathBuf};
 
     fn temp_cache_dir(name: &str) -> PathBuf {
@@ -2102,6 +2122,35 @@ mod tests {
                 "changes": [{ "uri": "file:///site/shared.js", "type": 2 }]
             })
         ));
+    }
+
+    #[test]
+    fn workspace_max_index_files_reads_configuration() {
+        assert_eq!(super::workspace_max_index_files(&Value::Null), 5_000);
+        assert_eq!(
+            super::workspace_max_index_files(&json!({ "workspace": { "maxIndexFiles": 2 } })),
+            2
+        );
+        assert_eq!(
+            super::workspace_max_index_files(&json!({ "workspace": { "maxIndexFiles": 0 } })),
+            5_000
+        );
+    }
+
+    #[test]
+    fn index_workspace_files_respects_configured_file_limit() {
+        let root = env::temp_dir().join(format!("asp-lsp-index-limit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp root");
+        fs::write(root.join("first.asp"), "<% Dim first %>").expect("write first");
+        fs::write(root.join("second.asp"), "<% Dim second %>").expect("write second");
+        fs::write(root.join("third.inc"), "<% Dim third %>").expect("write third");
+
+        let root_uri = format!("file://{}", root.to_string_lossy());
+        let files = super::index_workspace_files(&[root_uri], 2).expect("index workspace");
+
+        assert_eq!(files.len(), 2);
+        let _ = fs::remove_dir_all(root);
     }
 }
 

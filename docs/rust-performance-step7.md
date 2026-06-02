@@ -183,9 +183,9 @@ split the workload before relying on it for regression proof.
 - `workspace.backgroundAnalysis` is exposed in VS Code settings and benchmark
   inputs, but Rust server background processing was not observed in source
   search or benchmark events.
-- VS Code has an `aspLsp.workspace.maxIndexFiles` setting, while Rust workspace
-  indexing currently stops at a fixed 512 files. This may affect include-tree and
-  cutover parity.
+- VS Code has an `aspLsp.workspace.maxIndexFiles` setting. Rust workspace
+  indexing now reads that setting, with the same default of 5000 files, so
+  cutover indexing capacity matches the extension configuration.
 
 ## Step 7B Queue
 

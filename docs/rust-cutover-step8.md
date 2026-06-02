@@ -93,6 +93,9 @@ Automated package coverage:
   localizer key were removed from the extension source.
 - The stale `.vscodeignore` entry for `server/language-server/node_modules/**`
   was removed.
+- Rust workspace indexing now reads the extension-facing
+  `workspace.maxIndexFiles` setting, so `aspLsp.workspace.maxIndexFiles` is not
+  a stale TypeScript-era setting after cutover.
 
 ## Release Matrix
 

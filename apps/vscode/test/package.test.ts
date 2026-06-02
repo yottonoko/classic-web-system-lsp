@@ -213,6 +213,9 @@ describe("VS Code extension package", () => {
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.backgroundAnalysis"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
     expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.workspace.maxIndexFiles"],
+    ).toEqual(expect.objectContaining({ type: "number", default: 5000, minimum: 1 }));
+    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.idleAnalysisConcurrency"],
     ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
     expect(

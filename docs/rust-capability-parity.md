@@ -51,13 +51,20 @@ intentionally empty, or implement the missing responder.
 | `documentLink/resolve`                            | Explicitly tested for include links, but handler is passthrough.                                                                                                                                            | Keep as proven for links; revisit only if future links need lazy resolution.                                    |
 | Embedded TypeScript-specific read features        | Embedded JavaScript completion, hover, and definition are covered. TypeScript-specific project/file interactions are not isolated beyond shared TypeScript language-service plumbing and diagnostics tests. | Add TS-specific embedded read assertions only if Step 6 requires project interaction parity beyond JS coverage. |
 | Embedded sidecar language-specific empty branches | HTML definition, JS document symbols/folding, and CSS linked editing now have explicit empty/null assertions. Non-CSS color branches are exercised through document-wide aggregation rather than isolated.  | Add isolated non-CSS color/colorPresentation empty assertions only if Step 6 requires branch-level proof.       |
-| Sidecar crash recovery                            | Sidecar process management exists, but crash/respawn/degrade is not directly proven by stdio tests.                                                                                                         | Move to Step 7/8 hardening unless a small deterministic test can be added.                                      |
-| Benchmark parity                                  | Step 7A evidence is recorded in `docs/rust-performance-step7.md`; include-tree and background warmup remain weak.                                                                                           | Continue with Step 7B hardening before treating benchmark parity as complete.                                   |
-| Final cutover smoke                               | Package tests cover layout, but installed VSIX smoke is not represented here.                                                                                                                               | Move to Step 8 final cutover audit.                                                                             |
+| Sidecar process crash recovery                    | Extension-level language-client crash restart handling is present, and sidecar request retry exists in Rust. Direct sidecar crash injection is not represented by a deterministic stdio test.               | Treat as future resilience hardening, not a Rust cutover blocker.                                               |
 
 ## Step 6B Queue
 
 1. Decide whether TS-specific embedded read features and isolated non-CSS
    color/colorPresentation empty branches need stronger branch-level proof.
-2. Move Sidecar crash recovery to Step 7/8 hardening unless a deterministic
-   stdio test can be kept small.
+
+## Step 7/8 Evidence Closure
+
+- Benchmark parity and hardening evidence is recorded in
+  `docs/rust-performance-step7.md`. Step 7B covers semantic-token hardening,
+  background disk-cache warmup, bounded include-tree runs, hot/cold Node and
+  Rust comparison, semantic-token delta measurement, and Node worker latency.
+- Final cutover evidence is recorded in `docs/rust-cutover-step8.md`. Package
+  tests cover native, no-native, and `win32-x64` VSIX layouts; manual VSIX
+  install smoke is documented there.
+- Release packaging is intentionally limited to `win32-x64` for now.

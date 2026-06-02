@@ -110,6 +110,53 @@ This keeps the sidecar as the HTML/CSS/JavaScript service boundary while making
 its process-local cache behavior measurable during large and embedded
 benchmarks.
 
+## Step 7 Performance Hardening And Benchmark Evidence
+
+Step 7 adds performance proof and targeted hardening around the highest-cost
+cache surfaces:
+
+- Rust semantic-token generation now builds per-request lookup/index structures
+  for symbols and UTF-16 line positions instead of repeatedly scanning the same
+  document and workspace symbol lists.
+- Background analysis can warm indexed unopened files into the disk snapshot
+  cache, and emits `backgroundAnalysis.started` /
+  `backgroundAnalysis.completed` debug events.
+- Workspace indexing now reads `workspace.maxIndexFiles`, matching the VS Code
+  `aspLsp.workspace.maxIndexFiles` setting and defaulting to 5000 indexed files.
+- The include-tree benchmark is bounded by source count and source bytes before
+  reading file contents, so short evidence runs complete without Node heap
+  exhaustion while still allowing larger stress runs through
+  `ASP_LSP_BENCH_MAX_FILES` and `ASP_LSP_BENCH_MAX_BYTES`.
+- Benchmark evidence covers large, huge, embedded, include-tree, hot/cold cache
+  modes, Rust stdio workspace cache behavior, semantic-token full/delta/range,
+  and Node worker latency.
+
+The detailed evidence is recorded in `docs/rust-performance-step7.md`. The
+remaining high-cost areas, especially huge-sample `semanticTokens/full` and
+cold JavaScript semantic diagnostics, are future optimization targets rather
+than Step 7 blockers.
+
+## Step 8 Cutover And Package Audit
+
+Step 8 audits the VS Code cutover from the old Node language-server runtime to
+the Rust stdio server plus embedded sidecar:
+
+- The extension resolves `aspLsp.server.path`, then a bundled
+  `server/bin/<platform>-<arch>/asp-lsp-server`, then the development
+  `target/release/asp-lsp-server`.
+- Backend status handling accepts the Rust backend shape only; the old
+  TypeScript fallback status labels and language-server runtime dependency are
+  absent.
+- Native, no-native, and `win32-x64` VSIX layouts are covered by package tests.
+  The no-native VSIX includes the sidecar and requires `aspLsp.server.path` for
+  an external Rust server.
+- The Rust server honors `workspace.maxIndexFiles`, so the extension's
+  workspace indexing setting is not left as a TypeScript-era no-op.
+- The release workflow is intentionally limited to the `win32-x64` native VSIX
+  asset for now.
+
+The detailed evidence is recorded in `docs/rust-cutover-step8.md`.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
@@ -132,5 +179,5 @@ benchmarks.
 3. Add explicit sidecar project fingerprints beyond generation counters.
 4. Add include-summary/document-summary snapshot payloads and dependency graph
    fingerprints.
-5. Add query hit/miss benchmark evidence for large, huge, include-tree, and
-   embedded workloads.
+5. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
+   semantic diagnostics if more performance work is prioritized after cutover.
