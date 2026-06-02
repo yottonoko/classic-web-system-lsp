@@ -93,6 +93,23 @@ This Step still stores the LSP diagnostics payload as JSON values. Later query
 snapshot Steps can add include-summary, document-summary, or graph fingerprints
 without duplicating the disk cache plumbing.
 
+## Step 6 Sidecar Cache Telemetry
+
+Step 6 adds explicit cache evidence for the embedded Node sidecar without
+changing LSP result payloads:
+
+- The sidecar response can include optional `cacheStats` counters for
+  generation resets plus file/directory read hit and miss counts.
+- Rust accepts the optional wire field and emits verbose `window/logMessage`
+  events such as `sidecarCache.readFile.hit` and
+  `sidecarCache.generationReset` only when `debug.output` is `verbose`.
+- The document-change benchmark collects those sidecar events alongside the
+  existing disk-cache, builder, and background-analysis debug counters.
+
+This keeps the sidecar as the HTML/CSS/JavaScript service boundary while making
+its process-local cache behavior measurable during large and embedded
+benchmarks.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
@@ -112,7 +129,7 @@ without duplicating the disk cache plumbing.
    `VirtualDocuments`, `DocumentSummary`, `VbSymbols`, and `VbDiagnostics`.
 2. Add a workspace registry generation/fingerprint input and report dependent
    document counts on `.inc` changes.
-3. Add explicit sidecar project fingerprints and cache hit/miss debug counters.
+3. Add explicit sidecar project fingerprints beyond generation counters.
 4. Add include-summary/document-summary snapshot payloads and dependency graph
    fingerprints.
 5. Add query hit/miss benchmark evidence for large, huge, include-tree, and

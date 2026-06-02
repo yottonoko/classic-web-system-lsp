@@ -38,11 +38,13 @@ pub struct EmbeddedResponse {
     pub ok: bool,
     pub result: Option<Value>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_stats: Option<Value>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{EmbeddedRequest, VirtualDocument};
+    use super::{EmbeddedRequest, EmbeddedResponse, VirtualDocument};
     use serde_json::{json, Value};
 
     #[test]
@@ -65,5 +67,28 @@ mod tests {
         let serialized = serde_json::to_value(request).expect("serialize request");
         assert_eq!(serialized["projectGeneration"], json!(42));
         assert!(serialized.get("project_generation").is_none());
+    }
+
+    #[test]
+    fn deserializes_optional_cache_stats_as_camel_case() {
+        let response: EmbeddedResponse = serde_json::from_value(json!({
+            "id": 7,
+            "ok": true,
+            "result": [],
+            "error": null,
+            "cacheStats": { "readFileHit": 2 }
+        }))
+        .expect("deserialize response");
+
+        assert_eq!(response.cache_stats, Some(json!({ "readFileHit": 2 })));
+
+        let legacy_response: EmbeddedResponse = serde_json::from_value(json!({
+            "id": 8,
+            "ok": true,
+            "result": [],
+            "error": null
+        }))
+        .expect("deserialize legacy response");
+        assert_eq!(legacy_response.cache_stats, None);
     }
 }

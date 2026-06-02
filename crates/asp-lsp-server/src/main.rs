@@ -182,7 +182,7 @@ impl ServerState {
     fn publish_due_diagnostics(&mut self, connection: &Connection) -> Result<(), String> {
         for uri in self.diagnostics.take_due() {
             let started_at = Instant::now();
-            let diagnostics = self.full_diagnostics(&uri)?;
+            let diagnostics = self.full_diagnostics(Some(connection), &uri)?;
             let diagnostic_count = diagnostics.len();
             send_diagnostics(connection, &uri, diagnostics)?;
             self.log_check_completed(connection, &uri, started_at, diagnostic_count)?;
@@ -268,14 +268,18 @@ impl ServerState {
         send_diagnostics(connection, uri, diagnostics)
     }
 
-    fn full_diagnostics(&mut self, uri: &str) -> Result<Vec<Value>, String> {
+    fn full_diagnostics(
+        &mut self,
+        connection: Option<&Connection>,
+        uri: &str,
+    ) -> Result<Vec<Value>, String> {
         let mut diagnostics = self.ide.diagnostics(uri)?;
-        diagnostics.extend(self.embedded_diagnostics(uri)?);
+        diagnostics.extend(self.embedded_diagnostics(connection, uri)?);
         Ok(diagnostics)
     }
 
     fn text_document_diagnostic(&mut self, uri: &str) -> Result<Value, String> {
-        let diagnostics = self.full_diagnostics(uri)?;
+        let diagnostics = self.full_diagnostics(None, uri)?;
         Ok(json!({
             "kind": "full",
             "items": diagnostics,
@@ -289,7 +293,7 @@ impl ServerState {
                 "kind": "full",
                 "uri": uri,
                 "version": null,
-                "items": self.full_diagnostics(&uri)?,
+                "items": self.full_diagnostics(Some(connection), &uri)?,
             }));
         }
         for file in self.indexed_files.clone() {
@@ -378,7 +382,11 @@ impl ServerState {
         )
     }
 
-    fn embedded_diagnostics(&mut self, uri: &str) -> Result<Vec<Value>, String> {
+    fn embedded_diagnostics(
+        &mut self,
+        connection: Option<&Connection>,
+        uri: &str,
+    ) -> Result<Vec<Value>, String> {
         let virtuals = self.ide.embedded_virtual_documents(uri)?;
         let open_virtuals = virtuals
             .iter()
@@ -408,6 +416,13 @@ impl ServerState {
                     continue;
                 }
             };
+            log_sidecar_cache_stats(
+                connection,
+                &self.settings,
+                "diagnostics",
+                &mapped.document.language_id,
+                response.cache_stats.as_ref(),
+            )?;
             let items = response
                 .result
                 .and_then(|result| result.as_array().cloned())
@@ -2121,6 +2136,50 @@ fn log_debug_summary(
             .into(),
         )
         .map_err(|error| error.to_string())
+}
+
+fn log_sidecar_cache_stats(
+    connection: Option<&Connection>,
+    settings: &Value,
+    operation: &str,
+    language_id: &str,
+    stats: Option<&Value>,
+) -> Result<(), String> {
+    let Some(connection) = connection else {
+        return Ok(());
+    };
+    let Some(stats) = stats.and_then(Value::as_object) else {
+        return Ok(());
+    };
+    const STAT_EVENTS: &[(&str, &str)] = &[
+        ("generationReset", "sidecarCache.generationReset"),
+        ("fileExistsHit", "sidecarCache.fileExists.hit"),
+        ("fileExistsMiss", "sidecarCache.fileExists.miss"),
+        ("readFileHit", "sidecarCache.readFile.hit"),
+        ("readFileMiss", "sidecarCache.readFile.miss"),
+        ("directoryExistsHit", "sidecarCache.directoryExists.hit"),
+        ("directoryExistsMiss", "sidecarCache.directoryExists.miss"),
+        ("getDirectoriesHit", "sidecarCache.getDirectories.hit"),
+        ("getDirectoriesMiss", "sidecarCache.getDirectories.miss"),
+        ("readDirectoryHit", "sidecarCache.readDirectory.hit"),
+        ("readDirectoryMiss", "sidecarCache.readDirectory.miss"),
+        ("realpathHit", "sidecarCache.realpath.hit"),
+        ("realpathMiss", "sidecarCache.realpath.miss"),
+    ];
+    for (field, event_name) in STAT_EVENTS {
+        let count = stats.get(*field).and_then(Value::as_u64).unwrap_or(0);
+        if count == 0 {
+            continue;
+        }
+        log_debug_summary(
+            connection,
+            settings,
+            format!(
+                "[asp-lsp] {event_name}: operation={operation} language={language_id} count={count}"
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 fn text_range(value: &Value) -> Option<TextRange> {

@@ -424,7 +424,11 @@ fn invalidates_embedded_sidecar_project_cache_after_watched_file_change() {
     initialize_with_settings_and_root(
         &mut stdin,
         &mut reader,
-        json!({ "checkJs": true, "diagnostics": { "debounceMs": 0 } }),
+        json!({
+            "checkJs": true,
+            "debug": { "output": "verbose" },
+            "diagnostics": { "debounceMs": 0 },
+        }),
         &root_uri,
     );
     write_message(
@@ -467,12 +471,38 @@ fn invalidates_embedded_sidecar_project_cache_after_watched_file_change() {
         }),
     );
 
-    let refreshed = request(
+    write_message(
         &mut stdin,
-        &mut reader,
-        21,
-        "textDocument/diagnostic",
-        json!({ "textDocument": { "uri": page_uri } }),
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "workspace/diagnostic",
+            "params": { "previousResultIds": [] },
+        }),
+    );
+    let mut sidecar_cache_log = None;
+    let mut refreshed = None;
+    for _ in 0..20 {
+        let message = read_message(&mut reader);
+        if message["method"] == json!("window/logMessage")
+            && message.to_string().contains("sidecarCache.generationReset")
+        {
+            sidecar_cache_log = Some(message);
+            continue;
+        }
+        if message["id"] == json!(21) {
+            refreshed = Some(message);
+            break;
+        }
+    }
+    let refreshed = refreshed.expect("expected workspace diagnostic response");
+    let sidecar_cache_log =
+        sidecar_cache_log.expect("expected sidecar cache telemetry after watched file change");
+    assert!(
+        sidecar_cache_log
+            .to_string()
+            .contains("operation=diagnostics"),
+        "expected sidecar cache telemetry after watched file change: {sidecar_cache_log}"
     );
     assert!(
         !refreshed["result"].to_string().contains("toFixed"),

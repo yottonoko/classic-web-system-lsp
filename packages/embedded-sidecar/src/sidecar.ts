@@ -54,6 +54,23 @@ interface EmbeddedResponse {
   ok: boolean;
   result?: unknown;
   error?: string;
+  cacheStats?: SidecarCacheStats;
+}
+
+interface SidecarCacheStats {
+  generationReset: number;
+  fileExistsHit: number;
+  fileExistsMiss: number;
+  readFileHit: number;
+  readFileMiss: number;
+  directoryExistsHit: number;
+  directoryExistsMiss: number;
+  getDirectoriesHit: number;
+  getDirectoriesMiss: number;
+  readDirectoryHit: number;
+  readDirectoryMiss: number;
+  realpathHit: number;
+  realpathMiss: number;
 }
 
 interface AspSettings {
@@ -87,6 +104,7 @@ const directoryExistsCache = new Map<string, boolean>();
 const directoriesCache = new Map<string, string[]>();
 const readDirectoryCache = new Map<string, string[]>();
 const realpathCache = new Map<string, string>();
+let currentRequestStats: SidecarCacheStats | undefined;
 
 process.stdin.on("data", (chunk: Buffer) => {
   inputBuffer = Buffer.concat([inputBuffer, chunk]);
@@ -118,12 +136,20 @@ function readFrames(): Buffer[] {
 
 async function handlePayload(payload: Buffer): Promise<void> {
   const request = JSON.parse(payload.toString("utf8")) as EmbeddedRequest;
+  currentRequestStats = createCacheStats();
   try {
     resetCachesForProjectGeneration(request.projectGeneration);
     const result = await handleRequest(request);
-    writeResponse({ id: request.id, ok: true, result });
+    writeResponse({ id: request.id, ok: true, result, cacheStats: currentRequestStats });
   } catch (error) {
-    writeResponse({ id: request.id, ok: false, error: errorMessage(error) });
+    writeResponse({
+      id: request.id,
+      ok: false,
+      error: errorMessage(error),
+      cacheStats: currentRequestStats,
+    });
+  } finally {
+    currentRequestStats = undefined;
   }
 }
 
@@ -783,6 +809,7 @@ function resetCachesForProjectGeneration(projectGeneration: number): void {
     return;
   }
   currentProjectGeneration = projectGeneration;
+  recordCacheStat("generationReset");
   fileExistsCache.clear();
   readFileCache.clear();
   directoryExistsCache.clear();
@@ -791,12 +818,38 @@ function resetCachesForProjectGeneration(projectGeneration: number): void {
   realpathCache.clear();
 }
 
+function createCacheStats(): SidecarCacheStats {
+  return {
+    generationReset: 0,
+    fileExistsHit: 0,
+    fileExistsMiss: 0,
+    readFileHit: 0,
+    readFileMiss: 0,
+    directoryExistsHit: 0,
+    directoryExistsMiss: 0,
+    getDirectoriesHit: 0,
+    getDirectoriesMiss: 0,
+    readDirectoryHit: 0,
+    readDirectoryMiss: 0,
+    realpathHit: 0,
+    realpathMiss: 0,
+  };
+}
+
+function recordCacheStat(stat: keyof SidecarCacheStats): void {
+  if (currentRequestStats) {
+    currentRequestStats[stat] += 1;
+  }
+}
+
 function cachedFileExists(fileName: string): boolean {
   const normalized = normalizeFileName(fileName);
   const cached = fileExistsCache.get(normalized);
   if (cached !== undefined) {
+    recordCacheStat("fileExistsHit");
     return cached;
   }
+  recordCacheStat("fileExistsMiss");
   const exists = fs.statSync(normalized, { throwIfNoEntry: false })?.isFile() === true;
   fileExistsCache.set(normalized, exists);
   return exists;
@@ -805,8 +858,10 @@ function cachedFileExists(fileName: string): boolean {
 function cachedReadFile(fileName: string): string | undefined {
   const normalized = normalizeFileName(fileName);
   if (readFileCache.has(normalized)) {
+    recordCacheStat("readFileHit");
     return readFileCache.get(normalized);
   }
+  recordCacheStat("readFileMiss");
   const text = fs.existsSync(normalized) ? fs.readFileSync(normalized, "utf8") : undefined;
   readFileCache.set(normalized, text);
   return text;
@@ -816,8 +871,10 @@ function cachedDirectoryExists(directory: string): boolean {
   const normalized = normalizeFileName(directory);
   const cached = directoryExistsCache.get(normalized);
   if (cached !== undefined) {
+    recordCacheStat("directoryExistsHit");
     return cached;
   }
+  recordCacheStat("directoryExistsMiss");
   const exists = fs.statSync(normalized, { throwIfNoEntry: false })?.isDirectory() === true;
   directoryExistsCache.set(normalized, exists);
   return exists;
@@ -825,10 +882,11 @@ function cachedDirectoryExists(directory: string): boolean {
 
 function cachedGetDirectories(directory: string): string[] {
   const normalized = normalizeFileName(directory);
-  const cached = directoriesCache.get(normalized);
-  if (cached) {
-    return cached;
+  if (directoriesCache.has(normalized)) {
+    recordCacheStat("getDirectoriesHit");
+    return directoriesCache.get(normalized) ?? [];
   }
+  recordCacheStat("getDirectoriesMiss");
   const entries = fs.existsSync(normalized)
     ? fs
         .readdirSync(normalized, { withFileTypes: true })
@@ -842,10 +900,11 @@ function cachedGetDirectories(directory: string): string[] {
 function cachedReadDirectory(rootDir: string, extensions?: readonly string[]): string[] {
   const normalized = normalizeFileName(rootDir);
   const key = JSON.stringify({ rootDir: normalized, extensions });
-  const cached = readDirectoryCache.get(key);
-  if (cached) {
-    return cached;
+  if (readDirectoryCache.has(key)) {
+    recordCacheStat("readDirectoryHit");
+    return readDirectoryCache.get(key) ?? [];
   }
+  recordCacheStat("readDirectoryMiss");
   const files = cachedDirectoryExists(normalized)
     ? ts.sys.readDirectory(normalized, extensions)
     : [];
@@ -855,10 +914,11 @@ function cachedReadDirectory(rootDir: string, extensions?: readonly string[]): s
 
 function cachedRealpath(fileName: string): string {
   const normalized = normalizeFileName(fileName);
-  const cached = realpathCache.get(normalized);
-  if (cached) {
-    return cached;
+  if (realpathCache.has(normalized)) {
+    recordCacheStat("realpathHit");
+    return realpathCache.get(normalized) ?? normalized;
   }
+  recordCacheStat("realpathMiss");
   const realpath = ts.sys.realpath ? ts.sys.realpath(normalized) : normalized;
   realpathCache.set(normalized, realpath);
   return realpath;

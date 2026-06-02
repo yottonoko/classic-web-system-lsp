@@ -28,6 +28,7 @@ const serverPath = path.join(root, "target", "release", executableName("asp-lsp-
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
+const benchmarkCheckJs = readBoolean("ASP_LSP_BENCH_CHECK_JS");
 const rapidBurstSize = readPositiveInteger("ASP_LSP_BENCH_BURST_SIZE", 5);
 const rapidDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEBOUNCE_MS", 80);
 const defaultDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEFAULT_DEBOUNCE_MS", 250);
@@ -62,6 +63,19 @@ const debugEventNames = [
   "disk.builder.restore.hit",
   "disk.builder.restore.miss",
   "disk.builder.persist",
+  "sidecarCache.generationReset",
+  "sidecarCache.fileExists.hit",
+  "sidecarCache.fileExists.miss",
+  "sidecarCache.readFile.hit",
+  "sidecarCache.readFile.miss",
+  "sidecarCache.directoryExists.hit",
+  "sidecarCache.directoryExists.miss",
+  "sidecarCache.getDirectories.hit",
+  "sidecarCache.getDirectories.miss",
+  "sidecarCache.readDirectory.hit",
+  "sidecarCache.readDirectory.miss",
+  "sidecarCache.realpath.hit",
+  "sidecarCache.realpath.miss",
 ];
 const selectedStepNames = [
   "projectUpdate.flush",
@@ -136,6 +150,7 @@ async function main() {
   console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
   console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
   console.log(`Cache mode: ${benchmarkCacheMode}`);
+  console.log(`Check JS: ${benchmarkCheckJs ? "on" : "off"}`);
   console.log(`Warmups: ${warmupIterations}`);
   console.log(`Iterations: ${benchmarkIterations}`);
   console.log(`Change kinds: ${changeKinds.join(", ")}`);
@@ -197,6 +212,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
       settings: {
         aspLsp: {
           cache: { enabled: true, directory: cacheDir },
+          checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
           workspace: { backgroundAnalysis },
@@ -358,6 +374,7 @@ async function measureColdScenarioIteration(
       settings: {
         aspLsp: {
           cache: { enabled: true, directory: cacheDir },
+          checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
           workspace: { backgroundAnalysis },
@@ -700,6 +717,7 @@ async function startWorkspaceCacheServer(backgroundAnalysis) {
     settings: {
       aspLsp: {
         cache: { enabled: true, directory: cacheDir },
+        checkJs: benchmarkCheckJs,
         debug: { output: "verbose" },
         workspace: { backgroundAnalysis },
       },
