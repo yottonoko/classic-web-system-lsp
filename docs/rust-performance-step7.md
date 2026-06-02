@@ -189,8 +189,14 @@ split the workload before relying on it for regression proof.
 
 ## Step 7B Queue
 
-1. Add a stronger Node/Rust comparison report after the above fixes, using
-   stable iterations and both hot/cold cache modes.
+Step 7B now has evidence for semantic-token hardening, Rust background-analysis
+disk-cache warmup, a bounded include-tree harness, and Node/Rust hot/cold
+comparison. The remaining performance items are not Step 7B blockers:
+
+1. `semanticTokens/full` remains the largest Rust stdio latency on the huge
+   sample.
+2. JavaScript semantic diagnostics remain the largest Node-side embedded
+   operation on cold large/huge/include-tree samples.
 
 ## Step 7B Semantic Tokens
 
@@ -326,3 +332,106 @@ Interpretation:
   failing with Node heap exhaustion before results are printed.
 - The full generated tree remains available through higher
   `ASP_LSP_BENCH_MAX_*` values when a longer stress run is desired.
+
+## Step 7B Node/Rust Hot-Cold Comparison
+
+These runs use two measured iterations and one warmup:
+
+```sh
+ASP_LSP_BENCH_ITERATIONS=2
+ASP_LSP_BENCH_WARMUPS=1
+```
+
+Node-side commands:
+
+```sh
+ASP_LSP_BENCH_CACHE_MODE=hot  ASP_LSP_BENCH_WORKERS=2 pnpm run benchmark:large
+ASP_LSP_BENCH_CACHE_MODE=cold ASP_LSP_BENCH_WORKERS=2 pnpm run benchmark:large
+ASP_LSP_BENCH_CACHE_MODE=hot  pnpm run benchmark:huge
+ASP_LSP_BENCH_CACHE_MODE=cold pnpm run benchmark:huge
+ASP_LSP_BENCH_CACHE_MODE=hot  ASP_LSP_BENCH_CONCURRENCY=2 pnpm run benchmark:embedded
+ASP_LSP_BENCH_CACHE_MODE=cold ASP_LSP_BENCH_CONCURRENCY=2 pnpm run benchmark:embedded
+NODE_OPTIONS=--max-old-space-size=4096 \
+  ASP_LSP_BENCH_CACHE_MODE=hot \
+  ASP_LSP_BENCH_CONCURRENCY=2 \
+  pnpm run benchmark:include-tree
+NODE_OPTIONS=--max-old-space-size=4096 \
+  ASP_LSP_BENCH_CACHE_MODE=cold \
+  ASP_LSP_BENCH_CONCURRENCY=2 \
+  pnpm run benchmark:include-tree
+```
+
+Rust stdio commands:
+
+```sh
+ASP_LSP_BENCH_CHANGE_KIND=replace \
+ASP_LSP_BENCH_CHANGE_MODE=default \
+ASP_LSP_BENCH_BACKGROUND=off \
+ASP_LSP_BENCH_DEBUG_STEPS=1 \
+ASP_LSP_BENCH_CACHE_MODE=hot \
+pnpm run benchmark:change:large
+
+ASP_LSP_BENCH_CHANGE_KIND=replace \
+ASP_LSP_BENCH_CHANGE_MODE=default \
+ASP_LSP_BENCH_BACKGROUND=off \
+ASP_LSP_BENCH_DEBUG_STEPS=1 \
+ASP_LSP_BENCH_CACHE_MODE=cold \
+pnpm run benchmark:change:large
+
+ASP_LSP_BENCH_CHANGE_KIND=replace \
+ASP_LSP_BENCH_CHANGE_MODE=default \
+ASP_LSP_BENCH_BACKGROUND=off \
+ASP_LSP_BENCH_DEBUG_STEPS=1 \
+ASP_LSP_BENCH_CACHE_MODE=hot \
+pnpm run benchmark:change:huge
+
+ASP_LSP_BENCH_CHANGE_KIND=replace \
+ASP_LSP_BENCH_CHANGE_MODE=default \
+ASP_LSP_BENCH_BACKGROUND=off \
+ASP_LSP_BENCH_DEBUG_STEPS=1 \
+ASP_LSP_BENCH_CACHE_MODE=cold \
+pnpm run benchmark:change:huge
+```
+
+Node baseline summary:
+
+| Surface                | Cache | Files | Lines   | Slowest measured operation    | mean ms |
+| ---------------------- | ----- | ----- | ------- | ----------------------------- | ------- |
+| benchmark:large        | hot   | 20    | 50,150  | buildVirtualDocuments         | 1.91    |
+| benchmark:large        | cold  | 20    | 50,150  | javascriptSemanticDiagnostics | 1368.98 |
+| benchmark:huge         | hot   | 55    | 100,500 | htmlVirtualDocument           | 0.04    |
+| benchmark:huge         | cold  | 55    | 100,500 | javascriptSemanticDiagnostics | 5118.55 |
+| benchmark:embedded     | hot   | 20    | 50,150  | htmlVirtualDocument           | 0.03    |
+| benchmark:embedded     | cold  | 20    | 50,150  | javascriptSemanticDiagnostics | 2117.33 |
+| benchmark:include-tree | hot   | 58    | 116,000 | javascriptSemanticDiagnostics | 4719.22 |
+| benchmark:include-tree | cold  | 58    | 116,000 | javascriptSemanticDiagnostics | 4782.59 |
+
+Rust stdio summary:
+
+| Sample | Cache | Files | Lines   | didOpen final diagnostics mean ms | semanticTokens/full mean ms | semanticTokens/range mean ms | didChange final diagnostics mean ms |
+| ------ | ----- | ----- | ------- | --------------------------------- | --------------------------- | ---------------------------- | ----------------------------------- |
+| large  | hot   | 20    | 50,150  | 1573.02                           | 9605.02                     | 3176.42                      | 1366.11                             |
+| large  | cold  | 20    | 50,150  | 1576.48                           | 9769.56                     | 3105.34                      | 1376.19                             |
+| huge   | hot   | 55    | 100,500 | 4552.73                           | 37618.47                    | 12084.80                     | 4337.50                             |
+| huge   | cold  | 55    | 100,500 | 4530.94                           | 38039.63                    | 12201.31                     | 4356.72                             |
+
+Workspace cache summary from Rust stdio runs:
+
+| Sample | Cache | cold workspace diagnostics ms | warm workspace diagnostics ms |
+| ------ | ----- | ----------------------------- | ----------------------------- |
+| large  | hot   | 314.70                        | 52.01                         |
+| large  | cold  | 318.85                        | n/a                           |
+| huge   | hot   | 634.54                        | 54.34                         |
+| huge   | cold  | 634.03                        | n/a                           |
+
+Interpretation:
+
+- Hot/cold cache mode changes Node baseline parse/analyze operations strongly,
+  but Rust open-document semantic-token and final-diagnostics latency is mostly
+  independent of disk-cache mode.
+- Rust workspace diagnostics still proves disk-cache behavior: hot mode returns
+  to roughly 52-54 ms after the initial cache write on both large and huge
+  samples.
+- The next performance optimization target, if Step 8 does not take priority,
+  should remain Rust `semanticTokens/full` for large/huge open documents, with
+  JavaScript semantic diagnostics as the Node-side embedded baseline bottleneck.
