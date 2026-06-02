@@ -17,6 +17,7 @@ if (!parentPort) {
 }
 
 parentPort.on("message", async (message) => {
+  const operationStartedAt = performance.now();
   const timings = new Map();
   const context = message.debugSteps
     ? {
@@ -45,6 +46,7 @@ parentPort.on("message", async (message) => {
     }
     parentPort?.postMessage({
       id: message.id,
+      elapsedMs: performance.now() - operationStartedAt,
       timings: [...timings.entries()],
     });
   } catch (error) {

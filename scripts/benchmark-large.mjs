@@ -23,6 +23,7 @@ const workerCount = readPositiveInteger(
   Math.max(1, Math.min(4, os.availableParallelism() - 1)),
 );
 const analyzeStepTotals = new Map();
+const workerLatencySamples = new Map();
 const results = [];
 
 async function main() {
@@ -82,6 +83,13 @@ async function main() {
   printTable(results);
   if (collectDebugSteps) {
     console.log("");
+    console.log("worker latency summary");
+    console.log(
+      `Measured calls include ${warmupIterations} warmup and ${benchmarkIterations} benchmark iterations.`,
+    );
+    console.log("");
+    printWorkerLatencySummary(workerLatencySamples);
+    console.log("");
     console.log("analyzeVbscript debug step totals");
     console.log(
       `Measured calls include ${warmupIterations} warmup and ${benchmarkIterations} benchmark iterations.`,
@@ -132,6 +140,7 @@ async function runParallelOperation(pool, operation, inputs) {
       ? inputs.map((source) => ({ operation, source }))
       : inputs.map((source) => ({ operation, source, debugSteps: collectDebugSteps }));
   const outputs = await pool.runAll(messages);
+  recordWorkerLatencySamples(operation, outputs);
   if (operation === "analyzeVbscript" && collectDebugSteps) {
     for (const output of outputs) {
       for (const [name, elapsed] of output.timings ?? []) {
@@ -139,6 +148,25 @@ async function runParallelOperation(pool, operation, inputs) {
       }
     }
   }
+}
+
+function recordWorkerLatencySamples(operation, outputs) {
+  const samples = workerLatencySamples.get(operation) ?? [];
+  for (const output of outputs) {
+    if (
+      typeof output.elapsedMs === "number" &&
+      typeof output.roundTripMs === "number" &&
+      typeof output.payloadBytes === "number"
+    ) {
+      samples.push({
+        elapsedMs: output.elapsedMs,
+        roundTripMs: output.roundTripMs,
+        payloadBytes: output.payloadBytes,
+        overheadMs: Math.max(0, output.roundTripMs - output.elapsedMs),
+      });
+    }
+  }
+  workerLatencySamples.set(operation, samples);
 }
 
 async function runBenchmark(name, fn) {
@@ -200,8 +228,46 @@ function printDebugStepTotals(totals) {
   }
 }
 
+function printWorkerLatencySummary(samplesByOperation) {
+  const rows = [
+    [
+      "Operation",
+      "calls",
+      "payload mean bytes",
+      "run mean ms",
+      "round-trip mean ms",
+      "overhead mean ms",
+    ],
+  ];
+  for (const [operation, samples] of samplesByOperation) {
+    rows.push([
+      operation,
+      String(samples.length),
+      formatNumber(mean(samples.map((sample) => sample.payloadBytes))),
+      formatMillis(mean(samples.map((sample) => sample.elapsedMs))),
+      formatMillis(mean(samples.map((sample) => sample.roundTripMs))),
+      formatMillis(mean(samples.map((sample) => sample.overheadMs))),
+    ]);
+  }
+  const widths = rows[0].map((_, column) => Math.max(...rows.map((row) => row[column].length)));
+  for (const [index, row] of rows.entries()) {
+    console.log(row.map((value, column) => value.padEnd(widths[column])).join("  "));
+    if (index === 0) {
+      console.log(widths.map((width) => "-".repeat(width)).join("  "));
+    }
+  }
+}
+
+function mean(samples) {
+  return samples.reduce((sum, value) => sum + value, 0) / samples.length;
+}
+
 function formatMillis(value) {
   return value.toFixed(2);
+}
+
+function formatNumber(value) {
+  return value.toFixed(0);
 }
 
 function readPositiveInteger(name, fallback) {
@@ -267,8 +333,10 @@ class BenchmarkWorkerPool {
     const id = ++this.nextId;
     const worker = this.workers[this.cursor % this.workers.length];
     this.cursor += 1;
+    const payloadBytes = Buffer.byteLength(JSON.stringify(message), "utf8");
+    const postedAt = performance.now();
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { resolve, reject, payloadBytes, postedAt });
       worker.postMessage({ id, ...message });
     });
   }
@@ -283,6 +351,8 @@ class BenchmarkWorkerPool {
       pending.reject(new Error(message.error));
       return;
     }
+    message.roundTripMs = performance.now() - pending.postedAt;
+    message.payloadBytes = pending.payloadBytes;
     pending.resolve(message);
   }
 

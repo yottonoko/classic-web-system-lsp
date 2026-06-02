@@ -198,6 +198,11 @@ comparison. The remaining performance items are not Step 7B blockers:
 2. JavaScript semantic diagnostics remain the largest Node-side embedded
    operation on cold large/huge/include-tree samples.
 
+The benchmark harness now measures `semanticTokens/full/delta` separately from
+`semanticTokens/full`, and the Rust stdio debug event list no longer includes
+worker event names that the Rust server does not emit. Worker latency evidence
+is recorded by the Node large benchmark worker pool instead.
+
 ## Step 7B Semantic Tokens
 
 The first Step 7B hardening pass optimized Rust semantic token generation by
@@ -435,3 +440,62 @@ Interpretation:
 - The next performance optimization target, if Step 8 does not take priority,
   should remain Rust `semanticTokens/full` for large/huge open documents, with
   JavaScript semantic diagnostics as the Node-side embedded baseline bottleneck.
+
+## Step 7B Harness Coverage Follow-up
+
+This follow-up closes two weak evidence points from the Step 7 audit:
+
+- `scripts/benchmark-document-change.mjs` now measures
+  `post-open semanticTokens/full/delta` after the initial full semantic-token
+  request returns a `resultId`.
+- `scripts/benchmark-large.mjs` now prints a worker latency summary when
+  `ASP_LSP_BENCH_DEBUG_STEPS=1`, including payload bytes, worker run duration,
+  round-trip latency, and overhead.
+
+Rust stdio command:
+
+```sh
+ASP_LSP_BENCH_ITERATIONS=1 \
+ASP_LSP_BENCH_WARMUPS=0 \
+ASP_LSP_BENCH_CHANGE_KIND=replace \
+ASP_LSP_BENCH_CHANGE_MODE=default \
+ASP_LSP_BENCH_BACKGROUND=off \
+ASP_LSP_BENCH_DEBUG_STEPS=1 \
+pnpm run benchmark:change:large
+```
+
+Rust stdio result:
+
+| Metric                                | elapsed ms |
+| ------------------------------------- | ---------- |
+| post-open semanticTokens/full         | 9698.44    |
+| post-open semanticTokens/full/delta   | 9562.41    |
+| post-open semanticTokens/range        | 3045.11    |
+| didChange->finalDiagnostics           | 1374.20    |
+| warm workspace diagnostics, hot cache | 52.99      |
+
+Interpretation: delta is now visible in the harness and is still effectively as
+expensive as full generation for this unchanged-document sample. That is
+measurement evidence, not a performance win.
+
+Node worker command:
+
+```sh
+ASP_LSP_BENCH_ITERATIONS=1 \
+ASP_LSP_BENCH_WARMUPS=0 \
+ASP_LSP_BENCH_WORKERS=2 \
+ASP_LSP_BENCH_DEBUG_STEPS=1 \
+pnpm run benchmark:large
+```
+
+Worker latency sample:
+
+| Operation                     | calls | payload mean bytes | run mean ms | round-trip mean ms | overhead mean ms |
+| ----------------------------- | ----- | ------------------ | ----------- | ------------------ | ---------------- |
+| parseAspDocument              | 20    | 94376              | 3.83        | 155.03             | 151.20           |
+| javascriptSemanticDiagnostics | 20    | 94407              | 126.10      | 1169.30            | 1043.19          |
+| javascriptUnusedDiagnostics   | 20    | 94405              | 7.22        | 66.38              | 59.16            |
+
+Interpretation: worker latency is now an explicit benchmark surface. The
+largest observed worker overhead remains JavaScript semantic diagnostics on the
+large sample.

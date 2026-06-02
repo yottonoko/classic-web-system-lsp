@@ -62,9 +62,6 @@ const debugEventNames = [
   "disk.builder.restore.hit",
   "disk.builder.restore.miss",
   "disk.builder.persist",
-  "worker.queue.wait",
-  "worker.run.duration",
-  "worker.payload.bytes",
 ];
 const selectedStepNames = [
   "projectUpdate.flush",
@@ -517,9 +514,25 @@ async function measureOpenLanguageFeatures(server, uri, text, editTarget) {
       context: { triggerKind: 1 },
     });
   }
-  metrics.semanticTokensFullMs = await timedRequest(server, "textDocument/semanticTokens/full", {
-    textDocument: { uri },
-  });
+  const semanticTokensFull = await timedRequestWithResult(
+    server,
+    "textDocument/semanticTokens/full",
+    {
+      textDocument: { uri },
+    },
+  );
+  metrics.semanticTokensFullMs = semanticTokensFull.elapsedMs;
+  const semanticTokensResultId = resultIdOf(semanticTokensFull.result);
+  if (semanticTokensResultId) {
+    metrics.semanticTokensFullDeltaMs = await timedRequest(
+      server,
+      "textDocument/semanticTokens/full/delta",
+      {
+        textDocument: { uri },
+        previousResultId: semanticTokensResultId,
+      },
+    );
+  }
   if (range) {
     metrics.semanticTokensRangeMs = await timedRequest(
       server,
@@ -543,9 +556,19 @@ async function measureOpenLanguageFeatures(server, uri, text, editTarget) {
 }
 
 async function timedRequest(server, method, params) {
+  return (await timedRequestWithResult(server, method, params)).elapsedMs;
+}
+
+async function timedRequestWithResult(server, method, params) {
   const startedAt = performance.now();
-  await server.request(method, params);
-  return performance.now() - startedAt;
+  const result = await server.request(method, params);
+  return { elapsedMs: performance.now() - startedAt, result };
+}
+
+function resultIdOf(value) {
+  return value && typeof value === "object" && typeof value.resultId === "string"
+    ? value.resultId
+    : undefined;
 }
 
 function semanticTokenRange(text, position) {
@@ -984,6 +1007,7 @@ function printScenarioTable(scenarioResults) {
       ["hoverMs", "post-open hover"],
       ["completionMs", "post-open completion"],
       ["semanticTokensFullMs", "post-open semanticTokens/full"],
+      ["semanticTokensFullDeltaMs", "post-open semanticTokens/full/delta"],
       ["semanticTokensRangeMs", "post-open semanticTokens/range"],
       ["codeLensMs", "post-open codeLens"],
       ["codeLensResolveMs", "post-open codeLens/resolve"],
