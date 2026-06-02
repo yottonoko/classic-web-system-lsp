@@ -2421,15 +2421,36 @@ fn serves_workspace_diagnostics_with_disk_cache() {
             "params": { "previousResultIds": [] },
         }),
     );
-    let disk_hit = read_until(&mut reader, |message| {
-        message["method"] == json!("window/logMessage")
-            && message.to_string().contains("diskCache.hit")
-    });
+    let mut disk_hit = false;
+    let mut document_summary_hit = false;
+    let mut include_summary_hit = false;
+    let mut dependency_graph_hit = false;
+    let third = loop {
+        let message = read_message(&mut reader);
+        if message["method"] == json!("window/logMessage") {
+            let text = message.to_string();
+            disk_hit |= text.contains("diskCache.hit") && text.contains("default.asp");
+            document_summary_hit |= text.contains("diskCache.documentSummary.hit");
+            include_summary_hit |= text.contains("diskCache.includeSummary.hit");
+            dependency_graph_hit |= text.contains("diskCache.dependencyGraph.hit");
+        }
+        if message["id"] == json!(34) {
+            break message;
+        }
+    };
     assert!(
-        disk_hit.to_string().contains("default.asp"),
-        "expected clearProcessCache to preserve disk snapshot identity: {disk_hit}"
+        disk_hit,
+        "expected clearProcessCache to preserve disk snapshot identity"
     );
-    let third = read_until(&mut reader, |message| message["id"] == json!(34));
+    assert!(
+        document_summary_hit,
+        "expected document summary snapshot hit"
+    );
+    assert!(include_summary_hit, "expected include summary snapshot hit");
+    assert!(
+        dependency_graph_hit,
+        "expected dependency graph snapshot hit"
+    );
     assert_eq!(third["result"], second["result"]);
 
     let clear_all = request(

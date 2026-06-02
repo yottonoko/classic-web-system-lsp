@@ -637,6 +637,46 @@ impl Ide {
         self.workspace_registry.input.fingerprint(&self.db).clone()
     }
 
+    pub fn document_summary_snapshot(&self, uri: &str) -> Result<Option<Value>, String> {
+        let Some(document) = self.workspace_document(uri) else {
+            return Ok(None);
+        };
+        let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
+        Ok(Some(serde_json::json!({
+            "uri": uri,
+            "parsed": summary.parsed,
+        })))
+    }
+
+    pub fn include_summary_snapshot(&self, uri: &str) -> Result<Option<Value>, String> {
+        if self.workspace_document(uri).is_none() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::json!({
+            "uri": uri,
+            "includes": self.direct_include_refs(uri)?,
+            "graphFingerprint": self.include_graph_fingerprint(&self.include_reverse_edges()?),
+        })))
+    }
+
+    pub fn dependency_graph_snapshot(&self) -> Result<Value, String> {
+        let reverse_edges = self.include_reverse_edges()?;
+        let edges = reverse_edges
+            .iter()
+            .map(|(target, sources)| {
+                serde_json::json!({
+                    "target": target,
+                    "sources": sources.iter().cloned().collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "fingerprint": self.include_graph_fingerprint(&reverse_edges),
+            "workspaceFingerprint": self.workspace_registry_fingerprint(),
+            "reverseEdges": edges,
+        }))
+    }
+
     pub fn include_impact_for_change(&self, changed_uri: &str) -> Result<IncludeImpact, String> {
         let reverse_edges = self.include_reverse_edges()?;
         let mut affected_documents = BTreeSet::new();
@@ -5760,6 +5800,69 @@ mod tests {
             .expect("updated include impact");
         assert!(impact.affected_roots.is_empty());
         assert_ne!(impact.graph_fingerprint, before);
+    }
+
+    #[test]
+    fn exposes_step_nine_summary_snapshots_with_graph_fingerprint() {
+        let mut ide = Ide::default();
+        ide.set_open_document(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"shared.inc\"-->\n<%\nResponse.Write SharedValue\n%>".to_string(),
+        );
+        ide.replace_indexed_documents(vec![(
+            "file:///site/shared.inc".to_string(),
+            "<%\nDim SharedValue\n%>".to_string(),
+        )]);
+
+        let document_summary = ide
+            .document_summary_snapshot("file:///site/default.asp")
+            .expect("document summary")
+            .expect("summary");
+        assert_eq!(document_summary["uri"], "file:///site/default.asp");
+        assert_eq!(
+            document_summary["parsed"]["uri"],
+            "file:///site/default.asp"
+        );
+
+        let include_summary = ide
+            .include_summary_snapshot("file:///site/default.asp")
+            .expect("include summary")
+            .expect("summary");
+        assert_eq!(
+            include_summary["includes"][0]["path"],
+            serde_json::json!("shared.inc")
+        );
+        let graph_fingerprint = include_summary["graphFingerprint"]
+            .as_str()
+            .expect("graph fingerprint")
+            .to_string();
+
+        let graph = ide.dependency_graph_snapshot().expect("dependency graph");
+        assert_eq!(graph["fingerprint"], graph_fingerprint);
+        assert_eq!(
+            graph["reverseEdges"][0]["target"],
+            "file:///site/shared.inc"
+        );
+        assert_eq!(
+            graph["reverseEdges"][0]["sources"][0],
+            "file:///site/default.asp"
+        );
+        let before = ide.workspace_registry_fingerprint();
+
+        ide.replace_document_text(
+            "file:///site/default.asp".to_string(),
+            "<%\nResponse.Write SharedValue\n%>".to_string(),
+        );
+        assert_ne!(ide.workspace_registry_fingerprint(), before);
+        let include_summary = ide
+            .include_summary_snapshot("file:///site/default.asp")
+            .expect("updated include summary")
+            .expect("summary");
+        assert_eq!(include_summary["includes"], serde_json::json!([]));
+        let graph = ide
+            .dependency_graph_snapshot()
+            .expect("updated dependency graph");
+        assert_eq!(graph["reverseEdges"], serde_json::json!([]));
     }
 
     #[test]

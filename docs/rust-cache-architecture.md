@@ -234,6 +234,27 @@ Step 9C adds explicit workspace registry and include-impact evidence:
 The detailed implementation evidence is recorded in
 `docs/rust-analyzer-speed-step9.md`.
 
+## Step 9D Summary Snapshot Payloads
+
+Step 9D extends the existing disk snapshot envelope beyond workspace
+diagnostics:
+
+- `PersistedQuerySnapshotPayload` now supports `documentSummary`,
+  `includeSummary`, and `dependencyGraph` payloads.
+- `DiskCacheLookup` and persisted envelopes include a workspace fingerprint, so
+  summary and graph snapshots are rejected when the effective workspace graph
+  changes.
+- Indexed diagnostics writes also persist the current document summary, direct
+  include summary, and dependency graph snapshot.
+- Warm disk-cache reads report verbose `diskCache.documentSummary.hit`,
+  `diskCache.includeSummary.hit`, and `diskCache.dependencyGraph.hit` evidence.
+- Step 9D does not hydrate LSP responses from persisted summaries yet; Salsa
+  remains the authoritative source for diagnostics, definition, references, and
+  formatting.
+
+The detailed implementation evidence is recorded in
+`docs/rust-analyzer-speed-step9.md`.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
@@ -243,19 +264,15 @@ The detailed implementation evidence is recorded in
 - Process caches in `asp-analysis`: compatibility caches for parsed JSON,
   symbols, diagnostics, and serialized results.
 - Server caches in `asp-lsp-server`: semantic-token result cache, disk
-  query snapshot cache, sidecar project generation, and background-analysis
-  warmup.
+  query snapshot cache for diagnostics/summaries/graph evidence, sidecar
+  project generation, and background-analysis warmup.
 - Embedded sidecar caches: TypeScript project/file reads and HTML/CSS/JS
   document/service caches, invalidated by request `projectGeneration`.
 
 ## Next Steps
 
-1. Execute Step 9D from `docs/rust-analyzer-speed-step9.md` by extending disk
-   snapshots with document/include summaries and graph fingerprints.
-2. Move more summary payloads onto typed tracked queries as Step 9D needs
-   them.
-3. Add explicit sidecar project fingerprints beyond generation counters.
-4. Add include-summary/document-summary snapshot payloads and dependency graph
-   fingerprints.
-5. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
+1. Execute Step 9E from `docs/rust-analyzer-speed-step9.md` by adding semantic
+   token index and delta reuse.
+2. Add explicit sidecar project fingerprints beyond generation counters.
+3. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
    semantic diagnostics if more performance work is prioritized after cutover.

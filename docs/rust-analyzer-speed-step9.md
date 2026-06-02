@@ -220,6 +220,44 @@ Short include-tree benchmark result:
 | ------------------------ | ----: | ------: | ------------------------------- | ---------: | ---------: |
 | `benchmark:include-tree` |    58 | 116,000 | `javascriptSemanticDiagnostics` |    4905.89 |    4839.87 |
 
+## Step 9D Implementation
+
+Step 9D extends disk query snapshots without changing LSP response hydration.
+
+Implementation changes:
+
+- The disk snapshot format version is bumped, and persisted envelopes now carry
+  `workspaceFingerprint` in addition to source metadata and settings key.
+- `PersistedQuerySnapshotPayload` adds `documentSummary`, `includeSummary`, and
+  `dependencyGraph` variants alongside `workspaceDiagnostics`.
+- `Ide` exposes read-only snapshot helpers for the current document summary,
+  direct include summary, and dependency graph fingerprint/reverse edges.
+- Indexed diagnostics writes the summary and graph snapshots after diagnostics
+  are computed.
+- Warm diagnostics reads log verbose `diskCache.documentSummary.hit`,
+  `diskCache.includeSummary.hit`, and `diskCache.dependencyGraph.hit` events
+  when those snapshots are valid.
+
+Focused evidence:
+
+```sh
+cargo fmt --all -- --check
+cargo test -p asp-ide exposes_step_nine_summary_snapshots_with_graph_fingerprint
+cargo test -p asp-lsp-server disk_snapshot_round_trips_summary_and_graph_payloads
+cargo test -p asp-lsp-server disk_snapshot_misses_when_workspace_fingerprint_changes
+cargo test -p asp-lsp-server serves_workspace_diagnostics_with_disk_cache
+cargo check --workspace
+```
+
+The new snapshot tests prove all summary/graph payload variants round-trip, the
+workspace fingerprint participates in staleness validation, and the existing
+workspace-diagnostics stdio test observes hot summary/graph snapshot hits after
+`clearProcessCache`.
+
+Step 9D intentionally keeps persisted summaries as evidence/warm payloads. LSP
+requests still use current Salsa inputs and source metadata, so stale persisted
+summaries cannot answer definitions, references, diagnostics, or formatting.
+
 ## Step Execution Order
 
 Each Step must close with investigation, implementation or evidence update,

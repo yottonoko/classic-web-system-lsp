@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 const BACKEND_STATUS_METHOD: &str = "aspLsp/backendStatus";
 const FRAME_KIND_JSON: u8 = 1;
-const DISK_CACHE_FORMAT_VERSION: u32 = 4;
+const DISK_CACHE_FORMAT_VERSION: u32 = 5;
 const DEFAULT_CACHE_TTL_HOURS: f64 = 24.0 * 14.0;
 const DEFAULT_CACHE_MAX_SIZE_MB: f64 = 128.0;
 const VSCODE_PACKAGE_JSON: &str = include_str!("../../../apps/vscode/package.json");
@@ -324,8 +324,10 @@ impl ServerState {
         let lookup = DiskCacheLookup {
             source: file.source.clone(),
             settings_key: disk_analysis_settings_key(&self.settings),
+            workspace_fingerprint: self.ide.workspace_registry_fingerprint(),
         };
         if let Some(diagnostics) = self.disk_cache.read_workspace_diagnostics(&lookup) {
+            self.log_query_snapshot_hits(connection, &file.uri, &lookup)?;
             log_debug_summary(
                 connection,
                 &self.settings,
@@ -343,6 +345,7 @@ impl ServerState {
         let diagnostics = self.ide.workspace_diagnostics(&file.uri)?;
         self.disk_cache
             .write_workspace_diagnostics(&lookup, &diagnostics);
+        self.write_query_snapshots(&file.uri, &lookup)?;
         if self.disk_cache.enabled {
             log_debug_summary(
                 connection,
@@ -351,6 +354,48 @@ impl ServerState {
             )?;
         }
         Ok(diagnostics)
+    }
+
+    fn write_query_snapshots(&self, uri: &str, lookup: &DiskCacheLookup) -> Result<(), String> {
+        if let Some(summary) = self.ide.document_summary_snapshot(uri)? {
+            self.disk_cache.write_document_summary(lookup, summary);
+        }
+        if let Some(summary) = self.ide.include_summary_snapshot(uri)? {
+            self.disk_cache.write_include_summary(lookup, summary);
+        }
+        let graph = self.ide.dependency_graph_snapshot()?;
+        self.disk_cache.write_dependency_graph(lookup, graph);
+        Ok(())
+    }
+
+    fn log_query_snapshot_hits(
+        &self,
+        connection: &Connection,
+        uri: &str,
+        lookup: &DiskCacheLookup,
+    ) -> Result<(), String> {
+        if self.disk_cache.read_document_summary(lookup).is_some() {
+            log_debug_summary(
+                connection,
+                &self.settings,
+                format!("[asp-lsp] diskCache.documentSummary.hit: {uri}"),
+            )?;
+        }
+        if self.disk_cache.read_include_summary(lookup).is_some() {
+            log_debug_summary(
+                connection,
+                &self.settings,
+                format!("[asp-lsp] diskCache.includeSummary.hit: {uri}"),
+            )?;
+        }
+        if self.disk_cache.read_dependency_graph(lookup).is_some() {
+            log_debug_summary(
+                connection,
+                &self.settings,
+                format!("[asp-lsp] diskCache.dependencyGraph.hit: {uri}"),
+            )?;
+        }
+        Ok(())
     }
 
     fn semantic_tokens_full(&mut self, uri: &str) -> Result<Value, String> {
@@ -590,6 +635,7 @@ struct DiskSourceMetadata {
 struct DiskCacheLookup {
     source: DiskSourceMetadata,
     settings_key: String,
+    workspace_fingerprint: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -604,6 +650,8 @@ struct PersistedQuerySnapshot {
     source: DiskSourceMetadata,
     #[serde(rename = "settingsKey")]
     settings_key: String,
+    #[serde(rename = "workspaceFingerprint")]
+    workspace_fingerprint: String,
     #[serde(flatten)]
     payload: PersistedQuerySnapshotPayload,
 }
@@ -613,12 +661,21 @@ struct PersistedQuerySnapshot {
 enum PersistedQuerySnapshotPayload {
     #[serde(rename = "workspaceDiagnostics")]
     WorkspaceDiagnostics { items: Vec<Value> },
+    #[serde(rename = "documentSummary")]
+    DocumentSummary { value: Value },
+    #[serde(rename = "includeSummary")]
+    IncludeSummary { value: Value },
+    #[serde(rename = "dependencyGraph")]
+    DependencyGraph { value: Value },
 }
 
 impl PersistedQuerySnapshotPayload {
     fn query_kind(&self) -> &'static str {
         match self {
             Self::WorkspaceDiagnostics { .. } => "workspaceDiagnostics",
+            Self::DocumentSummary { .. } => "documentSummary",
+            Self::IncludeSummary { .. } => "includeSummary",
+            Self::DependencyGraph { .. } => "dependencyGraph",
         }
     }
 }
@@ -675,6 +732,7 @@ impl DiskAnalysisCache {
         let snapshot = self.read_snapshot(lookup, "workspaceDiagnostics")?;
         match snapshot.payload {
             PersistedQuerySnapshotPayload::WorkspaceDiagnostics { items } => Some(items),
+            _ => None,
         }
     }
 
@@ -684,6 +742,51 @@ impl DiskAnalysisCache {
             PersistedQuerySnapshotPayload::WorkspaceDiagnostics {
                 items: diagnostics.to_vec(),
             },
+        );
+    }
+
+    fn read_document_summary(&self, lookup: &DiskCacheLookup) -> Option<Value> {
+        let snapshot = self.read_snapshot(lookup, "documentSummary")?;
+        match snapshot.payload {
+            PersistedQuerySnapshotPayload::DocumentSummary { value } => Some(value),
+            _ => None,
+        }
+    }
+
+    fn write_document_summary(&self, lookup: &DiskCacheLookup, value: Value) {
+        self.write_snapshot(
+            lookup,
+            PersistedQuerySnapshotPayload::DocumentSummary { value },
+        );
+    }
+
+    fn read_include_summary(&self, lookup: &DiskCacheLookup) -> Option<Value> {
+        let snapshot = self.read_snapshot(lookup, "includeSummary")?;
+        match snapshot.payload {
+            PersistedQuerySnapshotPayload::IncludeSummary { value } => Some(value),
+            _ => None,
+        }
+    }
+
+    fn write_include_summary(&self, lookup: &DiskCacheLookup, value: Value) {
+        self.write_snapshot(
+            lookup,
+            PersistedQuerySnapshotPayload::IncludeSummary { value },
+        );
+    }
+
+    fn read_dependency_graph(&self, lookup: &DiskCacheLookup) -> Option<Value> {
+        let snapshot = self.read_snapshot(lookup, "dependencyGraph")?;
+        match snapshot.payload {
+            PersistedQuerySnapshotPayload::DependencyGraph { value } => Some(value),
+            _ => None,
+        }
+    }
+
+    fn write_dependency_graph(&self, lookup: &DiskCacheLookup, value: Value) {
+        self.write_snapshot(
+            lookup,
+            PersistedQuerySnapshotPayload::DependencyGraph { value },
         );
     }
 
@@ -723,6 +826,7 @@ impl DiskAnalysisCache {
             written_at: now_ms(),
             source: lookup.source.clone(),
             settings_key: lookup.settings_key.clone(),
+            workspace_fingerprint: lookup.workspace_fingerprint.clone(),
             payload,
         };
         let Ok(file) = File::create(self.file_name_for_lookup(lookup, query_kind)) else {
@@ -804,6 +908,7 @@ impl DiskAnalysisCache {
             && entry.tool_version == self.tool_version
             && entry.namespace == self.namespace
             && entry.settings_key == lookup.settings_key
+            && entry.workspace_fingerprint == lookup.workspace_fingerprint
             && entry.source.file_name == lookup.source.file_name
             && entry.source.mtime_ms == lookup.source.mtime_ms
             && entry.source.size == lookup.source.size
@@ -819,6 +924,7 @@ impl DiskAnalysisCache {
                     "namespace": self.namespace,
                     "fileName": lookup.source.file_name,
                     "settingsKey": lookup.settings_key,
+                    "workspaceFingerprint": lookup.workspace_fingerprint,
                 })
                 .to_string()
             )
@@ -2067,6 +2173,7 @@ mod tests {
                 size: 42,
             },
             settings_key: "settings".to_string(),
+            workspace_fingerprint: "workspace".to_string(),
         }
     }
 
@@ -2093,6 +2200,58 @@ mod tests {
             PersistedQuerySnapshotPayload::WorkspaceDiagnostics { items } => {
                 assert_eq!(items, diagnostics);
             }
+            _ => panic!("expected workspace diagnostics payload"),
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disk_snapshot_round_trips_summary_and_graph_payloads() {
+        let root = temp_cache_dir("summaries");
+        let cache = test_cache(root.clone());
+        let lookup = test_lookup();
+        let document_summary = json!({
+            "uri": "file:///site/default.asp",
+            "parsed": { "uri": "file:///site/default.asp" },
+        });
+        let include_summary = json!({
+            "uri": "file:///site/default.asp",
+            "includes": [{ "path": "shared.inc" }],
+            "graphFingerprint": "graph-a",
+        });
+        let dependency_graph = json!({
+            "fingerprint": "graph-a",
+            "reverseEdges": [{ "target": "file:///site/shared.inc", "sources": ["file:///site/default.asp"] }],
+        });
+
+        cache.write_document_summary(&lookup, document_summary.clone());
+        cache.write_include_summary(&lookup, include_summary.clone());
+        cache.write_dependency_graph(&lookup, dependency_graph.clone());
+
+        assert_eq!(
+            cache.read_document_summary(&lookup),
+            Some(document_summary.clone())
+        );
+        assert_eq!(
+            cache.read_include_summary(&lookup),
+            Some(include_summary.clone())
+        );
+        assert_eq!(
+            cache.read_dependency_graph(&lookup),
+            Some(dependency_graph.clone())
+        );
+        let summary_snapshot: PersistedQuerySnapshot = ciborium::de::from_reader(
+            File::open(cache.file_name_for_lookup(&lookup, "documentSummary"))
+                .expect("open summary snapshot"),
+        )
+        .expect("decode summary snapshot");
+        assert_eq!(summary_snapshot.workspace_fingerprint, "workspace");
+        match summary_snapshot.payload {
+            PersistedQuerySnapshotPayload::DocumentSummary { value } => {
+                assert_eq!(value, document_summary);
+            }
+            _ => panic!("expected document summary payload"),
         }
 
         let _ = fs::remove_dir_all(root);
@@ -2111,9 +2270,26 @@ mod tests {
                 ..lookup.source.clone()
             },
             settings_key: lookup.settings_key.clone(),
+            workspace_fingerprint: lookup.workspace_fingerprint.clone(),
         };
 
         assert_eq!(cache.read_workspace_diagnostics(&stale_lookup), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disk_snapshot_misses_when_workspace_fingerprint_changes() {
+        let root = temp_cache_dir("workspace-fingerprint");
+        let cache = test_cache(root.clone());
+        let lookup = test_lookup();
+        cache.write_document_summary(&lookup, json!({ "uri": "file:///site/default.asp" }));
+
+        let stale_lookup = DiskCacheLookup {
+            workspace_fingerprint: "changed-workspace".to_string(),
+            ..lookup
+        };
+
+        assert_eq!(cache.read_document_summary(&stale_lookup), None);
         let _ = fs::remove_dir_all(root);
     }
 
