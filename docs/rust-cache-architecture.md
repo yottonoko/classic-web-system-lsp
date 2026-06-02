@@ -157,6 +157,23 @@ the Rust stdio server plus embedded sidecar:
 
 The detailed evidence is recorded in `docs/rust-cutover-step8.md`.
 
+## Step 9P rust-analyzer-style Speed Plan
+
+Step 9P fixes the execution plan for the next cache-architecture work before
+changing runtime behavior. The detailed plan is recorded in
+`docs/rust-analyzer-speed-step9.md`.
+
+- The primary optimization target is the current `codex/revolution` bottleneck
+  set, not a fresh `main` comparison: huge-document semantic tokens, remaining
+  direct parse-derived feature work, include dependency invalidation, expanded
+  disk query snapshots, and sidecar project fingerprints.
+- The first implementation step after this plan is Step 9A, which must lock the
+  typed-query and benchmark baseline before Step 9B starts moving feature
+  handlers onto new query layers.
+- Public LSP result shapes, UTF-16 ranges, embedded source-map remapping, `.inc`
+  fragment behavior, and VSIX cutover semantics remain compatibility
+  constraints for every Step 9 change.
+
 ## Current Cache Layers
 
 - Salsa in `asp-ide`: open/indexed document inputs plus tracked parse,
@@ -172,12 +189,14 @@ The detailed evidence is recorded in `docs/rust-cutover-step8.md`.
 
 ## Next Steps
 
-1. Move more `asp-ide` derived work onto typed tracked queries:
+1. Execute Step 9A from `docs/rust-analyzer-speed-step9.md` to lock the
+   current typed-query and benchmark baseline.
+2. Move more `asp-ide` derived work onto typed tracked queries:
    `VirtualDocuments`, `DocumentSummary`, `VbSymbols`, and `VbDiagnostics`.
-2. Add a workspace registry generation/fingerprint input and report dependent
+3. Add a workspace registry generation/fingerprint input and report dependent
    document counts on `.inc` changes.
-3. Add explicit sidecar project fingerprints beyond generation counters.
-4. Add include-summary/document-summary snapshot payloads and dependency graph
+4. Add explicit sidecar project fingerprints beyond generation counters.
+5. Add include-summary/document-summary snapshot payloads and dependency graph
    fingerprints.
-5. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
+6. Continue optimizing huge-sample `semanticTokens/full` and cold JavaScript
    semantic diagnostics if more performance work is prioritized after cutover.
