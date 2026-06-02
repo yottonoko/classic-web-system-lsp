@@ -71,17 +71,16 @@ Result:
 - The stale `.vscodeignore` entry for `server/language-server/node_modules/**`
   was removed.
 
-## Remaining Cutover Risk
+## Release Matrix
 
-The release workflow currently builds native VSIX assets for:
+The release workflow currently builds one native VSIX asset:
 
-- `linux-x64`
-- `darwin-arm64`
 - `win32-x64`
 
-The client computes its bundled server directory from the runtime
-`process.platform` and `process.arch`, so `darwin-x64` is not covered by the
-current release matrix. Adding that target needs a build-server change that
-actually cross-compiles or runs on an x64 macOS runner; the current
-`scripts/build-server.mjs --target` path only changes the copied destination
-name.
+Linux and macOS native VSIX assets are intentionally out of the release matrix
+for now. Local package smoke still covers both the native VSIX command and the
+no-native VSIX command, but tag release upload is limited to Windows x64.
+
+If Linux or macOS release assets are restored later, use a runner that matches
+the target architecture. `scripts/build-server.mjs --target` only changes the
+copied destination name; it does not cross-compile the Rust executable.

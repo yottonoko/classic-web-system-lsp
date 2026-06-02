@@ -61,10 +61,12 @@ describe("VS Code extension package", () => {
       }),
     );
     expect(copyServerRuntimeScript).toContain("--no-native");
-    expect(releaseWorkflow).toContain("target: linux-x64");
-    expect(releaseWorkflow).toContain("target: darwin-arm64");
+    expect(releaseWorkflow).not.toContain("target: linux-x64");
+    expect(releaseWorkflow).not.toContain("target: darwin-x64");
+    expect(releaseWorkflow).not.toContain("target: darwin-arm64");
     expect(releaseWorkflow).toContain("target: win32-x64");
-    expect(releaseWorkflow).toContain("Package VSIX without Rust server binary");
+    expect(releaseWorkflow).not.toContain("release-vsix-no-native");
+    expect(releaseWorkflow).not.toContain("Package VSIX without Rust server binary");
     expect(releaseWorkflow).not.toContain("# - os: ubuntu-latest");
     expect(releaseWorkflow).not.toContain("#   target: linux-x64");
     expect(releaseWorkflow).toContain("ASP_LSP_PACKAGE_TARGET: ${{ matrix.target }}");
