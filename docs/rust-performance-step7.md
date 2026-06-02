@@ -69,8 +69,8 @@ Workspace cache table:
 Interpretation:
 
 - Disk cache write/hit is observable for workspace diagnostics.
-- `workspace.backgroundAnalysis` is not proving background warmup in the Rust
-  server: no background start/complete events were observed, and
+- In this initial Step 7A run, `workspace.backgroundAnalysis` did not yet prove
+  background warmup: no background start/complete events were observed, and
   post-background workspace diagnostics still wrote 20 cache entries.
 - `semanticTokens/full` is the largest measured open-file latency by a wide
   margin.
