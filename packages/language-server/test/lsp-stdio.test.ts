@@ -3092,6 +3092,13 @@ Response.Write IncludedOnly()
           rootUri: `file://${tempDir}`,
           capabilities: {},
         });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              inlayHints: { functionReturnTypes: true, variableTypes: true },
+            },
+          },
+        });
         server.notify("textDocument/didOpen", {
           textDocument: {
             uri: `file://${owner}`,
@@ -3200,7 +3207,11 @@ Response.Write implicitValue
                 cache: { directory: cacheDirectory },
                 debug: { output: "summary" },
                 diagnostics: { debounceMs: 0 },
-                inlayHints: { globalVariableMarkers: "all" },
+                inlayHints: {
+                  functionReturnTypes: true,
+                  globalVariableMarkers: "all",
+                  variableTypes: true,
+                },
               },
             },
           });
@@ -3382,7 +3393,11 @@ Response.Write localValue
             aspLsp: {
               debug: { output: "summary" },
               diagnostics: { debounceMs: 0 },
-              inlayHints: { globalVariableMarkers: "all" },
+              inlayHints: {
+                functionReturnTypes: true,
+                globalVariableMarkers: "all",
+                variableTypes: true,
+              },
               workspace: {
                 vbProjectMaxDocuments: 4,
                 vbProjectMaxTextLength: 1048576,
@@ -3539,6 +3554,13 @@ Response.Write a
           rootUri: "file:///tmp",
           capabilities: {},
         });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              inlayHints: { functionReturnTypes: true, variableTypes: true },
+            },
+          },
+        });
         const uri = "file:///tmp/implicit-vbscript.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
@@ -3627,6 +3649,17 @@ both.SharedName
           processId: process.pid,
           rootUri: "file:///tmp",
           capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              inlayHints: {
+                functionReturnTypes: true,
+                globalVariableMarkers: "global",
+                variableTypes: true,
+              },
+            },
+          },
         });
         const uri = "file:///tmp/union-vbscript.asp";
         server.notify("textDocument/didOpen", {
@@ -4345,6 +4378,17 @@ End Sub
         expect(initializeText).toContain("monikerProvider");
         expect(initializeText).toContain("inlineValueProvider");
         expect(initializeText).toContain("willSaveWaitUntil");
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              inlayHints: {
+                functionReturnTypes: true,
+                implicitByRef: true,
+                variableTypes: true,
+              },
+            },
+          },
+        });
 
         const uri = "file:///tmp/extended-lsp.asp";
         server.notify("textDocument/didOpen", {
@@ -4708,7 +4752,15 @@ End Sub
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { inlayHints: { globalVariableMarkers: false } } },
+          settings: {
+            aspLsp: {
+              inlayHints: {
+                functionReturnTypes: true,
+                globalVariableMarkers: false,
+                variableTypes: true,
+              },
+            },
+          },
         });
         const uri = "file:///tmp/global-marker-inlay-disabled.asp";
         server.notify("textDocument/didOpen", {
@@ -4737,6 +4789,51 @@ End Sub
       }
     });
 
+    it("defaults type, scope marker, and ByRef inlay hints off", async () => {
+      const source = `<%
+Function BuildName(firstName)
+  BuildName = firstName
+End Function
+Dim pageTitle
+pageTitle = BuildName("Dashboard")
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/default-inlay-hints.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const inlayHints = await server.request("textDocument/inlayHint", {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: { line: 7, character: 0 } },
+        });
+        const serialized = JSON.stringify(inlayHints);
+        expect(serialized).not.toContain(" As ");
+        expect(serialized).not.toContain("(global)");
+        expect(serialized).not.toContain("(local)");
+        expect(serialized).not.toContain("ByRef");
+        expect(serialized).toContain("firstName:");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("shows local and uncertain VBScript variable inlay hint markers when configured", async () => {
       const source = `<!-- #include file="shared.inc" -->
 <%
@@ -4754,7 +4851,15 @@ End Sub
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { inlayHints: { globalVariableMarkers: "all" } } },
+          settings: {
+            aspLsp: {
+              inlayHints: {
+                functionReturnTypes: true,
+                globalVariableMarkers: "all",
+                variableTypes: true,
+              },
+            },
+          },
         });
         const uri = "file:///tmp/include-uncertain-inlay.asp";
         server.notify("textDocument/didOpen", {
@@ -4777,7 +4882,15 @@ End Sub
         expect(serialized).toContain("(local) As String");
 
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { inlayHints: { globalVariableMarkers: "local" } } },
+          settings: {
+            aspLsp: {
+              inlayHints: {
+                functionReturnTypes: true,
+                globalVariableMarkers: "local",
+                variableTypes: true,
+              },
+            },
+          },
         });
         const localOnlyUri = "file:///tmp/local-marker-inlay.asp";
         const localOnlySource = `<%
@@ -4833,7 +4946,11 @@ a = 2
           settings: {
             aspLsp: {
               diagnostics: { debounceMs: 0 },
-              inlayHints: { globalVariableMarkers: "all" },
+              inlayHints: {
+                functionReturnTypes: true,
+                globalVariableMarkers: "all",
+                variableTypes: true,
+              },
             },
           },
         });
@@ -4912,7 +5029,11 @@ End Sub
           settings: {
             aspLsp: {
               diagnostics: { debounceMs: 10_000 },
-              inlayHints: { globalVariableMarkers: "all" },
+              inlayHints: {
+                functionReturnTypes: true,
+                globalVariableMarkers: "all",
+                variableTypes: true,
+              },
             },
           },
         });
@@ -5087,6 +5208,9 @@ Response.Write RenderCustomerRows(customers, activeId)
           rootUri: "file:///tmp",
           capabilities: {},
         });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { inlayHints: { implicitByRef: true } } },
+        });
         const uri = "file:///tmp/formal-parameter-inlay.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {
@@ -5138,7 +5262,7 @@ Response.Write BuildName("Ada")
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { inlayHints: { parameterNames: false } } },
+          settings: { aspLsp: { inlayHints: { implicitByRef: true, parameterNames: false } } },
         });
         const uri = "file:///tmp/parameter-name-inlay-disabled.asp";
         server.notify("textDocument/didOpen", {

@@ -137,14 +137,20 @@ describe("VS Code extension package", () => {
     ).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.implicitByRef"],
-    ).toBeTruthy();
+    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.variableTypes"],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.functionReturnTypes"],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.globalVariableMarkers"],
     ).toEqual(
       expect.objectContaining({
         type: "string",
         enum: ["global", "local", "all", "off"],
-        default: "global",
+        default: "off",
       }),
     );
     expect(

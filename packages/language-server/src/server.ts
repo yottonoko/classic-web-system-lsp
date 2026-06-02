@@ -196,7 +196,7 @@ const clearCacheServerCommand = "aspLsp.server.clearCache";
 const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const backendStatusMethod = "aspLsp/backendStatus";
-const languageServerVersion = "0.3.7";
+const languageServerVersion = "0.3.8";
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
 const backgroundAnalysisIdleDelayMs = 5_000;
@@ -5467,11 +5467,10 @@ function cssDocumentHighlights(cached: CachedDocument, position: Position): Docu
 async function jsInlayHintsAsync(cached: CachedDocument, range: Range): Promise<InlayHint[]> {
   const settings = cachedSettings(cached.source.uri);
   const hints = settings.inlayHints;
-  if (
-    hints?.parameterNames === false &&
-    hints.variableTypes === false &&
-    hints.functionReturnTypes === false
-  ) {
+  const parameterNamesEnabled = hints?.parameterNames !== false;
+  const variableTypesEnabled = hints?.variableTypes === true;
+  const functionReturnTypesEnabled = hints?.functionReturnTypes === true;
+  if (!parameterNamesEnabled && !variableTypesEnabled && !functionReturnTypesEnabled) {
     return [];
   }
   const hintsByVirtual = await Promise.all(
@@ -5499,10 +5498,10 @@ async function jsInlayHintsAsync(cached: CachedDocument, range: Range): Promise<
             fileName,
             { start, length: end - start },
             {
-              includeInlayParameterNameHints: hints?.parameterNames === false ? "none" : "all",
-              includeInlayVariableTypeHints: hints?.variableTypes !== false,
-              includeInlayFunctionLikeReturnTypeHints: hints?.functionReturnTypes !== false,
-              includeInlayPropertyDeclarationTypeHints: hints?.variableTypes !== false,
+              includeInlayParameterNameHints: parameterNamesEnabled ? "all" : "none",
+              includeInlayVariableTypeHints: variableTypesEnabled,
+              includeInlayFunctionLikeReturnTypeHints: functionReturnTypesEnabled,
+              includeInlayPropertyDeclarationTypeHints: variableTypesEnabled,
             },
           );
         })
@@ -9389,10 +9388,10 @@ function normalizeInlayHintSettings(
   const raw = settings.inlayHints;
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
-    variableTypes: record.variableTypes !== false,
+    variableTypes: record.variableTypes === true,
     parameterNames: record.parameterNames !== false,
-    functionReturnTypes: record.functionReturnTypes !== false,
-    implicitByRef: record.implicitByRef !== false,
+    functionReturnTypes: record.functionReturnTypes === true,
+    implicitByRef: record.implicitByRef === true,
     globalVariableMarkers: normalizeInlayMarkerMode(record.globalVariableMarkers),
   };
 }
@@ -9400,13 +9399,13 @@ function normalizeInlayHintSettings(
 function normalizeInlayMarkerMode(
   value: unknown,
 ): NonNullable<NonNullable<AspSettings["inlayHints"]>["globalVariableMarkers"]> {
-  if (value === "all" || value === "local" || value === "off") {
+  if (value === "all" || value === "local" || value === "global" || value === "off") {
     return value;
   }
   if (value === false) {
     return "off";
   }
-  return "global";
+  return "off";
 }
 
 function normalizeCodeLensSettings(
