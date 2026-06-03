@@ -1735,10 +1735,6 @@ fn server_capabilities() -> Value {
             "full": { "delta": true },
             "range": true,
         },
-        "diagnosticProvider": {
-            "interFileDependencies": true,
-            "workspaceDiagnostics": false,
-        },
         "documentLinkProvider": { "resolveProvider": true },
         "codeActionProvider": {
             "resolveProvider": true,

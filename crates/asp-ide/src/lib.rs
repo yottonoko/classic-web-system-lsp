@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     sync::OnceLock,
 };
 
@@ -222,6 +222,11 @@ fn array_field(value: &Value, field: &str) -> Vec<Value> {
         .flatten()
         .cloned()
         .collect()
+}
+
+fn is_include_context_symbol(symbol: &Value) -> bool {
+    symbol.get("scopeName").and_then(Value::as_str).is_none()
+        || symbol.get("memberOf").and_then(Value::as_str).is_some()
 }
 
 fn include_refs_from_parsed(parsed: &Value) -> Vec<IncludeRef> {
@@ -624,7 +629,10 @@ impl Ide {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Vec::new());
         };
-        document_diagnostics(&self.db, document.source_file, self.settings.input)
+        let mut diagnostics =
+            parser_diagnostics(&self.db, document.source_file, self.settings.input)?;
+        diagnostics.extend(self.vb_diagnostics_for_document_context(uri, document)?);
+        Ok(diagnostics)
     }
 
     pub fn parse_asp(&self, uri: &str) -> Result<Value, String> {
@@ -677,14 +685,14 @@ impl Ide {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Vec::new());
         };
-        vb_symbols(&self.db, document.source_file, self.settings.input)
+        self.vb_symbols_for_document_context(uri, document)
     }
 
     pub fn vb_diagnostics(&self, uri: &str) -> Result<Vec<Value>, String> {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Vec::new());
         };
-        vb_diagnostics(&self.db, document.source_file, self.settings.input)
+        self.vb_diagnostics_for_document_context(uri, document)
     }
 
     pub fn include_closure(&self, uri: &str) -> Result<Vec<Value>, String> {
@@ -871,6 +879,88 @@ impl Ide {
         Ok(())
     }
 
+    fn include_context_symbols(&self, uri: &str) -> Result<Vec<Value>, String> {
+        let mut symbols = Vec::new();
+        let mut seen_uris = HashSet::new();
+        for edge in self.include_graph(uri)? {
+            let Some(target_uri) = edge.target_uri else {
+                continue;
+            };
+            if !seen_uris.insert(target_uri.clone()) {
+                continue;
+            }
+            let Some(document) = self.workspace_document(&target_uri) else {
+                continue;
+            };
+            symbols.extend(
+                vb_symbols(&self.db, document.source_file, self.settings.input)?
+                    .into_iter()
+                    .filter(is_include_context_symbol),
+            );
+        }
+        Ok(symbols)
+    }
+
+    fn vb_context_value_with_symbols(&self, symbols: Vec<Value>) -> Value {
+        let mut context = self
+            .settings
+            .input
+            .json(&self.db)
+            .parse::<Value>()
+            .ok()
+            .and_then(|settings| settings.get("vbscript").cloned())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !context.is_object() {
+            context = serde_json::json!({});
+        }
+        if let Some(object) = context.as_object_mut() {
+            object.insert("symbols".to_string(), Value::Array(symbols));
+        }
+        context
+    }
+
+    fn vb_symbols_for_document_context(
+        &self,
+        uri: &str,
+        document: &OpenDocument,
+    ) -> Result<Vec<Value>, String> {
+        let include_symbols = self.include_context_symbols(uri)?;
+        if include_symbols.is_empty() {
+            return vb_symbols(&self.db, document.source_file, self.settings.input);
+        }
+        let settings_value = serde_json::from_str::<Value>(self.settings.input.json(&self.db))
+            .map_err(|error| error.to_string())?;
+        let context = self.vb_context_value_with_symbols(include_symbols.clone());
+        let mut symbols = asp_analysis::Analyzer::default().vb_symbols_with_context(
+            document.source_file.uri(&self.db),
+            document.source_file.text(&self.db),
+            &settings_value,
+            &context,
+        )?;
+        symbols.extend(include_symbols);
+        Ok(symbols)
+    }
+
+    fn vb_diagnostics_for_document_context(
+        &self,
+        uri: &str,
+        document: &OpenDocument,
+    ) -> Result<Vec<Value>, String> {
+        let include_symbols = self.include_context_symbols(uri)?;
+        if include_symbols.is_empty() {
+            return vb_diagnostics(&self.db, document.source_file, self.settings.input);
+        }
+        let settings_value = serde_json::from_str::<Value>(self.settings.input.json(&self.db))
+            .map_err(|error| error.to_string())?;
+        let context = self.vb_context_value_with_symbols(include_symbols);
+        asp_analysis::Analyzer::default().vb_diagnostics_with_context(
+            document.source_file.uri(&self.db),
+            document.source_file.text(&self.db),
+            &settings_value,
+            &context,
+        )
+    }
+
     pub fn completion(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
         let Some(context) = self.vb_context(uri, position)? else {
             return Ok(Value::Array(Vec::new()));
@@ -883,9 +973,9 @@ impl Ide {
             context.offset,
             &prefix,
         ) {
-            return Ok(Value::Array(builtin_member_completion_items(
-                type_name, &prefix,
-            )));
+            let mut items = member_completion_items(&context.symbols, type_name, &prefix);
+            items.extend(builtin_member_completion_items(type_name, &prefix));
+            return Ok(Value::Array(items));
         }
         let syntax_snippets = vbscript_syntax_snippets_enabled(self.settings.input.json(&self.db));
         if syntax_snippets {
@@ -1004,33 +1094,27 @@ impl Ide {
         else {
             return Ok(Value::Null);
         };
-        let workspace_symbols = self.workspace_vb_symbols()?;
-        let resolved_symbol = resolve_semantic_symbol(
-            uri,
-            &context.text,
-            &workspace_symbols,
-            &occurrence,
-        )
-        .or_else(|| {
-            resolve_symbol_for_identifier(uri, &context.text, &workspace_symbols, &occurrence)
-        });
+        let resolved_symbol =
+            resolve_semantic_symbol(uri, &context.text, &context.symbols, &occurrence).or_else(
+                || resolve_symbol_for_identifier(uri, &context.text, &context.symbols, &occurrence),
+            );
         let type_name = resolved_symbol
             .and_then(class_type_name_from_symbol)
             .or_else(|| resolved_symbol.and_then(member_owner_name_from_symbol))
             .or_else(|| {
-                member_access_owner_type_name(uri, &context.text, &workspace_symbols, &occurrence)
+                member_access_owner_type_name(uri, &context.text, &context.symbols, &occurrence)
             })
             .or_else(|| {
                 member_access_subject_type_name(
                     uri,
                     &context.text,
-                    &workspace_symbols,
+                    &context.symbols,
                     &occurrence,
                     context.offset,
                 )
             });
         let Some(class_symbol) =
-            type_name.and_then(|type_name| resolve_class_symbol(&workspace_symbols, type_name))
+            type_name.and_then(|type_name| resolve_class_symbol(&context.symbols, type_name))
         else {
             return Ok(Value::Null);
         };
@@ -1377,7 +1461,7 @@ impl Ide {
         };
         let text = document.text(&self.db);
         let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
-        let symbols = self.workspace_vb_symbols()?;
+        let symbols = self.vb_symbols_for_document_context(uri, document)?;
         let semantic_symbols = SemanticSymbolIndex::new(&symbols);
         let text_index = Utf16LineIndex::new(text);
         let range_offsets = range.and_then(|range| {
@@ -1520,7 +1604,7 @@ impl Ide {
         };
         let text = document.text(&self.db);
         let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
-        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+        let symbols = self.vb_symbols_for_document_context(uri, document)?;
         let options = InlayHintOptions::from_settings(settings);
         let start_offset = position_to_utf16_offset(
             text,
@@ -2076,7 +2160,7 @@ impl Ide {
         if !is_vbscript_offset(&summary.parsed, offset) {
             return Ok(None);
         }
-        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+        let symbols = self.vb_symbols_for_document_context(uri, document)?;
         Ok(Some(VbContext {
             text,
             offset,
@@ -2094,15 +2178,11 @@ impl Ide {
         else {
             return Ok(None);
         };
-        let workspace_symbols = self.workspace_vb_symbols()?;
-        let symbol =
-            resolve_symbol_for_identifier(uri, &context.text, &workspace_symbols, &occurrence)
-                .cloned()
-                .or_else(|| {
-                    self.workspace_symbol_by_name(&occurrence.name)
-                        .ok()
-                        .flatten()
-                });
+        let symbol = resolve_semantic_symbol(uri, &context.text, &context.symbols, &occurrence)
+            .or_else(|| {
+                resolve_symbol_for_identifier(uri, &context.text, &context.symbols, &occurrence)
+            })
+            .cloned();
         Ok(symbol.map(|symbol| (symbol, context)))
     }
 
@@ -2132,18 +2212,6 @@ impl Ide {
             },
             context,
         )))
-    }
-
-    fn workspace_symbol_by_name(&self, name: &str) -> Result<Option<Value>, String> {
-        for (_uri, document) in self.workspace_documents() {
-            if let Some(symbol) = vb_symbols(&self.db, document.source_file, self.settings.input)?
-                .into_iter()
-                .find(|symbol| symbol_name_eq(symbol, name))
-            {
-                return Ok(Some(symbol));
-            }
-        }
-        Ok(None)
     }
 
     fn workspace_vb_symbols(&self) -> Result<Vec<Value>, String> {
@@ -4653,6 +4721,30 @@ fn completion_kind(symbol: &Value) -> u32 {
     }
 }
 
+fn member_completion_items(symbols: &[Value], type_name: &str, prefix: &str) -> Vec<Value> {
+    symbols
+        .iter()
+        .filter(|symbol| {
+            symbol
+                .get("memberOf")
+                .and_then(Value::as_str)
+                .is_some_and(|owner| owner.eq_ignore_ascii_case(type_name))
+        })
+        .filter_map(|symbol| {
+            let name = symbol.get("name").and_then(Value::as_str)?;
+            if !prefix.is_empty() && !name.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                return None;
+            }
+            Some(serde_json::json!({
+                "label": name,
+                "kind": completion_kind(symbol),
+                "detail": symbol_detail(symbol),
+                "data": { "kind": "vbscript" },
+            }))
+        })
+        .collect()
+}
+
 struct BuiltinCompletionDetail {
     detail: Value,
     documentation: String,
@@ -7159,6 +7251,149 @@ mod tests {
             .include_closure("file:///site/default.asp")
             .expect("include closure");
         assert_eq!(include_paths(&includes), vec!["a.inc", "b.inc", "a.inc"]);
+    }
+
+    #[test]
+    fn uses_include_symbols_for_vb_diagnostics_and_hover() {
+        let mut ide = Ide::default();
+        ide.set_open_document(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"helpers.inc\"-->\n<%\nOption Explicit\nResponse.Write BuildName(\"Ada\")\n%>".to_string(),
+        );
+        ide.replace_indexed_documents(vec![(
+            "file:///site/helpers.inc".to_string(),
+            "<%\nFunction BuildName(first)\nBuildName = first\nEnd Function\n%>".to_string(),
+        )]);
+
+        let diagnostics = ide
+            .diagnostics("file:///site/default.asp")
+            .expect("diagnostics");
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.to_string().contains("BuildName")),
+            "include symbol should satisfy Option Explicit diagnostics: {diagnostics:?}"
+        );
+
+        let hover = ide
+            .hover(
+                "file:///site/default.asp",
+                TextPosition {
+                    line: 3,
+                    character: 24,
+                },
+            )
+            .expect("hover");
+        let hover_markdown = hover["contents"]["value"]
+            .as_str()
+            .unwrap_or_else(|| panic!("hover markdown: {hover}"));
+        assert!(
+            hover_markdown.contains("Function BuildName(first)"),
+            "hover markdown: {hover_markdown}"
+        );
+    }
+
+    #[test]
+    fn uses_include_symbols_for_member_types_and_completion() {
+        let mut ide = Ide::default();
+        ide.set_open_document(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"models.inc\"-->\n<%\nDim customer\nSet customer = CreateCustomer()\nResponse.Write customer.DisplayName\n%>".to_string(),
+        );
+        ide.replace_indexed_documents(vec![(
+            "file:///site/models.inc".to_string(),
+            "<%\nClass DashboardCustomer\nPublic Property Get DisplayName()\nDisplayName = \"Ada\"\nEnd Property\nEnd Class\nFunction CreateCustomer()\nSet CreateCustomer = New DashboardCustomer\nEnd Function\n%>".to_string(),
+        )]);
+
+        let hover = ide
+            .hover(
+                "file:///site/default.asp",
+                TextPosition {
+                    line: 4,
+                    character: 35,
+                },
+            )
+            .expect("member hover");
+        let hover_markdown = hover["contents"]["value"]
+            .as_str()
+            .unwrap_or_else(|| panic!("member hover markdown: {hover}"));
+        assert!(
+            hover_markdown.contains("Property DisplayName() As String"),
+            "member hover markdown: {hover_markdown}"
+        );
+
+        let type_definition = ide
+            .type_definition(
+                "file:///site/default.asp",
+                TextPosition {
+                    line: 4,
+                    character: 22,
+                },
+            )
+            .expect("type definition");
+        assert_eq!(
+            type_definition["uri"],
+            serde_json::json!("file:///site/models.inc")
+        );
+        assert_eq!(
+            type_definition["range"]["start"],
+            serde_json::json!({ "line": 1, "character": 6 })
+        );
+
+        let completion = ide
+            .completion(
+                "file:///site/default.asp",
+                TextPosition {
+                    line: 4,
+                    character: 35,
+                },
+            )
+            .expect("member completion");
+        assert!(completion
+            .as_array()
+            .expect("completion items")
+            .iter()
+            .any(|item| item["label"] == serde_json::json!("DisplayName")));
+    }
+
+    #[test]
+    fn refreshes_include_symbols_after_include_edit() {
+        let mut ide = Ide::default();
+        ide.set_open_document(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"helpers.inc\"-->\n<%\nOption Explicit\nResponse.Write BuildName(\"Ada\")\n%>".to_string(),
+        );
+        ide.replace_indexed_documents(vec![(
+            "file:///site/helpers.inc".to_string(),
+            "<%\nFunction BuildName(first)\nBuildName = first\nEnd Function\n%>".to_string(),
+        )]);
+
+        assert!(!ide
+            .diagnostics("file:///site/default.asp")
+            .expect("initial diagnostics")
+            .iter()
+            .any(|diagnostic| diagnostic.to_string().contains("BuildName")));
+
+        ide.replace_indexed_documents(vec![(
+            "file:///site/helpers.inc".to_string(),
+            "<%\nFunction BuildTitle(first)\nBuildTitle = first\nEnd Function\n%>".to_string(),
+        )]);
+
+        assert!(ide
+            .diagnostics("file:///site/default.asp")
+            .expect("updated diagnostics")
+            .iter()
+            .any(|diagnostic| diagnostic.to_string().contains("BuildName")));
+
+        ide.replace_document_text(
+            "file:///site/default.asp".to_string(),
+            "<!--#include file=\"helpers.inc\"-->\n<%\nOption Explicit\nResponse.Write BuildTitle(\"Ada\")\n%>".to_string(),
+        );
+        assert!(!ide
+            .diagnostics("file:///site/default.asp")
+            .expect("refreshed diagnostics")
+            .iter()
+            .any(|diagnostic| diagnostic.to_string().contains("BuildTitle")));
     }
 
     #[test]

@@ -2939,6 +2939,92 @@ fn indexes_unopened_workspace_files_for_vbscript_references() {
 }
 
 #[test]
+fn uses_include_context_for_pushed_diagnostics_and_hover() {
+    let root = std::env::temp_dir().join(format!(
+        "asp-lsp-rust-include-context-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    fs::write(
+        root.join("helpers.inc"),
+        "<%\nFunction ReadDashboardFilter()\nReadDashboardFilter = \"all\"\nEnd Function\n%>",
+    )
+    .expect("write include");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let root_uri = format!("file://{}", root.to_string_lossy());
+    let page_uri = format!("{root_uri}/default.asp");
+
+    initialize_with_root(&mut stdin, &mut reader, &root_uri);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": page_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<!-- #include file=\"helpers.inc\" -->\n<%\nOption Explicit\nDim filter\nfilter = ReadDashboardFilter()\n%>",
+                },
+            },
+        }),
+    );
+
+    let diagnostics = read_until(&mut reader, |message| {
+        message["method"] == json!("textDocument/publishDiagnostics")
+            && message["params"]["uri"] == json!(page_uri)
+    });
+    let serialized = diagnostics.to_string();
+    assert!(
+        !serialized.contains("ReadDashboardFilter"),
+        "include function should not be undeclared: {serialized}"
+    );
+    let items = diagnostics["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    let unique = items
+        .iter()
+        .map(|diagnostic| diagnostic.to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        items.len(),
+        unique.len(),
+        "diagnostics should not be duplicated"
+    );
+
+    let hover = request(
+        &mut stdin,
+        &mut reader,
+        30,
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": page_uri },
+            "position": { "line": 4, "character": 17 },
+        }),
+    );
+    assert!(hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("hover markdown")
+        .contains("Function ReadDashboardFilter()"));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn refreshes_workspace_index_after_file_operations() {
     let root = std::env::temp_dir().join(format!(
         "asp-lsp-rust-file-operations-{}",
@@ -3526,10 +3612,7 @@ fn initialize_with_settings_and_root(
         initialize["result"]["capabilities"]["completionProvider"]["triggerCharacters"],
         json!(["<", ".", "\"", "'", ":", "#", "(", " "])
     );
-    assert_eq!(
-        initialize["result"]["capabilities"]["diagnosticProvider"]["workspaceDiagnostics"],
-        json!(false)
-    );
+    assert!(initialize["result"]["capabilities"]["diagnosticProvider"].is_null());
     assert_eq!(
         initialize["result"]["capabilities"]["executeCommandProvider"]["commands"],
         json!([

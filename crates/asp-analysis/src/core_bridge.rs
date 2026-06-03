@@ -208,8 +208,13 @@ impl CoreState {
                 let analysis = VbAnalysisCache::new(parsed);
                 let symbols =
                     self.cached_collect_symbols_with_analysis(request, parsed, context, &analysis);
+                let diagnostic_symbols = symbols_with_context_symbols(&symbols, context);
                 let diagnostics = self.cached_diagnostics_with_analysis(
-                    request, parsed, &symbols, context, &analysis,
+                    request,
+                    parsed,
+                    &diagnostic_symbols,
+                    context,
+                    &analysis,
                 );
                 json!({ "diagnostics": diagnostics, "symbols": symbols })
             }
@@ -228,8 +233,13 @@ impl CoreState {
                 let analysis = VbAnalysisCache::new(&parsed);
                 let symbols =
                     self.cached_collect_symbols_with_analysis(request, &parsed, context, &analysis);
+                let diagnostic_symbols = symbols_with_context_symbols(&symbols, context);
                 let diagnostics = self.cached_diagnostics_with_analysis(
-                    request, &parsed, &symbols, context, &analysis,
+                    request,
+                    &parsed,
+                    &diagnostic_symbols,
+                    context,
+                    &analysis,
                 );
                 json!({ "diagnostics": diagnostics, "symbols": symbols })
             }
@@ -2940,10 +2950,50 @@ fn collect_symbols_from_analysis(
     add_server_object_symbols(parsed, &mut symbols);
     add_implicit_assignment_symbols(parsed, context, analysis, &mut symbols);
     apply_type_annotations(analysis, &mut symbols);
-    infer_assigned_types(parsed, context, analysis, &mut symbols);
+    infer_assigned_types_with_context_symbols(parsed, context, analysis, &mut symbols);
     apply_variant_fallback_types(&mut symbols);
     strip_null_fields_from_values(&mut symbols);
     symbols
+}
+
+fn context_symbols(context: &Value) -> Vec<Value> {
+    context
+        .get("symbols")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect()
+}
+
+fn infer_assigned_types_with_context_symbols(
+    parsed: &Value,
+    context: &Value,
+    analysis: &VbAnalysisCache<'_>,
+    symbols: &mut [Value],
+) {
+    let context_symbols = context_symbols(context);
+    if context_symbols.is_empty() {
+        infer_assigned_types(parsed, context, analysis, symbols);
+        return;
+    }
+
+    let local_len = symbols.len();
+    let mut combined_symbols = symbols.to_vec();
+    combined_symbols.extend(context_symbols);
+    infer_assigned_types(parsed, context, analysis, &mut combined_symbols);
+    for (target, inferred) in symbols
+        .iter_mut()
+        .zip(combined_symbols.into_iter().take(local_len))
+    {
+        *target = inferred;
+    }
+}
+
+fn symbols_with_context_symbols(symbols: &[Value], context: &Value) -> Vec<Value> {
+    let mut combined = symbols.to_vec();
+    combined.extend(context_symbols(context));
+    combined
 }
 
 fn strip_null_fields_from_values(values: &mut [Value]) {

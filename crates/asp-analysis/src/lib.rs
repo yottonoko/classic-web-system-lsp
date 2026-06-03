@@ -94,6 +94,23 @@ impl Analyzer {
         Ok(symbols.as_array().cloned().unwrap_or_default())
     }
 
+    pub fn vb_symbols_with_context(
+        &mut self,
+        uri: &str,
+        text: &str,
+        settings: &Value,
+        context: &Value,
+    ) -> Result<Vec<Value>, String> {
+        let symbols = self.core.handle_value(&json!({
+            "operation": "collectVbscriptSymbolsFromText",
+            "uri": uri,
+            "text": text,
+            "settings": settings,
+            "context": context,
+        }))?;
+        Ok(symbols.as_array().cloned().unwrap_or_default())
+    }
+
     pub fn vb_diagnostics(
         &mut self,
         uri: &str,
@@ -110,18 +127,53 @@ impl Analyzer {
             .collect())
     }
 
+    pub fn vb_diagnostics_with_context(
+        &mut self,
+        uri: &str,
+        text: &str,
+        settings: &Value,
+        context: &Value,
+    ) -> Result<Vec<Value>, String> {
+        let semantic = self.analyze_vbscript_with_context(uri, text, settings, context)?;
+        Ok(semantic
+            .get("diagnostics")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect())
+    }
+
     fn analyze_vbscript(
         &mut self,
         uri: &str,
         text: &str,
         settings: &Value,
     ) -> Result<Value, String> {
+        self.analyze_vbscript_with_context(
+            uri,
+            text,
+            settings,
+            &settings
+                .get("vbscript")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        )
+    }
+
+    fn analyze_vbscript_with_context(
+        &mut self,
+        uri: &str,
+        text: &str,
+        settings: &Value,
+        context: &Value,
+    ) -> Result<Value, String> {
         Ok(self.core.handle_value(&json!({
             "operation": "analyzeVbscriptFromText",
             "uri": uri,
             "text": text,
             "settings": settings,
-            "context": settings.get("vbscript").cloned().unwrap_or_else(|| json!({})),
+            "context": context,
         }))?)
     }
 
