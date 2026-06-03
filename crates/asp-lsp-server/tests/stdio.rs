@@ -349,6 +349,128 @@ fn publishes_fast_parser_then_debounced_vbscript_diagnostics() {
 }
 
 #[test]
+fn debug_output_logs_verbose_and_debug_only_diagnostics() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+
+    initialize_with_settings(
+        &mut stdin,
+        &mut reader,
+        json!({ "debug": { "output": "debug" }, "diagnostics": { "debounceMs": 0 } }),
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": "file:///tmp/default.asp",
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nOption Explicit\nmissingName = 1\n%>",
+                },
+            },
+        }),
+    );
+
+    let mut saw_debug_only = false;
+    let mut saw_verbose = false;
+    for _ in 0..20 {
+        let message = read_message(&mut reader);
+        let text = message.to_string();
+        if text.contains("diagnostics.start") {
+            saw_debug_only = true;
+        }
+        if text.contains("LSP check completed") {
+            saw_verbose = true;
+        }
+        if saw_debug_only && saw_verbose {
+            break;
+        }
+    }
+    assert!(
+        saw_debug_only,
+        "debug output should include debug-only diagnostics logs"
+    );
+    assert!(
+        saw_verbose,
+        "debug output should include existing verbose diagnostics logs"
+    );
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
+fn verbose_output_omits_debug_only_diagnostics() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+
+    initialize_with_settings(
+        &mut stdin,
+        &mut reader,
+        json!({ "debug": { "output": "verbose" }, "diagnostics": { "debounceMs": 0 } }),
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": "file:///tmp/default.asp",
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nOption Explicit\nmissingName = 1\n%>",
+                },
+            },
+        }),
+    );
+
+    let mut saw_debug_only = false;
+    let mut saw_verbose = false;
+    for _ in 0..20 {
+        let message = read_message(&mut reader);
+        let text = message.to_string();
+        if text.contains("diagnostics.start") {
+            saw_debug_only = true;
+        }
+        if text.contains("LSP check completed") {
+            saw_verbose = true;
+            break;
+        }
+    }
+    assert!(
+        saw_verbose,
+        "verbose output should keep existing diagnostics logs"
+    );
+    assert!(
+        !saw_debug_only,
+        "verbose output must not include debug-only diagnostics logs"
+    );
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
 fn publishes_embedded_sidecar_diagnostics_over_stdio_lsp() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
         .env("ASP_LSP_EMBEDDED_SIDECAR_PATH", embedded_sidecar_path())

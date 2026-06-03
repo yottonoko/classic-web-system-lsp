@@ -166,6 +166,13 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.javascript.ignoreProjectConfig"],
     ).toBeTruthy();
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.debug.output"]).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["off", "summary", "verbose", "debug"],
+        default: "off",
+      }),
+    );
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.implicitByRef"],
     ).toBeTruthy();

@@ -216,7 +216,8 @@
           "enum": [
             "off",
             "summary",
-            "verbose"
+            "verbose",
+            "debug"
           ],
           "default": "off",
           "description": "%configuration.debug.output.description%"

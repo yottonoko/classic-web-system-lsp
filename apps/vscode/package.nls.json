@@ -6,7 +6,7 @@
   "configuration.defaultLanguage.description": "Default server-side script language for Classic ASP pages.",
   "configuration.checkJs.description": "Enable semantic checking for client JavaScript regions.",
   "configuration.diagnostics.debounceMs.description": "Delay, in milliseconds, before publishing diagnostics after text changes. Set to 0 to publish immediately.",
-  "configuration.debug.output.description": "Controls asp-lsp debug timing logs in the VS Code Output channel. Off disables logs, summary logs operation start and completion, and verbose adds per-step timings.",
+  "configuration.debug.output.description": "Controls asp-lsp debug logs in the VS Code Output channel. Off disables logs, summary logs operation summaries, verbose adds detailed timings, and debug adds high-frequency diagnostic investigation logs.",
   "configuration.javascript.unusedDiagnostics.description": "Report unused JavaScript and JScript locals and parameters as hint diagnostics.",
   "configuration.javascript.autoImports.description": "Enable TypeScript-powered JavaScript and JScript auto import completions and quick fixes.",
   "configuration.javascript.ignoreProjectConfig.description": "Ignore nearest tsconfig.json or jsconfig.json when building embedded JavaScript and JScript language service projects.",

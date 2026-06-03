@@ -85,7 +85,7 @@ export interface AspDiagnosticsSettings {
   debounceMs?: number;
 }
 
-export type AspDebugOutputLevel = "off" | "summary" | "verbose";
+export type AspDebugOutputLevel = "off" | "summary" | "verbose" | "debug";
 
 export interface AspDebugSettings {
   output?: AspDebugOutputLevel;

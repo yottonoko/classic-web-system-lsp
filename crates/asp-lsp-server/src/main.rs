@@ -61,6 +61,7 @@ fn run() -> Result<(), String> {
             }),
         )
         .map_err(|error| error.to_string())?;
+    state.log_workspace_index_completed(&connection, "workspaceRoots")?;
     publish_backend_status(&connection, &state)?;
 
     loop {
@@ -155,6 +156,23 @@ impl ServerState {
         self.set_workspace_roots_with_reason(self.workspace_roots.clone(), "workspaceIndex")
     }
 
+    fn log_workspace_index_completed(
+        &self,
+        connection: &Connection,
+        reason: &str,
+    ) -> Result<(), String> {
+        log_debug_only(
+            connection,
+            &self.settings,
+            format!(
+                "[asp-lsp] workspaceIndex.completed: reason={reason}, roots={}, files={}, maxFiles={}",
+                self.workspace_roots.len(),
+                self.indexed_files.len(),
+                workspace_max_index_files(&self.settings)
+            ),
+        )
+    }
+
     fn execute_command(&mut self, command: &str) -> Result<Value, String> {
         match command {
             "aspLsp.server.reindexWorkspace" => {
@@ -192,6 +210,11 @@ impl ServerState {
     fn publish_due_diagnostics(&mut self, connection: &Connection) -> Result<(), String> {
         for uri in self.diagnostics.take_due() {
             let started_at = Instant::now();
+            log_debug_only(
+                connection,
+                &self.settings,
+                format!("[asp-lsp] diagnostics.start: uri={uri}"),
+            )?;
             let diagnostics = self.full_diagnostics(Some(connection), &uri)?;
             let diagnostic_count = diagnostics.len();
             send_diagnostics(connection, &uri, diagnostics)?;
@@ -405,6 +428,17 @@ impl ServerState {
         params: Value,
     ) -> Result<Option<Value>, String> {
         let request_id = self.next_sidecar_request_id();
+        let open_virtual_count = open_virtuals.len();
+        if let Some(connection) = connection {
+            log_debug_only(
+                connection,
+                &self.settings,
+                format!(
+                    "[asp-lsp] sidecar.request: operation={operation}, language={}, openVirtuals={open_virtual_count}",
+                    mapped.document.language_id
+                ),
+            )?;
+        }
         let response = match self.sidecar.request(EmbeddedRequest {
             id: request_id,
             operation: operation.to_string(),
@@ -671,10 +705,11 @@ fn collect_embedded_diagnostics_from_virtuals(
     project_fingerprint: &str,
     project_reset_reason: &str,
     request_id: &mut u64,
-    _uri: &str,
+    uri: &str,
     virtuals: Vec<MappedVirtualDocument>,
     parallelism: usize,
 ) -> Result<Vec<Value>, String> {
+    let virtual_count = virtuals.len();
     let open_virtuals = virtuals
         .iter()
         .map(|mapped| mapped.document.clone())
@@ -699,6 +734,29 @@ fn collect_embedded_diagnostics_from_virtuals(
             params: Value::Null,
         });
         mapped_requests.push(mapped);
+    }
+    let languages = mapped_requests
+        .iter()
+        .map(|mapped| mapped.document.language_id.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    if let Some(connection) = connection {
+        log_debug_only(
+            connection,
+            settings,
+            format!(
+                "[asp-lsp] embeddedDiagnostics.virtuals: uri={uri}, virtuals={virtual_count}, requests={}, languages={languages}, parallelism={parallelism}",
+                mapped_requests.len()
+            ),
+        )?;
+        log_debug_only(
+            connection,
+            settings,
+            format!(
+                "[asp-lsp] sidecar.requestBatch: operation=diagnostics, requests={}, parallelism={parallelism}, languages={languages}",
+                mapped_requests.len()
+            ),
+        )?;
     }
 
     let responses = sidecar.request_batch(requests, parallelism);
@@ -1494,6 +1552,9 @@ fn handle_request(
                     return Ok(false);
                 }
             };
+            if command == "aspLsp.server.reindexWorkspace" {
+                state.log_workspace_index_completed(connection, "executeCommand")?;
+            }
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -1566,6 +1627,7 @@ fn handle_notification(
         }
         "workspace/didCreateFiles" | "workspace/didRenameFiles" | "workspace/didDeleteFiles" => {
             state.refresh_workspace_index()?;
+            state.log_workspace_index_completed(connection, "fileOperations")?;
         }
         "workspace/didChangeWatchedFiles" => {
             let affects_workspace_index =
@@ -1580,6 +1642,7 @@ fn handle_notification(
             }
             if affects_workspace_index {
                 state.refresh_workspace_index()?;
+                state.log_workspace_index_completed(connection, "watchedFiles")?;
             } else {
                 state.bump_sidecar_project_generation("watchedFiles");
             }
@@ -2060,6 +2123,38 @@ mod tests {
     }
 
     #[test]
+    fn debug_output_level_uses_ordered_levels() {
+        assert_eq!(
+            super::debug_output_level(&Value::Null),
+            super::DebugOutputLevel::Off
+        );
+        assert_eq!(
+            super::debug_output_level(&json!({ "debug": { "output": "summary" } })),
+            super::DebugOutputLevel::Summary
+        );
+        assert_eq!(
+            super::debug_output_level(&json!({ "debug": { "output": "verbose" } })),
+            super::DebugOutputLevel::Verbose
+        );
+        assert_eq!(
+            super::debug_output_level(&json!({ "debug": { "output": "debug" } })),
+            super::DebugOutputLevel::Debug
+        );
+        assert!(super::debug_output_at_least(
+            &json!({ "debug": { "output": "debug" } }),
+            super::DebugOutputLevel::Verbose
+        ));
+        assert!(!super::debug_output_at_least(
+            &json!({ "debug": { "output": "verbose" } }),
+            super::DebugOutputLevel::Debug
+        ));
+        assert!(!super::debug_output_at_least(
+            &json!({ "debug": { "output": "off" } }),
+            super::DebugOutputLevel::Summary
+        ));
+    }
+
+    #[test]
     fn watched_asp_like_files_affect_workspace_index() {
         assert!(super::watched_file_changes_affect_workspace_index(&json!({
             "changes": [{ "uri": "file:///site/default.asp", "type": 2 }]
@@ -2257,17 +2352,38 @@ fn format_on_save_enabled(settings: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn log_debug_summary(
-    connection: &Connection,
-    settings: &Value,
-    message: String,
-) -> Result<(), String> {
-    if settings
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum DebugOutputLevel {
+    Off,
+    Summary,
+    Verbose,
+    Debug,
+}
+
+fn debug_output_level(settings: &Value) -> DebugOutputLevel {
+    match settings
         .get("debug")
         .and_then(|debug| debug.get("output"))
         .and_then(Value::as_str)
-        != Some("verbose")
     {
+        Some("summary") => DebugOutputLevel::Summary,
+        Some("verbose") => DebugOutputLevel::Verbose,
+        Some("debug") => DebugOutputLevel::Debug,
+        _ => DebugOutputLevel::Off,
+    }
+}
+
+fn debug_output_at_least(settings: &Value, minimum: DebugOutputLevel) -> bool {
+    debug_output_level(settings) >= minimum
+}
+
+fn log_debug_at(
+    connection: &Connection,
+    settings: &Value,
+    minimum: DebugOutputLevel,
+    message: String,
+) -> Result<(), String> {
+    if !debug_output_at_least(settings, minimum) {
         return Ok(());
     }
     connection
@@ -2280,6 +2396,22 @@ fn log_debug_summary(
             .into(),
         )
         .map_err(|error| error.to_string())
+}
+
+fn log_debug_summary(
+    connection: &Connection,
+    settings: &Value,
+    message: String,
+) -> Result<(), String> {
+    log_debug_at(connection, settings, DebugOutputLevel::Verbose, message)
+}
+
+fn log_debug_only(
+    connection: &Connection,
+    settings: &Value,
+    message: String,
+) -> Result<(), String> {
+    log_debug_at(connection, settings, DebugOutputLevel::Debug, message)
 }
 
 fn log_include_impact(

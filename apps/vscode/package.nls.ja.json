@@ -6,7 +6,7 @@
   "configuration.defaultLanguage.description": "Classic ASP page の既定 server-side script language です。",
   "configuration.checkJs.description": "client JavaScript region の semantic checking を有効にします。",
   "configuration.diagnostics.debounceMs.description": "text change 後に diagnostics を publish するまでの待ち時間を milliseconds で指定します。0 なら即時 publish します。",
-  "configuration.debug.output.description": "VS Code Output channel に出す asp-lsp debug timing log を制御します。off は出力なし、summary は処理の開始/完了、verbose は step ごとの時間も出力します。",
+  "configuration.debug.output.description": "VS Code Output channel に出す asp-lsp debug log を制御します。off は出力なし、summary は処理 summary、verbose は詳細 timing、debug は高頻度の diagnostics 調査 log も出力します。",
   "configuration.javascript.unusedDiagnostics.description": "未使用の JavaScript / JScript local variable と parameter を hint diagnostic として報告します。",
   "configuration.javascript.autoImports.description": "TypeScript による JavaScript / JScript auto import completion と quick fix を有効にします。",
   "configuration.javascript.ignoreProjectConfig.description": "embedded JavaScript / JScript language service project を作るときに、nearest tsconfig.json / jsconfig.json を無視します。",
