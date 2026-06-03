@@ -210,6 +210,12 @@ function parseVbscriptCstTypeScript(text: string, sourceText = text, baseOffset 
       );
       continue;
     }
+    if (first === "for" && second !== "each") {
+      const node = createStatementNode("For", token, significant, index);
+      addChild(current, node);
+      stack.push(node);
+      continue;
+    }
     if (first === "for" && second === "each" && significant[index + 2]?.kind === "identifier") {
       const nameToken = significant[index + 2];
       const node: VbCstNode = {
@@ -555,14 +561,18 @@ function closeBlock(stack: VbCstNode[], endKind: string | undefined, endToken: V
                 : endKind === "wend"
                   ? "While"
                   : endKind === "next"
-                    ? "ForEach"
+                    ? "For"
                     : "Procedure";
-  const index = findLastIndex(stack, (node) => node.kind === targetKind);
+  const index =
+    endKind === "next"
+      ? findLastIndex(stack, (node) => node.kind === "For" || node.kind === "ForEach")
+      : findLastIndex(stack, (node) => node.kind === targetKind);
   if (index <= 0) {
     return;
   }
   const [node] = stack.splice(index, 1);
   node.end = endToken.end;
+  node.closeStart = endToken.start;
   node.scopeEnd = endToken.end;
 }
 
@@ -727,7 +737,7 @@ function arrayDimensionTexts(tokens: VbToken[]): string[] {
 }
 
 function createStatementNode(
-  kind: "If" | "Select" | "DoLoop" | "While" | "Call" | "Assignment" | "Expression",
+  kind: "For" | "If" | "Select" | "DoLoop" | "While" | "Call" | "Assignment" | "Expression",
   startToken: VbToken,
   tokens: VbToken[],
   startIndex: number,

@@ -849,6 +849,133 @@ fn serves_phase_two_navigation_requests_over_stdio_lsp() {
 }
 
 #[test]
+fn serves_expanded_matching_brace_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let uri = "file:///tmp/matching.inc";
+    let broken_uri = "file:///tmp/broken.asp";
+
+    initialize(&mut stdin, &mut reader);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<div>\n<span>\n<%\nIf True Then\n  Select Case 1\n  Case 1\n  End Select\n  With Response\n  End With\n  For i = 1 To 2\n    For Each item In items\n    Next\n    Do While i < 3\n    Loop Until i > 5\n    Do\n    Loop\n    Do Until i > 10\n    Loop\n    Do\n    Loop While i < 2\n    While i < 4\n    Wend\n  Next\nEnd If\n%>\n</span>\n<br>\n</div>",
+                },
+            },
+        }),
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": broken_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nIf True Then\n",
+                },
+            },
+        }),
+    );
+
+    for (id, line, character, expected) in [
+        (90, 3, 0, json!({ "line": 23, "character": 0 })),
+        (91, 4, 2, json!({ "line": 6, "character": 2 })),
+        (92, 7, 2, json!({ "line": 8, "character": 2 })),
+        (93, 9, 2, json!({ "line": 22, "character": 2 })),
+        (94, 10, 4, json!({ "line": 11, "character": 4 })),
+        (95, 12, 4, json!({ "line": 13, "character": 4 })),
+        (96, 14, 4, json!({ "line": 15, "character": 4 })),
+        (97, 16, 4, json!({ "line": 17, "character": 4 })),
+        (98, 18, 4, json!({ "line": 19, "character": 4 })),
+        (99, 20, 4, json!({ "line": 21, "character": 4 })),
+        (100, 2, 0, json!({ "line": 24, "character": 0 })),
+        (101, 1, 0, json!({ "line": 25, "character": 0 })),
+        (102, 0, 0, json!({ "line": 27, "character": 0 })),
+    ] {
+        let response = request(
+            &mut stdin,
+            &mut reader,
+            id,
+            "rust-analyzer/matchingBrace",
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character },
+            }),
+        );
+        assert_eq!(response["result"], expected);
+    }
+
+    let nested = request(
+        &mut stdin,
+        &mut reader,
+        103,
+        "rust-analyzer/matchingBrace",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 10, "character": 8 },
+        }),
+    );
+    assert_eq!(
+        nested["result"],
+        json!([
+            { "line": 10, "character": 4 },
+            { "line": 11, "character": 4 }
+        ])
+    );
+
+    let void_tag = request(
+        &mut stdin,
+        &mut reader,
+        104,
+        "rust-analyzer/matchingBrace",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 26, "character": 0 },
+        }),
+    );
+    assert_eq!(
+        void_tag["result"],
+        json!([
+            { "line": 0, "character": 0 },
+            { "line": 27, "character": 0 }
+        ])
+    );
+
+    let broken = request(
+        &mut stdin,
+        &mut reader,
+        105,
+        "rust-analyzer/matchingBrace",
+        json!({
+            "textDocument": { "uri": broken_uri },
+            "position": { "line": 0, "character": 0 },
+        }),
+    );
+    assert_eq!(broken["result"], Value::Null);
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
 fn serves_phase_three_edit_requests_over_stdio_lsp() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
         .stdin(Stdio::piped())

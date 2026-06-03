@@ -11,6 +11,15 @@ pub struct Analyzer {
 }
 
 impl Analyzer {
+    pub fn parse_asp(&mut self, uri: &str, text: &str, settings: &Value) -> Result<Value, String> {
+        Ok(self.core.handle_value(&json!({
+            "operation": "parseAspDocument",
+            "uri": uri,
+            "text": text,
+            "settings": settings,
+        }))?)
+    }
+
     pub fn parse_asp_skeleton(
         &mut self,
         uri: &str,
@@ -155,6 +164,10 @@ pub fn parser_diagnostics_once(
 
 pub fn parse_asp_skeleton_once(uri: &str, text: &str, settings: &Value) -> Result<Value, String> {
     Analyzer::default().parse_asp_skeleton(uri, text, settings)
+}
+
+pub fn parse_asp_once(uri: &str, text: &str, settings: &Value) -> Result<Value, String> {
+    Analyzer::default().parse_asp(uri, text, settings)
 }
 
 pub fn include_refs_once(uri: &str, text: &str, settings: &Value) -> Result<Vec<Value>, String> {

@@ -47,6 +47,17 @@ fn parse_asp(
     )
 }
 
+#[salsa::tracked(returns(clone))]
+fn parse_asp_full(
+    db: &dyn salsa::Database,
+    source_file: SourceFile,
+    settings: WorkspaceSettings,
+) -> Result<Value, String> {
+    let settings_value =
+        serde_json::from_str(settings.json(db)).map_err(|error| error.to_string())?;
+    asp_analysis::parse_asp_once(source_file.uri(db), source_file.text(db), &settings_value)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct AspFileIr {
     diagnostics: Vec<Value>,
@@ -1080,6 +1091,21 @@ impl Ide {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Value::Null);
         };
+        let text = document.text(&self.db);
+        let Some(cursor_offset) =
+            position_to_utf16_offset(text, position.line as usize, position.character as usize)
+        else {
+            return Ok(Value::Null);
+        };
+        let parsed = parse_asp_full(&self.db, document.source_file, self.settings.input)?;
+        let mut candidates = Vec::new();
+        collect_vb_block_matching_candidates(&parsed, &mut candidates);
+        collect_asp_delimiter_matching_candidates(&parsed, &mut candidates);
+        collect_html_tag_matching_candidates(&parsed, &mut candidates);
+        if let Some(response) = matching_candidate_response(text, cursor_offset, candidates) {
+            return Ok(response);
+        }
+
         let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
         let mut matching_ranges = symbols
             .iter()
@@ -2246,6 +2272,15 @@ struct ItemTextRange {
     end_line: u32,
     range: Value,
     text: String,
+}
+
+#[derive(Clone, Debug)]
+struct MatchingBraceCandidate {
+    priority: u8,
+    span_start: usize,
+    span_end: usize,
+    start_anchor: usize,
+    end_anchor: usize,
 }
 
 struct InlayHintOptions {
@@ -4452,6 +4487,189 @@ fn empty_range() -> Value {
         "start": { "line": 0, "character": 0 },
         "end": { "line": 0, "character": 0 },
     })
+}
+
+fn collect_vb_block_matching_candidates(
+    parsed: &Value,
+    candidates: &mut Vec<MatchingBraceCandidate>,
+) {
+    if let Some(cst) = parsed.get("cst") {
+        collect_vb_block_matching_candidates_from_node(cst, candidates);
+    }
+}
+
+fn collect_vb_block_matching_candidates_from_node(
+    node: &Value,
+    candidates: &mut Vec<MatchingBraceCandidate>,
+) {
+    if let Some(vbscript) = node.get("vbscript") {
+        collect_vb_block_matching_candidates_from_vb_node(vbscript, candidates);
+    }
+    for child in node
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        collect_vb_block_matching_candidates_from_node(child, candidates);
+    }
+}
+
+fn collect_vb_block_matching_candidates_from_vb_node(
+    node: &Value,
+    candidates: &mut Vec<MatchingBraceCandidate>,
+) {
+    if is_matching_vb_block_kind(node.get("kind").and_then(Value::as_str).unwrap_or_default()) {
+        if let (Some(start), Some(close_start), Some(end)) = (
+            matching_value_usize(node, "start"),
+            matching_value_usize(node, "closeStart"),
+            matching_value_usize(node, "end"),
+        ) {
+            if start < close_start && close_start < end {
+                candidates.push(MatchingBraceCandidate {
+                    priority: 0,
+                    span_start: start,
+                    span_end: end,
+                    start_anchor: start,
+                    end_anchor: close_start,
+                });
+            }
+        }
+    }
+    for child in node
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        collect_vb_block_matching_candidates_from_vb_node(child, candidates);
+    }
+}
+
+fn is_matching_vb_block_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "Class"
+            | "Procedure"
+            | "Property"
+            | "If"
+            | "Select"
+            | "DoLoop"
+            | "While"
+            | "For"
+            | "ForEach"
+            | "With"
+    )
+}
+
+fn collect_asp_delimiter_matching_candidates(
+    parsed: &Value,
+    candidates: &mut Vec<MatchingBraceCandidate>,
+) {
+    for region in parsed
+        .get("regions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(kind) = region.get("kind").and_then(Value::as_str) else {
+            continue;
+        };
+        if !matches!(kind, "asp-block" | "asp-expression" | "asp-directive") {
+            continue;
+        }
+        let (Some(start), Some(content_end), Some(end)) = (
+            matching_value_usize(region, "start"),
+            matching_value_usize(region, "contentEnd"),
+            matching_value_usize(region, "end"),
+        ) else {
+            continue;
+        };
+        if start < content_end && content_end + 2 <= end {
+            candidates.push(MatchingBraceCandidate {
+                priority: 1,
+                span_start: start,
+                span_end: end,
+                start_anchor: start,
+                end_anchor: content_end,
+            });
+        }
+    }
+}
+
+fn collect_html_tag_matching_candidates(
+    parsed: &Value,
+    candidates: &mut Vec<MatchingBraceCandidate>,
+) {
+    for pair in parsed
+        .get("htmlTagPairs")
+        .and_then(Value::as_array)
+        .or_else(|| {
+            parsed
+                .get("cst")
+                .and_then(|cst| cst.get("htmlTagPairs"))
+                .and_then(Value::as_array)
+        })
+        .into_iter()
+        .flatten()
+    {
+        let (Some(start), Some(close_start), Some(close_end)) = (
+            matching_value_usize(pair, "openStart"),
+            matching_value_usize(pair, "closeStart"),
+            matching_value_usize(pair, "closeEnd"),
+        ) else {
+            continue;
+        };
+        if start < close_start && close_start < close_end {
+            candidates.push(MatchingBraceCandidate {
+                priority: 2,
+                span_start: start,
+                span_end: close_end,
+                start_anchor: start,
+                end_anchor: close_start,
+            });
+        }
+    }
+}
+
+fn matching_candidate_response(
+    text: &str,
+    cursor_offset: usize,
+    mut candidates: Vec<MatchingBraceCandidate>,
+) -> Option<Value> {
+    candidates.retain(|candidate| {
+        candidate.span_start <= cursor_offset && cursor_offset <= candidate.span_end
+    });
+    candidates.sort_by_key(|candidate| {
+        (
+            candidate.priority,
+            candidate.span_end.saturating_sub(candidate.span_start),
+            candidate.span_start,
+            candidate.span_end,
+        )
+    });
+    let candidate = candidates.first()?;
+    let start = position_value_from_offset(text, candidate.start_anchor)?;
+    let end = position_value_from_offset(text, candidate.end_anchor)?;
+    if cursor_offset == candidate.start_anchor {
+        Some(end)
+    } else if cursor_offset == candidate.end_anchor {
+        Some(start)
+    } else {
+        Some(serde_json::json!([start, end]))
+    }
+}
+
+fn position_value_from_offset(text: &str, offset: usize) -> Option<Value> {
+    let (line, character) = utf16_position_at(text, offset)?;
+    Some(serde_json::json!({ "line": line, "character": character }))
+}
+
+fn matching_value_usize(value: &Value, key: &str) -> Option<usize> {
+    value
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|value| value.try_into().ok())
 }
 
 fn range_contains_position(range: &Value, position: TextPosition) -> bool {

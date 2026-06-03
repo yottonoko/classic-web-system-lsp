@@ -536,12 +536,18 @@ fn parse_asp_document(uri: &str, text: &str, settings: &Value) -> Value {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let html_tag_pairs = cst
+        .get("htmlTagPairs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let default_language = default_language_from_directives(&directives, settings);
     json!({
         "uri": uri,
         "text": text,
         "cst": cst,
         "regions": regions,
+        "htmlTagPairs": html_tag_pairs,
         "directives": directives,
         "includes": includes,
         "serverObjects": server_objects,
@@ -635,6 +641,11 @@ fn parse_asp_document_skeleton(uri: &str, text: &str, settings: &Value) -> Value
             "errors": errors,
         },
         "regions": top_level_regions,
+        "htmlTagPairs": scan
+            .html_tag_pairs
+            .iter()
+            .map(|pair| html_tag_pair_to_value(&index, pair))
+            .collect::<Vec<_>>(),
         "directives": directives,
         "includes": scan.includes.iter().map(include_to_value).collect::<Vec<_>>(),
         "serverObjects": scan.server_objects,
@@ -768,6 +779,11 @@ fn parse_asp_cst(text: &str, settings: &Value) -> Value {
         "text": text,
         "tokens": tokens,
         "children": nodes,
+        "htmlTagPairs": scan
+            .html_tag_pairs
+            .iter()
+            .map(|pair| html_tag_pair_to_value(&index, pair))
+            .collect::<Vec<_>>(),
         "serverObjects": scan.server_objects,
         "errors": errors,
     })
@@ -784,6 +800,7 @@ struct DiagnosticSpan {
 struct AspScan {
     inline_regions: Vec<Region>,
     tag_regions: Vec<Region>,
+    html_tag_pairs: Vec<HtmlTagPair>,
     includes: Vec<IncludeRef>,
     server_objects: Vec<Value>,
     diagnostics: Vec<DiagnosticSpan>,
@@ -825,6 +842,15 @@ struct HtmlTag {
 }
 
 #[derive(Clone)]
+struct HtmlTagPair {
+    name: String,
+    open_start: usize,
+    open_end: usize,
+    close_start: usize,
+    close_end: usize,
+}
+
+#[derive(Clone)]
 struct AttributeSpan {
     name: String,
     value: Value,
@@ -836,6 +862,7 @@ fn scan_html_and_asp(index: &TextIndex<'_>, settings: &Value) -> AspScan {
     let mut scan = AspScan {
         inline_regions: Vec::new(),
         tag_regions: Vec::new(),
+        html_tag_pairs: Vec::new(),
         includes: Vec::new(),
         server_objects: Vec::new(),
         diagnostics: Vec::new(),
@@ -847,6 +874,7 @@ fn scan_html_and_asp(index: &TextIndex<'_>, settings: &Value) -> AspScan {
             .unwrap_or("VBScript"),
     );
     let mut cursor = 0usize;
+    let mut tag_stack: Vec<HtmlTag> = Vec::new();
     while cursor < index.len() {
         if index.starts_with(cursor, "<%") {
             let region = parse_asp_region_at(
@@ -882,6 +910,21 @@ fn scan_html_and_asp(index: &TextIndex<'_>, settings: &Value) -> AspScan {
             cursor += 1;
             continue;
         };
+        if tag.closing {
+            if tag_stack.last().map(|open| open.name.as_str()) == Some(tag.name.as_str()) {
+                if let Some(open) = tag_stack.pop() {
+                    scan.html_tag_pairs.push(HtmlTagPair {
+                        name: open.name,
+                        open_start: open.start,
+                        open_end: open.end,
+                        close_start: tag.start,
+                        close_end: tag.end,
+                    });
+                }
+            }
+            cursor = tag.end;
+            continue;
+        }
         if !tag.closing {
             scan.tag_regions
                 .extend(style_attribute_regions_from_tag(&tag));
@@ -900,6 +943,13 @@ fn scan_html_and_asp(index: &TextIndex<'_>, settings: &Value) -> AspScan {
         }
         if (tag.name == "script" || tag.name == "style") && !tag.closing && !tag.self_closing {
             if let Some((close_start, close_end)) = find_element_close(index, &tag.name, tag.end) {
+                scan.html_tag_pairs.push(HtmlTagPair {
+                    name: tag.name.clone(),
+                    open_start: tag.start,
+                    open_end: tag.end,
+                    close_start,
+                    close_end,
+                });
                 scan.tag_regions
                     .push(element_region_from_tag(&tag, close_start, close_end));
                 let nested = scan_asp_regions_in_range(
@@ -914,6 +964,9 @@ fn scan_html_and_asp(index: &TextIndex<'_>, settings: &Value) -> AspScan {
                 cursor = close_end;
                 continue;
             }
+        }
+        if !tag.self_closing && !is_html_void_tag(&tag.name) {
+            tag_stack.push(tag.clone());
         }
         cursor = tag.end;
     }
@@ -1757,6 +1810,21 @@ fn token_json(kind: &str, index: &TextIndex<'_>, start: usize, end: usize) -> Va
     })
 }
 
+fn html_tag_pair_to_value(index: &TextIndex<'_>, pair: &HtmlTagPair) -> Value {
+    json!({
+        "name": pair.name.clone(),
+        "start": pair.open_start,
+        "end": pair.close_end,
+        "openStart": pair.open_start,
+        "openEnd": pair.open_end,
+        "closeStart": pair.close_start,
+        "closeEnd": pair.close_end,
+        "range": index.range(pair.open_start, pair.close_end),
+        "openRange": index.range(pair.open_start, pair.open_end),
+        "closeRange": index.range(pair.close_start, pair.close_end),
+    })
+}
+
 #[derive(Clone)]
 struct VbToken {
     kind: String,
@@ -1773,6 +1841,7 @@ struct VbNode {
     end: usize,
     content_start: Option<usize>,
     content_end: Option<usize>,
+    close_start: Option<usize>,
     name_token: Option<VbToken>,
     tokens: Vec<VbToken>,
     children: Vec<VbNode>,
@@ -1816,6 +1885,7 @@ fn parse_vbscript_cst_from_tokens(
         end: base_offset + text_len,
         content_start: Some(base_offset),
         content_end: Some(base_offset + text_len),
+        close_start: None,
         name_token: None,
         tokens: tokens.to_vec(),
         children: Vec::new(),
@@ -1849,7 +1919,7 @@ fn parse_vbscript_cst_from_tokens(
             continue;
         }
         if first == "end" {
-            close_block(&mut document, &mut stack, &second, token.end);
+            close_block(&mut document, &mut stack, &second, token);
             continue;
         }
         let declaration_start = if first == "public" || first == "private" {
@@ -1907,15 +1977,15 @@ fn parse_vbscript_cst_from_tokens(
             continue;
         }
         if first == "loop" {
-            close_block(&mut document, &mut stack, &"loop".to_string(), token.end);
+            close_block(&mut document, &mut stack, &"loop".to_string(), token);
             continue;
         }
         if first == "wend" {
-            close_block(&mut document, &mut stack, &"wend".to_string(), token.end);
+            close_block(&mut document, &mut stack, &"wend".to_string(), token);
             continue;
         }
         if first == "next" {
-            close_block(&mut document, &mut stack, &"next".to_string(), token.end);
+            close_block(&mut document, &mut stack, &"next".to_string(), token);
             continue;
         }
         if first == "if" {
@@ -1978,6 +2048,12 @@ fn parse_vbscript_cst_from_tokens(
                 None,
             );
             push_child(&mut document, &mut stack, node);
+            continue;
+        }
+        if first == "for" && second != "each" {
+            let node = create_statement_node("For", token, &significant, i, None);
+            push_child(&mut document, &mut stack, node.clone());
+            stack.push(node);
             continue;
         }
         if first == "for" && second == "each" {
@@ -2253,6 +2329,7 @@ fn create_block_node(kind: &str, start: &VbToken, name: &VbToken, stack: &[VbNod
         end: start.end,
         content_start: None,
         content_end: None,
+        close_start: None,
         name_token: Some(name.clone()),
         tokens: vec![start.clone(), name.clone()],
         children: Vec::new(),
@@ -2302,6 +2379,7 @@ fn create_procedure_node(
         end: start.end,
         content_start: None,
         content_end: None,
+        close_start: None,
         name_token: Some(name.clone()),
         tokens: vec![start.clone(), name.clone()],
         children: Vec::new(),
@@ -2398,6 +2476,7 @@ fn create_declaration_node(
         end: statement_end(tokens, start_index.saturating_sub(1)),
         content_start: None,
         content_end: None,
+        close_start: None,
         name_token: None,
         tokens: statement_tokens(tokens, start_index.saturating_sub(1)),
         children: Vec::new(),
@@ -2503,6 +2582,7 @@ fn create_statement_node(
         end,
         content_start: None,
         content_end: None,
+        close_start: None,
         name_token,
         tokens: statement_tokens(tokens, start_index),
         children: Vec::new(),
@@ -2530,7 +2610,12 @@ fn push_child(document: &mut VbNode, stack: &mut [VbNode], child: VbNode) {
     }
 }
 
-fn close_block(document: &mut VbNode, stack: &mut Vec<VbNode>, end_kind: &str, end: usize) {
+fn close_block(
+    document: &mut VbNode,
+    stack: &mut Vec<VbNode>,
+    end_kind: &str,
+    end_token: &VbToken,
+) {
     let target = match end_kind {
         "class" => "Class",
         "property" => "Property",
@@ -2539,13 +2624,21 @@ fn close_block(document: &mut VbNode, stack: &mut Vec<VbNode>, end_kind: &str, e
         "select" => "Select",
         "loop" => "DoLoop",
         "wend" => "While",
-        "next" => "ForEach",
+        "next" => "For",
         _ => "Procedure",
     };
-    if let Some(index) = stack.iter().rposition(|node| node.kind == target) {
+    let index = if end_kind == "next" {
+        stack
+            .iter()
+            .rposition(|node| node.kind == "For" || node.kind == "ForEach")
+    } else {
+        stack.iter().rposition(|node| node.kind == target)
+    };
+    if let Some(index) = index {
         let mut node = stack.remove(index);
-        node.end = end;
-        node.scope_end = Some(end);
+        node.end = end_token.end;
+        node.close_start = Some(end_token.start);
+        node.scope_end = Some(end_token.end);
         attach_closed_node(document, stack, node);
     }
 }
@@ -2656,6 +2749,9 @@ fn vb_node_to_value(node: &VbNode) -> Value {
     }
     if let Some(value) = node.content_end {
         object.insert("contentEnd".to_string(), json!(value));
+    }
+    if let Some(value) = node.close_start {
+        object.insert("closeStart".to_string(), json!(value));
     }
     if let Some(token) = &node.name_token {
         object.insert("nameToken".to_string(), vb_token_to_value(token));
@@ -5776,6 +5872,26 @@ fn is_html_tag_part(ch: Option<char>) -> bool {
         .unwrap_or(false)
 }
 
+fn is_html_void_tag(name: &str) -> bool {
+    matches!(
+        name,
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    )
+}
+
 fn is_attr_name_start(ch: Option<char>) -> bool {
     ch.map(|ch| ch.is_ascii_alphabetic() || ch == '_' || ch == ':')
         .unwrap_or(false)
@@ -5854,6 +5970,23 @@ mod tests {
         text[..byte_offset].encode_utf16().count()
     }
 
+    fn collect_nodes_by_kind<'a>(node: &'a Value, kind: &str, out: &mut Vec<&'a Value>) {
+        if node.get("kind").and_then(Value::as_str) == Some(kind) {
+            out.push(node);
+        }
+        for child in node
+            .get("children")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            collect_nodes_by_kind(child, kind, out);
+        }
+        if let Some(vbscript) = node.get("vbscript") {
+            collect_nodes_by_kind(vbscript, kind, out);
+        }
+    }
+
     #[test]
     fn parses_embedded_skeleton_without_heavy_cst_payload() {
         fn visit_nodes(node: &Value, callback: &mut impl FnMut(&Value)) {
@@ -5896,6 +6029,7 @@ mod tests {
         for key in [
             "uri",
             "regions",
+            "htmlTagPairs",
             "directives",
             "includes",
             "serverObjects",
@@ -5910,6 +6044,93 @@ mod tests {
             assert!(node.get("text").is_none());
             assert_eq!(node["tokens"].as_array().map_or(0, Vec::len), 0);
         });
+    }
+
+    #[test]
+    fn parses_vbscript_loop_blocks_with_close_start() {
+        let source = r#"<%
+For i = 1 To 2
+  Do While i < 2
+  Loop Until i > 10
+  Do
+  Loop
+  Do Until i > 10
+  Loop
+  Do
+  Loop While i < 2
+  While i < 3
+  Wend
+Next
+%>"#;
+        let parsed = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+
+        let mut for_nodes = Vec::new();
+        collect_nodes_by_kind(&parsed["cst"], "For", &mut for_nodes);
+        assert_eq!(for_nodes.len(), 1);
+        assert_eq!(
+            for_nodes[0]["closeStart"],
+            json!(utf16_offset(source, source.find("Next").unwrap()))
+        );
+
+        let mut do_nodes = Vec::new();
+        collect_nodes_by_kind(&parsed["cst"], "DoLoop", &mut do_nodes);
+        assert_eq!(do_nodes.len(), 4);
+        for (node, close_text) in do_nodes.iter().zip([
+            "Loop Until",
+            "\n  Loop\n  Do Until",
+            "\n  Loop\n  Do\n",
+            "Loop While",
+        ]) {
+            assert_eq!(
+                node["closeStart"],
+                json!(utf16_offset(
+                    source,
+                    source.find(close_text).unwrap() + close_text.find("Loop").unwrap()
+                ))
+            );
+        }
+
+        let mut while_nodes = Vec::new();
+        collect_nodes_by_kind(&parsed["cst"], "While", &mut while_nodes);
+        assert_eq!(while_nodes.len(), 1);
+        assert_eq!(
+            while_nodes[0]["closeStart"],
+            json!(utf16_offset(source, source.find("Wend").unwrap()))
+        );
+    }
+
+    #[test]
+    fn parses_html_tag_pairs_for_matching_brace() {
+        let source = r#"<div><span>x</span><br><script>const marker = "</div>";</script></div>"#;
+        let parsed = handle_value(json!({
+            "operation": "parseAspDocument",
+            "uri": "file:///default.asp",
+            "text": source,
+            "settings": {},
+        }));
+        let pairs = parsed["htmlTagPairs"].as_array().expect("html tag pairs");
+        let names = pairs
+            .iter()
+            .filter_map(|pair| pair.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["span", "script", "div"]);
+        assert!(pairs
+            .iter()
+            .all(|pair| pair.get("name").and_then(Value::as_str) != Some("br")));
+        let div = pairs
+            .iter()
+            .find(|pair| pair.get("name").and_then(Value::as_str) == Some("div"))
+            .expect("div pair");
+        assert_eq!(div["openStart"], json!(0));
+        assert_eq!(
+            div["closeStart"],
+            json!(utf16_offset(source, source.rfind("</div>").unwrap()))
+        );
     }
 
     #[test]

@@ -369,6 +369,7 @@ export type VbCstNodeKind =
   | "Property"
   | "VariableDeclaration"
   | "ConstantDeclaration"
+  | "For"
   | "ForEach"
   | "With"
   | "If"
@@ -387,6 +388,7 @@ export interface VbCstNode {
   end: number;
   contentStart?: number;
   contentEnd?: number;
+  closeStart?: number;
   nameToken?: VbToken;
   tokens: VbToken[];
   children: VbCstNode[];
