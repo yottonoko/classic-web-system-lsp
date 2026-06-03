@@ -1,5 +1,0 @@
-id,packet,objective,files
-P1,parser-scanner,"Find no-cache parser/scanner bottlenecks and low-risk optimizations for parseAspDocument <=23.25ms.","packages/core/src/parser.ts;packages/core/src/asp-scanner.ts;scripts/benchmark-huge.mjs"
-P2,virtual-documents,"Find no-cache virtual document bottlenecks and optimizations for build/html/css/javascript target medians.","packages/core/src/virtual-documents.ts;scripts/embedded-language-benchmark.mjs;scripts/benchmark-huge.mjs"
-P3,vb-analysis,"Find no-cache VBScript collect/analyze bottlenecks and low-risk optimizations for <50ms medians.","packages/core/src/vbscript.ts;packages/core/src/vbscript-cst.ts;packages/core/src/parser.ts"
-P4,verification,"Design final no-cache benchmark/test command matrix and identify measurement risks.","package.json;scripts/benchmark-huge.mjs;scripts/benchmark-cache-mode.mjs"
