@@ -49,6 +49,7 @@
   "configuration.cache.directory.description": "Directory used for Classic ASP LSP disk analysis cache. Leave empty to use the OS temporary directory.",
   "configuration.cache.ttlHours.description": "Hours before disk analysis cache entries expire.",
   "configuration.cache.maxSizeMb.description": "Maximum disk analysis cache size in megabytes.",
+  "configuration.embedded.parallelism.description": "Maximum embedded HTML/CSS/JavaScript diagnostics parallelism during LSP requests. Set 0 to choose automatically.",
   "configuration.workspace.maxIndexFiles.description": "Maximum number of unopened Classic ASP workspace files indexed per scan.",
   "configuration.workspace.scanChunkSize.description": "Number of filesystem entries processed before yielding during workspace indexing.",
   "configuration.workspace.vbProjectMaxDocuments.description": "Maximum number of documents included in one full VBScript project context and include cycle traversal.",

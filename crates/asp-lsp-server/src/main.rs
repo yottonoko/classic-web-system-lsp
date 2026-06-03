@@ -7,6 +7,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use asp_ide::{Ide, IncludeImpact, MappedVirtualDocument, TextPosition, TextRange};
@@ -250,68 +251,87 @@ impl ServerState {
         }))
     }
 
-    fn workspace_diagnostic(&mut self, connection: &Connection) -> Result<Value, String> {
+    fn workspace_diagnostic(
+        &mut self,
+        connection: &Connection,
+        partial_result_token: Option<&Value>,
+    ) -> Result<Value, String> {
         let mut reports = Vec::new();
         for uri in self.ide.open_document_uris() {
-            reports.push(json!({
+            let report = json!({
                 "kind": "full",
                 "uri": uri,
                 "version": null,
                 "items": self.full_diagnostics(Some(connection), &uri)?,
-            }));
+            });
+            if let Some(token) = partial_result_token {
+                send_workspace_diagnostic_progress(connection, token, report)?;
+            } else {
+                reports.push(report);
+            }
         }
+
+        let settings_key = disk_analysis_settings_key(&self.settings);
+        let workspace_fingerprint = self.ide.workspace_registry_fingerprint();
         for file in self.indexed_files.clone() {
             if self.ide.is_open_document(&file.uri) {
                 continue;
             }
-            reports.push(json!({
-                "kind": "full",
-                "uri": file.uri,
-                "version": null,
-                "items": self.indexed_diagnostics(connection, &file)?,
-            }));
+            let lookup = DiskCacheLookup {
+                source: file.source.clone(),
+                settings_key: settings_key.clone(),
+                workspace_fingerprint: workspace_fingerprint.clone(),
+            };
+            if let Some(diagnostics) = self.disk_cache.read_workspace_diagnostics(&lookup) {
+                self.log_query_snapshot_hits(connection, &file.uri, &lookup)?;
+                log_debug_summary(
+                    connection,
+                    &self.settings,
+                    format!("[asp-lsp] diskCache.hit: {}", file.uri),
+                )?;
+                let report = workspace_diagnostic_report(&file.uri, diagnostics);
+                if let Some(token) = partial_result_token {
+                    send_workspace_diagnostic_progress(connection, token, report)?;
+                } else {
+                    reports.push(report);
+                }
+                continue;
+            }
+            if self.disk_cache.enabled {
+                log_debug_summary(
+                    connection,
+                    &self.settings,
+                    format!("[asp-lsp] diskCache.miss: {}", file.uri),
+                )?;
+            }
+            let diagnostics = self.indexed_full_diagnostics(connection, &file.uri)?;
+            self.disk_cache
+                .write_workspace_diagnostics(&lookup, &diagnostics);
+            self.write_query_snapshots(&file.uri, &lookup)?;
+            if self.disk_cache.enabled {
+                log_debug_summary(
+                    connection,
+                    &self.settings,
+                    format!("[asp-lsp] diskCache.write: {}", file.uri),
+                )?;
+            }
+            let report = workspace_diagnostic_report(&file.uri, diagnostics);
+            if let Some(token) = partial_result_token {
+                send_workspace_diagnostic_progress(connection, token, report)?;
+            } else {
+                reports.push(report);
+            }
         }
         Ok(json!({ "items": reports }))
     }
 
-    fn indexed_diagnostics(
+    fn indexed_full_diagnostics(
         &mut self,
         connection: &Connection,
-        file: &IndexedFile,
+        uri: &str,
     ) -> Result<Vec<Value>, String> {
-        let lookup = DiskCacheLookup {
-            source: file.source.clone(),
-            settings_key: disk_analysis_settings_key(&self.settings),
-            workspace_fingerprint: self.ide.workspace_registry_fingerprint(),
-        };
-        if let Some(diagnostics) = self.disk_cache.read_workspace_diagnostics(&lookup) {
-            self.log_query_snapshot_hits(connection, &file.uri, &lookup)?;
-            log_debug_summary(
-                connection,
-                &self.settings,
-                format!("[asp-lsp] diskCache.hit: {}", file.uri),
-            )?;
-            return Ok(diagnostics);
-        }
-        if self.disk_cache.enabled {
-            log_debug_summary(
-                connection,
-                &self.settings,
-                format!("[asp-lsp] diskCache.miss: {}", file.uri),
-            )?;
-        }
-        let diagnostics = self.ide.workspace_diagnostics(&file.uri)?;
-        self.disk_cache
-            .write_workspace_diagnostics(&lookup, &diagnostics);
-        self.write_query_snapshots(&file.uri, &lookup)?;
-        if self.disk_cache.enabled {
-            log_debug_summary(
-                connection,
-                &self.settings,
-                format!("[asp-lsp] diskCache.write: {}", file.uri),
-            )?;
-        }
-        Ok(diagnostics)
+        let _ = connection;
+        self.ide.workspace_diagnostics(uri)
     }
 
     fn write_query_snapshots(&self, uri: &str, lookup: &DiskCacheLookup) -> Result<(), String> {
@@ -406,55 +426,19 @@ impl ServerState {
         connection: Option<&Connection>,
         uri: &str,
     ) -> Result<Vec<Value>, String> {
-        let virtuals = self.ide.embedded_virtual_documents(uri)?;
-        let open_virtuals = virtuals
-            .iter()
-            .map(|mapped| mapped.document.clone())
-            .collect::<Vec<_>>();
-        let mut diagnostics = Vec::new();
-        for mapped in virtuals {
-            if mapped.document.language_id == "vbscript" {
-                continue;
-            }
-            let request_id = self.next_sidecar_request_id();
-            let response = match self.sidecar.request(EmbeddedRequest {
-                id: request_id,
-                operation: "diagnostics".to_string(),
-                active_virtual: mapped.document.clone(),
-                open_virtuals: open_virtuals.clone(),
-                settings: self.settings.clone(),
-                workspace_roots: self.workspace_roots.clone(),
-                project_generation: self.sidecar_project_generation,
-                project_fingerprint: Some(self.sidecar_project_fingerprint.clone()),
-                project_reset_reason: Some(self.sidecar_project_reset_reason.clone()),
-                params: Value::Null,
-            }) {
-                Ok(response) => response,
-                Err(error) => {
-                    if !error.contains("embedded sidecar dist/sidecar.js was not found") {
-                        eprintln!("embedded sidecar diagnostics failed: {error}");
-                    }
-                    continue;
-                }
-            };
-            log_sidecar_cache_stats(
-                connection,
-                &self.settings,
-                "diagnostics",
-                &mapped.document.language_id,
-                response.cache_stats.as_ref(),
-            )?;
-            let items = response
-                .result
-                .and_then(|result| result.as_array().cloned())
-                .unwrap_or_default();
-            diagnostics.extend(
-                items
-                    .into_iter()
-                    .filter_map(|diagnostic| mapped.remap_diagnostic(diagnostic)),
-            );
-        }
-        Ok(diagnostics)
+        collect_embedded_diagnostics(
+            &mut self.sidecar,
+            &self.ide,
+            connection,
+            &self.settings,
+            &self.workspace_roots,
+            self.sidecar_project_generation,
+            &self.sidecar_project_fingerprint,
+            &self.sidecar_project_reset_reason,
+            &mut self.sidecar_request_id,
+            uri,
+            embedded_parallelism(&self.settings),
+        )
     }
 
     fn embedded_position_feature(
@@ -662,6 +646,7 @@ struct DiskSourceMetadata {
     size: u64,
 }
 
+#[derive(Clone)]
 struct DiskCacheLookup {
     source: DiskSourceMetadata,
     settings_key: String,
@@ -1089,53 +1074,192 @@ fn semantic_token_delta_edit(previous: &[Value], next: &[Value]) -> Value {
     })
 }
 
+fn collect_embedded_diagnostics(
+    sidecar: &mut EmbeddedSidecar,
+    ide: &Ide,
+    connection: Option<&Connection>,
+    settings: &Value,
+    workspace_roots: &[String],
+    project_generation: u64,
+    project_fingerprint: &str,
+    project_reset_reason: &str,
+    request_id: &mut u64,
+    uri: &str,
+    parallelism: usize,
+) -> Result<Vec<Value>, String> {
+    let virtuals = ide.embedded_virtual_documents(uri)?;
+    let open_virtuals = virtuals
+        .iter()
+        .map(|mapped| mapped.document.clone())
+        .collect::<Vec<_>>();
+    let mut mapped_requests = Vec::new();
+    let mut requests = Vec::new();
+    for mapped in virtuals {
+        if mapped.document.language_id == "vbscript" {
+            continue;
+        }
+        *request_id = request_id.wrapping_add(1);
+        requests.push(EmbeddedRequest {
+            id: *request_id,
+            operation: "diagnostics".to_string(),
+            active_virtual: mapped.document.clone(),
+            open_virtuals: open_virtuals.clone(),
+            settings: settings.clone(),
+            workspace_roots: workspace_roots.to_vec(),
+            project_generation,
+            project_fingerprint: Some(project_fingerprint.to_string()),
+            project_reset_reason: Some(project_reset_reason.to_string()),
+            params: Value::Null,
+        });
+        mapped_requests.push(mapped);
+    }
+
+    let responses = sidecar.request_batch(requests, parallelism);
+    let mut diagnostics = Vec::new();
+    for (mapped, response) in mapped_requests.into_iter().zip(responses) {
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                if !error.contains("embedded sidecar dist/sidecar.js was not found") {
+                    eprintln!("embedded sidecar diagnostics failed: {error}");
+                }
+                continue;
+            }
+        };
+        log_sidecar_cache_stats(
+            connection,
+            settings,
+            "diagnostics",
+            &mapped.document.language_id,
+            response.cache_stats.as_ref(),
+        )?;
+        let items = response
+            .result
+            .and_then(|result| result.as_array().cloned())
+            .unwrap_or_default();
+        diagnostics.extend(
+            items
+                .into_iter()
+                .filter_map(|diagnostic| mapped.remap_diagnostic(diagnostic)),
+        );
+    }
+    Ok(diagnostics)
+}
+
 struct EmbeddedSidecar {
-    process: Option<EmbeddedSidecarProcess>,
+    processes: Vec<EmbeddedSidecarProcess>,
 }
 
 impl Default for EmbeddedSidecar {
     fn default() -> Self {
-        Self { process: None }
+        Self {
+            processes: Vec::new(),
+        }
     }
 }
 
 impl EmbeddedSidecar {
     fn is_running(&self) -> bool {
-        self.process.is_some()
+        !self.processes.is_empty()
     }
 
     fn request(&mut self, request: EmbeddedRequest) -> Result<EmbeddedResponse, String> {
-        self.request_inner(&request).or_else(|error| {
-            self.process = None;
-            self.request_inner(&request)
-                .map_err(|retry_error| format!("{error}; retry failed: {retry_error}"))
-        })
+        self.ensure_process_count(1)?;
+        request_with_process_retry(&mut self.processes[0], &request)
     }
 
-    fn request_inner(&mut self, request: &EmbeddedRequest) -> Result<EmbeddedResponse, String> {
-        if self.process.is_none() {
-            self.process = Some(EmbeddedSidecarProcess::start()?);
+    fn request_batch(
+        &mut self,
+        requests: Vec<EmbeddedRequest>,
+        parallelism: usize,
+    ) -> Vec<Result<EmbeddedResponse, String>> {
+        if requests.is_empty() {
+            return Vec::new();
         }
-        let response = self
-            .process
-            .as_mut()
-            .ok_or_else(|| "embedded sidecar was not started".to_string())?
-            .request(request);
-        match response {
-            Ok(response) => {
-                if response.ok {
-                    Ok(response)
-                } else {
-                    Err(response
-                        .error
-                        .unwrap_or_else(|| "embedded sidecar failed".to_string()))
+        let request_count = requests.len();
+        let worker_count = parallelism.max(1).min(requests.len());
+        if worker_count == 1 {
+            return requests
+                .into_iter()
+                .map(|request| self.request(request))
+                .collect();
+        }
+
+        if let Err(error) = self.ensure_process_count(worker_count) {
+            return requests.into_iter().map(|_| Err(error.clone())).collect();
+        }
+
+        let mut assignments = (0..worker_count).map(|_| Vec::new()).collect::<Vec<_>>();
+        for (index, request) in requests.into_iter().enumerate() {
+            assignments[index % worker_count].push((index, request));
+        }
+
+        let mut processes = std::mem::take(&mut self.processes);
+        let mut ordered = Vec::new();
+        thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for (process, jobs) in processes.iter_mut().take(worker_count).zip(assignments) {
+                handles.push(scope.spawn(move || {
+                    let mut results = Vec::new();
+                    for (index, request) in jobs {
+                        results.push((index, request_with_process_retry(process, &request)));
+                    }
+                    results
+                }));
+            }
+            for handle in handles {
+                match handle.join() {
+                    Ok(results) => ordered.extend(results),
+                    Err(_) => ordered.push((
+                        usize::MAX,
+                        Err("embedded sidecar worker panicked".to_string()),
+                    )),
                 }
             }
-            Err(error) => {
-                self.process = None;
-                Err(error)
+        });
+        self.processes = processes;
+
+        let mut responses = (0..request_count)
+            .map(|_| Err("embedded sidecar response is missing".to_string()))
+            .collect::<Vec<_>>();
+        for (index, result) in ordered {
+            if index < responses.len() {
+                responses[index] = result;
             }
         }
+        responses
+    }
+
+    fn ensure_process_count(&mut self, count: usize) -> Result<(), String> {
+        while self.processes.len() < count {
+            self.processes.push(EmbeddedSidecarProcess::start()?);
+        }
+        Ok(())
+    }
+}
+
+fn request_with_process_retry(
+    process: &mut EmbeddedSidecarProcess,
+    request: &EmbeddedRequest,
+) -> Result<EmbeddedResponse, String> {
+    request_with_process(process, request).or_else(|error| {
+        *process = EmbeddedSidecarProcess::start()?;
+        request_with_process(process, request)
+            .map_err(|retry_error| format!("{error}; retry failed: {retry_error}"))
+    })
+}
+
+fn request_with_process(
+    process: &mut EmbeddedSidecarProcess,
+    request: &EmbeddedRequest,
+) -> Result<EmbeddedResponse, String> {
+    let response = process.request(request)?;
+    if response.ok {
+        Ok(response)
+    } else {
+        Err(response
+            .error
+            .unwrap_or_else(|| "embedded sidecar failed".to_string()))
     }
 }
 
@@ -1588,7 +1712,8 @@ fn handle_request(
             Ok(false)
         }
         "workspace/diagnostic" => {
-            let result = state.workspace_diagnostic(connection)?;
+            let partial_result_token = request.params.get("partialResultToken").cloned();
+            let result = state.workspace_diagnostic(connection, partial_result_token.as_ref())?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -2116,6 +2241,30 @@ fn workspace_max_index_files(settings: &Value) -> usize {
         .and_then(|value| usize::try_from(value).ok())
         .filter(|value| *value > 0)
         .unwrap_or(5_000)
+}
+
+fn embedded_parallelism(settings: &Value) -> usize {
+    configured_parallelism(settings.get("embedded"), "parallelism", 4)
+}
+
+fn configured_parallelism(parent: Option<&Value>, key: &str, max_auto: usize) -> usize {
+    let configured = parent
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok());
+    match configured {
+        Some(0) | None => auto_parallelism(max_auto),
+        Some(value) => value.max(1).min(max_auto),
+    }
+}
+
+fn auto_parallelism(max_auto: usize) -> usize {
+    thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(2)
+        .saturating_div(2)
+        .max(1)
+        .min(max_auto)
 }
 
 fn index_workspace_files(roots: &[String], max_files: usize) -> Result<Vec<IndexedFile>, String> {
@@ -2669,6 +2818,21 @@ mod tests {
     }
 
     #[test]
+    fn embedded_parallelism_setting_uses_auto_serial_and_clamped_values() {
+        let auto_embedded =
+            super::embedded_parallelism(&json!({ "embedded": { "parallelism": 0 } }));
+        assert!((1..=4).contains(&auto_embedded));
+        assert_eq!(
+            super::embedded_parallelism(&json!({ "embedded": { "parallelism": 1 } })),
+            1
+        );
+        assert_eq!(
+            super::embedded_parallelism(&json!({ "embedded": { "parallelism": 99 } })),
+            4
+        );
+    }
+
+    #[test]
     fn server_timeout_uses_only_scheduled_diagnostics() {
         let mut state = super::ServerState::default();
         assert_eq!(state.next_server_timeout(), None);
@@ -2952,6 +3116,37 @@ fn send_diagnostics(
             Notification::new(
                 "textDocument/publishDiagnostics".to_string(),
                 json!({ "uri": uri, "diagnostics": diagnostics }),
+            )
+            .into(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn workspace_diagnostic_report(uri: &str, diagnostics: Vec<Value>) -> Value {
+    json!({
+        "kind": "full",
+        "uri": uri,
+        "version": null,
+        "items": diagnostics,
+    })
+}
+
+fn send_workspace_diagnostic_progress(
+    connection: &Connection,
+    token: &Value,
+    report: Value,
+) -> Result<(), String> {
+    connection
+        .sender
+        .send(
+            Notification::new(
+                "$/progress".to_string(),
+                json!({
+                    "token": token,
+                    "value": {
+                        "items": [report],
+                    },
+                }),
             )
             .into(),
         )

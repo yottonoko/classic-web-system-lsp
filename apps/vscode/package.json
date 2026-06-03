@@ -574,6 +574,12 @@
           "default": 128,
           "description": "%configuration.cache.maxSizeMb.description%"
         },
+        "aspLsp.embedded.parallelism": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "%configuration.embedded.parallelism.description%"
+        },
         "aspLsp.workspace.maxIndexFiles": {
           "type": "number",
           "minimum": 1,

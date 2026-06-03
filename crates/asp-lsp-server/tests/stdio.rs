@@ -3294,6 +3294,82 @@ fn workspace_diagnostics_populates_disk_cache_only_when_requested() {
 }
 
 #[test]
+fn workspace_diagnostics_streams_partial_results() {
+    let root = std::env::temp_dir().join(format!(
+        "asp-lsp-rust-workspace-diagnostics-partial-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    fs::write(
+        root.join("first.asp"),
+        "<%\nOption Explicit\nfirstMissing = 1\n%>",
+    )
+    .expect("write first asp");
+    fs::write(
+        root.join("second.asp"),
+        "<%\nOption Explicit\nsecondMissing = 1\n%>",
+    )
+    .expect("write second asp");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let root_uri = format!("file://{}", root.to_string_lossy());
+
+    initialize_with_settings_and_root(
+        &mut stdin,
+        &mut reader,
+        json!({
+            "embedded": { "parallelism": 1 },
+        }),
+        &root_uri,
+    );
+
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "workspace/diagnostic",
+            "params": {
+                "previousResultIds": [],
+                "partialResultToken": "workspace-diag-token",
+            },
+        }),
+    );
+
+    let mut progress_count = 0;
+    let mut progress_text = String::new();
+    let final_response = loop {
+        let message = read_message(&mut reader);
+        if message["method"] == json!("$/progress") {
+            assert_eq!(message["params"]["token"], json!("workspace-diag-token"));
+            progress_count += 1;
+            progress_text.push_str(&message.to_string());
+        }
+        if message["id"] == json!(30) {
+            break message;
+        }
+    };
+    assert_eq!(progress_count, 2);
+    assert!(progress_text.contains("firstMissing"));
+    assert!(progress_text.contains("secondMissing"));
+    assert_eq!(final_response["result"]["items"], json!([]));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn serves_embedded_read_requests_over_stdio_lsp() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
         .env("ASP_LSP_EMBEDDED_SIDECAR_PATH", embedded_sidecar_path())

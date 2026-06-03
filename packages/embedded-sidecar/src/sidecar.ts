@@ -83,6 +83,9 @@ type SidecarCacheStatCounter = {
 
 interface AspSettings {
   checkJs?: boolean;
+  embedded?: {
+    parallelism?: number;
+  };
   javascript?: {
     unusedDiagnostics?: boolean;
     ignoreProjectConfig?: boolean;

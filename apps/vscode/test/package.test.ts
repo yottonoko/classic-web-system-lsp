@@ -207,11 +207,17 @@ describe("VS Code extension package", () => {
       expect.objectContaining({ type: "number", default: 128, minimum: 1 }),
     );
     expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.embedded.parallelism"],
+    ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
+    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.backgroundAnalysis"],
     ).toBeUndefined();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.maxIndexFiles"],
     ).toEqual(expect.objectContaining({ type: "number", default: 5000, minimum: 1 }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.workspace.diagnosticConcurrency"],
+    ).toBeUndefined();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.idleAnalysisConcurrency"],
     ).toBeUndefined();

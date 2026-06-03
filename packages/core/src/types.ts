@@ -36,6 +36,7 @@ export interface AspSettings {
   inlayHints?: AspInlayHintSettings;
   codeLens?: AspCodeLensSettings;
   cache?: AspCacheSettings;
+  embedded?: AspEmbeddedSettings;
   workspace?: AspWorkspaceSettings;
 }
 
@@ -153,6 +154,10 @@ export interface AspCacheSettings {
   directory?: string;
   ttlHours?: number;
   maxSizeMb?: number;
+}
+
+export interface AspEmbeddedSettings {
+  parallelism?: number;
 }
 
 export interface AspWorkspaceSettings {
