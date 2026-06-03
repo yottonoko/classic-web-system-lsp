@@ -567,6 +567,12 @@ impl Ide {
             .collect()
     }
 
+    pub fn document_text(&self, uri: &str) -> Option<String> {
+        self.documents
+            .get(uri)
+            .map(|document| document.text(&self.db).clone())
+    }
+
     pub fn indexed_document_texts(&self) -> Vec<(String, String)> {
         self.indexed_documents
             .iter()
@@ -2055,8 +2061,22 @@ impl Ide {
         lsp_options: &Value,
         settings: &Value,
     ) -> Result<Value, String> {
-        let Some(document) = self.documents.get(uri) else {
+        let Some(replacement) = self.formatting_replacement(uri, range, lsp_options, settings)?
+        else {
             return Ok(Value::Array(Vec::new()));
+        };
+        Ok(serde_json::json!([replacement]))
+    }
+
+    pub fn formatting_replacement(
+        &self,
+        uri: &str,
+        range: Option<TextRange>,
+        lsp_options: &Value,
+        settings: &Value,
+    ) -> Result<Option<Value>, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(None);
         };
         let text = document.text(&self.db);
         let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
@@ -2083,15 +2103,15 @@ impl Ide {
         let formatted = format_text(text, &summary.parsed, &options, start, end)?;
         let original = slice_utf16(text, start, end)?;
         if formatted == original {
-            return Ok(Value::Array(Vec::new()));
+            return Ok(None);
         }
-        Ok(serde_json::json!([{
+        Ok(Some(serde_json::json!({
             "range": range_from_offsets(text, start, end).unwrap_or_else(|| serde_json::json!({
                 "start": { "line": 0, "character": 0 },
                 "end": { "line": 0, "character": 0 },
             })),
             "newText": formatted,
-        }]))
+        })))
     }
 
     pub fn embedded_virtual_documents(
@@ -2102,6 +2122,17 @@ impl Ide {
             return Ok(Vec::new());
         };
         virtual_documents(&self.db, document.source_file, self.settings.input)
+    }
+
+    pub fn embedded_virtual_documents_for_text(
+        &self,
+        uri: &str,
+        text: &str,
+    ) -> Result<Vec<MappedVirtualDocument>, String> {
+        let settings_value = serde_json::from_str::<Value>(self.settings.input.json(&self.db))
+            .map_err(|error| error.to_string())?;
+        let parsed = asp_analysis::parse_asp_skeleton_once(uri, text, &settings_value)?;
+        build_virtual_documents(uri.to_string(), text, &parsed)
     }
 
     pub fn workspace_embedded_virtual_documents(

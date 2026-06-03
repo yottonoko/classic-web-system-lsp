@@ -17,13 +17,17 @@ import {
   MarkupKind,
   type CompletionItem,
   type Diagnostic,
+  type DocumentHighlight,
   type DocumentSymbol,
   type FoldingRange,
   type Hover,
   type Location,
   type Position,
   type Range,
+  type SelectionRange,
   type SymbolInformation,
+  type TextEdit,
+  type WorkspaceEdit,
 } from "vscode-languageserver-types";
 
 const frameKindJson = 1;
@@ -113,6 +117,12 @@ interface CachedLanguageServiceProject {
   lastUsed: number;
 }
 
+interface DecodedSemanticToken {
+  range: Range;
+  tokenType: number;
+  tokenModifiers: number;
+}
+
 let inputBuffer = Buffer.alloc(0);
 let currentProjectCacheKey: string | undefined;
 const fileExistsCache = new Map<string, boolean>();
@@ -187,6 +197,28 @@ async function handleRequest(request: EmbeddedRequest): Promise<unknown> {
   }
   if (request.operation === "definition") {
     return definition(request);
+  }
+  if (request.operation === "documentHighlights") {
+    return documentHighlights(request);
+  }
+  if (request.operation === "selectionRanges") {
+    return selectionRanges(request);
+  }
+  if (request.operation === "prepareRename") {
+    return prepareRename(request);
+  }
+  if (request.operation === "rename") {
+    return rename(request);
+  }
+  if (
+    request.operation === "formatting" ||
+    request.operation === "rangeFormatting" ||
+    request.operation === "onTypeFormatting"
+  ) {
+    return formatting(request);
+  }
+  if (request.operation === "semanticTokens") {
+    return semanticTokens(request);
   }
   if (request.operation === "documentSymbols") {
     return documentSymbols(request);
@@ -271,6 +303,132 @@ async function definition(request: EmbeddedRequest): Promise<Location | Location
     return jsDefinition(request, document, position);
   }
   return null;
+}
+
+async function documentHighlights(request: EmbeddedRequest): Promise<DocumentHighlight[]> {
+  const document = toTextDocument(request.activeVirtual);
+  const position = requestPosition(request);
+  const language = request.activeVirtual.languageId;
+  if (language === "html") {
+    const htmlDocument = htmlService.parseHTMLDocument(document);
+    return htmlService.findDocumentHighlights(document, position, htmlDocument);
+  }
+  if (language === "css") {
+    const stylesheet = cssService.parseStylesheet(document);
+    return cssService.findDocumentHighlights(document, position, stylesheet);
+  }
+  if (language === "javascript" || language === "jscript") {
+    return jsDocumentHighlights(request, document, position);
+  }
+  return [];
+}
+
+async function selectionRanges(request: EmbeddedRequest): Promise<SelectionRange[]> {
+  const document = toTextDocument(request.activeVirtual);
+  const positions = requestPositions(request);
+  const language = request.activeVirtual.languageId;
+  if (language === "html") {
+    return htmlService.getSelectionRanges(document, positions);
+  }
+  if (language === "css") {
+    const stylesheet = cssService.parseStylesheet(document);
+    return cssService.getSelectionRanges(document, positions, stylesheet);
+  }
+  if (language === "javascript" || language === "jscript") {
+    return positions.map((position) => jsSelectionRange(request, document, position));
+  }
+  return [];
+}
+
+async function prepareRename(request: EmbeddedRequest): Promise<Range | null> {
+  const document = toTextDocument(request.activeVirtual);
+  const position = requestPosition(request);
+  const language = request.activeVirtual.languageId;
+  if (language === "html") {
+    const htmlDocument = htmlService.parseHTMLDocument(document);
+    return (
+      htmlService
+        .findDocumentHighlights(document, position, htmlDocument)
+        .find((highlight) => rangeContainsPosition(highlight.range, position))?.range ?? null
+    );
+  }
+  if (language === "css") {
+    const stylesheet = cssService.parseStylesheet(document);
+    return cssService.prepareRename(document, position, stylesheet) ?? null;
+  }
+  if (language === "javascript" || language === "jscript") {
+    return jsPrepareRename(request, document, position);
+  }
+  return null;
+}
+
+async function rename(request: EmbeddedRequest): Promise<WorkspaceEdit | null> {
+  const document = toTextDocument(request.activeVirtual);
+  const position = requestPosition(request);
+  const newName = requestNewName(request);
+  const language = request.activeVirtual.languageId;
+  if (language === "html") {
+    const htmlDocument = htmlService.parseHTMLDocument(document);
+    return htmlService.doRename(document, position, newName, htmlDocument);
+  }
+  if (language === "css") {
+    const stylesheet = cssService.parseStylesheet(document);
+    return cssService.doRename(document, position, newName, stylesheet);
+  }
+  if (language === "javascript" || language === "jscript") {
+    return jsRename(request, document, position, newName);
+  }
+  return null;
+}
+
+async function formatting(request: EmbeddedRequest): Promise<TextEdit[]> {
+  const document = toTextDocument(request.activeVirtual);
+  const language = request.activeVirtual.languageId;
+  const range =
+    request.operation === "rangeFormatting" ? requestRange(request) : requestFormatRange(request);
+  const options = requestFormatOptions(request);
+  if (language === "html") {
+    return htmlService.format(document, range, options);
+  }
+  if (language === "css") {
+    return cssService.format(document, range, options);
+  }
+  if (language === "javascript" || language === "jscript") {
+    return jsFormatting(request, document, range, options);
+  }
+  return [];
+}
+
+async function semanticTokens(request: EmbeddedRequest): Promise<DecodedSemanticToken[]> {
+  const document = toTextDocument(request.activeVirtual);
+  const language = request.activeVirtual.languageId;
+  if (language === "css") {
+    return cssSemanticTokens(document);
+  }
+  if (language === "javascript" || language === "jscript") {
+    return jsSemanticTokens(request, document);
+  }
+  return [];
+}
+
+function cssSemanticTokens(document: TextDocument): DecodedSemanticToken[] {
+  const tokens: DecodedSemanticToken[] = [];
+  const pattern = /\b([A-Za-z-]+)\s*:/g;
+  const text = document.getText();
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    const start = match.index;
+    const end = start + match[1].length;
+    tokens.push({
+      range: {
+        start: document.positionAt(start),
+        end: document.positionAt(end),
+      },
+      tokenType: 6,
+      tokenModifiers: 0,
+    });
+  }
+  return tokens;
 }
 
 async function documentSymbols(
@@ -424,6 +582,136 @@ function jsDefinition(
       .getDefinitionAtPosition(project.fileName, document.offsetAt(position))
       ?.flatMap((definition) => tsDefinitionToLocation(request, definition)) ?? []
   );
+}
+
+function jsDocumentHighlights(
+  request: EmbeddedRequest,
+  document: TextDocument,
+  position: Position,
+): DocumentHighlight[] {
+  const project = createLanguageServiceProject(request);
+  const highlights =
+    project.service.getDocumentHighlights(project.fileName, document.offsetAt(position), [
+      project.fileName,
+    ]) ?? [];
+  return highlights.flatMap((highlight) =>
+    highlight.highlightSpans.map((span) => ({
+      range: textSpanToRange(document, span.textSpan),
+      kind: span.kind === "writtenReference" ? 3 : 2,
+    })),
+  );
+}
+
+function jsSelectionRange(
+  request: EmbeddedRequest,
+  document: TextDocument,
+  position: Position,
+): SelectionRange {
+  const project = createLanguageServiceProject(request);
+  return tsSelectionRangeToLsp(
+    document,
+    project.service.getSmartSelectionRange(project.fileName, document.offsetAt(position)),
+  );
+}
+
+function jsPrepareRename(
+  request: EmbeddedRequest,
+  document: TextDocument,
+  position: Position,
+): Range | null {
+  const project = createLanguageServiceProject(request);
+  const info = project.service.getRenameInfo(project.fileName, document.offsetAt(position), {});
+  if (!info.canRename) {
+    return null;
+  }
+  return textSpanToRange(document, info.triggerSpan);
+}
+
+function jsRename(
+  request: EmbeddedRequest,
+  document: TextDocument,
+  position: Position,
+  newName: string,
+): WorkspaceEdit | null {
+  const project = createLanguageServiceProject(request);
+  const locations = project.service.findRenameLocations(
+    project.fileName,
+    document.offsetAt(position),
+    false,
+    false,
+    {},
+  );
+  if (!locations || locations.length === 0) {
+    return null;
+  }
+  const changes: NonNullable<WorkspaceEdit["changes"]> = {};
+  for (const location of locations) {
+    const uri = fileNameToVirtualUri(request, location.fileName);
+    if (!uri) {
+      continue;
+    }
+    (changes[uri] ??= []).push({
+      range: textSpanToRange(documentForVirtualUri(request, uri), location.textSpan),
+      newText: newName,
+    });
+  }
+  return Object.keys(changes).length === 0 ? null : { changes };
+}
+
+function jsFormatting(
+  request: EmbeddedRequest,
+  document: TextDocument,
+  range: Range | undefined,
+  options: { tabSize: number; insertSpaces: boolean },
+): TextEdit[] {
+  const project = createLanguageServiceProject(request);
+  const formatOptions = tsFormatOptions(options);
+  const changes =
+    request.operation === "onTypeFormatting"
+      ? project.service.getFormattingEditsAfterKeystroke(
+          project.fileName,
+          document.offsetAt(requestPosition(request)),
+          requestCharacter(request),
+          formatOptions,
+        )
+      : project.service.getFormattingEditsForRange(
+          project.fileName,
+          range ? document.offsetAt(range.start) : 0,
+          range ? document.offsetAt(range.end) : document.getText().length,
+          formatOptions,
+        );
+  return changes.map((change) => textChangeToTextEdit(document, change));
+}
+
+function jsSemanticTokens(
+  request: EmbeddedRequest,
+  document: TextDocument,
+): DecodedSemanticToken[] {
+  const project = createLanguageServiceProject(request);
+  const spans = project.service.getEncodedSemanticClassifications(
+    project.fileName,
+    {
+      start: 0,
+      length: document.getText().length,
+    },
+    ts.SemanticClassificationFormat.TwentyTwenty,
+  ).spans;
+  const tokens: DecodedSemanticToken[] = [];
+  for (let index = 0; index + 2 < spans.length; index += 3) {
+    const token = jsSemanticTokenFromClassification(spans[index + 2]);
+    if (!token) {
+      continue;
+    }
+    tokens.push({
+      range: {
+        start: document.positionAt(spans[index]),
+        end: document.positionAt(spans[index] + spans[index + 1]),
+      },
+      tokenType: token.tokenType,
+      tokenModifiers: token.tokenModifiers,
+    });
+  }
+  return tokens;
 }
 
 async function jsDiagnostics(request: EmbeddedRequest): Promise<Diagnostic[]> {
@@ -686,6 +974,107 @@ function tsDefinitionToLocation(
   ];
 }
 
+function textSpanToRange(document: TextDocument, span: ts.TextSpan): Range {
+  return {
+    start: document.positionAt(span.start),
+    end: document.positionAt(span.start + span.length),
+  };
+}
+
+function textChangeToTextEdit(document: TextDocument, change: ts.TextChange): TextEdit {
+  return {
+    range: textSpanToRange(document, change.span),
+    newText: change.newText,
+  };
+}
+
+function tsSelectionRangeToLsp(document: TextDocument, range: ts.SelectionRange): SelectionRange {
+  return {
+    range: textSpanToRange(document, range.textSpan),
+    parent: range.parent ? tsSelectionRangeToLsp(document, range.parent) : undefined,
+  };
+}
+
+function tsFormatOptions(options: { tabSize: number; insertSpaces: boolean }): ts.FormatCodeSettings {
+  return {
+    tabSize: options.tabSize,
+    indentSize: options.tabSize,
+    convertTabsToSpaces: options.insertSpaces,
+    newLineCharacter: "\n",
+  };
+}
+
+function fileNameToVirtualUri(request: EmbeddedRequest, fileName: string): string | undefined {
+  const normalized = normalizeFileName(fileName);
+  return [request.activeVirtual, ...request.openVirtuals].find(
+    (virtual) =>
+      (virtual.languageId === "javascript" || virtual.languageId === "jscript") &&
+      normalizeFileName(jsVirtualFileName(virtual.uri)) === normalized,
+  )?.uri;
+}
+
+function documentForVirtualUri(request: EmbeddedRequest, uri: string): TextDocument {
+  const virtual = [request.activeVirtual, ...request.openVirtuals].find((item) => item.uri === uri);
+  if (virtual) {
+    return toTextDocument(virtual);
+  }
+  const fileName = uriToFileName(uri);
+  return TextDocument.create(uri, "javascript", 0, cachedReadFile(fileName) ?? "");
+}
+
+function jsSemanticTokenFromClassification(
+  classification: number,
+): { tokenType: number; tokenModifiers: number } | undefined {
+  const typeIndex = (classification >> 8) - 1;
+  const tokenType = jsSemanticTokenType(typeIndex);
+  if (tokenType === undefined) {
+    return undefined;
+  }
+  return { tokenType, tokenModifiers: jsSemanticTokenModifiers(classification & 255) };
+}
+
+function jsSemanticTokenType(typeIndex: number): number | undefined {
+  switch (typeIndex) {
+    case 0:
+      return 4;
+    case 1:
+      return 12;
+    case 2:
+      return 11;
+    case 3:
+      return 10;
+    case 4:
+      return 15;
+    case 5:
+      return 14;
+    case 6:
+      return 2;
+    case 7:
+      return 1;
+    case 8:
+      return 13;
+    case 9:
+      return 6;
+    case 10:
+      return 3;
+    case 11:
+      return 5;
+    default:
+      return undefined;
+  }
+}
+
+function jsSemanticTokenModifiers(modifierSet: number): number {
+  let modifiers = 0;
+  if (modifierSet & (1 << 3)) {
+    modifiers |= 1 << 2;
+  }
+  if (modifierSet & (1 << 4)) {
+    modifiers |= 1 << 3;
+  }
+  return modifiers;
+}
+
 function tsCompletionItemKind(kind: string): CompletionItemKind {
   switch (kind) {
     case ts.ScriptElementKind.functionElement:
@@ -776,6 +1165,14 @@ function requestPosition(request: EmbeddedRequest): Position {
   return { line, character };
 }
 
+function requestPositions(request: EmbeddedRequest): Position[] {
+  const positions = (request.params as { positions?: unknown } | undefined)?.positions;
+  if (!Array.isArray(positions) || !positions.every(isPosition)) {
+    throw new Error("params.positions must be an LSP position array");
+  }
+  return positions;
+}
+
 function requestRange(request: EmbeddedRequest): Range {
   const range = (request.params as { range?: unknown } | undefined)?.range;
   if (!range || typeof range !== "object") {
@@ -787,6 +1184,51 @@ function requestRange(request: EmbeddedRequest): Range {
     throw new Error("params.range must be an LSP range");
   }
   return { start, end };
+}
+
+function requestFormatRange(request: EmbeddedRequest): Range | undefined {
+  const range = (request.params as { range?: unknown } | undefined)?.range;
+  if (range === undefined || range === null) {
+    return undefined;
+  }
+  if (typeof range !== "object") {
+    throw new Error("params.range must be an LSP range");
+  }
+  const start = (range as { start?: unknown }).start;
+  const end = (range as { end?: unknown }).end;
+  if (!isPosition(start) || !isPosition(end)) {
+    throw new Error("params.range must be an LSP range");
+  }
+  return { start, end };
+}
+
+function requestNewName(request: EmbeddedRequest): string {
+  const newName = (request.params as { newName?: unknown } | undefined)?.newName;
+  if (typeof newName !== "string") {
+    throw new Error("params.newName is required");
+  }
+  return newName;
+}
+
+function requestCharacter(request: EmbeddedRequest): string {
+  const character = (request.params as { character?: unknown } | undefined)?.character;
+  if (typeof character !== "string") {
+    throw new Error("params.character is required");
+  }
+  return character;
+}
+
+function requestFormatOptions(request: EmbeddedRequest): { tabSize: number; insertSpaces: boolean } {
+  const options = (request.params as { options?: unknown } | undefined)?.options;
+  if (!options || typeof options !== "object") {
+    return { tabSize: 2, insertSpaces: true };
+  }
+  const tabSize = (options as { tabSize?: unknown }).tabSize;
+  const insertSpaces = (options as { insertSpaces?: unknown }).insertSpaces;
+  return {
+    tabSize: typeof tabSize === "number" ? tabSize : 2,
+    insertSpaces: typeof insertSpaces === "boolean" ? insertSpaces : true,
+  };
 }
 
 function requestColor(request: EmbeddedRequest): Color {
@@ -817,6 +1259,17 @@ function isPosition(value: unknown): value is Position {
     typeof (value as { line?: unknown }).line === "number" &&
     typeof (value as { character?: unknown }).character === "number"
   );
+}
+
+function rangeContainsPosition(range: Range, position: Position): boolean {
+  return (
+    comparePosition(range.start, position) <= 0 &&
+    comparePosition(position, range.end) <= 0
+  );
+}
+
+function comparePosition(left: Position, right: Position): number {
+  return left.line - right.line || left.character - right.character;
 }
 
 function virtualSourceUri(virtual: VirtualDocument): string {
@@ -1004,6 +1457,7 @@ function errorMessage(error: unknown): string {
 }
 
 export const __test = {
+  handleRequest,
   createLanguageServiceProject,
   resetCachesForProject,
   clearLanguageServiceProjectCache,

@@ -260,26 +260,26 @@ impl ServerState {
     }
 
     fn semantic_tokens_full(&mut self, uri: &str) -> Result<Value, String> {
-        let fingerprint = self.ide.semantic_tokens_fingerprint(uri);
+        let fingerprint = self.semantic_tokens_fingerprint(uri);
         if let Some(value) = self
             .semantic_tokens
             .full_from_cached(uri, fingerprint.as_deref())
         {
             return Ok(value);
         }
-        let value = self.ide.semantic_tokens(uri, None)?;
+        let value = self.semantic_tokens_value(None, uri)?;
         Ok(self.semantic_tokens.full(uri, value, fingerprint))
     }
 
     fn semantic_tokens_range(&mut self, uri: &str, range: TextRange) -> Result<Value, String> {
-        let fingerprint = self.ide.semantic_tokens_fingerprint(uri);
+        let fingerprint = self.semantic_tokens_fingerprint(uri);
         if let Some(value) =
             self.semantic_tokens
                 .range_from_cached(uri, fingerprint.as_deref(), &range)
         {
             return Ok(value);
         }
-        self.ide.semantic_tokens(uri, Some(range))
+        self.semantic_tokens_value(Some(range), uri)
     }
 
     fn semantic_tokens_delta(
@@ -287,17 +287,101 @@ impl ServerState {
         uri: &str,
         previous_result_id: &str,
     ) -> Result<Value, String> {
-        let fingerprint = self.ide.semantic_tokens_fingerprint(uri);
+        let fingerprint = self.semantic_tokens_fingerprint(uri);
         if let Some(value) =
             self.semantic_tokens
                 .delta_from_cached(uri, previous_result_id, fingerprint.as_deref())
         {
             return Ok(value);
         }
-        let value = self.ide.semantic_tokens(uri, None)?;
+        let value = self.semantic_tokens_value(None, uri)?;
         Ok(self
             .semantic_tokens
             .delta(uri, previous_result_id, value, fingerprint))
+    }
+
+    fn semantic_tokens_fingerprint(&self, uri: &str) -> Option<String> {
+        let ide = self.ide.semantic_tokens_fingerprint(uri)?;
+        Some(stable_hash(&format!(
+            "{ide}\0{}",
+            self.sidecar_project_fingerprint
+        )))
+    }
+
+    fn semantic_tokens_value(
+        &mut self,
+        range: Option<TextRange>,
+        uri: &str,
+    ) -> Result<Value, String> {
+        let mut value = self.ide.semantic_tokens(uri, range)?;
+        let Some(data) = value.get("data").and_then(Value::as_array) else {
+            return Ok(value);
+        };
+        let Some(mut tokens) = decode_semantic_tokens(data) else {
+            return Ok(value);
+        };
+        tokens.extend(self.embedded_semantic_tokens(uri, range)?);
+        tokens.sort_by_key(|token| (token.line, token.character));
+        tokens.dedup_by(|left, right| {
+            left.line == right.line
+                && left.character == right.character
+                && left.length == right.length
+                && left.token_type == right.token_type
+                && left.token_modifiers == right.token_modifiers
+        });
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "data".to_string(),
+                Value::Array(encode_decoded_semantic_tokens(&tokens)),
+            );
+        }
+        Ok(value)
+    }
+
+    fn embedded_semantic_tokens(
+        &mut self,
+        uri: &str,
+        range: Option<TextRange>,
+    ) -> Result<Vec<DecodedSemanticToken>, String> {
+        let virtuals = self.ide.embedded_virtual_documents(uri)?;
+        let open_virtuals = virtuals
+            .iter()
+            .map(|mapped| mapped.document.clone())
+            .collect::<Vec<_>>();
+        let mut tokens = Vec::new();
+        for mapped in virtuals {
+            if matches!(mapped.document.language_id.as_str(), "vbscript" | "html") {
+                continue;
+            }
+            let Some(result) = self.embedded_request(
+                None,
+                &mapped,
+                open_virtuals.clone(),
+                "semanticTokens",
+                Value::Null,
+            )?
+            else {
+                continue;
+            };
+            let remapped = mapped.remap_lsp_value(result);
+            for token in remapped.as_array().into_iter().flatten() {
+                let Some(decoded) = decoded_semantic_token_from_value(token) else {
+                    continue;
+                };
+                if range.as_ref().is_none_or(|range| {
+                    semantic_token_starts_in_range(
+                        &decoded,
+                        u64::from(range.start.line),
+                        u64::from(range.start.character),
+                        u64::from(range.end.line),
+                        u64::from(range.end.character),
+                    )
+                }) {
+                    tokens.push(decoded);
+                }
+            }
+        }
+        Ok(tokens)
     }
 
     fn clear_semantic_tokens(&mut self, uri: &str) {
@@ -348,20 +432,249 @@ impl ServerState {
         operation: &str,
         position: TextPosition,
     ) -> Result<Option<Value>, String> {
+        self.embedded_position_feature_with_params(connection, uri, operation, position, json!({}))
+    }
+
+    fn embedded_position_feature_with_params(
+        &mut self,
+        connection: &Connection,
+        uri: &str,
+        operation: &str,
+        position: TextPosition,
+        mut params: Value,
+    ) -> Result<Option<Value>, String> {
         let Some((mapped, virtual_position)) =
             self.ide.embedded_virtual_document_at(uri, position)?
         else {
             return Ok(None);
         };
+        if mapped.document.language_id == "vbscript" {
+            return Ok(None);
+        }
         let open_virtuals = self.open_virtual_documents(uri)?;
-        let result = self.embedded_request(
+        if let Some(object) = params.as_object_mut() {
+            object.insert("position".to_string(), virtual_position);
+        }
+        let result =
+            self.embedded_request(Some(connection), &mapped, open_virtuals, operation, params)?;
+        Ok(result.map(|value| mapped.remap_lsp_value(value)))
+    }
+
+    fn embedded_range_feature(
+        &mut self,
+        connection: &Connection,
+        uri: &str,
+        operation: &str,
+        range: TextRange,
+        mut params: Value,
+    ) -> Result<Option<Value>, String> {
+        let virtuals = self.ide.embedded_virtual_documents(uri)?;
+        let open_virtuals = virtuals
+            .iter()
+            .map(|mapped| mapped.document.clone())
+            .collect::<Vec<_>>();
+        for mapped in virtuals {
+            if mapped.document.language_id == "vbscript" {
+                continue;
+            }
+            let Some(virtual_range) = mapped.virtual_range_for_source_range(range) else {
+                continue;
+            };
+            if let Some(object) = params.as_object_mut() {
+                object.insert("range".to_string(), virtual_range);
+            }
+            let Some(result) = self.embedded_request(
+                Some(connection),
+                &mapped,
+                open_virtuals.clone(),
+                operation,
+                params.clone(),
+            )?
+            else {
+                continue;
+            };
+            return Ok(Some(mapped.remap_lsp_value(result)));
+        }
+        Ok(None)
+    }
+
+    fn embedded_document_highlights(
+        &mut self,
+        connection: &Connection,
+        uri: &str,
+        position: TextPosition,
+    ) -> Result<Option<Value>, String> {
+        self.embedded_position_feature(connection, uri, "documentHighlights", position)
+    }
+
+    fn embedded_selection_ranges(
+        &mut self,
+        connection: &Connection,
+        uri: &str,
+        positions: &[TextPosition],
+    ) -> Result<Option<Value>, String> {
+        let mut result = self.ide.selection_ranges(uri, positions)?;
+        let Some(items) = result.as_array_mut() else {
+            return Ok(Some(result));
+        };
+        for (index, position) in positions.iter().copied().enumerate() {
+            let Some((mapped, virtual_position)) =
+                self.ide.embedded_virtual_document_at(uri, position)?
+            else {
+                continue;
+            };
+            if mapped.document.language_id == "vbscript" {
+                continue;
+            }
+            let open_virtuals = self.open_virtual_documents(uri)?;
+            let Some(value) = self.embedded_request(
+                Some(connection),
+                &mapped,
+                open_virtuals,
+                "selectionRanges",
+                json!({ "positions": [virtual_position] }),
+            )?
+            else {
+                continue;
+            };
+            let value = mapped.remap_lsp_value(value);
+            let Some(selection) = value.as_array().and_then(|values| values.first()).cloned()
+            else {
+                continue;
+            };
+            if let Some(item) = items.get_mut(index) {
+                *item = selection;
+            }
+        }
+        Ok(Some(result))
+    }
+
+    fn embedded_prepare_rename(
+        &mut self,
+        connection: &Connection,
+        uri: &str,
+        position: TextPosition,
+    ) -> Result<Option<Value>, String> {
+        self.embedded_position_feature(connection, uri, "prepareRename", position)
+    }
+
+    fn embedded_rename(
+        &mut self,
+        connection: &Connection,
+        uri: &str,
+        position: TextPosition,
+        new_name: &str,
+    ) -> Result<Option<Value>, String> {
+        let Some((mapped, virtual_position)) =
+            self.ide.embedded_virtual_document_at(uri, position)?
+        else {
+            return Ok(None);
+        };
+        if mapped.document.language_id == "vbscript" {
+            return Ok(None);
+        }
+        let open_virtuals = self.open_virtual_documents(uri)?;
+        let Some(result) = self.embedded_request(
             Some(connection),
             &mapped,
             open_virtuals,
-            operation,
-            json!({ "position": virtual_position }),
-        )?;
-        Ok(result.map(|value| mapped.remap_lsp_value(value)))
+            "rename",
+            json!({
+                "position": virtual_position,
+                "newName": new_name,
+            }),
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(remap_workspace_edit(uri, &mapped, result)))
+    }
+
+    fn embedded_range_formatting(
+        &mut self,
+        connection: &Connection,
+        uri: &str,
+        range: TextRange,
+        options: &Value,
+    ) -> Result<Option<Value>, String> {
+        self.embedded_range_feature(
+            connection,
+            uri,
+            "rangeFormatting",
+            range,
+            json!({ "options": options }),
+        )
+    }
+
+    fn embedded_on_type_formatting(
+        &mut self,
+        connection: &Connection,
+        uri: &str,
+        position: TextPosition,
+        character: &str,
+        options: &Value,
+    ) -> Result<Option<Value>, String> {
+        self.embedded_position_feature_with_params(
+            connection,
+            uri,
+            "onTypeFormatting",
+            position,
+            json!({
+                "character": character,
+                "options": options,
+            }),
+        )
+    }
+
+    fn document_formatting(&mut self, uri: &str, options: &Value) -> Result<Value, String> {
+        let Some(original) = self.ide.document_text(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let replacement = self
+            .ide
+            .formatting_replacement(uri, None, options, &self.settings)?;
+        let mut formatted = replacement
+            .as_ref()
+            .and_then(|value| value.get("newText"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| original.clone());
+        let virtuals = self
+            .ide
+            .embedded_virtual_documents_for_text(uri, &formatted)?;
+        let open_virtuals = virtuals
+            .iter()
+            .map(|mapped| mapped.document.clone())
+            .collect::<Vec<_>>();
+        let mut embedded_edits = Vec::new();
+        for mapped in virtuals {
+            if mapped.document.language_id == "vbscript" {
+                continue;
+            }
+            let Some(result) = self.embedded_request(
+                None,
+                &mapped,
+                open_virtuals.clone(),
+                "formatting",
+                json!({ "options": options }),
+            )?
+            else {
+                continue;
+            };
+            if let Value::Array(values) = mapped.remap_lsp_value(result) {
+                embedded_edits.extend(values.into_iter().filter(|value| !value.is_null()));
+            }
+        }
+        if !embedded_edits.is_empty() {
+            formatted = apply_lsp_text_edits(&formatted, &embedded_edits)?;
+        }
+        if formatted == original {
+            return Ok(Value::Array(Vec::new()));
+        }
+        Ok(json!([{
+            "range": full_text_range(&original),
+            "newText": formatted,
+        }]))
     }
 
     fn embedded_document_feature(
@@ -1394,7 +1707,10 @@ fn handle_request(
         "textDocument/documentHighlight" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
-            let result = state.ide.document_highlights(&uri, position)?;
+            let result = merge_lsp_arrays(
+                state.ide.document_highlights(&uri, position)?,
+                state.embedded_document_highlights(connection, &uri, position)?,
+            );
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -1419,7 +1735,12 @@ fn handle_request(
         "textDocument/prepareRename" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
-            let result = state.ide.prepare_rename(&uri, position)?;
+            let result =
+                if let Some(result) = state.embedded_prepare_rename(connection, &uri, position)? {
+                    result
+                } else {
+                    state.ide.prepare_rename(&uri, position)?
+                };
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -1430,7 +1751,13 @@ fn handle_request(
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
             let new_name = pointer_string(&request.params, "/newName");
-            let result = state.ide.rename(&uri, position, &new_name)?;
+            let result = if let Some(result) =
+                state.embedded_rename(connection, &uri, position, &new_name)?
+            {
+                result
+            } else {
+                state.ide.rename(&uri, position, &new_name)?
+            };
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -1531,7 +1858,9 @@ fn handle_request(
         "textDocument/selectionRange" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let positions = request_positions(&request.params)?;
-            let result = state.ide.selection_ranges(&uri, &positions)?;
+            let result = state
+                .embedded_selection_ranges(connection, &uri, &positions)?
+                .unwrap_or_else(|| Value::Array(Vec::new()));
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -1649,9 +1978,34 @@ fn handle_request(
                 _ => None,
             };
             let options = request.params.get("options").unwrap_or(&Value::Null);
-            let result = state
-                .ide
-                .formatting_edits(&uri, range, options, &state.settings)?;
+            let result = match request.method.as_str() {
+                "textDocument/formatting" => state.document_formatting(&uri, options)?,
+                "textDocument/rangeFormatting" => state
+                    .embedded_range_formatting(connection, &uri, range.expect("range"), options)?
+                    .filter(non_empty_lsp_array)
+                    .map(Ok)
+                    .unwrap_or_else(|| {
+                        state
+                            .ide
+                            .formatting_edits(&uri, range, options, &state.settings)
+                    })?,
+                "textDocument/onTypeFormatting" => {
+                    let position = request_position(&request.params)?;
+                    let character = pointer_string(&request.params, "/ch");
+                    state
+                        .embedded_on_type_formatting(
+                            connection, &uri, position, &character, options,
+                        )?
+                        .filter(non_empty_lsp_array)
+                        .map(Ok)
+                        .unwrap_or_else(|| {
+                            state
+                                .ide
+                                .formatting_edits(&uri, range, options, &state.settings)
+                        })?
+                }
+                _ => Value::Array(Vec::new()),
+            };
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -2788,6 +3142,134 @@ fn merge_lsp_arrays(left: Value, right: Option<Value>) -> Value {
         Some(value) => items.push(value),
     }
     Value::Array(items)
+}
+
+fn non_empty_lsp_array(value: &Value) -> bool {
+    value.as_array().is_some_and(|items| !items.is_empty())
+}
+
+fn remap_workspace_edit(uri: &str, mapped: &MappedVirtualDocument, value: Value) -> Value {
+    let Some(changes) = value.get("changes").and_then(Value::as_object) else {
+        return mapped.remap_lsp_value(value);
+    };
+    let Some(edits) = changes.get(&mapped.document.uri).and_then(Value::as_array) else {
+        return Value::Null;
+    };
+    let remapped = mapped.remap_lsp_value(Value::Array(edits.clone()));
+    json!({
+        "changes": {
+            uri: remapped.as_array().cloned().unwrap_or_default(),
+        },
+    })
+}
+
+fn decoded_semantic_token_from_value(value: &Value) -> Option<DecodedSemanticToken> {
+    let range = value.get("range")?;
+    let start = range.get("start")?;
+    let end = range.get("end")?;
+    let line = start.get("line")?.as_u64()?;
+    let character = start.get("character")?.as_u64()?;
+    let end_line = end.get("line")?.as_u64()?;
+    let end_character = end.get("character")?.as_u64()?;
+    if line != end_line {
+        return None;
+    }
+    Some(DecodedSemanticToken {
+        line,
+        character,
+        length: Value::from(end_character.saturating_sub(character)),
+        token_type: value.get("tokenType")?.clone(),
+        token_modifiers: value
+            .get("tokenModifiers")
+            .cloned()
+            .unwrap_or(Value::from(0)),
+    })
+}
+
+fn full_text_range(text: &str) -> Value {
+    let (line, character) = utf16_position_at(text, utf16_len(text)).unwrap_or((0, 0));
+    json!({
+        "start": { "line": 0, "character": 0 },
+        "end": { "line": line, "character": character },
+    })
+}
+
+fn apply_lsp_text_edits(text: &str, edits: &[Value]) -> Result<String, String> {
+    let mut edits = edits
+        .iter()
+        .filter_map(|edit| {
+            let range = edit.get("range").and_then(text_range)?;
+            let new_text = edit.get("newText")?.as_str()?.to_string();
+            let start = utf16_offset_at(text, range.start.line, range.start.character)?;
+            let end = utf16_offset_at(text, range.end.line, range.end.character)?;
+            Some((start, end, new_text))
+        })
+        .collect::<Vec<_>>();
+    edits.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+    let mut output = text.to_string();
+    for (start, end, new_text) in edits {
+        let start_byte = utf16_to_byte_offset(&output, start)?;
+        let end_byte = utf16_to_byte_offset(&output, end)?;
+        output.replace_range(start_byte..end_byte, &new_text);
+    }
+    Ok(output)
+}
+
+fn utf16_len(text: &str) -> usize {
+    text.chars().map(char::len_utf16).sum()
+}
+
+fn utf16_offset_at(text: &str, line: u32, character: u32) -> Option<usize> {
+    let mut current_line = 0_u32;
+    let mut current_character = 0_u32;
+    let mut offset = 0_usize;
+    for current in text.chars() {
+        if current_line == line && current_character == character {
+            return Some(offset);
+        }
+        offset += current.len_utf16();
+        if current == '\n' {
+            current_line += 1;
+            current_character = 0;
+        } else {
+            current_character += u32::try_from(current.len_utf16()).ok()?;
+        }
+    }
+    (current_line == line && current_character == character).then_some(offset)
+}
+
+fn utf16_position_at(text: &str, target_offset: usize) -> Option<(usize, usize)> {
+    let mut offset = 0_usize;
+    let mut line = 0_usize;
+    let mut character = 0_usize;
+    for current in text.chars() {
+        if offset == target_offset {
+            return Some((line, character));
+        }
+        offset += current.len_utf16();
+        if current == '\n' {
+            line += 1;
+            character = 0;
+        } else {
+            character += current.len_utf16();
+        }
+    }
+    (offset == target_offset).then_some((line, character))
+}
+
+fn utf16_to_byte_offset(text: &str, target_offset: usize) -> Result<usize, String> {
+    let mut offset = 0_usize;
+    for (byte, current) in text.char_indices() {
+        if offset == target_offset {
+            return Ok(byte);
+        }
+        offset += current.len_utf16();
+    }
+    if offset == target_offset {
+        Ok(text.len())
+    } else {
+        Err(format!("UTF-16 offset {target_offset} is out of bounds"))
+    }
 }
 
 fn resolve_code_lens(ide: &Ide, settings: &Value, mut lens: Value) -> Result<Value, String> {

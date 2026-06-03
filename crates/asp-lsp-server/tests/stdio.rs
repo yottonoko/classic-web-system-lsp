@@ -3536,6 +3536,150 @@ fn serves_embedded_read_requests_over_stdio_lsp() {
     );
     assert_eq!(css_linked["result"], Value::Null);
 
+    let css_highlights = request(
+        &mut stdin,
+        &mut reader,
+        34,
+        "textDocument/documentHighlight",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 5, "character": 19 },
+        }),
+    );
+    assert!(css_highlights["result"]
+        .as_array()
+        .expect("embedded CSS highlights")
+        .iter()
+        .any(|highlight| highlight["range"]["start"]["line"] == json!(4)));
+
+    let js_highlights = request(
+        &mut stdin,
+        &mut reader,
+        35,
+        "textDocument/documentHighlight",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 12, "character": 2 },
+        }),
+    );
+    assert!(js_highlights["result"]
+        .as_array()
+        .expect("embedded JS highlights")
+        .iter()
+        .any(|highlight| highlight["range"]["start"]["line"] == json!(9)));
+
+    let selection_ranges = request(
+        &mut stdin,
+        &mut reader,
+        36,
+        "textDocument/selectionRange",
+        json!({
+            "textDocument": { "uri": uri },
+            "positions": [
+                { "line": 3, "character": 4 },
+                { "line": 12, "character": 2 }
+            ],
+        }),
+    );
+    let selection_ranges = selection_ranges["result"]
+        .as_array()
+        .expect("embedded selection ranges");
+    assert_eq!(selection_ranges.len(), 2);
+    assert!(selection_ranges
+        .iter()
+        .any(|range| range["range"]["start"]["line"] == json!(3)));
+    assert!(selection_ranges
+        .iter()
+        .any(|range| range["range"]["start"]["line"] == json!(12)));
+
+    let prepare_js_rename = request(
+        &mut stdin,
+        &mut reader,
+        37,
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 12, "character": 2 },
+        }),
+    );
+    assert_eq!(
+        prepare_js_rename["result"]["start"],
+        json!({ "line": 12, "character": 0 })
+    );
+
+    let js_rename = request(
+        &mut stdin,
+        &mut reader,
+        38,
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 12, "character": 2 },
+            "newName": "welcome",
+        }),
+    );
+    let js_rename_edits = js_rename["result"]["changes"][uri]
+        .as_array()
+        .expect("embedded JS rename edits");
+    assert!(js_rename_edits
+        .iter()
+        .any(|edit| edit["range"]["start"] == json!({ "line": 9, "character": 9 })));
+    assert!(js_rename_edits
+        .iter()
+        .all(|edit| edit["newText"] == json!("welcome")));
+
+    let semantic_tokens = request(
+        &mut stdin,
+        &mut reader,
+        39,
+        "textDocument/semanticTokens/full",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    let decoded = decode_semantic_tokens(
+        semantic_tokens["result"]["data"]
+            .as_array()
+            .expect("semantic token data"),
+    );
+    assert!(decoded
+        .iter()
+        .any(|token| token.line == 3 && token.character == 2 && token.token_type == 6));
+    assert!(decoded
+        .iter()
+        .any(|token| token.line == 9 && token.character == 9 && token.token_type == 3));
+
+    let format_uri = "file:///tmp/embedded-format.asp";
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": format_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<style>.box{color:red}</style><script>function total(){return 1;}</script>",
+                },
+            },
+        }),
+    );
+    let formatting = request(
+        &mut stdin,
+        &mut reader,
+        40,
+        "textDocument/formatting",
+        json!({
+            "textDocument": { "uri": format_uri },
+            "options": { "tabSize": 2, "insertSpaces": true },
+        }),
+    );
+    let formatted_text = formatting["result"][0]["newText"]
+        .as_str()
+        .expect("embedded formatted text");
+    assert!(formatted_text.contains("<style>"));
+    assert!(formatted_text.contains("<script>"));
+    assert!(formatted_text.contains('\n'));
+
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
     assert!(child.wait().expect("wait server").success());
