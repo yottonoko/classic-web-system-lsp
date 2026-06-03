@@ -107,6 +107,12 @@ interface JsProjectConfig {
   currentDirectory: string;
 }
 
+interface CachedLanguageServiceProject {
+  service: ts.LanguageService;
+  fileName: string;
+  lastUsed: number;
+}
+
 let inputBuffer = Buffer.alloc(0);
 let currentProjectCacheKey: string | undefined;
 const fileExistsCache = new Map<string, boolean>();
@@ -115,18 +121,23 @@ const directoryExistsCache = new Map<string, boolean>();
 const directoriesCache = new Map<string, string[]>();
 const readDirectoryCache = new Map<string, string[]>();
 const realpathCache = new Map<string, string>();
+const languageServiceProjectCache = new Map<string, CachedLanguageServiceProject>();
+let languageServiceProjectCacheTick = 0;
 let currentRequestStats: SidecarCacheStats | undefined;
+const maxLanguageServiceProjectCacheEntries = 8;
 
-process.stdin.on("data", (chunk: Buffer) => {
-  inputBuffer = Buffer.concat([inputBuffer, chunk]);
-  for (const payload of readFrames()) {
-    void handlePayload(payload);
-  }
-});
+if (process.env.ASP_LSP_SIDECAR_TEST_MODE !== "1") {
+  process.stdin.on("data", (chunk: Buffer) => {
+    inputBuffer = Buffer.concat([inputBuffer, chunk]);
+    for (const payload of readFrames()) {
+      void handlePayload(payload);
+    }
+  });
 
-process.stdin.on("end", () => {
-  process.exit(0);
-});
+  process.stdin.on("end", () => {
+    process.exit(0);
+  });
+}
 
 function readFrames(): Buffer[] {
   const frames: Buffer[] = [];
@@ -364,23 +375,18 @@ function jsCompletion(
   position: Position,
 ): CompletionItem[] {
   const project = createLanguageServiceProject(request);
-  try {
-    const fileName = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
-    const entries = project.service.getCompletionsAtPosition(
-      fileName,
-      document.offsetAt(position),
-      {},
-    );
-    return (
-      entries?.entries.map((entry) => ({
-        label: entry.name,
-        kind: tsCompletionItemKind(entry.kind),
-        sortText: entry.sortText,
-      })) ?? []
-    );
-  } finally {
-    project.service.dispose();
-  }
+  const entries = project.service.getCompletionsAtPosition(
+    project.fileName,
+    document.offsetAt(position),
+    {},
+  );
+  return (
+    entries?.entries.map((entry) => ({
+      label: entry.name,
+      kind: tsCompletionItemKind(entry.kind),
+      sortText: entry.sortText,
+    })) ?? []
+  );
 }
 
 function jsHover(
@@ -389,27 +395,22 @@ function jsHover(
   position: Position,
 ): Hover | null {
   const project = createLanguageServiceProject(request);
-  try {
-    const fileName = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
-    const info = project.service.getQuickInfoAtPosition(fileName, document.offsetAt(position));
-    if (!info) {
-      return null;
-    }
-    const display = ts.displayPartsToString(info.displayParts ?? []);
-    const documentation = ts.displayPartsToString(info.documentation ?? []);
-    return {
-      contents: {
-        kind: MarkupKind.Markdown,
-        value: documentation ? `\`\`\`javascript\n${display}\n\`\`\`\n\n${documentation}` : display,
-      },
-      range: {
-        start: document.positionAt(info.textSpan.start),
-        end: document.positionAt(info.textSpan.start + info.textSpan.length),
-      },
-    };
-  } finally {
-    project.service.dispose();
+  const info = project.service.getQuickInfoAtPosition(project.fileName, document.offsetAt(position));
+  if (!info) {
+    return null;
   }
+  const display = ts.displayPartsToString(info.displayParts ?? []);
+  const documentation = ts.displayPartsToString(info.documentation ?? []);
+  return {
+    contents: {
+      kind: MarkupKind.Markdown,
+      value: documentation ? `\`\`\`javascript\n${display}\n\`\`\`\n\n${documentation}` : display,
+    },
+    range: {
+      start: document.positionAt(info.textSpan.start),
+      end: document.positionAt(info.textSpan.start + info.textSpan.length),
+    },
+  };
 }
 
 function jsDefinition(
@@ -418,16 +419,11 @@ function jsDefinition(
   position: Position,
 ): Location[] {
   const project = createLanguageServiceProject(request);
-  try {
-    const fileName = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
-    return (
-      project.service
-        .getDefinitionAtPosition(fileName, document.offsetAt(position))
-        ?.flatMap((definition) => tsDefinitionToLocation(request, definition)) ?? []
-    );
-  } finally {
-    project.service.dispose();
-  }
+  return (
+    project.service
+      .getDefinitionAtPosition(project.fileName, document.offsetAt(position))
+      ?.flatMap((definition) => tsDefinitionToLocation(request, definition)) ?? []
+  );
 }
 
 async function jsDiagnostics(request: EmbeddedRequest): Promise<Diagnostic[]> {
@@ -468,12 +464,7 @@ function jsSyntaxDiagnostics(virtual: VirtualDocument): CachedTsDiagnostic[] {
 
 function jsSemanticDiagnostics(request: EmbeddedRequest): CachedTsDiagnostic[] {
   const project = createLanguageServiceProject(request);
-  try {
-    const fileName = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
-    return project.service.getSemanticDiagnostics(fileName).map(cacheTsDiagnostic);
-  } finally {
-    project.service.dispose();
-  }
+  return project.service.getSemanticDiagnostics(project.fileName).map(cacheTsDiagnostic);
 }
 
 function lightweightJsUnusedDiagnostics(virtual: VirtualDocument): CachedTsDiagnostic[] {
@@ -517,7 +508,7 @@ function lightweightJsUnusedDiagnostics(virtual: VirtualDocument): CachedTsDiagn
   }
 }
 
-function createLanguageServiceProject(request: EmbeddedRequest): { service: ts.LanguageService } {
+function createLanguageServiceProject(request: EmbeddedRequest): CachedLanguageServiceProject {
   const activeFile = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
   const ownerFile = uriToFileName(virtualSourceUri(request.activeVirtual));
   const config = projectConfig(ownerFile, request.settings, request.workspaceRoots);
@@ -543,6 +534,12 @@ function createLanguageServiceProject(request: EmbeddedRequest): { service: ts.L
       version: stat ? `${stat.mtimeMs}:${stat.size}` : "0",
     });
   }
+  const cacheKey = languageServiceProjectCacheKey(request, activeFile, config, files);
+  const cached = languageServiceProjectCache.get(cacheKey);
+  if (cached) {
+    cached.lastUsed = ++languageServiceProjectCacheTick;
+    return cached;
+  }
   const host: ts.LanguageServiceHost = {
     getScriptFileNames: () => [...new Set([activeFile, ...files.keys()])],
     getProjectVersion: () => [...files.values()].map((file) => file.version).join("|"),
@@ -565,7 +562,49 @@ function createLanguageServiceProject(request: EmbeddedRequest): { service: ts.L
     realpath: cachedRealpath,
     useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
   };
-  return { service: ts.createLanguageService(host) };
+  const project = {
+    service: ts.createLanguageService(host),
+    fileName: activeFile,
+    lastUsed: ++languageServiceProjectCacheTick,
+  };
+  languageServiceProjectCache.set(cacheKey, project);
+  pruneLanguageServiceProjectCache();
+  return project;
+}
+
+function languageServiceProjectCacheKey(
+  request: EmbeddedRequest,
+  activeFile: string,
+  config: JsProjectConfig,
+  files: Map<string, { text: string; version: string }>,
+): string {
+  return JSON.stringify({
+    project: request.projectFingerprint ?? `generation:${request.projectGeneration}`,
+    activeFile,
+    currentDirectory: config.currentDirectory,
+    options: config.options,
+    fileNames: config.fileNames.map(normalizeFileName).sort(),
+    files: [...files.entries()]
+      .map(([fileName, file]) => [fileName, file.version])
+      .sort(([left], [right]) => left.localeCompare(right)),
+  });
+}
+
+function pruneLanguageServiceProjectCache(): void {
+  while (languageServiceProjectCache.size > maxLanguageServiceProjectCacheEntries) {
+    const oldest = [...languageServiceProjectCache.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0];
+    oldest[1].service.dispose();
+    languageServiceProjectCache.delete(oldest[0]);
+  }
+}
+
+function clearLanguageServiceProjectCache(): void {
+  for (const project of languageServiceProjectCache.values()) {
+    project.service.dispose();
+  }
+  languageServiceProjectCache.clear();
 }
 
 function projectConfig(
@@ -834,6 +873,7 @@ function resetCachesForProject(request: EmbeddedRequest): void {
   directoriesCache.clear();
   readDirectoryCache.clear();
   realpathCache.clear();
+  clearLanguageServiceProjectCache();
 }
 
 function createCacheStats(): SidecarCacheStats {
@@ -962,3 +1002,10 @@ function writeResponse(response: EmbeddedResponse): void {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+export const __test = {
+  createLanguageServiceProject,
+  resetCachesForProject,
+  clearLanguageServiceProjectCache,
+  languageServiceProjectCacheSize: () => languageServiceProjectCache.size,
+};

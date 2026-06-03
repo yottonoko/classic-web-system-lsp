@@ -261,8 +261,25 @@ impl ServerState {
 
     fn semantic_tokens_full(&mut self, uri: &str) -> Result<Value, String> {
         let fingerprint = self.ide.semantic_tokens_fingerprint(uri);
+        if let Some(value) = self
+            .semantic_tokens
+            .full_from_cached(uri, fingerprint.as_deref())
+        {
+            return Ok(value);
+        }
         let value = self.ide.semantic_tokens(uri, None)?;
         Ok(self.semantic_tokens.full(uri, value, fingerprint))
+    }
+
+    fn semantic_tokens_range(&mut self, uri: &str, range: TextRange) -> Result<Value, String> {
+        let fingerprint = self.ide.semantic_tokens_fingerprint(uri);
+        if let Some(value) =
+            self.semantic_tokens
+                .range_from_cached(uri, fingerprint.as_deref(), &range)
+        {
+            return Ok(value);
+        }
+        self.ide.semantic_tokens(uri, Some(range))
     }
 
     fn semantic_tokens_delta(
@@ -554,6 +571,16 @@ struct SemanticTokenResult {
 }
 
 impl SemanticTokenCache {
+    fn full_from_cached(&mut self, uri: &str, fingerprint: Option<&str>) -> Option<Value> {
+        let data = self.cached_latest_data(uri, fingerprint)?.to_vec();
+        let fingerprint = fingerprint.map(str::to_string);
+        let result_id = self.store(uri, data.clone(), fingerprint);
+        Some(json!({
+            "data": data,
+            "resultId": result_id,
+        }))
+    }
+
     fn full(&mut self, uri: &str, mut value: Value, fingerprint: Option<String>) -> Value {
         let data = semantic_token_data(&value);
         let result_id = self.store(uri, data, fingerprint);
@@ -607,6 +634,17 @@ impl SemanticTokenCache {
         }))
     }
 
+    fn range_from_cached(
+        &self,
+        uri: &str,
+        fingerprint: Option<&str>,
+        range: &TextRange,
+    ) -> Option<Value> {
+        let data = self.cached_latest_data(uri, fingerprint)?;
+        let range_data = semantic_token_range_data(data, range)?;
+        Some(json!({ "data": range_data }))
+    }
+
     fn clear_uri(&mut self, uri: &str) {
         if let Some(result_id) = self.latest_by_uri.remove(uri) {
             self.results.remove(&result_id);
@@ -635,6 +673,16 @@ impl SemanticTokenCache {
             },
         );
         result_id
+    }
+
+    fn cached_latest_data(&self, uri: &str, fingerprint: Option<&str>) -> Option<&[Value]> {
+        let result_id = self.latest_by_uri.get(uri)?;
+        let result = self
+            .results
+            .get(result_id)
+            .filter(|result| result.uri == uri)
+            .filter(|result| result.fingerprint.as_deref() == fingerprint)?;
+        Some(&result.data)
     }
 }
 
@@ -665,6 +713,106 @@ fn semantic_token_delta_edit(previous: &[Value], next: &[Value]) -> Value {
         "deleteCount": previous_suffix - prefix,
         "data": next[prefix..next_suffix].to_vec(),
     })
+}
+
+#[derive(Clone)]
+struct DecodedSemanticToken {
+    line: u64,
+    character: u64,
+    length: Value,
+    token_type: Value,
+    token_modifiers: Value,
+}
+
+fn semantic_token_range_data(data: &[Value], range: &TextRange) -> Option<Vec<Value>> {
+    let start_line = u64::from(range.start.line);
+    let start_character = u64::from(range.start.character);
+    let end_line = u64::from(range.end.line);
+    let end_character = u64::from(range.end.character);
+    let tokens = decode_semantic_tokens(data)?;
+    Some(encode_decoded_semantic_tokens(
+        &tokens
+            .into_iter()
+            .filter(|token| {
+                semantic_token_starts_in_range(
+                    token,
+                    start_line,
+                    start_character,
+                    end_line,
+                    end_character,
+                )
+            })
+            .collect::<Vec<_>>(),
+    ))
+}
+
+fn decode_semantic_tokens(data: &[Value]) -> Option<Vec<DecodedSemanticToken>> {
+    let mut line = 0_u64;
+    let mut character = 0_u64;
+    let mut tokens = Vec::new();
+    for chunk in data.chunks_exact(5) {
+        let delta_line = chunk[0].as_u64()?;
+        let delta_start = chunk[1].as_u64()?;
+        line = line.checked_add(delta_line)?;
+        character = if delta_line == 0 {
+            character.checked_add(delta_start)?
+        } else {
+            delta_start
+        };
+        tokens.push(DecodedSemanticToken {
+            line,
+            character,
+            length: chunk[2].clone(),
+            token_type: chunk[3].clone(),
+            token_modifiers: chunk[4].clone(),
+        });
+    }
+    if data.len() % 5 == 0 {
+        Some(tokens)
+    } else {
+        None
+    }
+}
+
+fn encode_decoded_semantic_tokens(tokens: &[DecodedSemanticToken]) -> Vec<Value> {
+    let mut data = Vec::with_capacity(tokens.len() * 5);
+    let mut previous_line = 0_u64;
+    let mut previous_character = 0_u64;
+    for token in tokens {
+        let delta_line = token.line.saturating_sub(previous_line);
+        let delta_start = if delta_line == 0 {
+            token.character.saturating_sub(previous_character)
+        } else {
+            token.character
+        };
+        data.push(Value::from(delta_line));
+        data.push(Value::from(delta_start));
+        data.push(token.length.clone());
+        data.push(token.token_type.clone());
+        data.push(token.token_modifiers.clone());
+        previous_line = token.line;
+        previous_character = token.character;
+    }
+    data
+}
+
+fn semantic_token_starts_in_range(
+    token: &DecodedSemanticToken,
+    start_line: u64,
+    start_character: u64,
+    end_line: u64,
+    end_character: u64,
+) -> bool {
+    if token.line < start_line || token.line > end_line {
+        return false;
+    }
+    if token.line == start_line && token.character < start_character {
+        return false;
+    }
+    if token.line == end_line && token.character >= end_character {
+        return false;
+    }
+    true
 }
 
 fn collect_embedded_diagnostics(
@@ -1320,7 +1468,7 @@ fn handle_request(
         "textDocument/semanticTokens/range" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let range = request_range(&request.params)?;
-            let result = state.ide.semantic_tokens(&uri, Some(range))?;
+            let result = state.semantic_tokens_range(&uri, range)?;
             connection
                 .sender
                 .send(Response::new_ok(request.id, result).into())
@@ -2283,6 +2431,83 @@ mod tests {
                 .delta_from_cached("file:///site/default.asp", &first_id, Some("fingerprint-b"))
                 .is_none(),
             "changed fingerprint must not use cached delta"
+        );
+    }
+
+    #[test]
+    fn semantic_token_full_reuses_cached_result_for_unchanged_fingerprint() {
+        let mut cache = super::SemanticTokenCache::default();
+        let full = cache.full(
+            "file:///site/default.asp",
+            json!({ "data": [0, 0, 3, 1, 0] }),
+            Some("fingerprint-a".to_string()),
+        );
+        let first_id = full["resultId"].as_str().expect("result id").to_string();
+
+        let cached = cache
+            .full_from_cached("file:///site/default.asp", Some("fingerprint-a"))
+            .expect("cached full");
+        assert_ne!(cached["resultId"], first_id);
+        assert_eq!(cached["data"], json!([0, 0, 3, 1, 0]));
+        assert!(
+            cache
+                .full_from_cached("file:///site/default.asp", Some("fingerprint-b"))
+                .is_none(),
+            "changed fingerprint must not use cached full tokens"
+        );
+    }
+
+    #[test]
+    fn semantic_token_range_reuses_cached_result_for_unchanged_fingerprint() {
+        let mut cache = super::SemanticTokenCache::default();
+        cache.full(
+            "file:///site/default.asp",
+            json!({
+                "data": [
+                    0, 0, 3, 1, 0,
+                    1, 2, 4, 2, 0,
+                    0, 8, 5, 3, 0,
+                    1, 1, 6, 4, 0
+                ]
+            }),
+            Some("fingerprint-a".to_string()),
+        );
+
+        let cached = cache
+            .range_from_cached(
+                "file:///site/default.asp",
+                Some("fingerprint-a"),
+                &super::TextRange {
+                    start: super::TextPosition {
+                        line: 1,
+                        character: 0,
+                    },
+                    end: super::TextPosition {
+                        line: 2,
+                        character: 0,
+                    },
+                },
+            )
+            .expect("cached range");
+        assert_eq!(cached["data"], json!([1, 2, 4, 2, 0, 0, 8, 5, 3, 0]));
+        assert!(
+            cache
+                .range_from_cached(
+                    "file:///site/default.asp",
+                    Some("fingerprint-b"),
+                    &super::TextRange {
+                        start: super::TextPosition {
+                            line: 1,
+                            character: 0,
+                        },
+                        end: super::TextPosition {
+                            line: 2,
+                            character: 0,
+                        },
+                    },
+                )
+                .is_none(),
+            "changed fingerprint must not use cached range tokens"
         );
     }
 
