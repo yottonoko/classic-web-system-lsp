@@ -747,6 +747,33 @@
         "key": "ctrl+/",
         "mac": "cmd+/",
         "when": "editorTextFocus && editorLangId == classic-asp"
+      },
+      {
+        "command": "aspLsp.joinLines",
+        "key": "ctrl+shift+j",
+        "mac": "cmd+shift+j",
+        "when": "editorTextFocus && editorLangId == classic-asp"
+      },
+      {
+        "command": "aspLsp.onEnter",
+        "key": "enter",
+        "when": "editorTextFocus && editorLangId == classic-asp"
+      },
+      {
+        "command": "aspLsp.matchingBrace",
+        "key": "ctrl+shift+\\",
+        "mac": "cmd+shift+\\",
+        "when": "editorTextFocus && editorLangId == classic-asp"
+      },
+      {
+        "command": "aspLsp.moveItemUp",
+        "key": "alt+up",
+        "when": "editorTextFocus && editorLangId == classic-asp"
+      },
+      {
+        "command": "aspLsp.moveItemDown",
+        "key": "alt+down",
+        "when": "editorTextFocus && editorLangId == classic-asp"
       }
     ],
     "problemMatchers": [

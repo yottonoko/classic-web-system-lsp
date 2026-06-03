@@ -687,7 +687,7 @@ impl Ide {
             .into_iter()
             .filter_map(|edge| {
                 let target_uri = edge.target_uri?;
-                Some(serde_json::json!({ "uri": target_uri, "range": empty_range() }))
+                Some(include_location(&target_uri, &edge.include.raw))
             })
             .collect::<Vec<_>>();
         Ok(Value::Array(locations))
@@ -1096,13 +1096,7 @@ impl Ide {
         let Some(end) = range.get("end").cloned() else {
             return Ok(Value::Null);
         };
-        if position_matches_value(position, &start) {
-            Ok(end)
-        } else if position_matches_value(position, &end) {
-            Ok(start)
-        } else {
-            Ok(serde_json::json!([start, end]))
-        }
+        Ok(serde_json::json!([start, end]))
     }
 
     pub fn join_lines(&self, uri: &str, ranges: &[TextRange]) -> Result<Value, String> {
@@ -1135,17 +1129,16 @@ impl Ide {
         let Some(line_text) = line_text(text, position.line) else {
             return Ok(Value::Array(Vec::new()));
         };
+        if !line_text.trim_start().starts_with('\'') {
+            return Ok(Value::Array(Vec::new()));
+        }
         let indent = line_text
             .chars()
             .take_while(|character| {
                 character.is_whitespace() && *character != '\r' && *character != '\n'
             })
             .collect::<String>();
-        let continuation = if line_text.trim_start().starts_with('\'') {
-            format!("\n{indent}' ")
-        } else {
-            format!("\n{indent}")
-        };
+        let continuation = format!("\n{indent}' ");
         Ok(serde_json::json!([{
             "range": {
                 "start": { "line": position.line, "character": position.character },
@@ -2246,6 +2239,7 @@ struct ItemTextRange {
     end_line: u32,
     range: Value,
     text: String,
+    has_trailing_line_break: bool,
 }
 
 struct InlayHintOptions {
@@ -3333,12 +3327,8 @@ fn documentation_code_action(
                         "end": { "line": range_end_line, "character": 0 },
                     },
                     "newText": new_text,
-                    "insertTextFormat": 2,
                 }],
             },
-        },
-        "experimental": {
-            "snippetTextEdit": true,
         },
     }))
 }
@@ -3818,17 +3808,21 @@ fn valid_vb_identifier(name: &str) -> bool {
 }
 
 fn external_docs_url(name: &str) -> String {
-    let query = format!("Classic ASP VBScript {name}")
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
-                character.to_string()
+    let query = percent_encode_query(&format!("Classic ASP VBScript {name}"));
+    format!("https://learn.microsoft.com/search/?terms={query}")
+}
+
+fn percent_encode_query(query: &str) -> String {
+    query
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_') {
+                char::from(byte).to_string()
             } else {
-                "%20".to_string()
+                format!("%{byte:02X}")
             }
         })
-        .collect::<String>();
-    format!("https://learn.microsoft.com/search/?terms={query}")
+        .collect()
 }
 
 fn is_callable_symbol(symbol: &Value) -> bool {
@@ -4482,10 +4476,6 @@ fn range_span_key(range: &&Value) -> (u64, u64, u64, u64) {
     )
 }
 
-fn position_matches_value(position: TextPosition, value: &Value) -> bool {
-    lsp_position_tuple(value) == Some((u64::from(position.line), u64::from(position.character)))
-}
-
 fn lsp_position_tuple(value: &Value) -> Option<(u64, u64)> {
     Some((
         value.get("line")?.as_u64()?,
@@ -4555,8 +4545,9 @@ fn item_line_range(text: &str, range: &Value) -> Option<ItemTextRange> {
     let start_line = range.pointer("/start/line")?.as_u64()?.try_into().ok()?;
     let end_line = range.pointer("/end/line")?.as_u64()?.try_into().ok()?;
     let text_start = line_start_byte_offset(text, start_line)?;
-    let text_end = line_start_byte_offset(text, end_line + 1).unwrap_or(text.len());
-    let end_position = if line_start_byte_offset(text, end_line + 1).is_some() {
+    let next_line_start = line_start_byte_offset(text, end_line + 1);
+    let text_end = next_line_start.unwrap_or(text.len());
+    let end_position = if next_line_start.is_some() {
         serde_json::json!({ "line": end_line + 1, "character": 0 })
     } else {
         line_range(text, end_line)?.get("end")?.clone()
@@ -4569,6 +4560,7 @@ fn item_line_range(text: &str, range: &Value) -> Option<ItemTextRange> {
             "end": end_position,
         }),
         text: text[text_start..text_end].to_string(),
+        has_trailing_line_break: next_line_start.is_some(),
     })
 }
 
@@ -4577,16 +4569,33 @@ fn line_range_contains(range: &ItemTextRange, line: u32) -> bool {
 }
 
 fn swap_item_edits(first: &ItemTextRange, second: &ItemTextRange) -> Vec<Value> {
+    let new_line = if first.text.contains("\r\n") || second.text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     vec![
         serde_json::json!({
             "range": first.range.clone(),
-            "newText": second.text.clone(),
+            "newText": text_for_item_range(second, first, new_line),
         }),
         serde_json::json!({
             "range": second.range.clone(),
-            "newText": first.text.clone(),
+            "newText": text_for_item_range(first, second, new_line),
         }),
     ]
+}
+
+fn text_for_item_range(source: &ItemTextRange, target: &ItemTextRange, new_line: &str) -> String {
+    if target.has_trailing_line_break {
+        if source.text.ends_with('\n') {
+            source.text.clone()
+        } else {
+            format!("{}{new_line}", source.text)
+        }
+    } else {
+        source.text.trim_end_matches(['\r', '\n']).to_string()
+    }
 }
 
 fn selection_range_chain(
