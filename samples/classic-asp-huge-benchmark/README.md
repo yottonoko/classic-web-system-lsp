@@ -58,7 +58,7 @@ pnpm run benchmark:change:huge
 Start with a narrow scenario when comparing interactive changes:
 
 ```sh
-ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_WARMUPS=1 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default ASP_LSP_BENCH_BACKGROUND=off pnpm run benchmark:change:huge
+ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_WARMUPS=1 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default pnpm run benchmark:change:huge
 ```
 
 Useful checks:

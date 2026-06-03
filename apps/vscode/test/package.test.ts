@@ -208,16 +208,16 @@ describe("VS Code extension package", () => {
     );
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.backgroundAnalysis"],
-    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
+    ).toBeUndefined();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.maxIndexFiles"],
     ).toEqual(expect.objectContaining({ type: "number", default: 5000, minimum: 1 }));
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.idleAnalysisConcurrency"],
-    ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
+    ).toBeUndefined();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.busyAnalysisConcurrency"],
-    ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
+    ).toBeUndefined();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.legacyEncoding"]).toEqual(
       expect.objectContaining({
         enum: ["auto", "utf8", "shift_jis", "cp932"],

@@ -104,7 +104,7 @@ changing LSP result payloads:
   events such as `sidecarCache.readFile.hit` and
   `sidecarCache.generationReset` only when `debug.output` is `verbose`.
 - The document-change benchmark collects those sidecar events alongside the
-  existing disk-cache, builder, and background-analysis debug counters.
+  existing disk-cache and builder debug counters.
 
 This keeps the sidecar as the HTML/CSS/JavaScript service boundary while making
 its process-local cache behavior measurable during large and embedded
@@ -118,9 +118,8 @@ cache surfaces:
 - Rust semantic-token generation now builds per-request lookup/index structures
   for symbols and UTF-16 line positions instead of repeatedly scanning the same
   document and workspace symbol lists.
-- Background analysis can warm indexed unopened files into the disk snapshot
-  cache, and emits `backgroundAnalysis.started` /
-  `backgroundAnalysis.completed` debug events.
+- Workspace diagnostics can populate the disk snapshot cache for indexed
+  unopened files when the client explicitly requests `workspace/diagnostic`.
 - Workspace indexing now reads `workspace.maxIndexFiles`, matching the VS Code
   `aspLsp.workspace.maxIndexFiles` setting and defaulting to 5000 indexed files.
 - The include-tree benchmark is bounded by source count and source bytes before
@@ -300,23 +299,12 @@ project fingerprint:
 The detailed implementation evidence is recorded in
 `docs/rust-analyzer-speed-step9.md`.
 
-## Step 9G Background Scheduler Hardening
+## Background Analysis Removal
 
-Step 9G keeps background analysis bounded while making its warmup order more
-intentional:
-
-- Include-change affected roots are queued before unrelated indexed files.
-- Root ASP/ASA files and include-heavy files are prioritized over lower-value
-  include fragments.
-- Open documents remain outside the background queue so foreground diagnostics
-  keep using the open-document path.
-- Each idle pass is bounded by `workspace.idleAnalysisConcurrency`; the default
-  remains one file per pass.
-- Verbose telemetry reports priority count, batch size, per-batch
-  processed/remaining counts, and completion.
-
-The detailed implementation evidence is recorded in
-`docs/rust-analyzer-speed-step9.md`.
+Idle/background warmup has been removed from the Rust server. The server no
+longer schedules unopened workspace files from the main-loop timeout, settings
+changes, file operations, or watched-file notifications. Disk-cache writes for
+unopened files remain request-driven through `workspace/diagnostic`.
 
 ## Current Cache Layers
 

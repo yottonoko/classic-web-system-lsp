@@ -104,57 +104,56 @@ speedup, set `ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000` or higher and
 start with a narrow scenario:
 
 ```sh
-ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000 ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default ASP_LSP_BENCH_BACKGROUND=off pnpm run benchmark:change:include-tree
+ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000 ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default pnpm run benchmark:change:include-tree
 ```
 
 ## Settings
 
-| Item                                       | Default                  | Description                                                                                                                                      |
-| ------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `aspLsp.locale`                            | `auto`                   | Runtime message locale, `auto`, `en`, or `ja`; `auto` uses Japanese for `ja*` VS Code/LSP client locales and English otherwise.                  |
-| `aspLsp.defaultLanguage`                   | `VBScript`               | Default server-side language, `VBScript` or `JScript`.                                                                                           |
-| `aspLsp.checkJs`                           | `false`                  | Enable semantic checks for client JavaScript regions.                                                                                            |
-| `aspLsp.diagnostics.debounceMs`            | `250`                    | Delay diagnostics after text changes in milliseconds; `0` publishes immediately.                                                                 |
-| `aspLsp.debug.output`                      | `off`                    | Debug timing output, `off`, `summary`, or `verbose`; VS Code highlights elapsed duration as green, yellow, orange, or red.                       |
-| `aspLsp.javascript.unusedDiagnostics`      | `true`                   | Report unused JavaScript/JScript locals and parameters as hints.                                                                                 |
-| `aspLsp.javascript.autoImports`            | `true`                   | Enable TypeScript-powered JavaScript/JScript auto import completions and quick fixes.                                                            |
-| `aspLsp.javascript.ignoreProjectConfig`    | `false`                  | Ignore nearest `tsconfig.json` or `jsconfig.json` for embedded JavaScript/JScript language service projects.                                     |
-| `aspLsp.virtualRoot`                       | `""`                     | Root directory for `<!-- #include virtual="..." -->`.                                                                                            |
-| `aspLsp.virtualRoots`                      | `[]`                     | Additional virtual include roots.                                                                                                                |
-| `aspLsp.windowsPathResolution`             | `true`                   | Resolve includes case-insensitively like Windows and report diagnostics when path casing does not exactly match the file system.                 |
-| `aspLsp.legacyEncoding`                    | `auto`                   | Encoding for unopened include files, `auto`, `utf8`, `shift_jis`, or `cp932`.                                                                    |
-| `aspLsp.format.indentSize`                 | `null`                   | Classic ASP formatter indent size; `null` uses editor options.                                                                                   |
-| `aspLsp.format.indentStyle`                | Unset                    | `space` or `tab`; unset uses editor options.                                                                                                     |
-| `aspLsp.format.uppercaseKeywords`          | `false`                  | Format VBScript keywords as uppercase.                                                                                                           |
-| `aspLsp.format.alignAssignments`           | `false`                  | Align simple consecutive VBScript assignments.                                                                                                   |
-| `aspLsp.format.ignoreVbscriptTagIndent`    | `false`                  | Ignore surrounding tag indentation when formatting VBScript regions.                                                                             |
-| `aspLsp.format.ignoreCssTagIndent`         | `false`                  | Ignore surrounding tag indentation when formatting CSS regions.                                                                                  |
-| `aspLsp.format.ignoreJavaScriptTagIndent`  | `false`                  | Ignore surrounding tag indentation when formatting JavaScript/JScript regions.                                                                   |
-| `aspLsp.format.onSave`                     | `false`                  | Return full-document formatting edits from `textDocument/willSaveWaitUntil`.                                                                     |
-| `aspLsp.vbscript.typeChecking`             | `basic`                  | `basic` or `strict`; strict enables VBScript type diagnostics.                                                                                   |
-| `aspLsp.vbscript.identifierCase`           | `ignore`                 | `PascalCase`, `UPPERCASE`, `camelCase`, `lowercase`, `snake_case`, `UPPER_SNAKE`, or `ignore`; reports declaration casing hints and quick fixes. |
-| `aspLsp.vbscript.identifierCaseByKind`     | `{}`                     | Per-symbol-kind VBScript identifier casing overrides.                                                                                            |
-| `aspLsp.vbscript.comTypes`                 | `{}`                     | Custom COM type catalog keyed by `Server.CreateObject` Prog.ID.                                                                                  |
-| `aspLsp.vbscript.globals`                  | `{}`                     | Runtime or framework-provided VBScript globals keyed by identifier.                                                                              |
-| `aspLsp.vbscript.unusedDiagnostics`        | `true`                   | Report unused VBScript declarations as hints.                                                                                                    |
-| `aspLsp.vbscript.syntaxSnippets`           | `true`                   | Enable VBScript syntax snippet completions.                                                                                                      |
-| `aspLsp.inlayHints.variableTypes`          | `true`                   | Show inferred VBScript variable types.                                                                                                           |
-| `aspLsp.inlayHints.parameterNames`         | `true`                   | Show VBScript procedure parameter names at call sites.                                                                                           |
-| `aspLsp.inlayHints.functionReturnTypes`    | `true`                   | Show inferred VBScript function return types.                                                                                                    |
-| `aspLsp.inlayHints.implicitByRef`          | `true`                   | Show `ByRef` for VBScript parameters whose passing mode is omitted.                                                                              |
-| `aspLsp.inlayHints.globalVariableMarkers`  | `global`                 | Show VBScript variable scope markers, `global`, `local`, `all`, or `off`; in-progress include analysis may use `(?)`.                            |
-| `aspLsp.codeLens.references`               | `true`                   | Show VBScript reference counts.                                                                                                                  |
-| `aspLsp.codeLens.referenceScope`           | `analyzed`               | Reference count scope, `analyzed` for currently analyzed files or `workspace` for full workspace reference counts.                               |
-| `aspLsp.codeLens.includes`                 | `false`                  | Show include resolution lenses.                                                                                                                  |
-| `aspLsp.workspace.maxIndexFiles`           | `5000`                   | Maximum unopened Classic ASP files indexed in one workspace scan.                                                                                |
-| `aspLsp.workspace.scanChunkSize`           | `200`                    | Filesystem entries processed before yielding during workspace indexing.                                                                          |
-| `aspLsp.workspace.busyAnalysisConcurrency` | `0`                      | Maximum workspace analysis concurrency; `0` uses half the available CPU count.                                                                   |
-| `aspLsp.iis.url`                           | `http://localhost/`      | URL opened by the IIS debug helper command.                                                                                                      |
-| `aspLsp.iis.webRoot`                       | `""`                     | Web root used by the IIS debug helper command.                                                                                                   |
-| `aspLsp.iis.browser`                       | `pwa-chrome`             | VS Code debug type used by the IIS debug helper command.                                                                                         |
-| `aspLsp.iisExpress.url`                    | `http://localhost:8080/` | URL opened by the IIS Express debug helper command.                                                                                              |
-| `aspLsp.iisExpress.webRoot`                | `""`                     | Web root used by the IIS Express debug helper command.                                                                                           |
-| `aspLsp.iisExpress.browser`                | `pwa-chrome`             | VS Code debug type used by the IIS Express debug helper command.                                                                                 |
+| Item                                      | Default                  | Description                                                                                                                                      |
+| ----------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `aspLsp.locale`                           | `auto`                   | Runtime message locale, `auto`, `en`, or `ja`; `auto` uses Japanese for `ja*` VS Code/LSP client locales and English otherwise.                  |
+| `aspLsp.defaultLanguage`                  | `VBScript`               | Default server-side language, `VBScript` or `JScript`.                                                                                           |
+| `aspLsp.checkJs`                          | `false`                  | Enable semantic checks for client JavaScript regions.                                                                                            |
+| `aspLsp.diagnostics.debounceMs`           | `250`                    | Delay diagnostics after text changes in milliseconds; `0` publishes immediately.                                                                 |
+| `aspLsp.debug.output`                     | `off`                    | Debug timing output, `off`, `summary`, or `verbose`; VS Code highlights elapsed duration as green, yellow, orange, or red.                       |
+| `aspLsp.javascript.unusedDiagnostics`     | `true`                   | Report unused JavaScript/JScript locals and parameters as hints.                                                                                 |
+| `aspLsp.javascript.autoImports`           | `true`                   | Enable TypeScript-powered JavaScript/JScript auto import completions and quick fixes.                                                            |
+| `aspLsp.javascript.ignoreProjectConfig`   | `false`                  | Ignore nearest `tsconfig.json` or `jsconfig.json` for embedded JavaScript/JScript language service projects.                                     |
+| `aspLsp.virtualRoot`                      | `""`                     | Root directory for `<!-- #include virtual="..." -->`.                                                                                            |
+| `aspLsp.virtualRoots`                     | `[]`                     | Additional virtual include roots.                                                                                                                |
+| `aspLsp.windowsPathResolution`            | `true`                   | Resolve includes case-insensitively like Windows and report diagnostics when path casing does not exactly match the file system.                 |
+| `aspLsp.legacyEncoding`                   | `auto`                   | Encoding for unopened include files, `auto`, `utf8`, `shift_jis`, or `cp932`.                                                                    |
+| `aspLsp.format.indentSize`                | `null`                   | Classic ASP formatter indent size; `null` uses editor options.                                                                                   |
+| `aspLsp.format.indentStyle`               | Unset                    | `space` or `tab`; unset uses editor options.                                                                                                     |
+| `aspLsp.format.uppercaseKeywords`         | `false`                  | Format VBScript keywords as uppercase.                                                                                                           |
+| `aspLsp.format.alignAssignments`          | `false`                  | Align simple consecutive VBScript assignments.                                                                                                   |
+| `aspLsp.format.ignoreVbscriptTagIndent`   | `false`                  | Ignore surrounding tag indentation when formatting VBScript regions.                                                                             |
+| `aspLsp.format.ignoreCssTagIndent`        | `false`                  | Ignore surrounding tag indentation when formatting CSS regions.                                                                                  |
+| `aspLsp.format.ignoreJavaScriptTagIndent` | `false`                  | Ignore surrounding tag indentation when formatting JavaScript/JScript regions.                                                                   |
+| `aspLsp.format.onSave`                    | `false`                  | Return full-document formatting edits from `textDocument/willSaveWaitUntil`.                                                                     |
+| `aspLsp.vbscript.typeChecking`            | `basic`                  | `basic` or `strict`; strict enables VBScript type diagnostics.                                                                                   |
+| `aspLsp.vbscript.identifierCase`          | `ignore`                 | `PascalCase`, `UPPERCASE`, `camelCase`, `lowercase`, `snake_case`, `UPPER_SNAKE`, or `ignore`; reports declaration casing hints and quick fixes. |
+| `aspLsp.vbscript.identifierCaseByKind`    | `{}`                     | Per-symbol-kind VBScript identifier casing overrides.                                                                                            |
+| `aspLsp.vbscript.comTypes`                | `{}`                     | Custom COM type catalog keyed by `Server.CreateObject` Prog.ID.                                                                                  |
+| `aspLsp.vbscript.globals`                 | `{}`                     | Runtime or framework-provided VBScript globals keyed by identifier.                                                                              |
+| `aspLsp.vbscript.unusedDiagnostics`       | `true`                   | Report unused VBScript declarations as hints.                                                                                                    |
+| `aspLsp.vbscript.syntaxSnippets`          | `true`                   | Enable VBScript syntax snippet completions.                                                                                                      |
+| `aspLsp.inlayHints.variableTypes`         | `true`                   | Show inferred VBScript variable types.                                                                                                           |
+| `aspLsp.inlayHints.parameterNames`        | `true`                   | Show VBScript procedure parameter names at call sites.                                                                                           |
+| `aspLsp.inlayHints.functionReturnTypes`   | `true`                   | Show inferred VBScript function return types.                                                                                                    |
+| `aspLsp.inlayHints.implicitByRef`         | `true`                   | Show `ByRef` for VBScript parameters whose passing mode is omitted.                                                                              |
+| `aspLsp.inlayHints.globalVariableMarkers` | `global`                 | Show VBScript variable scope markers, `global`, `local`, `all`, or `off`; in-progress include analysis may use `(?)`.                            |
+| `aspLsp.codeLens.references`              | `true`                   | Show VBScript reference counts.                                                                                                                  |
+| `aspLsp.codeLens.referenceScope`          | `analyzed`               | Reference count scope, `analyzed` for currently analyzed files or `workspace` for full workspace reference counts.                               |
+| `aspLsp.codeLens.includes`                | `false`                  | Show include resolution lenses.                                                                                                                  |
+| `aspLsp.workspace.maxIndexFiles`          | `5000`                   | Maximum unopened Classic ASP files indexed in one workspace scan.                                                                                |
+| `aspLsp.workspace.scanChunkSize`          | `200`                    | Filesystem entries processed before yielding during workspace indexing.                                                                          |
+| `aspLsp.iis.url`                          | `http://localhost/`      | URL opened by the IIS debug helper command.                                                                                                      |
+| `aspLsp.iis.webRoot`                      | `""`                     | Web root used by the IIS debug helper command.                                                                                                   |
+| `aspLsp.iis.browser`                      | `pwa-chrome`             | VS Code debug type used by the IIS debug helper command.                                                                                         |
+| `aspLsp.iisExpress.url`                   | `http://localhost:8080/` | URL opened by the IIS Express debug helper command.                                                                                              |
+| `aspLsp.iisExpress.webRoot`               | `""`                     | Web root used by the IIS Express debug helper command.                                                                                           |
+| `aspLsp.iisExpress.browser`               | `pwa-chrome`             | VS Code debug type used by the IIS Express debug helper command.                                                                                 |
 
 Example `aspLsp.vbscript.comTypes` and `aspLsp.vbscript.globals` entries:
 

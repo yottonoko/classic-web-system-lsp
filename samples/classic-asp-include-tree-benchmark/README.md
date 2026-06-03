@@ -62,7 +62,7 @@ the required speedup, set `ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000` or
 higher and keep the first matrix narrow:
 
 ```sh
-ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000 ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default ASP_LSP_BENCH_BACKGROUND=off pnpm run benchmark:change:include-tree
+ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000 ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default pnpm run benchmark:change:include-tree
 ```
 
 Useful checks:

@@ -3227,9 +3227,9 @@ fn serves_workspace_diagnostics_with_disk_cache() {
 }
 
 #[test]
-fn warms_workspace_diagnostics_with_background_analysis() {
+fn workspace_diagnostics_populates_disk_cache_only_when_requested() {
     let root = std::env::temp_dir().join(format!(
-        "asp-lsp-rust-background-analysis-{}",
+        "asp-lsp-rust-workspace-diagnostics-cache-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
@@ -3258,29 +3258,17 @@ fn warms_workspace_diagnostics_with_background_analysis() {
         json!({
             "cache": { "enabled": true, "directory": cache_dir.to_string_lossy() },
             "debug": { "output": "verbose" },
-            "workspace": { "backgroundAnalysis": true },
         }),
         &root_uri,
     );
 
-    let started = read_until(&mut reader, |message| {
-        message["method"] == json!("window/logMessage")
-            && message.to_string().contains("backgroundAnalysis.started")
-    });
-    assert!(started.to_string().contains("1 files"));
-    assert!(started.to_string().contains("priority=0"));
-    assert!(started.to_string().contains("batchSize="));
-    let completed = read_until(&mut reader, |message| {
-        message["method"] == json!("window/logMessage")
-            && message.to_string().contains("backgroundAnalysis.completed")
-    });
-    assert!(completed.to_string().contains("diagnostics=1"));
     assert!(
-        fs::read_dir(&cache_dir)
-            .expect("cache dir")
-            .flatten()
-            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
-        "expected background analysis to populate disk cache"
+        !cache_dir.exists()
+            || !fs::read_dir(&cache_dir)
+                .expect("cache dir")
+                .flatten()
+                .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
+        "workspace cache must not be populated before a workspace/diagnostic request"
     );
 
     let diagnostics = request(
@@ -3291,6 +3279,13 @@ fn warms_workspace_diagnostics_with_background_analysis() {
         json!({ "previousResultIds": [] }),
     );
     assert!(diagnostics["result"].to_string().contains("missingName"));
+    assert!(
+        fs::read_dir(&cache_dir)
+            .expect("cache dir")
+            .flatten()
+            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
+        "expected workspace/diagnostic request to populate disk cache"
+    );
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);

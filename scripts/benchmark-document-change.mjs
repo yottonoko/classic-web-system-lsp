@@ -35,18 +35,17 @@ const rapidDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEBOUNCE_MS", 80);
 const defaultDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEFAULT_DEBOUNCE_MS", 250);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", defaultTimeoutMs);
-const optionalLogWaitMs = readNonNegativeInteger("ASP_LSP_BENCH_OPTIONAL_LOG_WAIT_MS", 1_000);
+const workspaceCacheLogWaitMs = readNonNegativeInteger(
+  "ASP_LSP_BENCH_WORKSPACE_CACHE_LOG_WAIT_MS",
+  1_000,
+);
 const changeKinds = readChangeKinds();
 const changeModes = readChangeModes();
 const editTargets = readEditTargets();
-const backgroundModes = readBackgroundModes();
 const debugEventNames = [
   "diskCache.hit",
   "diskCache.miss",
   "diskCache.write",
-  "backgroundAnalysis.started",
-  "backgroundAnalysis.batch",
-  "backgroundAnalysis.completed",
   "check.vbscript.diagnostics.reuse",
   "js.snapshot.changeRange.hit",
   "js.snapshot.changeRange.miss",
@@ -131,14 +130,10 @@ async function main() {
 
   const sourceStats = summarizeSources(collectBenchmarkSources());
   const scenarioResults = [];
-  for (const backgroundAnalysis of backgroundModes) {
-    for (const changeMode of changeModes) {
-      for (const editTarget of editTargets) {
-        for (const changeKind of changeKinds) {
-          scenarioResults.push(
-            await runScenario(changeKind, changeMode, backgroundAnalysis, editTarget),
-          );
-        }
+  for (const changeMode of changeModes) {
+    for (const editTarget of editTargets) {
+      for (const changeKind of changeKinds) {
+        scenarioResults.push(await runScenario(changeKind, changeMode, editTarget));
       }
     }
   }
@@ -162,7 +157,6 @@ async function main() {
   console.log(`Default debounce: ${defaultDebounceMs} ms`);
   console.log(`Rapid burst size: ${rapidBurstSize}`);
   console.log(`Rapid debounce: ${rapidDebounceMs} ms`);
-  console.log(`Background analysis: ${backgroundModes.map(backgroundLabel).join(", ")}`);
   console.log("");
   printScenarioTable(scenarioResults);
 
@@ -196,9 +190,9 @@ async function main() {
   }
 }
 
-async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarget) {
+async function runScenario(changeKind, changeMode, editTarget) {
   if (benchmarkCacheMode === "cold") {
-    return runColdScenario(changeKind, changeMode, backgroundAnalysis, editTarget);
+    return runColdScenario(changeKind, changeMode, editTarget);
   }
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-change-bench-"));
   const cacheDir = path.join(tempDir, "cache");
@@ -227,7 +221,6 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
           checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
-          workspace: { backgroundAnalysis },
         },
       },
     });
@@ -294,7 +287,6 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
       changeKind,
       changeMode,
       editTarget,
-      backgroundAnalysis,
       burstSize,
       debounceMs,
       openMetrics: {
@@ -313,16 +305,10 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
   }
 }
 
-async function runColdScenario(changeKind, changeMode, backgroundAnalysis, editTarget) {
+async function runColdScenario(changeKind, changeMode, editTarget) {
   const { burstSize, debounceMs } = changeModeSettings(changeMode);
   for (let index = 0; index < warmupIterations; index += 1) {
-    await measureColdScenarioIteration(
-      changeKind,
-      changeMode,
-      backgroundAnalysis,
-      editTarget,
-      index,
-    );
+    await measureColdScenarioIteration(changeKind, changeMode, editTarget, index);
   }
 
   const samples = [];
@@ -334,7 +320,6 @@ async function runColdScenario(changeKind, changeMode, backgroundAnalysis, editT
     const { openMetrics, sample } = await measureColdScenarioIteration(
       changeKind,
       changeMode,
-      backgroundAnalysis,
       editTarget,
       warmupIterations + index,
     );
@@ -351,7 +336,6 @@ async function runColdScenario(changeKind, changeMode, backgroundAnalysis, editT
     changeKind,
     changeMode,
     editTarget,
-    backgroundAnalysis,
     burstSize,
     debounceMs,
     openMetrics: openMetricSamples,
@@ -362,13 +346,7 @@ async function runColdScenario(changeKind, changeMode, backgroundAnalysis, editT
   };
 }
 
-async function measureColdScenarioIteration(
-  changeKind,
-  changeMode,
-  backgroundAnalysis,
-  editTarget,
-  iteration,
-) {
+async function measureColdScenarioIteration(changeKind, changeMode, editTarget, iteration) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-change-bench-cold-"));
   const cacheDir = path.join(tempDir, "cache");
   const sourcePath = path.join(sampleRoot, "default.asp");
@@ -395,7 +373,6 @@ async function measureColdScenarioIteration(
           checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
-          workspace: { backgroundAnalysis },
         },
       },
     });
@@ -619,53 +596,19 @@ function semanticTokenRange(text, position) {
 }
 
 async function runWorkspaceCacheBenchmarks() {
-  const results = [];
-  if (backgroundModes.includes(false)) {
-    results.push(
-      benchmarkCacheMode === "cold"
-        ? await runColdWorkspaceCacheScenario(false)
-        : await runColdWarmWorkspaceCacheScenario(),
-    );
-  }
-  if (backgroundModes.includes(true)) {
-    results.push(
-      benchmarkCacheMode === "cold"
-        ? await runColdWorkspaceCacheScenario(true)
-        : await runBackgroundWorkspaceCacheScenario(),
-    );
-  }
-  return results;
+  return [
+    benchmarkCacheMode === "cold"
+      ? await runColdWorkspaceCacheScenario()
+      : await runColdWarmWorkspaceCacheScenario(),
+  ];
 }
 
-async function runColdWorkspaceCacheScenario(backgroundAnalysis) {
-  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer(backgroundAnalysis);
+async function runColdWorkspaceCacheScenario() {
+  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer();
   try {
-    if (backgroundAnalysis) {
-      const startedAt = performance.now();
-      const logs = [];
-      await waitForOptionalLogContaining(
-        server,
-        "backgroundAnalysis.completed",
-        logs,
-        optionalLogWaitMs,
-      );
-      logs.push(...server.takePendingNotifications("window/logMessage"));
-      return {
-        scenario: "background=on",
-        cacheDir,
-        rows: [
-          {
-            metric: "cold background warmup",
-            elapsedMs: performance.now() - startedAt,
-            diagnosticCount: 0,
-            eventCounts: collectDebugEventCounts(logs),
-          },
-        ],
-      };
-    }
     const cold = await measureWorkspaceDiagnostics(server, "diskCache.write");
     return {
-      scenario: "background=off",
+      scenario: "workspace diagnostics",
       cacheDir,
       rows: [{ metric: "cold workspace diagnostics", ...cold }],
     };
@@ -676,12 +619,12 @@ async function runColdWorkspaceCacheScenario(backgroundAnalysis) {
 }
 
 async function runColdWarmWorkspaceCacheScenario() {
-  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer(false);
+  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer();
   try {
     const cold = await measureWorkspaceDiagnostics(server, "diskCache.write");
     const warm = await measureWorkspaceDiagnostics(server, "diskCache.hit");
     return {
-      scenario: "background=off",
+      scenario: "workspace diagnostics",
       cacheDir,
       rows: [
         { metric: "cold workspace diagnostics", ...cold },
@@ -694,39 +637,7 @@ async function runColdWarmWorkspaceCacheScenario() {
   }
 }
 
-async function runBackgroundWorkspaceCacheScenario() {
-  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer(true);
-  try {
-    const warmupStartedAt = performance.now();
-    const warmupLogs = [];
-    await waitForOptionalLogContaining(
-      server,
-      "backgroundAnalysis.completed",
-      warmupLogs,
-      optionalLogWaitMs,
-    );
-    warmupLogs.push(...server.takePendingNotifications("window/logMessage"));
-    const warmup = {
-      elapsedMs: performance.now() - warmupStartedAt,
-      diagnosticCount: 0,
-      eventCounts: collectDebugEventCounts(warmupLogs),
-    };
-    const warm = await measureWorkspaceDiagnostics(server, "diskCache.hit");
-    return {
-      scenario: "background=on",
-      cacheDir,
-      rows: [
-        { metric: "background warmup", ...warmup },
-        { metric: "post-background workspace diagnostics", ...warm },
-      ],
-    };
-  } finally {
-    await stopWorkspaceCacheServer(server);
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
-
-async function startWorkspaceCacheServer(backgroundAnalysis) {
+async function startWorkspaceCacheServer() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-cache-bench-"));
   const cacheDir = path.join(tempDir, "cache");
   const server = new RpcServer();
@@ -738,7 +649,6 @@ async function startWorkspaceCacheServer(backgroundAnalysis) {
         cache: benchmarkCacheSettings(cacheDir),
         checkJs: benchmarkCheckJs,
         debug: { output: "verbose" },
-        workspace: { backgroundAnalysis },
       },
     },
   });
@@ -773,7 +683,7 @@ async function measureWorkspaceDiagnostics(server, expectedLog) {
   const startedAt = performance.now();
   const report = await server.request("workspace/diagnostic", { previousResultIds: [] });
   const logs = [];
-  await waitForOptionalLogContaining(server, expectedLog, logs, optionalLogWaitMs);
+  await waitForOptionalLogContaining(server, expectedLog, logs, workspaceCacheLogWaitMs);
   await sleep(50);
   logs.push(...server.takePendingNotifications("window/logMessage"));
   return {
@@ -1153,17 +1063,7 @@ function printDebugEventDetails(scenarioResults) {
 
 function printWorkspaceCacheTable(results) {
   const rows = [
-    [
-      "Scenario",
-      "Metric",
-      "elapsed ms",
-      "diagnostics",
-      "disk hits",
-      "disk misses",
-      "disk writes",
-      "background starts",
-      "background completes",
-    ],
+    ["Scenario", "Metric", "elapsed ms", "diagnostics", "disk hits", "disk misses", "disk writes"],
   ];
   for (const result of results) {
     for (const row of result.rows) {
@@ -1175,8 +1075,6 @@ function printWorkspaceCacheTable(results) {
         String(row.eventCounts.get("diskCache.hit") ?? 0),
         String(row.eventCounts.get("diskCache.miss") ?? 0),
         String(row.eventCounts.get("diskCache.write") ?? 0),
-        String(row.eventCounts.get("backgroundAnalysis.started") ?? 0),
-        String(row.eventCounts.get("backgroundAnalysis.completed") ?? 0),
       ]);
     }
   }
@@ -1195,9 +1093,7 @@ function statsCells(samples) {
 }
 
 function scenarioLabel(scenario) {
-  return `target=${scenario.editTarget}, ${scenario.changeKind}, mode=${scenario.changeMode}, burst=${scenario.burstSize}, debounce=${scenario.debounceMs}ms, background=${backgroundLabel(
-    scenario.backgroundAnalysis,
-  )}`;
+  return `target=${scenario.editTarget}, ${scenario.changeKind}, mode=${scenario.changeMode}, burst=${scenario.burstSize}, debounce=${scenario.debounceMs}ms`;
 }
 
 function printRows(rows) {
@@ -1208,10 +1104,6 @@ function printRows(rows) {
       console.log(widths.map((width) => "-".repeat(width)).join("  "));
     }
   }
-}
-
-function backgroundLabel(value) {
-  return value ? "on" : "off";
 }
 
 function formatMillis(value) {
@@ -1310,20 +1202,6 @@ function changeModeSettings(changeMode) {
     return { burstSize: 1, debounceMs: defaultDebounceMs };
   }
   return { burstSize: 1, debounceMs: 0 };
-}
-
-function readBackgroundModes() {
-  const raw = process.env.ASP_LSP_BENCH_BACKGROUND ?? "both";
-  if (raw === "both") {
-    return [false, true];
-  }
-  if (raw === "off") {
-    return [false];
-  }
-  if (raw === "on") {
-    return [true];
-  }
-  throw new Error("ASP_LSP_BENCH_BACKGROUND must be on, off, or both.");
 }
 
 function readPositiveInteger(name, fallback) {
