@@ -39,7 +39,7 @@ The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, Jav
 - include-aware VBScript symbols for completions and definition jumps
 - rename, document highlights, signature help, workspace symbols, and semantic tokens for VBScript symbols
 - selection ranges, inlay hints, call hierarchy, type hierarchy, type definition, implementation, monikers, inline values, and CodeLens for VBScript symbols
-- quick fixes for undeclared variables, missing includes, include suggestions, removable unused VBScript declarations, strict type diagnostics such as missing `Set`, unnecessary `Set`, and type annotations, and extract-variable refactors for selected VBScript expressions
+- quick fixes for undeclared variables, missing includes, removable unused VBScript declarations, strict type diagnostics such as missing `Set`, unnecessary `Set`, and type annotations, and extract-variable refactors for selected VBScript expressions
 - VB.NET-style `'''` XML documentation comments for VBScript hover, completion resolve, and signature help
 - XML documentation tag completion for `summary`, `remarks`, `param`, `returns`, `value`, `exception`, `see`, `seealso`, `example`, `code`, `c`, `list`, and `para`
 - conservative support for `ReDim`, `For Each`, `With`, ASP Reference built-ins, FileSystem/Dictionary/MSWC components, and ADO object completions
@@ -137,7 +137,6 @@ ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000 ASP_LSP_BENCH_ITERATIONS=1 ASP_
 | `aspLsp.vbscript.comTypes`                 | `{}`                     | Custom COM type catalog keyed by `Server.CreateObject` Prog.ID.                                                                                  |
 | `aspLsp.vbscript.globals`                  | `{}`                     | Runtime or framework-provided VBScript globals keyed by identifier.                                                                              |
 | `aspLsp.vbscript.unusedDiagnostics`        | `true`                   | Report unused VBScript declarations as hints.                                                                                                    |
-| `aspLsp.vbscript.includeSuggestions`       | `true`                   | Suggest `<!-- #include ... -->` fixes for undeclared symbols found in workspace files.                                                           |
 | `aspLsp.vbscript.syntaxSnippets`           | `true`                   | Enable VBScript syntax snippet completions.                                                                                                      |
 | `aspLsp.inlayHints.variableTypes`          | `true`                   | Show inferred VBScript variable types.                                                                                                           |
 | `aspLsp.inlayHints.parameterNames`         | `true`                   | Show VBScript procedure parameter names at call sites.                                                                                           |
@@ -188,7 +187,6 @@ Example `aspLsp.vbscript.comTypes` and `aspLsp.vbscript.globals` entries:
 - Unused diagnostics are hints. Classic ASP runtime entry points such as `Application_OnStart`, public class members, include-cross references, and names inside strings/comments are excluded from VBScript unused checks.
 - JavaScript/JScript auto imports use TypeScript language service results. Import edits are applied only when every edit maps safely back into the same ASP JavaScript/JScript virtual document; cross-file or unmappable edits are skipped instead of partially applying.
 - Cross-language rename is conservative. It links HTML `id`/`class`, CSS `#id`/`.class`, and common JavaScript DOM selector strings such as `querySelector`, `querySelectorAll`, `getElementById`, and `classList` across open and indexed Classic ASP workspace files.
-- VBScript has no import syntax, so auto import support is exposed as include suggestions for undeclared symbols that exist in indexed `.asp`, `.asa`, or `.inc` workspace files.
 - `.inc` files are treated as fragments, so full-document HTML diagnostics are suppressed for them.
 - Include resolution supports `file` and `virtual` directives, Windows-style case-insensitive lookup with exact-casing diagnostics, missing include diagnostics, and bounded cycle detection.
 - COM and IIS runtime behavior are not executed. COM type information comes from built-in ASP/COM/ADO stubs or `aspLsp.vbscript.comTypes`.

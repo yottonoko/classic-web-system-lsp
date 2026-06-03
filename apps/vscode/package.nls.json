@@ -36,8 +36,6 @@
   "configuration.vbscript.globals.string.description": "Global object type shorthand, for example MyCompany.Repository or String | Nothing.",
   "configuration.vbscript.globals.type.description": "Global object type. Use | for union types.",
   "configuration.vbscript.unusedDiagnostics.description": "Report unused VBScript declarations as hint diagnostics.",
-  "configuration.vbscript.includeSuggestions.description": "Suggest Classic ASP include directives for undeclared VBScript symbols found in workspace files.",
-  "configuration.vbscript.includeSuggestionMaxFiles.description": "Maximum number of workspace files scanned for undeclared-symbol include suggestions. Set to 0 to disable the scan.",
   "configuration.vbscript.syntaxSnippets.description": "Enable VBScript syntax snippet completions for common control flow and declaration blocks.",
   "configuration.inlayHints.variableTypes.description": "Show inferred VBScript variable type inlay hints.",
   "configuration.inlayHints.parameterNames.description": "Show VBScript procedure parameter name inlay hints.",

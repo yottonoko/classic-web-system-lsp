@@ -155,9 +155,6 @@ describe("VS Code extension package", () => {
       manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.unusedDiagnostics"],
     ).toBeTruthy();
     expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.includeSuggestions"],
-    ).toBeTruthy();
-    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.syntaxSnippets"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
     expect(
