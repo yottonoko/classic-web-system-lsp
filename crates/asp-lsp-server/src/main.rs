@@ -313,14 +313,23 @@ impl ServerState {
         range: Option<TextRange>,
         uri: &str,
     ) -> Result<Value, String> {
-        let mut value = self.ide.semantic_tokens(uri, range)?;
+        let virtuals = self.ide.embedded_virtual_documents(uri)?;
+        let rust_tokens = thread::scope(|scope| {
+            let embedded_handle =
+                scope.spawn(move || collect_fast_embedded_semantic_tokens(virtuals, range));
+            let rust_tokens = self.ide.semantic_tokens(uri, range);
+            let embedded_tokens = embedded_handle.join().unwrap_or_default();
+            (rust_tokens, embedded_tokens)
+        });
+        let (value, embedded_tokens) = rust_tokens;
+        let mut value = value?;
         let Some(data) = value.get("data").and_then(Value::as_array) else {
             return Ok(value);
         };
         let Some(mut tokens) = decode_semantic_tokens(data) else {
             return Ok(value);
         };
-        tokens.extend(self.embedded_semantic_tokens(uri, range)?);
+        tokens.extend(embedded_tokens);
         tokens.sort_by_key(|token| (token.line, token.character));
         tokens.dedup_by(|left, right| {
             left.line == right.line
@@ -336,52 +345,6 @@ impl ServerState {
             );
         }
         Ok(value)
-    }
-
-    fn embedded_semantic_tokens(
-        &mut self,
-        uri: &str,
-        range: Option<TextRange>,
-    ) -> Result<Vec<DecodedSemanticToken>, String> {
-        let virtuals = self.ide.embedded_virtual_documents(uri)?;
-        let open_virtuals = virtuals
-            .iter()
-            .map(|mapped| mapped.document.clone())
-            .collect::<Vec<_>>();
-        let mut tokens = Vec::new();
-        for mapped in virtuals {
-            if matches!(mapped.document.language_id.as_str(), "vbscript" | "html") {
-                continue;
-            }
-            let Some(result) = self.embedded_request(
-                None,
-                &mapped,
-                open_virtuals.clone(),
-                "semanticTokens",
-                Value::Null,
-            )?
-            else {
-                continue;
-            };
-            let remapped = mapped.remap_lsp_value(result);
-            for token in remapped.as_array().into_iter().flatten() {
-                let Some(decoded) = decoded_semantic_token_from_value(token) else {
-                    continue;
-                };
-                if range.as_ref().is_none_or(|range| {
-                    semantic_token_starts_in_range(
-                        &decoded,
-                        u64::from(range.start.line),
-                        u64::from(range.start.character),
-                        u64::from(range.end.line),
-                        u64::from(range.end.character),
-                    )
-                }) {
-                    tokens.push(decoded);
-                }
-            }
-        }
-        Ok(tokens)
     }
 
     fn clear_semantic_tokens(&mut self, uri: &str) {
@@ -1032,9 +995,9 @@ fn semantic_token_delta_edit(previous: &[Value], next: &[Value]) -> Value {
 struct DecodedSemanticToken {
     line: u64,
     character: u64,
-    length: Value,
-    token_type: Value,
-    token_modifiers: Value,
+    length: u64,
+    token_type: u64,
+    token_modifiers: u64,
 }
 
 fn semantic_token_range_data(data: &[Value], range: &TextRange) -> Option<Vec<Value>> {
@@ -1075,9 +1038,9 @@ fn decode_semantic_tokens(data: &[Value]) -> Option<Vec<DecodedSemanticToken>> {
         tokens.push(DecodedSemanticToken {
             line,
             character,
-            length: chunk[2].clone(),
-            token_type: chunk[3].clone(),
-            token_modifiers: chunk[4].clone(),
+            length: chunk[2].as_u64()?,
+            token_type: chunk[3].as_u64()?,
+            token_modifiers: chunk[4].as_u64()?,
         });
     }
     if data.len() % 5 == 0 {
@@ -1100,9 +1063,9 @@ fn encode_decoded_semantic_tokens(tokens: &[DecodedSemanticToken]) -> Vec<Value>
         };
         data.push(Value::from(delta_line));
         data.push(Value::from(delta_start));
-        data.push(token.length.clone());
-        data.push(token.token_type.clone());
-        data.push(token.token_modifiers.clone());
+        data.push(Value::from(token.length));
+        data.push(Value::from(token.token_type));
+        data.push(Value::from(token.token_modifiers));
         previous_line = token.line;
         previous_character = token.character;
     }
@@ -1252,6 +1215,279 @@ fn collect_embedded_diagnostics_from_virtuals(
     Ok(diagnostics)
 }
 
+fn collect_fast_embedded_semantic_tokens(
+    virtuals: Vec<MappedVirtualDocument>,
+    range: Option<TextRange>,
+) -> Vec<DecodedSemanticToken> {
+    let mut tokens = Vec::new();
+    for mapped in virtuals {
+        let virtual_tokens = match mapped.document.language_id.as_str() {
+            "css" => css_semantic_token_values(&mapped.document.text),
+            "javascript" | "jscript" => js_semantic_token_values(&mapped.document.text),
+            _ => Vec::new(),
+        };
+        if virtual_tokens.is_empty() {
+            continue;
+        }
+        let remapped = mapped.remap_lsp_value(Value::Array(virtual_tokens));
+        for token in remapped.as_array().into_iter().flatten() {
+            let Some(decoded) = decoded_semantic_token_from_value(token) else {
+                continue;
+            };
+            if range.as_ref().is_none_or(|range| {
+                semantic_token_starts_in_range(
+                    &decoded,
+                    u64::from(range.start.line),
+                    u64::from(range.start.character),
+                    u64::from(range.end.line),
+                    u64::from(range.end.character),
+                )
+            }) {
+                tokens.push(decoded);
+            }
+        }
+    }
+    tokens
+}
+
+fn css_semantic_token_values(text: &str) -> Vec<Value> {
+    let positions = byte_to_lsp_positions(text);
+    let bytes = text.as_bytes();
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !bytes[index].is_ascii_alphabetic() && bytes[index] != b'-' {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        let mut end = index + 1;
+        while end < bytes.len() && (bytes[end].is_ascii_alphabetic() || bytes[end] == b'-') {
+            end += 1;
+        }
+        let mut cursor = end;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor < bytes.len()
+            && bytes[cursor] == b':'
+            && bytes[start..end].iter().any(u8::is_ascii_alphabetic)
+        {
+            if let Some(token) =
+                semantic_token_value_from_byte_offsets(&positions, start, end, 6, 0)
+            {
+                tokens.push(token);
+            }
+        }
+        index = end;
+    }
+    tokens
+}
+
+fn js_semantic_token_values(text: &str) -> Vec<Value> {
+    let positions = byte_to_lsp_positions(text);
+    let bytes = text.as_bytes();
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    let mut previous_keyword: Option<&str> = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte.is_ascii_whitespace() {
+            index += 1;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            previous_keyword = None;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            index += 2;
+            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
+                index += 1;
+            }
+            index = (index + 2).min(bytes.len());
+            previous_keyword = None;
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"' | b'`') {
+            let quote = byte;
+            index += 1;
+            while index < bytes.len() {
+                if bytes[index] == b'\\' {
+                    index = (index + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[index] == quote {
+                    index += 1;
+                    break;
+                }
+                index += 1;
+            }
+            previous_keyword = None;
+            continue;
+        }
+        if is_js_identifier_start(byte) {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_js_identifier_part(bytes[index]) {
+                index += 1;
+            }
+            let word = &text[start..index];
+            if is_js_keyword(word) {
+                previous_keyword = Some(word);
+                continue;
+            }
+            let next = next_non_whitespace(bytes, index);
+            let previous = previous_non_whitespace(bytes, start);
+            let token_type = if previous_keyword == Some("function") {
+                3
+            } else if previous_keyword == Some("class") {
+                4
+            } else if previous == Some(b'.') {
+                6
+            } else if next == Some(b'(') {
+                3
+            } else {
+                previous_keyword = None;
+                continue;
+            };
+            push_semantic_token_value(&positions, &mut tokens, start, index, token_type, 0);
+            previous_keyword = None;
+            continue;
+        }
+        previous_keyword = None;
+        index += 1;
+    }
+    tokens
+}
+
+fn push_semantic_token_value(
+    positions: &[(usize, usize)],
+    tokens: &mut Vec<Value>,
+    start: usize,
+    end: usize,
+    token_type: u64,
+    token_modifiers: u64,
+) {
+    if let Some(token) =
+        semantic_token_value_from_byte_offsets(positions, start, end, token_type, token_modifiers)
+    {
+        tokens.push(token);
+    }
+}
+
+fn semantic_token_value_from_byte_offsets(
+    positions: &[(usize, usize)],
+    start: usize,
+    end: usize,
+    token_type: u64,
+    token_modifiers: u64,
+) -> Option<Value> {
+    let (start_line, start_character) = *positions.get(start)?;
+    let (end_line, end_character) = *positions.get(end)?;
+    Some(json!({
+        "range": {
+            "start": { "line": start_line, "character": start_character },
+            "end": { "line": end_line, "character": end_character },
+        },
+        "tokenType": token_type,
+        "tokenModifiers": token_modifiers,
+    }))
+}
+
+fn byte_to_lsp_positions(text: &str) -> Vec<(usize, usize)> {
+    let mut positions = vec![(0, 0); text.len() + 1];
+    let mut line = 0;
+    let mut character = 0;
+    for (byte_index, ch) in text.char_indices() {
+        positions[byte_index] = (line, character);
+        if ch == '\n' {
+            line += 1;
+            character = 0;
+        } else {
+            character += ch.len_utf16();
+        }
+        let next = byte_index + ch.len_utf8();
+        for position in positions.iter_mut().take(next + 1).skip(byte_index + 1) {
+            *position = (line, character);
+        }
+    }
+    positions[text.len()] = (line, character);
+    positions
+}
+
+fn is_js_identifier_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$')
+}
+
+fn is_js_identifier_part(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$')
+}
+
+fn is_js_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "async"
+            | "await"
+            | "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "debugger"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "export"
+            | "extends"
+            | "finally"
+            | "for"
+            | "function"
+            | "if"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "let"
+            | "new"
+            | "return"
+            | "switch"
+            | "throw"
+            | "try"
+            | "typeof"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+    )
+}
+
+fn next_non_whitespace(bytes: &[u8], mut index: usize) -> Option<u8> {
+    while index < bytes.len() {
+        if !bytes[index].is_ascii_whitespace() {
+            return Some(bytes[index]);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn previous_non_whitespace(bytes: &[u8], index: usize) -> Option<u8> {
+    let mut cursor = index.checked_sub(1)?;
+    loop {
+        if !bytes[cursor].is_ascii_whitespace() {
+            return Some(bytes[cursor]);
+        }
+        cursor = cursor.checked_sub(1)?;
+    }
+}
+
 struct EmbeddedSidecar {
     processes: Vec<EmbeddedSidecarProcess>,
 }
@@ -1282,8 +1518,16 @@ impl EmbeddedSidecar {
         if requests.is_empty() {
             return Vec::new();
         }
-        let request_count = requests.len();
         let worker_count = parallelism.max(1).min(requests.len());
+        self.request_batch_with_worker_count(requests, worker_count)
+    }
+
+    fn request_batch_with_worker_count(
+        &mut self,
+        requests: Vec<EmbeddedRequest>,
+        worker_count: usize,
+    ) -> Vec<Result<EmbeddedResponse, String>> {
+        let request_count = requests.len();
         if worker_count == 1 {
             return requests
                 .into_iter()
@@ -3022,6 +3266,8 @@ fn log_sidecar_cache_stats(
     };
     const STAT_EVENTS: &[(&str, &str)] = &[
         ("generationReset", "sidecarCache.generationReset"),
+        ("semanticTokensHit", "sidecarCache.semanticTokens.hit"),
+        ("semanticTokensMiss", "sidecarCache.semanticTokens.miss"),
         ("fileExistsHit", "sidecarCache.fileExists.hit"),
         ("fileExistsMiss", "sidecarCache.fileExists.miss"),
         ("readFileHit", "sidecarCache.readFile.hit"),
@@ -3177,12 +3423,12 @@ fn decoded_semantic_token_from_value(value: &Value) -> Option<DecodedSemanticTok
     Some(DecodedSemanticToken {
         line,
         character,
-        length: Value::from(end_character.saturating_sub(character)),
-        token_type: value.get("tokenType")?.clone(),
+        length: end_character.saturating_sub(character),
+        token_type: value.get("tokenType")?.as_u64()?,
         token_modifiers: value
             .get("tokenModifiers")
-            .cloned()
-            .unwrap_or(Value::from(0)),
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
     })
 }
 

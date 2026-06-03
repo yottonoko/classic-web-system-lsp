@@ -67,6 +67,8 @@ interface SidecarCacheStats {
   generationReset: number;
   resetReason?: string;
   projectFingerprint?: string;
+  semanticTokensHit: number;
+  semanticTokensMiss: number;
   fileExistsHit: number;
   fileExistsMiss: number;
   readFileHit: number;
@@ -117,6 +119,11 @@ interface CachedLanguageServiceProject {
   lastUsed: number;
 }
 
+interface CachedSemanticTokens {
+  tokens: DecodedSemanticToken[];
+  lastUsed: number;
+}
+
 interface DecodedSemanticToken {
   range: Range;
   tokenType: number;
@@ -132,9 +139,12 @@ const directoriesCache = new Map<string, string[]>();
 const readDirectoryCache = new Map<string, string[]>();
 const realpathCache = new Map<string, string>();
 const languageServiceProjectCache = new Map<string, CachedLanguageServiceProject>();
+const semanticTokenCache = new Map<string, CachedSemanticTokens>();
 let languageServiceProjectCacheTick = 0;
+let semanticTokenCacheTick = 0;
 let currentRequestStats: SidecarCacheStats | undefined;
 const maxLanguageServiceProjectCacheEntries = 8;
+const maxSemanticTokenCacheEntries = 64;
 
 if (process.env.ASP_LSP_SIDECAR_TEST_MODE !== "1") {
   process.stdin.on("data", (chunk: Buffer) => {
@@ -402,13 +412,29 @@ async function formatting(request: EmbeddedRequest): Promise<TextEdit[]> {
 async function semanticTokens(request: EmbeddedRequest): Promise<DecodedSemanticToken[]> {
   const document = toTextDocument(request.activeVirtual);
   const language = request.activeVirtual.languageId;
+  const range = requestSemanticTokenRange(request);
+  const cacheKey = semanticTokenCacheKey(request);
+  const cached = semanticTokenCache.get(cacheKey);
+  if (cached) {
+    cached.lastUsed = ++semanticTokenCacheTick;
+    recordCacheStat("semanticTokensHit");
+    return semanticTokensForRange(cached.tokens, range);
+  }
+  recordCacheStat("semanticTokensMiss");
+  let tokens: DecodedSemanticToken[];
   if (language === "css") {
-    return cssSemanticTokens(document);
+    tokens = cssSemanticTokens(document);
+  } else if (language === "javascript" || language === "jscript") {
+    tokens = jsSemanticTokens(request, document);
+  } else {
+    tokens = [];
   }
-  if (language === "javascript" || language === "jscript") {
-    return jsSemanticTokens(request, document);
-  }
-  return [];
+  semanticTokenCache.set(cacheKey, {
+    tokens,
+    lastUsed: ++semanticTokenCacheTick,
+  });
+  pruneSemanticTokenCache();
+  return semanticTokensForRange(tokens, range);
 }
 
 function cssSemanticTokens(document: TextDocument): DecodedSemanticToken[] {
@@ -687,19 +713,27 @@ function jsSemanticTokens(
   request: EmbeddedRequest,
   document: TextDocument,
 ): DecodedSemanticToken[] {
-  const project = createLanguageServiceProject(request);
-  const spans = project.service.getEncodedSemanticClassifications(
-    project.fileName,
-    {
-      start: 0,
-      length: document.getText().length,
-    },
-    ts.SemanticClassificationFormat.TwentyTwenty,
-  ).spans;
+  const text = document.getText();
+  const tokens = jsLexicalSemanticTokens(document, text);
+  const sourceFile = ts.createSourceFile(
+    jsVirtualFileName(request.activeVirtual.uri),
+    text,
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.JS,
+  );
+  visitJsSemanticIdentifiers(document, sourceFile, sourceFile, tokens);
+  return tokens.sort(compareSemanticTokens);
+}
+
+function jsLexicalSemanticTokens(document: TextDocument, text: string): DecodedSemanticToken[] {
+  const spans = ts
+    .createClassifier()
+    .getEncodedLexicalClassifications(text, ts.EndOfLineState.None, true).spans;
   const tokens: DecodedSemanticToken[] = [];
   for (let index = 0; index + 2 < spans.length; index += 3) {
-    const token = jsSemanticTokenFromClassification(spans[index + 2]);
-    if (!token) {
+    const tokenType = jsLexicalSemanticTokenType(spans[index + 2]);
+    if (tokenType === undefined) {
       continue;
     }
     tokens.push({
@@ -707,11 +741,160 @@ function jsSemanticTokens(
         start: document.positionAt(spans[index]),
         end: document.positionAt(spans[index] + spans[index + 1]),
       },
-      tokenType: token.tokenType,
-      tokenModifiers: token.tokenModifiers,
+      tokenType,
+      tokenModifiers: 0,
     });
   }
   return tokens;
+}
+
+function jsLexicalSemanticTokenType(classification: number): number | undefined {
+  switch (classification) {
+    case ts.ClassificationType.keyword:
+      return 0;
+    case ts.ClassificationType.comment:
+      return 7;
+    case ts.ClassificationType.stringLiteral:
+    case ts.ClassificationType.regularExpressionLiteral:
+      return 8;
+    case ts.ClassificationType.operator:
+      return 9;
+    default:
+      return undefined;
+  }
+}
+
+function visitJsSemanticIdentifiers(
+  document: TextDocument,
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  tokens: DecodedSemanticToken[],
+): void {
+  if (ts.isIdentifier(node)) {
+    const token = jsIdentifierSemanticToken(node);
+    if (token) {
+      tokens.push({
+        range: {
+          start: document.positionAt(node.getStart(sourceFile)),
+          end: document.positionAt(node.end),
+        },
+        tokenType: token.tokenType,
+        tokenModifiers: token.tokenModifiers,
+      });
+    }
+  }
+  ts.forEachChild(node, (child) => visitJsSemanticIdentifiers(document, sourceFile, child, tokens));
+}
+
+function jsIdentifierSemanticToken(
+  node: ts.Identifier,
+): { tokenType: number; tokenModifiers: number } | undefined {
+  const parent = node.parent;
+  if ((ts.isFunctionDeclaration(parent) || ts.isFunctionExpression(parent)) && parent.name === node) {
+    return { tokenType: 3, tokenModifiers: 0 };
+  }
+  if (ts.isMethodDeclaration(parent) && parent.name === node) {
+    return { tokenType: 5, tokenModifiers: 0 };
+  }
+  if ((ts.isClassDeclaration(parent) || ts.isClassExpression(parent)) && parent.name === node) {
+    return { tokenType: 4, tokenModifiers: 0 };
+  }
+  if (ts.isParameter(parent) && parent.name === node) {
+    return { tokenType: 2, tokenModifiers: 0 };
+  }
+  if (
+    (ts.isPropertyAccessExpression(parent) ||
+      ts.isPropertyAssignment(parent) ||
+      ts.isPropertyDeclaration(parent)) &&
+    parent.name === node
+  ) {
+    return { tokenType: 6, tokenModifiers: 0 };
+  }
+  if (ts.isCallExpression(parent) && parent.expression === node) {
+    return { tokenType: 3, tokenModifiers: 0 };
+  }
+  if (ts.isNewExpression(parent) && parent.expression === node) {
+    return { tokenType: 4, tokenModifiers: 0 };
+  }
+  if (ts.isVariableDeclaration(parent) && parent.name === node) {
+    return {
+      tokenType: 1,
+      tokenModifiers: variableDeclarationIsConst(parent) ? 1 << 2 : 0,
+    };
+  }
+  return { tokenType: 1, tokenModifiers: 0 };
+}
+
+function variableDeclarationIsConst(node: ts.VariableDeclaration): boolean {
+  return (
+    ts.isVariableDeclarationList(node.parent) &&
+    (node.parent.flags & ts.NodeFlags.Const) === ts.NodeFlags.Const
+  );
+}
+
+function compareSemanticTokens(left: DecodedSemanticToken, right: DecodedSemanticToken): number {
+  return (
+    left.range.start.line - right.range.start.line ||
+    left.range.start.character - right.range.start.character ||
+    left.range.end.character - right.range.end.character ||
+    left.tokenType - right.tokenType ||
+    left.tokenModifiers - right.tokenModifiers
+  );
+}
+
+function semanticTokensForRange(
+  tokens: DecodedSemanticToken[],
+  range: Range | undefined,
+): DecodedSemanticToken[] {
+  const filtered = range ? tokens.filter((token) => semanticTokenStartsInRange(token, range)) : tokens;
+  return filtered.map((token) => ({
+    range: {
+      start: { ...token.range.start },
+      end: { ...token.range.end },
+    },
+    tokenType: token.tokenType,
+    tokenModifiers: token.tokenModifiers,
+  }));
+}
+
+function semanticTokenStartsInRange(token: DecodedSemanticToken, range: Range): boolean {
+  const { line, character } = token.range.start;
+  if (line < range.start.line || line > range.end.line) {
+    return false;
+  }
+  if (line === range.start.line && character < range.start.character) {
+    return false;
+  }
+  if (line === range.end.line && character >= range.end.character) {
+    return false;
+  }
+  return true;
+}
+
+function semanticTokenCacheKey(request: EmbeddedRequest): string {
+  return JSON.stringify({
+    project: request.projectFingerprint ?? `generation:${request.projectGeneration}`,
+    uri: request.activeVirtual.uri,
+    languageId: request.activeVirtual.languageId,
+    text: textFingerprint(request.activeVirtual.text),
+    settings: {
+      checkJs: request.settings.checkJs ?? false,
+      javascript: request.settings.javascript ?? {},
+    },
+  });
+}
+
+function pruneSemanticTokenCache(): void {
+  while (semanticTokenCache.size > maxSemanticTokenCacheEntries) {
+    const oldest = [...semanticTokenCache.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0];
+    semanticTokenCache.delete(oldest[0]);
+  }
+}
+
+function clearSemanticTokenCache(): void {
+  semanticTokenCache.clear();
 }
 
 async function jsDiagnostics(request: EmbeddedRequest): Promise<Diagnostic[]> {
@@ -1022,59 +1205,6 @@ function documentForVirtualUri(request: EmbeddedRequest, uri: string): TextDocum
   return TextDocument.create(uri, "javascript", 0, cachedReadFile(fileName) ?? "");
 }
 
-function jsSemanticTokenFromClassification(
-  classification: number,
-): { tokenType: number; tokenModifiers: number } | undefined {
-  const typeIndex = (classification >> 8) - 1;
-  const tokenType = jsSemanticTokenType(typeIndex);
-  if (tokenType === undefined) {
-    return undefined;
-  }
-  return { tokenType, tokenModifiers: jsSemanticTokenModifiers(classification & 255) };
-}
-
-function jsSemanticTokenType(typeIndex: number): number | undefined {
-  switch (typeIndex) {
-    case 0:
-      return 4;
-    case 1:
-      return 12;
-    case 2:
-      return 11;
-    case 3:
-      return 10;
-    case 4:
-      return 15;
-    case 5:
-      return 14;
-    case 6:
-      return 2;
-    case 7:
-      return 1;
-    case 8:
-      return 13;
-    case 9:
-      return 6;
-    case 10:
-      return 3;
-    case 11:
-      return 5;
-    default:
-      return undefined;
-  }
-}
-
-function jsSemanticTokenModifiers(modifierSet: number): number {
-  let modifiers = 0;
-  if (modifierSet & (1 << 3)) {
-    modifiers |= 1 << 2;
-  }
-  if (modifierSet & (1 << 4)) {
-    modifiers |= 1 << 3;
-  }
-  return modifiers;
-}
-
 function tsCompletionItemKind(kind: string): CompletionItemKind {
   switch (kind) {
     case ts.ScriptElementKind.functionElement:
@@ -1177,6 +1307,22 @@ function requestRange(request: EmbeddedRequest): Range {
   const range = (request.params as { range?: unknown } | undefined)?.range;
   if (!range || typeof range !== "object") {
     throw new Error("params.range is required");
+  }
+  const start = (range as { start?: unknown }).start;
+  const end = (range as { end?: unknown }).end;
+  if (!isPosition(start) || !isPosition(end)) {
+    throw new Error("params.range must be an LSP range");
+  }
+  return { start, end };
+}
+
+function requestSemanticTokenRange(request: EmbeddedRequest): Range | undefined {
+  const range = (request.params as { range?: unknown } | undefined)?.range;
+  if (range === undefined || range === null) {
+    return undefined;
+  }
+  if (typeof range !== "object") {
+    throw new Error("params.range must be an LSP range");
   }
   const start = (range as { start?: unknown }).start;
   const end = (range as { end?: unknown }).end;
@@ -1327,11 +1473,14 @@ function resetCachesForProject(request: EmbeddedRequest): void {
   readDirectoryCache.clear();
   realpathCache.clear();
   clearLanguageServiceProjectCache();
+  clearSemanticTokenCache();
 }
 
 function createCacheStats(): SidecarCacheStats {
   return {
     generationReset: 0,
+    semanticTokensHit: 0,
+    semanticTokensMiss: 0,
     fileExistsHit: 0,
     fileExistsMiss: 0,
     readFileHit: 0,
@@ -1461,5 +1610,7 @@ export const __test = {
   createLanguageServiceProject,
   resetCachesForProject,
   clearLanguageServiceProjectCache,
+  clearSemanticTokenCache,
   languageServiceProjectCacheSize: () => languageServiceProjectCache.size,
+  semanticTokenCacheSize: () => semanticTokenCache.size,
 };

@@ -63,6 +63,21 @@ describe("sidecar language service cache", () => {
     expect(changedProject.service).not.toBe(first.service);
     expect(changedContent.service).not.toBe(changedProject.service);
   });
+
+  it("clears semantic token cache after project fingerprint changes", async () => {
+    __test.clearSemanticTokenCache();
+    __test.resetCachesForProject(request());
+
+    await __test.handleRequest({
+      ...request(),
+      operation: "semanticTokens",
+      params: {},
+    });
+    expect(__test.semanticTokenCacheSize()).toBe(1);
+
+    __test.resetCachesForProject(request({ projectFingerprint: "fingerprint-b" }));
+    expect(__test.semanticTokenCacheSize()).toBe(0);
+  });
 });
 
 describe("sidecar embedded language features", () => {
@@ -100,6 +115,7 @@ describe("sidecar embedded language features", () => {
   });
 
   it("serves CSS formatting and semantic tokens", async () => {
+    __test.clearSemanticTokenCache();
     const activeVirtual = {
       uri: "file:///tmp/asp-lsp-sidecar/default.asp.css.virtual",
       languageId: "css",
@@ -123,10 +139,19 @@ describe("sidecar embedded language features", () => {
       params: {},
     })) as Array<{ tokenType: number }>;
     expect(tokens.some((token) => token.tokenType === 6)).toBe(true);
+
+    const rangedTokens = (await __test.handleRequest({
+      ...base,
+      operation: "semanticTokens",
+      params: { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 10 } } },
+    })) as Array<{ range: { start: { character: number } }; tokenType: number }>;
+    expect(rangedTokens.every((token) => token.range.start.character < 10)).toBe(true);
+    expect(__test.semanticTokenCacheSize()).toBe(1);
   });
 
   it("serves JS language service features from the cached project", async () => {
     __test.clearLanguageServiceProjectCache();
+    __test.clearSemanticTokenCache();
     const activeVirtual = {
       uri: "file:///tmp/asp-lsp-sidecar/default.asp.javascript.virtual",
       languageId: "javascript",
@@ -177,6 +202,13 @@ describe("sidecar embedded language features", () => {
       params: {},
     })) as Array<{ tokenType: number }>;
     expect(tokens.length).toBeGreaterThan(0);
+    const cachedTokens = (await __test.handleRequest({
+      ...base,
+      operation: "semanticTokens",
+      params: {},
+    })) as Array<{ tokenType: number }>;
+    expect(cachedTokens).toEqual(tokens);
     expect(__test.languageServiceProjectCacheSize()).toBe(1);
+    expect(__test.semanticTokenCacheSize()).toBe(1);
   });
 });
