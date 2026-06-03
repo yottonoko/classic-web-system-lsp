@@ -3,6 +3,10 @@ import type { Position, Range } from "vscode-languageserver-types";
 const lineStartsCache = new Map<string, number[]>();
 const maxLineStartsCacheEntries = 64;
 
+export function clearPositionCaches(): void {
+  lineStartsCache.clear();
+}
+
 export function positionAt(text: string, offset: number): Position {
   const safeOffset = Math.max(0, Math.min(offset, text.length));
   const starts = lineStarts(text);

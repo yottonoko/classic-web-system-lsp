@@ -4,7 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
-import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
+import {
+  benchmarkSourcesForRun,
+  readBenchmarkCacheMode,
+  readBenchmarkDisableCaches,
+} from "./benchmark-cache-mode.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const coreDist = path.join(root, "packages", "core", "dist", "index.js");
@@ -617,9 +621,12 @@ async function main() {
   const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
   const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
   const benchmarkCacheMode = readBenchmarkCacheMode();
+  const disableCaches = readBenchmarkDisableCaches();
   const benchmarkConcurrency = readPositiveInteger("ASP_LSP_BENCH_CONCURRENCY", 4);
   const results = [];
-  prewarmEmbeddedBenchmarkServices();
+  if (!disableCaches) {
+    prewarmEmbeddedBenchmarkServices();
+  }
 
   for (const operation of embeddedOperationNames) {
     await runBenchmark(results, operation, benchmarkIterations, warmupIterations, async (run) =>
@@ -627,7 +634,9 @@ async function main() {
         benchmarkSourcesForRun(sources, benchmarkCacheMode, operation, run),
         benchmarkConcurrency,
         async (source) => {
-          await runEmbeddedOperation(operation, source, core);
+          await runSourceBenchmark(disableCaches, core, () =>
+            runEmbeddedOperation(operation, source, core),
+          );
         },
       ),
     );
@@ -640,6 +649,7 @@ async function main() {
   console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
   console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
   console.log(`Cache mode: ${benchmarkCacheMode}`);
+  console.log(`Benchmark caches: ${disableCaches ? "disabled" : "enabled"}`);
   console.log(`Warmups: ${warmupIterations}`);
   console.log(`Iterations: ${benchmarkIterations}`);
   console.log(`Concurrency: ${benchmarkConcurrency}`);
@@ -651,6 +661,23 @@ async function measureAcrossSources(sources, concurrency, callback) {
   const start = performance.now();
   await runBounded(sources, concurrency, callback);
   return performance.now() - start;
+}
+
+async function runSourceBenchmark(disableCaches, core, action) {
+  if (!disableCaches) {
+    return action();
+  }
+  clearAllBenchmarkCaches(core);
+  try {
+    return await action();
+  } finally {
+    clearAllBenchmarkCaches(core);
+  }
+}
+
+function clearAllBenchmarkCaches(core) {
+  core.clearAspCoreCaches?.();
+  clearEmbeddedBenchmarkCaches();
 }
 
 async function runBounded(items, concurrency, callback) {

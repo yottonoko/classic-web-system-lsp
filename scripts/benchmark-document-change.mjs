@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
-import { readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
+import { readBenchmarkCacheMode, readBenchmarkDisableCaches } from "./benchmark-cache-mode.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const sampleConfigs = new Map([
@@ -28,6 +28,7 @@ const serverPath = path.join(root, "target", "release", executableName("asp-lsp-
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
+const disableCaches = readBenchmarkDisableCaches();
 const benchmarkCheckJs = readBoolean("ASP_LSP_BENCH_CHECK_JS");
 const rapidBurstSize = readPositiveInteger("ASP_LSP_BENCH_BURST_SIZE", 5);
 const rapidDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEBOUNCE_MS", 80);
@@ -151,6 +152,7 @@ async function main() {
   console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
   console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
   console.log(`Cache mode: ${benchmarkCacheMode}`);
+  console.log(`Benchmark caches: ${disableCaches ? "disabled" : "enabled"}`);
   console.log(`Check JS: ${benchmarkCheckJs ? "on" : "off"}`);
   console.log(`Warmups: ${warmupIterations}`);
   console.log(`Iterations: ${benchmarkIterations}`);
@@ -185,8 +187,13 @@ async function main() {
   console.log("");
   console.log("Workspace cache benchmark");
   console.log(`Cache mode: ${benchmarkCacheMode}`);
+  console.log(`Benchmark caches: ${disableCaches ? "disabled" : "enabled"}`);
   console.log("");
-  printWorkspaceCacheTable(await runWorkspaceCacheBenchmarks());
+  if (disableCaches) {
+    console.log("Skipped because benchmark caches are disabled.");
+  } else {
+    printWorkspaceCacheTable(await runWorkspaceCacheBenchmarks());
+  }
 }
 
 async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarget) {
@@ -216,7 +223,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
     server.notify("workspace/didChangeConfiguration", {
       settings: {
         aspLsp: {
-          cache: { enabled: true, directory: cacheDir },
+          cache: benchmarkCacheSettings(cacheDir),
           checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
@@ -384,7 +391,7 @@ async function measureColdScenarioIteration(
     server.notify("workspace/didChangeConfiguration", {
       settings: {
         aspLsp: {
-          cache: { enabled: true, directory: cacheDir },
+          cache: benchmarkCacheSettings(cacheDir),
           checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
@@ -728,7 +735,7 @@ async function startWorkspaceCacheServer(backgroundAnalysis) {
   server.notify("workspace/didChangeConfiguration", {
     settings: {
       aspLsp: {
-        cache: { enabled: true, directory: cacheDir },
+        cache: benchmarkCacheSettings(cacheDir),
         checkJs: benchmarkCheckJs,
         debug: { output: "verbose" },
         workspace: { backgroundAnalysis },
@@ -737,6 +744,10 @@ async function startWorkspaceCacheServer(backgroundAnalysis) {
   });
   drainBenchmarkNotifications(server);
   return { server, tempDir, cacheDir };
+}
+
+function benchmarkCacheSettings(cacheDir) {
+  return { enabled: !disableCaches, directory: cacheDir };
 }
 
 async function initializeServer(server) {

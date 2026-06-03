@@ -1,13 +1,18 @@
 import { parentPort } from "node:worker_threads";
 import { performance } from "node:perf_hooks";
 import { createRequire } from "node:module";
-import { embeddedOperationNames, runEmbeddedOperation } from "./embedded-language-benchmark.mjs";
+import {
+  clearEmbeddedBenchmarkCaches,
+  embeddedOperationNames,
+  runEmbeddedOperation,
+} from "./embedded-language-benchmark.mjs";
 
 const require = createRequire(import.meta.url);
 const {
   analyzeVbscriptFromTextAsync,
   buildVirtualDocuments,
   collectVbscriptSymbolsFromTextAsync,
+  clearAspCoreCaches,
   parseAspDocumentAsync,
 } = require("../packages/core/dist/index.js");
 const core = require("../packages/core/dist/index.js");
@@ -30,20 +35,22 @@ parentPort.on("message", async (message) => {
       }
     : {};
   try {
-    if (message.operation === "parseAspDocument") {
-      await parseAspDocumentAsync(message.source.uri, message.source.text);
-    } else if (message.operation === "buildVirtualDocuments") {
-      const parsed = await parseAspDocumentAsync(message.source.uri, message.source.text);
-      buildVirtualDocuments(parsed);
-    } else if (message.operation === "collectVbscriptSymbols") {
-      await collectVbscriptSymbolsFromTextAsync(message.source.uri, message.source.text);
-    } else if (message.operation === "analyzeVbscript") {
-      await analyzeVbscriptFromTextAsync(message.source.uri, message.source.text, {}, context);
-    } else if (embeddedOperationNames.includes(message.operation)) {
-      await runEmbeddedOperation(message.operation, message.source, core);
-    } else {
-      throw new Error(`Unknown benchmark operation: ${message.operation}`);
-    }
+    await runSourceBenchmark(message.disableCaches, async () => {
+      if (message.operation === "parseAspDocument") {
+        await parseAspDocumentAsync(message.source.uri, message.source.text);
+      } else if (message.operation === "buildVirtualDocuments") {
+        const parsed = await parseAspDocumentAsync(message.source.uri, message.source.text);
+        buildVirtualDocuments(parsed);
+      } else if (message.operation === "collectVbscriptSymbols") {
+        await collectVbscriptSymbolsFromTextAsync(message.source.uri, message.source.text);
+      } else if (message.operation === "analyzeVbscript") {
+        await analyzeVbscriptFromTextAsync(message.source.uri, message.source.text, {}, context);
+      } else if (embeddedOperationNames.includes(message.operation)) {
+        await runEmbeddedOperation(message.operation, message.source, core);
+      } else {
+        throw new Error(`Unknown benchmark operation: ${message.operation}`);
+      }
+    });
     parentPort?.postMessage({
       id: message.id,
       elapsedMs: performance.now() - operationStartedAt,
@@ -56,3 +63,20 @@ parentPort.on("message", async (message) => {
     });
   }
 });
+
+async function runSourceBenchmark(disableCaches, action) {
+  if (!disableCaches) {
+    return action();
+  }
+  clearBenchmarkCaches();
+  try {
+    return await action();
+  } finally {
+    clearBenchmarkCaches();
+  }
+}
+
+function clearBenchmarkCaches() {
+  clearAspCoreCaches?.();
+  clearEmbeddedBenchmarkCaches();
+}

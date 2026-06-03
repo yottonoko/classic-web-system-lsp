@@ -9,6 +9,17 @@ export function readBenchmarkCacheMode() {
   throw new Error("ASP_LSP_BENCH_CACHE_MODE must be cold or hot.");
 }
 
+export function readBenchmarkDisableCaches() {
+  const raw = process.env.ASP_LSP_BENCH_DISABLE_CACHES;
+  if (raw === undefined || raw === "" || raw === "0" || raw.toLowerCase() === "false") {
+    return false;
+  }
+  if (raw === "1" || raw.toLowerCase() === "true") {
+    return true;
+  }
+  throw new Error("ASP_LSP_BENCH_DISABLE_CACHES must be 1, 0, true, or false.");
+}
+
 export function benchmarkSourcesForRun(sources, cacheMode, operation, run) {
   if (cacheMode !== "cold") {
     return sources;

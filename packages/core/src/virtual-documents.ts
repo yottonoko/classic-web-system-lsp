@@ -54,7 +54,7 @@ const virtualDocumentLanguages: AspEmbeddedLanguage[] = [
   "jscript",
 ];
 
-const virtualDocumentsByParsed = new WeakMap<
+let virtualDocumentsByParsed = new WeakMap<
   AspParsedDocument,
   Map<AspEmbeddedLanguage, VirtualDocument>
 >();
@@ -64,6 +64,14 @@ const virtualDocumentBodyCache = new Map<string, Map<string, VirtualDocumentBody
 interface VirtualDocumentBody {
   text: string;
   segments: SourceMapSegment[];
+}
+
+export function clearVirtualDocumentCaches(): void {
+  virtualDocumentsByParsed = new WeakMap<
+    AspParsedDocument,
+    Map<AspEmbeddedLanguage, VirtualDocument>
+  >();
+  virtualDocumentBodyCache.clear();
 }
 
 export function buildVirtualDocument(

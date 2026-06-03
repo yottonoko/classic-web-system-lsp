@@ -9,7 +9,11 @@ import {
   embeddedOperationNames,
   runEmbeddedOperationForParsed,
 } from "./embedded-language-benchmark.mjs";
-import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
+import {
+  benchmarkSourcesForRun,
+  readBenchmarkCacheMode,
+  readBenchmarkDisableCaches,
+} from "./benchmark-cache-mode.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -19,6 +23,7 @@ const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
+const disableCaches = readBenchmarkDisableCaches();
 const benchmarkConcurrency = readPositiveInteger("ASP_LSP_BENCH_CONCURRENCY", 4);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const maxBenchmarkFiles = readPositiveInteger("ASP_LSP_BENCH_MAX_FILES", 64);
@@ -48,7 +53,7 @@ const sourceStats = summarizeSources(sourceRefs);
 
 await runBenchmark("parseAspDocument", (run) =>
   measureAcrossSources(sourcesForRun("parseAspDocument", run), async (source) => {
-    await parseAspDocumentAsync(source.uri, source.text);
+    await runSourceBenchmark(() => parseAspDocumentAsync(source.uri, source.text));
   }),
 );
 
@@ -60,13 +65,15 @@ await runBenchmark("buildVirtualDocuments", (run) =>
 
 await runBenchmark("collectVbscriptSymbols", (run) =>
   measureAcrossSources(sourcesForRun("collectVbscriptSymbols", run), async (source) => {
-    await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
+    await runSourceBenchmark(() => collectVbscriptSymbolsFromTextAsync(source.uri, source.text));
   }),
 );
 
 await runBenchmark("analyzeVbscript", (run) =>
   measureAcrossSources(sourcesForRun("analyzeVbscript", run), async (source) => {
-    await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
+    await runSourceBenchmark(() =>
+      analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext()),
+    );
   }),
 );
 
@@ -92,6 +99,7 @@ console.log(`Byte limit: ${formatBytes(maxBenchmarkBytes)}`);
 console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
 console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
 console.log(`Cache mode: ${benchmarkCacheMode}`);
+console.log(`Benchmark caches: ${disableCaches ? "disabled" : "enabled"}`);
 console.log(`Warmups: ${warmupIterations}`);
 console.log(`Iterations: ${benchmarkIterations}`);
 console.log(`Concurrency: ${benchmarkConcurrency}`);
@@ -191,12 +199,31 @@ async function measureAcrossParsedSources(parsedDocuments, callback, afterBatch)
   await runBounded(
     parsedDocuments,
     async (source) => {
-      const parsed = await parseAspDocumentAsync(source.uri, source.text);
-      await callback(parsed);
+      await runSourceBenchmark(async () => {
+        const parsed = await parseAspDocumentAsync(source.uri, source.text);
+        await callback(parsed);
+      });
     },
     afterBatch,
   );
   return performance.now() - start;
+}
+
+async function runSourceBenchmark(action) {
+  if (!disableCaches) {
+    return action();
+  }
+  clearBenchmarkCaches();
+  try {
+    return await action();
+  } finally {
+    clearBenchmarkCaches();
+  }
+}
+
+function clearBenchmarkCaches() {
+  core.clearAspCoreCaches?.();
+  clearEmbeddedBenchmarkCaches();
 }
 
 async function runBounded(items, callback, afterBatch) {

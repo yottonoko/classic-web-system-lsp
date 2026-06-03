@@ -7,7 +7,11 @@ import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
 import { embeddedOperationNames } from "./embedded-language-benchmark.mjs";
-import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
+import {
+  benchmarkSourcesForRun,
+  readBenchmarkCacheMode,
+  readBenchmarkDisableCaches,
+} from "./benchmark-cache-mode.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -17,6 +21,7 @@ const coreDist = path.join(root, "packages", "core", "dist", "index.js");
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
+const disableCaches = readBenchmarkDisableCaches();
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const workerCount = readPositiveInteger(
   "ASP_LSP_BENCH_WORKERS",
@@ -76,6 +81,7 @@ async function main() {
   console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
   console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
   console.log(`Cache mode: ${benchmarkCacheMode}`);
+  console.log(`Benchmark caches: ${disableCaches ? "disabled" : "enabled"}`);
   console.log(`Warmups: ${warmupIterations}`);
   console.log(`Iterations: ${benchmarkIterations}`);
   console.log(`Workers: ${workerCount}`);
@@ -137,8 +143,13 @@ function summarizeSources(items) {
 async function runParallelOperation(pool, operation, inputs) {
   const messages =
     operation === "parseAspDocument"
-      ? inputs.map((source) => ({ operation, source }))
-      : inputs.map((source) => ({ operation, source, debugSteps: collectDebugSteps }));
+      ? inputs.map((source) => ({ operation, source, disableCaches }))
+      : inputs.map((source) => ({
+          operation,
+          source,
+          debugSteps: collectDebugSteps,
+          disableCaches,
+        }));
   const outputs = await pool.runAll(messages);
   recordWorkerLatencySamples(operation, outputs);
   if (operation === "analyzeVbscript" && collectDebugSteps) {
