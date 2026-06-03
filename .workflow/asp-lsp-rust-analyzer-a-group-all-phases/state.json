@@ -13,7 +13,7 @@
     { "id": "P3-edit", "status": "completed" },
     { "id": "P4-quality", "status": "completed" },
     { "id": "P5-docs-ssr", "status": "completed" },
-    { "id": "P6-final", "status": "in_progress" }
+    { "id": "P6-final", "status": "completed" }
   ],
   "verification": {
     "status": "passed",
@@ -21,7 +21,7 @@
       { "command": "cargo test -p asp-lsp-server", "status": "passed" },
       { "command": "pnpm --filter classic-asp-lsp run typecheck", "status": "passed" },
       { "command": "pnpm --filter classic-asp-lsp run lint", "status": "passed" },
-      { "command": "git diff --check", "status": "pending" }
+      { "command": "git diff --check", "status": "passed" }
     ]
   }
 }
