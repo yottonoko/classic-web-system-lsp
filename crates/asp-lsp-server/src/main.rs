@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs::{self, File};
@@ -14,6 +16,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const BACKEND_STATUS_METHOD: &str = "aspLsp/backendStatus";
+const RA_VIEW_FILE_TEXT_METHOD: &str = "rust-analyzer/viewFileText";
+const RA_VIEW_SYNTAX_TREE_METHOD: &str = "rust-analyzer/viewSyntaxTree";
+const RA_ANALYZER_STATUS_METHOD: &str = "rust-analyzer/analyzerStatus";
+const RA_MEMORY_USAGE_METHOD: &str = "rust-analyzer/memoryUsage";
+const RA_OPEN_SERVER_LOGS_METHOD: &str = "rust-analyzer/openServerLogs";
+const RA_MATCHING_BRACE_METHOD: &str = "rust-analyzer/matchingBrace";
+const EXPERIMENTAL_PARENT_MODULE_METHOD: &str = "experimental/parentModule";
+const EXPERIMENTAL_CHILD_MODULES_METHOD: &str = "experimental/childModules";
+const EXPERIMENTAL_JOIN_LINES_METHOD: &str = "experimental/joinLines";
+const EXPERIMENTAL_ON_ENTER_METHOD: &str = "experimental/onEnter";
+const EXPERIMENTAL_MOVE_ITEM_METHOD: &str = "experimental/moveItem";
+const EXPERIMENTAL_EXTERNAL_DOCS_METHOD: &str = "experimental/externalDocs";
+const EXPERIMENTAL_SSR_METHOD: &str = "experimental/ssr";
 const FRAME_KIND_JSON: u8 = 1;
 const DISK_CACHE_FORMAT_VERSION: u32 = 5;
 const DEFAULT_CACHE_TTL_HOURS: f64 = 24.0 * 14.0;
@@ -1378,6 +1393,123 @@ fn handle_request(
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
+        RA_VIEW_FILE_TEXT_METHOD => {
+            let uri = request_text_document_uri(&request.params);
+            connection
+                .sender
+                .send(Response::new_ok(request.id, state.ide.view_file_text(&uri)?).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        RA_VIEW_SYNTAX_TREE_METHOD => {
+            let uri = request_text_document_uri(&request.params);
+            connection
+                .sender
+                .send(Response::new_ok(request.id, state.ide.view_syntax_tree(&uri)?).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        RA_ANALYZER_STATUS_METHOD => {
+            connection
+                .sender
+                .send(Response::new_ok(request.id, state.ide.analyzer_status()).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        RA_MEMORY_USAGE_METHOD => {
+            connection
+                .sender
+                .send(Response::new_ok(request.id, state.ide.memory_usage()).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        RA_OPEN_SERVER_LOGS_METHOD => {
+            connection
+                .sender
+                .send(Response::new_ok(request.id, json!({ "ok": true })).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        RA_MATCHING_BRACE_METHOD => {
+            let uri = request_text_document_uri(&request.params);
+            let position = request_position(&request.params)?;
+            connection
+                .sender
+                .send(
+                    Response::new_ok(request.id, state.ide.matching_brace(&uri, position)?).into(),
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        EXPERIMENTAL_PARENT_MODULE_METHOD => {
+            let uri = request_text_document_uri(&request.params);
+            connection
+                .sender
+                .send(Response::new_ok(request.id, state.ide.parent_modules(&uri)?).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        EXPERIMENTAL_CHILD_MODULES_METHOD => {
+            let uri = request_text_document_uri(&request.params);
+            connection
+                .sender
+                .send(Response::new_ok(request.id, state.ide.child_modules(&uri)?).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        EXPERIMENTAL_JOIN_LINES_METHOD => {
+            let uri = request_text_document_uri(&request.params);
+            let ranges = request_ranges_or_default(&request.params)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, state.ide.join_lines(&uri, &ranges)?).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        EXPERIMENTAL_ON_ENTER_METHOD => {
+            let uri = request_text_document_uri(&request.params);
+            let position = request_position(&request.params)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, state.ide.on_enter(&uri, position)?).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        EXPERIMENTAL_MOVE_ITEM_METHOD => {
+            let uri = request_text_document_uri(&request.params);
+            let position = request_position(&request.params)?;
+            let direction = request
+                .params
+                .get("direction")
+                .and_then(Value::as_str)
+                .unwrap_or("down");
+            connection
+                .sender
+                .send(
+                    Response::new_ok(request.id, state.ide.move_item(&uri, position, direction)?)
+                        .into(),
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        EXPERIMENTAL_EXTERNAL_DOCS_METHOD => {
+            let uri = request_text_document_uri(&request.params);
+            let position = request_position(&request.params)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, state.ide.external_docs(&uri, position)?).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
+        EXPERIMENTAL_SSR_METHOD => {
+            let uri = request_text_document_uri(&request.params);
+            let (search, replace) = ssr_terms(&request.params)?;
+            connection
+                .sender
+                .send(Response::new_ok(request.id, state.ide.ssr(&uri, &search, &replace)?).into())
+                .map_err(|error| error.to_string())?;
+            Ok(false)
+        }
         "textDocument/completion" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let position = request_position(&request.params)?;
@@ -2033,6 +2165,25 @@ fn server_capabilities() -> Value {
                 "aspLsp.server.clearDiskCache",
                 "aspLsp.server.clearProcessCache",
             ],
+        },
+        "experimental": {
+            "rust-analyzer": {
+                "viewFileText": true,
+                "viewSyntaxTree": true,
+                "analyzerStatus": true,
+                "memoryUsage": true,
+                "openServerLogs": true,
+                "matchingBrace": true,
+            },
+            "experimental": {
+                "parentModule": true,
+                "childModules": true,
+                "joinLines": true,
+                "onEnter": true,
+                "moveItem": true,
+                "externalDocs": true,
+                "ssr": true,
+            },
         },
         "positionEncoding": "utf-16",
     })
@@ -2942,6 +3093,31 @@ fn request_range(params: &Value) -> Result<TextRange, String> {
         .ok_or_else(|| "range is required".to_string())
 }
 
+fn request_ranges_or_default(params: &Value) -> Result<Vec<TextRange>, String> {
+    if let Some(ranges) = params.get("ranges").and_then(Value::as_array) {
+        return ranges
+            .iter()
+            .map(|value| text_range(value).ok_or_else(|| "invalid range".to_string()))
+            .collect();
+    }
+    Ok(vec![request_range(params)?])
+}
+
+fn ssr_terms(params: &Value) -> Result<(String, String), String> {
+    let search = params.get("search").and_then(Value::as_str);
+    let replace = params.get("replace").and_then(Value::as_str);
+    if let (Some(search), Some(replace)) = (search, replace) {
+        return Ok((search.to_string(), replace.to_string()));
+    }
+    let Some(query) = params.get("query").and_then(Value::as_str) else {
+        return Err("ssr search/replace or query is required".to_string());
+    };
+    let Some((search, replace)) = query.split_once("==>>") else {
+        return Err("ssr query must use `search ==>> replace`".to_string());
+    };
+    Ok((search.trim().to_string(), replace.trim().to_string()))
+}
+
 fn request_positions(params: &Value) -> Result<Vec<TextPosition>, String> {
     params
         .get("positions")
@@ -3055,6 +3231,15 @@ fn pointer_string(params: &Value, pointer: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+fn request_text_document_uri(params: &Value) -> String {
+    let text_document_uri = pointer_string(params, "/textDocument/uri");
+    if text_document_uri.is_empty() {
+        pointer_string(params, "/uri")
+    } else {
+        text_document_uri
+    }
 }
 
 fn write_sidecar_frame(stdin: &mut ChildStdin, request: &EmbeddedRequest) -> Result<(), String> {

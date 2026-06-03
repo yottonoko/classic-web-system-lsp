@@ -600,6 +600,38 @@ impl Ide {
         parse_asp(&self.db, document.source_file, self.settings.input)
     }
 
+    pub fn view_file_text(&self, uri: &str) -> Result<String, String> {
+        let Some(document) = self.workspace_document(uri) else {
+            return Ok(format!("No document found for {uri}"));
+        };
+        let source_text = document.text(&self.db).clone();
+        let virtual_documents = self.embedded_virtual_documents(uri)?;
+        let mut output = vec![
+            format!("Source: {uri}"),
+            String::new(),
+            source_text,
+            String::new(),
+        ];
+        for mapped in virtual_documents {
+            output.push(format!(
+                "Virtual: {} ({})",
+                mapped.document.uri, mapped.document.language_id
+            ));
+            output.push(format!("Source map segments: {}", mapped.source_map.len()));
+            output.push(mapped.document.text);
+            output.push(String::new());
+        }
+        Ok(output.join("\n"))
+    }
+
+    pub fn view_syntax_tree(&self, uri: &str) -> Result<String, String> {
+        let Some(document) = self.workspace_document(uri) else {
+            return Ok(format!("No document found for {uri}"));
+        };
+        let parsed = parse_asp(&self.db, document.source_file, self.settings.input)?;
+        serde_json::to_string_pretty(&parsed).map_err(|error| error.to_string())
+    }
+
     pub fn parser_diagnostics(&self, uri: &str) -> Result<Vec<Value>, String> {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Vec::new());
@@ -631,6 +663,34 @@ impl Ide {
             .into_iter()
             .map(|edge| edge.include.raw)
             .collect())
+    }
+
+    pub fn parent_modules(&self, uri: &str) -> Result<Value, String> {
+        let reverse_edges = self.include_reverse_edges()?;
+        let Some(sources) = reverse_edges.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let mut locations = Vec::new();
+        for source_uri in sources {
+            for edge in self.direct_include_edges(source_uri)? {
+                if edge.target_uri.as_deref() == Some(uri) {
+                    locations.push(include_location(source_uri, &edge.include.raw));
+                }
+            }
+        }
+        Ok(Value::Array(locations))
+    }
+
+    pub fn child_modules(&self, uri: &str) -> Result<Value, String> {
+        let locations = self
+            .direct_include_edges(uri)?
+            .into_iter()
+            .filter_map(|edge| {
+                let target_uri = edge.target_uri?;
+                Some(serde_json::json!({ "uri": target_uri, "range": empty_range() }))
+            })
+            .collect::<Vec<_>>();
+        Ok(Value::Array(locations))
     }
 
     pub fn workspace_registry_fingerprint(&self) -> String {
@@ -862,7 +922,15 @@ impl Ide {
             "contents": {
                 "kind": "markdown",
                 "value": format!("```vbscript\n{signature}\n```"),
-            }
+            },
+            "actions": [{
+                "title": localize_static(self.locale(), "server.hover.openExternalDocs"),
+                "command": "aspLsp.externalDocs",
+                "arguments": [
+                    uri,
+                    { "line": position.line, "character": position.character },
+                ],
+            }],
         }))
     }
 
@@ -1006,6 +1074,128 @@ impl Ide {
             })
             .collect::<Vec<_>>();
         Ok(Value::Array(ranges))
+    }
+
+    pub fn matching_brace(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Null);
+        };
+        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+        let mut matching_ranges = symbols
+            .iter()
+            .filter_map(|symbol| symbol.get("scopeRange"))
+            .filter(|range| range_contains_position(range, position))
+            .collect::<Vec<_>>();
+        matching_ranges.sort_by_key(range_span_key);
+        let Some(range) = matching_ranges.first() else {
+            return Ok(Value::Null);
+        };
+        let Some(start) = range.get("start").cloned() else {
+            return Ok(Value::Null);
+        };
+        let Some(end) = range.get("end").cloned() else {
+            return Ok(Value::Null);
+        };
+        if position_matches_value(position, &start) {
+            Ok(end)
+        } else if position_matches_value(position, &end) {
+            Ok(start)
+        } else {
+            Ok(serde_json::json!([start, end]))
+        }
+    }
+
+    pub fn join_lines(&self, uri: &str, ranges: &[TextRange]) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let text = document.text(&self.db);
+        let mut edits = Vec::new();
+        for range in ranges {
+            let end_line = if range.end.line > range.start.line {
+                range.end.line - 1
+            } else {
+                range.start.line
+            };
+            for line in range.start.line..=end_line {
+                let Some(edit) = join_line_edit(text, line) else {
+                    continue;
+                };
+                edits.push(edit);
+            }
+        }
+        Ok(Value::Array(edits))
+    }
+
+    pub fn on_enter(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let text = document.text(&self.db);
+        let Some(line_text) = line_text(text, position.line) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let indent = line_text
+            .chars()
+            .take_while(|character| {
+                character.is_whitespace() && *character != '\r' && *character != '\n'
+            })
+            .collect::<String>();
+        let continuation = if line_text.trim_start().starts_with('\'') {
+            format!("\n{indent}' ")
+        } else {
+            format!("\n{indent}")
+        };
+        Ok(serde_json::json!([{
+            "range": {
+                "start": { "line": position.line, "character": position.character },
+                "end": { "line": position.line, "character": position.character },
+            },
+            "newText": continuation,
+        }]))
+    }
+
+    pub fn move_item(
+        &self,
+        uri: &str,
+        position: TextPosition,
+        direction: &str,
+    ) -> Result<Value, String> {
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let text = document.text(&self.db);
+        let symbols = vb_symbols(&self.db, document.source_file, self.settings.input)?;
+        let mut items = symbols
+            .iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.get("kind").and_then(Value::as_str),
+                    Some("function" | "sub" | "class")
+                )
+            })
+            .filter_map(|symbol| symbol.get("scopeRange"))
+            .filter_map(|range| item_line_range(text, range))
+            .collect::<Vec<_>>();
+        items.sort_by_key(|item| item.start_line);
+        let Some(index) = items
+            .iter()
+            .position(|item| line_range_contains(item, position.line))
+        else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let swap_index = if direction == "up" {
+            index.checked_sub(1)
+        } else {
+            (index + 1 < items.len()).then_some(index + 1)
+        };
+        let Some(swap_index) = swap_index else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        Ok(Value::Array(swap_item_edits(
+            &items[index],
+            &items[swap_index],
+        )))
     }
 
     pub fn document_highlights(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
@@ -1534,6 +1724,7 @@ impl Ide {
                 actions.push(serde_json::json!({
                     "title": localize_static(locale, "server.refactor.extractVbscriptVariable"),
                     "kind": "refactor.extract",
+                    "group": "refactor.extract",
                     "edit": {
                         "changes": {
                             uri: [
@@ -1952,6 +2143,89 @@ impl Ide {
     pub fn backend_status(&self) -> Value {
         asp_analysis::backend_status()
     }
+
+    pub fn analyzer_status(&self) -> String {
+        let status = asp_analysis::backend_status();
+        let field = |key: &str| {
+            status
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?")
+                .to_string()
+        };
+        format!(
+            "asp-lsp-server\nbackend: {}\nengine: {}\ncore: {}\nversion: {}\nopen documents: {}\nindexed documents: {}",
+            field("backend"),
+            field("engine"),
+            field("core"),
+            field("version"),
+            self.open_document_uris().len(),
+            self.indexed_documents.len(),
+        )
+    }
+
+    pub fn memory_usage(&self) -> String {
+        let open_text_bytes = self
+            .documents
+            .values()
+            .map(|document| document.text(&self.db).len())
+            .sum::<usize>();
+        let indexed_text_bytes = self
+            .indexed_documents
+            .values()
+            .map(|document| document.text(&self.db).len())
+            .sum::<usize>();
+        format!(
+            "asp-lsp-server memory usage\nopen documents: {} ({} bytes)\nindexed documents: {} ({} bytes)\ntotal document text: {} bytes",
+            self.documents.len(),
+            open_text_bytes,
+            self.indexed_documents.len(),
+            indexed_text_bytes,
+            open_text_bytes + indexed_text_bytes,
+        )
+    }
+
+    pub fn external_docs(&self, uri: &str, position: TextPosition) -> Result<Value, String> {
+        let Some((identifier, context)) = self.identifier_context_at_position(uri, position)?
+        else {
+            return Ok(Value::Null);
+        };
+        let lookup_name = member_call_owner(&context.text, &identifier)
+            .map(|owner| format!("{}.{}", owner.name, identifier.name))
+            .unwrap_or(identifier.name);
+        Ok(serde_json::json!({
+            "web_url": external_docs_url(&lookup_name),
+            "local": false,
+        }))
+    }
+
+    pub fn ssr(&self, uri: &str, search: &str, replace: &str) -> Result<Value, String> {
+        if !valid_vb_identifier(search) || !valid_vb_identifier(replace) {
+            return Ok(serde_json::json!({ "changes": {} }));
+        }
+        let Some(document) = self.documents.get(uri) else {
+            return Ok(serde_json::json!({ "changes": {} }));
+        };
+        let text = document.text(&self.db);
+        let summary = document_summary(&self.db, document.source_file, self.settings.input)?;
+        let edits = identifier_ranges(text, &summary.parsed, search)
+            .into_iter()
+            .map(|range| {
+                serde_json::json!({
+                    "range": range,
+                    "newText": replace,
+                })
+            })
+            .collect::<Vec<_>>();
+        if edits.is_empty() {
+            return Ok(serde_json::json!({ "changes": {} }));
+        }
+        Ok(serde_json::json!({
+            "changes": {
+                uri: edits,
+            },
+        }))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1964,6 +2238,14 @@ pub struct TextPosition {
 pub struct TextRange {
     pub start: TextPosition,
     pub end: TextPosition,
+}
+
+#[derive(Clone, Debug)]
+struct ItemTextRange {
+    start_line: u32,
+    end_line: u32,
+    range: Value,
+    text: String,
 }
 
 struct InlayHintOptions {
@@ -3042,6 +3324,7 @@ fn documentation_code_action(
     Some(serde_json::json!({
         "title": localize_static(locale, "server.quickfix.generateVbscriptDocumentation"),
         "kind": "quickfix",
+        "group": "documentation",
         "edit": {
             "changes": {
                 uri: [{
@@ -3050,8 +3333,12 @@ fn documentation_code_action(
                         "end": { "line": range_end_line, "character": 0 },
                     },
                     "newText": new_text,
+                    "insertTextFormat": 2,
                 }],
             },
+        },
+        "experimental": {
+            "snippetTextEdit": true,
         },
     }))
 }
@@ -3367,10 +3654,12 @@ fn localize_static(locale: &str, key: &str) -> String {
             "VBScript documentation を生成".to_string()
         }
         ("ja", "server.refactor.extractVbscriptVariable") => "VBScript 変数に抽出".to_string(),
+        ("ja", "server.hover.openExternalDocs") => "外部 documentation を開く".to_string(),
         (_, "server.quickfix.generateVbscriptDocumentation") => {
             "Generate VBScript documentation".to_string()
         }
         (_, "server.refactor.extractVbscriptVariable") => "Extract VBScript variable".to_string(),
+        (_, "server.hover.openExternalDocs") => "Open external documentation".to_string(),
         _ => key.to_string(),
     }
 }
@@ -3526,6 +3815,20 @@ fn valid_vb_identifier(name: &str) -> bool {
         .next()
         .is_some_and(|character| character.is_ascii_alphabetic())
         && chars.all(is_identifier_char)
+}
+
+fn external_docs_url(name: &str) -> String {
+    let query = format!("Classic ASP VBScript {name}")
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character.to_string()
+            } else {
+                "%20".to_string()
+            }
+        })
+        .collect::<String>();
+    format!("https://learn.microsoft.com/search/?terms={query}")
 }
 
 fn is_callable_symbol(symbol: &Value) -> bool {
@@ -4135,6 +4438,61 @@ fn resolve_include_target(uri: &str, include: &Value) -> String {
     format!("{base}/{path}")
 }
 
+fn include_location(uri: &str, include: &Value) -> Value {
+    let range = include
+        .get("pathRange")
+        .or_else(|| include.get("range"))
+        .cloned()
+        .unwrap_or_else(empty_range);
+    serde_json::json!({ "uri": uri, "range": range })
+}
+
+fn empty_range() -> Value {
+    serde_json::json!({
+        "start": { "line": 0, "character": 0 },
+        "end": { "line": 0, "character": 0 },
+    })
+}
+
+fn range_contains_position(range: &Value, position: TextPosition) -> bool {
+    let Some(start) = range.get("start").and_then(lsp_position_tuple) else {
+        return false;
+    };
+    let Some(end) = range.get("end").and_then(lsp_position_tuple) else {
+        return false;
+    };
+    let current = (u64::from(position.line), u64::from(position.character));
+    start <= current && current <= end
+}
+
+fn range_span_key(range: &&Value) -> (u64, u64, u64, u64) {
+    let start = range
+        .get("start")
+        .and_then(lsp_position_tuple)
+        .unwrap_or((0, 0));
+    let end = range
+        .get("end")
+        .and_then(lsp_position_tuple)
+        .unwrap_or((u64::MAX, u64::MAX));
+    (
+        end.0.saturating_sub(start.0),
+        end.1.saturating_sub(start.1),
+        start.0,
+        start.1,
+    )
+}
+
+fn position_matches_value(position: TextPosition, value: &Value) -> bool {
+    lsp_position_tuple(value) == Some((u64::from(position.line), u64::from(position.character)))
+}
+
+fn lsp_position_tuple(value: &Value) -> Option<(u64, u64)> {
+    Some((
+        value.get("line")?.as_u64()?,
+        value.get("character")?.as_u64()?,
+    ))
+}
+
 fn line_range(text: &str, target_line: u32) -> Option<Value> {
     let mut line = 0;
     let mut character = 0;
@@ -4164,6 +4522,71 @@ fn line_range(text: &str, target_line: u32) -> Option<Value> {
         "start": { "line": start_line, "character": start_character },
         "end": { "line": end_line, "character": end_character },
     }))
+}
+
+fn line_text(text: &str, target_line: u32) -> Option<&str> {
+    let start = line_start_byte_offset(text, target_line)?;
+    let end = line_start_byte_offset(text, target_line + 1).unwrap_or(text.len());
+    Some(text[start..end].trim_end_matches(['\r', '\n']))
+}
+
+fn join_line_edit(text: &str, line: u32) -> Option<Value> {
+    let current = line_text(text, line)?;
+    let next = line_text(text, line + 1)?;
+    if next.is_empty() {
+        return None;
+    }
+    let current_end = current.chars().map(char::len_utf16).sum::<usize>() as u32;
+    let next_indent = next
+        .chars()
+        .take_while(|character| character.is_whitespace())
+        .map(char::len_utf16)
+        .sum::<usize>() as u32;
+    Some(serde_json::json!({
+        "range": {
+            "start": { "line": line, "character": current_end },
+            "end": { "line": line + 1, "character": next_indent },
+        },
+        "newText": " ",
+    }))
+}
+
+fn item_line_range(text: &str, range: &Value) -> Option<ItemTextRange> {
+    let start_line = range.pointer("/start/line")?.as_u64()?.try_into().ok()?;
+    let end_line = range.pointer("/end/line")?.as_u64()?.try_into().ok()?;
+    let text_start = line_start_byte_offset(text, start_line)?;
+    let text_end = line_start_byte_offset(text, end_line + 1).unwrap_or(text.len());
+    let end_position = if line_start_byte_offset(text, end_line + 1).is_some() {
+        serde_json::json!({ "line": end_line + 1, "character": 0 })
+    } else {
+        line_range(text, end_line)?.get("end")?.clone()
+    };
+    Some(ItemTextRange {
+        start_line,
+        end_line,
+        range: serde_json::json!({
+            "start": { "line": start_line, "character": 0 },
+            "end": end_position,
+        }),
+        text: text[text_start..text_end].to_string(),
+    })
+}
+
+fn line_range_contains(range: &ItemTextRange, line: u32) -> bool {
+    range.start_line <= line && line <= range.end_line
+}
+
+fn swap_item_edits(first: &ItemTextRange, second: &ItemTextRange) -> Vec<Value> {
+    vec![
+        serde_json::json!({
+            "range": first.range.clone(),
+            "newText": second.text.clone(),
+        }),
+        serde_json::json!({
+            "range": second.range.clone(),
+            "newText": first.text.clone(),
+        }),
+    ]
 }
 
 fn selection_range_chain(

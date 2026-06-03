@@ -666,6 +666,346 @@ fn coalesces_debounced_document_changes() {
 }
 
 #[test]
+fn serves_phase_one_introspection_requests_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let uri = "file:///tmp/introspection.asp";
+
+    initialize(&mut stdin, &mut reader);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nDim customerName\ncustomerName = \"Ada\"\n%>\n<p><%= customerName %></p>",
+                },
+            },
+        }),
+    );
+
+    let file_text = request(
+        &mut stdin,
+        &mut reader,
+        70,
+        "rust-analyzer/viewFileText",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert!(file_text["result"]
+        .as_str()
+        .expect("file text")
+        .contains("customerName = \"Ada\""));
+
+    let syntax_tree = request(
+        &mut stdin,
+        &mut reader,
+        71,
+        "rust-analyzer/viewSyntaxTree",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    let syntax_tree_text = syntax_tree["result"].as_str().expect("syntax tree text");
+    assert!(syntax_tree_text.starts_with("{\n"));
+    assert!(syntax_tree_text.contains("\"diagnostics\""));
+
+    let analyzer_status = request(
+        &mut stdin,
+        &mut reader,
+        72,
+        "rust-analyzer/analyzerStatus",
+        Value::Null,
+    );
+    let analyzer_status_text = analyzer_status["result"]
+        .as_str()
+        .expect("analyzer status text");
+    assert!(analyzer_status_text.contains("asp-lsp-server"));
+    assert!(analyzer_status_text.contains("backend: rust"));
+    assert!(analyzer_status_text.contains("open documents: 1"));
+
+    let memory_usage = request(
+        &mut stdin,
+        &mut reader,
+        73,
+        "rust-analyzer/memoryUsage",
+        Value::Null,
+    );
+    let memory_usage_text = memory_usage["result"].as_str().expect("memory usage text");
+    assert!(memory_usage_text.contains("asp-lsp-server memory usage"));
+    assert!(memory_usage_text.contains("open documents: 1"));
+    assert!(memory_usage_text.contains("total document text:"));
+
+    let open_server_logs = request(
+        &mut stdin,
+        &mut reader,
+        74,
+        "rust-analyzer/openServerLogs",
+        Value::Null,
+    );
+    assert_eq!(open_server_logs["result"]["ok"], json!(true));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
+fn serves_phase_two_navigation_requests_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let root_uri = "file:///tmp/default.asp";
+    let child_uri = "file:///tmp/includes/shared.inc";
+
+    initialize(&mut stdin, &mut reader);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": root_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<!--#include file=\"includes/shared.inc\"-->\n<%\nSub BuildTitle()\nResponse.Write SharedValue\nEnd Sub\n%>",
+                },
+            },
+        }),
+    );
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": child_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nDim SharedValue\n%>",
+                },
+            },
+        }),
+    );
+
+    let matching = request(
+        &mut stdin,
+        &mut reader,
+        80,
+        "rust-analyzer/matchingBrace",
+        json!({
+            "textDocument": { "uri": root_uri },
+            "position": { "line": 2, "character": 1 },
+        }),
+    );
+    let matching_positions = matching["result"].as_array().expect("matching positions");
+    assert_eq!(matching_positions.len(), 2);
+
+    let parents = request(
+        &mut stdin,
+        &mut reader,
+        81,
+        "experimental/parentModule",
+        json!({ "textDocument": { "uri": child_uri } }),
+    );
+    assert_eq!(parents["result"][0]["uri"], json!(root_uri));
+    assert_eq!(
+        parents["result"][0]["range"]["start"],
+        json!({ "line": 0, "character": 18 })
+    );
+
+    let children = request(
+        &mut stdin,
+        &mut reader,
+        82,
+        "experimental/childModules",
+        json!({ "textDocument": { "uri": root_uri } }),
+    );
+    assert_eq!(children["result"][0]["uri"], json!(child_uri));
+    assert_eq!(
+        children["result"][0]["range"]["start"],
+        json!({ "line": 0, "character": 0 })
+    );
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
+fn serves_phase_three_edit_requests_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let uri = "file:///tmp/edits.asp";
+
+    initialize(&mut stdin, &mut reader);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\n' keep going\nResponse.Write _\n  \"Ada\"\nSub Alpha()\nEnd Sub\nSub Beta()\nEnd Sub\n%>",
+                },
+            },
+        }),
+    );
+
+    let join_lines = request(
+        &mut stdin,
+        &mut reader,
+        90,
+        "experimental/joinLines",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 2, "character": 0 },
+                "end": { "line": 2, "character": 0 },
+            },
+        }),
+    );
+    assert_eq!(
+        join_lines["result"][0]["range"],
+        json!({
+            "start": { "line": 2, "character": 16 },
+            "end": { "line": 3, "character": 2 },
+        })
+    );
+    assert_eq!(join_lines["result"][0]["newText"], json!(" "));
+
+    let on_enter = request(
+        &mut stdin,
+        &mut reader,
+        91,
+        "experimental/onEnter",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": 12 },
+        }),
+    );
+    assert_eq!(on_enter["result"][0]["newText"], json!("\n' "));
+
+    let move_item = request(
+        &mut stdin,
+        &mut reader,
+        92,
+        "experimental/moveItem",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 6, "character": 1 },
+            "direction": "up",
+        }),
+    );
+    assert_eq!(move_item["result"].as_array().expect("move edits").len(), 2);
+    assert!(move_item["result"][0]["newText"]
+        .as_str()
+        .expect("first replacement")
+        .contains("Sub Alpha"));
+    assert!(move_item["result"][1]["newText"]
+        .as_str()
+        .expect("second replacement")
+        .contains("Sub Beta"));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
+fn serves_phase_five_docs_and_ssr_requests_over_stdio_lsp() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+    let uri = "file:///tmp/docs-ssr.asp";
+
+    initialize(&mut stdin, &mut reader);
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nResponse.Write customerName\ncustomerName = \"Ada\"\nResponse.Write customerName\n%>",
+                },
+            },
+        }),
+    );
+
+    let docs = request(
+        &mut stdin,
+        &mut reader,
+        100,
+        "experimental/externalDocs",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": 10 },
+        }),
+    );
+    assert_eq!(docs["result"]["local"], json!(false));
+    assert!(docs["result"]["web_url"]
+        .as_str()
+        .expect("external docs url")
+        .contains("Response.Write"));
+
+    let ssr = request(
+        &mut stdin,
+        &mut reader,
+        101,
+        "experimental/ssr",
+        json!({
+            "textDocument": { "uri": uri },
+            "query": "customerName ==>> displayName",
+        }),
+    );
+    let edits = ssr["result"]["changes"][uri].as_array().expect("ssr edits");
+    assert_eq!(edits.len(), 3);
+    assert!(edits
+        .iter()
+        .all(|edit| edit["newText"] == json!("displayName")));
+
+    shutdown(&mut stdin, &mut reader);
+    drop(stdin);
+    assert!(child.wait().expect("wait server").success());
+}
+
+#[test]
 fn serves_vbscript_read_requests_over_stdio_lsp() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
         .stdin(Stdio::piped())
@@ -793,6 +1133,10 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         .as_str()
         .expect("hover markdown")
         .contains("Function BuildName(first)"));
+    assert_eq!(
+        hover["result"]["actions"][0]["command"],
+        json!("aspLsp.externalDocs")
+    );
 
     let definition = request(
         &mut stdin,
@@ -1285,7 +1629,13 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         .iter()
         .find(|action| action["title"] == json!("Generate VBScript documentation"))
         .expect("documentation code action");
+    assert_eq!(documentation_action["group"], json!("documentation"));
+    assert_eq!(
+        documentation_action["experimental"]["snippetTextEdit"],
+        json!(true)
+    );
     let documentation_edit = &documentation_action["edit"]["changes"][uri][0];
+    assert_eq!(documentation_edit["insertTextFormat"], json!(2));
     assert_eq!(
         documentation_edit["range"],
         json!({
@@ -2887,6 +3237,29 @@ fn initialize_with_settings_and_root(
             "aspLsp.server.clearDiskCache",
             "aspLsp.server.clearProcessCache",
         ])
+    );
+    assert_eq!(
+        initialize["result"]["capabilities"]["experimental"]["rust-analyzer"],
+        json!({
+            "viewFileText": true,
+            "viewSyntaxTree": true,
+            "analyzerStatus": true,
+            "memoryUsage": true,
+            "openServerLogs": true,
+            "matchingBrace": true,
+        })
+    );
+    assert_eq!(
+        initialize["result"]["capabilities"]["experimental"]["experimental"],
+        json!({
+            "parentModule": true,
+            "childModules": true,
+            "joinLines": true,
+            "onEnter": true,
+            "moveItem": true,
+            "externalDocs": true,
+            "ssr": true,
+        })
     );
     assert_eq!(
         initialize["result"]["capabilities"]["workspace"]["fileOperations"]["didCreate"]["filters"]

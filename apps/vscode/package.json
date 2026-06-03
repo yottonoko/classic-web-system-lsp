@@ -673,6 +673,62 @@
         "title": "%command.openOutput.title%"
       },
       {
+        "command": "aspLsp.viewFileText",
+        "title": "%command.viewFileText.title%"
+      },
+      {
+        "command": "aspLsp.viewSyntaxTree",
+        "title": "%command.viewSyntaxTree.title%"
+      },
+      {
+        "command": "aspLsp.analyzerStatus",
+        "title": "%command.analyzerStatus.title%"
+      },
+      {
+        "command": "aspLsp.memoryUsage",
+        "title": "%command.memoryUsage.title%"
+      },
+      {
+        "command": "aspLsp.openServerLogs",
+        "title": "%command.openServerLogs.title%"
+      },
+      {
+        "command": "aspLsp.matchingBrace",
+        "title": "%command.matchingBrace.title%"
+      },
+      {
+        "command": "aspLsp.parentModule",
+        "title": "%command.parentModule.title%"
+      },
+      {
+        "command": "aspLsp.childModules",
+        "title": "%command.childModules.title%"
+      },
+      {
+        "command": "aspLsp.joinLines",
+        "title": "%command.joinLines.title%"
+      },
+      {
+        "command": "aspLsp.onEnter",
+        "title": "%command.onEnter.title%"
+      },
+      {
+        "command": "aspLsp.moveItemUp",
+        "title": "%command.moveItemUp.title%"
+      },
+      {
+        "command": "aspLsp.moveItemDown",
+        "title": "%command.moveItemDown.title%"
+      },
+      {
+        "command": "aspLsp.externalDocs",
+        "title": "%command.externalDocs.title%"
+      },
+      {
+        "command": "aspLsp.ssr",
+        "title": "%command.ssr.title%"
+      },
+      {
         "command": "aspLsp.debugIisUrl",
         "title": "%command.debugIisUrl.title%"
       },
