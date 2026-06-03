@@ -217,7 +217,7 @@ describe("VS Code extension package", () => {
     ).toEqual(expect.objectContaining({ type: "number", default: 5000, minimum: 1 }));
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.diagnosticConcurrency"],
-    ).toBeUndefined();
+    ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.idleAnalysisConcurrency"],
     ).toBeUndefined();

@@ -52,6 +52,7 @@
   "configuration.embedded.parallelism.description": "Maximum embedded HTML/CSS/JavaScript diagnostics parallelism during LSP requests. Set 0 to choose automatically.",
   "configuration.workspace.maxIndexFiles.description": "Maximum number of unopened Classic ASP workspace files indexed per scan.",
   "configuration.workspace.scanChunkSize.description": "Number of filesystem entries processed before yielding during workspace indexing.",
+  "configuration.workspace.diagnosticConcurrency.description": "Maximum unopened workspace files analyzed concurrently during explicit workspace diagnostics requests. Set 0 to choose automatically.",
   "configuration.workspace.vbProjectMaxDocuments.description": "Maximum number of documents included in one full VBScript project context and include cycle traversal.",
   "configuration.workspace.vbProjectMaxTextLength.description": "Maximum total text size, in bytes, included in one full VBScript project context and include cycle traversal.",
   "configuration.iis.url.description": "URL opened by the Classic ASP IIS debug helper command.",

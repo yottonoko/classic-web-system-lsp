@@ -163,6 +163,7 @@ export interface AspEmbeddedSettings {
 export interface AspWorkspaceSettings {
   maxIndexFiles?: number;
   scanChunkSize?: number;
+  diagnosticConcurrency?: number;
   vbProjectMaxDocuments?: number;
   vbProjectMaxTextLength?: number;
 }

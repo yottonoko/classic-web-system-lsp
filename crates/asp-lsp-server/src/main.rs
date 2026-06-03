@@ -1,12 +1,13 @@
 // serde_json::json! builds large nested LSP capability objects in this file.
 #![recursion_limit = "256"]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -273,10 +274,16 @@ impl ServerState {
 
         let settings_key = disk_analysis_settings_key(&self.settings);
         let workspace_fingerprint = self.ide.workspace_registry_fingerprint();
+        let mut jobs = Vec::new();
+        let mut lookups = HashMap::new();
+        let mut indexed_reports = BTreeMap::new();
+        let mut next_report_index = 0usize;
         for file in self.indexed_files.clone() {
             if self.ide.is_open_document(&file.uri) {
                 continue;
             }
+            let report_index = next_report_index;
+            next_report_index += 1;
             let lookup = DiskCacheLookup {
                 source: file.source.clone(),
                 settings_key: settings_key.clone(),
@@ -293,7 +300,7 @@ impl ServerState {
                 if let Some(token) = partial_result_token {
                     send_workspace_diagnostic_progress(connection, token, report)?;
                 } else {
-                    reports.push(report);
+                    indexed_reports.insert(report_index, report);
                 }
                 continue;
             }
@@ -304,41 +311,88 @@ impl ServerState {
                     format!("[asp-lsp] diskCache.miss: {}", file.uri),
                 )?;
             }
-            let diagnostics = self.indexed_full_diagnostics(connection, &file.uri)?;
+            lookups.insert(report_index, lookup);
+            jobs.push(WorkspaceDiagnosticJob { report_index, file });
+        }
+
+        let snapshot = Arc::new(WorkspaceDiagnosticSnapshot {
+            settings: self.settings.clone(),
+            open_documents: self.ide.open_document_texts(),
+            indexed_documents: self.ide.indexed_document_texts(),
+        });
+        for result in run_workspace_diagnostic_jobs(
+            snapshot,
+            jobs,
+            workspace_diagnostic_concurrency(&self.settings),
+        ) {
+            let payload = result.result?;
+            let Some(lookup) = lookups.remove(&result.report_index) else {
+                continue;
+            };
+            let mut diagnostics = payload.diagnostics;
+            diagnostics.extend(self.embedded_diagnostics_for_virtuals(
+                connection,
+                payload.virtual_documents,
+                &result.file.uri,
+            )?);
             self.disk_cache
                 .write_workspace_diagnostics(&lookup, &diagnostics);
-            self.write_query_snapshots(&file.uri, &lookup)?;
+            self.write_query_snapshots_from_payload(
+                &lookup,
+                payload.document_summary,
+                payload.include_summary,
+            )?;
             if self.disk_cache.enabled {
                 log_debug_summary(
                     connection,
                     &self.settings,
-                    format!("[asp-lsp] diskCache.write: {}", file.uri),
+                    format!("[asp-lsp] diskCache.write: {}", result.file.uri),
                 )?;
             }
-            let report = workspace_diagnostic_report(&file.uri, diagnostics);
+            let report = workspace_diagnostic_report(&result.file.uri, diagnostics);
             if let Some(token) = partial_result_token {
                 send_workspace_diagnostic_progress(connection, token, report)?;
             } else {
-                reports.push(report);
+                indexed_reports.insert(result.report_index, report);
             }
+        }
+        if partial_result_token.is_none() {
+            reports.extend(indexed_reports.into_values());
         }
         Ok(json!({ "items": reports }))
     }
 
-    fn indexed_full_diagnostics(
+    fn embedded_diagnostics_for_virtuals(
         &mut self,
         connection: &Connection,
+        virtuals: Vec<MappedVirtualDocument>,
         uri: &str,
     ) -> Result<Vec<Value>, String> {
-        let _ = connection;
-        self.ide.workspace_diagnostics(uri)
+        collect_embedded_diagnostics_from_virtuals(
+            &mut self.sidecar,
+            Some(connection),
+            &self.settings,
+            &self.workspace_roots,
+            self.sidecar_project_generation,
+            &self.sidecar_project_fingerprint,
+            &self.sidecar_project_reset_reason,
+            &mut self.sidecar_request_id,
+            uri,
+            virtuals,
+            embedded_parallelism(&self.settings),
+        )
     }
 
-    fn write_query_snapshots(&self, uri: &str, lookup: &DiskCacheLookup) -> Result<(), String> {
-        if let Some(summary) = self.ide.document_summary_snapshot(uri)? {
+    fn write_query_snapshots_from_payload(
+        &self,
+        lookup: &DiskCacheLookup,
+        document_summary: Option<Value>,
+        include_summary: Option<Value>,
+    ) -> Result<(), String> {
+        if let Some(summary) = document_summary {
             self.disk_cache.write_document_summary(lookup, summary);
         }
-        if let Some(summary) = self.ide.include_summary_snapshot(uri)? {
+        if let Some(summary) = include_summary {
             self.disk_cache.write_include_summary(lookup, summary);
         }
         let graph = self.ide.dependency_graph_snapshot()?;
@@ -651,6 +705,31 @@ struct DiskCacheLookup {
     source: DiskSourceMetadata,
     settings_key: String,
     workspace_fingerprint: String,
+}
+
+#[derive(Clone)]
+struct WorkspaceDiagnosticSnapshot {
+    settings: Value,
+    open_documents: Vec<(String, String)>,
+    indexed_documents: Vec<(String, String)>,
+}
+
+struct WorkspaceDiagnosticJob {
+    report_index: usize,
+    file: IndexedFile,
+}
+
+struct WorkspaceDiagnosticWorkerResult {
+    report_index: usize,
+    file: IndexedFile,
+    result: Result<WorkspaceDiagnosticPayload, String>,
+}
+
+struct WorkspaceDiagnosticPayload {
+    diagnostics: Vec<Value>,
+    virtual_documents: Vec<MappedVirtualDocument>,
+    document_summary: Option<Value>,
+    include_summary: Option<Value>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1074,6 +1153,105 @@ fn semantic_token_delta_edit(previous: &[Value], next: &[Value]) -> Value {
     })
 }
 
+fn run_workspace_diagnostic_jobs(
+    snapshot: Arc<WorkspaceDiagnosticSnapshot>,
+    jobs: Vec<WorkspaceDiagnosticJob>,
+    concurrency: usize,
+) -> Vec<WorkspaceDiagnosticWorkerResult> {
+    if jobs.is_empty() {
+        return Vec::new();
+    }
+    let worker_count = concurrency.max(1).min(jobs.len());
+    if worker_count == 1 {
+        return workspace_diagnostic_worker(snapshot, jobs);
+    }
+
+    let total_jobs = jobs.len();
+    let mut expected = jobs
+        .iter()
+        .map(|job| (job.report_index, job.file.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut assignments = (0..worker_count).map(|_| Vec::new()).collect::<Vec<_>>();
+    for (index, job) in jobs.into_iter().enumerate() {
+        assignments[index % worker_count].push(job);
+    }
+
+    let (sender, receiver) = mpsc::channel();
+    for assignment in assignments {
+        if assignment.is_empty() {
+            continue;
+        }
+        let sender = sender.clone();
+        let snapshot = Arc::clone(&snapshot);
+        thread::spawn(move || {
+            for result in workspace_diagnostic_worker(snapshot, assignment) {
+                let _ = sender.send(result);
+            }
+        });
+    }
+    drop(sender);
+
+    let mut results = Vec::new();
+    for _ in 0..total_jobs {
+        let Ok(result) = receiver.recv() else {
+            break;
+        };
+        expected.remove(&result.report_index);
+        results.push(result);
+    }
+    results.extend(expected.into_iter().map(|(report_index, file)| {
+        WorkspaceDiagnosticWorkerResult {
+            report_index,
+            file,
+            result: Err(
+                "workspace diagnostic worker stopped before returning a result".to_string(),
+            ),
+        }
+    }));
+    results
+}
+
+fn workspace_diagnostic_worker(
+    snapshot: Arc<WorkspaceDiagnosticSnapshot>,
+    jobs: Vec<WorkspaceDiagnosticJob>,
+) -> Vec<WorkspaceDiagnosticWorkerResult> {
+    let ide = match Ide::from_workspace_snapshot(
+        snapshot.settings.clone(),
+        snapshot.open_documents.clone(),
+        snapshot.indexed_documents.clone(),
+    ) {
+        Ok(ide) => ide,
+        Err(error) => {
+            return jobs
+                .into_iter()
+                .map(|job| WorkspaceDiagnosticWorkerResult {
+                    report_index: job.report_index,
+                    file: job.file,
+                    result: Err(error.clone()),
+                })
+                .collect();
+        }
+    };
+
+    jobs.into_iter()
+        .map(|job| {
+            let result = (|| -> Result<WorkspaceDiagnosticPayload, String> {
+                Ok(WorkspaceDiagnosticPayload {
+                    diagnostics: ide.workspace_diagnostics(&job.file.uri)?,
+                    virtual_documents: ide.workspace_embedded_virtual_documents(&job.file.uri)?,
+                    document_summary: ide.document_summary_snapshot(&job.file.uri)?,
+                    include_summary: ide.include_summary_snapshot(&job.file.uri)?,
+                })
+            })();
+            WorkspaceDiagnosticWorkerResult {
+                report_index: job.report_index,
+                file: job.file,
+                result,
+            }
+        })
+        .collect()
+}
+
 fn collect_embedded_diagnostics(
     sidecar: &mut EmbeddedSidecar,
     ide: &Ide,
@@ -1088,6 +1266,34 @@ fn collect_embedded_diagnostics(
     parallelism: usize,
 ) -> Result<Vec<Value>, String> {
     let virtuals = ide.embedded_virtual_documents(uri)?;
+    collect_embedded_diagnostics_from_virtuals(
+        sidecar,
+        connection,
+        settings,
+        workspace_roots,
+        project_generation,
+        project_fingerprint,
+        project_reset_reason,
+        request_id,
+        uri,
+        virtuals,
+        parallelism,
+    )
+}
+
+fn collect_embedded_diagnostics_from_virtuals(
+    sidecar: &mut EmbeddedSidecar,
+    connection: Option<&Connection>,
+    settings: &Value,
+    workspace_roots: &[String],
+    project_generation: u64,
+    project_fingerprint: &str,
+    project_reset_reason: &str,
+    request_id: &mut u64,
+    _uri: &str,
+    virtuals: Vec<MappedVirtualDocument>,
+    parallelism: usize,
+) -> Result<Vec<Value>, String> {
     let open_virtuals = virtuals
         .iter()
         .map(|mapped| mapped.document.clone())
@@ -2247,6 +2453,10 @@ fn embedded_parallelism(settings: &Value) -> usize {
     configured_parallelism(settings.get("embedded"), "parallelism", 4)
 }
 
+fn workspace_diagnostic_concurrency(settings: &Value) -> usize {
+    configured_parallelism(settings.get("workspace"), "diagnosticConcurrency", 8)
+}
+
 fn configured_parallelism(parent: Option<&Value>, key: &str, max_auto: usize) -> usize {
     let configured = parent
         .and_then(|value| value.get(key))
@@ -2829,6 +3039,23 @@ mod tests {
         assert_eq!(
             super::embedded_parallelism(&json!({ "embedded": { "parallelism": 99 } })),
             4
+        );
+
+        let auto_workspace = super::workspace_diagnostic_concurrency(
+            &json!({ "workspace": { "diagnosticConcurrency": 0 } }),
+        );
+        assert!((1..=8).contains(&auto_workspace));
+        assert_eq!(
+            super::workspace_diagnostic_concurrency(
+                &json!({ "workspace": { "diagnosticConcurrency": 1 } })
+            ),
+            1
+        );
+        assert_eq!(
+            super::workspace_diagnostic_concurrency(
+                &json!({ "workspace": { "diagnosticConcurrency": 99 } })
+            ),
+            8
         );
     }
 

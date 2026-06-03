@@ -3328,6 +3328,7 @@ fn workspace_diagnostics_streams_partial_results() {
         &mut reader,
         json!({
             "embedded": { "parallelism": 1 },
+            "workspace": { "diagnosticConcurrency": 2 },
         }),
         &root_uri,
     );
@@ -3366,6 +3367,78 @@ fn workspace_diagnostics_streams_partial_results() {
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
     assert!(child.wait().expect("wait server").success());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn workspace_diagnostics_parallel_results_match_serial() {
+    fn run_workspace_diagnostic(root_uri: &str, concurrency: usize) -> Value {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn server");
+
+        let mut stdin = child.stdin.take().expect("server stdin");
+        let stdout = child.stdout.take().expect("server stdout");
+        let mut reader = BufReader::new(stdout);
+
+        initialize_with_settings_and_root(
+            &mut stdin,
+            &mut reader,
+            json!({
+                "embedded": { "parallelism": 1 },
+                "workspace": { "diagnosticConcurrency": concurrency },
+            }),
+            root_uri,
+        );
+
+        let diagnostics = request(
+            &mut stdin,
+            &mut reader,
+            30,
+            "workspace/diagnostic",
+            json!({ "previousResultIds": [] }),
+        );
+
+        shutdown(&mut stdin, &mut reader);
+        drop(stdin);
+        assert!(child.wait().expect("wait server").success());
+        diagnostics["result"].clone()
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "asp-lsp-rust-workspace-diagnostics-parallel-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    fs::write(
+        root.join("first.asp"),
+        "<%\nOption Explicit\nfirstMissing = 1\n%>",
+    )
+    .expect("write first asp");
+    fs::write(
+        root.join("second.asp"),
+        "<%\nOption Explicit\nsecondMissing = 1\n%>",
+    )
+    .expect("write second asp");
+    fs::write(
+        root.join("third.inc"),
+        "<%\nOption Explicit\nthirdMissing = 1\n%>",
+    )
+    .expect("write third inc");
+
+    let root_uri = format!("file://{}", root.to_string_lossy());
+    let serial = run_workspace_diagnostic(&root_uri, 1);
+    let parallel = run_workspace_diagnostic(&root_uri, 2);
+
+    assert_eq!(parallel, serial);
+    let text = parallel.to_string();
+    assert!(text.contains("firstMissing"));
+    assert!(text.contains("secondMissing"));
+    assert!(text.contains("thirdMissing"));
+
     let _ = fs::remove_dir_all(root);
 }
 

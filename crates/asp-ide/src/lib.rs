@@ -463,10 +463,30 @@ impl Default for Ide {
 }
 
 impl Ide {
+    pub fn from_workspace_snapshot(
+        settings: Value,
+        open_documents: Vec<(String, String)>,
+        indexed_documents: Vec<(String, String)>,
+    ) -> Result<Self, String> {
+        let mut ide = Self::default();
+        ide.set_settings_without_diagnostics(settings)?;
+        for (uri, text) in open_documents {
+            ide.set_open_document(uri, text);
+        }
+        ide.replace_indexed_documents(indexed_documents);
+        Ok(ide)
+    }
+
     pub fn set_open_document(&mut self, uri: String, text: String) {
         let document = OpenDocument::new(&self.db, uri.clone(), text);
         self.documents.insert(uri, document);
         self.update_workspace_registry();
+    }
+
+    pub fn set_settings_without_diagnostics(&mut self, settings: Value) -> Result<(), String> {
+        self.settings.set(&mut self.db, settings)?;
+        self.update_workspace_registry();
+        Ok(())
     }
 
     pub fn set_settings(&mut self, settings: Value) -> Result<Vec<(String, Vec<Value>)>, String> {
@@ -533,6 +553,20 @@ impl Ide {
 
     pub fn open_document_uris(&self) -> Vec<String> {
         self.documents.keys().cloned().collect()
+    }
+
+    pub fn open_document_texts(&self) -> Vec<(String, String)> {
+        self.documents
+            .iter()
+            .map(|(uri, document)| (uri.clone(), document.text(&self.db).clone()))
+            .collect()
+    }
+
+    pub fn indexed_document_texts(&self) -> Vec<(String, String)> {
+        self.indexed_documents
+            .iter()
+            .map(|(uri, document)| (uri.clone(), document.text(&self.db).clone()))
+            .collect()
     }
 
     pub fn replace_indexed_documents(&mut self, files: Vec<(String, String)>) {
@@ -2005,6 +2039,16 @@ impl Ide {
         uri: &str,
     ) -> Result<Vec<MappedVirtualDocument>, String> {
         let Some(document) = self.documents.get(uri) else {
+            return Ok(Vec::new());
+        };
+        virtual_documents(&self.db, document.source_file, self.settings.input)
+    }
+
+    pub fn workspace_embedded_virtual_documents(
+        &self,
+        uri: &str,
+    ) -> Result<Vec<MappedVirtualDocument>, String> {
+        let Some(document) = self.workspace_document(uri) else {
             return Ok(Vec::new());
         };
         virtual_documents(&self.db, document.source_file, self.settings.input)
@@ -6672,6 +6716,7 @@ fn normalize_path_segments(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{array_field, Ide, TextPosition, TextRange};
+    use serde_json::json;
 
     fn include_paths(includes: &[serde_json::Value]) -> Vec<String> {
         includes
@@ -6902,6 +6947,61 @@ mod tests {
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|name| name == "OtherName")
         }));
+    }
+
+    #[test]
+    fn workspace_snapshot_reports_indexed_file_diagnostics() {
+        let ide = Ide::from_workspace_snapshot(
+            json!({ "strictMode": true }),
+            Vec::new(),
+            vec![
+                (
+                    "file:///site/default.asp".to_string(),
+                    "<%\nOption Explicit\nmissingName = 1\n%>".to_string(),
+                ),
+                (
+                    "file:///site/other.asp".to_string(),
+                    "<%\nOption Explicit\nDim ok\n%>".to_string(),
+                ),
+            ],
+        )
+        .expect("workspace snapshot");
+
+        let diagnostics = ide
+            .workspace_diagnostics("file:///site/default.asp")
+            .expect("workspace diagnostics");
+
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|message| message.contains("missingName"))
+        }));
+    }
+
+    #[test]
+    fn workspace_snapshot_exposes_indexed_embedded_virtual_documents() {
+        let ide = Ide::from_workspace_snapshot(
+            json!({}),
+            Vec::new(),
+            vec![(
+                "file:///site/default.asp".to_string(),
+                "<div class=\"box\"><style>.box { color: red; }</style><script>var alpha = 1;</script></div>".to_string(),
+            )],
+        )
+        .expect("workspace snapshot");
+
+        let virtuals = ide
+            .workspace_embedded_virtual_documents("file:///site/default.asp")
+            .expect("workspace virtual documents");
+        let languages: Vec<&str> = virtuals
+            .iter()
+            .map(|mapped| mapped.document.language_id.as_str())
+            .collect();
+
+        assert!(languages.contains(&"html"));
+        assert!(languages.contains(&"css"));
+        assert!(languages.contains(&"javascript"));
     }
 
     #[test]

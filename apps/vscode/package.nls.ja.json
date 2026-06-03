@@ -52,6 +52,7 @@
   "configuration.embedded.parallelism.description": "LSP request 中の embedded HTML/CSS/JavaScript diagnostics 最大並列数です。0 の場合は自動で選びます。",
   "configuration.workspace.maxIndexFiles.description": "1 回の workspace scan で index する、開いていない Classic ASP file の最大数です。",
   "configuration.workspace.scanChunkSize.description": "workspace indexing 中に yield するまでに処理する filesystem entry 数です。",
+  "configuration.workspace.diagnosticConcurrency.description": "明示的な workspace diagnostics request 中に並列解析する、開いていない workspace file の最大数です。0 の場合は自動で選びます。",
   "configuration.workspace.vbProjectMaxDocuments.description": "1 回の full VBScript project context と include cycle traversal に含める document の最大数です。",
   "configuration.workspace.vbProjectMaxTextLength.description": "1 回の full VBScript project context と include cycle traversal に含める text 合計サイズの最大値を byte で指定します。",
   "configuration.iis.url.description": "IIS debug helper command が開く URL です。",
