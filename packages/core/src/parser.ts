@@ -22,11 +22,6 @@ const asyncParseCache = new Map<string, { text: string; parsed: AspParsedDocumen
 const asyncParseContentCacheMaxTexts = 64;
 const asyncParseContentCache = new Map<string, Map<string, AspParsedDocument>>();
 
-export function clearAspParseCaches(): void {
-  asyncParseCache.clear();
-  asyncParseContentCache.clear();
-}
-
 export function parseAspDocument(
   uri: string,
   text: string,

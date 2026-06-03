@@ -4,11 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
-import {
-  clearEmbeddedBenchmarkCaches,
-  embeddedOperationNames,
-  runEmbeddedOperation,
-} from "./embedded-language-benchmark.mjs";
+import { embeddedOperationNames, runEmbeddedOperation } from "./embedded-language-benchmark.mjs";
 import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
 
 const require = createRequire(import.meta.url);
@@ -20,7 +16,6 @@ const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
 const operationFilter = process.env.ASP_LSP_BENCH_OPERATION;
-const disableCaches = readBoolean("ASP_LSP_BENCH_DISABLE_CACHES");
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const analyzeStepTotals = new Map();
 const results = [];
@@ -47,7 +42,7 @@ const sourceStats = summarizeSources(sources);
 if (shouldRunOperation("parseAspDocument")) {
   await runBenchmark("parseAspDocument", async (run) => {
     for (const source of sourcesForRun("parseAspDocument", run)) {
-      await runSourceBenchmark(() => parseAspDocumentAsync(source.uri, source.text));
+      await parseAspDocumentAsync(source.uri, source.text);
     }
   });
 }
@@ -55,10 +50,8 @@ if (shouldRunOperation("parseAspDocument")) {
 if (shouldRunOperation("buildVirtualDocuments")) {
   await runBenchmark("buildVirtualDocuments", async (run) => {
     for (const source of sourcesForRun("buildVirtualDocuments", run)) {
-      await runSourceBenchmark(async () => {
-        const parsed = await parseAspDocumentAsync(source.uri, source.text);
-        buildVirtualDocuments(parsed);
-      });
+      const parsed = await parseAspDocumentAsync(source.uri, source.text);
+      buildVirtualDocuments(parsed);
     }
   });
 }
@@ -66,7 +59,7 @@ if (shouldRunOperation("buildVirtualDocuments")) {
 if (shouldRunOperation("collectVbscriptSymbols")) {
   await runBenchmark("collectVbscriptSymbols", async (run) => {
     for (const source of sourcesForRun("collectVbscriptSymbols", run)) {
-      await runSourceBenchmark(() => collectVbscriptSymbolsFromTextAsync(source.uri, source.text));
+      await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
     }
   });
 }
@@ -74,9 +67,7 @@ if (shouldRunOperation("collectVbscriptSymbols")) {
 if (shouldRunOperation("analyzeVbscript")) {
   await runBenchmark("analyzeVbscript", async (run) => {
     for (const source of sourcesForRun("analyzeVbscript", run)) {
-      await runSourceBenchmark(() =>
-        analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext()),
-      );
+      await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
     }
   });
 }
@@ -87,7 +78,7 @@ for (const operation of embeddedOperationNames) {
   }
   await runBenchmark(operation, async (run) => {
     for (const source of sourcesForRun(operation, run)) {
-      await runSourceBenchmark(() => runEmbeddedOperation(operation, source, core));
+      await runEmbeddedOperation(operation, source, core);
     }
   });
 }
@@ -98,7 +89,6 @@ console.log(`Files: ${sourceStats.files}`);
 console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
 console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
 console.log(`Cache mode: ${benchmarkCacheMode}`);
-console.log(`Benchmark caches: ${disableCaches ? "disabled" : "enabled"}`);
 console.log(`Warmups: ${warmupIterations}`);
 console.log(`Iterations: ${benchmarkIterations}`);
 if (operationFilter) {
@@ -122,23 +112,6 @@ function sourcesForRun(operation, run) {
 
 function shouldRunOperation(operation) {
   return !operationFilter || operationFilter === operation;
-}
-
-async function runSourceBenchmark(action) {
-  if (!disableCaches) {
-    return action();
-  }
-  clearBenchmarkCaches();
-  try {
-    return await action();
-  } finally {
-    clearBenchmarkCaches();
-  }
-}
-
-function clearBenchmarkCaches() {
-  core.clearAspCoreCaches?.();
-  clearEmbeddedBenchmarkCaches();
 }
 
 function collectBenchmarkSources() {
