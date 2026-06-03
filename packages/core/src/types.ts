@@ -35,7 +35,6 @@ export interface AspSettings {
   vbscript?: AspVbscriptSettings;
   inlayHints?: AspInlayHintSettings;
   codeLens?: AspCodeLensSettings;
-  cache?: AspCacheSettings;
   embedded?: AspEmbeddedSettings;
   workspace?: AspWorkspaceSettings;
 }
@@ -149,13 +148,6 @@ export interface AspCodeLensSettings {
   referenceScope?: "analyzed" | "workspace";
 }
 
-export interface AspCacheSettings {
-  enabled?: boolean;
-  directory?: string;
-  ttlHours?: number;
-  maxSizeMb?: number;
-}
-
 export interface AspEmbeddedSettings {
   parallelism?: number;
 }
@@ -163,7 +155,6 @@ export interface AspEmbeddedSettings {
 export interface AspWorkspaceSettings {
   maxIndexFiles?: number;
   scanChunkSize?: number;
-  diagnosticConcurrency?: number;
   vbProjectMaxDocuments?: number;
   vbProjectMaxTextLength?: number;
 }

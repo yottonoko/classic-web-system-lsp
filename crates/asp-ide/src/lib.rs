@@ -627,17 +627,6 @@ impl Ide {
         document_diagnostics(&self.db, document.source_file, self.settings.input)
     }
 
-    pub fn workspace_diagnostics(&self, uri: &str) -> Result<Vec<Value>, String> {
-        let Some(document) = self
-            .documents
-            .get(uri)
-            .or_else(|| self.indexed_documents.get(uri))
-        else {
-            return Ok(Vec::new());
-        };
-        document_diagnostics(&self.db, document.source_file, self.settings.input)
-    }
-
     pub fn parse_asp(&self, uri: &str) -> Result<Value, String> {
         let Some(document) = self.documents.get(uri) else {
             return Ok(Value::Null);
@@ -6946,36 +6935,6 @@ mod tests {
                 .get("name")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|name| name == "OtherName")
-        }));
-    }
-
-    #[test]
-    fn workspace_snapshot_reports_indexed_file_diagnostics() {
-        let ide = Ide::from_workspace_snapshot(
-            json!({ "strictMode": true }),
-            Vec::new(),
-            vec![
-                (
-                    "file:///site/default.asp".to_string(),
-                    "<%\nOption Explicit\nmissingName = 1\n%>".to_string(),
-                ),
-                (
-                    "file:///site/other.asp".to_string(),
-                    "<%\nOption Explicit\nDim ok\n%>".to_string(),
-                ),
-            ],
-        )
-        .expect("workspace snapshot");
-
-        let diagnostics = ide
-            .workspace_diagnostics("file:///site/default.asp")
-            .expect("workspace diagnostics");
-
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|message| message.contains("missingName"))
         }));
     }
 

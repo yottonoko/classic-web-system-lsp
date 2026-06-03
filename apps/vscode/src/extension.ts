@@ -15,7 +15,6 @@ const maxCrashRestartCount = 4;
 const crashRestartWindowMs = 3 * 60 * 1000;
 const reindexWorkspaceServerCommand = "aspLsp.server.reindexWorkspace";
 const clearCacheServerCommand = "aspLsp.server.clearCache";
-const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const backendStatusMethod = "aspLsp/backendStatus";
 const viewFileTextMethod = "rust-analyzer/viewFileText";
@@ -64,9 +63,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     vscode.commands.registerCommand("aspLsp.clearCache", async () =>
       executeServerCommand(clearCacheServerCommand),
-    ),
-    vscode.commands.registerCommand("aspLsp.clearDiskCache", async () =>
-      executeServerCommand(clearDiskCacheServerCommand),
     ),
     vscode.commands.registerCommand("aspLsp.clearProcessCache", async () =>
       executeServerCommand(clearProcessCacheServerCommand),

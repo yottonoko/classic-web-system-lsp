@@ -552,28 +552,6 @@
           "default": false,
           "description": "%configuration.codeLens.includes.description%"
         },
-        "aspLsp.cache.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.cache.enabled.description%"
-        },
-        "aspLsp.cache.directory": {
-          "type": "string",
-          "default": "",
-          "description": "%configuration.cache.directory.description%"
-        },
-        "aspLsp.cache.ttlHours": {
-          "type": "number",
-          "minimum": 1,
-          "default": 336,
-          "description": "%configuration.cache.ttlHours.description%"
-        },
-        "aspLsp.cache.maxSizeMb": {
-          "type": "number",
-          "minimum": 1,
-          "default": 128,
-          "description": "%configuration.cache.maxSizeMb.description%"
-        },
         "aspLsp.embedded.parallelism": {
           "type": "number",
           "minimum": 0,
@@ -591,12 +569,6 @@
           "minimum": 1,
           "default": 200,
           "description": "%configuration.workspace.scanChunkSize.description%"
-        },
-        "aspLsp.workspace.diagnosticConcurrency": {
-          "type": "number",
-          "minimum": 0,
-          "default": 0,
-          "description": "%configuration.workspace.diagnosticConcurrency.description%"
         },
         "aspLsp.workspace.vbProjectMaxDocuments": {
           "type": "number",
@@ -654,10 +626,6 @@
       {
         "command": "aspLsp.clearCache",
         "title": "%command.clearCache.title%"
-      },
-      {
-        "command": "aspLsp.clearDiskCache",
-        "title": "%command.clearDiskCache.title%"
       },
       {
         "command": "aspLsp.clearProcessCache",

@@ -1,11 +1,10 @@
 import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
-import { readBenchmarkCacheMode, readBenchmarkDisableCaches } from "./benchmark-cache-mode.mjs";
+import { readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const sampleConfigs = new Map([
@@ -28,24 +27,16 @@ const serverPath = path.join(root, "target", "release", executableName("asp-lsp-
 const benchmarkIterations = readPositiveInteger("ASP_LSP_BENCH_ITERATIONS", 5);
 const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
-const disableCaches = readBenchmarkDisableCaches();
 const benchmarkCheckJs = readBoolean("ASP_LSP_BENCH_CHECK_JS");
 const rapidBurstSize = readPositiveInteger("ASP_LSP_BENCH_BURST_SIZE", 5);
 const rapidDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEBOUNCE_MS", 80);
 const defaultDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEFAULT_DEBOUNCE_MS", 250);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", defaultTimeoutMs);
-const workspaceCacheLogWaitMs = readNonNegativeInteger(
-  "ASP_LSP_BENCH_WORKSPACE_CACHE_LOG_WAIT_MS",
-  1_000,
-);
 const changeKinds = readChangeKinds();
 const changeModes = readChangeModes();
 const editTargets = readEditTargets();
 const debugEventNames = [
-  "diskCache.hit",
-  "diskCache.miss",
-  "diskCache.write",
   "check.vbscript.diagnostics.reuse",
   "js.snapshot.changeRange.hit",
   "js.snapshot.changeRange.miss",
@@ -147,7 +138,6 @@ async function main() {
   console.log(`Lines: ${sourceStats.lines.toLocaleString("en-US")}`);
   console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
   console.log(`Cache mode: ${benchmarkCacheMode}`);
-  console.log(`Benchmark caches: ${disableCaches ? "disabled" : "enabled"}`);
   console.log(`Check JS: ${benchmarkCheckJs ? "on" : "off"}`);
   console.log(`Warmups: ${warmupIterations}`);
   console.log(`Iterations: ${benchmarkIterations}`);
@@ -177,25 +167,12 @@ async function main() {
     console.log("");
     printDebugEventDetails(scenarioResults);
   }
-
-  console.log("");
-  console.log("Workspace cache benchmark");
-  console.log(`Cache mode: ${benchmarkCacheMode}`);
-  console.log(`Benchmark caches: ${disableCaches ? "disabled" : "enabled"}`);
-  console.log("");
-  if (disableCaches) {
-    console.log("Skipped because benchmark caches are disabled.");
-  } else {
-    printWorkspaceCacheTable(await runWorkspaceCacheBenchmarks());
-  }
 }
 
 async function runScenario(changeKind, changeMode, editTarget) {
   if (benchmarkCacheMode === "cold") {
     return runColdScenario(changeKind, changeMode, editTarget);
   }
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-change-bench-"));
-  const cacheDir = path.join(tempDir, "cache");
   const sourcePath = path.join(sampleRoot, "default.asp");
   const uri = pathToFileURL(sourcePath).href;
   const { burstSize, debounceMs } = changeModeSettings(changeMode);
@@ -217,7 +194,6 @@ async function runScenario(changeKind, changeMode, editTarget) {
     server.notify("workspace/didChangeConfiguration", {
       settings: {
         aspLsp: {
-          cache: benchmarkCacheSettings(cacheDir),
           checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
@@ -301,7 +277,6 @@ async function runScenario(changeKind, changeMode, editTarget) {
     };
   } finally {
     server.stop();
-    fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
@@ -347,8 +322,6 @@ async function runColdScenario(changeKind, changeMode, editTarget) {
 }
 
 async function measureColdScenarioIteration(changeKind, changeMode, editTarget, iteration) {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-change-bench-cold-"));
-  const cacheDir = path.join(tempDir, "cache");
   const sourcePath = path.join(sampleRoot, "default.asp");
   const uri = pathToFileURL(coldIterationPath(sourcePath, iteration)).href;
   const { burstSize, debounceMs } = changeModeSettings(changeMode);
@@ -369,7 +342,6 @@ async function measureColdScenarioIteration(changeKind, changeMode, editTarget, 
     server.notify("workspace/didChangeConfiguration", {
       settings: {
         aspLsp: {
-          cache: benchmarkCacheSettings(cacheDir),
           checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
@@ -418,7 +390,6 @@ async function measureColdScenarioIteration(changeKind, changeMode, editTarget, 
     };
   } finally {
     server.stop();
-    fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
@@ -595,71 +566,6 @@ function semanticTokenRange(text, position) {
   };
 }
 
-async function runWorkspaceCacheBenchmarks() {
-  return [
-    benchmarkCacheMode === "cold"
-      ? await runColdWorkspaceCacheScenario()
-      : await runColdWarmWorkspaceCacheScenario(),
-  ];
-}
-
-async function runColdWorkspaceCacheScenario() {
-  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer();
-  try {
-    const cold = await measureWorkspaceDiagnostics(server, "diskCache.write");
-    return {
-      scenario: "workspace diagnostics",
-      cacheDir,
-      rows: [{ metric: "cold workspace diagnostics", ...cold }],
-    };
-  } finally {
-    await stopWorkspaceCacheServer(server);
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
-
-async function runColdWarmWorkspaceCacheScenario() {
-  const { server, tempDir, cacheDir } = await startWorkspaceCacheServer();
-  try {
-    const cold = await measureWorkspaceDiagnostics(server, "diskCache.write");
-    const warm = await measureWorkspaceDiagnostics(server, "diskCache.hit");
-    return {
-      scenario: "workspace diagnostics",
-      cacheDir,
-      rows: [
-        { metric: "cold workspace diagnostics", ...cold },
-        { metric: "warm workspace diagnostics", ...warm },
-      ],
-    };
-  } finally {
-    await stopWorkspaceCacheServer(server);
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
-
-async function startWorkspaceCacheServer() {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-cache-bench-"));
-  const cacheDir = path.join(tempDir, "cache");
-  const server = new RpcServer();
-  await server.start();
-  await initializeServer(server);
-  server.notify("workspace/didChangeConfiguration", {
-    settings: {
-      aspLsp: {
-        cache: benchmarkCacheSettings(cacheDir),
-        checkJs: benchmarkCheckJs,
-        debug: { output: "verbose" },
-      },
-    },
-  });
-  drainBenchmarkNotifications(server);
-  return { server, tempDir, cacheDir };
-}
-
-function benchmarkCacheSettings(cacheDir) {
-  return { enabled: !disableCaches, directory: cacheDir };
-}
-
 async function initializeServer(server) {
   await server.request("initialize", {
     processId: process.pid,
@@ -667,30 +573,6 @@ async function initializeServer(server) {
     capabilities: {},
   });
   server.notify("initialized", {});
-}
-
-async function stopWorkspaceCacheServer(server) {
-  try {
-    await server.request("shutdown", null);
-    server.notify("exit", undefined);
-  } finally {
-    server.stop();
-  }
-}
-
-async function measureWorkspaceDiagnostics(server, expectedLog) {
-  drainBenchmarkNotifications(server);
-  const startedAt = performance.now();
-  const report = await server.request("workspace/diagnostic", { previousResultIds: [] });
-  const logs = [];
-  await waitForOptionalLogContaining(server, expectedLog, logs, workspaceCacheLogWaitMs);
-  await sleep(50);
-  logs.push(...server.takePendingNotifications("window/logMessage"));
-  return {
-    elapsedMs: performance.now() - startedAt,
-    diagnosticCount: countWorkspaceDiagnostics(report),
-    eventCounts: collectDebugEventCounts(logs),
-  };
 }
 
 async function sleep(ms) {
@@ -852,16 +734,6 @@ function addCounters(target, source) {
 
 function countLogsContaining(logs, expected) {
   return logs.filter((log) => logMessage(log).includes(expected)).length;
-}
-
-function countWorkspaceDiagnostics(report) {
-  const items =
-    report && typeof report === "object" && Array.isArray(report.items) ? report.items : [];
-  return items.reduce(
-    (sum, item) =>
-      sum + (item && typeof item === "object" && Array.isArray(item.items) ? item.items.length : 0),
-    0,
-  );
 }
 
 async function waitForLogContaining(server, expected, collectedLogs) {
@@ -1056,26 +928,6 @@ function printDebugEventDetails(scenarioResults) {
     const scenarioName = scenarioLabel(scenario);
     for (const detail of scenario.debugEventDetails ?? []) {
       rows.push([scenarioName, detail]);
-    }
-  }
-  printRows(rows);
-}
-
-function printWorkspaceCacheTable(results) {
-  const rows = [
-    ["Scenario", "Metric", "elapsed ms", "diagnostics", "disk hits", "disk misses", "disk writes"],
-  ];
-  for (const result of results) {
-    for (const row of result.rows) {
-      rows.push([
-        result.scenario,
-        row.metric,
-        formatMillis(row.elapsedMs),
-        String(row.diagnosticCount),
-        String(row.eventCounts.get("diskCache.hit") ?? 0),
-        String(row.eventCounts.get("diskCache.miss") ?? 0),
-        String(row.eventCounts.get("diskCache.write") ?? 0),
-      ]);
     }
   }
   printRows(rows);

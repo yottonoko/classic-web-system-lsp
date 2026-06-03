@@ -1,15 +1,14 @@
 // serde_json::json! builds large nested LSP capability objects in this file.
 #![recursion_limit = "256"]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::env;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use asp_ide::{Ide, IncludeImpact, MappedVirtualDocument, TextPosition, TextRange};
 use asp_sidecar_protocol::{EmbeddedRequest, EmbeddedResponse, VirtualDocument};
@@ -33,9 +32,6 @@ const EXPERIMENTAL_MOVE_ITEM_METHOD: &str = "experimental/moveItem";
 const EXPERIMENTAL_EXTERNAL_DOCS_METHOD: &str = "experimental/externalDocs";
 const EXPERIMENTAL_SSR_METHOD: &str = "experimental/ssr";
 const FRAME_KIND_JSON: u8 = 1;
-const DISK_CACHE_FORMAT_VERSION: u32 = 5;
-const DEFAULT_CACHE_TTL_HOURS: f64 = 24.0 * 14.0;
-const DEFAULT_CACHE_MAX_SIZE_MB: f64 = 128.0;
 const VSCODE_PACKAGE_JSON: &str = include_str!("../../../apps/vscode/package.json");
 
 fn main() {
@@ -108,7 +104,6 @@ struct ServerState {
     ide: Ide,
     diagnostics: DiagnosticScheduler,
     sidecar: EmbeddedSidecar,
-    disk_cache: DiskAnalysisCache,
     semantic_tokens: SemanticTokenCache,
     indexed_files: Vec<IndexedFile>,
     settings: Value,
@@ -126,7 +121,6 @@ impl ServerState {
         let next_max_index_files = workspace_max_index_files(&settings);
         self.diagnostics.set_debounce_from_settings(&settings);
         self.settings = settings.clone();
-        self.configure_disk_cache();
         self.bump_sidecar_project_generation("settings");
         if previous_max_index_files != next_max_index_files && !self.workspace_roots.is_empty() {
             self.refresh_workspace_index()?;
@@ -153,7 +147,6 @@ impl ServerState {
         );
         self.indexed_files = indexed_files;
         self.workspace_roots = roots;
-        self.configure_disk_cache();
         self.bump_sidecar_project_generation(reason);
         Ok(())
     }
@@ -168,13 +161,9 @@ impl ServerState {
                 self.refresh_workspace_index()?;
             }
             "aspLsp.server.clearCache" => {
-                self.disk_cache.clear()?;
                 self.ide.clear_process_cache();
                 self.semantic_tokens.clear_all();
                 self.bump_sidecar_project_generation("clearCache");
-            }
-            "aspLsp.server.clearDiskCache" => {
-                self.disk_cache.clear()?;
             }
             "aspLsp.server.clearProcessCache" => {
                 self.ide.clear_process_cache();
@@ -224,11 +213,6 @@ impl ServerState {
         status
     }
 
-    fn configure_disk_cache(&mut self) {
-        self.disk_cache = DiskAnalysisCache::from_settings(&self.settings, &self.workspace_roots);
-        self.disk_cache.sweep();
-    }
-
     fn publish_fast_diagnostics(&self, connection: &Connection, uri: &str) -> Result<(), String> {
         let diagnostics = self.ide.parser_diagnostics(uri)?;
         send_diagnostics(connection, uri, diagnostics)
@@ -250,184 +234,6 @@ impl ServerState {
             "kind": "full",
             "items": diagnostics,
         }))
-    }
-
-    fn workspace_diagnostic(
-        &mut self,
-        connection: &Connection,
-        partial_result_token: Option<&Value>,
-    ) -> Result<Value, String> {
-        let mut reports = Vec::new();
-        for uri in self.ide.open_document_uris() {
-            let report = json!({
-                "kind": "full",
-                "uri": uri,
-                "version": null,
-                "items": self.full_diagnostics(Some(connection), &uri)?,
-            });
-            if let Some(token) = partial_result_token {
-                send_workspace_diagnostic_progress(connection, token, report)?;
-            } else {
-                reports.push(report);
-            }
-        }
-
-        let settings_key = disk_analysis_settings_key(&self.settings);
-        let workspace_fingerprint = self.ide.workspace_registry_fingerprint();
-        let mut jobs = Vec::new();
-        let mut lookups = HashMap::new();
-        let mut indexed_reports = BTreeMap::new();
-        let mut next_report_index = 0usize;
-        for file in self.indexed_files.clone() {
-            if self.ide.is_open_document(&file.uri) {
-                continue;
-            }
-            let report_index = next_report_index;
-            next_report_index += 1;
-            let lookup = DiskCacheLookup {
-                source: file.source.clone(),
-                settings_key: settings_key.clone(),
-                workspace_fingerprint: workspace_fingerprint.clone(),
-            };
-            if let Some(diagnostics) = self.disk_cache.read_workspace_diagnostics(&lookup) {
-                self.log_query_snapshot_hits(connection, &file.uri, &lookup)?;
-                log_debug_summary(
-                    connection,
-                    &self.settings,
-                    format!("[asp-lsp] diskCache.hit: {}", file.uri),
-                )?;
-                let report = workspace_diagnostic_report(&file.uri, diagnostics);
-                if let Some(token) = partial_result_token {
-                    send_workspace_diagnostic_progress(connection, token, report)?;
-                } else {
-                    indexed_reports.insert(report_index, report);
-                }
-                continue;
-            }
-            if self.disk_cache.enabled {
-                log_debug_summary(
-                    connection,
-                    &self.settings,
-                    format!("[asp-lsp] diskCache.miss: {}", file.uri),
-                )?;
-            }
-            lookups.insert(report_index, lookup);
-            jobs.push(WorkspaceDiagnosticJob { report_index, file });
-        }
-
-        let snapshot = Arc::new(WorkspaceDiagnosticSnapshot {
-            settings: self.settings.clone(),
-            open_documents: self.ide.open_document_texts(),
-            indexed_documents: self.ide.indexed_document_texts(),
-        });
-        for result in run_workspace_diagnostic_jobs(
-            snapshot,
-            jobs,
-            workspace_diagnostic_concurrency(&self.settings),
-        ) {
-            let payload = result.result?;
-            let Some(lookup) = lookups.remove(&result.report_index) else {
-                continue;
-            };
-            let mut diagnostics = payload.diagnostics;
-            diagnostics.extend(self.embedded_diagnostics_for_virtuals(
-                connection,
-                payload.virtual_documents,
-                &result.file.uri,
-            )?);
-            self.disk_cache
-                .write_workspace_diagnostics(&lookup, &diagnostics);
-            self.write_query_snapshots_from_payload(
-                &lookup,
-                payload.document_summary,
-                payload.include_summary,
-            )?;
-            if self.disk_cache.enabled {
-                log_debug_summary(
-                    connection,
-                    &self.settings,
-                    format!("[asp-lsp] diskCache.write: {}", result.file.uri),
-                )?;
-            }
-            let report = workspace_diagnostic_report(&result.file.uri, diagnostics);
-            if let Some(token) = partial_result_token {
-                send_workspace_diagnostic_progress(connection, token, report)?;
-            } else {
-                indexed_reports.insert(result.report_index, report);
-            }
-        }
-        if partial_result_token.is_none() {
-            reports.extend(indexed_reports.into_values());
-        }
-        Ok(json!({ "items": reports }))
-    }
-
-    fn embedded_diagnostics_for_virtuals(
-        &mut self,
-        connection: &Connection,
-        virtuals: Vec<MappedVirtualDocument>,
-        uri: &str,
-    ) -> Result<Vec<Value>, String> {
-        collect_embedded_diagnostics_from_virtuals(
-            &mut self.sidecar,
-            Some(connection),
-            &self.settings,
-            &self.workspace_roots,
-            self.sidecar_project_generation,
-            &self.sidecar_project_fingerprint,
-            &self.sidecar_project_reset_reason,
-            &mut self.sidecar_request_id,
-            uri,
-            virtuals,
-            embedded_parallelism(&self.settings),
-        )
-    }
-
-    fn write_query_snapshots_from_payload(
-        &self,
-        lookup: &DiskCacheLookup,
-        document_summary: Option<Value>,
-        include_summary: Option<Value>,
-    ) -> Result<(), String> {
-        if let Some(summary) = document_summary {
-            self.disk_cache.write_document_summary(lookup, summary);
-        }
-        if let Some(summary) = include_summary {
-            self.disk_cache.write_include_summary(lookup, summary);
-        }
-        let graph = self.ide.dependency_graph_snapshot()?;
-        self.disk_cache.write_dependency_graph(lookup, graph);
-        Ok(())
-    }
-
-    fn log_query_snapshot_hits(
-        &self,
-        connection: &Connection,
-        uri: &str,
-        lookup: &DiskCacheLookup,
-    ) -> Result<(), String> {
-        if self.disk_cache.read_document_summary(lookup).is_some() {
-            log_debug_summary(
-                connection,
-                &self.settings,
-                format!("[asp-lsp] diskCache.documentSummary.hit: {uri}"),
-            )?;
-        }
-        if self.disk_cache.read_include_summary(lookup).is_some() {
-            log_debug_summary(
-                connection,
-                &self.settings,
-                format!("[asp-lsp] diskCache.includeSummary.hit: {uri}"),
-            )?;
-        }
-        if self.disk_cache.read_dependency_graph(lookup).is_some() {
-            log_debug_summary(
-                connection,
-                &self.settings,
-                format!("[asp-lsp] diskCache.dependencyGraph.hit: {uri}"),
-            )?;
-        }
-        Ok(())
     }
 
     fn semantic_tokens_full(&mut self, uri: &str) -> Result<Value, String> {
@@ -700,332 +506,6 @@ struct DiskSourceMetadata {
     size: u64,
 }
 
-#[derive(Clone)]
-struct DiskCacheLookup {
-    source: DiskSourceMetadata,
-    settings_key: String,
-    workspace_fingerprint: String,
-}
-
-#[derive(Clone)]
-struct WorkspaceDiagnosticSnapshot {
-    settings: Value,
-    open_documents: Vec<(String, String)>,
-    indexed_documents: Vec<(String, String)>,
-}
-
-struct WorkspaceDiagnosticJob {
-    report_index: usize,
-    file: IndexedFile,
-}
-
-struct WorkspaceDiagnosticWorkerResult {
-    report_index: usize,
-    file: IndexedFile,
-    result: Result<WorkspaceDiagnosticPayload, String>,
-}
-
-struct WorkspaceDiagnosticPayload {
-    diagnostics: Vec<Value>,
-    virtual_documents: Vec<MappedVirtualDocument>,
-    document_summary: Option<Value>,
-    include_summary: Option<Value>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct PersistedQuerySnapshot {
-    #[serde(rename = "formatVersion")]
-    format_version: u32,
-    #[serde(rename = "toolVersion")]
-    tool_version: String,
-    namespace: String,
-    #[serde(rename = "writtenAt")]
-    written_at: f64,
-    source: DiskSourceMetadata,
-    #[serde(rename = "settingsKey")]
-    settings_key: String,
-    #[serde(rename = "workspaceFingerprint")]
-    workspace_fingerprint: String,
-    #[serde(flatten)]
-    payload: PersistedQuerySnapshotPayload,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(tag = "queryKind", content = "payload")]
-enum PersistedQuerySnapshotPayload {
-    #[serde(rename = "workspaceDiagnostics")]
-    WorkspaceDiagnostics { items: Vec<Value> },
-    #[serde(rename = "documentSummary")]
-    DocumentSummary { value: Value },
-    #[serde(rename = "includeSummary")]
-    IncludeSummary { value: Value },
-    #[serde(rename = "dependencyGraph")]
-    DependencyGraph { value: Value },
-}
-
-impl PersistedQuerySnapshotPayload {
-    fn query_kind(&self) -> &'static str {
-        match self {
-            Self::WorkspaceDiagnostics { .. } => "workspaceDiagnostics",
-            Self::DocumentSummary { .. } => "documentSummary",
-            Self::IncludeSummary { .. } => "includeSummary",
-            Self::DependencyGraph { .. } => "dependencyGraph",
-        }
-    }
-}
-
-struct DiskAnalysisCache {
-    enabled: bool,
-    root: PathBuf,
-    ttl_ms: f64,
-    max_size_bytes: u64,
-    namespace: String,
-    tool_version: String,
-}
-
-impl Default for DiskAnalysisCache {
-    fn default() -> Self {
-        Self::from_settings(&Value::Null, &[])
-    }
-}
-
-impl DiskAnalysisCache {
-    fn from_settings(settings: &Value, workspace_roots: &[String]) -> Self {
-        let cache = settings.get("cache").unwrap_or(&Value::Null);
-        let enabled = cache
-            .get("enabled")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        let root = cache
-            .get("directory")
-            .and_then(Value::as_str)
-            .filter(|directory| !directory.trim().is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| env::temp_dir().join("asp-lsp-analysis-cache"));
-        let ttl_hours = cache
-            .get("ttlHours")
-            .and_then(Value::as_f64)
-            .unwrap_or(DEFAULT_CACHE_TTL_HOURS)
-            .max(0.000001);
-        let max_size_mb = cache
-            .get("maxSizeMb")
-            .and_then(Value::as_f64)
-            .unwrap_or(DEFAULT_CACHE_MAX_SIZE_MB)
-            .max(0.000001);
-        Self {
-            enabled,
-            root,
-            ttl_ms: ttl_hours * 60.0 * 60.0 * 1000.0,
-            max_size_bytes: (max_size_mb * 1024.0 * 1024.0) as u64,
-            namespace: disk_analysis_namespace(workspace_roots),
-            tool_version: language_server_version(),
-        }
-    }
-
-    fn read_workspace_diagnostics(&self, lookup: &DiskCacheLookup) -> Option<Vec<Value>> {
-        let snapshot = self.read_snapshot(lookup, "workspaceDiagnostics")?;
-        match snapshot.payload {
-            PersistedQuerySnapshotPayload::WorkspaceDiagnostics { items } => Some(items),
-            _ => None,
-        }
-    }
-
-    fn write_workspace_diagnostics(&self, lookup: &DiskCacheLookup, diagnostics: &[Value]) {
-        self.write_snapshot(
-            lookup,
-            PersistedQuerySnapshotPayload::WorkspaceDiagnostics {
-                items: diagnostics.to_vec(),
-            },
-        );
-    }
-
-    fn read_document_summary(&self, lookup: &DiskCacheLookup) -> Option<Value> {
-        let snapshot = self.read_snapshot(lookup, "documentSummary")?;
-        match snapshot.payload {
-            PersistedQuerySnapshotPayload::DocumentSummary { value } => Some(value),
-            _ => None,
-        }
-    }
-
-    fn write_document_summary(&self, lookup: &DiskCacheLookup, value: Value) {
-        self.write_snapshot(
-            lookup,
-            PersistedQuerySnapshotPayload::DocumentSummary { value },
-        );
-    }
-
-    fn read_include_summary(&self, lookup: &DiskCacheLookup) -> Option<Value> {
-        let snapshot = self.read_snapshot(lookup, "includeSummary")?;
-        match snapshot.payload {
-            PersistedQuerySnapshotPayload::IncludeSummary { value } => Some(value),
-            _ => None,
-        }
-    }
-
-    fn write_include_summary(&self, lookup: &DiskCacheLookup, value: Value) {
-        self.write_snapshot(
-            lookup,
-            PersistedQuerySnapshotPayload::IncludeSummary { value },
-        );
-    }
-
-    fn read_dependency_graph(&self, lookup: &DiskCacheLookup) -> Option<Value> {
-        let snapshot = self.read_snapshot(lookup, "dependencyGraph")?;
-        match snapshot.payload {
-            PersistedQuerySnapshotPayload::DependencyGraph { value } => Some(value),
-            _ => None,
-        }
-    }
-
-    fn write_dependency_graph(&self, lookup: &DiskCacheLookup, value: Value) {
-        self.write_snapshot(
-            lookup,
-            PersistedQuerySnapshotPayload::DependencyGraph { value },
-        );
-    }
-
-    fn read_snapshot(
-        &self,
-        lookup: &DiskCacheLookup,
-        query_kind: &str,
-    ) -> Option<PersistedQuerySnapshot> {
-        if !self.enabled {
-            return None;
-        }
-        let path = self.file_name_for_lookup(lookup, query_kind);
-        let snapshot: PersistedQuerySnapshot = ciborium::de::from_reader(File::open(&path).ok()?)
-            .inspect_err(|_| {
-                let _ = fs::remove_file(&path);
-            })
-            .ok()?;
-        if self.matches(&snapshot, lookup, query_kind) {
-            Some(snapshot)
-        } else {
-            None
-        }
-    }
-
-    fn write_snapshot(&self, lookup: &DiskCacheLookup, payload: PersistedQuerySnapshotPayload) {
-        if !self.enabled {
-            return;
-        }
-        if fs::create_dir_all(&self.root).is_err() {
-            return;
-        }
-        let query_kind = payload.query_kind();
-        let snapshot = PersistedQuerySnapshot {
-            format_version: DISK_CACHE_FORMAT_VERSION,
-            tool_version: self.tool_version.clone(),
-            namespace: self.namespace.clone(),
-            written_at: now_ms(),
-            source: lookup.source.clone(),
-            settings_key: lookup.settings_key.clone(),
-            workspace_fingerprint: lookup.workspace_fingerprint.clone(),
-            payload,
-        };
-        let Ok(file) = File::create(self.file_name_for_lookup(lookup, query_kind)) else {
-            return;
-        };
-        let _ = ciborium::ser::into_writer(&snapshot, file);
-    }
-
-    fn sweep(&self) {
-        if !self.enabled {
-            return;
-        }
-        let Ok(entries) = fs::read_dir(&self.root) else {
-            return;
-        };
-        let now = now_ms();
-        let mut live_files = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("cbor") {
-                continue;
-            }
-            let size = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-            let persisted: Option<PersistedQuerySnapshot> = File::open(&path)
-                .ok()
-                .and_then(|file| ciborium::de::from_reader(file).ok());
-            let Some(persisted) = persisted else {
-                let _ = fs::remove_file(&path);
-                continue;
-            };
-            if now - persisted.written_at > self.ttl_ms {
-                let _ = fs::remove_file(&path);
-                continue;
-            }
-            live_files.push((path, size, persisted.written_at));
-        }
-        let mut total = live_files.iter().map(|(_, size, _)| *size).sum::<u64>();
-        live_files.sort_by(|left, right| {
-            left.2
-                .partial_cmp(&right.2)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        for (path, size, _) in live_files {
-            if total <= self.max_size_bytes {
-                break;
-            }
-            if fs::remove_file(path).is_ok() {
-                total = total.saturating_sub(size);
-            }
-        }
-    }
-
-    fn clear(&self) -> Result<(), String> {
-        let Ok(entries) = fs::read_dir(&self.root) else {
-            return Ok(());
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|extension| extension.to_str()) == Some("cbor") {
-                fs::remove_file(&path).map_err(|error| {
-                    format!(
-                        "failed to remove disk cache entry {}: {error}",
-                        path.display()
-                    )
-                })?;
-            }
-        }
-        Ok(())
-    }
-
-    fn matches(
-        &self,
-        entry: &PersistedQuerySnapshot,
-        lookup: &DiskCacheLookup,
-        query_kind: &str,
-    ) -> bool {
-        entry.payload.query_kind() == query_kind
-            && entry.format_version == DISK_CACHE_FORMAT_VERSION
-            && entry.tool_version == self.tool_version
-            && entry.namespace == self.namespace
-            && entry.settings_key == lookup.settings_key
-            && entry.workspace_fingerprint == lookup.workspace_fingerprint
-            && entry.source.file_name == lookup.source.file_name
-            && entry.source.mtime_ms == lookup.source.mtime_ms
-            && entry.source.size == lookup.source.size
-            && now_ms() - entry.written_at <= self.ttl_ms
-    }
-
-    fn file_name_for_lookup(&self, lookup: &DiskCacheLookup, kind: &str) -> PathBuf {
-        self.root.join(format!(
-            "{}.cbor",
-            stable_hash(
-                &json!({
-                    "kind": kind,
-                    "namespace": self.namespace,
-                    "fileName": lookup.source.file_name,
-                    "settingsKey": lookup.settings_key,
-                    "workspaceFingerprint": lookup.workspace_fingerprint,
-                })
-                .to_string()
-            )
-        ))
-    }
-}
-
 #[derive(Default)]
 struct SemanticTokenCache {
     next_id: u64,
@@ -1151,105 +631,6 @@ fn semantic_token_delta_edit(previous: &[Value], next: &[Value]) -> Value {
         "deleteCount": previous_suffix - prefix,
         "data": next[prefix..next_suffix].to_vec(),
     })
-}
-
-fn run_workspace_diagnostic_jobs(
-    snapshot: Arc<WorkspaceDiagnosticSnapshot>,
-    jobs: Vec<WorkspaceDiagnosticJob>,
-    concurrency: usize,
-) -> Vec<WorkspaceDiagnosticWorkerResult> {
-    if jobs.is_empty() {
-        return Vec::new();
-    }
-    let worker_count = concurrency.max(1).min(jobs.len());
-    if worker_count == 1 {
-        return workspace_diagnostic_worker(snapshot, jobs);
-    }
-
-    let total_jobs = jobs.len();
-    let mut expected = jobs
-        .iter()
-        .map(|job| (job.report_index, job.file.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let mut assignments = (0..worker_count).map(|_| Vec::new()).collect::<Vec<_>>();
-    for (index, job) in jobs.into_iter().enumerate() {
-        assignments[index % worker_count].push(job);
-    }
-
-    let (sender, receiver) = mpsc::channel();
-    for assignment in assignments {
-        if assignment.is_empty() {
-            continue;
-        }
-        let sender = sender.clone();
-        let snapshot = Arc::clone(&snapshot);
-        thread::spawn(move || {
-            for result in workspace_diagnostic_worker(snapshot, assignment) {
-                let _ = sender.send(result);
-            }
-        });
-    }
-    drop(sender);
-
-    let mut results = Vec::new();
-    for _ in 0..total_jobs {
-        let Ok(result) = receiver.recv() else {
-            break;
-        };
-        expected.remove(&result.report_index);
-        results.push(result);
-    }
-    results.extend(expected.into_iter().map(|(report_index, file)| {
-        WorkspaceDiagnosticWorkerResult {
-            report_index,
-            file,
-            result: Err(
-                "workspace diagnostic worker stopped before returning a result".to_string(),
-            ),
-        }
-    }));
-    results
-}
-
-fn workspace_diagnostic_worker(
-    snapshot: Arc<WorkspaceDiagnosticSnapshot>,
-    jobs: Vec<WorkspaceDiagnosticJob>,
-) -> Vec<WorkspaceDiagnosticWorkerResult> {
-    let ide = match Ide::from_workspace_snapshot(
-        snapshot.settings.clone(),
-        snapshot.open_documents.clone(),
-        snapshot.indexed_documents.clone(),
-    ) {
-        Ok(ide) => ide,
-        Err(error) => {
-            return jobs
-                .into_iter()
-                .map(|job| WorkspaceDiagnosticWorkerResult {
-                    report_index: job.report_index,
-                    file: job.file,
-                    result: Err(error.clone()),
-                })
-                .collect();
-        }
-    };
-
-    jobs.into_iter()
-        .map(|job| {
-            let result = (|| -> Result<WorkspaceDiagnosticPayload, String> {
-                Ok(WorkspaceDiagnosticPayload {
-                    diagnostics: ide.workspace_diagnostics(&job.file.uri)?,
-                    virtual_documents: ide.workspace_embedded_virtual_documents(&job.file.uri)?,
-                    document_summary: ide.document_summary_snapshot(&job.file.uri)?,
-                    include_summary: ide.include_summary_snapshot(&job.file.uri)?,
-                })
-            })();
-            WorkspaceDiagnosticWorkerResult {
-                report_index: job.report_index,
-                file: job.file,
-                result,
-            }
-        })
-        .collect()
 }
 
 fn collect_embedded_diagnostics(
@@ -1917,15 +1298,6 @@ fn handle_request(
                 .map_err(|error| error.to_string())?;
             Ok(false)
         }
-        "workspace/diagnostic" => {
-            let partial_result_token = request.params.get("partialResultToken").cloned();
-            let result = state.workspace_diagnostic(connection, partial_result_token.as_ref())?;
-            connection
-                .sender
-                .send(Response::new_ok(request.id, result).into())
-                .map_err(|error| error.to_string())?;
-            Ok(false)
-        }
         "textDocument/documentLink" => {
             let uri = pointer_string(&request.params, "/textDocument/uri");
             let result = state.ide.document_links(&uri)?;
@@ -2302,7 +1674,7 @@ fn server_capabilities() -> Value {
         },
         "diagnosticProvider": {
             "interFileDependencies": true,
-            "workspaceDiagnostics": true,
+            "workspaceDiagnostics": false,
         },
         "documentLinkProvider": { "resolveProvider": true },
         "codeActionProvider": {
@@ -2348,7 +1720,6 @@ fn server_capabilities() -> Value {
             "commands": [
                 "aspLsp.server.reindexWorkspace",
                 "aspLsp.server.clearCache",
-                "aspLsp.server.clearDiskCache",
                 "aspLsp.server.clearProcessCache",
             ],
         },
@@ -2451,10 +1822,6 @@ fn workspace_max_index_files(settings: &Value) -> usize {
 
 fn embedded_parallelism(settings: &Value) -> usize {
     configured_parallelism(settings.get("embedded"), "parallelism", 4)
-}
-
-fn workspace_diagnostic_concurrency(settings: &Value) -> usize {
-    configured_parallelism(settings.get("workspace"), "diagnosticConcurrency", 8)
 }
 
 fn configured_parallelism(parent: Option<&Value>, key: &str, max_auto: usize) -> usize {
@@ -2647,29 +2014,6 @@ fn metadata_mtime_ms(metadata: &fs::Metadata) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn disk_analysis_namespace(workspace_roots: &[String]) -> String {
-    let mut roots = workspace_roots.to_vec();
-    roots.sort();
-    stable_hash(
-        &json!({
-            "roots": roots,
-            "cwd": env::current_dir()
-                .ok()
-                .map(|path| normalize_file_name(&path))
-                .unwrap_or_default(),
-        })
-        .to_string(),
-    )
-}
-
-fn disk_analysis_settings_key(settings: &Value) -> String {
-    json!({
-        "rust": 1,
-        "settings": settings,
-    })
-    .to_string()
-}
-
 fn sidecar_project_settings_key(settings: &Value) -> String {
     json!({
         "checkJs": settings.get("checkJs"),
@@ -2687,13 +2031,6 @@ fn stable_hash(text: &str) -> String {
     format!("{hash:08x}")
 }
 
-fn now_ms() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
-}
-
 fn language_server_version() -> String {
     serde_json::from_str::<Value>(VSCODE_PACKAGE_JSON)
         .ok()
@@ -2708,13 +2045,9 @@ fn language_server_version() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DiskAnalysisCache, DiskCacheLookup, DiskSourceMetadata, PersistedQuerySnapshot,
-        PersistedQuerySnapshotPayload, DISK_CACHE_FORMAT_VERSION,
-    };
     use asp_ide::IncludeImpact;
     use serde_json::{json, Value};
-    use std::{env, fs, fs::File, path::PathBuf};
+    use std::{env, fs, path::PathBuf};
 
     fn temp_cache_dir(name: &str) -> PathBuf {
         let path = env::temp_dir().join(format!(
@@ -2724,158 +2057,6 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("create cache dir");
         path
-    }
-
-    fn test_cache(root: PathBuf) -> DiskAnalysisCache {
-        DiskAnalysisCache {
-            enabled: true,
-            root,
-            ttl_ms: 60_000.0,
-            max_size_bytes: 1024 * 1024,
-            namespace: "test-namespace".to_string(),
-            tool_version: "test-version".to_string(),
-        }
-    }
-
-    fn test_lookup() -> DiskCacheLookup {
-        DiskCacheLookup {
-            source: DiskSourceMetadata {
-                file_name: "file:///site/default.asp".to_string(),
-                mtime_ms: 1234.0,
-                size: 42,
-            },
-            settings_key: "settings".to_string(),
-            workspace_fingerprint: "workspace".to_string(),
-        }
-    }
-
-    #[test]
-    fn disk_snapshot_round_trips_workspace_diagnostics_payload() {
-        let root = temp_cache_dir("roundtrip");
-        let cache = test_cache(root.clone());
-        let lookup = test_lookup();
-        let diagnostics = vec![json!({ "message": "missingName" })];
-
-        cache.write_workspace_diagnostics(&lookup, &diagnostics);
-
-        assert_eq!(
-            cache.read_workspace_diagnostics(&lookup),
-            Some(diagnostics.clone())
-        );
-        let snapshot: PersistedQuerySnapshot = ciborium::de::from_reader(
-            File::open(cache.file_name_for_lookup(&lookup, "workspaceDiagnostics"))
-                .expect("open snapshot"),
-        )
-        .expect("decode snapshot");
-        assert_eq!(snapshot.format_version, DISK_CACHE_FORMAT_VERSION);
-        match snapshot.payload {
-            PersistedQuerySnapshotPayload::WorkspaceDiagnostics { items } => {
-                assert_eq!(items, diagnostics);
-            }
-            _ => panic!("expected workspace diagnostics payload"),
-        }
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn disk_snapshot_round_trips_summary_and_graph_payloads() {
-        let root = temp_cache_dir("summaries");
-        let cache = test_cache(root.clone());
-        let lookup = test_lookup();
-        let document_summary = json!({
-            "uri": "file:///site/default.asp",
-            "parsed": { "uri": "file:///site/default.asp" },
-        });
-        let include_summary = json!({
-            "uri": "file:///site/default.asp",
-            "includes": [{ "path": "shared.inc" }],
-            "graphFingerprint": "graph-a",
-        });
-        let dependency_graph = json!({
-            "fingerprint": "graph-a",
-            "reverseEdges": [{ "target": "file:///site/shared.inc", "sources": ["file:///site/default.asp"] }],
-        });
-
-        cache.write_document_summary(&lookup, document_summary.clone());
-        cache.write_include_summary(&lookup, include_summary.clone());
-        cache.write_dependency_graph(&lookup, dependency_graph.clone());
-
-        assert_eq!(
-            cache.read_document_summary(&lookup),
-            Some(document_summary.clone())
-        );
-        assert_eq!(
-            cache.read_include_summary(&lookup),
-            Some(include_summary.clone())
-        );
-        assert_eq!(
-            cache.read_dependency_graph(&lookup),
-            Some(dependency_graph.clone())
-        );
-        let summary_snapshot: PersistedQuerySnapshot = ciborium::de::from_reader(
-            File::open(cache.file_name_for_lookup(&lookup, "documentSummary"))
-                .expect("open summary snapshot"),
-        )
-        .expect("decode summary snapshot");
-        assert_eq!(summary_snapshot.workspace_fingerprint, "workspace");
-        match summary_snapshot.payload {
-            PersistedQuerySnapshotPayload::DocumentSummary { value } => {
-                assert_eq!(value, document_summary);
-            }
-            _ => panic!("expected document summary payload"),
-        }
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn disk_snapshot_misses_when_source_metadata_changes() {
-        let root = temp_cache_dir("metadata");
-        let cache = test_cache(root.clone());
-        let lookup = test_lookup();
-        cache.write_workspace_diagnostics(&lookup, &[json!({ "message": "missingName" })]);
-
-        let stale_lookup = DiskCacheLookup {
-            source: DiskSourceMetadata {
-                size: lookup.source.size + 1,
-                ..lookup.source.clone()
-            },
-            settings_key: lookup.settings_key.clone(),
-            workspace_fingerprint: lookup.workspace_fingerprint.clone(),
-        };
-
-        assert_eq!(cache.read_workspace_diagnostics(&stale_lookup), None);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn disk_snapshot_misses_when_workspace_fingerprint_changes() {
-        let root = temp_cache_dir("workspace-fingerprint");
-        let cache = test_cache(root.clone());
-        let lookup = test_lookup();
-        cache.write_document_summary(&lookup, json!({ "uri": "file:///site/default.asp" }));
-
-        let stale_lookup = DiskCacheLookup {
-            workspace_fingerprint: "changed-workspace".to_string(),
-            ..lookup
-        };
-
-        assert_eq!(cache.read_document_summary(&stale_lookup), None);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn disk_snapshot_removes_corrupt_entries_on_read() {
-        let root = temp_cache_dir("corrupt");
-        let cache = test_cache(root.clone());
-        let lookup = test_lookup();
-        let path = cache.file_name_for_lookup(&lookup, "workspaceDiagnostics");
-        fs::write(&path, b"not cbor").expect("write corrupt snapshot");
-
-        assert_eq!(cache.read_workspace_diagnostics(&lookup), None);
-        assert!(!path.exists(), "corrupt snapshot should be removed");
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3039,23 +2220,6 @@ mod tests {
         assert_eq!(
             super::embedded_parallelism(&json!({ "embedded": { "parallelism": 99 } })),
             4
-        );
-
-        let auto_workspace = super::workspace_diagnostic_concurrency(
-            &json!({ "workspace": { "diagnosticConcurrency": 0 } }),
-        );
-        assert!((1..=8).contains(&auto_workspace));
-        assert_eq!(
-            super::workspace_diagnostic_concurrency(
-                &json!({ "workspace": { "diagnosticConcurrency": 1 } })
-            ),
-            1
-        );
-        assert_eq!(
-            super::workspace_diagnostic_concurrency(
-                &json!({ "workspace": { "diagnosticConcurrency": 99 } })
-            ),
-            8
         );
     }
 
@@ -3343,37 +2507,6 @@ fn send_diagnostics(
             Notification::new(
                 "textDocument/publishDiagnostics".to_string(),
                 json!({ "uri": uri, "diagnostics": diagnostics }),
-            )
-            .into(),
-        )
-        .map_err(|error| error.to_string())
-}
-
-fn workspace_diagnostic_report(uri: &str, diagnostics: Vec<Value>) -> Value {
-    json!({
-        "kind": "full",
-        "uri": uri,
-        "version": null,
-        "items": diagnostics,
-    })
-}
-
-fn send_workspace_diagnostic_progress(
-    connection: &Connection,
-    token: &Value,
-    report: Value,
-) -> Result<(), String> {
-    connection
-        .sender
-        .send(
-            Notification::new(
-                "$/progress".to_string(),
-                json!({
-                    "token": token,
-                    "value": {
-                        "items": [report],
-                    },
-                }),
             )
             .into(),
         )

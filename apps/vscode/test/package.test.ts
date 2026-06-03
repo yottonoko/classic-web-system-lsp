@@ -124,7 +124,7 @@ describe("VS Code extension package", () => {
     ).toBe("%command.restartServer.title%");
     expect(commands).toContain("aspLsp.reindexWorkspace");
     expect(commands).toContain("aspLsp.clearCache");
-    expect(commands).toContain("aspLsp.clearDiskCache");
+    expect(commands).not.toContain("aspLsp.clearDiskCache");
     expect(commands).toContain("aspLsp.clearProcessCache");
     expect(commands).toContain("aspLsp.openOutput");
     expect(commands).toContain("aspLsp.debugIisUrl");
@@ -194,18 +194,18 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.backgroundConcurrency"],
     ).toBeUndefined();
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.enabled"]).toEqual(
-      expect.objectContaining({ type: "boolean", default: true }),
-    );
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.directory"]).toEqual(
-      expect.objectContaining({ type: "string", default: "" }),
-    );
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.ttlHours"]).toEqual(
-      expect.objectContaining({ type: "number", default: 336, minimum: 1 }),
-    );
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.maxSizeMb"]).toEqual(
-      expect.objectContaining({ type: "number", default: 128, minimum: 1 }),
-    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.cache.enabled"],
+    ).toBeUndefined();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.cache.directory"],
+    ).toBeUndefined();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.cache.ttlHours"],
+    ).toBeUndefined();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.cache.maxSizeMb"],
+    ).toBeUndefined();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.embedded.parallelism"],
     ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
@@ -217,7 +217,7 @@ describe("VS Code extension package", () => {
     ).toEqual(expect.objectContaining({ type: "number", default: 5000, minimum: 1 }));
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.diagnosticConcurrency"],
-    ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
+    ).toBeUndefined();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.idleAnalysisConcurrency"],
     ).toBeUndefined();
@@ -436,7 +436,7 @@ describe("VS Code extension package", () => {
     expect(nls["command.restartServer.title"]).toBe("Classic ASP: Restart Language Server");
     expect(nlsJa["command.restartServer.title"]).toBe("Classic ASP: Language Server を再起動");
     expect(nls["command.clearCache.title"]).toBe("Classic ASP: Clear All Analysis Caches");
-    expect(nls["command.clearDiskCache.title"]).toBe("Classic ASP: Clear Disk Analysis Cache");
+    expect(nls["command.clearDiskCache.title"]).toBeUndefined();
     expect(nls["command.clearProcessCache.title"]).toBe(
       "Classic ASP: Clear Process Analysis Cache",
     );

@@ -476,45 +476,19 @@ fn invalidates_embedded_sidecar_project_cache_after_watched_file_change() {
         &json!({
             "jsonrpc": "2.0",
             "id": 21,
-            "method": "workspace/diagnostic",
-            "params": { "previousResultIds": [] },
+            "method": "textDocument/diagnostic",
+            "params": { "textDocument": { "uri": page_uri } },
         }),
     );
-    let mut sidecar_cache_log = None;
     let mut refreshed = None;
     for _ in 0..20 {
         let message = read_message(&mut reader);
-        if message["method"] == json!("window/logMessage")
-            && message.to_string().contains("sidecarCache.generationReset")
-            && message.to_string().contains("reason=watchedFiles")
-        {
-            sidecar_cache_log = Some(message);
-            continue;
-        }
         if message["id"] == json!(21) {
             refreshed = Some(message);
             break;
         }
     }
-    let refreshed = refreshed.expect("expected workspace diagnostic response");
-    let sidecar_cache_log =
-        sidecar_cache_log.expect("expected sidecar cache telemetry after watched file change");
-    assert!(
-        sidecar_cache_log
-            .to_string()
-            .contains("operation=diagnostics"),
-        "expected sidecar cache telemetry after watched file change: {sidecar_cache_log}"
-    );
-    assert!(
-        sidecar_cache_log
-            .to_string()
-            .contains("reason=watchedFiles"),
-        "expected sidecar reset reason after watched file change: {sidecar_cache_log}"
-    );
-    assert!(
-        sidecar_cache_log.to_string().contains("fingerprint="),
-        "expected sidecar project fingerprint after watched file change: {sidecar_cache_log}"
-    );
+    let refreshed = refreshed.expect("expected document diagnostic response");
     assert!(
         !refreshed["result"].to_string().contains("toFixed"),
         "refreshed embedded diagnostics should observe updated shared.js: {refreshed}"
@@ -3072,20 +3046,7 @@ fn execute_command_reindexes_workspace_files() {
 }
 
 #[test]
-fn serves_workspace_diagnostics_with_disk_cache() {
-    let root = std::env::temp_dir().join(format!(
-        "asp-lsp-rust-workspace-diagnostics-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create temp root");
-    fs::write(
-        root.join("default.asp"),
-        "<%\nOption Explicit\nmissingName = 1\n%>",
-    )
-    .expect("write asp");
-    let cache_dir = root.join("cache");
-
+fn workspace_diagnostic_request_is_not_supported() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -3095,351 +3056,31 @@ fn serves_workspace_diagnostics_with_disk_cache() {
     let mut stdin = child.stdin.take().expect("server stdin");
     let stdout = child.stdout.take().expect("server stdout");
     let mut reader = BufReader::new(stdout);
-    let root_uri = format!("file://{}", root.to_string_lossy());
 
-    initialize_with_settings_and_root(
-        &mut stdin,
-        &mut reader,
-        json!({
-            "cache": { "enabled": true, "directory": cache_dir.to_string_lossy() },
-            "debug": { "output": "verbose" },
-        }),
-        &root_uri,
-    );
-
-    let first = request(
-        &mut stdin,
-        &mut reader,
-        30,
-        "workspace/diagnostic",
-        json!({ "previousResultIds": [] }),
-    );
-    assert!(first["result"].to_string().contains("missingName"));
-    assert!(
-        fs::read_dir(&cache_dir)
-            .expect("cache dir")
-            .flatten()
-            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
-        "expected cbor cache entry"
-    );
-
-    let clear_disk = request(
-        &mut stdin,
-        &mut reader,
-        31,
-        "workspace/executeCommand",
-        json!({ "command": "aspLsp.server.clearDiskCache" }),
-    );
-    assert_eq!(clear_disk["result"]["ok"], json!(true));
-    assert!(
-        !fs::read_dir(&cache_dir)
-            .expect("cache dir")
-            .flatten()
-            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
-        "expected clearDiskCache to remove cbor cache entries"
-    );
-
-    let second = request(
-        &mut stdin,
-        &mut reader,
-        32,
-        "workspace/diagnostic",
-        json!({ "previousResultIds": [] }),
-    );
-    assert_eq!(second["result"], first["result"]);
-    assert!(
-        fs::read_dir(&cache_dir)
-            .expect("cache dir")
-            .flatten()
-            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
-        "expected workspace diagnostics to repopulate disk cache"
-    );
-
-    let clear_process = request(
-        &mut stdin,
-        &mut reader,
-        33,
-        "workspace/executeCommand",
-        json!({ "command": "aspLsp.server.clearProcessCache" }),
-    );
-    assert_eq!(clear_process["result"]["ok"], json!(true));
-    write_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 34,
-            "method": "workspace/diagnostic",
-            "params": { "previousResultIds": [] },
-        }),
-    );
-    let mut disk_hit = false;
-    let mut document_summary_hit = false;
-    let mut include_summary_hit = false;
-    let mut dependency_graph_hit = false;
-    let third = loop {
-        let message = read_message(&mut reader);
-        if message["method"] == json!("window/logMessage") {
-            let text = message.to_string();
-            disk_hit |= text.contains("diskCache.hit") && text.contains("default.asp");
-            document_summary_hit |= text.contains("diskCache.documentSummary.hit");
-            include_summary_hit |= text.contains("diskCache.includeSummary.hit");
-            dependency_graph_hit |= text.contains("diskCache.dependencyGraph.hit");
-        }
-        if message["id"] == json!(34) {
-            break message;
-        }
-    };
-    assert!(
-        disk_hit,
-        "expected clearProcessCache to preserve disk snapshot identity"
-    );
-    assert!(
-        document_summary_hit,
-        "expected document summary snapshot hit"
-    );
-    assert!(include_summary_hit, "expected include summary snapshot hit");
-    assert!(
-        dependency_graph_hit,
-        "expected dependency graph snapshot hit"
-    );
-    assert_eq!(third["result"], second["result"]);
-
-    let clear_all = request(
-        &mut stdin,
-        &mut reader,
-        35,
-        "workspace/executeCommand",
-        json!({ "command": "aspLsp.server.clearCache" }),
-    );
-    assert_eq!(clear_all["result"]["ok"], json!(true));
-    assert!(
-        !fs::read_dir(&cache_dir)
-            .expect("cache dir")
-            .flatten()
-            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
-        "expected clearCache to remove cbor cache entries"
-    );
-
-    shutdown(&mut stdin, &mut reader);
-    drop(stdin);
-    assert!(child.wait().expect("wait server").success());
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn workspace_diagnostics_populates_disk_cache_only_when_requested() {
-    let root = std::env::temp_dir().join(format!(
-        "asp-lsp-rust-workspace-diagnostics-cache-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create temp root");
-    fs::write(
-        root.join("default.asp"),
-        "<%\nOption Explicit\nmissingName = 1\n%>",
-    )
-    .expect("write asp");
-    let cache_dir = root.join("cache");
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("spawn server");
-
-    let mut stdin = child.stdin.take().expect("server stdin");
-    let stdout = child.stdout.take().expect("server stdout");
-    let mut reader = BufReader::new(stdout);
-    let root_uri = format!("file://{}", root.to_string_lossy());
-
-    initialize_with_settings_and_root(
-        &mut stdin,
-        &mut reader,
-        json!({
-            "cache": { "enabled": true, "directory": cache_dir.to_string_lossy() },
-            "debug": { "output": "verbose" },
-        }),
-        &root_uri,
-    );
-
-    assert!(
-        !cache_dir.exists()
-            || !fs::read_dir(&cache_dir)
-                .expect("cache dir")
-                .flatten()
-                .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
-        "workspace cache must not be populated before a workspace/diagnostic request"
-    );
-
-    let diagnostics = request(
-        &mut stdin,
-        &mut reader,
-        30,
-        "workspace/diagnostic",
-        json!({ "previousResultIds": [] }),
-    );
-    assert!(diagnostics["result"].to_string().contains("missingName"));
-    assert!(
-        fs::read_dir(&cache_dir)
-            .expect("cache dir")
-            .flatten()
-            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cbor")),
-        "expected workspace/diagnostic request to populate disk cache"
-    );
-
-    shutdown(&mut stdin, &mut reader);
-    drop(stdin);
-    assert!(child.wait().expect("wait server").success());
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn workspace_diagnostics_streams_partial_results() {
-    let root = std::env::temp_dir().join(format!(
-        "asp-lsp-rust-workspace-diagnostics-partial-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create temp root");
-    fs::write(
-        root.join("first.asp"),
-        "<%\nOption Explicit\nfirstMissing = 1\n%>",
-    )
-    .expect("write first asp");
-    fs::write(
-        root.join("second.asp"),
-        "<%\nOption Explicit\nsecondMissing = 1\n%>",
-    )
-    .expect("write second asp");
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("spawn server");
-
-    let mut stdin = child.stdin.take().expect("server stdin");
-    let stdout = child.stdout.take().expect("server stdout");
-    let mut reader = BufReader::new(stdout);
-    let root_uri = format!("file://{}", root.to_string_lossy());
-
-    initialize_with_settings_and_root(
-        &mut stdin,
-        &mut reader,
-        json!({
-            "embedded": { "parallelism": 1 },
-            "workspace": { "diagnosticConcurrency": 2 },
-        }),
-        &root_uri,
-    );
-
+    initialize(&mut stdin, &mut reader);
     write_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 30,
             "method": "workspace/diagnostic",
-            "params": {
-                "previousResultIds": [],
-                "partialResultToken": "workspace-diag-token",
-            },
+            "params": { "previousResultIds": [] },
         }),
     );
-
-    let mut progress_count = 0;
-    let mut progress_text = String::new();
-    let final_response = loop {
-        let message = read_message(&mut reader);
-        if message["method"] == json!("$/progress") {
-            assert_eq!(message["params"]["token"], json!("workspace-diag-token"));
-            progress_count += 1;
-            progress_text.push_str(&message.to_string());
-        }
-        if message["id"] == json!(30) {
-            break message;
-        }
-    };
-    assert_eq!(progress_count, 2);
-    assert!(progress_text.contains("firstMissing"));
-    assert!(progress_text.contains("secondMissing"));
-    assert_eq!(final_response["result"]["items"], json!([]));
+    let response = read_until(&mut reader, |message| message["id"] == json!(30));
+    assert_eq!(response["id"], json!(30));
+    assert_eq!(response["error"]["code"], json!(-32601));
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("workspace/diagnostic"),
+        "expected unsupported workspace diagnostic method: {response}"
+    );
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
     assert!(child.wait().expect("wait server").success());
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn workspace_diagnostics_parallel_results_match_serial() {
-    fn run_workspace_diagnostic(root_uri: &str, concurrency: usize) -> Value {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_asp-lsp-server"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("spawn server");
-
-        let mut stdin = child.stdin.take().expect("server stdin");
-        let stdout = child.stdout.take().expect("server stdout");
-        let mut reader = BufReader::new(stdout);
-
-        initialize_with_settings_and_root(
-            &mut stdin,
-            &mut reader,
-            json!({
-                "embedded": { "parallelism": 1 },
-                "workspace": { "diagnosticConcurrency": concurrency },
-            }),
-            root_uri,
-        );
-
-        let diagnostics = request(
-            &mut stdin,
-            &mut reader,
-            30,
-            "workspace/diagnostic",
-            json!({ "previousResultIds": [] }),
-        );
-
-        shutdown(&mut stdin, &mut reader);
-        drop(stdin);
-        assert!(child.wait().expect("wait server").success());
-        diagnostics["result"].clone()
-    }
-
-    let root = std::env::temp_dir().join(format!(
-        "asp-lsp-rust-workspace-diagnostics-parallel-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create temp root");
-    fs::write(
-        root.join("first.asp"),
-        "<%\nOption Explicit\nfirstMissing = 1\n%>",
-    )
-    .expect("write first asp");
-    fs::write(
-        root.join("second.asp"),
-        "<%\nOption Explicit\nsecondMissing = 1\n%>",
-    )
-    .expect("write second asp");
-    fs::write(
-        root.join("third.inc"),
-        "<%\nOption Explicit\nthirdMissing = 1\n%>",
-    )
-    .expect("write third inc");
-
-    let root_uri = format!("file://{}", root.to_string_lossy());
-    let serial = run_workspace_diagnostic(&root_uri, 1);
-    let parallel = run_workspace_diagnostic(&root_uri, 2);
-
-    assert_eq!(parallel, serial);
-    let text = parallel.to_string();
-    assert!(text.contains("firstMissing"));
-    assert!(text.contains("secondMissing"));
-    assert!(text.contains("thirdMissing"));
-
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -3764,11 +3405,14 @@ fn initialize_with_settings_and_root(
         json!(["<", ".", "\"", "'", ":", "#", "(", " "])
     );
     assert_eq!(
+        initialize["result"]["capabilities"]["diagnosticProvider"]["workspaceDiagnostics"],
+        json!(false)
+    );
+    assert_eq!(
         initialize["result"]["capabilities"]["executeCommandProvider"]["commands"],
         json!([
             "aspLsp.server.reindexWorkspace",
             "aspLsp.server.clearCache",
-            "aspLsp.server.clearDiskCache",
             "aspLsp.server.clearProcessCache",
         ])
     );
