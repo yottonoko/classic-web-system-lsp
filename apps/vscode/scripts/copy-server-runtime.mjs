@@ -7,7 +7,6 @@ const extensionRoot = path.resolve(import.meta.dirname, "..");
 const repoRoot = path.resolve(extensionRoot, "..", "..");
 const serverRoot = path.join(extensionRoot, "server", "language-server");
 const serverEntry = path.join(repoRoot, "packages", "language-server", "dist", "server.js");
-const includeNativeCore = !process.argv.includes("--no-native");
 const workerEntry = path.join(
   repoRoot,
   "packages",
@@ -49,9 +48,6 @@ fs.chmodSync(path.join(distRoot, "server.js"), 0o755);
 fs.chmodSync(path.join(distRoot, "js-diagnostics-worker.js"), 0o755);
 fs.chmodSync(path.join(distRoot, "vb-diagnostics-worker.js"), 0o755);
 copyTypeScriptLibs(distRoot);
-if (includeNativeCore) {
-  copyNativeCore(serverRoot);
-}
 fs.writeFileSync(
   path.join(serverRoot, "package.json"),
   `${JSON.stringify(
@@ -96,13 +92,4 @@ function copyTypeScriptLibs(targetDirectory) {
       fs.copyFileSync(path.join(sourceDirectory, entry), path.join(targetDirectory, entry));
     }
   }
-}
-
-function copyNativeCore(targetRoot) {
-  const sourceRoot = path.join(repoRoot, "packages", "core", "native");
-  if (!fs.existsSync(sourceRoot)) {
-    return;
-  }
-  const targetDirectory = path.join(targetRoot, "native");
-  fs.cpSync(sourceRoot, targetDirectory, { recursive: true });
 }

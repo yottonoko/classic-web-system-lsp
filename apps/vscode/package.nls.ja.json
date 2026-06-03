@@ -4,7 +4,6 @@
   "configuration.locale.description": "asp-lsp が生成する diagnostics、code actions、CodeLens、extension message の表示言語です。auto は VS Code または LSP client の locale に従います。",
   "configuration.defaultLanguage.description": "Classic ASP page の既定 server-side script language です。",
   "configuration.checkJs.description": "client JavaScript region の semantic checking を有効にします。",
-  "configuration.analysisBackend.description": "analysis backend を選択します。auto は利用可能なら native backend を使い、使えない場合は TypeScript に fallback します。",
   "configuration.diagnostics.debounceMs.description": "text change 後に diagnostics を publish するまでの待ち時間を milliseconds で指定します。0 なら即時 publish します。",
   "configuration.debug.output.description": "VS Code Output channel に出す asp-lsp debug timing log を制御します。off は出力なし、summary は処理の開始/完了、verbose は step ごとの時間も出力します。",
   "configuration.javascript.unusedDiagnostics.description": "未使用の JavaScript / JScript local variable と parameter を hint diagnostic として報告します。",

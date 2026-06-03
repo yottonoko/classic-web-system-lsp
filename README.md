@@ -22,7 +22,6 @@ pnpm run format:check
 pnpm run test
 pnpm run build
 pnpm run package:vsix
-pnpm run package:vsix:no-native
 ```
 
 The test suite includes JSON-RPC smoke coverage for HTML, CSS, inline style, JavaScript, and ASP/VBScript completions, completion resolve, pull/workspace diagnostics, hover, definition, references, rename, document highlights, signature help, workspace symbols, semantic tokens, selection ranges, inlay hints, call hierarchy, type hierarchy, monikers, inline values, linked editing, will-save/save hooks, file operations, code actions, CodeLens, formatting, workspace indexing, and virtual include roots.
@@ -78,7 +77,6 @@ pnpm run package:vsix --out classic-asp-lsp.vsix
 ```
 
 The VSIX build bundles the standalone language server into `apps/vscode/server/language-server/dist/server.js` before packaging, so the extension does not ship a nested `node_modules` tree.
-Use `pnpm run package:vsix:no-native` to build a VSIX without the Rust native core.
 
 ## Samples
 

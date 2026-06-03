@@ -6,16 +6,12 @@
   "license": "MIT OR Apache-2.0",
   "scripts": {
     "build": "pnpm -r run build",
-    "build:native": "node scripts/build-native-core.mjs",
     "benchmark:large": "pnpm --filter @asp-lsp/core run build && node scripts/benchmark-large.mjs",
     "benchmark:large:cold": "ASP_LSP_BENCH_CACHE_MODE=cold pnpm run benchmark:large",
     "benchmark:large:hot": "ASP_LSP_BENCH_CACHE_MODE=hot pnpm run benchmark:large",
     "benchmark:huge": "pnpm --filter @asp-lsp/core run build && node scripts/benchmark-huge.mjs",
     "benchmark:huge:cold": "ASP_LSP_BENCH_CACHE_MODE=cold pnpm run benchmark:huge",
     "benchmark:huge:hot": "ASP_LSP_BENCH_CACHE_MODE=hot pnpm run benchmark:huge",
-    "benchmark:scale": "pnpm --filter @asp-lsp/core run build && pnpm run build:native && node scripts/benchmark-scale.mjs",
-    "benchmark:scale:cold": "ASP_LSP_BENCH_CACHE_MODE=cold pnpm run benchmark:scale",
-    "benchmark:scale:hot": "ASP_LSP_BENCH_CACHE_MODE=hot pnpm run benchmark:scale",
     "benchmark:include-tree": "pnpm --filter @asp-lsp/core run build && node scripts/benchmark-include-tree.mjs",
     "benchmark:include-tree:cold": "ASP_LSP_BENCH_CACHE_MODE=cold pnpm run benchmark:include-tree",
     "benchmark:include-tree:hot": "ASP_LSP_BENCH_CACHE_MODE=hot pnpm run benchmark:include-tree",
@@ -39,7 +35,6 @@
     "format": "oxfmt .",
     "format:check": "oxfmt . --check",
     "package:vsix": "pnpm --filter classic-asp-lsp run package:vsix",
-    "package:vsix:no-native": "pnpm --filter classic-asp-lsp run package:vsix:no-native",
     "test": "pnpm -r run test"
   },
   "devDependencies": {

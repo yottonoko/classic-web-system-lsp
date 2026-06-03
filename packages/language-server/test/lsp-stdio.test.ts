@@ -47,8 +47,6 @@ interface DecodedSemanticToken {
 }
 
 const rpcTimeoutMs = 30_000;
-const nativeCorePath = resolveNativeCorePath();
-const itWithNativeCore = nativeCorePath ? it : it.skip;
 const semanticTokenType = {
   keyword: 0,
   variable: 1,
@@ -119,50 +117,6 @@ describe(
           position: { line: 1, character: 9 },
         });
         expect(JSON.stringify(completions)).toContain("Write");
-
-        await server.request("shutdown", null);
-        server.notify("exit", undefined);
-      } finally {
-        server.stop();
-      }
-    });
-
-    it("reports backend status over a custom request and notification", async () => {
-      const server = new RpcServer({ env: { ASP_LSP_ANALYSIS_BACKEND: "typescript" } });
-      try {
-        await server.start();
-        await server.request("initialize", {
-          processId: process.pid,
-          rootUri: "file:///tmp",
-          capabilities: {},
-        });
-
-        const initialStatus = await server.request("aspLsp/backendStatus", null);
-        expect(initialStatus).toMatchObject({
-          backend: "typescript-fallback",
-          engine: "typescript",
-        });
-
-        const uri = "file:///tmp/backend-status.asp";
-        server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
-        });
-        server.notify("textDocument/didOpen", {
-          textDocument: {
-            uri,
-            languageId: "classic-asp",
-            version: 1,
-            text: `<% Response.Write "ok" %>`,
-          },
-        });
-
-        const notification = await server.waitForNotification("aspLsp/backendStatus");
-        expect(notification.params).toMatchObject({
-          backend: "typescript-fallback",
-          engine: "typescript",
-          reason: "disabled by ASP_LSP_ANALYSIS_BACKEND=typescript",
-        });
-        await server.waitForNotification("textDocument/publishDiagnostics");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -6508,73 +6462,6 @@ Response.Write ${testCase.referenceName}
       }
     });
 
-    itWithNativeCore(
-      "returns native parameter naming quick fixes without undefined names",
-      async () => {
-        const source = `<%
-Function BuildName(User_Name)
-  Response.Write USER_NAME
-End Function
-%>`;
-        const server = new RpcServer({
-          env: {
-            ASP_LSP_ANALYSIS_BACKEND: "native",
-            ASP_LSP_ENABLE_SOURCE_NATIVE: "1",
-            ASP_LSP_NATIVE_CORE_PATH: nativeCorePath ?? "",
-          },
-        });
-        try {
-          await server.start();
-          await server.request("initialize", {
-            processId: process.pid,
-            rootUri: "file:///tmp",
-            capabilities: {},
-          });
-          server.notify("workspace/didChangeConfiguration", {
-            settings: {
-              aspLsp: {
-                diagnostics: { debounceMs: 0 },
-                vbscript: { identifierCase: "lowercase" },
-              },
-            },
-          });
-          const uri = "file:///tmp/native-vb-parameter-naming.asp";
-          server.notify("textDocument/didOpen", {
-            textDocument: {
-              uri,
-              languageId: "classic-asp",
-              version: 1,
-              text: source,
-            },
-          });
-          const namingDiagnostic = {
-            range: {
-              start: { line: 1, character: 19 },
-              end: { line: 1, character: 28 },
-            },
-            message: "User_Name should be username.",
-            source: "asp-lsp-vbscript-naming",
-            code: "identifierCase",
-            data: { name: "User_Name", expectedName: "username" },
-          };
-          const actions = await server.request("textDocument/codeAction", {
-            textDocument: { uri },
-            range: namingDiagnostic.range,
-            context: { diagnostics: [namingDiagnostic] },
-          });
-          const serialized = JSON.stringify(actions);
-          expect(serialized).toContain("Rename User_Name to username");
-          expect(serialized).toContain('"newText":"username"');
-          expect(serialized).not.toContain("undefined");
-
-          await server.request("shutdown", null);
-          server.notify("exit", undefined);
-        } finally {
-          server.stop();
-        }
-      },
-    );
-
     it("accepts legacy VBScript identifier casing setting aliases", async () => {
       const source = `<%
 Dim user_name
@@ -7942,76 +7829,6 @@ Response.Write enabled
         server.stop();
       }
     });
-
-    itWithNativeCore(
-      "uses native skeleton parses for foreground embedded diagnostics",
-      async () => {
-        const server = new RpcServer({
-          env: {
-            ASP_LSP_ANALYSIS_BACKEND: "native",
-            ASP_LSP_ENABLE_SOURCE_NATIVE: "1",
-            ASP_LSP_NATIVE_CORE_PATH: nativeCorePath ?? "",
-          },
-        });
-        try {
-          await server.start();
-          await server.request("initialize", {
-            processId: process.pid,
-            rootUri: "file:///tmp",
-            capabilities: {},
-          });
-          server.notify("workspace/didChangeConfiguration", {
-            settings: {
-              aspLsp: {
-                debug: { output: "verbose" },
-                diagnostics: { debounceMs: 0 },
-              },
-            },
-          });
-          const uri = "file:///tmp/native-skeleton-diagnostics.asp";
-          let source = `<div>before</div>
-<style>.x{color:}</style>
-<script>const broken = ;</script>
-<% Option Explicit
-Response.Write missingName
-%>`;
-          server.notify("textDocument/didOpen", {
-            textDocument: {
-              uri,
-              languageId: "classic-asp",
-              version: 1,
-              text: source,
-            },
-          });
-
-          await waitForLogContaining(server, "analysis.parse.skeleton");
-          await waitForDiagnosticsContaining(server, "asp-lsp-css");
-          await waitForDiagnosticsContaining(server, "Expression expected");
-          await waitForDiagnosticsContaining(server, "missingName");
-          await waitForLogContaining(server, "check.vbscript.hydrate");
-          server.takePendingNotifications("window/logMessage");
-          server.takePendingNotifications("textDocument/publishDiagnostics");
-
-          source = notifyRangedReplacement(
-            server,
-            uri,
-            source,
-            2,
-            "before",
-            "before<!-- shifted -->\nshifted",
-          );
-
-          await waitForLogContaining(server, "analysis.parse.skeleton");
-          await waitForDiagnosticsContaining(server, "asp-lsp-css");
-          expect(source).toContain("before<!-- shifted -->\nshifted");
-
-          await server.request("shutdown", null);
-          server.notify("exit", undefined);
-        } finally {
-          server.stop();
-        }
-      },
-    );
 
     it("publishes staged diagnostics from parser to final layers", async () => {
       const server = new RpcServer();
@@ -9746,41 +9563,6 @@ class RpcServer {
       }
     }
   }
-}
-
-function resolveNativeCorePath(): string | undefined {
-  const platform =
-    process.platform === "win32"
-      ? "win32"
-      : process.platform === "darwin"
-        ? "darwin"
-        : process.platform === "linux"
-          ? "linux"
-          : process.platform;
-  const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
-  const executable = process.platform === "win32" ? "asp-lsp-core.exe" : "asp-lsp-core";
-  const sourceNativeBinary = path.join(
-    import.meta.dirname,
-    "..",
-    "..",
-    "..",
-    "target",
-    "debug",
-    executable,
-  );
-  if (fs.existsSync(sourceNativeBinary)) {
-    return sourceNativeBinary;
-  }
-  const packagedNativeBinary = path.join(
-    import.meta.dirname,
-    "..",
-    "..",
-    "core",
-    "native",
-    `${platform}-${arch}`,
-    executable,
-  );
-  return fs.existsSync(packagedNativeBinary) ? packagedNativeBinary : undefined;
 }
 
 function markedDocument(source: string): MarkedDocument {

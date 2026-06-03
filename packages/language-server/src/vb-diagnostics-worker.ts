@@ -1,5 +1,5 @@
 import { parentPort } from "node:worker_threads";
-import { analyzeVbscriptFromTextAsync, aspAnalysisBackendInfo } from "@asp-lsp/core";
+import { analyzeVbscriptFromTextAsync } from "@asp-lsp/core";
 import type {
   VbDiagnosticsWorkerContext,
   VbDiagnosticsWorkerDocument,
@@ -32,11 +32,6 @@ parentPort.on("message", async (request: VbDiagnosticsWorkerRequest) => {
         },
       })
     ).diagnostics;
-    const backend = aspAnalysisBackendInfo();
-    timings.push({
-      name: `backend.${backend.backend}`,
-      elapsedMs: 0,
-    });
     parentPort?.postMessage({
       id: request.id,
       diagnostics,

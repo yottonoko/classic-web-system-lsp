@@ -81,7 +81,6 @@ import type {
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
   analyzeVbscriptFromTextAsync,
-  aspAnalysisBackendInfo,
   buildVbTypeEnvironment,
   buildVirtualDocuments,
   collectVbscriptSymbols,
@@ -125,7 +124,6 @@ import {
   type AspLegacyEncoding,
   type AspLocale,
   type AspLocaleSetting,
-  type AspAnalysisBackendInfo,
   type AspCstNode,
   type AspParsedDocument,
   type AspSettings,
@@ -195,7 +193,6 @@ const reindexWorkspaceServerCommand = "aspLsp.server.reindexWorkspace";
 const clearCacheServerCommand = "aspLsp.server.clearCache";
 const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
-const backendStatusMethod = "aspLsp/backendStatus";
 const languageServerVersion = "0.3.8";
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -1174,7 +1171,6 @@ const maxVbProjectContextCacheEntries = 32;
 let vbDiagnosticsWorkerPool: VbDiagnosticsWorkerPool | undefined;
 let vbDiagnosticsWorkerRequestId = 0;
 let stagedDiagnosticsGeneration = 0;
-let lastSentBackendStatusIdentity: string | undefined;
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
   clientLocale = typeof params.locale === "string" ? params.locale : "en";
@@ -1347,8 +1343,6 @@ documents.onWillSaveWaitUntil((event) => {
 connection.onInitialized(() => {
   void refreshConfiguration();
 });
-
-connection.onRequest(backendStatusMethod, (): AspAnalysisBackendInfo => currentBackendStatus());
 
 connection.onNotification(
   "workspace/didChangeWorkspaceFolders",
@@ -2305,7 +2299,6 @@ function refreshCachedDocument(document: TextDocument, impactReason?: string): C
   const parseStartedAt = process.hrtime.bigint();
   const parsed = parseAspDocument(document.uri, document.getText(), settings);
   finishDebugStep(settings, document.uri, "analysis.parse.full", parseStartedAt);
-  notifyBackendStatusIfChanged();
   finishDebugStep(
     settings,
     document.uri,
@@ -2338,7 +2331,6 @@ async function refreshCachedDocumentSkeletonAsync(
   const parseStartedAt = process.hrtime.bigint();
   const parsed = await parseAspDocumentSkeletonAsync(document.uri, document.getText(), settings);
   finishDebugStep(settings, document.uri, "analysis.parse.skeleton", parseStartedAt);
-  notifyBackendStatusIfChanged();
   finishDebugStep(
     settings,
     document.uri,
@@ -2377,7 +2369,6 @@ function refreshCachedDocumentIncremental(
     updated.impact.kind === "incremental" ? "analysis.parse.incremental" : "analysis.parse.full",
     parseStartedAt,
   );
-  notifyBackendStatusIfChanged();
   logDebugSummary(
     settings,
     `[asp-lsp] analysis.parse.impact: ${document.uri}, mode=${updated.impact.kind}, reason=${updated.impact.reason}`,
@@ -2437,7 +2428,6 @@ async function refreshCachedDiagnosticsDocumentIncrementalAsync(
       : "analysis.parse.skeleton",
     parseStartedAt,
   );
-  notifyBackendStatusIfChanged();
   logDebugSummary(
     settings,
     `[asp-lsp] analysis.parse.impact: ${document.uri}, mode=${updated.impact.kind}, reason=${updated.impact.reason}`,
@@ -2692,20 +2682,6 @@ function finishAnalysisLog(
     settings,
     `[asp-lsp] LSP analysis completed: ${uri} ${formatElapsedMs(elapsedMs)}, mode=${mode}`,
   );
-}
-
-function currentBackendStatus(): AspAnalysisBackendInfo {
-  return aspAnalysisBackendInfo();
-}
-
-function notifyBackendStatusIfChanged(): void {
-  const status = currentBackendStatus();
-  const identity = JSON.stringify(status);
-  if (identity === lastSentBackendStatusIdentity) {
-    return;
-  }
-  lastSentBackendStatusIdentity = identity;
-  connection.sendNotification(backendStatusMethod, status);
 }
 
 async function scheduleDiagnosticsAsync(document: TextDocument): Promise<CachedDocument> {
@@ -4110,7 +4086,6 @@ async function hydrateCachedVbscriptCstAsync(
   await measureDebugStepAsync(settings, cached.source.uri, `${stepPrefix}.vbscript.hydrate`, () =>
     hydrateVbscriptCst(cached.parsed, settings),
   );
-  notifyBackendStatusIfChanged();
 }
 
 function cstHasVbscript(node: AspCstNode): boolean {
@@ -7816,7 +7791,6 @@ async function includeDocumentSourceIdentityAsync(
 
 function includeDocumentSettingsIdentity(settings: AspSettings): string {
   return JSON.stringify({
-    engine: aspAnalysisBackendInfo(),
     parse: parseSettingsIdentity(settings),
     legacyEncoding: settings.legacyEncoding,
     vbscript: vbProjectContextSettings(settings),

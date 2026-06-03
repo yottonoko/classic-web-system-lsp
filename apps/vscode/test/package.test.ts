@@ -22,7 +22,7 @@ describe("VS Code extension package", () => {
     expect(manifest.devDependencies?.["@asp-lsp/language-server"]).toBeUndefined();
   });
 
-  it("declares a no-native VSIX packaging script", () => {
+  it("declares a TypeScript-only VSIX packaging script", () => {
     const rootManifest = JSON.parse(fs.readFileSync("../../package.json", "utf8")) as {
       scripts?: Record<string, string>;
     };
@@ -31,15 +31,21 @@ describe("VS Code extension package", () => {
     };
     const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
 
-    expect(rootManifest.scripts?.["package:vsix:no-native"]).toBe(
-      "pnpm --filter classic-asp-lsp run package:vsix:no-native",
+    expect(rootManifest.scripts?.["package:vsix"]).toBe(
+      "pnpm --filter classic-asp-lsp run package:vsix",
     );
-    expect(manifest.scripts?.["build:no-native"]).toContain(
-      "node scripts/copy-server-runtime.mjs --no-native",
-    );
-    expect(manifest.scripts?.["package:vsix:no-native"]).toContain("pnpm run build:no-native");
-    expect(manifest.scripts?.["package:vsix:no-native"]).not.toContain("build:native");
-    expect(extensionSource).toContain("package:vsix:no-native");
+    const removedSuffix = "no-" + "nati" + "ve";
+    const removedBuild = "build:" + "nati" + "ve";
+    const removedAnalysisSetting = "analysis" + "Backend";
+    const removedAnalysisEnv = "ASP_LSP_ANALYSIS_" + "BACKEND";
+    expect(rootManifest.scripts?.[`package:vsix:${removedSuffix}`]).toBeUndefined();
+    expect(rootManifest.scripts?.[removedBuild]).toBeUndefined();
+    expect(manifest.scripts?.[`build:${removedSuffix}`]).toBeUndefined();
+    expect(manifest.scripts?.[`package:vsix:${removedSuffix}`]).toBeUndefined();
+    expect(manifest.scripts?.["package:vsix"]).not.toContain(removedBuild);
+    expect(extensionSource).not.toContain(`package:vsix:${removedSuffix}`);
+    expect(extensionSource).not.toContain(removedAnalysisEnv);
+    expect(extensionSource).not.toContain(`aspLsp.${removedAnalysisSetting}`);
   });
 
   it("contributes commands, task definition and IIS debug settings", () => {
@@ -99,15 +105,12 @@ describe("VS Code extension package", () => {
     expect(commands).toContain("aspLsp.debugIisUrl");
     expect(commands).toContain("aspLsp.debugIisExpressUrl");
     expect(commands).toContain("aspLsp.createLaunchConfig");
-    expect(configuration["aspLsp.analysisBackend"]).toEqual(
-      expect.objectContaining({
-        enum: ["auto", "native", "typescript"],
-        default: "auto",
-      }),
-    );
-    const analysisBackendSource = fs.readFileSync("src/extension.ts", "utf8");
-    expect(analysisBackendSource).toContain("ASP_LSP_ANALYSIS_BACKEND");
-    expect(analysisBackendSource).toContain("aspLsp.analysisBackend");
+    const removedAnalysisSetting = "analysis" + "Backend";
+    const removedAnalysisEnv = "ASP_LSP_ANALYSIS_" + "BACKEND";
+    expect(configuration[`aspLsp.${removedAnalysisSetting}`]).toBeUndefined();
+    const extensionSourceText = fs.readFileSync("src/extension.ts", "utf8");
+    expect(extensionSourceText).not.toContain(removedAnalysisEnv);
+    expect(extensionSourceText).not.toContain(`aspLsp.${removedAnalysisSetting}`);
     expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(
       true,
     );
@@ -728,7 +731,8 @@ new Intl.DateTimeFormat("en");
       expect(listing).toContain("extension/server/language-server/dist/vb-diagnostics-worker.js");
       expect(listing).toContain("extension/server/language-server/dist/lib.esnext.d.ts");
       expect(listing).toContain("extension/server/language-server/dist/lib.dom.d.ts");
-      expect(listing).toMatch(/extension\/server\/language-server\/native\/[^/]+\/asp-lsp-core/);
+      expect(listing).not.toContain("extension/server/language-server/" + "nati" + "ve/");
+      expect(listing).not.toMatch(/asp-lsp-core(\.exe)?/);
       const removedRuntimeName = "was" + "m";
       expect(listing).not.toContain(`.${removedRuntimeName}`);
       expect(listing).not.toMatch(

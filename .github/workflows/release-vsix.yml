@@ -35,19 +35,9 @@ jobs:
           pnpm run test
 
   release-vsix:
-    name: Build VSIX (${{ matrix.target }})
+    name: Build VSIX
     needs: validate
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # - os: ubuntu-latest
-          #   target: linux-x64
-          # - os: macos-14
-          #   target: darwin-arm64
-          - os: windows-latest
-            target: win32-x64
+    runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
@@ -70,61 +60,22 @@ jobs:
         shell: bash
         run: |
           tag_name="${GITHUB_REF_NAME//\//-}"
-          echo "name=classic-asp-lsp-${tag_name}-${{ matrix.target }}.vsix" >> "$GITHUB_OUTPUT"
+          echo "name=classic-asp-lsp-${tag_name}.vsix" >> "$GITHUB_OUTPUT"
 
       - name: Package VSIX
         shell: bash
-        run: pnpm run package:vsix --target "${{ matrix.target }}" --out "$GITHUB_WORKSPACE/${{ steps.vsix.outputs.name }}"
+        run: pnpm run package:vsix --out "$GITHUB_WORKSPACE/${{ steps.vsix.outputs.name }}"
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
-          path: ${{ steps.vsix.outputs.name }}
-          if-no-files-found: error
-
-  release-vsix-no-native:
-    name: Build VSIX (no native)
-    needs: validate
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Resolve VSIX name
-        id: vsix
-        shell: bash
-        run: |
-          tag_name="${GITHUB_REF_NAME//\//-}"
-          echo "name=classic-asp-lsp-${tag_name}-no-native.vsix" >> "$GITHUB_OUTPUT"
-
-      - name: Package VSIX without native core
-        run: pnpm run package:vsix:no-native --out "$GITHUB_WORKSPACE/${{ steps.vsix.outputs.name }}"
-
-      - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: no-native
+          name: vsix
           path: ${{ steps.vsix.outputs.name }}
           if-no-files-found: error
 
   publish-release:
     name: Publish release
-    needs:
-      - release-vsix
-      - release-vsix-no-native
+    needs: release-vsix
     runs-on: ubuntu-latest
     steps:
       - name: Download VSIX artifacts
