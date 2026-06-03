@@ -1294,6 +1294,133 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         .expect("Response.Write documentation")
         .contains("Response.Write value"));
 
+    let syntax_uri = "file:///tmp/contextual-completion.asp";
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": syntax_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nIf ready \nDo\nlo\nWhile ready\nwe\nSub Render()\n  For index = 1 To 3\n  n\nEnd Sub\nSub Blocked()\n  Do\n  end\nEnd Sub\nSub Save()\nEnd S\n%>",
+                },
+            },
+        }),
+    );
+    let completion_labels = |stdin: &mut std::process::ChildStdin,
+                             reader: &mut BufReader<std::process::ChildStdout>,
+                             id: u64,
+                             position: Value| {
+        request(
+            stdin,
+            reader,
+            id,
+            "textDocument/completion",
+            json!({
+                "textDocument": { "uri": syntax_uri },
+                "position": position,
+            }),
+        )["result"]
+            .as_array()
+            .expect("contextual completion items")
+            .iter()
+            .filter_map(|item| item["label"].as_str().map(str::to_string))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        completion_labels(
+            &mut stdin,
+            &mut reader,
+            49,
+            json!({ "line": 1, "character": 9 })
+        ),
+        vec!["Then"]
+    );
+    assert_eq!(
+        completion_labels(
+            &mut stdin,
+            &mut reader,
+            50,
+            json!({ "line": 3, "character": 2 })
+        ),
+        vec!["Loop"]
+    );
+    assert_eq!(
+        completion_labels(
+            &mut stdin,
+            &mut reader,
+            51,
+            json!({ "line": 5, "character": 2 })
+        ),
+        vec!["Wend"]
+    );
+    assert_eq!(
+        completion_labels(
+            &mut stdin,
+            &mut reader,
+            52,
+            json!({ "line": 8, "character": 3 })
+        ),
+        vec!["Next"]
+    );
+    let blocked_labels = completion_labels(
+        &mut stdin,
+        &mut reader,
+        53,
+        json!({ "line": 12, "character": 5 }),
+    );
+    assert!(
+        !blocked_labels.iter().any(|label| label == "End Sub"),
+        "blocked labels: {blocked_labels:?}"
+    );
+    let suffix_completion = request(
+        &mut stdin,
+        &mut reader,
+        54,
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": syntax_uri },
+            "position": { "line": 15, "character": 5 },
+        }),
+    );
+    let end_sub = suffix_completion["result"]
+        .as_array()
+        .expect("suffix completion items")
+        .iter()
+        .find(|item| item["label"] == json!("End Sub"))
+        .expect("End Sub suffix completion");
+    assert_eq!(end_sub["filterText"], json!("Sub"));
+
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeConfiguration",
+            "params": {
+                "settings": {
+                    "aspLsp": {
+                        "vbscript": {
+                            "syntaxSnippets": false,
+                        },
+                    },
+                },
+            },
+        }),
+    );
+    let disabled_syntax_labels = completion_labels(
+        &mut stdin,
+        &mut reader,
+        55,
+        json!({ "line": 1, "character": 9 }),
+    );
+    assert!(
+        !disabled_syntax_labels.iter().any(|label| label == "Then"),
+        "disabled syntax labels: {disabled_syntax_labels:?}"
+    );
+
     let hover = request(
         &mut stdin,
         &mut reader,
@@ -1678,17 +1805,17 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         "inlay labels: {inlay_labels:?}"
     );
     assert!(
-        inlay_labels.iter().any(|label| *label == "ByRef "),
+        !inlay_labels.iter().any(|label| *label == "ByRef "),
         "inlay labels: {inlay_labels:?}"
     );
     assert!(
-        inlay_labels
+        !inlay_labels
             .iter()
             .any(|label| label.contains(" As Customer")),
         "inlay labels: {inlay_labels:?}"
     );
     assert!(
-        inlay_labels.iter().any(|label| *label == " As String"),
+        !inlay_labels.iter().any(|label| *label == " As String"),
         "inlay labels: {inlay_labels:?}"
     );
     let resolved_inlay = request(
@@ -1699,6 +1826,62 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         inlay_hints["result"][0].clone(),
     );
     assert_eq!(resolved_inlay["result"], inlay_hints["result"][0]);
+
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeConfiguration",
+            "params": {
+                "settings": {
+                    "aspLsp": {
+                        "inlayHints": {
+                            "variableTypes": true,
+                            "parameterNames": true,
+                            "functionReturnTypes": true,
+                            "implicitByRef": true,
+                            "globalVariableMarkers": "global",
+                        },
+                    },
+                },
+            },
+        }),
+    );
+    let enabled_inlay_hints = request(
+        &mut stdin,
+        &mut reader,
+        56,
+        "textDocument/inlayHint",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 40, "character": 0 },
+            },
+        }),
+    );
+    let enabled_inlay_labels = enabled_inlay_hints["result"]
+        .as_array()
+        .expect("enabled inlay hints")
+        .iter()
+        .filter_map(|hint| hint["label"].as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        enabled_inlay_labels.iter().any(|label| *label == "ByRef "),
+        "enabled inlay labels: {enabled_inlay_labels:?}"
+    );
+    assert!(
+        enabled_inlay_labels
+            .iter()
+            .any(|label| label.contains(" As Customer")),
+        "enabled inlay labels: {enabled_inlay_labels:?}"
+    );
+    assert!(
+        enabled_inlay_labels
+            .iter()
+            .any(|label| *label == " As String"),
+        "enabled inlay labels: {enabled_inlay_labels:?}"
+    );
 
     write_message(
         &mut stdin,

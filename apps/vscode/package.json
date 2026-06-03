@@ -504,7 +504,7 @@
         },
         "aspLsp.inlayHints.variableTypes": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "%configuration.inlayHints.variableTypes.description%"
         },
         "aspLsp.inlayHints.parameterNames": {
@@ -514,12 +514,12 @@
         },
         "aspLsp.inlayHints.functionReturnTypes": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "%configuration.inlayHints.functionReturnTypes.description%"
         },
         "aspLsp.inlayHints.implicitByRef": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "%configuration.inlayHints.implicitByRef.description%"
         },
         "aspLsp.inlayHints.globalVariableMarkers": {
@@ -530,7 +530,7 @@
             "all",
             "off"
           ],
-          "default": "global",
+          "default": "off",
           "description": "%configuration.inlayHints.globalVariableMarkers.description%"
         },
         "aspLsp.codeLens.references": {

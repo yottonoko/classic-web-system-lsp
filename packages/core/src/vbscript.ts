@@ -1212,12 +1212,12 @@ export function getVbscriptCompletions(
           : inferVariableTypeRef(ownerName, parsed, sourceOffset, symbols);
     return ownerType ? typeMemberCompletions(ownerType, symbols, typeEnvironment) : [];
   }
-  const endBlockCompletions =
+  const contextualSyntaxCompletions =
     context.syntaxSnippets === false
       ? []
-      : vbscriptEndBlockCompletions(parsed, sourceOffset, context.locale);
-  if (endBlockCompletions.length > 0) {
-    return endBlockCompletions;
+      : vbscriptContextualSyntaxCompletions(parsed, sourceOffset, context.locale);
+  if (contextualSyntaxCompletions.length > 0) {
+    return contextualSyntaxCompletions;
   }
   return dedupeCompletions([
     ...(context.syntaxSnippets === false ? [] : vbscriptSyntaxSnippetCompletions(context.locale)),
@@ -1237,6 +1237,7 @@ type VbEndCompletionBlockKind =
   | "With"
   | "DoLoop"
   | "While"
+  | "For"
   | "ForEach";
 
 interface VbEndCompletionBlock {
@@ -1244,12 +1245,86 @@ interface VbEndCompletionBlock {
   procedureKind?: "sub" | "function" | "property";
 }
 
-function vbscriptEndBlockCompletions(
+function vbscriptContextualSyntaxCompletions(
   parsed: AspParsedDocument,
   sourceOffset: number,
   locale: AspLocale | undefined,
 ): CompletionItem[] {
-  const context = endBlockCompletionContext(parsed.text, sourceOffset);
+  return [
+    ...vbscriptThenCompletions(parsed, sourceOffset, locale),
+    ...vbscriptBlockCloseCompletions(parsed, sourceOffset, locale),
+  ];
+}
+
+function vbscriptThenCompletions(
+  parsed: AspParsedDocument,
+  sourceOffset: number,
+  locale: AspLocale | undefined,
+): CompletionItem[] {
+  const context = thenCompletionContext(parsed, sourceOffset);
+  if (!context) {
+    return [];
+  }
+  return [
+    {
+      label: "Then",
+      kind: CompletionItemKind.Keyword,
+      detail: createLocalizer(locale).t("vb.completion.syntaxSnippet"),
+      sortText: "00-Then",
+      textEdit: {
+        range: {
+          start: positionAt(parsed.text, context.replaceStart),
+          end: positionAt(parsed.text, sourceOffset),
+        },
+        newText: "Then",
+      },
+    },
+  ];
+}
+
+function thenCompletionContext(
+  parsed: AspParsedDocument,
+  sourceOffset: number,
+): { replaceStart: number } | undefined {
+  const document = vbDocuments(parsed).find(
+    (candidate) => sourceOffset >= candidate.start && sourceOffset <= candidate.end,
+  );
+  if (!document) {
+    return undefined;
+  }
+  const statementStart = completionStatementStartOffset(document.tokens, parsed.text, sourceOffset);
+  const tokens = document.tokens.filter(
+    (token) =>
+      token.start >= statementStart &&
+      token.start < sourceOffset &&
+      token.kind !== "whitespace" &&
+      token.kind !== "newline" &&
+      token.kind !== "comment" &&
+      token.text !== ":",
+  );
+  const first = lowerToken(tokens[0]);
+  if (first !== "if" && first !== "elseif") {
+    return undefined;
+  }
+  if (tokens.some((token) => lowerToken(token) === "then")) {
+    return undefined;
+  }
+  const last = tokens.at(-1);
+  const partialThen =
+    last && last.end === sourceOffset && "then".startsWith(last.text.toLowerCase());
+  const conditionTokens = partialThen ? tokens.slice(1, -1) : tokens.slice(1);
+  if (conditionTokens.length === 0) {
+    return undefined;
+  }
+  return { replaceStart: partialThen ? last.start : sourceOffset };
+}
+
+function vbscriptBlockCloseCompletions(
+  parsed: AspParsedDocument,
+  sourceOffset: number,
+  locale: AspLocale | undefined,
+): CompletionItem[] {
+  const context = blockCloseCompletionContext(parsed.text, sourceOffset);
   if (!context) {
     return [];
   }
@@ -1260,13 +1335,14 @@ function vbscriptEndBlockCompletions(
     return [];
   }
   const blocks = openVbEndCompletionBlocksBefore(document, context.replaceStart);
-  const labels = endCompletionLabels(blocks);
+  const labels = blockCloseCompletionLabels(blocks, context);
   const detail = createLocalizer(locale).t("vb.completion.syntaxSnippet");
   return labels.map((label, index) => ({
     label,
     kind: CompletionItemKind.Snippet,
     detail,
-    filterText: context.filterBySuffix ? label.slice("End ".length) : label,
+    filterText:
+      context.kind === "end" && context.filterBySuffix ? label.slice("End ".length) : label,
     sortText: `0${index}-${label}`,
     textEdit: {
       range: {
@@ -1278,10 +1354,14 @@ function vbscriptEndBlockCompletions(
   }));
 }
 
-function endBlockCompletionContext(
+type VbBlockCloseCompletionContext =
+  | { kind: "end"; replaceStart: number; filterBySuffix: boolean; suffix: string }
+  | { kind: "keyword"; replaceStart: number; prefix: string };
+
+function blockCloseCompletionContext(
   text: string,
   sourceOffset: number,
-): { replaceStart: number; filterBySuffix: boolean } | undefined {
+): VbBlockCloseCompletionContext | undefined {
   const lineStart = text.lastIndexOf("\n", Math.max(0, sourceOffset - 1)) + 1;
   const lineEnd = lineEndOffset(text, lineStart);
   const currentLine = text.slice(lineStart, lineEnd);
@@ -1291,11 +1371,37 @@ function endBlockCompletionContext(
     return undefined;
   }
   const prefix = text.slice(replaceStart, sourceOffset);
-  const match = /^end(?:\s+([A-Za-z]*))?$/i.exec(prefix);
-  if (!match) {
-    return undefined;
+  const endMatch = /^end(?:\s+([A-Za-z]*))?$/i.exec(prefix);
+  if (endMatch) {
+    return {
+      kind: "end",
+      replaceStart,
+      filterBySuffix: endMatch[1] !== undefined,
+      suffix: endMatch[1]?.toLowerCase() ?? "",
+    };
   }
-  return { replaceStart, filterBySuffix: match[1] !== undefined };
+  const keywordMatch = /^[A-Za-z]+$/.exec(prefix);
+  return keywordMatch ? { kind: "keyword", replaceStart, prefix: prefix.toLowerCase() } : undefined;
+}
+
+function completionStatementStartOffset(
+  tokens: VbToken[],
+  text: string,
+  sourceOffset: number,
+): number {
+  const lineStart = text.lastIndexOf("\n", Math.max(0, sourceOffset - 1)) + 1;
+  let statementStart = lineStart;
+  for (const token of tokens) {
+    if (token.end > sourceOffset) {
+      break;
+    }
+    if (token.kind === "newline") {
+      statementStart = token.end;
+    } else if (token.text === ":" && token.start >= lineStart) {
+      statementStart = token.end;
+    }
+  }
+  return statementStart;
 }
 
 function openVbEndCompletionBlocksBefore(
@@ -1372,8 +1478,8 @@ function openVbEndCompletionBlocksBefore(
       stack.push({ kind: "While" });
       continue;
     }
-    if (first === "for" && second === "each") {
-      stack.push({ kind: "ForEach" });
+    if (first === "for") {
+      stack.push({ kind: second === "each" ? "ForEach" : "For" });
     }
   }
   return stack;
@@ -1388,25 +1494,25 @@ function closeVbEndCompletionBlock(
   stack: VbEndCompletionBlock[],
   endKind: string | undefined,
 ): void {
-  const targetKind =
+  const targetKinds =
     endKind === "class"
-      ? "Class"
+      ? ["Class"]
       : endKind === "property"
-        ? "Property"
+        ? ["Property"]
         : endKind === "with"
-          ? "With"
+          ? ["With"]
           : endKind === "if"
-            ? "If"
+            ? ["If"]
             : endKind === "select"
-              ? "Select"
+              ? ["Select"]
               : endKind === "loop"
-                ? "DoLoop"
+                ? ["DoLoop"]
                 : endKind === "wend"
-                  ? "While"
+                  ? ["While"]
                   : endKind === "next"
-                    ? "ForEach"
-                    : "Procedure";
-  const index = findLastIndex(stack, (node) => node.kind === targetKind);
+                    ? ["For", "ForEach"]
+                    : ["Procedure"];
+  const index = findLastIndex(stack, (node) => targetKinds.includes(node.kind));
   if (index !== -1) {
     stack.splice(index, 1);
   }
@@ -1435,11 +1541,14 @@ function completionStatementEndIndex(tokens: VbToken[], startIndex: number): num
   return index;
 }
 
-function endCompletionLabels(blocks: VbEndCompletionBlock[]): string[] {
+function blockCloseCompletionLabels(
+  blocks: VbEndCompletionBlock[],
+  context: VbBlockCloseCompletionContext,
+): string[] {
   const labels: string[] = [];
   for (const block of [...blocks].reverse()) {
-    const label = endCompletionLabel(block);
-    if (!label) {
+    const label = blockCloseCompletionLabel(block);
+    if (!labelMatchesBlockCloseCompletionContext(label, context)) {
       if (labels.length === 0) {
         return [];
       }
@@ -1452,7 +1561,20 @@ function endCompletionLabels(blocks: VbEndCompletionBlock[]): string[] {
   return labels;
 }
 
-function endCompletionLabel(block: VbEndCompletionBlock): string | undefined {
+function labelMatchesBlockCloseCompletionContext(
+  label: string,
+  context: VbBlockCloseCompletionContext,
+): boolean {
+  const lowerLabel = label.toLowerCase();
+  if (context.kind === "end") {
+    return (
+      lowerLabel.startsWith("end ") && lowerLabel.slice("end ".length).startsWith(context.suffix)
+    );
+  }
+  return lowerLabel.startsWith(context.prefix);
+}
+
+function blockCloseCompletionLabel(block: VbEndCompletionBlock): string {
   switch (block.kind) {
     case "Class":
       return "End Class";
@@ -1466,8 +1588,13 @@ function endCompletionLabel(block: VbEndCompletionBlock): string | undefined {
       return "End Select";
     case "With":
       return "End With";
-    default:
-      return undefined;
+    case "DoLoop":
+      return "Loop";
+    case "While":
+      return "Wend";
+    case "For":
+    case "ForEach":
+      return "Next";
   }
 }
 
@@ -2671,11 +2798,11 @@ export function getVbscriptInlayHints(
   options: VbInlayHintOptions = {},
 ): InlayHint[] {
   const settings = {
-    variableTypes: options.variableTypes !== false,
+    variableTypes: options.variableTypes === true,
     parameterNames: options.parameterNames !== false,
-    functionReturnTypes: options.functionReturnTypes !== false,
-    implicitByRef: options.implicitByRef !== false,
-    globalVariableMarkers: options.globalVariableMarkers ?? "global",
+    functionReturnTypes: options.functionReturnTypes === true,
+    implicitByRef: options.implicitByRef === true,
+    globalVariableMarkers: options.globalVariableMarkers ?? "off",
   };
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const env = context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });

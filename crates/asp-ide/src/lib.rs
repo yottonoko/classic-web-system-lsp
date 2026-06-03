@@ -864,6 +864,21 @@ impl Ide {
                 type_name, &prefix,
             )));
         }
+        let syntax_snippets = vbscript_syntax_snippets_enabled(self.settings.input.json(&self.db));
+        if syntax_snippets {
+            let settings_value = serde_json::from_str::<Value>(self.settings.input.json(&self.db))
+                .map_err(|error| error.to_string())?;
+            let parsed = asp_analysis::parse_asp_once(uri, &context.text, &settings_value)?;
+            let contextual = contextual_vbscript_completion_items(
+                &context.text,
+                &parsed,
+                context.offset,
+                self.locale(),
+            );
+            if !contextual.is_empty() {
+                return Ok(Value::Array(contextual));
+            }
+        }
         let mut items = Vec::new();
         for symbol in &context.symbols {
             let Some(name) = symbol.get("name").and_then(Value::as_str) else {
@@ -880,11 +895,13 @@ impl Ide {
             }));
         }
         items.extend(builtin_completion_items(&prefix));
-        for keyword in [
-            "Dim", "Function", "Sub", "If", "Then", "Else", "End If", "For", "Next",
-        ] {
-            if prefix.is_empty() || keyword.to_lowercase().starts_with(&prefix.to_lowercase()) {
-                items.push(serde_json::json!({ "label": keyword, "kind": 14 }));
+        if syntax_snippets {
+            for keyword in [
+                "Dim", "Function", "Sub", "If", "Then", "Else", "End If", "For", "Next",
+            ] {
+                if prefix.is_empty() || keyword.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                    items.push(serde_json::json!({ "label": keyword, "kind": 14 }));
+                }
             }
         }
         Ok(Value::Array(items))
@@ -2289,14 +2306,14 @@ impl InlayHintOptions {
     fn from_settings(settings: &Value) -> Self {
         let inlay_hints = settings.get("inlayHints").unwrap_or(&Value::Null);
         Self {
-            variable_types: inlay_hint_bool(inlay_hints, "variableTypes", true),
+            variable_types: inlay_hint_bool(inlay_hints, "variableTypes", false),
             parameter_names: inlay_hint_bool(inlay_hints, "parameterNames", true),
-            function_return_types: inlay_hint_bool(inlay_hints, "functionReturnTypes", true),
-            implicit_by_ref: inlay_hint_bool(inlay_hints, "implicitByRef", true),
+            function_return_types: inlay_hint_bool(inlay_hints, "functionReturnTypes", false),
+            implicit_by_ref: inlay_hint_bool(inlay_hints, "implicitByRef", false),
             global_variable_markers: inlay_hints
                 .get("globalVariableMarkers")
                 .and_then(Value::as_str)
-                .unwrap_or("global")
+                .unwrap_or("off")
                 .to_string(),
         }
     }
@@ -2361,6 +2378,41 @@ struct VbContext {
     offset: usize,
     parsed: Value,
     symbols: Vec<Value>,
+}
+
+#[derive(Clone)]
+struct VbCompletionToken {
+    kind: String,
+    text: String,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Clone)]
+struct VbEndCompletionBlock {
+    kind: &'static str,
+    procedure_kind: Option<&'static str>,
+}
+
+enum VbBlockCloseCompletionContext {
+    End {
+        replace_start: usize,
+        filter_by_suffix: bool,
+        suffix: String,
+    },
+    Keyword {
+        replace_start: usize,
+        prefix: String,
+    },
+}
+
+impl VbBlockCloseCompletionContext {
+    fn replace_start(&self) -> usize {
+        match self {
+            VbBlockCloseCompletionContext::End { replace_start, .. }
+            | VbBlockCloseCompletionContext::Keyword { replace_start, .. } => *replace_start,
+        }
+    }
 }
 
 struct IdentifierOccurrence {
@@ -2461,6 +2513,492 @@ fn identifier_prefix_at(text: &str, offset: usize) -> String {
         })
         .map(|(_, character)| *character)
         .collect()
+}
+
+fn contextual_vbscript_completion_items(
+    text: &str,
+    parsed: &Value,
+    offset: usize,
+    locale: &str,
+) -> Vec<Value> {
+    let mut items = vbscript_then_completion_items(text, parsed, offset, locale);
+    items.extend(vbscript_block_close_completion_items(
+        text, parsed, offset, locale,
+    ));
+    items
+}
+
+fn vbscript_then_completion_items(
+    text: &str,
+    parsed: &Value,
+    offset: usize,
+    locale: &str,
+) -> Vec<Value> {
+    let Some(replace_start) = then_completion_context(text, parsed, offset) else {
+        return Vec::new();
+    };
+    let Some(range) = range_from_offsets(text, replace_start, offset) else {
+        return Vec::new();
+    };
+    vec![serde_json::json!({
+        "label": "Then",
+        "kind": 14,
+        "detail": localize_static(locale, "vb.completion.syntaxSnippet"),
+        "sortText": "00-Then",
+        "textEdit": {
+            "range": range,
+            "newText": "Then",
+        },
+    })]
+}
+
+fn then_completion_context(text: &str, parsed: &Value, offset: usize) -> Option<usize> {
+    let tokens = vb_completion_tokens_for_offset(parsed, offset)?;
+    let statement_start = completion_statement_start_offset(&tokens, text, offset);
+    let statement_tokens = tokens
+        .iter()
+        .filter(|token| {
+            token.start >= statement_start
+                && token.start < offset
+                && token.kind != "whitespace"
+                && token.kind != "newline"
+                && token.kind != "comment"
+                && token.text != ":"
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let first = lower_completion_token(statement_tokens.first());
+    if first != "if" && first != "elseif" {
+        return None;
+    }
+    if statement_tokens
+        .iter()
+        .any(|token| token.text.eq_ignore_ascii_case("then"))
+    {
+        return None;
+    }
+    let last = statement_tokens.last();
+    let partial_then = last.is_some_and(|token| {
+        token.end == offset && "then".starts_with(&token.text.to_ascii_lowercase())
+    });
+    let condition_len = if partial_then {
+        statement_tokens.len().saturating_sub(2)
+    } else {
+        statement_tokens.len().saturating_sub(1)
+    };
+    if condition_len == 0 {
+        return None;
+    }
+    if partial_then {
+        last.map(|token| token.start)
+    } else {
+        Some(offset)
+    }
+}
+
+fn vbscript_block_close_completion_items(
+    text: &str,
+    parsed: &Value,
+    offset: usize,
+    locale: &str,
+) -> Vec<Value> {
+    let Some(context) = block_close_completion_context(text, offset) else {
+        return Vec::new();
+    };
+    let Some(tokens) = vb_completion_tokens_for_offset(parsed, offset) else {
+        return Vec::new();
+    };
+    let blocks = open_vb_end_completion_blocks_before(&tokens, context.replace_start());
+    let labels = block_close_completion_labels(&blocks, &context);
+    labels
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, label)| {
+            let range = range_from_offsets(text, context.replace_start(), offset)?;
+            let filter_text = match &context {
+                VbBlockCloseCompletionContext::End {
+                    filter_by_suffix: true,
+                    ..
+                } => label.strip_prefix("End ").unwrap_or(&label).to_string(),
+                _ => label.clone(),
+            };
+            Some(serde_json::json!({
+                "label": label,
+                "kind": 15,
+                "detail": localize_static(locale, "vb.completion.syntaxSnippet"),
+                "filterText": filter_text,
+                "sortText": format!("0{index}-{label}"),
+                "textEdit": {
+                    "range": range,
+                    "newText": label,
+                },
+            }))
+        })
+        .collect()
+}
+
+fn block_close_completion_context(
+    text: &str,
+    offset: usize,
+) -> Option<VbBlockCloseCompletionContext> {
+    let line_start = line_start_offset(text, offset);
+    let line_end = line_end_offset(text, line_start);
+    if offset > line_end {
+        return None;
+    }
+    let replace_start = line_indent_end_offset(text, line_start, line_end);
+    if offset < replace_start {
+        return None;
+    }
+    let prefix = slice_utf16(text, replace_start, offset).ok()?;
+    let lower = prefix.to_ascii_lowercase();
+    if lower == "end" {
+        return Some(VbBlockCloseCompletionContext::End {
+            replace_start,
+            filter_by_suffix: false,
+            suffix: String::new(),
+        });
+    }
+    if lower.starts_with("end") && lower[3..].starts_with(char::is_whitespace) {
+        let suffix = lower[3..].trim_start();
+        if suffix
+            .chars()
+            .all(|character| character.is_ascii_alphabetic())
+        {
+            return Some(VbBlockCloseCompletionContext::End {
+                replace_start,
+                filter_by_suffix: true,
+                suffix: suffix.to_string(),
+            });
+        }
+    }
+    if !lower.is_empty()
+        && lower
+            .chars()
+            .all(|character| character.is_ascii_alphabetic())
+    {
+        return Some(VbBlockCloseCompletionContext::Keyword {
+            replace_start,
+            prefix: lower,
+        });
+    }
+    None
+}
+
+fn completion_statement_start_offset(
+    tokens: &[VbCompletionToken],
+    text: &str,
+    offset: usize,
+) -> usize {
+    let line_start = line_start_offset(text, offset);
+    let mut statement_start = line_start;
+    for token in tokens {
+        if token.end > offset {
+            break;
+        }
+        if token.kind == "newline" {
+            statement_start = token.end;
+        } else if token.text == ":" && token.start >= line_start {
+            statement_start = token.end;
+        }
+    }
+    statement_start
+}
+
+fn open_vb_end_completion_blocks_before(
+    tokens: &[VbCompletionToken],
+    offset: usize,
+) -> Vec<VbEndCompletionBlock> {
+    let tokens = tokens
+        .iter()
+        .filter(|token| {
+            token.start < offset && token.kind != "whitespace" && token.kind != "comment"
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut stack = Vec::new();
+    for index in 0..tokens.len() {
+        if !is_completion_statement_start(&tokens, index) {
+            continue;
+        }
+        let first = lower_completion_token(tokens.get(index));
+        let second = lower_completion_token(tokens.get(index + 1));
+        if first == "class" && token_kind_is(&tokens, index + 1, "identifier") {
+            stack.push(VbEndCompletionBlock {
+                kind: "Class",
+                procedure_kind: None,
+            });
+            continue;
+        }
+        if first == "end" {
+            close_vb_end_completion_block(&mut stack, second.as_str());
+            continue;
+        }
+        let declaration_offset = usize::from(first == "public" || first == "private");
+        let declaration_start = if declaration_offset == 1 {
+            lower_completion_token(tokens.get(index + 1))
+        } else {
+            first.clone()
+        };
+        if (declaration_start == "sub" || declaration_start == "function")
+            && token_kind_is(&tokens, index + declaration_offset + 1, "identifier")
+        {
+            stack.push(VbEndCompletionBlock {
+                kind: "Procedure",
+                procedure_kind: if declaration_start == "function" {
+                    Some("function")
+                } else {
+                    Some("sub")
+                },
+            });
+            continue;
+        }
+        if declaration_start == "property" {
+            let accessor = lower_completion_token(tokens.get(index + declaration_offset + 1));
+            if matches!(accessor.as_str(), "get" | "let" | "set")
+                && token_kind_is(&tokens, index + declaration_offset + 2, "identifier")
+            {
+                stack.push(VbEndCompletionBlock {
+                    kind: "Property",
+                    procedure_kind: Some("property"),
+                });
+            }
+            continue;
+        }
+        if first == "loop" {
+            close_vb_end_completion_block(&mut stack, "loop");
+            continue;
+        }
+        if first == "wend" {
+            close_vb_end_completion_block(&mut stack, "wend");
+            continue;
+        }
+        if first == "next" {
+            close_vb_end_completion_block(&mut stack, "next");
+            continue;
+        }
+        if first == "if" && is_completion_multiline_if(&tokens, index) {
+            stack.push(VbEndCompletionBlock {
+                kind: "If",
+                procedure_kind: None,
+            });
+            continue;
+        }
+        if first == "select" && second == "case" {
+            stack.push(VbEndCompletionBlock {
+                kind: "Select",
+                procedure_kind: None,
+            });
+            continue;
+        }
+        if first == "with" {
+            stack.push(VbEndCompletionBlock {
+                kind: "With",
+                procedure_kind: None,
+            });
+            continue;
+        }
+        if first == "do" {
+            stack.push(VbEndCompletionBlock {
+                kind: "DoLoop",
+                procedure_kind: None,
+            });
+            continue;
+        }
+        if first == "while" {
+            stack.push(VbEndCompletionBlock {
+                kind: "While",
+                procedure_kind: None,
+            });
+            continue;
+        }
+        if first == "for" {
+            stack.push(VbEndCompletionBlock {
+                kind: if second == "each" { "ForEach" } else { "For" },
+                procedure_kind: None,
+            });
+        }
+    }
+    stack
+}
+
+fn is_completion_statement_start(tokens: &[VbCompletionToken], index: usize) -> bool {
+    index == 0 || tokens[index - 1].kind == "newline" || tokens[index - 1].text == ":"
+}
+
+fn close_vb_end_completion_block(stack: &mut Vec<VbEndCompletionBlock>, end_kind: &str) {
+    let target_kinds: &[&str] = match end_kind {
+        "class" => &["Class"],
+        "property" => &["Property"],
+        "with" => &["With"],
+        "if" => &["If"],
+        "select" => &["Select"],
+        "loop" => &["DoLoop"],
+        "wend" => &["While"],
+        "next" => &["For", "ForEach"],
+        _ => &["Procedure"],
+    };
+    if let Some(index) = stack
+        .iter()
+        .rposition(|node| target_kinds.contains(&node.kind))
+    {
+        stack.remove(index);
+    }
+}
+
+fn is_completion_multiline_if(tokens: &[VbCompletionToken], start_index: usize) -> bool {
+    let end_index = completion_statement_end_index(tokens, start_index);
+    let mut then_index = None;
+    for index in start_index..=end_index {
+        if lower_completion_token(tokens.get(index)) == "then" {
+            then_index = Some(index);
+        }
+    }
+    then_index.is_some_and(|index| index == end_index)
+}
+
+fn completion_statement_end_index(tokens: &[VbCompletionToken], start_index: usize) -> usize {
+    let mut index = start_index;
+    while index + 1 < tokens.len() {
+        let next = &tokens[index + 1];
+        if (next.kind == "newline" && tokens[index].text != "_") || next.text == ":" {
+            break;
+        }
+        index += 1;
+    }
+    index
+}
+
+fn block_close_completion_labels(
+    blocks: &[VbEndCompletionBlock],
+    context: &VbBlockCloseCompletionContext,
+) -> Vec<String> {
+    let mut labels = Vec::new();
+    for block in blocks.iter().rev() {
+        let label = block_close_completion_label(block);
+        if !label_matches_block_close_completion_context(&label, context) {
+            if labels.is_empty() {
+                return Vec::new();
+            }
+            break;
+        }
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    labels
+}
+
+fn label_matches_block_close_completion_context(
+    label: &str,
+    context: &VbBlockCloseCompletionContext,
+) -> bool {
+    let lower_label = label.to_ascii_lowercase();
+    match context {
+        VbBlockCloseCompletionContext::End { suffix, .. } => {
+            lower_label.starts_with("end ") && lower_label["end ".len()..].starts_with(suffix)
+        }
+        VbBlockCloseCompletionContext::Keyword { prefix, .. } => lower_label.starts_with(prefix),
+    }
+}
+
+fn block_close_completion_label(block: &VbEndCompletionBlock) -> String {
+    match block.kind {
+        "Class" => "End Class".to_string(),
+        "Procedure" if block.procedure_kind == Some("function") => "End Function".to_string(),
+        "Procedure" => "End Sub".to_string(),
+        "Property" => "End Property".to_string(),
+        "If" => "End If".to_string(),
+        "Select" => "End Select".to_string(),
+        "With" => "End With".to_string(),
+        "DoLoop" => "Loop".to_string(),
+        "While" => "Wend".to_string(),
+        "For" | "ForEach" => "Next".to_string(),
+        _ => String::new(),
+    }
+}
+
+fn vb_completion_tokens_for_offset(
+    parsed: &Value,
+    offset: usize,
+) -> Option<Vec<VbCompletionToken>> {
+    let mut candidates = Vec::new();
+    if let Some(cst) = parsed.get("cst") {
+        collect_vb_completion_token_candidates(cst, offset, &mut candidates);
+    }
+    candidates
+        .into_iter()
+        .min_by_key(|(span, _)| *span)
+        .map(|(_, tokens)| tokens)
+}
+
+fn collect_vb_completion_token_candidates(
+    node: &Value,
+    offset: usize,
+    candidates: &mut Vec<(usize, Vec<VbCompletionToken>)>,
+) {
+    if let Some(vbscript) = node.get("vbscript") {
+        if let (Some(start), Some(end)) = (
+            matching_value_usize(node, "start"),
+            matching_value_usize(node, "end"),
+        ) {
+            if offset >= start && offset <= end {
+                let tokens = vbscript
+                    .get("tokens")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(vb_completion_token_from_value)
+                    .collect::<Vec<_>>();
+                if !tokens.is_empty() {
+                    candidates.push((end.saturating_sub(start), tokens));
+                }
+            }
+        }
+    }
+    for child in node
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        collect_vb_completion_token_candidates(child, offset, candidates);
+    }
+}
+
+fn vb_completion_token_from_value(value: &Value) -> Option<VbCompletionToken> {
+    Some(VbCompletionToken {
+        kind: value.get("kind")?.as_str()?.to_string(),
+        text: value.get("text")?.as_str()?.to_string(),
+        start: matching_value_usize(value, "start")?,
+        end: matching_value_usize(value, "end")?,
+    })
+}
+
+fn lower_completion_token(token: Option<&VbCompletionToken>) -> String {
+    token
+        .map(|token| token.text.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn token_kind_is(tokens: &[VbCompletionToken], index: usize, expected: &str) -> bool {
+    tokens
+        .get(index)
+        .is_some_and(|token| token.kind == expected)
+}
+
+fn line_indent_end_offset(text: &str, line_start: usize, line_end: usize) -> usize {
+    let mut end = line_start;
+    for (char_offset, character) in utf16_chars(text) {
+        if char_offset < line_start {
+            continue;
+        }
+        if char_offset >= line_end || (character != ' ' && character != '\t') {
+            break;
+        }
+        end = char_offset + character.len_utf16();
+    }
+    end
 }
 
 fn previous_non_whitespace_char_before(text: &str, offset: usize) -> Option<(usize, char)> {
@@ -3673,13 +4211,27 @@ fn code_lens_setting_bool(settings_json: &str, key: &str, default: bool) -> bool
         .unwrap_or(default)
 }
 
+fn vbscript_syntax_snippets_enabled(settings_json: &str) -> bool {
+    serde_json::from_str::<Value>(settings_json)
+        .ok()
+        .and_then(|settings| {
+            settings
+                .get("vbscript")
+                .and_then(|vbscript| vbscript.get("syntaxSnippets"))
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(true)
+}
+
 fn localize_static(locale: &str, key: &str) -> String {
     match (locale, key) {
+        ("ja", "vb.completion.syntaxSnippet") => "VBScript 構文スニペット".to_string(),
         ("ja", "server.quickfix.generateVbscriptDocumentation") => {
             "VBScript documentation を生成".to_string()
         }
         ("ja", "server.refactor.extractVbscriptVariable") => "VBScript 変数に抽出".to_string(),
         ("ja", "server.hover.openExternalDocs") => "外部 documentation を開く".to_string(),
+        (_, "vb.completion.syntaxSnippet") => "VBScript syntax snippet".to_string(),
         (_, "server.quickfix.generateVbscriptDocumentation") => {
             "Generate VBScript documentation".to_string()
         }

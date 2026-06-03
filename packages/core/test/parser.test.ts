@@ -769,6 +769,109 @@ end
     expect(disabled.some((item) => item.label === "End If")).toBe(false);
   });
 
+  it("completes VBScript block continuation and closing keywords only when usable", () => {
+    const thenSource = ["<%", "If ready ", "%>"].join("\n");
+    const thenParsed = parseAspDocument("file:///site/then-completion.asp", thenSource);
+    const thenCompletions = getVbscriptCompletions(
+      thenParsed,
+      positionAt(thenSource, thenSource.indexOf("ready") + "ready ".length),
+    );
+    expect(thenCompletions.map((item) => item.label)).toEqual(["Then"]);
+    expect(thenCompletions[0]).toMatchObject({
+      kind: CompletionItemKind.Keyword,
+      textEdit: {
+        newText: "Then",
+      },
+    });
+
+    const partialThenSource = `<%
+ElseIf ready th
+%>`;
+    const partialThenParsed = parseAspDocument(
+      "file:///site/partial-then-completion.asp",
+      partialThenSource,
+    );
+    const partialThenCompletions = getVbscriptCompletions(
+      partialThenParsed,
+      positionAt(partialThenSource, partialThenSource.indexOf("th") + "th".length),
+    );
+    expect(partialThenCompletions[0]?.textEdit).toMatchObject({
+      newText: "Then",
+    });
+
+    const completeThenSource = `<%
+If ready Then
+%>`;
+    const completeThenParsed = parseAspDocument(
+      "file:///site/complete-then-completion.asp",
+      completeThenSource,
+    );
+    const completeThenCompletions = getVbscriptCompletions(
+      completeThenParsed,
+      positionAt(completeThenSource, completeThenSource.indexOf("Then") + "Then".length),
+    );
+    expect(completeThenCompletions.some((item) => item.label === "Then")).toBe(false);
+
+    const loopSource = `<%
+Do
+  Response.Write value
+lo
+%>`;
+    const loopParsed = parseAspDocument("file:///site/loop-completion.asp", loopSource);
+    const loopCompletions = getVbscriptCompletions(
+      loopParsed,
+      positionAt(loopSource, loopSource.indexOf("lo") + "lo".length),
+    );
+    expect(loopCompletions.map((item) => item.label)).toEqual(["Loop"]);
+
+    const whileSource = `<%
+While ready
+  Response.Write value
+we
+%>`;
+    const whileParsed = parseAspDocument("file:///site/wend-completion.asp", whileSource);
+    const whileCompletions = getVbscriptCompletions(
+      whileParsed,
+      positionAt(whileSource, whileSource.indexOf("we") + "we".length),
+    );
+    expect(whileCompletions.map((item) => item.label)).toEqual(["Wend"]);
+
+    const forSource = `<%
+Sub Render()
+  For index = 1 To 3
+  n
+%>`;
+    const forParsed = parseAspDocument("file:///site/next-completion.asp", forSource);
+    const forCompletions = getVbscriptCompletions(
+      forParsed,
+      positionAt(forSource, forSource.lastIndexOf("n") + "n".length),
+    );
+    expect(forCompletions.map((item) => item.label)).toEqual(["Next"]);
+    expect(forCompletions.some((item) => item.label === "End Sub")).toBe(false);
+
+    const blockedEndSource = `<%
+Sub Render()
+  Do
+  end
+%>`;
+    const blockedEndParsed = parseAspDocument(
+      "file:///site/blocked-end-completion.asp",
+      blockedEndSource,
+    );
+    const blockedEndCompletions = getVbscriptCompletions(
+      blockedEndParsed,
+      positionAt(blockedEndSource, blockedEndSource.lastIndexOf("end") + "end".length),
+    );
+    expect(blockedEndCompletions.some((item) => item.label === "End Sub")).toBe(false);
+
+    const disabled = getVbscriptCompletions(
+      thenParsed,
+      positionAt(thenSource, thenSource.indexOf("ready") + "ready ".length),
+      { syntaxSnippets: false },
+    );
+    expect(disabled.some((item) => item.label === "Then")).toBe(false);
+  });
+
   it("treats server-side object tags as typed VBScript globals", () => {
     const source = `<object runat="server" id="rs" progid="ADODB.Recordset"></object>
 <%
@@ -832,6 +935,7 @@ ReDim resizedItems(5)
       parsed,
       { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
       { symbols },
+      { variableTypes: true, globalVariableMarkers: "global" },
     );
     const arrayHintPositions = hints
       .filter((hint) => typeof hint.label === "string" && hint.label.includes(" As Array"))
@@ -3007,6 +3111,7 @@ End Sub
       parsed,
       { start: { line: 0, character: 0 }, end: { line: 11, character: 0 } },
       { symbols },
+      { variableTypes: true },
     );
     expect(hints.some((hint) => hint.label === " As Customer | Nothing")).toBe(true);
 
@@ -3082,6 +3187,7 @@ both.OnlyFirst
       parsed,
       { start: { line: 0, character: 0 }, end: { line: 32, character: 0 } },
       { symbols },
+      { variableTypes: true },
     );
     expect(JSON.stringify(hints)).toContain("As String | Number");
 
@@ -3142,14 +3248,22 @@ End Sub
       symbols.find((symbol) => symbol.name === "sharedValue" && !symbol.scopeName)?.typeName,
     ).toBe("Number");
 
-    const hints = getVbscriptInlayHints(parsed, sourceRange, { symbols });
+    const hints = getVbscriptInlayHints(
+      parsed,
+      sourceRange,
+      { symbols },
+      {
+        variableTypes: true,
+        globalVariableMarkers: "global",
+      },
+    );
     expect(hints.some((hint) => hint.label === " (global) As String | Number")).toBe(true);
     expect(hints.some((hint) => hint.label === " (global) As Variant")).toBe(true);
     const hintsWithoutGlobalMarkers = getVbscriptInlayHints(
       parsed,
       sourceRange,
       { symbols },
-      { globalVariableMarkers: "off" },
+      { variableTypes: true, globalVariableMarkers: "off" },
     );
     expect(JSON.stringify(hintsWithoutGlobalMarkers)).not.toContain("(global)");
     expect(hintsWithoutGlobalMarkers.some((hint) => hint.label === " As String | Number")).toBe(
@@ -3167,7 +3281,7 @@ End Sub
       parsed,
       sourceRange,
       { symbols },
-      { globalVariableMarkers: "all" },
+      { variableTypes: true, globalVariableMarkers: "all" },
     );
     expect(
       hintsWithLocalMarkers.some(
@@ -3187,7 +3301,7 @@ End Sub
       parsed,
       sourceRange,
       { symbols },
-      { globalVariableMarkers: "local" },
+      { variableTypes: true, globalVariableMarkers: "local" },
     );
     expect(JSON.stringify(localOnlyHints)).not.toContain("(global)");
     expect(
@@ -3274,6 +3388,7 @@ Response.Write a
         parsed,
         { start: { line: 0, character: 0 }, end: { line: 4, character: 0 } },
         { symbols },
+        { variableTypes: true, globalVariableMarkers: "global" },
       ).some(
         (hint) =>
           hint.label === " (global) As Number" &&
@@ -3311,7 +3426,7 @@ End Sub
       includeParsed,
       { start: { line: 0, character: 0 }, end: positionAt(includeSource, includeSource.length) },
       { symbols: includeSymbols },
-      { globalVariableMarkers: "all" },
+      { variableTypes: true, globalVariableMarkers: "all" },
     );
     expect(includeHints.filter((hint) => hint.label === " (global) As Number")).toHaveLength(1);
     expect(includeHints.filter((hint) => hint.label === " (global) As String")).toHaveLength(1);
@@ -3343,7 +3458,7 @@ Response.Write b
       pageParsed,
       { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
       { symbols: pageSymbols },
-      { globalVariableMarkers: "all" },
+      { variableTypes: true, globalVariableMarkers: "all" },
     );
     expect(pageHints.some((hint) => hint.label === " (?) As Number")).toBe(true);
     expect(pageHints.some((hint) => hint.label === " (local) As String")).toBe(true);
@@ -3353,7 +3468,7 @@ Response.Write b
       pageParsed,
       { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
       { symbols: [...pageSymbols, ...includeSymbols], documents: [pageParsed, includeParsed] },
-      { globalVariableMarkers: "all" },
+      { variableTypes: true, globalVariableMarkers: "all" },
     );
     expect(JSON.stringify(includeAwarePageHints)).not.toContain("(global) As Number");
     expect(includeAwarePageHints.some((hint) => hint.label === " (local) As String")).toBe(true);
@@ -3375,7 +3490,7 @@ Response.Write b
       includeParsed,
       { start: { line: 0, character: 0 }, end: positionAt(includeSource, includeSource.length) },
       { symbols: includeSymbols },
-      { globalVariableMarkers: "off" },
+      { variableTypes: true, globalVariableMarkers: "off" },
     );
     expect(JSON.stringify(disabled)).not.toContain("(?)");
   });
@@ -3409,7 +3524,7 @@ sharedTitle = "page"
         pageParsed,
         { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
         context,
-        { globalVariableMarkers: "all" },
+        { variableTypes: true, globalVariableMarkers: "all" },
       ).some((hint) => hint.label === " (global) As String"),
     ).toBe(false);
 
@@ -3440,7 +3555,7 @@ sharedTitle = "page"
           symbols: [...beforeIncludeSymbols, ...includeSymbols],
           documents: [beforeIncludeParsed, includeParsed],
         },
-        { globalVariableMarkers: "all" },
+        { variableTypes: true, globalVariableMarkers: "all" },
       ).some((hint) => hint.label === " (global) As String"),
     ).toBe(true);
   });
@@ -3488,7 +3603,7 @@ End Class
       pageParsed,
       { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
       context,
-      { globalVariableMarkers: "all" },
+      { variableTypes: true, globalVariableMarkers: "all" },
     );
     expect(JSON.stringify(hints)).not.toContain("(local) As String");
     expect(JSON.stringify(hints)).not.toContain("(global) As String");
@@ -3608,15 +3723,23 @@ Response.Write BuildName("Ada")
       { start: { line: 0, character: 0 }, end: { line: 10, character: 0 } },
       { symbols },
     );
-    expect(JSON.stringify(hints)).toContain("As Customer");
     expect(JSON.stringify(hints)).toContain("firstName:");
+    expect(JSON.stringify(hints)).not.toContain("As Customer");
+    expect(JSON.stringify(hints)).not.toContain("ByRef");
     expect(hints.filter((hint) => hint.label === "firstName:")).toEqual([
       expect.objectContaining({
         position: positionAt(source, source.indexOf('"Ada"')),
       }),
     ]);
+
+    const typedHints = getVbscriptInlayHints(
+      parsed,
+      { start: { line: 0, character: 0 }, end: { line: 10, character: 0 } },
+      { symbols },
+      { variableTypes: true, functionReturnTypes: true, implicitByRef: true },
+    );
     const customerSymbol = symbols.find((symbol) => symbol.name === "c");
-    const customerHint = hints.find((hint) => hint.label === " As Customer");
+    const customerHint = typedHints.find((hint) => hint.label === " As Customer");
     expect(customerHint).toEqual(
       expect.objectContaining({ position: customerSymbol?.range.end, paddingLeft: false }),
     );
@@ -3642,6 +3765,8 @@ End Function
 %>`,
       ),
       { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+      {},
+      { functionReturnTypes: true },
     ).find((hint) => hint.label === " As String");
     expect(returnHint).toEqual(
       expect.objectContaining({ label: " As String", paddingLeft: false, paddingRight: true }),
@@ -3661,6 +3786,7 @@ Response.Write BuildDisplayName("Ada", "Lovelace", value)
       implicitByRefParsed,
       { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
       { symbols: collectVbscriptSymbols(implicitByRefParsed) },
+      { implicitByRef: true },
     );
     expect(implicitByRefHints.filter((hint) => hint.label === "ByRef ")).toEqual([
       expect.objectContaining({
@@ -3672,7 +3798,6 @@ Response.Write BuildDisplayName("Ada", "Lovelace", value)
       implicitByRefParsed,
       { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
       { symbols: collectVbscriptSymbols(implicitByRefParsed) },
-      { implicitByRef: false },
     );
     expect(JSON.stringify(disabledByRefHints)).not.toContain("ByRef");
     expect(JSON.stringify(disabledByRefHints)).toContain("first:");
@@ -3712,8 +3837,15 @@ SelectedCustomer(activeId) = currentCustomer
         .filter((hint) => typeof hint.label === "string" && hint.label.endsWith(":"))
         .some((hint) => hint.position.line >= 1 && hint.position.line <= 9),
     ).toBe(false);
+    expect(declarationParameterHints.filter((hint) => hint.label === "ByRef ").length).toBe(0);
+    const declarationParameterByRefHints = getVbscriptInlayHints(
+      declarationParameterParsed,
+      { start: { line: 0, character: 0 }, end: { line: 16, character: 0 } },
+      { symbols: collectVbscriptSymbols(declarationParameterParsed) },
+      { implicitByRef: true },
+    );
     expect(
-      declarationParameterHints.filter((hint) => hint.label === "ByRef ").length,
+      declarationParameterByRefHints.filter((hint) => hint.label === "ByRef ").length,
     ).toBeGreaterThan(0);
 
     const selection = getVbscriptSelectionRanges(parsed, [

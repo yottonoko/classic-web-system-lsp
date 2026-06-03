@@ -175,7 +175,7 @@ describe("VS Code extension package", () => {
       expect.objectContaining({
         type: "string",
         enum: ["global", "local", "all", "off"],
-        default: "global",
+        default: "off",
       }),
     );
     expect(
