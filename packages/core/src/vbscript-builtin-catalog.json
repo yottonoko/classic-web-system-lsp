@@ -2135,6 +2135,230 @@
     {
       "label": "adWChar",
       "type": "Number"
+    },
+    {
+      "label": "vbBlack",
+      "type": "Number"
+    },
+    {
+      "label": "vbRed",
+      "type": "Number"
+    },
+    {
+      "label": "vbGreen",
+      "type": "Number"
+    },
+    {
+      "label": "vbYellow",
+      "type": "Number"
+    },
+    {
+      "label": "vbBlue",
+      "type": "Number"
+    },
+    {
+      "label": "vbMagenta",
+      "type": "Number"
+    },
+    {
+      "label": "vbCyan",
+      "type": "Number"
+    },
+    {
+      "label": "vbWhite",
+      "type": "Number"
+    },
+    {
+      "label": "vbBinaryCompare",
+      "type": "Number"
+    },
+    {
+      "label": "vbTextCompare",
+      "type": "Number"
+    },
+    {
+      "label": "vbSunday",
+      "type": "Number"
+    },
+    {
+      "label": "vbMonday",
+      "type": "Number"
+    },
+    {
+      "label": "vbTuesday",
+      "type": "Number"
+    },
+    {
+      "label": "vbWednesday",
+      "type": "Number"
+    },
+    {
+      "label": "vbThursday",
+      "type": "Number"
+    },
+    {
+      "label": "vbFriday",
+      "type": "Number"
+    },
+    {
+      "label": "vbSaturday",
+      "type": "Number"
+    },
+    {
+      "label": "vbUseSystem",
+      "type": "Number"
+    },
+    {
+      "label": "vbUseSystemDayOfWeek",
+      "type": "Number"
+    },
+    {
+      "label": "vbFirstJan1",
+      "type": "Number"
+    },
+    {
+      "label": "vbFirstFourDays",
+      "type": "Number"
+    },
+    {
+      "label": "vbFirstFullWeek",
+      "type": "Number"
+    },
+    {
+      "label": "vbGeneralDate",
+      "type": "Number"
+    },
+    {
+      "label": "vbLongDate",
+      "type": "Number"
+    },
+    {
+      "label": "vbShortDate",
+      "type": "Number"
+    },
+    {
+      "label": "vbLongTime",
+      "type": "Number"
+    },
+    {
+      "label": "vbShortTime",
+      "type": "Number"
+    },
+    {
+      "label": "vbObjectError",
+      "type": "Number"
+    },
+    {
+      "label": "vbOKOnly",
+      "type": "Number"
+    },
+    {
+      "label": "vbOKCancel",
+      "type": "Number"
+    },
+    {
+      "label": "vbAbortRetryIgnore",
+      "type": "Number"
+    },
+    {
+      "label": "vbYesNoCancel",
+      "type": "Number"
+    },
+    {
+      "label": "vbYesNo",
+      "type": "Number"
+    },
+    {
+      "label": "vbRetryCancel",
+      "type": "Number"
+    },
+    {
+      "label": "vbCritical",
+      "type": "Number"
+    },
+    {
+      "label": "vbQuestion",
+      "type": "Number"
+    },
+    {
+      "label": "vbExclamation",
+      "type": "Number"
+    },
+    {
+      "label": "vbInformation",
+      "type": "Number"
+    },
+    {
+      "label": "vbDefaultButton1",
+      "type": "Number"
+    },
+    {
+      "label": "vbDefaultButton2",
+      "type": "Number"
+    },
+    {
+      "label": "vbDefaultButton3",
+      "type": "Number"
+    },
+    {
+      "label": "vbDefaultButton4",
+      "type": "Number"
+    },
+    {
+      "label": "vbApplicationModal",
+      "type": "Number"
+    },
+    {
+      "label": "vbSystemModal",
+      "type": "Number"
+    },
+    {
+      "label": "vbCr",
+      "type": "String"
+    },
+    {
+      "label": "vbCrLf",
+      "type": "String"
+    },
+    {
+      "label": "vbFormFeed",
+      "type": "String"
+    },
+    {
+      "label": "vbLf",
+      "type": "String"
+    },
+    {
+      "label": "vbNewLine",
+      "type": "String"
+    },
+    {
+      "label": "vbNullChar",
+      "type": "String"
+    },
+    {
+      "label": "vbNullString",
+      "type": "String"
+    },
+    {
+      "label": "vbTab",
+      "type": "String"
+    },
+    {
+      "label": "vbVerticalTab",
+      "type": "String"
+    },
+    {
+      "label": "vbUseDefault",
+      "type": "Number"
+    },
+    {
+      "label": "vbTrue",
+      "type": "Number"
+    },
+    {
+      "label": "vbFalse",
+      "type": "Number"
     }
   ],
   "runtimeEvents": [

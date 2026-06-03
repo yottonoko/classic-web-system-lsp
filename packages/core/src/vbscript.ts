@@ -977,6 +977,10 @@ function parametersForDocumentation(
 
 function builtinConstantDocumentation(label: string): BuiltinDocumentationSpec {
   const lower = label.toLowerCase();
+  const vbscriptConstant = vbscriptConstantDocumentation(label, lower);
+  if (vbscriptConstant) {
+    return vbscriptConstant;
+  }
   const descriptions: Record<string, LocalizedText> = {
     adinteger: text(
       "ADO data type constant for a 32-bit signed integer value.",
@@ -1012,6 +1016,171 @@ function builtinConstantDocumentation(label: string): BuiltinDocumentationSpec {
       "numeric な ADO DataTypeEnum constant です。",
     ),
   };
+}
+
+function vbscriptConstantDocumentation(
+  label: string,
+  lower: string,
+): BuiltinDocumentationSpec | undefined {
+  const values: Record<string, string> = {
+    vbblack: "0",
+    vbred: "255",
+    vbgreen: "65280",
+    vbyellow: "65535",
+    vbblue: "16711680",
+    vbmagenta: "16711935",
+    vbcyan: "16776960",
+    vbwhite: "16777215",
+    vbbinarycompare: "0",
+    vbtextcompare: "1",
+    vbsunday: "1",
+    vbmonday: "2",
+    vbtuesday: "3",
+    vbwednesday: "4",
+    vbthursday: "5",
+    vbfriday: "6",
+    vbsaturday: "7",
+    vbusesystem: "0",
+    vbusesystemdayofweek: "0",
+    vbfirstjan1: "1",
+    vbfirstfourdays: "2",
+    vbfirstfullweek: "3",
+    vbgeneraldate: "0",
+    vblongdate: "1",
+    vbshortdate: "2",
+    vblongtime: "3",
+    vbshorttime: "4",
+    vbobjecterror: "-2147221504",
+    vbokonly: "0",
+    vbokcancel: "1",
+    vbabortretryignore: "2",
+    vbyesnocancel: "3",
+    vbyesno: "4",
+    vbretrycancel: "5",
+    vbcritical: "16",
+    vbquestion: "32",
+    vbexclamation: "48",
+    vbinformation: "64",
+    vbdefaultbutton1: "0",
+    vbdefaultbutton2: "256",
+    vbdefaultbutton3: "512",
+    vbdefaultbutton4: "768",
+    vbapplicationmodal: "0",
+    vbsystemmodal: "4096",
+    vbcr: "Chr(13)",
+    vbcrlf: "Chr(13) + Chr(10)",
+    vbformfeed: "Chr(12)",
+    vblf: "Chr(10)",
+    vbnewline: "platform newline",
+    vbnullchar: "Chr(0)",
+    vbnullstring: "zero-length string pointer",
+    vbtab: "Chr(9)",
+    vbverticaltab: "Chr(11)",
+    vbusedefault: "-2",
+    vbtrue: "-1",
+    vbfalse: "0",
+  };
+  const category = vbscriptConstantCategory(lower);
+  const value = values[lower];
+  if (!category || !value) {
+    return undefined;
+  }
+  return {
+    summary: text(
+      `VBScript ${category.en} constant available without an explicit Const declaration.`,
+      `明示的な Const 宣言なしで使える VBScript ${category.ja} constant です。`,
+    ),
+    value: text(`Value: ${value}.`, `値は ${value} です。`),
+    remarks: text(
+      `${label} is provided by the VBScript runtime in Classic ASP pages that use VBScript.`,
+      `${label} は VBScript を使う Classic ASP page で VBScript runtime から提供されます。`,
+    ),
+  };
+}
+
+function vbscriptConstantCategory(lower: string): { en: string; ja: string } | undefined {
+  if (
+    [
+      "vbblack",
+      "vbred",
+      "vbgreen",
+      "vbyellow",
+      "vbblue",
+      "vbmagenta",
+      "vbcyan",
+      "vbwhite",
+    ].includes(lower)
+  ) {
+    return { en: "color", ja: "color" };
+  }
+  if (["vbbinarycompare", "vbtextcompare"].includes(lower)) {
+    return { en: "comparison", ja: "comparison" };
+  }
+  if (
+    [
+      "vbsunday",
+      "vbmonday",
+      "vbtuesday",
+      "vbwednesday",
+      "vbthursday",
+      "vbfriday",
+      "vbsaturday",
+      "vbusesystem",
+      "vbusesystemdayofweek",
+      "vbfirstjan1",
+      "vbfirstfourdays",
+      "vbfirstfullweek",
+    ].includes(lower)
+  ) {
+    return { en: "date and time", ja: "date/time" };
+  }
+  if (["vbgeneraldate", "vblongdate", "vbshortdate", "vblongtime", "vbshorttime"].includes(lower)) {
+    return { en: "date format", ja: "date format" };
+  }
+  if (lower === "vbobjecterror") {
+    return { en: "miscellaneous", ja: "miscellaneous" };
+  }
+  if (
+    [
+      "vbokonly",
+      "vbokcancel",
+      "vbabortretryignore",
+      "vbyesnocancel",
+      "vbyesno",
+      "vbretrycancel",
+      "vbcritical",
+      "vbquestion",
+      "vbexclamation",
+      "vbinformation",
+      "vbdefaultbutton1",
+      "vbdefaultbutton2",
+      "vbdefaultbutton3",
+      "vbdefaultbutton4",
+      "vbapplicationmodal",
+      "vbsystemmodal",
+    ].includes(lower)
+  ) {
+    return { en: "MsgBox argument", ja: "MsgBox argument" };
+  }
+  if (
+    [
+      "vbcr",
+      "vbcrlf",
+      "vbformfeed",
+      "vblf",
+      "vbnewline",
+      "vbnullchar",
+      "vbnullstring",
+      "vbtab",
+      "vbverticaltab",
+    ].includes(lower)
+  ) {
+    return { en: "string", ja: "string" };
+  }
+  if (["vbusedefault", "vbtrue", "vbfalse"].includes(lower)) {
+    return { en: "Tristate", ja: "Tristate" };
+  }
+  return undefined;
 }
 
 function builtinFunctionDocumentation(

@@ -2240,6 +2240,60 @@ Name = "Ada"
     ).toBe(true);
   });
 
+  it("keeps declaration-free VBScript constants built-in", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<% Option Explicit
+Dim lineBreak, compareMode, promptStyle, excluded
+lineBreak = vbCrLf
+compareMode = vbTextCompare
+promptStyle = vbOKOnly
+excluded = vbOK
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const diagnostics = analyzeVbscript(parsed).diagnostics.filter(
+      (diagnostic) => diagnostic.source === "asp-lsp-vbscript",
+    );
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("vbCrLf"))).toBe(false);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("vbTextCompare"))).toBe(
+      false,
+    );
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("vbOKOnly"))).toBe(false);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("vbOK"))).toBe(true);
+
+    const completions = getVbscriptCompletions(parsed, { line: 2, character: 0 }, { symbols });
+    expect(completions.some((item) => item.label === "vbCrLf")).toBe(true);
+    expect(completions.some((item) => item.label === "vbTextCompare")).toBe(true);
+    expect(completions.some((item) => item.label === "vbOKOnly")).toBe(true);
+    expect(completions.some((item) => item.label === "vbOK")).toBe(false);
+
+    const crlfHover = getVbscriptHover(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("vbCrLf")),
+      { symbols, locale: "en" },
+    );
+    expect(crlfHover).toContain("Const vbCrLf As String");
+    expect(crlfHover).toContain("VBScript string constant");
+    expect(crlfHover).toContain("Value: Chr(13) + Chr(10).");
+    const okOnlyHover = getVbscriptHover(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("vbOKOnly")),
+      { symbols, locale: "en" },
+    );
+    expect(okOnlyHover).toContain("Const vbOKOnly As Number");
+    expect(okOnlyHover).toContain("VBScript MsgBox argument constant");
+    expect(okOnlyHover).toContain("Value: 0.");
+
+    const okOnlyCompletion = completions.find((item) => item.label === "vbOKOnly");
+    expect(
+      String(
+        resolveVbscriptCompletionItem(okOnlyCompletion!, parsed, { symbols, locale: "en" })
+          .documentation,
+      ),
+    ).toContain("VBScript MsgBox argument constant");
+  });
+
   it("localizes built-in function documentation and parameter help", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -3509,6 +3563,8 @@ Const NumericValue = 10
 Const DateValue = #2026-06-01#
 Const BooleanValue = True
 Const BuiltinValue = adInteger
+Const StringBuiltinValue = vbCrLf
+Const NumericBuiltinValue = vbOKOnly
 Const FunctionValue = MakeTitle()
 Const UnknownValue = MissingValue
 %>`;
@@ -3520,6 +3576,8 @@ Const UnknownValue = MissingValue
     expect(typeName("DateValue")).toBe("Date");
     expect(typeName("BooleanValue")).toBe("Boolean");
     expect(typeName("BuiltinValue")).toBe("Number");
+    expect(typeName("StringBuiltinValue")).toBe("String");
+    expect(typeName("NumericBuiltinValue")).toBe("Number");
     expect(typeName("FunctionValue")).toBe("String");
     expect(typeName("UnknownValue")).toBe("Variant");
   });
