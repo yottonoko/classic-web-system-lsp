@@ -51,7 +51,10 @@ const sourceStats = summarizeSources(sources);
 if (shouldRunOperation("parseAspDocument")) {
   await runBenchmark("parseAspDocument", async (run) => {
     for (const source of sourcesForRun("parseAspDocument", run)) {
-      await runSourceBenchmark(() => parseAspDocumentAsync(source.uri, source.text));
+      await runSourceBenchmark(
+        () => parseAspDocumentAsync(source.uri, source.text),
+        clearCoreCaches,
+      );
     }
   });
 }
@@ -62,7 +65,7 @@ if (shouldRunOperation("buildVirtualDocuments")) {
       await runSourceBenchmark(async () => {
         const parsed = await parseAspDocumentAsync(source.uri, source.text);
         buildVirtualDocuments(parsed);
-      });
+      }, clearCoreCaches);
     }
   });
 }
@@ -70,7 +73,10 @@ if (shouldRunOperation("buildVirtualDocuments")) {
 if (shouldRunOperation("collectVbscriptSymbols")) {
   await runBenchmark("collectVbscriptSymbols", async (run) => {
     for (const source of sourcesForRun("collectVbscriptSymbols", run)) {
-      await runSourceBenchmark(() => collectVbscriptSymbolsFromTextAsync(source.uri, source.text));
+      await runSourceBenchmark(
+        () => collectVbscriptSymbolsFromTextAsync(source.uri, source.text),
+        clearCoreCaches,
+      );
     }
   });
 }
@@ -78,8 +84,9 @@ if (shouldRunOperation("collectVbscriptSymbols")) {
 if (shouldRunOperation("analyzeVbscript")) {
   await runBenchmark("analyzeVbscript", async (run) => {
     for (const source of sourcesForRun("analyzeVbscript", run)) {
-      await runSourceBenchmark(() =>
-        analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext()),
+      await runSourceBenchmark(
+        () => analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext()),
+        clearCoreCaches,
       );
     }
   });
@@ -91,7 +98,7 @@ for (const operation of embeddedOperationNames) {
   }
   await runBenchmark(operation, async (run) => {
     for (const source of sourcesForRun(operation, run)) {
-      await runSourceBenchmark(() => runEmbeddedOperation(operation, source, core));
+      await runSourceBenchmark(() => runEmbeddedOperation(operation, source, core), clearAllCaches);
     }
   });
 }
@@ -128,20 +135,24 @@ function shouldRunOperation(operation) {
   return !operationFilter || operationFilter === operation;
 }
 
-async function runSourceBenchmark(action) {
+async function runSourceBenchmark(action, clearCaches) {
   if (!disableCaches) {
     return action();
   }
-  clearBenchmarkCaches();
+  clearCaches();
   try {
     return await action();
   } finally {
-    clearBenchmarkCaches();
+    clearCaches();
   }
 }
 
-function clearBenchmarkCaches() {
+function clearCoreCaches() {
   core.clearAspCoreCaches?.();
+}
+
+function clearAllCaches() {
+  clearCoreCaches();
   clearEmbeddedBenchmarkCaches();
 }
 

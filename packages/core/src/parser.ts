@@ -186,7 +186,7 @@ function parseAspDocumentSkeletonTypeScript(
       const attributeText = hasExplicitName ? rest.join(" ") : normalized;
       return {
         offset: region.start,
-        range: rangeFromOffsets(text, region.start, region.end),
+        range: rangeFromOffsetsLinear(text, region.start, region.end),
         name,
         attributes: parseAttributes(attributeText),
       };
@@ -211,25 +211,29 @@ function parseAspDocumentSkeletonTypeScript(
           : "vbscript",
     };
   });
+  const directiveByOffset = new Map(directives.map((directive) => [directive.offset, directive]));
   const regions = buildRegions(text, [...inlineRegions, ...scriptRegions], defaultLanguage);
+  for (const region of regions) {
+    const directive = directiveByOffset.get(region.start);
+    if (directive) {
+      region.attributes = directive.attributes;
+    }
+  }
   const nodes: AspCstNode[] = [
     ...regions.map(skeletonRegionToNode),
     ...includes.map((include) => skeletonIncludeToNode(text, include)),
   ].sort(
     (left, right) => left.start - right.start || left.end - left.start - (right.end - right.start),
   );
-  for (const directive of directives) {
-    const node = nodes.find(
-      (item) => item.start === directive.offset && item.kind === "AspDirective",
-    );
-    if (node) {
-      node.directive = directive;
-      node.attributes = directive.attributes;
+  for (const node of nodes) {
+    if (node.kind === "AspDirective") {
+      const directive = directiveByOffset.get(node.start);
+      if (directive) {
+        node.directive = directive;
+        node.attributes = directive.attributes;
+      }
     }
   }
-  const topLevelRegions = nodes
-    .map(nodeToRegion)
-    .filter((region): region is AspRegion => region !== undefined);
   const cst: AspCstNode = {
     kind: "Document",
     start: 0,
@@ -249,7 +253,7 @@ function parseAspDocumentSkeletonTypeScript(
     uri,
     text,
     cst,
-    regions: topLevelRegions,
+    regions,
     directives,
     includes,
     serverObjects,
@@ -984,6 +988,29 @@ function skeletonIncludeToNode(text: string, include: AspInclude): AspCstNode {
     children: [],
     include,
   };
+}
+
+function rangeFromOffsetsLinear(text: string, start: number, end: number) {
+  const safeStart = Math.max(0, Math.min(start, text.length));
+  const safeEnd = Math.max(0, Math.min(end, text.length));
+  let line = 0;
+  let lineStart = 0;
+  let startPosition = { line: 0, character: safeStart };
+  let endPosition = { line: 0, character: safeEnd };
+  for (let index = 0; index <= safeEnd; index += 1) {
+    if (index === safeStart) {
+      startPosition = { line, character: index - lineStart };
+    }
+    if (index === safeEnd) {
+      endPosition = { line, character: index - lineStart };
+      break;
+    }
+    if (text.charCodeAt(index) === 10) {
+      line += 1;
+      lineStart = index + 1;
+    }
+  }
+  return { start: startPosition, end: endPosition };
 }
 
 function parseCacheKey(uri: string, settings: AspSettings): string {

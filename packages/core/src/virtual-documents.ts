@@ -47,12 +47,7 @@ export function buildVirtualDocuments(
   return result;
 }
 
-const virtualDocumentLanguages: AspEmbeddedLanguage[] = [
-  "html",
-  "css",
-  "javascript",
-  "jscript",
-];
+const virtualDocumentLanguages: AspEmbeddedLanguage[] = ["html", "css", "javascript", "jscript"];
 
 let virtualDocumentsByParsed = new WeakMap<
   AspParsedDocument,
@@ -139,7 +134,10 @@ function sortedRegionsBySource(regions: AspRegion[]): AspRegion[] {
   for (let index = 1; index < regions.length; index += 1) {
     const previous = regions[index - 1];
     const current = regions[index];
-    if (previous.start > current.start || (previous.start === current.start && previous.end > current.end)) {
+    if (
+      previous.start > current.start ||
+      (previous.start === current.start && previous.end > current.end)
+    ) {
       return sortRegionsBySource(regions);
     }
   }
@@ -338,14 +336,14 @@ function preserveLineEndingsRange(text: string, start: number, end: number, fill
   const chunks: string[] = [];
   let runStart = start;
   for (let index = start; index < end; index += 1) {
-    const char = text[index];
-    if (char !== "\r" && char !== "\n") {
+    const code = text.charCodeAt(index);
+    if (code !== 13 && code !== 10) {
       continue;
     }
     if (runStart < index) {
       chunks.push(fill.repeat(index - runStart));
     }
-    chunks.push(char);
+    chunks.push(text[index]);
     runStart = index + 1;
   }
   if (runStart < end) {
@@ -478,7 +476,7 @@ export function createSourceMap(
   virtualText: string,
   segments: SourceMapSegment[],
 ): SourceMap {
-  const sourceSegments = sourceSegmentsForLookup(segments);
+  let sourceSegments: SourceMapSegment[] | undefined;
   const map = {
     segments,
     toSourceOffset(offset: number): number | undefined {
@@ -489,6 +487,7 @@ export function createSourceMap(
       return segment.sourceStart + (offset - segment.virtualStart);
     },
     toVirtualOffset(offset: number): number | undefined {
+      sourceSegments ??= sourceSegmentsForLookup(segments);
       const segment = findSegmentContaining(sourceSegments, offset, "source");
       if (!segment) {
         return undefined;

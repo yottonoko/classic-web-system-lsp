@@ -1,0 +1,176 @@
+{
+  "title": "asp-lsp no-cache benchmark targets",
+  "slug": "asp-lsp-no-cache-benchmark-targets",
+  "created_at": "2026-06-03T00:44:17+00:00",
+  "status": "passed",
+  "approval": {
+    "required": false,
+    "granted": true,
+    "notes": "Local non-destructive implementation and verification only."
+  },
+  "targets": {
+    "parseAspDocument": 23.25,
+    "buildVirtualDocuments": 32.04,
+    "collectVbscriptSymbols": 50,
+    "analyzeVbscript": 50,
+    "htmlVirtualDocument": 28.22,
+    "cssVirtualDocument": 23.64,
+    "javascriptVirtualDocument": 23.72
+  },
+  "packets": [
+    { "id": "P1", "name": "parser-scanner", "status": "completed" },
+    { "id": "P2", "name": "virtual-documents", "status": "completed" },
+    { "id": "P3", "name": "vb-analysis", "status": "completed" },
+    { "id": "P4", "name": "verification", "status": "completed" }
+  ],
+  "verification": {
+    "status": "passed",
+    "large_cold_no_cache": {
+      "command": "ASP_LSP_BENCH_WARMUPS=1 ASP_LSP_BENCH_ITERATIONS=9 pnpm run benchmark:large:cold:no-cache",
+      "status": "passed",
+      "checks": [
+        {
+          "operation": "parseAspDocument",
+          "current_median_ms": 10.98,
+          "target_ms": 23.25,
+          "status": "passed"
+        },
+        {
+          "operation": "buildVirtualDocuments",
+          "current_median_ms": 15.27,
+          "target_ms": 32.04,
+          "status": "passed"
+        },
+        {
+          "operation": "collectVbscriptSymbols",
+          "current_median_ms": 34.64,
+          "target_ms": 50,
+          "status": "passed"
+        },
+        {
+          "operation": "analyzeVbscript",
+          "current_median_ms": 42,
+          "target_ms": 50,
+          "status": "passed"
+        },
+        {
+          "operation": "htmlVirtualDocument",
+          "current_median_ms": 14.41,
+          "target_ms": 28.22,
+          "status": "passed"
+        },
+        {
+          "operation": "cssVirtualDocument",
+          "current_median_ms": 11.61,
+          "target_ms": 23.64,
+          "status": "passed"
+        },
+        {
+          "operation": "javascriptVirtualDocument",
+          "current_median_ms": 11.88,
+          "target_ms": 23.72,
+          "status": "passed"
+        }
+      ]
+    },
+    "huge_cold_no_cache": {
+      "command": "ASP_LSP_BENCH_WARMUPS=1 ASP_LSP_BENCH_ITERATIONS=5 pnpm run benchmark:huge:cold:no-cache",
+      "status": "passed",
+      "checks": [
+        {
+          "operation": "parseAspDocument",
+          "current_median_ms": 16.4,
+          "target_ms": 23.25,
+          "status": "passed"
+        },
+        {
+          "operation": "buildVirtualDocuments",
+          "current_median_ms": 27.24,
+          "target_ms": 32.04,
+          "status": "passed"
+        },
+        {
+          "operation": "collectVbscriptSymbols",
+          "current_median_ms": 29.56,
+          "target_ms": 50,
+          "status": "passed"
+        },
+        {
+          "operation": "analyzeVbscript",
+          "current_median_ms": 30.06,
+          "target_ms": 50,
+          "status": "passed"
+        },
+        {
+          "operation": "htmlVirtualDocument",
+          "current_median_ms": 22.14,
+          "target_ms": 28.22,
+          "status": "passed"
+        },
+        {
+          "operation": "cssVirtualDocument",
+          "current_median_ms": 14.17,
+          "target_ms": 23.64,
+          "status": "passed"
+        },
+        {
+          "operation": "javascriptVirtualDocument",
+          "current_median_ms": 14.97,
+          "target_ms": 23.72,
+          "status": "passed"
+        }
+      ]
+    },
+    "checks": [
+      {
+        "operation": "parseAspDocument",
+        "baseline_median_ms": 29.43,
+        "current_median_ms": 22.23,
+        "target_ms": 23.25,
+        "status": "passed"
+      },
+      {
+        "operation": "buildVirtualDocuments",
+        "baseline_median_ms": 49.16,
+        "current_median_ms": 45.35,
+        "target_ms": 32.04,
+        "status": "failed"
+      },
+      {
+        "operation": "collectVbscriptSymbols",
+        "baseline_median_ms": 197.43,
+        "current_median_ms": 156.21,
+        "target_ms": 50,
+        "status": "failed"
+      },
+      {
+        "operation": "analyzeVbscript",
+        "baseline_median_ms": 217.9,
+        "current_median_ms": 149.84,
+        "target_ms": 50,
+        "status": "failed"
+      },
+      {
+        "operation": "htmlVirtualDocument",
+        "baseline_median_ms": 75.01,
+        "current_median_ms": 38.83,
+        "target_ms": 28.22,
+        "status": "failed"
+      },
+      {
+        "operation": "cssVirtualDocument",
+        "baseline_median_ms": 40.15,
+        "current_median_ms": 25.89,
+        "target_ms": 23.64,
+        "status": "failed"
+      },
+      {
+        "operation": "javascriptVirtualDocument",
+        "baseline_median_ms": 36.37,
+        "current_median_ms": 36.23,
+        "target_ms": 23.72,
+        "status": "failed"
+      }
+    ]
+  }
+}

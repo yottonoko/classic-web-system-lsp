@@ -108,7 +108,9 @@ const sampleConfigs = new Map([
 
 export async function runEmbeddedOperation(operation, source, core) {
   const parsed = await core.parseAspDocumentAsync(source.uri, source.text);
-  parsedTextFingerprints.set(parsed, source.fingerprint ?? textFingerprint(source.text));
+  if (!operation.endsWith("VirtualDocument")) {
+    parsedTextFingerprints.set(parsed, source.fingerprint ?? textFingerprint(source.text));
+  }
   return runEmbeddedOperationForParsed(operation, parsed, core);
 }
 

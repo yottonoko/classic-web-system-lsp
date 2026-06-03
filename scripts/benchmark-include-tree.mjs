@@ -53,26 +53,35 @@ const sourceStats = summarizeSources(sourceRefs);
 
 await runBenchmark("parseAspDocument", (run) =>
   measureAcrossSources(sourcesForRun("parseAspDocument", run), async (source) => {
-    await runSourceBenchmark(() => parseAspDocumentAsync(source.uri, source.text));
+    await runSourceBenchmark(() => parseAspDocumentAsync(source.uri, source.text), clearCoreCaches);
   }),
 );
 
 await runBenchmark("buildVirtualDocuments", (run) =>
-  measureAcrossParsedSources(sourcesForRun("buildVirtualDocuments", run), (parsed) => {
-    buildVirtualDocuments(parsed);
-  }),
+  measureAcrossParsedSources(
+    sourcesForRun("buildVirtualDocuments", run),
+    (parsed) => {
+      buildVirtualDocuments(parsed);
+    },
+    undefined,
+    clearCoreCaches,
+  ),
 );
 
 await runBenchmark("collectVbscriptSymbols", (run) =>
   measureAcrossSources(sourcesForRun("collectVbscriptSymbols", run), async (source) => {
-    await runSourceBenchmark(() => collectVbscriptSymbolsFromTextAsync(source.uri, source.text));
+    await runSourceBenchmark(
+      () => collectVbscriptSymbolsFromTextAsync(source.uri, source.text),
+      clearCoreCaches,
+    );
   }),
 );
 
 await runBenchmark("analyzeVbscript", (run) =>
   measureAcrossSources(sourcesForRun("analyzeVbscript", run), async (source) => {
-    await runSourceBenchmark(() =>
-      analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext()),
+    await runSourceBenchmark(
+      () => analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext()),
+      clearCoreCaches,
     );
   }),
 );
@@ -194,7 +203,12 @@ async function measureAcrossSources(sources, callback) {
   return performance.now() - start;
 }
 
-async function measureAcrossParsedSources(parsedDocuments, callback, afterBatch) {
+async function measureAcrossParsedSources(
+  parsedDocuments,
+  callback,
+  afterBatch,
+  clearCaches = clearAllCaches,
+) {
   const start = performance.now();
   await runBounded(
     parsedDocuments,
@@ -202,27 +216,31 @@ async function measureAcrossParsedSources(parsedDocuments, callback, afterBatch)
       await runSourceBenchmark(async () => {
         const parsed = await parseAspDocumentAsync(source.uri, source.text);
         await callback(parsed);
-      });
+      }, clearCaches);
     },
     afterBatch,
   );
   return performance.now() - start;
 }
 
-async function runSourceBenchmark(action) {
+async function runSourceBenchmark(action, clearCaches) {
   if (!disableCaches) {
     return action();
   }
-  clearBenchmarkCaches();
+  clearCaches();
   try {
     return await action();
   } finally {
-    clearBenchmarkCaches();
+    clearCaches();
   }
 }
 
-function clearBenchmarkCaches() {
+function clearCoreCaches() {
   core.clearAspCoreCaches?.();
+}
+
+function clearAllCaches() {
+  clearCoreCaches();
   clearEmbeddedBenchmarkCaches();
 }
 

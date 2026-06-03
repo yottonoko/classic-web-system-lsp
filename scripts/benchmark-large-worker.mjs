@@ -34,8 +34,11 @@ parentPort.on("message", async (message) => {
         },
       }
     : {};
+  const clearCaches = embeddedOperationNames.includes(message.operation)
+    ? clearAllCaches
+    : clearCoreCaches;
   try {
-    await runSourceBenchmark(message.disableCaches, async () => {
+    await runSourceBenchmark(message.disableCaches, clearCaches, async () => {
       if (message.operation === "parseAspDocument") {
         await parseAspDocumentAsync(message.source.uri, message.source.text);
       } else if (message.operation === "buildVirtualDocuments") {
@@ -64,19 +67,23 @@ parentPort.on("message", async (message) => {
   }
 });
 
-async function runSourceBenchmark(disableCaches, action) {
+async function runSourceBenchmark(disableCaches, clearCaches, action) {
   if (!disableCaches) {
     return action();
   }
-  clearBenchmarkCaches();
+  clearCaches();
   try {
     return await action();
   } finally {
-    clearBenchmarkCaches();
+    clearCaches();
   }
 }
 
-function clearBenchmarkCaches() {
+function clearCoreCaches() {
   clearAspCoreCaches?.();
+}
+
+function clearAllCaches() {
+  clearCoreCaches();
   clearEmbeddedBenchmarkCaches();
 }

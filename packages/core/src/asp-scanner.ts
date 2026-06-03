@@ -91,19 +91,20 @@ export function scanHtmlAndAsp(
     if (!tag.closing) {
       const styleAttributeRegions = styleAttributeRegionsFromTag(tag);
       tagRegions.push(...styleAttributeRegions);
-      const serverObject = serverObjectFromTag(text, tag);
-      if (serverObject) {
-        serverObjects.push(serverObject);
+      if (tag.name === "object") {
+        const serverObject = serverObjectFromTag(text, tag);
+        if (serverObject) {
+          serverObjects.push(serverObject);
+        }
       }
-      inlineRegions.push(
-        ...scanAspRegionsInRange(
-          text,
-          tag.attributesStart,
-          tag.attributesEnd,
-          diagnostics,
-          settings,
-          scriptLanguage,
-        ),
+      appendAspRegionsInRange(
+        inlineRegions,
+        text,
+        tag.attributesStart,
+        tag.attributesEnd,
+        diagnostics,
+        settings,
+        scriptLanguage,
       );
     }
     if ((tag.name === "script" || tag.name === "style") && !tag.closing && !tag.selfClosing) {
@@ -111,15 +112,14 @@ export function scanHtmlAndAsp(
       if (close) {
         const region = elementRegionFromTag(tag, close);
         tagRegions.push(region);
-        inlineRegions.push(
-          ...scanAspRegionsInRange(
-            text,
-            tag.end,
-            close.start,
-            diagnostics,
-            settings,
-            scriptLanguage,
-          ),
+        appendAspRegionsInRange(
+          inlineRegions,
+          text,
+          tag.end,
+          close.start,
+          diagnostics,
+          settings,
+          scriptLanguage,
         );
         cursor = close.end;
         continue;
@@ -152,6 +152,29 @@ function scanAspRegionsInRange(
     cursor = Math.max(region.end, next + 2);
   }
   return regions;
+}
+
+function appendAspRegionsInRange(
+  regions: AspRegion[],
+  text: string,
+  start: number,
+  end: number,
+  diagnostics: AspParsedDocument["diagnostics"],
+  settings: AspSettings = {},
+  scriptLanguage: AspScriptScanLanguage = normalizeScriptLanguage(
+    settings.defaultLanguage ?? "VBScript",
+  ),
+): void {
+  let cursor = start;
+  while (cursor < end) {
+    const next = text.indexOf("<%", cursor);
+    if (next === -1 || next >= end) {
+      break;
+    }
+    const region = parseAspRegionAt(text, next, diagnostics, end, settings, scriptLanguage);
+    regions.push(region);
+    cursor = Math.max(region.end, next + 2);
+  }
 }
 
 function parseAspRegionAt(
@@ -267,7 +290,7 @@ function readHtmlTag(
     attributeSpans,
     closing,
     selfClosing: parseAttributes
-      ? text.slice(attributesStart, attributesEnd).trimEnd().endsWith("/")
+      ? isSelfClosingTagText(text, attributesStart, attributesEnd)
       : false,
   };
 }
@@ -541,11 +564,14 @@ function isClosingTagAt(text: string, index: number, tagName: string): boolean {
 function parseIncludeComment(text: string, start: number, end: number): AspInclude | undefined {
   const contentStart = start + 4;
   const contentEnd = Math.max(contentStart, end - 3);
-  const commentBody = text.slice(contentStart, contentEnd);
-  const leadingWhitespace = commentBody.match(/^\s*/)?.[0].length ?? 0;
-  const bodyStart = contentStart + leadingWhitespace;
-  const body = commentBody.slice(leadingWhitespace).trimEnd();
-  if (!body.toLowerCase().startsWith("#include")) {
+  let bodyStart = contentStart;
+  while (bodyStart < contentEnd && isHtmlWhitespaceCode(text.charCodeAt(bodyStart))) {
+    bodyStart += 1;
+  }
+  if (
+    bodyStart + "#include".length > contentEnd ||
+    !equalsAsciiCaseInsensitive(text, bodyStart, "#include")
+  ) {
     return undefined;
   }
   const directiveStart = bodyStart;
@@ -570,8 +596,8 @@ function parseIncludeComment(text: string, start: number, end: number): AspInclu
     const rawValueStart = attributeTextStart + match.index + match[0].indexOf(rawValue);
     const candidate = {
       path: value,
-      modeRange: rangeFromOffsets(text, nameStart, nameStart + match[1].length),
-      pathRange: rangeFromOffsets(text, rawValueStart, rawValueStart + rawValue.length),
+      modeRange: rangeFromOffsetsLinear(text, nameStart, nameStart + match[1].length),
+      pathRange: rangeFromOffsetsLinear(text, rawValueStart, rawValueStart + rawValue.length),
     };
     if (mode === "file") {
       file = candidate;
@@ -584,10 +610,10 @@ function parseIncludeComment(text: string, start: number, end: number): AspInclu
   return chosenMode && chosen
     ? {
         offset: start,
-        range: rangeFromOffsets(text, start, end),
+        range: rangeFromOffsetsLinear(text, start, end),
         mode: chosenMode,
         path: chosen.path,
-        directiveRange: rangeFromOffsets(text, directiveStart, directiveEnd),
+        directiveRange: rangeFromOffsetsLinear(text, directiveStart, directiveEnd),
         modeRange: chosen.modeRange,
         pathRange: chosen.pathRange,
       }
@@ -632,6 +658,50 @@ function containsAsciiCaseInsensitive(
     if (matched) {
       return true;
     }
+  }
+  return false;
+}
+
+function equalsAsciiCaseInsensitive(text: string, start: number, expected: string): boolean {
+  for (let index = 0; index < expected.length; index += 1) {
+    const code = text.charCodeAt(start + index);
+    const lowerCode = code >= 65 && code <= 90 ? code + 32 : code;
+    if (lowerCode !== expected.charCodeAt(index)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function rangeFromOffsetsLinear(text: string, start: number, end: number) {
+  const safeStart = Math.max(0, Math.min(start, text.length));
+  const safeEnd = Math.max(0, Math.min(end, text.length));
+  let line = 0;
+  let lineStart = 0;
+  let startPosition = { line: 0, character: safeStart };
+  let endPosition = { line: 0, character: safeEnd };
+  for (let index = 0; index <= safeEnd; index += 1) {
+    if (index === safeStart) {
+      startPosition = { line, character: index - lineStart };
+    }
+    if (index === safeEnd) {
+      endPosition = { line, character: index - lineStart };
+      break;
+    }
+    if (text.charCodeAt(index) === 10) {
+      line += 1;
+      lineStart = index + 1;
+    }
+  }
+  return { start: startPosition, end: endPosition };
+}
+
+function isSelfClosingTagText(text: string, start: number, end: number): boolean {
+  for (let cursor = end - 1; cursor >= start; cursor -= 1) {
+    if (isHtmlWhitespaceCode(text.charCodeAt(cursor))) {
+      continue;
+    }
+    return text.charCodeAt(cursor) === 47;
   }
   return false;
 }

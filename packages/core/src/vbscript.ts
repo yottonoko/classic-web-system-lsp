@@ -23,7 +23,7 @@ import type {
   TextEdit,
 } from "vscode-languageserver-types";
 import { offsetAt, positionAt, rangeFromOffsets } from "./position";
-import { hydrateVbscriptCst, needsVbscriptCstHydration, parseAspDocument } from "./parser";
+import { hydrateVbscriptCst, needsVbscriptCstHydration, parseAspDocumentAsync } from "./parser";
 import { createLocalizer } from "./localize";
 import builtinCatalogData from "./vbscript-builtin-catalog.json";
 import type {
@@ -1813,7 +1813,26 @@ export async function analyzeVbscriptFromTextAsync(
   if (cached) {
     return cached;
   }
-  const result = analyzeVbscriptTypeScript(parseAspDocument(uri, text, settings), context);
+  const parsed = await parseAspDocumentAsync(uri, text, settings);
+  const fastSymbolOptions: VbSymbolCollectionOptions = {
+    documentation: false,
+    expressionDocuments: false,
+    implicitAssignments: false,
+    inferTypes: false,
+    typeAnnotations: false,
+    variantFallback: false,
+  };
+  const analysisContext =
+    context.symbols || context.typeChecking === "strict"
+      ? context
+      : {
+          ...context,
+          callSyntaxDiagnostics: false,
+          declarationSyntaxDiagnostics: false,
+          unusedDiagnostics: context.unusedDiagnostics ?? false,
+          symbols: collectVbscriptSymbolsTypeScript(parsed, context, fastSymbolOptions),
+        };
+  const result = analyzeVbscriptTypeScript(parsed, analysisContext);
   if (cacheKey) {
     setVbFromTextCache(cacheKey, text, result);
   }
@@ -1824,28 +1843,33 @@ function analyzeVbscriptTypeScript(
   parsed: AspParsedDocument,
   context: VbProjectContext,
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
+  const declarationSyntaxDiagnostics = (context as VbInternalProjectContext)
+    .declarationSyntaxDiagnostics;
+  const callSyntaxDiagnostics = (context as VbInternalProjectContext).callSyntaxDiagnostics;
   const symbols = measureVbDebugStep(
     context,
     "symbols",
     () => context.symbols ?? collectVbscriptSymbolsTypeScript(parsed, context, {}),
   );
   const diagnostics: Diagnostic[] = [];
-  diagnostics.push(
-    ...measureVbDebugStep(context, "declarationSyntax", () =>
-      diagnoseDeclarationSyntax(parsed, context.locale),
-    ),
+  if (declarationSyntaxDiagnostics !== false) {
+    diagnostics.push(
+      ...measureVbDebugStep(context, "declarationSyntax", () =>
+        diagnoseDeclarationSyntax(parsed, context.locale),
+      ),
+    );
+  }
+  if (callSyntaxDiagnostics !== false) {
+    diagnostics.push(
+      ...measureVbDebugStep(context, "callSyntax", () =>
+        diagnoseCallSyntax(parsed, symbols, context.locale),
+      ),
+    );
+  }
+  const optionExplicit = measureVbDebugStep(context, "optionExplicit", () =>
+    hasOptionExplicit(parsed),
   );
-  diagnostics.push(
-    ...measureVbDebugStep(context, "callSyntax", () =>
-      diagnoseCallSyntax(parsed, symbols, context.locale),
-    ),
-  );
-  const scriptText = measureVbDebugStep(
-    context,
-    "serverScriptText",
-    () => snapshotFor(parsed).serverScriptText,
-  );
-  if (/^\s*Option\s+Explicit\b/im.test(scriptText)) {
+  if (optionExplicit) {
     diagnostics.push(
       ...measureVbDebugStep(context, "undeclaredVariables", () =>
         diagnoseUndeclaredVariables(parsed, symbols, context.locale),
@@ -3056,11 +3080,15 @@ export async function collectVbscriptSymbolsFromTextAsync(
   if (cached) {
     return cached;
   }
-  const result = collectVbscriptSymbolsTypeScript(
-    parseAspDocument(uri, text, settings),
-    context,
-    {},
-  );
+  const parsed = await parseAspDocumentAsync(uri, text, settings);
+  const result = collectVbscriptSymbolsTypeScript(parsed, context, {
+    documentation: false,
+    expressionDocuments: false,
+    implicitAssignments: false,
+    inferTypes: false,
+    typeAnnotations: false,
+    variantFallback: false,
+  });
   if (cacheKey) {
     setVbFromTextCache(cacheKey, text, result);
   }
@@ -3073,14 +3101,21 @@ function collectVbscriptSymbolsTypeScript(
   options: VbSymbolCollectionOptions,
 ): VbSymbol[] {
   const symbols: VbSymbol[] = [];
-  for (const node of vbDocuments(parsed)) {
-    addSymbolsFromVbNode(parsed, node, symbols, createDocCommentLookup(node));
+  for (const node of vbDocumentsForSymbolCollection(parsed, options)) {
+    addSymbolsFromVbNode(
+      parsed,
+      node,
+      symbols,
+      options.documentation === false ? undefined : createDocCommentLookup(node),
+    );
   }
   addServerObjectSymbols(parsed, symbols);
   if (options.implicitAssignments !== false) {
     addImplicitAssignmentSymbols(parsed, symbols);
   }
-  applyTypeAnnotations(parsed, symbols);
+  if (options.typeAnnotations !== false) {
+    applyTypeAnnotations(parsed, symbols);
+  }
   if (options.inferTypes !== false) {
     inferAssignedTypes(parsed, symbols, context);
   }
@@ -3091,9 +3126,17 @@ function collectVbscriptSymbolsTypeScript(
 }
 
 interface VbSymbolCollectionOptions {
+  documentation?: boolean;
+  expressionDocuments?: boolean;
   implicitAssignments?: boolean;
   inferTypes?: boolean;
+  typeAnnotations?: boolean;
   variantFallback?: boolean;
+}
+
+interface VbInternalProjectContext extends VbProjectContext {
+  callSyntaxDiagnostics?: boolean;
+  declarationSyntaxDiagnostics?: boolean;
 }
 
 interface VbDocCommentLookup {
@@ -3140,7 +3183,11 @@ export async function summarizeAspFileAnalysisFromTextAsync(
   if (cached) {
     return cached;
   }
-  const result = summarizeAspFileAnalysisTypeScript(parseAspDocument(uri, text, settings), context);
+  const parsed = await parseAspDocumentAsync(uri, text, settings);
+  const result = summarizeAspFileAnalysisTypeScript(
+    await ensureVbscriptCstForAsyncAnalysis(parsed),
+    context,
+  );
   if (cacheKey) {
     setVbFromTextCache(cacheKey, text, result);
   }
@@ -3500,7 +3547,7 @@ function addSymbolsFromVbNode(
   parsed: AspParsedDocument,
   node: VbCstNode,
   symbols: VbSymbol[],
-  docCommentLookup: VbDocCommentLookup,
+  docCommentLookup: VbDocCommentLookup | undefined,
   currentScopeName?: string,
   currentScopeRange?: Range,
   currentClassName?: string,
@@ -3510,7 +3557,9 @@ function addSymbolsFromVbNode(
       ? rangeFromOffsets(parsed.text, node.start, node.end)
       : undefined;
   if (node.kind === "Class" && node.nameToken) {
-    const documentation = documentationForNode(parsed, node, docCommentLookup);
+    const documentation = docCommentLookup
+      ? documentationForNode(parsed, node, docCommentLookup)
+      : undefined;
     symbols.push({
       name: node.nameToken.text,
       kind: "class",
@@ -3521,7 +3570,9 @@ function addSymbolsFromVbNode(
     });
   }
   if ((node.kind === "Procedure" || node.kind === "Property") && node.nameToken) {
-    const documentation = documentationForNode(parsed, node, docCommentLookup);
+    const documentation = docCommentLookup
+      ? documentationForNode(parsed, node, docCommentLookup)
+      : undefined;
     const scopeRange = nodeScopeRange;
     const name = node.nameToken.text;
     const kind: VbSymbolKind =
@@ -3583,14 +3634,16 @@ function addSymbolsFromVbNode(
       (memberOf ? rangeFromOffsets(parsed.text, node.start, node.end) : undefined);
     const identifiers = node.identifiers ?? (node.nameToken ? [node.nameToken] : []);
     const variableDocumentation =
-      identifiers.length === 1 ? documentationForNode(parsed, node, docCommentLookup) : undefined;
+      docCommentLookup && identifiers.length === 1
+        ? documentationForNode(parsed, node, docCommentLookup)
+        : undefined;
     for (const identifier of identifiers) {
       const array = node.arrayDeclarations?.find(
         (item) => item.name.start === identifier.start && item.name.end === identifier.end,
       );
       const documentation =
         variableDocumentation ??
-        (identifiers.length === 1
+        (docCommentLookup && identifiers.length === 1
           ? trailingPlainCommentDocumentation(parsed, docCommentLookup, identifier)
           : undefined);
       symbols.push({
@@ -3660,8 +3713,15 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
     return;
   }
   const existingSymbols = new Map<string, VbSymbol[]>();
+  const symbolsByLowerName = new Map<string, VbSymbol[]>();
+  const visibleTopLevelNames = new Set<string>();
   for (const symbol of symbols) {
     pushMapItem(existingSymbols, implicitAssignmentSymbolKey(symbol), symbol);
+    const lowerName = symbol.name.toLowerCase();
+    pushMapItem(symbolsByLowerName, lowerName, symbol);
+    if (symbol.sourceUri === parsed.uri && !symbol.scopeRange) {
+      visibleTopLevelNames.add(lowerName);
+    }
   }
   for (const statement of vbStatements(parsed)) {
     const first = lowerToken(statement[0]);
@@ -3685,12 +3745,13 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
       continue;
     }
     const lowerTarget = target.text.toLowerCase();
+    if (visibleTopLevelNames.has(lowerTarget)) {
+      continue;
+    }
     if (
-      symbols.some(
-        (symbol) =>
-          symbol.name.toLowerCase() === lowerTarget &&
-          isSymbolVisibleAt(symbol, parsed.uri, parsed.text, target.start),
-      )
+      symbolsByLowerName
+        .get(lowerTarget)
+        ?.some((symbol) => isSymbolVisibleAt(symbol, parsed.uri, parsed.text, target.start))
     ) {
       continue;
     }
@@ -3719,6 +3780,7 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
     };
     symbols.push(symbol);
     pushMapItem(existingSymbols, implicitAssignmentSymbolKey(symbol), symbol);
+    pushMapItem(symbolsByLowerName, lowerTarget, symbol);
   }
 }
 
@@ -3741,7 +3803,14 @@ function implicitAssignmentKey(
 }
 
 function hasOptionExplicit(parsed: AspParsedDocument): boolean {
-  return /^\s*Option\s+Explicit\b/im.test(getServerScriptText(parsed));
+  for (const region of serverRegions(parsed)) {
+    if (
+      /^\s*Option\s+Explicit\b/im.test(parsed.text.slice(region.contentStart, region.contentEnd))
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isImplicitKeywordName(name: string): boolean {
@@ -5343,8 +5412,27 @@ function computeVbDocuments(parsed: AspParsedDocument): VbCstNode[] {
   return documents;
 }
 
-function flattenVbNodes(node: VbCstNode): VbCstNode[] {
-  return [node, ...node.children.flatMap((child) => flattenVbNodes(child))];
+function vbDocumentsForSymbolCollection(
+  parsed: AspParsedDocument,
+  options: VbSymbolCollectionOptions,
+): VbCstNode[] {
+  if (options.expressionDocuments !== false || !needsVbscriptCstHydration(parsed)) {
+    return vbDocuments(parsed);
+  }
+  const documents: VbCstNode[] = [];
+  for (const region of serverRegions(parsed)) {
+    if (region.kind === "asp-expression") {
+      continue;
+    }
+    documents.push(
+      parseVbscriptCst(
+        parsed.text.slice(region.contentStart, region.contentEnd),
+        parsed.text,
+        region.contentStart,
+      ),
+    );
+  }
+  return documents;
 }
 
 function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
@@ -5353,16 +5441,28 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
     return cached;
   }
   const documents = computeVbDocuments(parsed);
-  const nodes = documents.flatMap((document) => flattenVbNodes(document));
-  const scopeNodes = nodes.filter((node) => node.kind === "Procedure" || node.kind === "Property");
-  const classNodes = nodes.filter((node) => node.kind === "Class");
+  const nodes: VbCstNode[] = [];
+  const scopeNodes: VbCstNode[] = [];
+  const classNodes: VbCstNode[] = [];
+  for (const document of documents) {
+    collectVbNodes(document, nodes, scopeNodes, classNodes);
+  }
   const serverScriptText = serverRegions(parsed)
     .map((region) => parsed.text.slice(region.contentStart, region.contentEnd))
     .join("\n");
-  const significantTokens = documents
-    .flatMap((document) => document.tokens)
-    .filter((token) => !isTriviaToken(token));
-  const identifierTokens = significantTokens.filter((token) => token.kind === "identifier");
+  const significantTokens: VbToken[] = [];
+  const identifierTokens: VbToken[] = [];
+  for (const document of documents) {
+    for (const token of document.tokens) {
+      if (isTriviaToken(token)) {
+        continue;
+      }
+      significantTokens.push(token);
+      if (token.kind === "identifier") {
+        identifierTokens.push(token);
+      }
+    }
+  }
   const statements = computeVbStatements(documents);
   const declarationTokens = new Set<VbToken>();
   for (const node of nodes) {
@@ -5400,6 +5500,23 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
   };
   analysisSnapshots.set(parsed, snapshot);
   return snapshot;
+}
+
+function collectVbNodes(
+  node: VbCstNode,
+  nodes: VbCstNode[],
+  scopeNodes: VbCstNode[],
+  classNodes: VbCstNode[],
+): void {
+  nodes.push(node);
+  if (node.kind === "Procedure" || node.kind === "Property") {
+    scopeNodes.push(node);
+  } else if (node.kind === "Class") {
+    classNodes.push(node);
+  }
+  for (const child of node.children) {
+    collectVbNodes(child, nodes, scopeNodes, classNodes);
+  }
 }
 
 function parentClassName(parsed: AspParsedDocument, offset: number): string | undefined {
