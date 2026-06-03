@@ -78,8 +78,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("aspLsp.memoryUsage", async () => showMemoryUsage()),
     vscode.commands.registerCommand("aspLsp.openServerLogs", () => outputChannel?.show()),
     vscode.commands.registerCommand("aspLsp.matchingBrace", async () => goToMatchingBrace()),
-    vscode.commands.registerCommand("aspLsp.parentModule", async () => pickIncludeLocation(parentModuleMethod)),
-    vscode.commands.registerCommand("aspLsp.childModules", async () => pickIncludeLocation(childModulesMethod)),
+    vscode.commands.registerCommand("aspLsp.parentModule", async () =>
+      pickIncludeLocation(parentModuleMethod),
+    ),
+    vscode.commands.registerCommand("aspLsp.childModules", async () =>
+      pickIncludeLocation(childModulesMethod),
+    ),
     vscode.commands.registerCommand("aspLsp.joinLines", async () => applyJoinLines()),
     vscode.commands.registerCommand("aspLsp.onEnter", async () => applyOnEnter()),
     vscode.commands.registerCommand("aspLsp.moveItemUp", async () => applyMoveItem("up")),
@@ -92,6 +96,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       provideTextDocumentContent(uri) {
         return introspectionDocuments.get(uri.toString()) ?? "";
       },
+    }),
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      if (document.uri.scheme === introspectionScheme) {
+        introspectionDocuments.delete(document.uri.toString());
+      }
     }),
     vscode.commands.registerCommand("aspLsp.showReferences", async (uri, position, locations) =>
       showReferences(uri, position, locations),
@@ -188,12 +197,18 @@ async function goToMatchingBrace(): Promise<void> {
       character: editor.selection.active.character,
     },
   });
-  const target = Array.isArray(result) ? toPosition(result[1] ?? result[0]) : toPosition(result);
+  const positions = Array.isArray(result)
+    ? result.map(toPosition).filter((item): item is vscode.Position => Boolean(item))
+    : [];
+  const target = matchingBraceTarget(positions, editor.selection.active);
   if (!target) {
     return;
   }
   editor.selection = new vscode.Selection(target, target);
-  editor.revealRange(new vscode.Range(target, target), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  editor.revealRange(
+    new vscode.Range(target, target),
+    vscode.TextEditorRevealType.InCenterIfOutsideViewport,
+  );
 }
 
 async function pickIncludeLocation(method: string): Promise<void> {
@@ -236,7 +251,9 @@ async function applyJoinLines(): Promise<void> {
       end: { line: selection.end.line, character: selection.end.character },
     })),
   });
-  await applyTextEdits(editor.document.uri, result);
+  if (!(await applyTextEdits(editor.document.uri, result))) {
+    await vscode.commands.executeCommand("editor.action.joinLines");
+  }
 }
 
 async function applyOnEnter(): Promise<void> {
@@ -250,7 +267,17 @@ async function applyOnEnter(): Promise<void> {
     textDocument: { uri: editor.document.uri.toString() },
     position: { line: position.line, character: position.character },
   });
-  await applyTextEdits(editor.document.uri, result);
+  if (!(await applyTextEdits(editor.document.uri, result))) {
+    await vscode.commands.executeCommand("default:type", { text: "\n" });
+    return;
+  }
+  const firstEdit = Array.isArray(result) ? toTextEdit(result[0]) : undefined;
+  const newPosition = firstEdit
+    ? positionAfterInsertedText(position, firstEdit.newText)
+    : undefined;
+  if (newPosition) {
+    editor.selection = new vscode.Selection(newPosition, newPosition);
+  }
 }
 
 async function applyMoveItem(direction: "up" | "down"): Promise<void> {
@@ -265,7 +292,11 @@ async function applyMoveItem(direction: "up" | "down"): Promise<void> {
     position: { line: position.line, character: position.character },
     direction,
   });
-  await applyTextEdits(editor.document.uri, result);
+  if (!(await applyTextEdits(editor.document.uri, result))) {
+    await vscode.commands.executeCommand(
+      direction === "up" ? "editor.action.moveLinesUpAction" : "editor.action.moveLinesDownAction",
+    );
+  }
 }
 
 async function openExternalDocs(uri?: unknown, position?: unknown): Promise<void> {
@@ -315,23 +346,21 @@ async function applySsr(): Promise<void> {
   await applyWorkspaceEdit(result);
 }
 
-async function applyTextEdits(uri: vscode.Uri, edits: unknown): Promise<void> {
+async function applyTextEdits(uri: vscode.Uri, edits: unknown): Promise<boolean> {
   if (!Array.isArray(edits) || edits.length === 0) {
-    return;
+    return false;
   }
   const workspaceEdit = new vscode.WorkspaceEdit();
+  let hasEdit = false;
   for (const edit of edits) {
-    if (!edit || typeof edit !== "object") {
+    const candidate = toTextEdit(edit);
+    if (!candidate) {
       continue;
     }
-    const candidate = edit as { range?: unknown; newText?: unknown };
-    const range = toRange(candidate.range);
-    if (!range || typeof candidate.newText !== "string") {
-      continue;
-    }
-    workspaceEdit.replace(uri, range, candidate.newText);
+    workspaceEdit.replace(uri, candidate.range, candidate.newText);
+    hasEdit = true;
   }
-  await vscode.workspace.applyEdit(workspaceEdit);
+  return hasEdit ? vscode.workspace.applyEdit(workspaceEdit) : false;
 }
 
 async function applyWorkspaceEdit(edit: unknown): Promise<void> {
@@ -371,7 +400,10 @@ function activeDocumentUri(): string | undefined {
   return uri;
 }
 
-async function sendIntrospectionRequest(method: string, params: unknown): Promise<string | undefined> {
+async function sendIntrospectionRequest(
+  method: string,
+  params: unknown,
+): Promise<string | undefined> {
   const result = await sendJsonRequest(method, params);
   if (result === undefined) {
     return undefined;
@@ -434,6 +466,15 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
       ),
     },
     errorHandler: createLanguageClientErrorHandler(),
+    middleware: {
+      async provideHover(document, position, token, next) {
+        const result = await sendJsonRequest("textDocument/hover", {
+          textDocument: { uri: document.uri.toString() },
+          position: { line: position.line, character: position.character },
+        });
+        return toHoverWithActions(result) ?? next(document, position, token);
+      },
+    },
   };
 
   const nextClient = new LanguageClient(
@@ -551,6 +592,23 @@ function toUri(value: unknown): vscode.Uri | undefined {
   return typeof value === "string" ? vscode.Uri.parse(value) : undefined;
 }
 
+function matchingBraceTarget(
+  positions: vscode.Position[],
+  active: vscode.Position,
+): vscode.Position | undefined {
+  const [start, end] = positions;
+  if (!start || !end) {
+    return undefined;
+  }
+  if (active.isEqual(start)) {
+    return end;
+  }
+  if (active.isEqual(end)) {
+    return start;
+  }
+  return end;
+}
+
 function toPosition(value: unknown): vscode.Position | undefined {
   if (value instanceof vscode.Position) {
     return value;
@@ -561,6 +619,17 @@ function toPosition(value: unknown): vscode.Position | undefined {
   const candidate = value as { line?: unknown; character?: unknown };
   return typeof candidate.line === "number" && typeof candidate.character === "number"
     ? new vscode.Position(candidate.line, candidate.character)
+    : undefined;
+}
+
+function toTextEdit(value: unknown): { range: vscode.Range; newText: string } | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const candidate = value as { range?: unknown; newText?: unknown };
+  const range = toRange(candidate.range);
+  return range && typeof candidate.newText === "string"
+    ? { range, newText: candidate.newText }
     : undefined;
 }
 
@@ -575,6 +644,92 @@ function toRange(value: unknown): vscode.Range | undefined {
   const start = toPosition(candidate.start);
   const end = toPosition(candidate.end);
   return start && end ? new vscode.Range(start, end) : undefined;
+}
+
+function positionAfterInsertedText(
+  position: vscode.Position,
+  insertedText: string,
+): vscode.Position {
+  const normalized = insertedText.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  if (lines.length === 1) {
+    return position.translate(0, insertedText.length);
+  }
+  return new vscode.Position(
+    position.line + lines.length - 1,
+    lines[lines.length - 1]?.length ?? 0,
+  );
+}
+
+function toHoverWithActions(value: unknown): vscode.Hover | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const candidate = value as { contents?: unknown; range?: unknown; actions?: unknown };
+  const contents = hoverContentsToMarkdown(candidate.contents);
+  const actionMarkdown = hoverActionsToMarkdown(candidate.actions);
+  if (actionMarkdown) {
+    contents.push(actionMarkdown);
+  }
+  if (contents.length === 0) {
+    return undefined;
+  }
+  return new vscode.Hover(contents, toRange(candidate.range));
+}
+
+function hoverContentsToMarkdown(contents: unknown): vscode.MarkdownString[] {
+  if (Array.isArray(contents)) {
+    return contents.flatMap(hoverContentsToMarkdown);
+  }
+  if (typeof contents === "string") {
+    return [new vscode.MarkdownString(contents)];
+  }
+  if (!contents || typeof contents !== "object") {
+    return [];
+  }
+  const candidate = contents as { kind?: unknown; value?: unknown; language?: unknown };
+  if (typeof candidate.value !== "string") {
+    return [];
+  }
+  if (typeof candidate.language === "string") {
+    const markdown = new vscode.MarkdownString();
+    markdown.appendCodeblock(candidate.value, candidate.language);
+    return [markdown];
+  }
+  return [new vscode.MarkdownString(candidate.value)];
+}
+
+function hoverActionsToMarkdown(actions: unknown): vscode.MarkdownString | undefined {
+  if (!Array.isArray(actions)) {
+    return undefined;
+  }
+  const links = actions
+    .map((action) => {
+      if (!action || typeof action !== "object") {
+        return undefined;
+      }
+      const candidate = action as { title?: unknown; command?: unknown; arguments?: unknown };
+      if (typeof candidate.title !== "string" || typeof candidate.command !== "string") {
+        return undefined;
+      }
+      if (candidate.command !== "aspLsp.externalDocs") {
+        return undefined;
+      }
+      const args = Array.isArray(candidate.arguments) ? candidate.arguments : [];
+      const encodedArgs = encodeURIComponent(JSON.stringify(args));
+      return `[${escapeMarkdownLinkText(candidate.title)}](command:${candidate.command}?${encodedArgs})`;
+    })
+    .filter((link): link is string => Boolean(link));
+  if (links.length === 0) {
+    return undefined;
+  }
+  const markdown = new vscode.MarkdownString(links.join("  \n"));
+  markdown.isTrusted = { enabledCommands: ["aspLsp.externalDocs"] };
+  return markdown;
+}
+
+function escapeMarkdownLinkText(text: string): string {
+  return text.replace(/([\\[\]])/g, "\\$1");
 }
 
 function toLocation(value: unknown): vscode.Location | undefined {
@@ -785,7 +940,7 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "launch.noWorkspace": "Open a workspace before creating launch.json.",
     "launch.created": "Classic ASP launch.json snippet created.",
     "introspection.viewFileText.title": "Classic ASP File Text",
-    "introspection.viewSyntaxTree.title": "Classic ASP Syntax Tree",
+    "introspection.viewSyntaxTree.title": "Classic ASP Parsed JSON",
     "introspection.analyzerStatus.title": "Classic ASP Analyzer Status",
     "introspection.memoryUsage.title": "Classic ASP Memory Usage",
     "introspection.noActiveEditor": "Open an editor before running this command.",
@@ -804,7 +959,7 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "launch.noWorkspace": "launch.json を作成する前に workspace を開いてください。",
     "launch.created": "Classic ASP の launch.json snippet を作成しました。",
     "introspection.viewFileText.title": "Classic ASP file text",
-    "introspection.viewSyntaxTree.title": "Classic ASP syntax tree",
+    "introspection.viewSyntaxTree.title": "Classic ASP parsed JSON",
     "introspection.analyzerStatus.title": "Classic ASP analyzer status",
     "introspection.memoryUsage.title": "Classic ASP memory usage",
     "introspection.noActiveEditor": "この command を実行する前に editor を開いてください。",

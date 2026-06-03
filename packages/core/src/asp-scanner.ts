@@ -130,30 +130,6 @@ export function scanHtmlAndAsp(
   return { inlineRegions, tagRegions, includes, serverObjects };
 }
 
-function scanAspRegionsInRange(
-  text: string,
-  start: number,
-  end: number,
-  diagnostics: AspParsedDocument["diagnostics"],
-  settings: AspSettings = {},
-  scriptLanguage: AspScriptScanLanguage = normalizeScriptLanguage(
-    settings.defaultLanguage ?? "VBScript",
-  ),
-): AspRegion[] {
-  const regions: AspRegion[] = [];
-  let cursor = start;
-  while (cursor < end) {
-    const next = text.indexOf("<%", cursor);
-    if (next === -1 || next >= end) {
-      break;
-    }
-    const region = parseAspRegionAt(text, next, diagnostics, end, settings, scriptLanguage);
-    regions.push(region);
-    cursor = Math.max(region.end, next + 2);
-  }
-  return regions;
-}
-
 function appendAspRegionsInRange(
   regions: AspRegion[],
   text: string,

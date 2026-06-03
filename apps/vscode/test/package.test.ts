@@ -264,11 +264,50 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain('registerCommand("aspLsp.showReferences"');
     expect(extensionSource).toContain('"editor.action.showReferences"');
     expect(extensionSource).toContain('registerCommand("aspLsp.toggleLineComment"');
+    expect(extensionSource).toContain("provideHover");
+    expect(extensionSource).toContain("onDidCloseTextDocument");
     expect(keybindings).toContainEqual(
       expect.objectContaining({
         command: "aspLsp.toggleLineComment",
         key: "ctrl+/",
         mac: "cmd+/",
+        when: "editorTextFocus && editorLangId == classic-asp",
+      }),
+    );
+    expect(keybindings).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.joinLines",
+        key: "ctrl+shift+j",
+        mac: "cmd+shift+j",
+        when: "editorTextFocus && editorLangId == classic-asp",
+      }),
+    );
+    expect(keybindings).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.onEnter",
+        key: "enter",
+        when: "editorTextFocus && editorLangId == classic-asp",
+      }),
+    );
+    expect(keybindings).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.matchingBrace",
+        key: "ctrl+shift+\\",
+        mac: "cmd+shift+\\",
+        when: "editorTextFocus && editorLangId == classic-asp",
+      }),
+    );
+    expect(keybindings).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.moveItemUp",
+        key: "alt+up",
+        when: "editorTextFocus && editorLangId == classic-asp",
+      }),
+    );
+    expect(keybindings).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.moveItemDown",
+        key: "alt+down",
         when: "editorTextFocus && editorLangId == classic-asp",
       }),
     );

@@ -69,7 +69,7 @@
   "command.clearProcessCache.title": "Classic ASP: Clear Process Analysis Cache",
   "command.openOutput.title": "Classic ASP: Open Output",
   "command.viewFileText.title": "Classic ASP: View File Text",
-  "command.viewSyntaxTree.title": "Classic ASP: View Syntax Tree",
+  "command.viewSyntaxTree.title": "Classic ASP: View Parsed JSON",
   "command.analyzerStatus.title": "Classic ASP: Analyzer Status",
   "command.memoryUsage.title": "Classic ASP: Memory Usage",
   "command.openServerLogs.title": "Classic ASP: Open Server Logs",

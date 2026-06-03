@@ -69,7 +69,7 @@
   "command.clearProcessCache.title": "Classic ASP: Process analysis cache を消去",
   "command.openOutput.title": "Classic ASP: Output を開く",
   "command.viewFileText.title": "Classic ASP: file text を表示",
-  "command.viewSyntaxTree.title": "Classic ASP: syntax tree を表示",
+  "command.viewSyntaxTree.title": "Classic ASP: parsed JSON を表示",
   "command.analyzerStatus.title": "Classic ASP: analyzer status を表示",
   "command.memoryUsage.title": "Classic ASP: memory usage を表示",
   "command.openServerLogs.title": "Classic ASP: server log を開く",

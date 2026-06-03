@@ -1,3 +1,4 @@
+// serde_json::json! builds large nested LSP capability objects in this file.
 #![recursion_limit = "256"]
 
 use std::collections::{HashMap, VecDeque};
@@ -2175,7 +2176,7 @@ fn server_capabilities() -> Value {
                 "openServerLogs": true,
                 "matchingBrace": true,
             },
-            "experimental": {
+            "asp-lsp": {
                 "parentModule": true,
                 "childModules": true,
                 "joinLines": true,

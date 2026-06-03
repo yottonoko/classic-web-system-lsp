@@ -840,7 +840,7 @@ fn serves_phase_two_navigation_requests_over_stdio_lsp() {
     assert_eq!(children["result"][0]["uri"], json!(child_uri));
     assert_eq!(
         children["result"][0]["range"]["start"],
-        json!({ "line": 0, "character": 0 })
+        json!({ "line": 0, "character": 18 })
     );
 
     shutdown(&mut stdin, &mut reader);
@@ -1039,6 +1039,18 @@ fn serves_phase_three_edit_requests_over_stdio_lsp() {
     );
     assert_eq!(on_enter["result"][0]["newText"], json!("\n' "));
 
+    let normal_on_enter = request(
+        &mut stdin,
+        &mut reader,
+        93,
+        "experimental/onEnter",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 2, "character": 16 },
+        }),
+    );
+    assert_eq!(normal_on_enter["result"], json!([]));
+
     let move_item = request(
         &mut stdin,
         &mut reader,
@@ -1059,6 +1071,42 @@ fn serves_phase_three_edit_requests_over_stdio_lsp() {
         .as_str()
         .expect("second replacement")
         .contains("Sub Beta"));
+
+    let eof_uri = "file:///tmp/move-eof.asp";
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": eof_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\nSub Alpha()\nEnd Sub\nSub Beta()\nEnd Sub",
+                },
+            },
+        }),
+    );
+    let eof_move_item = request(
+        &mut stdin,
+        &mut reader,
+        94,
+        "experimental/moveItem",
+        json!({
+            "textDocument": { "uri": eof_uri },
+            "position": { "line": 4, "character": 1 },
+            "direction": "up",
+        }),
+    );
+    assert_eq!(
+        eof_move_item["result"][0]["newText"],
+        json!("Sub Alpha()\nEnd Sub")
+    );
+    assert_eq!(
+        eof_move_item["result"][1]["newText"],
+        json!("Sub Beta()\nEnd Sub\n")
+    );
 
     shutdown(&mut stdin, &mut reader);
     drop(stdin);
@@ -1757,12 +1805,9 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
         .find(|action| action["title"] == json!("Generate VBScript documentation"))
         .expect("documentation code action");
     assert_eq!(documentation_action["group"], json!("documentation"));
-    assert_eq!(
-        documentation_action["experimental"]["snippetTextEdit"],
-        json!(true)
-    );
+    assert!(documentation_action.get("experimental").is_none());
     let documentation_edit = &documentation_action["edit"]["changes"][uri][0];
-    assert_eq!(documentation_edit["insertTextFormat"], json!(2));
+    assert!(documentation_edit.get("insertTextFormat").is_none());
     assert_eq!(
         documentation_edit["range"],
         json!({
@@ -1778,6 +1823,41 @@ fn serves_vbscript_read_requests_over_stdio_lsp() {
     assert!(documentation_text.contains("''' <summary>TODO: Describe BuildName.</summary>"));
     assert!(documentation_text.contains("''' <param name=\"first\">TODO: Describe first.</param>"));
     assert!(documentation_text.contains("''' <returns>TODO: Describe return value.</returns>"));
+
+    let special_doc_uri = "file:///tmp/documentation-special.asp";
+    write_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": special_doc_uri,
+                    "languageId": "classic-asp",
+                    "version": 1,
+                    "text": "<%\n''' <summary>Existing $value } and \\ path.</summary>\nFunction ExistingDoc()\nEnd Function\n%>",
+                },
+            },
+        }),
+    );
+    let special_documentation_actions = request(
+        &mut stdin,
+        &mut reader,
+        65,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": special_doc_uri },
+            "range": {
+                "start": { "line": 2, "character": 9 },
+                "end": { "line": 2, "character": 20 },
+            },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    let special_documentation_text =
+        documentation_action_new_text(&special_documentation_actions, special_doc_uri);
+    assert!(special_documentation_text
+        .contains("''' <summary>Existing $value } and \\ path.</summary>"));
 
     let variable_documentation_actions = request(
         &mut stdin,
@@ -3377,7 +3457,7 @@ fn initialize_with_settings_and_root(
         })
     );
     assert_eq!(
-        initialize["result"]["capabilities"]["experimental"]["experimental"],
+        initialize["result"]["capabilities"]["experimental"]["asp-lsp"],
         json!({
             "parentModule": true,
             "childModules": true,
