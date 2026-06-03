@@ -1482,59 +1482,46 @@ impl Ide {
             &summary.parsed,
             &text_index,
         ));
-        tokens.extend(include_semantic_tokens(text, &summary.parsed));
-        tokens.extend(operator_semantic_tokens_indexed(
-            text,
-            &summary.parsed,
-            &text_index,
-        ));
-        for identifier in identifiers_in_vbscript_indexed(text, &summary.parsed, &text_index) {
+        tokens.extend(include_semantic_tokens(&summary.parsed, &text_index));
+        let vbscript_scan = scan_vbscript_semantic_tokens(text, &summary.parsed, &text_index, true);
+        tokens.extend(vbscript_scan.operators);
+        for identifier in vbscript_scan.identifiers {
             if let Some((start, end)) = range_offsets {
-                if identifier.start < start || identifier.end > end {
+                if identifier.occurrence.start < start || identifier.occurrence.end > end {
                     continue;
                 }
             }
-            if is_classic_asp_object_name(&identifier.name) {
+            if is_classic_asp_object_name_normalized(&identifier.normalized_name) {
                 tokens.push(SemanticToken {
-                    range: identifier.range,
+                    start: identifier.occurrence.start,
+                    line: identifier.line,
+                    character: identifier.character,
+                    length: identifier.length,
                     token_type: 1,
                     token_modifiers: 1 << 3,
                 });
                 continue;
             }
             let Some((token_type, token_modifiers)) =
-                resolve_semantic_symbol_indexed(uri, text, &semantic_symbols, &identifier)
+                resolve_semantic_symbol_scanned(uri, text, &semantic_symbols, &identifier)
                     .and_then(semantic_symbol_kind)
-                    .or_else(|| builtin_semantic_token(text, &identifier, &summary.parsed))
+                    .or_else(|| builtin_semantic_token_scanned(&identifier))
             else {
                 continue;
             };
             tokens.push(SemanticToken {
-                range: identifier.range,
+                start: identifier.occurrence.start,
+                line: identifier.line,
+                character: identifier.character,
+                length: identifier.length,
                 token_type,
                 token_modifiers,
             });
         }
         if let Some((start, end)) = range_offsets {
-            tokens.retain(|token| {
-                range_start_offset(text, &token.range)
-                    .is_some_and(|offset| offset >= start && offset < end)
-            });
+            tokens.retain(|token| token.start >= start && token.start < end);
         }
-        tokens.sort_by_key(|token| {
-            (
-                token
-                    .range
-                    .pointer("/start/line")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                token
-                    .range
-                    .pointer("/start/character")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-            )
-        });
+        tokens.sort_by_key(|token| (token.line, token.character));
         Ok(serde_json::json!({ "data": encode_semantic_tokens(&tokens) }))
     }
 
@@ -2516,6 +2503,7 @@ impl VbBlockCloseCompletionContext {
     }
 }
 
+#[derive(Clone)]
 struct IdentifierOccurrence {
     name: String,
     start: usize,
@@ -2531,9 +2519,82 @@ struct CallSite {
 }
 
 struct SemanticToken {
-    range: Value,
+    start: usize,
+    line: u64,
+    character: u64,
+    length: u64,
     token_type: u32,
     token_modifiers: u32,
+}
+
+struct SemanticIdentifier {
+    occurrence: IdentifierOccurrence,
+    owner: Option<IdentifierOccurrence>,
+    line: u64,
+    character: u64,
+    length: u64,
+    normalized_name: String,
+}
+
+struct VbScriptSemanticScan {
+    identifiers: Vec<SemanticIdentifier>,
+    operators: Vec<SemanticToken>,
+}
+
+impl SemanticToken {
+    fn from_offsets(
+        text_index: &Utf16LineIndex,
+        start: usize,
+        end: usize,
+        token_type: u32,
+        token_modifiers: u32,
+    ) -> Option<Self> {
+        let (line, character) = text_index.position_at(start)?;
+        let (end_line, end_character) = text_index.position_at(end)?;
+        if end_line != line {
+            return None;
+        }
+        Some(Self {
+            start,
+            line: line.try_into().ok()?,
+            character: character.try_into().ok()?,
+            length: end_character.saturating_sub(character).try_into().ok()?,
+            token_type,
+            token_modifiers,
+        })
+    }
+
+    fn from_range(
+        text_index: &Utf16LineIndex,
+        range: &Value,
+        token_type: u32,
+        token_modifiers: u32,
+    ) -> Option<Self> {
+        let start_line: usize = range.pointer("/start/line")?.as_u64()?.try_into().ok()?;
+        let start_character: usize = range
+            .pointer("/start/character")?
+            .as_u64()?
+            .try_into()
+            .ok()?;
+        let end_line: usize = range.pointer("/end/line")?.as_u64()?.try_into().ok()?;
+        let end_character: usize = range.pointer("/end/character")?.as_u64()?.try_into().ok()?;
+        let start = text_index.offset_at(start_line, start_character)?;
+        text_index.offset_at(end_line, end_character)?;
+        if start_line != end_line {
+            return None;
+        }
+        Some(Self {
+            start,
+            line: start_line.try_into().ok()?,
+            character: start_character.try_into().ok()?,
+            length: end_character
+                .saturating_sub(start_character)
+                .try_into()
+                .ok()?,
+            token_type,
+            token_modifiers,
+        })
+    }
 }
 
 fn is_vbscript_offset(parsed: &Value, offset: usize) -> bool {
@@ -3164,20 +3225,39 @@ fn identifiers_in_vbscript_indexed(
     parsed: &Value,
     text_index: &Utf16LineIndex,
 ) -> Vec<IdentifierOccurrence> {
-    let regions = vbscript_regions(parsed);
+    scan_vbscript_semantic_tokens(text, parsed, text_index, false)
+        .identifiers
+        .into_iter()
+        .map(|identifier| identifier.occurrence)
+        .collect()
+}
+
+fn scan_vbscript_semantic_tokens(
+    text: &str,
+    parsed: &Value,
+    text_index: &Utf16LineIndex,
+    collect_operators: bool,
+) -> VbScriptSemanticScan {
+    let mut regions = vbscript_regions(parsed);
+    regions.sort_unstable();
     let chars = utf16_chars(text);
     let mut identifiers = Vec::new();
+    let mut operators = Vec::new();
     let mut index = 0;
+    let mut region_index = 0;
+    let mut previous_identifier: Option<IdentifierOccurrence> = None;
+    let mut last_non_whitespace = None;
     while index < chars.len() {
         let offset = chars[index].0;
-        if !regions
-            .iter()
-            .any(|(start, end)| offset >= *start && offset < *end)
-        {
+        while region_index < regions.len() && offset >= regions[region_index].1 {
+            region_index += 1;
+        }
+        if region_index >= regions.len() || offset < regions[region_index].0 {
             index += 1;
             continue;
         }
         if chars[index].1 == '"' {
+            last_non_whitespace = Some('"');
             index += 1;
             while index < chars.len() {
                 if chars[index].1 == '"' {
@@ -3189,13 +3269,35 @@ fn identifiers_in_vbscript_indexed(
             continue;
         }
         if chars[index].1 == '\'' {
+            last_non_whitespace = Some('\'');
             index += 1;
             while index < chars.len() && chars[index].1 != '\n' {
                 index += 1;
             }
             continue;
         }
+        if is_semantic_operator_char(chars[index].1) {
+            if let Some(token) = SemanticToken::from_offsets(
+                text_index,
+                offset,
+                offset + chars[index].1.len_utf16(),
+                9,
+                0,
+            )
+            .filter(|_| collect_operators)
+            {
+                operators.push(token);
+            }
+            if !chars[index].1.is_whitespace() {
+                last_non_whitespace = Some(chars[index].1);
+            }
+            index += 1;
+            continue;
+        }
         if !is_identifier_char(chars[index].1) {
+            if !chars[index].1.is_whitespace() {
+                last_non_whitespace = Some(chars[index].1);
+            }
             index += 1;
             continue;
         }
@@ -3213,15 +3315,47 @@ fn identifiers_in_vbscript_indexed(
             .map(|(offset, _)| *offset)
             .unwrap_or_else(|| utf16_len(text));
         if let Some(range) = range_from_offsets_indexed(text_index, start_offset, end_offset) {
-            identifiers.push(IdentifierOccurrence {
+            let (line, character) = text_index.position_at(start_offset).unwrap_or((0, 0));
+            let (_, end_character) = text_index
+                .position_at(end_offset)
+                .unwrap_or((line, character));
+            let occurrence = IdentifierOccurrence {
                 name: text_name,
                 start: start_offset,
                 end: end_offset,
                 range,
-            });
+            };
+            let semantic_identifier = SemanticIdentifier {
+                normalized_name: occurrence.name.to_ascii_lowercase(),
+                owner: (last_non_whitespace == Some('.'))
+                    .then(|| previous_identifier.clone())
+                    .flatten(),
+                line: line.try_into().unwrap_or(0),
+                character: character.try_into().unwrap_or(0),
+                length: end_character
+                    .saturating_sub(character)
+                    .try_into()
+                    .unwrap_or(0),
+                occurrence: occurrence.clone(),
+            };
+            previous_identifier = Some(occurrence);
+            identifiers.push(semantic_identifier);
         }
+        last_non_whitespace = chars
+            .get(index.saturating_sub(1))
+            .map(|(_, character)| *character);
     }
-    identifiers
+    VbScriptSemanticScan {
+        identifiers,
+        operators,
+    }
+}
+
+fn is_semantic_operator_char(character: char) -> bool {
+    matches!(
+        character,
+        '&' | '+' | '-' | '*' | '/' | '\\' | '^' | '=' | '<' | '>'
+    )
 }
 
 fn vbscript_regions(parsed: &Value) -> Vec<(usize, usize)> {
@@ -3534,22 +3668,27 @@ fn resolve_semantic_symbol<'a>(
     resolve_symbol_for_identifier(document_uri, text, symbols, identifier)
 }
 
-fn resolve_semantic_symbol_indexed<'a>(
+fn resolve_semantic_symbol_scanned<'a>(
     document_uri: &str,
     text: &str,
     symbols: &SemanticSymbolIndex<'a>,
-    identifier: &IdentifierOccurrence,
+    identifier: &SemanticIdentifier,
 ) -> Option<&'a Value> {
-    if let Some(owner) = member_call_owner(text, identifier) {
-        let offset = identifier.start + ((identifier.end.saturating_sub(identifier.start)) / 2);
+    if let Some(owner) = &identifier.owner {
+        let offset = identifier.occurrence.start
+            + ((identifier
+                .occurrence
+                .end
+                .saturating_sub(identifier.occurrence.start))
+                / 2);
         let type_name = if owner.name.eq_ignore_ascii_case("me") {
             current_class_name_at_indexed(document_uri, text, symbols, offset)
         } else {
-            infer_variable_type_name_indexed(document_uri, text, symbols, &owner, offset)
+            infer_variable_type_name_indexed(document_uri, text, symbols, owner, offset)
         }?;
-        return resolve_member_symbol_indexed(symbols, &type_name, &identifier.name);
+        return resolve_member_symbol_indexed(symbols, &type_name, &identifier.occurrence.name);
     }
-    resolve_symbol_for_identifier_indexed(document_uri, text, symbols, identifier)
+    resolve_symbol_for_identifier_indexed(document_uri, text, symbols, &identifier.occurrence)
 }
 
 fn current_class_name_at<'a>(
@@ -5087,47 +5226,32 @@ fn semantic_symbol_kind(symbol: &Value) -> Option<(u32, u32)> {
     Some((token_type, modifiers))
 }
 
-fn builtin_semantic_token(
-    text: &str,
-    identifier: &IdentifierOccurrence,
-    parsed: &Value,
-) -> Option<(u32, u32)> {
-    let name = identifier.name.to_lowercase();
-    if matches!(name.as_str(), "cstr" | "ubound" | "array") {
+fn builtin_semantic_token_scanned(identifier: &SemanticIdentifier) -> Option<(u32, u32)> {
+    if matches!(
+        identifier.normalized_name.as_str(),
+        "cstr" | "ubound" | "array"
+    ) {
         return Some((3, 1 << 3));
     }
-    if matches!(
-        name.as_str(),
-        "response" | "request" | "server" | "session" | "application" | "asperror"
-    ) {
+    if is_classic_asp_object_name_normalized(&identifier.normalized_name) {
         return Some((1, 1 << 3));
     }
-    if name == "write" && previous_identifier_is(text, parsed, identifier.start, "response") {
+    if identifier.normalized_name == "write"
+        && identifier
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.name.eq_ignore_ascii_case("response"))
+    {
         return Some((5, 1 << 3));
     }
     None
 }
 
-fn is_classic_asp_object_name(name: &str) -> bool {
+fn is_classic_asp_object_name_normalized(name: &str) -> bool {
     matches!(
-        name.to_lowercase().as_str(),
+        name,
         "request" | "response" | "session" | "application" | "server" | "asperror"
     )
-}
-
-fn previous_identifier_is(text: &str, parsed: &Value, offset: usize, expected: &str) -> bool {
-    let Ok(before) = slice_utf16(text, 0, offset) else {
-        return false;
-    };
-    let before = before.trim_end();
-    let Some(without_dot) = before.strip_suffix('.') else {
-        return false;
-    };
-    let owner_end = utf16_len(without_dot.trim_end());
-    let Some(owner) = identifier_at_offset(text, owner_end) else {
-        return false;
-    };
-    owner.eq_ignore_ascii_case(expected) && is_vbscript_offset(parsed, owner_end)
 }
 
 fn resolve_include_target(uri: &str, include: &Value) -> String {
@@ -5624,7 +5748,7 @@ fn next_non_whitespace_offset(text: &str, start: usize, expected: char) -> Optio
     None
 }
 
-fn include_semantic_tokens(_text: &str, parsed: &Value) -> Vec<SemanticToken> {
+fn include_semantic_tokens(parsed: &Value, text_index: &Utf16LineIndex) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     for include in parsed
         .get("includes")
@@ -5633,12 +5757,11 @@ fn include_semantic_tokens(_text: &str, parsed: &Value) -> Vec<SemanticToken> {
         .flatten()
     {
         for (key, token_type) in [("directiveRange", 0), ("modeRange", 6), ("pathRange", 8)] {
-            if let Some(range) = include.get(key).cloned() {
-                tokens.push(SemanticToken {
-                    range,
-                    token_type,
-                    token_modifiers: 0,
-                });
+            if let Some(token) = include
+                .get(key)
+                .and_then(|range| SemanticToken::from_range(text_index, range, token_type, 0))
+            {
+                tokens.push(token);
             }
         }
     }
@@ -5659,40 +5782,9 @@ fn asp_delimiter_semantic_tokens_indexed(
         .filter_map(|region| {
             let start = value_usize(region, "start").ok()?.checked_add(2)?;
             let end = start.checked_add(1)?;
-            Some(SemanticToken {
-                range: range_from_offsets_indexed(text_index, start, end)?,
-                token_type: 0,
-                token_modifiers: 0,
-            })
+            SemanticToken::from_offsets(text_index, start, end, 0, 0)
         })
         .collect()
-}
-
-fn operator_semantic_tokens_indexed(
-    text: &str,
-    parsed: &Value,
-    text_index: &Utf16LineIndex,
-) -> Vec<SemanticToken> {
-    let operators = ["&", "+", "-", "*", "/", "\\", "^", "=", "<", ">"];
-    let mut tokens = Vec::new();
-    let chars = utf16_chars(text);
-    for (offset, character) in chars {
-        if !operators.contains(&character.to_string().as_str())
-            || !is_vbscript_offset(parsed, offset)
-        {
-            continue;
-        }
-        if let Some(range) =
-            range_from_offsets_indexed(text_index, offset, offset + character.len_utf16())
-        {
-            tokens.push(SemanticToken {
-                range,
-                token_type: 9,
-                token_modifiers: 0,
-            });
-        }
-    }
-    tokens
 }
 
 fn encode_semantic_tokens(tokens: &[SemanticToken]) -> Vec<u64> {
@@ -5700,38 +5792,21 @@ fn encode_semantic_tokens(tokens: &[SemanticToken]) -> Vec<u64> {
     let mut previous_line = 0;
     let mut previous_character = 0;
     for token in tokens {
-        let Some(line) = token.range.pointer("/start/line").and_then(Value::as_u64) else {
-            continue;
-        };
-        let Some(character) = token
-            .range
-            .pointer("/start/character")
-            .and_then(Value::as_u64)
-        else {
-            continue;
-        };
-        let Some(end_character) = token
-            .range
-            .pointer("/end/character")
-            .and_then(Value::as_u64)
-        else {
-            continue;
-        };
-        let delta_line = line.saturating_sub(previous_line);
+        let delta_line = token.line.saturating_sub(previous_line);
         let delta_start = if delta_line == 0 {
-            character.saturating_sub(previous_character)
+            token.character.saturating_sub(previous_character)
         } else {
-            character
+            token.character
         };
         data.extend([
             delta_line,
             delta_start,
-            end_character.saturating_sub(character),
+            token.length,
             u64::from(token.token_type),
             u64::from(token.token_modifiers),
         ]);
-        previous_line = line;
-        previous_character = character;
+        previous_line = token.line;
+        previous_character = token.character;
     }
     data
 }
@@ -6796,7 +6871,10 @@ fn normalize_path_segments(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{array_field, Ide, TextPosition, TextRange};
+    use super::{
+        array_field, encode_semantic_tokens, scan_vbscript_semantic_tokens, utf16_len, Ide,
+        SemanticToken, TextPosition, TextRange, Utf16LineIndex,
+    };
     use serde_json::json;
 
     fn include_paths(includes: &[serde_json::Value]) -> Vec<String> {
@@ -6809,6 +6887,58 @@ mod tests {
                     .map(ToString::to_string)
             })
             .collect()
+    }
+
+    #[test]
+    fn encodes_typed_semantic_tokens_without_json_ranges() {
+        let text = "A = B\nC";
+        let index = Utf16LineIndex::new(text);
+        let tokens = vec![
+            SemanticToken::from_offsets(&index, 0, 1, 1, 0).expect("first token"),
+            SemanticToken::from_offsets(&index, 4, 5, 2, 1).expect("same-line token"),
+            SemanticToken::from_offsets(&index, 6, 7, 3, 0).expect("next-line token"),
+        ];
+
+        assert_eq!(
+            encode_semantic_tokens(&tokens),
+            vec![0, 0, 1, 1, 0, 0, 4, 1, 2, 1, 1, 0, 1, 3, 0]
+        );
+    }
+
+    #[test]
+    fn scans_vbscript_semantic_tokens_with_region_cursor() {
+        let text = "<%\nResponse.Write total + 1\n' ignored + comment\nname = \"skip + me\"\n%>";
+        let index = Utf16LineIndex::new(text);
+        let parsed = json!({
+            "regions": [{
+                "language": "vbscript",
+                "contentStart": 2,
+                "contentEnd": utf16_len(text).saturating_sub(2)
+            }]
+        });
+
+        let scan = scan_vbscript_semantic_tokens(text, &parsed, &index, true);
+        let names = scan
+            .identifiers
+            .iter()
+            .map(|identifier| identifier.occurrence.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"Response"));
+        assert!(names.contains(&"Write"));
+        assert!(names.contains(&"total"));
+        assert!(names.contains(&"name"));
+        assert!(!names.contains(&"ignored"));
+        assert!(!names.contains(&"skip"));
+        assert_eq!(
+            scan.identifiers
+                .iter()
+                .find(|identifier| identifier.occurrence.name == "Write")
+                .and_then(|identifier| identifier.owner.as_ref())
+                .map(|owner| owner.name.as_str()),
+            Some("Response")
+        );
+        assert_eq!(scan.operators.len(), 2);
     }
 
     #[test]
