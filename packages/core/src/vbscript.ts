@@ -205,6 +205,10 @@ let cachedBuiltinTypes: VbType[] | undefined;
 const vbFromTextCacheMaxEntries = 64;
 const vbFromTextCache = new Map<string, Map<string, unknown>>();
 
+export function clearVbscriptCaches(): void {
+  vbFromTextCache.clear();
+}
+
 function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
   const localizer = createLocalizer(locale);
   return [
