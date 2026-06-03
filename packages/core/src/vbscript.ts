@@ -6510,12 +6510,6 @@ function isRuntimeEntryPoint(parsed: AspParsedDocument, symbol: VbSymbol): boole
   ]).has(symbol.name.toLowerCase());
 }
 
-function getServerScriptText(parsed: AspParsedDocument): string {
-  return serverRegions(parsed)
-    .map((region) => parsed.text.slice(region.contentStart, region.contentEnd))
-    .join("\n");
-}
-
 function serverRegions(parsed: AspParsedDocument): AspRegion[] {
   return parsed.regions.filter((region) => region.language === "vbscript");
 }
