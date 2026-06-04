@@ -103,8 +103,6 @@ export interface AspVbscriptSettings {
   comTypes?: Record<string, AspVbscriptComType>;
   globals?: Record<string, string | AspVbscriptGlobal>;
   unusedDiagnostics?: boolean;
-  includeSuggestions?: boolean;
-  includeSuggestionMaxFiles?: number;
   syntaxSnippets?: boolean;
 }
 

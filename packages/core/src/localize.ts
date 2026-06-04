@@ -83,7 +83,6 @@ export type LocalizeKey =
   | "server.quickfix.annotateType"
   | "server.quickfix.renameIdentifierCase"
   | "server.quickfix.createMissingInclude"
-  | "server.quickfix.includeSymbol"
   | "server.quickfix.generateVbscriptDocumentation"
   | "server.refactor.extractVbscriptVariable"
   | "server.codeAction.organizeJavascriptImports"
@@ -180,7 +179,6 @@ const en: Record<LocalizeKey, string> = {
   "server.quickfix.annotateType": "Annotate {name} as {type}",
   "server.quickfix.renameIdentifierCase": "Rename {name} to {expectedName}",
   "server.quickfix.createMissingInclude": "Create missing include {path}",
-  "server.quickfix.includeSymbol": "Include {path} for {symbol}",
   "server.quickfix.generateVbscriptDocumentation": "Generate VBScript documentation",
   "server.refactor.extractVbscriptVariable": "Extract VBScript variable",
   "server.codeAction.organizeJavascriptImports": "Organize JavaScript imports",
@@ -281,7 +279,6 @@ const ja: Record<LocalizeKey, string> = {
   "server.quickfix.annotateType": "{name} に {type} の型注釈を追加",
   "server.quickfix.renameIdentifierCase": "{name} を {expectedName} に変更",
   "server.quickfix.createMissingInclude": "不足している include {path} を作成",
-  "server.quickfix.includeSymbol": "{symbol} のために {path} を include",
   "server.quickfix.generateVbscriptDocumentation": "VBScript documentation を生成",
   "server.refactor.extractVbscriptVariable": "VBScript 変数に抽出",
   "server.codeAction.organizeJavascriptImports": "JavaScript import を整理",

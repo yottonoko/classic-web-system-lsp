@@ -9285,11 +9285,6 @@ function normalizeVbscriptSettings(
         ? (record.globals as NonNullable<AspSettings["vbscript"]>["globals"])
         : undefined,
     unusedDiagnostics: record.unusedDiagnostics !== false,
-    includeSuggestions: record.includeSuggestions !== false,
-    includeSuggestionMaxFiles:
-      typeof record.includeSuggestionMaxFiles === "number" && record.includeSuggestionMaxFiles >= 0
-        ? Math.floor(record.includeSuggestionMaxFiles)
-        : 128,
     syntaxSnippets: record.syntaxSnippets !== false,
   };
 }
@@ -11239,7 +11234,6 @@ async function quickFixesForDiagnosticAsync(
     }
     const line = diagnostic.range.start.line;
     const localizer = localizerForUri(cached.source.uri);
-    const includeActions = await vbscriptIncludeSuggestionActionsAsync(cached, diagnostic, name);
     return [
       {
         title: localizer.t("server.quickfix.declareDim", { name }),
@@ -11259,7 +11253,6 @@ async function quickFixesForDiagnosticAsync(
           },
         },
       },
-      ...includeActions,
     ];
   }
   if (diagnostic.source === "asp-lsp-vbscript-unused") {
@@ -11629,148 +11622,6 @@ function parameterRemovalStartOffset(
     keywordPrefix[0].length -
     keywordPrefix[1].length
   );
-}
-
-async function vbscriptIncludeSuggestionActionsAsync(
-  cached: CachedDocument,
-  diagnostic: Diagnostic,
-  symbolName: string,
-): Promise<CodeAction[]> {
-  const settings = cachedSettings(cached.source.uri);
-  if (settings.vbscript?.includeSuggestions === false) {
-    return [];
-  }
-  const maxFiles = settings.vbscript?.includeSuggestionMaxFiles ?? 128;
-  if (maxFiles <= 0) {
-    return [];
-  }
-  await ensureWorkspaceIndexAsync(settings);
-  const ownerFile = normalizeFileName(uriToFileName(cached.source.uri));
-  const includedFiles = new Set(
-    await Promise.all(
-      cached.parsed.includes.map(async (include) =>
-        normalizeFileName(
-          await resolveIncludePathAsync(cached.source.uri, include.path, include.mode, settings),
-        ),
-      ),
-    ),
-  );
-  const candidates = new Map<string, () => Promise<WorkspaceVbReferenceSummary | undefined>>();
-  for (const document of documents.all()) {
-    const fileName = normalizeFileName(uriToFileName(document.uri));
-    if (fileName !== ownerFile && !includedFiles.has(fileName)) {
-      candidates.set(fileName, async () => {
-        const opened = await ensureFreshCachedDocumentAsync(document);
-        return opened ? workspaceVbReferenceSummaryForCachedAsync(opened, settings) : undefined;
-      });
-    }
-  }
-  for (const indexed of [...workspaceIndex.values()].sort(
-    (left, right) =>
-      includeCandidateRank(left.fileName) - includeCandidateRank(right.fileName) ||
-      left.fileName.localeCompare(right.fileName),
-  )) {
-    const fileName = normalizeFileName(indexed.fileName);
-    if (fileName !== ownerFile && !includedFiles.has(fileName) && !candidates.has(fileName)) {
-      candidates.set(fileName, () => workspaceVbReferenceSummaryForIndexed(indexed, settings));
-    }
-  }
-  const matches: Array<{ fileName: string }> = [];
-  let scanned = 0;
-  for (const [fileName, loadSummary] of candidates) {
-    if (scanned >= maxFiles || matches.length >= 5) {
-      break;
-    }
-    scanned += 1;
-    const summary = await loadSummary();
-    if (summaryHasPublicVbSymbol(summary?.summary, symbolName)) {
-      matches.push({ fileName });
-    }
-    await yieldToEventLoop();
-  }
-  if (scanned < candidates.size) {
-    logDebugSummary(
-      settings,
-      `[asp-lsp] vb.includeSuggestion.truncated: ${cached.source.uri}, scanned=${scanned}, candidates=${candidates.size}, maxFiles=${maxFiles}, matches=${matches.length}`,
-    );
-  }
-  const localizer = localizerForUri(cached.source.uri);
-  const insert = includeInsertionPoint(cached);
-  return matches.map(({ fileName }) => {
-    const include = includeSuggestionPath(cached.source.uri, fileName, settings);
-    return {
-      title: localizer.t("server.quickfix.includeSymbol", {
-        path: include.path,
-        symbol: symbolName,
-      }),
-      kind: CodeActionKind.QuickFix,
-      diagnostics: [diagnostic],
-      edit: {
-        changes: {
-          [cached.source.uri]: [
-            {
-              range: { start: insert, end: insert },
-              newText: `<!-- #include ${include.mode}="${include.path}" -->\n`,
-            },
-          ],
-        },
-      },
-    } satisfies CodeAction;
-  });
-}
-
-function summaryHasPublicVbSymbol(
-  summary: FileAnalysisSummary | undefined,
-  symbolName: string,
-): boolean {
-  const lowerName = symbolName.toLowerCase();
-  return (
-    summary?.vbscript?.localSymbols.some(
-      (symbol) =>
-        !symbol.memberOf &&
-        !symbol.scopeName &&
-        symbol.kind !== "parameter" &&
-        symbol.name.toLowerCase() === lowerName,
-    ) === true
-  );
-}
-
-function includeCandidateRank(fileName: string): number {
-  const lower = fileName.toLowerCase();
-  return (lower.endsWith(".inc") ? 0 : lower.endsWith(".asa") ? 1 : 2) * 100_000 + lower.length;
-}
-
-function includeInsertionPoint(cached: CachedDocument): Position {
-  if (cached.parsed.includes.length === 0) {
-    return { line: 0, character: 0 };
-  }
-  const last = cached.parsed.includes.reduce((current, include) =>
-    include.range.end.line > current.range.end.line ? include : current,
-  );
-  return { line: last.range.end.line + 1, character: 0 };
-}
-
-function includeSuggestionPath(
-  ownerUri: string,
-  targetFile: string,
-  settings: AspSettings,
-): { mode: "file" | "virtual"; path: string } {
-  for (const root of [...(settings.virtualRoots ?? []), settings.virtualRoot]) {
-    if (!root) {
-      continue;
-    }
-    const relative = path.relative(root, targetFile);
-    if (!relative.startsWith("..") && !path.isAbsolute(relative)) {
-      return { mode: "virtual", path: `/${relative.split(path.sep).join("/")}` };
-    }
-  }
-  return {
-    mode: "file",
-    path: path
-      .relative(path.dirname(uriToFileName(ownerUri)), targetFile)
-      .split(path.sep)
-      .join("/"),
-  };
 }
 
 const vbscriptExtractVariableKind = `${CodeActionKind.Refactor}.extract`;

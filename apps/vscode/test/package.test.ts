@@ -123,9 +123,18 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.unusedDiagnostics"],
     ).toBeTruthy();
+    const removedIncludeSuggestions = "include" + "Suggestions";
     expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.includeSuggestions"],
-    ).toBeTruthy();
+      manifest.contributes?.configuration?.properties?.[
+        `aspLsp.vbscript.${removedIncludeSuggestions}`
+      ],
+    ).toBeUndefined();
+    const removedIncludeSuggestionMaxFiles = "include" + "SuggestionMaxFiles";
+    expect(
+      manifest.contributes?.configuration?.properties?.[
+        `aspLsp.vbscript.${removedIncludeSuggestionMaxFiles}`
+      ],
+    ).toBeUndefined();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.syntaxSnippets"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
