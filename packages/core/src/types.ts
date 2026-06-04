@@ -160,8 +160,6 @@ export interface AspCacheSettings {
 export interface AspWorkspaceSettings {
   maxIndexFiles?: number;
   scanChunkSize?: number;
-  backgroundAnalysis?: boolean;
-  idleAnalysisConcurrency?: number;
   busyAnalysisConcurrency?: number;
   vbProjectMaxDocuments?: number;
   vbProjectMaxTextLength?: number;

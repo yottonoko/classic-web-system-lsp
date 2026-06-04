@@ -196,7 +196,6 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const languageServerVersion = "0.3.8";
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
-const backgroundAnalysisIdleDelayMs = 5_000;
 const semanticTokensLargeSourceThreshold = internalTestThreshold(
   "ASP_LSP_TEST_SEMANTIC_TOKENS_LARGE_SOURCE_THRESHOLD",
   1024 * 1024,
@@ -222,11 +221,6 @@ let workspaceGeneration = 0;
 let includeResolutionGeneration = 0;
 let jsProjectGeneration = 0;
 let diskAnalysisCache = createDiskAnalysisCache(globalSettings);
-let backgroundAnalysisTimer: ReturnType<typeof setTimeout> | undefined;
-let backgroundAnalysisGeneration = 0;
-let backgroundAnalysisRunning = false;
-let backgroundAnalysisRunningGeneration: number | undefined;
-let pendingBackgroundAnalysisReason: string | undefined;
 let lastForegroundActivityAt = 0;
 let projectUpdateTimer: ReturnType<typeof setTimeout> | undefined;
 let openFileProjectMaintenanceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -468,7 +462,7 @@ interface AnalysisCancellation {
   isCancellationRequested(): boolean;
 }
 
-type AnalysisExecutionMode = "foreground" | "workspace" | "idle";
+type AnalysisExecutionMode = "foreground" | "workspace";
 
 interface OffsetEdit {
   start: number;
@@ -1370,7 +1364,6 @@ connection.onNotification(
     for (const document of documents.all()) {
       validate(document);
     }
-    scheduleBackgroundAnalysis("workspaceFolders.changed");
   },
 );
 
@@ -1394,7 +1387,6 @@ connection.onDidChangeConfiguration((change) => {
       validate(document);
     }
   }
-  scheduleBackgroundAnalysis("configuration.changed");
 });
 
 connection.onDidChangeWatchedFiles(async (change) => {
@@ -1444,7 +1436,6 @@ connection.onDidChangeWatchedFiles(async (change) => {
   for (const document of documents.all().filter((item) => affectedUris.has(item.uri))) {
     validate(document);
   }
-  scheduleBackgroundAnalysis(scriptChanged ? "watchedScript.changed" : "watchedAsp.changed");
 });
 
 connection.workspace.onWillRenameFiles((params) => includeRenameWorkspaceEditAsync(params.files));
@@ -1993,7 +1984,6 @@ connection.onExecuteCommand(async (params) => {
     for (const document of documents.all()) {
       validate(document);
     }
-    scheduleBackgroundAnalysis("command.reindexWorkspace");
     return { ok: true };
   }
   if (params.command === clearCacheCommand || params.command === clearCacheServerCommand) {
@@ -2774,12 +2764,23 @@ async function runStagedDiagnostics(
   const cancellation: AnalysisCancellation = {
     isCancellationRequested: () => !isCurrentStagedDiagnostics(cached, state),
   };
-  const includeItems = await includeDiagnosticsForCachedAsync(
+  const includeItemsPromise = includeDiagnosticsForCachedAsync(
     cached,
     settings,
     "check",
     cancellation,
   );
+  const projectItemsPromise = projectDiagnosticsForCachedAsync(
+    cached,
+    settings,
+    "check",
+    cancellation,
+    "foreground",
+  );
+  void includeItemsPromise.catch(() => undefined);
+  void projectItemsPromise.catch(() => undefined);
+  const syntaxItems = syntaxDiagnosticsForCached(cached, settings, "check");
+  const includeItems = await includeItemsPromise;
   if (!isCurrentStagedDiagnostics(cached, state)) {
     logStaleStagedDiagnostics(settings, state, "include");
     return;
@@ -2792,7 +2793,7 @@ async function runStagedDiagnostics(
     logStaleStagedDiagnostics(settings, state, "syntax");
     return;
   }
-  state.layers.syntax = syntaxDiagnosticsForCached(cached, settings, "check");
+  state.layers.syntax = syntaxItems;
   publishStagedDiagnosticsLayer(cached, settings, state, "syntax");
   await yieldToEventLoop();
 
@@ -2800,13 +2801,7 @@ async function runStagedDiagnostics(
     logStaleStagedDiagnostics(settings, state, "project");
     return;
   }
-  state.layers.project = await projectDiagnosticsForCachedAsync(
-    cached,
-    settings,
-    "check",
-    cancellation,
-    "foreground",
-  );
+  state.layers.project = await projectItemsPromise;
   shareStagedAnalysisWithCurrentCache(cached, state);
   publishStagedDiagnosticsLayer(cached, settings, state, "project");
   if (!isCurrentStagedDiagnostics(cached, state)) {
@@ -2931,23 +2926,29 @@ async function diagnosticsForCachedAsync(
   mode: AnalysisExecutionMode = "foreground",
 ): Promise<Diagnostic[]> {
   const parserItems = cached.parsed.diagnostics;
-  const includeItems = await includeDiagnosticsForCachedAsync(
+  const includeItemsPromise = includeDiagnosticsForCachedAsync(
     cached,
     settings,
     stepPrefix,
     cancellation,
   );
-  if (cancellation.isCancellationRequested()) {
-    return [];
-  }
-  const syntaxItems = syntaxDiagnosticsForCached(cached, settings, stepPrefix);
-  const projectItems = await projectDiagnosticsForCachedAsync(
+  const projectItemsPromise = projectDiagnosticsForCachedAsync(
     cached,
     settings,
     stepPrefix,
     cancellation,
     mode,
   );
+  void includeItemsPromise.catch(() => undefined);
+  void projectItemsPromise.catch(() => undefined);
+  const syntaxItems = syntaxDiagnosticsForCached(cached, settings, stepPrefix);
+  const [includeItems, projectItems] = await Promise.all([
+    includeItemsPromise,
+    projectItemsPromise,
+  ]);
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
   const items = measureDebugStep(settings, cached.source.uri, `${stepPrefix}.dedupe`, () =>
     dedupeDiagnostics([...parserItems, ...includeItems, ...syntaxItems, ...projectItems]),
   );
@@ -3178,10 +3179,6 @@ function defaultBusyAnalysisConcurrency(): number {
   return Math.max(1, Math.floor(availableAnalysisConcurrency() / 2));
 }
 
-function defaultIdleAnalysisConcurrency(): number {
-  return Math.max(1, availableAnalysisConcurrency() - 1);
-}
-
 const neverCancelled: AnalysisCancellation = {
   isCancellationRequested: () => false,
 };
@@ -3233,29 +3230,16 @@ function busyAnalysisConcurrency(settings: AspSettings): number {
   );
 }
 
-function idleAnalysisConcurrency(settings: AspSettings): number {
-  return clampAnalysisConcurrency(
-    settings.workspace?.idleAnalysisConcurrency,
-    defaultIdleAnalysisConcurrency(),
-  );
-}
-
 function analysisConcurrency(settings: AspSettings): number {
   return busyAnalysisConcurrency(settings);
 }
 
-function workerAnalysisConcurrency(settings: AspSettings, mode: "busy" | "idle" = "busy"): number {
-  return mode === "idle" ? idleAnalysisConcurrency(settings) : busyAnalysisConcurrency(settings);
+function workerAnalysisConcurrency(settings: AspSettings): number {
+  return busyAnalysisConcurrency(settings);
 }
 
 function noteForegroundActivity(): void {
   lastForegroundActivityAt = Date.now();
-  if (
-    globalSettings.workspace?.backgroundAnalysis === true &&
-    (backgroundAnalysisTimer || backgroundAnalysisRunning || pendingBackgroundAnalysisReason)
-  ) {
-    scheduleBackgroundAnalysis(pendingBackgroundAnalysisReason ?? "foreground.defer");
-  }
 }
 
 function scheduleProjectUpdate(reason: string): void {
@@ -3387,98 +3371,6 @@ function diskAnalysisNamespace(): string {
       cwd: process.cwd(),
     }),
   );
-}
-
-function scheduleBackgroundAnalysis(reason: string): void {
-  if (globalSettings.workspace?.backgroundAnalysis !== true) {
-    cancelBackgroundAnalysis();
-    return;
-  }
-  pendingBackgroundAnalysisReason = reason;
-  if (backgroundAnalysisTimer) {
-    clearTimeout(backgroundAnalysisTimer);
-  }
-  const generation = ++backgroundAnalysisGeneration;
-  backgroundAnalysisTimer = setTimeout(() => {
-    backgroundAnalysisTimer = undefined;
-    void runBackgroundAnalysis(generation, reason);
-  }, backgroundAnalysisIdleDelayMs);
-}
-
-async function runBackgroundAnalysis(generation: number, reason: string): Promise<void> {
-  const settings = globalSettings;
-  if (settings.workspace?.backgroundAnalysis !== true) {
-    return;
-  }
-  if (generation !== backgroundAnalysisGeneration) {
-    return;
-  }
-  if (backgroundAnalysisRunning) {
-    backgroundAnalysisTimer = setTimeout(() => {
-      backgroundAnalysisTimer = undefined;
-      void runBackgroundAnalysis(generation, reason);
-    }, backgroundAnalysisIdleDelayMs);
-    logDebugSummary(settings, `[asp-lsp] backgroundAnalysis.deferred: reason=${reason}`);
-    return;
-  }
-  backgroundAnalysisRunning = true;
-  backgroundAnalysisRunningGeneration = generation;
-  try {
-    await waitForForegroundIdle();
-    if (generation !== backgroundAnalysisGeneration) {
-      return;
-    }
-    logDebugSummary(settings, `[asp-lsp] backgroundAnalysis.started: reason=${reason}`);
-    const token = {
-      get isCancellationRequested() {
-        return generation !== backgroundAnalysisGeneration;
-      },
-    };
-    await ensureWorkspaceIndexAsync(settings, token);
-    if (token.isCancellationRequested) {
-      return;
-    }
-    const openedUris = openDocumentUris();
-    const entries = [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri));
-    await mapWithConcurrency(entries, idleAnalysisConcurrency(settings), async (entry) => {
-      if (token.isCancellationRequested) {
-        return;
-      }
-      await waitForForegroundIdle();
-      if (token.isCancellationRequested) {
-        return;
-      }
-      await diagnosticsForIndexed(entry, cachedSettings(entry.uri), token, "idle");
-    });
-    if (!token.isCancellationRequested) {
-      await diskAnalysisCache.sweep();
-      pendingBackgroundAnalysisReason = undefined;
-      logDebugSummary(
-        settings,
-        `[asp-lsp] backgroundAnalysis.completed: files=${entries.length}, cache=${diskAnalysisCache.directory}`,
-      );
-    }
-  } finally {
-    if (backgroundAnalysisRunningGeneration === generation) {
-      backgroundAnalysisRunning = false;
-      backgroundAnalysisRunningGeneration = undefined;
-    }
-  }
-}
-
-function cancelBackgroundAnalysis(): void {
-  if (backgroundAnalysisTimer) {
-    clearTimeout(backgroundAnalysisTimer);
-    backgroundAnalysisTimer = undefined;
-  }
-  backgroundAnalysisGeneration += 1;
-  pendingBackgroundAnalysisReason = undefined;
-}
-
-async function waitForForegroundIdle(): Promise<void> {
-  while (Date.now() - lastForegroundActivityAt < backgroundAnalysisIdleDelayMs) {
-    await delay(100);
-  }
 }
 
 function runInteractiveLanguageFeature<T>(callback: () => T): T {
@@ -3851,12 +3743,10 @@ async function runJsDiagnosticsWorker(
 
 function getJsDiagnosticsWorkerPool(
   settings: AspSettings,
-  mode: AnalysisExecutionMode,
+  _mode: AnalysisExecutionMode,
 ): JsDiagnosticsWorkerPool {
   jsDiagnosticsWorkerPool ??= new JsDiagnosticsWorkerPool();
-  jsDiagnosticsWorkerPool.resize(
-    workerAnalysisConcurrency(settings, mode === "idle" ? "idle" : "busy"),
-  );
+  jsDiagnosticsWorkerPool.resize(workerAnalysisConcurrency(settings));
   return jsDiagnosticsWorkerPool;
 }
 
@@ -4107,10 +3997,9 @@ async function runVbDiagnosticsWorker(
   }
   const pool = getVbDiagnosticsWorkerPool(settings, mode);
   const id = ++vbDiagnosticsWorkerRequestId;
-  const concurrencyMode = mode === "idle" ? "idle" : "busy";
   logDebugSummary(
     settings,
-    `[asp-lsp] vbscript.worker.dispatch: ${cached.source.uri}, request=${id}, mode=${mode}, concurrency=${workerAnalysisConcurrency(settings, concurrencyMode)}`,
+    `[asp-lsp] vbscript.worker.dispatch: ${cached.source.uri}, request=${id}, mode=${mode}, concurrency=${workerAnalysisConcurrency(settings)}`,
   );
   const response = await pool.run(
     {
@@ -4143,12 +4032,10 @@ async function runVbDiagnosticsWorker(
 
 function getVbDiagnosticsWorkerPool(
   settings: AspSettings,
-  mode: AnalysisExecutionMode,
+  _mode: AnalysisExecutionMode,
 ): VbDiagnosticsWorkerPool {
   vbDiagnosticsWorkerPool ??= new VbDiagnosticsWorkerPool();
-  vbDiagnosticsWorkerPool.resize(
-    workerAnalysisConcurrency(settings, mode === "idle" ? "idle" : "busy"),
-  );
+  vbDiagnosticsWorkerPool.resize(workerAnalysisConcurrency(settings));
   return vbDiagnosticsWorkerPool;
 }
 
@@ -8831,10 +8718,6 @@ async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-async function delay(ms: number): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, ms));
-}
-
 function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
   workspaceGeneration += 1;
   workspaceIndexDirty = true;
@@ -8851,7 +8734,6 @@ async function clearDiskAnalysisCacheByCommand(): Promise<void> {
 
 async function clearProcessCachesByCommand(reason: string): Promise<void> {
   const openedUris = openDocumentUris();
-  cancelBackgroundAnalysis();
   if (projectUpdateTimer) {
     clearTimeout(projectUpdateTimer);
     projectUpdateTimer = undefined;
@@ -8879,7 +8761,6 @@ async function clearProcessCachesByCommand(reason: string): Promise<void> {
   for (const document of documents.all()) {
     validate(document);
   }
-  scheduleBackgroundAnalysis(reason);
   logDebugSummary(globalSettings, "[asp-lsp] processCache.clear");
 }
 
@@ -9200,7 +9081,6 @@ async function refreshConfiguration(): Promise<void> {
     globalSettings = normalizeSettings(globalSettings);
     await configureDiskAnalysisCacheAsync();
   }
-  scheduleBackgroundAnalysis("configuration.refresh");
 }
 
 function readSettingsFromChange(settings: unknown): Record<string, unknown> | undefined {
@@ -9276,13 +9156,6 @@ function normalizeWorkspaceSettings(
       typeof record.scanChunkSize === "number" && record.scanChunkSize > 0
         ? Math.floor(record.scanChunkSize)
         : defaultScanChunkSize,
-    backgroundAnalysis: record.backgroundAnalysis === true,
-    idleAnalysisConcurrency: clampAnalysisConcurrency(
-      typeof record.idleAnalysisConcurrency === "number"
-        ? record.idleAnalysisConcurrency
-        : undefined,
-      defaultIdleAnalysisConcurrency(),
-    ),
     busyAnalysisConcurrency: clampAnalysisConcurrency(
       typeof record.busyAnalysisConcurrency === "number"
         ? record.busyAnalysisConcurrency
@@ -13751,7 +13624,6 @@ function isDiagnostic(value: Diagnostic | undefined): value is Diagnostic {
 }
 
 connection.onShutdown(async () => {
-  cancelBackgroundAnalysis();
   await jsDiagnosticsWorkerPool?.close();
   jsDiagnosticsWorkerPool = undefined;
   await vbDiagnosticsWorkerPool?.close();

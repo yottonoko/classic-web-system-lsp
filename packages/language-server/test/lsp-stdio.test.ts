@@ -5382,7 +5382,6 @@ End Function
               checkJs: true,
               debug: { output: "verbose" },
               cache: { enabled: true, directory: cacheDir },
-              workspace: { backgroundAnalysis: false },
             },
           },
         });
@@ -5454,7 +5453,6 @@ End Function
             aspLsp: {
               debug: { output: "verbose" },
               cache: { enabled: true, directory: cacheDir },
-              workspace: { backgroundAnalysis: false },
             },
           },
         });
@@ -5504,7 +5502,6 @@ End Function
           debug: { output: "verbose" },
           cache: { enabled: true, directory: cacheDir },
           diagnostics: { debounceMs: 0 },
-          workspace: { backgroundAnalysis: false },
         },
       };
       let server = new RpcServer();
@@ -5555,50 +5552,6 @@ End Function
         });
         expect(completionLabels(completions)).toContain("SharedCached");
         await waitForLogContaining(server, "diskSummary.hit");
-
-        await server.request("shutdown", null);
-        server.notify("exit", undefined);
-      } finally {
-        server.stop();
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    });
-
-    it("warms unopened workspace diagnostics in the background", async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-background-cache-"));
-      const cacheDir = path.join(tempDir, ".cache");
-      fs.writeFileSync(
-        path.join(tempDir, "broken.asp"),
-        `<%\nOption Explicit\nResponse.Write backgroundMissing\n%>`,
-        "utf8",
-      );
-      const server = new RpcServer();
-      try {
-        await server.start();
-        await server.request("initialize", {
-          processId: process.pid,
-          rootUri: `file://${tempDir}`,
-          capabilities: {},
-        });
-        server.notify("workspace/didChangeConfiguration", {
-          settings: {
-            aspLsp: {
-              debug: { output: "verbose" },
-              cache: { enabled: true, directory: cacheDir },
-              workspace: { backgroundAnalysis: true, idleAnalysisConcurrency: 1 },
-            },
-          },
-        });
-
-        await waitForLogContaining(server, "backgroundAnalysis.completed");
-        const logs = JSON.stringify(server.takePendingNotifications("window/logMessage"));
-        expect(logs).toContain("diskCache.write");
-
-        const diagnostics = await server.request("workspace/diagnostic", {
-          previousResultIds: [],
-        });
-        expect(JSON.stringify(diagnostics)).toContain("backgroundMissing");
-        await waitForLogContaining(server, "diskCache.hit");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -7983,7 +7936,7 @@ Response.Write "ok"
             aspLsp: {
               debug: { output: "verbose" },
               diagnostics: { debounceMs: 0 },
-              workspace: { busyAnalysisConcurrency: 1, idleAnalysisConcurrency: 1 },
+              workspace: { busyAnalysisConcurrency: 1 },
             },
           },
         });

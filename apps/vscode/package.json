@@ -588,17 +588,6 @@
           "default": 200,
           "description": "%configuration.workspace.scanChunkSize.description%"
         },
-        "aspLsp.workspace.backgroundAnalysis": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.workspace.backgroundAnalysis.description%"
-        },
-        "aspLsp.workspace.idleAnalysisConcurrency": {
-          "type": "number",
-          "minimum": 0,
-          "default": 0,
-          "description": "%configuration.workspace.idleAnalysisConcurrency.description%"
-        },
         "aspLsp.workspace.busyAnalysisConcurrency": {
           "type": "number",
           "minimum": 0,

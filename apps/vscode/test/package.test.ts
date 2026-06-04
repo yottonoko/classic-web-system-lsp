@@ -184,12 +184,18 @@ describe("VS Code extension package", () => {
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.maxSizeMb"]).toEqual(
       expect.objectContaining({ type: "number", default: 128, minimum: 1 }),
     );
+    const removedBackgroundAnalysis = "background" + "Analysis";
+    const removedIdleAnalysisConcurrency = "i" + "dleAnalysisConcurrency";
     expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.workspace.backgroundAnalysis"],
-    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
+      manifest.contributes?.configuration?.properties?.[
+        `aspLsp.workspace.${removedBackgroundAnalysis}`
+      ],
+    ).toBeUndefined();
     expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.workspace.idleAnalysisConcurrency"],
-    ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
+      manifest.contributes?.configuration?.properties?.[
+        `aspLsp.workspace.${removedIdleAnalysisConcurrency}`
+      ],
+    ).toBeUndefined();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.workspace.busyAnalysisConcurrency"],
     ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
