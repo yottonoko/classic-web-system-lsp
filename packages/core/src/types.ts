@@ -106,9 +106,12 @@ export interface AspVbscriptSettings {
   unusedDiagnostics?: boolean;
   syntaxSnippets?: boolean;
   syntaxKeywords?: boolean;
+  initializedDimQuickFixStyle?: AspVbscriptInitializedDimQuickFixStyle;
 }
 
 export type AspVbscriptIfSyntaxDiagnostics = "off" | "basic" | "strict";
+
+export type AspVbscriptInitializedDimQuickFixStyle = "newline" | "sameLineColon";
 
 export type AspVbscriptIdentifierCase =
   | "PascalCase"

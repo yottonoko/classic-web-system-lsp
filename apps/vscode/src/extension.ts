@@ -62,6 +62,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.onDidChangeTextDocument((event) => {
       void autoCloseHtmlTag(event);
       void autoCloseAspBlock(event);
+      void autoCloseApostrophe(event);
     }),
     vscode.tasks.registerTaskProvider("asp-lsp", new AspLspTaskProvider()),
   );
@@ -100,6 +101,51 @@ async function autoCloseHtmlTag(event: vscode.TextDocumentChangeEvent): Promise<
     textDocument: { uri: event.document.uri.toString() },
     position: { line: position.line, character: position.character },
     ch: ">",
+    options: {
+      tabSize: numericEditorOption(editor?.options.tabSize, 2),
+      insertSpaces: booleanEditorOption(editor?.options.insertSpaces, true),
+    },
+  });
+  if (!edits || edits.length === 0) {
+    return;
+  }
+  const workspaceEdit = new vscode.WorkspaceEdit();
+  for (const edit of edits) {
+    workspaceEdit.replace(event.document.uri, toVscodeRange(edit.range), edit.newText);
+  }
+  await vscode.workspace.applyEdit(workspaceEdit);
+}
+
+async function autoCloseApostrophe(event: vscode.TextDocumentChangeEvent): Promise<void> {
+  if (
+    !client ||
+    event.document.languageId !== "classic-asp" ||
+    event.contentChanges.length !== 1 ||
+    event.contentChanges[0]?.text !== "'" ||
+    !event.contentChanges[0]?.range.isEmpty
+  ) {
+    return;
+  }
+  const change = event.contentChanges[0];
+  const position = new vscode.Position(change.range.start.line, change.range.start.character + 1);
+  const editor = vscode.window.visibleTextEditors.find(
+    (candidate) => candidate.document.uri.toString() === event.document.uri.toString(),
+  );
+  if (vscode.workspace.getConfiguration("editor", event.document.uri).get("formatOnType")) {
+    return;
+  }
+  const edits = await client.sendRequest<
+    Array<{
+      range: {
+        start: { line: number; character: number };
+        end: { line: number; character: number };
+      };
+      newText: string;
+    }>
+  >("textDocument/onTypeFormatting", {
+    textDocument: { uri: event.document.uri.toString() },
+    position: { line: position.line, character: position.character },
+    ch: "'",
     options: {
       tabSize: numericEditorOption(editor?.options.tabSize, 2),
       insertSpaces: booleanEditorOption(editor?.options.insertSpaces, true),

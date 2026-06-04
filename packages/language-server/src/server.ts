@@ -1242,7 +1242,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       documentRangeFormattingProvider: true,
       documentOnTypeFormattingProvider: {
         firstTriggerCharacter: "\n",
-        moreTriggerCharacter: [">"],
+        moreTriggerCharacter: [">", "'"],
       },
       workspace: {
         workspaceFolders: {
@@ -9499,7 +9499,16 @@ function normalizeVbscriptSettings(
     unusedDiagnostics: record.unusedDiagnostics !== false,
     syntaxSnippets: record.syntaxSnippets !== false,
     syntaxKeywords: record.syntaxKeywords !== false,
+    initializedDimQuickFixStyle: normalizeInitializedDimQuickFixStyle(
+      record.initializedDimQuickFixStyle,
+    ),
   };
+}
+
+function normalizeInitializedDimQuickFixStyle(
+  value: unknown,
+): NonNullable<NonNullable<AspSettings["vbscript"]>["initializedDimQuickFixStyle"]> {
+  return value === "sameLineColon" ? "sameLineColon" : "newline";
 }
 
 function normalizeIfSyntaxDiagnostics(
@@ -11923,6 +11932,11 @@ function splitInitializedDimDeclarationAction(
   if (!name || !value.trim()) {
     return undefined;
   }
+  const trimmedValue = value.trim();
+  const newText =
+    cachedSettings(cached.source.uri).vbscript?.initializedDimQuickFixStyle === "sameLineColon"
+      ? `${indent}Dim ${name} : ${name} = ${trimmedValue}`
+      : `${indent}Dim ${name}\n${indent}${name} = ${trimmedValue}`;
   return {
     title: localizerForUri(cached.source.uri).t("server.quickfix.splitInitializedDim"),
     kind: CodeActionKind.QuickFix,
@@ -11932,7 +11946,7 @@ function splitInitializedDimDeclarationAction(
         [cached.source.uri]: [
           {
             range: lineRange(cached.source, line),
-            newText: `${indent}Dim ${name}\n${indent}${name} = ${value.trim()}`,
+            newText,
           },
         ],
       },
@@ -12568,6 +12582,9 @@ async function onTypeFormattingAsync(
   character: string,
   formattingOptions: FormattingOptions,
 ): Promise<TextEdit[]> {
+  if (character === "'") {
+    return apostropheCloseOnTypeFormatting(cached, position);
+  }
   if (character === ">") {
     const jsEdits = await jsOnTypeFormattingAsync(cached, position, character, formattingOptions);
     if (jsEdits) {
@@ -12648,6 +12665,28 @@ async function jsOnTypeFormattingAsync(
     )
     .map((change) => textChangeToSourceTextEdit(context.virtual, change))
     .filter((edit): edit is TextEdit => Boolean(edit));
+}
+
+function apostropheCloseOnTypeFormatting(cached: CachedDocument, position: Position): TextEdit[] {
+  const offset = Math.max(0, cached.source.offsetAt(position) - 1);
+  const language = findRegionAt(cached.parsed, offset)?.language;
+  if (
+    language !== "html" &&
+    language !== "css" &&
+    language !== "javascript" &&
+    language !== "jscript"
+  ) {
+    return [];
+  }
+  if (lineText(cached.source, position.line).charAt(position.character) === "'") {
+    return [];
+  }
+  return [
+    {
+      range: { start: position, end: position },
+      newText: "'",
+    },
+  ];
 }
 
 function htmlCloseTagOnTypeFormatting(

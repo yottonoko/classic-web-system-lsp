@@ -501,6 +501,15 @@
           "default": true,
           "description": "%configuration.vbscript.syntaxKeywords.description%"
         },
+        "aspLsp.vbscript.initializedDimQuickFixStyle": {
+          "type": "string",
+          "enum": [
+            "newline",
+            "sameLineColon"
+          ],
+          "default": "newline",
+          "description": "%configuration.vbscript.initializedDimQuickFixStyle.description%"
+        },
         "aspLsp.vbscript.ifSyntaxDiagnostics": {
           "type": "string",
           "enum": [

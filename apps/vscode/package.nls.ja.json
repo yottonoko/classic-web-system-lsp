@@ -37,6 +37,7 @@
   "configuration.vbscript.unusedDiagnostics.description": "未使用の VBScript declaration を hint diagnostic として報告します。",
   "configuration.vbscript.syntaxSnippets.description": "よく使う制御構文と宣言 block の VBScript syntax snippet completion を有効にします。",
   "configuration.vbscript.syntaxKeywords.description": "文脈に応じた VBScript syntax keyword completion を有効にします。",
+  "configuration.vbscript.initializedDimQuickFixStyle.description": "初期化つき VBScript Dim declaration の quick fix style を制御します。newline は 2 つの statement を別行に分け、sameLineColon は Dim a : a = value に書き換えます。",
   "configuration.vbscript.ifSyntaxDiagnostics.description": "VBScript If / ElseIf 構文をどの程度厳しく診断するかを制御します。",
   "configuration.inlayHints.variableTypes.description": "推論された VBScript variable type の inlay hint を表示します。",
   "configuration.inlayHints.parameterNames.description": "VBScript procedure call site に parameter name inlay hint を表示します。",

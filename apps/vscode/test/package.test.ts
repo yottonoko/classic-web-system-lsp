@@ -145,6 +145,17 @@ describe("VS Code extension package", () => {
       manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.syntaxKeywords"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
     expect(
+      manifest.contributes?.configuration?.properties?.[
+        "aspLsp.vbscript.initializedDimQuickFixStyle"
+      ],
+    ).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["newline", "sameLineColon"],
+        default: "newline",
+      }),
+    );
+    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.ifSyntaxDiagnostics"],
     ).toEqual(expect.objectContaining({ type: "string", default: "basic" }));
     expect(
@@ -275,9 +286,19 @@ describe("VS Code extension package", () => {
       fs.readFileSync("language-configuration.json", "utf8"),
     ) as {
       comments?: { blockComment?: string[]; lineComment?: string };
+      autoClosingPairs?: Array<{ open?: string; close?: string }>;
+      surroundingPairs?: Array<{ open?: string; close?: string }>;
     };
     expect(languageConfiguration.comments?.blockComment).toEqual(["<!--", "-->"]);
     expect(languageConfiguration.comments?.lineComment).toBeUndefined();
+    expect(languageConfiguration.autoClosingPairs).not.toContainEqual({
+      open: "'",
+      close: "'",
+    });
+    expect(languageConfiguration.surroundingPairs).toContainEqual({
+      open: "'",
+      close: "'",
+    });
     const vbscriptLanguage = manifest.contributes?.languages?.find(
       (language) => language.id === "vbscript",
     );
@@ -293,9 +314,15 @@ describe("VS Code extension package", () => {
       open: "(",
       close: ")",
     });
+    expect(vbscriptLanguageConfiguration.autoClosingPairs).not.toContainEqual({
+      open: "'",
+      close: "'",
+    });
     expect(extensionSource).toContain("autoCloseHtmlTag");
     expect(extensionSource).toContain("textDocument/onTypeFormatting");
     expect(extensionSource).toContain("autoCloseAspBlock");
+    expect(extensionSource).toContain("autoCloseApostrophe");
+    expect(extensionSource).toContain('ch: "\'"');
     expect(extensionSource).toContain("%>");
     expect(
       manifest.contributes?.grammars?.some(

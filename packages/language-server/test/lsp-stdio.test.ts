@@ -5969,6 +5969,62 @@ Response.Write value
       }
     });
 
+    it("supports same-line colon style for initialized Dim quick fixes", async () => {
+      const source = `<%
+Dim value = 1
+Response.Write value
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              vbscript: {
+                initializedDimQuickFixStyle: "sameLineColon",
+              },
+            },
+          },
+        });
+        const uri = "file:///tmp/vb-split-dim-colon.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await waitForDiagnosticsContaining(server, "initializers");
+        const syntaxDiagnostics = (
+          diagnostics.params as { diagnostics: Array<Record<string, unknown>> }
+        ).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+        const actions = await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(source, source.indexOf("value")),
+            end: positionAt(source, source.indexOf("value") + "value".length),
+          },
+          context: { diagnostics: syntaxDiagnostics, only: ["quickfix"] },
+        });
+        const serialized = JSON.stringify(actions);
+        expect(serialized).toContain("Split initialized Dim declaration");
+        expect(serialized).toContain("Dim value : value = 1");
+        expect(serialized).not.toContain("Dim value\\nvalue = 1");
+        expect((actions as unknown[]).length).toBe(1);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns a VBScript quick fix for multi-name Dim declarations", async () => {
       const source = `<%
 Dim first, second
@@ -7697,6 +7753,100 @@ helper▮Thing();
           '<% Response.Write "ok" %>',
         );
         expect(aspCloseEdits).toEqual([]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("auto-closes apostrophes outside VBScript regions only", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const requestOnType = async (
+          uri: string,
+          text: string,
+          quoteOffset = text.indexOf("'") + 1,
+        ): Promise<TextEdit[]> => {
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri,
+              languageId: "classic-asp",
+              version: 1,
+              text,
+            },
+          });
+          await server.waitForNotification("textDocument/publishDiagnostics");
+          return (await server.request("textDocument/onTypeFormatting", {
+            textDocument: { uri },
+            position: positionAt(text, quoteOffset),
+            ch: "'",
+            options: { tabSize: 2, insertSpaces: true },
+          })) as TextEdit[];
+        };
+
+        const vbscriptEdits = await requestOnType(
+          "file:///tmp/apostrophe-vbscript.asp",
+          `<% Response.Write '
+%>`,
+        );
+        expect(vbscriptEdits).toEqual([]);
+
+        const htmlEdits = await requestOnType("file:///tmp/apostrophe-html.asp", "<div title='>");
+        expect(htmlEdits).toEqual([
+          {
+            range: { start: { line: 0, character: 12 }, end: { line: 0, character: 12 } },
+            newText: "'",
+          },
+        ]);
+
+        const cssEdits = await requestOnType(
+          "file:///tmp/apostrophe-css.asp",
+          "<style>.x::before { content: '</style>",
+        );
+        expect(cssEdits).toEqual([
+          {
+            range: { start: { line: 0, character: 30 }, end: { line: 0, character: 30 } },
+            newText: "'",
+          },
+        ]);
+
+        const javascriptEdits = await requestOnType(
+          "file:///tmp/apostrophe-javascript.asp",
+          "<script>const value = '</script>",
+        );
+        expect(javascriptEdits).toEqual([
+          {
+            range: { start: { line: 0, character: 23 }, end: { line: 0, character: 23 } },
+            newText: "'",
+          },
+        ]);
+
+        const jscriptEdits = await requestOnType(
+          "file:///tmp/apostrophe-jscript.asp",
+          `<%@ LANGUAGE="JScript" %>
+<% var value = '
+%>`,
+        );
+        expect(jscriptEdits).toEqual([
+          {
+            range: { start: { line: 1, character: 16 }, end: { line: 1, character: 16 } },
+            newText: "'",
+          },
+        ]);
+
+        const existingCloseEdits = await requestOnType(
+          "file:///tmp/apostrophe-existing-close.asp",
+          "<script>const value = '';</script>",
+        );
+        expect(existingCloseEdits).toEqual([]);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

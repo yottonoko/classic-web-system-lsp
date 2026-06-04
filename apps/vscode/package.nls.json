@@ -37,6 +37,7 @@
   "configuration.vbscript.unusedDiagnostics.description": "Report unused VBScript declarations as hint diagnostics.",
   "configuration.vbscript.syntaxSnippets.description": "Enable VBScript syntax snippet completions for common control flow and declaration blocks.",
   "configuration.vbscript.syntaxKeywords.description": "Enable context-aware VBScript syntax keyword completions.",
+  "configuration.vbscript.initializedDimQuickFixStyle.description": "Controls the quick fix style for initialized VBScript Dim declarations. newline rewrites to two statements on separate lines, and sameLineColon rewrites to Dim a : a = value.",
   "configuration.vbscript.ifSyntaxDiagnostics.description": "Controls how strictly VBScript If and ElseIf syntax is checked.",
   "configuration.inlayHints.variableTypes.description": "Show inferred VBScript variable type inlay hints.",
   "configuration.inlayHints.parameterNames.description": "Show VBScript procedure parameter name inlay hints.",
