@@ -37,6 +37,7 @@ export type LocalizeKey =
   | "vb.builtin.application.detail"
   | "vb.builtin.server.detail"
   | "vb.builtin.asperror.detail"
+  | "vb.builtin.err.detail"
   | "vb.builtin.optionExplicit.detail"
   | "vb.hover.builtin.request"
   | "vb.hover.builtin.response"
@@ -44,6 +45,7 @@ export type LocalizeKey =
   | "vb.hover.builtin.application"
   | "vb.hover.builtin.server"
   | "vb.hover.builtin.asperror"
+  | "vb.hover.builtin.err"
   | "vb.symbol.owner"
   | "vb.symbol.scope"
   | "vb.completion.builtinLabel"
@@ -61,6 +63,7 @@ export type LocalizeKey =
   | "vb.diagnostic.missingIfCondition"
   | "vb.diagnostic.invalidIfCondition"
   | "vb.diagnostic.missingEndIf"
+  | "vb.diagnostic.invalidOnErrorStatement"
   | "vb.diagnostic.setScalar"
   | "vb.diagnostic.objectNeedsSet"
   | "vb.diagnostic.typeMismatch"
@@ -131,6 +134,7 @@ const en: Record<LocalizeKey, string> = {
   "vb.builtin.application.detail": "Classic ASP Application object",
   "vb.builtin.server.detail": "Classic ASP Server object",
   "vb.builtin.asperror.detail": "Classic ASP error object",
+  "vb.builtin.err.detail": "VBScript Err object",
   "vb.builtin.optionExplicit.detail": "Require explicit variable declarations",
   "vb.hover.builtin.request": "Classic ASP Request object. Reads values sent by the client.",
   "vb.hover.builtin.response":
@@ -140,6 +144,8 @@ const en: Record<LocalizeKey, string> = {
   "vb.hover.builtin.server":
     "Classic ASP Server object. Creates COM objects, maps paths, and encodes values.",
   "vb.hover.builtin.asperror": "Classic ASP error object returned by Server.GetLastError.",
+  "vb.hover.builtin.err":
+    "VBScript Err object. Stores details about the most recent runtime error.",
   "vb.symbol.owner": " of {owner}",
   "vb.symbol.scope": " in {scope}",
   "vb.completion.builtinLabel": "built-in",
@@ -158,6 +164,8 @@ const en: Record<LocalizeKey, string> = {
   "vb.diagnostic.missingIfCondition": "VBScript If statements must include a condition.",
   "vb.diagnostic.invalidIfCondition": "VBScript If condition syntax is invalid.",
   "vb.diagnostic.missingEndIf": "VBScript multiline If block is missing End If.",
+  "vb.diagnostic.invalidOnErrorStatement":
+    "VBScript On Error statements must be 'On Error Resume Next' or 'On Error GoTo 0'.",
   "vb.diagnostic.setScalar": "Set assigns an object reference, but '{name}' receives {type}.",
   "vb.diagnostic.objectNeedsSet": "Object assignment to '{name}' should use Set.",
   "vb.diagnostic.typeMismatch": "Type mismatch: '{name}' is {expected}, but assigned {actual}.",
@@ -233,6 +241,7 @@ const ja: Record<LocalizeKey, string> = {
   "vb.builtin.application.detail": "Classic ASP Application オブジェクト",
   "vb.builtin.server.detail": "Classic ASP Server オブジェクト",
   "vb.builtin.asperror.detail": "Classic ASP error オブジェクト",
+  "vb.builtin.err.detail": "VBScript Err オブジェクト",
   "vb.builtin.optionExplicit.detail": "明示的な変数宣言を必須にします",
   "vb.hover.builtin.request":
     "Classic ASP Request オブジェクト。クライアントから送られた値を読み取ります。",
@@ -244,6 +253,7 @@ const ja: Record<LocalizeKey, string> = {
   "vb.hover.builtin.server":
     "Classic ASP Server オブジェクト。COM オブジェクトの作成、パス解決、値のエンコードを行います。",
   "vb.hover.builtin.asperror": "Server.GetLastError が返す Classic ASP error オブジェクトです。",
+  "vb.hover.builtin.err": "VBScript Err オブジェクト。直近の実行時エラーの詳細を保持します。",
   "vb.symbol.owner": " ({owner} のメンバー)",
   "vb.symbol.scope": " ({scope} 内)",
   "vb.completion.builtinLabel": "built-in",
@@ -261,6 +271,8 @@ const ja: Record<LocalizeKey, string> = {
   "vb.diagnostic.missingIfCondition": "VBScript の If statement には条件式が必要です。",
   "vb.diagnostic.invalidIfCondition": "VBScript の If 条件式の構文が無効です。",
   "vb.diagnostic.missingEndIf": "VBScript の multiline If block に End If がありません。",
+  "vb.diagnostic.invalidOnErrorStatement":
+    "VBScript の On Error statement は 'On Error Resume Next' または 'On Error GoTo 0' にしてください。",
   "vb.diagnostic.setScalar":
     "Set はオブジェクト参照を代入しますが、'{name}' は {type} を受け取っています。",
   "vb.diagnostic.objectNeedsSet": "'{name}' へのオブジェクト代入には Set が必要です。",

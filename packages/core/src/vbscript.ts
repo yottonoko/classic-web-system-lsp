@@ -58,6 +58,7 @@ import type {
   VbInlayHintOptions,
   VbIfSyntaxDiagnosticCode,
   VbMember,
+  VbOnErrorSyntaxDiagnosticCode,
   VbExportSummary,
   VbExternalRef,
   VbExternalRefUsage,
@@ -260,6 +261,14 @@ function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
     ),
     withBuiltinCompletionLabel(
       {
+        label: "Err",
+        kind: CompletionItemKind.Variable,
+        detail: localizer.t("vb.builtin.err.detail"),
+      },
+      locale,
+    ),
+    withBuiltinCompletionLabel(
+      {
         label: "Nothing",
         kind: CompletionItemKind.Constant,
         detail: "VBScript Nothing literal",
@@ -389,9 +398,13 @@ function builtinDescription(name: string, locale: AspLocale | undefined): string
     key === "vb.hover.builtin.session" ||
     key === "vb.hover.builtin.application" ||
     key === "vb.hover.builtin.server" ||
-    key === "vb.hover.builtin.asperror"
+    key === "vb.hover.builtin.asperror" ||
+    key === "vb.hover.builtin.err"
   ) {
-    return markdownHover(`Dim ${name} As ${name}`, createLocalizer(locale).t(key));
+    return markdownHover(
+      `Dim ${name} As ${classicAspObjectCatalog[name.toLowerCase()]?.typeName ?? name}`,
+      createLocalizer(locale).t(key),
+    );
   }
   const builtin = builtinFunction(name);
   if (builtin) {
@@ -539,6 +552,8 @@ const classicAspTypeNames = new Set([
   "application",
   "server",
   "asperror",
+  "err",
+  "errobject",
 ]);
 
 const builtinConstants: BuiltinConstant[] = builtinCatalog.constants.map((item) => ({
@@ -1510,7 +1525,7 @@ function statementKeywordCompletionContext(
     return undefined;
   }
   const rawPrefix = parsed.text.slice(statementStart, sourceOffset);
-  const match = /^[ \t]*([A-Za-z]*)[ \t]*$/.exec(rawPrefix);
+  const match = /^[ \t]*([A-Za-z]*(?:[ \t]+[A-Za-z]+)*)[ \t]*$/.exec(rawPrefix);
   if (!match) {
     return undefined;
   }
@@ -1520,7 +1535,7 @@ function statementKeywordCompletionContext(
   const replaceStart = statementStart + (/^[ \t]*/.exec(rawPrefix)?.[0].length ?? 0);
   return {
     replaceStart,
-    prefix: match[1].toLowerCase(),
+    prefix: match[1].replace(/[ \t]+/g, " ").toLowerCase(),
     blocks: openVbEndCompletionBlocksBefore(document, replaceStart),
   };
 }
@@ -1529,7 +1544,16 @@ function statementKeywordCompletionLabels(
   blocks: VbEndCompletionBlock[],
   prefix: string,
 ): string[] {
-  const labels = ["If", "Do", "For", "Select", "With", "While"];
+  const labels = [
+    "If",
+    "Do",
+    "For",
+    "Select",
+    "With",
+    "While",
+    "On Error Resume Next",
+    "On Error GoTo 0",
+  ];
   const topBlock = blocks.at(-1);
   if (topBlock?.kind === "If") {
     labels.push("ElseIf", "Else");
@@ -2273,6 +2297,11 @@ function analyzeVbscriptTypeScript(
   diagnostics.push(
     ...measureVbDebugStep(context, "ifSyntax", () =>
       diagnoseIfSyntax(parsed, context.ifSyntaxDiagnostics ?? "basic", context.locale),
+    ),
+  );
+  diagnostics.push(
+    ...measureVbDebugStep(context, "onErrorSyntax", () =>
+      diagnoseOnErrorSyntax(parsed, context.locale),
     ),
   );
   const scriptText = measureVbDebugStep(
@@ -5613,7 +5642,10 @@ function inferSignificantExpressionType(
     if (constant) {
       return typeRef(constant.type);
     }
-    return inferVariableTypeRef(first.text, parsed, offset, symbols);
+    return (
+      inferVariableTypeRef(first.text, parsed, offset, symbols) ??
+      classicAspObjectTypeRef(first.text)
+    );
   }
   return undefined;
 }
@@ -6341,6 +6373,43 @@ function diagnoseIfSyntax(
   return diagnostics;
 }
 
+function diagnoseOnErrorSyntax(
+  parsed: AspParsedDocument,
+  locale: AspLocale | undefined,
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const statement of vbStatements(parsed)) {
+    if (lowerToken(statement[0]) !== "on" || lowerToken(statement[1]) !== "error") {
+      continue;
+    }
+    if (isValidOnErrorStatement(statement)) {
+      continue;
+    }
+    const start = statement[0].start;
+    const end = statement.at(-1)?.end ?? statement[0].end;
+    diagnostics.push({
+      severity: DiagnosticSeverity.Error,
+      range: rangeFromOffsets(parsed.text, start, end),
+      message: createLocalizer(locale).t("vb.diagnostic.invalidOnErrorStatement"),
+      code: "invalidOnErrorStatement" satisfies VbOnErrorSyntaxDiagnosticCode,
+      source: "asp-lsp-vbscript-syntax",
+    });
+  }
+  return diagnostics;
+}
+
+function isValidOnErrorStatement(statement: VbToken[]): boolean {
+  return (
+    (statement.length === 4 &&
+      lowerToken(statement[2]) === "resume" &&
+      lowerToken(statement[3]) === "next") ||
+    (statement.length === 4 &&
+      lowerToken(statement[2]) === "goto" &&
+      statement[3]?.kind === "number" &&
+      statement[3].text === "0")
+  );
+}
+
 function ifStatementSyntaxDiagnostic(
   parsed: AspParsedDocument,
   statement: VbToken[],
@@ -6726,6 +6795,7 @@ function diagnoseUndeclaredVariables(
     "application",
     "server",
     "asperror",
+    "err",
     "true",
     "false",
     "nothing",
@@ -8539,7 +8609,7 @@ function isBuiltinName(name: string): boolean {
 }
 
 function isClassicAspObjectName(name: string): boolean {
-  return ["request", "response", "session", "application", "server", "asperror"].includes(
+  return ["request", "response", "session", "application", "server", "asperror", "err"].includes(
     name.toLowerCase(),
   );
 }

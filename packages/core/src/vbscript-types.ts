@@ -208,6 +208,8 @@ export type VbIfSyntaxDiagnosticCode =
   | "invalidIfCondition"
   | "missingEndIf";
 
+export type VbOnErrorSyntaxDiagnosticCode = "invalidOnErrorStatement";
+
 export interface VbMember {
   name: string;
   kind: "field" | "property" | "method" | "event";

@@ -4331,6 +4331,118 @@ Response.Write UBound(Array("a", "b"))
       }
     });
 
+    it("supports VBScript On Error completions and Err built-ins", async () => {
+      const source = `<%
+Option Explicit
+On Error Resume Next
+Dim captured, errNumber
+Set captured = Err
+errNumber = Err.Number
+Err.Raise(vbObjectError + 513, "App", "Boom")
+Err.
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vbscript-err-builtins.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const published = await server.waitForNotification("textDocument/publishDiagnostics");
+        expect(JSON.stringify(published)).not.toContain("Err");
+
+        const memberCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.lastIndexOf("Err.") + "Err.".length),
+        });
+        expect(completionLabels(memberCompletions)).toEqual(
+          expect.arrayContaining(["Number", "Description", "Clear", "Raise"]),
+        );
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("Err.Number") + "Err.".length),
+        });
+        expect(JSON.stringify(hover)).toContain("property ErrObject.Number As Number");
+
+        const signature = await server.request("textDocument/signatureHelp", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("Err.Raise(") + "Err.Raise(".length),
+        });
+        expect(JSON.stringify(signature)).toContain(
+          "Err.Raise(number, source, description, helpfile, helpcontext)",
+        );
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        const tokenAtOffset = (offset: number) => {
+          const position = positionAt(source, offset);
+          return decoded.find(
+            (token) => token.line === position.line && token.character === position.character,
+          );
+        };
+        expect(
+          tokenAtOffset(source.indexOf("Set captured = Err") + "Set captured = ".length),
+        ).toEqual(
+          expect.objectContaining({
+            tokenType: semanticTokenType.constant,
+            tokenModifiers: semanticTokenModifier.readonly | semanticTokenModifier.library,
+          }),
+        );
+        expect(tokenAtOffset(source.indexOf("Err.Number") + "Err.".length)).toEqual(
+          expect.objectContaining({
+            tokenType: semanticTokenType.property,
+            tokenModifiers: semanticTokenModifier.library,
+          }),
+        );
+        expect(tokenAtOffset(source.indexOf("Err.Raise") + "Err.".length)).toEqual(
+          expect.objectContaining({
+            tokenType: semanticTokenType.method,
+            tokenModifiers: semanticTokenModifier.library,
+          }),
+        );
+
+        const completionSource = `<%
+On Error R
+%>`;
+        const completionUri = "file:///tmp/vbscript-on-error-completion.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: completionUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: completionSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const onErrorCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri: completionUri },
+          position: positionAt(
+            completionSource,
+            completionSource.indexOf("On Error R") + "On Error R".length,
+          ),
+        });
+        expect(completionLabels(onErrorCompletions)).toEqual(["On Error Resume Next"]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("supports VBScript rename, highlights, signature help, workspace symbols and semantic tokens", async () => {
       const marked = markedDocument(`<%
 Function BuildName(ByVal firstName, lastName)

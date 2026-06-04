@@ -829,6 +829,49 @@ Response.
     expect(memberCompletions.some((item) => item.label === "If")).toBe(false);
   });
 
+  it("completes VBScript On Error statements as syntax keywords", () => {
+    const source = `<%
+On
+On Error${" "}
+On Error R
+On Error G
+%>`;
+    const parsed = parseAspDocument("file:///site/on-error-completion.asp", source);
+    const onCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("On") + "On".length),
+    );
+    expect(onCompletions.map((item) => item.label)).toEqual(
+      expect.arrayContaining(["On Error Resume Next", "On Error GoTo 0"]),
+    );
+    expect(onCompletions.find((item) => item.label === "On Error Resume Next")).toMatchObject({
+      kind: CompletionItemKind.Keyword,
+      detail: "VBScript syntax keyword",
+      textEdit: {
+        newText: "On Error Resume Next",
+      },
+    });
+
+    const resumeCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("On Error R") + "On Error R".length),
+    );
+    expect(resumeCompletions.map((item) => item.label)).toEqual(["On Error Resume Next"]);
+
+    const gotoCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("On Error G") + "On Error G".length),
+    );
+    expect(gotoCompletions.map((item) => item.label)).toEqual(["On Error GoTo 0"]);
+
+    const disabled = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("On Error R") + "On Error R".length),
+      { syntaxKeywords: false },
+    );
+    expect(disabled.some((item) => item.label === "On Error Resume Next")).toBe(false);
+  });
+
   it("completes matching End block labels for open VBScript blocks", () => {
     const source = `<%
 Function Render()
@@ -1766,6 +1809,32 @@ End If
     expect(syntaxDiagnostics).toHaveLength(0);
   });
 
+  it("reports invalid VBScript On Error statements", () => {
+    const parsed = parseAspDocument(
+      "file:///site/on-error-syntax.asp",
+      `<%
+On Error Resume Next
+On Error GoTo 0
+On Error Resume
+On Error GoTo
+On Error GoTo label
+On Error GoTo -1
+On Error Next
+%>`,
+    );
+    const syntaxDiagnostics = analyzeVbscript(parsed, {
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+    expect(syntaxDiagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "invalidOnErrorStatement",
+      "invalidOnErrorStatement",
+      "invalidOnErrorStatement",
+      "invalidOnErrorStatement",
+      "invalidOnErrorStatement",
+    ]);
+    expect(syntaxDiagnostics.every((diagnostic) => diagnostic.severity === 1)).toBe(true);
+  });
+
   it("allows function return value self references in assignments", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -2410,6 +2479,93 @@ Response.Write lastError.Description
       getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("Application_OnStart"))),
     ).toContain("Sub Application_OnStart()");
     expect(symbols.find((symbol) => symbol.name === "lastError")?.typeName).toBe("ASPError");
+  });
+
+  it("treats Err as a typed VBScript built-in object", () => {
+    const parsed = parseAspDocument(
+      "file:///site/err-object.asp",
+      `<%
+Option Explicit
+On Error Resume Next
+Dim captured, errNumber, errDescription
+Set captured = Err
+errNumber = Err.Number
+errDescription = Err.Description
+Err.Clear
+Err.Raise(vbObjectError + 513, "App", "Boom")
+Err.
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const diagnostics = analyzeVbscript(parsed, {
+      symbols,
+      unusedDiagnostics: false,
+    }).diagnostics;
+    expect(
+      diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript"),
+    ).toHaveLength(0);
+    expect(
+      diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax"),
+    ).toHaveLength(0);
+
+    const memberCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(parsed.text, parsed.text.lastIndexOf("Err.") + "Err.".length),
+      { symbols },
+    );
+    expect(memberCompletions.map((item) => item.label)).toEqual(
+      expect.arrayContaining(["Number", "Description", "Clear", "Raise"]),
+    );
+
+    const topLevelCompletions = getVbscriptCompletions(
+      parsed,
+      { line: 1, character: 0 },
+      { symbols },
+    );
+    const errCompletion = topLevelCompletions.find((item) => item.label === "Err");
+    expect(errCompletion).toMatchObject({
+      kind: CompletionItemKind.Variable,
+    });
+    expect(resolveVbscriptCompletionItem(errCompletion!, parsed, { symbols })).toMatchObject({
+      detail: "VBScript Err object",
+    });
+
+    expect(symbols.find((symbol) => symbol.name === "captured")?.typeName).toBe("ErrObject");
+    expect(symbols.find((symbol) => symbol.name === "errNumber")?.typeName).toBe("Number");
+    expect(symbols.find((symbol) => symbol.name === "errDescription")?.typeName).toBe("String");
+    expect(
+      getVbscriptHover(
+        parsed,
+        positionAt(
+          parsed.text,
+          parsed.text.indexOf("Set captured = Err") + "Set captured = ".length,
+        ),
+      ),
+    ).toContain("Dim Err As ErrObject");
+    expect(
+      getVbscriptHover(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf("Err.Number") + "Err.".length),
+      ),
+    ).toContain("property ErrObject.Number As Number");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("Raise"))),
+    ).toContain("ErrObject.Raise(number, source, description, helpfile, helpcontext)");
+    expect(
+      getVbscriptSignatureHelp(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf("Err.Raise(") + "Err.Raise(".length),
+        { symbols },
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        signatures: [
+          expect.objectContaining({
+            label: "Err.Raise(number, source, description, helpfile, helpcontext)",
+          }),
+        ],
+      }),
+    );
   });
 
   it("covers W3Schools COM and ADO catalog completions and return types", () => {

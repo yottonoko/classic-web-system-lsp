@@ -441,6 +441,14 @@ describe("VS Code extension package", () => {
     expect(keywordPattern).toContain("As");
     expect(keywordPattern).toContain("ElseIf");
     expect(keywordPattern).toContain("Is");
+    expect(keywordPattern).toContain("On");
+    expect(keywordPattern).toContain("Error");
+    expect(keywordPattern).toContain("Resume");
+    expect(keywordPattern).toContain("GoTo");
+    const aspObjectPattern = patterns.find(
+      (pattern) => pattern.name === "support.class.asp",
+    )?.match;
+    expect(aspObjectPattern).toContain("Err");
     const remCommentPattern = grammar.repository?.["vbscript-basic"]?.patterns?.find(
       (pattern) => pattern.name === "comment.line.rem.vbscript",
     )?.match;

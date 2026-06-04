@@ -337,6 +337,48 @@
           "type": "String"
         }
       ]
+    },
+    "err": {
+      "typeName": "ErrObject",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Number",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Description",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Source",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "HelpFile",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "HelpContext",
+          "type": "Number"
+        },
+        {
+          "kind": "method",
+          "name": "Clear",
+          "type": "Variant",
+          "signature": "Err.Clear"
+        },
+        {
+          "kind": "method",
+          "name": "Raise",
+          "type": "Variant",
+          "signature": "Err.Raise(number, source, description, helpfile, helpcontext)"
+        }
+      ]
     }
   },
   "externalObjects": {
