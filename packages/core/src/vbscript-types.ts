@@ -52,7 +52,15 @@ export interface VbSymbol {
 
 export interface VbSemanticToken {
   range: Range;
-  tokenType: "variable" | "parameter" | "function" | "class" | "method" | "property" | "operator";
+  tokenType:
+    | "variable"
+    | "parameter"
+    | "function"
+    | "class"
+    | "method"
+    | "property"
+    | "constant"
+    | "operator";
   tokenModifiers?: Array<"public" | "private" | "readonly" | "library" | "byref" | "byval">;
 }
 

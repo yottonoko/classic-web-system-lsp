@@ -257,6 +257,14 @@ function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
       },
       locale,
     ),
+    withBuiltinCompletionLabel(
+      {
+        label: "Nothing",
+        kind: CompletionItemKind.Constant,
+        detail: "VBScript Nothing literal",
+      },
+      locale,
+    ),
     {
       label: "Option Explicit",
       kind: CompletionItemKind.Keyword,
@@ -2586,12 +2594,29 @@ export function getVbscriptSemanticTokens(
   const rangeStart = range ? offsetAt(parsed.text, range.start) : 0;
   const rangeEnd = range ? offsetAt(parsed.text, range.end) : parsed.text.length;
   const tokens: VbSemanticToken[] = operatorSemanticTokens(parsed, rangeStart, rangeEnd);
+  const intrinsicConstantStarts = new Set<number>();
+  for (const token of significantTokensInRange(parsed, rangeStart, rangeEnd)) {
+    if (
+      isVbscriptIntrinsicConstantName(token.text) &&
+      previousSignificantTokenForToken(parsed, token)?.text !== "."
+    ) {
+      intrinsicConstantStarts.add(token.start);
+      tokens.push({
+        range: rangeFromOffsets(parsed.text, token.start, token.end),
+        tokenType: "constant",
+        tokenModifiers: ["readonly", "library"],
+      });
+    }
+  }
   for (const token of identifierTokensInRange(parsed, rangeStart, rangeEnd)) {
+    if (intrinsicConstantStarts.has(token.start)) {
+      continue;
+    }
     if (isClassicAspObjectName(token.text)) {
       tokens.push({
         range: rangeFromOffsets(parsed.text, token.start, token.end),
-        tokenType: "variable",
-        tokenModifiers: ["library"],
+        tokenType: "constant",
+        tokenModifiers: ["readonly", "library"],
       });
       continue;
     }
@@ -2646,11 +2671,15 @@ function builtinSemanticTokenForIdentifier(
   if (builtinConstant(token.text)) {
     return {
       range: rangeFromOffsets(parsed.text, token.start, token.end),
-      tokenType: "variable",
+      tokenType: "constant",
       tokenModifiers: ["readonly", "library"],
     };
   }
   return undefined;
+}
+
+function isVbscriptIntrinsicConstantName(name: string): boolean {
+  return ["true", "false", "nothing", "empty", "null"].includes(name.toLowerCase());
 }
 
 function builtinMemberName(owner: string, member: string): boolean {
@@ -2742,7 +2771,10 @@ function semanticTokenTypeForSymbol(symbol: VbSymbol): VbSemanticToken["tokenTyp
   if (symbol.kind === "parameter") {
     return "parameter";
   }
-  if (symbol.kind === "variable" || symbol.kind === "constant") {
+  if (symbol.kind === "constant") {
+    return "constant";
+  }
+  if (symbol.kind === "variable") {
     return "variable";
   }
   return undefined;

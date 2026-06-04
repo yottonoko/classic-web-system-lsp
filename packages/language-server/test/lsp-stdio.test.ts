@@ -64,6 +64,7 @@ const semanticTokenType = {
   enumMember: 13,
   typeAlias: 14,
   typeParameter: 15,
+  constant: 16,
 } as const;
 const semanticTokenModifier = {
   public: 1 << 0,
@@ -3565,8 +3566,9 @@ Response.Write a
             (token) =>
               token.line === 5 &&
               token.character === 0 &&
-              token.tokenType === semanticTokenType.variable &&
-              token.tokenModifiers === semanticTokenModifier.library,
+              token.tokenType === semanticTokenType.constant &&
+              token.tokenModifiers ===
+                (semanticTokenModifier.readonly | semanticTokenModifier.library),
           ),
         ).toBe(true);
 
@@ -4195,6 +4197,7 @@ Response.Write Build▮Name("Ada", "Lovelace")
         expect(initializeText).toContain('"byval"');
         expect(initializeText).toContain('"string"');
         expect(initializeText).toContain('"operator"');
+        expect(initializeText).toContain('"constant"');
         const uri = "file:///tmp/vbscript-editing.asp";
         server.notify("textDocument/didOpen", {
           textDocument: {

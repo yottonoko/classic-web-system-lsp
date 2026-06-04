@@ -262,6 +262,7 @@ const semanticTokenTypes = [
   "enumMember",
   "typeAlias",
   "typeParameter",
+  "constant",
 ] as const;
 const semanticTokenModifiers = [
   "public",
@@ -12836,20 +12837,27 @@ function fallbackVbSemanticTokenType(kind: VbSymbolKind): string | undefined {
   if (kind === "class") {
     return "class";
   }
-  if (kind === "variable" || kind === "constant") {
+  if (kind === "constant") {
+    return "constant";
+  }
+  if (kind === "variable") {
     return "variable";
   }
   return undefined;
 }
 
 function fallbackVbSemanticTokenModifiers(symbol: VbSymbol): readonly string[] | undefined {
+  const modifiers: string[] = [];
   if (symbol.visibility === "public") {
-    return ["public"];
+    modifiers.push("public");
   }
   if (symbol.visibility === "private") {
-    return ["private"];
+    modifiers.push("private");
   }
-  return undefined;
+  if (symbol.kind === "constant") {
+    modifiers.push("readonly");
+  }
+  return modifiers.length > 0 ? modifiers : undefined;
 }
 
 function addRangeSemanticToken(

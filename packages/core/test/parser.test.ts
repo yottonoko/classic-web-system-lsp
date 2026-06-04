@@ -655,6 +655,10 @@ Response. %>`;
     expect(
       topLevelCompletions.find((item) => item.label === "CStr")?.labelDetails?.description,
     ).toBe("built-in");
+    expect(topLevelCompletions.find((item) => item.label === "Nothing")).toMatchObject({
+      kind: CompletionItemKind.Constant,
+      labelDetails: { description: "built-in" },
+    });
     expect(resolveVbscriptCompletionItem({ label: "CStr" }, parsed).labelDetails?.description).toBe(
       "built-in",
     );
@@ -3563,7 +3567,8 @@ Response.Write a
         (token) =>
           token.range.start.line === 2 &&
           token.range.start.character === 0 &&
-          token.tokenType === "variable" &&
+          token.tokenType === "constant" &&
+          token.tokenModifiers?.includes("readonly") &&
           token.tokenModifiers?.includes("library"),
       ),
     ).toBe(true);
@@ -3776,7 +3781,8 @@ Class Customer
 End Class
 Const MaxCount = 10
 Sub Render(ByVal metricMap, output)
-  Response.Write MaxCount + 1
+  Response.Write MaxCount + vbCrLf
+  Set output = Nothing
 End Sub
 %>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
@@ -3797,7 +3803,7 @@ End Sub
       expect.objectContaining({ tokenType: "parameter", tokenModifiers: ["byref"] }),
     );
     expect(tokenAt("MaxCount")).toEqual(
-      expect.objectContaining({ tokenType: "variable", tokenModifiers: ["readonly"] }),
+      expect.objectContaining({ tokenType: "constant", tokenModifiers: ["readonly"] }),
     );
     expect(tokenAt("Name")).toEqual(
       expect.objectContaining({ tokenType: "property", tokenModifiers: ["public"] }),
@@ -3806,10 +3812,16 @@ End Sub
       expect.objectContaining({ tokenType: "property", tokenModifiers: ["public"] }),
     );
     expect(tokenAt("Response")).toEqual(
-      expect.objectContaining({ tokenType: "variable", tokenModifiers: ["library"] }),
+      expect.objectContaining({ tokenType: "constant", tokenModifiers: ["readonly", "library"] }),
     );
     expect(tokenAt("Write")).toEqual(
       expect.objectContaining({ tokenType: "method", tokenModifiers: ["library"] }),
+    );
+    expect(tokenAt("vbCrLf")).toEqual(
+      expect.objectContaining({ tokenType: "constant", tokenModifiers: ["readonly", "library"] }),
+    );
+    expect(tokenAt("Nothing")).toEqual(
+      expect.objectContaining({ tokenType: "constant", tokenModifiers: ["readonly", "library"] }),
     );
     expect(tokenAt("+")).toEqual(expect.objectContaining({ tokenType: "operator" }));
   });
