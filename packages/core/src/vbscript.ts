@@ -1513,6 +1513,9 @@ function statementKeywordCompletionContext(
   if (!match) {
     return undefined;
   }
+  if (match[1].toLowerCase() === "end" && /[ \t]$/.test(rawPrefix)) {
+    return undefined;
+  }
   const replaceStart = statementStart + (/^[ \t]*/.exec(rawPrefix)?.[0].length ?? 0);
   return {
     replaceStart,

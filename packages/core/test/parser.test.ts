@@ -813,6 +813,24 @@ End F
       },
     });
 
+    const afterEndSource = `<%
+Function Render()
+If ready Then
+${"End "}
+%>`;
+    const afterEndParsed = parseAspDocument(
+      "file:///site/after-end-completion.asp",
+      afterEndSource,
+    );
+    const afterEndCompletions = getVbscriptCompletions(
+      afterEndParsed,
+      positionAt(afterEndSource, afterEndSource.indexOf("End ") + "End ".length),
+    );
+    expect(afterEndCompletions.map((item) => item.label)).toEqual(["End If", "End Function"]);
+    expect(afterEndCompletions.some((item) => item.kind === CompletionItemKind.Keyword)).toBe(
+      false,
+    );
+
     const trailingSpaceSource = `<%
 Function Render()
 If ready Then
