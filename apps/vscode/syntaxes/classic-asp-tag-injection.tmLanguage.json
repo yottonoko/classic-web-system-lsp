@@ -19,7 +19,7 @@
       "endCaptures": {
         "0": { "name": "punctuation.section.embedded.end.asp" }
       },
-      "patterns": [{ "include": "source.vbscript" }]
+      "patterns": [{ "include": "#asp-vbscript" }]
     },
     "asp-directive": {
       "name": "meta.directive.asp",
@@ -31,7 +31,7 @@
       "endCaptures": {
         "0": { "name": "punctuation.section.embedded.end.asp" }
       },
-      "patterns": [{ "include": "source.vbscript" }]
+      "patterns": [{ "include": "#asp-vbscript" }]
     },
     "asp-block": {
       "name": "source.vbscript.embedded.asp",
@@ -43,7 +43,67 @@
       "endCaptures": {
         "0": { "name": "punctuation.section.embedded.end.asp" }
       },
-      "patterns": [{ "include": "source.vbscript" }]
+      "patterns": [{ "include": "#asp-vbscript" }]
+    },
+    "asp-vbscript": {
+      "patterns": [
+        { "include": "#asp-vbscript-rem-comment" },
+        { "include": "#asp-vbscript-string" },
+        { "include": "#asp-vbscript-documentation-comment" },
+        { "include": "#asp-vbscript-annotation-comment" },
+        { "include": "#asp-vbscript-apostrophe-comment" },
+        { "include": "source.vbscript" }
+      ]
+    },
+    "asp-vbscript-rem-comment": {
+      "begin": "(?i)(^|:)\\s*Rem\\b",
+      "beginCaptures": {
+        "0": { "name": "comment.line.rem.vbscript" }
+      },
+      "end": "(?=%>)|$",
+      "name": "comment.line.rem.vbscript"
+    },
+    "asp-vbscript-string": {
+      "begin": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.vbscript" }
+      },
+      "end": "\"|(?=%>)",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.vbscript" }
+      },
+      "name": "string.quoted.double.vbscript"
+    },
+    "asp-vbscript-documentation-comment": {
+      "begin": "(''')\\s?",
+      "beginCaptures": {
+        "1": { "name": "comment.line.documentation.vbscript" }
+      },
+      "end": "(?=%>)|$",
+      "patterns": [
+        { "include": "source.vbscript#documentation-tag" },
+        { "include": "source.vbscript#documentation-entity" },
+        {
+          "match": "[^<&\\n\\r]+",
+          "name": "string.unquoted.documentation.vbscript"
+        }
+      ]
+    },
+    "asp-vbscript-annotation-comment": {
+      "begin": "(')\\s*(?=@(?:type|param|returns|member)\\b)",
+      "beginCaptures": {
+        "1": { "name": "comment.line.annotation.vbscript" }
+      },
+      "end": "(?=%>)|$",
+      "patterns": [{ "include": "source.vbscript#annotation-comment" }]
+    },
+    "asp-vbscript-apostrophe-comment": {
+      "begin": "'",
+      "beginCaptures": {
+        "0": { "name": "comment.line.apostrophe.vbscript" }
+      },
+      "end": "(?=%>)|$",
+      "name": "comment.line.apostrophe.vbscript"
     }
   }
 }

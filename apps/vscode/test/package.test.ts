@@ -1,8 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { INITIAL, Registry, parseRawGrammar } from "vscode-textmate";
+import { OnigScanner, OnigString, loadWASM } from "vscode-oniguruma";
 import { getServerModulePath } from "../src/server-path";
 
 interface JsonRpcMessage {
@@ -490,9 +493,17 @@ describe("VS Code extension package", () => {
     ).toBe(true);
     expect(
       classicAspGrammar.repository?.["asp-block"]?.patterns?.some(
-        (pattern) => pattern.include === "source.vbscript",
+        (pattern) => pattern.include === "#asp-vbscript",
       ),
     ).toBe(true);
+    expect(classicAspGrammar.repository?.["asp-vbscript"]?.patterns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ include: "#asp-vbscript-apostrophe-comment" }),
+        expect.objectContaining({ include: "source.vbscript" }),
+      ]),
+    );
+    expect(classicAspGrammar.repository?.["asp-vbscript-apostrophe-comment"]?.end).toContain("%>");
+    expect(classicAspGrammar.repository?.["asp-vbscript-string"]?.end).toContain("%>");
     expect(classicAspGrammar.repository?.["asp-expression"]?.end).toBe("%>");
     expect(classicAspTagInjection.injectionSelector).toBe("L:text.html.classic-asp meta.tag");
     expect(classicAspTagInjection.patterns).toEqual(
@@ -503,6 +514,12 @@ describe("VS Code extension package", () => {
     );
     expect(classicAspTagInjection.repository?.["asp-expression"]?.end).toBe("%>");
     expect(classicAspTagInjection.repository?.["asp-block"]?.end).toBe("%>");
+    expect(classicAspTagInjection.repository?.["asp-vbscript"]?.patterns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ include: "#asp-vbscript-apostrophe-comment" }),
+        expect.objectContaining({ include: "source.vbscript" }),
+      ]),
+    );
     expect(classicAspGrammar.injections?.["source.css, source.js"]?.patterns).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ include: "#asp-expression" }),
@@ -605,6 +622,48 @@ describe("VS Code extension package", () => {
     ]) {
       expect(pattern?.captures?.["1"]?.name).toBe("keyword.other.annotation.vbscript");
       expect(JSON.stringify(pattern?.captures)).not.toContain("comment.line");
+    }
+  });
+
+  it("keeps ASP islands inside CSS and JavaScript comments from capturing following scopes", async () => {
+    const grammar = await loadClassicAspTextMateGrammar();
+    const cases = [
+      {
+        source: `<style>
+/* <% 'css comment %> */
+.next { color: red; }
+</style>`,
+        line: 2,
+        needle: ".next",
+        expectedScope: "source.css",
+      },
+      {
+        source: `<script>
+// <% 'js comment %>
+const next = 1;
+</script>`,
+        line: 2,
+        needle: "const",
+        expectedScope: "source.js",
+      },
+      {
+        source: `<script>
+/* <% 'js comment %> */
+const next = 1;
+</script>`,
+        line: 2,
+        needle: "const",
+        expectedScope: "source.js",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const lines = testCase.source.split("\n");
+      const token = tokenAtText(grammar, lines, testCase.line, testCase.needle);
+      expect(token?.scopes, testCase.source).toContain(testCase.expectedScope);
+      expect(token?.scopes.some((scope) => scope.includes("source.vbscript.embedded.asp"))).toBe(
+        false,
+      );
     }
   });
 
@@ -760,6 +819,141 @@ new Intl.DateTimeFormat("en");
     }
   });
 });
+
+type TextMateGrammar = NonNullable<Awaited<ReturnType<Registry["loadGrammar"]>>>;
+type TextMateToken = { startIndex: number; endIndex: number; scopes: string[] };
+
+async function loadClassicAspTextMateGrammar(): Promise<TextMateGrammar> {
+  const require = createRequire(path.join(process.cwd(), "package.json"));
+  const onigWasm = fs.readFileSync(require.resolve("vscode-oniguruma/release/onig.wasm"));
+  const onigBytes = onigWasm.buffer.slice(
+    onigWasm.byteOffset,
+    onigWasm.byteOffset + onigWasm.byteLength,
+  );
+  const onigLib = loadWASM(onigBytes).then(() => ({
+    createOnigScanner: (sources: string[]) => new OnigScanner(sources),
+    createOnigString: (value: string) => new OnigString(value),
+  }));
+  const rawGrammars = new Map([
+    [
+      "text.html.classic-asp",
+      parseRawGrammar(
+        fs.readFileSync("syntaxes/classic-asp.tmLanguage.json", "utf8"),
+        "classic-asp.tmLanguage.json",
+      ),
+    ],
+    [
+      "source.vbscript",
+      parseRawGrammar(
+        fs.readFileSync("syntaxes/vbscript.tmLanguage.json", "utf8"),
+        "vbscript.tmLanguage.json",
+      ),
+    ],
+    ["text.html.basic", parseRawGrammar(JSON.stringify(minimalHtmlGrammar()), "html.json")],
+    ["source.css", parseRawGrammar(JSON.stringify(minimalCssGrammar()), "css.json")],
+    ["source.js", parseRawGrammar(JSON.stringify(minimalJavaScriptGrammar()), "javascript.json")],
+  ]);
+  const registry = new Registry({
+    onigLib,
+    loadGrammar: async (scopeName) => rawGrammars.get(scopeName) ?? null,
+  });
+  const grammar = await registry.loadGrammar("text.html.classic-asp");
+  if (!grammar) {
+    throw new Error("Failed to load Classic ASP TextMate grammar.");
+  }
+  return grammar;
+}
+
+function tokenAtText(
+  grammar: TextMateGrammar,
+  lines: string[],
+  lineIndex: number,
+  needle: string,
+): TextMateToken | undefined {
+  let state = INITIAL;
+  let tokens: TextMateToken[] = [];
+  for (let index = 0; index <= lineIndex; index += 1) {
+    const result = grammar.tokenizeLine(lines[index] ?? "", state);
+    tokens = result.tokens;
+    state = result.ruleStack;
+  }
+  const needleStart = lines[lineIndex]?.indexOf(needle) ?? -1;
+  if (needleStart === -1) {
+    throw new Error(`Missing token text: ${needle}`);
+  }
+  return tokens.find((token) => token.startIndex <= needleStart && token.endIndex > needleStart);
+}
+
+function minimalHtmlGrammar() {
+  return {
+    scopeName: "text.html.basic",
+    patterns: [{ include: "#style" }, { include: "#script" }, { match: "[^<]+" }],
+    repository: {
+      style: {
+        begin: "<style\\b[^>]*>",
+        end: "</style>",
+        contentName: "source.css",
+        name: "meta.embedded.block.css.html",
+        patterns: [{ include: "source.css" }],
+      },
+      script: {
+        begin: "<script\\b[^>]*>",
+        end: "</script>",
+        contentName: "source.js",
+        name: "meta.embedded.block.javascript.html",
+        patterns: [{ include: "source.js" }],
+      },
+    },
+  };
+}
+
+function minimalCssGrammar() {
+  return {
+    scopeName: "source.css",
+    name: "source.css",
+    patterns: [
+      {
+        begin: "/\\*",
+        end: "\\*/",
+        name: "comment.block.css",
+        patterns: aspIslandPatterns(),
+      },
+      { match: "\\.[A-Za-z_][A-Za-z0-9_-]*", name: "entity.other.attribute-name.class.css" },
+      { match: "[A-Za-z_-][A-Za-z0-9_-]*", name: "support.type.property-name.css" },
+    ],
+  };
+}
+
+function minimalJavaScriptGrammar() {
+  return {
+    scopeName: "source.js",
+    name: "source.js",
+    patterns: [
+      {
+        begin: "//",
+        end: "$",
+        name: "comment.line.double-slash.js",
+        patterns: aspIslandPatterns(),
+      },
+      {
+        begin: "/\\*",
+        end: "\\*/",
+        name: "comment.block.js",
+        patterns: aspIslandPatterns(),
+      },
+      { match: "\\bconst\\b", name: "storage.modifier.js" },
+      { match: "[A-Za-z_$][A-Za-z0-9_$]*", name: "variable.other.js" },
+    ],
+  };
+}
+
+function aspIslandPatterns() {
+  return [
+    { include: "text.html.classic-asp#asp-expression" },
+    { include: "text.html.classic-asp#asp-directive" },
+    { include: "text.html.classic-asp#asp-block" },
+  ];
+}
 
 class RpcServer {
   private child: ChildProcessWithoutNullStreams | undefined;

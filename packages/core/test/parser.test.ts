@@ -297,6 +297,33 @@ const dynamic = <% Response.Write clientValue %>;</script>`;
     expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(1);
   });
 
+  it("keeps CSS and JavaScript virtual documents stable after ASP comments inside comments", () => {
+    const source = `<style>
+/* <% 'css comment %> */
+.next { color: red; }
+</style>
+<script>
+// <% 'js line comment %>
+const lineCommentNext = 1;
+/* <% 'js block comment %> */
+const blockCommentNext = 2;
+</script>`;
+    const parsed = parseAspDocument("file:///site/commented-asp-islands.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    const aspBlocks = parsed.regions.filter((region) => region.kind === "asp-block");
+    expect(aspBlocks.map((region) => source.slice(region.start, region.end))).toEqual([
+      "<% 'css comment %>",
+      "<% 'js line comment %>",
+      "<% 'js block comment %>",
+    ]);
+    expect(docs.get("css")?.text).toContain(".next { color: red; }");
+    expect(docs.get("css")?.text).not.toContain("css comment");
+    expect(docs.get("javascript")?.text).toContain("const lineCommentNext = 1;");
+    expect(docs.get("javascript")?.text).toContain("const blockCommentNext = 2;");
+    expect(docs.get("javascript")?.text).not.toContain("js line comment");
+    expect(docs.get("javascript")?.text).not.toContain("js block comment");
+  });
+
   it("leaves inline ASP islands unmapped inside JavaScript virtual documents", () => {
     const source = `<script>
 const n = "<%= RenderTierOptions(selectedTier: filter.Tier) %>";
