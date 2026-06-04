@@ -98,6 +98,7 @@ export interface AspFormattingOptions extends AspFormatSettings {
 
 export interface AspVbscriptSettings {
   typeChecking?: "basic" | "strict";
+  ifSyntaxDiagnostics?: AspVbscriptIfSyntaxDiagnostics;
   identifierCase?: AspVbscriptIdentifierCase;
   identifierCaseByKind?: Partial<Record<AspVbscriptIdentifierKind, AspVbscriptIdentifierCase>>;
   comTypes?: Record<string, AspVbscriptComType>;
@@ -106,6 +107,8 @@ export interface AspVbscriptSettings {
   syntaxSnippets?: boolean;
   syntaxKeywords?: boolean;
 }
+
+export type AspVbscriptIfSyntaxDiagnostics = "off" | "basic" | "strict";
 
 export type AspVbscriptIdentifierCase =
   | "PascalCase"

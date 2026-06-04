@@ -29,6 +29,7 @@ export interface VbDiagnosticsWorkerContext {
   symbols?: VbSymbol[];
   externalRefUsages?: VbExternalRefUsage[];
   typeChecking?: "basic" | "strict";
+  ifSyntaxDiagnostics?: NonNullable<NonNullable<AspSettings["vbscript"]>["ifSyntaxDiagnostics"]>;
   identifierCase?: AspVbscriptIdentifierCase;
   identifierCaseByKind?: Partial<Record<AspVbscriptIdentifierKind, AspVbscriptIdentifierCase>>;
   comTypes?: Record<string, AspVbscriptComType>;

@@ -1622,6 +1622,91 @@ Response.Write("x")
     expect(syntaxDiagnostics).toHaveLength(0);
   });
 
+  it("reports VBScript If syntax errors according to the configured strictness", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+If ready
+ElseIf ready
+If Then
+If (ready Then
+If openBlock Then
+  Response.Write openBlock
+If outer Then
+  If inner Then
+    Response.Write inner
+%>`,
+    );
+    const basicDiagnostics = analyzeVbscript(parsed, {
+      ifSyntaxDiagnostics: "basic",
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+    expect(basicDiagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "missingThen",
+      "missingThen",
+      "missingIfCondition",
+      "invalidIfCondition",
+      "missingEndIf",
+      "missingEndIf",
+      "missingEndIf",
+    ]);
+    expect(basicDiagnostics.every((diagnostic) => diagnostic.severity === 1)).toBe(true);
+
+    const strictParsed = parseAspDocument(
+      "file:///site/strict-if.asp",
+      `<%
+If value = Then
+%>`,
+    );
+    expect(
+      analyzeVbscript(strictParsed, {
+        ifSyntaxDiagnostics: "basic",
+        unusedDiagnostics: false,
+      }).diagnostics.some((diagnostic) => diagnostic.code === "invalidIfCondition"),
+    ).toBe(false);
+    expect(
+      analyzeVbscript(strictParsed, {
+        ifSyntaxDiagnostics: "strict",
+        unusedDiagnostics: false,
+      })
+        .diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax")
+        .map((diagnostic) => diagnostic.code),
+    ).toEqual(["invalidIfCondition"]);
+
+    expect(
+      analyzeVbscript(parsed, {
+        ifSyntaxDiagnostics: "off",
+        unusedDiagnostics: false,
+      }).diagnostics.some((diagnostic) =>
+        ["missingThen", "missingIfCondition", "invalidIfCondition", "missingEndIf"].includes(
+          String(diagnostic.code),
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps valid VBScript If syntax out of syntax diagnostics", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+If ready Then Response.Write "ok"
+If ready Then: Response.Write "ok"
+If ready Then _
+  Response.Write "continued"
+If ready Then
+  Response.Write "ready"
+ElseIf other Then
+  Response.Write "other"
+End If
+%>`,
+    );
+    const syntaxDiagnostics = analyzeVbscript(parsed, {
+      ifSyntaxDiagnostics: "strict",
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+    expect(syntaxDiagnostics).toHaveLength(0);
+  });
+
   it("allows function return value self references in assignments", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

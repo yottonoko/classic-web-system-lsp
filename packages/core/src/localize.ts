@@ -57,6 +57,10 @@ export type LocalizeKey =
   | "vb.diagnostic.initializedDeclaration"
   | "vb.diagnostic.typedDeclaration"
   | "vb.diagnostic.invalidCallSyntax"
+  | "vb.diagnostic.missingThen"
+  | "vb.diagnostic.missingIfCondition"
+  | "vb.diagnostic.invalidIfCondition"
+  | "vb.diagnostic.missingEndIf"
   | "vb.diagnostic.setScalar"
   | "vb.diagnostic.objectNeedsSet"
   | "vb.diagnostic.typeMismatch"
@@ -150,6 +154,10 @@ const en: Record<LocalizeKey, string> = {
     "VBScript {keyword} declarations cannot include initializers.",
   "vb.diagnostic.typedDeclaration": "VBScript {keyword} declarations cannot include As types.",
   "vb.diagnostic.invalidCallSyntax": "VBScript call syntax is invalid for '{name}'.",
+  "vb.diagnostic.missingThen": "VBScript If statements must include Then.",
+  "vb.diagnostic.missingIfCondition": "VBScript If statements must include a condition.",
+  "vb.diagnostic.invalidIfCondition": "VBScript If condition syntax is invalid.",
+  "vb.diagnostic.missingEndIf": "VBScript multiline If block is missing End If.",
   "vb.diagnostic.setScalar": "Set assigns an object reference, but '{name}' receives {type}.",
   "vb.diagnostic.objectNeedsSet": "Object assignment to '{name}' should use Set.",
   "vb.diagnostic.typeMismatch": "Type mismatch: '{name}' is {expected}, but assigned {actual}.",
@@ -249,6 +257,10 @@ const ja: Record<LocalizeKey, string> = {
   "vb.diagnostic.initializedDeclaration": "VBScript の {keyword} 宣言には初期値を含められません。",
   "vb.diagnostic.typedDeclaration": "VBScript の {keyword} 宣言には As 型指定を含められません。",
   "vb.diagnostic.invalidCallSyntax": "'{name}' の VBScript 呼び出し構文が無効です。",
+  "vb.diagnostic.missingThen": "VBScript の If statement には Then が必要です。",
+  "vb.diagnostic.missingIfCondition": "VBScript の If statement には条件式が必要です。",
+  "vb.diagnostic.invalidIfCondition": "VBScript の If 条件式の構文が無効です。",
+  "vb.diagnostic.missingEndIf": "VBScript の multiline If block に End If がありません。",
   "vb.diagnostic.setScalar":
     "Set はオブジェクト参照を代入しますが、'{name}' は {type} を受け取っています。",
   "vb.diagnostic.objectNeedsSet": "'{name}' へのオブジェクト代入には Set が必要です。",

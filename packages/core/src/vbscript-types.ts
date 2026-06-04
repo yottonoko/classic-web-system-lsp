@@ -7,6 +7,7 @@ import type {
   AspParsedDocument,
   AspRegionKind,
   AspVbscriptComType,
+  AspVbscriptIfSyntaxDiagnostics,
   AspVbscriptIdentifierCase,
   AspVbscriptIdentifierKind,
   VbParameterMode,
@@ -80,6 +81,7 @@ export interface VbProjectContext {
   includeSummaryUris?: string[];
   externalRefUsages?: VbExternalRefUsage[];
   typeChecking?: "basic" | "strict";
+  ifSyntaxDiagnostics?: AspVbscriptIfSyntaxDiagnostics;
   identifierCase?: AspVbscriptIdentifierCase;
   identifierCaseByKind?: Partial<Record<AspVbscriptIdentifierKind, AspVbscriptIdentifierCase>>;
   comTypes?: Record<string, AspVbscriptComType>;
@@ -199,6 +201,12 @@ export type VbCallSyntaxDiagnosticCode =
   | "callStatementRequiresParentheses"
   | "expressionCallRequiresParentheses"
   | "statementCallDisallowsParenthesizedArguments";
+
+export type VbIfSyntaxDiagnosticCode =
+  | "missingThen"
+  | "missingIfCondition"
+  | "invalidIfCondition"
+  | "missingEndIf";
 
 export interface VbMember {
   name: string;

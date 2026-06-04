@@ -4053,6 +4053,7 @@ function cloneableVbProjectContext(context: VbProjectContext): VbDiagnosticsWork
     symbols: context.symbols,
     externalRefUsages: context.externalRefUsages,
     typeChecking: context.typeChecking,
+    ifSyntaxDiagnostics: context.ifSyntaxDiagnostics,
     identifierCase: context.identifierCase,
     identifierCaseByKind: context.identifierCaseByKind,
     comTypes: context.comTypes,
@@ -6574,6 +6575,7 @@ function buildImmediateLocalVbProjectContext(
     document: vbProjectDocumentFingerprint(cached.parsed),
     settings: {
       typeChecking: contextSettings.typeChecking,
+      ifSyntaxDiagnostics: contextSettings.ifSyntaxDiagnostics,
       identifierCase: contextSettings.identifierCase,
       identifierCaseByKind: contextSettings.identifierCaseByKind,
       comTypes: contextSettings.comTypes,
@@ -6610,6 +6612,7 @@ async function buildImmediateLocalVbProjectContextAsync(
     document: vbProjectDocumentFingerprint(cached.parsed),
     settings: {
       typeChecking: contextSettings.typeChecking,
+      ifSyntaxDiagnostics: contextSettings.ifSyntaxDiagnostics,
       identifierCase: contextSettings.identifierCase,
       identifierCaseByKind: contextSettings.identifierCaseByKind,
       comTypes: contextSettings.comTypes,
@@ -7095,6 +7098,7 @@ function vbProjectContextSettings(
 ): Omit<VbProjectContext, "documents" | "symbols" | "typeEnvironment" | "locale"> {
   return {
     typeChecking: settings.vbscript?.typeChecking,
+    ifSyntaxDiagnostics: settings.vbscript?.ifSyntaxDiagnostics ?? "basic",
     identifierCase: settings.vbscript?.identifierCase,
     identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
     comTypes: settings.vbscript?.comTypes,
@@ -7109,6 +7113,7 @@ function vbProjectRootContextCacheKey(cached: CachedDocument, settings: AspSetti
     root: vbProjectDocumentCollectionKey(cached, settings),
     settings: {
       typeChecking: settings.vbscript?.typeChecking,
+      ifSyntaxDiagnostics: settings.vbscript?.ifSyntaxDiagnostics ?? "basic",
       identifierCase: settings.vbscript?.identifierCase,
       identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
       comTypes: settings.vbscript?.comTypes,
@@ -7141,6 +7146,7 @@ function vbProjectContextCacheKey(documents: AspParsedDocument[], settings: AspS
     })),
     settings: {
       typeChecking: settings.vbscript?.typeChecking,
+      ifSyntaxDiagnostics: settings.vbscript?.ifSyntaxDiagnostics ?? "basic",
       identifierCase: settings.vbscript?.identifierCase,
       identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
       comTypes: settings.vbscript?.comTypes,
@@ -7258,6 +7264,7 @@ async function cachedFileAnalysisSummaryAsync(
     document: vbProjectDocumentFingerprint(cached.parsed),
     context: {
       typeChecking: context.typeChecking,
+      ifSyntaxDiagnostics: context.ifSyntaxDiagnostics,
       identifierCase: context.identifierCase,
       identifierCaseByKind: context.identifierCaseByKind,
       comTypes: context.comTypes,
@@ -8955,6 +8962,7 @@ function diagnosticsIdentity(settings: AspSettings): string {
     },
     vbscript: {
       typeChecking: settings.vbscript?.typeChecking,
+      ifSyntaxDiagnostics: settings.vbscript?.ifSyntaxDiagnostics ?? "basic",
       identifierCase: settings.vbscript?.identifierCase,
       identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
       comTypes: settings.vbscript?.comTypes,
@@ -9282,6 +9290,7 @@ function normalizeVbscriptSettings(
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
     typeChecking: record.typeChecking === "strict" ? "strict" : "basic",
+    ifSyntaxDiagnostics: normalizeIfSyntaxDiagnostics(record.ifSyntaxDiagnostics),
     identifierCase: normalizeVbscriptIdentifierCase(record.identifierCase),
     identifierCaseByKind: normalizeVbscriptIdentifierCaseByKind(record.identifierCaseByKind),
     comTypes:
@@ -9296,6 +9305,12 @@ function normalizeVbscriptSettings(
     syntaxSnippets: record.syntaxSnippets !== false,
     syntaxKeywords: record.syntaxKeywords !== false,
   };
+}
+
+function normalizeIfSyntaxDiagnostics(
+  value: unknown,
+): NonNullable<NonNullable<AspSettings["vbscript"]>["ifSyntaxDiagnostics"]> {
+  return value === "off" || value === "strict" ? value : "basic";
 }
 
 function normalizeVbscriptIdentifierCase(

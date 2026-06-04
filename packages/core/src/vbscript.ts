@@ -56,6 +56,7 @@ import type {
   VbDocumentationQuickAction,
   FileAnalysisSummary,
   VbInlayHintOptions,
+  VbIfSyntaxDiagnosticCode,
   VbMember,
   VbExportSummary,
   VbExternalRef,
@@ -2267,6 +2268,11 @@ function analyzeVbscriptTypeScript(
   diagnostics.push(
     ...measureVbDebugStep(context, "callSyntax", () =>
       diagnoseCallSyntax(parsed, symbols, context.locale),
+    ),
+  );
+  diagnostics.push(
+    ...measureVbDebugStep(context, "ifSyntax", () =>
+      diagnoseIfSyntax(parsed, context.ifSyntaxDiagnostics ?? "basic", context.locale),
     ),
   );
   const scriptText = measureVbDebugStep(
@@ -6291,6 +6297,220 @@ function diagnoseCallSyntax(
     }
   }
   return diagnostics;
+}
+
+function diagnoseIfSyntax(
+  parsed: AspParsedDocument,
+  level: NonNullable<VbProjectContext["ifSyntaxDiagnostics"]>,
+  locale: AspLocale | undefined,
+): Diagnostic[] {
+  if (level === "off") {
+    return [];
+  }
+  const diagnostics: Diagnostic[] = [];
+  const openIfs: VbToken[] = [];
+  for (const statement of vbStatements(parsed)) {
+    const first = lowerToken(statement[0]);
+    const second = lowerToken(statement[1]);
+    if (first === "end" && second === "if") {
+      openIfs.pop();
+      continue;
+    }
+    if (first !== "if" && first !== "elseif") {
+      continue;
+    }
+    const syntaxDiagnostic = ifStatementSyntaxDiagnostic(parsed, statement, level, locale);
+    if (syntaxDiagnostic) {
+      diagnostics.push(syntaxDiagnostic);
+    }
+    if (!syntaxDiagnostic && first === "if" && isMultilineIfHeader(parsed, statement)) {
+      openIfs.push(statement[0]);
+    }
+  }
+  for (const token of openIfs) {
+    diagnostics.push(
+      ifSyntaxDiagnostic(
+        parsed,
+        token.start,
+        token.end,
+        createLocalizer(locale).t("vb.diagnostic.missingEndIf"),
+        "missingEndIf",
+      ),
+    );
+  }
+  return diagnostics;
+}
+
+function ifStatementSyntaxDiagnostic(
+  parsed: AspParsedDocument,
+  statement: VbToken[],
+  level: NonNullable<VbProjectContext["ifSyntaxDiagnostics"]>,
+  locale: AspLocale | undefined,
+): Diagnostic | undefined {
+  const localizer = createLocalizer(locale);
+  const thenIndex = topLevelKeywordIndex(statement, "then");
+  const anyThenIndex = thenIndex === -1 ? keywordIndex(statement, "then") : thenIndex;
+  if (anyThenIndex === -1) {
+    return ifSyntaxDiagnostic(
+      parsed,
+      statement[0].start,
+      statement.at(-1)?.end ?? statement[0].end,
+      localizer.t("vb.diagnostic.missingThen"),
+      "missingThen",
+    );
+  }
+  const condition = statement.slice(1, anyThenIndex);
+  if (condition.length === 0) {
+    return ifSyntaxDiagnostic(
+      parsed,
+      statement[0].start,
+      statement[anyThenIndex].end,
+      localizer.t("vb.diagnostic.missingIfCondition"),
+      "missingIfCondition",
+    );
+  }
+  if (!isValidIfConditionShape(condition, level)) {
+    return ifSyntaxDiagnostic(
+      parsed,
+      condition[0].start,
+      condition.at(-1)?.end ?? condition[0].end,
+      localizer.t("vb.diagnostic.invalidIfCondition"),
+      "invalidIfCondition",
+    );
+  }
+  return undefined;
+}
+
+function isMultilineIfHeader(parsed: AspParsedDocument, statement: VbToken[]): boolean {
+  const thenIndex = topLevelKeywordIndex(statement, "then");
+  if (thenIndex === -1 || thenIndex !== statement.length - 1) {
+    return false;
+  }
+  const then = statement[thenIndex];
+  const tail = parsed.text.slice(then.end, lineEndOffset(parsed.text, then.end));
+  return !/^[ \t]*:/.test(tail);
+}
+
+function isValidIfConditionShape(
+  tokens: VbToken[],
+  level: NonNullable<VbProjectContext["ifSyntaxDiagnostics"]>,
+): boolean {
+  if (!hasBalancedParentheses(tokens)) {
+    return false;
+  }
+  if (level !== "strict") {
+    return true;
+  }
+  const first = tokens[0];
+  const last = tokens.at(-1);
+  return (
+    first !== undefined &&
+    last !== undefined &&
+    !isInvalidIfConditionStart(first) &&
+    !isExpressionTrailingOperator(last)
+  );
+}
+
+function hasBalancedParentheses(tokens: VbToken[]): boolean {
+  let depth = 0;
+  for (const token of tokens) {
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")") {
+      depth -= 1;
+      if (depth < 0) {
+        return false;
+      }
+    }
+  }
+  return depth === 0;
+}
+
+function isInvalidIfConditionStart(token: VbToken): boolean {
+  return [
+    "case",
+    "class",
+    "const",
+    "dim",
+    "do",
+    "else",
+    "elseif",
+    "end",
+    "for",
+    "function",
+    "loop",
+    "next",
+    "private",
+    "property",
+    "public",
+    "select",
+    "set",
+    "sub",
+    "wend",
+    "while",
+    "with",
+  ].includes(lowerToken(token) ?? "");
+}
+
+function isExpressionTrailingOperator(token: VbToken): boolean {
+  return [
+    "and",
+    "eqv",
+    "imp",
+    "is",
+    "mod",
+    "not",
+    "or",
+    "xor",
+    "=",
+    "<>",
+    "<",
+    ">",
+    "<=",
+    ">=",
+    "&",
+    "+",
+    "-",
+    "*",
+    "/",
+    "\\",
+    "^",
+  ].includes(token.text.toLowerCase());
+}
+
+function keywordIndex(tokens: VbToken[], keyword: string): number {
+  return tokens.findIndex((token) => lowerToken(token) === keyword);
+}
+
+function topLevelKeywordIndex(tokens: VbToken[], keyword: string): number {
+  let depth = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")") {
+      depth = Math.max(0, depth - 1);
+    } else if (depth === 0 && lowerToken(token) === keyword) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function ifSyntaxDiagnostic(
+  parsed: AspParsedDocument,
+  start: number,
+  end: number,
+  message: string,
+  code: VbIfSyntaxDiagnosticCode,
+): Diagnostic {
+  return {
+    severity: DiagnosticSeverity.Error,
+    range: rangeFromOffsets(parsed.text, start, end),
+    message,
+    code,
+    source: "asp-lsp-vbscript-syntax",
+  };
 }
 
 function callSyntaxDiagnosticForStatement(

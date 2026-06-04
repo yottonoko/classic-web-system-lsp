@@ -500,6 +500,16 @@
           "default": true,
           "description": "%configuration.vbscript.syntaxKeywords.description%"
         },
+        "aspLsp.vbscript.ifSyntaxDiagnostics": {
+          "type": "string",
+          "enum": [
+            "off",
+            "basic",
+            "strict"
+          ],
+          "default": "basic",
+          "description": "%configuration.vbscript.ifSyntaxDiagnostics.description%"
+        },
         "aspLsp.inlayHints.variableTypes": {
           "type": "boolean",
           "default": false,
