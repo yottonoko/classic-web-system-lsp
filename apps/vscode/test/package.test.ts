@@ -673,6 +673,28 @@ const next = 1;
     }
   });
 
+  it("tokenizes root script tags between ASP procedure blocks as JavaScript", async () => {
+    const grammar = await loadClassicAspTextMateGrammar();
+    const source = `<% Sub A() %>
+<script>
+const a = 10;
+console.log(a);
+</script>
+<% End Sub %>`;
+    const lines = source.split("\n");
+
+    for (const testCase of [
+      { line: 2, needle: "const" },
+      { line: 3, needle: "console" },
+    ]) {
+      const token = tokenAtText(grammar, lines, testCase.line, testCase.needle);
+      expect(token?.scopes, source).toContain("source.js");
+      expect(token?.scopes.some((scope) => scope.includes("source.vbscript.embedded.asp"))).toBe(
+        false,
+      );
+    }
+  });
+
   it("describes the COM type catalog schema for settings UI", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       contributes?: {

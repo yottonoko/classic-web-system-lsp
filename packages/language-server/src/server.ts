@@ -9801,6 +9801,7 @@ function tsFormatOptions(
     tabSize: options.tabSize,
     convertTabsToSpaces: indentStyle !== "tab",
     newLineCharacter: "\n",
+    insertSpaceBeforeAndAfterBinaryOperators: true,
   };
 }
 

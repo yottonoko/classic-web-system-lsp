@@ -256,6 +256,25 @@ Response.Write name
     ).toBe(true);
   });
 
+  it("detects root script regions between ASP procedure blocks", () => {
+    const source = `<% Sub A() %>
+<script>
+const a = 10;
+console.log(a);
+</script>
+<% End Sub %>`;
+    const parsed = parseAspDocument("file:///site/sub-script.asp", source);
+    const script = parsed.regions.find((region) => region.kind === "client-script");
+    expect(script?.language).toBe("javascript");
+    expect(script && source.slice(script.contentStart, script.contentEnd)).toContain(
+      "console.log(a);",
+    );
+
+    const javascript = buildVirtualDocuments(parsed).get("javascript");
+    expect(javascript?.text).toContain("const a = 10;");
+    expect(javascript?.text).toContain("console.log(a);");
+  });
+
   it("builds virtual documents with source maps", () => {
     const source = `<div><%= title %></div><style>.x { color: red }</style>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);

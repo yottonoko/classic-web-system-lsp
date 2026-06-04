@@ -677,6 +677,104 @@ document.querySelectorAll(".customer-row").forEach((row) => {
       }
     });
 
+    it("treats root script tags between ASP procedure blocks as JavaScript", async () => {
+      const source = `<% Sub A() %>
+<script>
+const aValue = 10;
+let bValue = aValue + 1;
+console.log(aValue, bValue);
+missingThing();
+</script>
+<% End Sub %>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              checkJs: true,
+              diagnostics: { debounceMs: 0 },
+              javascript: { ignoreProjectConfig: true },
+            },
+          },
+        });
+        const uri = "file:///tmp/root-sub-script.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await waitForDiagnosticsContaining(server, "missingThing");
+        expect(diagnosticText(diagnostics)).toContain("asp-lsp-typescript");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("console.") + "console.".length),
+        });
+        expect(completionLabels(completions)).toContain("log");
+
+        const hover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("aValue")),
+        });
+        expect(JSON.stringify(hover)).toContain("const aValue: 10");
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        expect(
+          decoded.some((token) =>
+            tokenMatches(source, token, "aValue", semanticTokenType.variable),
+          ),
+        ).toBe(true);
+
+        const formatSource = source
+          .replace("const aValue = 10;", "const aValue=10;")
+          .replace("let bValue = aValue + 1;", "let bValue=aValue+1;");
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: formatSource }],
+        });
+        await waitForDiagnosticsContaining(server, "missingThing");
+
+        const fullEdits = (await server.request("textDocument/formatting", {
+          textDocument: { uri },
+          options: { tabSize: 2, insertSpaces: true },
+        })) as TextEdit[];
+        const formatted =
+          fullEdits.length === 1 ? applyTextEdit(formatSource, fullEdits[0]) : formatSource;
+        expect(formatted).toContain("const aValue = 10;");
+        expect(formatted).toContain("let bValue = aValue + 1;");
+
+        const rangeEdits = (await server.request("textDocument/rangeFormatting", {
+          textDocument: { uri },
+          range: {
+            start: positionAt(formatSource, formatSource.indexOf("const aValue")),
+            end: positionAt(formatSource, formatSource.indexOf("console.log")),
+          },
+          options: { tabSize: 2, insertSpaces: true },
+        })) as TextEdit[];
+        const rangeFormatted =
+          rangeEdits.length === 1 ? applyTextEdit(formatSource, rangeEdits[0]) : formatSource;
+        expect(rangeFormatted).toContain("const aValue = 10;");
+        expect(rangeFormatted).toContain("let bValue = aValue + 1;");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("defers full JavaScript semantic tokens for large script tags while range stays immediate", async () => {
       const filler = " ".repeat(512);
       const source = `<script>
