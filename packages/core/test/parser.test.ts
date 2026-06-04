@@ -675,6 +675,11 @@ Response.
     const snippetLabels = [
       "If Then",
       "If Then Else",
+      "Do Loop",
+      "Do While Loop",
+      "Do Until Loop",
+      "Do Loop While",
+      "Do Loop Until",
       "For Next",
       "For Each Next",
       "Select Case",
@@ -694,6 +699,13 @@ Response.
       detail: "VBScript syntax snippet",
     });
     expect(ifSnippet?.insertText).toContain("End If");
+    const doSnippet = completions.find((item) => item.label === "Do While Loop");
+    expect(doSnippet).toMatchObject({
+      kind: CompletionItemKind.Snippet,
+      insertTextFormat: InsertTextFormat.Snippet,
+      detail: "VBScript syntax snippet",
+    });
+    expect(doSnippet?.insertText).toContain("Loop");
 
     const disabled = getVbscriptCompletions(
       parsed,
@@ -746,6 +758,23 @@ End F
         newText: "End Function",
       },
     });
+
+    const trailingSpaceSource = `<%
+Function Render()
+If ready Then
+  end   
+%>`;
+    const trailingSpaceParsed = parseAspDocument(
+      "file:///site/end-completion-trailing-space.asp",
+      trailingSpaceSource,
+    );
+    const trailingSpaceCompletions = getVbscriptCompletions(
+      trailingSpaceParsed,
+      positionAt(trailingSpaceSource, trailingSpaceSource.indexOf("end   ") + "end   ".length),
+    );
+    expect(trailingSpaceCompletions.map((item) => item.label)).toEqual(
+      expect.arrayContaining(["End If", "End Function"]),
+    );
 
     const blockedSource = `<%
 Function Render()
@@ -892,6 +921,20 @@ lo
       positionAt(loopSource, loopSource.indexOf("lo") + "lo".length),
     );
     expect(loopCompletions.map((item) => item.label)).toEqual(["Loop"]);
+
+    const loopTrailingSpaceSource = `<%
+Do
+  lo  
+%>`;
+    const loopTrailingSpaceParsed = parseAspDocument(
+      "file:///site/loop-completion-trailing-space.asp",
+      loopTrailingSpaceSource,
+    );
+    const loopTrailingSpaceCompletions = getVbscriptCompletions(
+      loopTrailingSpaceParsed,
+      positionAt(loopTrailingSpaceSource, loopTrailingSpaceSource.indexOf("lo  ") + "lo  ".length),
+    );
+    expect(loopTrailingSpaceCompletions.map((item) => item.label)).toEqual(["Loop"]);
 
     const whileSource = `<%
 While ready

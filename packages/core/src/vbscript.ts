@@ -316,6 +316,11 @@ function vbscriptSyntaxSnippetCompletions(locale: AspLocale | undefined): Comple
       "If ${1:condition} Then\n  ${2:statement}\nElse\n  $0\nEnd If",
       detail,
     ),
+    snippetCompletion("Do Loop", "Do\n  $0\nLoop", detail),
+    snippetCompletion("Do While Loop", "Do While ${1:condition}\n  $0\nLoop", detail),
+    snippetCompletion("Do Until Loop", "Do Until ${1:condition}\n  $0\nLoop", detail),
+    snippetCompletion("Do Loop While", "Do\n  $0\nLoop While ${1:condition}", detail),
+    snippetCompletion("Do Loop Until", "Do\n  $0\nLoop Until ${1:condition}", detail),
     snippetCompletion("For Next", "For ${1:index} = ${2:start} To ${3:end}\n  $0\nNext", detail),
     snippetCompletion("For Each Next", "For Each ${1:item} In ${2:items}\n  $0\nNext", detail),
     snippetCompletion(
@@ -1535,7 +1540,9 @@ function blockCloseCompletionContext(
   if (sourceOffset < replaceStart || sourceOffset > lineEnd) {
     return undefined;
   }
-  const prefix = text.slice(replaceStart, sourceOffset);
+  const rawPrefix = text.slice(replaceStart, sourceOffset);
+  const leadingWhitespace = /^[ \t]*/.exec(rawPrefix)?.[0].length ?? 0;
+  const prefix = rawPrefix.slice(leadingWhitespace).replace(/[ \t]+$/, "");
   const endMatch = /^end(?:\s+([A-Za-z]*))?$/i.exec(prefix);
   if (endMatch) {
     return {
