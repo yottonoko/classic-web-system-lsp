@@ -37,7 +37,6 @@ const {
   buildVirtualDocuments,
   collectVbscriptSymbolsFromTextAsync,
   parseAspDocumentAsync,
-  tryNativeParseAspDocumentLightAsync,
 } = core;
 
 const sourceRefs = collectBenchmarkSourceRefs();
@@ -45,9 +44,7 @@ const sourceStats = summarizeSources(sourceRefs);
 
 await runBenchmark("parseAspDocument", (run) =>
   measureAcrossSources(sourcesForRun("parseAspDocument", run), async (source) => {
-    if (!(await tryNativeParseAspDocumentLightAsync(source.uri, source.text, {}))) {
-      await parseAspDocumentAsync(source.uri, source.text);
-    }
+    await parseAspDocumentAsync(source.uri, source.text);
   }),
 );
 
