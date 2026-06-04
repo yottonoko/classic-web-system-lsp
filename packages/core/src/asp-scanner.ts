@@ -448,6 +448,14 @@ function findElementClose(
   offset: number,
 ): { start: number; end: number } | undefined {
   for (let index = offset; index < text.length; index += 1) {
+    if (text.startsWith("<%", index)) {
+      const close = findAspClose(text, index + 2, text.length);
+      if (close === -1) {
+        return undefined;
+      }
+      index = close + 1;
+      continue;
+    }
     if (isClosingTagAt(text, index, tagName)) {
       const closeEnd = findTagEnd(text, index + 2);
       return closeEnd === -1 ? undefined : { start: index, end: closeEnd + 1 };

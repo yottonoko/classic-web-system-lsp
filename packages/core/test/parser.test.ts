@@ -546,6 +546,46 @@ const ok = true;
     expect(style && source.slice(style.contentStart, style.contentEnd)).not.toContain("color: red");
   });
 
+  it("does not close script and style regions at raw closing tags inside ASP islands", () => {
+    const source = `<script>
+<%
+Do While ready
+Response.Write "</script>"
+%>
+const afterAsp = true;
+<%
+Loop
+%>
+</script>
+<style>
+<%
+Do While ready
+Response.Write "</style>"
+%>
+.after-asp { color: red; }
+<%
+Loop
+%>
+</style>`;
+    const parsed = parseAspDocument("file:///site/asp-island-raw-script-close.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    const script = parsed.regions.find((region) => region.kind === "client-script");
+    const style = parsed.regions.find((region) => region.kind === "style");
+    expect(script?.end).toBe(
+      source.indexOf("</script>", source.indexOf("const afterAsp")) + "</script>".length,
+    );
+    expect(style?.end).toBe(
+      source.indexOf("</style>", source.indexOf(".after-asp")) + "</style>".length,
+    );
+    expect(script && source.slice(script.contentStart, script.contentEnd)).toContain(
+      "const afterAsp = true;",
+    );
+    expect(style && source.slice(style.contentStart, style.contentEnd)).toContain(
+      ".after-asp { color: red; }",
+    );
+    expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(4);
+  });
+
   it("closes server-side JScript regions at raw script end tags inside strings", () => {
     const source = `<%@ LANGUAGE="JScript" %>
 <script runat="server" language="JScript">
