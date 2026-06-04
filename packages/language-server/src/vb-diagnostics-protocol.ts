@@ -35,6 +35,7 @@ export interface VbDiagnosticsWorkerContext {
   typeEnvironment?: VbTypeEnvironment;
   unusedDiagnostics?: boolean;
   syntaxSnippets?: boolean;
+  syntaxKeywords?: boolean;
   locale?: AspLocale;
 }
 

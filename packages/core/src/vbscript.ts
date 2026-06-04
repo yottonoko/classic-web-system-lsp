@@ -1390,15 +1390,28 @@ export function getVbscriptCompletions(
           : inferVariableTypeRef(ownerName, parsed, sourceOffset, symbols);
     return ownerType ? typeMemberCompletions(ownerType, symbols, typeEnvironment) : [];
   }
-  const contextualSyntaxCompletions =
-    context.syntaxSnippets === false
+  const syntaxKeywordCompletions =
+    context.syntaxKeywords === false
       ? []
-      : vbscriptContextualSyntaxCompletions(parsed, sourceOffset, context.locale);
-  if (contextualSyntaxCompletions.length > 0) {
-    return contextualSyntaxCompletions;
+      : vbscriptSyntaxKeywordCompletions(parsed, sourceOffset, context.locale);
+  const hasSyntaxKeywordPrefix =
+    context.syntaxKeywords !== false &&
+    syntaxKeywordCompletions.length > 0 &&
+    (statementKeywordCompletionContext(parsed, sourceOffset)?.prefix.length ?? 0) > 0;
+  const contextualSyntaxCompletions = vbscriptContextualSyntaxCompletions(
+    parsed,
+    sourceOffset,
+    context,
+  );
+  if (contextualSyntaxCompletions.length > 0 || hasSyntaxKeywordPrefix) {
+    return mergeSyntaxKeywordAndContextualCompletions(
+      syntaxKeywordCompletions,
+      contextualSyntaxCompletions,
+    );
   }
   return dedupeCompletions([
     ...(context.syntaxSnippets === false ? [] : vbscriptSyntaxSnippetCompletions(context.locale)),
+    ...syntaxKeywordCompletions,
     ...builtinCompletions(context.locale),
     ...visibleSymbols(parsed, sourceOffset, symbols).map((symbol) =>
       symbolToCompletion(symbol, context.locale),
@@ -1426,12 +1439,116 @@ interface VbEndCompletionBlock {
 function vbscriptContextualSyntaxCompletions(
   parsed: AspParsedDocument,
   sourceOffset: number,
-  locale: AspLocale | undefined,
+  context: VbProjectContext,
 ): CompletionItem[] {
   return [
-    ...vbscriptThenCompletions(parsed, sourceOffset, locale),
-    ...vbscriptBlockCloseCompletions(parsed, sourceOffset, locale),
+    ...(context.syntaxKeywords === false
+      ? []
+      : vbscriptThenCompletions(parsed, sourceOffset, context.locale)),
+    ...(context.syntaxSnippets === false
+      ? []
+      : vbscriptBlockCloseCompletions(parsed, sourceOffset, context.locale)),
   ];
+}
+
+function mergeSyntaxKeywordAndContextualCompletions(
+  keywordCompletions: CompletionItem[],
+  contextualCompletions: CompletionItem[],
+): CompletionItem[] {
+  const keywordLabels = new Set(keywordCompletions.map((item) => item.label));
+  return [
+    ...keywordCompletions,
+    ...contextualCompletions.filter((item) => !keywordLabels.has(item.label)),
+  ];
+}
+
+function vbscriptSyntaxKeywordCompletions(
+  parsed: AspParsedDocument,
+  sourceOffset: number,
+  locale: AspLocale | undefined,
+): CompletionItem[] {
+  const context = statementKeywordCompletionContext(parsed, sourceOffset);
+  if (!context) {
+    return [];
+  }
+  const labels = statementKeywordCompletionLabels(context.blocks, context.prefix);
+  const detail = createLocalizer(locale).t("vb.completion.syntaxKeyword");
+  return labels.map((label, index) => ({
+    label,
+    kind: CompletionItemKind.Keyword,
+    detail,
+    sortText: `00-${index}-${label}`,
+    textEdit: {
+      range: {
+        start: positionAt(parsed.text, context.replaceStart),
+        end: positionAt(parsed.text, sourceOffset),
+      },
+      newText: label,
+    },
+  }));
+}
+
+function statementKeywordCompletionContext(
+  parsed: AspParsedDocument,
+  sourceOffset: number,
+):
+  | {
+      replaceStart: number;
+      prefix: string;
+      blocks: VbEndCompletionBlock[];
+    }
+  | undefined {
+  const document = vbDocuments(parsed).find(
+    (candidate) => sourceOffset >= candidate.start && sourceOffset <= candidate.end,
+  );
+  if (!document) {
+    return undefined;
+  }
+  const statementStart = completionStatementStartOffset(document.tokens, parsed.text, sourceOffset);
+  if (sourceOffset < statementStart) {
+    return undefined;
+  }
+  const rawPrefix = parsed.text.slice(statementStart, sourceOffset);
+  const match = /^[ \t]*([A-Za-z]*)[ \t]*$/.exec(rawPrefix);
+  if (!match) {
+    return undefined;
+  }
+  const replaceStart = statementStart + (/^[ \t]*/.exec(rawPrefix)?.[0].length ?? 0);
+  return {
+    replaceStart,
+    prefix: match[1].toLowerCase(),
+    blocks: openVbEndCompletionBlocksBefore(document, replaceStart),
+  };
+}
+
+function statementKeywordCompletionLabels(
+  blocks: VbEndCompletionBlock[],
+  prefix: string,
+): string[] {
+  const labels = ["If", "Do", "For", "Select", "With", "While"];
+  const topBlock = blocks.at(-1);
+  if (topBlock?.kind === "If") {
+    labels.push("ElseIf", "Else");
+  }
+  if (topBlock?.kind === "Select") {
+    labels.push("Case");
+  }
+  const closeKeyword = blockCloseCompletionKeyword(topBlock);
+  if (closeKeyword) {
+    labels.push(closeKeyword);
+  }
+  return labels.filter((label, index) => {
+    const lowerLabel = label.toLowerCase();
+    return lowerLabel.startsWith(prefix) && labels.indexOf(label) === index;
+  });
+}
+
+function blockCloseCompletionKeyword(block: VbEndCompletionBlock | undefined): string | undefined {
+  if (!block) {
+    return undefined;
+  }
+  const label = blockCloseCompletionLabel(block);
+  return label.startsWith("End ") ? "End" : label;
 }
 
 function vbscriptThenCompletions(

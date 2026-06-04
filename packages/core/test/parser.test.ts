@@ -730,6 +730,10 @@ Response.
       detail: "VBScript syntax snippet",
     });
     expect(ifSnippet?.insertText).toContain("End If");
+    expect(completions.find((item) => item.label === "If")).toMatchObject({
+      kind: CompletionItemKind.Keyword,
+      detail: "VBScript syntax keyword",
+    });
     const doSnippet = completions.find((item) => item.label === "Do While Loop");
     expect(doSnippet).toMatchObject({
       kind: CompletionItemKind.Snippet,
@@ -746,12 +750,24 @@ Response.
       },
     );
     expect(disabled.some((item) => item.label === "If Then")).toBe(false);
+    expect(disabled.some((item) => item.label === "If")).toBe(true);
     expect(disabled.some((item) => item.label === "Response")).toBe(true);
     expect(disabled.some((item) => item.label === "Dim")).toBe(true);
+
+    const keywordsDisabled = getVbscriptCompletions(
+      parsed,
+      { line: 1, character: 0 },
+      {
+        syntaxKeywords: false,
+      },
+    );
+    expect(keywordsDisabled.some((item) => item.label === "If Then")).toBe(true);
+    expect(keywordsDisabled.some((item) => item.label === "If")).toBe(false);
 
     const memberCompletions = getVbscriptCompletions(parsed, { line: 2, character: 9 });
     expect(memberCompletions.some((item) => item.label === "Write")).toBe(true);
     expect(memberCompletions.some((item) => item.label === "If Then")).toBe(false);
+    expect(memberCompletions.some((item) => item.label === "If")).toBe(false);
   });
 
   it("completes matching End block labels for open VBScript blocks", () => {
@@ -764,8 +780,15 @@ end
     const endOffset = source.lastIndexOf("end") + "end".length;
     const completions = getVbscriptCompletions(parsed, positionAt(source, endOffset));
     expect(completions.map((item) => item.label)).toEqual(
-      expect.arrayContaining(["End If", "End Function"]),
+      expect.arrayContaining(["End", "End If", "End Function"]),
     );
+    expect(completions.find((item) => item.label === "End")).toMatchObject({
+      kind: CompletionItemKind.Keyword,
+      detail: "VBScript syntax keyword",
+      textEdit: {
+        newText: "End",
+      },
+    });
     expect(completions.find((item) => item.label === "End If")).toMatchObject({
       kind: CompletionItemKind.Snippet,
       detail: "VBScript syntax snippet",
@@ -827,6 +850,15 @@ end
       syntaxSnippets: false,
     });
     expect(disabled.some((item) => item.label === "End If")).toBe(false);
+    expect(disabled.find((item) => item.label === "End")).toMatchObject({
+      kind: CompletionItemKind.Keyword,
+    });
+
+    const keywordsDisabled = getVbscriptCompletions(parsed, positionAt(source, endOffset), {
+      syntaxKeywords: false,
+    });
+    expect(keywordsDisabled.some((item) => item.label === "End")).toBe(false);
+    expect(keywordsDisabled.some((item) => item.label === "End If")).toBe(true);
   });
 
   it("completes matching End labels for VBScript procedures, classes and members", () => {
@@ -942,6 +974,46 @@ If ready Then
     );
     expect(completeThenCompletions.some((item) => item.label === "Then")).toBe(false);
 
+    const ifBlockSource = `<%
+If ready Then
+e
+End If
+%>`;
+    const ifBlockParsed = parseAspDocument("file:///site/if-keyword-completion.asp", ifBlockSource);
+    const ifBlockCompletions = getVbscriptCompletions(
+      ifBlockParsed,
+      positionAt(ifBlockSource, ifBlockSource.indexOf("\ne\n") + "\ne".length),
+    );
+    expect(ifBlockCompletions.map((item) => item.label)).toEqual(
+      expect.arrayContaining(["ElseIf", "Else", "End", "End If"]),
+    );
+    expect(ifBlockCompletions.find((item) => item.label === "ElseIf")).toMatchObject({
+      kind: CompletionItemKind.Keyword,
+    });
+    expect(ifBlockCompletions.find((item) => item.label === "End")).toMatchObject({
+      kind: CompletionItemKind.Keyword,
+    });
+
+    const selectSource = `<%
+Select Case value
+c
+End Select
+%>`;
+    const selectParsed = parseAspDocument(
+      "file:///site/select-keyword-completion.asp",
+      selectSource,
+    );
+    const selectCompletions = getVbscriptCompletions(
+      selectParsed,
+      positionAt(selectSource, selectSource.indexOf("\nc\n") + "\nc".length),
+    );
+    expect(selectCompletions.find((item) => item.label === "Case")).toMatchObject({
+      kind: CompletionItemKind.Keyword,
+      textEdit: {
+        newText: "Case",
+      },
+    });
+
     const loopSource = `<%
 Do
 lo
@@ -952,6 +1024,12 @@ lo
       positionAt(loopSource, loopSource.indexOf("lo") + "lo".length),
     );
     expect(loopCompletions.map((item) => item.label)).toEqual(["Loop"]);
+    expect(loopCompletions.find((item) => item.kind === CompletionItemKind.Keyword)).toMatchObject({
+      label: "Loop",
+      textEdit: {
+        newText: "Loop",
+      },
+    });
 
     const loopTrailingSpaceSource = `<%
 Do
@@ -977,6 +1055,11 @@ we
       positionAt(whileSource, whileSource.indexOf("we") + "we".length),
     );
     expect(whileCompletions.map((item) => item.label)).toEqual(["Wend"]);
+    expect(whileCompletions.find((item) => item.kind === CompletionItemKind.Keyword)).toMatchObject(
+      {
+        label: "Wend",
+      },
+    );
 
     const forSource = `<%
 Sub Render()
@@ -989,6 +1072,9 @@ n
       positionAt(forSource, forSource.lastIndexOf("n") + "n".length),
     );
     expect(forCompletions.map((item) => item.label)).toEqual(["Next"]);
+    expect(forCompletions.find((item) => item.kind === CompletionItemKind.Keyword)).toMatchObject({
+      label: "Next",
+    });
     expect(forCompletions.some((item) => item.label === "End Sub")).toBe(false);
 
     const blockedEndSource = `<%
@@ -1009,9 +1095,25 @@ end
     const disabled = getVbscriptCompletions(
       thenParsed,
       positionAt(thenSource, thenSource.indexOf("ready") + "ready ".length),
-      { syntaxSnippets: false },
+      { syntaxKeywords: false },
     );
     expect(disabled.some((item) => item.label === "Then")).toBe(false);
+
+    const snippetDisabledLoopCompletions = getVbscriptCompletions(
+      loopParsed,
+      positionAt(loopSource, loopSource.indexOf("lo") + "lo".length),
+      { syntaxSnippets: false },
+    );
+    expect(snippetDisabledLoopCompletions.map((item) => item.label)).toEqual(["Loop"]);
+    expect(snippetDisabledLoopCompletions[0]?.kind).toBe(CompletionItemKind.Keyword);
+
+    const keywordDisabledLoopCompletions = getVbscriptCompletions(
+      loopParsed,
+      positionAt(loopSource, loopSource.indexOf("lo") + "lo".length),
+      { syntaxKeywords: false },
+    );
+    expect(keywordDisabledLoopCompletions.map((item) => item.label)).toEqual(["Loop"]);
+    expect(keywordDisabledLoopCompletions[0]?.kind).toBe(CompletionItemKind.Snippet);
   });
 
   it("treats server-side object tags as typed VBScript globals", () => {

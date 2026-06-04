@@ -4059,6 +4059,7 @@ function cloneableVbProjectContext(context: VbProjectContext): VbDiagnosticsWork
     typeEnvironment: context.typeEnvironment,
     unusedDiagnostics: context.unusedDiagnostics,
     syntaxSnippets: context.syntaxSnippets,
+    syntaxKeywords: context.syntaxKeywords,
     locale: context.locale,
   };
 }
@@ -6578,6 +6579,7 @@ function buildImmediateLocalVbProjectContext(
       comTypes: contextSettings.comTypes,
       unusedDiagnostics: contextSettings.unusedDiagnostics,
       syntaxSnippets: contextSettings.syntaxSnippets,
+      syntaxKeywords: contextSettings.syntaxKeywords,
     },
     globals: settings.vbscript?.globals,
   });
@@ -6613,6 +6615,7 @@ async function buildImmediateLocalVbProjectContextAsync(
       comTypes: contextSettings.comTypes,
       unusedDiagnostics: contextSettings.unusedDiagnostics,
       syntaxSnippets: contextSettings.syntaxSnippets,
+      syntaxKeywords: contextSettings.syntaxKeywords,
     },
     globals: settings.vbscript?.globals,
   });
@@ -7097,6 +7100,7 @@ function vbProjectContextSettings(
     comTypes: settings.vbscript?.comTypes,
     unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
     syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
+    syntaxKeywords: settings.vbscript?.syntaxKeywords !== false,
   };
 }
 
@@ -7110,6 +7114,7 @@ function vbProjectRootContextCacheKey(cached: CachedDocument, settings: AspSetti
       comTypes: settings.vbscript?.comTypes,
       unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
       syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
+      syntaxKeywords: settings.vbscript?.syntaxKeywords !== false,
     },
     globals: settings.vbscript?.globals,
   });
@@ -7141,6 +7146,7 @@ function vbProjectContextCacheKey(documents: AspParsedDocument[], settings: AspS
       comTypes: settings.vbscript?.comTypes,
       unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
       syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
+      syntaxKeywords: settings.vbscript?.syntaxKeywords !== false,
     },
     globals: settings.vbscript?.globals,
   });
@@ -7257,6 +7263,7 @@ async function cachedFileAnalysisSummaryAsync(
       comTypes: context.comTypes,
       unusedDiagnostics: context.unusedDiagnostics,
       syntaxSnippets: context.syntaxSnippets,
+      syntaxKeywords: context.syntaxKeywords,
     },
   });
   const existing = cached.analysis?.vbFileSummary;
@@ -9287,6 +9294,7 @@ function normalizeVbscriptSettings(
         : undefined,
     unusedDiagnostics: record.unusedDiagnostics !== false,
     syntaxSnippets: record.syntaxSnippets !== false,
+    syntaxKeywords: record.syntaxKeywords !== false,
   };
 }
 

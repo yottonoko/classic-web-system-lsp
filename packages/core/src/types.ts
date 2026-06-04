@@ -104,6 +104,7 @@ export interface AspVbscriptSettings {
   globals?: Record<string, string | AspVbscriptGlobal>;
   unusedDiagnostics?: boolean;
   syntaxSnippets?: boolean;
+  syntaxKeywords?: boolean;
 }
 
 export type AspVbscriptIdentifierCase =
