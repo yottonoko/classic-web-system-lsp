@@ -65,7 +65,8 @@
         "aliases": [
           "VBScript",
           "vbscript"
-        ]
+        ],
+        "configuration": "./vbscript-language-configuration.json"
       },
       {
         "id": "asp-lsp-output",

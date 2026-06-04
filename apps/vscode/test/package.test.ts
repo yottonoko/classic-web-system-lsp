@@ -58,7 +58,7 @@ describe("VS Code extension package", () => {
       galleryBanner?: { color?: string };
       dependencies?: Record<string, string>;
       contributes?: {
-        languages?: Array<{ id: string; extensions?: string[] }>;
+        languages?: Array<{ id: string; extensions?: string[]; configuration?: string }>;
         grammars?: Array<{
           language?: string;
           scopeName?: string;
@@ -273,7 +273,9 @@ describe("VS Code extension package", () => {
     );
     const languageConfiguration = JSON.parse(
       fs.readFileSync("language-configuration.json", "utf8"),
-    ) as { comments?: { blockComment?: string[]; lineComment?: string } };
+    ) as {
+      comments?: { blockComment?: string[]; lineComment?: string };
+    };
     expect(languageConfiguration.comments?.blockComment).toEqual(["<!--", "-->"]);
     expect(languageConfiguration.comments?.lineComment).toBeUndefined();
     const vbscriptLanguage = manifest.contributes?.languages?.find(
@@ -281,6 +283,20 @@ describe("VS Code extension package", () => {
     );
     expect(vbscriptLanguage).toBeTruthy();
     expect(vbscriptLanguage?.extensions).toBeUndefined();
+    expect(vbscriptLanguage?.configuration).toBe("./vbscript-language-configuration.json");
+    const vbscriptLanguageConfiguration = JSON.parse(
+      fs.readFileSync("vbscript-language-configuration.json", "utf8"),
+    ) as { brackets?: string[][]; autoClosingPairs?: Array<{ open?: string; close?: string }> };
+    expect(vbscriptLanguageConfiguration.brackets).toContainEqual(["(", ")"]);
+    expect(vbscriptLanguageConfiguration.brackets).toContainEqual(["[", "]"]);
+    expect(vbscriptLanguageConfiguration.autoClosingPairs).toContainEqual({
+      open: "(",
+      close: ")",
+    });
+    expect(extensionSource).toContain("autoCloseHtmlTag");
+    expect(extensionSource).toContain("textDocument/onTypeFormatting");
+    expect(extensionSource).toContain("autoCloseAspBlock");
+    expect(extensionSource).toContain("%>");
     expect(
       manifest.contributes?.grammars?.some(
         (grammar) =>

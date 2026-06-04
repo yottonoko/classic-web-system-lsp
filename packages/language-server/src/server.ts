@@ -6315,12 +6315,207 @@ async function jsFoldingRangesAsync(cached: CachedDocument): Promise<FoldingRang
 
 function vbscriptFoldingRanges(cached: CachedDocument): FoldingRange[] {
   const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
-  return (context.symbols ?? [])
+  const symbolRanges = (context.symbols ?? [])
     .filter((symbol) => symbol.sourceUri === cached.source.uri && symbol.scopeRange)
     .map((symbol) => symbol.scopeRange)
     .filter((range): range is Range => Boolean(range))
     .filter((range) => range.start.line < range.end.line)
     .map((range) => ({ startLine: range.start.line, endLine: range.end.line }));
+  return dedupeFoldingRanges([...symbolRanges, ...vbscriptBlockFoldingRanges(cached)]);
+}
+
+type VbFoldingBlockKind = "If" | "DoLoop" | "While" | "For" | "ForEach";
+
+interface VbFoldingBlock {
+  kind: VbFoldingBlockKind;
+  start: VbToken;
+  branchStart?: VbToken;
+}
+
+function vbscriptBlockFoldingRanges(cached: CachedDocument): FoldingRange[] {
+  const ranges: FoldingRange[] = [];
+  for (const document of vbscriptDocuments(cached.parsed)) {
+    const tokens = document.tokens.filter(
+      (token) => token.kind !== "whitespace" && token.kind !== "comment",
+    );
+    const stack: VbFoldingBlock[] = [];
+    for (let index = 0; index < tokens.length; index += 1) {
+      if (!isVbFoldingStatementStart(tokens, index)) {
+        continue;
+      }
+      const token = tokens[index];
+      const first = lowerVbToken(token);
+      const second = lowerVbToken(tokens[index + 1]);
+      if (!first) {
+        continue;
+      }
+      if (first === "end" && second === "if") {
+        closeVbFoldingIfBlock(cached, ranges, stack, token);
+        continue;
+      }
+      if (first === "elseif" || first === "else") {
+        closeVbFoldingIfBranch(cached, ranges, stack, token);
+        continue;
+      }
+      if (first === "loop") {
+        closeVbFoldingBlock(cached, ranges, stack, ["DoLoop"], token);
+        continue;
+      }
+      if (first === "wend") {
+        closeVbFoldingBlock(cached, ranges, stack, ["While"], token);
+        continue;
+      }
+      if (first === "next") {
+        closeVbFoldingBlock(cached, ranges, stack, ["For", "ForEach"], token);
+        continue;
+      }
+      if (first === "if" && isVbFoldingMultilineIf(tokens, index)) {
+        stack.push({ kind: "If", start: token, branchStart: token });
+        continue;
+      }
+      if (first === "do") {
+        stack.push({ kind: "DoLoop", start: token });
+        continue;
+      }
+      if (first === "while") {
+        stack.push({ kind: "While", start: token });
+        continue;
+      }
+      if (first === "for") {
+        stack.push({ kind: second === "each" ? "ForEach" : "For", start: token });
+      }
+    }
+  }
+  return dedupeFoldingRanges(ranges);
+}
+
+function vbscriptDocuments(parsed: AspParsedDocument): VbCstNode[] {
+  const documents: VbCstNode[] = [];
+  const visit = (node: AspCstNode): void => {
+    if (node.vbscript) {
+      documents.push(node.vbscript);
+    }
+    for (const child of node.children) {
+      visit(child);
+    }
+  };
+  visit(parsed.cst);
+  return documents;
+}
+
+function closeVbFoldingIfBlock(
+  cached: CachedDocument,
+  ranges: FoldingRange[],
+  stack: VbFoldingBlock[],
+  closeToken: VbToken,
+): void {
+  const index = findLastFoldingBlockIndex(stack, (block) => block.kind === "If");
+  if (index === -1) {
+    return;
+  }
+  const [block] = stack.splice(index, 1);
+  pushVbFoldingRange(cached, ranges, block.branchStart ?? block.start, closeToken);
+}
+
+function closeVbFoldingIfBranch(
+  cached: CachedDocument,
+  ranges: FoldingRange[],
+  stack: VbFoldingBlock[],
+  branchToken: VbToken,
+): void {
+  const block = stack.at(-1);
+  if (block?.kind !== "If") {
+    return;
+  }
+  pushVbFoldingRange(cached, ranges, block.branchStart ?? block.start, branchToken, true);
+  block.branchStart = branchToken;
+}
+
+function closeVbFoldingBlock(
+  cached: CachedDocument,
+  ranges: FoldingRange[],
+  stack: VbFoldingBlock[],
+  kinds: VbFoldingBlockKind[],
+  closeToken: VbToken,
+): void {
+  const index = findLastFoldingBlockIndex(stack, (block) => kinds.includes(block.kind));
+  if (index === -1) {
+    return;
+  }
+  const [block] = stack.splice(index, 1);
+  pushVbFoldingRange(cached, ranges, block.start, closeToken);
+}
+
+function pushVbFoldingRange(
+  cached: CachedDocument,
+  ranges: FoldingRange[],
+  startToken: VbToken,
+  endToken: VbToken,
+  endBeforeToken = false,
+): void {
+  const startLine = cached.source.positionAt(startToken.start).line;
+  const endLine =
+    cached.source.positionAt(endBeforeToken ? endToken.start : endToken.end).line -
+    (endBeforeToken ? 1 : 0);
+  if (startLine < endLine) {
+    ranges.push({ startLine, endLine });
+  }
+}
+
+function isVbFoldingStatementStart(tokens: VbToken[], index: number): boolean {
+  const previous = tokens[index - 1];
+  return !previous || previous.kind === "newline" || previous.text === ":";
+}
+
+function isVbFoldingMultilineIf(tokens: VbToken[], startIndex: number): boolean {
+  const endIndex = vbFoldingStatementEndIndex(tokens, startIndex);
+  let thenIndex = -1;
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    if (lowerVbToken(tokens[index]) === "then") {
+      thenIndex = index;
+    }
+  }
+  return thenIndex !== -1 && thenIndex === endIndex;
+}
+
+function vbFoldingStatementEndIndex(tokens: VbToken[], startIndex: number): number {
+  let index = startIndex;
+  while (index + 1 < tokens.length) {
+    const next = tokens[index + 1];
+    if ((next.kind === "newline" && tokens[index]?.text !== "_") || next.text === ":") {
+      break;
+    }
+    index += 1;
+  }
+  return index;
+}
+
+function lowerVbToken(token: VbToken | undefined): string | undefined {
+  return token?.text.toLowerCase();
+}
+
+function dedupeFoldingRanges(ranges: FoldingRange[]): FoldingRange[] {
+  const seen = new Set<string>();
+  return ranges.filter((range) => {
+    const key = `${range.startLine}:${range.startCharacter ?? ""}:${range.endLine}:${range.endCharacter ?? ""}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function findLastFoldingBlockIndex(
+  stack: VbFoldingBlock[],
+  predicate: (block: VbFoldingBlock) => boolean,
+): number {
+  for (let index = stack.length - 1; index >= 0; index -= 1) {
+    if (predicate(stack[index])) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function remapFoldingRange(
@@ -12374,12 +12569,18 @@ async function onTypeFormattingAsync(
   formattingOptions: FormattingOptions,
 ): Promise<TextEdit[]> {
   if (character === ">") {
-    return (
-      (await jsOnTypeFormattingAsync(cached, position, character, formattingOptions)) ??
-      htmlOnTypeFormatting(cached, position, formattingOptions) ??
-      aspCloseOnTypeFormatting(cached, position, formattingOptions) ??
-      []
-    );
+    const jsEdits = await jsOnTypeFormattingAsync(cached, position, character, formattingOptions);
+    if (jsEdits) {
+      return jsEdits;
+    }
+    const htmlCloseTagEdits = htmlCloseTagOnTypeFormatting(cached, position);
+    if (htmlCloseTagEdits) {
+      return htmlCloseTagEdits;
+    }
+    if (isHtmlOnTypePosition(cached, position)) {
+      return [];
+    }
+    return aspCloseOnTypeFormatting(cached, position, formattingOptions) ?? [];
   }
   const jsEdits = await jsOnTypeFormattingAsync(cached, position, character, formattingOptions);
   if (jsEdits) {
@@ -12449,37 +12650,40 @@ async function jsOnTypeFormattingAsync(
     .filter((edit): edit is TextEdit => Boolean(edit));
 }
 
-function htmlOnTypeFormatting(
+function htmlCloseTagOnTypeFormatting(
   cached: CachedDocument,
   position: Position,
-  formattingOptions: FormattingOptions,
 ): TextEdit[] | undefined {
   const offset = Math.max(0, cached.source.offsetAt(position) - 1);
   const region = findRegionAt(cached.parsed, offset);
   if (!region || region.language !== "html") {
     return undefined;
   }
-  const lineRange = {
-    start: { line: position.line, character: 0 },
-    end: { line: position.line + 1, character: 0 },
-  };
-  if (rangeOverlapsNonHtml(cached, lineRange)) {
-    return undefined;
-  }
   const virtual = getCachedVirtual(cached, "html");
-  if (!virtual) {
+  const virtualPosition = virtual?.sourceMap.toVirtualPosition(position);
+  if (!virtual || !virtualPosition) {
     return undefined;
   }
-  return htmlService
-    .format(toTextDocument(virtual), lineRange, {
-      tabSize: formattingOptions.tabSize,
-      insertSpaces: formattingOptions.insertSpaces,
-    })
-    .map((edit) => {
-      const range = sourceRangeFromVirtualRange(virtual, edit.range);
-      return range ? { ...edit, range } : undefined;
-    })
-    .filter((edit): edit is TextEdit => Boolean(edit));
+  const document = toTextDocument(virtual);
+  const completion = htmlService.doTagComplete(
+    document,
+    virtualPosition,
+    htmlService.parseHTMLDocument(document),
+  );
+  const newText = completion?.replace(/\$0/g, "");
+  return newText
+    ? [
+        {
+          range: { start: position, end: position },
+          newText,
+        },
+      ]
+    : undefined;
+}
+
+function isHtmlOnTypePosition(cached: CachedDocument, position: Position): boolean {
+  const offset = Math.max(0, cached.source.offsetAt(position) - 1);
+  return findRegionAt(cached.parsed, offset)?.language === "html";
 }
 
 function aspCloseOnTypeFormatting(

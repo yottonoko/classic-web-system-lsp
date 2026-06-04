@@ -1272,6 +1272,67 @@ function boot() {
       }
     });
 
+    it("returns VBScript folding ranges for If branches and loops", async () => {
+      const source = `<%
+If ready Then
+  Response.Write 1
+ElseIf other Then
+  Response.Write 2
+Else
+  Response.Write 3
+End If
+If inlineReady Then Response.Write inlineReady
+Do While ready
+  Response.Write 4
+Loop
+While ready
+  Response.Write 5
+Wend
+For index = 1 To 3
+  Response.Write index
+Next
+For Each item In items
+  Response.Write item
+Next
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/vbscript-folding.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const folding = (await server.request("textDocument/foldingRange", {
+          textDocument: { uri },
+        })) as Array<{ startLine: number; endLine: number }>;
+        const ranges = folding.map((range) => [range.startLine, range.endLine]);
+        expect(ranges).toContainEqual([1, 2]);
+        expect(ranges).toContainEqual([3, 4]);
+        expect(ranges).toContainEqual([5, 7]);
+        expect(ranges).toContainEqual([9, 11]);
+        expect(ranges).toContainEqual([12, 14]);
+        expect(ranges).toContainEqual([15, 17]);
+        expect(ranges).toContainEqual([18, 20]);
+        expect(ranges.some(([startLine]) => startLine === 8)).toBe(false);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("keeps remapped selection range parents containing child ranges", async () => {
       const source = `<style>
 .panel { <% If ok Then %>color: red;<% End If %> }
@@ -7475,6 +7536,60 @@ helper▮Thing();
       } finally {
         server.stop();
         fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("returns HTML close-tag edits only for HTML opening tags on >", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const requestOnType = async (uri: string, text: string): Promise<TextEdit[]> => {
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri,
+              languageId: "classic-asp",
+              version: 1,
+              text,
+            },
+          });
+          await server.waitForNotification("textDocument/publishDiagnostics");
+          return (await server.request("textDocument/onTypeFormatting", {
+            textDocument: { uri },
+            position: positionAt(text, text.length),
+            ch: ">",
+            options: { tabSize: 2, insertSpaces: true },
+          })) as TextEdit[];
+        };
+
+        const divEdits = await requestOnType("file:///tmp/tag-complete-div.asp", "<div>");
+        expect(divEdits).toEqual([
+          {
+            range: { start: { line: 0, character: 5 }, end: { line: 0, character: 5 } },
+            newText: "</div>",
+          },
+        ]);
+
+        const brEdits = await requestOnType("file:///tmp/tag-complete-br.asp", "<br>");
+        expect(brEdits).toEqual([]);
+
+        const closingEdits = await requestOnType("file:///tmp/tag-complete-close.asp", "</div>");
+        expect(closingEdits).toEqual([]);
+
+        const aspCloseEdits = await requestOnType(
+          "file:///tmp/tag-complete-asp-close.asp",
+          '<% Response.Write "ok" %>',
+        );
+        expect(aspCloseEdits).toEqual([]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
       }
     });
 
