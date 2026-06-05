@@ -261,10 +261,18 @@ Response.Write name
     const source = `<%@ LANGUAGE="VBScript" %>\r
 <!-- #include file="inc/共通.inc" -->\r
 <!-- #INCLUDE file="fallback.inc" virtual="/shared/virtual.inc" -->\r
-<script>const ignored = '<!-- #include file="script.inc" -->';</script>\r
-<style>/* <!-- #include file="style.inc" --> */</style>\r
+<script>
+const ignoredString = '<!-- #include file="script-string.inc" -->';
+// <!-- #include file="script-line-comment.inc" -->
+/* <!-- #include file="script-block-comment.inc" --> */
+</script>\r
+<style>
+body::before { content: "<!-- #include file='style-string.inc' -->"; }
+/* <!-- #include file="style-comment.inc" --> */
+</style>\r
 <div data-include="<!-- #include file='attribute.inc' -->"></div>\r
 <% Response.Write "<!-- #include file=""asp.inc"" -->" %>\r
+<% ' <!-- #include file="vbscript-comment.inc" --> %>\r
 <!-- #include file='single.inc' -->\r
 <!-- #include file=plain.inc -->`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
