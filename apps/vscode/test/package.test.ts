@@ -562,7 +562,10 @@ describe("VS Code extension package", () => {
     expect(classicAspGrammar.repository?.["asp-vbscript-apostrophe-comment"]?.end).toContain("%>");
     expect(classicAspGrammar.repository?.["asp-vbscript-string"]?.end).toContain("%>");
     expect(classicAspGrammar.repository?.["asp-expression"]?.end).toBe("%>");
-    expect(classicAspTagInjection.injectionSelector).toBe("L:text.html.classic-asp meta.tag");
+    expect(classicAspTagInjection.injectionSelector).toContain("L:text.html.classic-asp meta.tag");
+    expect(classicAspTagInjection.injectionSelector).toContain(
+      "L:text.html.classic-asp meta.tag string.quoted",
+    );
     expect(classicAspTagInjection.patterns).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ include: "#asp-expression" }),
@@ -746,6 +749,24 @@ console.log(a);
     }
   });
 
+  it("tokenizes ASP islands inside HTML attributes as embedded VBScript", async () => {
+    const grammar = await loadClassicAspTextMateGrammar();
+    const source = `<input value="<%= Response.Write value %>" <% Response.Write "disabled" %>>`;
+    const lines = source.split("\n");
+
+    for (const { needle, scope } of [
+      { needle: "Response.Write value", scope: "source.vbscript.embedded.asp.expression" },
+      { needle: 'Response.Write "disabled"', scope: "source.vbscript.embedded.asp" },
+    ]) {
+      const token = tokenAtText(grammar, lines, 0, needle);
+      expect(token?.scopes, needle).toContain(scope);
+      const vbscriptIndex = token?.scopes.indexOf(scope) ?? -1;
+      const stringIndex =
+        token?.scopes.findIndex((scope) => scope.includes("string.quoted.double.html")) ?? -1;
+      expect(vbscriptIndex).toBeGreaterThan(stringIndex);
+    }
+  });
+
   it("describes the COM type catalog schema for settings UI", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       contributes?: {
@@ -922,6 +943,13 @@ async function loadClassicAspTextMateGrammar(): Promise<TextMateGrammar> {
       ),
     ],
     [
+      "classic-asp.tag-injection",
+      parseRawGrammar(
+        fs.readFileSync("syntaxes/classic-asp-tag-injection.tmLanguage.json", "utf8"),
+        "classic-asp-tag-injection.tmLanguage.json",
+      ),
+    ],
+    [
       "source.vbscript",
       parseRawGrammar(
         fs.readFileSync("syntaxes/vbscript.tmLanguage.json", "utf8"),
@@ -935,6 +963,8 @@ async function loadClassicAspTextMateGrammar(): Promise<TextMateGrammar> {
   const registry = new Registry({
     onigLib,
     loadGrammar: async (scopeName) => rawGrammars.get(scopeName) ?? null,
+    getInjections: (scopeName) =>
+      scopeName === "text.html.classic-asp" ? ["classic-asp.tag-injection"] : [],
   });
   const grammar = await registry.loadGrammar("text.html.classic-asp");
   if (!grammar) {
@@ -966,8 +996,30 @@ function tokenAtText(
 function minimalHtmlGrammar() {
   return {
     scopeName: "text.html.basic",
-    patterns: [{ include: "#style" }, { include: "#script" }, { match: "[^<]+" }],
+    patterns: [
+      { include: "#style" },
+      { include: "#script" },
+      { include: "#tag" },
+      { match: "[^<]+" },
+    ],
     repository: {
+      tag: {
+        begin: "<[A-Za-z][A-Za-z0-9:-]*\\b",
+        end: ">",
+        name: "meta.tag.html",
+        patterns: [
+          {
+            begin: '"',
+            end: '"',
+            name: "string.quoted.double.html",
+          },
+          {
+            begin: "'",
+            end: "'",
+            name: "string.quoted.single.html",
+          },
+        ],
+      },
       style: {
         begin: "<style\\b[^>]*>",
         end: "</style>",

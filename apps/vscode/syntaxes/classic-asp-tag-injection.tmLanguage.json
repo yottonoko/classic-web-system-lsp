@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Classic ASP Tag Injection",
   "scopeName": "classic-asp.tag-injection",
-  "injectionSelector": "L:text.html.classic-asp meta.tag",
+  "injectionSelector": "L:text.html.classic-asp meta.tag, L:text.html.classic-asp meta.tag string.quoted",
   "patterns": [
     { "include": "#asp-expression" },
     { "include": "#asp-directive" },

@@ -6318,6 +6318,45 @@ End Function
       }
     });
 
+    it("returns VBScript completions inside HTML attribute ASP islands", async () => {
+      const source = `<input value="<%= Response. %>" <% Response. %>>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/html-attribute-asp-completion.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        for (const offset of [
+          source.indexOf("Response.") + "Response.".length,
+          source.lastIndexOf("Response.") + "Response.".length,
+        ]) {
+          const completions = await server.request("textDocument/completion", {
+            textDocument: { uri },
+            position: positionAt(source, offset),
+          });
+          expect(completionLabels(completions)).toContain("Write");
+        }
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("avoids existing VBScript extract variable names", async () => {
       const source = `<%
 Dim extractedValue
