@@ -428,6 +428,28 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(parsed.diagnostics[0]?.message).toContain("closing %>");
   });
 
+  it("ignores ASP open delimiters inside client script and style strings or comments", () => {
+    const source = `<script>
+const literal = "<%";
+const angleText = "<>";
+// <% not an ASP island
+const value = <%= serverValue %>;
+</script>
+<style>
+.literal::before { content: "<%"; }
+/* <% not an ASP island */
+.dynamic { width: <%= width %>px; }
+</style>`;
+    const parsed = parseAspDocument("file:///site/client-literal-delimiters.asp", source);
+    expect(parsed.diagnostics).toHaveLength(0);
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(2);
+    expect(parsed.regions.some((region) => region.kind === "client-script")).toBe(true);
+    expect(parsed.regions.some((region) => region.kind === "style")).toBe(true);
+    const docs = buildVirtualDocuments(parsed);
+    expect(docs.get("javascript")?.text).toContain('const literal = "<%";');
+    expect(docs.get("css")?.text).toContain('content: "<%";');
+  });
+
   it("localizes ASP parser diagnostics", () => {
     const parsed = parseAspDocument("file:///broken.asp", "<html><% Response.Write 1", {
       resolvedLocale: "ja",
@@ -827,6 +849,58 @@ Response.
     expect(memberCompletions.some((item) => item.label === "Write")).toBe(true);
     expect(memberCompletions.some((item) => item.label === "If Then")).toBe(false);
     expect(memberCompletions.some((item) => item.label === "If")).toBe(false);
+  });
+
+  it("keeps VBScript syntax snippets available while typing statement prefixes", () => {
+    const source = `<% Option Explicit
+Do▮
+%>`;
+    const marked = markedDocument(source);
+    const parsed = parseAspDocument("file:///site/default.asp", marked.text);
+    const doCompletions = getVbscriptCompletions(parsed, marked.position);
+    expect(doCompletions.find((item) => item.label === "Do")).toMatchObject({
+      kind: CompletionItemKind.Keyword,
+    });
+    expect(doCompletions.find((item) => item.label === "Do Loop")).toMatchObject({
+      kind: CompletionItemKind.Snippet,
+      insertTextFormat: InsertTextFormat.Snippet,
+    });
+    expect(doCompletions.find((item) => item.label === "Do While Loop")).toMatchObject({
+      kind: CompletionItemKind.Snippet,
+    });
+    expect(doCompletions.find((item) => item.label === "Do Until Loop")).toMatchObject({
+      kind: CompletionItemKind.Snippet,
+    });
+
+    const sub = markedDocument(`<% Option Explicit
+Sub▮
+%>`);
+    const subCompletions = getVbscriptCompletions(
+      parseAspDocument("file:///site/default.asp", sub.text),
+      sub.position,
+    );
+    expect(subCompletions.find((item) => item.label === "Sub")).toMatchObject({
+      kind: CompletionItemKind.Snippet,
+      insertTextFormat: InsertTextFormat.Snippet,
+    });
+
+    const fn = markedDocument(`<% Option Explicit
+Funct▮
+%>`);
+    const functionCompletions = getVbscriptCompletions(
+      parseAspDocument("file:///site/default.asp", fn.text),
+      fn.position,
+    );
+    expect(functionCompletions.find((item) => item.label === "Function")).toMatchObject({
+      kind: CompletionItemKind.Snippet,
+      insertTextFormat: InsertTextFormat.Snippet,
+    });
+
+    const disabled = getVbscriptCompletions(parsed, marked.position, {
+      syntaxSnippets: false,
+    });
+    expect(disabled.some((item) => item.label === "Do Loop")).toBe(false);
+    expect(disabled.some((item) => item.label === "Do")).toBe(true);
   });
 
   it("completes VBScript On Error statements as syntax keywords", () => {

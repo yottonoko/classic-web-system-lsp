@@ -1410,20 +1410,35 @@ export function getVbscriptCompletions(
     context.syntaxKeywords === false
       ? []
       : vbscriptSyntaxKeywordCompletions(parsed, sourceOffset, context.locale);
+  const statementKeywordContext =
+    context.syntaxKeywords !== false
+      ? statementKeywordCompletionContext(parsed, sourceOffset)
+      : undefined;
   const hasSyntaxKeywordPrefix =
     context.syntaxKeywords !== false &&
     syntaxKeywordCompletions.length > 0 &&
-    (statementKeywordCompletionContext(parsed, sourceOffset)?.prefix.length ?? 0) > 0;
+    (statementKeywordContext?.prefix.length ?? 0) > 0;
   const contextualSyntaxCompletions = vbscriptContextualSyntaxCompletions(
     parsed,
     sourceOffset,
     context,
   );
   if (contextualSyntaxCompletions.length > 0 || hasSyntaxKeywordPrefix) {
-    return mergeSyntaxKeywordAndContextualCompletions(
-      syntaxKeywordCompletions,
-      contextualSyntaxCompletions,
-    );
+    const syntaxSnippetCompletions =
+      context.syntaxSnippets === false ? [] : vbscriptSyntaxSnippetCompletions(context.locale);
+    const prefixedSyntaxSnippets =
+      hasSyntaxKeywordPrefix && statementKeywordContext
+        ? syntaxSnippetCompletions.filter((item) =>
+            item.label.toLowerCase().startsWith(statementKeywordContext.prefix),
+          )
+        : [];
+    return dedupeCompletions([
+      ...mergeSyntaxKeywordAndContextualCompletions(
+        syntaxKeywordCompletions,
+        contextualSyntaxCompletions,
+      ),
+      ...prefixedSyntaxSnippets,
+    ]);
   }
   return dedupeCompletions([
     ...(context.syntaxSnippets === false ? [] : vbscriptSyntaxSnippetCompletions(context.locale)),

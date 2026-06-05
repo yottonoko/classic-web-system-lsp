@@ -96,7 +96,14 @@ export function scanHtmlAndAsp(
         const region = elementRegionFromTag(tag, close);
         tagRegions.push(region);
         inlineRegions.push(
-          ...scanAspRegionsInRange(text, tag.end, close.start, diagnostics, settings),
+          ...scanAspRegionsInRange(
+            text,
+            tag.end,
+            close.start,
+            diagnostics,
+            settings,
+            tag.name === "script" ? "javascript" : "css",
+          ),
         );
         cursor = close.end;
         continue;
@@ -113,19 +120,123 @@ function scanAspRegionsInRange(
   end: number,
   diagnostics: AspParsedDocument["diagnostics"],
   settings: AspSettings = {},
+  embeddedLanguage?: "javascript" | "css",
 ): AspRegion[] {
   const regions: AspRegion[] = [];
   let cursor = start;
   while (cursor < end) {
-    const next = text.indexOf("<%", cursor);
+    const next = findAspOpenInRange(text, cursor, end, embeddedLanguage);
     if (next === -1 || next >= end) {
       break;
+    }
+    if (embeddedLanguage) {
+      const state = embeddedContentStateAt(text, start, next, embeddedLanguage);
+      if (state.kind !== "normal") {
+        const close = findAspClose(text, next + 2, end);
+        const stateEnd = embeddedContentStateEnd(text, next, end, embeddedLanguage, state);
+        if (close === -1 || close >= stateEnd) {
+          cursor = next + 2;
+          continue;
+        }
+      }
     }
     const region = parseAspRegionAt(text, next, diagnostics, end, settings);
     regions.push(region);
     cursor = Math.max(region.end, next + 2);
   }
   return regions;
+}
+
+type EmbeddedContentState =
+  | { kind: "normal" }
+  | { kind: "string"; quote: string; escaped: boolean }
+  | { kind: "lineComment" }
+  | { kind: "blockComment" };
+
+function findAspOpenInRange(
+  text: string,
+  start: number,
+  end: number,
+  embeddedLanguage?: "javascript" | "css",
+): number {
+  if (!embeddedLanguage) {
+    const next = text.indexOf("<%", start);
+    return next === -1 || next >= end ? -1 : next;
+  }
+  for (let index = start; index < end; index += 1) {
+    if (text.startsWith("<%", index)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function embeddedContentStateAt(
+  text: string,
+  start: number,
+  offset: number,
+  embeddedLanguage: "javascript" | "css",
+): EmbeddedContentState {
+  let state: EmbeddedContentState = { kind: "normal" };
+  for (let index = start; index < offset; index += 1) {
+    state = advanceEmbeddedContentState(text, index, offset, embeddedLanguage, state);
+  }
+  return state;
+}
+
+function embeddedContentStateEnd(
+  text: string,
+  start: number,
+  end: number,
+  embeddedLanguage: "javascript" | "css",
+  state: EmbeddedContentState,
+): number {
+  let current = state;
+  for (let index = start; index < end; index += 1) {
+    current = advanceEmbeddedContentState(text, index, end, embeddedLanguage, current);
+    if (current.kind === "normal") {
+      return index + 1;
+    }
+  }
+  return end;
+}
+
+function advanceEmbeddedContentState(
+  text: string,
+  index: number,
+  end: number,
+  embeddedLanguage: "javascript" | "css",
+  state: EmbeddedContentState,
+): EmbeddedContentState {
+  const char = text[index];
+  if (state.kind === "lineComment") {
+    return char === "\n" || char === "\r" ? { kind: "normal" } : state;
+  }
+  if (state.kind === "blockComment") {
+    return char === "*" && index + 1 < end && text[index + 1] === "/" ? { kind: "normal" } : state;
+  }
+  if (state.kind === "string") {
+    if (state.escaped) {
+      return { ...state, escaped: false };
+    }
+    if (char === "\\") {
+      return { ...state, escaped: true };
+    }
+    return char === state.quote ? { kind: "normal" } : state;
+  }
+  if (char === '"' || char === "'" || (embeddedLanguage === "javascript" && char === "`")) {
+    return { kind: "string", quote: char, escaped: false };
+  }
+  if (char === "/" && index + 1 < end) {
+    const next = text[index + 1];
+    if (next === "*") {
+      return { kind: "blockComment" };
+    }
+    if (embeddedLanguage === "javascript" && next === "/") {
+      return { kind: "lineComment" };
+    }
+  }
+  return state;
 }
 
 function parseAspRegionAt(
@@ -447,19 +558,32 @@ function findElementClose(
   tagName: "script" | "style",
   offset: number,
 ): { start: number; end: number } | undefined {
+  const embeddedLanguage = tagName === "script" ? "javascript" : "css";
+  let state: EmbeddedContentState = { kind: "normal" };
   for (let index = offset; index < text.length; index += 1) {
-    if (text.startsWith("<%", index)) {
-      const close = findAspClose(text, index + 2, text.length);
-      if (close === -1) {
-        return undefined;
-      }
-      index = close + 1;
-      continue;
-    }
     if (isClosingTagAt(text, index, tagName)) {
       const closeEnd = findTagEnd(text, index + 2);
       return closeEnd === -1 ? undefined : { start: index, end: closeEnd + 1 };
     }
+    if (text.startsWith("<%", index)) {
+      const close = findAspClose(text, index + 2, text.length);
+      if (state.kind !== "normal") {
+        const stateEnd = embeddedContentStateEnd(text, index, text.length, embeddedLanguage, state);
+        if (close === -1 || close >= stateEnd) {
+          state = advanceEmbeddedContentState(text, index, text.length, embeddedLanguage, state);
+          continue;
+        }
+      }
+      if (close === -1) {
+        return undefined;
+      }
+      if (state.kind !== "normal") {
+        state = advanceEmbeddedContentState(text, index, text.length, embeddedLanguage, state);
+      }
+      index = close + 1;
+      continue;
+    }
+    state = advanceEmbeddedContentState(text, index, text.length, embeddedLanguage, state);
   }
   return undefined;
 }
