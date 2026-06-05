@@ -286,11 +286,14 @@ describe("VS Code extension package", () => {
       fs.readFileSync("language-configuration.json", "utf8"),
     ) as {
       comments?: { blockComment?: string[]; lineComment?: string };
+      colorizedBracketPairs?: string[][];
       autoClosingPairs?: Array<{ open?: string; close?: string }>;
       surroundingPairs?: Array<{ open?: string; close?: string }>;
     };
     expect(languageConfiguration.comments?.blockComment).toEqual(["<!--", "-->"]);
     expect(languageConfiguration.comments?.lineComment).toBeUndefined();
+    expect(languageConfiguration.colorizedBracketPairs).toContainEqual(["(", ")"]);
+    expect(languageConfiguration.colorizedBracketPairs).toContainEqual(["[", "]"]);
     expect(languageConfiguration.autoClosingPairs).not.toContainEqual({
       open: "'",
       close: "'",
@@ -307,9 +310,15 @@ describe("VS Code extension package", () => {
     expect(vbscriptLanguage?.configuration).toBe("./vbscript-language-configuration.json");
     const vbscriptLanguageConfiguration = JSON.parse(
       fs.readFileSync("vbscript-language-configuration.json", "utf8"),
-    ) as { brackets?: string[][]; autoClosingPairs?: Array<{ open?: string; close?: string }> };
+    ) as {
+      brackets?: string[][];
+      colorizedBracketPairs?: string[][];
+      autoClosingPairs?: Array<{ open?: string; close?: string }>;
+    };
     expect(vbscriptLanguageConfiguration.brackets).toContainEqual(["(", ")"]);
     expect(vbscriptLanguageConfiguration.brackets).toContainEqual(["[", "]"]);
+    expect(vbscriptLanguageConfiguration.colorizedBracketPairs).toContainEqual(["(", ")"]);
+    expect(vbscriptLanguageConfiguration.colorizedBracketPairs).toContainEqual(["[", "]"]);
     expect(vbscriptLanguageConfiguration.autoClosingPairs).toContainEqual({
       open: "(",
       close: ")",
@@ -319,9 +328,15 @@ describe("VS Code extension package", () => {
       close: "'",
     });
     expect(extensionSource).toContain("autoCloseHtmlTag");
+    expect(extensionSource).toContain("couldTriggerHtmlTagCompleteBefore");
+    expect(extensionSource).toContain(
+      "editor.selection = new vscode.Selection(position, position)",
+    );
     expect(extensionSource).toContain("textDocument/onTypeFormatting");
     expect(extensionSource).toContain("autoCloseAspBlock");
     expect(extensionSource).toContain("autoCloseApostrophe");
+    expect(extensionSource).toContain("pendingApostropheAutoCloseEdits");
+    expect(extensionSource).toContain("consumePendingApostropheAutoClose");
     expect(extensionSource).toContain('ch: "\'"');
     expect(extensionSource).toContain("%>");
     expect(

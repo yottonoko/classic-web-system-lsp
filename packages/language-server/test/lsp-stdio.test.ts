@@ -7787,6 +7787,17 @@ helper▮Thing();
         const closingEdits = await requestOnType("file:///tmp/tag-complete-close.asp", "</div>");
         expect(closingEdits).toEqual([]);
 
+        const quotedGreaterEdits = await requestOnType(
+          "file:///tmp/tag-complete-quoted-greater.asp",
+          '<div title=">">',
+        );
+        expect(quotedGreaterEdits).toEqual([
+          {
+            range: { start: { line: 0, character: 15 }, end: { line: 0, character: 15 } },
+            newText: "</div>",
+          },
+        ]);
+
         const aspCloseEdits = await requestOnType(
           "file:///tmp/tag-complete-asp-close.asp",
           '<% Response.Write "ok" %>',
@@ -7886,6 +7897,13 @@ helper▮Thing();
           "<script>const value = '';</script>",
         );
         expect(existingCloseEdits).toEqual([]);
+
+        const generatedCloseEdits = await requestOnType(
+          "file:///tmp/apostrophe-generated-close.asp",
+          "<script>const value = '';</script>",
+          "<script>const value = ''".length,
+        );
+        expect(generatedCloseEdits).toEqual([]);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

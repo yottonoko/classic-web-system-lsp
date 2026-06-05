@@ -17,6 +17,7 @@ const reindexWorkspaceServerCommand = "aspLsp.server.reindexWorkspace";
 const clearCacheServerCommand = "aspLsp.server.clearCache";
 const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
+const htmlTagCompleteLookBehind = 2000;
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
@@ -25,6 +26,7 @@ let restartPromise: Promise<void> | undefined;
 let isDeactivating = false;
 let isManualRestarting = false;
 let crashRestartTimestamps: number[] = [];
+const pendingApostropheAutoCloseEdits = new Map<string, Set<string>>();
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   isDeactivating = false;
@@ -80,7 +82,7 @@ async function autoCloseHtmlTag(event: vscode.TextDocumentChangeEvent): Promise<
   }
   const change = event.contentChanges[0];
   const position = new vscode.Position(change.range.start.line, change.range.start.character + 1);
-  if (!looksLikeHtmlOpenTagBefore(event.document, position)) {
+  if (!couldTriggerHtmlTagCompleteBefore(event.document, position)) {
     return;
   }
   const editor = vscode.window.visibleTextEditors.find(
@@ -113,7 +115,10 @@ async function autoCloseHtmlTag(event: vscode.TextDocumentChangeEvent): Promise<
   for (const edit of edits) {
     workspaceEdit.replace(event.document.uri, toVscodeRange(edit.range), edit.newText);
   }
-  await vscode.workspace.applyEdit(workspaceEdit);
+  const applied = await vscode.workspace.applyEdit(workspaceEdit);
+  if (applied && editor) {
+    editor.selection = new vscode.Selection(position, position);
+  }
 }
 
 async function autoCloseApostrophe(event: vscode.TextDocumentChangeEvent): Promise<void> {
@@ -127,6 +132,9 @@ async function autoCloseApostrophe(event: vscode.TextDocumentChangeEvent): Promi
     return;
   }
   const change = event.contentChanges[0];
+  if (consumePendingApostropheAutoClose(event.document.uri, change.range.start, change.text)) {
+    return;
+  }
   const position = new vscode.Position(change.range.start.line, change.range.start.character + 1);
   const editor = vscode.window.visibleTextEditors.find(
     (candidate) => candidate.document.uri.toString() === event.document.uri.toString(),
@@ -155,10 +163,19 @@ async function autoCloseApostrophe(event: vscode.TextDocumentChangeEvent): Promi
     return;
   }
   const workspaceEdit = new vscode.WorkspaceEdit();
+  const remembered = new Set<string>();
   for (const edit of edits) {
-    workspaceEdit.replace(event.document.uri, toVscodeRange(edit.range), edit.newText);
+    const range = toVscodeRange(edit.range);
+    workspaceEdit.replace(event.document.uri, range, edit.newText);
+    if (edit.newText === "'" && range.isEmpty) {
+      rememberPendingApostropheAutoClose(event.document.uri, range.start, edit.newText);
+      remembered.add(apostropheAutoCloseChangeKey(range.start, edit.newText));
+    }
   }
-  await vscode.workspace.applyEdit(workspaceEdit);
+  const applied = await vscode.workspace.applyEdit(workspaceEdit);
+  if (!applied) {
+    forgetPendingApostropheAutoClose(event.document.uri, remembered);
+  }
 }
 
 async function autoCloseAspBlock(event: vscode.TextDocumentChangeEvent): Promise<void> {
@@ -194,24 +211,74 @@ async function autoCloseAspBlock(event: vscode.TextDocumentChangeEvent): Promise
   await vscode.workspace.applyEdit(workspaceEdit);
 }
 
-function looksLikeHtmlOpenTagBefore(
+function couldTriggerHtmlTagCompleteBefore(
   document: vscode.TextDocument,
   position: vscode.Position,
 ): boolean {
-  const prefix = document.lineAt(position.line).text.slice(0, position.character);
+  const offset = document.offsetAt(position);
+  const start = document.positionAt(Math.max(0, offset - htmlTagCompleteLookBehind));
+  const prefix = document.getText(new vscode.Range(start, position));
   if (!prefix.endsWith(">") || prefix.endsWith("%>")) {
     return false;
   }
   const open = prefix.lastIndexOf("<");
-  const previousClose = prefix.lastIndexOf(">", prefix.length - 2);
-  if (open === -1 || open < previousClose) {
+  if (open === -1) {
     return false;
   }
   const fragment = prefix.slice(open);
-  if (/^<\/|^<!|^<\?|^<%/.test(fragment) || fragment.endsWith("/>")) {
+  return !fragment.startsWith("<%");
+}
+
+function rememberPendingApostropheAutoClose(
+  uri: vscode.Uri,
+  position: vscode.Position,
+  text: string,
+): void {
+  const key = uri.toString();
+  const pending = pendingApostropheAutoCloseEdits.get(key) ?? new Set<string>();
+  pending.add(apostropheAutoCloseChangeKey(position, text));
+  pendingApostropheAutoCloseEdits.set(key, pending);
+}
+
+function consumePendingApostropheAutoClose(
+  uri: vscode.Uri,
+  position: vscode.Position,
+  text: string,
+): boolean {
+  const key = uri.toString();
+  const pending = pendingApostropheAutoCloseEdits.get(key);
+  if (!pending) {
     return false;
   }
-  return /^<[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*)?>$/.test(fragment);
+  const changeKey = apostropheAutoCloseChangeKey(position, text);
+  if (!pending.delete(changeKey)) {
+    return false;
+  }
+  if (pending.size === 0) {
+    pendingApostropheAutoCloseEdits.delete(key);
+  }
+  return true;
+}
+
+function forgetPendingApostropheAutoClose(uri: vscode.Uri, keys: Set<string>): void {
+  if (keys.size === 0) {
+    return;
+  }
+  const uriKey = uri.toString();
+  const pending = pendingApostropheAutoCloseEdits.get(uriKey);
+  if (!pending) {
+    return;
+  }
+  for (const key of keys) {
+    pending.delete(key);
+  }
+  if (pending.size === 0) {
+    pendingApostropheAutoCloseEdits.delete(uriKey);
+  }
+}
+
+function apostropheAutoCloseChangeKey(position: vscode.Position, text: string): string {
+  return `${position.line}:${position.character}:${text}`;
 }
 
 function isAfterAspOpenDelimiter(

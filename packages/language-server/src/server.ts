@@ -12678,7 +12678,8 @@ function apostropheCloseOnTypeFormatting(cached: CachedDocument, position: Posit
   ) {
     return [];
   }
-  if (lineText(cached.source, position.line).charAt(position.character) === "'") {
+  const line = lineText(cached.source, position.line);
+  if (line.charAt(position.character) === "'" || line.charAt(position.character - 2) === "'") {
     return [];
   }
   return [
