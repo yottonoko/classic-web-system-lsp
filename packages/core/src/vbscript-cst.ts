@@ -315,7 +315,7 @@ function parseVbscriptCstTypeScript(text: string, sourceText = text, baseOffset 
   return document;
 }
 
-function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
+export function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
   const tokens: VbToken[] = [];
   const length = text.length;
   let index = 0;

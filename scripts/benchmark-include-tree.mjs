@@ -25,6 +25,7 @@ const benchmarkOperationNames = new Set([
   "extractAspIncludeRefs",
   "buildVirtualDocuments",
   "collectVbscriptSymbols",
+  "extractVbscriptSymbolIndex",
   "analyzeVbscript",
   ...embeddedOperationNames,
 ]);
@@ -49,6 +50,7 @@ const {
   buildVirtualDocuments,
   collectVbscriptSymbolsFromTextAsync,
   extractAspIncludeRefs,
+  extractVbscriptSymbolIndex,
   parseAspDocumentAsync,
 } = core;
 
@@ -76,6 +78,12 @@ await runBenchmark("buildVirtualDocuments", (run) =>
 await runBenchmark("collectVbscriptSymbols", (run) =>
   measureAcrossSources(sourcesForRun("collectVbscriptSymbols", run), async (source) => {
     await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
+  }),
+);
+
+await runBenchmark("extractVbscriptSymbolIndex", (run) =>
+  measureAcrossSources(sourcesForRun("extractVbscriptSymbolIndex", run), async (source) => {
+    extractVbscriptSymbolIndex(source.uri, source.text);
   }),
 );
 

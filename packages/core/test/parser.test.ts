@@ -8,6 +8,7 @@ import {
   collectVbscriptSymbols,
   collectVbscriptSymbolsAsync,
   extractAspIncludeRefs,
+  extractVbscriptSymbolIndex,
   formatAspDocument,
   formatAspRange,
   getClassicAspLineCommentEdits,
@@ -1435,6 +1436,137 @@ Dim matrix(2, 3)
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("matrix") + 2), { symbols }),
     ).toContain("Dim matrix(2, 3) As Array(2, 3)");
+  });
+
+  it("builds a VBScript symbol index with declarations, references, calls, and deferred include candidates", () => {
+    const source = `<!-- #include file="common.inc" -->
+<%
+Const SiteName = "demo"
+Dim GlobalValue
+Class User
+  Public displayName
+  Private Const Kind = "user"
+  Public Function Render(value)
+    Dim localValue
+    Render = value & displayName
+  End Function
+  Public Property Get Title()
+    Title = displayName
+  End Property
+End Class
+
+Sub Log(message)
+  Dim localValue
+  localValue = message
+End Sub
+
+Function MakeUser(name)
+  Dim user
+  Set user = New User
+  Call Log(name)
+  Log name
+  user.Render(name)
+  MissingRead
+  MissingWrite = name
+  MakeUser = user
+End Function
+%>`;
+    const index = extractVbscriptSymbolIndex("file:///site/default.asp", source);
+    const declaration = (name: string, kind: string) =>
+      index.declarations.find((item) => item.name === name && item.kind === kind);
+
+    expect(index.includeRefs.map((include) => include.path)).toEqual(["common.inc"]);
+    expect(declaration("User", "class")).toBeDefined();
+    expect(declaration("Render", "method")).toMatchObject({ memberOf: "User" });
+    expect(declaration("Title", "property")).toMatchObject({ memberOf: "User" });
+    expect(declaration("displayName", "field")).toMatchObject({ memberOf: "User" });
+    expect(declaration("SiteName", "constant")).toMatchObject({ bindingScope: "global" });
+    expect(declaration("GlobalValue", "variable")).toMatchObject({ bindingScope: "global" });
+    expect(declaration("name", "parameter")).toMatchObject({ bindingScope: "local" });
+    expect(
+      index.declarations.filter(
+        (item) => item.name === "localValue" && item.bindingScope === "local",
+      ),
+    ).toHaveLength(2);
+
+    const userClass = declaration("User", "class");
+    expect(
+      index.references.find((item) => item.name === "User" && item.role === "new"),
+    ).toMatchObject({
+      resolvedId: userClass?.id,
+    });
+    expect(index.callSites.filter((item) => item.name === "Log" && item.resolvedId)).toHaveLength(
+      2,
+    );
+    expect(index.callSites.find((item) => item.name === "Render")).toMatchObject({
+      callKind: "member",
+      receiverName: "user",
+      deferredKey: expect.any(String),
+    });
+    expect(index.deferredExternalRefs.find((item) => item.name === "MissingRead")).toMatchObject({
+      bindingScope: "unknown",
+      expectedKinds: ["variable", "constant"],
+      role: "read",
+    });
+    expect(index.deferredExternalRefs.find((item) => item.name === "MissingWrite")).toMatchObject({
+      bindingScope: "unknown",
+      expectedKinds: ["variable"],
+      role: "write",
+    });
+  });
+
+  it("ignores symbol index declarations inside strings, comments, and client content", () => {
+    const source = `<script>
+const ignored = "Function ClientFake()";
+// Dim ClientComment
+</script>
+<style>
+.fake { content: "Class StyleFake"; }
+/* Const StyleComment = 1 */
+</style>
+<%
+Dim RealValue
+RealValue = "Class StringFake"
+' Function CommentFake()
+Rem Const RemFake = 1
+%>`;
+    const index = extractVbscriptSymbolIndex("file:///site/ignored.asp", source);
+    expect(index.declarations.map((item) => item.name)).toEqual(["RealValue"]);
+    expect(index.deferredExternalRefs.map((item) => item.name)).not.toEqual(
+      expect.arrayContaining([
+        "ClientFake",
+        "ClientComment",
+        "StyleFake",
+        "StyleComment",
+        "StringFake",
+        "CommentFake",
+        "RemFake",
+      ]),
+    );
+  });
+
+  it("keeps local symbol index shadowing ahead of include-deferred globals", () => {
+    const source = `<%
+Dim Value
+Sub UseValue()
+  Dim Value
+  Value = IncludedValue
+End Sub
+%>`;
+    const index = extractVbscriptSymbolIndex("file:///site/shadow.asp", source);
+    const localValue = index.declarations.find(
+      (item) => item.name === "Value" && item.bindingScope === "local",
+    );
+    expect(
+      index.references.find((item) => item.name === "Value" && item.role === "write"),
+    ).toMatchObject({
+      resolvedId: localValue?.id,
+      bindingScope: "local",
+    });
+    expect(index.deferredExternalRefs.find((item) => item.name === "IncludedValue")).toMatchObject({
+      bindingScope: "unknown",
+      expectedKinds: ["variable", "constant"],
+    });
   });
 
   it("collects only public VBScript symbols for include summaries", () => {
