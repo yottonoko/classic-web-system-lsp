@@ -1242,7 +1242,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       documentRangeFormattingProvider: true,
       documentOnTypeFormattingProvider: {
         firstTriggerCharacter: "\n",
-        moreTriggerCharacter: [">", "'"],
+        moreTriggerCharacter: [">"],
       },
       workspace: {
         workspaceFolders: {
@@ -12582,9 +12582,6 @@ async function onTypeFormattingAsync(
   character: string,
   formattingOptions: FormattingOptions,
 ): Promise<TextEdit[]> {
-  if (character === "'") {
-    return apostropheCloseOnTypeFormatting(cached, position);
-  }
   if (character === ">") {
     const jsEdits = await jsOnTypeFormattingAsync(cached, position, character, formattingOptions);
     if (jsEdits) {
@@ -12665,29 +12662,6 @@ async function jsOnTypeFormattingAsync(
     )
     .map((change) => textChangeToSourceTextEdit(context.virtual, change))
     .filter((edit): edit is TextEdit => Boolean(edit));
-}
-
-function apostropheCloseOnTypeFormatting(cached: CachedDocument, position: Position): TextEdit[] {
-  const offset = Math.max(0, cached.source.offsetAt(position) - 1);
-  const language = findRegionAt(cached.parsed, offset)?.language;
-  if (
-    language !== "html" &&
-    language !== "css" &&
-    language !== "javascript" &&
-    language !== "jscript"
-  ) {
-    return [];
-  }
-  const line = lineText(cached.source, position.line);
-  if (line.charAt(position.character) === "'" || line.charAt(position.character - 2) === "'") {
-    return [];
-  }
-  return [
-    {
-      range: { start: position, end: position },
-      newText: "'",
-    },
-  ];
 }
 
 function htmlCloseTagOnTypeFormatting(

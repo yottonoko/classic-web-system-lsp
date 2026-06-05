@@ -7811,15 +7811,23 @@ helper▮Thing();
       }
     });
 
-    it("auto-closes apostrophes outside VBScript regions only", async () => {
+    it("does not auto-close apostrophes on type", async () => {
       const server = new RpcServer();
       try {
         await server.start();
-        await server.request("initialize", {
+        const initialize = await server.request("initialize", {
           processId: process.pid,
           rootUri: "file:///tmp",
           capabilities: {},
         });
+        const onTypeFormattingProvider = (
+          initialize as {
+            capabilities?: {
+              documentOnTypeFormattingProvider?: { moreTriggerCharacter?: string[] };
+            };
+          }
+        ).capabilities?.documentOnTypeFormattingProvider;
+        expect(onTypeFormattingProvider?.moreTriggerCharacter).not.toContain("'");
         const requestOnType = async (
           uri: string,
           text: string,
@@ -7850,34 +7858,19 @@ helper▮Thing();
         expect(vbscriptEdits).toEqual([]);
 
         const htmlEdits = await requestOnType("file:///tmp/apostrophe-html.asp", "<div title='>");
-        expect(htmlEdits).toEqual([
-          {
-            range: { start: { line: 0, character: 12 }, end: { line: 0, character: 12 } },
-            newText: "'",
-          },
-        ]);
+        expect(htmlEdits).toEqual([]);
 
         const cssEdits = await requestOnType(
           "file:///tmp/apostrophe-css.asp",
           "<style>.x::before { content: '</style>",
         );
-        expect(cssEdits).toEqual([
-          {
-            range: { start: { line: 0, character: 30 }, end: { line: 0, character: 30 } },
-            newText: "'",
-          },
-        ]);
+        expect(cssEdits).toEqual([]);
 
         const javascriptEdits = await requestOnType(
           "file:///tmp/apostrophe-javascript.asp",
           "<script>const value = '</script>",
         );
-        expect(javascriptEdits).toEqual([
-          {
-            range: { start: { line: 0, character: 23 }, end: { line: 0, character: 23 } },
-            newText: "'",
-          },
-        ]);
+        expect(javascriptEdits).toEqual([]);
 
         const jscriptEdits = await requestOnType(
           "file:///tmp/apostrophe-jscript.asp",
@@ -7885,12 +7878,7 @@ helper▮Thing();
 <% var value = '
 %>`,
         );
-        expect(jscriptEdits).toEqual([
-          {
-            range: { start: { line: 1, character: 16 }, end: { line: 1, character: 16 } },
-            newText: "'",
-          },
-        ]);
+        expect(jscriptEdits).toEqual([]);
 
         const existingCloseEdits = await requestOnType(
           "file:///tmp/apostrophe-existing-close.asp",

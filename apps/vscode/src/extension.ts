@@ -26,7 +26,6 @@ let restartPromise: Promise<void> | undefined;
 let isDeactivating = false;
 let isManualRestarting = false;
 let crashRestartTimestamps: number[] = [];
-const pendingApostropheAutoCloseEdits = new Map<string, Set<string>>();
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   isDeactivating = false;
@@ -64,7 +63,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.onDidChangeTextDocument((event) => {
       void autoCloseHtmlTag(event);
       void autoCloseAspBlock(event);
-      void autoCloseApostrophe(event);
     }),
     vscode.tasks.registerTaskProvider("asp-lsp", new AspLspTaskProvider()),
   );
@@ -121,63 +119,6 @@ async function autoCloseHtmlTag(event: vscode.TextDocumentChangeEvent): Promise<
   }
 }
 
-async function autoCloseApostrophe(event: vscode.TextDocumentChangeEvent): Promise<void> {
-  if (
-    !client ||
-    event.document.languageId !== "classic-asp" ||
-    event.contentChanges.length !== 1 ||
-    event.contentChanges[0]?.text !== "'" ||
-    !event.contentChanges[0]?.range.isEmpty
-  ) {
-    return;
-  }
-  const change = event.contentChanges[0];
-  if (consumePendingApostropheAutoClose(event.document.uri, change.range.start, change.text)) {
-    return;
-  }
-  const position = new vscode.Position(change.range.start.line, change.range.start.character + 1);
-  const editor = vscode.window.visibleTextEditors.find(
-    (candidate) => candidate.document.uri.toString() === event.document.uri.toString(),
-  );
-  if (vscode.workspace.getConfiguration("editor", event.document.uri).get("formatOnType")) {
-    return;
-  }
-  const edits = await client.sendRequest<
-    Array<{
-      range: {
-        start: { line: number; character: number };
-        end: { line: number; character: number };
-      };
-      newText: string;
-    }>
-  >("textDocument/onTypeFormatting", {
-    textDocument: { uri: event.document.uri.toString() },
-    position: { line: position.line, character: position.character },
-    ch: "'",
-    options: {
-      tabSize: numericEditorOption(editor?.options.tabSize, 2),
-      insertSpaces: booleanEditorOption(editor?.options.insertSpaces, true),
-    },
-  });
-  if (!edits || edits.length === 0) {
-    return;
-  }
-  const workspaceEdit = new vscode.WorkspaceEdit();
-  const remembered = new Set<string>();
-  for (const edit of edits) {
-    const range = toVscodeRange(edit.range);
-    workspaceEdit.replace(event.document.uri, range, edit.newText);
-    if (edit.newText === "'" && range.isEmpty) {
-      rememberPendingApostropheAutoClose(event.document.uri, range.start, edit.newText);
-      remembered.add(apostropheAutoCloseChangeKey(range.start, edit.newText));
-    }
-  }
-  const applied = await vscode.workspace.applyEdit(workspaceEdit);
-  if (!applied) {
-    forgetPendingApostropheAutoClose(event.document.uri, remembered);
-  }
-}
-
 async function autoCloseAspBlock(event: vscode.TextDocumentChangeEvent): Promise<void> {
   if (
     event.document.languageId !== "classic-asp" ||
@@ -227,58 +168,6 @@ function couldTriggerHtmlTagCompleteBefore(
   }
   const fragment = prefix.slice(open);
   return !fragment.startsWith("<%");
-}
-
-function rememberPendingApostropheAutoClose(
-  uri: vscode.Uri,
-  position: vscode.Position,
-  text: string,
-): void {
-  const key = uri.toString();
-  const pending = pendingApostropheAutoCloseEdits.get(key) ?? new Set<string>();
-  pending.add(apostropheAutoCloseChangeKey(position, text));
-  pendingApostropheAutoCloseEdits.set(key, pending);
-}
-
-function consumePendingApostropheAutoClose(
-  uri: vscode.Uri,
-  position: vscode.Position,
-  text: string,
-): boolean {
-  const key = uri.toString();
-  const pending = pendingApostropheAutoCloseEdits.get(key);
-  if (!pending) {
-    return false;
-  }
-  const changeKey = apostropheAutoCloseChangeKey(position, text);
-  if (!pending.delete(changeKey)) {
-    return false;
-  }
-  if (pending.size === 0) {
-    pendingApostropheAutoCloseEdits.delete(key);
-  }
-  return true;
-}
-
-function forgetPendingApostropheAutoClose(uri: vscode.Uri, keys: Set<string>): void {
-  if (keys.size === 0) {
-    return;
-  }
-  const uriKey = uri.toString();
-  const pending = pendingApostropheAutoCloseEdits.get(uriKey);
-  if (!pending) {
-    return;
-  }
-  for (const key of keys) {
-    pending.delete(key);
-  }
-  if (pending.size === 0) {
-    pendingApostropheAutoCloseEdits.delete(uriKey);
-  }
-}
-
-function apostropheAutoCloseChangeKey(position: vscode.Position, text: string): string {
-  return `${position.line}:${position.character}:${text}`;
 }
 
 function isAfterAspOpenDelimiter(

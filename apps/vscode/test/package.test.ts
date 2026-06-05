@@ -334,10 +334,10 @@ describe("VS Code extension package", () => {
     );
     expect(extensionSource).toContain("textDocument/onTypeFormatting");
     expect(extensionSource).toContain("autoCloseAspBlock");
-    expect(extensionSource).toContain("autoCloseApostrophe");
-    expect(extensionSource).toContain("pendingApostropheAutoCloseEdits");
-    expect(extensionSource).toContain("consumePendingApostropheAutoClose");
-    expect(extensionSource).toContain('ch: "\'"');
+    expect(extensionSource).not.toContain("autoCloseApostrophe");
+    expect(extensionSource).not.toContain("pendingApostropheAutoCloseEdits");
+    expect(extensionSource).not.toContain("consumePendingApostropheAutoClose");
+    expect(extensionSource).not.toContain('ch: "\'"');
     expect(extensionSource).toContain("%>");
     expect(
       manifest.contributes?.grammars?.some(
