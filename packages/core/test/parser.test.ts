@@ -399,7 +399,7 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     const css = docs.get("css")?.text ?? "";
     expect(css).toContain(".x { color: x");
     expect(css).toContain("width: x");
-    expect(css).toContain("__asp_lsp__{color: x");
+    expect(css).toContain("*{color: x");
     expect(css).not.toContain("themeColor");
     expect(css).not.toContain("Response.Write");
     expect(
@@ -420,7 +420,7 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
         (region) => region.kind === "style-attribute" && region.language === "css",
       ),
     ).toBe(true);
-    expect(docs.get("css")?.text).toContain("__asp_lsp__{color: red; display: block}");
+    expect(docs.get("css")?.text).toContain("*{color: red; display: block}");
   });
 
   it("reports missing ASP close delimiter", () => {
@@ -1857,6 +1857,79 @@ If value = Then
         ["missingThen", "missingIfCondition", "invalidIfCondition", "missingEndIf"].includes(
           String(diagnostic.code),
         ),
+      ),
+    ).toBe(false);
+  });
+
+  it("reports missing VBScript block terminators", () => {
+    const parsed = parseAspDocument(
+      "file:///site/missing-block-ends.asp",
+      `<%
+Sub MissingSub()
+Function MissingFunction()
+Class MissingClass
+Property Get MissingProperty()
+Select Case value
+With obj
+Do
+While ready
+For index = 0 To 1
+For Each item In items
+%>`,
+    );
+    const syntaxDiagnostics = analyzeVbscript(parsed, {
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+    expect(syntaxDiagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "missingEndSub",
+      "missingEndFunction",
+      "missingEndClass",
+      "missingEndProperty",
+      "missingEndSelect",
+      "missingEndWith",
+      "missingLoop",
+      "missingWend",
+      "missingNext",
+      "missingNext",
+    ]);
+    expect(syntaxDiagnostics.every((diagnostic) => diagnostic.severity === 1)).toBe(true);
+
+    const valid = parseAspDocument(
+      "file:///site/closed-blocks.asp",
+      `<%
+Sub ClosedSub()
+End Sub
+Function ClosedFunction()
+End Function
+Class ClosedClass
+  Property Get Name()
+  End Property
+End Class
+Select Case value
+End Select
+With obj
+End With
+Do
+Loop
+While ready
+Wend
+For index = 0 To 1
+Next
+For Each item In items
+Next
+%>`,
+    );
+    expect(
+      analyzeVbscript(valid, {
+        unusedDiagnostics: false,
+      }).diagnostics.some(
+        (diagnostic) =>
+          String(diagnostic.code ?? "")
+            .toLowerCase()
+            .includes("missingend") ||
+          diagnostic.code === "missingLoop" ||
+          diagnostic.code === "missingWend" ||
+          diagnostic.code === "missingNext",
       ),
     ).toBe(false);
   });

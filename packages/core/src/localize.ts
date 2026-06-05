@@ -63,6 +63,7 @@ export type LocalizeKey =
   | "vb.diagnostic.missingIfCondition"
   | "vb.diagnostic.invalidIfCondition"
   | "vb.diagnostic.missingEndIf"
+  | "vb.diagnostic.missingBlockTerminator"
   | "vb.diagnostic.invalidOnErrorStatement"
   | "vb.diagnostic.setScalar"
   | "vb.diagnostic.objectNeedsSet"
@@ -164,6 +165,7 @@ const en: Record<LocalizeKey, string> = {
   "vb.diagnostic.missingIfCondition": "VBScript If statements must include a condition.",
   "vb.diagnostic.invalidIfCondition": "VBScript If condition syntax is invalid.",
   "vb.diagnostic.missingEndIf": "VBScript multiline If block is missing End If.",
+  "vb.diagnostic.missingBlockTerminator": "VBScript {kind} block is missing {terminator}.",
   "vb.diagnostic.invalidOnErrorStatement":
     "VBScript On Error statements must be 'On Error Resume Next' or 'On Error GoTo 0'.",
   "vb.diagnostic.setScalar": "Set assigns an object reference, but '{name}' receives {type}.",
@@ -271,6 +273,7 @@ const ja: Record<LocalizeKey, string> = {
   "vb.diagnostic.missingIfCondition": "VBScript の If statement には条件式が必要です。",
   "vb.diagnostic.invalidIfCondition": "VBScript の If 条件式の構文が無効です。",
   "vb.diagnostic.missingEndIf": "VBScript の multiline If block に End If がありません。",
+  "vb.diagnostic.missingBlockTerminator": "VBScript の {kind} block に {terminator} がありません。",
   "vb.diagnostic.invalidOnErrorStatement":
     "VBScript の On Error statement は 'On Error Resume Next' または 'On Error GoTo 0' にしてください。",
   "vb.diagnostic.setScalar":

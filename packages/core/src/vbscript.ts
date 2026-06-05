@@ -51,6 +51,7 @@ import {
 } from "./vbscript-cst";
 import type {
   VbCallHierarchyData,
+  VbBlockEndSyntaxDiagnosticCode,
   VbCallSyntaxDiagnosticCode,
   VbDocumentation,
   VbDocumentationQuickAction,
@@ -1465,6 +1466,7 @@ type VbEndCompletionBlockKind =
 interface VbEndCompletionBlock {
   kind: VbEndCompletionBlockKind;
   procedureKind?: "sub" | "function" | "property";
+  openingToken: VbToken;
 }
 
 function vbscriptContextualSyntaxCompletions(
@@ -1759,7 +1761,7 @@ function openVbEndCompletionBlocksBefore(
     const first = lowerToken(tokens[index]);
     const second = lowerToken(tokens[index + 1]);
     if (first === "class" && tokens[index + 1]?.kind === "identifier") {
-      stack.push({ kind: "Class" });
+      stack.push({ kind: "Class", openingToken: tokens[index] });
       continue;
     }
     if (first === "end") {
@@ -1773,7 +1775,11 @@ function openVbEndCompletionBlocksBefore(
       (declarationStart === "sub" || declarationStart === "function") &&
       tokens[index + declarationOffset + 1]?.kind === "identifier"
     ) {
-      stack.push({ kind: "Procedure", procedureKind: declarationStart });
+      stack.push({
+        kind: "Procedure",
+        procedureKind: declarationStart,
+        openingToken: tokens[index + declarationOffset],
+      });
       continue;
     }
     if (declarationStart === "property") {
@@ -1782,7 +1788,11 @@ function openVbEndCompletionBlocksBefore(
         (accessor === "get" || accessor === "let" || accessor === "set") &&
         tokens[index + declarationOffset + 2]?.kind === "identifier"
       ) {
-        stack.push({ kind: "Property", procedureKind: "property" });
+        stack.push({
+          kind: "Property",
+          procedureKind: "property",
+          openingToken: tokens[index + declarationOffset],
+        });
       }
       continue;
     }
@@ -1799,27 +1809,27 @@ function openVbEndCompletionBlocksBefore(
       continue;
     }
     if (first === "if" && isCompletionMultilineIf(tokens, index)) {
-      stack.push({ kind: "If" });
+      stack.push({ kind: "If", openingToken: tokens[index] });
       continue;
     }
     if (first === "select" && second === "case") {
-      stack.push({ kind: "Select" });
+      stack.push({ kind: "Select", openingToken: tokens[index] });
       continue;
     }
     if (first === "with") {
-      stack.push({ kind: "With" });
+      stack.push({ kind: "With", openingToken: tokens[index] });
       continue;
     }
     if (first === "do") {
-      stack.push({ kind: "DoLoop" });
+      stack.push({ kind: "DoLoop", openingToken: tokens[index] });
       continue;
     }
     if (first === "while") {
-      stack.push({ kind: "While" });
+      stack.push({ kind: "While", openingToken: tokens[index] });
       continue;
     }
     if (first === "for") {
-      stack.push({ kind: second === "each" ? "ForEach" : "For" });
+      stack.push({ kind: second === "each" ? "ForEach" : "For", openingToken: tokens[index] });
     }
   }
   return stack;
@@ -2312,6 +2322,11 @@ function analyzeVbscriptTypeScript(
   diagnostics.push(
     ...measureVbDebugStep(context, "ifSyntax", () =>
       diagnoseIfSyntax(parsed, context.ifSyntaxDiagnostics ?? "basic", context.locale),
+    ),
+  );
+  diagnostics.push(
+    ...measureVbDebugStep(context, "blockEndSyntax", () =>
+      diagnoseBlockEndSyntax(parsed, context.locale),
     ),
   );
   diagnostics.push(
@@ -6386,6 +6401,86 @@ function diagnoseIfSyntax(
     );
   }
   return diagnostics;
+}
+
+function diagnoseBlockEndSyntax(
+  parsed: AspParsedDocument,
+  locale: AspLocale | undefined,
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const document of vbDocuments(parsed)) {
+    const openBlocks = openVbEndCompletionBlocksBefore(document, document.end).filter(
+      (block) => block.kind !== "If",
+    );
+    for (const block of openBlocks) {
+      const terminator = blockCloseCompletionLabel(block);
+      const token = block.openingToken;
+      diagnostics.push({
+        severity: DiagnosticSeverity.Error,
+        range: rangeFromOffsets(parsed.text, token.start, token.end),
+        message: createLocalizer(locale).t("vb.diagnostic.missingBlockTerminator", {
+          kind: blockDisplayName(block),
+          terminator,
+        }),
+        code: blockEndSyntaxDiagnosticCode(block),
+        source: "asp-lsp-vbscript-syntax",
+      });
+    }
+  }
+  return diagnostics;
+}
+
+function blockDisplayName(block: VbEndCompletionBlock): string {
+  switch (block.kind) {
+    case "Class":
+      return "Class";
+    case "Procedure":
+      return block.procedureKind === "function" ? "Function" : "Sub";
+    case "Property":
+      return "Property";
+    case "Select":
+      return "Select Case";
+    case "With":
+      return "With";
+    case "DoLoop":
+      return "Do";
+    case "While":
+      return "While";
+    case "For":
+      return "For";
+    case "ForEach":
+      return "For Each";
+    case "If":
+      return "If";
+  }
+  const exhaustive: never = block.kind;
+  return exhaustive;
+}
+
+function blockEndSyntaxDiagnosticCode(block: VbEndCompletionBlock): VbBlockEndSyntaxDiagnosticCode {
+  switch (block.kind) {
+    case "Class":
+      return "missingEndClass";
+    case "Procedure":
+      return block.procedureKind === "function" ? "missingEndFunction" : "missingEndSub";
+    case "Property":
+      return "missingEndProperty";
+    case "Select":
+      return "missingEndSelect";
+    case "With":
+      return "missingEndWith";
+    case "DoLoop":
+      return "missingLoop";
+    case "While":
+      return "missingWend";
+    case "For":
+    case "ForEach":
+      return "missingNext";
+    case "If":
+      return "missingEndIf";
+  }
+  const exhaustive: never = block.kind;
+  return exhaustive;
 }
 
 function diagnoseOnErrorSyntax(

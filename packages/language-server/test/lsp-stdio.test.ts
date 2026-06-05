@@ -273,6 +273,49 @@ Server.HTMLEe▮
       }
     });
 
+    it("returns CSS completions and colors inside HTML style attributes", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/css-style-attribute.asp";
+        const marked = markedDocument('<div style="colo▮; background: #ff0000"></div>');
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+        });
+        expect(completionLabels(completions)).toContain("color");
+
+        const colors = (await server.request("textDocument/documentColor", {
+          textDocument: { uri },
+        })) as Array<{ range: { start: { line: number; character: number } }; color: unknown }>;
+        expect(colors).toHaveLength(1);
+        expect(colors[0].range.start).toEqual({
+          line: 0,
+          character: marked.text.indexOf("#ff0000"),
+        });
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("resolves HTML and CSS completion items", async () => {
       const server = new RpcServer();
       try {

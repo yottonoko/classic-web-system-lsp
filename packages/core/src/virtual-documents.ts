@@ -92,8 +92,7 @@ function buildVirtualDocumentWithSortedRegions(
   const segments: SourceMapSegment[] = [];
   let textLength = 0;
   for (const region of regions) {
-    const prefix =
-      languageId === "css" ? (region.kind === "style-attribute" ? "__asp_lsp__{" : "\n") : "";
+    const prefix = languageId === "css" ? (region.kind === "style-attribute" ? "*{" : "\n") : "";
     const suffix = languageId === "css" && region.kind === "style-attribute" ? "}\n" : "\n";
     const start = textLength + prefix.length;
     const nestedRegions = canContainNestedRegions(region)

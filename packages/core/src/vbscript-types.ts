@@ -208,6 +208,18 @@ export type VbIfSyntaxDiagnosticCode =
   | "invalidIfCondition"
   | "missingEndIf";
 
+export type VbBlockEndSyntaxDiagnosticCode =
+  | "missingEndClass"
+  | "missingEndSub"
+  | "missingEndFunction"
+  | "missingEndProperty"
+  | "missingEndIf"
+  | "missingEndSelect"
+  | "missingEndWith"
+  | "missingLoop"
+  | "missingWend"
+  | "missingNext";
+
 export type VbOnErrorSyntaxDiagnosticCode = "invalidOnErrorStatement";
 
 export interface VbMember {
