@@ -9,6 +9,7 @@ import {
   type LanguageClientOptions,
   type ServerOptions,
 } from "vscode-languageclient/node";
+import { showAspGraphWebview, type AspGraphPayload } from "./include-graph-webview";
 import { getServerModulePath } from "./server-path";
 
 const maxCrashRestartCount = 4;
@@ -17,6 +18,7 @@ const reindexWorkspaceServerCommand = "aspLsp.server.reindexWorkspace";
 const clearCacheServerCommand = "aspLsp.server.clearCache";
 const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
+const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const htmlTagCompleteLookBehind = 2000;
 
 let client: LanguageClient | undefined;
@@ -51,6 +53,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       executeServerCommand(clearProcessCacheServerCommand),
     ),
     vscode.commands.registerCommand("aspLsp.openOutput", () => outputChannel?.show()),
+    vscode.commands.registerCommand("aspLsp.showCurrentFileGraph", async () =>
+      showGraph(context, "document"),
+    ),
+    vscode.commands.registerCommand("aspLsp.showWorkspaceGraph", async () =>
+      showGraph(context, "workspace"),
+    ),
     vscode.commands.registerCommand("aspLsp.showReferences", async (uri, position, locations) =>
       showReferences(uri, position, locations),
     ),
@@ -191,6 +199,38 @@ function booleanEditorOption(value: string | boolean | undefined, fallback: bool
 
 async function executeServerCommand(command: string): Promise<unknown> {
   return client?.sendRequest("workspace/executeCommand", { command });
+}
+
+async function showGraph(
+  context: vscode.ExtensionContext,
+  scope: "document" | "workspace",
+): Promise<void> {
+  if (!client) {
+    void vscode.window.showWarningMessage(extensionLocalizer()("graph.serverUnavailable"));
+    return;
+  }
+  const activeClient = client;
+  const activeDocument = vscode.window.activeTextEditor?.document;
+  const uri =
+    scope === "document" && activeDocument?.languageId === "classic-asp"
+      ? activeDocument.uri.toString()
+      : undefined;
+  if (scope === "document" && !uri) {
+    void vscode.window.showWarningMessage(extensionLocalizer()("graph.noActiveFile"));
+    return;
+  }
+  const title = extensionLocalizer()(
+    scope === "document" ? "graph.currentTitle" : "graph.workspaceTitle",
+  );
+  const payload = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title },
+    async () =>
+      activeClient.sendRequest<AspGraphPayload>("workspace/executeCommand", {
+        command: buildGraphServerCommand,
+        arguments: [{ scope, uri }],
+      }),
+  );
+  showAspGraphWebview(context, payload, title);
 }
 
 async function startClient(context: vscode.ExtensionContext): Promise<void> {
@@ -472,7 +512,11 @@ type ExtensionMessageKey =
   | "debug.iis.name"
   | "debug.iisExpress.name"
   | "launch.noWorkspace"
-  | "launch.created";
+  | "launch.created"
+  | "graph.serverUnavailable"
+  | "graph.noActiveFile"
+  | "graph.currentTitle"
+  | "graph.workspaceTitle";
 
 type ExtensionMessageArgs = Record<string, string>;
 
@@ -483,6 +527,10 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "debug.iisExpress.name": "Debug Classic ASP IIS Express URL",
     "launch.noWorkspace": "Open a workspace before creating launch.json.",
     "launch.created": "Classic ASP launch.json snippet created.",
+    "graph.serverUnavailable": "Start the Classic ASP Language Server before building a graph.",
+    "graph.noActiveFile": "Open a Classic ASP file before building the current file graph.",
+    "graph.currentTitle": "Classic ASP: Current File Graph",
+    "graph.workspaceTitle": "Classic ASP: Workspace Graph",
   },
   ja: {
     "status.tooltip": "Classic ASP Language Server",
@@ -490,6 +538,11 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "debug.iisExpress.name": "Classic ASP IIS Express URL をデバッグ",
     "launch.noWorkspace": "launch.json を作成する前に workspace を開いてください。",
     "launch.created": "Classic ASP の launch.json snippet を作成しました。",
+    "graph.serverUnavailable":
+      "graph を作成する前に Classic ASP Language Server を起動してください。",
+    "graph.noActiveFile": "current file graph を作成する前に Classic ASP file を開いてください。",
+    "graph.currentTitle": "Classic ASP: Current File Graph",
+    "graph.workspaceTitle": "Classic ASP: Workspace Graph",
   },
 };
 

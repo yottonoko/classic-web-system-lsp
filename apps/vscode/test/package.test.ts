@@ -45,6 +45,8 @@ describe("VS Code extension package", () => {
     expect(rootManifest.scripts?.[removedBuild]).toBeUndefined();
     expect(manifest.scripts?.[`build:${removedSuffix}`]).toBeUndefined();
     expect(manifest.scripts?.[`package:vsix:${removedSuffix}`]).toBeUndefined();
+    expect(manifest.scripts?.["build"]).toContain("scripts/build-webview.mjs");
+    expect(manifest.scripts?.["typecheck"]).toContain("tsconfig.webview.json");
     expect(manifest.scripts?.["package:vsix"]).not.toContain(removedBuild);
     expect(extensionSource).not.toContain(`package:vsix:${removedSuffix}`);
     expect(extensionSource).not.toContain(removedAnalysisEnv);
@@ -82,11 +84,18 @@ describe("VS Code extension package", () => {
     const rootManifest = JSON.parse(fs.readFileSync("../../package.json", "utf8")) as {
       license?: string;
     };
+    const nls = JSON.parse(fs.readFileSync("package.nls.json", "utf8")) as Record<string, string>;
+    const nlsJa = JSON.parse(fs.readFileSync("package.nls.ja.json", "utf8")) as Record<
+      string,
+      string
+    >;
     const commands = manifest.contributes?.commands?.map((command) => command.command) ?? [];
     const keybindings = manifest.contributes?.keybindings ?? [];
     const configuration = manifest.contributes?.configuration?.properties ?? {};
     expect(rootManifest.license).toBe("MIT OR Apache-2.0");
     expect(manifest.license).toBe("MIT OR Apache-2.0");
+    expect(manifest.dependencies?.["react-force-graph-2d"]).toBe("1.29.1");
+    expect(manifest.dependencies?.["react-force-graph-3d"]).toBe("1.29.1");
     expect(fs.existsSync("../../LICENSE-MIT")).toBe(true);
     expect(fs.existsSync("../../LICENSE-APACHE")).toBe(true);
     expect(manifest.dependencies?.["@asp-lsp/core"]).toBe("workspace:*");
@@ -272,6 +281,15 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("isDeactivating");
     expect(extensionSource).toContain("isManualRestarting");
     expect(extensionSource).toContain('registerCommand("aspLsp.showReferences"');
+    expect(commands).toContain("aspLsp.showCurrentFileGraph");
+    expect(commands).toContain("aspLsp.showWorkspaceGraph");
+    expect(nls["command.showCurrentFileGraph.title"]).toBeTruthy();
+    expect(nls["command.showWorkspaceGraph.title"]).toBeTruthy();
+    expect(nlsJa["command.showCurrentFileGraph.title"]).toBeTruthy();
+    expect(nlsJa["command.showWorkspaceGraph.title"]).toBeTruthy();
+    expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileGraph"');
+    expect(extensionSource).toContain('registerCommand("aspLsp.showWorkspaceGraph"');
+    expect(extensionSource).toContain('"aspLsp.server.buildGraph"');
     expect(extensionSource).toContain('"editor.action.showReferences"');
     expect(extensionSource).toContain('registerCommand("aspLsp.toggleLineComment"');
     expect(keybindings).toContainEqual(
@@ -910,6 +928,7 @@ new Intl.DateTimeFormat("en");
       expect(fs.existsSync(vsixPath)).toBe(true);
       const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
       expect(listing).toContain("extension/dist/extension.js");
+      expect(listing).toContain("extension/dist/webview/include-graph.js");
       expect(listing).toContain("extension/syntaxes/classic-asp-tag-injection.tmLanguage.json");
       expect(listing).toContain("extension/syntaxes/classic-asp.tmLanguage.json");
       expect(listing).toContain("extension/package.nls.json");

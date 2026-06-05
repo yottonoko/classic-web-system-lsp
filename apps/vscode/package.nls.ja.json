@@ -68,6 +68,8 @@
   "command.clearDiskCache.title": "Classic ASP: Disk analysis cache を消去",
   "command.clearProcessCache.title": "Classic ASP: Process analysis cache を消去",
   "command.openOutput.title": "Classic ASP: Output を開く",
+  "command.showCurrentFileGraph.title": "Classic ASP: Current file graph を表示",
+  "command.showWorkspaceGraph.title": "Classic ASP: Workspace graph を表示",
   "command.debugIisUrl.title": "Classic ASP: IIS URL をデバッグ",
   "command.debugIisExpressUrl.title": "Classic ASP: IIS Express URL をデバッグ",
   "command.createLaunchConfig.title": "Classic ASP: Browser launch config を作成",

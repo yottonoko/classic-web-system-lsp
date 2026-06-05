@@ -88,6 +88,7 @@ import {
   collectVbscriptSymbolsAsync,
   createLocalizer,
   extractAspIncludeRefs,
+  extractVbscriptSymbolIndex,
   formatAspDocument,
   formatAspRange,
   getVbscriptCompletions,
@@ -196,6 +197,7 @@ const reindexWorkspaceServerCommand = "aspLsp.server.reindexWorkspace";
 const clearCacheServerCommand = "aspLsp.server.clearCache";
 const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
+const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const languageServerVersion = "0.3.10";
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -623,6 +625,81 @@ interface VbReferenceCodeLensData {
   memberOf?: string;
   line: number;
   character: number;
+}
+
+type AspGraphScope = "document" | "workspace";
+
+type AspGraphNodeKind = "file" | "vbDeclaration" | "vbUnresolved";
+
+type AspGraphLinkKind = "include" | "declares" | "references" | "calls" | "unresolvedReference";
+
+interface AspGraphNode {
+  id: string;
+  kind: AspGraphNodeKind;
+  label: string;
+  uri?: string;
+  fileName?: string;
+  range?: Range;
+  exists?: boolean;
+  declarationKind?: string;
+  role?: string;
+  memberOf?: string;
+  bindingScope?: string;
+  group?: string;
+}
+
+interface AspGraphLink {
+  id: string;
+  source: string;
+  target: string;
+  kind: AspGraphLinkKind;
+  label: string;
+  role?: string;
+  count: number;
+  ranges: Array<{ uri: string; range: Range }>;
+  include?: {
+    path: string;
+    mode: AspInclude["mode"];
+    exists: boolean;
+    resolvedUri: string;
+    actualPath?: string;
+    pathCaseMatches?: boolean;
+  };
+}
+
+interface AspGraphPayload {
+  scope: AspGraphScope;
+  rootUri?: string;
+  nodes: AspGraphNode[];
+  links: AspGraphLink[];
+  stats: {
+    files: number;
+    declarations: number;
+    references: number;
+    calls: number;
+    unresolvedReferences: number;
+    includes: number;
+    missingIncludes: number;
+    nodes: number;
+    links: number;
+  };
+  truncated?: {
+    reason: string;
+  };
+}
+
+interface AspGraphDocument {
+  uri: string;
+  fileName: string;
+  text: string;
+}
+
+interface AspGraphBuildState {
+  nodes: Map<string, AspGraphNode>;
+  links: Map<string, AspGraphLink>;
+  declarations: Set<string>;
+  stats: AspGraphPayload["stats"];
+  truncated?: AspGraphPayload["truncated"];
 }
 
 interface FilePublicSignature {
@@ -1336,6 +1413,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
           clearCacheServerCommand,
           clearDiskCacheServerCommand,
           clearProcessCacheServerCommand,
+          buildGraphServerCommand,
         ],
       },
       codeLensProvider: { resolveProvider: true },
@@ -2125,6 +2203,9 @@ connection.onExecuteCommand(async (params) => {
   ) {
     await clearProcessCachesByCommand("command.clearProcessCache");
     return { ok: true, cleared: "process" };
+  }
+  if (params.command === buildGraphServerCommand) {
+    return buildAspGraphForCommand(params.arguments?.[0]);
   }
   return {
     ok: false,
@@ -12709,6 +12790,436 @@ function mergeWorkspaceEdits(
     }
   }
   return Object.keys(changes).length > 0 ? { changes } : undefined;
+}
+
+async function buildAspGraphForCommand(argument: unknown): Promise<AspGraphPayload> {
+  const scope = graphCommandScope(argument);
+  const uri = graphCommandUri(argument);
+  return scope === "workspace"
+    ? buildWorkspaceAspGraphAsync()
+    : buildDocumentAspGraphAsync(uri ?? documents.all()[0]?.uri);
+}
+
+function graphCommandScope(argument: unknown): AspGraphScope {
+  if (argument && typeof argument === "object" && "scope" in argument) {
+    const scope = (argument as { scope?: unknown }).scope;
+    return scope === "workspace" ? "workspace" : "document";
+  }
+  return "document";
+}
+
+function graphCommandUri(argument: unknown): string | undefined {
+  if (!argument || typeof argument !== "object" || !("uri" in argument)) {
+    return undefined;
+  }
+  const uri = (argument as { uri?: unknown }).uri;
+  return typeof uri === "string" ? uri : undefined;
+}
+
+async function buildDocumentAspGraphAsync(uri: string | undefined): Promise<AspGraphPayload> {
+  const cached = uri ? await cachedDocumentForGraphAsync(uri) : undefined;
+  if (!cached) {
+    return emptyAspGraphPayload("document", uri);
+  }
+  const settings = cachedSettings(cached.source.uri);
+  const documentsForGraph = await collectDocumentGraphDocumentsAsync(cached, settings);
+  const payload = await graphPayloadFromDocumentsAsync("document", documentsForGraph, settings, {
+    rootUri: cached.source.uri,
+  });
+  return payload;
+}
+
+async function buildWorkspaceAspGraphAsync(): Promise<AspGraphPayload> {
+  const settings = globalSettings;
+  await ensureWorkspaceIndexAsync(settings);
+  const opened = new Set<string>();
+  const documentsForGraph: AspGraphDocument[] = [];
+  for (const document of documents.all()) {
+    if (!isClassicAspGraphUri(document.uri)) {
+      continue;
+    }
+    const cached = await ensureFreshCachedDocumentAsync(document);
+    opened.add(cached.source.uri);
+    documentsForGraph.push(graphDocumentFromCached(cached));
+  }
+  for (const entry of workspaceIndex.values()) {
+    if (opened.has(entry.uri)) {
+      continue;
+    }
+    const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
+    documentsForGraph.push(graphDocumentFromCached(cached));
+    await yieldToEventLoop();
+  }
+  const payload = await graphPayloadFromDocumentsAsync("workspace", documentsForGraph, settings, {
+    truncated: workspaceIndexTruncated
+      ? {
+          reason: `workspaceIndex>${settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles}`,
+        }
+      : undefined,
+  });
+  return payload;
+}
+
+async function cachedDocumentForGraphAsync(uri: string): Promise<CachedDocument | undefined> {
+  const document = documents.get(uri);
+  if (document) {
+    return ensureFreshCachedDocumentAsync(document);
+  }
+  if (!isClassicAspGraphUri(uri)) {
+    return undefined;
+  }
+  const fileName = normalizeFileName(uriToFileName(uri));
+  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  if (!stat?.isFile()) {
+    return undefined;
+  }
+  return cachedFromIndexedAsync(
+    { uri, fileName, mtimeMs: stat.mtimeMs, size: stat.size },
+    cachedSettings(uri),
+  );
+}
+
+async function collectDocumentGraphDocumentsAsync(
+  root: CachedDocument,
+  settings: AspSettings,
+): Promise<AspGraphDocument[]> {
+  const limits = vbProjectContextLimits(settings);
+  const documentsForGraph: AspGraphDocument[] = [];
+  const visited = new Set<string>();
+  let textLength = root.parsed.text.length;
+
+  const visit = async (document: AspGraphDocument, depth: number): Promise<void> => {
+    if (depth > 20 || visited.has(document.uri)) {
+      return;
+    }
+    visited.add(document.uri);
+    documentsForGraph.push(document);
+    const includeRefs = extractAspIncludeRefs(document.text);
+    for (const include of includeRefs) {
+      const resolved = await resolveIncludePathDetailsAsync(
+        document.uri,
+        include.path,
+        include.mode,
+        settings,
+      );
+      const includeUri = pathToFileUri(resolved.fileName);
+      if (!resolved.exists || visited.has(includeUri) || visited.size >= limits.maxDocuments) {
+        continue;
+      }
+      const size = await fileSizeAsync(resolved.fileName);
+      if (size !== undefined && textLength + size > limits.maxTextLength) {
+        continue;
+      }
+      const entry = await includeDocumentLoader.readAsync(resolved.fileName, settings);
+      if (!entry) {
+        continue;
+      }
+      textLength += entry.source.size;
+      await visit(
+        {
+          uri: entry.uri,
+          fileName: entry.fileName,
+          text: entry.parsed.text,
+        },
+        depth + 1,
+      );
+    }
+  };
+
+  await visit(graphDocumentFromCached(root), 0);
+  return documentsForGraph;
+}
+
+async function graphPayloadFromDocumentsAsync(
+  scope: AspGraphScope,
+  documentsForGraph: AspGraphDocument[],
+  settings: AspSettings,
+  options: { rootUri?: string; truncated?: AspGraphPayload["truncated"] } = {},
+): Promise<AspGraphPayload> {
+  const state = createAspGraphBuildState(options.truncated);
+  for (const document of documentsForGraph) {
+    addFileGraphNode(state, document.uri, document.fileName, true);
+  }
+  for (const document of documentsForGraph) {
+    await addDocumentToAspGraphAsync(state, document, settings);
+    await yieldToEventLoop();
+  }
+  state.stats.nodes = state.nodes.size;
+  state.stats.links = state.links.size;
+  return {
+    scope,
+    rootUri: options.rootUri,
+    nodes: [...state.nodes.values()],
+    links: [...state.links.values()],
+    stats: state.stats,
+    truncated: state.truncated,
+  };
+}
+
+function createAspGraphBuildState(truncated?: AspGraphPayload["truncated"]): AspGraphBuildState {
+  return {
+    nodes: new Map(),
+    links: new Map(),
+    declarations: new Set(),
+    truncated,
+    stats: {
+      files: 0,
+      declarations: 0,
+      references: 0,
+      calls: 0,
+      unresolvedReferences: 0,
+      includes: 0,
+      missingIncludes: 0,
+      nodes: 0,
+      links: 0,
+    },
+  };
+}
+
+async function addDocumentToAspGraphAsync(
+  state: AspGraphBuildState,
+  document: AspGraphDocument,
+  settings: AspSettings,
+): Promise<void> {
+  const index = extractVbscriptSymbolIndex(document.uri, document.text, settings);
+  const fileNode = fileGraphNodeId(document.uri);
+  for (const include of index.includeRefs) {
+    const resolved = await resolveIncludePathDetailsAsync(
+      document.uri,
+      include.path,
+      include.mode,
+      settings,
+    );
+    const targetUri = pathToFileUri(resolved.fileName);
+    addFileGraphNode(state, targetUri, resolved.fileName, resolved.exists);
+    state.stats.includes += 1;
+    if (!resolved.exists) {
+      state.stats.missingIncludes += 1;
+    }
+    addAspGraphLink(state, {
+      source: fileNode,
+      target: fileGraphNodeId(targetUri),
+      kind: "include",
+      label: include.mode === "virtual" ? `virtual ${include.path}` : include.path,
+      ranges: [{ uri: document.uri, range: include.range }],
+      include: {
+        path: include.path,
+        mode: include.mode,
+        exists: resolved.exists,
+        resolvedUri: targetUri,
+        actualPath: resolved.actualPath,
+        pathCaseMatches: resolved.pathCaseMatches,
+      },
+    });
+  }
+  for (const declaration of index.declarations) {
+    const declarationNode = declarationGraphNodeId(declaration.id);
+    state.declarations.add(declaration.id);
+    state.stats.declarations += 1;
+    state.nodes.set(declarationNode, {
+      id: declarationNode,
+      kind: "vbDeclaration",
+      label: declaration.memberOf
+        ? `${declaration.memberOf}.${declaration.name}`
+        : declaration.name,
+      uri: document.uri,
+      range: declaration.nameRange,
+      declarationKind: declaration.kind,
+      memberOf: declaration.memberOf,
+      bindingScope: declaration.bindingScope,
+      group: declaration.kind,
+    });
+    addAspGraphLink(state, {
+      source: fileNode,
+      target: declarationNode,
+      kind: "declares",
+      label: "declares",
+      ranges: [{ uri: document.uri, range: declaration.nameRange }],
+    });
+  }
+  for (const reference of index.references) {
+    if (!reference.resolvedId || reference.role === "call" || reference.role === "new") {
+      continue;
+    }
+    state.stats.references += 1;
+    addAspGraphLink(state, {
+      source: scopeGraphNodeId(state, document.uri, reference.scopeId),
+      target: declarationGraphNodeId(reference.resolvedId),
+      kind: "references",
+      label: reference.role,
+      role: reference.role,
+      ranges: [{ uri: document.uri, range: reference.range }],
+    });
+  }
+  for (const callSite of index.callSites) {
+    state.stats.calls += 1;
+    const target = callSite.resolvedId
+      ? declarationGraphNodeId(callSite.resolvedId)
+      : unresolvedGraphNodeId(document.uri, callSite.deferredKey ?? callSite.name, callSite.name);
+    if (!callSite.resolvedId) {
+      addUnresolvedGraphNode(
+        state,
+        document.uri,
+        callSite.deferredKey ?? callSite.name,
+        callSite.name,
+        callSite.range,
+        callSite.callKind,
+      );
+    }
+    addAspGraphLink(state, {
+      source: scopeGraphNodeId(state, document.uri, callSite.scopeId),
+      target,
+      kind: "calls",
+      label: callSite.callKind,
+      role: callSite.callKind,
+      ranges: [{ uri: document.uri, range: callSite.range }],
+    });
+  }
+  for (const deferred of index.deferredExternalRefs) {
+    state.stats.unresolvedReferences += 1;
+    const target = unresolvedGraphNodeId(document.uri, deferred.key, deferred.name);
+    addUnresolvedGraphNode(
+      state,
+      document.uri,
+      deferred.key,
+      deferred.name,
+      deferred.range,
+      deferred.role,
+    );
+    addAspGraphLink(state, {
+      source: scopeGraphNodeId(state, document.uri, deferred.scopeId),
+      target,
+      kind: "unresolvedReference",
+      label: deferred.role,
+      role: deferred.role,
+      ranges: [{ uri: document.uri, range: deferred.range }],
+    });
+  }
+}
+
+function graphDocumentFromCached(cached: CachedDocument): AspGraphDocument {
+  return {
+    uri: cached.source.uri,
+    fileName: normalizeFileName(uriToFileName(cached.source.uri)),
+    text: cached.parsed.text,
+  };
+}
+
+function addFileGraphNode(
+  state: AspGraphBuildState,
+  uri: string,
+  fileName: string,
+  exists: boolean,
+): void {
+  const id = fileGraphNodeId(uri);
+  if (!state.nodes.has(id)) {
+    state.stats.files += 1;
+  }
+  state.nodes.set(id, {
+    id,
+    kind: "file",
+    label: path.basename(fileName),
+    uri,
+    fileName,
+    exists,
+    group: exists ? "file" : "missing",
+  });
+}
+
+function addUnresolvedGraphNode(
+  state: AspGraphBuildState,
+  uri: string,
+  key: string,
+  name: string,
+  range: Range,
+  role: string,
+): void {
+  const id = unresolvedGraphNodeId(uri, key, name);
+  if (state.nodes.has(id)) {
+    return;
+  }
+  state.nodes.set(id, {
+    id,
+    kind: "vbUnresolved",
+    label: name,
+    uri,
+    range,
+    role,
+    group: "unresolved",
+  });
+}
+
+function addAspGraphLink(
+  state: AspGraphBuildState,
+  input: Omit<AspGraphLink, "id" | "count">,
+): void {
+  const key = JSON.stringify({
+    source: input.source,
+    target: input.target,
+    kind: input.kind,
+    role: input.role,
+    includePath: input.include?.path,
+  });
+  const existing = state.links.get(key);
+  if (existing) {
+    existing.count += 1;
+    existing.ranges.push(...input.ranges);
+    return;
+  }
+  state.links.set(key, {
+    ...input,
+    id: `link:${state.links.size}`,
+    count: 1,
+  });
+}
+
+function fileGraphNodeId(uri: string): string {
+  return `file:${uri}`;
+}
+
+function declarationGraphNodeId(id: string): string {
+  return `vb:${id}`;
+}
+
+function unresolvedGraphNodeId(uri: string, key: string, name: string): string {
+  return `unresolved:${uri}:${key}:${name.toLowerCase()}`;
+}
+
+function scopeGraphNodeId(
+  state: AspGraphBuildState,
+  uri: string,
+  scopeId: string | undefined,
+): string {
+  return scopeId && state.declarations.has(scopeId)
+    ? declarationGraphNodeId(scopeId)
+    : fileGraphNodeId(uri);
+}
+
+function emptyAspGraphPayload(scope: AspGraphScope, rootUri?: string): AspGraphPayload {
+  return {
+    scope,
+    rootUri,
+    nodes: [],
+    links: [],
+    stats: {
+      files: 0,
+      declarations: 0,
+      references: 0,
+      calls: 0,
+      unresolvedReferences: 0,
+      includes: 0,
+      missingIncludes: 0,
+      nodes: 0,
+      links: 0,
+    },
+  };
+}
+
+function isClassicAspGraphUri(uri: string): boolean {
+  if (!uri.startsWith("file://")) {
+    return false;
+  }
+  return isAspWorkspaceFile(path.basename(uriToFileName(uri)));
 }
 
 async function codeLensesAsync(cached: CachedDocument): Promise<CodeLens[]> {

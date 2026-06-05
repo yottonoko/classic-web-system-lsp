@@ -68,6 +68,8 @@
   "command.clearDiskCache.title": "Classic ASP: Clear Disk Analysis Cache",
   "command.clearProcessCache.title": "Classic ASP: Clear Process Analysis Cache",
   "command.openOutput.title": "Classic ASP: Open Output",
+  "command.showCurrentFileGraph.title": "Classic ASP: Show Current File Graph",
+  "command.showWorkspaceGraph.title": "Classic ASP: Show Workspace Graph",
   "command.debugIisUrl.title": "Classic ASP: Debug IIS URL",
   "command.debugIisExpressUrl.title": "Classic ASP: Debug IIS Express URL",
   "command.createLaunchConfig.title": "Classic ASP: Create Browser Launch Config",

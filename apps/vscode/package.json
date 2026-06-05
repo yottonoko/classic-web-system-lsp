@@ -27,8 +27,8 @@
   "publisher": "yottonoko",
   "main": "./dist/extension.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/bundle-extension.mjs && node scripts/copy-server-runtime.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json && node scripts/bundle-extension.mjs && node scripts/build-webview.mjs && node scripts/copy-server-runtime.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
     "lint": "oxlint src test --deny-warnings --no-error-on-unmatched-pattern",
     "package:vsix": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --no-dependencies --follow-symlinks",
     "test": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
@@ -36,11 +36,19 @@
   "dependencies": {
     "@asp-lsp/core": "workspace:*",
     "@asp-lsp/language-server": "workspace:*",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-force-graph-2d": "1.29.1",
+    "react-force-graph-3d": "1.29.1",
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
+    "@types/react": "19.2.16",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
     "@vscode/vsce": "^3.9.1",
     "rolldown": "^1.0.1",
+    "vite": "8.0.16",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2"
   },
@@ -680,6 +688,14 @@
         "title": "%command.openOutput.title%"
       },
       {
+        "command": "aspLsp.showCurrentFileGraph",
+        "title": "%command.showCurrentFileGraph.title%"
+      },
+      {
+        "command": "aspLsp.showWorkspaceGraph",
+        "title": "%command.showWorkspaceGraph.title%"
+      },
+      {
         "command": "aspLsp.debugIisUrl",
         "title": "%command.debugIisUrl.title%"
       },
@@ -735,6 +751,8 @@
     ]
   },
   "activationEvents": [
+    "onCommand:aspLsp.showCurrentFileGraph",
+    "onCommand:aspLsp.showWorkspaceGraph",
     "onLanguage:classic-asp"
   ],
   "icon": "assets/icon.png",

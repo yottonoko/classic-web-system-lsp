@@ -93,6 +93,7 @@ describe(
         expect(initializeText).toContain('"aspLsp.server.clearCache"');
         expect(initializeText).toContain('"aspLsp.server.clearDiskCache"');
         expect(initializeText).toContain('"aspLsp.server.clearProcessCache"');
+        expect(initializeText).toContain('"aspLsp.server.buildGraph"');
         expect(initializeText).not.toContain('"aspLsp.reindexWorkspace"');
         expect(initializeText).not.toContain('"aspLsp.clearCache"');
         expect(initializeText).not.toContain('"aspLsp.clearDiskCache"');
@@ -5668,6 +5669,138 @@ End Function
         });
         expect(JSON.stringify(diagnostics)).toContain("broken.asp");
         expect(JSON.stringify(diagnostics)).toContain("asp-lsp-css");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("builds a graph for the active document include tree and VB index", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-document-graph-"));
+      const page = path.join(tempDir, "default.asp");
+      fs.writeFileSync(path.join(tempDir, "common.inc"), `<%\nConst IncludedValue = 1\n%>`, "utf8");
+      const uri = `file://${page}`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<!-- #include file="common.inc" -->
+<!-- #include file="missing.inc" -->
+<%
+Function Render(value)
+  Render = value
+End Function
+Sub Main()
+  Render "x"
+  MissingName
+End Sub
+%>`,
+          },
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri }],
+        })) as {
+          scope?: string;
+          rootUri?: string;
+          nodes?: Array<Record<string, unknown>>;
+          links?: Array<Record<string, unknown>>;
+          stats?: Record<string, unknown>;
+        };
+
+        expect(graph.scope).toBe("document");
+        expect(graph.rootUri).toBe(uri);
+        expect(
+          graph.nodes?.some((node) => node.kind === "file" && node.label === "default.asp"),
+        ).toBe(true);
+        expect(
+          graph.nodes?.some((node) => node.kind === "file" && node.label === "common.inc"),
+        ).toBe(true);
+        expect(graph.nodes?.some((node) => node.kind === "file" && node.exists === false)).toBe(
+          true,
+        );
+        expect(
+          graph.nodes?.some((node) => node.kind === "vbDeclaration" && node.label === "Render"),
+        ).toBe(true);
+        expect(
+          graph.nodes?.some((node) => node.kind === "vbUnresolved" && node.label === "MissingName"),
+        ).toBe(true);
+        expect(graph.links?.some((link) => link.kind === "include")).toBe(true);
+        expect(graph.links?.some((link) => link.kind === "declares")).toBe(true);
+        expect(graph.links?.some((link) => link.kind === "references")).toBe(true);
+        expect(graph.links?.some((link) => link.kind === "calls")).toBe(true);
+        expect(graph.links?.some((link) => link.kind === "unresolvedReference")).toBe(true);
+        expect(graph.stats?.missingIncludes).toBe(1);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("builds a workspace graph from unopened ASP files", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-graph-"));
+      fs.writeFileSync(
+        path.join(tempDir, "default.asp"),
+        `<!-- #include file="common.inc" -->\n<%\nSub PageEntry()\nEnd Sub\n%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "common.inc"),
+        `<%\nFunction SharedEntry()\nEnd Function\n%>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "workspace" }],
+        })) as {
+          scope?: string;
+          nodes?: Array<Record<string, unknown>>;
+          links?: Array<Record<string, unknown>>;
+          stats?: Record<string, unknown>;
+        };
+
+        expect(graph.scope).toBe("workspace");
+        expect(
+          graph.nodes?.some((node) => node.kind === "file" && node.label === "default.asp"),
+        ).toBe(true);
+        expect(
+          graph.nodes?.some((node) => node.kind === "file" && node.label === "common.inc"),
+        ).toBe(true);
+        expect(
+          graph.nodes?.some((node) => node.kind === "vbDeclaration" && node.label === "PageEntry"),
+        ).toBe(true);
+        expect(
+          graph.nodes?.some(
+            (node) => node.kind === "vbDeclaration" && node.label === "SharedEntry",
+          ),
+        ).toBe(true);
+        expect(graph.links?.some((link) => link.kind === "include")).toBe(true);
+        expect(typeof graph.stats?.files).toBe("number");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
