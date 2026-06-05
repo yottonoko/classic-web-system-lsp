@@ -7,6 +7,7 @@ import {
   collectVbscriptPublicSymbols,
   collectVbscriptSymbols,
   collectVbscriptSymbolsAsync,
+  extractAspIncludeRefs,
   formatAspDocument,
   formatAspRange,
   getClassicAspLineCommentEdits,
@@ -254,6 +255,28 @@ Response.Write name
         (region) => region.kind === "asp-block" && region.language === "vbscript",
       ),
     ).toBe(true);
+  });
+
+  it("extracts include references without full ASP parsing", () => {
+    const source = `<%@ LANGUAGE="VBScript" %>\r
+<!-- #include file="inc/共通.inc" -->\r
+<!-- #INCLUDE file="fallback.inc" virtual="/shared/virtual.inc" -->\r
+<script>const ignored = '<!-- #include file="script.inc" -->';</script>\r
+<style>/* <!-- #include file="style.inc" --> */</style>\r
+<div data-include="<!-- #include file='attribute.inc' -->"></div>\r
+<% Response.Write "<!-- #include file=""asp.inc"" -->" %>\r
+<!-- #include file='single.inc' -->\r
+<!-- #include file=plain.inc -->`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const includes = extractAspIncludeRefs(source);
+
+    expect(includes).toEqual(parsed.includes);
+    expect(includes.map((include) => `${include.mode}:${include.path}`)).toEqual([
+      "file:inc/共通.inc",
+      "virtual:/shared/virtual.inc",
+      "file:single.inc",
+      "file:plain.inc",
+    ]);
   });
 
   it("detects root script regions between ASP procedure blocks", () => {

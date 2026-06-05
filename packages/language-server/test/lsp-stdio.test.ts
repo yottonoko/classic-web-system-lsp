@@ -5878,6 +5878,71 @@ End Function
       }
     });
 
+    it("restores include refs from disk cache after server restart", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-refs-cache-"));
+      const cacheDir = path.join(tempDir, ".cache");
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "loop.inc");
+      fs.writeFileSync(owner, '<!-- #include file="loop.inc" -->', "utf8");
+      fs.writeFileSync(include, '<!-- #include file="default.asp" -->', "utf8");
+      const uri = `file://${owner}`;
+      const settings = {
+        aspLsp: {
+          debug: { output: "verbose" },
+          cache: { enabled: true, directory: cacheDir },
+          diagnostics: { debounceMs: 0 },
+        },
+      };
+      let server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(owner, "utf8"),
+          },
+        });
+        await waitForDiagnosticsContaining(server, "Include cycle detected");
+        await waitForLogContaining(server, "diskIncludeRefs.write");
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+        server.stop();
+
+        server = new RpcServer();
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(owner, "utf8"),
+          },
+        });
+        await waitForDiagnosticsContaining(server, "Include cycle detected");
+        await waitForLogContaining(server, "diskIncludeRefs.hit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns CSS and JavaScript source code actions", async () => {
       const source = `<style>.x { color: #ff0000; }</style>
 <script>
@@ -9854,6 +9919,56 @@ Response.Write Shared▮Thing()
 
         const diagnostics = await waitForDiagnosticsContaining(server, "Include cycle detected");
         expect(JSON.stringify(diagnostics.params)).toContain("Include cycle detected");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("refreshes dependent diagnostics after include directive changes", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-graph-"));
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "shared.inc");
+      fs.writeFileSync(owner, '<!-- #include file="shared.inc" -->', "utf8");
+      fs.writeFileSync(include, '<% Const SharedValue = "ok" %>', "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${owner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(owner, "utf8"),
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        server.takePendingNotifications("window/logMessage");
+
+        fs.writeFileSync(include, '<!-- #include file="default.asp" -->', "utf8");
+        server.notify("workspace/didChangeWatchedFiles", {
+          changes: [{ uri: `file://${include}`, type: 2 }],
+        });
+
+        await waitForDiagnosticsContaining(server, "Include cycle detected");
+        await waitForLogContaining(server, "invalidation.includeRefs");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

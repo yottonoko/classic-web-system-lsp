@@ -20,6 +20,18 @@ const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
 const benchmarkConcurrency = readPositiveInteger("ASP_LSP_BENCH_CONCURRENCY", 4);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
+const benchmarkOperationNames = new Set([
+  "parseAspDocument",
+  "extractAspIncludeRefs",
+  "buildVirtualDocuments",
+  "collectVbscriptSymbols",
+  "analyzeVbscript",
+  ...embeddedOperationNames,
+]);
+const benchmarkOperations = readOperationFilter(
+  "ASP_LSP_BENCH_OPERATIONS",
+  benchmarkOperationNames,
+);
 const analyzeStepTotals = new Map();
 const results = [];
 
@@ -36,6 +48,7 @@ const {
   analyzeVbscriptFromTextAsync,
   buildVirtualDocuments,
   collectVbscriptSymbolsFromTextAsync,
+  extractAspIncludeRefs,
   parseAspDocumentAsync,
 } = core;
 
@@ -45,6 +58,12 @@ const sourceStats = summarizeSources(sourceRefs);
 await runBenchmark("parseAspDocument", (run) =>
   measureAcrossSources(sourcesForRun("parseAspDocument", run), async (source) => {
     await parseAspDocumentAsync(source.uri, source.text);
+  }),
+);
+
+await runBenchmark("extractAspIncludeRefs", (run) =>
+  measureAcrossSources(sourcesForRun("extractAspIncludeRefs", run), async (source) => {
+    extractAspIncludeRefs(source.text);
   }),
 );
 
@@ -178,6 +197,9 @@ async function runBounded(items, callback) {
 }
 
 async function runBenchmark(name, fn) {
+  if (benchmarkOperations && !benchmarkOperations.has(name)) {
+    return;
+  }
   for (let index = 0; index < warmupIterations; index += 1) {
     await fn({ phase: "warmup", index });
   }
@@ -285,4 +307,20 @@ function readBoolean(name) {
     return true;
   }
   throw new Error(`${name} must be 1, 0, true, or false.`);
+}
+
+function readOperationFilter(name, knownOperations) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") {
+    return undefined;
+  }
+  const operations = raw
+    .split(",")
+    .map((operation) => operation.trim())
+    .filter((operation) => operation.length > 0);
+  const unknown = operations.filter((operation) => !knownOperations.has(operation));
+  if (unknown.length > 0) {
+    throw new Error(`${name} contains unknown operations: ${unknown.join(", ")}.`);
+  }
+  return operations.length > 0 ? new Set(operations) : undefined;
 }

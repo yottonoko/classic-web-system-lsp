@@ -2,13 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { decode, encode } from "cbor-x";
-import type { FileAnalysisSummary } from "@asp-lsp/core";
+import type { AspInclude, FileAnalysisSummary } from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver-types";
 
 const formatVersion = 3;
 const defaultTtlHours = 24 * 14;
 const defaultMaxSizeMb = 128;
-type DiskCacheEntryKind = "diagnostics" | "summary";
+type DiskCacheEntryKind = "diagnostics" | "summary" | "includeRefs";
 
 export interface DiskAnalysisCacheOptions {
   enabled: boolean;
@@ -40,6 +40,11 @@ export interface DiskSummaryCacheEntry extends DiskAnalysisCacheLookup {
   publicSignature?: unknown;
 }
 
+export interface DiskIncludeRefsCacheEntry extends DiskAnalysisCacheLookup {
+  includeRefs: AspInclude[];
+  fingerprint: string;
+}
+
 export interface DiskAnalysisBuilderState {
   publicSignature?: unknown;
   includeDeps?: unknown[];
@@ -63,7 +68,18 @@ interface PersistedDiskSummaryEntry extends DiskSummaryCacheEntry {
   writtenAt: number;
 }
 
-type PersistedDiskEntry = PersistedDiskAnalysisEntry | PersistedDiskSummaryEntry;
+interface PersistedDiskIncludeRefsEntry extends DiskIncludeRefsCacheEntry {
+  kind: "includeRefs";
+  formatVersion: number;
+  toolVersion: string;
+  namespace: string;
+  writtenAt: number;
+}
+
+type PersistedDiskEntry =
+  | PersistedDiskAnalysisEntry
+  | PersistedDiskSummaryEntry
+  | PersistedDiskIncludeRefsEntry;
 
 export class DiskAnalysisCache {
   private readonly root: string;
@@ -113,6 +129,19 @@ export class DiskAnalysisCache {
     return entry;
   }
 
+  async readIncludeRefs(
+    lookup: DiskAnalysisCacheLookup,
+  ): Promise<DiskIncludeRefsCacheEntry | undefined> {
+    if (!this.enabled) {
+      return undefined;
+    }
+    const entry = await this.readEntry(this.fileNameForLookup(lookup, "includeRefs"));
+    if (!entry || entry.kind !== "includeRefs" || !this.matches(entry, lookup, "includeRefs")) {
+      return undefined;
+    }
+    return entry;
+  }
+
   async write(entry: DiskAnalysisCacheEntry): Promise<void> {
     if (!this.enabled) {
       return;
@@ -143,6 +172,22 @@ export class DiskAnalysisCache {
       writtenAt: Date.now(),
     };
     await fs.promises.writeFile(this.fileNameForLookup(entry, "summary"), encode(payload));
+  }
+
+  async writeIncludeRefs(entry: DiskIncludeRefsCacheEntry): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
+    await fs.promises.mkdir(this.root, { recursive: true });
+    const payload: PersistedDiskIncludeRefsEntry = {
+      ...entry,
+      kind: "includeRefs",
+      formatVersion,
+      toolVersion: this.options.toolVersion,
+      namespace: this.options.namespace,
+      writtenAt: Date.now(),
+    };
+    await fs.promises.writeFile(this.fileNameForLookup(entry, "includeRefs"), encode(payload));
   }
 
   async clear(): Promise<void> {

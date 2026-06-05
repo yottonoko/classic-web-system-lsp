@@ -37,6 +37,54 @@ interface AttributeSpan {
   valueEnd: number;
 }
 
+export function extractAspIncludeRefs(text: string): AspInclude[] {
+  const includes: AspInclude[] = [];
+  const specialPattern = /<!--|<%|<\/?script\b|<\/?style\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = specialPattern.exec(text)) !== null) {
+    const start = match.index;
+    if (isInsideHtmlTagAt(text, start)) {
+      continue;
+    }
+    const token = match[0].toLowerCase();
+    if (token === "<%") {
+      const close = findAspClose(text, start + 2, text.length);
+      specialPattern.lastIndex = close === -1 ? text.length : close + 2;
+      continue;
+    }
+    if (token === "<!--") {
+      const commentEnd = text.indexOf("-->", start + 4);
+      const end = commentEnd === -1 ? text.length : commentEnd + 3;
+      const include = parseIncludeComment(text, start, end);
+      if (include) {
+        includes.push(include);
+      }
+      specialPattern.lastIndex = end;
+      continue;
+    }
+    const tag = readHtmlTag(text, start);
+    if (!tag) {
+      continue;
+    }
+    if ((tag.name === "script" || tag.name === "style") && !tag.closing && !tag.selfClosing) {
+      const close = findElementClose(text, tag.name, tag.end);
+      if (close) {
+        specialPattern.lastIndex = close.end;
+      }
+    }
+  }
+  return includes;
+}
+
+function isInsideHtmlTagAt(text: string, index: number): boolean {
+  const tagStart = text.lastIndexOf("<", index - 1);
+  if (tagStart === -1 || text.startsWith("<!--", tagStart) || text.startsWith("<%", tagStart)) {
+    return false;
+  }
+  const tagEnd = text.lastIndexOf(">", index - 1);
+  return tagStart > tagEnd;
+}
+
 export function scanHtmlAndAsp(
   text: string,
   diagnostics: AspParsedDocument["diagnostics"],

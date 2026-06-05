@@ -42,6 +42,58 @@ describe("DiskAnalysisCache", () => {
     }
   });
 
+  it("restores matching include refs and rejects stale metadata", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
+    try {
+      const cache = new DiskAnalysisCache({
+        enabled: true,
+        directory,
+        namespace: "test",
+        toolVersion: "1",
+      });
+      const lookup = {
+        source: { fileName: "/site/default.asp", mtimeMs: 1, size: 10 },
+        settingsKey: "include-refs",
+      };
+      await cache.writeIncludeRefs({
+        ...lookup,
+        fingerprint: "refs",
+        includeRefs: [
+          {
+            offset: 0,
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: 0, character: 36 },
+            },
+            directiveRange: {
+              start: { line: 0, character: 5 },
+              end: { line: 0, character: 13 },
+            },
+            mode: "file",
+            modeRange: {
+              start: { line: 0, character: 14 },
+              end: { line: 0, character: 18 },
+            },
+            path: "shared.inc",
+            pathRange: {
+              start: { line: 0, character: 19 },
+              end: { line: 0, character: 31 },
+            },
+          },
+        ],
+      });
+      expect((await cache.readIncludeRefs(lookup))?.includeRefs[0]?.path).toBe("shared.inc");
+      expect(
+        await cache.readIncludeRefs({
+          ...lookup,
+          source: { ...lookup.source, size: 11 },
+        }),
+      ).toBeUndefined();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("drops corrupt and expired entries during read and sweep", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
     try {
