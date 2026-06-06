@@ -5800,6 +5800,9 @@ Const GlobalConst = 1
 Class Customer
   Public Const Kind = "retail"
   Public Name
+  Public Function BuildLabel()
+    BuildLabel = Name
+  End Function
   Public Sub Save(item)
     Dim localValue
     Const localConst = 2
@@ -5993,6 +5996,13 @@ End Sub
         expectNode(visibleGraph, "Customer.Save", {
           declarationKind: "method",
           memberOf: "Customer",
+          procedureKind: "sub",
+          origin: "source",
+        });
+        expectNode(visibleGraph, "Customer.BuildLabel", {
+          declarationKind: "method",
+          memberOf: "Customer",
+          procedureKind: "function",
           origin: "source",
         });
         expect(hasNode(visibleGraph, (node) => node.label === "Customer.Name")).toBe(true);

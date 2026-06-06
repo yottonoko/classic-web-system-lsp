@@ -20,7 +20,7 @@ export type VbIndexedReferenceRole = "read" | "write" | "call" | "new" | "member
 
 export type VbIndexedCallKind = "procedure" | "function" | "constructor" | "member" | "unknown";
 
-type VbIndexedProcedureKind = "sub" | "function" | "property";
+export type VbIndexedProcedureKind = "sub" | "function" | "property";
 
 export interface VbSymbolIndexOptions {
   includeReferences?: boolean;
@@ -48,6 +48,7 @@ export interface VbIndexedDeclaration {
   memberOf?: string;
   visibility?: "public" | "private";
   bindingScope?: VbBindingScope;
+  procedureKind?: VbIndexedProcedureKind;
   parameters?: VbIndexedParameter[];
 }
 
@@ -573,6 +574,7 @@ function openProcedureScope(
     parentId: classScope?.declarationId,
     memberOf: classScope?.name,
     visibility,
+    procedureKind,
     parameters: parameters.map((parameter) => ({
       name: parameter.token.text,
       normalizedName: normalizeName(parameter.token.text),
@@ -646,6 +648,7 @@ function addDeclaration(
     memberOf?: string;
     visibility?: "public" | "private";
     bindingScope?: VbBindingScope;
+    procedureKind?: VbIndexedProcedureKind;
     parameters?: VbIndexedParameter[];
   },
 ): VbIndexedDeclaration {
@@ -661,6 +664,7 @@ function addDeclaration(
     memberOf: input.memberOf,
     visibility: input.visibility,
     bindingScope: input.bindingScope,
+    procedureKind: input.procedureKind,
     parameters: input.parameters,
   };
   state.declarations.push(declaration);

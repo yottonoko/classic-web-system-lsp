@@ -33,6 +33,7 @@ export interface AspGraphNode {
   role?: string;
   memberOf?: string;
   bindingScope?: string;
+  procedureKind?: string;
   group?: string;
   origin?: "source" | "builtin" | "configured";
   externalKind?: "function" | "constant" | "object" | "member" | "event";

@@ -656,6 +656,7 @@ interface AspGraphNode {
   role?: string;
   memberOf?: string;
   bindingScope?: string;
+  procedureKind?: string;
   group?: string;
   origin?: AspGraphNodeOrigin;
   externalKind?: AspGraphExternalKind;
@@ -8269,7 +8270,7 @@ function includeRefsSettingsKey(settings: AspSettings): string {
 
 function graphFileIndexSettingsKey(settings: AspSettings): string {
   return JSON.stringify({
-    scanner: "asp-graph-file-index-v3",
+    scanner: "asp-graph-file-index-v4",
     parse: parseSettingsIdentity(settings),
     legacyEncoding: settings.legacyEncoding,
     vbscript: vbProjectContextSettings(settings),
@@ -13274,6 +13275,7 @@ async function addDocumentStructureToAspGraphAsync(
       declarationKind: declaration.kind,
       memberOf: declaration.memberOf,
       bindingScope: declaration.bindingScope,
+      procedureKind: declaration.procedureKind,
       group: declaration.kind,
       origin: "source",
     });

@@ -1453,6 +1453,8 @@ Class User
   Public Property Get Title()
     Title = displayName
   End Property
+  Public Sub Save()
+  End Sub
 End Class
 
 Sub Log(message)
@@ -1478,7 +1480,13 @@ End Function
     expect(index.includeRefs.map((include) => include.path)).toEqual(["common.inc"]);
     expect(declaration("User", "class")).toBeDefined();
     expect(declaration("Render", "method")).toMatchObject({ memberOf: "User" });
+    expect(declaration("Render", "method")).toMatchObject({ procedureKind: "function" });
     expect(declaration("Title", "property")).toMatchObject({ memberOf: "User" });
+    expect(declaration("Title", "property")).toMatchObject({ procedureKind: "property" });
+    expect(declaration("Save", "method")).toMatchObject({
+      memberOf: "User",
+      procedureKind: "sub",
+    });
     expect(declaration("displayName", "field")).toMatchObject({ memberOf: "User" });
     expect(declaration("SiteName", "constant")).toMatchObject({ bindingScope: "global" });
     expect(declaration("GlobalValue", "variable")).toMatchObject({ bindingScope: "global" });

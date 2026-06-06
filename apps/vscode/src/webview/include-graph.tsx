@@ -24,6 +24,8 @@ type NodeColorCategory =
   | "sub"
   | "class"
   | "method"
+  | "methodFunction"
+  | "methodSub"
   | "property"
   | "member"
   | "globalVariable"
@@ -60,6 +62,8 @@ const nodeColors: Record<NodeColorCategory, string> = {
   sub: "#b39ddb",
   class: "#c3e88d",
   method: "#f78c6c",
+  methodFunction: "#f78c6c",
+  methodSub: "#ffb86c",
   property: "#ff9cac",
   member: "#ffb86c",
   globalVariable: "#ffcb6b",
@@ -374,6 +378,7 @@ function NodeDetails({ node }: { node: GraphNode }): React.ReactElement {
       <Detail label="References" value={String(node.referenceCount)} />
       <Detail label="Group" value={node.group} />
       <Detail label="Declaration" value={node.declarationKind} />
+      <Detail label="Procedure" value={node.procedureKind} />
       <Detail label="Member of" value={node.memberOf} />
       <Detail label="Scope" value={node.bindingScope} />
       <Detail label="Origin" value={node.origin} />
@@ -503,6 +508,12 @@ function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
     case "class":
       return "class";
     case "method":
+      if (node.procedureKind === "function") {
+        return "methodFunction";
+      }
+      if (node.procedureKind === "sub") {
+        return "methodSub";
+      }
       return "method";
     case "property":
       return "property";
