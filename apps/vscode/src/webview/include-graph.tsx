@@ -20,7 +20,8 @@ type ViewMode = "3d" | "2d";
 type NodeColorCategory =
   | "root"
   | "file"
-  | "callable"
+  | "function"
+  | "sub"
   | "class"
   | "method"
   | "property"
@@ -55,7 +56,8 @@ const graph = window.__ASP_LSP_GRAPH__;
 const nodeColors: Record<NodeColorCategory, string> = {
   root: "#ffffff",
   file: "#67d8ef",
-  callable: "#c792ea",
+  function: "#c792ea",
+  sub: "#b39ddb",
   class: "#c3e88d",
   method: "#f78c6c",
   property: "#ff9cac",
@@ -174,14 +176,14 @@ function App(): React.ReactElement {
               nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
               linkColor={(link) => (link as GraphLink).color}
-              linkWidth={0}
+              linkWidth={(link) => linkWidth3d(link as GraphLink)}
               linkLabel={(link) => linkLabel(link as GraphLink)}
               linkCurvature={0.25}
               linkDirectionalArrowLength={3.5}
               linkDirectionalArrowRelPos={1}
               linkDirectionalArrowColor={(link) => (link as GraphLink).color}
-              linkDirectionalParticles={1}
-              linkDirectionalParticleWidth={(link) => Math.min(4, (link as GraphLink).count)}
+              linkDirectionalParticles={(link) => linkParticleCount(link as GraphLink)}
+              linkDirectionalParticleWidth={3}
               onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
               onLinkClick={(link) => setSelection({ type: "link", item: link as GraphLink })}
             />
@@ -194,14 +196,14 @@ function App(): React.ReactElement {
               nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
               linkColor={(link) => (link as GraphLink).color}
-              linkWidth={(link) => linkWidth(link as GraphLink)}
+              linkWidth={(link) => linkWidth2d(link as GraphLink)}
               linkLabel={(link) => linkLabel(link as GraphLink)}
               linkCurvature={0.25}
               linkDirectionalArrowLength={3.5}
               linkDirectionalArrowRelPos={1}
               linkDirectionalArrowColor={(link) => (link as GraphLink).color}
-              linkDirectionalParticles={1}
-              linkDirectionalParticleWidth={(link) => linkParticleWidth2d(link as GraphLink)}
+              linkDirectionalParticles={(link) => linkParticleCount(link as GraphLink)}
+              linkDirectionalParticleWidth={4.5}
               nodeCanvasObject={(node, canvas, scale) =>
                 paintNode(node as GraphNode, canvas, scale)
               }
@@ -230,7 +232,10 @@ function LinkLegend(): React.ReactElement {
           <div key={kind} className="flex min-w-0 items-center gap-2">
             <span
               className="h-0 w-7 shrink-0 rounded-full border-t-2"
-              style={{ borderColor: linkColors[kind as AspGraphLink["kind"]] }}
+              style={{
+                borderColor: linkColors[kind as AspGraphLink["kind"]],
+                borderTopWidth: kind === "include" ? 4 : 2,
+              }}
               aria-hidden="true"
             />
             <span
@@ -463,12 +468,17 @@ function nodeValue(referenceCount: number): number {
   return clamp(1 + Math.sqrt(referenceCount) * 1.5, 1, 10);
 }
 
-function linkWidth(link: GraphLink): number {
-  return clamp(0.8 + Math.log2(link.count + 1) * 0.4, 0.8, 3);
+function linkWidth2d(link: GraphLink): number {
+  const width = clamp(0.8 + Math.log2(link.count + 1) * 0.4, 0.8, 3);
+  return link.kind === "include" ? Math.max(3.5, width + 1.5) : width;
 }
 
-function linkParticleWidth2d(link: GraphLink): number {
-  return clamp(3.25 + Math.log2(link.count + 1) * 1.1, 4.5, 9);
+function linkWidth3d(link: GraphLink): number {
+  return link.kind === "include" ? 1.5 : 0;
+}
+
+function linkParticleCount(link: GraphLink): number {
+  return clamp(Math.ceil(Math.sqrt(link.count)), 1, 8);
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -487,8 +497,9 @@ function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
   }
   switch (node.declarationKind) {
     case "function":
+      return "function";
     case "sub":
-      return "callable";
+      return "sub";
     case "class":
       return "class";
     case "method":
@@ -516,7 +527,7 @@ function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
 function externalNodeCategory(node: AspGraphNode): NodeColorCategory {
   switch (node.externalKind) {
     case "function":
-      return "callable";
+      return "function";
     case "constant":
       return "globalConstant";
     case "member":

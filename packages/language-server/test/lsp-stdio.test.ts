@@ -5699,7 +5699,9 @@ End Function
             text: `<!-- #include file="common.inc" -->
 <!-- #include file="missing.inc" -->
 <%
+Dim PageValue
 Function Render(value)
+  PageValue = value
   Render = value
 End Function
 Sub Main()
@@ -5751,6 +5753,17 @@ End Sub
         expect(graph.links?.some((link) => link.kind === "include")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "declares")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "references")).toBe(true);
+        const renderNode = graph.nodes?.find(
+          (node) => node.kind === "vbDeclaration" && node.label === "Render",
+        );
+        expect(
+          graph.links?.some(
+            (link) =>
+              link.kind === "references" &&
+              link.source === renderNode?.id &&
+              link.target === renderNode?.id,
+          ),
+        ).toBe(false);
         expect(graph.links?.some((link) => link.kind === "calls")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "unresolvedReference")).toBe(true);
         expect(graph.stats?.missingIncludes).toBe(1);

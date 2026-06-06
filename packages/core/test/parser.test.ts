@@ -1569,6 +1569,34 @@ End Sub
     });
   });
 
+  it("keeps function return assignments out of VBScript symbol index references", () => {
+    const source = `<%
+Class Customer
+End Class
+Function MakeCustomer()
+  Set MakeCustomer = New Customer
+End Function
+Function BuildValue(ByVal n)
+  Let BuildValue = n
+  BuildValue = BuildValue + n
+End Function
+result = MakeCustomer()
+result = BuildValue(2)
+%>`;
+    const index = extractVbscriptSymbolIndex("file:///site/return-assignment.asp", source);
+    const references = (name: string) => index.references.filter((item) => item.name === name);
+
+    expect(references("MakeCustomer").some((item) => item.role === "write")).toBe(false);
+    expect(references("BuildValue").some((item) => item.role === "write")).toBe(false);
+    expect(references("BuildValue").some((item) => item.role === "read")).toBe(true);
+    expect(index.callSites.some((item) => item.name === "MakeCustomer" && item.resolvedId)).toBe(
+      true,
+    );
+    expect(index.callSites.some((item) => item.name === "BuildValue" && item.resolvedId)).toBe(
+      true,
+    );
+  });
+
   it("keeps VBScript symbol index procedure scope after block End statements", () => {
     const source = `<%
 Function BuildValue(ByVal input)

@@ -20,6 +20,8 @@ export type VbIndexedReferenceRole = "read" | "write" | "call" | "new" | "member
 
 export type VbIndexedCallKind = "procedure" | "function" | "constructor" | "member" | "unknown";
 
+type VbIndexedProcedureKind = "sub" | "function" | "property";
+
 export interface VbSymbolIndexOptions {
   includeReferences?: boolean;
   includeParameters?: boolean;
@@ -115,6 +117,7 @@ interface ScopeFrame {
   kind: "global" | "class" | "procedure";
   start: number;
   end: number;
+  procedureKind?: VbIndexedProcedureKind;
   declarationId?: string;
   name?: string;
   normalizedName?: string;
@@ -546,7 +549,7 @@ function openClassScope(
 
 function openProcedureScope(
   state: SymbolIndexBuildState,
-  procedureKind: "sub" | "function" | "property",
+  procedureKind: VbIndexedProcedureKind,
   startToken: VbToken,
   nameToken: VbToken,
   parameterStartIndex: number,
@@ -582,6 +585,7 @@ function openProcedureScope(
     kind: "procedure",
     start: startToken.start,
     end: state.text.length,
+    procedureKind,
     declarationId: declaration.id,
     name: declaration.name,
     normalizedName: declaration.normalizedName,
@@ -690,6 +694,9 @@ function collectReferences(state: SymbolIndexBuildState): {
         role = "read";
         resolved = valueResolved;
       }
+    }
+    if (resolved && isFunctionReturnAssignmentReference(state, index, resolved)) {
+      continue;
     }
     const expectedKinds = expectedKindsForReference(role, resolved);
     const scope =
@@ -989,7 +996,52 @@ function isWriteTarget(tokens: VbToken[], index: number): boolean {
   if (next?.text !== "=") {
     return false;
   }
-  return isStatementFirstIdentifier(tokens, index) || lower(previous) === "set";
+  return (
+    isStatementFirstIdentifier(tokens, index) ||
+    lower(previous) === "set" ||
+    lower(previous) === "let"
+  );
+}
+
+function isFunctionReturnAssignmentReference(
+  state: SymbolIndexBuildState,
+  index: number,
+  resolved: VbIndexedDeclaration,
+): boolean {
+  const token = state.tokens[index];
+  const scope = activeScopeAt(state, token.start, "procedure");
+  if (
+    scope?.procedureKind !== "function" ||
+    !scope.declarationId ||
+    scope.declarationId !== resolved.id ||
+    scope.normalizedName !== normalizeName(token.text)
+  ) {
+    return false;
+  }
+  const targetIndex = assignmentTargetIndex(state.tokens, index);
+  return targetIndex === index && statementHasEqualsAfter(state.tokens, index);
+}
+
+function assignmentTargetIndex(tokens: VbToken[], index: number): number {
+  let cursor = index;
+  while (cursor > 0 && !isStatementBoundary(tokens[cursor - 1])) {
+    cursor -= 1;
+  }
+  const first = lower(tokens[cursor]);
+  return first === "set" || first === "let" ? nextNonBoundaryIndex(tokens, cursor + 1) : cursor;
+}
+
+function statementHasEqualsAfter(tokens: VbToken[], index: number): boolean {
+  for (
+    let cursor = index + 1;
+    cursor < tokens.length && !isStatementBoundary(tokens[cursor]);
+    cursor += 1
+  ) {
+    if (tokens[cursor].text === "=") {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isBareCallTarget(tokens: VbToken[], index: number): boolean {
