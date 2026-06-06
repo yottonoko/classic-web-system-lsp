@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@source "./include-graph.tsx";
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    font-family: var(--vscode-font-family), system-ui, sans-serif;
+    background: #11151c;
+    color: #d7dde8;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  button {
+    font: inherit;
+  }
+}

@@ -1,4 +1,5 @@
 import path from "node:path";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { build } from "vite";
 
@@ -10,7 +11,7 @@ await build({
   define: {
     "process.env.NODE_ENV": JSON.stringify("production"),
   },
-  plugins: [react()],
+  plugins: [tailwindcss(), react()],
   build: {
     emptyOutDir: true,
     outDir: path.join(extensionRoot, "dist", "webview"),

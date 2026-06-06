@@ -2,6 +2,7 @@ import React, { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ForceGraph2D from "react-force-graph-2d";
 import ForceGraph3D from "react-force-graph-3d";
+import tailwindStyles from "./include-graph.css?inline";
 import type { AspGraphLink, AspGraphNode, AspGraphPayload } from "../include-graph-webview";
 
 declare const acquireVsCodeApi: () => {
@@ -56,47 +57,61 @@ function App(): React.ReactElement {
   if (!graph) {
     return (
       <Shell>
-        <main className="empty-state">Graph data is unavailable.</main>
+        <main className="grid place-items-center text-[#9aa7b8]">Graph data is unavailable.</main>
       </Shell>
     );
   }
 
   return (
     <Shell>
-      <header className="toolbar">
-        <div className="title">
-          <span className="title-main">
+      <header className="grid grid-cols-[minmax(180px,1fr)_auto_auto] items-center gap-3 border-b border-[#2b3442] bg-[#171c25] px-3 py-2.5 max-[780px]:grid-cols-1 max-[780px]:items-stretch">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-semibold text-[#d7dde8]">
             {graph.scope === "workspace" ? "Workspace Graph" : "Current File Graph"}
           </span>
           {graph.truncated ? (
-            <span className="warning">truncated: {graph.truncated.reason}</span>
+            <span className="text-[11px] text-[#ffcb6b]">truncated: {graph.truncated.reason}</span>
           ) : null}
         </div>
-        <div className="stats">
+        <div className="flex flex-wrap gap-2">
           <Metric label="Files" value={graph.stats.files} />
           <Metric label="VB" value={graph.stats.declarations} />
           <Metric label="Links" value={graph.stats.links} />
           <Metric label="Missing" value={graph.stats.missingIncludes} />
         </div>
-        <div className="segmented" aria-label="Graph mode">
+        <div
+          className="inline-grid grid-cols-2 overflow-hidden rounded-md border border-[#394456]"
+          aria-label="Graph mode"
+        >
           <button
             type="button"
-            className={mode === "3d" ? "active" : ""}
+            className={
+              mode === "3d"
+                ? "h-7 min-w-[42px] cursor-pointer border-0 bg-[#89ddff] text-[#11151c]"
+                : "h-7 min-w-[42px] cursor-pointer border-0 bg-[#151a22] text-[#b5c0d0]"
+            }
             onClick={() => setMode("3d")}
           >
             3D
           </button>
           <button
             type="button"
-            className={mode === "2d" ? "active" : ""}
+            className={
+              mode === "2d"
+                ? "h-7 min-w-[42px] cursor-pointer border-0 bg-[#89ddff] text-[#11151c]"
+                : "h-7 min-w-[42px] cursor-pointer border-0 bg-[#151a22] text-[#b5c0d0]"
+            }
             onClick={() => setMode("2d")}
           >
             2D
           </button>
         </div>
       </header>
-      <main className="workspace">
-        <section ref={surfaceRef} className="graph-surface">
+      <main className="relative grid min-h-0 grid-cols-[minmax(0,1fr)_320px] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]">
+        <section
+          ref={surfaceRef}
+          className="relative min-h-0 min-w-0 overflow-hidden [&_canvas]:block"
+        >
           {mode === "3d" ? (
             <ForceGraph3D
               graphData={graphData}
@@ -129,7 +144,7 @@ function App(): React.ReactElement {
             />
           )}
         </section>
-        <Inspector selection={selection} />
+        <Inspector selection={selection} onClose={() => setSelection(undefined)} />
       </main>
     </Shell>
   );
@@ -173,27 +188,40 @@ function useElementSize<TElement extends HTMLElement>(): [
 function Shell({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
     <>
-      <style>{styles}</style>
-      <div className="app-shell">{children}</div>
+      <style>{tailwindStyles}</style>
+      <div className="grid h-full min-w-0 grid-rows-[auto_1fr] bg-[#11151c] text-[#d7dde8]">
+        {children}
+      </div>
     </>
   );
 }
 
 function Metric({ label, value }: { label: string; value: number }): React.ReactElement {
   return (
-    <span className="metric">
+    <span className="inline-flex items-baseline gap-[5px] rounded-md border border-[#303a49] px-[7px] py-[3px] text-[11px] text-[#9aa7b8]">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong className="text-xs text-[#f4f7fb]">{value}</strong>
     </span>
   );
 }
 
-function Inspector({ selection }: { selection: Selection }): React.ReactElement {
+function Inspector({
+  selection,
+  onClose,
+}: {
+  selection: Selection;
+  onClose(): void;
+}): React.ReactElement {
+  const className = selection
+    ? "min-w-0 overflow-auto border-l border-[#2b3442] bg-[#171c25] p-3.5 max-[780px]:absolute max-[780px]:inset-x-2.5 max-[780px]:top-2.5 max-[780px]:z-10 max-[780px]:block max-[780px]:max-h-[min(260px,calc(100%_-_20px))] max-[780px]:rounded-md max-[780px]:border max-[780px]:shadow-[0_14px_34px_rgb(0_0_0_/_34%)]"
+    : "min-w-0 overflow-auto border-l border-[#2b3442] bg-[#171c25] p-3.5 max-[780px]:hidden";
   if (!selection) {
     return (
-      <aside className="inspector">
-        <h2>Inspector</h2>
-        <p className="muted">Select a node or link.</p>
+      <aside className={className}>
+        <h2 className="mb-3 text-sm leading-[1.35] font-semibold [overflow-wrap:anywhere]">
+          Inspector
+        </h2>
+        <p className="m-0 text-xs text-[#8d98a8]">Select a node or link.</p>
       </aside>
     );
   }
@@ -202,8 +230,20 @@ function Inspector({ selection }: { selection: Selection }): React.ReactElement 
       ? { uri: selection.item.uri, range: selection.item.range }
       : selection.item.ranges[0];
   return (
-    <aside className="inspector">
-      <h2>{selection.type === "node" ? selection.item.label : selection.item.label}</h2>
+    <aside className={className}>
+      <div className="mb-3 flex min-w-0 items-start gap-2">
+        <h2 className="m-0 min-w-0 flex-1 text-sm leading-[1.35] font-semibold [overflow-wrap:anywhere]">
+          {selection.type === "node" ? selection.item.label : selection.item.label}
+        </h2>
+        <button
+          type="button"
+          className="hidden h-7 w-7 shrink-0 rounded-md border border-[#405068] bg-[#202735] text-sm leading-none text-[#d7dde8] max-[780px]:inline-grid max-[780px]:place-items-center"
+          aria-label="Close inspector"
+          onClick={onClose}
+        >
+          x
+        </button>
+      </div>
       {selection.type === "node" ? (
         <NodeDetails node={selection.item} />
       ) : (
@@ -211,7 +251,7 @@ function Inspector({ selection }: { selection: Selection }): React.ReactElement 
       )}
       <button
         type="button"
-        className="jump-button"
+        className="h-[30px] w-full cursor-pointer rounded-md border border-[#405068] bg-[#c3e88d] text-[#11151c] disabled:cursor-not-allowed disabled:bg-[#202735] disabled:text-[#717b8c]"
         disabled={!location?.uri}
         onClick={() => {
           if (location?.uri) {
@@ -227,7 +267,7 @@ function Inspector({ selection }: { selection: Selection }): React.ReactElement 
 
 function NodeDetails({ node }: { node: GraphNode }): React.ReactElement {
   return (
-    <dl>
+    <dl className="mb-3.5 grid grid-cols-[86px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
       <Detail label="Kind" value={node.kind} />
       <Detail label="Group" value={node.group} />
       <Detail label="Declaration" value={node.declarationKind} />
@@ -241,7 +281,7 @@ function NodeDetails({ node }: { node: GraphNode }): React.ReactElement {
 
 function LinkDetails({ link }: { link: GraphLink }): React.ReactElement {
   return (
-    <dl>
+    <dl className="mb-3.5 grid grid-cols-[86px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
       <Detail label="Kind" value={link.kind} />
       <Detail label="Role" value={link.role} />
       <Detail label="Count" value={String(link.count)} />
@@ -265,8 +305,13 @@ function Detail({
   }
   return (
     <>
-      <dt>{label}</dt>
-      <dd title={value}>{value}</dd>
+      <dt className="text-[11px] text-[#8d98a8]">{label}</dt>
+      <dd
+        className="m-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-[#d7dde8]"
+        title={value}
+      >
+        {value}
+      </dd>
     </>
   );
 }
@@ -312,206 +357,5 @@ function paintNode(node: GraphNode, canvas: CanvasRenderingContext2D, scale: num
     canvas.fillText(node.label, (node.x ?? 0) + radius + 2, (node.y ?? 0) + 3);
   }
 }
-
-const styles = `
-:root {
-  color-scheme: dark;
-  font-family: var(--vscode-font-family), system-ui, sans-serif;
-  background: #11151c;
-  color: #d7dde8;
-}
-
-html,
-body,
-#root {
-  height: 100%;
-  margin: 0;
-}
-
-button {
-  font: inherit;
-}
-
-.app-shell {
-  display: grid;
-  grid-template-rows: auto 1fr;
-  height: 100%;
-  min-width: 0;
-  background: #11151c;
-}
-
-.toolbar {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto auto;
-  gap: 12px;
-  align-items: center;
-  padding: 10px 12px;
-  border-bottom: 1px solid #2b3442;
-  background: #171c25;
-}
-
-.title {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  gap: 10px;
-}
-
-.title-main {
-  overflow: hidden;
-  font-size: 13px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.warning {
-  color: #ffcb6b;
-  font-size: 11px;
-}
-
-.stats {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.metric {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  padding: 3px 7px;
-  border: 1px solid #303a49;
-  border-radius: 6px;
-  color: #9aa7b8;
-  font-size: 11px;
-}
-
-.metric strong {
-  color: #f4f7fb;
-  font-size: 12px;
-}
-
-.segmented {
-  display: inline-grid;
-  grid-template-columns: 1fr 1fr;
-  border: 1px solid #394456;
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.segmented button {
-  min-width: 42px;
-  height: 28px;
-  border: 0;
-  color: #b5c0d0;
-  background: #151a22;
-  cursor: pointer;
-}
-
-.segmented button.active {
-  color: #11151c;
-  background: #89ddff;
-}
-
-.workspace {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.graph-surface {
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.graph-surface canvas {
-  display: block;
-}
-
-.inspector {
-  min-width: 0;
-  padding: 14px;
-  border-left: 1px solid #2b3442;
-  background: #171c25;
-  overflow: auto;
-}
-
-.inspector h2 {
-  margin: 0 0 12px;
-  overflow-wrap: anywhere;
-  font-size: 14px;
-  line-height: 1.35;
-}
-
-.muted {
-  margin: 0;
-  color: #8d98a8;
-  font-size: 12px;
-}
-
-dl {
-  display: grid;
-  grid-template-columns: 86px minmax(0, 1fr);
-  gap: 8px 10px;
-  margin: 0 0 14px;
-}
-
-dt {
-  color: #8d98a8;
-  font-size: 11px;
-}
-
-dd {
-  margin: 0;
-  overflow: hidden;
-  color: #d7dde8;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.jump-button {
-  width: 100%;
-  height: 30px;
-  border: 1px solid #405068;
-  border-radius: 6px;
-  color: #11151c;
-  background: #c3e88d;
-  cursor: pointer;
-}
-
-.jump-button:disabled {
-  color: #717b8c;
-  background: #202735;
-  cursor: not-allowed;
-}
-
-.empty-state {
-  display: grid;
-  place-items: center;
-  color: #9aa7b8;
-}
-
-@media (max-width: 780px) {
-  .toolbar {
-    grid-template-columns: 1fr;
-    align-items: stretch;
-  }
-
-  .workspace {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(360px, 1fr) 260px;
-  }
-
-  .inspector {
-    border-left: 0;
-    border-top: 1px solid #2b3442;
-  }
-}
-`;
 
 createRoot(document.getElementById("root") ?? document.body).render(<App />);
