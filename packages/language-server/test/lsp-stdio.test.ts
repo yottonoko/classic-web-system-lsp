@@ -5810,6 +5810,119 @@ End Sub
       }
     });
 
+    it("restores graph include refs and VB symbol indexes from disk cache after server restart", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-cache-"));
+      const cacheDir = path.join(tempDir, ".cache");
+      fs.writeFileSync(
+        path.join(tempDir, "default.asp"),
+        `<!-- #include file="common.inc" -->
+<%
+Function Render(value)
+  Render = value
+End Function
+Sub PageEntry()
+  Render "x"
+End Sub
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "common.inc"),
+        `<%
+Sub SharedEntry()
+End Sub
+%>`,
+        "utf8",
+      );
+      const settings = {
+        aspLsp: {
+          debug: { output: "verbose" },
+          cache: { enabled: true, directory: cacheDir },
+          diagnostics: { debounceMs: 0 },
+        },
+      };
+      const normalizeGraph = (graph: {
+        nodes?: Array<Record<string, unknown>>;
+        links?: Array<Record<string, unknown>>;
+        stats?: Record<string, unknown>;
+      }) => ({
+        nodes: (graph.nodes ?? [])
+          .map((node) => ({
+            id: node.id,
+            kind: node.kind,
+            label: node.label,
+            exists: node.exists,
+          }))
+          .sort((left, right) => String(left.id).localeCompare(String(right.id))),
+        links: (graph.links ?? [])
+          .map((link) => ({
+            source: link.source,
+            target: link.target,
+            kind: link.kind,
+            label: link.label,
+            role: link.role,
+            count: link.count,
+          }))
+          .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+        stats: graph.stats,
+      });
+      let server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        const firstGraph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "workspace" }],
+        })) as {
+          nodes?: Array<Record<string, unknown>>;
+          links?: Array<Record<string, unknown>>;
+          stats?: Record<string, unknown>;
+        };
+        expect(firstGraph.links?.some((link) => link.kind === "include")).toBe(true);
+        expect(
+          firstGraph.nodes?.some(
+            (node) => node.kind === "vbDeclaration" && node.label === "PageEntry",
+          ),
+        ).toBe(true);
+        await waitForLogContaining(server, "diskIncludeRefs.write");
+        await waitForLogContaining(server, "graphVbIndex.write");
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+        server.stop();
+
+        server = new RpcServer();
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        const secondGraph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "workspace" }],
+        })) as {
+          nodes?: Array<Record<string, unknown>>;
+          links?: Array<Record<string, unknown>>;
+          stats?: Record<string, unknown>;
+        };
+        expect(normalizeGraph(secondGraph)).toEqual(normalizeGraph(firstGraph));
+        await waitForLogContaining(server, "diskIncludeRefs.hit");
+        await waitForLogContaining(server, "graphVbIndex.hit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("restores workspace diagnostics from disk cache and clears it by command", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-cache-"));
       const cacheDir = path.join(tempDir, ".cache");

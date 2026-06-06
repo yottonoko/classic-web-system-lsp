@@ -11,6 +11,7 @@ import {
   type DiskIncludeRefsCacheEntry,
   type DiskAnalysisSourceMetadata,
   type DiskSummaryCacheEntry,
+  type DiskVbSymbolIndexCacheEntry,
 } from "./disk-analysis-cache";
 import type {
   JsDiagnosticsWorkerResponse,
@@ -140,6 +141,7 @@ import {
   type VbReference,
   type VbReferenceOptions,
   type VbSymbol,
+  type VbSymbolIndex,
   type VbSymbolKind,
   type VbToken,
   type VbType,
@@ -182,6 +184,8 @@ const jsDirectoriesCache = new Map<string, string[]>();
 const jsReadDirectoryCache = new Map<string, string[]>();
 const jsRealpathCache = new Map<string, string>();
 const jsFileStatCache = new Map<string, JsFileStat | undefined>();
+const graphFileIndexCache = new Map<string, GraphFileIndex>();
+const graphFileIndexInFlight = new Map<string, Promise<GraphFileIndex>>();
 const semanticTokenResults = new Map<string, { uri: string; data: number[] }>();
 const latestSemanticTokenResultByUri = new Map<string, string>();
 const pendingSemanticJavascriptTokenBuilds = new Map<string, Promise<void>>();
@@ -189,6 +193,7 @@ const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
 const defaultDiagnosticsDebounceMs = 250;
+const graphFileIndexCacheMaxEntries = 64;
 const reindexWorkspaceCommand = "aspLsp.reindexWorkspace";
 const clearCacheCommand = "aspLsp.clearCache";
 const clearDiskCacheCommand = "aspLsp.clearDiskCache";
@@ -692,6 +697,19 @@ interface AspGraphDocument {
   uri: string;
   fileName: string;
   text: string;
+  source: DiskAnalysisSourceMetadata;
+  diskBacked: boolean;
+}
+
+interface GraphFileIndex {
+  key: string;
+  uri: string;
+  fileName: string;
+  source: DiskAnalysisSourceMetadata;
+  includeRefs: AspInclude[];
+  vbSymbolIndex: VbSymbolIndex;
+  fingerprint: string;
+  lastUsed: number;
 }
 
 interface AspGraphBuildState {
@@ -7338,6 +7356,7 @@ async function refreshIncludeStateForAspChangesAsync(
     previousIncludeRefs.set(fileName, includeDocumentLoader.cachedIncludeRefs(fileName));
   }
   includeDocumentLoader.invalidateFiles(changes.map((change) => change.fileName));
+  invalidateGraphFileIndexFiles(changes.map((change) => change.fileName));
   for (const change of changes) {
     const fileName = normalizeFileName(change.fileName);
     const previous = includeDocumentLoader.cachedPublicSummary(fileName);
@@ -7566,6 +7585,9 @@ function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.i
   if (uris.size > 0) {
     vbProjectContextCache.clear();
     completionSessionCache.clearUris(uris, reason);
+    invalidateGraphFileIndexFiles(
+      [...uris].filter((uri) => uri.startsWith("file://")).map(uriToFileName),
+    );
     logInvalidation("analysis", `${reason}, files=${uris.size}`);
   }
   for (const uri of uris) {
@@ -8223,6 +8245,15 @@ function includeRefsSettingsKey(settings: AspSettings): string {
   });
 }
 
+function graphFileIndexSettingsKey(settings: AspSettings): string {
+  return JSON.stringify({
+    scanner: "asp-graph-file-index-v1",
+    parse: parseSettingsIdentity(settings),
+    legacyEncoding: settings.legacyEncoding,
+    vbscript: vbProjectContextSettings(settings),
+  });
+}
+
 function includeRefsCacheKey(
   fileName: string,
   source: DiskAnalysisSourceMetadata,
@@ -8269,6 +8300,28 @@ function includeRefsCacheEntryFromDisk(
   };
 }
 
+function graphFileIndexFromDisk(
+  fileName: string,
+  key: string,
+  entry: DiskVbSymbolIndexCacheEntry,
+  includeRefsEntry?: IncludeRefsCacheEntry,
+): GraphFileIndex {
+  const includeRefs =
+    includeRefsEntry && sameDiskAnalysisSource(includeRefsEntry.source, entry.source)
+      ? includeRefsEntry.includeRefs
+      : entry.index.includeRefs;
+  return {
+    key,
+    fileName,
+    uri: pathToFileUri(fileName),
+    source: entry.source,
+    includeRefs,
+    vbSymbolIndex: { ...entry.index, includeRefs },
+    fingerprint: entry.fingerprint,
+    lastUsed: Date.now(),
+  };
+}
+
 function includeRefsCacheEntryFromSummary(
   entry: IncludeSummaryCacheEntry,
   settings: AspSettings,
@@ -8303,6 +8356,18 @@ function diskIncludeRefsCacheEntry(
     source: entry.source,
     settingsKey: includeRefsSettingsKey(settings),
     includeRefs: entry.includeRefs,
+    fingerprint: entry.fingerprint,
+  };
+}
+
+function diskVbSymbolIndexCacheEntry(
+  entry: GraphFileIndex,
+  settings: AspSettings,
+): DiskVbSymbolIndexCacheEntry {
+  return {
+    source: entry.source,
+    settingsKey: graphFileIndexSettingsKey(settings),
+    index: entry.vbSymbolIndex,
     fingerprint: entry.fingerprint,
   };
 }
@@ -10812,6 +10877,7 @@ function clearIncludeCaches(): void {
   pathResolutionCache.clear();
   includeCycleCache.clear();
   includeDocumentLoader.clear();
+  clearGraphFileIndexCache();
   clearIncludeGraph();
   completionSessionCache.clear("includeResolution");
 }
@@ -12840,14 +12906,16 @@ async function buildWorkspaceAspGraphAsync(): Promise<AspGraphPayload> {
     }
     const cached = await ensureFreshCachedDocumentAsync(document);
     opened.add(cached.source.uri);
-    documentsForGraph.push(graphDocumentFromCached(cached));
+    documentsForGraph.push(
+      await graphDocumentFromCachedAsync(cached, cachedSettings(cached.source.uri)),
+    );
   }
   for (const entry of workspaceIndex.values()) {
     if (opened.has(entry.uri)) {
       continue;
     }
     const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
-    documentsForGraph.push(graphDocumentFromCached(cached));
+    documentsForGraph.push(await graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri)));
     await yieldToEventLoop();
   }
   const payload = await graphPayloadFromDocumentsAsync("workspace", documentsForGraph, settings, {
@@ -12894,7 +12962,7 @@ async function collectDocumentGraphDocumentsAsync(
     }
     visited.add(document.uri);
     documentsForGraph.push(document);
-    const includeRefs = extractAspIncludeRefs(document.text);
+    const includeRefs = (await graphFileIndexForDocumentAsync(document, settings)).includeRefs;
     for (const include of includeRefs) {
       const resolved = await resolveIncludePathDetailsAsync(
         document.uri,
@@ -12915,18 +12983,11 @@ async function collectDocumentGraphDocumentsAsync(
         continue;
       }
       textLength += entry.source.size;
-      await visit(
-        {
-          uri: entry.uri,
-          fileName: entry.fileName,
-          text: entry.parsed.text,
-        },
-        depth + 1,
-      );
+      await visit(graphDocumentFromIncludeEntry(entry), depth + 1);
     }
   };
 
-  await visit(graphDocumentFromCached(root), 0);
+  await visit(await graphDocumentFromCachedAsync(root, settings), 0);
   return documentsForGraph;
 }
 
@@ -12981,9 +13042,10 @@ async function addDocumentToAspGraphAsync(
   document: AspGraphDocument,
   settings: AspSettings,
 ): Promise<void> {
-  const index = extractVbscriptSymbolIndex(document.uri, document.text, settings);
+  const graphIndex = await graphFileIndexForDocumentAsync(document, settings);
+  const index = graphIndex.vbSymbolIndex;
   const fileNode = fileGraphNodeId(document.uri);
-  for (const include of index.includeRefs) {
+  for (const include of graphIndex.includeRefs) {
     const resolved = await resolveIncludePathDetailsAsync(
       document.uri,
       include.path,
@@ -13097,12 +13159,139 @@ async function addDocumentToAspGraphAsync(
   }
 }
 
-function graphDocumentFromCached(cached: CachedDocument): AspGraphDocument {
+async function graphDocumentFromCachedAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<AspGraphDocument> {
+  const fileName = normalizeFileName(uriToFileName(cached.source.uri));
+  const identity = await includeDocumentSourceIdentityAsync(fileName, settings);
   return {
     uri: cached.source.uri,
-    fileName: normalizeFileName(uriToFileName(cached.source.uri)),
-    text: cached.parsed.text,
+    fileName,
+    text: identity?.text ?? cached.parsed.text,
+    source: identity?.source ?? {
+      fileName,
+      mtimeMs: cached.source.version,
+      size: cached.parsed.text.length,
+    },
+    diskBacked: identity?.diskBacked ?? false,
   };
+}
+
+function graphDocumentFromIncludeEntry(entry: IncludeDocumentCacheEntry): AspGraphDocument {
+  return {
+    uri: entry.uri,
+    fileName: entry.fileName,
+    text: entry.parsed.text,
+    source: entry.source,
+    diskBacked: !documents.get(entry.uri),
+  };
+}
+
+async function graphFileIndexForDocumentAsync(
+  document: AspGraphDocument,
+  settings: AspSettings,
+): Promise<GraphFileIndex> {
+  const settingsKey = graphFileIndexSettingsKey(settings);
+  const key = JSON.stringify({
+    fileName: document.fileName,
+    source: document.source,
+    settings: settingsKey,
+    text: document.diskBacked ? undefined : textFingerprint(document.text),
+  });
+  const existing = graphFileIndexCache.get(document.fileName);
+  if (existing?.key === key) {
+    existing.lastUsed = Date.now();
+    return existing;
+  }
+  const pending = graphFileIndexInFlight.get(key);
+  if (pending) {
+    return pending;
+  }
+  const promise = (async () => {
+    const includeRefsEntry = await includeDocumentLoader
+      .readIncludeRefsAsync(document.fileName, settings, { allowRead: true })
+      .catch((error) => {
+        logDiskAnalysisCacheError("graphIncludeRefs.read", error);
+        return undefined;
+      });
+    if (document.diskBacked) {
+      const cachedIndex = await diskAnalysisCache
+        .readVbSymbolIndex({ source: document.source, settingsKey })
+        .catch((error) => {
+          logDiskAnalysisCacheError("graphVbIndex.read", error);
+          return undefined;
+        });
+      if (cachedIndex) {
+        const entry = graphFileIndexFromDisk(document.fileName, key, cachedIndex, includeRefsEntry);
+        graphFileIndexCache.set(document.fileName, entry);
+        pruneGraphFileIndexCache();
+        logDebugSummary(settings, `[asp-lsp] graphVbIndex.hit: ${document.uri}`);
+        return entry;
+      }
+      logDebugSummary(settings, `[asp-lsp] graphVbIndex.miss: ${document.uri}`);
+    }
+    const extracted = extractVbscriptSymbolIndex(document.uri, document.text, settings);
+    const includeRefs =
+      includeRefsEntry && sameDiskAnalysisSource(includeRefsEntry.source, document.source)
+        ? includeRefsEntry.includeRefs
+        : extracted.includeRefs;
+    const vbSymbolIndex: VbSymbolIndex = { ...extracted, includeRefs };
+    const entry: GraphFileIndex = {
+      key,
+      uri: document.uri,
+      fileName: document.fileName,
+      source: document.source,
+      includeRefs,
+      vbSymbolIndex,
+      fingerprint: graphFileIndexFingerprint(vbSymbolIndex),
+      lastUsed: Date.now(),
+    };
+    graphFileIndexCache.set(document.fileName, entry);
+    pruneGraphFileIndexCache();
+    if (document.diskBacked) {
+      await diskAnalysisCache.writeVbSymbolIndex(diskVbSymbolIndexCacheEntry(entry, settings));
+      logDebugSummary(settings, `[asp-lsp] graphVbIndex.write: ${document.uri}`);
+    }
+    return entry;
+  })();
+  graphFileIndexInFlight.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    if (graphFileIndexInFlight.get(key) === promise) {
+      graphFileIndexInFlight.delete(key);
+    }
+  }
+}
+
+function graphFileIndexFingerprint(index: VbSymbolIndex): string {
+  return textFingerprint(JSON.stringify(index));
+}
+
+function pruneGraphFileIndexCache(): void {
+  while (graphFileIndexCache.size > graphFileIndexCacheMaxEntries) {
+    const oldest = [...graphFileIndexCache.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0];
+    if (!oldest) {
+      return;
+    }
+    graphFileIndexCache.delete(oldest[0]);
+  }
+}
+
+function invalidateGraphFileIndexFiles(fileNames: Iterable<string>): void {
+  for (const fileName of fileNames) {
+    const normalized = normalizeFileName(fileName);
+    graphFileIndexCache.delete(normalized);
+  }
+  graphFileIndexInFlight.clear();
+}
+
+function clearGraphFileIndexCache(): void {
+  graphFileIndexCache.clear();
+  graphFileIndexInFlight.clear();
 }
 
 function addFileGraphNode(

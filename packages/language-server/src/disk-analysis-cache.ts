@@ -2,13 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { decode, encode } from "cbor-x";
-import type { AspInclude, FileAnalysisSummary } from "@asp-lsp/core";
+import type { AspInclude, FileAnalysisSummary, VbSymbolIndex } from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver-types";
 
 const formatVersion = 3;
 const defaultTtlHours = 24 * 14;
 const defaultMaxSizeMb = 128;
-type DiskCacheEntryKind = "diagnostics" | "summary" | "includeRefs";
+type DiskCacheEntryKind = "diagnostics" | "summary" | "includeRefs" | "vbSymbolIndex";
 
 export interface DiskAnalysisCacheOptions {
   enabled: boolean;
@@ -45,6 +45,11 @@ export interface DiskIncludeRefsCacheEntry extends DiskAnalysisCacheLookup {
   fingerprint: string;
 }
 
+export interface DiskVbSymbolIndexCacheEntry extends DiskAnalysisCacheLookup {
+  index: VbSymbolIndex;
+  fingerprint: string;
+}
+
 export interface DiskAnalysisBuilderState {
   publicSignature?: unknown;
   includeDeps?: unknown[];
@@ -76,10 +81,19 @@ interface PersistedDiskIncludeRefsEntry extends DiskIncludeRefsCacheEntry {
   writtenAt: number;
 }
 
+interface PersistedDiskVbSymbolIndexEntry extends DiskVbSymbolIndexCacheEntry {
+  kind: "vbSymbolIndex";
+  formatVersion: number;
+  toolVersion: string;
+  namespace: string;
+  writtenAt: number;
+}
+
 type PersistedDiskEntry =
   | PersistedDiskAnalysisEntry
   | PersistedDiskSummaryEntry
-  | PersistedDiskIncludeRefsEntry;
+  | PersistedDiskIncludeRefsEntry
+  | PersistedDiskVbSymbolIndexEntry;
 
 export class DiskAnalysisCache {
   private readonly root: string;
@@ -142,6 +156,19 @@ export class DiskAnalysisCache {
     return entry;
   }
 
+  async readVbSymbolIndex(
+    lookup: DiskAnalysisCacheLookup,
+  ): Promise<DiskVbSymbolIndexCacheEntry | undefined> {
+    if (!this.enabled) {
+      return undefined;
+    }
+    const entry = await this.readEntry(this.fileNameForLookup(lookup, "vbSymbolIndex"));
+    if (!entry || entry.kind !== "vbSymbolIndex" || !this.matches(entry, lookup, "vbSymbolIndex")) {
+      return undefined;
+    }
+    return entry;
+  }
+
   async write(entry: DiskAnalysisCacheEntry): Promise<void> {
     if (!this.enabled) {
       return;
@@ -188,6 +215,22 @@ export class DiskAnalysisCache {
       writtenAt: Date.now(),
     };
     await fs.promises.writeFile(this.fileNameForLookup(entry, "includeRefs"), encode(payload));
+  }
+
+  async writeVbSymbolIndex(entry: DiskVbSymbolIndexCacheEntry): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
+    await fs.promises.mkdir(this.root, { recursive: true });
+    const payload: PersistedDiskVbSymbolIndexEntry = {
+      ...entry,
+      kind: "vbSymbolIndex",
+      formatVersion,
+      toolVersion: this.options.toolVersion,
+      namespace: this.options.namespace,
+      writtenAt: Date.now(),
+    };
+    await fs.promises.writeFile(this.fileNameForLookup(entry, "vbSymbolIndex"), encode(payload));
   }
 
   async clear(): Promise<void> {

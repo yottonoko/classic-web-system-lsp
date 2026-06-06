@@ -94,6 +94,66 @@ describe("DiskAnalysisCache", () => {
     }
   });
 
+  it("restores matching VB symbol indexes and rejects stale metadata", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
+    try {
+      const cache = new DiskAnalysisCache({
+        enabled: true,
+        directory,
+        namespace: "test",
+        toolVersion: "1",
+      });
+      const lookup = {
+        source: { fileName: "/site/default.asp", mtimeMs: 1, size: 10 },
+        settingsKey: "graph-index",
+      };
+      await cache.writeVbSymbolIndex({
+        ...lookup,
+        fingerprint: "vb",
+        index: {
+          uri: "file:///site/default.asp",
+          declarations: [
+            {
+              id: "file:///site/default.asp#sub:main:0",
+              name: "Main",
+              normalizedName: "main",
+              kind: "sub",
+              range: {
+                start: { line: 0, character: 0 },
+                end: { line: 1, character: 7 },
+              },
+              nameRange: {
+                start: { line: 0, character: 4 },
+                end: { line: 0, character: 8 },
+              },
+            },
+          ],
+          references: [],
+          callSites: [],
+          deferredExternalRefs: [],
+          includeRefs: [],
+          stats: {
+            regions: 1,
+            tokens: 2,
+            declarations: 1,
+            references: 0,
+            callSites: 0,
+            deferredExternalRefs: 0,
+          },
+        },
+      });
+      expect((await cache.readVbSymbolIndex(lookup))?.index.declarations[0]?.name).toBe("Main");
+      expect(
+        await cache.readVbSymbolIndex({
+          ...lookup,
+          source: { ...lookup.source, size: 11 },
+        }),
+      ).toBeUndefined();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("drops corrupt and expired entries during read and sweep", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
     try {
