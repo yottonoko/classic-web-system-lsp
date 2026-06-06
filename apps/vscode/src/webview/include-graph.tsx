@@ -193,7 +193,7 @@ function App(): React.ReactElement {
               linkWidth={(link) => linkWidth(link as GraphLink)}
               linkLabel={(link) => linkLabel(link as GraphLink)}
               linkDirectionalParticles={1}
-              linkDirectionalParticleWidth={(link) => Math.min(4, (link as GraphLink).count)}
+              linkDirectionalParticleWidth={(link) => linkParticleWidth2d(link as GraphLink)}
               nodeCanvasObject={(node, canvas, scale) =>
                 paintNode(node as GraphNode, canvas, scale)
               }
@@ -459,6 +459,10 @@ function linkWidth(link: GraphLink): number {
   return clamp(0.8 + Math.log2(link.count + 1) * 0.4, 0.8, 3);
 }
 
+function linkParticleWidth2d(link: GraphLink): number {
+  return clamp(4 + Math.log2(link.count + 1) * 1.5, 5.5, 12);
+}
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
@@ -557,7 +561,7 @@ function paintNodePointerArea(
 }
 
 function nodeRadius(node: GraphNode): number {
-  return (node.kind === "file" ? 6 : 5.5) + node.value;
+  return (node.kind === "file" ? 4 : 3.5) + node.value;
 }
 
 createRoot(document.getElementById("root") ?? document.body).render(<App />);
