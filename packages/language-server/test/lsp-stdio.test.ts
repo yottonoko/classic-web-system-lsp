@@ -5800,7 +5800,9 @@ Sub Main(arg)
   localMain("value") = arg
   localMain = IncludedGlobal
   localMain = IncludedConst
+  localMain = Err.Number
   Call Shared()
+  Err.Clear
   Response.Write CStr(GlobalConst)
   Repository.Find arg
   MissingName
@@ -5895,6 +5897,10 @@ End Sub
 
         configure();
         const defaultGraph = await buildGraph();
+        expect(hasNode(defaultGraph, (node) => node.label === "GlobalValue")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "GlobalConst")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "IncludedGlobal")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "IncludedConst")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "Customer.Name")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "Customer.Save")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "Customer.Kind")).toBe(false);
@@ -5924,6 +5930,9 @@ End Sub
         expect(
           hasNode(defaultGraph, (node) => node.kind === "vbUnresolved" && node.label === "Shared"),
         ).toBe(false);
+        expect(
+          hasNode(defaultGraph, (node) => node.kind === "vbUnresolved" && node.label === "Err"),
+        ).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "MissingName")).toBe(true);
 
         configure(allGraphSettings);
@@ -5943,9 +5952,18 @@ End Sub
         expect(hasGraphLink(visibleGraph, "references", "Customer.Save", "localConst")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "IncludedGlobal")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "IncludedConst")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Main", "Err")).toBe(true);
         expect(hasGraphLink(visibleGraph, "calls", "Main", "Shared")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "calls", "Main", "ErrObject.Clear")).toBe(true);
         expect(hasGraphLink(visibleGraph, "calls", "Main", "Response.Write")).toBe(true);
         expect(hasGraphLink(visibleGraph, "calls", "Main", "CStr")).toBe(true);
+        expect(
+          hasNode(
+            visibleGraph,
+            (node) =>
+              node.label === "Err" && node.origin === "builtin" && node.externalKind === "object",
+          ),
+        ).toBe(true);
         expect(
           hasNode(
             visibleGraph,

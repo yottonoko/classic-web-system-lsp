@@ -8115,6 +8115,14 @@ export function getVbscriptGraphExternalSymbols(
   settings: AspSettings = {},
 ): VbGraphExternalSymbol[] {
   const symbols: VbGraphExternalSymbol[] = [
+    {
+      name: "Err",
+      origin: "builtin",
+      externalKind: "object",
+      category: "builtin",
+      declarationKind: "object",
+      typeName: "ErrObject",
+    },
     ...builtinFunctions.map(
       (item): VbGraphExternalSymbol => ({
         name: item.label,

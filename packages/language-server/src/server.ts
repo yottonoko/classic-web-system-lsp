@@ -8267,7 +8267,7 @@ function includeRefsSettingsKey(settings: AspSettings): string {
 
 function graphFileIndexSettingsKey(settings: AspSettings): string {
   return JSON.stringify({
-    scanner: "asp-graph-file-index-v1",
+    scanner: "asp-graph-file-index-v2",
     parse: parseSettingsIdentity(settings),
     legacyEncoding: settings.legacyEncoding,
     vbscript: vbProjectContextSettings(settings),
