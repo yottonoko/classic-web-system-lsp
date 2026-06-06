@@ -16,6 +16,8 @@ await build({
     emptyOutDir: true,
     outDir: path.join(extensionRoot, "dist", "webview"),
     cssCodeSplit: false,
+    minify: true,
+    sourcemap: false,
     lib: {
       entry: path.join(extensionRoot, "src", "webview", "include-graph.tsx"),
       name: "AspLspGraphWebview",

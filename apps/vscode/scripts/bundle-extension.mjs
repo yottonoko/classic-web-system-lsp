@@ -15,7 +15,8 @@ try {
   await bundle.write({
     file: path.join(extensionRoot, "dist", "extension.js"),
     format: "cjs",
-    sourcemap: true,
+    sourcemap: false,
+    minify: true,
     exports: "named",
   });
 } finally {

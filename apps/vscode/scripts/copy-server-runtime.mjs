@@ -76,7 +76,8 @@ async function bundleNodeEntry(input, output) {
     await bundle.write({
       file: output,
       format: "cjs",
-      sourcemap: true,
+      sourcemap: false,
+      minify: true,
       exports: "auto",
     });
   } finally {
