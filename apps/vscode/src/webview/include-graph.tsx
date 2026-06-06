@@ -1,9 +1,19 @@
-import React, { useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 import ForceGraph2D from "react-force-graph-2d";
 import ForceGraph3D from "react-force-graph-3d";
+import SpriteText from "three-spritetext";
 import tailwindStyles from "./include-graph.css?inline";
 import type { AspGraphLink, AspGraphNode, AspGraphPayload } from "../include-graph-webview";
+import type { ForceGraphMethods as ForceGraph2DMethods } from "react-force-graph-2d";
+import type { ForceGraphMethods as ForceGraph3DMethods } from "react-force-graph-3d";
 
 declare const acquireVsCodeApi: () => {
   postMessage(message: unknown): void;
@@ -55,6 +65,12 @@ type Selection = { type: "node"; item: GraphNode } | { type: "link"; item: Graph
 type HighlightState = {
   activeNodeIds: Set<string>;
   activeLinkIds: Set<string>;
+};
+
+type CenteredSpriteText = SpriteText & {
+  center: {
+    y: number;
+  };
 };
 
 const vscode = acquireVsCodeApi();
@@ -110,15 +126,114 @@ const linkMeanings: Record<AspGraphLink["kind"], { label: string; description: s
   },
 };
 
+const nodeCategoryLabels: Record<NodeColorCategory, string> = {
+  root: "Root",
+  file: "File",
+  function: "Function",
+  sub: "Sub",
+  class: "Class",
+  method: "Method",
+  methodFunction: "Function method",
+  methodSub: "Sub method",
+  property: "Property",
+  member: "Member",
+  globalVariable: "Global variable",
+  globalConstant: "Global constant",
+  localVariable: "Local variable",
+  localConstant: "Local constant",
+  parameter: "Parameter",
+  unresolved: "Unresolved",
+};
+
+const nodeCategoryOrder: NodeColorCategory[] = [
+  "root",
+  "file",
+  "class",
+  "function",
+  "sub",
+  "method",
+  "methodFunction",
+  "methodSub",
+  "property",
+  "member",
+  "globalVariable",
+  "globalConstant",
+  "localVariable",
+  "localConstant",
+  "parameter",
+  "unresolved",
+];
+
+const minimumNodeValue = 0.6;
+const maximumNodeValue = 16;
+const maximumNodeScaleReferenceCount = 144;
+const graphFitDurationMs = 400;
+
 function App(): React.ReactElement {
   const [mode, setMode] = useState<ViewMode>("3d");
   const [selection, setSelection] = useState<Selection>();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchMatchCase, setSearchMatchCase] = useState(false);
+  const graph2dRef = useRef<ForceGraph2DMethods<GraphNode, GraphLink> | undefined>(
+    undefined,
+  );
+  const graph3dRef = useRef<ForceGraph3DMethods<GraphNode, GraphLink> | undefined>(
+    undefined,
+  );
+  const hasAutoFit2dRef = useRef(false);
+  const hasAutoFit3dRef = useRef(false);
   const graphData = useMemo(() => graphDataFor(graph), []);
-  const highlight = useMemo(
+  const nodeLegendCategories = useMemo(
+    () => nodeLegendCategoriesFor(graphData.nodes),
+    [graphData.nodes],
+  );
+  const searchHighlight = useMemo(
+    () =>
+      highlightForSearch(searchQuery, searchMatchCase, graphData.nodes, graphData.links),
+    [searchQuery, searchMatchCase, graphData.nodes, graphData.links],
+  );
+  const selectionHighlight = useMemo(
     () => highlightForSelection(selection, graphData.links),
     [selection, graphData.links],
   );
+  const highlight = searchHighlight ?? selectionHighlight;
   const [surfaceRef, surfaceSize] = useElementSize<HTMLElement>();
+  const canFitGraph =
+    graphData.nodes.length > 0 && surfaceSize.width > 0 && surfaceSize.height > 0;
+  const fitGraphToCanvas = useCallback(
+    (nextMode: ViewMode) => {
+      if (!canFitGraph) {
+        return false;
+      }
+      const graphRef = nextMode === "3d" ? graph3dRef : graph2dRef;
+      if (!graphRef.current) {
+        return false;
+      }
+      graphRef.current.zoomToFit(graphFitDurationMs);
+      return true;
+    },
+    [canFitGraph],
+  );
+  const handleEngineStop = useCallback(
+    (nextMode: ViewMode) => {
+      const autoFitRef = nextMode === "3d" ? hasAutoFit3dRef : hasAutoFit2dRef;
+      if (autoFitRef.current) {
+        return;
+      }
+      autoFitRef.current = fitGraphToCanvas(nextMode);
+    },
+    [fitGraphToCanvas],
+  );
+
+  useEffect(() => {
+    const clearSelectionOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelection(undefined);
+      }
+    };
+    window.addEventListener("keydown", clearSelectionOnEscape);
+    return () => window.removeEventListener("keydown", clearSelectionOnEscape);
+  }, []);
 
   if (!graph) {
     return (
@@ -130,7 +245,7 @@ function App(): React.ReactElement {
 
   return (
     <Shell>
-      <header className="grid grid-cols-[minmax(180px,1fr)_auto_auto] items-center gap-3 border-b border-[#2b3442] bg-[#171c25] px-3 py-2.5 max-[780px]:grid-cols-1 max-[780px]:items-stretch">
+      <header className="grid grid-cols-[minmax(180px,1fr)_minmax(220px,320px)_auto_auto_auto] items-center gap-3 border-b border-[#2b3442] bg-[#171c25] px-3 py-2.5 max-[980px]:grid-cols-1 max-[980px]:items-stretch">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-semibold text-[#d7dde8]">
             {graph.scope === "workspace" ? "Workspace Graph" : "Current File Graph"}
@@ -138,6 +253,25 @@ function App(): React.ReactElement {
           {graph.truncated ? (
             <span className="text-[11px] text-[#ffcb6b]">truncated: {graph.truncated.reason}</span>
           ) : null}
+        </div>
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+          <input
+            type="search"
+            className="h-7 min-w-0 rounded-md border border-[#394456] bg-[#11151c] px-2.5 text-xs text-[#d7dde8] outline-none placeholder:text-[#717b8c] focus:border-[#89ddff]"
+            aria-label="Search nodes"
+            placeholder="Search nodes"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.currentTarget.value)}
+          />
+          <label className="inline-flex h-7 cursor-pointer select-none items-center gap-1.5 whitespace-nowrap rounded-md border border-[#394456] bg-[#151a22] px-2 text-[11px] text-[#b5c0d0]">
+            <input
+              type="checkbox"
+              className="m-0 h-3.5 w-3.5 accent-[#89ddff]"
+              checked={searchMatchCase}
+              onChange={(event) => setSearchMatchCase(event.currentTarget.checked)}
+            />
+            Match case
+          </label>
         </div>
         <div className="flex flex-wrap gap-2">
           <Metric label="Files" value={graph.stats.files} />
@@ -172,15 +306,26 @@ function App(): React.ReactElement {
             2D
           </button>
         </div>
+        <button
+          type="button"
+          className="h-7 min-w-[42px] cursor-pointer rounded-md border border-[#394456] bg-[#151a22] px-2.5 text-xs text-[#b5c0d0] disabled:cursor-not-allowed disabled:text-[#717b8c]"
+          aria-label="Fit graph to canvas"
+          title="Fit graph to canvas"
+          disabled={!canFitGraph}
+          onClick={() => fitGraphToCanvas(mode)}
+        >
+          Fit
+        </button>
       </header>
       <main className="relative grid min-h-0 grid-cols-[minmax(0,1fr)_320px] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]">
         <section
           ref={surfaceRef}
           className="relative min-h-0 min-w-0 overflow-hidden [&_canvas]:block"
         >
-          <LinkLegend />
+          <GraphLegend nodeCategories={nodeLegendCategories} />
           {mode === "3d" ? (
             <ForceGraph3D
+              ref={graph3dRef}
               graphData={graphData}
               width={surfaceSize.width}
               height={surfaceSize.height}
@@ -188,22 +333,28 @@ function App(): React.ReactElement {
               nodeColor={(node) => nodeColor(node as GraphNode, highlight)}
               nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
+              nodeThreeObjectExtend={true}
+              nodeThreeObject={(node: GraphNode) => nodeTextObject(node, highlight)}
               linkColor={(link) => linkColor(link as GraphLink, highlight)}
               linkWidth={(link) => linkWidth3d(link as GraphLink, highlight)}
               linkLabel={(link) => linkLabel(link as GraphLink)}
               linkCurvature={0.25}
-              linkDirectionalArrowLength={3.5}
+              linkDirectionalArrowLength={(link) => linkArrowLength(link as GraphLink)}
               linkDirectionalArrowRelPos={1}
               linkDirectionalArrowColor={(link) => linkColor(link as GraphLink, highlight)}
               linkDirectionalParticles={(link) =>
                 linkParticleCount(link as GraphLink, highlight)
               }
-              linkDirectionalParticleWidth={2}
+              linkDirectionalParticleWidth={1.5}
               onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
               onLinkClick={(link) => setSelection({ type: "link", item: link as GraphLink })}
+              onBackgroundClick={() => setSelection(undefined)}
+              cooldownTicks={100}
+              onEngineStop={() => handleEngineStop("3d")}
             />
           ) : (
             <ForceGraph2D
+              ref={graph2dRef}
               graphData={graphData}
               width={surfaceSize.width}
               height={surfaceSize.height}
@@ -214,7 +365,7 @@ function App(): React.ReactElement {
               linkWidth={(link) => linkWidth2d(link as GraphLink, highlight)}
               linkLabel={(link) => linkLabel(link as GraphLink)}
               linkCurvature={0.25}
-              linkDirectionalArrowLength={3.5}
+              linkDirectionalArrowLength={(link) => linkArrowLength(link as GraphLink)}
               linkDirectionalArrowRelPos={1}
               linkDirectionalArrowColor={(link) => linkColor(link as GraphLink, highlight)}
               linkDirectionalParticles={(link) =>
@@ -229,6 +380,9 @@ function App(): React.ReactElement {
               }
               onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
               onLinkClick={(link) => setSelection({ type: "link", item: link as GraphLink })}
+              onBackgroundClick={() => setSelection(undefined)}
+              cooldownTicks={100}
+              onEngineStop={() => handleEngineStop("2d")}
             />
           )}
         </section>
@@ -238,32 +392,61 @@ function App(): React.ReactElement {
   );
 }
 
-function LinkLegend(): React.ReactElement {
+function GraphLegend({
+  nodeCategories,
+}: {
+  nodeCategories: NodeColorCategory[];
+}): React.ReactElement {
   return (
-    <div className="pointer-events-none absolute top-3 left-3 z-10 max-w-[min(460px,calc(100%_-_24px))] rounded-md border border-[#303a49] bg-[#171c25]/90 px-3 py-2 shadow-[0_10px_26px_rgb(0_0_0_/_28%)] backdrop-blur">
-      <div className="mb-1.5 text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
-        Link colors
+    <div className="pointer-events-none absolute top-3 left-3 z-10 grid max-w-[min(520px,calc(100%_-_24px))] gap-2.5 rounded-md border border-[#303a49] bg-[#171c25]/90 px-3 py-2 shadow-[0_10px_26px_rgb(0_0_0_/_28%)] backdrop-blur">
+      <div>
+        <LegendHeading>Link colors</LegendHeading>
+        <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-x-3 gap-y-1.5 max-[560px]:grid-cols-1">
+          {Object.entries(linkMeanings).map(([kind, meaning]) => (
+            <div key={kind} className="flex min-w-0 items-center gap-2">
+              <span
+                className="h-0 w-7 shrink-0 rounded-full border-t-2"
+                style={{
+                  borderColor: linkColors[kind as AspGraphLink["kind"]],
+                  borderTopWidth: kind === "include" ? 4 : 2,
+                }}
+                aria-hidden="true"
+              />
+              <span
+                className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#d7dde8]"
+                title={meaning.description}
+              >
+                {meaning.label}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
-      <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-x-3 gap-y-1.5 max-[560px]:grid-cols-1">
-        {Object.entries(linkMeanings).map(([kind, meaning]) => (
-          <div key={kind} className="flex min-w-0 items-center gap-2">
-            <span
-              className="h-0 w-7 shrink-0 rounded-full border-t-2"
-              style={{
-                borderColor: linkColors[kind as AspGraphLink["kind"]],
-                borderTopWidth: kind === "include" ? 4 : 2,
-              }}
-              aria-hidden="true"
-            />
-            <span
-              className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#d7dde8]"
-              title={meaning.description}
-            >
-              {meaning.label}
-            </span>
-          </div>
-        ))}
+      <div>
+        <LegendHeading>Node colors</LegendHeading>
+        <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-x-3 gap-y-1.5 max-[560px]:grid-cols-1">
+          {nodeCategories.map((category) => (
+            <div key={category} className="flex min-w-0 items-center gap-2">
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: nodeColors[category] }}
+                aria-hidden="true"
+              />
+              <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#d7dde8]">
+                {nodeCategoryLabels[category]}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
+    </div>
+  );
+}
+
+function LegendHeading({ children }: { children: React.ReactNode }): React.ReactElement {
+  return (
+    <div className="mb-1.5 text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
+      {children}
     </div>
   );
 }
@@ -273,7 +456,7 @@ function useElementSize<TElement extends HTMLElement>(): [
   { width: number; height: number },
 ] {
   const ref = useRef<TElement>(null);
-  const [size, setSize] = useState({ width: 1, height: 1 });
+  const [size, setSize] = useState({ width: 0, height: 0 });
 
   useLayoutEffect(() => {
     const element = ref.current;
@@ -482,6 +665,51 @@ function graphReferenceCounts(links: AspGraphLink[]): Map<string, number> {
   return counts;
 }
 
+function nodeLegendCategoriesFor(nodes: GraphNode[]): NodeColorCategory[] {
+  const categories = new Set(nodes.map((node) => node.category));
+  return nodeCategoryOrder.filter((category) => categories.has(category));
+}
+
+function highlightForSearch(
+  query: string,
+  matchCase: boolean,
+  nodes: GraphNode[],
+  links: GraphLink[],
+): HighlightState | undefined {
+  const normalizedQuery = normalizeSearchText(query.trim(), matchCase);
+  if (!normalizedQuery) {
+    return undefined;
+  }
+  const activeNodeIds = new Set(
+    nodes
+      .filter((node) => searchableNodeText(node, matchCase).includes(normalizedQuery))
+      .map((node) => node.id),
+  );
+  const activeLinkIds = new Set(
+    links
+      .filter(
+        (link) =>
+          activeNodeIds.has(nodeIdForEndpoint(link.source)) &&
+          activeNodeIds.has(nodeIdForEndpoint(link.target)),
+      )
+      .map((link) => link.id),
+  );
+  return { activeNodeIds, activeLinkIds };
+}
+
+function searchableNodeText(node: GraphNode, matchCase: boolean): string {
+  return normalizeSearchText(
+    [node.label, node.fileName, node.kind, node.declarationKind]
+      .filter((value): value is string => Boolean(value))
+      .join("\n"),
+    matchCase,
+  );
+}
+
+function normalizeSearchText(value: string, matchCase: boolean): string {
+  return matchCase ? value : value.toLowerCase();
+}
+
 function highlightForSelection(
   selection: Selection,
   links: GraphLink[],
@@ -523,8 +751,44 @@ function linkColor(link: GraphLink, highlight: HighlightState | undefined): stri
   return isActiveLink(link, highlight) ? link.color : "#29313d";
 }
 
+function nodeTextObject(node: GraphNode, highlight: HighlightState | undefined): SpriteText {
+  const offset = nodeTextOffset3d(node);
+  const textHeight = nodeTextHeight3d(node);
+  const sprite = new SpriteText(
+    node.label,
+    textHeight,
+    nodeColor(node, highlight),
+  );
+  sprite.fontFace = "system-ui, sans-serif";
+  sprite.fontWeight = node.kind === "file" ? "600" : "500";
+  sprite.backgroundColor = false;
+  sprite.padding = 0.5;
+  (sprite as CenteredSpriteText).center.y = nodeTextAnchor3d(offset, textHeight);
+  return sprite;
+}
+
+function nodeTextHeight3d(node: GraphNode): number {
+  return node.kind === "file" ? 6 : 5;
+}
+
+function nodeTextOffset3d(node: GraphNode): number {
+  return nodeRadius(node) + (node.kind === "file" ? 5 : 3.5);
+}
+
+function nodeTextAnchor3d(offset: number, textHeight: number): number {
+  return -offset / textHeight;
+}
+
 function nodeValue(referenceCount: number): number {
-  return clamp(1 + Math.sqrt(referenceCount) * 1.5, 1, 10);
+  const scale = Math.sqrt(
+    clamp(referenceCount, 0, maximumNodeScaleReferenceCount) /
+      maximumNodeScaleReferenceCount,
+  );
+  return minimumNodeValue + scale * (maximumNodeValue - minimumNodeValue);
+}
+
+function linkArrowLength(link: GraphLink): number {
+  return link.kind === "include" ? 6 : 3.5;
 }
 
 function linkWidth2d(link: GraphLink, highlight: HighlightState | undefined): number {
@@ -640,9 +904,14 @@ function paintNode(
   canvas.fillStyle = active ? node.color : "#2d3542";
   canvas.fill();
   if (scale > 1.2 && active) {
+    const offset = nodeTextOffset2d(node);
+    canvas.save();
     canvas.font = `${Math.max(8, 12 / scale)}px system-ui, sans-serif`;
     canvas.fillStyle = "#d7dde8";
-    canvas.fillText(node.label, (node.x ?? 0) + radius + 2, (node.y ?? 0) + 3);
+    canvas.textAlign = "center";
+    canvas.textBaseline = "bottom";
+    canvas.fillText(node.label, node.x ?? 0, (node.y ?? 0) - offset);
+    canvas.restore();
   }
 }
 
@@ -658,7 +927,11 @@ function paintNodePointerArea(
 }
 
 function nodeRadius(node: GraphNode): number {
-  return (node.kind === "file" ? 4 : 3.5) + node.value;
+  return (node.kind === "file" ? 3.4 : 3) + node.value;
+}
+
+function nodeTextOffset2d(node: GraphNode): number {
+  return nodeRadius(node) + (node.kind === "file" ? 6 : 3);
 }
 
 createRoot(document.getElementById("root") ?? document.body).render(<App />);

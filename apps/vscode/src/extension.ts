@@ -20,6 +20,7 @@ const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const htmlTagCompleteLookBehind = 2000;
+type GraphOpenLocation = "active" | "beside";
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
@@ -230,7 +231,14 @@ async function showGraph(
         arguments: [{ scope, uri }],
       }),
   );
-  showAspGraphWebview(context, payload, title);
+  showAspGraphWebview(context, payload, title, graphViewColumn());
+}
+
+function graphViewColumn(): vscode.ViewColumn {
+  const openLocation = vscode.workspace
+    .getConfiguration("aspLsp")
+    .get<GraphOpenLocation>("graph.openLocation", "active");
+  return openLocation === "beside" ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active;
 }
 
 async function startClient(context: vscode.ExtensionContext): Promise<void> {

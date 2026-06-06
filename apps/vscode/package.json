@@ -40,6 +40,7 @@
     "react-dom": "19.2.7",
     "react-force-graph-2d": "1.29.1",
     "react-force-graph-3d": "1.29.1",
+    "three-spritetext": "1.10.0",
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
@@ -695,6 +696,15 @@
           "default": true,
           "description": "%configuration.graph.showUnresolvedReferences.description%"
         },
+        "aspLsp.graph.openLocation": {
+          "type": "string",
+          "enum": [
+            "active",
+            "beside"
+          ],
+          "default": "active",
+          "description": "%configuration.graph.openLocation.description%"
+        },
         "aspLsp.cache.enabled": {
           "type": "boolean",
           "default": true,
@@ -806,7 +816,8 @@
       },
       {
         "command": "aspLsp.showCurrentFileGraph",
-        "title": "%command.showCurrentFileGraph.title%"
+        "title": "%command.showCurrentFileGraph.title%",
+        "icon": "$(graph)"
       },
       {
         "command": "aspLsp.showWorkspaceGraph",
@@ -833,6 +844,15 @@
         "when": "editorTextFocus && editorLangId == classic-asp"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "aspLsp.showCurrentFileGraph",
+          "when": "editorLangId == classic-asp",
+          "group": "navigation"
+        }
+      ]
+    },
     "problemMatchers": [
       {
         "name": "asp-lsp",

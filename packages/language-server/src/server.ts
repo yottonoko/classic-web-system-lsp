@@ -13283,8 +13283,8 @@ async function addDocumentStructureToAspGraphAsync(
       pushAspGraphMapItem(state.sourceDeclarationsByName, declaration.normalizedName, declaration);
     }
     addAspGraphLink(state, {
-      source: declarationSourceGraphNodeId(state, document.uri, declaration.scopeId),
-      target: declarationNode,
+      source: declarationNode,
+      target: declarationSourceGraphNodeId(state, document.uri, declaration.scopeId),
       kind: "declares",
       label: "declares",
       ranges: [{ uri: document.uri, range: declaration.nameRange }],

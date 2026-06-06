@@ -76,9 +76,10 @@ export function showAspGraphWebview(
   context: vscode.ExtensionContext,
   payload: AspGraphPayload,
   title: string,
+  viewColumn: vscode.ViewColumn,
 ): void {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
-  const panel = vscode.window.createWebviewPanel("aspLsp.graph", title, vscode.ViewColumn.Beside, {
+  const panel = vscode.window.createWebviewPanel("aspLsp.graph", title, viewColumn, {
     enableScripts: true,
     retainContextWhenHidden: true,
     localResourceRoots: [webviewRoot],

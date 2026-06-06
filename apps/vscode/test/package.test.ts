@@ -73,8 +73,11 @@ describe("VS Code extension package", () => {
             textMateRules?: Array<{ scope?: string; settings?: Record<string, unknown> }>;
           };
         };
-        commands?: Array<{ command: string; title?: string }>;
+        commands?: Array<{ command: string; title?: string; icon?: string }>;
         keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
+        menus?: {
+          "editor/title"?: Array<{ command?: string; when?: string; group?: string }>;
+        };
         problemMatchers?: Array<{ name: string }>;
         taskDefinitions?: Array<{ type: string }>;
         configuration?: { properties?: Record<string, unknown> };
@@ -96,6 +99,7 @@ describe("VS Code extension package", () => {
     expect(manifest.license).toBe("MIT OR Apache-2.0");
     expect(manifest.dependencies?.["react-force-graph-2d"]).toBe("1.29.1");
     expect(manifest.dependencies?.["react-force-graph-3d"]).toBe("1.29.1");
+    expect(manifest.dependencies?.["three-spritetext"]).toBe("1.10.0");
     expect(fs.existsSync("../../LICENSE-MIT")).toBe(true);
     expect(fs.existsSync("../../LICENSE-APACHE")).toBe(true);
     expect(manifest.dependencies?.["@asp-lsp/core"]).toBe("workspace:*");
@@ -236,6 +240,15 @@ describe("VS Code extension package", () => {
       expect(nls[`configuration.graph.${name}.description`]).toBeTruthy();
       expect(nlsJa[`configuration.graph.${name}.description`]).toBeTruthy();
     }
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.graph.openLocation"]).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["active", "beside"],
+        default: "active",
+      }),
+    );
+    expect(nls["configuration.graph.openLocation.description"]).toBeTruthy();
+    expect(nlsJa["configuration.graph.openLocation.description"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.windowsPathResolution"],
@@ -316,12 +329,27 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain('registerCommand("aspLsp.showReferences"');
     expect(commands).toContain("aspLsp.showCurrentFileGraph");
     expect(commands).toContain("aspLsp.showWorkspaceGraph");
+    expect(
+      manifest.contributes?.commands?.find(
+        (command) => command.command === "aspLsp.showCurrentFileGraph",
+      ),
+    ).toEqual(expect.objectContaining({ icon: "$(graph)" }));
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showCurrentFileGraph",
+        when: "editorLangId == classic-asp",
+        group: "navigation",
+      }),
+    );
     expect(nls["command.showCurrentFileGraph.title"]).toBeTruthy();
     expect(nls["command.showWorkspaceGraph.title"]).toBeTruthy();
     expect(nlsJa["command.showCurrentFileGraph.title"]).toBeTruthy();
     expect(nlsJa["command.showWorkspaceGraph.title"]).toBeTruthy();
     expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileGraph"');
     expect(extensionSource).toContain('registerCommand("aspLsp.showWorkspaceGraph"');
+    expect(extensionSource).toContain('get<GraphOpenLocation>("graph.openLocation", "active")');
+    expect(extensionSource).toContain("vscode.ViewColumn.Active");
+    expect(extensionSource).toContain("vscode.ViewColumn.Beside");
     expect(extensionSource).toContain('"aspLsp.server.buildGraph"');
     expect(extensionSource).toContain('"editor.action.showReferences"');
     expect(extensionSource).toContain('registerCommand("aspLsp.toggleLineComment"');
