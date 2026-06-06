@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ForceGraph2D from "react-force-graph-2d";
 import ForceGraph3D from "react-force-graph-3d";
@@ -51,6 +51,7 @@ function App(): React.ReactElement {
   const [mode, setMode] = useState<ViewMode>("3d");
   const [selection, setSelection] = useState<Selection>();
   const graphData = useMemo(() => graphDataFor(graph), []);
+  const [surfaceRef, surfaceSize] = useElementSize<HTMLElement>();
 
   if (!graph) {
     return (
@@ -95,10 +96,12 @@ function App(): React.ReactElement {
         </div>
       </header>
       <main className="workspace">
-        <section className="graph-surface">
+        <section ref={surfaceRef} className="graph-surface">
           {mode === "3d" ? (
             <ForceGraph3D
               graphData={graphData}
+              width={surfaceSize.width}
+              height={surfaceSize.height}
               backgroundColor="#11151c"
               nodeColor={(node) => (node as GraphNode).color}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
@@ -111,6 +114,8 @@ function App(): React.ReactElement {
           ) : (
             <ForceGraph2D
               graphData={graphData}
+              width={surfaceSize.width}
+              height={surfaceSize.height}
               backgroundColor="#11151c"
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
               linkColor={(link) => (link as GraphLink).color}
@@ -128,6 +133,41 @@ function App(): React.ReactElement {
       </main>
     </Shell>
   );
+}
+
+function useElementSize<TElement extends HTMLElement>(): [
+  React.RefObject<TElement | null>,
+  { width: number; height: number },
+] {
+  const ref = useRef<TElement>(null);
+  const [size, setSize] = useState({ width: 1, height: 1 });
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) {
+      return undefined;
+    }
+
+    const updateSize = () => {
+      const { width, height } = element.getBoundingClientRect();
+      const nextSize = {
+        width: Math.max(1, Math.floor(width)),
+        height: Math.max(1, Math.floor(height)),
+      };
+      setSize((currentSize) =>
+        currentSize.width === nextSize.width && currentSize.height === nextSize.height
+          ? currentSize
+          : nextSize,
+      );
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  return [ref, size];
 }
 
 function Shell({ children }: { children: React.ReactNode }): React.ReactElement {
@@ -378,12 +418,18 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .graph-surface {
   position: relative;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
+}
+
+.graph-surface canvas {
+  display: block;
 }
 
 .inspector {
