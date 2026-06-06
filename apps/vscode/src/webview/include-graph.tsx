@@ -22,6 +22,8 @@ type NodeColorCategory =
   | "file"
   | "callable"
   | "class"
+  | "method"
+  | "property"
   | "member"
   | "globalVariable"
   | "globalConstant"
@@ -53,15 +55,17 @@ const graph = window.__ASP_LSP_GRAPH__;
 const nodeColors: Record<NodeColorCategory, string> = {
   root: "#ffffff",
   file: "#67d8ef",
-  callable: "#c3e88d",
-  class: "#c792ea",
-  member: "#f78c6c",
-  globalVariable: "#82aaff",
-  globalConstant: "#ffcb6b",
-  localVariable: "#80cbc4",
-  localConstant: "#dcdcaa",
+  callable: "#c792ea",
+  class: "#c3e88d",
+  method: "#f78c6c",
+  property: "#ff9cac",
+  member: "#ffb86c",
+  globalVariable: "#ffcb6b",
+  globalConstant: "#82aaff",
+  localVariable: "#dcdcaa",
+  localConstant: "#80cbc4",
   parameter: "#b2ccd6",
-  unresolved: "#ffcb6b",
+  unresolved: "#ff5370",
 };
 
 const linkColors: Record<AspGraphLink["kind"], string> = {
@@ -69,7 +73,7 @@ const linkColors: Record<AspGraphLink["kind"], string> = {
   declares: "#89ddff",
   references: "#c3e88d",
   calls: "#f78c6c",
-  unresolvedReference: "#ffcb6b",
+  unresolvedReference: "#ff5370",
 };
 
 function App(): React.ReactElement {
@@ -417,8 +421,9 @@ function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
     case "class":
       return "class";
     case "method":
+      return "method";
     case "property":
-      return "member";
+      return "property";
     case "field":
       return "localVariable";
     case "parameter":
