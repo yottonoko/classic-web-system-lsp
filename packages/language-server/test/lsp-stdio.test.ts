@@ -5758,6 +5758,8 @@ End Sub
       fs.writeFileSync(
         path.join(tempDir, "common.inc"),
         `<%
+Dim IncludedGlobal
+Const IncludedConst = 5
 Sub Shared()
 End Sub
 %>`,
@@ -5796,6 +5798,9 @@ Sub Main(arg)
   End If
   localMain = arg
   localMain("value") = arg
+  localMain = IncludedGlobal
+  localMain = IncludedConst
+  Call Shared()
   Response.Write CStr(GlobalConst)
   Repository.Find arg
   MissingName
@@ -5904,6 +5909,21 @@ End Sub
         expect(hasNode(defaultGraph, (node) => node.label === "RepositoryType.Find")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.role === "member")).toBe(false);
         expect(hasLink(defaultGraph, (link) => link.role === "member")).toBe(false);
+        expect(
+          hasNode(
+            defaultGraph,
+            (node) => node.kind === "vbUnresolved" && node.label === "IncludedGlobal",
+          ),
+        ).toBe(false);
+        expect(
+          hasNode(
+            defaultGraph,
+            (node) => node.kind === "vbUnresolved" && node.label === "IncludedConst",
+          ),
+        ).toBe(false);
+        expect(
+          hasNode(defaultGraph, (node) => node.kind === "vbUnresolved" && node.label === "Shared"),
+        ).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "MissingName")).toBe(true);
 
         configure(allGraphSettings);
@@ -5921,6 +5941,9 @@ End Sub
         expect(hasGraphLink(visibleGraph, "references", "Main", "arg")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "localMain")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Customer.Save", "localConst")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Main", "IncludedGlobal")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Main", "IncludedConst")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "calls", "Main", "Shared")).toBe(true);
         expect(hasGraphLink(visibleGraph, "calls", "Main", "Response.Write")).toBe(true);
         expect(hasGraphLink(visibleGraph, "calls", "Main", "CStr")).toBe(true);
         expect(

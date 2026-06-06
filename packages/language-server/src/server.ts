@@ -720,10 +720,16 @@ interface GraphFileIndex {
   lastUsed: number;
 }
 
+interface AspGraphIndexedDocument {
+  document: AspGraphDocument;
+  graphIndex: GraphFileIndex;
+}
+
 interface AspGraphBuildState {
   nodes: Map<string, AspGraphNode>;
   links: Map<string, AspGraphLink>;
   declarations: Set<string>;
+  sourceDeclarationsByName: Map<string, Array<VbSymbolIndex["declarations"][number]>>;
   externalSymbols: AspGraphExternalIndex;
   stats: AspGraphPayload["stats"];
   truncated?: AspGraphPayload["truncated"];
@@ -13045,12 +13051,21 @@ async function graphPayloadFromDocumentsAsync(
   options: { rootUri?: string; truncated?: AspGraphPayload["truncated"] } = {},
 ): Promise<AspGraphPayload> {
   const state = createAspGraphBuildState(settings, options.truncated);
+  const indexedDocuments: AspGraphIndexedDocument[] = [];
   for (const document of documentsForGraph) {
     addFileGraphNode(state, document.uri, document.fileName, true);
-  }
-  for (const document of documentsForGraph) {
-    await addDocumentToAspGraphAsync(state, document, settings);
+    indexedDocuments.push({
+      document,
+      graphIndex: await graphFileIndexForDocumentAsync(document, settings),
+    });
     await yieldToEventLoop();
+  }
+  for (const indexed of indexedDocuments) {
+    await addDocumentStructureToAspGraphAsync(state, indexed, settings);
+    await yieldToEventLoop();
+  }
+  for (const indexed of indexedDocuments) {
+    addDocumentUsageToAspGraph(state, indexed);
   }
   state.stats = recomputeAspGraphStats(state.nodes.values(), state.links.values());
   const payload = filterAspGraphPayload(
@@ -13075,6 +13090,7 @@ function createAspGraphBuildState(
     nodes: new Map(),
     links: new Map(),
     declarations: new Set(),
+    sourceDeclarationsByName: new Map(),
     externalSymbols: createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings)),
     truncated,
     stats: {
@@ -13202,12 +13218,12 @@ function declarationSourceGraphNodeId(
     : fileGraphNodeId(uri);
 }
 
-async function addDocumentToAspGraphAsync(
+async function addDocumentStructureToAspGraphAsync(
   state: AspGraphBuildState,
-  document: AspGraphDocument,
+  indexed: AspGraphIndexedDocument,
   settings: AspSettings,
 ): Promise<void> {
-  const graphIndex = await graphFileIndexForDocumentAsync(document, settings);
+  const { document, graphIndex } = indexed;
   const index = graphIndex.vbSymbolIndex;
   const fileNode = fileGraphNodeId(document.uri);
   for (const include of graphIndex.includeRefs) {
@@ -13257,6 +13273,9 @@ async function addDocumentToAspGraphAsync(
       group: declaration.kind,
       origin: "source",
     });
+    if (isCrossFileSourceGraphDeclaration(declaration)) {
+      pushAspGraphMapItem(state.sourceDeclarationsByName, declaration.normalizedName, declaration);
+    }
     addAspGraphLink(state, {
       source: declarationSourceGraphNodeId(state, document.uri, declaration.scopeId),
       target: declarationNode,
@@ -13265,19 +13284,34 @@ async function addDocumentToAspGraphAsync(
       ranges: [{ uri: document.uri, range: declaration.nameRange }],
     });
   }
+}
+
+function addDocumentUsageToAspGraph(
+  state: AspGraphBuildState,
+  indexed: AspGraphIndexedDocument,
+): void {
+  const { document, graphIndex } = indexed;
+  const index = graphIndex.vbSymbolIndex;
   for (const reference of index.references) {
     if (reference.role === "call" || reference.role === "new" || reference.role === "member") {
       continue;
     }
+    const sourceDeclaration = reference.resolvedId
+      ? undefined
+      : resolveSourceGraphDeclaration(state, reference.name, reference.expectedKinds);
     const external = reference.resolvedId
       ? undefined
-      : resolveExternalGraphSymbol(state, reference.name);
-    if (!reference.resolvedId && !external) {
+      : sourceDeclaration
+        ? undefined
+        : resolveExternalGraphSymbol(state, reference.name);
+    if (!reference.resolvedId && !sourceDeclaration && !external) {
       continue;
     }
     const target = reference.resolvedId
       ? declarationGraphNodeId(reference.resolvedId)
-      : addExternalGraphNode(state, external);
+      : sourceDeclaration
+        ? declarationGraphNodeId(sourceDeclaration.id)
+        : addExternalGraphNode(state, external);
     state.stats.references += 1;
     addAspGraphLink(state, {
       source: scopeGraphNodeId(state, document.uri, reference.scopeId),
@@ -13290,15 +13324,26 @@ async function addDocumentToAspGraphAsync(
   }
   for (const callSite of index.callSites) {
     state.stats.calls += 1;
+    const sourceDeclaration = callSite.resolvedId
+      ? undefined
+      : resolveSourceGraphCallSite(state, callSite);
     const external = callSite.resolvedId
       ? undefined
-      : resolveExternalGraphCallSite(state, callSite);
+      : sourceDeclaration
+        ? undefined
+        : resolveExternalGraphCallSite(state, callSite);
     const target = callSite.resolvedId
       ? declarationGraphNodeId(callSite.resolvedId)
-      : external
-        ? addExternalGraphNode(state, external)
-        : unresolvedGraphNodeId(document.uri, callSite.deferredKey ?? callSite.name, callSite.name);
-    if (!callSite.resolvedId && !external) {
+      : sourceDeclaration
+        ? declarationGraphNodeId(sourceDeclaration.id)
+        : external
+          ? addExternalGraphNode(state, external)
+          : unresolvedGraphNodeId(
+              document.uri,
+              callSite.deferredKey ?? callSite.name,
+              callSite.name,
+            );
+    if (!callSite.resolvedId && !sourceDeclaration && !external) {
       addUnresolvedGraphNode(
         state,
         document.uri,
@@ -13318,8 +13363,15 @@ async function addDocumentToAspGraphAsync(
     });
   }
   for (const deferred of index.deferredExternalRefs) {
-    const external = resolveExternalGraphDeferredRef(state, deferred);
-    if (external) {
+    const sourceDeclaration = resolveSourceGraphDeclaration(
+      state,
+      deferred.name,
+      deferred.expectedKinds,
+    );
+    const external = sourceDeclaration
+      ? undefined
+      : resolveExternalGraphDeferredRef(state, deferred);
+    if (sourceDeclaration || external) {
       continue;
     }
     state.stats.unresolvedReferences += 1;
@@ -13340,6 +13392,57 @@ async function addDocumentToAspGraphAsync(
       role: deferred.role,
       ranges: [{ uri: document.uri, range: deferred.range }],
     });
+  }
+}
+
+function isCrossFileSourceGraphDeclaration(
+  declaration: VbSymbolIndex["declarations"][number],
+): boolean {
+  return declaration.bindingScope !== "local" && !declaration.memberOf;
+}
+
+function resolveSourceGraphCallSite(
+  state: AspGraphBuildState,
+  callSite: VbSymbolIndex["callSites"][number],
+): VbSymbolIndex["declarations"][number] | undefined {
+  if (callSite.memberName) {
+    return undefined;
+  }
+  return resolveSourceGraphDeclaration(
+    state,
+    callSite.name,
+    expectedSourceGraphKindsForCallSite(callSite),
+  );
+}
+
+function resolveSourceGraphDeclaration(
+  state: AspGraphBuildState,
+  name: string | undefined,
+  expectedKinds: VbSymbolIndex["references"][number]["expectedKinds"],
+): VbSymbolIndex["declarations"][number] | undefined {
+  if (!name) {
+    return undefined;
+  }
+  const candidates = state.sourceDeclarationsByName.get(name.toLowerCase());
+  return candidates?.find(
+    (declaration) => !expectedKinds || expectedKinds.includes(declaration.kind),
+  );
+}
+
+function expectedSourceGraphKindsForCallSite(
+  callSite: VbSymbolIndex["callSites"][number],
+): VbSymbolIndex["references"][number]["expectedKinds"] {
+  switch (callSite.callKind) {
+    case "constructor":
+      return ["class"];
+    case "function":
+      return ["function"];
+    case "procedure":
+      return ["function", "sub", "method", "property"];
+    case "unknown":
+      return ["function", "sub", "class", "method", "property"];
+    case "member":
+      return undefined;
   }
 }
 
