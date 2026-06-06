@@ -50,7 +50,7 @@
   "configuration.graph.showBuiltinSymbols.description": "Show built-in VBScript, Classic ASP, and catalog object symbols in graph views.",
   "configuration.graph.showConfiguredGlobals.description": "Show VBScript globals from aspLsp.vbscript.globals in graph views.",
   "configuration.graph.showConfiguredComTypes.description": "Show custom COM types from aspLsp.vbscript.comTypes in graph views.",
-  "configuration.graph.showObjectMembers.description": "Show object member nodes for built-in and configured object types in graph views.",
+  "configuration.graph.showObjectMembers.description": "Show built-in, configured, and unresolved object member nodes in graph views.",
   "configuration.graph.showFunctionParameters.description": "Show function, sub, method, and property parameter nodes in graph views.",
   "configuration.graph.showLocalVariables.description": "Show procedure-local VBScript variable nodes in graph views.",
   "configuration.graph.showLocalConstants.description": "Show procedure-local VBScript constant nodes in graph views.",

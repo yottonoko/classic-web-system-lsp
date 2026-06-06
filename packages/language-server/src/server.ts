@@ -13552,7 +13552,7 @@ function filterAspGraphPayload(payload: AspGraphPayload, settings: AspSettings):
   const visibleNodeIds = new Set(nodes.map((node) => node.id));
   const links = payload.links.filter(
     (link) =>
-      isVisibleAspGraphLinkKind(link.kind, graphSettings) &&
+      isVisibleAspGraphLink(link, graphSettings) &&
       visibleNodeIds.has(link.source) &&
       visibleNodeIds.has(link.target),
   );
@@ -13574,6 +13574,9 @@ function isVisibleAspGraphNode(
       : settings.showFiles !== false;
   }
   if (node.kind === "vbUnresolved") {
+    if (node.role === "member") {
+      return settings.showObjectMembers === true && settings.showUnresolvedReferences !== false;
+    }
     return settings.showUnresolvedReferences !== false;
   }
   if (node.origin === "builtin") {
@@ -13632,11 +13635,14 @@ function isVisibleSourceGraphDeclaration(
   }
 }
 
-function isVisibleAspGraphLinkKind(
-  kind: AspGraphLinkKind,
+function isVisibleAspGraphLink(
+  link: AspGraphLink,
   settings: NonNullable<AspSettings["graph"]>,
 ): boolean {
-  switch (kind) {
+  if (link.role === "member" && settings.showObjectMembers !== true) {
+    return false;
+  }
+  switch (link.kind) {
     case "include":
       return settings.showIncludeLinks !== false;
     case "declares":

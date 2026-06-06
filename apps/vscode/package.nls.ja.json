@@ -50,7 +50,7 @@
   "configuration.graph.showBuiltinSymbols.description": "graph view に built-in VBScript、Classic ASP、catalog object symbol を表示します。",
   "configuration.graph.showConfiguredGlobals.description": "graph view に aspLsp.vbscript.globals の VBScript global を表示します。",
   "configuration.graph.showConfiguredComTypes.description": "graph view に aspLsp.vbscript.comTypes の custom COM type を表示します。",
-  "configuration.graph.showObjectMembers.description": "graph view に built-in / configured object type の member node を表示します。",
+  "configuration.graph.showObjectMembers.description": "graph view に built-in、configured、未解決 object member node を表示します。",
   "configuration.graph.showFunctionParameters.description": "graph view に function、sub、method、property の parameter node を表示します。",
   "configuration.graph.showLocalVariables.description": "graph view に procedure-local VBScript variable node を表示します。",
   "configuration.graph.showLocalConstants.description": "graph view に procedure-local VBScript constant node を表示します。",

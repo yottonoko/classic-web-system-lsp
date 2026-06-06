@@ -5896,6 +5896,8 @@ End Sub
         expect(hasNode(defaultGraph, (node) => node.label === "CStr")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "Repository")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "RepositoryType.Find")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.role === "member")).toBe(false);
+        expect(hasLink(defaultGraph, (link) => link.role === "member")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "MissingName")).toBe(true);
 
         configure(allGraphSettings);
