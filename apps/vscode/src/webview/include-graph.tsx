@@ -1,11 +1,4 @@
-import React, {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ForceGraph2D from "react-force-graph-2d";
 import ForceGraph3D from "react-force-graph-3d";
@@ -52,6 +45,10 @@ type GraphNode = AspGraphNode & {
   value: number;
   x?: number;
   y?: number;
+  z?: number;
+  vx?: number;
+  vy?: number;
+  vz?: number;
 };
 
 type GraphLink = Omit<AspGraphLink, "source" | "target"> & {
@@ -215,18 +212,15 @@ function App(): React.ReactElement {
   const [selection, setSelection] = useState<Selection>();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatchCase, setSearchMatchCase] = useState(false);
+  const [isLegendVisible, setLegendVisible] = useState(true);
   const [hiddenNodeCategories, setHiddenNodeCategories] = useState<Set<NodeColorCategory>>(
     () => new Set(),
   );
   const [hiddenLinkCategories, setHiddenLinkCategories] = useState<Set<LinkFilterCategory>>(
     () => new Set(),
   );
-  const graph2dRef = useRef<ForceGraph2DMethods<GraphNode, GraphLink> | undefined>(
-    undefined,
-  );
-  const graph3dRef = useRef<ForceGraph3DMethods<GraphNode, GraphLink> | undefined>(
-    undefined,
-  );
+  const graph2dRef = useRef<ForceGraph2DMethods<GraphNode, GraphLink> | undefined>(undefined);
+  const graph3dRef = useRef<ForceGraph3DMethods<GraphNode, GraphLink> | undefined>(undefined);
   const hasAutoFit2dRef = useRef(false);
   const hasAutoFit3dRef = useRef(false);
   const graphData = useMemo(() => graphDataFor(graph), []);
@@ -398,14 +392,26 @@ function App(): React.ReactElement {
           ref={surfaceRef}
           className="relative min-h-0 min-w-0 overflow-hidden [&_canvas]:block"
         >
-          <GraphLegend
-            hiddenLinkCategories={hiddenLinkCategories}
-            hiddenNodeCategories={hiddenNodeCategories}
-            linkCategories={linkLegendCategories}
-            nodeCategories={nodeLegendCategories}
-            onToggleLinkCategory={toggleLinkCategory}
-            onToggleNodeCategory={toggleNodeCategory}
-          />
+          {isLegendVisible ? (
+            <GraphLegend
+              hiddenLinkCategories={hiddenLinkCategories}
+              hiddenNodeCategories={hiddenNodeCategories}
+              linkCategories={linkLegendCategories}
+              nodeCategories={nodeLegendCategories}
+              onClose={() => setLegendVisible(false)}
+              onToggleLinkCategory={toggleLinkCategory}
+              onToggleNodeCategory={toggleNodeCategory}
+            />
+          ) : (
+            <button
+              type="button"
+              className="absolute top-3 left-3 z-10 h-7 cursor-pointer rounded-md border border-[#303a49] bg-[#171c25]/90 px-2.5 text-xs text-[#d7dde8] shadow-[0_10px_26px_rgb(0_0_0_/_28%)] backdrop-blur"
+              aria-label="Show graph legend"
+              onClick={() => setLegendVisible(true)}
+            >
+              Legend
+            </button>
+          )}
           {mode === "3d" ? (
             <ForceGraph3D
               ref={graph3dRef}
@@ -425,9 +431,7 @@ function App(): React.ReactElement {
               linkDirectionalArrowLength={(link) => linkArrowLength(link as GraphLink)}
               linkDirectionalArrowRelPos={1}
               linkDirectionalArrowColor={(link) => linkColor(link as GraphLink, highlight)}
-              linkDirectionalParticles={(link) =>
-                linkParticleCount(link as GraphLink, highlight)
-              }
+              linkDirectionalParticles={(link) => linkParticleCount(link as GraphLink, highlight)}
               linkDirectionalParticleWidth={1.5}
               onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
               onLinkClick={(link) => setSelection({ type: "link", item: link as GraphLink })}
@@ -451,13 +455,9 @@ function App(): React.ReactElement {
               linkDirectionalArrowLength={(link) => linkArrowLength(link as GraphLink)}
               linkDirectionalArrowRelPos={1}
               linkDirectionalArrowColor={(link) => linkColor(link as GraphLink, highlight)}
-              linkDirectionalParticles={(link) =>
-                linkParticleCount(link as GraphLink, highlight)
-              }
+              linkDirectionalParticles={(link) => linkParticleCount(link as GraphLink, highlight)}
               linkDirectionalParticleWidth={4.5}
-              nodeCanvasObject={(node, canvas) =>
-                paintNode(node as GraphNode, canvas, highlight)
-              }
+              nodeCanvasObject={(node, canvas) => paintNode(node as GraphNode, canvas, highlight)}
               nodePointerAreaPaint={(node, color, canvas) =>
                 paintNodePointerArea(node as GraphNode, color, canvas)
               }
@@ -480,6 +480,7 @@ function GraphLegend({
   hiddenNodeCategories,
   linkCategories,
   nodeCategories,
+  onClose,
   onToggleLinkCategory,
   onToggleNodeCategory,
 }: {
@@ -487,12 +488,26 @@ function GraphLegend({
   hiddenNodeCategories: ReadonlySet<NodeColorCategory>;
   linkCategories: LinkFilterCategory[];
   nodeCategories: NodeColorCategory[];
+  onClose(): void;
   onToggleLinkCategory(category: LinkFilterCategory): void;
   onToggleNodeCategory(category: NodeColorCategory): void;
 }): React.ReactElement {
   return (
     <div className="absolute top-3 left-3 z-10 grid max-w-[min(560px,calc(100%_-_24px))] gap-2.5 rounded-md border border-[#303a49] bg-[#171c25]/90 px-3 py-2 shadow-[0_10px_26px_rgb(0_0_0_/_28%)] backdrop-blur">
-      <LegendFilterGroup title="Link filters">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <span className="text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
+          Legend
+        </span>
+        <button
+          type="button"
+          className="grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md border border-[#405068] bg-[#202735] text-xs leading-none text-[#d7dde8]"
+          aria-label="Close graph legend"
+          onClick={onClose}
+        >
+          x
+        </button>
+      </div>
+      <LegendFilterGroup itemCount={linkCategories.length} title="Link filters">
         {linkCategories.map((category) => (
           <LegendFilterItem
             key={category}
@@ -505,7 +520,7 @@ function GraphLegend({
           />
         ))}
       </LegendFilterGroup>
-      <LegendFilterGroup title="Node filters">
+      <LegendFilterGroup itemCount={nodeCategories.length} title="Node filters">
         {nodeCategories.map((category) => (
           <LegendFilterItem
             key={category}
@@ -523,18 +538,34 @@ function GraphLegend({
 
 function LegendFilterGroup({
   children,
+  itemCount,
   title,
 }: {
   children: React.ReactNode;
+  itemCount: number;
   title: string;
 }): React.ReactElement {
+  const [isOpen, setOpen] = useState(false);
   return (
-    <div>
-      <LegendHeading>{title}</LegendHeading>
-      <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-x-3 gap-y-1.5 max-[560px]:grid-cols-1">
-        {children}
-      </div>
-    </div>
+    <section className="overflow-hidden rounded-md border border-[#303a49] bg-[#11151c]/45">
+      <button
+        type="button"
+        className="flex h-8 w-full cursor-pointer items-center justify-between gap-3 border-0 bg-transparent px-2.5 text-left text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase"
+        aria-expanded={isOpen}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{title}</span>
+        <span className="inline-flex shrink-0 items-center gap-2 text-[10px] tracking-normal text-[#8d98a8] normal-case">
+          {itemCount}
+          <span aria-hidden="true">{isOpen ? "-" : "+"}</span>
+        </span>
+      </button>
+      {isOpen ? (
+        <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-x-3 gap-y-1.5 border-t border-[#303a49] px-2.5 py-2 max-[560px]:grid-cols-1">
+          {children}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -582,14 +613,6 @@ function LegendFilterItem({
       )}
       <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{label}</span>
     </label>
-  );
-}
-
-function LegendHeading({ children }: { children: React.ReactNode }): React.ReactElement {
-  return (
-    <div className="mb-1.5 text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
-      {children}
-    </div>
   );
 }
 
@@ -793,9 +816,7 @@ function filterGraphData(
   hiddenNodeCategories: ReadonlySet<NodeColorCategory>,
   hiddenLinkCategories: ReadonlySet<LinkFilterCategory>,
 ): GraphData {
-  const visibleNodes = graphData.nodes.filter(
-    (node) => !hiddenNodeCategories.has(node.category),
-  );
+  const visibleNodes = graphData.nodes.filter((node) => !hiddenNodeCategories.has(node.category));
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
   const visibleLinks = graphData.links.filter((link) => {
     const sourceId = nodeIdForEndpoint(link.source);
@@ -808,15 +829,13 @@ function filterGraphData(
     );
   });
   const referenceCounts = graphReferenceCountsForGraphLinks(visibleLinks);
+  for (const node of visibleNodes) {
+    const referenceCount = referenceCounts.get(node.id) ?? 0;
+    node.referenceCount = referenceCount;
+    node.value = nodeValue(referenceCount);
+  }
   return {
-    nodes: visibleNodes.map((node) => {
-      const referenceCount = referenceCounts.get(node.id) ?? 0;
-      return {
-        ...node,
-        referenceCount,
-        value: nodeValue(referenceCount),
-      };
-    }),
+    nodes: visibleNodes,
     links: visibleLinks,
   };
 }
@@ -1005,11 +1024,7 @@ function linkColor(link: GraphLink, highlight: HighlightState | undefined): stri
 function nodeTextObject(node: GraphNode, highlight: HighlightState | undefined): SpriteText {
   const offset = nodeTextOffset(node);
   const textHeight = nodeTextHeight(node);
-  const sprite = new SpriteText(
-    node.label,
-    textHeight,
-    nodeColor(node, highlight),
-  );
+  const sprite = new SpriteText(node.label, textHeight, nodeColor(node, highlight));
   sprite.fontFace = "system-ui, sans-serif";
   sprite.fontWeight = nodeTextFontWeight(node);
   sprite.backgroundColor = false;
@@ -1036,8 +1051,7 @@ function nodeTextFontWeight(node: GraphNode): "500" | "600" {
 
 function nodeValue(referenceCount: number): number {
   const scale = Math.sqrt(
-    clamp(referenceCount, 0, maximumNodeScaleReferenceCount) /
-      maximumNodeScaleReferenceCount,
+    clamp(referenceCount, 0, maximumNodeScaleReferenceCount) / maximumNodeScaleReferenceCount,
   );
   return minimumNodeValue + scale * (maximumNodeValue - minimumNodeValue);
 }
