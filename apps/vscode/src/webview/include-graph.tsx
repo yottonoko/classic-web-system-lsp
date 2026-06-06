@@ -492,7 +492,7 @@ function paintNodePointerArea(
 }
 
 function nodeRadius(node: GraphNode): number {
-  return (node.kind === "file" ? 4 : 3.5) + node.value;
+  return (node.kind === "file" ? 6 : 5.5) + node.value;
 }
 
 createRoot(document.getElementById("root") ?? document.body).render(<App />);
