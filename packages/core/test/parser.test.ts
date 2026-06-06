@@ -2105,6 +2105,11 @@ If ready Then Response.Write "ok"
 If ready Then: Response.Write "ok"
 If ready Then _
   Response.Write "continued"
+If first _
+  And second _
+  And third Then
+  Response.Write "continued condition"
+End If
 If ready Then
   Response.Write "ready"
 ElseIf other Then
