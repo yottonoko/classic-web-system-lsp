@@ -661,6 +661,11 @@
           "default": true,
           "description": "%configuration.graph.showUnresolvedNodes.description%"
         },
+        "aspLsp.graph.hideSingleNodes": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.graph.hideSingleNodes.description%"
+        },
         "aspLsp.graph.showIncludeLinks": {
           "type": "boolean",
           "default": true,
@@ -688,7 +693,7 @@
         },
         "aspLsp.graph.showMemberLinks": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "%configuration.graph.showMemberLinks.description%"
         },
         "aspLsp.graph.openLocation": {

@@ -173,6 +173,7 @@ export interface AspGraphSettings {
   showLocalConstantNodes?: boolean;
   showParameterNodes?: boolean;
   showUnresolvedNodes?: boolean;
+  hideSingleNodes?: boolean;
   showIncludeLinks?: boolean;
   showDeclareLinks?: boolean;
   showReferenceLinks?: boolean;

@@ -644,6 +644,8 @@ type AspGraphExternalKind = "function" | "constant" | "object" | "member" | "eve
 
 type AspGraphLinkKind = "include" | "declares" | "references" | "calls" | "unresolvedReference";
 
+type AspGraphLinkFilterCategory = AspGraphLinkKind | "member";
+
 type AspGraphNodeCategory =
   | "root"
   | "file"
@@ -705,6 +707,11 @@ interface AspGraphPayload {
   rootUri?: string;
   nodes: AspGraphNode[];
   links: AspGraphLink[];
+  settings?: {
+    hideSingleNodes: boolean;
+    hiddenNodeCategories: AspGraphNodeCategory[];
+    hiddenLinkCategories: AspGraphLinkFilterCategory[];
+  };
   stats: {
     files: number;
     declarations: number;
@@ -10020,12 +10027,13 @@ function normalizeGraphSettings(
     showLocalConstantNodes: record.showLocalConstantNodes === true,
     showParameterNodes: record.showParameterNodes === true,
     showUnresolvedNodes: record.showUnresolvedNodes !== false,
+    hideSingleNodes: record.hideSingleNodes !== false,
     showIncludeLinks: record.showIncludeLinks !== false,
     showDeclareLinks: record.showDeclareLinks !== false,
     showReferenceLinks: record.showReferenceLinks !== false,
     showCallLinks: record.showCallLinks !== false,
     showUnresolvedLinks: record.showUnresolvedLinks !== false,
-    showMemberLinks: record.showMemberLinks === true,
+    showMemberLinks: record.showMemberLinks !== false,
   };
 }
 
@@ -13088,18 +13096,15 @@ async function graphPayloadFromDocumentsAsync(
     addDocumentUsageToAspGraph(state, indexed);
   }
   state.stats = recomputeAspGraphStats(state.nodes.values(), state.links.values());
-  const payload = filterAspGraphPayload(
-    {
-      scope,
-      rootUri: options.rootUri,
-      nodes: [...state.nodes.values()],
-      links: [...state.links.values()],
-      stats: state.stats,
-      truncated: state.truncated,
-    },
-    settings,
-  );
-  return payload;
+  return {
+    scope,
+    rootUri: options.rootUri,
+    nodes: [...state.nodes.values()],
+    links: [...state.links.values()],
+    settings: graphPayloadSettings(settings),
+    stats: state.stats,
+    truncated: state.truncated,
+  };
 }
 
 function createAspGraphBuildState(
@@ -13327,6 +13332,9 @@ function addDocumentUsageToAspGraph(
       : sourceDeclaration
         ? undefined
         : resolveExternalGraphSymbol(state, reference.name);
+    if (isSuppressedBuiltinGraphExternalSymbol(external)) {
+      continue;
+    }
     if (!reference.resolvedId && !sourceDeclaration && !external) {
       continue;
     }
@@ -13355,6 +13363,9 @@ function addDocumentUsageToAspGraph(
       : sourceDeclaration
         ? undefined
         : resolveExternalGraphCallSite(state, callSite);
+    if (isSuppressedBuiltinGraphExternalSymbol(external)) {
+      continue;
+    }
     const target = callSite.resolvedId
       ? declarationGraphNodeId(callSite.resolvedId)
       : sourceDeclaration
@@ -13416,6 +13427,12 @@ function addDocumentUsageToAspGraph(
       ranges: [{ uri: document.uri, range: deferred.range }],
     });
   }
+}
+
+function isSuppressedBuiltinGraphExternalSymbol(
+  symbol: VbGraphExternalSymbol | undefined,
+): boolean {
+  return symbol?.origin === "builtin";
 }
 
 function isCrossFileSourceGraphDeclaration(
@@ -13673,29 +13690,52 @@ function addAspGraphLink(
   });
 }
 
-function filterAspGraphPayload(payload: AspGraphPayload, settings: AspSettings): AspGraphPayload {
+function graphPayloadSettings(settings: AspSettings): NonNullable<AspGraphPayload["settings"]> {
   const graphSettings = normalizeGraphSettings(settings);
-  const nodes = payload.nodes.filter((node) => isVisibleAspGraphNode(node, graphSettings));
-  const visibleNodeIds = new Set(nodes.map((node) => node.id));
-  const links = payload.links.filter(
-    (link) =>
-      isVisibleAspGraphLink(link, graphSettings) &&
-      visibleNodeIds.has(link.source) &&
-      visibleNodeIds.has(link.target),
-  );
   return {
-    ...payload,
-    nodes,
-    links,
-    stats: recomputeAspGraphStats(nodes, links),
+    hideSingleNodes: graphSettings.hideSingleNodes !== false,
+    hiddenNodeCategories: graphNodeCategoryOrder.filter(
+      (category) => !isVisibleAspGraphNodeCategory(category, graphSettings),
+    ),
+    hiddenLinkCategories: graphLinkFilterOrder.filter(
+      (category) => !isVisibleAspGraphLinkCategory(category, graphSettings),
+    ),
   };
 }
 
-function isVisibleAspGraphNode(
-  node: AspGraphNode,
+const graphNodeCategoryOrder: AspGraphNodeCategory[] = [
+  "root",
+  "file",
+  "function",
+  "sub",
+  "class",
+  "method",
+  "methodFunction",
+  "methodSub",
+  "property",
+  "member",
+  "globalVariable",
+  "globalConstant",
+  "localVariable",
+  "localConstant",
+  "parameter",
+  "unresolved",
+];
+
+const graphLinkFilterOrder: AspGraphLinkFilterCategory[] = [
+  "include",
+  "declares",
+  "references",
+  "calls",
+  "unresolvedReference",
+  "member",
+];
+
+function isVisibleAspGraphNodeCategory(
+  category: AspGraphNodeCategory,
   settings: NonNullable<AspSettings["graph"]>,
 ): boolean {
-  switch (aspGraphNodeCategory(node)) {
+  switch (category) {
     case "root":
       return settings.showRootNodes !== false;
     case "file":
@@ -13731,14 +13771,14 @@ function isVisibleAspGraphNode(
   }
 }
 
-function isVisibleAspGraphLink(
-  link: AspGraphLink,
+function isVisibleAspGraphLinkCategory(
+  category: AspGraphLinkFilterCategory,
   settings: NonNullable<AspSettings["graph"]>,
 ): boolean {
-  if (link.role === "member" && settings.showMemberLinks !== true) {
-    return false;
+  if (category === "member") {
+    return settings.showMemberLinks === true;
   }
-  switch (link.kind) {
+  switch (category) {
     case "include":
       return settings.showIncludeLinks !== false;
     case "declares":
@@ -13749,69 +13789,6 @@ function isVisibleAspGraphLink(
       return settings.showCallLinks !== false;
     case "unresolvedReference":
       return settings.showUnresolvedLinks !== false;
-  }
-}
-
-function aspGraphNodeCategory(node: AspGraphNode): AspGraphNodeCategory {
-  if (node.isRoot) {
-    return "root";
-  }
-  if (node.kind === "file") {
-    return "file";
-  }
-  if (node.kind === "vbUnresolved") {
-    return node.role === "member" ? "member" : "unresolved";
-  }
-  if (node.externalKind === "member") {
-    return "member";
-  }
-  switch (node.declarationKind) {
-    case "function":
-      return "function";
-    case "sub":
-      return "sub";
-    case "class":
-      return "class";
-    case "method":
-      if (node.procedureKind === "function") {
-        return "methodFunction";
-      }
-      if (node.procedureKind === "sub") {
-        return "methodSub";
-      }
-      return "method";
-    case "property":
-      return "property";
-    case "field":
-      return "localVariable";
-    case "parameter":
-      return "parameter";
-    case "variable":
-      return node.bindingScope === "local" ? "localVariable" : "globalVariable";
-    case "constant":
-      if (node.bindingScope === "local") {
-        return "localConstant";
-      }
-      return node.memberOf ? "localConstant" : "globalConstant";
-    case "object":
-      return "globalVariable";
-    default:
-      return externalGraphNodeCategory(node);
-  }
-}
-
-function externalGraphNodeCategory(node: AspGraphNode): AspGraphNodeCategory {
-  switch (node.externalKind) {
-    case "function":
-      return "function";
-    case "constant":
-      return "globalConstant";
-    case "member":
-      return "member";
-    case "object":
-      return "globalVariable";
-    default:
-      return "globalVariable";
   }
 }
 

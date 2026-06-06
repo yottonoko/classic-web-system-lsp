@@ -5,6 +5,11 @@ export interface AspGraphPayload {
   rootUri?: string;
   nodes: AspGraphNode[];
   links: AspGraphLink[];
+  settings?: {
+    hideSingleNodes?: boolean;
+    hiddenNodeCategories?: AspGraphNodeCategory[];
+    hiddenLinkCategories?: AspGraphLinkFilterCategory[];
+  };
   stats: {
     files: number;
     declarations: number;
@@ -20,6 +25,26 @@ export interface AspGraphPayload {
     reason: string;
   };
 }
+
+export type AspGraphNodeCategory =
+  | "root"
+  | "file"
+  | "function"
+  | "sub"
+  | "class"
+  | "method"
+  | "methodFunction"
+  | "methodSub"
+  | "property"
+  | "member"
+  | "globalVariable"
+  | "globalConstant"
+  | "localVariable"
+  | "localConstant"
+  | "parameter"
+  | "unresolved";
+
+export type AspGraphLinkFilterCategory = AspGraphLink["kind"] | "member";
 
 export interface AspGraphNode {
   id: string;

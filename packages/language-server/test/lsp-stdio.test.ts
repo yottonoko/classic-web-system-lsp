@@ -5776,7 +5776,7 @@ End Sub
       }
     });
 
-    it("filters graph nodes and links from graph settings", async () => {
+    it("returns graph filter settings for the webview initial state", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-settings-"));
       fs.writeFileSync(
         path.join(tempDir, "common.inc"),
@@ -5870,6 +5870,7 @@ End Sub
         showLocalConstantNodes: true,
         showParameterNodes: true,
         showUnresolvedNodes: true,
+        hideSingleNodes: false,
         showIncludeLinks: true,
         showDeclareLinks: true,
         showReferenceLinks: true,
@@ -5880,6 +5881,7 @@ End Sub
       type TestGraph = {
         nodes?: Array<Record<string, unknown>>;
         links?: Array<Record<string, unknown>>;
+        settings?: Record<string, unknown>;
         stats?: Record<string, unknown>;
       };
       const configure = (graph?: Record<string, unknown>) => {
@@ -5937,6 +5939,22 @@ End Sub
 
         configure();
         const defaultGraph = await buildGraph();
+        expect(defaultGraph.settings).toEqual(
+          expect.objectContaining({
+            hideSingleNodes: true,
+            hiddenNodeCategories: expect.arrayContaining([
+              "method",
+              "methodFunction",
+              "methodSub",
+              "property",
+              "member",
+              "localVariable",
+              "localConstant",
+              "parameter",
+            ]),
+          }),
+        );
+        expect(defaultGraph.settings?.hiddenLinkCategories).not.toContain("member");
         expectNode(defaultGraph, "default.asp", { kind: "file", isRoot: true });
         expectNode(defaultGraph, "common.inc", { kind: "file" });
         expect(nodeByLabel(defaultGraph, "common.inc")).not.toHaveProperty("isRoot", true);
@@ -5944,20 +5962,20 @@ End Sub
         expect(hasNode(defaultGraph, (node) => node.label === "GlobalConst")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "IncludedGlobal")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "IncludedConst")).toBe(true);
-        expect(hasNode(defaultGraph, (node) => node.label === "Customer.Name")).toBe(false);
-        expect(hasNode(defaultGraph, (node) => node.label === "Customer.Save")).toBe(false);
-        expect(hasNode(defaultGraph, (node) => node.label === "Customer.Kind")).toBe(false);
-        expect(hasNode(defaultGraph, (node) => node.label === "localValue")).toBe(false);
-        expect(hasNode(defaultGraph, (node) => node.label === "localConst")).toBe(false);
-        expect(hasNode(defaultGraph, (node) => node.label === "localMain")).toBe(false);
-        expect(hasNode(defaultGraph, (node) => node.label === "arg")).toBe(false);
-        expect(hasNode(defaultGraph, (node) => node.label === "Response")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "Customer.Name")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "Customer.Save")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "Customer.Kind")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "localValue")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "localConst")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "localMain")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "arg")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "Response")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "Response.Write")).toBe(false);
-        expect(hasNode(defaultGraph, (node) => node.label === "CStr")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "CStr")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "Repository")).toBe(true);
-        expect(hasNode(defaultGraph, (node) => node.label === "RepositoryType.Find")).toBe(false);
-        expect(hasNode(defaultGraph, (node) => node.role === "member")).toBe(false);
-        expect(hasLink(defaultGraph, (link) => link.role === "member")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "RepositoryType.Find")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.externalKind === "member")).toBe(true);
+        expect(hasLink(defaultGraph, (link) => link.role === "member")).toBe(true);
         expect(
           hasNode(
             defaultGraph,
@@ -5980,6 +5998,7 @@ End Sub
 
         configure(allGraphSettings);
         const visibleGraph = await buildGraph();
+        expect(visibleGraph.settings).toEqual(expect.objectContaining({ hideSingleNodes: false }));
         expectNode(visibleGraph, "GlobalValue", {
           declarationKind: "variable",
           bindingScope: "global",
@@ -6039,37 +6058,13 @@ End Sub
         expect(hasGraphLink(visibleGraph, "references", "Customer.Save", "localConst")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "IncludedGlobal")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "IncludedConst")).toBe(true);
-        expect(hasGraphLink(visibleGraph, "references", "Main", "Err")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Main", "Err")).toBe(false);
         expect(hasGraphLink(visibleGraph, "calls", "Main", "Shared")).toBe(true);
-        expect(hasGraphLink(visibleGraph, "calls", "Main", "ErrObject.Clear")).toBe(true);
-        expect(hasGraphLink(visibleGraph, "calls", "Main", "Response.Write")).toBe(true);
-        expect(hasGraphLink(visibleGraph, "calls", "Main", "CStr")).toBe(true);
-        expect(
-          hasNode(
-            visibleGraph,
-            (node) =>
-              node.label === "Err" && node.origin === "builtin" && node.externalKind === "object",
-          ),
-        ).toBe(true);
-        expect(
-          hasNode(
-            visibleGraph,
-            (node) =>
-              node.label === "Response" &&
-              node.origin === "builtin" &&
-              node.externalKind === "object",
-          ),
-        ).toBe(true);
-        expect(
-          hasNode(
-            visibleGraph,
-            (node) =>
-              node.label === "Response.Write" &&
-              node.origin === "builtin" &&
-              node.externalKind === "member",
-          ),
-        ).toBe(true);
-        expect(hasNode(visibleGraph, (node) => node.label === "CStr")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "calls", "Main", "ErrObject.Clear")).toBe(false);
+        expect(hasGraphLink(visibleGraph, "calls", "Main", "Response.Write")).toBe(false);
+        expect(hasGraphLink(visibleGraph, "calls", "Main", "CStr")).toBe(false);
+        expect(hasNode(visibleGraph, (node) => node.origin === "builtin")).toBe(false);
+        expect(hasNode(visibleGraph, (node) => node.label === "CStr")).toBe(false);
         expect(
           hasNode(
             visibleGraph,
@@ -6090,30 +6085,57 @@ End Sub
         ).toBe(true);
 
         configure({ ...allGraphSettings, showIncludeLinks: false });
-        expect(hasLink(await buildGraph(), (link) => link.kind === "include")).toBe(false);
+        {
+          const graph = await buildGraph();
+          expect(hasLink(graph, (link) => link.kind === "include")).toBe(true);
+          expect(graph.settings?.hiddenLinkCategories).toContain("include");
+        }
         configure({ ...allGraphSettings, showDeclareLinks: false });
-        expect(hasLink(await buildGraph(), (link) => link.kind === "declares")).toBe(false);
+        {
+          const graph = await buildGraph();
+          expect(hasLink(graph, (link) => link.kind === "declares")).toBe(true);
+          expect(graph.settings?.hiddenLinkCategories).toContain("declares");
+        }
         configure({ ...allGraphSettings, showReferenceLinks: false });
-        expect(hasLink(await buildGraph(), (link) => link.kind === "references")).toBe(false);
+        {
+          const graph = await buildGraph();
+          expect(hasLink(graph, (link) => link.kind === "references")).toBe(true);
+          expect(graph.settings?.hiddenLinkCategories).toContain("references");
+        }
         configure({ ...allGraphSettings, showCallLinks: false });
-        expect(hasLink(await buildGraph(), (link) => link.kind === "calls")).toBe(false);
+        {
+          const graph = await buildGraph();
+          expect(hasLink(graph, (link) => link.kind === "calls")).toBe(true);
+          expect(graph.settings?.hiddenLinkCategories).toContain("calls");
+        }
         configure({ ...allGraphSettings, showUnresolvedLinks: false });
         const noUnresolvedGraph = await buildGraph();
         expect(hasLink(noUnresolvedGraph, (link) => link.kind === "unresolvedReference")).toBe(
-          false,
+          true,
         );
+        expect(noUnresolvedGraph.settings?.hiddenLinkCategories).toContain("unresolvedReference");
         configure({ ...allGraphSettings, showUnresolvedNodes: false });
         const noUnresolvedNodesGraph = await buildGraph();
         expect(
           hasNode(noUnresolvedNodesGraph, (node) => node.kind === "vbUnresolved"),
-        ).toBe(false);
+        ).toBe(true);
+        expect(noUnresolvedNodesGraph.settings?.hiddenNodeCategories).toContain("unresolved");
         configure({ ...allGraphSettings, showMemberLinks: false });
-        expect(hasLink(await buildGraph(), (link) => link.role === "member")).toBe(false);
+        {
+          const graph = await buildGraph();
+          expect(hasLink(graph, (link) => link.role === "member")).toBe(true);
+          expect(graph.settings?.hiddenLinkCategories).toContain("member");
+        }
         configure({ ...allGraphSettings, showMemberNodes: false });
-        expect(hasNode(await buildGraph(), (node) => node.externalKind === "member")).toBe(false);
+        {
+          const graph = await buildGraph();
+          expect(hasNode(graph, (node) => node.externalKind === "member")).toBe(true);
+          expect(graph.settings?.hiddenNodeCategories).toContain("member");
+        }
         configure({ ...allGraphSettings, showFileNodes: false });
         const noFileGraph = await buildGraph();
-        expect(hasNode(noFileGraph, (node) => node.kind === "file" && !node.isRoot)).toBe(false);
+        expect(hasNode(noFileGraph, (node) => node.kind === "file" && !node.isRoot)).toBe(true);
+        expect(noFileGraph.settings?.hiddenNodeCategories).toContain("file");
         expect(
           hasLink(
             noFileGraph,
@@ -6123,7 +6145,7 @@ End Sub
               link.include !== null &&
               (link.include as Record<string, unknown>).exists === false,
           ),
-        ).toBe(false);
+        ).toBe(true);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

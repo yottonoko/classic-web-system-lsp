@@ -63,6 +63,7 @@
   "configuration.graph.showLocalConstantNodes.description": "Show procedure-local and class constant nodes in graph views.",
   "configuration.graph.showParameterNodes.description": "Show function, sub, method, and property parameter nodes in graph views.",
   "configuration.graph.showUnresolvedNodes.description": "Show unresolved reference nodes in graph views.",
+  "configuration.graph.hideSingleNodes.description": "Hide non-root nodes that have no visible links in graph views.",
   "configuration.graph.showIncludeLinks.description": "Show include links in graph views.",
   "configuration.graph.showDeclareLinks.description": "Show declaration-to-source links in graph views.",
   "configuration.graph.showReferenceLinks.description": "Show reference links in graph views.",

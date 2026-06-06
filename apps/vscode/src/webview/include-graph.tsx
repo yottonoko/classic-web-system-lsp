@@ -4,7 +4,13 @@ import ForceGraph2D from "react-force-graph-2d";
 import ForceGraph3D from "react-force-graph-3d";
 import SpriteText from "three-spritetext";
 import tailwindStyles from "./include-graph.css?inline";
-import type { AspGraphLink, AspGraphNode, AspGraphPayload } from "../include-graph-webview";
+import type {
+  AspGraphLink,
+  AspGraphLinkFilterCategory,
+  AspGraphNode,
+  AspGraphNodeCategory,
+  AspGraphPayload,
+} from "../include-graph-webview";
 import type { ForceGraphMethods as ForceGraph2DMethods } from "react-force-graph-2d";
 import type { ForceGraphMethods as ForceGraph3DMethods } from "react-force-graph-3d";
 
@@ -20,23 +26,7 @@ declare global {
 
 type ViewMode = "3d" | "2d";
 
-type NodeColorCategory =
-  | "root"
-  | "file"
-  | "function"
-  | "sub"
-  | "class"
-  | "method"
-  | "methodFunction"
-  | "methodSub"
-  | "property"
-  | "member"
-  | "globalVariable"
-  | "globalConstant"
-  | "localVariable"
-  | "localConstant"
-  | "parameter"
-  | "unresolved";
+type NodeColorCategory = AspGraphNodeCategory;
 
 type GraphNode = AspGraphNode & {
   color: string;
@@ -69,7 +59,7 @@ type HighlightState = {
   activeLinkIds: Set<string>;
 };
 
-type LinkFilterCategory = AspGraphLink["kind"] | "member";
+type LinkFilterCategory = AspGraphLinkFilterCategory;
 
 type CenteredSpriteText = SpriteText & {
   center: {
@@ -178,7 +168,6 @@ const nodeCategoryOrder: NodeColorCategory[] = [
   "class",
   "function",
   "sub",
-  "method",
   "methodFunction",
   "methodSub",
   "property",
@@ -204,7 +193,7 @@ const minimumNodeValue = 0.6;
 const maximumNodeValue = 16;
 const maximumNodeScaleReferenceCount = 144;
 const graphFitDurationMs = 400;
-const graphFitPadding2d = 80;
+const graphFitPadding2d = 120;
 const graphFitPadding3d = 30;
 
 function App(): React.ReactElement {
@@ -212,12 +201,12 @@ function App(): React.ReactElement {
   const [selection, setSelection] = useState<Selection>();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatchCase, setSearchMatchCase] = useState(false);
-  const [isLegendVisible, setLegendVisible] = useState(true);
+  const [hideSingleNodes, setHideSingleNodes] = useState(graph?.settings?.hideSingleNodes ?? true);
   const [hiddenNodeCategories, setHiddenNodeCategories] = useState<Set<NodeColorCategory>>(
-    () => new Set(),
+    () => new Set(graph?.settings?.hiddenNodeCategories ?? []),
   );
   const [hiddenLinkCategories, setHiddenLinkCategories] = useState<Set<LinkFilterCategory>>(
-    () => new Set(),
+    () => new Set(graph?.settings?.hiddenLinkCategories ?? []),
   );
   const graph2dRef = useRef<ForceGraph2DMethods<GraphNode, GraphLink> | undefined>(undefined);
   const graph3dRef = useRef<ForceGraph3DMethods<GraphNode, GraphLink> | undefined>(undefined);
@@ -225,18 +214,10 @@ function App(): React.ReactElement {
   const hasAutoFit3dRef = useRef(false);
   const graphData = useMemo(() => graphDataFor(graph), []);
   const filteredGraphData = useMemo(
-    () => filterGraphData(graphData, hiddenNodeCategories, hiddenLinkCategories),
-    [graphData, hiddenNodeCategories, hiddenLinkCategories],
+    () => filterGraphData(graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes),
+    [graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes],
   );
   const filteredStats = useMemo(() => graphStatsFor(filteredGraphData), [filteredGraphData]);
-  const nodeLegendCategories = useMemo(
-    () => nodeLegendCategoriesFor(graphData.nodes),
-    [graphData.nodes],
-  );
-  const linkLegendCategories = useMemo(
-    () => linkLegendCategoriesFor(graphData.links),
-    [graphData.links],
-  );
   const searchHighlight = useMemo(
     () =>
       highlightForSearch(
@@ -392,26 +373,16 @@ function App(): React.ReactElement {
           ref={surfaceRef}
           className="relative min-h-0 min-w-0 overflow-hidden [&_canvas]:block"
         >
-          {isLegendVisible ? (
-            <GraphLegend
-              hiddenLinkCategories={hiddenLinkCategories}
-              hiddenNodeCategories={hiddenNodeCategories}
-              linkCategories={linkLegendCategories}
-              nodeCategories={nodeLegendCategories}
-              onClose={() => setLegendVisible(false)}
-              onToggleLinkCategory={toggleLinkCategory}
-              onToggleNodeCategory={toggleNodeCategory}
-            />
-          ) : (
-            <button
-              type="button"
-              className="absolute top-3 left-3 z-10 h-7 cursor-pointer rounded-md border border-[#303a49] bg-[#171c25]/90 px-2.5 text-xs text-[#d7dde8] shadow-[0_10px_26px_rgb(0_0_0_/_28%)] backdrop-blur"
-              aria-label="Show graph legend"
-              onClick={() => setLegendVisible(true)}
-            >
-              Legend
-            </button>
-          )}
+          <GraphLegend
+            hiddenLinkCategories={hiddenLinkCategories}
+            hiddenNodeCategories={hiddenNodeCategories}
+            hideSingleNodes={hideSingleNodes}
+            linkCategories={linkFilterOrder}
+            nodeCategories={nodeCategoryOrder}
+            onToggleHideSingleNodes={() => setHideSingleNodes((current) => !current)}
+            onToggleLinkCategory={toggleLinkCategory}
+            onToggleNodeCategory={toggleNodeCategory}
+          />
           {mode === "3d" ? (
             <ForceGraph3D
               ref={graph3dRef}
@@ -478,94 +449,101 @@ function App(): React.ReactElement {
 function GraphLegend({
   hiddenLinkCategories,
   hiddenNodeCategories,
+  hideSingleNodes,
   linkCategories,
   nodeCategories,
-  onClose,
+  onToggleHideSingleNodes,
   onToggleLinkCategory,
   onToggleNodeCategory,
 }: {
   hiddenLinkCategories: ReadonlySet<LinkFilterCategory>;
   hiddenNodeCategories: ReadonlySet<NodeColorCategory>;
+  hideSingleNodes: boolean;
   linkCategories: LinkFilterCategory[];
   nodeCategories: NodeColorCategory[];
-  onClose(): void;
+  onToggleHideSingleNodes(): void;
   onToggleLinkCategory(category: LinkFilterCategory): void;
   onToggleNodeCategory(category: NodeColorCategory): void;
 }): React.ReactElement {
+  const [isOpen, setOpen] = useState(false);
   return (
-    <div className="absolute top-3 left-3 z-10 grid max-w-[min(560px,calc(100%_-_24px))] gap-2.5 rounded-md border border-[#303a49] bg-[#171c25]/90 px-3 py-2 shadow-[0_10px_26px_rgb(0_0_0_/_28%)] backdrop-blur">
-      <div className="flex min-w-0 items-center justify-between gap-3">
-        <span className="text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
+    <div className="absolute top-3 left-3 z-10 grid max-w-[min(560px,calc(100%_-_24px))] gap-0 rounded-md border border-[#303a49] bg-[#171c25]/90 px-2 py-0.5 shadow-[0_10px_26px_rgb(0_0_0_/_28%)] backdrop-blur">
+      <button
+        type="button"
+        className="flex h-7 min-w-0 cursor-pointer items-center justify-between gap-3 border-0 bg-transparent p-0 text-left"
+        aria-expanded={isOpen}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
           Legend
         </span>
-        <button
-          type="button"
-          className="grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md border border-[#405068] bg-[#202735] text-xs leading-none text-[#d7dde8]"
-          aria-label="Close graph legend"
-          onClick={onClose}
-        >
-          x
-        </button>
-      </div>
-      <LegendFilterGroup itemCount={linkCategories.length} title="Link filters">
-        {linkCategories.map((category) => (
-          <LegendFilterItem
-            key={category}
-            checked={!hiddenLinkCategories.has(category)}
-            color={linkFilterColors[category]}
-            label={linkFilterLabels[category]}
-            title={linkFilterDescriptions[category]}
-            variant={category === "member" ? "node" : "link"}
-            onToggle={() => onToggleLinkCategory(category)}
-          />
-        ))}
-      </LegendFilterGroup>
-      <LegendFilterGroup itemCount={nodeCategories.length} title="Node filters">
-        {nodeCategories.map((category) => (
-          <LegendFilterItem
-            key={category}
-            checked={!hiddenNodeCategories.has(category)}
-            color={nodeColors[category]}
-            label={nodeCategoryLabels[category]}
-            variant="node"
-            onToggle={() => onToggleNodeCategory(category)}
-          />
-        ))}
-      </LegendFilterGroup>
+        <span className="text-[11px] text-[#8d98a8]" aria-hidden="true">
+          {isOpen ? "-" : "+"}
+        </span>
+      </button>
+      {isOpen ? (
+        <div className="grid gap-2 pt-1.5 pb-2">
+          <LegendFilterGroup title="Link filters">
+            {linkCategories.map((category) => (
+              <LegendFilterItem
+                key={category}
+                checked={!hiddenLinkCategories.has(category)}
+                color={linkFilterColors[category]}
+                label={linkFilterLabels[category]}
+                title={linkFilterDescriptions[category]}
+                variant="link"
+                onToggle={() => onToggleLinkCategory(category)}
+              />
+            ))}
+          </LegendFilterGroup>
+          <LegendFilterGroup title="Node filters">
+            {nodeCategories.map((category) => (
+              <LegendFilterItem
+                key={category}
+                checked={!hiddenNodeCategories.has(category)}
+                color={nodeColors[category]}
+                label={nodeCategoryLabels[category]}
+                variant="node"
+                onToggle={() => onToggleNodeCategory(category)}
+              />
+            ))}
+            <LegendFilterItem
+              checked={hideSingleNodes}
+              color="#8d98a8"
+              label="Hide single nodes"
+              title="Hide non-root nodes that have no visible links."
+              variant="node"
+              onToggle={onToggleHideSingleNodes}
+            />
+          </LegendFilterGroup>
+        </div>
+      ) : null}
     </div>
   );
 }
 
 function LegendFilterGroup({
   children,
-  itemCount,
   title,
 }: {
   children: React.ReactNode;
-  itemCount: number;
   title: string;
 }): React.ReactElement {
-  const [isOpen, setOpen] = useState(false);
   return (
-    <section className="overflow-hidden rounded-md border border-[#303a49] bg-[#11151c]/45">
-      <button
-        type="button"
-        className="flex h-8 w-full cursor-pointer items-center justify-between gap-3 border-0 bg-transparent px-2.5 text-left text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase"
-        aria-expanded={isOpen}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{title}</span>
-        <span className="inline-flex shrink-0 items-center gap-2 text-[10px] tracking-normal text-[#8d98a8] normal-case">
-          {itemCount}
-          <span aria-hidden="true">{isOpen ? "-" : "+"}</span>
-        </span>
-      </button>
-      {isOpen ? (
-        <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-x-3 gap-y-1.5 border-t border-[#303a49] px-2.5 py-2 max-[560px]:grid-cols-1">
-          {children}
-        </div>
-      ) : null}
-    </section>
+    <div>
+      <LegendHeading>{title}</LegendHeading>
+      <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-x-3 gap-y-1.5 max-[560px]:grid-cols-1">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function LegendHeading({ children }: { children: React.ReactNode }): React.ReactElement {
+  return (
+    <div className="mb-1.5 text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
+      {children}
+    </div>
   );
 }
 
@@ -806,28 +784,46 @@ function graphDataFor(payload: AspGraphPayload | undefined): GraphData {
     }),
     links: payload.links.map((link) => ({
       ...link,
-      color: linkColors[link.kind],
+      color: graphLinkColor(link),
     })),
   };
+}
+
+function graphLinkColor(link: AspGraphLink): string {
+  return linkFilterColors[graphLinkFilterCategory(link)];
+}
+
+function graphLinkFilterCategory(link: Pick<AspGraphLink, "kind" | "role">): LinkFilterCategory {
+  return link.role === "member" ? "member" : link.kind;
 }
 
 function filterGraphData(
   graphData: GraphData,
   hiddenNodeCategories: ReadonlySet<NodeColorCategory>,
   hiddenLinkCategories: ReadonlySet<LinkFilterCategory>,
+  hideSingleNodes: boolean,
 ): GraphData {
-  const visibleNodes = graphData.nodes.filter((node) => !hiddenNodeCategories.has(node.category));
-  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
-  const visibleLinks = graphData.links.filter((link) => {
+  let visibleNodes = graphData.nodes.filter((node) => !hiddenNodeCategories.has(node.category));
+  let visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+  let visibleLinks = graphData.links.filter((link) => {
     const sourceId = nodeIdForEndpoint(link.source);
     const targetId = nodeIdForEndpoint(link.target);
     return (
       visibleNodeIds.has(sourceId) &&
       visibleNodeIds.has(targetId) &&
-      !hiddenLinkCategories.has(link.kind) &&
-      !(link.role === "member" && hiddenLinkCategories.has("member"))
+      !hiddenLinkCategories.has(graphLinkFilterCategory(link))
     );
   });
+  if (hideSingleNodes) {
+    const connectedNodeIds = connectedNodeIdsFor(visibleLinks);
+    visibleNodes = visibleNodes.filter((node) => node.isRoot || connectedNodeIds.has(node.id));
+    visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+    visibleLinks = visibleLinks.filter(
+      (link) =>
+        visibleNodeIds.has(nodeIdForEndpoint(link.source)) &&
+        visibleNodeIds.has(nodeIdForEndpoint(link.target)),
+    );
+  }
   const referenceCounts = graphReferenceCountsForGraphLinks(visibleLinks);
   for (const node of visibleNodes) {
     const referenceCount = referenceCounts.get(node.id) ?? 0;
@@ -838,6 +834,15 @@ function filterGraphData(
     nodes: visibleNodes,
     links: visibleLinks,
   };
+}
+
+function connectedNodeIdsFor(links: GraphLink[]): Set<string> {
+  const ids = new Set<string>();
+  for (const link of links) {
+    ids.add(nodeIdForEndpoint(link.source));
+    ids.add(nodeIdForEndpoint(link.target));
+  }
+  return ids;
 }
 
 function graphStatsFor(graphData: GraphData): AspGraphPayload["stats"] {
@@ -907,22 +912,6 @@ function graphReferenceCountsForGraphLinks(links: GraphLink[]): Map<string, numb
     counts.set(targetId, (counts.get(targetId) ?? 0) + link.count);
   }
   return counts;
-}
-
-function nodeLegendCategoriesFor(nodes: GraphNode[]): NodeColorCategory[] {
-  const categories = new Set(nodes.map((node) => node.category));
-  return nodeCategoryOrder.filter((category) => categories.has(category));
-}
-
-function linkLegendCategoriesFor(links: GraphLink[]): LinkFilterCategory[] {
-  const categories = new Set<LinkFilterCategory>();
-  for (const link of links) {
-    categories.add(link.kind);
-    if (link.role === "member") {
-      categories.add("member");
-    }
-  }
-  return linkFilterOrder.filter((category) => categories.has(category));
 }
 
 function toggledSet<T>(set: ReadonlySet<T>, value: T): Set<T> {
@@ -1038,7 +1027,7 @@ function nodeTextHeight(node: GraphNode): number {
 }
 
 function nodeTextOffset(node: GraphNode): number {
-  return nodeRadius(node) + (node.kind === "file" ? 5 : 3.5);
+  return nodeRadius(node) + (node.kind === "file" ? 2.5 : 1.5);
 }
 
 function nodeTextAnchor(offset: number, textHeight: number): number {

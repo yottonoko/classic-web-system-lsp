@@ -224,12 +224,13 @@ describe("VS Code extension package", () => {
       showLocalConstantNodes: false,
       showParameterNodes: false,
       showUnresolvedNodes: true,
+      hideSingleNodes: true,
       showIncludeLinks: true,
       showDeclareLinks: true,
       showReferenceLinks: true,
       showCallLinks: true,
       showUnresolvedLinks: true,
-      showMemberLinks: false,
+      showMemberLinks: true,
     };
     for (const [name, defaultValue] of Object.entries(graphDefaults)) {
       const setting = `aspLsp.graph.${name}`;
