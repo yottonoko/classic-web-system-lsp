@@ -5727,8 +5727,18 @@ End Sub
           graph.nodes?.some((node) => node.kind === "file" && node.label === "default.asp"),
         ).toBe(true);
         expect(
+          graph.nodes?.some(
+            (node) => node.kind === "file" && node.label === "default.asp" && node.isRoot === true,
+          ),
+        ).toBe(true);
+        expect(
           graph.nodes?.some((node) => node.kind === "file" && node.label === "common.inc"),
         ).toBe(true);
+        expect(
+          graph.nodes?.some(
+            (node) => node.kind === "file" && node.label === "common.inc" && node.isRoot === true,
+          ),
+        ).toBe(false);
         expect(graph.nodes?.some((node) => node.kind === "file" && node.exists === false)).toBe(
           true,
         );
@@ -5886,6 +5896,9 @@ End Sub
       };
       const hasDeclaresLink = (graph: TestGraph, sourceLabel: string, targetLabel: string) =>
         hasGraphLink(graph, "declares", sourceLabel, targetLabel);
+      const expectNode = (graph: TestGraph, label: string, expected: Record<string, unknown>) => {
+        expect(nodeByLabel(graph, label)).toEqual(expect.objectContaining(expected));
+      };
 
       try {
         await server.start();
@@ -5897,6 +5910,9 @@ End Sub
 
         configure();
         const defaultGraph = await buildGraph();
+        expectNode(defaultGraph, "default.asp", { kind: "file", isRoot: true });
+        expectNode(defaultGraph, "common.inc", { kind: "file" });
+        expect(nodeByLabel(defaultGraph, "common.inc")).not.toHaveProperty("isRoot", true);
         expect(hasNode(defaultGraph, (node) => node.label === "GlobalValue")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "GlobalConst")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "IncludedGlobal")).toBe(true);
@@ -5937,6 +5953,35 @@ End Sub
 
         configure(allGraphSettings);
         const visibleGraph = await buildGraph();
+        expectNode(visibleGraph, "GlobalValue", {
+          declarationKind: "variable",
+          bindingScope: "global",
+          origin: "source",
+        });
+        expectNode(visibleGraph, "GlobalConst", {
+          declarationKind: "constant",
+          bindingScope: "global",
+          origin: "source",
+        });
+        expectNode(visibleGraph, "localValue", {
+          declarationKind: "variable",
+          bindingScope: "local",
+          origin: "source",
+        });
+        expectNode(visibleGraph, "localConst", {
+          declarationKind: "constant",
+          bindingScope: "local",
+          origin: "source",
+        });
+        expectNode(visibleGraph, "arg", { declarationKind: "parameter", bindingScope: "local" });
+        expectNode(visibleGraph, "Customer", { declarationKind: "class", origin: "source" });
+        expectNode(visibleGraph, "Render", { declarationKind: "function", origin: "source" });
+        expectNode(visibleGraph, "Shared", { declarationKind: "sub", origin: "source" });
+        expectNode(visibleGraph, "Customer.Save", {
+          declarationKind: "method",
+          memberOf: "Customer",
+          origin: "source",
+        });
         expect(hasNode(visibleGraph, (node) => node.label === "Customer.Name")).toBe(true);
         expect(hasNode(visibleGraph, (node) => node.label === "Customer.Save")).toBe(true);
         expect(hasNode(visibleGraph, (node) => node.label === "Customer.Kind")).toBe(true);

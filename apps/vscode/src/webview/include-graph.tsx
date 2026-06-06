@@ -17,8 +17,24 @@ declare global {
 
 type ViewMode = "3d" | "2d";
 
+type NodeColorCategory =
+  | "root"
+  | "file"
+  | "callable"
+  | "class"
+  | "member"
+  | "globalVariable"
+  | "globalConstant"
+  | "localVariable"
+  | "localConstant"
+  | "parameter"
+  | "unresolved";
+
 type GraphNode = AspGraphNode & {
   color: string;
+  category: NodeColorCategory;
+  referenceCount: number;
+  value: number;
   x?: number;
   y?: number;
 };
@@ -34,10 +50,18 @@ type Selection = { type: "node"; item: GraphNode } | { type: "link"; item: Graph
 const vscode = acquireVsCodeApi();
 const graph = window.__ASP_LSP_GRAPH__;
 
-const nodeColors: Record<AspGraphNode["kind"], string> = {
+const nodeColors: Record<NodeColorCategory, string> = {
+  root: "#ffffff",
   file: "#67d8ef",
-  vbDeclaration: "#c792ea",
-  vbUnresolved: "#ffcb6b",
+  callable: "#c3e88d",
+  class: "#c792ea",
+  member: "#f78c6c",
+  globalVariable: "#82aaff",
+  globalConstant: "#ffcb6b",
+  localVariable: "#80cbc4",
+  localConstant: "#dcdcaa",
+  parameter: "#b2ccd6",
+  unresolved: "#ffcb6b",
 };
 
 const linkColors: Record<AspGraphLink["kind"], string> = {
@@ -119,6 +143,7 @@ function App(): React.ReactElement {
               height={surfaceSize.height}
               backgroundColor="#11151c"
               nodeColor={(node) => (node as GraphNode).color}
+              nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
               linkColor={(link) => (link as GraphLink).color}
               linkDirectionalParticles={1}
@@ -132,12 +157,16 @@ function App(): React.ReactElement {
               width={surfaceSize.width}
               height={surfaceSize.height}
               backgroundColor="#11151c"
+              nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
               linkColor={(link) => (link as GraphLink).color}
               linkDirectionalParticles={1}
               linkDirectionalParticleWidth={(link) => Math.min(4, (link as GraphLink).count)}
               nodeCanvasObject={(node, canvas, scale) =>
                 paintNode(node as GraphNode, canvas, scale)
+              }
+              nodePointerAreaPaint={(node, color, canvas) =>
+                paintNodePointerArea(node as GraphNode, color, canvas)
               }
               onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
               onLinkClick={(link) => setSelection({ type: "link", item: link as GraphLink })}
@@ -269,6 +298,8 @@ function NodeDetails({ node }: { node: GraphNode }): React.ReactElement {
   return (
     <dl className="mb-3.5 grid grid-cols-[86px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
       <Detail label="Kind" value={node.kind} />
+      <Detail label="Category" value={node.category} />
+      <Detail label="References" value={String(node.referenceCount)} />
       <Detail label="Group" value={node.group} />
       <Detail label="Declaration" value={node.declarationKind} />
       <Detail label="Member of" value={node.memberOf} />
@@ -325,16 +356,100 @@ function graphDataFor(payload: AspGraphPayload | undefined): {
   if (!payload) {
     return { nodes: [], links: [] };
   }
+  const referenceCounts = graphReferenceCounts(payload.links);
   return {
-    nodes: payload.nodes.map((node) => ({
-      ...node,
-      color: nodeColors[node.kind],
-    })),
+    nodes: payload.nodes.map((node) => {
+      const category = nodeCategoryForColor(node);
+      const referenceCount = referenceCounts.get(node.id) ?? 0;
+      return {
+        ...node,
+        category,
+        referenceCount,
+        value: nodeValue(referenceCount),
+        color: nodeColors[category],
+      };
+    }),
     links: payload.links.map((link) => ({
       ...link,
       color: linkColors[link.kind],
     })),
   };
+}
+
+function graphReferenceCounts(links: AspGraphLink[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const link of links) {
+    if (
+      link.kind !== "include" &&
+      link.kind !== "references" &&
+      link.kind !== "calls" &&
+      link.kind !== "unresolvedReference"
+    ) {
+      continue;
+    }
+    counts.set(link.target, (counts.get(link.target) ?? 0) + link.count);
+  }
+  return counts;
+}
+
+function nodeValue(referenceCount: number): number {
+  return clamp(1 + Math.sqrt(referenceCount) * 1.5, 1, 10);
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
+  if (node.isRoot) {
+    return "root";
+  }
+  if (node.kind === "file") {
+    return "file";
+  }
+  if (node.kind === "vbUnresolved") {
+    return "unresolved";
+  }
+  switch (node.declarationKind) {
+    case "function":
+    case "sub":
+      return "callable";
+    case "class":
+      return "class";
+    case "method":
+    case "property":
+      return "member";
+    case "field":
+      return "localVariable";
+    case "parameter":
+      return "parameter";
+    case "variable":
+      return node.bindingScope === "local" ? "localVariable" : "globalVariable";
+    case "constant":
+      if (node.bindingScope === "local") {
+        return "localConstant";
+      }
+      return node.memberOf ? "localConstant" : "globalConstant";
+    case "object":
+      return "globalVariable";
+    default:
+      return externalNodeCategory(node);
+  }
+}
+
+function externalNodeCategory(node: AspGraphNode): NodeColorCategory {
+  switch (node.externalKind) {
+    case "function":
+      return "callable";
+    case "constant":
+      return "globalConstant";
+    case "member":
+      return "member";
+    case "object":
+      return "globalVariable";
+    default:
+      return "globalVariable";
+  }
 }
 
 function nodeLabel(node: GraphNode): string {
@@ -348,7 +463,7 @@ function nodeLabel(node: GraphNode): string {
 }
 
 function paintNode(node: GraphNode, canvas: CanvasRenderingContext2D, scale: number): void {
-  const radius = node.kind === "file" ? 5 : 4;
+  const radius = nodeRadius(node);
   canvas.beginPath();
   canvas.arc(node.x ?? 0, node.y ?? 0, radius, 0, 2 * Math.PI, false);
   canvas.fillStyle = node.color;
@@ -358,6 +473,21 @@ function paintNode(node: GraphNode, canvas: CanvasRenderingContext2D, scale: num
     canvas.fillStyle = "#d7dde8";
     canvas.fillText(node.label, (node.x ?? 0) + radius + 2, (node.y ?? 0) + 3);
   }
+}
+
+function paintNodePointerArea(
+  node: GraphNode,
+  color: string,
+  canvas: CanvasRenderingContext2D,
+): void {
+  canvas.fillStyle = color;
+  canvas.beginPath();
+  canvas.arc(node.x ?? 0, node.y ?? 0, nodeRadius(node) + 2, 0, 2 * Math.PI, false);
+  canvas.fill();
+}
+
+function nodeRadius(node: GraphNode): number {
+  return (node.kind === "file" ? 4 : 3.5) + node.value;
 }
 
 createRoot(document.getElementById("root") ?? document.body).render(<App />);

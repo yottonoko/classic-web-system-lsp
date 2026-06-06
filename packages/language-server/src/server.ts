@@ -659,6 +659,7 @@ interface AspGraphNode {
   group?: string;
   origin?: AspGraphNodeOrigin;
   externalKind?: AspGraphExternalKind;
+  isRoot?: boolean;
 }
 
 interface AspGraphLink {
@@ -731,6 +732,7 @@ interface AspGraphBuildState {
   declarations: Set<string>;
   sourceDeclarationsByName: Map<string, Array<VbSymbolIndex["declarations"][number]>>;
   externalSymbols: AspGraphExternalIndex;
+  rootUri?: string;
   stats: AspGraphPayload["stats"];
   truncated?: AspGraphPayload["truncated"];
 }
@@ -13050,7 +13052,7 @@ async function graphPayloadFromDocumentsAsync(
   settings: AspSettings,
   options: { rootUri?: string; truncated?: AspGraphPayload["truncated"] } = {},
 ): Promise<AspGraphPayload> {
-  const state = createAspGraphBuildState(settings, options.truncated);
+  const state = createAspGraphBuildState(settings, options.rootUri, options.truncated);
   const indexedDocuments: AspGraphIndexedDocument[] = [];
   for (const document of documentsForGraph) {
     addFileGraphNode(state, document.uri, document.fileName, true);
@@ -13084,6 +13086,7 @@ async function graphPayloadFromDocumentsAsync(
 
 function createAspGraphBuildState(
   settings: AspSettings,
+  rootUri?: string,
   truncated?: AspGraphPayload["truncated"],
 ): AspGraphBuildState {
   return {
@@ -13092,6 +13095,7 @@ function createAspGraphBuildState(
     declarations: new Set(),
     sourceDeclarationsByName: new Map(),
     externalSymbols: createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings)),
+    rootUri,
     truncated,
     stats: {
       files: 0,
@@ -13599,6 +13603,7 @@ function addFileGraphNode(
     fileName,
     exists,
     group: exists ? "file" : "missing",
+    isRoot: uri === state.rootUri ? true : undefined,
   });
 }
 
