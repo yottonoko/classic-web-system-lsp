@@ -644,6 +644,24 @@ type AspGraphExternalKind = "function" | "constant" | "object" | "member" | "eve
 
 type AspGraphLinkKind = "include" | "declares" | "references" | "calls" | "unresolvedReference";
 
+type AspGraphNodeCategory =
+  | "root"
+  | "file"
+  | "function"
+  | "sub"
+  | "class"
+  | "method"
+  | "methodFunction"
+  | "methodSub"
+  | "property"
+  | "member"
+  | "globalVariable"
+  | "globalConstant"
+  | "localVariable"
+  | "localConstant"
+  | "parameter"
+  | "unresolved";
+
 interface AspGraphNode {
   id: string;
   kind: AspGraphNodeKind;
@@ -9986,29 +10004,28 @@ function normalizeGraphSettings(
   const raw = settings.graph;
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
-    showBuiltinSymbols: record.showBuiltinSymbols === true,
-    showConfiguredGlobals: record.showConfiguredGlobals === true,
-    showConfiguredComTypes: record.showConfiguredComTypes === true,
-    showObjectMembers: record.showObjectMembers === true,
-    showFunctionParameters: record.showFunctionParameters === true,
-    showLocalVariables: record.showLocalVariables === true,
-    showLocalConstants: record.showLocalConstants === true,
-    showClassFields: record.showClassFields === true,
-    showClassMethods: record.showClassMethods === true,
-    showClassProperties: record.showClassProperties === true,
-    showClassConstants: record.showClassConstants === true,
-    showClasses: record.showClasses !== false,
-    showFunctions: record.showFunctions !== false,
-    showSubs: record.showSubs !== false,
-    showGlobalVariables: record.showGlobalVariables !== false,
-    showGlobalConstants: record.showGlobalConstants !== false,
-    showFiles: record.showFiles !== false,
-    showMissingFiles: record.showMissingFiles !== false,
+    showRootNodes: record.showRootNodes !== false,
+    showFileNodes: record.showFileNodes !== false,
+    showFunctionNodes: record.showFunctionNodes !== false,
+    showSubNodes: record.showSubNodes !== false,
+    showClassNodes: record.showClassNodes !== false,
+    showMethodNodes: record.showMethodNodes === true,
+    showMethodFunctionNodes: record.showMethodFunctionNodes === true,
+    showMethodSubNodes: record.showMethodSubNodes === true,
+    showPropertyNodes: record.showPropertyNodes === true,
+    showMemberNodes: record.showMemberNodes === true,
+    showGlobalVariableNodes: record.showGlobalVariableNodes !== false,
+    showGlobalConstantNodes: record.showGlobalConstantNodes !== false,
+    showLocalVariableNodes: record.showLocalVariableNodes === true,
+    showLocalConstantNodes: record.showLocalConstantNodes === true,
+    showParameterNodes: record.showParameterNodes === true,
+    showUnresolvedNodes: record.showUnresolvedNodes !== false,
     showIncludeLinks: record.showIncludeLinks !== false,
-    showDeclarationLinks: record.showDeclarationLinks !== false,
+    showDeclareLinks: record.showDeclareLinks !== false,
     showReferenceLinks: record.showReferenceLinks !== false,
     showCallLinks: record.showCallLinks !== false,
-    showUnresolvedReferences: record.showUnresolvedReferences !== false,
+    showUnresolvedLinks: record.showUnresolvedLinks !== false,
+    showMemberLinks: record.showMemberLinks === true,
   };
 }
 
@@ -13678,70 +13695,39 @@ function isVisibleAspGraphNode(
   node: AspGraphNode,
   settings: NonNullable<AspSettings["graph"]>,
 ): boolean {
-  if (node.kind === "file") {
-    return node.exists === false
-      ? settings.showMissingFiles !== false
-      : settings.showFiles !== false;
-  }
-  if (node.kind === "vbUnresolved") {
-    if (node.role === "member") {
-      return settings.showObjectMembers === true && settings.showUnresolvedReferences !== false;
-    }
-    return settings.showUnresolvedReferences !== false;
-  }
-  if (node.origin === "builtin") {
-    return (
-      settings.showBuiltinSymbols === true &&
-      (node.externalKind !== "member" || settings.showObjectMembers === true)
-    );
-  }
-  if (node.origin === "configured") {
-    if (node.group === "configuredGlobal") {
-      return settings.showConfiguredGlobals === true;
-    }
-    if (node.group === "configuredComType") {
-      return (
-        settings.showConfiguredComTypes === true &&
-        (node.externalKind !== "member" || settings.showObjectMembers === true)
-      );
-    }
-    return false;
-  }
-  return isVisibleSourceGraphDeclaration(node, settings);
-}
-
-function isVisibleSourceGraphDeclaration(
-  node: AspGraphNode,
-  settings: NonNullable<AspSettings["graph"]>,
-): boolean {
-  switch (node.declarationKind) {
-    case "parameter":
-      return settings.showFunctionParameters === true;
-    case "variable":
-      return node.bindingScope === "local"
-        ? settings.showLocalVariables === true
-        : settings.showGlobalVariables !== false;
-    case "constant":
-      if (node.bindingScope === "local") {
-        return settings.showLocalConstants === true;
-      }
-      return node.memberOf
-        ? settings.showClassConstants === true
-        : settings.showGlobalConstants !== false;
-    case "field":
-      return settings.showClassFields === true;
-    case "method":
-      return settings.showClassMethods === true;
-    case "property":
-      return settings.showClassProperties === true;
-    case "class":
-      return settings.showClasses !== false;
+  switch (aspGraphNodeCategory(node)) {
+    case "root":
+      return settings.showRootNodes !== false;
+    case "file":
+      return settings.showFileNodes !== false;
     case "function":
-      return settings.showFunctions !== false;
+      return settings.showFunctionNodes !== false;
     case "sub":
-      return settings.showSubs !== false;
-    default:
-      return true;
+      return settings.showSubNodes !== false;
+    case "class":
+      return settings.showClassNodes !== false;
+    case "method":
+      return settings.showMethodNodes === true;
+    case "methodFunction":
+      return settings.showMethodFunctionNodes === true;
+    case "methodSub":
+      return settings.showMethodSubNodes === true;
+    case "property":
+      return settings.showPropertyNodes === true;
+    case "member":
+      return settings.showMemberNodes === true;
+    case "globalVariable":
+      return settings.showGlobalVariableNodes !== false;
+    case "globalConstant":
+      return settings.showGlobalConstantNodes !== false;
+    case "localVariable":
+      return settings.showLocalVariableNodes === true;
+    case "localConstant":
+      return settings.showLocalConstantNodes === true;
+    case "parameter":
+      return settings.showParameterNodes === true;
+    case "unresolved":
+      return settings.showUnresolvedNodes !== false;
   }
 }
 
@@ -13749,20 +13735,83 @@ function isVisibleAspGraphLink(
   link: AspGraphLink,
   settings: NonNullable<AspSettings["graph"]>,
 ): boolean {
-  if (link.role === "member" && settings.showObjectMembers !== true) {
+  if (link.role === "member" && settings.showMemberLinks !== true) {
     return false;
   }
   switch (link.kind) {
     case "include":
       return settings.showIncludeLinks !== false;
     case "declares":
-      return settings.showDeclarationLinks !== false;
+      return settings.showDeclareLinks !== false;
     case "references":
       return settings.showReferenceLinks !== false;
     case "calls":
       return settings.showCallLinks !== false;
     case "unresolvedReference":
-      return settings.showUnresolvedReferences !== false;
+      return settings.showUnresolvedLinks !== false;
+  }
+}
+
+function aspGraphNodeCategory(node: AspGraphNode): AspGraphNodeCategory {
+  if (node.isRoot) {
+    return "root";
+  }
+  if (node.kind === "file") {
+    return "file";
+  }
+  if (node.kind === "vbUnresolved") {
+    return node.role === "member" ? "member" : "unresolved";
+  }
+  if (node.externalKind === "member") {
+    return "member";
+  }
+  switch (node.declarationKind) {
+    case "function":
+      return "function";
+    case "sub":
+      return "sub";
+    case "class":
+      return "class";
+    case "method":
+      if (node.procedureKind === "function") {
+        return "methodFunction";
+      }
+      if (node.procedureKind === "sub") {
+        return "methodSub";
+      }
+      return "method";
+    case "property":
+      return "property";
+    case "field":
+      return "localVariable";
+    case "parameter":
+      return "parameter";
+    case "variable":
+      return node.bindingScope === "local" ? "localVariable" : "globalVariable";
+    case "constant":
+      if (node.bindingScope === "local") {
+        return "localConstant";
+      }
+      return node.memberOf ? "localConstant" : "globalConstant";
+    case "object":
+      return "globalVariable";
+    default:
+      return externalGraphNodeCategory(node);
+  }
+}
+
+function externalGraphNodeCategory(node: AspGraphNode): AspGraphNodeCategory {
+  switch (node.externalKind) {
+    case "function":
+      return "function";
+    case "constant":
+      return "globalConstant";
+    case "member":
+      return "member";
+    case "object":
+      return "globalVariable";
+    default:
+      return "globalVariable";
   }
 }
 

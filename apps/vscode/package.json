@@ -581,105 +581,95 @@
           "default": false,
           "description": "%configuration.codeLens.includes.description%"
         },
-        "aspLsp.graph.showBuiltinSymbols": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showBuiltinSymbols.description%"
-        },
-        "aspLsp.graph.showConfiguredGlobals": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showConfiguredGlobals.description%"
-        },
-        "aspLsp.graph.showConfiguredComTypes": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showConfiguredComTypes.description%"
-        },
-        "aspLsp.graph.showObjectMembers": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showObjectMembers.description%"
-        },
-        "aspLsp.graph.showFunctionParameters": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showFunctionParameters.description%"
-        },
-        "aspLsp.graph.showLocalVariables": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showLocalVariables.description%"
-        },
-        "aspLsp.graph.showLocalConstants": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showLocalConstants.description%"
-        },
-        "aspLsp.graph.showClassFields": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showClassFields.description%"
-        },
-        "aspLsp.graph.showClassMethods": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showClassMethods.description%"
-        },
-        "aspLsp.graph.showClassProperties": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showClassProperties.description%"
-        },
-        "aspLsp.graph.showClassConstants": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showClassConstants.description%"
-        },
-        "aspLsp.graph.showClasses": {
+        "aspLsp.graph.showRootNodes": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.graph.showClasses.description%"
+          "description": "%configuration.graph.showRootNodes.description%"
         },
-        "aspLsp.graph.showFunctions": {
+        "aspLsp.graph.showFileNodes": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.graph.showFunctions.description%"
+          "description": "%configuration.graph.showFileNodes.description%"
         },
-        "aspLsp.graph.showSubs": {
+        "aspLsp.graph.showFunctionNodes": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.graph.showSubs.description%"
+          "description": "%configuration.graph.showFunctionNodes.description%"
         },
-        "aspLsp.graph.showGlobalVariables": {
+        "aspLsp.graph.showSubNodes": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.graph.showGlobalVariables.description%"
+          "description": "%configuration.graph.showSubNodes.description%"
         },
-        "aspLsp.graph.showGlobalConstants": {
+        "aspLsp.graph.showClassNodes": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.graph.showGlobalConstants.description%"
+          "description": "%configuration.graph.showClassNodes.description%"
         },
-        "aspLsp.graph.showFiles": {
+        "aspLsp.graph.showMethodNodes": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.showMethodNodes.description%"
+        },
+        "aspLsp.graph.showMethodFunctionNodes": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.showMethodFunctionNodes.description%"
+        },
+        "aspLsp.graph.showMethodSubNodes": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.showMethodSubNodes.description%"
+        },
+        "aspLsp.graph.showPropertyNodes": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.showPropertyNodes.description%"
+        },
+        "aspLsp.graph.showMemberNodes": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.showMemberNodes.description%"
+        },
+        "aspLsp.graph.showGlobalVariableNodes": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.graph.showFiles.description%"
+          "description": "%configuration.graph.showGlobalVariableNodes.description%"
         },
-        "aspLsp.graph.showMissingFiles": {
+        "aspLsp.graph.showGlobalConstantNodes": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.graph.showMissingFiles.description%"
+          "description": "%configuration.graph.showGlobalConstantNodes.description%"
+        },
+        "aspLsp.graph.showLocalVariableNodes": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.showLocalVariableNodes.description%"
+        },
+        "aspLsp.graph.showLocalConstantNodes": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.showLocalConstantNodes.description%"
+        },
+        "aspLsp.graph.showParameterNodes": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.showParameterNodes.description%"
+        },
+        "aspLsp.graph.showUnresolvedNodes": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.graph.showUnresolvedNodes.description%"
         },
         "aspLsp.graph.showIncludeLinks": {
           "type": "boolean",
           "default": true,
           "description": "%configuration.graph.showIncludeLinks.description%"
         },
-        "aspLsp.graph.showDeclarationLinks": {
+        "aspLsp.graph.showDeclareLinks": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.graph.showDeclarationLinks.description%"
+          "description": "%configuration.graph.showDeclareLinks.description%"
         },
         "aspLsp.graph.showReferenceLinks": {
           "type": "boolean",
@@ -691,10 +681,15 @@
           "default": true,
           "description": "%configuration.graph.showCallLinks.description%"
         },
-        "aspLsp.graph.showUnresolvedReferences": {
+        "aspLsp.graph.showUnresolvedLinks": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.graph.showUnresolvedReferences.description%"
+          "description": "%configuration.graph.showUnresolvedLinks.description%"
+        },
+        "aspLsp.graph.showMemberLinks": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.showMemberLinks.description%"
         },
         "aspLsp.graph.openLocation": {
           "type": "string",

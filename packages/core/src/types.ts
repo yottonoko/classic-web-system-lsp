@@ -157,29 +157,28 @@ export interface AspCodeLensSettings {
 }
 
 export interface AspGraphSettings {
-  showBuiltinSymbols?: boolean;
-  showConfiguredGlobals?: boolean;
-  showConfiguredComTypes?: boolean;
-  showObjectMembers?: boolean;
-  showFunctionParameters?: boolean;
-  showLocalVariables?: boolean;
-  showLocalConstants?: boolean;
-  showClassFields?: boolean;
-  showClassMethods?: boolean;
-  showClassProperties?: boolean;
-  showClassConstants?: boolean;
-  showClasses?: boolean;
-  showFunctions?: boolean;
-  showSubs?: boolean;
-  showGlobalVariables?: boolean;
-  showGlobalConstants?: boolean;
-  showFiles?: boolean;
-  showMissingFiles?: boolean;
+  showRootNodes?: boolean;
+  showFileNodes?: boolean;
+  showFunctionNodes?: boolean;
+  showSubNodes?: boolean;
+  showClassNodes?: boolean;
+  showMethodNodes?: boolean;
+  showMethodFunctionNodes?: boolean;
+  showMethodSubNodes?: boolean;
+  showPropertyNodes?: boolean;
+  showMemberNodes?: boolean;
+  showGlobalVariableNodes?: boolean;
+  showGlobalConstantNodes?: boolean;
+  showLocalVariableNodes?: boolean;
+  showLocalConstantNodes?: boolean;
+  showParameterNodes?: boolean;
+  showUnresolvedNodes?: boolean;
   showIncludeLinks?: boolean;
-  showDeclarationLinks?: boolean;
+  showDeclareLinks?: boolean;
   showReferenceLinks?: boolean;
   showCallLinks?: boolean;
-  showUnresolvedReferences?: boolean;
+  showUnresolvedLinks?: boolean;
+  showMemberLinks?: boolean;
 }
 
 export interface AspCacheSettings {

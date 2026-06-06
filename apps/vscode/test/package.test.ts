@@ -208,29 +208,28 @@ describe("VS Code extension package", () => {
       }),
     );
     const graphDefaults: Record<string, boolean> = {
-      showBuiltinSymbols: false,
-      showConfiguredGlobals: false,
-      showConfiguredComTypes: false,
-      showObjectMembers: false,
-      showFunctionParameters: false,
-      showLocalVariables: false,
-      showLocalConstants: false,
-      showClassFields: false,
-      showClassMethods: false,
-      showClassProperties: false,
-      showClassConstants: false,
-      showClasses: true,
-      showFunctions: true,
-      showSubs: true,
-      showGlobalVariables: true,
-      showGlobalConstants: true,
-      showFiles: true,
-      showMissingFiles: true,
+      showRootNodes: true,
+      showFileNodes: true,
+      showFunctionNodes: true,
+      showSubNodes: true,
+      showClassNodes: true,
+      showMethodNodes: false,
+      showMethodFunctionNodes: false,
+      showMethodSubNodes: false,
+      showPropertyNodes: false,
+      showMemberNodes: false,
+      showGlobalVariableNodes: true,
+      showGlobalConstantNodes: true,
+      showLocalVariableNodes: false,
+      showLocalConstantNodes: false,
+      showParameterNodes: false,
+      showUnresolvedNodes: true,
       showIncludeLinks: true,
-      showDeclarationLinks: true,
+      showDeclareLinks: true,
       showReferenceLinks: true,
       showCallLinks: true,
-      showUnresolvedReferences: true,
+      showUnresolvedLinks: true,
+      showMemberLinks: false,
     };
     for (const [name, defaultValue] of Object.entries(graphDefaults)) {
       const setting = `aspLsp.graph.${name}`;
@@ -239,6 +238,34 @@ describe("VS Code extension package", () => {
       );
       expect(nls[`configuration.graph.${name}.description`]).toBeTruthy();
       expect(nlsJa[`configuration.graph.${name}.description`]).toBeTruthy();
+    }
+    for (const removedName of [
+      "showBuiltinSymbols",
+      "showConfiguredGlobals",
+      "showConfiguredComTypes",
+      "showObjectMembers",
+      "showFunctionParameters",
+      "showLocalVariables",
+      "showLocalConstants",
+      "showClassFields",
+      "showClassMethods",
+      "showClassProperties",
+      "showClassConstants",
+      "showClasses",
+      "showFunctions",
+      "showSubs",
+      "showGlobalVariables",
+      "showGlobalConstants",
+      "showFiles",
+      "showMissingFiles",
+      "showDeclarationLinks",
+      "showUnresolvedReferences",
+    ]) {
+      expect(
+        manifest.contributes?.configuration?.properties?.[`aspLsp.graph.${removedName}`],
+      ).toBeUndefined();
+      expect(nls[`configuration.graph.${removedName}.description`]).toBeUndefined();
+      expect(nlsJa[`configuration.graph.${removedName}.description`]).toBeUndefined();
     }
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.graph.openLocation"]).toEqual(
       expect.objectContaining({
