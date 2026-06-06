@@ -468,7 +468,7 @@ function linkWidth(link: GraphLink): number {
 }
 
 function linkParticleWidth2d(link: GraphLink): number {
-  return clamp(4 + Math.log2(link.count + 1) * 1.5, 5.5, 12);
+  return clamp(3.25 + Math.log2(link.count + 1) * 1.1, 4.5, 9);
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
