@@ -52,6 +52,11 @@ type GraphLink = Omit<AspGraphLink, "source" | "target"> & {
 
 type Selection = { type: "node"; item: GraphNode } | { type: "link"; item: GraphLink } | undefined;
 
+type HighlightState = {
+  activeNodeIds: Set<string>;
+  activeLinkIds: Set<string>;
+};
+
 const vscode = acquireVsCodeApi();
 const graph = window.__ASP_LSP_GRAPH__;
 
@@ -109,6 +114,10 @@ function App(): React.ReactElement {
   const [mode, setMode] = useState<ViewMode>("3d");
   const [selection, setSelection] = useState<Selection>();
   const graphData = useMemo(() => graphDataFor(graph), []);
+  const highlight = useMemo(
+    () => highlightForSelection(selection, graphData.links),
+    [selection, graphData.links],
+  );
   const [surfaceRef, surfaceSize] = useElementSize<HTMLElement>();
 
   if (!graph) {
@@ -176,18 +185,20 @@ function App(): React.ReactElement {
               width={surfaceSize.width}
               height={surfaceSize.height}
               backgroundColor="#11151c"
-              nodeColor={(node) => (node as GraphNode).color}
+              nodeColor={(node) => nodeColor(node as GraphNode, highlight)}
               nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
-              linkColor={(link) => (link as GraphLink).color}
-              linkWidth={(link) => linkWidth3d(link as GraphLink)}
+              linkColor={(link) => linkColor(link as GraphLink, highlight)}
+              linkWidth={(link) => linkWidth3d(link as GraphLink, highlight)}
               linkLabel={(link) => linkLabel(link as GraphLink)}
               linkCurvature={0.25}
               linkDirectionalArrowLength={3.5}
               linkDirectionalArrowRelPos={1}
-              linkDirectionalArrowColor={(link) => (link as GraphLink).color}
-              linkDirectionalParticles={(link) => linkParticleCount(link as GraphLink)}
-              linkDirectionalParticleWidth={3}
+              linkDirectionalArrowColor={(link) => linkColor(link as GraphLink, highlight)}
+              linkDirectionalParticles={(link) =>
+                linkParticleCount(link as GraphLink, highlight)
+              }
+              linkDirectionalParticleWidth={2}
               onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
               onLinkClick={(link) => setSelection({ type: "link", item: link as GraphLink })}
             />
@@ -199,17 +210,19 @@ function App(): React.ReactElement {
               backgroundColor="#11151c"
               nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
-              linkColor={(link) => (link as GraphLink).color}
-              linkWidth={(link) => linkWidth2d(link as GraphLink)}
+              linkColor={(link) => linkColor(link as GraphLink, highlight)}
+              linkWidth={(link) => linkWidth2d(link as GraphLink, highlight)}
               linkLabel={(link) => linkLabel(link as GraphLink)}
               linkCurvature={0.25}
               linkDirectionalArrowLength={3.5}
               linkDirectionalArrowRelPos={1}
-              linkDirectionalArrowColor={(link) => (link as GraphLink).color}
-              linkDirectionalParticles={(link) => linkParticleCount(link as GraphLink)}
+              linkDirectionalArrowColor={(link) => linkColor(link as GraphLink, highlight)}
+              linkDirectionalParticles={(link) =>
+                linkParticleCount(link as GraphLink, highlight)
+              }
               linkDirectionalParticleWidth={4.5}
               nodeCanvasObject={(node, canvas, scale) =>
-                paintNode(node as GraphNode, canvas, scale)
+                paintNode(node as GraphNode, canvas, scale, highlight)
               }
               nodePointerAreaPaint={(node, color, canvas) =>
                 paintNodePointerArea(node as GraphNode, color, canvas)
@@ -469,20 +482,68 @@ function graphReferenceCounts(links: AspGraphLink[]): Map<string, number> {
   return counts;
 }
 
+function highlightForSelection(
+  selection: Selection,
+  links: GraphLink[],
+): HighlightState | undefined {
+  if (selection?.type !== "node") {
+    return undefined;
+  }
+  const selectedNodeId = selection.item.id;
+  const activeNodeIds = new Set<string>([selectedNodeId]);
+  const activeLinkIds = new Set<string>();
+  for (const link of links) {
+    if (nodeIdForEndpoint(link.target) !== selectedNodeId) {
+      continue;
+    }
+    const sourceNodeId = nodeIdForEndpoint(link.source);
+    activeNodeIds.add(sourceNodeId);
+    activeLinkIds.add(link.id);
+  }
+  return { activeNodeIds, activeLinkIds };
+}
+
+function nodeIdForEndpoint(endpoint: string | GraphNode): string {
+  return typeof endpoint === "string" ? endpoint : endpoint.id;
+}
+
+function isActiveNode(node: GraphNode, highlight: HighlightState | undefined): boolean {
+  return !highlight || highlight.activeNodeIds.has(node.id);
+}
+
+function isActiveLink(link: GraphLink, highlight: HighlightState | undefined): boolean {
+  return !highlight || highlight.activeLinkIds.has(link.id);
+}
+
+function nodeColor(node: GraphNode, highlight: HighlightState | undefined): string {
+  return isActiveNode(node, highlight) ? node.color : "#2d3542";
+}
+
+function linkColor(link: GraphLink, highlight: HighlightState | undefined): string {
+  return isActiveLink(link, highlight) ? link.color : "#29313d";
+}
+
 function nodeValue(referenceCount: number): number {
   return clamp(1 + Math.sqrt(referenceCount) * 1.5, 1, 10);
 }
 
-function linkWidth2d(link: GraphLink): number {
+function linkWidth2d(link: GraphLink, highlight: HighlightState | undefined): number {
   const width = clamp(0.8 + Math.log2(link.count + 1) * 0.4, 0.8, 3);
-  return link.kind === "include" ? Math.max(3.5, width + 1.5) : width;
+  const visibleWidth = link.kind === "include" ? Math.max(3.5, width + 1.5) : width;
+  return isActiveLink(link, highlight) ? visibleWidth : Math.max(0.35, visibleWidth * 0.35);
 }
 
-function linkWidth3d(link: GraphLink): number {
+function linkWidth3d(link: GraphLink, highlight: HighlightState | undefined): number {
+  if (!isActiveLink(link, highlight)) {
+    return 0.05;
+  }
   return link.kind === "include" ? 1.5 : 0;
 }
 
-function linkParticleCount(link: GraphLink): number {
+function linkParticleCount(link: GraphLink, highlight: HighlightState | undefined): number {
+  if (!isActiveLink(link, highlight)) {
+    return 0;
+  }
   return clamp(Math.ceil(Math.sqrt(link.count)), 1, 8);
 }
 
@@ -566,13 +627,19 @@ function linkLabel(link: GraphLink): string {
   return `${meaning.label}: ${link.label} (${count})\n${meaning.description}`;
 }
 
-function paintNode(node: GraphNode, canvas: CanvasRenderingContext2D, scale: number): void {
+function paintNode(
+  node: GraphNode,
+  canvas: CanvasRenderingContext2D,
+  scale: number,
+  highlight: HighlightState | undefined,
+): void {
   const radius = nodeRadius(node);
+  const active = isActiveNode(node, highlight);
   canvas.beginPath();
   canvas.arc(node.x ?? 0, node.y ?? 0, radius, 0, 2 * Math.PI, false);
-  canvas.fillStyle = node.color;
+  canvas.fillStyle = active ? node.color : "#2d3542";
   canvas.fill();
-  if (scale > 1.2) {
+  if (scale > 1.2 && active) {
     canvas.font = `${Math.max(8, 12 / scale)}px system-ui, sans-serif`;
     canvas.fillStyle = "#d7dde8";
     canvas.fillText(node.label, (node.x ?? 0) + radius + 2, (node.y ?? 0) + 3);
