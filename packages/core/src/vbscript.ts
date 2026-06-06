@@ -5581,6 +5581,9 @@ function computeVbStatements(documents: VbCstNode[]): VbToken[][] {
       (item) => item.kind !== "whitespace" && item.kind !== "comment",
     )) {
       if (token.kind === "newline" || token.text === ":") {
+        if (token.kind === "newline" && current.at(-1)?.text === "_") {
+          continue;
+        }
         if (current.length > 0) {
           statements.push(current);
           current = [];
