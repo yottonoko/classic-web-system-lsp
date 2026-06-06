@@ -1569,6 +1569,44 @@ End Sub
     });
   });
 
+  it("keeps VBScript symbol index procedure scope after block End statements", () => {
+    const source = `<%
+Function BuildValue(ByVal input)
+  Dim values
+  If input Then
+    values = input
+  End If
+  values = values & input
+  values("total") = values("total") & input
+  With values
+  End With
+  BuildValue = values
+End Function
+%>`;
+    const index = extractVbscriptSymbolIndex("file:///site/block-scope.asp", source);
+    const input = index.declarations.find((item) => item.name === "input");
+    const values = index.declarations.find((item) => item.name === "values");
+    expect(input).toMatchObject({ kind: "parameter", bindingScope: "local" });
+    expect(values).toMatchObject({ kind: "variable", bindingScope: "local" });
+    expect(
+      index.references.filter((item) => item.name === "input" && item.role === "read"),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ resolvedId: input?.id, bindingScope: "local" }),
+      ]),
+    );
+    expect(
+      index.references.filter((item) => item.name === "values" && item.role === "read"),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ resolvedId: values?.id, bindingScope: "local" }),
+      ]),
+    );
+    expect(index.deferredExternalRefs.map((item) => item.name)).not.toEqual(
+      expect.arrayContaining(["input", "values"]),
+    );
+  });
+
   it("collects only public VBScript symbols for include summaries", () => {
     const source = `<%
 Dim PublicValue

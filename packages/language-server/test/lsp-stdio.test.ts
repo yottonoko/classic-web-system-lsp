@@ -5791,6 +5791,11 @@ End Function
 Sub Main(arg)
   Dim localMain
   Const localMainConst = 4
+  If arg Then
+    localMain = 1
+  End If
+  localMain = arg
+  localMain("value") = arg
   Response.Write CStr(GlobalConst)
   Repository.Find arg
   MissingName
@@ -5890,6 +5895,7 @@ End Sub
         expect(hasNode(defaultGraph, (node) => node.label === "Customer.Kind")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "localValue")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "localConst")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "localMain")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "arg")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "Response")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "Response.Write")).toBe(false);
@@ -5912,6 +5918,8 @@ End Sub
         expect(hasDeclaresLink(visibleGraph, "Customer", "Customer.Save")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "Customer.Save", "localValue")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "Main", "arg")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Main", "arg")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Main", "localMain")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Customer.Save", "localConst")).toBe(true);
         expect(hasGraphLink(visibleGraph, "calls", "Main", "Response.Write")).toBe(true);
         expect(hasGraphLink(visibleGraph, "calls", "Main", "CStr")).toBe(true);

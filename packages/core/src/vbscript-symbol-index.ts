@@ -681,9 +681,16 @@ function collectReferences(state: SymbolIndexBuildState): {
     if (isTypeAnnotationIdentifier(state.tokens, index)) {
       continue;
     }
-    const role = referenceRole(state.tokens, index);
+    let role = referenceRole(state.tokens, index);
     const baseName = memberBaseName(state.tokens, index);
-    const resolved = resolveDeclaration(state, lookup, token, role, baseName);
+    let resolved = resolveDeclaration(state, lookup, token, role, baseName);
+    if (!resolved && role === "call") {
+      const valueResolved = resolveDeclaration(state, lookup, token, "read", baseName);
+      if (valueResolved && declarationCanBeIndexed(valueResolved.kind)) {
+        role = "read";
+        resolved = valueResolved;
+      }
+    }
     const expectedKinds = expectedKindsForReference(role, resolved);
     const scope =
       activeScopeAt(state, token.start, "procedure") ?? activeScopeAt(state, token.start, "class");
@@ -793,7 +800,15 @@ function closeScope(
   endKind: string | undefined,
   endToken: VbToken,
 ): void {
-  const targetKind = endKind === "class" ? "class" : "procedure";
+  const targetKind =
+    endKind === "class"
+      ? "class"
+      : endKind === "sub" || endKind === "function" || endKind === "property"
+        ? "procedure"
+        : undefined;
+  if (!targetKind) {
+    return;
+  }
   const index = findLastIndex(state.stack, (scope) => scope.kind === targetKind);
   if (index <= 0) {
     return;
@@ -937,6 +952,16 @@ function declarationKindMatchesRole(
     return kind === "function" || kind === "sub" || kind === "method" || kind === "property";
   }
   return true;
+}
+
+function declarationCanBeIndexed(kind: VbIndexedDeclarationKind): boolean {
+  return (
+    kind === "variable" ||
+    kind === "constant" ||
+    kind === "parameter" ||
+    kind === "field" ||
+    kind === "property"
+  );
 }
 
 function referenceRole(tokens: VbToken[], index: number): VbIndexedReferenceRole {
