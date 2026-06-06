@@ -7,6 +7,9 @@ const extensionRoot = path.resolve(import.meta.dirname, "..");
 await build({
   root: extensionRoot,
   configFile: false,
+  define: {
+    "process.env.NODE_ENV": JSON.stringify("production"),
+  },
   plugins: [react()],
   build: {
     emptyOutDir: true,
