@@ -76,6 +76,29 @@ const linkColors: Record<AspGraphLink["kind"], string> = {
   unresolvedReference: "#ff5370",
 };
 
+const linkMeanings: Record<AspGraphLink["kind"], { label: string; description: string }> = {
+  include: {
+    label: "Include",
+    description: "A Classic ASP file includes another file.",
+  },
+  declares: {
+    label: "Declares",
+    description: "A file or containing scope declares a VBScript symbol.",
+  },
+  references: {
+    label: "Reference",
+    description: "VBScript reads, writes, or otherwise references a resolved symbol.",
+  },
+  calls: {
+    label: "Call",
+    description: "VBScript calls a procedure, function, method, constructor, or member.",
+  },
+  unresolvedReference: {
+    label: "Unresolved",
+    description: "VBScript references a symbol that could not be resolved.",
+  },
+};
+
 function App(): React.ReactElement {
   const [mode, setMode] = useState<ViewMode>("3d");
   const [selection, setSelection] = useState<Selection>();
@@ -140,6 +163,7 @@ function App(): React.ReactElement {
           ref={surfaceRef}
           className="relative min-h-0 min-w-0 overflow-hidden [&_canvas]:block"
         >
+          <LinkLegend />
           {mode === "3d" ? (
             <ForceGraph3D
               graphData={graphData}
@@ -150,6 +174,8 @@ function App(): React.ReactElement {
               nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
               linkColor={(link) => (link as GraphLink).color}
+              linkWidth={(link) => linkWidth(link as GraphLink)}
+              linkLabel={(link) => linkLabel(link as GraphLink)}
               linkDirectionalParticles={1}
               linkDirectionalParticleWidth={(link) => Math.min(4, (link as GraphLink).count)}
               onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
@@ -164,6 +190,8 @@ function App(): React.ReactElement {
               nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
               linkColor={(link) => (link as GraphLink).color}
+              linkWidth={(link) => linkWidth(link as GraphLink)}
+              linkLabel={(link) => linkLabel(link as GraphLink)}
               linkDirectionalParticles={1}
               linkDirectionalParticleWidth={(link) => Math.min(4, (link as GraphLink).count)}
               nodeCanvasObject={(node, canvas, scale) =>
@@ -180,6 +208,33 @@ function App(): React.ReactElement {
         <Inspector selection={selection} onClose={() => setSelection(undefined)} />
       </main>
     </Shell>
+  );
+}
+
+function LinkLegend(): React.ReactElement {
+  return (
+    <div className="pointer-events-none absolute top-3 left-3 z-10 max-w-[min(460px,calc(100%_-_24px))] rounded-md border border-[#303a49] bg-[#171c25]/90 px-3 py-2 shadow-[0_10px_26px_rgb(0_0_0_/_28%)] backdrop-blur">
+      <div className="mb-1.5 text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
+        Link colors
+      </div>
+      <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-x-3 gap-y-1.5 max-[560px]:grid-cols-1">
+        {Object.entries(linkMeanings).map(([kind, meaning]) => (
+          <div key={kind} className="flex min-w-0 items-center gap-2">
+            <span
+              className="h-0 w-7 shrink-0 rounded-full border-t-2"
+              style={{ borderColor: linkColors[kind as AspGraphLink["kind"]] }}
+              aria-hidden="true"
+            />
+            <span
+              className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#d7dde8]"
+              title={meaning.description}
+            >
+              {meaning.label}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -400,6 +455,10 @@ function nodeValue(referenceCount: number): number {
   return clamp(1 + Math.sqrt(referenceCount) * 1.5, 1, 10);
 }
 
+function linkWidth(link: GraphLink): number {
+  return clamp(0.8 + Math.log2(link.count + 1) * 0.4, 0.8, 3);
+}
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
@@ -465,6 +524,12 @@ function nodeLabel(node: GraphNode): string {
     return `${node.role}: ${node.label}`;
   }
   return node.label;
+}
+
+function linkLabel(link: GraphLink): string {
+  const meaning = linkMeanings[link.kind];
+  const count = link.count === 1 ? "1 occurrence" : `${link.count} occurrences`;
+  return `${meaning.label}: ${link.label} (${count})\n${meaning.description}`;
 }
 
 function paintNode(node: GraphNode, canvas: CanvasRenderingContext2D, scale: number): void {
