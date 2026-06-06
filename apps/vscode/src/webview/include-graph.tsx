@@ -174,8 +174,12 @@ function App(): React.ReactElement {
               nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
               linkColor={(link) => (link as GraphLink).color}
-              linkWidth={(link) => linkWidth(link as GraphLink)}
+              linkWidth={0}
               linkLabel={(link) => linkLabel(link as GraphLink)}
+              linkCurvature={0.25}
+              linkDirectionalArrowLength={3.5}
+              linkDirectionalArrowRelPos={1}
+              linkDirectionalArrowColor={(link) => (link as GraphLink).color}
               linkDirectionalParticles={1}
               linkDirectionalParticleWidth={(link) => Math.min(4, (link as GraphLink).count)}
               onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
@@ -192,6 +196,10 @@ function App(): React.ReactElement {
               linkColor={(link) => (link as GraphLink).color}
               linkWidth={(link) => linkWidth(link as GraphLink)}
               linkLabel={(link) => linkLabel(link as GraphLink)}
+              linkCurvature={0.25}
+              linkDirectionalArrowLength={3.5}
+              linkDirectionalArrowRelPos={1}
+              linkDirectionalArrowColor={(link) => (link as GraphLink).color}
               linkDirectionalParticles={1}
               linkDirectionalParticleWidth={(link) => linkParticleWidth2d(link as GraphLink)}
               nodeCanvasObject={(node, canvas, scale) =>
