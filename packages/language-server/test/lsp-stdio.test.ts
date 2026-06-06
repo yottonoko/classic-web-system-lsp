@@ -5823,6 +5823,10 @@ End Sub
         showFunctionParameters: true,
         showLocalVariables: true,
         showLocalConstants: true,
+        showClassFields: true,
+        showClassMethods: true,
+        showClassProperties: true,
+        showClassConstants: true,
       };
       type TestGraph = {
         nodes?: Array<Record<string, unknown>>;
@@ -5849,6 +5853,27 @@ End Sub
         (graph.nodes ?? []).some(predicate);
       const hasLink = (graph: TestGraph, predicate: (link: Record<string, unknown>) => boolean) =>
         (graph.links ?? []).some(predicate);
+      const nodeByLabel = (graph: TestGraph, label: string) =>
+        (graph.nodes ?? []).find((node) => node.label === label);
+      const hasGraphLink = (
+        graph: TestGraph,
+        kind: string,
+        sourceLabel: string,
+        targetLabel: string,
+      ) => {
+        const source = nodeByLabel(graph, sourceLabel);
+        const target = nodeByLabel(graph, targetLabel);
+        return Boolean(
+          source &&
+          target &&
+          hasLink(
+            graph,
+            (link) => link.kind === kind && link.source === source.id && link.target === target.id,
+          ),
+        );
+      };
+      const hasDeclaresLink = (graph: TestGraph, sourceLabel: string, targetLabel: string) =>
+        hasGraphLink(graph, "declares", sourceLabel, targetLabel);
 
       try {
         await server.start();
@@ -5860,7 +5885,9 @@ End Sub
 
         configure();
         const defaultGraph = await buildGraph();
-        expect(hasNode(defaultGraph, (node) => node.label === "Customer.Name")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "Customer.Name")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "Customer.Save")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "Customer.Kind")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "localValue")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "localConst")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "arg")).toBe(false);
@@ -5873,9 +5900,19 @@ End Sub
 
         configure(allGraphSettings);
         const visibleGraph = await buildGraph();
+        expect(hasNode(visibleGraph, (node) => node.label === "Customer.Name")).toBe(true);
+        expect(hasNode(visibleGraph, (node) => node.label === "Customer.Save")).toBe(true);
+        expect(hasNode(visibleGraph, (node) => node.label === "Customer.Kind")).toBe(true);
         expect(hasNode(visibleGraph, (node) => node.label === "localValue")).toBe(true);
         expect(hasNode(visibleGraph, (node) => node.label === "localConst")).toBe(true);
         expect(hasNode(visibleGraph, (node) => node.label === "arg")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "Customer", "Customer.Name")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "Customer", "Customer.Save")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "Customer.Save", "localValue")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "Main", "arg")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Customer.Save", "localConst")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "calls", "Main", "Response.Write")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "calls", "Main", "CStr")).toBe(true);
         expect(
           hasNode(
             visibleGraph,

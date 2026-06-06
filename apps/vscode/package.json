@@ -617,22 +617,22 @@
         },
         "aspLsp.graph.showClassFields": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "%configuration.graph.showClassFields.description%"
         },
         "aspLsp.graph.showClassMethods": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "%configuration.graph.showClassMethods.description%"
         },
         "aspLsp.graph.showClassProperties": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "%configuration.graph.showClassProperties.description%"
         },
         "aspLsp.graph.showClassConstants": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "%configuration.graph.showClassConstants.description%"
         },
         "aspLsp.graph.showClasses": {

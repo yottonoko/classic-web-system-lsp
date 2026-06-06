@@ -9984,10 +9984,10 @@ function normalizeGraphSettings(
     showFunctionParameters: record.showFunctionParameters === true,
     showLocalVariables: record.showLocalVariables === true,
     showLocalConstants: record.showLocalConstants === true,
-    showClassFields: record.showClassFields !== false,
-    showClassMethods: record.showClassMethods !== false,
-    showClassProperties: record.showClassProperties !== false,
-    showClassConstants: record.showClassConstants !== false,
+    showClassFields: record.showClassFields === true,
+    showClassMethods: record.showClassMethods === true,
+    showClassProperties: record.showClassProperties === true,
+    showClassConstants: record.showClassConstants === true,
     showClasses: record.showClasses !== false,
     showFunctions: record.showFunctions !== false,
     showSubs: record.showSubs !== false,
@@ -13192,6 +13192,16 @@ function externalGraphNodeId(symbol: VbGraphExternalSymbol): string {
   ].join(":");
 }
 
+function declarationSourceGraphNodeId(
+  state: AspGraphBuildState,
+  uri: string,
+  scopeId: string | undefined,
+): string {
+  return scopeId && state.declarations.has(scopeId)
+    ? declarationGraphNodeId(scopeId)
+    : fileGraphNodeId(uri);
+}
+
 async function addDocumentToAspGraphAsync(
   state: AspGraphBuildState,
   document: AspGraphDocument,
@@ -13248,7 +13258,7 @@ async function addDocumentToAspGraphAsync(
       origin: "source",
     });
     addAspGraphLink(state, {
-      source: fileNode,
+      source: declarationSourceGraphNodeId(state, document.uri, declaration.scopeId),
       target: declarationNode,
       kind: "declares",
       label: "declares",
@@ -13603,14 +13613,14 @@ function isVisibleSourceGraphDeclaration(
         return settings.showLocalConstants === true;
       }
       return node.memberOf
-        ? settings.showClassConstants !== false
+        ? settings.showClassConstants === true
         : settings.showGlobalConstants !== false;
     case "field":
-      return settings.showClassFields !== false;
+      return settings.showClassFields === true;
     case "method":
-      return settings.showClassMethods !== false;
+      return settings.showClassMethods === true;
     case "property":
-      return settings.showClassProperties !== false;
+      return settings.showClassProperties === true;
     case "class":
       return settings.showClasses !== false;
     case "function":
