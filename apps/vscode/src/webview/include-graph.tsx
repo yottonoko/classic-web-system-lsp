@@ -273,6 +273,8 @@ function NodeDetails({ node }: { node: GraphNode }): React.ReactElement {
       <Detail label="Declaration" value={node.declarationKind} />
       <Detail label="Member of" value={node.memberOf} />
       <Detail label="Scope" value={node.bindingScope} />
+      <Detail label="Origin" value={node.origin} />
+      <Detail label="External" value={node.externalKind} />
       <Detail label="File" value={node.fileName} />
       <Detail label="URI" value={node.uri} />
     </dl>

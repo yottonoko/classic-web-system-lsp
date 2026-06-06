@@ -35,6 +35,7 @@ export interface AspSettings {
   vbscript?: AspVbscriptSettings;
   inlayHints?: AspInlayHintSettings;
   codeLens?: AspCodeLensSettings;
+  graph?: AspGraphSettings;
   cache?: AspCacheSettings;
   workspace?: AspWorkspaceSettings;
 }
@@ -153,6 +154,32 @@ export interface AspCodeLensSettings {
   references?: boolean;
   includes?: boolean;
   referenceScope?: "analyzed" | "workspace";
+}
+
+export interface AspGraphSettings {
+  showBuiltinSymbols?: boolean;
+  showConfiguredGlobals?: boolean;
+  showConfiguredComTypes?: boolean;
+  showObjectMembers?: boolean;
+  showFunctionParameters?: boolean;
+  showLocalVariables?: boolean;
+  showLocalConstants?: boolean;
+  showClassFields?: boolean;
+  showClassMethods?: boolean;
+  showClassProperties?: boolean;
+  showClassConstants?: boolean;
+  showClasses?: boolean;
+  showFunctions?: boolean;
+  showSubs?: boolean;
+  showGlobalVariables?: boolean;
+  showGlobalConstants?: boolean;
+  showFiles?: boolean;
+  showMissingFiles?: boolean;
+  showIncludeLinks?: boolean;
+  showDeclarationLinks?: boolean;
+  showReferenceLinks?: boolean;
+  showCallLinks?: boolean;
+  showUnresolvedReferences?: boolean;
 }
 
 export interface AspCacheSettings {

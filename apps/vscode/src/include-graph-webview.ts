@@ -34,6 +34,8 @@ export interface AspGraphNode {
   memberOf?: string;
   bindingScope?: string;
   group?: string;
+  origin?: "source" | "builtin" | "configured";
+  externalKind?: "function" | "constant" | "object" | "member" | "event";
 }
 
 export interface AspGraphLink {

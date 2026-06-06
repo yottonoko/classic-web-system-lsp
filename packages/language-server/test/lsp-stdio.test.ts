@@ -5753,6 +5753,205 @@ End Sub
       }
     });
 
+    it("filters graph nodes and links from graph settings", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-settings-"));
+      fs.writeFileSync(
+        path.join(tempDir, "common.inc"),
+        `<%
+Sub Shared()
+End Sub
+%>`,
+        "utf8",
+      );
+      const owner = path.join(tempDir, "default.asp");
+      const uri = `file://${owner}`;
+      fs.writeFileSync(
+        owner,
+        `<!-- #include file="common.inc" -->
+<!-- #include file="missing.inc" -->
+<%
+Dim GlobalValue
+Const GlobalConst = 1
+Class Customer
+  Public Const Kind = "retail"
+  Public Name
+  Public Sub Save(item)
+    Dim localValue
+    Const localConst = 2
+    Response.Write CStr(item)
+    Repository.Find item
+    localValue = localConst
+  End Sub
+End Class
+Function Render(value)
+  Dim localRender
+  Const localRenderConst = 3
+  Render = value
+End Function
+Sub Main(arg)
+  Dim localMain
+  Const localMainConst = 4
+  Response.Write CStr(GlobalConst)
+  Repository.Find arg
+  MissingName
+End Sub
+%>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      const vbscriptSettings = {
+        globals: {
+          Repository: "RepositoryType",
+        },
+        comTypes: {
+          RepositoryType: {
+            members: {
+              Find: {
+                kind: "method",
+                returnType: "Variant",
+                parameters: [{ name: "id", type: "String" }],
+              },
+            },
+          },
+        },
+      };
+      const allGraphSettings = {
+        showBuiltinSymbols: true,
+        showConfiguredGlobals: true,
+        showConfiguredComTypes: true,
+        showObjectMembers: true,
+        showFunctionParameters: true,
+        showLocalVariables: true,
+        showLocalConstants: true,
+      };
+      type TestGraph = {
+        nodes?: Array<Record<string, unknown>>;
+        links?: Array<Record<string, unknown>>;
+        stats?: Record<string, unknown>;
+      };
+      const configure = (graph?: Record<string, unknown>) => {
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              vbscript: vbscriptSettings,
+              diagnostics: { debounceMs: 0 },
+              graph,
+            },
+          },
+        });
+      };
+      const buildGraph = async (): Promise<TestGraph> =>
+        (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri }],
+        })) as TestGraph;
+      const hasNode = (graph: TestGraph, predicate: (node: Record<string, unknown>) => boolean) =>
+        (graph.nodes ?? []).some(predicate);
+      const hasLink = (graph: TestGraph, predicate: (link: Record<string, unknown>) => boolean) =>
+        (graph.links ?? []).some(predicate);
+
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+
+        configure();
+        const defaultGraph = await buildGraph();
+        expect(hasNode(defaultGraph, (node) => node.label === "Customer.Name")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "localValue")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "localConst")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "arg")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "Response")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "Response.Write")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "CStr")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "Repository")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "RepositoryType.Find")).toBe(false);
+        expect(hasNode(defaultGraph, (node) => node.label === "MissingName")).toBe(true);
+
+        configure(allGraphSettings);
+        const visibleGraph = await buildGraph();
+        expect(hasNode(visibleGraph, (node) => node.label === "localValue")).toBe(true);
+        expect(hasNode(visibleGraph, (node) => node.label === "localConst")).toBe(true);
+        expect(hasNode(visibleGraph, (node) => node.label === "arg")).toBe(true);
+        expect(
+          hasNode(
+            visibleGraph,
+            (node) =>
+              node.label === "Response" &&
+              node.origin === "builtin" &&
+              node.externalKind === "object",
+          ),
+        ).toBe(true);
+        expect(
+          hasNode(
+            visibleGraph,
+            (node) =>
+              node.label === "Response.Write" &&
+              node.origin === "builtin" &&
+              node.externalKind === "member",
+          ),
+        ).toBe(true);
+        expect(hasNode(visibleGraph, (node) => node.label === "CStr")).toBe(true);
+        expect(
+          hasNode(
+            visibleGraph,
+            (node) =>
+              node.label === "Repository" &&
+              node.origin === "configured" &&
+              node.group === "configuredGlobal",
+          ),
+        ).toBe(true);
+        expect(
+          hasNode(
+            visibleGraph,
+            (node) =>
+              node.label === "RepositoryType.Find" &&
+              node.origin === "configured" &&
+              node.externalKind === "member",
+          ),
+        ).toBe(true);
+
+        configure({ ...allGraphSettings, showIncludeLinks: false });
+        expect(hasLink(await buildGraph(), (link) => link.kind === "include")).toBe(false);
+        configure({ ...allGraphSettings, showDeclarationLinks: false });
+        expect(hasLink(await buildGraph(), (link) => link.kind === "declares")).toBe(false);
+        configure({ ...allGraphSettings, showReferenceLinks: false });
+        expect(hasLink(await buildGraph(), (link) => link.kind === "references")).toBe(false);
+        configure({ ...allGraphSettings, showCallLinks: false });
+        expect(hasLink(await buildGraph(), (link) => link.kind === "calls")).toBe(false);
+        configure({ ...allGraphSettings, showUnresolvedReferences: false });
+        const noUnresolvedGraph = await buildGraph();
+        expect(hasNode(noUnresolvedGraph, (node) => node.kind === "vbUnresolved")).toBe(false);
+        expect(hasLink(noUnresolvedGraph, (link) => link.kind === "unresolvedReference")).toBe(
+          false,
+        );
+        configure({ ...allGraphSettings, showMissingFiles: false });
+        const noMissingGraph = await buildGraph();
+        expect(
+          hasNode(noMissingGraph, (node) => node.kind === "file" && node.exists === false),
+        ).toBe(false);
+        expect(
+          hasLink(
+            noMissingGraph,
+            (link) =>
+              link.kind === "include" &&
+              typeof link.include === "object" &&
+              link.include !== null &&
+              (link.include as Record<string, unknown>).exists === false,
+          ),
+        ).toBe(false);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("builds a workspace graph from unopened ASP files", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-graph-"));
       fs.writeFileSync(

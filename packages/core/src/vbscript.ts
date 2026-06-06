@@ -34,6 +34,7 @@ import type {
   AspRegion,
   AspSettings,
   AspVbscriptComType,
+  AspVbscriptGlobal,
   AspVbscriptIdentifierCase,
   AspVbscriptIdentifierKind,
   VbCstNode,
@@ -197,6 +198,22 @@ interface VbUnusedReferenceCandidates {
   lowerNames: Set<string>;
   memberNames: Set<string>;
   symbols: VbSymbol[];
+}
+
+export type VbGraphExternalSymbolOrigin = "builtin" | "configured";
+
+export type VbGraphExternalSymbolKind = "function" | "constant" | "object" | "member" | "event";
+
+export type VbGraphExternalSymbolCategory = "builtin" | "configuredGlobal" | "configuredComType";
+
+export interface VbGraphExternalSymbol {
+  name: string;
+  origin: VbGraphExternalSymbolOrigin;
+  externalKind: VbGraphExternalSymbolKind;
+  category: VbGraphExternalSymbolCategory;
+  declarationKind?: VbSymbolKind | "object" | "event";
+  memberOf?: string;
+  typeName?: string;
 }
 
 const analysisSnapshots = new WeakMap<AspParsedDocument, VbAnalysisSnapshot>();
@@ -8089,6 +8106,133 @@ function configuredComTypes(comTypes: Record<string, AspVbscriptComType>): VbTyp
       };
     }),
   }));
+}
+
+export function getVbscriptGraphExternalSymbols(
+  settings: AspSettings = {},
+): VbGraphExternalSymbol[] {
+  const symbols: VbGraphExternalSymbol[] = [
+    ...builtinFunctions.map(
+      (item): VbGraphExternalSymbol => ({
+        name: item.label,
+        origin: "builtin",
+        externalKind: "function",
+        category: "builtin",
+        declarationKind: "function",
+        typeName: item.returnType,
+      }),
+    ),
+    ...builtinConstants.map(
+      (item): VbGraphExternalSymbol => ({
+        name: item.label,
+        origin: "builtin",
+        externalKind: "constant",
+        category: "builtin",
+        declarationKind: "constant",
+        typeName: item.type,
+      }),
+    ),
+    ...classicAspRuntimeEvents.map(
+      (item): VbGraphExternalSymbol => ({
+        name: item.label,
+        origin: "builtin",
+        externalKind: "event",
+        category: "builtin",
+        declarationKind: "event",
+      }),
+    ),
+    ...graphObjectSymbols(classicAspObjectCatalog, "builtin", "builtin"),
+    ...graphObjectSymbols(externalObjectCatalog, "builtin", "builtin"),
+  ];
+  symbols.push(...configuredGlobalGraphSymbols(settings.vbscript?.globals ?? {}));
+  symbols.push(...configuredComTypeGraphSymbols(settings.vbscript?.comTypes ?? {}));
+  return symbols;
+}
+
+function graphObjectSymbols(
+  catalog: Record<string, BuiltinObjectSpec>,
+  origin: VbGraphExternalSymbolOrigin,
+  category: VbGraphExternalSymbolCategory,
+): VbGraphExternalSymbol[] {
+  return Object.values(catalog).flatMap((objectSpec) => [
+    {
+      name: objectSpec.typeName,
+      origin,
+      externalKind: "object",
+      category,
+      declarationKind: "object",
+      typeName: objectSpec.typeName,
+    } satisfies VbGraphExternalSymbol,
+    ...objectSpec.members.map(
+      (member): VbGraphExternalSymbol => ({
+        name: member.name,
+        origin,
+        externalKind: "member",
+        category,
+        declarationKind: graphDeclarationKindForMember(member.kind),
+        memberOf: objectSpec.typeName,
+        typeName: member.type,
+      }),
+    ),
+  ]);
+}
+
+function configuredGlobalGraphSymbols(
+  globals: Record<string, string | AspVbscriptGlobal>,
+): VbGraphExternalSymbol[] {
+  return Object.entries(globals).flatMap(([name, value]) => {
+    const typeName = typeof value === "string" ? value : value.type;
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name) || !typeName) {
+      return [];
+    }
+    const type = parseVbscriptTypeRef(typeName);
+    const isConstant = typeof value === "object" && value.kind === "constant";
+    return [
+      {
+        name,
+        origin: "configured",
+        externalKind: isConstant ? "constant" : "object",
+        category: "configuredGlobal",
+        declarationKind: isConstant ? "constant" : "variable",
+        typeName: type.name,
+      } satisfies VbGraphExternalSymbol,
+    ];
+  });
+}
+
+function configuredComTypeGraphSymbols(
+  comTypes: Record<string, AspVbscriptComType>,
+): VbGraphExternalSymbol[] {
+  return Object.entries(comTypes).flatMap(([name, config]) => [
+    {
+      name,
+      origin: "configured",
+      externalKind: "object",
+      category: "configuredComType",
+      declarationKind: "object",
+      typeName: name,
+    } satisfies VbGraphExternalSymbol,
+    ...Object.entries(config.members ?? {}).map(([memberName, member]): VbGraphExternalSymbol => {
+      const kind =
+        typeof member === "string"
+          ? "property"
+          : (member.kind ?? (member.parameters ? "method" : "property"));
+      const typeName = typeof member === "string" ? member : (member.returnType ?? member.type);
+      return {
+        name: memberName,
+        origin: "configured",
+        externalKind: "member",
+        category: "configuredComType",
+        declarationKind: graphDeclarationKindForMember(kind),
+        memberOf: name,
+        typeName,
+      };
+    }),
+  ]);
+}
+
+function graphDeclarationKindForMember(kind: VbBuiltinMemberKind): VbSymbolKind {
+  return kind === "method" ? "method" : kind === "field" ? "field" : "property";
 }
 
 function builtinSignature(name: string): VbSignature | undefined {

@@ -105,6 +105,7 @@ import {
   getVbscriptRenameRange,
   getVbscriptReferences,
   getVbscriptReferencesForSymbol,
+  getVbscriptGraphExternalSymbols,
   getVbscriptSelectionRanges,
   getVbscriptSemanticTokens,
   getVbscriptSignatureHelp,
@@ -146,6 +147,7 @@ import {
   type VbToken,
   type VbType,
   type VbTypeEnvironment,
+  type VbGraphExternalSymbol,
 } from "@asp-lsp/core";
 import { getCSSLanguageService, type Stylesheet } from "vscode-css-languageservice";
 import {
@@ -636,6 +638,10 @@ type AspGraphScope = "document" | "workspace";
 
 type AspGraphNodeKind = "file" | "vbDeclaration" | "vbUnresolved";
 
+type AspGraphNodeOrigin = "source" | "builtin" | "configured";
+
+type AspGraphExternalKind = "function" | "constant" | "object" | "member" | "event";
+
 type AspGraphLinkKind = "include" | "declares" | "references" | "calls" | "unresolvedReference";
 
 interface AspGraphNode {
@@ -651,6 +657,8 @@ interface AspGraphNode {
   memberOf?: string;
   bindingScope?: string;
   group?: string;
+  origin?: AspGraphNodeOrigin;
+  externalKind?: AspGraphExternalKind;
 }
 
 interface AspGraphLink {
@@ -716,8 +724,14 @@ interface AspGraphBuildState {
   nodes: Map<string, AspGraphNode>;
   links: Map<string, AspGraphLink>;
   declarations: Set<string>;
+  externalSymbols: AspGraphExternalIndex;
   stats: AspGraphPayload["stats"];
   truncated?: AspGraphPayload["truncated"];
+}
+
+interface AspGraphExternalIndex {
+  byName: Map<string, VbGraphExternalSymbol[]>;
+  memberByOwnerAndName: Map<string, VbGraphExternalSymbol>;
 }
 
 interface FilePublicSignature {
@@ -9815,6 +9829,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     vbscript: normalizeVbscriptSettings(settings),
     inlayHints: normalizeInlayHintSettings(settings),
     codeLens: normalizeCodeLensSettings(settings),
+    graph: normalizeGraphSettings(settings),
     cache: normalizeCacheSettings(settings),
     workspace: normalizeWorkspaceSettings(settings),
   };
@@ -9953,6 +9968,38 @@ function normalizeCodeLensSettings(
     references: record.references !== false,
     includes: record.includes === true,
     referenceScope: record.referenceScope === "workspace" ? "workspace" : "analyzed",
+  };
+}
+
+function normalizeGraphSettings(
+  settings: Record<string, unknown> | AspSettings,
+): NonNullable<AspSettings["graph"]> {
+  const raw = settings.graph;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    showBuiltinSymbols: record.showBuiltinSymbols === true,
+    showConfiguredGlobals: record.showConfiguredGlobals === true,
+    showConfiguredComTypes: record.showConfiguredComTypes === true,
+    showObjectMembers: record.showObjectMembers === true,
+    showFunctionParameters: record.showFunctionParameters === true,
+    showLocalVariables: record.showLocalVariables === true,
+    showLocalConstants: record.showLocalConstants === true,
+    showClassFields: record.showClassFields !== false,
+    showClassMethods: record.showClassMethods !== false,
+    showClassProperties: record.showClassProperties !== false,
+    showClassConstants: record.showClassConstants !== false,
+    showClasses: record.showClasses !== false,
+    showFunctions: record.showFunctions !== false,
+    showSubs: record.showSubs !== false,
+    showGlobalVariables: record.showGlobalVariables !== false,
+    showGlobalConstants: record.showGlobalConstants !== false,
+    showFiles: record.showFiles !== false,
+    showMissingFiles: record.showMissingFiles !== false,
+    showIncludeLinks: record.showIncludeLinks !== false,
+    showDeclarationLinks: record.showDeclarationLinks !== false,
+    showReferenceLinks: record.showReferenceLinks !== false,
+    showCallLinks: record.showCallLinks !== false,
+    showUnresolvedReferences: record.showUnresolvedReferences !== false,
   };
 }
 
@@ -12997,7 +13044,7 @@ async function graphPayloadFromDocumentsAsync(
   settings: AspSettings,
   options: { rootUri?: string; truncated?: AspGraphPayload["truncated"] } = {},
 ): Promise<AspGraphPayload> {
-  const state = createAspGraphBuildState(options.truncated);
+  const state = createAspGraphBuildState(settings, options.truncated);
   for (const document of documentsForGraph) {
     addFileGraphNode(state, document.uri, document.fileName, true);
   }
@@ -13005,23 +13052,30 @@ async function graphPayloadFromDocumentsAsync(
     await addDocumentToAspGraphAsync(state, document, settings);
     await yieldToEventLoop();
   }
-  state.stats.nodes = state.nodes.size;
-  state.stats.links = state.links.size;
-  return {
-    scope,
-    rootUri: options.rootUri,
-    nodes: [...state.nodes.values()],
-    links: [...state.links.values()],
-    stats: state.stats,
-    truncated: state.truncated,
-  };
+  state.stats = recomputeAspGraphStats(state.nodes.values(), state.links.values());
+  const payload = filterAspGraphPayload(
+    {
+      scope,
+      rootUri: options.rootUri,
+      nodes: [...state.nodes.values()],
+      links: [...state.links.values()],
+      stats: state.stats,
+      truncated: state.truncated,
+    },
+    settings,
+  );
+  return payload;
 }
 
-function createAspGraphBuildState(truncated?: AspGraphPayload["truncated"]): AspGraphBuildState {
+function createAspGraphBuildState(
+  settings: AspSettings,
+  truncated?: AspGraphPayload["truncated"],
+): AspGraphBuildState {
   return {
     nodes: new Map(),
     links: new Map(),
     declarations: new Set(),
+    externalSymbols: createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings)),
     truncated,
     stats: {
       files: 0,
@@ -13035,6 +13089,107 @@ function createAspGraphBuildState(truncated?: AspGraphPayload["truncated"]): Asp
       links: 0,
     },
   };
+}
+
+function createAspGraphExternalIndex(symbols: VbGraphExternalSymbol[]): AspGraphExternalIndex {
+  const byName = new Map<string, VbGraphExternalSymbol[]>();
+  const memberByOwnerAndName = new Map<string, VbGraphExternalSymbol>();
+  for (const symbol of symbols) {
+    if (symbol.memberOf) {
+      memberByOwnerAndName.set(externalMemberKey(symbol.memberOf, symbol.name), symbol);
+      continue;
+    }
+    pushAspGraphMapItem(byName, symbol.name.toLowerCase(), symbol);
+  }
+  return { byName, memberByOwnerAndName };
+}
+
+function pushAspGraphMapItem<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  const existing = map.get(key);
+  if (existing) {
+    existing.push(value);
+  } else {
+    map.set(key, [value]);
+  }
+}
+
+function resolveExternalGraphSymbol(
+  state: AspGraphBuildState,
+  name: string | undefined,
+): VbGraphExternalSymbol | undefined {
+  if (!name) {
+    return undefined;
+  }
+  return state.externalSymbols.byName.get(name.toLowerCase())?.[0];
+}
+
+function resolveExternalGraphCallSite(
+  state: AspGraphBuildState,
+  callSite: VbSymbolIndex["callSites"][number],
+): VbGraphExternalSymbol | undefined {
+  return callSite.memberName
+    ? resolveExternalGraphMember(state, callSite.receiverName, callSite.memberName)
+    : resolveExternalGraphSymbol(state, callSite.name);
+}
+
+function resolveExternalGraphDeferredRef(
+  state: AspGraphBuildState,
+  deferred: VbSymbolIndex["deferredExternalRefs"][number],
+): VbGraphExternalSymbol | undefined {
+  return deferred.memberName
+    ? resolveExternalGraphMember(state, deferred.receiverName, deferred.memberName)
+    : resolveExternalGraphSymbol(state, deferred.name);
+}
+
+function resolveExternalGraphMember(
+  state: AspGraphBuildState,
+  receiverName: string | undefined,
+  memberName: string,
+): VbGraphExternalSymbol | undefined {
+  if (!receiverName) {
+    return undefined;
+  }
+  const receiver = resolveExternalGraphSymbol(state, receiverName);
+  const ownerName = receiver?.typeName ?? receiver?.name ?? receiverName;
+  return state.externalSymbols.memberByOwnerAndName.get(externalMemberKey(ownerName, memberName));
+}
+
+function addExternalGraphNode(
+  state: AspGraphBuildState,
+  symbol: VbGraphExternalSymbol | undefined,
+): string {
+  if (!symbol) {
+    return "";
+  }
+  const id = externalGraphNodeId(symbol);
+  if (!state.nodes.has(id)) {
+    state.nodes.set(id, {
+      id,
+      kind: "vbDeclaration",
+      label: symbol.memberOf ? `${symbol.memberOf}.${symbol.name}` : symbol.name,
+      declarationKind: symbol.declarationKind,
+      memberOf: symbol.memberOf,
+      group: symbol.category,
+      origin: symbol.origin,
+      externalKind: symbol.externalKind,
+    });
+  }
+  return id;
+}
+
+function externalMemberKey(ownerName: string, memberName: string): string {
+  return `${ownerName.toLowerCase()}\0${memberName.toLowerCase()}`;
+}
+
+function externalGraphNodeId(symbol: VbGraphExternalSymbol): string {
+  return [
+    "external",
+    symbol.origin,
+    symbol.externalKind,
+    symbol.category,
+    symbol.memberOf?.toLowerCase() ?? "",
+    symbol.name.toLowerCase(),
+  ].join(":");
 }
 
 async function addDocumentToAspGraphAsync(
@@ -13090,6 +13245,7 @@ async function addDocumentToAspGraphAsync(
       memberOf: declaration.memberOf,
       bindingScope: declaration.bindingScope,
       group: declaration.kind,
+      origin: "source",
     });
     addAspGraphLink(state, {
       source: fileNode,
@@ -13100,13 +13256,22 @@ async function addDocumentToAspGraphAsync(
     });
   }
   for (const reference of index.references) {
-    if (!reference.resolvedId || reference.role === "call" || reference.role === "new") {
+    if (reference.role === "call" || reference.role === "new" || reference.role === "member") {
       continue;
     }
+    const external = reference.resolvedId
+      ? undefined
+      : resolveExternalGraphSymbol(state, reference.name);
+    if (!reference.resolvedId && !external) {
+      continue;
+    }
+    const target = reference.resolvedId
+      ? declarationGraphNodeId(reference.resolvedId)
+      : addExternalGraphNode(state, external);
     state.stats.references += 1;
     addAspGraphLink(state, {
       source: scopeGraphNodeId(state, document.uri, reference.scopeId),
-      target: declarationGraphNodeId(reference.resolvedId),
+      target,
       kind: "references",
       label: reference.role,
       role: reference.role,
@@ -13115,10 +13280,15 @@ async function addDocumentToAspGraphAsync(
   }
   for (const callSite of index.callSites) {
     state.stats.calls += 1;
+    const external = callSite.resolvedId
+      ? undefined
+      : resolveExternalGraphCallSite(state, callSite);
     const target = callSite.resolvedId
       ? declarationGraphNodeId(callSite.resolvedId)
-      : unresolvedGraphNodeId(document.uri, callSite.deferredKey ?? callSite.name, callSite.name);
-    if (!callSite.resolvedId) {
+      : external
+        ? addExternalGraphNode(state, external)
+        : unresolvedGraphNodeId(document.uri, callSite.deferredKey ?? callSite.name, callSite.name);
+    if (!callSite.resolvedId && !external) {
       addUnresolvedGraphNode(
         state,
         document.uri,
@@ -13138,6 +13308,10 @@ async function addDocumentToAspGraphAsync(
     });
   }
   for (const deferred of index.deferredExternalRefs) {
+    const external = resolveExternalGraphDeferredRef(state, deferred);
+    if (external) {
+      continue;
+    }
     state.stats.unresolvedReferences += 1;
     const target = unresolvedGraphNodeId(document.uri, deferred.key, deferred.name);
     addUnresolvedGraphNode(
@@ -13360,6 +13534,151 @@ function addAspGraphLink(
     id: `link:${state.links.size}`,
     count: 1,
   });
+}
+
+function filterAspGraphPayload(payload: AspGraphPayload, settings: AspSettings): AspGraphPayload {
+  const graphSettings = normalizeGraphSettings(settings);
+  const nodes = payload.nodes.filter((node) => isVisibleAspGraphNode(node, graphSettings));
+  const visibleNodeIds = new Set(nodes.map((node) => node.id));
+  const links = payload.links.filter(
+    (link) =>
+      isVisibleAspGraphLinkKind(link.kind, graphSettings) &&
+      visibleNodeIds.has(link.source) &&
+      visibleNodeIds.has(link.target),
+  );
+  return {
+    ...payload,
+    nodes,
+    links,
+    stats: recomputeAspGraphStats(nodes, links),
+  };
+}
+
+function isVisibleAspGraphNode(
+  node: AspGraphNode,
+  settings: NonNullable<AspSettings["graph"]>,
+): boolean {
+  if (node.kind === "file") {
+    return node.exists === false
+      ? settings.showMissingFiles !== false
+      : settings.showFiles !== false;
+  }
+  if (node.kind === "vbUnresolved") {
+    return settings.showUnresolvedReferences !== false;
+  }
+  if (node.origin === "builtin") {
+    return (
+      settings.showBuiltinSymbols === true &&
+      (node.externalKind !== "member" || settings.showObjectMembers === true)
+    );
+  }
+  if (node.origin === "configured") {
+    if (node.group === "configuredGlobal") {
+      return settings.showConfiguredGlobals === true;
+    }
+    if (node.group === "configuredComType") {
+      return (
+        settings.showConfiguredComTypes === true &&
+        (node.externalKind !== "member" || settings.showObjectMembers === true)
+      );
+    }
+    return false;
+  }
+  return isVisibleSourceGraphDeclaration(node, settings);
+}
+
+function isVisibleSourceGraphDeclaration(
+  node: AspGraphNode,
+  settings: NonNullable<AspSettings["graph"]>,
+): boolean {
+  switch (node.declarationKind) {
+    case "parameter":
+      return settings.showFunctionParameters === true;
+    case "variable":
+      return node.bindingScope === "local"
+        ? settings.showLocalVariables === true
+        : settings.showGlobalVariables !== false;
+    case "constant":
+      if (node.bindingScope === "local") {
+        return settings.showLocalConstants === true;
+      }
+      return node.memberOf
+        ? settings.showClassConstants !== false
+        : settings.showGlobalConstants !== false;
+    case "field":
+      return settings.showClassFields !== false;
+    case "method":
+      return settings.showClassMethods !== false;
+    case "property":
+      return settings.showClassProperties !== false;
+    case "class":
+      return settings.showClasses !== false;
+    case "function":
+      return settings.showFunctions !== false;
+    case "sub":
+      return settings.showSubs !== false;
+    default:
+      return true;
+  }
+}
+
+function isVisibleAspGraphLinkKind(
+  kind: AspGraphLinkKind,
+  settings: NonNullable<AspSettings["graph"]>,
+): boolean {
+  switch (kind) {
+    case "include":
+      return settings.showIncludeLinks !== false;
+    case "declares":
+      return settings.showDeclarationLinks !== false;
+    case "references":
+      return settings.showReferenceLinks !== false;
+    case "calls":
+      return settings.showCallLinks !== false;
+    case "unresolvedReference":
+      return settings.showUnresolvedReferences !== false;
+  }
+}
+
+function recomputeAspGraphStats(
+  nodes: Iterable<AspGraphNode>,
+  links: Iterable<AspGraphLink>,
+): AspGraphPayload["stats"] {
+  const stats: AspGraphPayload["stats"] = {
+    files: 0,
+    declarations: 0,
+    references: 0,
+    calls: 0,
+    unresolvedReferences: 0,
+    includes: 0,
+    missingIncludes: 0,
+    nodes: 0,
+    links: 0,
+  };
+  for (const node of nodes) {
+    stats.nodes += 1;
+    if (node.kind === "file") {
+      stats.files += 1;
+    } else if (node.kind === "vbDeclaration") {
+      stats.declarations += 1;
+    }
+  }
+  for (const link of links) {
+    stats.links += 1;
+    if (link.kind === "include") {
+      stats.includes += 1;
+      if (link.include?.exists === false) {
+        stats.missingIncludes += 1;
+      }
+    } else if (link.kind === "references") {
+      stats.references += 1;
+    } else if (link.kind === "calls") {
+      stats.calls += 1;
+    } else if (link.kind === "unresolvedReference") {
+      stats.unresolvedReferences += 1;
+    }
+  }
+  return stats;
 }
 
 function fileGraphNodeId(uri: string): string {

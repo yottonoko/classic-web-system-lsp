@@ -203,6 +203,39 @@ describe("VS Code extension package", () => {
         default: "analyzed",
       }),
     );
+    const graphDefaults: Record<string, boolean> = {
+      showBuiltinSymbols: false,
+      showConfiguredGlobals: false,
+      showConfiguredComTypes: false,
+      showObjectMembers: false,
+      showFunctionParameters: false,
+      showLocalVariables: false,
+      showLocalConstants: false,
+      showClassFields: true,
+      showClassMethods: true,
+      showClassProperties: true,
+      showClassConstants: true,
+      showClasses: true,
+      showFunctions: true,
+      showSubs: true,
+      showGlobalVariables: true,
+      showGlobalConstants: true,
+      showFiles: true,
+      showMissingFiles: true,
+      showIncludeLinks: true,
+      showDeclarationLinks: true,
+      showReferenceLinks: true,
+      showCallLinks: true,
+      showUnresolvedReferences: true,
+    };
+    for (const [name, defaultValue] of Object.entries(graphDefaults)) {
+      const setting = `aspLsp.graph.${name}`;
+      expect(manifest.contributes?.configuration?.properties?.[setting]).toEqual(
+        expect.objectContaining({ type: "boolean", default: defaultValue }),
+      );
+      expect(nls[`configuration.graph.${name}.description`]).toBeTruthy();
+      expect(nlsJa[`configuration.graph.${name}.description`]).toBeTruthy();
+    }
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.windowsPathResolution"],
