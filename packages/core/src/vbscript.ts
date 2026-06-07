@@ -2749,7 +2749,11 @@ export function getVbscriptReferencesForSymbols(
       if (!target || !targetReferences || !sameSymbol(resolved, target)) {
         continue;
       }
-      if (options.includeDeclaration === false && isDeclarationNameToken(document, token)) {
+      if (
+        options.includeDeclaration === false &&
+        (isDeclarationNameToken(document, token) ||
+          isImplicitSymbolDeclarationToken(document, target, token))
+      ) {
         continue;
       }
       if (
@@ -2826,6 +2830,18 @@ function isFunctionReturnAssignmentToken(
     target?.start === token.start &&
     target.end === token.end &&
     statement.some((item, index) => index > targetIndex && item.text === "=")
+  );
+}
+
+function isImplicitSymbolDeclarationToken(
+  parsed: AspParsedDocument,
+  symbol: VbSymbol,
+  token: VbToken,
+): boolean {
+  return (
+    symbol.implicit === true &&
+    symbol.sourceUri === parsed.uri &&
+    sameRange(symbol.range, rangeFromOffsets(parsed.text, token.start, token.end))
   );
 }
 

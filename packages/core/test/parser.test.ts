@@ -1597,6 +1597,82 @@ End Sub
     });
   });
 
+  it("adds implicit variable declarations to the symbol index only when opted in", () => {
+    const source = `<%
+implicitGlobal = "global"
+Function BuildValue()
+  implicitLocal = implicitGlobal
+  BuildValue = implicitLocal
+End Function
+Class Widget
+  Public Sub Save()
+    methodLocal = "method"
+  End Sub
+End Class
+obj.Member = "member"
+Response = "builtin"
+CStr = "builtin"
+%>`;
+    const defaultIndex = extractVbscriptSymbolIndex("file:///site/implicit-default.asp", source);
+    expect(defaultIndex.declarations.map((item) => item.name)).not.toEqual(
+      expect.arrayContaining(["implicitGlobal", "implicitLocal", "methodLocal"]),
+    );
+
+    const index = extractVbscriptSymbolIndex(
+      "file:///site/implicit.asp",
+      source,
+      {},
+      {
+        includeImplicitVariables: true,
+      },
+    );
+    const implicitGlobal = index.declarations.find((item) => item.name === "implicitGlobal");
+
+    expect(implicitGlobal).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+    });
+    expect(index.declarations.filter((item) => item.name === "implicitGlobal")).toHaveLength(1);
+    expect(index.declarations.find((item) => item.name === "implicitLocal")).toMatchObject({
+      kind: "variable",
+      bindingScope: "local",
+      implicit: true,
+    });
+    expect(index.declarations.find((item) => item.name === "methodLocal")).toMatchObject({
+      kind: "variable",
+      bindingScope: "local",
+      implicit: true,
+    });
+    expect(index.declarations.some((item) => item.name === "Member" && item.implicit)).toBe(false);
+    expect(index.declarations.some((item) => item.name === "Response" && item.implicit)).toBe(
+      false,
+    );
+    expect(index.declarations.some((item) => item.name === "CStr" && item.implicit)).toBe(false);
+    expect(index.declarations.some((item) => item.name === "BuildValue" && item.implicit)).toBe(
+      false,
+    );
+    expect(
+      index.references
+        .filter((item) => item.name === "implicitGlobal")
+        .every((item) => item.resolvedId === implicitGlobal?.id),
+    ).toBe(true);
+    expect(index.deferredExternalRefs.map((item) => item.name)).not.toEqual(
+      expect.arrayContaining(["implicitGlobal", "implicitLocal", "methodLocal"]),
+    );
+
+    const explicitIndex = extractVbscriptSymbolIndex(
+      "file:///site/explicit.asp",
+      `<%
+Option Explicit
+missingValue = 1
+%>`,
+      {},
+      { includeImplicitVariables: true },
+    );
+    expect(explicitIndex.declarations.some((item) => item.name === "missingValue")).toBe(false);
+  });
+
   it("keeps function return assignments out of VBScript symbol index references", () => {
     const source = `<%
 Class Customer
@@ -4668,6 +4744,46 @@ End Class
     );
     expect(JSON.stringify(hints)).not.toContain("(local) As String");
     expect(JSON.stringify(hints)).not.toContain("(global) As String");
+  });
+
+  it("excludes include-defined implicit global declarations from reference counts", () => {
+    const includeSource = `<%
+sharedTitle = "include"
+%>`;
+    const includeParsed = parseAspDocument("file:///site/shared.inc", includeSource);
+    const includeSymbols = collectVbscriptSymbols(includeParsed);
+    const pageSource = `<!-- #include file="shared.inc" -->
+<%
+Response.Write sharedTitle
+sharedTitle = "page"
+Function Render()
+  sharedTitle = "function"
+End Function
+%>`;
+    const pageParsed = parseAspDocument("file:///site/default.asp", pageSource);
+    const pageSymbols = collectVbscriptSymbols(pageParsed);
+    const sharedTitle = includeSymbols.find(
+      (symbol) => symbol.name === "sharedTitle" && symbol.implicit,
+    );
+    if (!sharedTitle) {
+      throw new Error("missing implicit include symbol");
+    }
+
+    const references = getVbscriptReferencesForSymbol(
+      sharedTitle,
+      {
+        symbols: [...pageSymbols, ...includeSymbols],
+        documents: [pageParsed, includeParsed],
+      },
+      { includeDeclaration: false, includeFunctionReturnAssignments: false },
+    );
+
+    expect(references).toHaveLength(3);
+    expect(references.map((reference) => reference.uri)).toEqual([
+      pageParsed.uri,
+      pageParsed.uri,
+      pageParsed.uri,
+    ]);
   });
 
   it("adds semantic token types and modifiers for VBScript symbols", () => {

@@ -713,6 +713,7 @@ interface AspGraphNode {
   memberOf?: string;
   bindingScope?: string;
   procedureKind?: string;
+  implicit?: boolean;
   group?: string;
   origin?: AspGraphNodeOrigin;
   externalKind?: AspGraphExternalKind;
@@ -794,6 +795,9 @@ interface AspGraphBuildState {
   links: Map<string, AspGraphLink>;
   declarations: Set<string>;
   sourceDeclarationsByName: Map<string, Array<VbSymbolIndex["declarations"][number]>>;
+  sourceDeclarationsById: Map<string, VbSymbolIndex["declarations"][number]>;
+  sourceDeclarationUrisById: Map<string, string>;
+  directIncludesByOwnerUri: Map<string, Array<{ range: Range; targetUri: string }>>;
   externalSymbols: AspGraphExternalIndex;
   rootUri?: string;
   stats: AspGraphPayload["stats"];
@@ -8988,7 +8992,7 @@ function includeRefsSettingsKey(settings: AspSettings): string {
 
 function graphFileIndexSettingsKey(settings: AspSettings): string {
   return JSON.stringify({
-    scanner: "asp-graph-file-index-v5",
+    scanner: "asp-graph-file-index-v6",
     parse: parseSettingsIdentity(settings),
     legacyEncoding: settings.legacyEncoding,
     vbscript: vbProjectContextSettings(settings),
@@ -14538,6 +14542,9 @@ function createAspGraphBuildState(
     links: new Map(),
     declarations: new Set(),
     sourceDeclarationsByName: new Map(),
+    sourceDeclarationsById: new Map(),
+    sourceDeclarationUrisById: new Map(),
+    directIncludesByOwnerUri: new Map(),
     externalSymbols: createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings)),
     rootUri,
     truncated,
@@ -14682,6 +14689,10 @@ async function addDocumentStructureToAspGraphAsync(
       settings,
     );
     const targetUri = pathToFileUri(resolved.fileName);
+    pushAspGraphMapItem(state.directIncludesByOwnerUri, document.uri, {
+      range: include.range,
+      targetUri,
+    });
     addFileGraphNode(state, targetUri, resolved.fileName, resolved.exists);
     state.stats.includes += 1;
     if (!resolved.exists) {
@@ -14706,6 +14717,8 @@ async function addDocumentStructureToAspGraphAsync(
   for (const declaration of index.declarations) {
     const declarationNode = declarationGraphNodeId(declaration.id);
     state.declarations.add(declaration.id);
+    state.sourceDeclarationsById.set(declaration.id, declaration);
+    state.sourceDeclarationUrisById.set(declaration.id, document.uri);
     state.stats.declarations += 1;
     state.nodes.set(declarationNode, {
       id: declarationNode,
@@ -14720,6 +14733,7 @@ async function addDocumentStructureToAspGraphAsync(
       memberOf: declaration.memberOf,
       bindingScope: declaration.bindingScope,
       procedureKind: declaration.procedureKind,
+      implicit: declaration.implicit,
       group: declaration.kind,
       origin: "source",
     });
@@ -14747,11 +14761,10 @@ function addDocumentUsageToAspGraph(
       continue;
     }
     const sourceDeclaration = reference.resolvedId
-      ? undefined
+      ? resolveIncludedImplicitSourceGraphDeclaration(state, indexed, reference)
       : resolveSourceGraphDeclaration(state, reference.name, reference.expectedKinds);
-    const external = reference.resolvedId
-      ? undefined
-      : sourceDeclaration
+    const external =
+      reference.resolvedId || sourceDeclaration
         ? undefined
         : resolveExternalGraphSymbol(state, reference.name);
     if (isSuppressedBuiltinGraphExternalSymbol(external)) {
@@ -14760,10 +14773,10 @@ function addDocumentUsageToAspGraph(
     if (!reference.resolvedId && !sourceDeclaration && !external) {
       continue;
     }
-    const target = reference.resolvedId
-      ? declarationGraphNodeId(reference.resolvedId)
-      : sourceDeclaration
-        ? declarationGraphNodeId(sourceDeclaration.id)
+    const target = sourceDeclaration
+      ? declarationGraphNodeId(sourceDeclaration.id)
+      : reference.resolvedId
+        ? declarationGraphNodeId(reference.resolvedId)
         : addExternalGraphNode(state, external);
     state.stats.references += 1;
     addAspGraphLink(state, {
@@ -14891,6 +14904,77 @@ function resolveSourceGraphDeclaration(
   );
 }
 
+function resolveIncludedImplicitSourceGraphDeclaration(
+  state: AspGraphBuildState,
+  indexed: AspGraphIndexedDocument,
+  reference: VbSymbolIndex["references"][number],
+): VbSymbolIndex["declarations"][number] | undefined {
+  if (!reference.resolvedId) {
+    return undefined;
+  }
+  const resolvedDeclaration = state.sourceDeclarationsById.get(reference.resolvedId);
+  if (!resolvedDeclaration?.implicit) {
+    return undefined;
+  }
+  const candidates = state.sourceDeclarationsByName.get(reference.normalizedName);
+  return candidates?.find((candidate) => {
+    const candidateUri = state.sourceDeclarationUrisById.get(candidate.id);
+    return (
+      candidateUri !== undefined &&
+      candidateUri !== indexed.document.uri &&
+      isCrossFileSourceGraphDeclaration(candidate) &&
+      matchesGraphExpectedKinds(candidate, [resolvedDeclaration.kind]) &&
+      hasEarlierReachableGraphInclude(state, indexed.document.uri, candidateUri, reference.range)
+    );
+  });
+}
+
+function matchesGraphExpectedKinds(
+  declaration: VbSymbolIndex["declarations"][number],
+  expectedKinds: VbSymbolIndex["references"][number]["expectedKinds"],
+): boolean {
+  return !expectedKinds || expectedKinds.includes(declaration.kind);
+}
+
+function hasEarlierReachableGraphInclude(
+  state: AspGraphBuildState,
+  ownerUri: string,
+  targetUri: string,
+  referenceRange: Range,
+): boolean {
+  const includes = state.directIncludesByOwnerUri.get(ownerUri) ?? [];
+  return includes.some(
+    (include) =>
+      positionBeforeOrEqual(include.range.start, referenceRange.start) &&
+      (include.targetUri === targetUri ||
+        isGraphIncludeReachable(state, include.targetUri, targetUri, new Set([ownerUri]))),
+  );
+}
+
+function isGraphIncludeReachable(
+  state: AspGraphBuildState,
+  startUri: string,
+  targetUri: string,
+  visited: Set<string>,
+): boolean {
+  if (startUri === targetUri) {
+    return true;
+  }
+  if (visited.has(startUri)) {
+    return false;
+  }
+  visited.add(startUri);
+  return (state.directIncludesByOwnerUri.get(startUri) ?? []).some(
+    (include) =>
+      include.targetUri === targetUri ||
+      isGraphIncludeReachable(state, include.targetUri, targetUri, visited),
+  );
+}
+
+function positionBeforeOrEqual(left: Position, right: Position): boolean {
+  return left.line < right.line || (left.line === right.line && left.character <= right.character);
+}
+
 function expectedSourceGraphKindsForCallSite(
   callSite: VbSymbolIndex["callSites"][number],
 ): VbSymbolIndex["references"][number]["expectedKinds"] {
@@ -14980,7 +15064,9 @@ async function graphFileIndexForDocumentAsync(
       }
       logDebugSummary(settings, `[asp-lsp] graphVbIndex.miss: ${document.uri}`);
     }
-    const extracted = extractVbscriptSymbolIndex(document.uri, document.text, settings);
+    const extracted = extractVbscriptSymbolIndex(document.uri, document.text, settings, {
+      includeImplicitVariables: true,
+    });
     const includeRefs =
       includeRefsEntry && sameDiskAnalysisSource(includeRefsEntry.source, document.source)
         ? includeRefsEntry.includeRefs
