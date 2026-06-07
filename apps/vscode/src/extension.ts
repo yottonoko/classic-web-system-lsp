@@ -231,7 +231,12 @@ async function showGraph(
         arguments: [{ scope, uri }],
       }),
   );
-  showAspGraphWebview(context, payload, title, graphViewColumn());
+  showAspGraphWebview(
+    context,
+    payload,
+    graphPanelTitle(payload, activeDocument),
+    graphViewColumn(),
+  );
 }
 
 function graphViewColumn(): vscode.ViewColumn {
@@ -239,6 +244,50 @@ function graphViewColumn(): vscode.ViewColumn {
     .getConfiguration("aspLsp")
     .get<GraphOpenLocation>("graph.openLocation", "active");
   return openLocation === "beside" ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active;
+}
+
+function graphPanelTitle(
+  payload: AspGraphPayload,
+  activeDocument: vscode.TextDocument | undefined,
+): string {
+  const localize = extensionLocalizer();
+  if (payload.scope === "workspace") {
+    return localize("graph.workspacePanelTitle");
+  }
+  const name =
+    currentFileGraphName(payload) ??
+    baseNameFromUri(payload.rootUri) ??
+    baseNameFromPath(activeDocument?.fileName) ??
+    "Current File";
+  return localize("graph.documentPanelTitle", { name });
+}
+
+function currentFileGraphName(payload: AspGraphPayload): string | undefined {
+  if (payload.scope !== "document") {
+    return undefined;
+  }
+  const rootNode =
+    payload.nodes.find((node) => node.isRoot) ??
+    payload.nodes.find((node) => node.uri === payload.rootUri);
+  return (
+    rootNode?.label || baseNameFromPath(rootNode?.fileName) || baseNameFromUri(payload.rootUri)
+  );
+}
+
+function baseNameFromPath(value: string | undefined): string | undefined {
+  const fileName = value?.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
+  return fileName || undefined;
+}
+
+function baseNameFromUri(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return baseNameFromPath(decodeURIComponent(new URL(value).pathname));
+  } catch {
+    return baseNameFromPath(value);
+  }
 }
 
 async function startClient(context: vscode.ExtensionContext): Promise<void> {
@@ -524,7 +573,9 @@ type ExtensionMessageKey =
   | "graph.serverUnavailable"
   | "graph.noActiveFile"
   | "graph.currentTitle"
-  | "graph.workspaceTitle";
+  | "graph.workspaceTitle"
+  | "graph.documentPanelTitle"
+  | "graph.workspacePanelTitle";
 
 type ExtensionMessageArgs = Record<string, string>;
 
@@ -539,6 +590,8 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "graph.noActiveFile": "Open a Classic ASP file before building the current file graph.",
     "graph.currentTitle": "Classic ASP: Current File Graph",
     "graph.workspaceTitle": "Classic ASP: Workspace Graph",
+    "graph.documentPanelTitle": "Classic ASP Graph: {name}",
+    "graph.workspacePanelTitle": "Classic ASP Graph: Workspace",
   },
   ja: {
     "status.tooltip": "Classic ASP Language Server",
@@ -551,6 +604,8 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "graph.noActiveFile": "current file graph を作成する前に Classic ASP file を開いてください。",
     "graph.currentTitle": "Classic ASP: Current File Graph",
     "graph.workspaceTitle": "Classic ASP: Workspace Graph",
+    "graph.documentPanelTitle": "Classic ASP Graph: {name}",
+    "graph.workspacePanelTitle": "Classic ASP Graph: Workspace",
   },
 };
 

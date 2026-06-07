@@ -60,6 +60,16 @@ type GraphData = {
 
 type Selection = { type: "node"; item: GraphNode } | { type: "link"; item: GraphLink } | undefined;
 
+type GraphStatsMetric = "files" | "declarations" | "links" | "missingIncludes";
+
+interface GraphStatsListItem {
+  id: string;
+  title: string;
+  detail?: string;
+  status?: string;
+  color?: string;
+}
+
 type HighlightState = {
   activeNodeIds: Set<string>;
   activeLinkIds: Set<string>;
@@ -518,12 +528,7 @@ function App(): React.ReactElement {
             Match case
           </label>
         </div>
-        <GraphStatsPopover
-          files={filteredStats.files}
-          declarations={filteredStats.declarations}
-          links={filteredStats.links}
-          missingIncludes={filteredStats.missingIncludes}
-        />
+        <GraphStatsPopover graphData={filteredGraphData} stats={filteredStats} />
         <div
           className="inline-grid grid-cols-2 overflow-hidden rounded-md border border-[#394456]"
           aria-label="Graph mode"
@@ -878,18 +883,19 @@ function Shell({ children }: { children: React.ReactNode }): React.ReactElement 
 }
 
 function GraphStatsPopover({
-  declarations,
-  files,
-  links,
-  missingIncludes,
+  graphData,
+  stats,
 }: {
-  declarations: number;
-  files: number;
-  links: number;
-  missingIncludes: number;
+  graphData: GraphData;
+  stats: AspGraphPayload["stats"];
 }): React.ReactElement {
   const [isOpen, setOpen] = useState(false);
+  const [activeMetric, setActiveMetric] = useState<GraphStatsMetric>("files");
   const containerRef = useRef<HTMLDivElement>(null);
+  const statsItems = useMemo(
+    () => statsItemsForMetric(activeMetric, graphData),
+    [activeMetric, graphData],
+  );
 
   useEffect(() => {
     if (!isOpen) {
@@ -926,36 +932,231 @@ function GraphStatsPopover({
         onClick={() => setOpen((current) => !current)}
       >
         <span className="font-semibold text-[#d7dde8]">Stats</span>
-        <span className="text-[11px] text-[#9aa7b8]">Links {links}</span>
+        <span className="text-[11px] text-[#9aa7b8]">Links {stats.links}</span>
       </button>
       {isOpen ? (
         <div
           role="dialog"
           aria-label="Graph statistics"
-          className="absolute top-[calc(100%_+_6px)] right-0 z-20 grid w-[min(260px,calc(100vw_-_24px))] gap-2 rounded-md border border-[#303a49] bg-[#171c25] p-2 shadow-[0_14px_34px_rgb(0_0_0_/_34%)] max-[980px]:right-auto max-[980px]:left-0"
+          className="absolute top-[calc(100%_+_6px)] right-0 z-20 grid w-[min(430px,calc(100vw_-_24px))] gap-2 rounded-md border border-[#303a49] bg-[#171c25] p-2 shadow-[0_14px_34px_rgb(0_0_0_/_34%)] max-[980px]:right-auto max-[980px]:left-0"
         >
           <div className="text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
             Graph stats
           </div>
           <div className="grid grid-cols-2 gap-2 max-[360px]:grid-cols-1">
-            <Metric label="Files" value={files} />
-            <Metric label="VB" value={declarations} />
-            <Metric label="Links" value={links} />
-            <Metric label="Missing" value={missingIncludes} />
+            <MetricButton
+              activeMetric={activeMetric}
+              label="Files"
+              metric="files"
+              value={stats.files}
+              onSelect={setActiveMetric}
+            />
+            <MetricButton
+              activeMetric={activeMetric}
+              label="VB"
+              metric="declarations"
+              value={stats.declarations}
+              onSelect={setActiveMetric}
+            />
+            <MetricButton
+              activeMetric={activeMetric}
+              label="Links"
+              metric="links"
+              value={stats.links}
+              onSelect={setActiveMetric}
+            />
+            <MetricButton
+              activeMetric={activeMetric}
+              label="Missing"
+              metric="missingIncludes"
+              value={stats.missingIncludes}
+              onSelect={setActiveMetric}
+            />
           </div>
+          <GraphStatsList items={statsItems} />
         </div>
       ) : null}
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: number }): React.ReactElement {
+function MetricButton({
+  activeMetric,
+  label,
+  metric,
+  onSelect,
+  value,
+}: {
+  activeMetric: GraphStatsMetric;
+  label: string;
+  metric: GraphStatsMetric;
+  onSelect(metric: GraphStatsMetric): void;
+  value: number;
+}): React.ReactElement {
+  const active = activeMetric === metric;
   return (
-    <span className="inline-flex items-baseline gap-[5px] rounded-md border border-[#303a49] px-[7px] py-[3px] text-[11px] text-[#9aa7b8]">
+    <button
+      type="button"
+      className={
+        active
+          ? "inline-flex cursor-pointer items-baseline gap-[5px] rounded-md border border-[#89ddff] bg-[#1c2d3a] px-[7px] py-[3px] text-left text-[11px] text-[#d7dde8]"
+          : "inline-flex cursor-pointer items-baseline gap-[5px] rounded-md border border-[#303a49] bg-transparent px-[7px] py-[3px] text-left text-[11px] text-[#9aa7b8] hover:border-[#4b5a70] hover:text-[#d7dde8]"
+      }
+      aria-pressed={active}
+      onClick={() => onSelect(metric)}
+    >
       <span>{label}</span>
       <strong className="text-xs text-[#f4f7fb]">{value}</strong>
-    </span>
+    </button>
   );
+}
+
+function GraphStatsList({ items }: { items: GraphStatsListItem[] }): React.ReactElement {
+  if (items.length === 0) {
+    return (
+      <p className="m-0 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-xs text-[#8d98a8]">
+        No matching items in the current graph view.
+      </p>
+    );
+  }
+  return (
+    <div className="grid max-h-72 gap-1.5 overflow-auto pr-1">
+      {items.map((item) => (
+        <article
+          key={item.id}
+          className="grid gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2"
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            {item.color ? (
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: item.color }}
+                aria-hidden="true"
+              />
+            ) : null}
+            <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+              {item.title}
+            </span>
+            {item.status ? (
+              <span className="shrink-0 rounded border border-[#405068] px-1.5 py-[1px] text-[10px] text-[#9aa7b8]">
+                {item.status}
+              </span>
+            ) : null}
+          </div>
+          {item.detail ? (
+            <div className="text-[11px] leading-[1.35] text-[#8d98a8] [overflow-wrap:anywhere]">
+              {item.detail}
+            </div>
+          ) : null}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function statsItemsForMetric(metric: GraphStatsMetric, graphData: GraphData): GraphStatsListItem[] {
+  switch (metric) {
+    case "files":
+      return graphData.nodes
+        .filter((node) => node.kind === "file")
+        .map((node) => ({
+          id: `file:${node.id}`,
+          title: node.label,
+          detail: detailParts(nodeFileLabel(node), node.uri).join(" · "),
+          status: fileStatsStatus(node),
+          color: node.color,
+        }));
+    case "declarations":
+      return graphData.nodes
+        .filter((node) => node.kind === "vbDeclaration")
+        .map((node) => ({
+          id: `declaration:${node.id}`,
+          title: node.label,
+          detail: detailParts(
+            nodeTypeLabel(node),
+            nodeFileLabel(node),
+            rangeLineLabel(node.range),
+          ).join(" · "),
+          status: nodeStatusLabel(node),
+          color: node.color,
+        }));
+    case "links":
+      return linkStatsItems(graphData);
+    case "missingIncludes":
+      return missingIncludeStatsItems(graphData);
+  }
+}
+
+function linkStatsItems(graphData: GraphData): GraphStatsListItem[] {
+  const nodesById = graphNodeMap(graphData.nodes);
+  return graphData.links.map((link) => ({
+    id: `link:${link.id}`,
+    title: linkStatsTitle(link),
+    detail: detailParts(
+      `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
+      link.role,
+    ).join(" · "),
+    status: `x${link.count}`,
+    color: link.color,
+  }));
+}
+
+function missingIncludeStatsItems(graphData: GraphData): GraphStatsListItem[] {
+  const nodesById = graphNodeMap(graphData.nodes);
+  return graphData.links
+    .filter((link) => link.kind === "include" && link.include?.exists === false)
+    .map((link) => {
+      const directive = link.ranges[0];
+      return {
+        id: `missing:${link.id}`,
+        title: link.include?.path ?? link.label,
+        detail: detailParts(
+          directive ? `Directive ${directiveSourceLabel(directive)}` : undefined,
+          `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
+          link.include?.mode,
+        ).join(" · "),
+        status: "Missing",
+        color: link.color,
+      };
+    });
+}
+
+function fileStatsStatus(node: GraphNode): string {
+  const status = detailParts(
+    node.isRoot ? "Root" : undefined,
+    node.exists === false ? "Missing" : undefined,
+  );
+  return status.length > 0 ? status.join(" / ") : "File";
+}
+
+function linkStatsTitle(link: GraphLink): string {
+  if (graphLinkFilterCategory(link) === "member") {
+    return linkFilterLabels.member;
+  }
+  return linkMeanings[link.kind].label;
+}
+
+function endpointLabel(
+  endpoint: string | GraphNode,
+  nodesById: ReadonlyMap<string, GraphNode>,
+): string {
+  const id = nodeIdForEndpoint(endpoint);
+  return nodesById.get(id)?.label ?? id;
+}
+
+function directiveSourceLabel(location: { uri: string; range: AspGraphRange }): string {
+  return detailParts(
+    baseNameFromUri(location.uri) ?? location.uri,
+    rangeLineLabel(location.range),
+  ).join(" ");
+}
+
+function rangeLineLabel(range: AspGraphRange | undefined): string | undefined {
+  return range ? `Line ${range.start.line + 1}` : undefined;
+}
+
+function detailParts(...values: Array<string | undefined>): string[] {
+  return values.filter((value): value is string => Boolean(value));
 }
 
 function PaneResizeHandle({
@@ -1295,9 +1496,7 @@ function DeclarationSource({
       {source?.error ? (
         <p className="m-0 text-[11px] text-[#ff9cac]">{source.error}</p>
       ) : (
-        <pre className="m-0 max-h-80 overflow-auto rounded border border-[#253041] bg-[#0d1117] p-2 font-mono text-[11px] leading-[1.45] whitespace-pre-wrap text-[#d7dde8] [tab-size:2]">
-          {source?.text ?? (loading ? "Loading source..." : "Source is unavailable.")}
-        </pre>
+        <SourceCodeSnippet className="max-h-80" loading={loading} source={source} />
       )}
     </div>
   );
@@ -1379,12 +1578,82 @@ function SourceRangeCard({
       {source?.error ? (
         <p className="m-0 text-[11px] text-[#ff9cac]">{source.error}</p>
       ) : (
-        <pre className="m-0 max-h-44 overflow-auto rounded border border-[#253041] bg-[#0d1117] p-2 font-mono text-[11px] leading-[1.45] whitespace-pre-wrap text-[#d7dde8] [tab-size:2]">
-          {source?.text ?? (loading ? "Loading source..." : "Source is unavailable.")}
-        </pre>
+        <SourceCodeSnippet className="max-h-44" loading={loading} source={source} />
       )}
     </article>
   );
+}
+
+function SourceCodeSnippet({
+  className,
+  loading,
+  source,
+}: {
+  className: string;
+  loading: boolean;
+  source: AspGraphSourceRangeResponseItem | undefined;
+}): React.ReactElement {
+  const text = source?.text ?? (loading ? "Loading source..." : "Source is unavailable.");
+  const highlightParts = sourceHighlightParts(source);
+  return (
+    <pre
+      className={`m-0 overflow-auto rounded border border-[#253041] bg-[#0d1117] p-2 font-mono text-[11px] leading-[1.45] whitespace-pre-wrap text-[#d7dde8] [tab-size:2] ${className}`}
+    >
+      {highlightParts ? (
+        <>
+          {highlightParts.before}
+          <mark className="rounded-sm bg-[#ffcb6b]/25 px-0.5 text-[#fff4c2]">
+            {highlightParts.highlighted}
+          </mark>
+          {highlightParts.after}
+        </>
+      ) : (
+        text
+      )}
+    </pre>
+  );
+}
+
+function sourceHighlightParts(
+  source: AspGraphSourceRangeResponseItem | undefined,
+): { before: string; highlighted: string; after: string } | undefined {
+  if (!source?.text || !source.range || !source.highlightRange) {
+    return undefined;
+  }
+  const start = positionOffsetInRangeText(source.text, source.range, source.highlightRange.start);
+  const end = positionOffsetInRangeText(source.text, source.range, source.highlightRange.end);
+  if (start === undefined || end === undefined || end <= start) {
+    return undefined;
+  }
+  return {
+    before: source.text.slice(0, start),
+    highlighted: source.text.slice(start, end),
+    after: source.text.slice(end),
+  };
+}
+
+function positionOffsetInRangeText(
+  text: string,
+  range: AspGraphRange,
+  position: AspGraphRange["start"],
+): number | undefined {
+  if (
+    position.line < range.start.line ||
+    position.line > range.end.line ||
+    (position.line === range.start.line && position.character < range.start.character)
+  ) {
+    return undefined;
+  }
+  let offset = 0;
+  for (let line = range.start.line; line < position.line; line += 1) {
+    const newlineOffset = text.indexOf("\n", offset);
+    if (newlineOffset === -1) {
+      return undefined;
+    }
+    offset = newlineOffset + 1;
+  }
+  const lineStartCharacter = position.line === range.start.line ? range.start.character : 0;
+  return clamp(offset + position.character - lineStartCharacter, 0, text.length);
 }
 
 function IncludeRelationList({ relations }: { relations: IncludeRelation[] }): React.ReactElement {
