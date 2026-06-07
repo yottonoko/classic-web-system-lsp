@@ -60,7 +60,7 @@ type GraphData = {
 
 type Selection = { type: "node"; item: GraphNode } | { type: "link"; item: GraphLink } | undefined;
 
-type GraphStatsMetric = "files" | "declarations" | "links" | "missingIncludes";
+type GraphStatsMetric = "files" | "declarations" | "missingIncludes";
 
 type GraphStatsTarget = { type: "node"; id: string } | { type: "link"; id: string };
 
@@ -715,6 +715,7 @@ function App(): React.ReactElement {
           graphData={graphData}
           selection={selection}
           onClose={() => setSelection(undefined)}
+          onSelectNode={selectGraphNode}
         />
       </main>
     </Shell>
@@ -981,7 +982,7 @@ function GraphStatsPopover({
         onClick={() => setOpen((current) => !current)}
       >
         <span className="font-semibold text-[#d7dde8]">Stats</span>
-        <span className="text-[11px] text-[#9aa7b8]">Links {stats.links}</span>
+        <span className="text-[11px] text-[#9aa7b8]">Files {stats.files}</span>
       </button>
       {isOpen ? (
         <div
@@ -992,7 +993,7 @@ function GraphStatsPopover({
           <div className="text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
             Graph stats
           </div>
-          <div className="grid grid-cols-2 gap-2 max-[360px]:grid-cols-1">
+          <div className="grid grid-cols-3 gap-2 max-[430px]:grid-cols-1">
             <MetricButton
               activeMetric={activeMetric}
               label="Files"
@@ -1005,13 +1006,6 @@ function GraphStatsPopover({
               label="VB"
               metric="declarations"
               value={stats.declarations}
-              onSelect={setActiveMetric}
-            />
-            <MetricButton
-              activeMetric={activeMetric}
-              label="Links"
-              metric="links"
-              value={stats.links}
               onSelect={setActiveMetric}
             />
             <MetricButton
@@ -1145,26 +1139,9 @@ function statsItemsForMetric(metric: GraphStatsMetric, graphData: GraphData): Gr
           status: nodeStatusLabel(node),
           color: node.color,
         }));
-    case "links":
-      return linkStatsItems(graphData);
     case "missingIncludes":
       return missingIncludeStatsItems(graphData);
   }
-}
-
-function linkStatsItems(graphData: GraphData): GraphStatsListItem[] {
-  const nodesById = graphNodeMap(graphData.nodes);
-  return graphData.links.map((link) => ({
-    id: `link:${link.id}`,
-    title: linkStatsTitle(link),
-    target: { type: "link", id: link.id },
-    detail: detailParts(
-      `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
-      link.role,
-    ).join(" · "),
-    status: `x${link.count}`,
-    color: link.color,
-  }));
 }
 
 function missingIncludeStatsItems(graphData: GraphData): GraphStatsListItem[] {
@@ -1194,13 +1171,6 @@ function fileStatsStatus(node: GraphNode): string {
     node.exists === false ? "Missing" : undefined,
   );
   return status.length > 0 ? status.join(" / ") : "File";
-}
-
-function linkStatsTitle(link: GraphLink): string {
-  if (graphLinkFilterCategory(link) === "member") {
-    return linkFilterLabels.member;
-  }
-  return linkMeanings[link.kind].label;
 }
 
 function endpointLabel(
@@ -1309,10 +1279,12 @@ function PaneResizeHandle({
 
 function Inspector({
   graphData,
+  onSelectNode,
   selection,
   onClose,
 }: {
   graphData: GraphData;
+  onSelectNode(node: GraphNode): void;
   selection: Selection;
   onClose(): void;
 }): React.ReactElement {
@@ -1347,7 +1319,7 @@ function Inspector({
       {selection.type === "node" ? (
         <NodeInspector graphData={graphData} node={selection.item} />
       ) : (
-        <LinkInspector graphData={graphData} link={selection.item} />
+        <LinkInspector graphData={graphData} link={selection.item} onSelectNode={onSelectNode} />
       )}
     </aside>
   );
@@ -1399,9 +1371,11 @@ function NodeInspector({
 function LinkInspector({
   graphData,
   link,
+  onSelectNode,
 }: {
   graphData: GraphData;
   link: GraphLink;
+  onSelectNode(node: GraphNode): void;
 }): React.ReactElement {
   const nodesById = useMemo(() => graphNodeMap(graphData.nodes), [graphData.nodes]);
   const sourceItems = useMemo(() => sourceItemsForLink(link), [link]);
@@ -1409,7 +1383,7 @@ function LinkInspector({
   const location = link.ranges[0];
   return (
     <>
-      <LinkDetails link={link} nodesById={nodesById} />
+      <LinkDetails link={link} nodesById={nodesById} onSelectNode={onSelectNode} />
       <div className="mb-3 grid gap-2">
         <Accordion
           count={link.count}
@@ -1708,7 +1682,7 @@ function SourceCodeSnippet({
       {highlightParts ? (
         <>
           {highlightParts.before}
-          <mark className="rounded-sm bg-[#ffcb6b]/25 px-0.5 text-[#fff4c2]">
+          <mark className="rounded-sm bg-[#ffcb6b]/55 px-0.5 text-[#fff8c6] shadow-[0_0_0_1px_rgb(255_203_107_/_75%)]">
             {highlightParts.highlighted}
           </mark>
           {highlightParts.after}
@@ -1958,11 +1932,15 @@ function titleCaseWords(value: string): string {
 function LinkDetails({
   link,
   nodesById,
+  onSelectNode,
 }: {
   link: GraphLink;
   nodesById: ReadonlyMap<string, GraphNode>;
+  onSelectNode(node: GraphNode): void;
 }): React.ReactElement {
   const typeLabel = linkInspectorTypeLabel(link);
+  const sourceNode = nodesById.get(nodeIdForEndpoint(link.source));
+  const targetNode = nodesById.get(nodeIdForEndpoint(link.target));
   const sourceLabel = endpointLabel(link.source, nodesById);
   const targetLabel = endpointLabel(link.target, nodesById);
   return (
@@ -1984,6 +1962,18 @@ function LinkDetails({
             >
               {sourceLabel} -&gt; {targetLabel}
             </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <SelectEndpointButton
+                label="Select source"
+                node={sourceNode}
+                onSelectNode={onSelectNode}
+              />
+              <SelectEndpointButton
+                label="Select target"
+                node={targetNode}
+                onSelectNode={onSelectNode}
+              />
+            </div>
           </div>
           <div className="grid min-w-[58px] shrink-0 justify-items-end rounded border border-[#405068] bg-[#151a22] px-2 py-1">
             <span className="text-sm leading-none font-semibold text-[#f4f7fb]">{link.count}</span>
@@ -2003,6 +1993,31 @@ function LinkDetails({
         <Detail label="Actual path" value={link.include?.actualPath} />
       </dl>
     </div>
+  );
+}
+
+function SelectEndpointButton({
+  label,
+  node,
+  onSelectNode,
+}: {
+  label: string;
+  node: GraphNode | undefined;
+  onSelectNode(node: GraphNode): void;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      className="h-7 cursor-pointer rounded-md border border-[#405068] bg-[#202735] px-2 text-[11px] text-[#d7dde8] hover:border-[#4b5a70] disabled:cursor-not-allowed disabled:border-[#303a49] disabled:text-[#717b8c]"
+      disabled={!node}
+      onClick={() => {
+        if (node) {
+          onSelectNode(node);
+        }
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
