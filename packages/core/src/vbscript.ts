@@ -2704,48 +2704,90 @@ export function getVbscriptReferencesForSymbol(
   context: VbProjectContext = {},
   options: VbReferenceOptions = {},
 ): VbReference[] {
+  return getVbscriptReferencesForSymbols([symbol], context, options).get(symbolKey(symbol)) ?? [];
+}
+
+export function getVbscriptReferencesForSymbols(
+  targets: VbSymbol[],
+  context: VbProjectContext = {},
+  options: VbReferenceOptions = {},
+): Map<string, VbReference[]> {
   const documents = context.documents ?? [];
   const symbols =
     context.symbols ?? documents.flatMap((document) => collectVbscriptSymbols(document, context));
-  const references: VbReference[] = [];
+  const references = new Map<string, VbReference[]>();
+  const targetsByKey = new Map<string, VbSymbol>();
+  const targetNames = new Set<string>();
+  for (const target of targets) {
+    const key = symbolKey(target);
+    if (targetsByKey.has(key)) {
+      continue;
+    }
+    targetsByKey.set(key, target);
+    references.set(key, []);
+    targetNames.add(target.name.toLowerCase());
+  }
+  if (targetsByKey.size === 0) {
+    return references;
+  }
   for (const document of documents) {
     for (const token of identifierTokens(document)) {
-      if (token.text.toLowerCase() === symbol.name.toLowerCase()) {
-        const resolved = resolveSymbolAt(
-          document,
-          token.start + Math.floor(token.text.length / 2),
-          symbols,
-        );
-        if (!resolved || !sameSymbol(resolved, symbol)) {
-          continue;
-        }
-        if (options.includeDeclaration === false && isDeclarationNameToken(document, token)) {
-          continue;
-        }
-        if (
-          options.includeFunctionReturnAssignments === false &&
-          isFunctionReturnAssignmentToken(document, symbol, token)
-        ) {
-          continue;
-        }
-        references.push({
-          uri: document.uri,
-          range: rangeFromOffsets(document.text, token.start, token.end),
-        });
-      }
-    }
-    for (const reference of docCommentReferences(document)) {
-      const resolved = resolveDocCommentReference(reference.name, symbols);
-      if (!resolved || !sameSymbol(resolved, symbol)) {
+      if (!targetNames.has(token.text.toLowerCase())) {
         continue;
       }
-      references.push({
+      const resolved = resolveSymbolAt(
+        document,
+        token.start + Math.floor(token.text.length / 2),
+        symbols,
+      );
+      if (!resolved) {
+        continue;
+      }
+      const key = symbolKey(resolved);
+      const target = targetsByKey.get(key);
+      const targetReferences = references.get(key);
+      if (!target || !targetReferences || !sameSymbol(resolved, target)) {
+        continue;
+      }
+      if (options.includeDeclaration === false && isDeclarationNameToken(document, token)) {
+        continue;
+      }
+      if (
+        options.includeFunctionReturnAssignments === false &&
+        isFunctionReturnAssignmentToken(document, target, token)
+      ) {
+        continue;
+      }
+      targetReferences.push({
+        uri: document.uri,
+        range: rangeFromOffsets(document.text, token.start, token.end),
+      });
+    }
+    for (const reference of docCommentReferences(document)) {
+      if (!targetNames.has(reference.name.toLowerCase())) {
+        continue;
+      }
+      const resolved = resolveDocCommentReference(reference.name, symbols);
+      if (!resolved) {
+        continue;
+      }
+      const key = symbolKey(resolved);
+      const target = targetsByKey.get(key);
+      const targetReferences = references.get(key);
+      if (!target || !targetReferences || !sameSymbol(resolved, target)) {
+        continue;
+      }
+      targetReferences.push({
         uri: document.uri,
         range: reference.range,
       });
     }
   }
   return references;
+}
+
+export function vbscriptReferenceSymbolKey(symbol: VbSymbol): string {
+  return symbolKey(symbol);
 }
 
 function isFunctionReturnAssignmentToken(

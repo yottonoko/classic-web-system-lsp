@@ -7,11 +7,12 @@ import {
   buildVbTypeEnvironment,
   extractAspIncludeRefs,
   extractVbscriptSymbolIndex,
-  getVbscriptReferencesForSymbol,
+  getVbscriptReferencesForSymbols,
   hydrateVbscriptCst,
   parseAspDocumentAsync,
   parseVbscriptTypeRef,
   summarizeAspFileAnalysisAsync,
+  vbscriptReferenceSymbolKey,
   type AspInclude,
   type AspLegacyEncoding,
   type AspParsedDocument,
@@ -62,23 +63,37 @@ async function runWorkspaceReferenceAnalysis(
   await testDelayFromEnv();
   const openDocuments = openDocumentMap(request.openDocuments);
   const closure = await collectLightweightIncludeClosure(request, openDocuments);
-  const targetFileName = targetFileNameFromSymbol(request.target);
-  if (closure.complete && targetFileName && !closure.files.has(targetFileName)) {
+  const targets = request.targets?.length ? request.targets : [request.target];
+  const targetFileNames = targets
+    .map(targetFileNameFromSymbol)
+    .filter((fileName): fileName is string => Boolean(fileName));
+  if (
+    closure.complete &&
+    targetFileNames.length > 0 &&
+    !targetFileNames.some((fileName) => closure.files.has(fileName))
+  ) {
     return {
       id: request.id,
       candidate: request.candidate,
       references: [],
+      referencesByTarget: emptyReferenceMap(targets),
       fallbackReasons: [],
       scannedFiles: closure.files.size,
       cacheHits: closure.openHits,
     };
   }
 
-  const references = await fullFallbackReferences(request, openDocuments);
+  const referencesByTarget = await fullFallbackReferencesForTargets(
+    request,
+    openDocuments,
+    targets,
+  );
+  const references = referencesByTarget[targetSymbolKey(request.target)] ?? [];
   return {
     id: request.id,
     candidate: request.candidate,
     references,
+    referencesByTarget,
     fallbackReasons: [
       closure.complete ? "target-reachable" : "include-closure-incomplete",
       ...closure.reasons,
@@ -194,13 +209,70 @@ async function collectLightweightIncludeClosure(
   return { files, complete, reasons: [...new Set(reasons)], openHits };
 }
 
-async function fullFallbackReferences(
+async function fullFallbackReferencesForTargets(
   request: VbReferencesWorkerRequest,
   openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
-): Promise<VbReference[]> {
+  targets: VbReferencesWorkerTargetSymbol[],
+): Promise<Record<string, VbReference[]>> {
+  const analysis = await cachedFullFallbackAnalysis(request, openDocuments);
+  const referencesByTarget = emptyReferenceMap(targets);
+  if (!analysis) {
+    return referencesByTarget;
+  }
+  const equivalentTargets: VbSymbol[] = [];
+  const equivalentKeys = new Map<string, string>();
+  for (const target of targets) {
+    const targetKey = targetSymbolKey(target);
+    const equivalent = equivalentVbSymbol(analysis.symbols, target);
+    if (equivalent) {
+      equivalentTargets.push(equivalent);
+      equivalentKeys.set(vbscriptReferenceSymbolKey(equivalent), targetKey);
+      continue;
+    }
+    referencesByTarget[targetKey] = fallbackWorkspaceExternalReferences(analysis.summaries, target);
+  }
+  const batch = getVbscriptReferencesForSymbols(
+    equivalentTargets,
+    analysis.context,
+    request.options,
+  );
+  for (const [equivalentKey, references] of batch) {
+    const targetKey = equivalentKeys.get(equivalentKey);
+    if (targetKey) {
+      referencesByTarget[targetKey] = references;
+    }
+  }
+  return referencesByTarget;
+}
+
+interface FullFallbackAnalysis {
+  context: VbProjectContext;
+  summaries: FileAnalysisSummary[];
+  symbols: VbSymbol[];
+}
+
+interface FullFallbackAnalysisCacheEntry {
+  key: string;
+  analysis: FullFallbackAnalysis;
+  lastUsed: number;
+}
+
+const fullFallbackAnalysisCache = new Map<string, FullFallbackAnalysisCacheEntry>();
+const maxFullFallbackAnalysisCacheEntries = 64;
+
+async function cachedFullFallbackAnalysis(
+  request: VbReferencesWorkerRequest,
+  openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
+): Promise<FullFallbackAnalysis | undefined> {
+  const key = fullFallbackAnalysisCacheKey(request);
+  const cached = fullFallbackAnalysisCache.get(key);
+  if (cached) {
+    cached.lastUsed = Date.now();
+    return cached.analysis;
+  }
   const documents = await collectFullDocuments(request, openDocuments);
   if (documents.length === 0) {
-    return [];
+    return undefined;
   }
   const contextSettings = vbProjectContextSettings(request.settings);
   const summaries = await Promise.all(
@@ -220,11 +292,64 @@ async function fullFallbackReferences(
     externalRefUsages: summaries.flatMap((summary) => summary.vbscript?.externalRefUsages ?? []),
     ...contextSettings,
   };
-  const target = equivalentVbSymbol(symbols, request.target);
-  if (target) {
-    return getVbscriptReferencesForSymbol(target, context, request.options);
+  const analysis = { context, summaries, symbols };
+  fullFallbackAnalysisCache.set(key, { key, analysis, lastUsed: Date.now() });
+  pruneFullFallbackAnalysisCache();
+  return analysis;
+}
+
+function fullFallbackAnalysisCacheKey(request: VbReferencesWorkerRequest): string {
+  return JSON.stringify({
+    candidate: request.candidate,
+    settings: request.settings,
+    workspaceRoots: request.workspaceRoots,
+    openDocuments: request.openDocuments.map((document) => ({
+      uri: document.uri,
+      fileName: document.fileName,
+      version: document.version,
+      length: document.text.length,
+      fingerprint: textFingerprint(document.text),
+    })),
+    limits: request.limits,
+  });
+}
+
+function emptyReferenceMap(
+  targets: VbReferencesWorkerTargetSymbol[],
+): Record<string, VbReference[]> {
+  return Object.fromEntries(targets.map((target) => [targetSymbolKey(target), []]));
+}
+
+function targetSymbolKey(symbol: VbReferencesWorkerTargetSymbol): string {
+  return [
+    symbol.sourceUri,
+    symbol.kind,
+    symbol.memberOf ?? "",
+    symbol.name.toLowerCase(),
+    symbol.range.start.line,
+    symbol.range.start.character,
+  ].join("|");
+}
+
+function textFingerprint(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
   }
-  return fallbackWorkspaceExternalReferences(summaries, request.target);
+  return `${text.length}:${(hash >>> 0).toString(16)}`;
+}
+
+function pruneFullFallbackAnalysisCache(): void {
+  while (fullFallbackAnalysisCache.size > maxFullFallbackAnalysisCacheEntries) {
+    const oldest = [...fullFallbackAnalysisCache.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0];
+    if (!oldest) {
+      return;
+    }
+    fullFallbackAnalysisCache.delete(oldest[0]);
+  }
 }
 
 async function collectFullDocuments(

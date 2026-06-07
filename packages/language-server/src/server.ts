@@ -112,6 +112,7 @@ import {
   getVbscriptRenameRange,
   getVbscriptReferences,
   getVbscriptReferencesForSymbol,
+  getVbscriptReferencesForSymbols,
   getVbscriptGraphExternalSymbols,
   getVbscriptSelectionRanges,
   getVbscriptSemanticTokens,
@@ -128,6 +129,7 @@ import {
   summarizeAspFileAnalysisAsync,
   updateAspParsedDocument,
   updateAspParsedDocumentSkeletonAsync,
+  vbscriptReferenceSymbolKey,
   type AspFormattingOptions,
   type AspEmbeddedLanguage,
   type AspEditImpact,
@@ -364,6 +366,10 @@ interface CachedAnalysis {
   vbProjectAnalysis?: {
     key: string;
     analysis: VbProjectAnalysis;
+  };
+  referenceCodeLensSymbols?: {
+    key: string;
+    symbols: VbSymbol[];
   };
 }
 
@@ -620,6 +626,37 @@ interface VbProjectSummaryGraph {
 interface WorkspaceVbReferenceWorkerTask {
   key: string;
   promise: Promise<VbReferencesWorkerResponse>;
+}
+
+interface WorkspaceVbReferenceBatchTask {
+  key: string;
+  promise: Promise<WorkspaceVbReferenceBatchResult>;
+}
+
+interface WorkspaceVbReferenceBatchResult {
+  key: string;
+  referencesByTarget: Map<string, VbReference[]>;
+  lastUsed: number;
+}
+
+interface WorkspaceVbReferenceReachabilityEntry {
+  key: string;
+  skippedUris: Set<string>;
+  complete: boolean;
+  lastUsed: number;
+}
+
+interface WorkspaceVbReferenceReachabilityState {
+  reachesTarget: boolean;
+  complete: boolean;
+  documents: number;
+}
+
+interface WorkspaceVbReferenceReachabilityGraphNode {
+  uri: string;
+  fileName: string;
+  includes: string[];
+  complete: boolean;
 }
 
 interface VbReferenceCodeLensData {
@@ -1424,8 +1461,18 @@ const aspProjectBuilderState = new AspProjectBuilderState();
 const completionSessionCache = new CompletionSessionCache();
 const maxVbProjectContextCacheEntries = 32;
 const maxWorkspaceVbReferenceWorkerCacheEntries = 128;
+const maxWorkspaceVbReferenceBatchCacheEntries = 64;
+const maxWorkspaceVbReferenceReachabilityCacheEntries = 2048;
+const maxWorkspaceVbReferenceReachabilityDocuments = 50_000;
+const workspaceVbReferenceReachabilityConcurrency = 256;
 const workspaceVbReferenceWorkerInFlight = new Map<string, WorkspaceVbReferenceWorkerTask>();
 const workspaceVbReferenceWorkerCompleted = new Map<string, VbReferencesWorkerResponse>();
+const workspaceVbReferenceBatchInFlight = new Map<string, WorkspaceVbReferenceBatchTask>();
+const workspaceVbReferenceBatchCompleted = new Map<string, WorkspaceVbReferenceBatchResult>();
+const workspaceVbReferenceReachabilityCache = new Map<
+  string,
+  WorkspaceVbReferenceReachabilityEntry
+>();
 let vbDiagnosticsWorkerPool: VbDiagnosticsWorkerPool | undefined;
 let vbDiagnosticsWorkerRequestId = 0;
 let stagedDiagnosticsGeneration = 0;
@@ -7126,25 +7173,61 @@ async function workspaceVbscriptReferencesForSymbol(
   settings: AspSettings,
   options: VbReferenceOptions = {},
 ): Promise<VbReference[]> {
+  return (
+    (
+      await workspaceVbscriptReferencesForSymbols(cached, [symbol], settings, options, {
+        logSymbol: symbol.name,
+      })
+    ).get(vbscriptReferenceSymbolKey(symbol)) ?? []
+  );
+}
+
+async function workspaceVbscriptReferencesForSymbols(
+  cached: CachedDocument,
+  symbols: VbSymbol[],
+  settings: AspSettings,
+  options: VbReferenceOptions = {},
+  logOptions: { logSymbol?: string } = {},
+): Promise<Map<string, VbReference[]>> {
   const context = await buildFullVbProjectContextForWorkspaceOperationAsync(cached, settings);
-  const target = equivalentVbSymbol(context.symbols ?? [], symbol) ?? symbol;
-  const references = new Map<string, VbReference>();
-  addVbReferences(references, getVbscriptReferencesForSymbol(target, context, options));
+  const targets = symbols.map(
+    (symbol) => equivalentVbSymbol(context.symbols ?? [], symbol) ?? symbol,
+  );
+  const targetKeyByContextKey = new Map<string, string>();
+  const referencesByTarget = new Map<string, VbReference[]>();
+  for (let index = 0; index < targets.length; index += 1) {
+    const contextKey = vbscriptReferenceSymbolKey(targets[index]);
+    const requestedKey = vbscriptReferenceSymbolKey(symbols[index]);
+    targetKeyByContextKey.set(contextKey, requestedKey);
+    referencesByTarget.set(requestedKey, []);
+  }
+  const localReferences = getVbscriptReferencesForSymbols(targets, context, options);
+  for (const [contextKey, references] of localReferences) {
+    addVbReferencesToArray(
+      referencesByTarget,
+      targetKeyByContextKey.get(contextKey) ?? contextKey,
+      references,
+    );
+  }
 
   const contextUris = new Set((context.documents ?? []).map((document) => document.uri));
-  const candidates = await workspaceVbReferenceWorkerCandidates(contextUris, settings);
+  const targetForWorkers = targets.map(vbReferencesWorkerTargetSymbol);
+  const candidates = await workspaceVbReferenceWorkerCandidates(
+    contextUris,
+    settings,
+    targetForWorkers,
+  );
   logDebugSummary(
     settings,
-    `[asp-lsp] vb.references.workspace.candidates: ${target.sourceUri}, symbol=${target.name}, candidates=${candidates.length}`,
+    `[asp-lsp] vb.references.workspace.candidates: ${cached.source.uri}, symbol=${logOptions.logSymbol ?? targets[0]?.name ?? "(batch)"}, symbols=${targets.length}, candidates=${candidates.length}`,
   );
-  const targetForWorker = vbReferencesWorkerTargetSymbol(target);
   const openDocuments = vbReferencesWorkerOpenDocuments();
   const openDocumentsKey = vbReferencesWorkerOpenDocumentsKey(openDocuments);
   const workerResponses = await Promise.all(
     candidates.map((candidate) =>
-      workspaceVbReferenceWorkerResponse(
+      workspaceVbReferenceWorkerBatchResponse(
         candidate,
-        targetForWorker,
+        targetForWorkers,
         settings,
         options,
         openDocuments,
@@ -7153,15 +7236,27 @@ async function workspaceVbscriptReferencesForSymbol(
     ),
   );
   for (const response of workerResponses) {
-    addVbReferences(references, response.references ?? []);
+    for (const target of targetForWorkers) {
+      const contextKey = vbReferencesWorkerTargetKey(target);
+      const requestedKey = targetKeyByContextKey.get(contextKey) ?? contextKey;
+      addVbReferencesToArray(
+        referencesByTarget,
+        requestedKey,
+        response.referencesByTarget?.[contextKey] ?? [],
+      );
+    }
   }
 
-  return [...references.values()].sort(vbReferenceOrder);
+  for (const [key, references] of referencesByTarget) {
+    referencesByTarget.set(key, dedupeVbReferences(references).sort(vbReferenceOrder));
+  }
+  return referencesByTarget;
 }
 
 async function workspaceVbReferenceWorkerCandidates(
   excludedUris: Set<string>,
   settings: AspSettings,
+  targets: VbReferencesWorkerTargetSymbol[] = [],
 ): Promise<VbReferencesWorkerCandidate[]> {
   await ensureWorkspaceIndexAsync(settings);
   const candidates = new Map<string, VbReferencesWorkerCandidate>();
@@ -7174,20 +7269,21 @@ async function workspaceVbReferenceWorkerCandidates(
     if (!identity) {
       continue;
     }
-    candidates.set(document.uri, {
+    const candidate = {
       uri: document.uri,
       fileName,
       source: {
         ...identity.source,
         openVersion: document.version,
       },
-    });
+    };
+    candidates.set(document.uri, candidate);
   }
   for (const entry of workspaceIndex.values()) {
     if (excludedUris.has(entry.uri) || candidates.has(entry.uri)) {
       continue;
     }
-    candidates.set(entry.uri, {
+    const candidate = {
       uri: entry.uri,
       fileName: entry.fileName,
       source: {
@@ -7195,9 +7291,355 @@ async function workspaceVbReferenceWorkerCandidates(
         mtimeMs: entry.mtimeMs,
         size: entry.size,
       },
-    });
+    };
+    candidates.set(entry.uri, candidate);
   }
-  return [...candidates.values()];
+  return filterWorkspaceVbReferenceWorkerCandidates([...candidates.values()], targets, settings);
+}
+
+async function filterWorkspaceVbReferenceWorkerCandidates(
+  candidates: VbReferencesWorkerCandidate[],
+  targets: VbReferencesWorkerTargetSymbol[],
+  settings: AspSettings,
+): Promise<VbReferencesWorkerCandidate[]> {
+  if (targets.length === 0 || candidates.length === 0) {
+    return candidates;
+  }
+  const targetFiles = new Set(
+    targets
+      .map((target) =>
+        target.sourceUri.startsWith("file://")
+          ? normalizeFileName(uriToFileName(target.sourceUri))
+          : undefined,
+      )
+      .filter((fileName): fileName is string => Boolean(fileName)),
+  );
+  if (targetFiles.size === 0) {
+    return candidates;
+  }
+  const reachability = await workspaceVbReferenceReachability(candidates, targetFiles, settings);
+  return candidates.filter((candidate) => !reachability.skippedUris.has(candidate.uri));
+}
+
+async function workspaceVbReferenceReachability(
+  candidates: VbReferencesWorkerCandidate[],
+  targetFiles: Set<string>,
+  settings: AspSettings,
+): Promise<WorkspaceVbReferenceReachabilityEntry> {
+  const key = JSON.stringify({
+    candidates: textFingerprint(
+      JSON.stringify(
+        candidates
+          .map((candidate) => ({
+            uri: candidate.uri,
+            fileName: candidate.fileName,
+            source: candidate.source,
+          }))
+          .sort((left, right) => left.uri.localeCompare(right.uri)),
+      ),
+    ),
+    targets: [...targetFiles].sort(),
+    settings: {
+      include: includeResolutionSettingsIdentity(settings),
+      legacyEncoding: settings.legacyEncoding,
+    },
+    limits: {
+      maxDocuments: maxWorkspaceVbReferenceReachabilityDocuments,
+    },
+    workspaceGeneration,
+  });
+  const cached = workspaceVbReferenceReachabilityCache.get(key);
+  if (cached) {
+    cached.lastUsed = Date.now();
+    return cached;
+  }
+
+  const basenameReachability = await workspaceVbReferenceBasenameReachability(
+    candidates,
+    targetFiles,
+  );
+  if (basenameReachability) {
+    basenameReachability.key = key;
+    workspaceVbReferenceReachabilityCache.set(key, basenameReachability);
+    pruneWorkspaceVbReferenceReachabilityCache();
+    for (const candidate of candidates) {
+      if (basenameReachability.skippedUris.has(candidate.uri)) {
+        logDebugSummary(settings, `[asp-lsp] vb.references.reachability.skip: ${candidate.uri}`);
+      }
+    }
+    return basenameReachability;
+  }
+
+  const graph = await workspaceVbReferenceReachabilityGraph(candidates, settings);
+  const stateCache = new Map<string, WorkspaceVbReferenceReachabilityState>();
+  let complete = true;
+
+  const visit = (
+    uri: string,
+    fileName: string,
+    depth: number,
+    pathStack: Set<string>,
+  ): WorkspaceVbReferenceReachabilityState => {
+    const normalized = normalizeFileName(fileName);
+    if (targetFiles.has(normalized)) {
+      return { reachesTarget: true, complete: true, documents: 1 };
+    }
+    const cachedState = stateCache.get(normalized);
+    if (cachedState) {
+      return cachedState;
+    }
+    if (depth > 20 || pathStack.size > maxWorkspaceVbReferenceReachabilityDocuments) {
+      return { reachesTarget: false, complete: false, documents: 1 };
+    }
+    if (pathStack.has(normalized)) {
+      return { reachesTarget: false, complete: true, documents: 0 };
+    }
+
+    pathStack.add(normalized);
+    const node = graph.get(normalized);
+    if (!node) {
+      pathStack.delete(normalized);
+      return { reachesTarget: false, complete: false, documents: 1 };
+    }
+
+    let reachesTarget = false;
+    let stateComplete = node.complete;
+    let documents = 1;
+    for (const includeFileName of node.includes) {
+      const childState = visit(
+        pathToFileUri(includeFileName),
+        includeFileName,
+        depth + 1,
+        pathStack,
+      );
+      reachesTarget ||= childState.reachesTarget;
+      stateComplete &&= childState.complete;
+      documents += childState.documents;
+      if (documents > maxWorkspaceVbReferenceReachabilityDocuments) {
+        stateComplete = false;
+        break;
+      }
+    }
+    pathStack.delete(normalized);
+
+    const state = { reachesTarget, complete: stateComplete, documents };
+    stateCache.set(normalized, state);
+    return state;
+  };
+
+  const skippedUris = new Set<string>();
+  for (const candidate of candidates) {
+    const state = visit(candidate.uri, candidate.fileName, 0, new Set());
+    complete &&= state.complete;
+    if (state.complete && !state.reachesTarget) {
+      skippedUris.add(candidate.uri);
+    }
+  }
+
+  const entry = {
+    key,
+    skippedUris,
+    complete,
+    lastUsed: Date.now(),
+  };
+  workspaceVbReferenceReachabilityCache.set(key, entry);
+  pruneWorkspaceVbReferenceReachabilityCache();
+  for (const candidate of candidates) {
+    if (skippedUris.has(candidate.uri)) {
+      logDebugSummary(settings, `[asp-lsp] vb.references.reachability.skip: ${candidate.uri}`);
+    }
+  }
+  return entry;
+}
+
+async function workspaceVbReferenceBasenameReachability(
+  candidates: VbReferencesWorkerCandidate[],
+  targetFiles: Set<string>,
+): Promise<WorkspaceVbReferenceReachabilityEntry | undefined> {
+  const targetBasenames = [...targetFiles]
+    .map((fileName) => path.basename(fileName).toLowerCase())
+    .filter((name) => name.length > 0);
+  if (targetBasenames.length === 0) {
+    return undefined;
+  }
+  const targetNeedles = targetBasenames
+    .map(asciiNeedle)
+    .filter((item): item is Uint8Array => Boolean(item));
+  if (targetNeedles.length !== targetBasenames.length) {
+    return undefined;
+  }
+
+  const matches = await mapWithConcurrency(
+    candidates,
+    workspaceVbReferenceReachabilityConcurrency,
+    async (candidate) => {
+      const openDocument = documents.get(candidate.uri);
+      const bytes =
+        openDocument === undefined
+          ? await fs.promises.readFile(candidate.fileName).catch(() => undefined)
+          : Buffer.from(openDocument.getText(), "utf8");
+      if (bytes === undefined) {
+        return { candidate, unknown: true, containsTargetBasename: false };
+      }
+      const containsTargetBasename = includeDirectiveMentionsAnyTarget(bytes, targetNeedles);
+      if (containsTargetBasename === undefined) {
+        return { candidate, unknown: true, containsTargetBasename: false };
+      }
+      return {
+        candidate,
+        unknown: false,
+        containsTargetBasename,
+      };
+    },
+  );
+
+  if (matches.some((match) => match.unknown || match.containsTargetBasename)) {
+    return undefined;
+  }
+  return {
+    key: "",
+    skippedUris: new Set(candidates.map((candidate) => candidate.uri)),
+    complete: true,
+    lastUsed: Date.now(),
+  };
+}
+
+function asciiNeedle(text: string): Uint8Array | undefined {
+  const bytes: number[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code > 0x7f) {
+      return undefined;
+    }
+    bytes.push(asciiLowerByte(code));
+  }
+  return Uint8Array.from(bytes);
+}
+
+function includeDirectiveMentionsAnyTarget(
+  bytes: Uint8Array,
+  targetNeedles: Uint8Array[],
+): boolean | undefined {
+  const includeNeedle = Uint8Array.from([35, 105, 110, 99, 108, 117, 100, 101]);
+  const directiveCloseNeedle = Uint8Array.from([45, 45, 62]);
+  let offset = 0;
+  for (;;) {
+    const includeAt = indexOfAsciiInsensitive(bytes, includeNeedle, offset);
+    if (includeAt < 0) {
+      return false;
+    }
+    const closeAt = indexOfAsciiInsensitive(bytes, directiveCloseNeedle, includeAt);
+    if (closeAt < 0) {
+      return undefined;
+    }
+    const closeEnd = closeAt + directiveCloseNeedle.length;
+    if (
+      targetNeedles.some(
+        (needle) => indexOfAsciiInsensitive(bytes, needle, includeAt, closeEnd) >= 0,
+      )
+    ) {
+      return true;
+    }
+    offset = closeEnd;
+  }
+}
+
+function indexOfAsciiInsensitive(
+  bytes: Uint8Array,
+  needle: Uint8Array,
+  offset: number,
+  end = bytes.length,
+): number {
+  if (needle.length === 0) {
+    return offset;
+  }
+  const limit = end - needle.length;
+  for (let index = offset; index <= limit; index += 1) {
+    let matched = true;
+    for (let needleIndex = 0; needleIndex < needle.length; needleIndex += 1) {
+      if (asciiLowerByte(bytes[index + needleIndex]) !== needle[needleIndex]) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function asciiLowerByte(value: number): number {
+  return value >= 65 && value <= 90 ? value + 32 : value;
+}
+
+async function workspaceVbReferenceReachabilityGraph(
+  candidates: VbReferencesWorkerCandidate[],
+  settings: AspSettings,
+): Promise<Map<string, WorkspaceVbReferenceReachabilityGraphNode>> {
+  const fileNames = [
+    ...new Set(candidates.map((candidate) => normalizeFileName(candidate.fileName))),
+  ];
+  const nodes = new Map<string, WorkspaceVbReferenceReachabilityGraphNode>();
+  const includeRefsEntries = await mapWithConcurrency(
+    fileNames,
+    workspaceVbReferenceReachabilityConcurrency,
+    async (fileName) => ({
+      fileName,
+      entry: await includeDocumentLoader.readIncludeRefsAsync(fileName, settings, {
+        allowRead: true,
+      }),
+    }),
+  );
+  const includeEdges: Array<{
+    ownerUri: string;
+    ownerFileName: string;
+    include: AspInclude;
+  }> = [];
+  for (const { fileName, entry } of includeRefsEntries) {
+    const normalized = normalizeFileName(fileName);
+    if (!entry) {
+      nodes.set(normalized, {
+        uri: pathToFileUri(normalized),
+        fileName: normalized,
+        includes: [],
+        complete: false,
+      });
+      continue;
+    }
+    nodes.set(normalized, {
+      uri: entry.uri,
+      fileName: normalized,
+      includes: [],
+      complete: true,
+    });
+    for (const include of entry.includeRefs) {
+      includeEdges.push({ ownerUri: entry.uri, ownerFileName: normalized, include });
+    }
+  }
+
+  await mapWithConcurrency(
+    includeEdges,
+    workspaceVbReferenceReachabilityConcurrency,
+    async ({ ownerUri, ownerFileName, include }) => {
+      const node = nodes.get(ownerFileName);
+      if (!node) {
+        return;
+      }
+      const resolved = await resolveIncludePathDetailsAsync(
+        ownerUri,
+        include.path,
+        include.mode,
+        settings,
+      );
+      if (!resolved.exists) {
+        node.complete = false;
+        return;
+      }
+      node.includes.push(normalizeFileName(resolved.fileName));
+    },
+  );
+  return nodes;
 }
 
 function vbReferencesWorkerTargetSymbol(symbol: VbSymbol): VbReferencesWorkerTargetSymbol {
@@ -7329,11 +7771,138 @@ async function workspaceVbReferenceWorkerResponse(
   return promise;
 }
 
+async function workspaceVbReferenceWorkerBatchResponse(
+  candidate: VbReferencesWorkerCandidate,
+  targets: VbReferencesWorkerTargetSymbol[],
+  settings: AspSettings,
+  options: VbReferenceOptions,
+  openDocuments: VbReferencesWorkerOpenDocument[],
+  openDocumentsKey: string,
+): Promise<VbReferencesWorkerResponse> {
+  if (targets.length === 0) {
+    return { id: 0, candidate, references: [], referencesByTarget: {} };
+  }
+  if (targets.length === 1) {
+    const response = await workspaceVbReferenceWorkerResponse(
+      candidate,
+      targets[0],
+      settings,
+      options,
+      openDocuments,
+      openDocumentsKey,
+    );
+    return {
+      ...response,
+      referencesByTarget: {
+        [vbReferencesWorkerTargetKey(targets[0])]: response.references ?? [],
+      },
+    };
+  }
+  const request = {
+    id: ++vbReferencesWorkerRequestId,
+    candidate,
+    target: targets[0],
+    targets,
+    settings,
+    workspaceRoots,
+    openDocuments,
+    options: workspaceVbReferenceWorkerOptions(options),
+    limits: {
+      ...vbProjectContextLimits(settings),
+      maxDepth: 20,
+      includeReadConcurrency: Math.max(1, Math.min(4, analysisConcurrency(settings))),
+    },
+  };
+  const pool = getVbReferencesWorkerPool(settings);
+  return pool
+    .run(request)
+    .then(async (response) => {
+      if (
+        !sameVbReferencesWorkerCandidate(candidate, response.candidate) ||
+        vbReferencesWorkerOpenDocumentsKey(vbReferencesWorkerOpenDocuments()) !==
+          openDocumentsKey ||
+        !(await isCurrentVbReferencesWorkerCandidate(candidate))
+      ) {
+        logDebugSummary(settings, `[asp-lsp] vb.references.worker.stale: ${candidate.uri}`);
+        return { ...response, references: [], referencesByTarget: {} };
+      }
+      for (const target of targets) {
+        const targetKey = vbReferencesWorkerTargetKey(target);
+        seedWorkspaceVbReferenceWorkerCompleted(
+          candidate,
+          target,
+          settings,
+          options,
+          openDocumentsKey,
+          {
+            ...response,
+            references: response.referencesByTarget?.[targetKey] ?? [],
+            referencesByTarget: undefined,
+          },
+        );
+      }
+      if (response.error) {
+        logDebugSummary(
+          settings,
+          `[asp-lsp] vb.references.worker.error: ${candidate.uri}, ${response.error.message}`,
+        );
+      } else {
+        logDebugSummary(
+          settings,
+          `[asp-lsp] vb.references.worker.batch.complete: ${candidate.uri}, symbols=${targets.length}, fallback=${response.fallbackReasons?.join("|") ?? ""}`,
+        );
+      }
+      return response;
+    })
+    .catch((error: unknown) => {
+      connection.console.warn(
+        `[asp-lsp] vb.references.worker.failed: ${candidate.uri}, error=${errorMessage(error)}`,
+      );
+      return {
+        id: request.id,
+        candidate,
+        references: [],
+        referencesByTarget: {},
+        error: { message: errorMessage(error) },
+      } satisfies VbReferencesWorkerResponse;
+    });
+}
+
+function seedWorkspaceVbReferenceWorkerCompleted(
+  candidate: VbReferencesWorkerCandidate,
+  target: VbReferencesWorkerTargetSymbol,
+  settings: AspSettings,
+  options: VbReferenceOptions,
+  openDocumentsKey: string,
+  response: VbReferencesWorkerResponse,
+): void {
+  const key = workspaceVbReferenceWorkerTaskKey(
+    candidate,
+    target,
+    settings,
+    workspaceVbReferenceWorkerOptions(options),
+    openDocumentsKey,
+  );
+  workspaceVbReferenceWorkerCompleted.set(key, response);
+  pruneWorkspaceVbReferenceWorkerCompleted();
+}
+
 function workspaceVbReferenceWorkerOptions(_options: VbReferenceOptions): VbReferenceOptions {
   return {
     includeDeclaration: false,
     includeFunctionReturnAssignments: false,
   };
+}
+
+function vbReferencesWorkerTargetKey(symbol: VbReferencesWorkerTargetSymbol): string {
+  return [
+    symbol.sourceUri,
+    symbol.kind,
+    symbol.memberOf ?? "",
+    symbol.name.toLowerCase(),
+    symbol.range.start.line,
+    symbol.range.start.character,
+  ].join("|");
 }
 
 function workspaceVbReferenceWorkerTaskKey(
@@ -7401,9 +7970,36 @@ function pruneWorkspaceVbReferenceWorkerCompleted(): void {
   }
 }
 
-function clearWorkspaceVbReferenceWorkerCache(): void {
+function pruneWorkspaceVbReferenceBatchCompleted(): void {
+  while (workspaceVbReferenceBatchCompleted.size > maxWorkspaceVbReferenceBatchCacheEntries) {
+    const oldest = workspaceVbReferenceBatchCompleted.keys().next().value;
+    if (!oldest) {
+      return;
+    }
+    workspaceVbReferenceBatchCompleted.delete(oldest);
+  }
+}
+
+function pruneWorkspaceVbReferenceReachabilityCache(): void {
+  while (
+    workspaceVbReferenceReachabilityCache.size > maxWorkspaceVbReferenceReachabilityCacheEntries
+  ) {
+    const oldest = [...workspaceVbReferenceReachabilityCache.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0];
+    if (!oldest) {
+      return;
+    }
+    workspaceVbReferenceReachabilityCache.delete(oldest[0]);
+  }
+}
+
+function clearWorkspaceVbReferenceCaches(): void {
   workspaceVbReferenceWorkerInFlight.clear();
   workspaceVbReferenceWorkerCompleted.clear();
+  workspaceVbReferenceBatchInFlight.clear();
+  workspaceVbReferenceBatchCompleted.clear();
+  workspaceVbReferenceReachabilityCache.clear();
 }
 
 function getVbReferencesWorkerPool(settings: AspSettings): VbReferencesWorkerPool {
@@ -7433,6 +8029,22 @@ function addVbReferences(target: Map<string, VbReference>, references: VbReferen
   for (const reference of references) {
     target.set(vbReferenceKey(reference), reference);
   }
+}
+
+function addVbReferencesToArray(
+  target: Map<string, VbReference[]>,
+  key: string,
+  references: VbReference[],
+): void {
+  const existing = target.get(key) ?? [];
+  existing.push(...references);
+  target.set(key, existing);
+}
+
+function dedupeVbReferences(references: VbReference[]): VbReference[] {
+  const deduped = new Map<string, VbReference>();
+  addVbReferences(deduped, references);
+  return [...deduped.values()];
 }
 
 function vbReferenceKey(reference: VbReference): string {
@@ -7712,7 +8324,7 @@ function clearIncludeGraph(): void {
 function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.invalidate"): void {
   if (uris.size > 0) {
     vbProjectContextCache.clear();
-    clearWorkspaceVbReferenceWorkerCache();
+    clearWorkspaceVbReferenceCaches();
     completionSessionCache.clearUris(uris, reason);
     invalidateGraphFileIndexFiles(
       [...uris].filter((uri) => uri.startsWith("file://")).map(uriToFileName),
@@ -9540,7 +10152,7 @@ function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
   workspaceIndexDirty = true;
   workspaceIndexTruncated = false;
   workspaceIndex.clear();
-  clearWorkspaceVbReferenceWorkerCache();
+  clearWorkspaceVbReferenceCaches();
   logInvalidation("workspaceIndex", reason, workspaceGeneration);
 }
 
@@ -9585,7 +10197,7 @@ function clearWorkspaceIndexProcessCaches(reason: string): void {
   workspaceIndexDirty = true;
   workspaceIndexTruncated = false;
   workspaceIndex.clear();
-  clearWorkspaceVbReferenceWorkerCache();
+  clearWorkspaceVbReferenceCaches();
   logDebugSummary(globalSettings, `[asp-lsp] processCache.workspaceIndex.clear: ${reason}`);
 }
 
@@ -9596,7 +10208,7 @@ async function closeDiagnosticsWorkerPools(reason: string): Promise<void> {
   jsDiagnosticsWorkerPool = undefined;
   vbDiagnosticsWorkerPool = undefined;
   vbReferencesWorkerPool = undefined;
-  clearWorkspaceVbReferenceWorkerCache();
+  clearWorkspaceVbReferenceCaches();
   if (jsPool) {
     try {
       await jsPool.close();
@@ -14718,7 +15330,7 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
   };
   const references =
     settings.codeLens?.referenceScope === "workspace"
-      ? await workspaceVbscriptReferencesForSymbol(cached, symbol, settings, options)
+      ? await workspaceVbscriptCodeLensReferencesForSymbol(cached, symbol, settings, options)
       : await analyzedVbscriptReferencesForSymbolAsync(cached, symbol, settings, options);
   const localizer = localizerForUri(cached.source.uri);
   return {
@@ -14736,6 +15348,126 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
       ],
     },
   };
+}
+
+async function workspaceVbscriptCodeLensReferencesForSymbol(
+  cached: CachedDocument,
+  symbol: VbSymbol,
+  settings: AspSettings,
+  options: VbReferenceOptions,
+): Promise<VbReference[]> {
+  const targets = await referenceCodeLensSymbolsForCachedDocumentAsync(cached, settings);
+  const batchTargets = targets.some((target) => sameVbSymbolIdentity(target, symbol))
+    ? targets
+    : [...targets, symbol];
+  const batch = await workspaceVbscriptCodeLensBatchReferences(
+    cached,
+    batchTargets,
+    settings,
+    options,
+  );
+  return batch.get(vbscriptReferenceSymbolKey(symbol)) ?? [];
+}
+
+async function referenceCodeLensSymbolsForCachedDocumentAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<VbSymbol[]> {
+  const key = JSON.stringify({
+    uri: cached.source.uri,
+    version: cached.source.version,
+    parsed: vbProjectDocumentFingerprint(cached.parsed),
+    settings: {
+      codeLens: settings.codeLens,
+      vbscript: vbProjectContextSettings(settings),
+    },
+  });
+  const existing = cached.analysis?.referenceCodeLensSymbols;
+  if (existing?.key === key) {
+    return existing.symbols;
+  }
+  await hydrateCachedVbscriptCstAsync(cached, settings, "codeLens");
+  const symbols = (
+    await collectVbscriptSymbolsAsync(cached.parsed, vbProjectContextSettings(settings))
+  ).filter((item) => shouldShowVbReferenceCodeLens(item, cached.source.uri, settings.codeLens));
+  analysisFor(cached).referenceCodeLensSymbols = { key, symbols };
+  return symbols;
+}
+
+async function workspaceVbscriptCodeLensBatchReferences(
+  cached: CachedDocument,
+  targets: VbSymbol[],
+  settings: AspSettings,
+  options: VbReferenceOptions,
+): Promise<Map<string, VbReference[]>> {
+  const openDocuments = vbReferencesWorkerOpenDocuments();
+  const openDocumentsKey = vbReferencesWorkerOpenDocumentsKey(openDocuments);
+  const key = workspaceVbReferenceBatchCacheKey(
+    cached,
+    targets,
+    settings,
+    options,
+    openDocumentsKey,
+  );
+  const cachedBatch = workspaceVbReferenceBatchCompleted.get(key);
+  if (cachedBatch) {
+    cachedBatch.lastUsed = Date.now();
+    logDebugSummary(settings, `[asp-lsp] vb.references.batch.cache.hit: ${cached.source.uri}`);
+    return cachedBatch.referencesByTarget;
+  }
+  const inFlight = workspaceVbReferenceBatchInFlight.get(key);
+  if (inFlight) {
+    logDebugSummary(settings, `[asp-lsp] vb.references.batch.reuse: ${cached.source.uri}`);
+    return (await inFlight.promise).referencesByTarget;
+  }
+  const promise = workspaceVbscriptReferencesForSymbols(cached, targets, settings, options, {
+    logSymbol: "(codelens-batch)",
+  }).then((referencesByTarget) => {
+    const result = { key, referencesByTarget, lastUsed: Date.now() };
+    workspaceVbReferenceBatchCompleted.set(key, result);
+    pruneWorkspaceVbReferenceBatchCompleted();
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vb.references.batch.complete: ${cached.source.uri}, symbols=${targets.length}`,
+    );
+    return result;
+  });
+  workspaceVbReferenceBatchInFlight.set(key, { key, promise });
+  try {
+    return (await promise).referencesByTarget;
+  } finally {
+    if (workspaceVbReferenceBatchInFlight.get(key)?.promise === promise) {
+      workspaceVbReferenceBatchInFlight.delete(key);
+    }
+  }
+}
+
+function workspaceVbReferenceBatchCacheKey(
+  cached: CachedDocument,
+  targets: VbSymbol[],
+  settings: AspSettings,
+  options: VbReferenceOptions,
+  openDocumentsKey: string,
+): string {
+  return JSON.stringify({
+    scope: "workspaceCodeLens",
+    source: {
+      uri: cached.source.uri,
+      version: cached.source.version,
+      text: textFingerprint(cached.source.getText()),
+      parsed: vbProjectDocumentFingerprint(cached.parsed),
+    },
+    targets: targets.map(vbscriptReferenceSymbolKey).sort(),
+    settings: {
+      parse: parseSettingsIdentity(settings),
+      include: includeResolutionSettingsIdentity(settings),
+      vbscript: vbProjectContextSettings(settings),
+      legacyEncoding: settings.legacyEncoding,
+    },
+    options: workspaceVbReferenceWorkerOptions(options),
+    workspaceGeneration,
+    openDocuments: openDocumentsKey,
+  });
 }
 
 function vbReferenceCodeLensData(symbol: VbSymbol): VbReferenceCodeLensData {
@@ -14770,10 +15502,7 @@ async function vbSymbolForCodeLensDataAsync(
   data: VbReferenceCodeLensData,
 ): Promise<VbSymbol | undefined> {
   const settings = cachedSettings(data.uri);
-  await hydrateCachedVbscriptCstAsync(cached, settings, "codeLens");
-  return (
-    await collectVbscriptSymbolsAsync(cached.parsed, vbProjectContextSettings(settings))
-  ).find(
+  return (await referenceCodeLensSymbolsForCachedDocumentAsync(cached, settings)).find(
     (symbol) =>
       symbol.sourceUri === data.uri &&
       symbol.name.toLowerCase() === data.name.toLowerCase() &&
@@ -16011,7 +16740,7 @@ connection.onShutdown(async () => {
   vbDiagnosticsWorkerPool = undefined;
   await vbReferencesWorkerPool?.close();
   vbReferencesWorkerPool = undefined;
-  clearWorkspaceVbReferenceWorkerCache();
+  clearWorkspaceVbReferenceCaches();
 });
 
 documents.listen(connection);
