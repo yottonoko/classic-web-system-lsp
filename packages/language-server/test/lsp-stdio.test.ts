@@ -10,7 +10,7 @@ import {
   DiagnosticSeverity,
   InsertTextFormat,
 } from "vscode-languageserver-types";
-import type { TextEdit } from "vscode-languageserver-types";
+import type { CodeAction, TextEdit, WorkspaceEdit } from "vscode-languageserver-types";
 
 interface JsonRpcMessage {
   id?: number;
@@ -7010,6 +7010,148 @@ console.log(z, a);
       }
     });
 
+    it("extracts inline styles to nearby CSS classes", async () => {
+      const source = `<div style="display: flex;">あいうえお</div>`;
+      const actions = await inlineStyleCodeActionsForSource(source, source.indexOf("<div") + 1);
+      const classAction = inlineStyleActionByTitle(actions, "class");
+      expect(classAction).toBeTruthy();
+      expect(inlineStyleActionByTitle(actions, "ID")).toBeTruthy();
+      expect(applyWorkspaceEditForText(source, classAction?.edit)).toBe(`<style>
+  .style-1 {
+    display: flex;
+  }
+</style>
+<div class="style-1">あいうえお</div>`);
+    });
+
+    it("appends extracted style class names without colliding", async () => {
+      const source = `<div class="card style-1" style="color: red;">x</div>`;
+      const actions = await inlineStyleCodeActionsForSource(source, source.indexOf("style=") + 2);
+      const classAction = inlineStyleActionByTitle(actions, "class");
+      expect(applyWorkspaceEditForText(source, classAction?.edit)).toBe(`<style>
+  .style-2 {
+    color: red;
+  }
+</style>
+<div class="card style-1 style-2">x</div>`);
+    });
+
+    it("extracts inline styles to existing and generated CSS IDs", async () => {
+      const existingIdSource = `<div id="hero" style="color: red;">x</div>`;
+      const existingIdActions = await inlineStyleCodeActionsForSource(
+        existingIdSource,
+        existingIdSource.indexOf("style=") + 2,
+      );
+      expect(
+        applyWorkspaceEditForText(
+          existingIdSource,
+          inlineStyleActionByTitle(existingIdActions, "ID")?.edit,
+        ),
+      ).toBe(`<style>
+  #hero {
+    color: red;
+  }
+</style>
+<div id="hero">x</div>`);
+
+      const generatedIdSource = `<div id="style-1"></div>
+<div style="color: red;">x</div>`;
+      const generatedIdActions = await inlineStyleCodeActionsForSource(
+        generatedIdSource,
+        generatedIdSource.indexOf("style=") + 2,
+      );
+      expect(
+        applyWorkspaceEditForText(
+          generatedIdSource,
+          inlineStyleActionByTitle(generatedIdActions, "ID")?.edit,
+        ),
+      ).toBe(`<div id="style-1"></div>
+<style>
+  #style-2 {
+    color: red;
+  }
+</style>
+<div id="style-2">x</div>`);
+    });
+
+    it("appends extracted inline styles to the nearest existing style element", async () => {
+      const source = `<style>
+  .existing {
+    color: blue;
+  }
+</style>
+<div style="display: flex;">x</div>`;
+      const actions = await inlineStyleCodeActionsForSource(source, source.indexOf("style=") + 2, {
+        styleExtraction: { insertionMode: "reuseExistingStyleTag" },
+      });
+      expect(applyWorkspaceEditForText(source, inlineStyleActionByTitle(actions, "class")?.edit))
+        .toBe(`<style>
+  .existing {
+    color: blue;
+  }
+  .style-1 {
+    display: flex;
+  }
+</style>
+<div class="style-1">x</div>`);
+    });
+
+    it("uses the nearest style element when several style elements exist", async () => {
+      const source = `<style>
+</style>
+<div>this gap keeps the first style farther away from the target</div>
+<div style="color: red;">x</div>
+<style>
+</style>`;
+      const actions = await inlineStyleCodeActionsForSource(source, source.indexOf("style=") + 2, {
+        styleExtraction: { insertionMode: "reuseExistingStyleTag" },
+      });
+      expect(applyWorkspaceEditForText(source, inlineStyleActionByTitle(actions, "class")?.edit))
+        .toBe(`<style>
+</style>
+<div>this gap keeps the first style farther away from the target</div>
+<div class="style-1">x</div>
+<style>
+  .style-1 {
+    color: red;
+  }
+</style>`);
+    });
+
+    it("falls back to nearby style elements when reuse mode has no existing style element", async () => {
+      const source = `<div style="color: red;">x</div>`;
+      const actions = await inlineStyleCodeActionsForSource(source, source.indexOf("style=") + 2, {
+        styleExtraction: { insertionMode: "reuseExistingStyleTag" },
+      });
+      expect(applyWorkspaceEditForText(source, inlineStyleActionByTitle(actions, "class")?.edit))
+        .toBe(`<style>
+  .style-1 {
+    color: red;
+  }
+</style>
+<div class="style-1">x</div>`);
+    });
+
+    it("does not return inline style extraction actions for unsupported ranges", async () => {
+      const noStyle = `<div class="card">x</div>`;
+      expect(await inlineStyleCodeActionsForSource(noStyle, noStyle.indexOf("card"))).toEqual([]);
+
+      const emptyStyle = `<div style="">x</div>`;
+      expect(
+        await inlineStyleCodeActionsForSource(emptyStyle, emptyStyle.indexOf("style=")),
+      ).toEqual([]);
+
+      const outsideTag = `<div style="color: red;">x</div>`;
+      expect(await inlineStyleCodeActionsForSource(outsideTag, outsideTag.indexOf("x"))).toEqual(
+        [],
+      );
+
+      const aspDelimiter = `<div style="color: <%= color %>;">x</div>`;
+      expect(
+        await inlineStyleCodeActionsForSource(aspDelimiter, aspDelimiter.indexOf("style=")),
+      ).toEqual([]);
+    });
+
     it("returns VBScript extract variable refactors", async () => {
       const source = `<%
 Response.Write Request.QueryString("name")
@@ -11154,6 +11296,71 @@ function markedDocument(source: string): MarkedDocument {
   }
   const text = source.slice(0, offset) + source.slice(offset + "▮".length);
   return { text, position: positionAt(text, offset) };
+}
+
+async function inlineStyleCodeActionsForSource(
+  source: string,
+  offset: number,
+  settings: Record<string, unknown> = {},
+): Promise<CodeAction[]> {
+  const server = new RpcServer();
+  try {
+    await server.start();
+    await server.request("initialize", {
+      processId: process.pid,
+      rootUri: "file:///tmp",
+      capabilities: {},
+    });
+    if (Object.keys(settings).length > 0) {
+      server.notify("workspace/didChangeConfiguration", {
+        settings: { aspLsp: settings },
+      });
+    }
+    const uri = `file:///tmp/inline-style-${Math.random().toString(16).slice(2)}.asp`;
+    server.notify("textDocument/didOpen", {
+      textDocument: {
+        uri,
+        languageId: "classic-asp",
+        version: 1,
+        text: source,
+      },
+    });
+    await waitForDiagnosticsPublished(server, uri);
+    const position = positionAt(source, offset);
+    const actions = (await server.request("textDocument/codeAction", {
+      textDocument: { uri },
+      range: { start: position, end: position },
+      context: { diagnostics: [], only: ["refactor.extract"] },
+    })) as CodeAction[];
+
+    await server.request("shutdown", null);
+    server.notify("exit", undefined);
+    return actions;
+  } finally {
+    server.stop();
+  }
+}
+
+function inlineStyleActionByTitle(
+  actions: CodeAction[],
+  titlePart: "class" | "ID",
+): CodeAction | undefined {
+  return actions.find((action) => action.title.includes(titlePart));
+}
+
+function applyWorkspaceEditForText(text: string, edit: WorkspaceEdit | undefined): string {
+  const edits = Object.values(edit?.changes ?? {})[0] ?? [];
+  return applyTextEdits(text, edits);
+}
+
+function applyTextEdits(text: string, edits: TextEdit[]): string {
+  return [...edits]
+    .sort(
+      (left, right) =>
+        offsetAt(text, right.range.start) - offsetAt(text, left.range.start) ||
+        offsetAt(text, right.range.end) - offsetAt(text, left.range.end),
+    )
+    .reduce((current, edit) => applyTextEdit(current, edit), text);
 }
 
 function decodeSemanticTokens(data: number[] | undefined): DecodedSemanticToken[] {

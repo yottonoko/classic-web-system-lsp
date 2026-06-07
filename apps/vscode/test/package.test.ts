@@ -207,6 +207,17 @@ describe("VS Code extension package", () => {
         default: "analyzed",
       }),
     );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.styleExtraction.insertionMode"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["nearby", "reuseExistingStyleTag"],
+        default: "nearby",
+      }),
+    );
+    expect(nls["configuration.styleExtraction.insertionMode.description"]).toBeTruthy();
+    expect(nlsJa["configuration.styleExtraction.insertionMode.description"]).toBeTruthy();
     for (const key of [
       "referenceProcedures",
       "referenceGlobals",

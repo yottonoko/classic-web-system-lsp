@@ -51,6 +51,7 @@
   "configuration.codeLens.referenceClassMembers.description": "Show VBScript class field and class constant reference count CodeLens entries.",
   "configuration.codeLens.referenceScope.description": "Controls whether VBScript reference count CodeLens uses the whole workspace or only currently analyzed files.",
   "configuration.codeLens.includes.description": "Show Classic ASP include CodeLens entries.",
+  "configuration.styleExtraction.insertionMode.description": "Controls where inline style extraction code actions insert CSS rules. nearby creates a style element before the target tag, and reuseExistingStyleTag appends to the nearest existing style element when one exists.",
   "configuration.graph.showRootNodes.description": "Show root file nodes in graph views.",
   "configuration.graph.showFileNodes.description": "Show non-root file nodes in graph views.",
   "configuration.graph.showFunctionNodes.description": "Show function nodes in graph views.",

@@ -94,6 +94,8 @@ export type LocalizeKey =
   | "server.quickfix.createMissingInclude"
   | "server.quickfix.generateVbscriptDocumentation"
   | "server.refactor.extractVbscriptVariable"
+  | "server.refactor.extractInlineStyleToClass"
+  | "server.refactor.extractInlineStyleToId"
   | "server.codeAction.organizeJavascriptImports"
   | "server.codeLens.reference"
   | "server.codeLens.references"
@@ -201,6 +203,8 @@ const en: Record<LocalizeKey, string> = {
   "server.quickfix.createMissingInclude": "Create missing include {path}",
   "server.quickfix.generateVbscriptDocumentation": "Generate VBScript documentation",
   "server.refactor.extractVbscriptVariable": "Extract VBScript variable",
+  "server.refactor.extractInlineStyleToClass": "Extract inline style to CSS class",
+  "server.refactor.extractInlineStyleToId": "Extract inline style to CSS ID",
   "server.codeAction.organizeJavascriptImports": "Organize JavaScript imports",
   "server.codeLens.reference": "{count} reference",
   "server.codeLens.references": "{count} references",
@@ -311,6 +315,8 @@ const ja: Record<LocalizeKey, string> = {
   "server.quickfix.createMissingInclude": "不足している include {path} を作成",
   "server.quickfix.generateVbscriptDocumentation": "VBScript documentation を生成",
   "server.refactor.extractVbscriptVariable": "VBScript 変数に抽出",
+  "server.refactor.extractInlineStyleToClass": "inline style を CSS class に抽出",
+  "server.refactor.extractInlineStyleToId": "inline style を CSS ID に抽出",
   "server.codeAction.organizeJavascriptImports": "JavaScript import を整理",
   "server.codeLens.reference": "{count} 件の参照",
   "server.codeLens.references": "{count} 件の参照",
