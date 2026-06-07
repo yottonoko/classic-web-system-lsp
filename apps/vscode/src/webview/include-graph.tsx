@@ -233,12 +233,19 @@ const graphFitPadding2d = 100;
 const graphFitPadding3d = 5;
 const positionSyncPinMs = 600;
 const graph3dSyncSpan = 160;
+const inspectorDefaultWidth = 320;
+const inspectorMinimumWidth = 260;
+const inspectorMaximumWidth = 560;
+const graphMinimumWidth = 360;
+const paneResizeHandleWidth = 6;
+const paneResizeKeyboardStep = 16;
 
 function App(): React.ReactElement {
   const [mode, setMode] = useState<ViewMode>("3d");
   const [selection, setSelection] = useState<Selection>();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatchCase, setSearchMatchCase] = useState(false);
+  const [inspectorWidth, setInspectorWidth] = useState(inspectorDefaultWidth);
   const [hideSingleNodes, setHideSingleNodes] = useState(graph?.settings?.hideSingleNodes ?? true);
   const [hiddenNodeCategories, setHiddenNodeCategories] = useState<Set<NodeColorCategory>>(
     () => new Set(graph?.settings?.hiddenNodeCategories ?? []),
@@ -287,7 +294,13 @@ function App(): React.ReactElement {
   );
   const highlight = selectionHighlight ?? searchHighlight;
   const titleFileName = currentFileGraphName(graph);
+  const [layoutRef, layoutSize] = useElementSize<HTMLElement>();
   const [surfaceRef, surfaceSize] = useElementSize<HTMLElement>();
+  const maximumInspectorWidth = maxInspectorWidthForLayout(layoutSize.width);
+  const clampedInspectorWidth = clamp(inspectorWidth, inspectorMinimumWidth, maximumInspectorWidth);
+  const layoutStyle = {
+    "--inspector-width": `${clampedInspectorWidth}px`,
+  } as React.CSSProperties;
   const canFitGraph =
     filteredGraphData.nodes.length > 0 && surfaceSize.width > 0 && surfaceSize.height > 0;
   const toggleNodeCategory = useCallback((category: NodeColorCategory) => {
@@ -395,6 +408,15 @@ function App(): React.ReactElement {
       setSelection(undefined);
     }
   }, [filteredGraphData, selection]);
+
+  useEffect(() => {
+    if (layoutSize.width <= 780) {
+      return;
+    }
+    setInspectorWidth((currentWidth) =>
+      clamp(currentWidth, inspectorMinimumWidth, maxInspectorWidthForLayout(layoutSize.width)),
+    );
+  }, [layoutSize.width]);
 
   useLayoutEffect(() => {
     const pending = pendingSyncRef.current;
@@ -537,7 +559,11 @@ function App(): React.ReactElement {
           Fit
         </button>
       </header>
-      <main className="relative grid min-h-0 grid-cols-[minmax(0,1fr)_320px] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]">
+      <main
+        ref={layoutRef}
+        className="relative grid min-h-0 grid-cols-[minmax(0,1fr)_6px_var(--inspector-width)] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]"
+        style={layoutStyle}
+      >
         <section
           ref={surfaceRef}
           className="relative min-h-0 min-w-0 overflow-hidden [&_canvas]:block"
@@ -620,6 +646,12 @@ function App(): React.ReactElement {
             />
           </div>
         </section>
+        <PaneResizeHandle
+          maxWidth={maximumInspectorWidth}
+          minWidth={inspectorMinimumWidth}
+          width={clampedInspectorWidth}
+          onWidthChange={setInspectorWidth}
+        />
         <Inspector
           graphData={graphData}
           selection={selection}
@@ -902,6 +934,87 @@ function Metric({ label, value }: { label: string; value: number }): React.React
       <span>{label}</span>
       <strong className="text-xs text-[#f4f7fb]">{value}</strong>
     </span>
+  );
+}
+
+function PaneResizeHandle({
+  maxWidth,
+  minWidth,
+  onWidthChange,
+  width,
+}: {
+  maxWidth: number;
+  minWidth: number;
+  onWidthChange(width: number): void;
+  width: number;
+}): React.ReactElement {
+  const updateWidth = useCallback(
+    (nextWidth: number) => onWidthChange(clamp(nextWidth, minWidth, maxWidth)),
+    [maxWidth, minWidth, onWidthChange],
+  );
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = width;
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        moveEvent.preventDefault();
+        updateWidth(startWidth - (moveEvent.clientX - startX));
+      };
+      const stopResize = () => {
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", stopResize);
+        window.removeEventListener("pointercancel", stopResize);
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", stopResize);
+      window.addEventListener("pointercancel", stopResize);
+    },
+    [updateWidth, width],
+  );
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        updateWidth(width + paneResizeKeyboardStep);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        updateWidth(width - paneResizeKeyboardStep);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        updateWidth(minWidth);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        updateWidth(maxWidth);
+      }
+    },
+    [maxWidth, minWidth, updateWidth, width],
+  );
+
+  return (
+    <div
+      role="separator"
+      tabIndex={0}
+      aria-label="Resize inspector pane"
+      aria-orientation="vertical"
+      aria-valuemin={minWidth}
+      aria-valuemax={maxWidth}
+      aria-valuenow={width}
+      className="relative cursor-col-resize bg-[#11151c] outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-[#2b3442] hover:bg-[#1c2430] focus:bg-[#1c2430] focus:before:bg-[#89ddff] max-[780px]:hidden"
+      onKeyDown={handleKeyDown}
+      onPointerDown={handlePointerDown}
+    />
   );
 }
 
@@ -2432,6 +2545,16 @@ function linkParticleWidth3d(link: GraphLink): number {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function maxInspectorWidthForLayout(containerWidth: number): number {
+  if (containerWidth <= 0) {
+    return inspectorMaximumWidth;
+  }
+  return Math.max(
+    inspectorMinimumWidth,
+    Math.min(inspectorMaximumWidth, containerWidth - graphMinimumWidth - paneResizeHandleWidth),
+  );
 }
 
 function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
