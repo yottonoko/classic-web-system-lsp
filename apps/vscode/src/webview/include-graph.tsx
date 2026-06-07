@@ -10,6 +10,9 @@ import type {
   AspGraphNode,
   AspGraphNodeCategory,
   AspGraphPayload,
+  AspGraphRange,
+  AspGraphSourceRangeRequestItem,
+  AspGraphSourceRangeResponseItem,
 } from "../include-graph-webview";
 import type { ForceGraphMethods as ForceGraph2DMethods } from "react-force-graph-2d";
 import type { ForceGraphMethods as ForceGraph3DMethods } from "react-force-graph-3d";
@@ -92,6 +95,12 @@ interface PositionSyncTransform {
   centerX: number;
   centerY: number;
   scale: number;
+}
+
+interface SourceRangesMessage {
+  type: "sourceRanges";
+  requestId: string;
+  items: AspGraphSourceRangeResponseItem[];
 }
 
 const vscode = acquireVsCodeApi();
@@ -611,7 +620,11 @@ function App(): React.ReactElement {
             />
           </div>
         </section>
-        <Inspector selection={selection} onClose={() => setSelection(undefined)} />
+        <Inspector
+          graphData={graphData}
+          selection={selection}
+          onClose={() => setSelection(undefined)}
+        />
       </main>
     </Shell>
   );
@@ -821,9 +834,11 @@ function Metric({ label, value }: { label: string; value: number }): React.React
 }
 
 function Inspector({
+  graphData,
   selection,
   onClose,
 }: {
+  graphData: GraphData;
   selection: Selection;
   onClose(): void;
 }): React.ReactElement {
@@ -840,10 +855,6 @@ function Inspector({
       </aside>
     );
   }
-  const location =
-    selection.type === "node"
-      ? { uri: selection.item.uri, range: selection.item.range }
-      : selection.item.ranges[0];
   return (
     <aside className={className}>
       <div className="mb-3 flex min-w-0 items-start gap-2">
@@ -860,23 +871,337 @@ function Inspector({
         </button>
       </div>
       {selection.type === "node" ? (
-        <NodeDetails node={selection.item} />
+        <NodeInspector graphData={graphData} node={selection.item} />
       ) : (
-        <LinkDetails link={selection.item} />
+        <LinkInspector link={selection.item} />
       )}
+    </aside>
+  );
+}
+
+function NodeInspector({
+  graphData,
+  node,
+}: {
+  graphData: GraphData;
+  node: GraphNode;
+}): React.ReactElement {
+  const location = node.uri ? { uri: node.uri, range: node.range } : undefined;
+  return (
+    <>
+      <NodeDetails node={node} />
+      {node.kind === "file" ? (
+        <FileNodeRelations graphData={graphData} node={node} />
+      ) : (
+        <NodeSourceSections graphData={graphData} node={node} />
+      )}
+      <OpenLocationButton
+        className="mt-3 h-[30px] w-full"
+        disabled={!location?.uri}
+        label={node.kind === "file" ? "Open File" : "Open Location"}
+        range={location?.range}
+        uri={location?.uri}
+      />
+    </>
+  );
+}
+
+function LinkInspector({ link }: { link: GraphLink }): React.ReactElement {
+  const location = link.ranges[0];
+  return (
+    <>
+      <LinkDetails link={link} />
+      <OpenLocationButton
+        className="h-[30px] w-full"
+        disabled={!location?.uri}
+        label="Open Source"
+        range={location?.range}
+        uri={location?.uri}
+      />
+    </>
+  );
+}
+
+interface GraphSourceItem {
+  id: string;
+  uri: string;
+  range: AspGraphRange;
+  highlightRange: AspGraphRange;
+  kind: AspGraphSourceRangeRequestItem["kind"];
+  title: string;
+  detail?: string;
+}
+
+interface GraphSourceState {
+  loading: boolean;
+  byId: Map<string, AspGraphSourceRangeResponseItem>;
+}
+
+interface IncludeRelation {
+  id: string;
+  title: string;
+  detail: string;
+  fileUri?: string;
+  fileRange?: AspGraphRange;
+  fileLabel: string;
+  directiveUri?: string;
+  directiveRange?: AspGraphRange;
+  directiveLabel: string;
+  exists?: boolean;
+}
+
+function NodeSourceSections({
+  graphData,
+  node,
+}: {
+  graphData: GraphData;
+  node: GraphNode;
+}): React.ReactElement {
+  const { declarationItems, usageItems } = useMemo(
+    () => sourceItemsForNode(node, graphData),
+    [graphData, node],
+  );
+  const sourceItems = useMemo(
+    () => [...declarationItems, ...usageItems],
+    [declarationItems, usageItems],
+  );
+  const sourceState = useSourceRanges(sourceItems);
+  return (
+    <div className="mb-3 grid gap-2">
+      <Accordion count={declarationItems.length} defaultOpen={true} title="Declaration">
+        {declarationItems.length > 0 ? (
+          <SourceRangeList items={declarationItems} sourceState={sourceState} />
+        ) : (
+          <EmptyInspectorText>Declaration source is unavailable.</EmptyInspectorText>
+        )}
+      </Accordion>
+      <Accordion count={usageItems.length} defaultOpen={true} title="References / Calls">
+        {usageItems.length > 0 ? (
+          <SourceFileGroups items={usageItems} sourceState={sourceState} />
+        ) : (
+          <EmptyInspectorText>No references or calls found in this graph.</EmptyInspectorText>
+        )}
+      </Accordion>
+    </div>
+  );
+}
+
+function FileNodeRelations({
+  graphData,
+  node,
+}: {
+  graphData: GraphData;
+  node: GraphNode;
+}): React.ReactElement {
+  const { incoming, outgoing } = useMemo(
+    () => includeRelationsForFileNode(node, graphData),
+    [graphData, node],
+  );
+  return (
+    <div className="mb-3 grid gap-2">
+      <Accordion count={outgoing.length} defaultOpen={true} title="Includes">
+        {outgoing.length > 0 ? (
+          <IncludeRelationList relations={outgoing} />
+        ) : (
+          <EmptyInspectorText>No included files found.</EmptyInspectorText>
+        )}
+      </Accordion>
+      <Accordion count={incoming.length} defaultOpen={incoming.length > 0} title="Included By">
+        {incoming.length > 0 ? (
+          <IncludeRelationList relations={incoming} />
+        ) : (
+          <EmptyInspectorText>No include sources found.</EmptyInspectorText>
+        )}
+      </Accordion>
+    </div>
+  );
+}
+
+function Accordion({
+  children,
+  count,
+  defaultOpen,
+  title,
+}: {
+  children: React.ReactNode;
+  count?: number;
+  defaultOpen: boolean;
+  title: string;
+}): React.ReactElement {
+  const [isOpen, setOpen] = useState(defaultOpen);
+  return (
+    <section className="overflow-hidden rounded-md border border-[#303a49] bg-[#151a22]">
       <button
         type="button"
-        className="h-[30px] w-full cursor-pointer rounded-md border border-[#405068] bg-[#c3e88d] text-[#11151c] disabled:cursor-not-allowed disabled:bg-[#202735] disabled:text-[#717b8c]"
-        disabled={!location?.uri}
-        onClick={() => {
-          if (location?.uri) {
-            vscode.postMessage({ type: "openRange", uri: location.uri, range: location.range });
-          }
-        }}
+        className="flex min-h-9 w-full cursor-pointer items-center justify-between gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left"
+        aria-expanded={isOpen}
+        onClick={() => setOpen((current) => !current)}
       >
-        Open Source
+        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+          {title}
+        </span>
+        <span className="inline-flex shrink-0 items-center gap-2 text-[11px] text-[#8d98a8]">
+          {count !== undefined ? <span>{count}</span> : null}
+          <span aria-hidden="true">{isOpen ? "-" : "+"}</span>
+        </span>
       </button>
-    </aside>
+      {isOpen ? <div className="grid gap-2 border-t border-[#303a49] p-2.5">{children}</div> : null}
+    </section>
+  );
+}
+
+function SourceFileGroups({
+  items,
+  sourceState,
+}: {
+  items: GraphSourceItem[];
+  sourceState: GraphSourceState;
+}): React.ReactElement {
+  const groups = groupedSourceItems(items);
+  return (
+    <div className="grid gap-2">
+      {groups.map((group) => (
+        <Accordion
+          key={group.uri}
+          count={group.items.length}
+          defaultOpen={groups.length === 1}
+          title={sourceGroupTitle(group.uri, group.items, sourceState.byId)}
+        >
+          <SourceRangeList items={group.items} sourceState={sourceState} />
+        </Accordion>
+      ))}
+    </div>
+  );
+}
+
+function SourceRangeList({
+  items,
+  sourceState,
+}: {
+  items: GraphSourceItem[];
+  sourceState: GraphSourceState;
+}): React.ReactElement {
+  return (
+    <div className="grid gap-2">
+      {items.map((item) => (
+        <SourceRangeCard
+          key={item.id}
+          item={item}
+          loading={sourceState.loading && !sourceState.byId.has(item.id)}
+          source={sourceState.byId.get(item.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function SourceRangeCard({
+  item,
+  loading,
+  source,
+}: {
+  item: GraphSourceItem;
+  loading: boolean;
+  source: AspGraphSourceRangeResponseItem | undefined;
+}): React.ReactElement {
+  const displayRange = source?.range ?? item.range;
+  return (
+    <article className="grid gap-2 rounded-md border border-[#303a49] bg-[#11151c] p-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+            {item.title}
+          </div>
+          <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]">
+            {item.detail ?? `Line ${displayRange.start.line + 1}`}
+          </div>
+        </div>
+        <OpenLocationButton
+          className="h-7 shrink-0 px-2"
+          label="Open"
+          range={item.highlightRange}
+          uri={item.uri}
+        />
+      </div>
+      {source?.error ? (
+        <p className="m-0 text-[11px] text-[#ff9cac]">{source.error}</p>
+      ) : (
+        <pre className="m-0 max-h-44 overflow-auto rounded border border-[#253041] bg-[#0d1117] p-2 font-mono text-[11px] leading-[1.45] whitespace-pre-wrap text-[#d7dde8] [tab-size:2]">
+          {source?.text ?? (loading ? "Loading source..." : "Source is unavailable.")}
+        </pre>
+      )}
+    </article>
+  );
+}
+
+function IncludeRelationList({ relations }: { relations: IncludeRelation[] }): React.ReactElement {
+  return (
+    <div className="grid gap-2">
+      {relations.map((relation) => (
+        <article
+          key={relation.id}
+          className="grid gap-2 rounded-md border border-[#303a49] bg-[#11151c] p-2"
+        >
+          <div className="min-w-0">
+            <div className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+              {relation.title}
+            </div>
+            <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]">
+              {relation.detail}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <OpenLocationButton
+              className="h-7 px-2"
+              disabled={relation.exists === false || !relation.fileUri}
+              label={relation.fileLabel}
+              range={relation.fileRange}
+              uri={relation.fileUri}
+            />
+            <OpenLocationButton
+              className="h-7 px-2"
+              disabled={!relation.directiveUri}
+              label={relation.directiveLabel}
+              range={relation.directiveRange}
+              uri={relation.directiveUri}
+            />
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function EmptyInspectorText({ children }: { children: React.ReactNode }): React.ReactElement {
+  return <p className="m-0 text-xs text-[#8d98a8]">{children}</p>;
+}
+
+function OpenLocationButton({
+  className,
+  disabled,
+  label,
+  range,
+  uri,
+}: {
+  className?: string;
+  disabled?: boolean;
+  label: string;
+  range?: AspGraphRange;
+  uri?: string;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      className={`cursor-pointer rounded-md border border-[#405068] bg-[#c3e88d] text-xs text-[#11151c] disabled:cursor-not-allowed disabled:bg-[#202735] disabled:text-[#717b8c] ${className ?? ""}`}
+      disabled={disabled || !uri}
+      onClick={() => {
+        if (uri) {
+          vscode.postMessage({ type: "openRange", uri, range });
+        }
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -934,6 +1259,216 @@ function Detail({
       </dd>
     </>
   );
+}
+
+function useSourceRanges(items: GraphSourceItem[]): GraphSourceState {
+  const [state, setState] = useState<GraphSourceState>(() => ({
+    loading: false,
+    byId: new Map(),
+  }));
+
+  useEffect(() => {
+    if (items.length === 0) {
+      setState({ loading: false, byId: new Map() });
+      return undefined;
+    }
+    const requestId = `source:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const handleMessage = (event: MessageEvent<unknown>) => {
+      if (!isSourceRangesMessage(event.data) || event.data.requestId !== requestId) {
+        return;
+      }
+      setState({
+        loading: false,
+        byId: new Map(event.data.items.map((item) => [item.id, item])),
+      });
+    };
+    window.addEventListener("message", handleMessage);
+    setState({ loading: true, byId: new Map() });
+    vscode.postMessage({
+      type: "readSourceRanges",
+      requestId,
+      items: items.map(sourceRangeRequestItem),
+    });
+    return () => window.removeEventListener("message", handleMessage);
+  }, [items]);
+
+  return state;
+}
+
+function isSourceRangesMessage(value: unknown): value is SourceRangesMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const message = value as Partial<SourceRangesMessage>;
+  return (
+    message.type === "sourceRanges" &&
+    typeof message.requestId === "string" &&
+    Array.isArray(message.items)
+  );
+}
+
+function sourceRangeRequestItem(item: GraphSourceItem): AspGraphSourceRangeRequestItem {
+  return {
+    id: item.id,
+    uri: item.uri,
+    range: item.range,
+    highlightRange: item.highlightRange,
+    kind: item.kind,
+  };
+}
+
+function sourceItemsForNode(
+  node: GraphNode,
+  graphData: GraphData,
+): { declarationItems: GraphSourceItem[]; usageItems: GraphSourceItem[] } {
+  const declarationItems =
+    node.uri && node.range
+      ? [
+          {
+            id: `declaration:${node.id}`,
+            uri: node.uri,
+            range: node.range,
+            highlightRange: node.range,
+            kind: "declaration" as const,
+            title: "Declaration",
+            detail: node.declarationKind ?? node.kind,
+          },
+        ]
+      : [];
+  const usageItems: GraphSourceItem[] = [];
+  for (const link of graphData.links) {
+    if (
+      nodeIdForEndpoint(link.target) !== node.id ||
+      (link.kind !== "references" && link.kind !== "calls" && link.kind !== "unresolvedReference")
+    ) {
+      continue;
+    }
+    link.ranges.forEach((location, index) => {
+      usageItems.push({
+        id: `usage:${link.id}:${index}:${location.uri}:${location.range.start.line}:${location.range.start.character}`,
+        uri: location.uri,
+        range: location.range,
+        highlightRange: location.range,
+        kind: link.kind === "calls" ? "call" : "reference",
+        title: sourceUsageTitle(link),
+      });
+    });
+  }
+  usageItems.sort(compareSourceItems);
+  return { declarationItems, usageItems };
+}
+
+function sourceUsageTitle(link: GraphLink): string {
+  const label = link.kind === "unresolvedReference" ? "Unresolved" : linkMeanings[link.kind].label;
+  return link.role ? `${label}: ${link.role}` : label;
+}
+
+function compareSourceItems(left: GraphSourceItem, right: GraphSourceItem): number {
+  return (
+    left.uri.localeCompare(right.uri) ||
+    left.range.start.line - right.range.start.line ||
+    left.range.start.character - right.range.start.character ||
+    left.title.localeCompare(right.title)
+  );
+}
+
+function groupedSourceItems(
+  items: GraphSourceItem[],
+): Array<{ uri: string; items: GraphSourceItem[] }> {
+  const groups = new Map<string, GraphSourceItem[]>();
+  for (const item of items) {
+    const group = groups.get(item.uri);
+    if (group) {
+      group.push(item);
+    } else {
+      groups.set(item.uri, [item]);
+    }
+  }
+  return [...groups.entries()].map(([uri, groupItems]) => ({ uri, items: groupItems }));
+}
+
+function sourceGroupTitle(
+  uri: string,
+  items: GraphSourceItem[],
+  sourcesById: ReadonlyMap<string, AspGraphSourceRangeResponseItem>,
+): string {
+  const source = items.map((item) => sourcesById.get(item.id)).find(Boolean);
+  return baseNameFromPath(source?.fileName) ?? baseNameFromUri(uri) ?? uri;
+}
+
+function includeRelationsForFileNode(
+  node: GraphNode,
+  graphData: GraphData,
+): { incoming: IncludeRelation[]; outgoing: IncludeRelation[] } {
+  const nodesById = graphNodeMap(graphData.nodes);
+  const incoming: IncludeRelation[] = [];
+  const outgoing: IncludeRelation[] = [];
+  for (const link of graphData.links) {
+    if (link.kind !== "include") {
+      continue;
+    }
+    const sourceId = nodeIdForEndpoint(link.source);
+    const targetId = nodeIdForEndpoint(link.target);
+    if (sourceId === node.id) {
+      outgoing.push(includeTargetRelation(link, nodesById));
+    }
+    if (targetId === node.id) {
+      incoming.push(includeSourceRelation(link, nodesById));
+    }
+  }
+  return { incoming, outgoing };
+}
+
+function includeTargetRelation(
+  link: GraphLink,
+  nodesById: ReadonlyMap<string, GraphNode>,
+): IncludeRelation {
+  const target = nodesById.get(nodeIdForEndpoint(link.target));
+  const directive = link.ranges[0];
+  const targetUri = target?.uri ?? link.include?.resolvedUri;
+  return {
+    id: `include-target:${link.id}`,
+    title: target?.label ?? link.include?.path ?? link.label,
+    detail: includeRelationDetail(link),
+    fileUri: targetUri,
+    fileLabel: "Open file",
+    directiveUri: directive?.uri,
+    directiveRange: directive?.range,
+    directiveLabel: "Open directive",
+    exists: link.include?.exists,
+  };
+}
+
+function includeSourceRelation(
+  link: GraphLink,
+  nodesById: ReadonlyMap<string, GraphNode>,
+): IncludeRelation {
+  const source = nodesById.get(nodeIdForEndpoint(link.source));
+  const directive = link.ranges[0];
+  return {
+    id: `include-source:${link.id}`,
+    title: source?.label ?? baseNameFromUri(directive?.uri) ?? link.label,
+    detail: includeRelationDetail(link),
+    fileUri: source?.uri ?? directive?.uri,
+    fileLabel: "Open file",
+    directiveUri: directive?.uri,
+    directiveRange: directive?.range,
+    directiveLabel: "Open directive",
+    exists: true,
+  };
+}
+
+function includeRelationDetail(link: GraphLink): string {
+  const parts = [
+    link.include?.mode,
+    link.include?.path,
+    link.include?.exists === false ? "missing" : undefined,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : link.label;
+}
+
+function graphNodeMap(nodes: GraphNode[]): Map<string, GraphNode> {
+  return new Map(nodes.map((node) => [node.id, node]));
 }
 
 function graphDataFor(payload: AspGraphPayload | undefined): GraphData {

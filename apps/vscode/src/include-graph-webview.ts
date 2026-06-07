@@ -89,13 +89,39 @@ export interface AspGraphRange {
   end: { line: number; character: number };
 }
 
+export type AspGraphSourceRangeKind = "declaration" | "reference" | "call" | "include";
+
+export interface AspGraphSourceRangeRequestItem {
+  id: string;
+  uri: string;
+  range?: AspGraphRange;
+  highlightRange?: AspGraphRange;
+  kind?: AspGraphSourceRangeKind;
+}
+
+export interface AspGraphSourceRangeResponseItem {
+  id: string;
+  uri: string;
+  fileName?: string;
+  text?: string;
+  range?: AspGraphRange;
+  highlightRange?: AspGraphRange;
+  error?: string;
+}
+
 interface OpenRangeMessage {
   type: "openRange";
   uri: string;
   range?: AspGraphRange;
 }
 
-type WebviewMessage = OpenRangeMessage;
+interface ReadSourceRangesMessage {
+  type: "readSourceRanges";
+  requestId: string;
+  items: AspGraphSourceRangeRequestItem[];
+}
+
+type WebviewMessage = OpenRangeMessage | ReadSourceRangesMessage;
 
 export function showAspGraphWebview(
   context: vscode.ExtensionContext,
@@ -112,6 +138,8 @@ export function showAspGraphWebview(
   panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
     if (message.type === "openRange") {
       void openGraphRange(message.uri, message.range);
+    } else if (message.type === "readSourceRanges") {
+      void readGraphSourceRanges(panel.webview, message);
     }
   });
   panel.webview.html = graphWebviewHtml(panel.webview, webviewRoot, payload, title);
@@ -126,6 +154,75 @@ async function openGraphRange(uriText: string, range: AspGraphRange | undefined)
   });
 }
 
+async function readGraphSourceRanges(
+  webview: vscode.Webview,
+  message: ReadSourceRangesMessage,
+): Promise<void> {
+  const items = await Promise.all(message.items.map((item) => readGraphSourceRange(item)));
+  await webview.postMessage({ type: "sourceRanges", requestId: message.requestId, items });
+}
+
+async function readGraphSourceRange(
+  item: AspGraphSourceRangeRequestItem,
+): Promise<AspGraphSourceRangeResponseItem> {
+  try {
+    const uri = vscode.Uri.parse(item.uri);
+    const document = await textDocumentForGraphSource(uri);
+    if (!item.range) {
+      return {
+        id: item.id,
+        uri: item.uri,
+        fileName: graphSourceFileName(document),
+        error: "Source range is unavailable.",
+      };
+    }
+    const displayRange = displayRangeForGraphSource(document, toVscodeRange(item.range));
+    return {
+      id: item.id,
+      uri: item.uri,
+      fileName: graphSourceFileName(document),
+      text: document.getText(displayRange),
+      range: fromVscodeRange(displayRange),
+      highlightRange: item.highlightRange,
+    };
+  } catch (error) {
+    return {
+      id: item.id,
+      uri: item.uri,
+      range: item.range,
+      highlightRange: item.highlightRange,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function textDocumentForGraphSource(uri: vscode.Uri): Promise<vscode.TextDocument> {
+  return (
+    vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString()) ??
+    (await vscode.workspace.openTextDocument(uri))
+  );
+}
+
+function graphSourceFileName(document: vscode.TextDocument): string {
+  return document.uri.scheme === "file" ? document.fileName : document.uri.toString();
+}
+
+function displayRangeForGraphSource(
+  document: vscode.TextDocument,
+  range: vscode.Range,
+): vscode.Range {
+  const startLine = clampedLine(document, range.start.line);
+  const endLine = clampedLine(document, Math.max(range.start.line, range.end.line));
+  return new vscode.Range(
+    document.lineAt(startLine).range.start,
+    document.lineAt(endLine).range.end,
+  );
+}
+
+function clampedLine(document: vscode.TextDocument, line: number): number {
+  return Math.max(0, Math.min(document.lineCount - 1, line));
+}
+
 function toVscodeRange(range: AspGraphRange): vscode.Range {
   return new vscode.Range(
     range.start.line,
@@ -133,6 +230,13 @@ function toVscodeRange(range: AspGraphRange): vscode.Range {
     range.end.line,
     range.end.character,
   );
+}
+
+function fromVscodeRange(range: vscode.Range): AspGraphRange {
+  return {
+    start: { line: range.start.line, character: range.start.character },
+    end: { line: range.end.line, character: range.end.character },
+  };
 }
 
 function graphWebviewHtml(
