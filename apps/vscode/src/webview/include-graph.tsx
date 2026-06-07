@@ -3,6 +3,12 @@ import { createRoot } from "react-dom/client";
 import ForceGraph2D from "react-force-graph-2d";
 import ForceGraph3D from "react-force-graph-3d";
 import SpriteText from "three-spritetext";
+import { INITIAL, Registry, parseRawGrammar } from "vscode-textmate";
+import { createOnigScanner, createOnigString, loadWASM } from "vscode-oniguruma";
+import onigWasmUrl from "vscode-oniguruma/release/onig.wasm?url";
+import classicAspGrammarJson from "../../syntaxes/classic-asp.tmLanguage.json";
+import classicAspTagInjectionGrammarJson from "../../syntaxes/classic-asp-tag-injection.tmLanguage.json";
+import vbscriptGrammarJson from "../../syntaxes/vbscript.tmLanguage.json";
 import tailwindStyles from "./include-graph.css?inline";
 import type {
   AspGraphLink,
@@ -16,6 +22,7 @@ import type {
 } from "../include-graph-webview";
 import type { ForceGraphMethods as ForceGraph2DMethods } from "react-force-graph-2d";
 import type { ForceGraphMethods as ForceGraph3DMethods } from "react-force-graph-3d";
+import type { IGrammar, IOnigLib, IRawGrammar, StateStack } from "vscode-textmate";
 
 declare const acquireVsCodeApi: () => {
   postMessage(message: unknown): void;
@@ -60,6 +67,19 @@ type GraphData = {
 
 type Selection = { type: "node"; item: GraphNode } | { type: "link"; item: GraphLink } | undefined;
 
+type GraphStatsMetric = "files" | "declarations" | "links" | "missingIncludes";
+
+type GraphStatsTarget = { type: "node"; id: string } | { type: "link"; id: string };
+
+interface GraphStatsListItem {
+  id: string;
+  title: string;
+  target: GraphStatsTarget;
+  detail?: string;
+  status?: string;
+  color?: string;
+}
+
 type HighlightState = {
   activeNodeIds: Set<string>;
   activeLinkIds: Set<string>;
@@ -101,6 +121,23 @@ interface SourceRangesMessage {
   type: "sourceRanges";
   requestId: string;
   items: AspGraphSourceRangeResponseItem[];
+}
+
+type SnippetLanguage = "classic-asp" | "vbscript";
+
+type SnippetHighlightState =
+  | { status: "loading" }
+  | { status: "ready"; highlighter: SnippetHighlighter }
+  | { status: "failed" };
+
+interface SnippetHighlighter {
+  classicAsp: IGrammar;
+  vbscript: IGrammar;
+}
+
+interface HighlightOffsets {
+  start: number;
+  end: number;
 }
 
 const vscode = acquireVsCodeApi();
@@ -231,8 +268,15 @@ const maximumNodeScaleReferenceCount = 144;
 const graphFitDurationMs = 400;
 const graphFitPadding2d = 100;
 const graphFitPadding3d = 5;
+const graphFocusDurationMs = 900;
+const graph2dMinimumFocusZoom = 2.2;
+const graph2dLinkFocusPadding = 120;
+const graph3dMinimumFocusDistance = 70;
+const graph3dLinkDistanceScale = 1.35;
 const positionSyncPinMs = 600;
 const graph3dSyncSpan = 160;
+const sourceHighlightMarkClassName =
+  "rounded-sm bg-[#ffcb6b]/45 px-0.5 text-inherit shadow-[0_0_0_1px_rgb(255_203_107_/_75%)]";
 const inspectorDefaultWidth = 320;
 const inspectorMinimumWidth = 260;
 const inspectorMaximumWidth = 560;
@@ -329,6 +373,49 @@ function App(): React.ReactElement {
     },
     [canFitGraph],
   );
+  const captureCurrentRenderPositions = useCallback(() => {
+    capturePositionSyncEntries(
+      mode,
+      renderGraphData.nodes,
+      graph2dRef.current,
+      graph3dRef.current,
+      positionSyncRef.current,
+    );
+  }, [mode, renderGraphData.nodes]);
+  const selectGraphNode = useCallback(
+    (node: GraphNode) => {
+      captureCurrentRenderPositions();
+      setSelection({ type: "node", item: node });
+    },
+    [captureCurrentRenderPositions],
+  );
+  const selectGraphLink = useCallback(
+    (link: GraphLink) => {
+      captureCurrentRenderPositions();
+      setSelection({ type: "link", item: link });
+    },
+    [captureCurrentRenderPositions],
+  );
+  const selectAndFocusGraphTarget = useCallback(
+    (target: GraphStatsTarget) => {
+      const nextSelection = selectionForStatsTarget(target, filteredGraphData);
+      if (!nextSelection) {
+        return;
+      }
+      captureCurrentRenderPositions();
+      setSelection(nextSelection);
+      focusGraphTarget(target, mode, renderGraphData, graph2dRef.current, graph3dRef.current);
+    },
+    [captureCurrentRenderPositions, filteredGraphData, mode, renderGraphData],
+  );
+  const selectAndFocusGraphNode = useCallback(
+    (node: GraphNode) => selectAndFocusGraphTarget({ type: "node", id: node.id }),
+    [selectAndFocusGraphTarget],
+  );
+  const selectAndFocusGraphLink = useCallback(
+    (link: GraphLink) => selectAndFocusGraphTarget({ type: "link", id: link.id }),
+    [selectAndFocusGraphTarget],
+  );
   const switchGraphMode = useCallback(
     (nextMode: ViewMode) => {
       if (nextMode === mode) {
@@ -386,7 +473,6 @@ function App(): React.ReactElement {
     },
     [fitGraphToCanvas],
   );
-
   useEffect(() => {
     const clearSelectionOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -519,10 +605,9 @@ function App(): React.ReactElement {
           </label>
         </div>
         <GraphStatsPopover
-          files={filteredStats.files}
-          declarations={filteredStats.declarations}
-          links={filteredStats.links}
-          missingIncludes={filteredStats.missingIncludes}
+          graphData={filteredGraphData}
+          stats={filteredStats}
+          onSelectTarget={selectAndFocusGraphTarget}
         />
         <div
           className="inline-grid grid-cols-2 overflow-hidden rounded-md border border-[#394456]"
@@ -611,8 +696,8 @@ function App(): React.ReactElement {
               linkDirectionalArrowColor={(link) => linkColor(link as GraphLink, highlight)}
               linkDirectionalParticles={(link) => linkParticleCount(link as GraphLink, highlight)}
               linkDirectionalParticleWidth={(link) => linkParticleWidth3d(link as GraphLink)}
-              onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
-              onLinkClick={(link) => setSelection({ type: "link", item: link as GraphLink })}
+              onNodeClick={(node) => selectGraphNode(node as GraphNode)}
+              onLinkClick={(link) => selectGraphLink(link as GraphLink)}
               onBackgroundClick={() => setSelection(undefined)}
               cooldownTicks={100}
               onEngineStop={() => handleEngineStop("3d")}
@@ -645,8 +730,8 @@ function App(): React.ReactElement {
               nodePointerAreaPaint={(node, color, canvas) =>
                 paintNodePointerArea(node as GraphNode, color, canvas)
               }
-              onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
-              onLinkClick={(link) => setSelection({ type: "link", item: link as GraphLink })}
+              onNodeClick={(node) => selectGraphNode(node as GraphNode)}
+              onLinkClick={(link) => selectGraphLink(link as GraphLink)}
               onBackgroundClick={() => setSelection(undefined)}
               cooldownTicks={100}
               onEngineStop={() => handleEngineStop("2d")}
@@ -661,8 +746,11 @@ function App(): React.ReactElement {
         />
         <Inspector
           graphData={graphData}
+          visibleGraphData={filteredGraphData}
           selection={selection}
           onClose={() => setSelection(undefined)}
+          onSelectLink={selectAndFocusGraphLink}
+          onSelectNode={selectAndFocusGraphNode}
         />
       </main>
     </Shell>
@@ -878,18 +966,21 @@ function Shell({ children }: { children: React.ReactNode }): React.ReactElement 
 }
 
 function GraphStatsPopover({
-  declarations,
-  files,
-  links,
-  missingIncludes,
+  graphData,
+  onSelectTarget,
+  stats,
 }: {
-  declarations: number;
-  files: number;
-  links: number;
-  missingIncludes: number;
+  graphData: GraphData;
+  onSelectTarget(target: GraphStatsTarget): void;
+  stats: AspGraphPayload["stats"];
 }): React.ReactElement {
   const [isOpen, setOpen] = useState(false);
+  const [activeMetric, setActiveMetric] = useState<GraphStatsMetric>("files");
   const containerRef = useRef<HTMLDivElement>(null);
+  const statsItems = useMemo(
+    () => statsItemsForMetric(activeMetric, graphData),
+    [activeMetric, graphData],
+  );
 
   useEffect(() => {
     if (!isOpen) {
@@ -919,43 +1010,255 @@ function GraphStatsPopover({
     <div ref={containerRef} className="relative inline-flex justify-end max-[980px]:justify-start">
       <button
         type="button"
-        className="inline-flex h-7 min-w-[88px] cursor-pointer items-center justify-between gap-2 rounded-md border border-[#394456] bg-[#151a22] px-2.5 text-xs text-[#b5c0d0] hover:border-[#4b5a70] hover:text-[#d7dde8]"
+        className="inline-flex h-7 cursor-pointer items-center rounded-md border border-[#394456] bg-[#151a22] px-2.5 text-xs text-[#b5c0d0] hover:border-[#4b5a70] hover:text-[#d7dde8]"
         aria-haspopup="dialog"
         aria-expanded={isOpen}
         aria-label="Show graph statistics"
         onClick={() => setOpen((current) => !current)}
       >
         <span className="font-semibold text-[#d7dde8]">Stats</span>
-        <span className="text-[11px] text-[#9aa7b8]">Links {links}</span>
       </button>
       {isOpen ? (
         <div
           role="dialog"
           aria-label="Graph statistics"
-          className="absolute top-[calc(100%_+_6px)] right-0 z-20 grid w-[min(260px,calc(100vw_-_24px))] gap-2 rounded-md border border-[#303a49] bg-[#171c25] p-2 shadow-[0_14px_34px_rgb(0_0_0_/_34%)] max-[980px]:right-auto max-[980px]:left-0"
+          className="absolute top-[calc(100%_+_6px)] right-0 z-20 grid w-[min(430px,calc(100vw_-_24px))] gap-2 rounded-md border border-[#303a49] bg-[#171c25] p-2 shadow-[0_14px_34px_rgb(0_0_0_/_34%)] max-[980px]:right-auto max-[980px]:left-0"
         >
           <div className="text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
             Graph stats
           </div>
           <div className="grid grid-cols-2 gap-2 max-[360px]:grid-cols-1">
-            <Metric label="Files" value={files} />
-            <Metric label="VB" value={declarations} />
-            <Metric label="Links" value={links} />
-            <Metric label="Missing" value={missingIncludes} />
+            <MetricButton
+              activeMetric={activeMetric}
+              label="Files"
+              metric="files"
+              value={stats.files}
+              onSelect={setActiveMetric}
+            />
+            <MetricButton
+              activeMetric={activeMetric}
+              label="VB"
+              metric="declarations"
+              value={stats.declarations}
+              onSelect={setActiveMetric}
+            />
+            <MetricButton
+              activeMetric={activeMetric}
+              label="Links"
+              metric="links"
+              value={stats.links}
+              onSelect={setActiveMetric}
+            />
+            <MetricButton
+              activeMetric={activeMetric}
+              label="Missing"
+              metric="missingIncludes"
+              value={stats.missingIncludes}
+              onSelect={setActiveMetric}
+            />
           </div>
+          <GraphStatsList
+            items={statsItems}
+            onSelectItem={(target) => {
+              setOpen(false);
+              onSelectTarget(target);
+            }}
+          />
         </div>
       ) : null}
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: number }): React.ReactElement {
+function MetricButton({
+  activeMetric,
+  label,
+  metric,
+  onSelect,
+  value,
+}: {
+  activeMetric: GraphStatsMetric;
+  label: string;
+  metric: GraphStatsMetric;
+  onSelect(metric: GraphStatsMetric): void;
+  value: number;
+}): React.ReactElement {
+  const active = activeMetric === metric;
   return (
-    <span className="inline-flex items-baseline gap-[5px] rounded-md border border-[#303a49] px-[7px] py-[3px] text-[11px] text-[#9aa7b8]">
+    <button
+      type="button"
+      className={
+        active
+          ? "inline-flex cursor-pointer items-baseline gap-[5px] rounded-md border border-[#89ddff] bg-[#1c2d3a] px-[7px] py-[3px] text-left text-[11px] text-[#d7dde8]"
+          : "inline-flex cursor-pointer items-baseline gap-[5px] rounded-md border border-[#303a49] bg-transparent px-[7px] py-[3px] text-left text-[11px] text-[#9aa7b8] hover:border-[#4b5a70] hover:text-[#d7dde8]"
+      }
+      aria-pressed={active}
+      onClick={() => onSelect(metric)}
+    >
       <span>{label}</span>
       <strong className="text-xs text-[#f4f7fb]">{value}</strong>
-    </span>
+    </button>
   );
+}
+
+function GraphStatsList({
+  items,
+  onSelectItem,
+}: {
+  items: GraphStatsListItem[];
+  onSelectItem(target: GraphStatsTarget): void;
+}): React.ReactElement {
+  if (items.length === 0) {
+    return (
+      <p className="m-0 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-xs text-[#8d98a8]">
+        No matching items in the current graph view.
+      </p>
+    );
+  }
+  return (
+    <div className="grid max-h-72 gap-1.5 overflow-auto pr-1">
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          className="grid cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
+          onClick={() => onSelectItem(item.target)}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            {item.color ? (
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: item.color }}
+                aria-hidden="true"
+              />
+            ) : null}
+            <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+              {item.title}
+            </span>
+            {item.status ? (
+              <span className="shrink-0 rounded border border-[#405068] px-1.5 py-[1px] text-[10px] text-[#9aa7b8]">
+                {item.status}
+              </span>
+            ) : null}
+          </div>
+          {item.detail ? (
+            <div className="text-[11px] leading-[1.35] text-[#8d98a8] [overflow-wrap:anywhere]">
+              {item.detail}
+            </div>
+          ) : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function statsItemsForMetric(metric: GraphStatsMetric, graphData: GraphData): GraphStatsListItem[] {
+  switch (metric) {
+    case "files":
+      return graphData.nodes
+        .filter((node) => node.kind === "file")
+        .map((node) => ({
+          id: `file:${node.id}`,
+          title: node.label,
+          target: { type: "node", id: node.id },
+          detail: detailParts(nodeFileLabel(node), node.uri).join(" · "),
+          status: fileStatsStatus(node),
+          color: node.color,
+        }));
+    case "declarations":
+      return graphData.nodes
+        .filter((node) => node.kind === "vbDeclaration")
+        .map((node) => ({
+          id: `declaration:${node.id}`,
+          title: node.label,
+          target: { type: "node", id: node.id },
+          detail: detailParts(
+            nodeTypeLabel(node),
+            nodeFileLabel(node),
+            rangeLineLabel(node.range),
+          ).join(" · "),
+          status: nodeStatusLabel(node),
+          color: node.color,
+        }));
+    case "links":
+      return linkStatsItems(graphData);
+    case "missingIncludes":
+      return missingIncludeStatsItems(graphData);
+  }
+}
+
+function linkStatsItems(graphData: GraphData): GraphStatsListItem[] {
+  const nodesById = graphNodeMap(graphData.nodes);
+  return graphData.links.map((link) => ({
+    id: `link:${link.id}`,
+    title: linkStatsTitle(link),
+    target: { type: "link", id: link.id },
+    detail: detailParts(
+      `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
+      link.role,
+    ).join(" · "),
+    status: `x${link.count}`,
+    color: link.color,
+  }));
+}
+
+function missingIncludeStatsItems(graphData: GraphData): GraphStatsListItem[] {
+  const nodesById = graphNodeMap(graphData.nodes);
+  return graphData.links
+    .filter((link) => link.kind === "include" && link.include?.exists === false)
+    .map((link) => {
+      const directive = link.ranges[0];
+      return {
+        id: `missing:${link.id}`,
+        title: link.include?.path ?? link.label,
+        target: { type: "link", id: link.id },
+        detail: detailParts(
+          directive ? `Directive ${directiveSourceLabel(directive)}` : undefined,
+          `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
+          link.include?.mode,
+        ).join(" · "),
+        status: "Missing",
+        color: link.color,
+      };
+    });
+}
+
+function fileStatsStatus(node: GraphNode): string {
+  const status = detailParts(
+    node.isRoot ? "Root" : undefined,
+    node.exists === false ? "Missing" : undefined,
+  );
+  return status.length > 0 ? status.join(" / ") : "File";
+}
+
+function linkStatsTitle(link: GraphLink): string {
+  if (graphLinkFilterCategory(link) === "member") {
+    return linkFilterLabels.member;
+  }
+  return linkMeanings[link.kind].label;
+}
+
+function endpointLabel(
+  endpoint: string | GraphNode,
+  nodesById: ReadonlyMap<string, GraphNode>,
+): string {
+  const id = nodeIdForEndpoint(endpoint);
+  return nodesById.get(id)?.label ?? id;
+}
+
+function directiveSourceLabel(location: { uri: string; range: AspGraphRange }): string {
+  return detailParts(
+    baseNameFromUri(location.uri) ?? location.uri,
+    rangeLineLabel(location.range),
+  ).join(" ");
+}
+
+function rangeLineLabel(range: AspGraphRange | undefined): string | undefined {
+  return range ? `Line ${range.start.line + 1}` : undefined;
+}
+
+function detailParts(...values: Array<string | undefined>): string[] {
+  return values.filter((value): value is string => Boolean(value));
 }
 
 function PaneResizeHandle({
@@ -1041,10 +1344,16 @@ function PaneResizeHandle({
 
 function Inspector({
   graphData,
+  visibleGraphData,
+  onSelectLink,
+  onSelectNode,
   selection,
   onClose,
 }: {
   graphData: GraphData;
+  visibleGraphData: GraphData;
+  onSelectLink(link: GraphLink): void;
+  onSelectNode(node: GraphNode): void;
   selection: Selection;
   onClose(): void;
 }): React.ReactElement {
@@ -1065,7 +1374,7 @@ function Inspector({
     <aside className={className}>
       <div className="mb-3 flex min-w-0 items-start gap-2">
         <h2 className="m-0 min-w-0 flex-1 text-sm leading-[1.35] font-semibold [overflow-wrap:anywhere]">
-          {selection.type === "node" ? selection.item.label : selection.item.label}
+          {inspectorTitleForSelection(selection, graphData)}
         </h2>
         <button
           type="button"
@@ -1077,25 +1386,49 @@ function Inspector({
         </button>
       </div>
       {selection.type === "node" ? (
-        <NodeInspector graphData={graphData} node={selection.item} />
+        <NodeInspector
+          graphData={graphData}
+          node={selection.item}
+          visibleGraphData={visibleGraphData}
+          onSelectLink={onSelectLink}
+        />
       ) : (
-        <LinkInspector link={selection.item} />
+        <LinkInspector graphData={graphData} link={selection.item} onSelectNode={onSelectNode} />
       )}
     </aside>
   );
 }
 
+function inspectorTitleForSelection(selection: Selection, graphData: GraphData): string {
+  if (!selection) {
+    return "Inspector";
+  }
+  if (selection.type === "node") {
+    return selection.item.label;
+  }
+  const nodesById = graphNodeMap(graphData.nodes);
+  return `${linkInspectorTypeLabel(selection.item)}: ${endpointLabel(
+    selection.item.source,
+    nodesById,
+  )} -> ${endpointLabel(selection.item.target, nodesById)}`;
+}
+
 function NodeInspector({
   graphData,
   node,
+  onSelectLink,
+  visibleGraphData,
 }: {
   graphData: GraphData;
   node: GraphNode;
+  onSelectLink(link: GraphLink): void;
+  visibleGraphData: GraphData;
 }): React.ReactElement {
   const location = node.uri ? { uri: node.uri, range: node.range } : undefined;
   return (
     <>
       <NodeDetails node={node} />
+      <NodeLinkSections graphData={visibleGraphData} node={node} onSelectLink={onSelectLink} />
       {node.kind === "file" ? (
         <FileNodeRelations graphData={graphData} node={node} />
       ) : (
@@ -1114,18 +1447,45 @@ function NodeInspector({
   );
 }
 
-function LinkInspector({ link }: { link: GraphLink }): React.ReactElement {
+function LinkInspector({
+  graphData,
+  link,
+  onSelectNode,
+}: {
+  graphData: GraphData;
+  link: GraphLink;
+  onSelectNode(node: GraphNode): void;
+}): React.ReactElement {
+  const nodesById = useMemo(() => graphNodeMap(graphData.nodes), [graphData.nodes]);
+  const sourceItems = useMemo(() => sourceItemsForLink(link), [link]);
+  const sourceState = useSourceRanges(sourceItems);
   const location = link.ranges[0];
   return (
     <>
-      <LinkDetails link={link} />
-      <OpenLocationButton
-        className="h-[30px] w-full"
-        disabled={!location?.uri}
-        label="Open Source"
-        range={location?.range}
-        uri={location?.uri}
-      />
+      <LinkDetails link={link} nodesById={nodesById} onSelectNode={onSelectNode} />
+      <div className="mb-3 grid gap-2">
+        <Accordion
+          count={link.count}
+          defaultOpen={true}
+          headerAction={
+            location ? (
+              <OpenLocationButton
+                className="h-7 px-2"
+                label="Open first"
+                range={location.range}
+                uri={location.uri}
+              />
+            ) : undefined
+          }
+          title="Occurrences"
+        >
+          {sourceItems.length > 0 ? (
+            <SourceFileGroups items={sourceItems} sourceState={sourceState} />
+          ) : (
+            <EmptyInspectorText>No source ranges found for this link.</EmptyInspectorText>
+          )}
+        </Accordion>
+      </div>
     </>
   );
 }
@@ -1156,6 +1516,104 @@ interface IncludeRelation {
   directiveRange?: AspGraphRange;
   directiveLabel: string;
   exists?: boolean;
+}
+
+function NodeLinkSections({
+  graphData,
+  node,
+  onSelectLink,
+}: {
+  graphData: GraphData;
+  node: GraphNode;
+  onSelectLink(link: GraphLink): void;
+}): React.ReactElement {
+  const { incoming, outgoing } = useMemo(
+    () => nodeLinksFor(node, graphData.links),
+    [graphData.links, node],
+  );
+  const nodesById = useMemo(() => graphNodeMap(graphData.nodes), [graphData.nodes]);
+  return (
+    <div className="mb-3 grid gap-2">
+      <Accordion count={outgoing.length} defaultOpen={outgoing.length > 0} title="Outgoing links">
+        {outgoing.length > 0 ? (
+          <NodeLinkList
+            direction="outgoing"
+            links={outgoing}
+            nodesById={nodesById}
+            onSelectLink={onSelectLink}
+          />
+        ) : (
+          <EmptyInspectorText>No outgoing links found in the current graph.</EmptyInspectorText>
+        )}
+      </Accordion>
+      <Accordion count={incoming.length} defaultOpen={incoming.length > 0} title="Incoming links">
+        {incoming.length > 0 ? (
+          <NodeLinkList
+            direction="incoming"
+            links={incoming}
+            nodesById={nodesById}
+            onSelectLink={onSelectLink}
+          />
+        ) : (
+          <EmptyInspectorText>No incoming links found in the current graph.</EmptyInspectorText>
+        )}
+      </Accordion>
+    </div>
+  );
+}
+
+function NodeLinkList({
+  direction,
+  links,
+  nodesById,
+  onSelectLink,
+}: {
+  direction: "incoming" | "outgoing";
+  links: GraphLink[];
+  nodesById: ReadonlyMap<string, GraphNode>;
+  onSelectLink(link: GraphLink): void;
+}): React.ReactElement {
+  return (
+    <div className="grid gap-2">
+      {links.map((link) => (
+        <button
+          key={link.id}
+          type="button"
+          className="grid cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
+          onClick={() => onSelectLink(link)}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ backgroundColor: link.color }}
+              aria-hidden="true"
+            />
+            <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+              {linkInspectorTypeLabel(link)}
+            </span>
+            <span className="shrink-0 rounded border border-[#405068] bg-[#151a22] px-1.5 py-0.5 text-[10px] leading-none text-[#9aa7b8]">
+              {link.count}
+            </span>
+          </div>
+          <div
+            className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]"
+            title={`${endpointLabel(link.source, nodesById)} -> ${endpointLabel(
+              link.target,
+              nodesById,
+            )}`}
+          >
+            {direction === "outgoing" ? "to" : "from"}{" "}
+            {endpointLabel(direction === "outgoing" ? link.target : link.source, nodesById)}
+          </div>
+          {nodeLinkDetail(link) ? (
+            <div className="text-[11px] leading-[1.35] text-[#8d98a8] [overflow-wrap:anywhere]">
+              {nodeLinkDetail(link)}
+            </div>
+          ) : null}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function NodeSourceSections({
@@ -1295,9 +1753,7 @@ function DeclarationSource({
       {source?.error ? (
         <p className="m-0 text-[11px] text-[#ff9cac]">{source.error}</p>
       ) : (
-        <pre className="m-0 max-h-80 overflow-auto rounded border border-[#253041] bg-[#0d1117] p-2 font-mono text-[11px] leading-[1.45] whitespace-pre-wrap text-[#d7dde8] [tab-size:2]">
-          {source?.text ?? (loading ? "Loading source..." : "Source is unavailable.")}
-        </pre>
+        <SourceCodeSnippet className="max-h-80" item={item} loading={loading} source={source} />
       )}
     </div>
   );
@@ -1379,12 +1835,428 @@ function SourceRangeCard({
       {source?.error ? (
         <p className="m-0 text-[11px] text-[#ff9cac]">{source.error}</p>
       ) : (
-        <pre className="m-0 max-h-44 overflow-auto rounded border border-[#253041] bg-[#0d1117] p-2 font-mono text-[11px] leading-[1.45] whitespace-pre-wrap text-[#d7dde8] [tab-size:2]">
-          {source?.text ?? (loading ? "Loading source..." : "Source is unavailable.")}
-        </pre>
+        <SourceCodeSnippet className="max-h-44" item={item} loading={loading} source={source} />
       )}
     </article>
   );
+}
+
+function SourceCodeSnippet({
+  className,
+  item,
+  loading,
+  source,
+}: {
+  className: string;
+  item: GraphSourceItem;
+  loading: boolean;
+  source: AspGraphSourceRangeResponseItem | undefined;
+}): React.ReactElement {
+  const text = source?.text ?? (loading ? "Loading source..." : "Source is unavailable.");
+  const highlightState = useSnippetHighlightState(Boolean(source?.text));
+  const highlightOffsets = sourceHighlightOffsets(source);
+  const language = snippetLanguageForSourceItem(item);
+  return (
+    <pre
+      className={`m-0 overflow-auto rounded border border-[#253041] bg-[#0d1117] p-2 font-mono text-[11px] leading-[1.45] whitespace-pre-wrap text-[#d7dde8] [tab-size:2] ${className}`}
+    >
+      {source?.text && highlightState.status === "ready" ? (
+        <HighlightedSourceText
+          highlightOffsets={highlightOffsets}
+          highlighter={highlightState.highlighter}
+          language={language}
+          text={source.text}
+        />
+      ) : (
+        <PlainSourceText highlightOffsets={highlightOffsets} text={text} />
+      )}
+    </pre>
+  );
+}
+
+function sourceHighlightOffsets(
+  source: AspGraphSourceRangeResponseItem | undefined,
+): HighlightOffsets | undefined {
+  if (!source?.text || !source.range || !source.highlightRange) {
+    return undefined;
+  }
+  const start = positionOffsetInRangeText(source.text, source.range, source.highlightRange.start);
+  const end = positionOffsetInRangeText(source.text, source.range, source.highlightRange.end);
+  if (start === undefined || end === undefined || end <= start) {
+    return undefined;
+  }
+  return { start, end };
+}
+
+function PlainSourceText({
+  highlightOffsets,
+  text,
+}: {
+  highlightOffsets: HighlightOffsets | undefined;
+  text: string;
+}): React.ReactElement {
+  return <>{renderCodeSegment(text, "plain", 0, highlightOffsets)}</>;
+}
+
+function HighlightedSourceText({
+  highlightOffsets,
+  highlighter,
+  language,
+  text,
+}: {
+  highlightOffsets: HighlightOffsets | undefined;
+  highlighter: SnippetHighlighter;
+  language: SnippetLanguage;
+  text: string;
+}): React.ReactElement {
+  const grammar = language === "classic-asp" ? highlighter.classicAsp : highlighter.vbscript;
+  const lines = text.split("\n");
+  const children: React.ReactNode[] = [];
+  let state: StateStack | null = INITIAL;
+  let lineOffset = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const result = grammar.tokenizeLine(line, state);
+    state = result.ruleStack;
+    children.push(
+      <React.Fragment key={`line:${index}`}>
+        {renderTokenizedLine(line, result.tokens, lineOffset, highlightOffsets)}
+        {index < lines.length - 1 ? "\n" : null}
+      </React.Fragment>,
+    );
+    lineOffset += line.length + (index < lines.length - 1 ? 1 : 0);
+  }
+  return <>{children}</>;
+}
+
+function renderTokenizedLine(
+  line: string,
+  tokens: Array<{ startIndex: number; endIndex: number; scopes: string[] }>,
+  lineOffset: number,
+  highlightOffsets: HighlightOffsets | undefined,
+): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const start = clamp(token.startIndex, 0, line.length);
+    const end = clamp(token.endIndex, start, line.length);
+    if (start > cursor) {
+      parts.push(
+        ...renderCodeSegment(
+          line.slice(cursor, start),
+          `gap:${index}:${cursor}`,
+          lineOffset + cursor,
+          highlightOffsets,
+        ),
+      );
+    }
+    if (end > start) {
+      parts.push(
+        ...renderCodeSegment(
+          line.slice(start, end),
+          `token:${index}:${start}`,
+          lineOffset + start,
+          highlightOffsets,
+          tokenStyleForScopes(token.scopes),
+        ),
+      );
+    }
+    cursor = end;
+  }
+  if (cursor < line.length) {
+    parts.push(
+      ...renderCodeSegment(
+        line.slice(cursor),
+        `tail:${cursor}`,
+        lineOffset + cursor,
+        highlightOffsets,
+      ),
+    );
+  }
+  return parts.length > 0 ? parts : [""];
+}
+
+function renderCodeSegment(
+  text: string,
+  key: string,
+  offset: number,
+  highlightOffsets: HighlightOffsets | undefined,
+  style?: React.CSSProperties,
+): React.ReactNode[] {
+  if (!text) {
+    return [];
+  }
+  if (!highlightOffsets) {
+    return [styledSourceSpan(key, text, style)];
+  }
+  const highlightStart = clamp(highlightOffsets.start - offset, 0, text.length);
+  const highlightEnd = clamp(highlightOffsets.end - offset, 0, text.length);
+  if (highlightEnd <= 0 || highlightStart >= text.length || highlightEnd <= highlightStart) {
+    return [styledSourceSpan(key, text, style)];
+  }
+  const parts: React.ReactNode[] = [];
+  if (highlightStart > 0) {
+    parts.push(styledSourceSpan(`${key}:before`, text.slice(0, highlightStart), style));
+  }
+  parts.push(
+    <mark key={`${key}:highlight`} className={sourceHighlightMarkClassName} style={style}>
+      {text.slice(highlightStart, highlightEnd)}
+    </mark>,
+  );
+  if (highlightEnd < text.length) {
+    parts.push(styledSourceSpan(`${key}:after`, text.slice(highlightEnd), style));
+  }
+  return parts;
+}
+
+function styledSourceSpan(
+  key: string,
+  text: string,
+  style: React.CSSProperties | undefined,
+): React.ReactElement {
+  return (
+    <span key={key} style={style}>
+      {text}
+    </span>
+  );
+}
+
+function tokenStyleForScopes(scopes: string[]): React.CSSProperties | undefined {
+  if (scopes.some((scope) => scope.includes("comment"))) {
+    return { color: "#6a9955", fontStyle: "italic" };
+  }
+  if (scopes.some((scope) => scope.includes("string"))) {
+    return { color: "#c3e88d" };
+  }
+  if (scopes.some((scope) => scope.includes("constant.numeric"))) {
+    return { color: "#f78c6c" };
+  }
+  if (scopes.some((scope) => scope.includes("keyword") || scope.includes("storage"))) {
+    return { color: "#c792ea", fontWeight: 600 };
+  }
+  if (scopes.some((scope) => scope.includes("entity.name.tag"))) {
+    return { color: "#ff5370", fontWeight: 600 };
+  }
+  if (scopes.some((scope) => scope.includes("meta.tag") || scope.includes("punctuation"))) {
+    return { color: "#89ddff" };
+  }
+  if (
+    scopes.some(
+      (scope) =>
+        scope.includes("entity.name") ||
+        scope.includes("support.function") ||
+        scope.includes("support.class"),
+    )
+  ) {
+    return { color: "#82aaff" };
+  }
+  if (scopes.some((scope) => scope.includes("variable.parameter"))) {
+    return { color: "#b2ccd6" };
+  }
+  if (scopes.some((scope) => scope.includes("variable") || scope.includes("support"))) {
+    return { color: "#dcdcaa" };
+  }
+  return undefined;
+}
+
+function useSnippetHighlightState(enabled: boolean): SnippetHighlightState {
+  const [state, setState] = useState<SnippetHighlightState>({ status: "loading" });
+  useEffect(() => {
+    if (!enabled) {
+      return undefined;
+    }
+    let cancelled = false;
+    setState({ status: "loading" });
+    void loadSnippetHighlighter()
+      .then((highlighter) => {
+        if (!cancelled) {
+          setState({ status: "ready", highlighter });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setState({ status: "failed" });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+  return enabled ? state : { status: "failed" };
+}
+
+function snippetLanguageForSourceItem(item: GraphSourceItem): SnippetLanguage {
+  return item.kind === "include" ? "classic-asp" : "vbscript";
+}
+
+let snippetHighlighterPromise: Promise<SnippetHighlighter> | undefined;
+
+function loadSnippetHighlighter(): Promise<SnippetHighlighter> {
+  snippetHighlighterPromise ??= createSnippetHighlighter();
+  return snippetHighlighterPromise;
+}
+
+async function createSnippetHighlighter(): Promise<SnippetHighlighter> {
+  const onigLib = (async (): Promise<IOnigLib> => {
+    await loadWASM(await fetch(onigWasmUrl));
+    return {
+      createOnigScanner,
+      createOnigString,
+    };
+  })();
+  const rawGrammars = new Map<string, IRawGrammar>([
+    [
+      "text.html.classic-asp",
+      rawTextMateGrammar(classicAspGrammarJson, "classic-asp.tmLanguage.json"),
+    ],
+    [
+      "classic-asp.tag-injection",
+      rawTextMateGrammar(
+        classicAspTagInjectionGrammarJson,
+        "classic-asp-tag-injection.tmLanguage.json",
+      ),
+    ],
+    ["source.vbscript", rawTextMateGrammar(vbscriptGrammarJson, "vbscript.tmLanguage.json")],
+    ["text.html.basic", rawTextMateGrammar(minimalHtmlGrammar(), "html.json")],
+    ["source.css", rawTextMateGrammar(minimalCssGrammar(), "css.json")],
+    ["source.js", rawTextMateGrammar(minimalJavaScriptGrammar(), "javascript.json")],
+  ]);
+  const registry = new Registry({
+    onigLib,
+    loadGrammar: async (scopeName) => rawGrammars.get(scopeName) ?? null,
+    getInjections: (scopeName) =>
+      scopeName === "text.html.classic-asp" ? ["classic-asp.tag-injection"] : undefined,
+  });
+  const [classicAsp, vbscript] = await Promise.all([
+    registry.loadGrammar("text.html.classic-asp"),
+    registry.loadGrammar("source.vbscript"),
+  ]);
+  if (!classicAsp || !vbscript) {
+    throw new Error("Failed to load graph snippet TextMate grammars.");
+  }
+  return { classicAsp, vbscript };
+}
+
+function rawTextMateGrammar(grammar: unknown, fileName: string): IRawGrammar {
+  return parseRawGrammar(JSON.stringify(grammar), fileName);
+}
+
+function minimalHtmlGrammar(): unknown {
+  return {
+    scopeName: "text.html.basic",
+    patterns: [
+      { include: "#style" },
+      { include: "#script" },
+      { include: "#tag" },
+      { match: "[^<]+" },
+    ],
+    repository: {
+      tag: {
+        begin: "<[A-Za-z][A-Za-z0-9:-]*\\b",
+        end: ">",
+        name: "meta.tag.html",
+        patterns: [
+          {
+            begin: '"',
+            end: '"',
+            name: "string.quoted.double.html",
+          },
+          {
+            begin: "'",
+            end: "'",
+            name: "string.quoted.single.html",
+          },
+        ],
+      },
+      style: {
+        begin: "<style\\b[^>]*>",
+        end: "</style>",
+        contentName: "source.css",
+        name: "meta.embedded.block.css.html",
+        patterns: [{ include: "source.css" }],
+      },
+      script: {
+        begin: "<script\\b[^>]*>",
+        end: "</script>",
+        contentName: "source.js",
+        name: "meta.embedded.block.javascript.html",
+        patterns: [{ include: "source.js" }],
+      },
+    },
+  };
+}
+
+function minimalCssGrammar(): unknown {
+  return {
+    scopeName: "source.css",
+    name: "source.css",
+    patterns: [
+      {
+        begin: "/\\*",
+        end: "\\*/",
+        name: "comment.block.css",
+        patterns: aspIslandPatterns(),
+      },
+      { match: "\\.[A-Za-z_][A-Za-z0-9_-]*", name: "entity.other.attribute-name.class.css" },
+      { match: "[A-Za-z_-][A-Za-z0-9_-]*", name: "support.type.property-name.css" },
+    ],
+  };
+}
+
+function minimalJavaScriptGrammar(): unknown {
+  return {
+    scopeName: "source.js",
+    name: "source.js",
+    patterns: [
+      {
+        begin: "//",
+        end: "$",
+        name: "comment.line.double-slash.js",
+        patterns: aspIslandPatterns(),
+      },
+      {
+        begin: "/\\*",
+        end: "\\*/",
+        name: "comment.block.js",
+        patterns: aspIslandPatterns(),
+      },
+      { match: "\\bconst\\b", name: "storage.modifier.js" },
+      { match: "[A-Za-z_$][A-Za-z0-9_$]*", name: "variable.other.js" },
+    ],
+  };
+}
+
+function aspIslandPatterns(): unknown[] {
+  return [
+    { include: "text.html.classic-asp#asp-expression" },
+    { include: "text.html.classic-asp#asp-directive" },
+    { include: "text.html.classic-asp#asp-block" },
+  ];
+}
+
+function positionOffsetInRangeText(
+  text: string,
+  range: AspGraphRange,
+  position: AspGraphRange["start"],
+): number | undefined {
+  if (
+    position.line < range.start.line ||
+    position.line > range.end.line ||
+    (position.line === range.start.line && position.character < range.start.character)
+  ) {
+    return undefined;
+  }
+  let offset = 0;
+  for (let line = range.start.line; line < position.line; line += 1) {
+    const newlineOffset = text.indexOf("\n", offset);
+    if (newlineOffset === -1) {
+      return undefined;
+    }
+    offset = newlineOffset + 1;
+  }
+  const lineStartCharacter = position.line === range.start.line ? range.start.character : 0;
+  return clamp(offset + position.character - lineStartCharacter, 0, text.length);
 }
 
 function IncludeRelationList({ relations }: { relations: IncludeRelation[] }): React.ReactElement {
@@ -1580,17 +2452,95 @@ function titleCaseWords(value: string): string {
     .join(" ");
 }
 
-function LinkDetails({ link }: { link: GraphLink }): React.ReactElement {
+function LinkDetails({
+  link,
+  nodesById,
+  onSelectNode,
+}: {
+  link: GraphLink;
+  nodesById: ReadonlyMap<string, GraphNode>;
+  onSelectNode(node: GraphNode): void;
+}): React.ReactElement {
+  const typeLabel = linkInspectorTypeLabel(link);
+  const sourceNode = nodesById.get(nodeIdForEndpoint(link.source));
+  const targetNode = nodesById.get(nodeIdForEndpoint(link.target));
+  const sourceLabel = endpointLabel(link.source, nodesById);
+  const targetLabel = endpointLabel(link.target, nodesById);
   return (
-    <dl className="mb-3.5 grid grid-cols-[86px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
-      <Detail label="Kind" value={link.kind} />
-      <Detail label="Role" value={link.role} />
-      <Detail label="Count" value={String(link.count)} />
-      <Detail label="Include" value={link.include?.path} />
-      <Detail label="Mode" value={link.include?.mode} />
-      <Detail label="Exists" value={link.include ? String(link.include.exists) : undefined} />
-      <Detail label="Actual path" value={link.include?.actualPath} />
-    </dl>
+    <div className="mb-3.5 grid gap-3">
+      <section className="rounded-md border border-[#303a49] bg-[#11151c] p-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span
+            className="h-3 w-3 shrink-0 rounded-full"
+            style={{ backgroundColor: link.color }}
+            aria-hidden="true"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+              {typeLabel}
+            </div>
+            <div
+              className="text-[11px] leading-[1.35] text-[#8d98a8] [overflow-wrap:anywhere]"
+              title={`${sourceLabel} -> ${targetLabel}`}
+            >
+              {sourceLabel} -&gt; {targetLabel}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <SelectEndpointButton
+                label="Select source"
+                node={sourceNode}
+                onSelectNode={onSelectNode}
+              />
+              <SelectEndpointButton
+                label="Select target"
+                node={targetNode}
+                onSelectNode={onSelectNode}
+              />
+            </div>
+          </div>
+          <div className="grid min-w-[58px] shrink-0 justify-items-end rounded border border-[#405068] bg-[#151a22] px-2 py-1">
+            <span className="text-sm leading-none font-semibold text-[#f4f7fb]">{link.count}</span>
+            <span className="text-[10px] leading-[1.2] text-[#9aa7b8]">count</span>
+          </div>
+        </div>
+      </section>
+      <dl className="grid grid-cols-[86px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
+        <Detail label="Type" value={typeLabel} />
+        <Detail label="Source" value={sourceLabel} />
+        <Detail label="Target" value={targetLabel} />
+        <Detail label="Role" value={link.role} />
+        <Detail label="Label" value={link.label !== typeLabel ? link.label : undefined} />
+        <Detail label="Include" value={link.include?.path} />
+        <Detail label="Mode" value={link.include?.mode} />
+        <Detail label="Exists" value={link.include ? String(link.include.exists) : undefined} />
+        <Detail label="Actual path" value={link.include?.actualPath} />
+      </dl>
+    </div>
+  );
+}
+
+function SelectEndpointButton({
+  label,
+  node,
+  onSelectNode,
+}: {
+  label: string;
+  node: GraphNode | undefined;
+  onSelectNode(node: GraphNode): void;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      className="h-7 cursor-pointer rounded-md border border-[#405068] bg-[#202735] px-2 text-[11px] text-[#d7dde8] hover:border-[#4b5a70] disabled:cursor-not-allowed disabled:border-[#303a49] disabled:text-[#717b8c]"
+      disabled={!node}
+      onClick={() => {
+        if (node) {
+          onSelectNode(node);
+        }
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -1714,9 +2664,96 @@ function sourceItemsForNode(
   return { declarationItems, usageItems };
 }
 
+function sourceItemsForLink(link: GraphLink): GraphSourceItem[] {
+  return link.ranges
+    .map((location, index) => ({
+      id: `link:${link.id}:${index}:${location.uri}:${location.range.start.line}:${location.range.start.character}`,
+      uri: location.uri,
+      range: location.range,
+      highlightRange: location.range,
+      kind: sourceKindForLink(link),
+      title: linkOccurrenceTitle(link),
+      detail: linkOccurrenceDetail(link, location),
+    }))
+    .sort(compareSourceItems);
+}
+
+function nodeLinksFor(
+  node: GraphNode,
+  links: GraphLink[],
+): { incoming: GraphLink[]; outgoing: GraphLink[] } {
+  const incoming: GraphLink[] = [];
+  const outgoing: GraphLink[] = [];
+  for (const link of links) {
+    if (nodeIdForEndpoint(link.source) === node.id) {
+      outgoing.push(link);
+    }
+    if (nodeIdForEndpoint(link.target) === node.id) {
+      incoming.push(link);
+    }
+  }
+  return { incoming, outgoing };
+}
+
+function nodeLinkDetail(link: GraphLink): string | undefined {
+  if (link.kind === "include") {
+    return includeRelationDetail(link);
+  }
+  const typeLabel = linkInspectorTypeLabel(link);
+  const parts = detailParts(
+    link.role,
+    link.label !== typeLabel ? link.label : undefined,
+    link.ranges.length > 0
+      ? `${link.ranges.length} occurrence${link.ranges.length === 1 ? "" : "s"}`
+      : undefined,
+  );
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+function sourceKindForLink(link: GraphLink): AspGraphSourceRangeRequestItem["kind"] {
+  switch (link.kind) {
+    case "include":
+      return "include";
+    case "declares":
+      return "declaration";
+    case "calls":
+      return "call";
+    case "references":
+    case "unresolvedReference":
+      return "reference";
+  }
+}
+
+function linkOccurrenceTitle(link: GraphLink): string {
+  if (link.kind === "include") {
+    return "Include directive";
+  }
+  if (link.kind === "declares") {
+    return "Declaration";
+  }
+  return sourceUsageTitle(link);
+}
+
+function linkOccurrenceDetail(
+  link: GraphLink,
+  location: { uri: string; range: AspGraphRange },
+): string | undefined {
+  const detail = detailParts(
+    rangeLineLabel(location.range),
+    link.kind === "include" ? link.include?.path : undefined,
+    link.role,
+  );
+  return detail.length > 0 ? detail.join(" · ") : undefined;
+}
+
 function sourceUsageTitle(link: GraphLink): string {
   const label = link.kind === "unresolvedReference" ? "Unresolved" : linkMeanings[link.kind].label;
   return link.role ? `${label}: ${link.role}` : label;
+}
+
+function linkInspectorTypeLabel(link: GraphLink): string {
+  const label = linkMeanings[link.kind].label;
+  return graphLinkFilterCategory(link) === "member" ? `Member ${label.toLowerCase()}` : label;
 }
 
 function compareSourceItems(left: GraphSourceItem, right: GraphSourceItem): number {
@@ -2283,6 +3320,203 @@ function releasePositionSyncPins(nodes: GraphNode[], pinnedNodeIds: ReadonlySet<
   }
 }
 
+function selectionForStatsTarget(target: GraphStatsTarget, graphData: GraphData): Selection {
+  if (target.type === "node") {
+    const node = graphData.nodes.find((candidate) => candidate.id === target.id);
+    return node ? { type: "node", item: node } : undefined;
+  }
+  const link = graphData.links.find((candidate) => candidate.id === target.id);
+  return link ? { type: "link", item: link } : undefined;
+}
+
+function focusGraphTarget(
+  target: GraphStatsTarget,
+  mode: ViewMode,
+  graphData: GraphData,
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+): void {
+  if (mode === "3d") {
+    focusGraphTarget3d(target, graphData, graph3d);
+  } else {
+    focusGraphTarget2d(target, graphData, graph2d);
+  }
+}
+
+function focusGraphTarget2d(
+  target: GraphStatsTarget,
+  graphData: GraphData,
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+): void {
+  if (!graph2d) {
+    return;
+  }
+  if (target.type === "node") {
+    const node = graphData.nodes.find((candidate) => candidate.id === target.id);
+    const point = node ? graphNodePoint2d(node) : undefined;
+    if (!point) {
+      return;
+    }
+    try {
+      graph2d.centerAt(point.x, point.y, graphFocusDurationMs);
+      graph2d.zoom(
+        Math.max(finiteNumber(graph2d.zoom()) ?? 1, graph2dMinimumFocusZoom),
+        graphFocusDurationMs,
+      );
+    } catch {
+      return;
+    }
+    return;
+  }
+  const link = graphData.links.find((candidate) => candidate.id === target.id);
+  const endpoints = linkEndpointNodes(link, graphData.nodes);
+  const sourcePoint = endpoints ? graphNodePoint2d(endpoints.source) : undefined;
+  const targetPoint = endpoints ? graphNodePoint2d(endpoints.target) : undefined;
+  if (!endpoints || !sourcePoint || !targetPoint) {
+    return;
+  }
+  const focusPoint = midpoint2d(sourcePoint, targetPoint);
+  try {
+    graph2d.centerAt(focusPoint.x, focusPoint.y, graphFocusDurationMs);
+    graph2d.zoomToFit(
+      graphFocusDurationMs,
+      graph2dLinkFocusPadding,
+      (node) => node.id === endpoints.source.id || node.id === endpoints.target.id,
+    );
+  } catch {
+    return;
+  }
+}
+
+function focusGraphTarget3d(
+  target: GraphStatsTarget,
+  graphData: GraphData,
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+): void {
+  if (!graph3d) {
+    return;
+  }
+  if (target.type === "node") {
+    const node = graphData.nodes.find((candidate) => candidate.id === target.id);
+    const point = node ? graphNodePoint3d(node) : undefined;
+    if (!point) {
+      return;
+    }
+    focusGraph3dPoint(graph3d, graphData.nodes, point, graph3dMinimumFocusDistance);
+    return;
+  }
+  const link = graphData.links.find((candidate) => candidate.id === target.id);
+  const endpoints = linkEndpointNodes(link, graphData.nodes);
+  const sourcePoint = endpoints ? graphNodePoint3d(endpoints.source) : undefined;
+  const targetPoint = endpoints ? graphNodePoint3d(endpoints.target) : undefined;
+  if (!sourcePoint || !targetPoint) {
+    return;
+  }
+  const focusPoint = midpoint3d(sourcePoint, targetPoint);
+  focusGraph3dPoint(
+    graph3d,
+    graphData.nodes,
+    focusPoint,
+    Math.max(
+      graph3dMinimumFocusDistance,
+      distance3d(sourcePoint, targetPoint) * graph3dLinkDistanceScale,
+    ),
+  );
+}
+
+function focusGraph3dPoint(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink>,
+  nodes: GraphNode[],
+  focusPoint: { x: number; y: number; z: number },
+  distance: number,
+): void {
+  const direction = graph3dViewDirection(graph3d, nodes, focusPoint);
+  if (!direction) {
+    return;
+  }
+  const nextPosition = {
+    x: focusPoint.x + direction.x * distance,
+    y: focusPoint.y + direction.y * distance,
+    z: focusPoint.z + direction.z * distance,
+  };
+  try {
+    graph3d.cameraPosition(nextPosition, focusPoint, graphFocusDurationMs);
+  } catch {
+    return;
+  }
+}
+
+function graph3dViewDirection(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink>,
+  nodes: GraphNode[],
+  focusPoint: { x: number; y: number; z: number },
+): { x: number; y: number; z: number } | undefined {
+  const cameraPosition = graph3dCameraPosition(graph3d);
+  if (!cameraPosition) {
+    return undefined;
+  }
+  const currentTarget = graph3dControlsTarget(graph3d) ?? graphNodeCenter3d(nodes) ?? focusPoint;
+  return (
+    normalize3d({
+      x: cameraPosition.x - currentTarget.x,
+      y: cameraPosition.y - currentTarget.y,
+      z: cameraPosition.z - currentTarget.z,
+    }) ??
+    normalize3d({
+      x: cameraPosition.x - focusPoint.x,
+      y: cameraPosition.y - focusPoint.y,
+      z: cameraPosition.z - focusPoint.z,
+    }) ?? { x: 0, y: 0, z: 1 }
+  );
+}
+
+function linkEndpointNodes(
+  link: GraphLink | undefined,
+  nodes: GraphNode[],
+): { source: GraphNode; target: GraphNode } | undefined {
+  if (!link) {
+    return undefined;
+  }
+  const nodesById = graphNodeMap(nodes);
+  const source = nodesById.get(nodeIdForEndpoint(link.source));
+  const target = nodesById.get(nodeIdForEndpoint(link.target));
+  return source && target ? { source, target } : undefined;
+}
+
+function graphNodePoint2d(node: GraphNode): { x: number; y: number } | undefined {
+  const x = finiteNumber(node.x);
+  const y = finiteNumber(node.y);
+  return x !== undefined && y !== undefined ? { x, y } : undefined;
+}
+
+function graphNodePoint3d(node: GraphNode): { x: number; y: number; z: number } | undefined {
+  const x = finiteNumber(node.x);
+  const y = finiteNumber(node.y);
+  const z = finiteNumber(node.z) ?? 0;
+  return x !== undefined && y !== undefined ? { x, y, z } : undefined;
+}
+
+function midpoint2d(
+  source: { x: number; y: number },
+  target: { x: number; y: number },
+): { x: number; y: number } {
+  return {
+    x: (source.x + target.x) / 2,
+    y: (source.y + target.y) / 2,
+  };
+}
+
+function midpoint3d(
+  source: { x: number; y: number; z: number },
+  target: { x: number; y: number; z: number },
+): { x: number; y: number; z: number } {
+  return {
+    x: (source.x + target.x) / 2,
+    y: (source.y + target.y) / 2,
+    z: (source.z + target.z) / 2,
+  };
+}
+
 function graph3dScreenCoords(
   graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
   x: number,
@@ -2420,6 +3654,21 @@ function distance3d(
   return Math.hypot(from.x - to.x, from.y - to.y, from.z - to.z);
 }
 
+function normalize3d(vector: {
+  x: number;
+  y: number;
+  z: number;
+}): { x: number; y: number; z: number } | undefined {
+  const length = Math.hypot(vector.x, vector.y, vector.z);
+  return length > 0
+    ? {
+        x: vector.x / length,
+        y: vector.y / length,
+        z: vector.z / length,
+      }
+    : undefined;
+}
+
 function finiteNumber(value: number | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -2474,8 +3723,18 @@ function highlightForSelection(
   links: GraphLink[],
   showOutgoingLinks: boolean,
 ): HighlightState | undefined {
-  if (selection?.type !== "node") {
+  if (!selection) {
     return undefined;
+  }
+  if (selection.type === "link") {
+    const selectedLink = links.find((link) => link.id === selection.item.id) ?? selection.item;
+    return {
+      activeNodeIds: new Set([
+        nodeIdForEndpoint(selectedLink.source),
+        nodeIdForEndpoint(selectedLink.target),
+      ]),
+      activeLinkIds: new Set([selectedLink.id]),
+    };
   }
   const selectedNodeId = selection.item.id;
   const activeNodeIds = new Set<string>([selectedNodeId]);
