@@ -5128,7 +5128,7 @@ Response.Write SharedTitle()
           "codeLens/resolve",
           referencesCodeLens,
         )) as Record<string, unknown>;
-        expect(JSON.stringify(resolvedCodeLens.command)).toContain("0 references");
+        expect(JSON.stringify(resolvedCodeLens.command)).toContain("0 references (analyzed only)");
         expect(JSON.stringify(resolvedCodeLens.command)).not.toContain(pageUri);
 
         server.notify("workspace/didChangeConfiguration", {
@@ -5139,6 +5139,7 @@ Response.Write SharedTitle()
           referencesCodeLens,
         )) as Record<string, unknown>;
         expect(JSON.stringify(workspaceResolvedCodeLens.command)).toContain("1 reference");
+        expect(JSON.stringify(workspaceResolvedCodeLens.command)).not.toContain("(analyzed only)");
         expect(JSON.stringify(workspaceResolvedCodeLens.command)).toContain(pageUri);
 
         const references = await server.request("textDocument/references", {
@@ -8782,7 +8783,7 @@ Response.Write miss▮ingName
           return data?.kind === "vbscript-reference";
         });
         const resolvedCodeLens = await server.request("codeLens/resolve", referencesCodeLens);
-        expect(JSON.stringify(resolvedCodeLens)).toContain("件の参照");
+        expect(JSON.stringify(resolvedCodeLens)).toContain("件の参照 (解析済みのみ)");
 
         const unknown = await server.request("workspace/executeCommand", {
           command: "aspLsp.unknown",

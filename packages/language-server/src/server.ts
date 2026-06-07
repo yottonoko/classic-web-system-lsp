@@ -15395,13 +15395,18 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
       ? await workspaceVbscriptCodeLensReferencesForSymbol(cached, symbol, settings, options)
       : await analyzedVbscriptReferencesForSymbolAsync(cached, symbol, settings, options);
   const localizer = localizerForUri(cached.source.uri);
+  const referenceTitle = localizer.t(
+    references.length === 1 ? "server.codeLens.reference" : "server.codeLens.references",
+    { count: references.length },
+  );
+  const title =
+    settings.codeLens?.referenceScope === "workspace"
+      ? referenceTitle
+      : `${referenceTitle}${localizer.t("server.codeLens.analyzedOnlySuffix")}`;
   return {
     ...lens,
     command: {
-      title: localizer.t(
-        references.length === 1 ? "server.codeLens.reference" : "server.codeLens.references",
-        { count: references.length },
-      ),
+      title,
       command: "aspLsp.showReferences",
       arguments: [
         cached.source.uri,

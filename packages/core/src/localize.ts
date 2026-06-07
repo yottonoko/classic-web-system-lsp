@@ -99,6 +99,7 @@ export type LocalizeKey =
   | "server.codeAction.organizeJavascriptImports"
   | "server.codeLens.reference"
   | "server.codeLens.references"
+  | "server.codeLens.analyzedOnlySuffix"
   | "server.codeLens.include";
 
 const en: Record<LocalizeKey, string> = {
@@ -208,6 +209,7 @@ const en: Record<LocalizeKey, string> = {
   "server.codeAction.organizeJavascriptImports": "Organize JavaScript imports",
   "server.codeLens.reference": "{count} reference",
   "server.codeLens.references": "{count} references",
+  "server.codeLens.analyzedOnlySuffix": " (analyzed only)",
   "server.codeLens.include": "include {name}",
 };
 
@@ -320,6 +322,7 @@ const ja: Record<LocalizeKey, string> = {
   "server.codeAction.organizeJavascriptImports": "JavaScript import を整理",
   "server.codeLens.reference": "{count} 件の参照",
   "server.codeLens.references": "{count} 件の参照",
+  "server.codeLens.analyzedOnlySuffix": " (解析済みのみ)",
   "server.codeLens.include": "{name} を include",
 };
 
