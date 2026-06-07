@@ -6228,6 +6228,168 @@ End Sub
       }
     });
 
+    it("graphs and counts include-defined implicit globals", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-implicit-graph-"));
+      const shared = path.join(tempDir, "shared.inc");
+      const page = path.join(tempDir, "default.asp");
+      const before = path.join(tempDir, "before.asp");
+      const unrelated = path.join(tempDir, "unrelated.asp");
+      const sharedSource = `<%
+sharedTitle = "include"
+%>`;
+      const pageSource = `<!-- #include file="shared.inc" -->
+<%
+Response.Write sharedTitle
+sharedTitle = "page"
+Function Render()
+  sharedTitle = "function"
+End Function
+%>`;
+      const beforeSource = `<%
+sharedTitle = "before"
+%>
+<!-- #include file="shared.inc" -->`;
+      fs.writeFileSync(shared, sharedSource, "utf8");
+      fs.writeFileSync(page, pageSource, "utf8");
+      fs.writeFileSync(before, beforeSource, "utf8");
+      fs.writeFileSync(unrelated, `<%\nResponse.Write sharedTitle\n%>`, "utf8");
+
+      const sharedUri = pathToFileURL(shared).href;
+      const pageUri = pathToFileURL(page).href;
+      const beforeUri = pathToFileURL(before).href;
+      const unrelatedUri = pathToFileURL(unrelated).href;
+      const server = new RpcServer();
+      type TestGraph = {
+        nodes?: Array<Record<string, unknown>>;
+        links?: Array<Record<string, unknown>>;
+      };
+      const nodeByLabelAndUri = (graph: TestGraph, label: string, uri: string) =>
+        (graph.nodes ?? []).find((node) => node.label === label && node.uri === uri);
+      const hasGraphLink = (
+        graph: TestGraph,
+        kind: string,
+        source: Record<string, unknown> | undefined,
+        target: Record<string, unknown> | undefined,
+      ) =>
+        Boolean(
+          source &&
+          target &&
+          (graph.links ?? []).some(
+            (link) => link.kind === kind && link.source === source.id && link.target === target.id,
+          ),
+        );
+
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              diagnostics: { debounceMs: 0 },
+              codeLens: { referenceScope: "workspace" },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: sharedUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: sharedSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const pageGraph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri: pageUri }],
+        })) as TestGraph;
+        const sharedFileNode = nodeByLabelAndUri(pageGraph, "shared.inc", sharedUri);
+        const pageFileNode = nodeByLabelAndUri(pageGraph, "default.asp", pageUri);
+        const renderNode = nodeByLabelAndUri(pageGraph, "Render", pageUri);
+        const includeSharedTitleNode = nodeByLabelAndUri(pageGraph, "sharedTitle", sharedUri);
+        const pageSharedTitleNode = nodeByLabelAndUri(pageGraph, "sharedTitle", pageUri);
+
+        expect(includeSharedTitleNode).toEqual(
+          expect.objectContaining({
+            declarationKind: "variable",
+            bindingScope: "global",
+            implicit: true,
+          }),
+        );
+        expect(hasGraphLink(pageGraph, "declares", includeSharedTitleNode, sharedFileNode)).toBe(
+          true,
+        );
+        expect(hasGraphLink(pageGraph, "references", pageFileNode, includeSharedTitleNode)).toBe(
+          true,
+        );
+        expect(hasGraphLink(pageGraph, "references", renderNode, includeSharedTitleNode)).toBe(
+          true,
+        );
+        expect(hasGraphLink(pageGraph, "references", pageFileNode, pageSharedTitleNode)).toBe(
+          false,
+        );
+
+        const beforeGraph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri: beforeUri }],
+        })) as TestGraph;
+        const beforeFileNode = nodeByLabelAndUri(beforeGraph, "before.asp", beforeUri);
+        const beforeSharedTitleNode = nodeByLabelAndUri(beforeGraph, "sharedTitle", beforeUri);
+        const beforeIncludeSharedTitleNode = nodeByLabelAndUri(
+          beforeGraph,
+          "sharedTitle",
+          sharedUri,
+        );
+        expect(hasGraphLink(beforeGraph, "references", beforeFileNode, beforeSharedTitleNode)).toBe(
+          true,
+        );
+        expect(
+          hasGraphLink(beforeGraph, "references", beforeFileNode, beforeIncludeSharedTitleNode),
+        ).toBe(false);
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: sharedUri },
+        })) as Array<Record<string, unknown>>;
+        const referencesCodeLens = codeLens.find((lens) => {
+          const data = lens.data as { kind?: unknown; name?: unknown } | undefined;
+          return data?.kind === "vbscript-reference" && data.name === "sharedTitle";
+        });
+        expect(referencesCodeLens).toBeDefined();
+        const resolvedCodeLens = (await server.request("codeLens/resolve", referencesCodeLens)) as {
+          command?: { title?: string; arguments?: unknown[] };
+        };
+        const codeLensLocations = (resolvedCodeLens.command?.arguments?.[2] ?? []) as Array<{
+          uri?: string;
+        }>;
+        expect(resolvedCodeLens.command?.title).toContain("3 references");
+        expect(codeLensLocations.map((location) => location.uri)).toEqual([
+          pageUri,
+          pageUri,
+          pageUri,
+        ]);
+        expect(JSON.stringify(codeLensLocations)).not.toContain(beforeUri);
+        expect(JSON.stringify(codeLensLocations)).not.toContain(unrelatedUri);
+
+        const references = (await server.request("textDocument/references", {
+          textDocument: { uri: sharedUri },
+          position: { line: 1, character: 1 },
+          context: { includeDeclaration: false },
+        })) as Array<{ uri?: string }>;
+        expect(references.map((reference) => reference.uri)).toEqual([pageUri, pageUri, pageUri]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns graph filter settings for the webview initial state", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-settings-"));
       fs.writeFileSync(

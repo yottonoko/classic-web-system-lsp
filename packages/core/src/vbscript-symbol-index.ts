@@ -2,6 +2,7 @@ import type { Range } from "vscode-languageserver-types";
 import type { AspInclude, AspRegion, AspSettings, VbToken } from "./types";
 import { extractAspIncludeRefs, normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 import { tokenizeVbscript } from "./vbscript-cst";
+import builtinCatalogData from "./vbscript-builtin-catalog.json";
 
 export type VbIndexedDeclarationKind =
   | "class"
@@ -51,6 +52,7 @@ export interface VbIndexedDeclaration {
   bindingScope?: VbBindingScope;
   procedureKind?: VbIndexedProcedureKind;
   parameters?: VbIndexedParameter[];
+  implicit?: boolean;
 }
 
 export interface VbIndexedReference {
@@ -133,6 +135,7 @@ interface SymbolIndexBuildState {
   options: Required<VbSymbolIndexOptions>;
   declarations: VbIndexedDeclaration[];
   declarationNameKeys: Set<string>;
+  hasOptionExplicit: boolean;
   lineStarts: number[];
   scopes: ScopeFrame[];
   stack: ScopeFrame[];
@@ -148,6 +151,12 @@ interface DeclarationLookup {
   byId: Map<string, VbIndexedDeclaration>;
   byScopeName: Map<string, VbIndexedDeclaration[]>;
   byParentName: Map<string, VbIndexedDeclaration[]>;
+}
+
+interface IndexedReferenceToken {
+  reference: VbIndexedReference;
+  token: VbToken;
+  tokenIndex: number;
 }
 
 interface IndexHtmlTag {
@@ -178,6 +187,28 @@ const memberExpectedKinds: VbIndexedDeclarationKind[] = [
 ];
 const writableExpectedKinds: VbIndexedDeclarationKind[] = ["variable"];
 const valueExpectedKinds: VbIndexedDeclarationKind[] = ["variable", "constant"];
+const implicitVariableExcludedNames = new Set(
+  [
+    "application",
+    "asperror",
+    "empty",
+    "err",
+    "false",
+    "me",
+    "nothing",
+    "null",
+    "request",
+    "response",
+    "server",
+    "session",
+    "true",
+    ...Object.keys(builtinCatalogData.classicAspObjects),
+    ...Object.keys(builtinCatalogData.externalObjects),
+    ...builtinCatalogData.constants.map((item) => item.label),
+    ...builtinCatalogData.functions.map((item) => item.label),
+    ...builtinCatalogData.runtimeEvents.map((item) => item.label),
+  ].map((name) => name.toLowerCase()),
+);
 
 export function extractVbscriptSymbolIndex(
   uri: string,
@@ -194,6 +225,7 @@ export function extractVbscriptSymbolIndex(
     options: resolvedOptions,
     declarations: [],
     declarationNameKeys: new Set(),
+    hasOptionExplicit: false,
     lineStarts: lineStartsForText(text),
     scopes: [
       {
@@ -457,6 +489,10 @@ function collectDeclarations(state: SymbolIndexBuildState): void {
     }
     const first = lower(token);
     const second = lower(tokens[index + 1]);
+    if (first === "option" && second === "explicit") {
+      state.hasOptionExplicit = true;
+      continue;
+    }
     if (first === "end") {
       closeScope(state, second, token);
       continue;
@@ -652,6 +688,7 @@ function addDeclaration(
     bindingScope?: VbBindingScope;
     procedureKind?: VbIndexedProcedureKind;
     parameters?: VbIndexedParameter[];
+    implicit?: boolean;
   },
 ): VbIndexedDeclaration {
   const declaration: VbIndexedDeclaration = {
@@ -668,6 +705,7 @@ function addDeclaration(
     bindingScope: input.bindingScope,
     procedureKind: input.procedureKind,
     parameters: input.parameters,
+    implicit: input.implicit,
   };
   state.declarations.push(declaration);
   state.declarationNameKeys.add(tokenKey(input.nameToken));
@@ -683,6 +721,10 @@ function collectReferences(state: SymbolIndexBuildState): {
   const callSites: VbIndexedCallSite[] = [];
   const deferredExternalRefs: VbDeferredExternalReference[] = [];
   const lookup = declarationLookup(state.declarations);
+  const collectImplicitReferences =
+    state.options.includeImplicitVariables && !state.hasOptionExplicit;
+  const deferredReferenceTokens: IndexedReferenceToken[] = [];
+  const implicitWriteReferenceTokens: IndexedReferenceToken[] = [];
   for (let index = 0; index < state.tokens.length; index += 1) {
     const token = state.tokens[index];
     if (token.kind !== "identifier" || state.declarationNameKeys.has(tokenKey(token))) {
@@ -725,7 +767,14 @@ function collectReferences(state: SymbolIndexBuildState): {
     if (role === "call" || role === "new" || role === "member") {
       callSites.push(callSiteFromReference(lookup, reference, role));
     }
-    if (!resolved && expectedKinds) {
+    if (collectImplicitReferences && !resolved && expectedKinds) {
+      const item = { reference, token, tokenIndex: index };
+      deferredReferenceTokens.push(item);
+      if (isImplicitVariableDeclarationCandidate(reference)) {
+        implicitWriteReferenceTokens.push(item);
+      }
+    }
+    if (!collectImplicitReferences && !resolved && expectedKinds) {
       deferredExternalRefs.push({
         key: deferredKey ?? referenceKey(state.uri, token),
         name: token.text,
@@ -741,7 +790,128 @@ function collectReferences(state: SymbolIndexBuildState): {
       });
     }
   }
+  if (collectImplicitReferences) {
+    const implicitNames = addImplicitVariableDeclarationsFromReferences(
+      state,
+      lookup,
+      implicitWriteReferenceTokens,
+    );
+    resolveReferencesWithImplicitDeclarations(
+      state,
+      lookup,
+      deferredReferenceTokens,
+      implicitNames,
+    );
+    deferredExternalRefs.push(...deferredExternalRefsForReferences(state, deferredReferenceTokens));
+  }
   return { references, callSites, deferredExternalRefs };
+}
+
+function addImplicitVariableDeclarationsFromReferences(
+  state: SymbolIndexBuildState,
+  lookup: DeclarationLookup,
+  references: IndexedReferenceToken[],
+): Set<string> {
+  const implicitNames = new Set<string>();
+  for (const item of references) {
+    const { reference, token } = item;
+    if (!isImplicitVariableDeclarationCandidate(reference)) {
+      continue;
+    }
+    if (resolveDeclaration(state, lookup, token, reference.role, reference.baseName)) {
+      continue;
+    }
+    const procedureScope = activeScopeAt(state, token.start, "procedure");
+    const classScope = activeScopeAt(state, token.start, "class");
+    const classField = !procedureScope && classScope;
+    const declaration = addDeclaration(state, {
+      kind: classField ? "field" : "variable",
+      nameToken: token,
+      start: token.start,
+      end: token.end,
+      scopeId: procedureScope?.id ?? classScope?.id ?? globalScopeId,
+      parentId: classField ? classScope.declarationId : undefined,
+      memberOf: classField ? classScope.name : undefined,
+      bindingScope: classField ? undefined : procedureScope ? "local" : "global",
+      implicit: true,
+    });
+    addDeclarationToLookup(lookup, declaration);
+    implicitNames.add(declaration.normalizedName);
+  }
+  return implicitNames;
+}
+
+function isImplicitVariableDeclarationCandidate(reference: VbIndexedReference): boolean {
+  return (
+    reference.role === "write" &&
+    !reference.resolvedId &&
+    !reference.baseName &&
+    reference.expectedKinds?.includes("variable") === true &&
+    !implicitVariableExcludedNames.has(reference.normalizedName)
+  );
+}
+
+function resolveReferencesWithImplicitDeclarations(
+  state: SymbolIndexBuildState,
+  lookup: DeclarationLookup,
+  references: IndexedReferenceToken[],
+  implicitNames: Set<string>,
+): void {
+  for (const item of references) {
+    const { reference, token, tokenIndex } = item;
+    if (
+      reference.resolvedId ||
+      reference.role === "member" ||
+      !implicitNames.has(reference.normalizedName)
+    ) {
+      continue;
+    }
+    const resolved = resolveDeclaration(state, lookup, token, reference.role, reference.baseName);
+    if (!resolved || isFunctionReturnAssignmentReference(state, tokenIndex, resolved)) {
+      continue;
+    }
+    reference.resolvedId = resolved.id;
+    reference.bindingScope = bindingScopeForReference(resolved, undefined);
+    reference.expectedKinds = undefined;
+    reference.deferredKey = undefined;
+  }
+}
+
+function deferredExternalRefsForReferences(
+  state: SymbolIndexBuildState,
+  references: IndexedReferenceToken[],
+): VbDeferredExternalReference[] {
+  const deferred: VbDeferredExternalReference[] = [];
+  for (const { reference, token } of references) {
+    if (reference.resolvedId || !reference.expectedKinds) {
+      continue;
+    }
+    deferred.push(
+      deferredExternalRefFromReference(state, reference, token, reference.expectedKinds),
+    );
+  }
+  return deferred;
+}
+
+function deferredExternalRefFromReference(
+  state: SymbolIndexBuildState,
+  reference: VbIndexedReference,
+  token: VbToken,
+  expectedKinds: VbIndexedDeclarationKind[],
+): VbDeferredExternalReference {
+  return {
+    key: reference.deferredKey ?? referenceKey(state.uri, token),
+    name: reference.name,
+    normalizedName: reference.normalizedName,
+    range: reference.range,
+    scopeId: reference.scopeId,
+    expectedKinds,
+    role: reference.role,
+    bindingScope: reference.bindingScope,
+    receiverName: reference.baseName,
+    memberName: reference.memberName,
+    reason: reference.role === "member" ? "member-access" : "include-candidate",
+  };
 }
 
 function declarationLookup(declarations: VbIndexedDeclaration[]): DeclarationLookup {
@@ -751,23 +921,30 @@ function declarationLookup(declarations: VbIndexedDeclaration[]): DeclarationLoo
     byParentName: new Map(),
   };
   for (const declaration of declarations) {
-    lookup.byId.set(declaration.id, declaration);
-    if (declaration.scopeId) {
-      pushMapItem(
-        lookup.byScopeName,
-        declarationMapKey(declaration.scopeId, declaration.normalizedName),
-        declaration,
-      );
-    }
-    if (declaration.parentId) {
-      pushMapItem(
-        lookup.byParentName,
-        declarationMapKey(declaration.parentId, declaration.normalizedName),
-        declaration,
-      );
-    }
+    addDeclarationToLookup(lookup, declaration);
   }
   return lookup;
+}
+
+function addDeclarationToLookup(
+  lookup: DeclarationLookup,
+  declaration: VbIndexedDeclaration,
+): void {
+  lookup.byId.set(declaration.id, declaration);
+  if (declaration.scopeId) {
+    pushMapItem(
+      lookup.byScopeName,
+      declarationMapKey(declaration.scopeId, declaration.normalizedName),
+      declaration,
+    );
+  }
+  if (declaration.parentId) {
+    pushMapItem(
+      lookup.byParentName,
+      declarationMapKey(declaration.parentId, declaration.normalizedName),
+      declaration,
+    );
+  }
 }
 
 function pushMapItem<K, V>(map: Map<K, V[]>, key: K, value: V): void {
