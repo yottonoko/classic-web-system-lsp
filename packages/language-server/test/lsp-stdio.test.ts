@@ -5079,7 +5079,7 @@ End Sub
       }
     });
 
-    it("counts VBScript references from unopened workspace files by default", async () => {
+    it("counts only analyzed VBScript references by default", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-"));
       const common = path.join(tempDir, "common.inc");
       const page = path.join(tempDir, "default.asp");
@@ -5128,18 +5128,18 @@ Response.Write SharedTitle()
           "codeLens/resolve",
           referencesCodeLens,
         )) as Record<string, unknown>;
-        expect(JSON.stringify(resolvedCodeLens.command)).toContain("1 reference");
-        expect(JSON.stringify(resolvedCodeLens.command)).toContain(pageUri);
+        expect(JSON.stringify(resolvedCodeLens.command)).toContain("0 references");
+        expect(JSON.stringify(resolvedCodeLens.command)).not.toContain(pageUri);
 
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { codeLens: { referenceScope: "analyzed" } } },
+          settings: { aspLsp: { codeLens: { referenceScope: "workspace" } } },
         });
-        const analyzedResolvedCodeLens = (await server.request(
+        const workspaceResolvedCodeLens = (await server.request(
           "codeLens/resolve",
           referencesCodeLens,
         )) as Record<string, unknown>;
-        expect(JSON.stringify(analyzedResolvedCodeLens.command)).toContain("0 references");
-        expect(JSON.stringify(analyzedResolvedCodeLens.command)).not.toContain(pageUri);
+        expect(JSON.stringify(workspaceResolvedCodeLens.command)).toContain("1 reference");
+        expect(JSON.stringify(workspaceResolvedCodeLens.command)).toContain(pageUri);
 
         const references = await server.request("textDocument/references", {
           textDocument: { uri: commonUri },

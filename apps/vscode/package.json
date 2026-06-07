@@ -593,7 +593,7 @@
             "analyzed",
             "workspace"
           ],
-          "default": "workspace",
+          "default": "analyzed",
           "description": "%configuration.codeLens.referenceScope.description%"
         },
         "aspLsp.codeLens.includes": {

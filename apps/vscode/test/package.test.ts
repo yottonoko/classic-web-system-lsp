@@ -204,7 +204,7 @@ describe("VS Code extension package", () => {
       expect.objectContaining({
         type: "string",
         enum: ["analyzed", "workspace"],
-        default: "workspace",
+        default: "analyzed",
       }),
     );
     for (const key of [
