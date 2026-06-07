@@ -62,9 +62,12 @@ type Selection = { type: "node"; item: GraphNode } | { type: "link"; item: Graph
 
 type GraphStatsMetric = "files" | "declarations" | "links" | "missingIncludes";
 
+type GraphStatsTarget = { type: "node"; id: string } | { type: "link"; id: string };
+
 interface GraphStatsListItem {
   id: string;
   title: string;
+  target: GraphStatsTarget;
   detail?: string;
   status?: string;
   color?: string;
@@ -241,6 +244,11 @@ const maximumNodeScaleReferenceCount = 144;
 const graphFitDurationMs = 400;
 const graphFitPadding2d = 100;
 const graphFitPadding3d = 5;
+const graphFocusDurationMs = 900;
+const graph2dMinimumFocusZoom = 2.2;
+const graph2dLinkFocusPadding = 120;
+const graph3dMinimumFocusDistance = 70;
+const graph3dLinkDistanceScale = 1.35;
 const positionSyncPinMs = 600;
 const graph3dSyncSpan = 160;
 const inspectorDefaultWidth = 320;
@@ -396,6 +404,17 @@ function App(): React.ReactElement {
     },
     [fitGraphToCanvas],
   );
+  const selectAndFocusStatsTarget = useCallback(
+    (target: GraphStatsTarget) => {
+      const nextSelection = selectionForStatsTarget(target, filteredGraphData);
+      if (!nextSelection) {
+        return;
+      }
+      setSelection(nextSelection);
+      focusGraphTarget(target, mode, renderGraphData, graph2dRef.current, graph3dRef.current);
+    },
+    [filteredGraphData, mode, renderGraphData],
+  );
 
   useEffect(() => {
     const clearSelectionOnEscape = (event: KeyboardEvent) => {
@@ -528,7 +547,11 @@ function App(): React.ReactElement {
             Match case
           </label>
         </div>
-        <GraphStatsPopover graphData={filteredGraphData} stats={filteredStats} />
+        <GraphStatsPopover
+          graphData={filteredGraphData}
+          stats={filteredStats}
+          onSelectTarget={selectAndFocusStatsTarget}
+        />
         <div
           className="inline-grid grid-cols-2 overflow-hidden rounded-md border border-[#394456]"
           aria-label="Graph mode"
@@ -884,9 +907,11 @@ function Shell({ children }: { children: React.ReactNode }): React.ReactElement 
 
 function GraphStatsPopover({
   graphData,
+  onSelectTarget,
   stats,
 }: {
   graphData: GraphData;
+  onSelectTarget(target: GraphStatsTarget): void;
   stats: AspGraphPayload["stats"];
 }): React.ReactElement {
   const [isOpen, setOpen] = useState(false);
@@ -973,7 +998,13 @@ function GraphStatsPopover({
               onSelect={setActiveMetric}
             />
           </div>
-          <GraphStatsList items={statsItems} />
+          <GraphStatsList
+            items={statsItems}
+            onSelectItem={(target) => {
+              setOpen(false);
+              onSelectTarget(target);
+            }}
+          />
         </div>
       ) : null}
     </div>
@@ -1011,7 +1042,13 @@ function MetricButton({
   );
 }
 
-function GraphStatsList({ items }: { items: GraphStatsListItem[] }): React.ReactElement {
+function GraphStatsList({
+  items,
+  onSelectItem,
+}: {
+  items: GraphStatsListItem[];
+  onSelectItem(target: GraphStatsTarget): void;
+}): React.ReactElement {
   if (items.length === 0) {
     return (
       <p className="m-0 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-xs text-[#8d98a8]">
@@ -1022,9 +1059,11 @@ function GraphStatsList({ items }: { items: GraphStatsListItem[] }): React.React
   return (
     <div className="grid max-h-72 gap-1.5 overflow-auto pr-1">
       {items.map((item) => (
-        <article
+        <button
           key={item.id}
-          className="grid gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2"
+          type="button"
+          className="grid cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
+          onClick={() => onSelectItem(item.target)}
         >
           <div className="flex min-w-0 items-center gap-2">
             {item.color ? (
@@ -1048,7 +1087,7 @@ function GraphStatsList({ items }: { items: GraphStatsListItem[] }): React.React
               {item.detail}
             </div>
           ) : null}
-        </article>
+        </button>
       ))}
     </div>
   );
@@ -1062,6 +1101,7 @@ function statsItemsForMetric(metric: GraphStatsMetric, graphData: GraphData): Gr
         .map((node) => ({
           id: `file:${node.id}`,
           title: node.label,
+          target: { type: "node", id: node.id },
           detail: detailParts(nodeFileLabel(node), node.uri).join(" · "),
           status: fileStatsStatus(node),
           color: node.color,
@@ -1072,6 +1112,7 @@ function statsItemsForMetric(metric: GraphStatsMetric, graphData: GraphData): Gr
         .map((node) => ({
           id: `declaration:${node.id}`,
           title: node.label,
+          target: { type: "node", id: node.id },
           detail: detailParts(
             nodeTypeLabel(node),
             nodeFileLabel(node),
@@ -1092,6 +1133,7 @@ function linkStatsItems(graphData: GraphData): GraphStatsListItem[] {
   return graphData.links.map((link) => ({
     id: `link:${link.id}`,
     title: linkStatsTitle(link),
+    target: { type: "link", id: link.id },
     detail: detailParts(
       `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
       link.role,
@@ -1110,6 +1152,7 @@ function missingIncludeStatsItems(graphData: GraphData): GraphStatsListItem[] {
       return {
         id: `missing:${link.id}`,
         title: link.include?.path ?? link.label,
+        target: { type: "link", id: link.id },
         detail: detailParts(
           directive ? `Directive ${directiveSourceLabel(directive)}` : undefined,
           `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
@@ -2539,6 +2582,203 @@ function releasePositionSyncPins(nodes: GraphNode[], pinnedNodeIds: ReadonlySet<
   }
 }
 
+function selectionForStatsTarget(target: GraphStatsTarget, graphData: GraphData): Selection {
+  if (target.type === "node") {
+    const node = graphData.nodes.find((candidate) => candidate.id === target.id);
+    return node ? { type: "node", item: node } : undefined;
+  }
+  const link = graphData.links.find((candidate) => candidate.id === target.id);
+  return link ? { type: "link", item: link } : undefined;
+}
+
+function focusGraphTarget(
+  target: GraphStatsTarget,
+  mode: ViewMode,
+  graphData: GraphData,
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+): void {
+  if (mode === "3d") {
+    focusGraphTarget3d(target, graphData, graph3d);
+  } else {
+    focusGraphTarget2d(target, graphData, graph2d);
+  }
+}
+
+function focusGraphTarget2d(
+  target: GraphStatsTarget,
+  graphData: GraphData,
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+): void {
+  if (!graph2d) {
+    return;
+  }
+  if (target.type === "node") {
+    const node = graphData.nodes.find((candidate) => candidate.id === target.id);
+    const point = node ? graphNodePoint2d(node) : undefined;
+    if (!point) {
+      return;
+    }
+    try {
+      graph2d.centerAt(point.x, point.y, graphFocusDurationMs);
+      graph2d.zoom(
+        Math.max(finiteNumber(graph2d.zoom()) ?? 1, graph2dMinimumFocusZoom),
+        graphFocusDurationMs,
+      );
+    } catch {
+      return;
+    }
+    return;
+  }
+  const link = graphData.links.find((candidate) => candidate.id === target.id);
+  const endpoints = linkEndpointNodes(link, graphData.nodes);
+  const sourcePoint = endpoints ? graphNodePoint2d(endpoints.source) : undefined;
+  const targetPoint = endpoints ? graphNodePoint2d(endpoints.target) : undefined;
+  if (!endpoints || !sourcePoint || !targetPoint) {
+    return;
+  }
+  const focusPoint = midpoint2d(sourcePoint, targetPoint);
+  try {
+    graph2d.centerAt(focusPoint.x, focusPoint.y, graphFocusDurationMs);
+    graph2d.zoomToFit(
+      graphFocusDurationMs,
+      graph2dLinkFocusPadding,
+      (node) => node.id === endpoints.source.id || node.id === endpoints.target.id,
+    );
+  } catch {
+    return;
+  }
+}
+
+function focusGraphTarget3d(
+  target: GraphStatsTarget,
+  graphData: GraphData,
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+): void {
+  if (!graph3d) {
+    return;
+  }
+  if (target.type === "node") {
+    const node = graphData.nodes.find((candidate) => candidate.id === target.id);
+    const point = node ? graphNodePoint3d(node) : undefined;
+    if (!point) {
+      return;
+    }
+    focusGraph3dPoint(graph3d, graphData.nodes, point, graph3dMinimumFocusDistance);
+    return;
+  }
+  const link = graphData.links.find((candidate) => candidate.id === target.id);
+  const endpoints = linkEndpointNodes(link, graphData.nodes);
+  const sourcePoint = endpoints ? graphNodePoint3d(endpoints.source) : undefined;
+  const targetPoint = endpoints ? graphNodePoint3d(endpoints.target) : undefined;
+  if (!sourcePoint || !targetPoint) {
+    return;
+  }
+  const focusPoint = midpoint3d(sourcePoint, targetPoint);
+  focusGraph3dPoint(
+    graph3d,
+    graphData.nodes,
+    focusPoint,
+    Math.max(
+      graph3dMinimumFocusDistance,
+      distance3d(sourcePoint, targetPoint) * graph3dLinkDistanceScale,
+    ),
+  );
+}
+
+function focusGraph3dPoint(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink>,
+  nodes: GraphNode[],
+  focusPoint: { x: number; y: number; z: number },
+  distance: number,
+): void {
+  const direction = graph3dViewDirection(graph3d, nodes, focusPoint);
+  if (!direction) {
+    return;
+  }
+  const nextPosition = {
+    x: focusPoint.x + direction.x * distance,
+    y: focusPoint.y + direction.y * distance,
+    z: focusPoint.z + direction.z * distance,
+  };
+  try {
+    graph3d.cameraPosition(nextPosition, focusPoint, graphFocusDurationMs);
+  } catch {
+    return;
+  }
+}
+
+function graph3dViewDirection(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink>,
+  nodes: GraphNode[],
+  focusPoint: { x: number; y: number; z: number },
+): { x: number; y: number; z: number } | undefined {
+  const cameraPosition = graph3dCameraPosition(graph3d);
+  if (!cameraPosition) {
+    return undefined;
+  }
+  const currentTarget = graph3dControlsTarget(graph3d) ?? graphNodeCenter3d(nodes) ?? focusPoint;
+  return (
+    normalize3d({
+      x: cameraPosition.x - currentTarget.x,
+      y: cameraPosition.y - currentTarget.y,
+      z: cameraPosition.z - currentTarget.z,
+    }) ??
+    normalize3d({
+      x: cameraPosition.x - focusPoint.x,
+      y: cameraPosition.y - focusPoint.y,
+      z: cameraPosition.z - focusPoint.z,
+    }) ?? { x: 0, y: 0, z: 1 }
+  );
+}
+
+function linkEndpointNodes(
+  link: GraphLink | undefined,
+  nodes: GraphNode[],
+): { source: GraphNode; target: GraphNode } | undefined {
+  if (!link) {
+    return undefined;
+  }
+  const nodesById = graphNodeMap(nodes);
+  const source = nodesById.get(nodeIdForEndpoint(link.source));
+  const target = nodesById.get(nodeIdForEndpoint(link.target));
+  return source && target ? { source, target } : undefined;
+}
+
+function graphNodePoint2d(node: GraphNode): { x: number; y: number } | undefined {
+  const x = finiteNumber(node.x);
+  const y = finiteNumber(node.y);
+  return x !== undefined && y !== undefined ? { x, y } : undefined;
+}
+
+function graphNodePoint3d(node: GraphNode): { x: number; y: number; z: number } | undefined {
+  const x = finiteNumber(node.x);
+  const y = finiteNumber(node.y);
+  const z = finiteNumber(node.z) ?? 0;
+  return x !== undefined && y !== undefined ? { x, y, z } : undefined;
+}
+
+function midpoint2d(
+  source: { x: number; y: number },
+  target: { x: number; y: number },
+): { x: number; y: number } {
+  return {
+    x: (source.x + target.x) / 2,
+    y: (source.y + target.y) / 2,
+  };
+}
+
+function midpoint3d(
+  source: { x: number; y: number; z: number },
+  target: { x: number; y: number; z: number },
+): { x: number; y: number; z: number } {
+  return {
+    x: (source.x + target.x) / 2,
+    y: (source.y + target.y) / 2,
+    z: (source.z + target.z) / 2,
+  };
+}
+
 function graph3dScreenCoords(
   graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
   x: number,
@@ -2674,6 +2914,21 @@ function distance3d(
   to: { x: number; y: number; z: number },
 ): number {
   return Math.hypot(from.x - to.x, from.y - to.y, from.z - to.z);
+}
+
+function normalize3d(vector: {
+  x: number;
+  y: number;
+  z: number;
+}): { x: number; y: number; z: number } | undefined {
+  const length = Math.hypot(vector.x, vector.y, vector.z);
+  return length > 0
+    ? {
+        x: vector.x / length,
+        y: vector.y / length,
+        z: vector.z / length,
+      }
+    : undefined;
 }
 
 function finiteNumber(value: number | undefined): number | undefined {
