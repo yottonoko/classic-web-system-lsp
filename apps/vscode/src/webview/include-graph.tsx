@@ -396,6 +396,26 @@ function App(): React.ReactElement {
     },
     [captureCurrentRenderPositions],
   );
+  const selectAndFocusGraphTarget = useCallback(
+    (target: GraphStatsTarget) => {
+      const nextSelection = selectionForStatsTarget(target, filteredGraphData);
+      if (!nextSelection) {
+        return;
+      }
+      captureCurrentRenderPositions();
+      setSelection(nextSelection);
+      focusGraphTarget(target, mode, renderGraphData, graph2dRef.current, graph3dRef.current);
+    },
+    [captureCurrentRenderPositions, filteredGraphData, mode, renderGraphData],
+  );
+  const selectAndFocusGraphNode = useCallback(
+    (node: GraphNode) => selectAndFocusGraphTarget({ type: "node", id: node.id }),
+    [selectAndFocusGraphTarget],
+  );
+  const selectAndFocusGraphLink = useCallback(
+    (link: GraphLink) => selectAndFocusGraphTarget({ type: "link", id: link.id }),
+    [selectAndFocusGraphTarget],
+  );
   const switchGraphMode = useCallback(
     (nextMode: ViewMode) => {
       if (nextMode === mode) {
@@ -453,19 +473,6 @@ function App(): React.ReactElement {
     },
     [fitGraphToCanvas],
   );
-  const selectAndFocusStatsTarget = useCallback(
-    (target: GraphStatsTarget) => {
-      const nextSelection = selectionForStatsTarget(target, filteredGraphData);
-      if (!nextSelection) {
-        return;
-      }
-      captureCurrentRenderPositions();
-      setSelection(nextSelection);
-      focusGraphTarget(target, mode, renderGraphData, graph2dRef.current, graph3dRef.current);
-    },
-    [captureCurrentRenderPositions, filteredGraphData, mode, renderGraphData],
-  );
-
   useEffect(() => {
     const clearSelectionOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -600,7 +607,7 @@ function App(): React.ReactElement {
         <GraphStatsPopover
           graphData={filteredGraphData}
           stats={filteredStats}
-          onSelectTarget={selectAndFocusStatsTarget}
+          onSelectTarget={selectAndFocusGraphTarget}
         />
         <div
           className="inline-grid grid-cols-2 overflow-hidden rounded-md border border-[#394456]"
@@ -739,9 +746,11 @@ function App(): React.ReactElement {
         />
         <Inspector
           graphData={graphData}
+          visibleGraphData={filteredGraphData}
           selection={selection}
           onClose={() => setSelection(undefined)}
-          onSelectNode={selectGraphNode}
+          onSelectLink={selectAndFocusGraphLink}
+          onSelectNode={selectAndFocusGraphNode}
         />
       </main>
     </Shell>
@@ -1335,11 +1344,15 @@ function PaneResizeHandle({
 
 function Inspector({
   graphData,
+  visibleGraphData,
+  onSelectLink,
   onSelectNode,
   selection,
   onClose,
 }: {
   graphData: GraphData;
+  visibleGraphData: GraphData;
+  onSelectLink(link: GraphLink): void;
   onSelectNode(node: GraphNode): void;
   selection: Selection;
   onClose(): void;
@@ -1373,7 +1386,12 @@ function Inspector({
         </button>
       </div>
       {selection.type === "node" ? (
-        <NodeInspector graphData={graphData} node={selection.item} />
+        <NodeInspector
+          graphData={graphData}
+          node={selection.item}
+          visibleGraphData={visibleGraphData}
+          onSelectLink={onSelectLink}
+        />
       ) : (
         <LinkInspector graphData={graphData} link={selection.item} onSelectNode={onSelectNode} />
       )}
@@ -1398,14 +1416,19 @@ function inspectorTitleForSelection(selection: Selection, graphData: GraphData):
 function NodeInspector({
   graphData,
   node,
+  onSelectLink,
+  visibleGraphData,
 }: {
   graphData: GraphData;
   node: GraphNode;
+  onSelectLink(link: GraphLink): void;
+  visibleGraphData: GraphData;
 }): React.ReactElement {
   const location = node.uri ? { uri: node.uri, range: node.range } : undefined;
   return (
     <>
       <NodeDetails node={node} />
+      <NodeLinkSections graphData={visibleGraphData} node={node} onSelectLink={onSelectLink} />
       {node.kind === "file" ? (
         <FileNodeRelations graphData={graphData} node={node} />
       ) : (
@@ -1493,6 +1516,104 @@ interface IncludeRelation {
   directiveRange?: AspGraphRange;
   directiveLabel: string;
   exists?: boolean;
+}
+
+function NodeLinkSections({
+  graphData,
+  node,
+  onSelectLink,
+}: {
+  graphData: GraphData;
+  node: GraphNode;
+  onSelectLink(link: GraphLink): void;
+}): React.ReactElement {
+  const { incoming, outgoing } = useMemo(
+    () => nodeLinksFor(node, graphData.links),
+    [graphData.links, node],
+  );
+  const nodesById = useMemo(() => graphNodeMap(graphData.nodes), [graphData.nodes]);
+  return (
+    <div className="mb-3 grid gap-2">
+      <Accordion count={outgoing.length} defaultOpen={outgoing.length > 0} title="Outgoing links">
+        {outgoing.length > 0 ? (
+          <NodeLinkList
+            direction="outgoing"
+            links={outgoing}
+            nodesById={nodesById}
+            onSelectLink={onSelectLink}
+          />
+        ) : (
+          <EmptyInspectorText>No outgoing links found in the current graph.</EmptyInspectorText>
+        )}
+      </Accordion>
+      <Accordion count={incoming.length} defaultOpen={incoming.length > 0} title="Incoming links">
+        {incoming.length > 0 ? (
+          <NodeLinkList
+            direction="incoming"
+            links={incoming}
+            nodesById={nodesById}
+            onSelectLink={onSelectLink}
+          />
+        ) : (
+          <EmptyInspectorText>No incoming links found in the current graph.</EmptyInspectorText>
+        )}
+      </Accordion>
+    </div>
+  );
+}
+
+function NodeLinkList({
+  direction,
+  links,
+  nodesById,
+  onSelectLink,
+}: {
+  direction: "incoming" | "outgoing";
+  links: GraphLink[];
+  nodesById: ReadonlyMap<string, GraphNode>;
+  onSelectLink(link: GraphLink): void;
+}): React.ReactElement {
+  return (
+    <div className="grid gap-2">
+      {links.map((link) => (
+        <button
+          key={link.id}
+          type="button"
+          className="grid cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
+          onClick={() => onSelectLink(link)}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ backgroundColor: link.color }}
+              aria-hidden="true"
+            />
+            <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+              {linkInspectorTypeLabel(link)}
+            </span>
+            <span className="shrink-0 rounded border border-[#405068] bg-[#151a22] px-1.5 py-0.5 text-[10px] leading-none text-[#9aa7b8]">
+              {link.count}
+            </span>
+          </div>
+          <div
+            className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]"
+            title={`${endpointLabel(link.source, nodesById)} -> ${endpointLabel(
+              link.target,
+              nodesById,
+            )}`}
+          >
+            {direction === "outgoing" ? "to" : "from"}{" "}
+            {endpointLabel(direction === "outgoing" ? link.target : link.source, nodesById)}
+          </div>
+          {nodeLinkDetail(link) ? (
+            <div className="text-[11px] leading-[1.35] text-[#8d98a8] [overflow-wrap:anywhere]">
+              {nodeLinkDetail(link)}
+            </div>
+          ) : null}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function NodeSourceSections({
@@ -2555,6 +2676,38 @@ function sourceItemsForLink(link: GraphLink): GraphSourceItem[] {
       detail: linkOccurrenceDetail(link, location),
     }))
     .sort(compareSourceItems);
+}
+
+function nodeLinksFor(
+  node: GraphNode,
+  links: GraphLink[],
+): { incoming: GraphLink[]; outgoing: GraphLink[] } {
+  const incoming: GraphLink[] = [];
+  const outgoing: GraphLink[] = [];
+  for (const link of links) {
+    if (nodeIdForEndpoint(link.source) === node.id) {
+      outgoing.push(link);
+    }
+    if (nodeIdForEndpoint(link.target) === node.id) {
+      incoming.push(link);
+    }
+  }
+  return { incoming, outgoing };
+}
+
+function nodeLinkDetail(link: GraphLink): string | undefined {
+  if (link.kind === "include") {
+    return includeRelationDetail(link);
+  }
+  const typeLabel = linkInspectorTypeLabel(link);
+  const parts = detailParts(
+    link.role,
+    link.label !== typeLabel ? link.label : undefined,
+    link.ranges.length > 0
+      ? `${link.ranges.length} occurrence${link.ranges.length === 1 ? "" : "s"}`
+      : undefined,
+  );
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 function sourceKindForLink(link: GraphLink): AspGraphSourceRangeRequestItem["kind"] {
