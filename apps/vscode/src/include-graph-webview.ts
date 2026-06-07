@@ -53,6 +53,7 @@ export interface AspGraphNode {
   uri?: string;
   fileName?: string;
   range?: AspGraphRange;
+  sourceRange?: AspGraphRange;
   exists?: boolean;
   declarationKind?: string;
   role?: string;

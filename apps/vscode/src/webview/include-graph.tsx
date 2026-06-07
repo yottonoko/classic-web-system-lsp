@@ -966,11 +966,25 @@ function NodeSourceSections({
     [declarationItems, usageItems],
   );
   const sourceState = useSourceRanges(sourceItems);
+  const declarationItem = declarationItems[0];
   return (
     <div className="mb-3 grid gap-2">
-      <Accordion count={declarationItems.length} defaultOpen={true} title="Declaration">
-        {declarationItems.length > 0 ? (
-          <SourceRangeList items={declarationItems} sourceState={sourceState} />
+      <Accordion
+        defaultOpen={true}
+        headerAction={
+          declarationItem ? (
+            <OpenLocationButton
+              className="h-7 px-2"
+              label="Open"
+              range={declarationItem.highlightRange}
+              uri={declarationItem.uri}
+            />
+          ) : undefined
+        }
+        title="Declaration"
+      >
+        {declarationItem ? (
+          <DeclarationSource item={declarationItem} sourceState={sourceState} />
         ) : (
           <EmptyInspectorText>Declaration source is unavailable.</EmptyInspectorText>
         )}
@@ -1021,32 +1035,63 @@ function Accordion({
   children,
   count,
   defaultOpen,
+  headerAction,
   title,
 }: {
   children: React.ReactNode;
   count?: number;
   defaultOpen: boolean;
+  headerAction?: React.ReactNode;
   title: string;
 }): React.ReactElement {
   const [isOpen, setOpen] = useState(defaultOpen);
   return (
     <section className="overflow-hidden rounded-md border border-[#303a49] bg-[#151a22]">
-      <button
-        type="button"
-        className="flex min-h-9 w-full cursor-pointer items-center justify-between gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left"
-        aria-expanded={isOpen}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
-          {title}
-        </span>
-        <span className="inline-flex shrink-0 items-center gap-2 text-[11px] text-[#8d98a8]">
-          {count !== undefined ? <span>{count}</span> : null}
-          <span aria-hidden="true">{isOpen ? "-" : "+"}</span>
-        </span>
-      </button>
+      <div className="flex min-h-9 items-center gap-2">
+        <button
+          type="button"
+          className="flex min-h-9 min-w-0 flex-1 cursor-pointer items-center justify-between gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left"
+          aria-expanded={isOpen}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+            {title}
+          </span>
+          <span className="inline-flex shrink-0 items-center gap-2 text-[11px] text-[#8d98a8]">
+            {count !== undefined ? <span>{count}</span> : null}
+            <span aria-hidden="true">{isOpen ? "-" : "+"}</span>
+          </span>
+        </button>
+        {headerAction ? <div className="shrink-0 pr-2">{headerAction}</div> : null}
+      </div>
       {isOpen ? <div className="grid gap-2 border-t border-[#303a49] p-2.5">{children}</div> : null}
     </section>
+  );
+}
+
+function DeclarationSource({
+  item,
+  sourceState,
+}: {
+  item: GraphSourceItem;
+  sourceState: GraphSourceState;
+}): React.ReactElement {
+  const source = sourceState.byId.get(item.id);
+  const displayRange = source?.range ?? item.range;
+  const loading = sourceState.loading && !source;
+  return (
+    <div className="grid gap-2">
+      <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]">
+        {item.detail ?? `Line ${displayRange.start.line + 1}`}
+      </div>
+      {source?.error ? (
+        <p className="m-0 text-[11px] text-[#ff9cac]">{source.error}</p>
+      ) : (
+        <pre className="m-0 max-h-80 overflow-auto rounded border border-[#253041] bg-[#0d1117] p-2 font-mono text-[11px] leading-[1.45] whitespace-pre-wrap text-[#d7dde8] [tab-size:2]">
+          {source?.text ?? (loading ? "Loading source..." : "Source is unavailable.")}
+        </pre>
+      )}
+    </div>
   );
 }
 
@@ -1194,7 +1239,8 @@ function OpenLocationButton({
       type="button"
       className={`cursor-pointer rounded-md border border-[#405068] bg-[#c3e88d] text-xs text-[#11151c] disabled:cursor-not-allowed disabled:bg-[#202735] disabled:text-[#717b8c] ${className ?? ""}`}
       disabled={disabled || !uri}
-      onClick={() => {
+      onClick={(event) => {
+        event.stopPropagation();
         if (uri) {
           vscode.postMessage({ type: "openRange", uri, range });
         }
@@ -1327,7 +1373,7 @@ function sourceItemsForNode(
           {
             id: `declaration:${node.id}`,
             uri: node.uri,
-            range: node.range,
+            range: node.sourceRange ?? node.range,
             highlightRange: node.range,
             kind: "declaration" as const,
             title: "Declaration",

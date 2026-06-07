@@ -6392,6 +6392,19 @@ End Sub
           procedureKind: "function",
           origin: "source",
         });
+        expect(nodeByLabel(visibleGraph, "Render")?.range).toMatchObject({
+          start: { line: 19, character: "Function ".length },
+          end: { line: 19 },
+        });
+        expect(nodeByLabel(visibleGraph, "Render")?.sourceRange).toMatchObject({
+          start: { line: 19, character: 0 },
+          end: { line: 23 },
+        });
+        expect(nodeByLabel(visibleGraph, "Customer.Save")?.sourceRange).toMatchObject({
+          start: { line: 11 },
+          end: { line: 17 },
+        });
+        expect(nodeByLabel(visibleGraph, "GlobalValue")).not.toHaveProperty("sourceRange");
         expect(hasNode(visibleGraph, (node) => node.label === "Customer.Name")).toBe(true);
         expect(hasNode(visibleGraph, (node) => node.label === "Customer.Save")).toBe(true);
         expect(hasNode(visibleGraph, (node) => node.label === "Customer.Kind")).toBe(true);

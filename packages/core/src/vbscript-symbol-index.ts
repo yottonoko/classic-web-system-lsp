@@ -43,6 +43,7 @@ export interface VbIndexedDeclaration {
   kind: VbIndexedDeclarationKind;
   range: Range;
   nameRange: Range;
+  sourceRange?: Range;
   scopeId?: string;
   parentId?: string;
   memberOf?: string;
@@ -519,6 +520,7 @@ function collectDeclarations(state: SymbolIndexBuildState): void {
   const end = tokens.at(-1)?.end ?? state.text.length;
   for (const scope of state.stack) {
     scope.end = Math.max(scope.end, end);
+    updateProcedureDeclarationSourceRange(state, scope);
   }
 }
 
@@ -826,6 +828,21 @@ function closeScope(
   }
   const [scope] = state.stack.splice(index, 1);
   scope.end = endToken.end;
+  updateProcedureDeclarationSourceRange(state, scope);
+}
+
+function updateProcedureDeclarationSourceRange(
+  state: SymbolIndexBuildState,
+  scope: ScopeFrame,
+): void {
+  if (scope.kind !== "procedure" || !scope.declarationId) {
+    return;
+  }
+  const declaration = state.declarations.find((item) => item.id === scope.declarationId);
+  if (!declaration) {
+    return;
+  }
+  declaration.sourceRange = rangeAt(state, scope.start, scope.end);
 }
 
 function collectParameterTokens(tokens: VbToken[], index: number): VbToken[] {

@@ -1491,6 +1491,23 @@ End Function
     expect(declaration("SiteName", "constant")).toMatchObject({ bindingScope: "global" });
     expect(declaration("GlobalValue", "variable")).toMatchObject({ bindingScope: "global" });
     expect(declaration("name", "parameter")).toMatchObject({ bindingScope: "local" });
+    expect(declaration("Render", "method")?.sourceRange).toMatchObject({
+      start: { line: 7 },
+      end: { line: 10 },
+    });
+    expect(declaration("Title", "property")?.sourceRange).toMatchObject({
+      start: { line: 11 },
+      end: { line: 13 },
+    });
+    expect(declaration("Log", "sub")?.sourceRange).toMatchObject({
+      start: { line: 18 },
+      end: { line: 21 },
+    });
+    expect(declaration("MakeUser", "function")?.sourceRange).toMatchObject({
+      start: { line: 23 },
+      end: { line: 32 },
+    });
+    expect(declaration("SiteName", "constant")?.sourceRange).toBeUndefined();
     expect(
       index.declarations.filter(
         (item) => item.name === "localValue" && item.bindingScope === "local",
