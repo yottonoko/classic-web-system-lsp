@@ -289,13 +289,17 @@ function App(): React.ReactElement {
     () => filterGraphData(graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes),
     [graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes],
   );
+  const displayGraphData = useMemo(
+    () => graphDataForSelection(selection, filteredGraphData),
+    [filteredGraphData, selection],
+  );
   const renderGraphData2d = useMemo(
-    () => graphDataForRender(filteredGraphData, positionSyncRef.current, "2d"),
-    [filteredGraphData],
+    () => graphDataForRender(displayGraphData, positionSyncRef.current, "2d"),
+    [displayGraphData],
   );
   const renderGraphData3d = useMemo(
-    () => graphDataForRender(filteredGraphData, positionSyncRef.current, "3d"),
-    [filteredGraphData],
+    () => graphDataForRender(displayGraphData, positionSyncRef.current, "3d"),
+    [displayGraphData],
   );
   const renderGraphData = mode === "3d" ? renderGraphData3d : renderGraphData2d;
   const filteredStats = useMemo(() => graphStatsFor(filteredGraphData), [filteredGraphData]);
@@ -310,8 +314,8 @@ function App(): React.ReactElement {
     [searchQuery, searchMatchCase, filteredGraphData.nodes, filteredGraphData.links],
   );
   const selectionHighlight = useMemo(
-    () => highlightForSelection(selection, filteredGraphData.links, showOutgoingSelectionLinks),
-    [selection, filteredGraphData.links, showOutgoingSelectionLinks],
+    () => highlightForSelection(selection, displayGraphData.links, showOutgoingSelectionLinks),
+    [selection, displayGraphData.links, showOutgoingSelectionLinks],
   );
   const highlight = selectionHighlight ?? searchHighlight;
   const titleFileName = currentFileGraphName(graph);
@@ -323,7 +327,7 @@ function App(): React.ReactElement {
     "--inspector-width": `${clampedInspectorWidth}px`,
   } as React.CSSProperties;
   const canFitGraph =
-    filteredGraphData.nodes.length > 0 && surfaceSize.width > 0 && surfaceSize.height > 0;
+    displayGraphData.nodes.length > 0 && surfaceSize.width > 0 && surfaceSize.height > 0;
   const toggleNodeCategory = useCallback((category: NodeColorCategory) => {
     setHiddenNodeCategories((current) => toggledSet(current, category));
   }, []);
@@ -346,6 +350,29 @@ function App(): React.ReactElement {
       return true;
     },
     [canFitGraph],
+  );
+  const captureCurrentRenderPositions = useCallback(() => {
+    capturePositionSyncEntries(
+      mode,
+      renderGraphData.nodes,
+      graph2dRef.current,
+      graph3dRef.current,
+      positionSyncRef.current,
+    );
+  }, [mode, renderGraphData.nodes]);
+  const selectGraphNode = useCallback(
+    (node: GraphNode) => {
+      captureCurrentRenderPositions();
+      setSelection({ type: "node", item: node });
+    },
+    [captureCurrentRenderPositions],
+  );
+  const selectGraphLink = useCallback(
+    (link: GraphLink) => {
+      captureCurrentRenderPositions();
+      setSelection({ type: "link", item: link });
+    },
+    [captureCurrentRenderPositions],
   );
   const switchGraphMode = useCallback(
     (nextMode: ViewMode) => {
@@ -410,10 +437,17 @@ function App(): React.ReactElement {
       if (!nextSelection) {
         return;
       }
+      captureCurrentRenderPositions();
+      const nextDisplayGraphData = graphDataForSelection(nextSelection, filteredGraphData);
+      const nextRenderGraphData = graphDataForRender(
+        nextDisplayGraphData,
+        positionSyncRef.current,
+        mode,
+      );
       setSelection(nextSelection);
-      focusGraphTarget(target, mode, renderGraphData, graph2dRef.current, graph3dRef.current);
+      focusGraphTarget(target, mode, nextRenderGraphData, graph2dRef.current, graph3dRef.current);
     },
-    [filteredGraphData, mode, renderGraphData],
+    [captureCurrentRenderPositions, filteredGraphData, mode],
   );
 
   useEffect(() => {
@@ -639,8 +673,8 @@ function App(): React.ReactElement {
               linkDirectionalArrowColor={(link) => linkColor(link as GraphLink, highlight)}
               linkDirectionalParticles={(link) => linkParticleCount(link as GraphLink, highlight)}
               linkDirectionalParticleWidth={(link) => linkParticleWidth3d(link as GraphLink)}
-              onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
-              onLinkClick={(link) => setSelection({ type: "link", item: link as GraphLink })}
+              onNodeClick={(node) => selectGraphNode(node as GraphNode)}
+              onLinkClick={(link) => selectGraphLink(link as GraphLink)}
               onBackgroundClick={() => setSelection(undefined)}
               cooldownTicks={100}
               onEngineStop={() => handleEngineStop("3d")}
@@ -673,8 +707,8 @@ function App(): React.ReactElement {
               nodePointerAreaPaint={(node, color, canvas) =>
                 paintNodePointerArea(node as GraphNode, color, canvas)
               }
-              onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
-              onLinkClick={(link) => setSelection({ type: "link", item: link as GraphLink })}
+              onNodeClick={(node) => selectGraphNode(node as GraphNode)}
+              onLinkClick={(link) => selectGraphLink(link as GraphLink)}
               onBackgroundClick={() => setSelection(undefined)}
               cooldownTicks={100}
               onEngineStop={() => handleEngineStop("2d")}
@@ -1309,7 +1343,7 @@ function Inspector({
     <aside className={className}>
       <div className="mb-3 flex min-w-0 items-start gap-2">
         <h2 className="m-0 min-w-0 flex-1 text-sm leading-[1.35] font-semibold [overflow-wrap:anywhere]">
-          {selection.type === "node" ? selection.item.label : selection.item.label}
+          {inspectorTitleForSelection(selection, graphData)}
         </h2>
         <button
           type="button"
@@ -1323,10 +1357,24 @@ function Inspector({
       {selection.type === "node" ? (
         <NodeInspector graphData={graphData} node={selection.item} />
       ) : (
-        <LinkInspector link={selection.item} />
+        <LinkInspector graphData={graphData} link={selection.item} />
       )}
     </aside>
   );
+}
+
+function inspectorTitleForSelection(selection: Selection, graphData: GraphData): string {
+  if (!selection) {
+    return "Inspector";
+  }
+  if (selection.type === "node") {
+    return selection.item.label;
+  }
+  const nodesById = graphNodeMap(graphData.nodes);
+  return `${linkInspectorTypeLabel(selection.item)}: ${endpointLabel(
+    selection.item.source,
+    nodesById,
+  )} -> ${endpointLabel(selection.item.target, nodesById)}`;
 }
 
 function NodeInspector({
@@ -1358,18 +1406,43 @@ function NodeInspector({
   );
 }
 
-function LinkInspector({ link }: { link: GraphLink }): React.ReactElement {
+function LinkInspector({
+  graphData,
+  link,
+}: {
+  graphData: GraphData;
+  link: GraphLink;
+}): React.ReactElement {
+  const nodesById = useMemo(() => graphNodeMap(graphData.nodes), [graphData.nodes]);
+  const sourceItems = useMemo(() => sourceItemsForLink(link), [link]);
+  const sourceState = useSourceRanges(sourceItems);
   const location = link.ranges[0];
   return (
     <>
-      <LinkDetails link={link} />
-      <OpenLocationButton
-        className="h-[30px] w-full"
-        disabled={!location?.uri}
-        label="Open Source"
-        range={location?.range}
-        uri={location?.uri}
-      />
+      <LinkDetails link={link} nodesById={nodesById} />
+      <div className="mb-3 grid gap-2">
+        <Accordion
+          count={link.count}
+          defaultOpen={true}
+          headerAction={
+            location ? (
+              <OpenLocationButton
+                className="h-7 px-2"
+                label="Open first"
+                range={location.range}
+                uri={location.uri}
+              />
+            ) : undefined
+          }
+          title="Occurrences"
+        >
+          {sourceItems.length > 0 ? (
+            <SourceFileGroups items={sourceItems} sourceState={sourceState} />
+          ) : (
+            <EmptyInspectorText>No source ranges found for this link.</EmptyInspectorText>
+          )}
+        </Accordion>
+      </div>
     </>
   );
 }
@@ -1892,17 +1965,54 @@ function titleCaseWords(value: string): string {
     .join(" ");
 }
 
-function LinkDetails({ link }: { link: GraphLink }): React.ReactElement {
+function LinkDetails({
+  link,
+  nodesById,
+}: {
+  link: GraphLink;
+  nodesById: ReadonlyMap<string, GraphNode>;
+}): React.ReactElement {
+  const typeLabel = linkInspectorTypeLabel(link);
+  const sourceLabel = endpointLabel(link.source, nodesById);
+  const targetLabel = endpointLabel(link.target, nodesById);
   return (
-    <dl className="mb-3.5 grid grid-cols-[86px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
-      <Detail label="Kind" value={link.kind} />
-      <Detail label="Role" value={link.role} />
-      <Detail label="Count" value={String(link.count)} />
-      <Detail label="Include" value={link.include?.path} />
-      <Detail label="Mode" value={link.include?.mode} />
-      <Detail label="Exists" value={link.include ? String(link.include.exists) : undefined} />
-      <Detail label="Actual path" value={link.include?.actualPath} />
-    </dl>
+    <div className="mb-3.5 grid gap-3">
+      <section className="rounded-md border border-[#303a49] bg-[#11151c] p-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span
+            className="h-3 w-3 shrink-0 rounded-full"
+            style={{ backgroundColor: link.color }}
+            aria-hidden="true"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+              {typeLabel}
+            </div>
+            <div
+              className="text-[11px] leading-[1.35] text-[#8d98a8] [overflow-wrap:anywhere]"
+              title={`${sourceLabel} -> ${targetLabel}`}
+            >
+              {sourceLabel} -&gt; {targetLabel}
+            </div>
+          </div>
+          <div className="grid min-w-[58px] shrink-0 justify-items-end rounded border border-[#405068] bg-[#151a22] px-2 py-1">
+            <span className="text-sm leading-none font-semibold text-[#f4f7fb]">{link.count}</span>
+            <span className="text-[10px] leading-[1.2] text-[#9aa7b8]">count</span>
+          </div>
+        </div>
+      </section>
+      <dl className="grid grid-cols-[86px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
+        <Detail label="Type" value={typeLabel} />
+        <Detail label="Source" value={sourceLabel} />
+        <Detail label="Target" value={targetLabel} />
+        <Detail label="Role" value={link.role} />
+        <Detail label="Label" value={link.label !== typeLabel ? link.label : undefined} />
+        <Detail label="Include" value={link.include?.path} />
+        <Detail label="Mode" value={link.include?.mode} />
+        <Detail label="Exists" value={link.include ? String(link.include.exists) : undefined} />
+        <Detail label="Actual path" value={link.include?.actualPath} />
+      </dl>
+    </div>
   );
 }
 
@@ -2026,9 +2136,64 @@ function sourceItemsForNode(
   return { declarationItems, usageItems };
 }
 
+function sourceItemsForLink(link: GraphLink): GraphSourceItem[] {
+  return link.ranges
+    .map((location, index) => ({
+      id: `link:${link.id}:${index}:${location.uri}:${location.range.start.line}:${location.range.start.character}`,
+      uri: location.uri,
+      range: location.range,
+      highlightRange: location.range,
+      kind: sourceKindForLink(link),
+      title: linkOccurrenceTitle(link),
+      detail: linkOccurrenceDetail(link, location),
+    }))
+    .sort(compareSourceItems);
+}
+
+function sourceKindForLink(link: GraphLink): AspGraphSourceRangeRequestItem["kind"] {
+  switch (link.kind) {
+    case "include":
+      return "include";
+    case "declares":
+      return "declaration";
+    case "calls":
+      return "call";
+    case "references":
+    case "unresolvedReference":
+      return "reference";
+  }
+}
+
+function linkOccurrenceTitle(link: GraphLink): string {
+  if (link.kind === "include") {
+    return "Include directive";
+  }
+  if (link.kind === "declares") {
+    return "Declaration";
+  }
+  return sourceUsageTitle(link);
+}
+
+function linkOccurrenceDetail(
+  link: GraphLink,
+  location: { uri: string; range: AspGraphRange },
+): string | undefined {
+  const detail = detailParts(
+    rangeLineLabel(location.range),
+    link.kind === "include" ? link.include?.path : undefined,
+    link.role,
+  );
+  return detail.length > 0 ? detail.join(" · ") : undefined;
+}
+
 function sourceUsageTitle(link: GraphLink): string {
   const label = link.kind === "unresolvedReference" ? "Unresolved" : linkMeanings[link.kind].label;
   return link.role ? `${label}: ${link.role}` : label;
+}
+
+function linkInspectorTypeLabel(link: GraphLink): string {
+  const label = linkMeanings[link.kind].label;
+  return graphLinkFilterCategory(link) === "member" ? `Member ${label.toLowerCase()}` : label;
 }
 
 function compareSourceItems(left: GraphSourceItem, right: GraphSourceItem): number {
@@ -2188,6 +2353,24 @@ function graphDataForRender(
       target: nodeIdForEndpoint(link.target),
     })),
   };
+}
+
+function graphDataForSelection(selection: Selection, graphData: GraphData): GraphData {
+  if (selection?.type !== "link") {
+    return graphData;
+  }
+  const selectedLink = graphData.links.find((link) => link.id === selection.item.id);
+  if (!selectedLink) {
+    return graphData;
+  }
+  const visibleNodeIds = new Set([
+    nodeIdForEndpoint(selectedLink.source),
+    nodeIdForEndpoint(selectedLink.target),
+  ]);
+  const visibleNodes = graphData.nodes.filter((node) => visibleNodeIds.has(node.id));
+  return visibleNodes.length === visibleNodeIds.size
+    ? { nodes: visibleNodes, links: [selectedLink] }
+    : graphData;
 }
 
 function positionSyncTransformFor3d(
@@ -2985,8 +3168,18 @@ function highlightForSelection(
   links: GraphLink[],
   showOutgoingLinks: boolean,
 ): HighlightState | undefined {
-  if (selection?.type !== "node") {
+  if (!selection) {
     return undefined;
+  }
+  if (selection.type === "link") {
+    const selectedLink = links.find((link) => link.id === selection.item.id) ?? selection.item;
+    return {
+      activeNodeIds: new Set([
+        nodeIdForEndpoint(selectedLink.source),
+        nodeIdForEndpoint(selectedLink.target),
+      ]),
+      activeLinkIds: new Set([selectedLink.id]),
+    };
   }
   const selectedNodeId = selection.item.id;
   const activeNodeIds = new Set<string>([selectedNodeId]);
