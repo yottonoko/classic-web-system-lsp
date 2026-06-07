@@ -2474,6 +2474,7 @@ connection.onCodeAction(async (params): Promise<CodeAction[]> => {
   ).flat();
   return [
     ...quickFixes,
+    ...htmlInlineStyleCodeActions(cached, params.range, params.context),
     ...(await vbscriptCodeActionsAsync(cached, params.range, params.context)),
     ...cssCodeActions(cached, params.range, params.context),
     ...(await jsCodeActionsAsync(cached, params.range, params.context)),
@@ -9954,6 +9955,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     vbscript: normalizeVbscriptSettings(settings),
     inlayHints: normalizeInlayHintSettings(settings),
     codeLens: normalizeCodeLensSettings(settings),
+    styleExtraction: normalizeStyleExtractionSettings(settings),
     graph: normalizeGraphSettings(settings),
     cache: normalizeCacheSettings(settings),
     workspace: normalizeWorkspaceSettings(settings),
@@ -10097,6 +10099,17 @@ function normalizeCodeLensSettings(
     referenceGlobals: record.referenceGlobals !== false,
     referenceClasses: record.referenceClasses !== false,
     referenceClassMembers: record.referenceClassMembers !== false,
+  };
+}
+
+function normalizeStyleExtractionSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["styleExtraction"] {
+  const raw = settings.styleExtraction;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    insertionMode:
+      record.insertionMode === "reuseExistingStyleTag" ? "reuseExistingStyleTag" : "nearby",
   };
 }
 
@@ -12506,6 +12519,643 @@ function parameterRemovalStartOffset(
     keywordPrefix[0].length -
     keywordPrefix[1].length
   );
+}
+
+const htmlExtractInlineStyleKind = `${CodeActionKind.Refactor}.extract`;
+
+interface HtmlAttributeSpan {
+  name: string;
+  value: string | true;
+  start: number;
+  end: number;
+  nameStart: number;
+  nameEnd: number;
+  valueStart: number;
+  valueEnd: number;
+  quote?: '"' | "'";
+}
+
+interface HtmlStartTagSpan {
+  name: string;
+  start: number;
+  end: number;
+  nameEnd: number;
+  attributesEnd: number;
+  attributes: HtmlAttributeSpan[];
+  closing: boolean;
+}
+
+interface InlineStyleExtractionTarget {
+  tag: HtmlStartTagSpan;
+  styleAttribute: HtmlAttributeSpan;
+  styleText: string;
+}
+
+type InlineStyleExtractionMode = "class" | "id";
+
+function htmlInlineStyleCodeActions(
+  cached: CachedDocument,
+  range: Range,
+  context: CodeActionContext,
+): CodeAction[] {
+  if (!codeActionAllows(context, htmlExtractInlineStyleKind)) {
+    return [];
+  }
+  const target = findInlineStyleExtractionTarget(cached, range);
+  if (!target) {
+    return [];
+  }
+  return [
+    inlineStyleExtractionAction(cached, target, "class"),
+    inlineStyleExtractionAction(cached, target, "id"),
+  ].filter((action): action is CodeAction => Boolean(action));
+}
+
+function inlineStyleExtractionAction(
+  cached: CachedDocument,
+  target: InlineStyleExtractionTarget,
+  mode: InlineStyleExtractionMode,
+): CodeAction | undefined {
+  const edit = inlineStyleExtractionEdit(cached, target, mode);
+  if (!edit) {
+    return undefined;
+  }
+  return {
+    title: localizerForUri(cached.source.uri).t(
+      mode === "class"
+        ? "server.refactor.extractInlineStyleToClass"
+        : "server.refactor.extractInlineStyleToId",
+    ),
+    kind: htmlExtractInlineStyleKind,
+    edit,
+  };
+}
+
+function findInlineStyleExtractionTarget(
+  cached: CachedDocument,
+  range: Range,
+): InlineStyleExtractionTarget | undefined {
+  const text = cached.source.getText();
+  const rangeStart = cached.source.offsetAt(range.start);
+  const rangeEnd = cached.source.offsetAt(range.end);
+  for (const region of cached.parsed.regions) {
+    if (region.kind !== "style-attribute") {
+      continue;
+    }
+    const tagStart = htmlStartTagOffsetForAttribute(text, region.contentStart);
+    const tag = tagStart === undefined ? undefined : readHtmlStartTagAt(text, tagStart);
+    if (!tag || tag.closing || !rangeTouchesHtmlStartTag(rangeStart, rangeEnd, tag)) {
+      continue;
+    }
+    const styleAttribute = tag.attributes.find(
+      (attribute) =>
+        attribute.name.toLowerCase() === "style" &&
+        attribute.value !== true &&
+        attribute.valueStart === region.contentStart &&
+        attribute.valueEnd === region.contentEnd,
+    );
+    if (!styleAttribute || styleAttribute.value === true) {
+      continue;
+    }
+    const styleText = text.slice(styleAttribute.valueStart, styleAttribute.valueEnd).trim();
+    if (!styleText || styleText.includes("<%") || styleText.includes("%>")) {
+      continue;
+    }
+    return { tag, styleAttribute, styleText };
+  }
+  return undefined;
+}
+
+function rangeTouchesHtmlStartTag(
+  rangeStart: number,
+  rangeEnd: number,
+  tag: HtmlStartTagSpan,
+): boolean {
+  return rangeStart === rangeEnd
+    ? rangeStart >= tag.start && rangeStart < tag.end
+    : rangeStart < tag.end && rangeEnd > tag.start;
+}
+
+function inlineStyleExtractionEdit(
+  cached: CachedDocument,
+  target: InlineStyleExtractionTarget,
+  mode: InlineStyleExtractionMode,
+): WorkspaceEdit | undefined {
+  const text = cached.source.getText();
+  const tag = target.tag;
+  const classAttribute = htmlAttributeByName(tag, "class");
+  const idAttribute = htmlAttributeByName(tag, "id");
+  const selectorName =
+    mode === "class"
+      ? nextAvailableHtmlName(text, "class")
+      : idAttribute && idAttribute.value !== true && idAttribute.value.trim()
+        ? idAttribute.value.trim()
+        : nextAvailableHtmlName(text, "id");
+  if (!selectorName) {
+    return undefined;
+  }
+  if (
+    (mode === "class" && classAttribute?.value === true) ||
+    (mode === "id" && idAttribute?.value === true)
+  ) {
+    return undefined;
+  }
+  const selector = mode === "class" ? `.${selectorName}` : `#${cssEscapeIdentifier(selectorName)}`;
+  const edits: TextEdit[] = [
+    styleRuleInsertionEdit(cached, target, selector),
+    removeStyleAttributeEdit(cached, target),
+  ];
+  const nameEdit =
+    mode === "class"
+      ? classAttribute
+        ? appendAttributeTokenEdit(cached, classAttribute, selectorName)
+        : insertAttributeEdit(cached, tag, "class", selectorName)
+      : idAttribute
+        ? undefined
+        : insertAttributeEdit(cached, tag, "id", selectorName);
+  if (nameEdit) {
+    edits.push(nameEdit);
+  }
+  return { changes: { [cached.source.uri]: edits } };
+}
+
+function styleRuleInsertionEdit(
+  cached: CachedDocument,
+  target: InlineStyleExtractionTarget,
+  selector: string,
+): TextEdit {
+  const text = cached.source.getText();
+  const existingStyle =
+    cachedSettings(cached.source.uri).styleExtraction?.insertionMode === "reuseExistingStyleTag"
+      ? nearestStyleElement(cached.parsed.regions, target.tag.start)
+      : undefined;
+  if (existingStyle) {
+    const newline = documentNewline(text);
+    return {
+      range: {
+        start: cached.source.positionAt(existingStyle.contentEnd),
+        end: cached.source.positionAt(existingStyle.contentEnd),
+      },
+      newText: styleRuleAppendText(text, existingStyle, selector, target.styleText, newline),
+    };
+  }
+  const insertOffset = lineStartOffset(text, target.tag.start);
+  return {
+    range: {
+      start: cached.source.positionAt(insertOffset),
+      end: cached.source.positionAt(insertOffset),
+    },
+    newText: standaloneStyleElementText(text, target.tag.start, selector, target.styleText),
+  };
+}
+
+function nearestStyleElement(
+  regions: readonly AspRegion[],
+  targetOffset: number,
+): AspRegion | undefined {
+  return regions
+    .filter((region) => region.kind === "style")
+    .sort((left, right) => {
+      const leftDistance = styleElementDistance(left, targetOffset);
+      const rightDistance = styleElementDistance(right, targetOffset);
+      return (
+        leftDistance - rightDistance ||
+        Number(right.start < targetOffset) - Number(left.start < targetOffset) ||
+        left.start - right.start
+      );
+    })[0];
+}
+
+function styleElementDistance(region: AspRegion, targetOffset: number): number {
+  if (targetOffset < region.start) {
+    return region.start - targetOffset;
+  }
+  if (targetOffset > region.end) {
+    return targetOffset - region.end;
+  }
+  return 0;
+}
+
+function styleRuleAppendText(
+  text: string,
+  styleRegion: AspRegion,
+  selector: string,
+  styleText: string,
+  newline: string,
+): string {
+  const rule = styleRuleText(selector, styleText, "  ", "    ", newline);
+  const existingContent = text.slice(styleRegion.contentStart, styleRegion.contentEnd);
+  const prefix =
+    existingContent.trim().length > 0 && !existingContent.endsWith("\n") ? newline : "";
+  return `${prefix}${rule}`;
+}
+
+function standaloneStyleElementText(
+  text: string,
+  tagStart: number,
+  selector: string,
+  styleText: string,
+): string {
+  const newline = documentNewline(text);
+  const indent = text.slice(lineStartOffset(text, tagStart), tagStart).match(/^[\t ]*/)?.[0] ?? "";
+  const rule = styleRuleText(selector, styleText, `${indent}  `, `${indent}    `, newline);
+  return `${indent}<style>${newline}${rule}${indent}</style>${newline}`;
+}
+
+function styleRuleText(
+  selector: string,
+  styleText: string,
+  outerIndent: string,
+  innerIndent: string,
+  newline: string,
+): string {
+  return [
+    `${outerIndent}${selector} {`,
+    `${innerIndent}${inlineStyleDeclarationText(styleText)}`,
+    `${outerIndent}}`,
+    "",
+  ].join(newline);
+}
+
+function inlineStyleDeclarationText(styleText: string): string {
+  const trimmed = styleText.trim();
+  return /;\s*$/.test(trimmed) ? trimmed : `${trimmed};`;
+}
+
+function removeStyleAttributeEdit(
+  cached: CachedDocument,
+  target: InlineStyleExtractionTarget,
+): TextEdit {
+  const text = cached.source.getText();
+  const range = htmlAttributeRemovalOffsets(text, target.tag, target.styleAttribute);
+  return {
+    range: {
+      start: cached.source.positionAt(range.start),
+      end: cached.source.positionAt(range.end),
+    },
+    newText: "",
+  };
+}
+
+function appendAttributeTokenEdit(
+  cached: CachedDocument,
+  attribute: HtmlAttributeSpan,
+  token: string,
+): TextEdit | undefined {
+  if (attribute.value === true) {
+    return undefined;
+  }
+  const value = attribute.value;
+  const newValue = value.trim().length > 0 ? `${value} ${token}` : token;
+  const newText = attribute.quote ? newValue : `"${newValue}"`;
+  return {
+    range: {
+      start: cached.source.positionAt(attribute.valueStart),
+      end: cached.source.positionAt(attribute.valueEnd),
+    },
+    newText,
+  };
+}
+
+function insertAttributeEdit(
+  cached: CachedDocument,
+  tag: HtmlStartTagSpan,
+  name: "class" | "id",
+  value: string,
+): TextEdit {
+  const text = cached.source.getText();
+  const offset = htmlAttributeInsertionOffset(text, tag);
+  return {
+    range: {
+      start: cached.source.positionAt(offset),
+      end: cached.source.positionAt(offset),
+    },
+    newText: ` ${name}="${value}"`,
+  };
+}
+
+function htmlAttributeRemovalOffsets(
+  text: string,
+  tag: HtmlStartTagSpan,
+  attribute: HtmlAttributeSpan,
+): { start: number; end: number } {
+  let start = attribute.start;
+  while (start > tag.nameEnd && isHtmlWhitespaceCode(text.charCodeAt(start - 1))) {
+    start -= 1;
+  }
+  let end = attribute.end;
+  if (start === attribute.start) {
+    while (end < tag.attributesEnd && isHtmlWhitespaceCode(text.charCodeAt(end))) {
+      end += 1;
+    }
+  }
+  return { start, end };
+}
+
+function htmlAttributeInsertionOffset(text: string, tag: HtmlStartTagSpan): number {
+  let offset = tag.end - 1;
+  while (offset > tag.nameEnd && isHtmlWhitespaceCode(text.charCodeAt(offset - 1))) {
+    offset -= 1;
+  }
+  if (text[offset - 1] === "/") {
+    offset -= 1;
+  }
+  return offset;
+}
+
+function nextAvailableHtmlName(text: string, attributeName: "class" | "id"): string {
+  const used = usedHtmlAttributeNames(text, attributeName);
+  for (let index = 1; index < 1000; index += 1) {
+    const name = `style-${index}`;
+    if (!used.has(name.toLowerCase())) {
+      return name;
+    }
+  }
+  return "style-1";
+}
+
+function usedHtmlAttributeNames(text: string, attributeName: "class" | "id"): Set<string> {
+  const used = new Set<string>();
+  for (const tag of htmlStartTags(text)) {
+    const attribute = htmlAttributeByName(tag, attributeName);
+    if (!attribute || attribute.value === true) {
+      continue;
+    }
+    const values =
+      attributeName === "class" ? attribute.value.split(/\s+/).filter(Boolean) : [attribute.value];
+    for (const value of values) {
+      used.add(value.toLowerCase());
+    }
+  }
+  return used;
+}
+
+function htmlAttributeByName(
+  tag: HtmlStartTagSpan,
+  name: "class" | "id" | "style",
+): HtmlAttributeSpan | undefined {
+  return tag.attributes.find((attribute) => attribute.name.toLowerCase() === name);
+}
+
+function* htmlStartTags(text: string): Iterable<HtmlStartTagSpan> {
+  let offset = 0;
+  while (offset < text.length) {
+    const start = text.indexOf("<", offset);
+    if (start === -1) {
+      return;
+    }
+    const tag = readHtmlStartTagAt(text, start);
+    if (tag && !tag.closing) {
+      yield tag;
+      offset = tag.end;
+    } else {
+      offset = start + 1;
+    }
+  }
+}
+
+function htmlStartTagOffsetForAttribute(text: string, attributeOffset: number): number | undefined {
+  const start = text.lastIndexOf("<", attributeOffset);
+  const end = text.lastIndexOf(">", attributeOffset);
+  return start > end ? start : undefined;
+}
+
+function readHtmlStartTagAt(text: string, start: number): HtmlStartTagSpan | undefined {
+  if (text[start] !== "<" || text.startsWith("<!--", start) || text[start + 1] === "%") {
+    return undefined;
+  }
+  let cursor = start + 1;
+  const closing = text[cursor] === "/";
+  if (closing) {
+    cursor += 1;
+  }
+  while (cursor < text.length && isHtmlWhitespaceCode(text.charCodeAt(cursor))) {
+    cursor += 1;
+  }
+  const nameStart = cursor;
+  if (!isAsciiAlphaCode(text.charCodeAt(cursor))) {
+    return undefined;
+  }
+  cursor += 1;
+  while (cursor < text.length && isHtmlTagNamePartCode(text.charCodeAt(cursor))) {
+    cursor += 1;
+  }
+  const name = text.slice(nameStart, cursor).toLowerCase();
+  const tagEnd = findHtmlTagEnd(text, cursor);
+  if (tagEnd === -1) {
+    return undefined;
+  }
+  return {
+    name,
+    start,
+    end: tagEnd + 1,
+    nameEnd: cursor,
+    attributesEnd: tagEnd,
+    attributes: parseHtmlAttributeSpans(text, cursor, tagEnd),
+    closing,
+  };
+}
+
+function findHtmlTagEnd(text: string, offset: number): number {
+  let quote: string | undefined;
+  for (let index = offset; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (text.startsWith("<%", index)) {
+      const close = text.indexOf("%>", index + 2);
+      if (close === -1) {
+        return -1;
+      }
+      index = close + 1;
+      continue;
+    }
+    if (char === ">") {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function parseHtmlAttributeSpans(text: string, start: number, end: number): HtmlAttributeSpan[] {
+  const attributes: HtmlAttributeSpan[] = [];
+  let cursor = start;
+  while (cursor < end) {
+    while (cursor < end) {
+      const code = text.charCodeAt(cursor);
+      if (code !== 47 && !isHtmlWhitespaceCode(code)) {
+        break;
+      }
+      cursor += 1;
+    }
+    if (text.startsWith("<%", cursor)) {
+      const close = text.indexOf("%>", cursor + 2);
+      cursor = close === -1 ? end : close + 2;
+      continue;
+    }
+    const nameStart = cursor;
+    if (!isAttributeNameStartCode(text.charCodeAt(cursor))) {
+      cursor += 1;
+      continue;
+    }
+    cursor += 1;
+    while (cursor < end && isAttributeNamePartCode(text.charCodeAt(cursor))) {
+      cursor += 1;
+    }
+    const nameEnd = cursor;
+    const name = text.slice(nameStart, nameEnd);
+    while (cursor < end && isHtmlWhitespaceCode(text.charCodeAt(cursor))) {
+      cursor += 1;
+    }
+    if (text[cursor] !== "=") {
+      attributes.push({
+        name,
+        value: true,
+        start: nameStart,
+        end: cursor,
+        nameStart,
+        nameEnd,
+        valueStart: cursor,
+        valueEnd: cursor,
+      });
+      continue;
+    }
+    cursor += 1;
+    while (cursor < end && isHtmlWhitespaceCode(text.charCodeAt(cursor))) {
+      cursor += 1;
+    }
+    const quote: '"' | "'" | undefined =
+      text[cursor] === '"' || text[cursor] === "'" ? (text[cursor] as '"' | "'") : undefined;
+    const valueStart = quote ? cursor + 1 : cursor;
+    if (quote) {
+      cursor += 1;
+      while (cursor < end && text[cursor] !== quote) {
+        cursor += 1;
+      }
+      const valueEnd = cursor;
+      if (cursor < end) {
+        cursor += 1;
+      }
+      attributes.push({
+        name,
+        value: text.slice(valueStart, valueEnd),
+        start: nameStart,
+        end: cursor,
+        nameStart,
+        nameEnd,
+        valueStart,
+        valueEnd,
+        quote,
+      });
+      continue;
+    }
+    while (cursor < end) {
+      const code = text.charCodeAt(cursor);
+      if (code === 62 || isHtmlWhitespaceCode(code)) {
+        break;
+      }
+      cursor += 1;
+    }
+    attributes.push({
+      name,
+      value: text.slice(valueStart, cursor),
+      start: nameStart,
+      end: cursor,
+      nameStart,
+      nameEnd,
+      valueStart,
+      valueEnd: cursor,
+    });
+  }
+  return attributes;
+}
+
+function isHtmlWhitespaceCode(code: number): boolean {
+  return (
+    code === 9 ||
+    code === 10 ||
+    code === 11 ||
+    code === 12 ||
+    code === 13 ||
+    code === 32 ||
+    code === 160 ||
+    code === 5760 ||
+    (code >= 8192 && code <= 8202) ||
+    code === 8232 ||
+    code === 8233 ||
+    code === 8239 ||
+    code === 8287 ||
+    code === 12288 ||
+    code === 65279
+  );
+}
+
+function isAsciiAlphaCode(code: number): boolean {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isAsciiDigitCode(code: number): boolean {
+  return code >= 48 && code <= 57;
+}
+
+function isHtmlTagNamePartCode(code: number): boolean {
+  return (
+    isAsciiAlphaCode(code) || isAsciiDigitCode(code) || code === 58 || code === 95 || code === 45
+  );
+}
+
+function isAttributeNameStartCode(code: number): boolean {
+  return isAsciiAlphaCode(code) || code === 95 || code === 58;
+}
+
+function isAttributeNamePartCode(code: number): boolean {
+  return (
+    isAsciiAlphaCode(code) ||
+    isAsciiDigitCode(code) ||
+    code === 45 ||
+    code === 95 ||
+    code === 58 ||
+    code === 46
+  );
+}
+
+function cssEscapeIdentifier(value: string): string {
+  let escaped = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index] ?? "";
+    const code = char.charCodeAt(0);
+    if (code === 0) {
+      escaped += "\uFFFD";
+    } else if (
+      (index === 0 && isAsciiDigitCode(code)) ||
+      (index === 1 && isAsciiDigitCode(code) && value[0] === "-")
+    ) {
+      escaped += `\\${code.toString(16)} `;
+    } else if (
+      isAsciiAlphaCode(code) ||
+      isAsciiDigitCode(code) ||
+      code === 45 ||
+      code === 95 ||
+      code >= 128
+    ) {
+      escaped += char;
+    } else {
+      escaped += `\\${char}`;
+    }
+  }
+  return escaped;
+}
+
+function documentNewline(text: string): string {
+  return text.includes("\r\n") ? "\r\n" : "\n";
 }
 
 const vbscriptExtractVariableKind = `${CodeActionKind.Refactor}.extract`;

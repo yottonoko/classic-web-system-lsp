@@ -35,6 +35,7 @@ export interface AspSettings {
   vbscript?: AspVbscriptSettings;
   inlayHints?: AspInlayHintSettings;
   codeLens?: AspCodeLensSettings;
+  styleExtraction?: AspStyleExtractionSettings;
   graph?: AspGraphSettings;
   cache?: AspCacheSettings;
   workspace?: AspWorkspaceSettings;
@@ -158,6 +159,10 @@ export interface AspCodeLensSettings {
   referenceGlobals?: boolean;
   referenceClasses?: boolean;
   referenceClassMembers?: boolean;
+}
+
+export interface AspStyleExtractionSettings {
+  insertionMode?: "nearby" | "reuseExistingStyleTag";
 }
 
 export interface AspGraphSettings {
