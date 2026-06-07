@@ -18,6 +18,8 @@ import {
   getVbscriptHover,
   getVbscriptInlayHints,
   getVbscriptReferences,
+  getVbscriptReferencesForSymbol,
+  getVbscriptReferencesForSymbols,
   getVbscriptSelectionRanges,
   getVbscriptSemanticTokens,
   getVbscriptSignatureHelp,
@@ -35,6 +37,7 @@ import {
   summarizeAspFileAnalysis,
   summarizeAspFileAnalysisAsync,
   updateAspParsedDocument,
+  vbscriptReferenceSymbolKey,
 } from "../src";
 import type { AspCstNode, VbCstNode } from "../src";
 
@@ -1883,6 +1886,49 @@ Set c = MakeCustomer()
     expect(factorialUsages).toHaveLength(1);
     expect(factorialUsages[0].range.start.line).toBe(9);
     expect(factorialUsages[0].range.start.character).toBe("    Factorial = n * ".length);
+  });
+
+  it("matches single-symbol VBScript references when resolving symbols in a batch", () => {
+    const source = `<%
+''' <summary>Uses <see cref="MakeCustomer" /> and <see cref="Customer.Name" />.</summary>
+Class Customer
+  Public Name
+End Class
+
+Function MakeCustomer()
+  Set MakeCustomer = New Customer
+End Function
+
+Set c = MakeCustomer()
+Response.Write c.Name
+%>`;
+    const parsed = parseAspDocument("file:///site/batch-references.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const targets = symbols.filter(
+      (symbol) =>
+        (symbol.name === "MakeCustomer" && symbol.kind === "function") ||
+        (symbol.name === "Name" && symbol.memberOf === "Customer"),
+    );
+    expect(targets).toHaveLength(2);
+
+    const options = {
+      includeDeclaration: false,
+      includeFunctionReturnAssignments: false,
+    };
+    const batch = getVbscriptReferencesForSymbols(
+      targets,
+      { documents: [parsed], symbols },
+      options,
+    );
+
+    for (const target of targets) {
+      const single = getVbscriptReferencesForSymbol(
+        target,
+        { documents: [parsed], symbols },
+        options,
+      );
+      expect(batch.get(vbscriptReferenceSymbolKey(target))).toEqual(single);
+    }
   });
 
   it("keeps user-defined completion candidates for mixed-case prefixes", () => {

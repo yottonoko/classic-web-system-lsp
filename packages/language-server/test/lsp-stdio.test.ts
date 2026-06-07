@@ -5236,6 +5236,100 @@ Response.Write SharedTitle()
       }
     });
 
+    it("batch resolves workspace reference CodeLens and skips unreachable candidates", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-batch-"));
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "default.asp");
+      const unrelated = path.join(tempDir, "unrelated.asp");
+      const commonSource = `<%
+Function SharedTitle()
+  SharedTitle = "Dashboard"
+End Function
+
+Function SharedSubtitle()
+  SharedSubtitle = "Overview"
+End Function
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="common.inc" -->
+<%
+Response.Write SharedTitle()
+Response.Write SharedSubtitle()
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(unrelated, `<%\nResponse.Write SharedTitle()\n%>`, "utf8");
+      const commonUri = pathToFileURL(common).href;
+      const pageUri = pathToFileURL(page).href;
+      const unrelatedUri = pathToFileURL(unrelated).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "summary" },
+              codeLens: { referenceScope: "workspace" },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: commonUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: commonSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: commonUri },
+        })) as Array<Record<string, unknown>>;
+        const referenceLensAtLine = (line: number): Record<string, unknown> | undefined =>
+          codeLens.find((lens) => {
+            const data = lens.data as { kind?: unknown; line?: unknown } | undefined;
+            return data?.kind === "vbscript-reference" && data.line === line;
+          });
+
+        const titleLens = referenceLensAtLine(1);
+        const resolvedTitleLens = (await server.request("codeLens/resolve", titleLens)) as Record<
+          string,
+          unknown
+        >;
+        expect(JSON.stringify(resolvedTitleLens.command)).toContain(pageUri);
+        expect(JSON.stringify(resolvedTitleLens.command)).not.toContain(unrelatedUri);
+        const workerBatchLog = await waitForLogContaining(
+          server,
+          "vb.references.worker.batch.complete",
+        );
+        expect(JSON.stringify(workerBatchLog.params)).toContain("symbols=2");
+        await waitForLogContaining(server, "vb.references.reachability.skip");
+
+        const subtitleLens = referenceLensAtLine(5);
+        const resolvedSubtitleLens = (await server.request(
+          "codeLens/resolve",
+          subtitleLens,
+        )) as Record<string, unknown>;
+        expect(JSON.stringify(resolvedSubtitleLens.command)).toContain(pageUri);
+        expect(JSON.stringify(resolvedSubtitleLens.command)).not.toContain(unrelatedUri);
+        await waitForLogContaining(server, "vb.references.batch.cache.hit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("reuses in-flight worker-backed workspace references for concurrent requests", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-reuse-"));
       const common = path.join(tempDir, "common.inc");

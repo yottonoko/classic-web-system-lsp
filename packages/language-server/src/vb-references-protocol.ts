@@ -43,6 +43,7 @@ export interface VbReferencesWorkerRequest {
   id: number;
   candidate: VbReferencesWorkerCandidate;
   target: VbReferencesWorkerTargetSymbol;
+  targets?: VbReferencesWorkerTargetSymbol[];
   settings: AspSettings;
   workspaceRoots: string[];
   openDocuments: VbReferencesWorkerOpenDocument[];
@@ -54,6 +55,7 @@ export interface VbReferencesWorkerResponse {
   id: number;
   candidate: VbReferencesWorkerCandidate;
   references?: VbReference[];
+  referencesByTarget?: Record<string, VbReference[]>;
   fallbackReasons?: string[];
   scannedFiles?: number;
   cacheHits?: number;
