@@ -895,13 +895,15 @@ function NodeInspector({
       ) : (
         <NodeSourceSections graphData={graphData} node={node} />
       )}
-      <OpenLocationButton
-        className="mt-3 h-[30px] w-full"
-        disabled={!location?.uri}
-        label={node.kind === "file" ? "Open File" : "Open Location"}
-        range={location?.range}
-        uri={location?.uri}
-      />
+      {node.kind === "file" ? (
+        <OpenLocationButton
+          className="mt-3 h-[30px] w-full"
+          disabled={!location?.uri}
+          label="Open File"
+          range={location?.range}
+          uri={location?.uri}
+        />
+      ) : null}
     </>
   );
 }
@@ -1253,21 +1255,123 @@ function OpenLocationButton({
 
 function NodeDetails({ node }: { node: GraphNode }): React.ReactElement {
   return (
-    <dl className="mb-3.5 grid grid-cols-[86px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
-      <Detail label="Kind" value={node.kind} />
-      <Detail label="Category" value={node.category} />
+    <dl className="mb-3.5 grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
+      <Detail label="Type" value={nodeTypeLabel(node)} />
       <Detail label="References" value={String(node.referenceCount)} />
-      <Detail label="Group" value={node.group} />
-      <Detail label="Declaration" value={node.declarationKind} />
-      <Detail label="Procedure" value={node.procedureKind} />
+      <Detail label="File" value={nodeFileLabel(node)} />
       <Detail label="Member of" value={node.memberOf} />
-      <Detail label="Scope" value={node.bindingScope} />
-      <Detail label="Origin" value={node.origin} />
-      <Detail label="External" value={node.externalKind} />
-      <Detail label="File" value={node.fileName} />
-      <Detail label="URI" value={node.uri} />
+      <Detail label="Scope" value={nodeScopeLabel(node)} />
+      <Detail label="Status" value={nodeStatusLabel(node)} />
     </dl>
   );
+}
+
+function nodeTypeLabel(node: GraphNode): string {
+  if (node.kind === "file") {
+    return node.exists === false ? "Missing file" : "File";
+  }
+  if (node.kind === "vbUnresolved") {
+    return node.role === "member" ? "Unresolved member" : "Unresolved";
+  }
+  switch (node.declarationKind) {
+    case "function":
+      return "Function";
+    case "sub":
+      return "Sub";
+    case "class":
+      return "Class";
+    case "method":
+      if (node.procedureKind === "function") {
+        return "Function method";
+      }
+      if (node.procedureKind === "sub") {
+        return "Sub method";
+      }
+      return "Class method";
+    case "property":
+      return "Property";
+    case "field":
+      return "Field";
+    case "parameter":
+      return "Parameter";
+    case "variable":
+      return node.bindingScope === "local" ? "Local variable" : "Global variable";
+    case "constant":
+      if (node.memberOf) {
+        return "Class constant";
+      }
+      return node.bindingScope === "local" ? "Local constant" : "Global constant";
+    case "object":
+      return "Object";
+    case "event":
+      return "Event";
+    default:
+      return node.externalKind
+        ? titleCaseWords(node.externalKind)
+        : nodeCategoryLabels[node.category];
+  }
+}
+
+function nodeFileLabel(node: GraphNode): string | undefined {
+  return basenameForDisplay(node.fileName ?? node.uri);
+}
+
+function nodeScopeLabel(node: GraphNode): string | undefined {
+  switch (node.bindingScope) {
+    case "global":
+      return "Global";
+    case "local":
+      return "Local";
+    case "unknown":
+      return "Unknown";
+    default:
+      return undefined;
+  }
+}
+
+function nodeStatusLabel(node: GraphNode): string | undefined {
+  if (node.kind === "file") {
+    return node.isRoot ? "Root" : undefined;
+  }
+  if (node.origin === "builtin") {
+    return "Built-in";
+  }
+  if (node.origin === "configured") {
+    return "Configured";
+  }
+  return undefined;
+}
+
+function basenameForDisplay(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  let normalized = value;
+  if (normalized.startsWith("file://")) {
+    try {
+      normalized = new URL(normalized).pathname;
+    } catch {
+      normalized = normalized.replace(/^file:\/\//, "");
+    }
+  }
+  const segments = safeDecodeURIComponent(normalized).split(/[\\/]/).filter(Boolean);
+  return segments.at(-1) ?? value;
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function titleCaseWords(value: string): string {
+  return value
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
 }
 
 function LinkDetails({ link }: { link: GraphLink }): React.ReactElement {
@@ -1377,7 +1481,7 @@ function sourceItemsForNode(
             highlightRange: node.range,
             kind: "declaration" as const,
             title: "Declaration",
-            detail: node.declarationKind ?? node.kind,
+            detail: nodeTypeLabel(node),
           },
         ]
       : [];
