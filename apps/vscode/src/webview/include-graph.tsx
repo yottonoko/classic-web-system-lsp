@@ -233,12 +233,19 @@ const graphFitPadding2d = 100;
 const graphFitPadding3d = 5;
 const positionSyncPinMs = 600;
 const graph3dSyncSpan = 160;
+const inspectorDefaultWidth = 320;
+const inspectorMinimumWidth = 260;
+const inspectorMaximumWidth = 560;
+const graphMinimumWidth = 360;
+const paneResizeHandleWidth = 6;
+const paneResizeKeyboardStep = 16;
 
 function App(): React.ReactElement {
   const [mode, setMode] = useState<ViewMode>("3d");
   const [selection, setSelection] = useState<Selection>();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatchCase, setSearchMatchCase] = useState(false);
+  const [inspectorWidth, setInspectorWidth] = useState(inspectorDefaultWidth);
   const [hideSingleNodes, setHideSingleNodes] = useState(graph?.settings?.hideSingleNodes ?? true);
   const [showOutgoingSelectionLinks, setShowOutgoingSelectionLinks] = useState(
     graph?.settings?.showOutgoingSelectionLinks ?? true,
@@ -290,7 +297,13 @@ function App(): React.ReactElement {
   );
   const highlight = selectionHighlight ?? searchHighlight;
   const titleFileName = currentFileGraphName(graph);
+  const [layoutRef, layoutSize] = useElementSize<HTMLElement>();
   const [surfaceRef, surfaceSize] = useElementSize<HTMLElement>();
+  const maximumInspectorWidth = maxInspectorWidthForLayout(layoutSize.width);
+  const clampedInspectorWidth = clamp(inspectorWidth, inspectorMinimumWidth, maximumInspectorWidth);
+  const layoutStyle = {
+    "--inspector-width": `${clampedInspectorWidth}px`,
+  } as React.CSSProperties;
   const canFitGraph =
     filteredGraphData.nodes.length > 0 && surfaceSize.width > 0 && surfaceSize.height > 0;
   const toggleNodeCategory = useCallback((category: NodeColorCategory) => {
@@ -399,6 +412,15 @@ function App(): React.ReactElement {
     }
   }, [filteredGraphData, selection]);
 
+  useEffect(() => {
+    if (layoutSize.width <= 780) {
+      return;
+    }
+    setInspectorWidth((currentWidth) =>
+      clamp(currentWidth, inspectorMinimumWidth, maxInspectorWidthForLayout(layoutSize.width)),
+    );
+  }, [layoutSize.width]);
+
   useLayoutEffect(() => {
     const pending = pendingSyncRef.current;
     if (!pending || pending.to !== mode || !canFitGraph) {
@@ -496,12 +518,12 @@ function App(): React.ReactElement {
             Match case
           </label>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Metric label="Files" value={filteredStats.files} />
-          <Metric label="VB" value={filteredStats.declarations} />
-          <Metric label="Links" value={filteredStats.links} />
-          <Metric label="Missing" value={filteredStats.missingIncludes} />
-        </div>
+        <GraphStatsPopover
+          files={filteredStats.files}
+          declarations={filteredStats.declarations}
+          links={filteredStats.links}
+          missingIncludes={filteredStats.missingIncludes}
+        />
         <div
           className="inline-grid grid-cols-2 overflow-hidden rounded-md border border-[#394456]"
           aria-label="Graph mode"
@@ -540,7 +562,11 @@ function App(): React.ReactElement {
           Fit
         </button>
       </header>
-      <main className="relative grid min-h-0 grid-cols-[minmax(0,1fr)_320px] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]">
+      <main
+        ref={layoutRef}
+        className="relative grid min-h-0 grid-cols-[minmax(0,1fr)_6px_var(--inspector-width)] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]"
+        style={layoutStyle}
+      >
         <section
           ref={surfaceRef}
           className="relative min-h-0 min-w-0 overflow-hidden [&_canvas]:block"
@@ -627,6 +653,12 @@ function App(): React.ReactElement {
             />
           </div>
         </section>
+        <PaneResizeHandle
+          maxWidth={maximumInspectorWidth}
+          minWidth={inspectorMinimumWidth}
+          width={clampedInspectorWidth}
+          onWidthChange={setInspectorWidth}
+        />
         <Inspector
           graphData={graphData}
           selection={selection}
@@ -845,12 +877,165 @@ function Shell({ children }: { children: React.ReactNode }): React.ReactElement 
   );
 }
 
+function GraphStatsPopover({
+  declarations,
+  files,
+  links,
+  missingIncludes,
+}: {
+  declarations: number;
+  files: number;
+  links: number;
+  missingIncludes: number;
+}): React.ReactElement {
+  const [isOpen, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+    const closeOnOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && containerRef.current?.contains(target)) {
+        return;
+      }
+      setOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("pointerdown", closeOnOutsidePointerDown);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("pointerdown", closeOnOutsidePointerDown);
+    };
+  }, [isOpen]);
+
+  return (
+    <div ref={containerRef} className="relative inline-flex justify-end max-[980px]:justify-start">
+      <button
+        type="button"
+        className="inline-flex h-7 min-w-[88px] cursor-pointer items-center justify-between gap-2 rounded-md border border-[#394456] bg-[#151a22] px-2.5 text-xs text-[#b5c0d0] hover:border-[#4b5a70] hover:text-[#d7dde8]"
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+        aria-label="Show graph statistics"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="font-semibold text-[#d7dde8]">Stats</span>
+        <span className="text-[11px] text-[#9aa7b8]">Links {links}</span>
+      </button>
+      {isOpen ? (
+        <div
+          role="dialog"
+          aria-label="Graph statistics"
+          className="absolute top-[calc(100%_+_6px)] right-0 z-20 grid w-[min(260px,calc(100vw_-_24px))] gap-2 rounded-md border border-[#303a49] bg-[#171c25] p-2 shadow-[0_14px_34px_rgb(0_0_0_/_34%)] max-[980px]:right-auto max-[980px]:left-0"
+        >
+          <div className="text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
+            Graph stats
+          </div>
+          <div className="grid grid-cols-2 gap-2 max-[360px]:grid-cols-1">
+            <Metric label="Files" value={files} />
+            <Metric label="VB" value={declarations} />
+            <Metric label="Links" value={links} />
+            <Metric label="Missing" value={missingIncludes} />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: number }): React.ReactElement {
   return (
     <span className="inline-flex items-baseline gap-[5px] rounded-md border border-[#303a49] px-[7px] py-[3px] text-[11px] text-[#9aa7b8]">
       <span>{label}</span>
       <strong className="text-xs text-[#f4f7fb]">{value}</strong>
     </span>
+  );
+}
+
+function PaneResizeHandle({
+  maxWidth,
+  minWidth,
+  onWidthChange,
+  width,
+}: {
+  maxWidth: number;
+  minWidth: number;
+  onWidthChange(width: number): void;
+  width: number;
+}): React.ReactElement {
+  const updateWidth = useCallback(
+    (nextWidth: number) => onWidthChange(clamp(nextWidth, minWidth, maxWidth)),
+    [maxWidth, minWidth, onWidthChange],
+  );
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = width;
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        moveEvent.preventDefault();
+        updateWidth(startWidth - (moveEvent.clientX - startX));
+      };
+      const stopResize = () => {
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", stopResize);
+        window.removeEventListener("pointercancel", stopResize);
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", stopResize);
+      window.addEventListener("pointercancel", stopResize);
+    },
+    [updateWidth, width],
+  );
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        updateWidth(width + paneResizeKeyboardStep);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        updateWidth(width - paneResizeKeyboardStep);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        updateWidth(minWidth);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        updateWidth(maxWidth);
+      }
+    },
+    [maxWidth, minWidth, updateWidth, width],
+  );
+
+  return (
+    <div
+      role="separator"
+      tabIndex={0}
+      aria-label="Resize inspector pane"
+      aria-orientation="vertical"
+      aria-valuemin={minWidth}
+      aria-valuemax={maxWidth}
+      aria-valuenow={width}
+      className="relative cursor-col-resize bg-[#11151c] outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-[#2b3442] hover:bg-[#1c2430] focus:bg-[#1c2430] focus:before:bg-[#89ddff] max-[780px]:hidden"
+      onKeyDown={handleKeyDown}
+      onPointerDown={handlePointerDown}
+    />
   );
 }
 
@@ -2392,6 +2577,16 @@ function linkParticleWidth3d(link: GraphLink): number {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function maxInspectorWidthForLayout(containerWidth: number): number {
+  if (containerWidth <= 0) {
+    return inspectorMaximumWidth;
+  }
+  return Math.max(
+    inspectorMinimumWidth,
+    Math.min(inspectorMaximumWidth, containerWidth - graphMinimumWidth - paneResizeHandleWidth),
+  );
 }
 
 function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
