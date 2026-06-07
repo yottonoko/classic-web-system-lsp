@@ -10092,7 +10092,7 @@ function normalizeCodeLensSettings(
   return {
     references: record.references !== false,
     includes: record.includes === true,
-    referenceScope: record.referenceScope === "analyzed" ? "analyzed" : "workspace",
+    referenceScope: record.referenceScope === "workspace" ? "workspace" : "analyzed",
     referenceProcedures: record.referenceProcedures !== false,
     referenceGlobals: record.referenceGlobals !== false,
     referenceClasses: record.referenceClasses !== false,
