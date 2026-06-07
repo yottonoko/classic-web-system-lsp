@@ -632,7 +632,7 @@ interface VbReferenceCodeLensData {
   character: number;
 }
 
-type AspGraphScope = "document" | "workspace";
+type AspGraphScope = "document" | "folder" | "workspace";
 
 type AspGraphNodeKind = "file" | "vbDeclaration" | "vbUnresolved";
 
@@ -13689,15 +13689,21 @@ function mergeWorkspaceEdits(
 async function buildAspGraphForCommand(argument: unknown): Promise<AspGraphPayload> {
   const scope = graphCommandScope(argument);
   const uri = graphCommandUri(argument);
-  return scope === "workspace"
-    ? buildWorkspaceAspGraphAsync()
-    : buildDocumentAspGraphAsync(uri ?? documents.all()[0]?.uri);
+  if (scope === "workspace") {
+    return buildWorkspaceAspGraphAsync();
+  }
+  if (scope === "folder") {
+    return buildFolderAspGraphAsync(uri);
+  }
+  return buildDocumentAspGraphAsync(uri ?? documents.all()[0]?.uri);
 }
 
 function graphCommandScope(argument: unknown): AspGraphScope {
   if (argument && typeof argument === "object" && "scope" in argument) {
     const scope = (argument as { scope?: unknown }).scope;
-    return scope === "workspace" ? "workspace" : "document";
+    if (scope === "folder" || scope === "workspace") {
+      return scope;
+    }
   }
   return "document";
 }
@@ -13719,6 +13725,48 @@ async function buildDocumentAspGraphAsync(uri: string | undefined): Promise<AspG
   const documentsForGraph = await collectDocumentGraphDocumentsAsync(cached, settings);
   const payload = await graphPayloadFromDocumentsAsync("document", documentsForGraph, settings, {
     rootUri: cached.source.uri,
+  });
+  return payload;
+}
+
+async function buildFolderAspGraphAsync(uri: string | undefined): Promise<AspGraphPayload> {
+  const folderName = await graphCommandFolderNameAsync(uri);
+  if (!folderName) {
+    return emptyAspGraphPayload("folder", uri);
+  }
+  const settings = globalSettings;
+  await ensureWorkspaceIndexAsync(settings);
+  const opened = new Set<string>();
+  const documentsForGraph: AspGraphDocument[] = [];
+  for (const document of documents.all()) {
+    if (!isClassicAspGraphUri(document.uri)) {
+      continue;
+    }
+    const fileName = normalizeFileName(uriToFileName(document.uri));
+    if (!isFileInDirectory(fileName, folderName)) {
+      continue;
+    }
+    const cached = await ensureFreshCachedDocumentAsync(document);
+    opened.add(cached.source.uri);
+    documentsForGraph.push(
+      await graphDocumentFromCachedAsync(cached, cachedSettings(cached.source.uri)),
+    );
+  }
+  for (const entry of workspaceIndex.values()) {
+    if (opened.has(entry.uri) || !isFileInDirectory(entry.fileName, folderName)) {
+      continue;
+    }
+    const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
+    documentsForGraph.push(await graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri)));
+    await yieldToEventLoop();
+  }
+  const payload = await graphPayloadFromDocumentsAsync("folder", documentsForGraph, settings, {
+    rootUri: pathToFileUri(folderName),
+    truncated: workspaceIndexTruncated
+      ? {
+          reason: `workspaceIndex>${settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles}`,
+        }
+      : undefined,
   });
   return payload;
 }
@@ -13754,6 +13802,20 @@ async function buildWorkspaceAspGraphAsync(): Promise<AspGraphPayload> {
       : undefined,
   });
   return payload;
+}
+
+async function graphCommandFolderNameAsync(uri: string | undefined): Promise<string | undefined> {
+  if (!uri?.startsWith("file://")) {
+    return undefined;
+  }
+  const folderName = normalizeFileName(uriToFileName(uri));
+  const stat = await fs.promises.stat(folderName).catch(() => undefined);
+  return stat?.isDirectory() ? folderName : undefined;
+}
+
+function isFileInDirectory(fileName: string, directory: string): boolean {
+  const relative = path.relative(directory, normalizeFileName(fileName));
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 async function cachedDocumentForGraphAsync(uri: string): Promise<CachedDocument | undefined> {

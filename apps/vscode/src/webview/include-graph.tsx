@@ -296,7 +296,7 @@ function App(): React.ReactElement {
     [selection, filteredGraphData.links, showOutgoingSelectionLinks],
   );
   const highlight = selectionHighlight ?? searchHighlight;
-  const titleFileName = currentFileGraphName(graph);
+  const titleFileName = graphRootName(graph);
   const [layoutRef, layoutSize] = useElementSize<HTMLElement>();
   const [surfaceRef, surfaceSize] = useElementSize<HTMLElement>();
   const maximumInspectorWidth = maxInspectorWidthForLayout(layoutSize.width);
@@ -485,7 +485,7 @@ function App(): React.ReactElement {
       <header className="grid grid-cols-[minmax(180px,1fr)_minmax(220px,320px)_auto_auto_auto] items-center gap-3 border-b border-[#2b3442] bg-[#171c25] px-3 py-2.5 max-[980px]:grid-cols-1 max-[980px]:items-stretch">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-semibold text-[#d7dde8]">
-            {graph.scope === "workspace" ? "Workspace Graph" : "Current File Graph"}
+            {graphScopeTitle(graph.scope)}
           </span>
           {titleFileName ? (
             <span
@@ -1936,9 +1936,22 @@ function positionSyncPositionFor3d(
   };
 }
 
-function currentFileGraphName(payload: AspGraphPayload | undefined): string | undefined {
-  if (!payload || payload.scope !== "document") {
+function graphScopeTitle(scope: AspGraphPayload["scope"]): string {
+  if (scope === "document") {
+    return "Current File Graph";
+  }
+  if (scope === "folder") {
+    return "Folder Graph";
+  }
+  return "Workspace Graph";
+}
+
+function graphRootName(payload: AspGraphPayload | undefined): string | undefined {
+  if (!payload || payload.scope === "workspace") {
     return undefined;
+  }
+  if (payload.scope === "folder") {
+    return baseNameFromUri(payload.rootUri);
   }
   const rootNode =
     payload.nodes.find((node) => node.isRoot) ??

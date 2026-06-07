@@ -99,6 +99,7 @@
   "command.clearProcessCache.title": "Classic ASP: Clear Process Analysis Cache",
   "command.openOutput.title": "Classic ASP: Open Output",
   "command.showCurrentFileGraph.title": "Classic ASP: Show Current File Graph",
+  "command.showFolderGraph.title": "Classic ASP: Show Folder Graph",
   "command.showWorkspaceGraph.title": "Classic ASP: Show Workspace Graph",
   "command.debugIisUrl.title": "Classic ASP: Debug IIS URL",
   "command.debugIisExpressUrl.title": "Classic ASP: Debug IIS Express URL",

@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
 export interface AspGraphPayload {
-  scope: "document" | "workspace";
+  scope: "document" | "folder" | "workspace";
   rootUri?: string;
   nodes: AspGraphNode[];
   links: AspGraphLink[];

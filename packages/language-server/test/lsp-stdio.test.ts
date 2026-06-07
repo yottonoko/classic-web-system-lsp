@@ -6589,6 +6589,99 @@ End Sub
       }
     });
 
+    it("builds a folder graph from ASP files under the selected folder only", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-folder-graph-"));
+      const appDir = path.join(tempDir, "app");
+      const sharedDir = path.join(tempDir, "shared");
+      fs.mkdirSync(appDir);
+      fs.mkdirSync(sharedDir);
+      const outsideInclude = path.join(sharedDir, "common.inc");
+      fs.writeFileSync(
+        path.join(appDir, "default.asp"),
+        `<!-- #include file="local.inc" -->\n<!-- #include file="../shared/common.inc" -->\n<%\nSub PageEntry()\nEnd Sub\n%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "local.inc"),
+        `<%\nFunction InsideEntry()\nEnd Function\n%>`,
+        "utf8",
+      );
+      fs.writeFileSync(outsideInclude, `<%\nFunction OutsideEntry()\nEnd Function\n%>`, "utf8");
+      fs.writeFileSync(
+        path.join(tempDir, "sibling.asp"),
+        `<%\nSub SiblingEntry()\nEnd Sub\n%>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "folder", uri: pathToFileURL(appDir).toString() }],
+        })) as {
+          scope?: string;
+          rootUri?: string;
+          nodes?: Array<Record<string, unknown>>;
+          links?: Array<Record<string, unknown>>;
+          stats?: Record<string, unknown>;
+        };
+
+        expect(graph.scope).toBe("folder");
+        expect(graph.rootUri).toBe(pathToFileURL(appDir).toString());
+        expect(
+          graph.nodes?.some((node) => node.kind === "file" && node.label === "default.asp"),
+        ).toBe(true);
+        expect(
+          graph.nodes?.some((node) => node.kind === "file" && node.label === "local.inc"),
+        ).toBe(true);
+        expect(
+          graph.nodes?.some((node) => node.kind === "file" && node.label === "common.inc"),
+        ).toBe(true);
+        expect(
+          graph.nodes?.some((node) => node.kind === "file" && node.label === "sibling.asp"),
+        ).toBe(false);
+        expect(
+          graph.nodes?.some((node) => node.kind === "vbDeclaration" && node.label === "PageEntry"),
+        ).toBe(true);
+        expect(
+          graph.nodes?.some(
+            (node) => node.kind === "vbDeclaration" && node.label === "InsideEntry",
+          ),
+        ).toBe(true);
+        expect(
+          graph.nodes?.some(
+            (node) => node.kind === "vbDeclaration" && node.label === "OutsideEntry",
+          ),
+        ).toBe(false);
+        expect(
+          graph.nodes?.some(
+            (node) => node.kind === "vbDeclaration" && node.label === "SiblingEntry",
+          ),
+        ).toBe(false);
+        expect(
+          graph.links?.some(
+            (link) =>
+              link.kind === "include" &&
+              (link.include as { resolvedUri?: string } | undefined)?.resolvedUri ===
+                pathToFileURL(outsideInclude).toString(),
+          ),
+        ).toBe(true);
+        expect(typeof graph.stats?.files).toBe("number");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("restores graph include refs and VB symbol indexes from disk cache after server restart", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-cache-"));
       const cacheDir = path.join(tempDir, ".cache");

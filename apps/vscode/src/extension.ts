@@ -21,6 +21,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const htmlTagCompleteLookBehind = 2000;
 type GraphOpenLocation = "active" | "beside";
+type GraphScope = "document" | "folder" | "workspace";
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
@@ -54,8 +55,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       executeServerCommand(clearProcessCacheServerCommand),
     ),
     vscode.commands.registerCommand("aspLsp.openOutput", () => outputChannel?.show()),
-    vscode.commands.registerCommand("aspLsp.showCurrentFileGraph", async () =>
-      showGraph(context, "document"),
+    vscode.commands.registerCommand("aspLsp.showCurrentFileGraph", async (uri?: vscode.Uri) =>
+      showGraph(context, "document", uri),
+    ),
+    vscode.commands.registerCommand("aspLsp.showFolderGraph", async (uri?: vscode.Uri) =>
+      showGraph(context, "folder", uri),
     ),
     vscode.commands.registerCommand("aspLsp.showWorkspaceGraph", async () =>
       showGraph(context, "workspace"),
@@ -204,7 +208,8 @@ async function executeServerCommand(command: string): Promise<unknown> {
 
 async function showGraph(
   context: vscode.ExtensionContext,
-  scope: "document" | "workspace",
+  scope: GraphScope,
+  selectedUri?: vscode.Uri,
 ): Promise<void> {
   if (!client) {
     void vscode.window.showWarningMessage(extensionLocalizer()("graph.serverUnavailable"));
@@ -212,17 +217,23 @@ async function showGraph(
   }
   const activeClient = client;
   const activeDocument = vscode.window.activeTextEditor?.document;
+  const selectedUriText = selectedUri?.toString();
   const uri =
-    scope === "document" && activeDocument?.languageId === "classic-asp"
-      ? activeDocument.uri.toString()
-      : undefined;
+    scope === "document"
+      ? (selectedUriText ??
+        (activeDocument?.languageId === "classic-asp" ? activeDocument.uri.toString() : undefined))
+      : scope === "folder"
+        ? selectedUriText
+        : undefined;
   if (scope === "document" && !uri) {
     void vscode.window.showWarningMessage(extensionLocalizer()("graph.noActiveFile"));
     return;
   }
-  const title = extensionLocalizer()(
-    scope === "document" ? "graph.currentTitle" : "graph.workspaceTitle",
-  );
+  if (scope === "folder" && !uri) {
+    void vscode.window.showWarningMessage(extensionLocalizer()("graph.noFolder"));
+    return;
+  }
+  const title = extensionLocalizer()(graphTitleKey(scope));
   const payload = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title },
     async () =>
@@ -232,6 +243,16 @@ async function showGraph(
       }),
   );
   showAspGraphWebview(context, payload, title, graphViewColumn());
+}
+
+function graphTitleKey(scope: GraphScope): ExtensionMessageKey {
+  if (scope === "document") {
+    return "graph.currentTitle";
+  }
+  if (scope === "folder") {
+    return "graph.folderTitle";
+  }
+  return "graph.workspaceTitle";
 }
 
 function graphViewColumn(): vscode.ViewColumn {
@@ -523,7 +544,9 @@ type ExtensionMessageKey =
   | "launch.created"
   | "graph.serverUnavailable"
   | "graph.noActiveFile"
+  | "graph.noFolder"
   | "graph.currentTitle"
+  | "graph.folderTitle"
   | "graph.workspaceTitle";
 
 type ExtensionMessageArgs = Record<string, string>;
@@ -537,7 +560,9 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "launch.created": "Classic ASP launch.json snippet created.",
     "graph.serverUnavailable": "Start the Classic ASP Language Server before building a graph.",
     "graph.noActiveFile": "Open a Classic ASP file before building the current file graph.",
+    "graph.noFolder": "Select a folder before building the folder graph.",
     "graph.currentTitle": "Classic ASP: Current File Graph",
+    "graph.folderTitle": "Classic ASP: Folder Graph",
     "graph.workspaceTitle": "Classic ASP: Workspace Graph",
   },
   ja: {
@@ -549,7 +574,9 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "graph.serverUnavailable":
       "graph を作成する前に Classic ASP Language Server を起動してください。",
     "graph.noActiveFile": "current file graph を作成する前に Classic ASP file を開いてください。",
+    "graph.noFolder": "folder graph を作成する前に folder を選択してください。",
     "graph.currentTitle": "Classic ASP: Current File Graph",
+    "graph.folderTitle": "Classic ASP: Folder Graph",
     "graph.workspaceTitle": "Classic ASP: Workspace Graph",
   },
 };

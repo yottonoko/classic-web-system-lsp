@@ -59,6 +59,7 @@ describe("VS Code extension package", () => {
       icon?: string;
       galleryBanner?: { color?: string };
       dependencies?: Record<string, string>;
+      activationEvents?: string[];
       contributes?: {
         languages?: Array<{ id: string; extensions?: string[]; configuration?: string }>;
         grammars?: Array<{
@@ -77,6 +78,7 @@ describe("VS Code extension package", () => {
         keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
         menus?: {
           "editor/title"?: Array<{ command?: string; when?: string; group?: string }>;
+          "explorer/context"?: Array<{ command?: string; when?: string; group?: string }>;
         };
         problemMatchers?: Array<{ name: string }>;
         taskDefinitions?: Array<{ type: string }>;
@@ -378,6 +380,7 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("isManualRestarting");
     expect(extensionSource).toContain('registerCommand("aspLsp.showReferences"');
     expect(commands).toContain("aspLsp.showCurrentFileGraph");
+    expect(commands).toContain("aspLsp.showFolderGraph");
     expect(commands).toContain("aspLsp.showWorkspaceGraph");
     expect(
       manifest.contributes?.commands?.find(
@@ -391,11 +394,31 @@ describe("VS Code extension package", () => {
         group: "navigation",
       }),
     );
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showFolderGraph",
+        when: "explorerResourceIsFolder",
+        group: "navigation",
+      }),
+    );
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showCurrentFileGraph",
+        when: "resourceExtname =~ /\\.(asp|asa|inc)$/i",
+        group: "navigation",
+      }),
+    );
     expect(nls["command.showCurrentFileGraph.title"]).toBeTruthy();
+    expect(nls["command.showFolderGraph.title"]).toBeTruthy();
     expect(nls["command.showWorkspaceGraph.title"]).toBeTruthy();
     expect(nlsJa["command.showCurrentFileGraph.title"]).toBeTruthy();
+    expect(nlsJa["command.showFolderGraph.title"]).toBeTruthy();
     expect(nlsJa["command.showWorkspaceGraph.title"]).toBeTruthy();
+    expect(manifest.activationEvents).toContain("onCommand:aspLsp.showCurrentFileGraph");
+    expect(manifest.activationEvents).toContain("onCommand:aspLsp.showFolderGraph");
+    expect(manifest.activationEvents).toContain("onCommand:aspLsp.showWorkspaceGraph");
     expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileGraph"');
+    expect(extensionSource).toContain('registerCommand("aspLsp.showFolderGraph"');
     expect(extensionSource).toContain('registerCommand("aspLsp.showWorkspaceGraph"');
     expect(extensionSource).toContain('get<GraphOpenLocation>("graph.openLocation", "active")');
     expect(extensionSource).toContain("vscode.ViewColumn.Active");

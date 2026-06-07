@@ -854,6 +854,11 @@
         "icon": "$(graph)"
       },
       {
+        "command": "aspLsp.showFolderGraph",
+        "title": "%command.showFolderGraph.title%",
+        "icon": "$(graph)"
+      },
+      {
         "command": "aspLsp.showWorkspaceGraph",
         "title": "%command.showWorkspaceGraph.title%"
       },
@@ -883,6 +888,18 @@
         {
           "command": "aspLsp.showCurrentFileGraph",
           "when": "editorLangId == classic-asp",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "aspLsp.showFolderGraph",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation"
+        },
+        {
+          "command": "aspLsp.showCurrentFileGraph",
+          "when": "resourceExtname =~ /\\.(asp|asa|inc)$/i",
           "group": "navigation"
         }
       ]
@@ -923,6 +940,7 @@
   },
   "activationEvents": [
     "onCommand:aspLsp.showCurrentFileGraph",
+    "onCommand:aspLsp.showFolderGraph",
     "onCommand:aspLsp.showWorkspaceGraph",
     "onLanguage:classic-asp"
   ],
