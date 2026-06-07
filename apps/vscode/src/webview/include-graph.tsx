@@ -289,17 +289,13 @@ function App(): React.ReactElement {
     () => filterGraphData(graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes),
     [graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes],
   );
-  const displayGraphData = useMemo(
-    () => graphDataForSelection(selection, filteredGraphData),
-    [filteredGraphData, selection],
-  );
   const renderGraphData2d = useMemo(
-    () => graphDataForRender(displayGraphData, positionSyncRef.current, "2d"),
-    [displayGraphData],
+    () => graphDataForRender(filteredGraphData, positionSyncRef.current, "2d"),
+    [filteredGraphData],
   );
   const renderGraphData3d = useMemo(
-    () => graphDataForRender(displayGraphData, positionSyncRef.current, "3d"),
-    [displayGraphData],
+    () => graphDataForRender(filteredGraphData, positionSyncRef.current, "3d"),
+    [filteredGraphData],
   );
   const renderGraphData = mode === "3d" ? renderGraphData3d : renderGraphData2d;
   const filteredStats = useMemo(() => graphStatsFor(filteredGraphData), [filteredGraphData]);
@@ -314,8 +310,8 @@ function App(): React.ReactElement {
     [searchQuery, searchMatchCase, filteredGraphData.nodes, filteredGraphData.links],
   );
   const selectionHighlight = useMemo(
-    () => highlightForSelection(selection, displayGraphData.links, showOutgoingSelectionLinks),
-    [selection, displayGraphData.links, showOutgoingSelectionLinks],
+    () => highlightForSelection(selection, filteredGraphData.links, showOutgoingSelectionLinks),
+    [selection, filteredGraphData.links, showOutgoingSelectionLinks],
   );
   const highlight = selectionHighlight ?? searchHighlight;
   const titleFileName = currentFileGraphName(graph);
@@ -327,7 +323,7 @@ function App(): React.ReactElement {
     "--inspector-width": `${clampedInspectorWidth}px`,
   } as React.CSSProperties;
   const canFitGraph =
-    displayGraphData.nodes.length > 0 && surfaceSize.width > 0 && surfaceSize.height > 0;
+    filteredGraphData.nodes.length > 0 && surfaceSize.width > 0 && surfaceSize.height > 0;
   const toggleNodeCategory = useCallback((category: NodeColorCategory) => {
     setHiddenNodeCategories((current) => toggledSet(current, category));
   }, []);
@@ -438,16 +434,10 @@ function App(): React.ReactElement {
         return;
       }
       captureCurrentRenderPositions();
-      const nextDisplayGraphData = graphDataForSelection(nextSelection, filteredGraphData);
-      const nextRenderGraphData = graphDataForRender(
-        nextDisplayGraphData,
-        positionSyncRef.current,
-        mode,
-      );
       setSelection(nextSelection);
-      focusGraphTarget(target, mode, nextRenderGraphData, graph2dRef.current, graph3dRef.current);
+      focusGraphTarget(target, mode, renderGraphData, graph2dRef.current, graph3dRef.current);
     },
-    [captureCurrentRenderPositions, filteredGraphData, mode],
+    [captureCurrentRenderPositions, filteredGraphData, mode, renderGraphData],
   );
 
   useEffect(() => {
@@ -2353,24 +2343,6 @@ function graphDataForRender(
       target: nodeIdForEndpoint(link.target),
     })),
   };
-}
-
-function graphDataForSelection(selection: Selection, graphData: GraphData): GraphData {
-  if (selection?.type !== "link") {
-    return graphData;
-  }
-  const selectedLink = graphData.links.find((link) => link.id === selection.item.id);
-  if (!selectedLink) {
-    return graphData;
-  }
-  const visibleNodeIds = new Set([
-    nodeIdForEndpoint(selectedLink.source),
-    nodeIdForEndpoint(selectedLink.target),
-  ]);
-  const visibleNodes = graphData.nodes.filter((node) => visibleNodeIds.has(node.id));
-  return visibleNodes.length === visibleNodeIds.size
-    ? { nodes: visibleNodes, links: [selectedLink] }
-    : graphData;
 }
 
 function positionSyncTransformFor3d(
