@@ -60,7 +60,7 @@ type GraphData = {
 
 type Selection = { type: "node"; item: GraphNode } | { type: "link"; item: GraphLink } | undefined;
 
-type GraphStatsMetric = "files" | "declarations" | "missingIncludes";
+type GraphStatsMetric = "files" | "declarations" | "links" | "missingIncludes";
 
 type GraphStatsTarget = { type: "node"; id: string } | { type: "link"; id: string };
 
@@ -982,7 +982,6 @@ function GraphStatsPopover({
         onClick={() => setOpen((current) => !current)}
       >
         <span className="font-semibold text-[#d7dde8]">Stats</span>
-        <span className="text-[11px] text-[#9aa7b8]">Files {stats.files}</span>
       </button>
       {isOpen ? (
         <div
@@ -993,7 +992,7 @@ function GraphStatsPopover({
           <div className="text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
             Graph stats
           </div>
-          <div className="grid grid-cols-3 gap-2 max-[430px]:grid-cols-1">
+          <div className="grid grid-cols-2 gap-2 max-[360px]:grid-cols-1">
             <MetricButton
               activeMetric={activeMetric}
               label="Files"
@@ -1006,6 +1005,13 @@ function GraphStatsPopover({
               label="VB"
               metric="declarations"
               value={stats.declarations}
+              onSelect={setActiveMetric}
+            />
+            <MetricButton
+              activeMetric={activeMetric}
+              label="Links"
+              metric="links"
+              value={stats.links}
               onSelect={setActiveMetric}
             />
             <MetricButton
@@ -1139,9 +1145,26 @@ function statsItemsForMetric(metric: GraphStatsMetric, graphData: GraphData): Gr
           status: nodeStatusLabel(node),
           color: node.color,
         }));
+    case "links":
+      return linkStatsItems(graphData);
     case "missingIncludes":
       return missingIncludeStatsItems(graphData);
   }
+}
+
+function linkStatsItems(graphData: GraphData): GraphStatsListItem[] {
+  const nodesById = graphNodeMap(graphData.nodes);
+  return graphData.links.map((link) => ({
+    id: `link:${link.id}`,
+    title: linkStatsTitle(link),
+    target: { type: "link", id: link.id },
+    detail: detailParts(
+      `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
+      link.role,
+    ).join(" · "),
+    status: `x${link.count}`,
+    color: link.color,
+  }));
 }
 
 function missingIncludeStatsItems(graphData: GraphData): GraphStatsListItem[] {
@@ -1171,6 +1194,13 @@ function fileStatsStatus(node: GraphNode): string {
     node.exists === false ? "Missing" : undefined,
   );
   return status.length > 0 ? status.join(" / ") : "File";
+}
+
+function linkStatsTitle(link: GraphLink): string {
+  if (graphLinkFilterCategory(link) === "member") {
+    return linkFilterLabels.member;
+  }
+  return linkMeanings[link.kind].label;
 }
 
 function endpointLabel(
