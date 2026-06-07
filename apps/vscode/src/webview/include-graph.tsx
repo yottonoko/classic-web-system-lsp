@@ -3,6 +3,12 @@ import { createRoot } from "react-dom/client";
 import ForceGraph2D from "react-force-graph-2d";
 import ForceGraph3D from "react-force-graph-3d";
 import SpriteText from "three-spritetext";
+import { INITIAL, Registry, parseRawGrammar } from "vscode-textmate";
+import { createOnigScanner, createOnigString, loadWASM } from "vscode-oniguruma";
+import onigWasmUrl from "vscode-oniguruma/release/onig.wasm?url";
+import classicAspGrammarJson from "../../syntaxes/classic-asp.tmLanguage.json";
+import classicAspTagInjectionGrammarJson from "../../syntaxes/classic-asp-tag-injection.tmLanguage.json";
+import vbscriptGrammarJson from "../../syntaxes/vbscript.tmLanguage.json";
 import tailwindStyles from "./include-graph.css?inline";
 import type {
   AspGraphLink,
@@ -16,6 +22,7 @@ import type {
 } from "../include-graph-webview";
 import type { ForceGraphMethods as ForceGraph2DMethods } from "react-force-graph-2d";
 import type { ForceGraphMethods as ForceGraph3DMethods } from "react-force-graph-3d";
+import type { IGrammar, IOnigLib, IRawGrammar, StateStack } from "vscode-textmate";
 
 declare const acquireVsCodeApi: () => {
   postMessage(message: unknown): void;
@@ -114,6 +121,23 @@ interface SourceRangesMessage {
   type: "sourceRanges";
   requestId: string;
   items: AspGraphSourceRangeResponseItem[];
+}
+
+type SnippetLanguage = "classic-asp" | "vbscript";
+
+type SnippetHighlightState =
+  | { status: "loading" }
+  | { status: "ready"; highlighter: SnippetHighlighter }
+  | { status: "failed" };
+
+interface SnippetHighlighter {
+  classicAsp: IGrammar;
+  vbscript: IGrammar;
+}
+
+interface HighlightOffsets {
+  start: number;
+  end: number;
 }
 
 const vscode = acquireVsCodeApi();
@@ -251,6 +275,8 @@ const graph3dMinimumFocusDistance = 70;
 const graph3dLinkDistanceScale = 1.35;
 const positionSyncPinMs = 600;
 const graph3dSyncSpan = 160;
+const sourceHighlightMarkClassName =
+  "rounded-sm bg-[#ffcb6b]/45 px-0.5 text-inherit shadow-[0_0_0_1px_rgb(255_203_107_/_75%)]";
 const inspectorDefaultWidth = 320;
 const inspectorMinimumWidth = 260;
 const inspectorMaximumWidth = 560;
@@ -1606,7 +1632,7 @@ function DeclarationSource({
       {source?.error ? (
         <p className="m-0 text-[11px] text-[#ff9cac]">{source.error}</p>
       ) : (
-        <SourceCodeSnippet className="max-h-80" loading={loading} source={source} />
+        <SourceCodeSnippet className="max-h-80" item={item} loading={loading} source={source} />
       )}
     </div>
   );
@@ -1688,7 +1714,7 @@ function SourceRangeCard({
       {source?.error ? (
         <p className="m-0 text-[11px] text-[#ff9cac]">{source.error}</p>
       ) : (
-        <SourceCodeSnippet className="max-h-44" loading={loading} source={source} />
+        <SourceCodeSnippet className="max-h-44" item={item} loading={loading} source={source} />
       )}
     </article>
   );
@@ -1696,37 +1722,40 @@ function SourceRangeCard({
 
 function SourceCodeSnippet({
   className,
+  item,
   loading,
   source,
 }: {
   className: string;
+  item: GraphSourceItem;
   loading: boolean;
   source: AspGraphSourceRangeResponseItem | undefined;
 }): React.ReactElement {
   const text = source?.text ?? (loading ? "Loading source..." : "Source is unavailable.");
-  const highlightParts = sourceHighlightParts(source);
+  const highlightState = useSnippetHighlightState(Boolean(source?.text));
+  const highlightOffsets = sourceHighlightOffsets(source);
+  const language = snippetLanguageForSourceItem(item);
   return (
     <pre
       className={`m-0 overflow-auto rounded border border-[#253041] bg-[#0d1117] p-2 font-mono text-[11px] leading-[1.45] whitespace-pre-wrap text-[#d7dde8] [tab-size:2] ${className}`}
     >
-      {highlightParts ? (
-        <>
-          {highlightParts.before}
-          <mark className="rounded-sm bg-[#ffcb6b]/55 px-0.5 text-[#fff8c6] shadow-[0_0_0_1px_rgb(255_203_107_/_75%)]">
-            {highlightParts.highlighted}
-          </mark>
-          {highlightParts.after}
-        </>
+      {source?.text && highlightState.status === "ready" ? (
+        <HighlightedSourceText
+          highlightOffsets={highlightOffsets}
+          highlighter={highlightState.highlighter}
+          language={language}
+          text={source.text}
+        />
       ) : (
-        text
+        <PlainSourceText highlightOffsets={highlightOffsets} text={text} />
       )}
     </pre>
   );
 }
 
-function sourceHighlightParts(
+function sourceHighlightOffsets(
   source: AspGraphSourceRangeResponseItem | undefined,
-): { before: string; highlighted: string; after: string } | undefined {
+): HighlightOffsets | undefined {
   if (!source?.text || !source.range || !source.highlightRange) {
     return undefined;
   }
@@ -1735,11 +1764,354 @@ function sourceHighlightParts(
   if (start === undefined || end === undefined || end <= start) {
     return undefined;
   }
+  return { start, end };
+}
+
+function PlainSourceText({
+  highlightOffsets,
+  text,
+}: {
+  highlightOffsets: HighlightOffsets | undefined;
+  text: string;
+}): React.ReactElement {
+  return <>{renderCodeSegment(text, "plain", 0, highlightOffsets)}</>;
+}
+
+function HighlightedSourceText({
+  highlightOffsets,
+  highlighter,
+  language,
+  text,
+}: {
+  highlightOffsets: HighlightOffsets | undefined;
+  highlighter: SnippetHighlighter;
+  language: SnippetLanguage;
+  text: string;
+}): React.ReactElement {
+  const grammar = language === "classic-asp" ? highlighter.classicAsp : highlighter.vbscript;
+  const lines = text.split("\n");
+  const children: React.ReactNode[] = [];
+  let state: StateStack | null = INITIAL;
+  let lineOffset = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const result = grammar.tokenizeLine(line, state);
+    state = result.ruleStack;
+    children.push(
+      <React.Fragment key={`line:${index}`}>
+        {renderTokenizedLine(line, result.tokens, lineOffset, highlightOffsets)}
+        {index < lines.length - 1 ? "\n" : null}
+      </React.Fragment>,
+    );
+    lineOffset += line.length + (index < lines.length - 1 ? 1 : 0);
+  }
+  return <>{children}</>;
+}
+
+function renderTokenizedLine(
+  line: string,
+  tokens: Array<{ startIndex: number; endIndex: number; scopes: string[] }>,
+  lineOffset: number,
+  highlightOffsets: HighlightOffsets | undefined,
+): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const start = clamp(token.startIndex, 0, line.length);
+    const end = clamp(token.endIndex, start, line.length);
+    if (start > cursor) {
+      parts.push(
+        ...renderCodeSegment(
+          line.slice(cursor, start),
+          `gap:${index}:${cursor}`,
+          lineOffset + cursor,
+          highlightOffsets,
+        ),
+      );
+    }
+    if (end > start) {
+      parts.push(
+        ...renderCodeSegment(
+          line.slice(start, end),
+          `token:${index}:${start}`,
+          lineOffset + start,
+          highlightOffsets,
+          tokenStyleForScopes(token.scopes),
+        ),
+      );
+    }
+    cursor = end;
+  }
+  if (cursor < line.length) {
+    parts.push(
+      ...renderCodeSegment(
+        line.slice(cursor),
+        `tail:${cursor}`,
+        lineOffset + cursor,
+        highlightOffsets,
+      ),
+    );
+  }
+  return parts.length > 0 ? parts : [""];
+}
+
+function renderCodeSegment(
+  text: string,
+  key: string,
+  offset: number,
+  highlightOffsets: HighlightOffsets | undefined,
+  style?: React.CSSProperties,
+): React.ReactNode[] {
+  if (!text) {
+    return [];
+  }
+  if (!highlightOffsets) {
+    return [styledSourceSpan(key, text, style)];
+  }
+  const highlightStart = clamp(highlightOffsets.start - offset, 0, text.length);
+  const highlightEnd = clamp(highlightOffsets.end - offset, 0, text.length);
+  if (highlightEnd <= 0 || highlightStart >= text.length || highlightEnd <= highlightStart) {
+    return [styledSourceSpan(key, text, style)];
+  }
+  const parts: React.ReactNode[] = [];
+  if (highlightStart > 0) {
+    parts.push(styledSourceSpan(`${key}:before`, text.slice(0, highlightStart), style));
+  }
+  parts.push(
+    <mark key={`${key}:highlight`} className={sourceHighlightMarkClassName} style={style}>
+      {text.slice(highlightStart, highlightEnd)}
+    </mark>,
+  );
+  if (highlightEnd < text.length) {
+    parts.push(styledSourceSpan(`${key}:after`, text.slice(highlightEnd), style));
+  }
+  return parts;
+}
+
+function styledSourceSpan(
+  key: string,
+  text: string,
+  style: React.CSSProperties | undefined,
+): React.ReactElement {
+  return (
+    <span key={key} style={style}>
+      {text}
+    </span>
+  );
+}
+
+function tokenStyleForScopes(scopes: string[]): React.CSSProperties | undefined {
+  if (scopes.some((scope) => scope.includes("comment"))) {
+    return { color: "#6a9955", fontStyle: "italic" };
+  }
+  if (scopes.some((scope) => scope.includes("string"))) {
+    return { color: "#c3e88d" };
+  }
+  if (scopes.some((scope) => scope.includes("constant.numeric"))) {
+    return { color: "#f78c6c" };
+  }
+  if (scopes.some((scope) => scope.includes("keyword") || scope.includes("storage"))) {
+    return { color: "#c792ea", fontWeight: 600 };
+  }
+  if (scopes.some((scope) => scope.includes("entity.name.tag"))) {
+    return { color: "#ff5370", fontWeight: 600 };
+  }
+  if (scopes.some((scope) => scope.includes("meta.tag") || scope.includes("punctuation"))) {
+    return { color: "#89ddff" };
+  }
+  if (
+    scopes.some(
+      (scope) =>
+        scope.includes("entity.name") ||
+        scope.includes("support.function") ||
+        scope.includes("support.class"),
+    )
+  ) {
+    return { color: "#82aaff" };
+  }
+  if (scopes.some((scope) => scope.includes("variable.parameter"))) {
+    return { color: "#b2ccd6" };
+  }
+  if (scopes.some((scope) => scope.includes("variable") || scope.includes("support"))) {
+    return { color: "#dcdcaa" };
+  }
+  return undefined;
+}
+
+function useSnippetHighlightState(enabled: boolean): SnippetHighlightState {
+  const [state, setState] = useState<SnippetHighlightState>({ status: "loading" });
+  useEffect(() => {
+    if (!enabled) {
+      return undefined;
+    }
+    let cancelled = false;
+    setState({ status: "loading" });
+    void loadSnippetHighlighter()
+      .then((highlighter) => {
+        if (!cancelled) {
+          setState({ status: "ready", highlighter });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setState({ status: "failed" });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+  return enabled ? state : { status: "failed" };
+}
+
+function snippetLanguageForSourceItem(item: GraphSourceItem): SnippetLanguage {
+  return item.kind === "include" ? "classic-asp" : "vbscript";
+}
+
+let snippetHighlighterPromise: Promise<SnippetHighlighter> | undefined;
+
+function loadSnippetHighlighter(): Promise<SnippetHighlighter> {
+  snippetHighlighterPromise ??= createSnippetHighlighter();
+  return snippetHighlighterPromise;
+}
+
+async function createSnippetHighlighter(): Promise<SnippetHighlighter> {
+  const onigLib = (async (): Promise<IOnigLib> => {
+    await loadWASM(await fetch(onigWasmUrl));
+    return {
+      createOnigScanner,
+      createOnigString,
+    };
+  })();
+  const rawGrammars = new Map<string, IRawGrammar>([
+    [
+      "text.html.classic-asp",
+      rawTextMateGrammar(classicAspGrammarJson, "classic-asp.tmLanguage.json"),
+    ],
+    [
+      "classic-asp.tag-injection",
+      rawTextMateGrammar(
+        classicAspTagInjectionGrammarJson,
+        "classic-asp-tag-injection.tmLanguage.json",
+      ),
+    ],
+    ["source.vbscript", rawTextMateGrammar(vbscriptGrammarJson, "vbscript.tmLanguage.json")],
+    ["text.html.basic", rawTextMateGrammar(minimalHtmlGrammar(), "html.json")],
+    ["source.css", rawTextMateGrammar(minimalCssGrammar(), "css.json")],
+    ["source.js", rawTextMateGrammar(minimalJavaScriptGrammar(), "javascript.json")],
+  ]);
+  const registry = new Registry({
+    onigLib,
+    loadGrammar: async (scopeName) => rawGrammars.get(scopeName) ?? null,
+    getInjections: (scopeName) =>
+      scopeName === "text.html.classic-asp" ? ["classic-asp.tag-injection"] : undefined,
+  });
+  const [classicAsp, vbscript] = await Promise.all([
+    registry.loadGrammar("text.html.classic-asp"),
+    registry.loadGrammar("source.vbscript"),
+  ]);
+  if (!classicAsp || !vbscript) {
+    throw new Error("Failed to load graph snippet TextMate grammars.");
+  }
+  return { classicAsp, vbscript };
+}
+
+function rawTextMateGrammar(grammar: unknown, fileName: string): IRawGrammar {
+  return parseRawGrammar(JSON.stringify(grammar), fileName);
+}
+
+function minimalHtmlGrammar(): unknown {
   return {
-    before: source.text.slice(0, start),
-    highlighted: source.text.slice(start, end),
-    after: source.text.slice(end),
+    scopeName: "text.html.basic",
+    patterns: [
+      { include: "#style" },
+      { include: "#script" },
+      { include: "#tag" },
+      { match: "[^<]+" },
+    ],
+    repository: {
+      tag: {
+        begin: "<[A-Za-z][A-Za-z0-9:-]*\\b",
+        end: ">",
+        name: "meta.tag.html",
+        patterns: [
+          {
+            begin: '"',
+            end: '"',
+            name: "string.quoted.double.html",
+          },
+          {
+            begin: "'",
+            end: "'",
+            name: "string.quoted.single.html",
+          },
+        ],
+      },
+      style: {
+        begin: "<style\\b[^>]*>",
+        end: "</style>",
+        contentName: "source.css",
+        name: "meta.embedded.block.css.html",
+        patterns: [{ include: "source.css" }],
+      },
+      script: {
+        begin: "<script\\b[^>]*>",
+        end: "</script>",
+        contentName: "source.js",
+        name: "meta.embedded.block.javascript.html",
+        patterns: [{ include: "source.js" }],
+      },
+    },
   };
+}
+
+function minimalCssGrammar(): unknown {
+  return {
+    scopeName: "source.css",
+    name: "source.css",
+    patterns: [
+      {
+        begin: "/\\*",
+        end: "\\*/",
+        name: "comment.block.css",
+        patterns: aspIslandPatterns(),
+      },
+      { match: "\\.[A-Za-z_][A-Za-z0-9_-]*", name: "entity.other.attribute-name.class.css" },
+      { match: "[A-Za-z_-][A-Za-z0-9_-]*", name: "support.type.property-name.css" },
+    ],
+  };
+}
+
+function minimalJavaScriptGrammar(): unknown {
+  return {
+    scopeName: "source.js",
+    name: "source.js",
+    patterns: [
+      {
+        begin: "//",
+        end: "$",
+        name: "comment.line.double-slash.js",
+        patterns: aspIslandPatterns(),
+      },
+      {
+        begin: "/\\*",
+        end: "\\*/",
+        name: "comment.block.js",
+        patterns: aspIslandPatterns(),
+      },
+      { match: "\\bconst\\b", name: "storage.modifier.js" },
+      { match: "[A-Za-z_$][A-Za-z0-9_$]*", name: "variable.other.js" },
+    ],
+  };
+}
+
+function aspIslandPatterns(): unknown[] {
+  return [
+    { include: "text.html.classic-asp#asp-expression" },
+    { include: "text.html.classic-asp#asp-directive" },
+    { include: "text.html.classic-asp#asp-block" },
+  ];
 }
 
 function positionOffsetInRangeText(
