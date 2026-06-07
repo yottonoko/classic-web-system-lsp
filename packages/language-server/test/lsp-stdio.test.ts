@@ -4923,6 +4923,16 @@ Response.Write BuildName()
         expect(JSON.stringify(enabledCodeLens)).toContain("vscode.open");
         expect(JSON.stringify(enabledCodeLens)).toContain("common.inc");
 
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { codeLens: { references: false, includes: true } } },
+        });
+        const includeOnlyCodeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri },
+        })) as Array<Record<string, unknown>>;
+        expect(includeOnlyCodeLens.some((lens) => lens.data)).toBe(false);
+        expect(JSON.stringify(includeOnlyCodeLens)).toContain("vscode.open");
+        expect(JSON.stringify(includeOnlyCodeLens)).toContain("common.inc");
+
         await server.request("shutdown", null);
         server.notify("exit", undefined);
       } finally {
@@ -4930,7 +4940,146 @@ Response.Write BuildName()
       }
     });
 
-    it("counts VBScript references from unopened workspace files", async () => {
+    it("filters VBScript reference CodeLens entries by symbol category settings", async () => {
+      const source = `<%
+Dim globalValue
+Const globalConst = 1
+Class Customer
+  Public Name
+  Const Kind = "vip"
+  Public Property Get DisplayName()
+    DisplayName = Name
+  End Property
+  Public Sub Save()
+  End Sub
+End Class
+Function BuildName()
+  BuildName = globalValue & globalConst
+End Function
+Sub Render()
+  Dim localValue
+  Const localConst = 2
+  Dim item
+  Set item = New Customer
+  item.Name = BuildName()
+  item.Save
+  Response.Write item.DisplayName
+End Sub
+%>`;
+      const uri = "file:///tmp/reference-codelens-categories.asp";
+      const server = new RpcServer();
+      const referenceCodeLensKeys = async (
+        codeLensSettings: Record<string, unknown> | undefined,
+      ): Promise<Set<string>> => {
+        if (codeLensSettings) {
+          server.notify("workspace/didChangeConfiguration", {
+            settings: { aspLsp: { codeLens: codeLensSettings } },
+          });
+        }
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri },
+        })) as Array<Record<string, unknown>>;
+        return new Set(
+          codeLens.flatMap((lens) => {
+            const data = lens.data as
+              | { kind?: unknown; name?: unknown; symbolKind?: unknown }
+              | undefined;
+            return data?.kind === "vbscript-reference" &&
+              typeof data.name === "string" &&
+              typeof data.symbolKind === "string"
+              ? [`${data.symbolKind}:${data.name}`]
+              : [];
+          }),
+        );
+      };
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const defaultKeys = await referenceCodeLensKeys(undefined);
+        for (const key of [
+          "variable:globalValue",
+          "constant:globalConst",
+          "class:Customer",
+          "field:Name",
+          "constant:Kind",
+          "property:DisplayName",
+          "method:Save",
+          "function:BuildName",
+          "sub:Render",
+        ]) {
+          expect(defaultKeys.has(key)).toBe(true);
+        }
+        expect(defaultKeys.has("variable:localValue")).toBe(false);
+        expect(defaultKeys.has("constant:localConst")).toBe(false);
+        expect(defaultKeys.has("variable:item")).toBe(false);
+
+        const withoutProcedures = await referenceCodeLensKeys({
+          referenceProcedures: false,
+          referenceGlobals: true,
+          referenceClasses: true,
+          referenceClassMembers: true,
+        });
+        expect(withoutProcedures.has("function:BuildName")).toBe(false);
+        expect(withoutProcedures.has("sub:Render")).toBe(false);
+        expect(withoutProcedures.has("method:Save")).toBe(false);
+        expect(withoutProcedures.has("property:DisplayName")).toBe(false);
+        expect(withoutProcedures.has("variable:globalValue")).toBe(true);
+        expect(withoutProcedures.has("class:Customer")).toBe(true);
+        expect(withoutProcedures.has("field:Name")).toBe(true);
+
+        const withoutGlobals = await referenceCodeLensKeys({
+          referenceProcedures: true,
+          referenceGlobals: false,
+          referenceClasses: true,
+          referenceClassMembers: true,
+        });
+        expect(withoutGlobals.has("variable:globalValue")).toBe(false);
+        expect(withoutGlobals.has("constant:globalConst")).toBe(false);
+        expect(withoutGlobals.has("constant:Kind")).toBe(true);
+        expect(withoutGlobals.has("function:BuildName")).toBe(true);
+
+        const withoutClasses = await referenceCodeLensKeys({
+          referenceProcedures: true,
+          referenceGlobals: true,
+          referenceClasses: false,
+          referenceClassMembers: true,
+        });
+        expect(withoutClasses.has("class:Customer")).toBe(false);
+        expect(withoutClasses.has("field:Name")).toBe(true);
+
+        const withoutClassMembers = await referenceCodeLensKeys({
+          referenceProcedures: true,
+          referenceGlobals: true,
+          referenceClasses: true,
+          referenceClassMembers: false,
+        });
+        expect(withoutClassMembers.has("field:Name")).toBe(false);
+        expect(withoutClassMembers.has("constant:Kind")).toBe(false);
+        expect(withoutClassMembers.has("property:DisplayName")).toBe(true);
+        expect(withoutClassMembers.has("class:Customer")).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("counts VBScript references from unopened workspace files by default", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-"));
       const common = path.join(tempDir, "common.inc");
       const page = path.join(tempDir, "default.asp");
@@ -4979,18 +5128,18 @@ Response.Write SharedTitle()
           "codeLens/resolve",
           referencesCodeLens,
         )) as Record<string, unknown>;
-        expect(JSON.stringify(resolvedCodeLens.command)).toContain("0 references");
-        expect(JSON.stringify(resolvedCodeLens.command)).not.toContain(pageUri);
+        expect(JSON.stringify(resolvedCodeLens.command)).toContain("1 reference");
+        expect(JSON.stringify(resolvedCodeLens.command)).toContain(pageUri);
 
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { codeLens: { referenceScope: "workspace" } } },
+          settings: { aspLsp: { codeLens: { referenceScope: "analyzed" } } },
         });
-        const workspaceResolvedCodeLens = (await server.request(
+        const analyzedResolvedCodeLens = (await server.request(
           "codeLens/resolve",
           referencesCodeLens,
         )) as Record<string, unknown>;
-        expect(JSON.stringify(workspaceResolvedCodeLens.command)).toContain("1 reference");
-        expect(JSON.stringify(workspaceResolvedCodeLens.command)).toContain(pageUri);
+        expect(JSON.stringify(analyzedResolvedCodeLens.command)).toContain("0 references");
+        expect(JSON.stringify(analyzedResolvedCodeLens.command)).not.toContain(pageUri);
 
         const references = await server.request("textDocument/references", {
           textDocument: { uri: commonUri },
@@ -4998,6 +5147,214 @@ Response.Write SharedTitle()
           context: { includeDeclaration: false },
         });
         expect(JSON.stringify(references)).toContain(pageUri);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("reuses worker-backed workspace references between CodeLens and references", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-cache-"));
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "default.asp");
+      const unrelated = path.join(tempDir, "unrelated.asp");
+      const commonSource = `<%
+Function SharedTitle()
+  SharedTitle = "Dashboard"
+End Function
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="common.inc" -->
+<%
+Response.Write SharedTitle()
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(unrelated, `<%\nResponse.Write SharedTitle()\n%>`, "utf8");
+      const commonUri = pathToFileURL(common).href;
+      const pageUri = pathToFileURL(page).href;
+      const unrelatedUri = pathToFileURL(unrelated).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "summary" },
+              codeLens: { referenceScope: "workspace" },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: commonUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: commonSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: commonUri },
+        })) as Array<Record<string, unknown>>;
+        const referencesCodeLens = codeLens.find((lens) => {
+          const data = lens.data as { kind?: unknown; line?: unknown } | undefined;
+          return data?.kind === "vbscript-reference" && data.line === 1;
+        });
+        const resolvedCodeLens = (await server.request(
+          "codeLens/resolve",
+          referencesCodeLens,
+        )) as Record<string, unknown>;
+        expect(JSON.stringify(resolvedCodeLens.command)).toContain(pageUri);
+        expect(JSON.stringify(resolvedCodeLens.command)).not.toContain(unrelatedUri);
+
+        const references = await server.request("textDocument/references", {
+          textDocument: { uri: commonUri },
+          position: { line: 1, character: 10 },
+          context: { includeDeclaration: false },
+        });
+        expect(JSON.stringify(references)).toContain(pageUri);
+        expect(JSON.stringify(references)).not.toContain(unrelatedUri);
+        await waitForLogContaining(server, "vb.references.worker.cache.hit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("reuses in-flight worker-backed workspace references for concurrent requests", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-reuse-"));
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "default.asp");
+      const commonSource = `<%
+Function SharedTitle()
+  SharedTitle = "Dashboard"
+End Function
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="common.inc" -->
+<%
+Response.Write SharedTitle()
+%>`,
+        "utf8",
+      );
+      const commonUri = pathToFileURL(common).href;
+      const pageUri = pathToFileURL(page).href;
+      const server = new RpcServer({
+        env: { ASP_LSP_TEST_VB_REFERENCES_WORKER_DELAY_MS: "150" },
+      });
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { debug: { output: "summary" } } },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: commonUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: commonSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const params = {
+          textDocument: { uri: commonUri },
+          position: { line: 1, character: 10 },
+          context: { includeDeclaration: false },
+        };
+        const first = server.request("textDocument/references", params);
+        const second = server.request("textDocument/references", params);
+        const [firstReferences, secondReferences] = await Promise.all([first, second]);
+        expect(JSON.stringify(firstReferences)).toContain(pageUri);
+        expect(JSON.stringify(secondReferences)).toContain(pageUri);
+        await waitForLogContaining(server, "vb.references.worker.reuse");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("does not adopt stale worker-backed workspace reference results after file changes", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-stale-"));
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "default.asp");
+      const commonSource = `<%
+Function SharedTitle()
+  SharedTitle = "Dashboard"
+End Function
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="common.inc" -->
+<%
+Response.Write SharedTitle()
+%>`,
+        "utf8",
+      );
+      const commonUri = pathToFileURL(common).href;
+      const pageUri = pathToFileURL(page).href;
+      const server = new RpcServer({
+        env: { ASP_LSP_TEST_VB_REFERENCES_WORKER_DELAY_MS: "200" },
+      });
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { debug: { output: "summary" } } },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: commonUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: commonSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const pendingReferences = server.request("textDocument/references", {
+          textDocument: { uri: commonUri },
+          position: { line: 1, character: 10 },
+          context: { includeDeclaration: false },
+        });
+        await waitForLogContaining(server, "vb.references.workspace.candidates");
+        fs.writeFileSync(page, `<%\nResponse.Write "changed"\n%>`, "utf8");
+        server.notify("workspace/didChangeWatchedFiles", {
+          changes: [{ uri: pageUri, type: 2 }],
+        });
+        const references = await pendingReferences;
+        expect(JSON.stringify(references)).not.toContain(pageUri);
+        await waitForLogContaining(server, "vb.references.worker.stale");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -6116,9 +6473,7 @@ End Sub
         expect(noUnresolvedGraph.settings?.hiddenLinkCategories).toContain("unresolvedReference");
         configure({ ...allGraphSettings, showUnresolvedNodes: false });
         const noUnresolvedNodesGraph = await buildGraph();
-        expect(
-          hasNode(noUnresolvedNodesGraph, (node) => node.kind === "vbUnresolved"),
-        ).toBe(true);
+        expect(hasNode(noUnresolvedNodesGraph, (node) => node.kind === "vbUnresolved")).toBe(true);
         expect(noUnresolvedNodesGraph.settings?.hiddenNodeCategories).toContain("unresolved");
         configure({ ...allGraphSettings, showMemberLinks: false });
         {
@@ -10912,7 +11267,8 @@ async function waitForDiagnosticsContaining(
   server: RpcServer,
   expected: string,
 ): Promise<JsonRpcMessage> {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  const deadline = Date.now() + rpcTimeoutMs;
+  while (Date.now() < deadline) {
     const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
     if (JSON.stringify(diagnostics.params).includes(expected)) {
       return diagnostics;

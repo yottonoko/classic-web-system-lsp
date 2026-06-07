@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { JsDiagnosticsWorkerPool } from "./js-worker-pool";
 import { VbDiagnosticsWorkerPool } from "./vb-worker-pool";
+import { VbReferencesWorkerPool } from "./vb-references-worker-pool";
 import {
   DiskAnalysisCache,
   type DiskAnalysisBuilderState,
@@ -22,6 +23,12 @@ import type {
   VbDiagnosticsWorkerDocument,
   VbDiagnosticsWorkerResponse,
 } from "./vb-diagnostics-protocol";
+import type {
+  VbReferencesWorkerCandidate,
+  VbReferencesWorkerOpenDocument,
+  VbReferencesWorkerResponse,
+  VbReferencesWorkerTargetSymbol,
+} from "./vb-references-protocol";
 import { analyse, detect } from "chardet";
 import {
   CodeActionKind,
@@ -119,7 +126,6 @@ import {
   resolveVbscriptCompletionItem,
   shiftAspRangeAfterChange,
   summarizeAspFileAnalysisAsync,
-  summarizeAspFileAnalysisFromTextAsync,
   updateAspParsedDocument,
   updateAspParsedDocumentSkeletonAsync,
   type AspFormattingOptions,
@@ -221,7 +227,8 @@ let workspaceRoots: string[] = [];
 let clientLocale = "en";
 let workspaceIndexDirty = true;
 let workspaceIndexTruncated = false;
-let workspaceVbReferenceIndex: WorkspaceVbReferenceIndex | undefined;
+let vbReferencesWorkerPool: VbReferencesWorkerPool | undefined;
+let vbReferencesWorkerRequestId = 0;
 let jsLanguageServiceCacheTick = 0;
 let lightweightJsUnusedCacheTick = 0;
 let jsScriptSnapshotSequence = 0;
@@ -610,18 +617,9 @@ interface VbProjectSummaryGraph {
   textLength: number;
 }
 
-interface WorkspaceVbReferenceSummary {
-  uri: string;
-  fileName: string;
-  summary: FileAnalysisSummary;
-}
-
-interface WorkspaceVbReferenceIndex {
+interface WorkspaceVbReferenceWorkerTask {
   key: string;
-  summaries: WorkspaceVbReferenceSummary[];
-  byUsageKey: Map<string, WorkspaceVbReferenceSummary[]>;
-  byMemberName: Map<string, WorkspaceVbReferenceSummary[]>;
-  lastUsed: number;
+  promise: Promise<VbReferencesWorkerResponse>;
 }
 
 interface VbReferenceCodeLensData {
@@ -1423,6 +1421,9 @@ const pendingIncludeSummaryRefreshes = new Map<string, Promise<void>>();
 const aspProjectBuilderState = new AspProjectBuilderState();
 const completionSessionCache = new CompletionSessionCache();
 const maxVbProjectContextCacheEntries = 32;
+const maxWorkspaceVbReferenceWorkerCacheEntries = 128;
+const workspaceVbReferenceWorkerInFlight = new Map<string, WorkspaceVbReferenceWorkerTask>();
+const workspaceVbReferenceWorkerCompleted = new Map<string, VbReferencesWorkerResponse>();
 let vbDiagnosticsWorkerPool: VbDiagnosticsWorkerPool | undefined;
 let vbDiagnosticsWorkerRequestId = 0;
 let stagedDiagnosticsGeneration = 0;
@@ -7127,220 +7128,285 @@ async function workspaceVbscriptReferencesForSymbol(
   const references = new Map<string, VbReference>();
   addVbReferences(references, getVbscriptReferencesForSymbol(target, context, options));
 
-  const indexed = await workspaceVbReferenceIndexForSettings(settings);
   const contextUris = new Set((context.documents ?? []).map((document) => document.uri));
-  const candidates = workspaceVbReferenceCandidatesForSymbol(indexed, target).filter(
-    (candidate) => !contextUris.has(candidate.uri),
-  );
+  const candidates = await workspaceVbReferenceWorkerCandidates(contextUris, settings);
   logDebugSummary(
     settings,
     `[asp-lsp] vb.references.workspace.candidates: ${target.sourceUri}, symbol=${target.name}, candidates=${candidates.length}`,
   );
-
-  for (const candidate of candidates) {
-    const candidateCached = await cachedForWorkspaceVbReferenceSummary(candidate, settings);
-    if (!candidateCached) {
-      continue;
-    }
-    const candidateContext = await buildFullVbProjectContextForWorkspaceOperationAsync(
-      candidateCached,
-      settings,
-    );
-    const candidateTarget = equivalentVbSymbol(candidateContext.symbols ?? [], target);
-    if (candidateTarget) {
-      addVbReferences(
-        references,
-        getVbscriptReferencesForSymbol(candidateTarget, candidateContext, options),
-      );
-      continue;
-    }
-    addVbReferences(references, fallbackWorkspaceExternalReferences(candidate.summary, target));
+  const targetForWorker = vbReferencesWorkerTargetSymbol(target);
+  const openDocuments = vbReferencesWorkerOpenDocuments();
+  const openDocumentsKey = vbReferencesWorkerOpenDocumentsKey(openDocuments);
+  const workerResponses = await Promise.all(
+    candidates.map((candidate) =>
+      workspaceVbReferenceWorkerResponse(
+        candidate,
+        targetForWorker,
+        settings,
+        options,
+        openDocuments,
+        openDocumentsKey,
+      ),
+    ),
+  );
+  for (const response of workerResponses) {
+    addVbReferences(references, response.references ?? []);
   }
 
   return [...references.values()].sort(vbReferenceOrder);
 }
 
-async function workspaceVbReferenceIndexForSettings(
+async function workspaceVbReferenceWorkerCandidates(
+  excludedUris: Set<string>,
   settings: AspSettings,
-): Promise<WorkspaceVbReferenceIndex> {
+): Promise<VbReferencesWorkerCandidate[]> {
   await ensureWorkspaceIndexAsync(settings);
-  const key = workspaceVbReferenceIndexKey(settings);
-  if (workspaceVbReferenceIndex?.key === key) {
-    workspaceVbReferenceIndex.lastUsed = Date.now();
-    logDebugSummary(settings, "[asp-lsp] vb.references.workspaceIndex.hit");
-    return workspaceVbReferenceIndex;
-  }
-  logDebugSummary(settings, "[asp-lsp] vb.references.workspaceIndex.miss");
-  const opened = new Set(documents.all().map((document) => document.uri));
-  const summaries: WorkspaceVbReferenceSummary[] = [];
+  const candidates = new Map<string, VbReferencesWorkerCandidate>();
   for (const document of documents.all()) {
-    const cached = await ensureFreshCachedDocumentAsync(document);
-    if (cached) {
-      summaries.push(await workspaceVbReferenceSummaryForCachedAsync(cached, settings));
+    if (!isClassicAspGraphUri(document.uri) || excludedUris.has(document.uri)) {
+      continue;
     }
-  }
-  const indexedSummaries = await mapWithConcurrency(
-    [...workspaceIndex.values()].filter((entry) => !opened.has(entry.uri)),
-    analysisConcurrency(settings),
-    async (entry) => workspaceVbReferenceSummaryForIndexed(entry, settings),
-  );
-  summaries.push(
-    ...indexedSummaries.filter((summary): summary is WorkspaceVbReferenceSummary =>
-      Boolean(summary),
-    ),
-  );
-
-  const byUsageKey = new Map<string, WorkspaceVbReferenceSummary[]>();
-  const byMemberName = new Map<string, WorkspaceVbReferenceSummary[]>();
-  for (const summary of summaries) {
-    for (const usage of summary.summary.vbscript?.externalRefUsages ?? []) {
-      pushWorkspaceVbReferenceSummary(byUsageKey, usage.key, summary);
-      if (usage.memberName) {
-        pushWorkspaceVbReferenceSummary(byMemberName, usage.memberName.toLowerCase(), summary);
-      }
+    const fileName = normalizeFileName(uriToFileName(document.uri));
+    const identity = await includeDocumentSourceIdentityAsync(fileName, settings);
+    if (!identity) {
+      continue;
     }
+    candidates.set(document.uri, {
+      uri: document.uri,
+      fileName,
+      source: {
+        ...identity.source,
+        openVersion: document.version,
+      },
+    });
   }
-  workspaceVbReferenceIndex = {
-    key,
-    summaries,
-    byUsageKey,
-    byMemberName,
-    lastUsed: Date.now(),
-  };
-  logDebugSummary(
-    settings,
-    `[asp-lsp] vb.references.workspaceIndex.built: files=${summaries.length}, usageKeys=${byUsageKey.size}, memberKeys=${byMemberName.size}`,
-  );
-  return workspaceVbReferenceIndex;
-}
-
-function workspaceVbReferenceIndexKey(settings: AspSettings): string {
-  return JSON.stringify({
-    workspaceGeneration,
-    workspace: workspaceIndexSettingsIdentity(settings),
-    parse: parseSettingsIdentity(settings),
-    include: includeResolutionSettingsIdentity(settings),
-    vbscript: vbProjectContextSettings(settings),
-    opened: documents.all().map((document) => documentIdentityFor(document)),
-    indexed: [...workspaceIndex.values()]
-      .map((entry) => ({
-        uri: entry.uri,
-        mtimeMs: entry.mtimeMs,
-        size: entry.size,
-      }))
-      .sort((left, right) => left.uri.localeCompare(right.uri)),
-  });
-}
-
-async function workspaceVbReferenceSummaryForCachedAsync(
-  cached: CachedDocument,
-  settings: AspSettings,
-): Promise<WorkspaceVbReferenceSummary> {
-  const fileName = normalizeFileName(uriToFileName(cached.source.uri));
-  return {
-    uri: cached.source.uri,
-    fileName,
-    summary: await cachedFileAnalysisSummaryAsync(
-      cached,
-      vbProjectContextSettings(settings),
-      settings,
-    ),
-  };
-}
-
-async function workspaceVbReferenceSummaryForIndexed(
-  entry: WorkspaceIndexedDocument,
-  settings: AspSettings,
-): Promise<WorkspaceVbReferenceSummary | undefined> {
-  try {
-    const text = await readTextFileAsync(entry.fileName, settings.legacyEncoding);
-    return {
+  for (const entry of workspaceIndex.values()) {
+    if (excludedUris.has(entry.uri) || candidates.has(entry.uri)) {
+      continue;
+    }
+    candidates.set(entry.uri, {
       uri: entry.uri,
       fileName: entry.fileName,
-      summary: await summarizeAspFileAnalysisFromTextAsync(
-        entry.uri,
-        text,
-        settings,
-        vbProjectContextSettings(settings),
-      ),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-async function cachedForWorkspaceVbReferenceSummary(
-  summary: WorkspaceVbReferenceSummary,
-  settings: AspSettings,
-): Promise<CachedDocument | undefined> {
-  const document = documents.get(summary.uri);
-  if (document) {
-    return ensureFreshCachedDocumentAsync(document);
-  }
-  try {
-    const text = await readTextFileAsync(summary.fileName, settings.legacyEncoding);
-    const parsed = await parseAspDocumentAsync(summary.uri, text, settings);
-    // 参照解決などは parsed.cst を直接 walk するため、浅い CST を VB CST で full 化する。
-    await hydrateVbscriptCst(parsed, settings);
-    return createCachedDocument(
-      TextDocument.create(summary.uri, "classic-asp", 0, text),
-      parsed,
-      settings,
-    );
-  } catch {
-    return undefined;
-  }
-}
-
-function workspaceVbReferenceCandidatesForSymbol(
-  index: WorkspaceVbReferenceIndex,
-  symbol: VbSymbol,
-): WorkspaceVbReferenceSummary[] {
-  const candidates = new Map<string, WorkspaceVbReferenceSummary>();
-  const usageKey = vbSymbolExternalUsageKey(symbol);
-  if (usageKey) {
-    for (const candidate of index.byUsageKey.get(usageKey) ?? []) {
-      candidates.set(candidate.uri, candidate);
-    }
-  }
-  if (symbol.memberOf) {
-    for (const candidate of index.byMemberName.get(symbol.name.toLowerCase()) ?? []) {
-      candidates.set(candidate.uri, candidate);
-    }
+      source: {
+        fileName: entry.fileName,
+        mtimeMs: entry.mtimeMs,
+        size: entry.size,
+      },
+    });
   }
   return [...candidates.values()];
 }
 
-function fallbackWorkspaceExternalReferences(
-  summary: FileAnalysisSummary,
-  symbol: VbSymbol,
-): VbReference[] {
-  if (!isGlobalWorkspaceReferenceFallbackSymbol(symbol)) {
-    return [];
-  }
-  const usageKey = vbSymbolExternalUsageKey(symbol);
-  if (!usageKey) {
-    return [];
-  }
-  return (summary.vbscript?.externalRefUsages ?? [])
-    .filter((usage) => usage.key === usageKey)
-    .flatMap((usage) => usage.ranges.map((range) => ({ uri: summary.uri, range })));
+function vbReferencesWorkerTargetSymbol(symbol: VbSymbol): VbReferencesWorkerTargetSymbol {
+  return {
+    name: symbol.name,
+    kind: symbol.kind,
+    sourceUri: symbol.sourceUri,
+    range: symbol.range,
+    memberOf: symbol.memberOf,
+    scopeName: symbol.scopeName,
+    visibility: symbol.visibility,
+    procedureKind: symbol.procedureKind,
+  };
 }
 
-function isGlobalWorkspaceReferenceFallbackSymbol(symbol: VbSymbol): boolean {
-  return (
-    !symbol.scopeName &&
-    !symbol.memberOf &&
-    symbol.visibility !== "private" &&
-    ["function", "sub", "class"].includes(symbol.kind)
+function vbReferencesWorkerOpenDocuments(): VbReferencesWorkerOpenDocument[] {
+  return documents
+    .all()
+    .filter((document) => isClassicAspGraphUri(document.uri))
+    .map((document) => ({
+      uri: document.uri,
+      fileName: normalizeFileName(uriToFileName(document.uri)),
+      text: document.getText(),
+      version: document.version,
+    }));
+}
+
+function vbReferencesWorkerOpenDocumentsKey(
+  openDocuments: VbReferencesWorkerOpenDocument[],
+): string {
+  return JSON.stringify(
+    openDocuments
+      .map((document) => ({
+        uri: document.uri,
+        version: document.version,
+        text: textFingerprint(document.text),
+      }))
+      .sort((left, right) => left.uri.localeCompare(right.uri)),
   );
 }
 
-function vbSymbolExternalUsageKey(symbol: VbSymbol): string | undefined {
-  if (symbol.memberOf) {
-    return undefined;
+async function workspaceVbReferenceWorkerResponse(
+  candidate: VbReferencesWorkerCandidate,
+  target: VbReferencesWorkerTargetSymbol,
+  settings: AspSettings,
+  options: VbReferenceOptions,
+  openDocuments: VbReferencesWorkerOpenDocument[],
+  openDocumentsKey: string,
+): Promise<VbReferencesWorkerResponse> {
+  const key = workspaceVbReferenceWorkerTaskKey(
+    candidate,
+    target,
+    settings,
+    workspaceVbReferenceWorkerOptions(options),
+    openDocumentsKey,
+  );
+  const cached = workspaceVbReferenceWorkerCompleted.get(key);
+  if (cached) {
+    workspaceVbReferenceWorkerCompleted.delete(key);
+    workspaceVbReferenceWorkerCompleted.set(key, cached);
+    logDebugSummary(settings, `[asp-lsp] vb.references.worker.cache.hit: ${candidate.uri}`);
+    return cached;
   }
-  return symbol.name.toLowerCase();
+  const inFlight = workspaceVbReferenceWorkerInFlight.get(key);
+  if (inFlight) {
+    logDebugSummary(settings, `[asp-lsp] vb.references.worker.reuse: ${candidate.uri}`);
+    return inFlight.promise;
+  }
+
+  const request = {
+    id: ++vbReferencesWorkerRequestId,
+    candidate,
+    target,
+    settings,
+    workspaceRoots,
+    openDocuments,
+    options: workspaceVbReferenceWorkerOptions(options),
+    limits: {
+      ...vbProjectContextLimits(settings),
+      maxDepth: 20,
+      includeReadConcurrency: Math.max(1, Math.min(4, analysisConcurrency(settings))),
+    },
+  };
+  const pool = getVbReferencesWorkerPool(settings);
+  const promise = pool
+    .run(request)
+    .then(async (response) => {
+      if (
+        !sameVbReferencesWorkerCandidate(candidate, response.candidate) ||
+        vbReferencesWorkerOpenDocumentsKey(vbReferencesWorkerOpenDocuments()) !==
+          openDocumentsKey ||
+        !(await isCurrentVbReferencesWorkerCandidate(candidate))
+      ) {
+        logDebugSummary(settings, `[asp-lsp] vb.references.worker.stale: ${candidate.uri}`);
+        return { ...response, references: [] };
+      }
+      workspaceVbReferenceWorkerCompleted.set(key, response);
+      pruneWorkspaceVbReferenceWorkerCompleted();
+      if (response.error) {
+        logDebugSummary(
+          settings,
+          `[asp-lsp] vb.references.worker.error: ${candidate.uri}, ${response.error.message}`,
+        );
+      } else {
+        logDebugSummary(
+          settings,
+          `[asp-lsp] vb.references.worker.complete: ${candidate.uri}, references=${response.references?.length ?? 0}, fallback=${response.fallbackReasons?.join("|") ?? ""}`,
+        );
+      }
+      return response;
+    })
+    .catch((error: unknown) => {
+      connection.console.warn(
+        `[asp-lsp] vb.references.worker.failed: ${candidate.uri}, error=${errorMessage(error)}`,
+      );
+      return {
+        id: request.id,
+        candidate,
+        references: [],
+        error: { message: errorMessage(error) },
+      } satisfies VbReferencesWorkerResponse;
+    })
+    .finally(() => {
+      if (workspaceVbReferenceWorkerInFlight.get(key)?.promise === promise) {
+        workspaceVbReferenceWorkerInFlight.delete(key);
+      }
+    });
+  workspaceVbReferenceWorkerInFlight.set(key, { key, promise });
+  return promise;
+}
+
+function workspaceVbReferenceWorkerOptions(_options: VbReferenceOptions): VbReferenceOptions {
+  return {
+    includeDeclaration: false,
+    includeFunctionReturnAssignments: false,
+  };
+}
+
+function workspaceVbReferenceWorkerTaskKey(
+  candidate: VbReferencesWorkerCandidate,
+  target: VbReferencesWorkerTargetSymbol,
+  settings: AspSettings,
+  options: VbReferenceOptions,
+  openDocumentsKey: string,
+): string {
+  return JSON.stringify({
+    target,
+    candidate,
+    settings: {
+      parse: parseSettingsIdentity(settings),
+      include: includeResolutionSettingsIdentity(settings),
+      vbscript: vbProjectContextSettings(settings),
+      legacyEncoding: settings.legacyEncoding,
+    },
+    options,
+    workspaceGeneration,
+    openDocuments: openDocumentsKey,
+  });
+}
+
+function sameVbReferencesWorkerCandidate(
+  left: VbReferencesWorkerCandidate,
+  right: VbReferencesWorkerCandidate,
+): boolean {
+  return (
+    left.uri === right.uri &&
+    left.fileName === right.fileName &&
+    left.source.fileName === right.source.fileName &&
+    left.source.mtimeMs === right.source.mtimeMs &&
+    left.source.size === right.source.size &&
+    left.source.openVersion === right.source.openVersion
+  );
+}
+
+async function isCurrentVbReferencesWorkerCandidate(
+  candidate: VbReferencesWorkerCandidate,
+): Promise<boolean> {
+  const document = documents.get(candidate.uri);
+  if (document) {
+    return (
+      candidate.source.openVersion === document.version &&
+      candidate.source.size === document.getText().length
+    );
+  }
+  const stat = await fs.promises.stat(candidate.fileName).catch(() => undefined);
+  return Boolean(
+    stat?.isFile() &&
+    candidate.source.openVersion === undefined &&
+    candidate.source.mtimeMs === stat.mtimeMs &&
+    candidate.source.size === stat.size,
+  );
+}
+
+function pruneWorkspaceVbReferenceWorkerCompleted(): void {
+  while (workspaceVbReferenceWorkerCompleted.size > maxWorkspaceVbReferenceWorkerCacheEntries) {
+    const oldest = workspaceVbReferenceWorkerCompleted.keys().next().value;
+    if (!oldest) {
+      return;
+    }
+    workspaceVbReferenceWorkerCompleted.delete(oldest);
+  }
+}
+
+function clearWorkspaceVbReferenceWorkerCache(): void {
+  workspaceVbReferenceWorkerInFlight.clear();
+  workspaceVbReferenceWorkerCompleted.clear();
+}
+
+function getVbReferencesWorkerPool(settings: AspSettings): VbReferencesWorkerPool {
+  vbReferencesWorkerPool ??= new VbReferencesWorkerPool();
+  vbReferencesWorkerPool.resize(analysisConcurrency(settings));
+  return vbReferencesWorkerPool;
 }
 
 function equivalentVbSymbol(symbols: VbSymbol[], target: VbSymbol): VbSymbol | undefined {
@@ -7383,14 +7449,25 @@ function vbReferenceOrder(left: VbReference, right: VbReference): number {
   );
 }
 
-function pushWorkspaceVbReferenceSummary(
-  map: Map<string, WorkspaceVbReferenceSummary[]>,
-  key: string,
-  summary: WorkspaceVbReferenceSummary,
-): void {
-  const summaries = map.get(key) ?? [];
-  summaries.push(summary);
-  map.set(key, summaries);
+function fallbackWorkspaceExternalReferences(
+  summary: FileAnalysisSummary,
+  symbol: VbSymbol,
+): VbReference[] {
+  if (!isGlobalWorkspaceReferenceFallbackSymbol(symbol)) {
+    return [];
+  }
+  return (summary.vbscript?.externalRefUsages ?? [])
+    .filter((usage) => usage.key === symbol.name.toLowerCase())
+    .flatMap((usage) => usage.ranges.map((range) => ({ uri: summary.uri, range })));
+}
+
+function isGlobalWorkspaceReferenceFallbackSymbol(symbol: VbSymbol): boolean {
+  return (
+    !symbol.scopeName &&
+    !symbol.memberOf &&
+    symbol.visibility !== "private" &&
+    ["function", "sub", "class"].includes(symbol.kind)
+  );
 }
 
 async function refreshIncludeStateForAspChangesAsync(
@@ -7632,6 +7709,7 @@ function clearIncludeGraph(): void {
 function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.invalidate"): void {
   if (uris.size > 0) {
     vbProjectContextCache.clear();
+    clearWorkspaceVbReferenceWorkerCache();
     completionSessionCache.clearUris(uris, reason);
     invalidateGraphFileIndexFiles(
       [...uris].filter((uri) => uri.startsWith("file://")).map(uriToFileName),
@@ -9459,7 +9537,7 @@ function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
   workspaceIndexDirty = true;
   workspaceIndexTruncated = false;
   workspaceIndex.clear();
-  workspaceVbReferenceIndex = undefined;
+  clearWorkspaceVbReferenceWorkerCache();
   logInvalidation("workspaceIndex", reason, workspaceGeneration);
 }
 
@@ -9504,15 +9582,18 @@ function clearWorkspaceIndexProcessCaches(reason: string): void {
   workspaceIndexDirty = true;
   workspaceIndexTruncated = false;
   workspaceIndex.clear();
-  workspaceVbReferenceIndex = undefined;
+  clearWorkspaceVbReferenceWorkerCache();
   logDebugSummary(globalSettings, `[asp-lsp] processCache.workspaceIndex.clear: ${reason}`);
 }
 
 async function closeDiagnosticsWorkerPools(reason: string): Promise<void> {
   const jsPool = jsDiagnosticsWorkerPool;
   const vbPool = vbDiagnosticsWorkerPool;
+  const referencesPool = vbReferencesWorkerPool;
   jsDiagnosticsWorkerPool = undefined;
   vbDiagnosticsWorkerPool = undefined;
+  vbReferencesWorkerPool = undefined;
+  clearWorkspaceVbReferenceWorkerCache();
   if (jsPool) {
     try {
       await jsPool.close();
@@ -9528,6 +9609,15 @@ async function closeDiagnosticsWorkerPools(reason: string): Promise<void> {
     } catch (error) {
       connection.console.warn(
         `[asp-lsp] vbWorkerPool.close.failed: reason=${reason}, error=${errorMessage(error)}`,
+      );
+    }
+  }
+  if (referencesPool) {
+    try {
+      await referencesPool.close();
+    } catch (error) {
+      connection.console.warn(
+        `[asp-lsp] references.worker.close.failed: reason=${reason}, error=${errorMessage(error)}`,
       );
     }
   }
@@ -10001,7 +10091,11 @@ function normalizeCodeLensSettings(
   return {
     references: record.references !== false,
     includes: record.includes === true,
-    referenceScope: record.referenceScope === "workspace" ? "workspace" : "analyzed",
+    referenceScope: record.referenceScope === "analyzed" ? "analyzed" : "workspace",
+    referenceProcedures: record.referenceProcedures !== false,
+    referenceGlobals: record.referenceGlobals !== false,
+    referenceClasses: record.referenceClasses !== false,
+    referenceClassMembers: record.referenceClassMembers !== false,
   };
 }
 
@@ -13892,10 +13986,8 @@ async function codeLensesAsync(cached: CachedDocument): Promise<CodeLens[]> {
       cached.parsed,
       vbProjectContextSettings(documentSettings),
     );
-    for (const symbol of symbols.filter(
-      (item) =>
-        item.sourceUri === cached.source.uri &&
-        ["function", "sub", "class", "method", "property"].includes(item.kind),
+    for (const symbol of symbols.filter((item) =>
+      shouldShowVbReferenceCodeLens(item, cached.source.uri, settings),
     )) {
       lenses.push({
         range: symbol.range,
@@ -13923,6 +14015,32 @@ async function codeLensesAsync(cached: CachedDocument): Promise<CodeLens[]> {
     }
   }
   return lenses;
+}
+
+function shouldShowVbReferenceCodeLens(
+  symbol: VbSymbol,
+  sourceUri: string,
+  settings: AspSettings["codeLens"],
+): boolean {
+  if (symbol.sourceUri !== sourceUri) {
+    return false;
+  }
+  if (["function", "sub", "method", "property"].includes(symbol.kind)) {
+    return settings?.referenceProcedures !== false;
+  }
+  if (symbol.kind === "class") {
+    return settings?.referenceClasses !== false;
+  }
+  if (symbol.kind === "variable" || symbol.kind === "constant") {
+    if (symbol.memberOf) {
+      return settings?.referenceClassMembers !== false;
+    }
+    return !symbol.scopeName && settings?.referenceGlobals !== false;
+  }
+  if (symbol.kind === "field") {
+    return settings?.referenceClassMembers !== false;
+  }
+  return false;
 }
 
 async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
@@ -14039,7 +14157,11 @@ async function analyzedVbscriptReferencesForSymbolAsync(
     addVbReferences(
       references,
       fallbackWorkspaceExternalReferences(
-        (await workspaceVbReferenceSummaryForCachedAsync(candidate, settings)).summary,
+        await cachedFileAnalysisSummaryAsync(
+          candidate,
+          vbProjectContextSettings(settings),
+          settings,
+        ),
         symbol,
       ),
     );
@@ -15232,6 +15354,9 @@ connection.onShutdown(async () => {
   jsDiagnosticsWorkerPool = undefined;
   await vbDiagnosticsWorkerPool?.close();
   vbDiagnosticsWorkerPool = undefined;
+  await vbReferencesWorkerPool?.close();
+  vbReferencesWorkerPool = undefined;
+  clearWorkspaceVbReferenceWorkerCache();
 });
 
 documents.listen(connection);

@@ -204,9 +204,19 @@ describe("VS Code extension package", () => {
       expect.objectContaining({
         type: "string",
         enum: ["analyzed", "workspace"],
-        default: "analyzed",
+        default: "workspace",
       }),
     );
+    for (const key of [
+      "referenceProcedures",
+      "referenceGlobals",
+      "referenceClasses",
+      "referenceClassMembers",
+    ]) {
+      expect(manifest.contributes?.configuration?.properties?.[`aspLsp.codeLens.${key}`]).toEqual(
+        expect.objectContaining({ type: "boolean", default: true }),
+      );
+    }
     const graphDefaults: Record<string, boolean> = {
       showRootNodes: true,
       showFileNodes: true,

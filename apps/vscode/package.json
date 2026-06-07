@@ -567,13 +567,33 @@
           "default": true,
           "description": "%configuration.codeLens.references.description%"
         },
+        "aspLsp.codeLens.referenceProcedures": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.codeLens.referenceProcedures.description%"
+        },
+        "aspLsp.codeLens.referenceGlobals": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.codeLens.referenceGlobals.description%"
+        },
+        "aspLsp.codeLens.referenceClasses": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.codeLens.referenceClasses.description%"
+        },
+        "aspLsp.codeLens.referenceClassMembers": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.codeLens.referenceClassMembers.description%"
+        },
         "aspLsp.codeLens.referenceScope": {
           "type": "string",
           "enum": [
             "analyzed",
             "workspace"
           ],
-          "default": "analyzed",
+          "default": "workspace",
           "description": "%configuration.codeLens.referenceScope.description%"
         },
         "aspLsp.codeLens.includes": {

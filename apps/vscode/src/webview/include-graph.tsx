@@ -39,6 +39,9 @@ type GraphNode = AspGraphNode & {
   vx?: number;
   vy?: number;
   vz?: number;
+  fx?: number;
+  fy?: number;
+  fz?: number;
 };
 
 type GraphLink = Omit<AspGraphLink, "source" | "target"> & {
@@ -66,6 +69,30 @@ type CenteredSpriteText = SpriteText & {
     y: number;
   };
 };
+
+interface PositionSyncEntry {
+  id: string;
+  sourceMode: ViewMode;
+  x?: number;
+  y?: number;
+  z?: number;
+  screenX?: number;
+  screenY?: number;
+  cameraDistance?: number;
+}
+
+interface PendingPositionSync {
+  from: ViewMode;
+  to: ViewMode;
+  generation: number;
+  entries: Map<string, PositionSyncEntry>;
+}
+
+interface PositionSyncTransform {
+  centerX: number;
+  centerY: number;
+  scale: number;
+}
 
 const vscode = acquireVsCodeApi();
 const graph = window.__ASP_LSP_GRAPH__;
@@ -193,8 +220,10 @@ const minimumNodeValue = 0.6;
 const maximumNodeValue = 16;
 const maximumNodeScaleReferenceCount = 144;
 const graphFitDurationMs = 400;
-const graphFitPadding2d = 120;
-const graphFitPadding3d = 30;
+const graphFitPadding2d = 100;
+const graphFitPadding3d = 5;
+const positionSyncPinMs = 600;
+const graph3dSyncSpan = 160;
 
 function App(): React.ReactElement {
   const [mode, setMode] = useState<ViewMode>("3d");
@@ -212,11 +241,26 @@ function App(): React.ReactElement {
   const graph3dRef = useRef<ForceGraph3DMethods<GraphNode, GraphLink> | undefined>(undefined);
   const hasAutoFit2dRef = useRef(false);
   const hasAutoFit3dRef = useRef(false);
+  const positionSyncRef = useRef(new Map<string, PositionSyncEntry>());
+  const pendingSyncRef = useRef<PendingPositionSync | undefined>(undefined);
+  const positionSyncGenerationRef = useRef(0);
+  const positionSyncReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const skipAutoFitForModeRef = useRef(new Set<ViewMode>());
+  const forceFitForModeRef = useRef(new Set<ViewMode>());
   const graphData = useMemo(() => graphDataFor(graph), []);
   const filteredGraphData = useMemo(
     () => filterGraphData(graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes),
     [graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes],
   );
+  const renderGraphData2d = useMemo(
+    () => graphDataForRender(filteredGraphData, positionSyncRef.current, "2d"),
+    [filteredGraphData],
+  );
+  const renderGraphData3d = useMemo(
+    () => graphDataForRender(filteredGraphData, positionSyncRef.current, "3d"),
+    [filteredGraphData],
+  );
+  const renderGraphData = mode === "3d" ? renderGraphData3d : renderGraphData2d;
   const filteredStats = useMemo(() => graphStatsFor(filteredGraphData), [filteredGraphData]);
   const searchHighlight = useMemo(
     () =>
@@ -233,6 +277,7 @@ function App(): React.ReactElement {
     [selection, filteredGraphData.links],
   );
   const highlight = selectionHighlight ?? searchHighlight;
+  const titleFileName = currentFileGraphName(graph);
   const [surfaceRef, surfaceSize] = useElementSize<HTMLElement>();
   const canFitGraph =
     filteredGraphData.nodes.length > 0 && surfaceSize.width > 0 && surfaceSize.height > 0;
@@ -259,9 +304,56 @@ function App(): React.ReactElement {
     },
     [canFitGraph],
   );
+  const switchGraphMode = useCallback(
+    (nextMode: ViewMode) => {
+      if (nextMode === mode) {
+        return;
+      }
+      if (mode === "3d") {
+        graph3dRef.current?.pauseAnimation();
+      } else {
+        graph2dRef.current?.pauseAnimation();
+      }
+      const generation = positionSyncGenerationRef.current + 1;
+      positionSyncGenerationRef.current = generation;
+      const entries = capturePositionSyncEntries(
+        mode,
+        renderGraphData.nodes,
+        graph2dRef.current,
+        graph3dRef.current,
+        positionSyncRef.current,
+      );
+      pendingSyncRef.current =
+        entries.size > 0
+          ? {
+              from: mode,
+              to: nextMode,
+              generation,
+              entries,
+            }
+          : undefined;
+      if (entries.size > 0) {
+        skipAutoFitForModeRef.current.add(nextMode);
+        if (mode === "2d" && nextMode === "3d") {
+          forceFitForModeRef.current.add(nextMode);
+        }
+      }
+      setMode(nextMode);
+    },
+    [mode, renderGraphData.nodes],
+  );
   const handleEngineStop = useCallback(
     (nextMode: ViewMode) => {
       const autoFitRef = nextMode === "3d" ? hasAutoFit3dRef : hasAutoFit2dRef;
+      if (forceFitForModeRef.current.delete(nextMode)) {
+        autoFitRef.current = fitGraphToCanvas(nextMode);
+        skipAutoFitForModeRef.current.delete(nextMode);
+        return;
+      }
+      if (skipAutoFitForModeRef.current.delete(nextMode)) {
+        autoFitRef.current = true;
+        return;
+      }
       if (autoFitRef.current) {
         return;
       }
@@ -280,11 +372,71 @@ function App(): React.ReactElement {
     return () => window.removeEventListener("keydown", clearSelectionOnEscape);
   }, []);
 
+  useEffect(
+    () => () => {
+      if (positionSyncReleaseTimerRef.current) {
+        clearTimeout(positionSyncReleaseTimerRef.current);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (selection && !isSelectionVisible(selection, filteredGraphData)) {
       setSelection(undefined);
     }
   }, [filteredGraphData, selection]);
+
+  useLayoutEffect(() => {
+    const pending = pendingSyncRef.current;
+    if (!pending || pending.to !== mode || !canFitGraph) {
+      return;
+    }
+    const graphRef = mode === "3d" ? graph3dRef.current : graph2dRef.current;
+    if (!graphRef) {
+      return;
+    }
+    const pinnedNodeIds =
+      mode === "3d"
+        ? applyPositionSyncTo3d(pending, renderGraphData.nodes, graph3dRef.current)
+        : applyPositionSyncTo2d(pending, renderGraphData.nodes, graph2dRef.current);
+    pendingSyncRef.current = undefined;
+    if (pinnedNodeIds.size === 0) {
+      return;
+    }
+    graphRef.d3ReheatSimulation();
+    if (positionSyncReleaseTimerRef.current) {
+      clearTimeout(positionSyncReleaseTimerRef.current);
+    }
+    positionSyncReleaseTimerRef.current = setTimeout(() => {
+      if (positionSyncGenerationRef.current !== pending.generation) {
+        return;
+      }
+      releasePositionSyncPins(renderGraphData.nodes, pinnedNodeIds);
+      const currentGraphRef = mode === "3d" ? graph3dRef.current : graph2dRef.current;
+      currentGraphRef?.d3ReheatSimulation();
+    }, positionSyncPinMs);
+  }, [canFitGraph, mode, renderGraphData.nodes, surfaceSize.height, surfaceSize.width]);
+
+  useEffect(() => {
+    capturePositionSyncEntries(
+      mode,
+      renderGraphData.nodes,
+      graph2dRef.current,
+      graph3dRef.current,
+      positionSyncRef.current,
+    );
+  }, [mode, renderGraphData.nodes]);
+
+  useEffect(() => {
+    if (mode === "3d") {
+      graph3dRef.current?.resumeAnimation();
+      graph2dRef.current?.pauseAnimation();
+    } else {
+      graph2dRef.current?.resumeAnimation();
+      graph3dRef.current?.pauseAnimation();
+    }
+  }, [mode]);
 
   if (!graph) {
     return (
@@ -301,6 +453,14 @@ function App(): React.ReactElement {
           <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-semibold text-[#d7dde8]">
             {graph.scope === "workspace" ? "Workspace Graph" : "Current File Graph"}
           </span>
+          {titleFileName ? (
+            <span
+              className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[12px] text-[#9aa7b8]"
+              title={titleFileName}
+            >
+              {titleFileName}
+            </span>
+          ) : null}
           {graph.truncated ? (
             <span className="text-[11px] text-[#ffcb6b]">truncated: {graph.truncated.reason}</span>
           ) : null}
@@ -341,7 +501,7 @@ function App(): React.ReactElement {
                 ? "h-7 min-w-[42px] cursor-pointer border-0 bg-[#89ddff] text-[#11151c]"
                 : "h-7 min-w-[42px] cursor-pointer border-0 bg-[#151a22] text-[#b5c0d0]"
             }
-            onClick={() => setMode("3d")}
+            onClick={() => switchGraphMode("3d")}
           >
             3D
           </button>
@@ -352,7 +512,7 @@ function App(): React.ReactElement {
                 ? "h-7 min-w-[42px] cursor-pointer border-0 bg-[#89ddff] text-[#11151c]"
                 : "h-7 min-w-[42px] cursor-pointer border-0 bg-[#151a22] text-[#b5c0d0]"
             }
-            onClick={() => setMode("2d")}
+            onClick={() => switchGraphMode("2d")}
           >
             2D
           </button>
@@ -383,10 +543,15 @@ function App(): React.ReactElement {
             onToggleLinkCategory={toggleLinkCategory}
             onToggleNodeCategory={toggleNodeCategory}
           />
-          {mode === "3d" ? (
+          <div
+            className={
+              mode === "3d" ? "absolute inset-0" : "pointer-events-none absolute inset-0 opacity-0"
+            }
+            aria-hidden={mode !== "3d"}
+          >
             <ForceGraph3D
               ref={graph3dRef}
-              graphData={filteredGraphData}
+              graphData={renderGraphData3d}
               width={surfaceSize.width}
               height={surfaceSize.height}
               backgroundColor="#11151c"
@@ -403,17 +568,23 @@ function App(): React.ReactElement {
               linkDirectionalArrowRelPos={1}
               linkDirectionalArrowColor={(link) => linkColor(link as GraphLink, highlight)}
               linkDirectionalParticles={(link) => linkParticleCount(link as GraphLink, highlight)}
-              linkDirectionalParticleWidth={1.5}
+              linkDirectionalParticleWidth={(link) => linkParticleWidth3d(link as GraphLink)}
               onNodeClick={(node) => setSelection({ type: "node", item: node as GraphNode })}
               onLinkClick={(link) => setSelection({ type: "link", item: link as GraphLink })}
               onBackgroundClick={() => setSelection(undefined)}
               cooldownTicks={100}
               onEngineStop={() => handleEngineStop("3d")}
             />
-          ) : (
+          </div>
+          <div
+            className={
+              mode === "2d" ? "absolute inset-0" : "pointer-events-none absolute inset-0 opacity-0"
+            }
+            aria-hidden={mode !== "2d"}
+          >
             <ForceGraph2D
               ref={graph2dRef}
-              graphData={filteredGraphData}
+              graphData={renderGraphData2d}
               width={surfaceSize.width}
               height={surfaceSize.height}
               backgroundColor="#11151c"
@@ -438,7 +609,7 @@ function App(): React.ReactElement {
               cooldownTicks={100}
               onEngineStop={() => handleEngineStop("2d")}
             />
-          )}
+          </div>
         </section>
         <Inspector selection={selection} onClose={() => setSelection(undefined)} />
       </main>
@@ -789,6 +960,119 @@ function graphDataFor(payload: AspGraphPayload | undefined): GraphData {
   };
 }
 
+function graphDataForRender(
+  graphData: GraphData,
+  positions: ReadonlyMap<string, PositionSyncEntry>,
+  mode: ViewMode,
+): GraphData {
+  const transform =
+    mode === "3d" ? positionSyncTransformFor3d(graphData.nodes, positions) : undefined;
+  return {
+    nodes: graphData.nodes.map((node) => {
+      const position = positions.get(node.id);
+      const renderPosition =
+        mode === "3d" ? positionSyncPositionFor3d(position, transform) : position;
+      return {
+        ...node,
+        x: renderPosition?.x ?? node.x,
+        y: renderPosition?.y ?? node.y,
+        z: renderPosition?.z ?? node.z,
+      };
+    }),
+    links: graphData.links.map((link) => ({
+      ...link,
+      source: nodeIdForEndpoint(link.source),
+      target: nodeIdForEndpoint(link.target),
+    })),
+  };
+}
+
+function positionSyncTransformFor3d(
+  nodes: GraphNode[],
+  positions: ReadonlyMap<string, PositionSyncEntry>,
+): PositionSyncTransform | undefined {
+  let minimumX = Infinity;
+  let maximumX = -Infinity;
+  let minimumY = Infinity;
+  let maximumY = -Infinity;
+  for (const node of nodes) {
+    const position = positions.get(node.id);
+    const x = finiteNumber(position?.x);
+    const y = finiteNumber(position?.y);
+    if (x === undefined || y === undefined) {
+      continue;
+    }
+    minimumX = Math.min(minimumX, x);
+    maximumX = Math.max(maximumX, x);
+    minimumY = Math.min(minimumY, y);
+    maximumY = Math.max(maximumY, y);
+  }
+  if (
+    !Number.isFinite(minimumX) ||
+    !Number.isFinite(maximumX) ||
+    !Number.isFinite(minimumY) ||
+    !Number.isFinite(maximumY)
+  ) {
+    return undefined;
+  }
+  const span = Math.max(maximumX - minimumX, maximumY - minimumY);
+  return {
+    centerX: (minimumX + maximumX) / 2,
+    centerY: (minimumY + maximumY) / 2,
+    scale: span > 0 ? graph3dSyncSpan / span : 1,
+  };
+}
+
+function positionSyncPositionFor3d(
+  position: PositionSyncEntry | undefined,
+  transform: PositionSyncTransform | undefined,
+): PositionSyncEntry | undefined {
+  if (!position) {
+    return undefined;
+  }
+  const x = finiteNumber(position?.x);
+  const y = finiteNumber(position?.y);
+  if (x === undefined || y === undefined) {
+    return position;
+  }
+  if (!transform) {
+    return position;
+  }
+  return {
+    ...position,
+    x: (x - transform.centerX) * transform.scale,
+    y: (position.sourceMode === "2d" ? -1 : 1) * (y - transform.centerY) * transform.scale,
+  };
+}
+
+function currentFileGraphName(payload: AspGraphPayload | undefined): string | undefined {
+  if (!payload || payload.scope !== "document") {
+    return undefined;
+  }
+  const rootNode =
+    payload.nodes.find((node) => node.isRoot) ??
+    payload.nodes.find((node) => node.uri === payload.rootUri);
+  return (
+    rootNode?.label || baseNameFromPath(rootNode?.fileName) || baseNameFromUri(payload.rootUri)
+  );
+}
+
+function baseNameFromPath(value: string | undefined): string | undefined {
+  const fileName = value?.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
+  return fileName || undefined;
+}
+
+function baseNameFromUri(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return baseNameFromPath(decodeURIComponent(new URL(value).pathname));
+  } catch {
+    return baseNameFromPath(value);
+  }
+}
+
 function graphLinkColor(link: AspGraphLink): string {
   return linkFilterColors[graphLinkFilterCategory(link)];
 }
@@ -803,6 +1087,7 @@ function filterGraphData(
   hiddenLinkCategories: ReadonlySet<LinkFilterCategory>,
   hideSingleNodes: boolean,
 ): GraphData {
+  const hasPayloadRoot = graphData.nodes.some((node) => node.isRoot);
   let visibleNodes = graphData.nodes.filter((node) => !hiddenNodeCategories.has(node.category));
   let visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
   let visibleLinks = graphData.links.filter((link) => {
@@ -816,7 +1101,10 @@ function filterGraphData(
   });
   if (hideSingleNodes) {
     const connectedNodeIds = connectedNodeIdsFor(visibleLinks);
-    visibleNodes = visibleNodes.filter((node) => node.isRoot || connectedNodeIds.has(node.id));
+    visibleNodes = visibleNodes.filter(
+      (node) =>
+        node.isRoot || connectedNodeIds.has(node.id) || (!hasPayloadRoot && node.kind === "file"),
+    );
     visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
     visibleLinks = visibleLinks.filter(
       (link) =>
@@ -924,6 +1212,314 @@ function toggledSet<T>(set: ReadonlySet<T>, value: T): Set<T> {
   return nextSet;
 }
 
+function capturePositionSyncEntries(
+  mode: ViewMode,
+  nodes: GraphNode[],
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+  store: Map<string, PositionSyncEntry>,
+): Map<string, PositionSyncEntry> {
+  const entries = new Map<string, PositionSyncEntry>();
+  for (const node of nodes) {
+    const previous = store.get(node.id);
+    const captured =
+      mode === "3d"
+        ? capturePositionSyncEntry3d(node, graph3d, previous)
+        : capturePositionSyncEntry2d(node, graph2d, previous);
+    if (captured) {
+      store.set(node.id, captured);
+      entries.set(node.id, { ...captured });
+    } else if (previous) {
+      entries.set(node.id, { ...previous });
+    }
+  }
+  return entries;
+}
+
+function capturePositionSyncEntry3d(
+  node: GraphNode,
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+  previous: PositionSyncEntry | undefined,
+): PositionSyncEntry | undefined {
+  const x = finiteNumber(node.x) ?? previous?.x;
+  const y = finiteNumber(node.y) ?? previous?.y;
+  const z = finiteNumber(node.z) ?? previous?.z ?? 0;
+  if (x === undefined || y === undefined) {
+    return previous;
+  }
+  const screen = graph3dScreenCoords(graph3d, x, y, z);
+  const cameraDistance = graph3dCameraDistanceToPoint(graph3d, x, y, z);
+  return {
+    id: node.id,
+    sourceMode: "3d",
+    x,
+    y,
+    z,
+    screenX: finiteNumber(screen?.x) ?? previous?.screenX,
+    screenY: finiteNumber(screen?.y) ?? previous?.screenY,
+    cameraDistance: cameraDistance ?? previous?.cameraDistance,
+  };
+}
+
+function capturePositionSyncEntry2d(
+  node: GraphNode,
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+  previous: PositionSyncEntry | undefined,
+): PositionSyncEntry | undefined {
+  const x = finiteNumber(node.x) ?? previous?.x;
+  const y = finiteNumber(node.y) ?? previous?.y;
+  if (x === undefined || y === undefined) {
+    return previous;
+  }
+  const screen = graph2dScreenCoords(graph2d, x, y);
+  return {
+    id: node.id,
+    sourceMode: "2d",
+    x,
+    y,
+    z: finiteNumber(node.z) ?? previous?.z ?? 0,
+    screenX: finiteNumber(screen?.x) ?? previous?.screenX,
+    screenY: finiteNumber(screen?.y) ?? previous?.screenY,
+    cameraDistance: previous?.cameraDistance,
+  };
+}
+
+function applyPositionSyncTo2d(
+  pending: PendingPositionSync,
+  nodes: GraphNode[],
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+): Set<string> {
+  const pinnedNodeIds = new Set<string>();
+  for (const node of nodes) {
+    const entry = pending.entries.get(node.id);
+    if (!entry) {
+      continue;
+    }
+    const projected =
+      pending.from === "3d"
+        ? graph2dCoordsFromScreen(graph2d, entry.screenX, entry.screenY)
+        : undefined;
+    const x = finiteNumber(projected?.x) ?? entry.x;
+    const y = finiteNumber(projected?.y) ?? entry.y;
+    if (x === undefined || y === undefined) {
+      continue;
+    }
+    node.x = x;
+    node.y = y;
+    node.z = entry.z;
+    node.vx = 0;
+    node.vy = 0;
+    node.vz = 0;
+    node.fx = x;
+    node.fy = y;
+    delete node.fz;
+    pinnedNodeIds.add(node.id);
+  }
+  return pinnedNodeIds;
+}
+
+function applyPositionSyncTo3d(
+  pending: PendingPositionSync,
+  nodes: GraphNode[],
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+): Set<string> {
+  const pinnedNodeIds = new Set<string>();
+  const transform = positionSyncTransformFor3dFromEntries(nodes, pending.entries);
+  const fallbackDistance = graph3dFallbackCameraDistance(graph3d, nodes);
+  for (const node of nodes) {
+    const capturedEntry = pending.entries.get(node.id);
+    const entry = positionSyncPositionFor3d(capturedEntry, transform);
+    if (!entry) {
+      continue;
+    }
+    const projected =
+      pending.from === "2d"
+        ? graph3dCoordsFromScreen(
+            graph3d,
+            capturedEntry?.screenX,
+            capturedEntry?.screenY,
+            finiteNumber(capturedEntry?.cameraDistance) ?? fallbackDistance,
+          )
+        : undefined;
+    const x = finiteNumber(projected?.x) ?? finiteNumber(entry.x);
+    const y = finiteNumber(projected?.y) ?? finiteNumber(entry.y);
+    if (x === undefined || y === undefined) {
+      continue;
+    }
+    const z = finiteNumber(projected?.z) ?? finiteNumber(entry.z) ?? 0;
+    node.x = x;
+    node.y = y;
+    node.z = z;
+    node.vx = 0;
+    node.vy = 0;
+    node.vz = 0;
+    node.fx = x;
+    node.fy = y;
+    node.fz = z;
+    pinnedNodeIds.add(node.id);
+  }
+  return pinnedNodeIds;
+}
+
+function positionSyncTransformFor3dFromEntries(
+  nodes: GraphNode[],
+  entries: ReadonlyMap<string, PositionSyncEntry>,
+): PositionSyncTransform | undefined {
+  return positionSyncTransformFor3d(nodes, entries);
+}
+
+function releasePositionSyncPins(nodes: GraphNode[], pinnedNodeIds: ReadonlySet<string>): void {
+  for (const node of nodes) {
+    if (!pinnedNodeIds.has(node.id)) {
+      continue;
+    }
+    delete node.fx;
+    delete node.fy;
+    delete node.fz;
+  }
+}
+
+function graph3dScreenCoords(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+  x: number,
+  y: number,
+  z: number,
+): { x: number; y: number } | undefined {
+  try {
+    return graph3d?.graph2ScreenCoords(x, y, z);
+  } catch {
+    return undefined;
+  }
+}
+
+function graph3dCoordsFromScreen(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+  screenX: number | undefined,
+  screenY: number | undefined,
+  distance: number | undefined,
+): { x: number; y: number; z?: number } | undefined {
+  if (screenX === undefined || screenY === undefined || distance === undefined) {
+    return undefined;
+  }
+  try {
+    return graph3d?.screen2GraphCoords(screenX, screenY, distance);
+  } catch {
+    return undefined;
+  }
+}
+
+function graph2dScreenCoords(
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+  x: number,
+  y: number,
+): { x: number; y: number } | undefined {
+  try {
+    return graph2d?.graph2ScreenCoords(x, y);
+  } catch {
+    return undefined;
+  }
+}
+
+function graph2dCoordsFromScreen(
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+  screenX: number | undefined,
+  screenY: number | undefined,
+): { x: number; y: number } | undefined {
+  if (screenX === undefined || screenY === undefined) {
+    return undefined;
+  }
+  try {
+    return graph2d?.screen2GraphCoords(screenX, screenY);
+  } catch {
+    return undefined;
+  }
+}
+
+function graph3dCameraDistanceToPoint(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+  x: number,
+  y: number,
+  z: number,
+): number | undefined {
+  const cameraPosition = graph3dCameraPosition(graph3d);
+  if (!cameraPosition) {
+    return undefined;
+  }
+  return distance3d(cameraPosition, { x, y, z });
+}
+
+function graph3dFallbackCameraDistance(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+  nodes: GraphNode[],
+): number | undefined {
+  const cameraPosition = graph3dCameraPosition(graph3d);
+  if (!cameraPosition) {
+    return undefined;
+  }
+  const controlsTarget = graph3dControlsTarget(graph3d);
+  const center = controlsTarget ?? graphNodeCenter3d(nodes);
+  return center ? distance3d(cameraPosition, center) : undefined;
+}
+
+function graph3dCameraPosition(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+): { x: number; y: number; z: number } | undefined {
+  try {
+    const position = graph3d?.camera().position;
+    const x = finiteNumber(position?.x);
+    const y = finiteNumber(position?.y);
+    const z = finiteNumber(position?.z);
+    return x !== undefined && y !== undefined && z !== undefined ? { x, y, z } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function graph3dControlsTarget(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+): { x: number; y: number; z: number } | undefined {
+  try {
+    const controls = graph3d?.controls() as { target?: { x?: number; y?: number; z?: number } };
+    const x = finiteNumber(controls?.target?.x);
+    const y = finiteNumber(controls?.target?.y);
+    const z = finiteNumber(controls?.target?.z);
+    return x !== undefined && y !== undefined && z !== undefined ? { x, y, z } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function graphNodeCenter3d(nodes: GraphNode[]): { x: number; y: number; z: number } | undefined {
+  let count = 0;
+  let totalX = 0;
+  let totalY = 0;
+  let totalZ = 0;
+  for (const node of nodes) {
+    const x = finiteNumber(node.x);
+    const y = finiteNumber(node.y);
+    const z = finiteNumber(node.z) ?? 0;
+    if (x === undefined || y === undefined) {
+      continue;
+    }
+    count += 1;
+    totalX += x;
+    totalY += y;
+    totalZ += z;
+  }
+  return count > 0 ? { x: totalX / count, y: totalY / count, z: totalZ / count } : undefined;
+}
+
+function distance3d(
+  from: { x: number; y: number; z: number },
+  to: { x: number; y: number; z: number },
+): number {
+  return Math.hypot(from.x - to.x, from.y - to.y, from.z - to.z);
+}
+
+function finiteNumber(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function isSelectionVisible(selection: Selection, graphData: GraphData): boolean {
   if (selection?.type === "node") {
     return graphData.nodes.some((node) => node.id === selection.item.id);
@@ -1011,7 +1607,7 @@ function linkColor(link: GraphLink, highlight: HighlightState | undefined): stri
 }
 
 function nodeTextObject(node: GraphNode, highlight: HighlightState | undefined): SpriteText {
-  const offset = nodeTextOffset(node);
+  const offset = nodeTextOffset3d(node);
   const textHeight = nodeTextHeight(node);
   const sprite = new SpriteText(node.label, textHeight, nodeColor(node, highlight));
   sprite.fontFace = "system-ui, sans-serif";
@@ -1030,6 +1626,10 @@ function nodeTextOffset(node: GraphNode): number {
   return nodeRadius(node) + (node.kind === "file" ? 2.5 : 1.5);
 }
 
+function nodeTextOffset3d(node: GraphNode): number {
+  return nodeRadius(node) + (node.kind === "file" ? 1.5 : 0.75);
+}
+
 function nodeTextAnchor(offset: number, textHeight: number): number {
   return -offset / textHeight;
 }
@@ -1046,7 +1646,7 @@ function nodeValue(referenceCount: number): number {
 }
 
 function linkArrowLength(link: GraphLink): number {
-  return link.kind === "include" ? 6 : 3.5;
+  return link.kind === "include" ? 7 : 3.5;
 }
 
 function linkWidth2d(link: GraphLink, highlight: HighlightState | undefined): number {
@@ -1067,6 +1667,10 @@ function linkParticleCount(link: GraphLink, highlight: HighlightState | undefine
     return 0;
   }
   return clamp(Math.ceil(Math.sqrt(link.count)), 1, 8);
+}
+
+function linkParticleWidth3d(link: GraphLink): number {
+  return link.kind === "include" ? 2.75 : 1.25;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

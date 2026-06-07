@@ -154,6 +154,10 @@ export interface AspCodeLensSettings {
   references?: boolean;
   includes?: boolean;
   referenceScope?: "analyzed" | "workspace";
+  referenceProcedures?: boolean;
+  referenceGlobals?: boolean;
+  referenceClasses?: boolean;
+  referenceClassMembers?: boolean;
 }
 
 export interface AspGraphSettings {
