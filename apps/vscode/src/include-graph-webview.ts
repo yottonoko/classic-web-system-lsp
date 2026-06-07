@@ -7,6 +7,7 @@ export interface AspGraphPayload {
   links: AspGraphLink[];
   settings?: {
     hideSingleNodes?: boolean;
+    showOutgoingSelectionLinks?: boolean;
     hiddenNodeCategories?: AspGraphNodeCategory[];
     hiddenLinkCategories?: AspGraphLinkFilterCategory[];
   };

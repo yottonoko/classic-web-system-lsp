@@ -6228,6 +6228,7 @@ End Sub
         showParameterNodes: true,
         showUnresolvedNodes: true,
         hideSingleNodes: false,
+        showOutgoingSelectionLinks: true,
         showIncludeLinks: true,
         showDeclareLinks: true,
         showReferenceLinks: true,
@@ -6299,6 +6300,7 @@ End Sub
         expect(defaultGraph.settings).toEqual(
           expect.objectContaining({
             hideSingleNodes: true,
+            showOutgoingSelectionLinks: true,
             hiddenNodeCategories: expect.arrayContaining([
               "method",
               "methodFunction",
@@ -6493,6 +6495,13 @@ End Sub
           const graph = await buildGraph();
           expect(hasLink(graph, (link) => link.role === "member")).toBe(true);
           expect(graph.settings?.hiddenLinkCategories).toContain("member");
+        }
+        configure({ ...allGraphSettings, showOutgoingSelectionLinks: false });
+        {
+          const graph = await buildGraph();
+          expect(graph.settings).toEqual(
+            expect.objectContaining({ showOutgoingSelectionLinks: false }),
+          );
         }
         configure({ ...allGraphSettings, showMemberNodes: false });
         {

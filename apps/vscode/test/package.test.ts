@@ -235,6 +235,7 @@ describe("VS Code extension package", () => {
       showParameterNodes: false,
       showUnresolvedNodes: true,
       hideSingleNodes: true,
+      showOutgoingSelectionLinks: true,
       showIncludeLinks: true,
       showDeclareLinks: true,
       showReferenceLinks: true,

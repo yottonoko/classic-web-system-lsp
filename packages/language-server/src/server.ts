@@ -708,6 +708,7 @@ interface AspGraphPayload {
   links: AspGraphLink[];
   settings?: {
     hideSingleNodes: boolean;
+    showOutgoingSelectionLinks: boolean;
     hiddenNodeCategories: AspGraphNodeCategory[];
     hiddenLinkCategories: AspGraphLinkFilterCategory[];
   };
@@ -10123,6 +10124,7 @@ function normalizeGraphSettings(
     showParameterNodes: record.showParameterNodes === true,
     showUnresolvedNodes: record.showUnresolvedNodes !== false,
     hideSingleNodes: record.hideSingleNodes !== false,
+    showOutgoingSelectionLinks: record.showOutgoingSelectionLinks !== false,
     showIncludeLinks: record.showIncludeLinks !== false,
     showDeclareLinks: record.showDeclareLinks !== false,
     showReferenceLinks: record.showReferenceLinks !== false,
@@ -13790,6 +13792,7 @@ function graphPayloadSettings(settings: AspSettings): NonNullable<AspGraphPayloa
   const graphSettings = normalizeGraphSettings(settings);
   return {
     hideSingleNodes: graphSettings.hideSingleNodes !== false,
+    showOutgoingSelectionLinks: graphSettings.showOutgoingSelectionLinks !== false,
     hiddenNodeCategories: graphNodeCategoryOrder.filter(
       (category) => !isVisibleAspGraphNodeCategory(category, graphSettings),
     ),

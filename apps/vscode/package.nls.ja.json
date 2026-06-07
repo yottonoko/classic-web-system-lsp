@@ -68,6 +68,7 @@
   "configuration.graph.showParameterNodes.description": "graph view に function、sub、method、property の parameter node を表示します。",
   "configuration.graph.showUnresolvedNodes.description": "graph view に unresolved reference node を表示します。",
   "configuration.graph.hideSingleNodes.description": "graph view で visible link を持たない root 以外の node を非表示にします。",
+  "configuration.graph.showOutgoingSelectionLinks.description": "graph view で選択 node から出る link も highlight します。",
   "configuration.graph.showIncludeLinks.description": "graph view に include link を表示します。",
   "configuration.graph.showDeclareLinks.description": "graph view に declaration-to-source link を表示します。",
   "configuration.graph.showReferenceLinks.description": "graph view に reference link を表示します。",

@@ -240,6 +240,9 @@ function App(): React.ReactElement {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatchCase, setSearchMatchCase] = useState(false);
   const [hideSingleNodes, setHideSingleNodes] = useState(graph?.settings?.hideSingleNodes ?? true);
+  const [showOutgoingSelectionLinks, setShowOutgoingSelectionLinks] = useState(
+    graph?.settings?.showOutgoingSelectionLinks ?? true,
+  );
   const [hiddenNodeCategories, setHiddenNodeCategories] = useState<Set<NodeColorCategory>>(
     () => new Set(graph?.settings?.hiddenNodeCategories ?? []),
   );
@@ -282,8 +285,8 @@ function App(): React.ReactElement {
     [searchQuery, searchMatchCase, filteredGraphData.nodes, filteredGraphData.links],
   );
   const selectionHighlight = useMemo(
-    () => highlightForSelection(selection, filteredGraphData.links),
-    [selection, filteredGraphData.links],
+    () => highlightForSelection(selection, filteredGraphData.links, showOutgoingSelectionLinks),
+    [selection, filteredGraphData.links, showOutgoingSelectionLinks],
   );
   const highlight = selectionHighlight ?? searchHighlight;
   const titleFileName = currentFileGraphName(graph);
@@ -548,9 +551,13 @@ function App(): React.ReactElement {
             hideSingleNodes={hideSingleNodes}
             linkCategories={linkFilterOrder}
             nodeCategories={nodeCategoryOrder}
+            showOutgoingSelectionLinks={showOutgoingSelectionLinks}
             onToggleHideSingleNodes={() => setHideSingleNodes((current) => !current)}
             onToggleLinkCategory={toggleLinkCategory}
             onToggleNodeCategory={toggleNodeCategory}
+            onToggleShowOutgoingSelectionLinks={() =>
+              setShowOutgoingSelectionLinks((current) => !current)
+            }
           />
           <div
             className={
@@ -636,18 +643,22 @@ function GraphLegend({
   hideSingleNodes,
   linkCategories,
   nodeCategories,
+  showOutgoingSelectionLinks,
   onToggleHideSingleNodes,
   onToggleLinkCategory,
   onToggleNodeCategory,
+  onToggleShowOutgoingSelectionLinks,
 }: {
   hiddenLinkCategories: ReadonlySet<LinkFilterCategory>;
   hiddenNodeCategories: ReadonlySet<NodeColorCategory>;
   hideSingleNodes: boolean;
   linkCategories: LinkFilterCategory[];
   nodeCategories: NodeColorCategory[];
+  showOutgoingSelectionLinks: boolean;
   onToggleHideSingleNodes(): void;
   onToggleLinkCategory(category: LinkFilterCategory): void;
   onToggleNodeCategory(category: NodeColorCategory): void;
+  onToggleShowOutgoingSelectionLinks(): void;
 }): React.ReactElement {
   const [isOpen, setOpen] = useState(false);
   return (
@@ -698,6 +709,16 @@ function GraphLegend({
               title="Hide non-root nodes that have no visible links."
               variant="node"
               onToggle={onToggleHideSingleNodes}
+            />
+          </LegendFilterGroup>
+          <LegendFilterGroup title="Selection">
+            <LegendFilterItem
+              checked={showOutgoingSelectionLinks}
+              color="#c792ea"
+              label="Outgoing links"
+              title="Also highlight links that start from the selected node."
+              variant="link"
+              onToggle={onToggleShowOutgoingSelectionLinks}
             />
           </LegendFilterGroup>
         </div>
@@ -2253,6 +2274,7 @@ function normalizeSearchText(value: string, matchCase: boolean): string {
 function highlightForSelection(
   selection: Selection,
   links: GraphLink[],
+  showOutgoingLinks: boolean,
 ): HighlightState | undefined {
   if (selection?.type !== "node") {
     return undefined;
@@ -2267,6 +2289,16 @@ function highlightForSelection(
     const sourceNodeId = nodeIdForEndpoint(link.source);
     activeNodeIds.add(sourceNodeId);
     activeLinkIds.add(link.id);
+  }
+  if (showOutgoingLinks) {
+    for (const link of links) {
+      if (nodeIdForEndpoint(link.source) !== selectedNodeId) {
+        continue;
+      }
+      const targetNodeId = nodeIdForEndpoint(link.target);
+      activeNodeIds.add(targetNodeId);
+      activeLinkIds.add(link.id);
+    }
   }
   return { activeNodeIds, activeLinkIds };
 }
