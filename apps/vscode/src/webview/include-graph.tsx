@@ -1428,12 +1428,12 @@ function NodeInspector({
   return (
     <>
       <NodeDetails node={node} />
-      <NodeLinkSections graphData={visibleGraphData} node={node} onSelectLink={onSelectLink} />
       {node.kind === "file" ? (
         <FileNodeRelations graphData={graphData} node={node} />
       ) : (
         <NodeSourceSections graphData={graphData} node={node} />
       )}
+      <NodeLinkSections graphData={visibleGraphData} node={node} onSelectLink={onSelectLink} />
       {node.kind === "file" ? (
         <OpenLocationButton
           className="mt-3 h-[30px] w-full"
