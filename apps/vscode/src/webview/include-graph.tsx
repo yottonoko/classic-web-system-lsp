@@ -1001,7 +1001,7 @@ function GraphStatsPopover({
     <div ref={containerRef} className="relative inline-flex justify-end max-[980px]:justify-start">
       <button
         type="button"
-        className="inline-flex h-7 min-w-[88px] cursor-pointer items-center justify-between gap-2 rounded-md border border-[#394456] bg-[#151a22] px-2.5 text-xs text-[#b5c0d0] hover:border-[#4b5a70] hover:text-[#d7dde8]"
+        className="inline-flex h-7 cursor-pointer items-center rounded-md border border-[#394456] bg-[#151a22] px-2.5 text-xs text-[#b5c0d0] hover:border-[#4b5a70] hover:text-[#d7dde8]"
         aria-haspopup="dialog"
         aria-expanded={isOpen}
         aria-label="Show graph statistics"
