@@ -2021,12 +2021,22 @@ connection.onRenameRequest(async (params: RenameParams): Promise<WorkspaceEdit |
   }
   if (isHtmlPosition(cached, params.position)) {
     const rename = htmlRename(cached, params.position, params.newName);
-    const crossLanguage = await crossLanguageRename(cached, params.position, params.newName);
+    const crossLanguage = await crossLanguageRename(
+      cached,
+      params.position,
+      params.newName,
+      "document",
+    );
     return mergeWorkspaceEdits([rename, crossLanguage]) ?? null;
   }
   if (isCssPosition(cached, params.position)) {
     const rename = cssRename(cached, params.position, params.newName);
-    const crossLanguage = await crossLanguageRename(cached, params.position, params.newName);
+    const crossLanguage = await crossLanguageRename(
+      cached,
+      params.position,
+      params.newName,
+      "document",
+    );
     return mergeWorkspaceEdits([rename, crossLanguage]) ?? null;
   }
   if (!isVbscriptPosition(cached, params.position)) {
@@ -5232,6 +5242,7 @@ async function crossLanguageRename(
   cached: CachedDocument,
   position: Position,
   newName: string,
+  scope: "document" | "workspace" = "workspace",
 ): Promise<WorkspaceEdit | undefined> {
   const target = crossLanguageRenameTarget(cached, position);
   if (!target || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(newName)) {
@@ -5239,7 +5250,7 @@ async function crossLanguageRename(
   }
   const changes: NonNullable<WorkspaceEdit["changes"]> = {};
   const seen = new Set<string>();
-  for (const candidate of await crossLanguageRenameCandidates(cached)) {
+  for (const candidate of await crossLanguageRenameCandidates(cached, scope)) {
     const text = candidate.source.getText();
     const edits = [
       ...htmlAttributeRenameEdits(candidate, target, newName),
@@ -5258,7 +5269,13 @@ async function crossLanguageRename(
   return Object.keys(changes).length > 0 ? { changes } : undefined;
 }
 
-async function crossLanguageRenameCandidates(active: CachedDocument): Promise<CachedDocument[]> {
+async function crossLanguageRenameCandidates(
+  active: CachedDocument,
+  scope: "document" | "workspace" = "workspace",
+): Promise<CachedDocument[]> {
+  if (scope === "document") {
+    return [active];
+  }
   const settings = cachedSettings(active.source.uri);
   await ensureWorkspaceIndexAsync(settings);
   const candidates: CachedDocument[] = [active];
