@@ -1521,19 +1521,20 @@ function vbscriptSyntaxKeywordCompletions(
   if (!context) {
     return [];
   }
-  const labels = statementKeywordCompletionLabels(context.blocks, context.prefix);
+  const completions = statementKeywordCompletionLabels(context.blocks, context.prefix);
   const detail = createLocalizer(locale).t("vb.completion.syntaxKeyword");
-  return labels.map((label, index) => ({
-    label,
+  return completions.map((completion, index) => ({
+    label: completion.label,
     kind: CompletionItemKind.Keyword,
     detail,
-    sortText: `00-${index}-${label}`,
+    filterText: completion.filterText,
+    sortText: `00-${index}-${completion.label}`,
     textEdit: {
       range: {
         start: positionAt(parsed.text, context.replaceStart),
         end: positionAt(parsed.text, sourceOffset),
       },
-      newText: label,
+      newText: completion.label,
     },
   }));
 }
@@ -1577,7 +1578,7 @@ function statementKeywordCompletionContext(
 function statementKeywordCompletionLabels(
   blocks: VbEndCompletionBlock[],
   prefix: string,
-): string[] {
+): Array<{ label: string; filterText?: string }> {
   const labels = [
     "If",
     "Do",
@@ -1599,10 +1600,33 @@ function statementKeywordCompletionLabels(
   if (closeKeyword) {
     labels.push(closeKeyword);
   }
-  return labels.filter((label, index) => {
-    const lowerLabel = label.toLowerCase();
-    return lowerLabel.startsWith(prefix) && labels.indexOf(label) === index;
+  const seen = new Set<string>();
+  return labels.flatMap((label) => {
+    if (seen.has(label)) {
+      return [];
+    }
+    seen.add(label);
+    const completion = statementKeywordCompletionForPrefix(label, prefix);
+    return completion ? [completion] : [];
   });
+}
+
+function statementKeywordCompletionForPrefix(
+  label: string,
+  prefix: string,
+): { label: string; filterText?: string } | undefined {
+  if (label.toLowerCase().startsWith(prefix)) {
+    return { label };
+  }
+  const onErrorFilterText = onErrorKeywordCompletionFilterText(label);
+  if (onErrorFilterText?.toLowerCase().startsWith(prefix)) {
+    return { label, filterText: onErrorFilterText };
+  }
+  return undefined;
+}
+
+function onErrorKeywordCompletionFilterText(label: string): string | undefined {
+  return label.toLowerCase().startsWith("on error ") ? label.slice("On ".length) : undefined;
 }
 
 function blockCloseCompletionKeyword(block: VbEndCompletionBlock | undefined): string | undefined {

@@ -941,6 +941,9 @@ On
 On Error${" "}
 On Error R
 On Error G
+Error
+Error R
+Error G
 %>`;
     const parsed = parseAspDocument("file:///site/on-error-completion.asp", source);
     const onCompletions = getVbscriptCompletions(
@@ -970,9 +973,50 @@ On Error G
     );
     expect(gotoCompletions.map((item) => item.label)).toEqual(["On Error GoTo 0"]);
 
+    const errorStart = source.indexOf("\nError\n") + "\n".length;
+    const errorCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, errorStart + "Error".length),
+    );
+    expect(errorCompletions.map((item) => item.label)).toEqual(
+      expect.arrayContaining(["On Error Resume Next", "On Error GoTo 0"]),
+    );
+    expect(errorCompletions.find((item) => item.label === "On Error Resume Next")).toMatchObject({
+      filterText: "Error Resume Next",
+      textEdit: {
+        range: {
+          start: positionAt(source, errorStart),
+          end: positionAt(source, errorStart + "Error".length),
+        },
+        newText: "On Error Resume Next",
+      },
+    });
+
+    const errorResumeCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("\nError R") + "\nError R".length),
+    );
+    expect(errorResumeCompletions).toEqual([
+      expect.objectContaining({
+        label: "On Error Resume Next",
+        filterText: "Error Resume Next",
+      }),
+    ]);
+
+    const errorGotoCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("\nError G") + "\nError G".length),
+    );
+    expect(errorGotoCompletions).toEqual([
+      expect.objectContaining({
+        label: "On Error GoTo 0",
+        filterText: "Error GoTo 0",
+      }),
+    ]);
+
     const disabled = getVbscriptCompletions(
       parsed,
-      positionAt(source, source.indexOf("On Error R") + "On Error R".length),
+      positionAt(source, source.indexOf("\nError R") + "\nError R".length),
       { syntaxKeywords: false },
     );
     expect(disabled.some((item) => item.label === "On Error Resume Next")).toBe(false);

@@ -4480,6 +4480,33 @@ On Error R
         });
         expect(completionLabels(onErrorCompletions)).toEqual(["On Error Resume Next"]);
 
+        const aliasCompletionSource = `<%
+Error R
+%>`;
+        const aliasCompletionUri = "file:///tmp/vbscript-error-alias-completion.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: aliasCompletionUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: aliasCompletionSource,
+          },
+        });
+        const errorAliasCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri: aliasCompletionUri },
+          position: positionAt(
+            aliasCompletionSource,
+            aliasCompletionSource.indexOf("Error R") + "Error R".length,
+          ),
+        });
+        expect(completionLabels(errorAliasCompletions)).toEqual(["On Error Resume Next"]);
+        expect(completionItems(errorAliasCompletions)[0]).toMatchObject({
+          filterText: "Error Resume Next",
+          textEdit: {
+            newText: "On Error Resume Next",
+          },
+        });
+
         await server.request("shutdown", null);
         server.notify("exit", undefined);
       } finally {
