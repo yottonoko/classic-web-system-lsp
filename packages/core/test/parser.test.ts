@@ -3347,6 +3347,28 @@ If ready Then
     );
   });
 
+  it("keeps ASP-island-spanning For blocks valid when Next is explicit", () => {
+    const parsed = parseAspDocument(
+      "file:///site/island-for-blocks.asp",
+      `<%
+For index = 0 To 1
+%>
+<span><%= index %></span>
+<% Next %>
+<%
+For Each item In items
+%>
+<span><%= item %></span>
+<% Next %>`,
+    );
+    const syntaxCodes = analyzeVbscript(parsed, {
+      unusedDiagnostics: false,
+    })
+      .diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax")
+      .map((diagnostic) => diagnostic.code);
+    expect(syntaxCodes).not.toContain("missingNext");
+  });
+
   it("keeps valid VBScript If syntax out of syntax diagnostics", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

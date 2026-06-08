@@ -1689,6 +1689,7 @@ interface VbEndCompletionBlock {
   kind: VbEndCompletionBlockKind;
   procedureKind?: "sub" | "function" | "property";
   openingToken: VbToken;
+  documentIndex?: number;
 }
 
 function vbscriptContextualSyntaxCompletions(
@@ -1972,10 +1973,36 @@ function openVbEndCompletionBlocksBefore(
   document: VbCstNode,
   offset: number,
 ): VbEndCompletionBlock[] {
-  const tokens = document.tokens.filter(
-    (token) => token.start < offset && token.kind !== "whitespace" && token.kind !== "comment",
+  return scanVbEndCompletionTokens(
+    document.tokens.filter(
+      (token) => token.start < offset && token.kind !== "whitespace" && token.kind !== "comment",
+    ),
   );
+}
+
+function openVbEndCompletionBlocksAcrossDocuments(documents: VbCstNode[]): VbEndCompletionBlock[] {
   const stack: VbEndCompletionBlock[] = [];
+  documents
+    .map((document, documentIndex) => ({
+      document,
+      documentIndex,
+    }))
+    .sort((left, right) => left.document.start - right.document.start)
+    .forEach(({ document, documentIndex }) => {
+      scanVbEndCompletionTokens(
+        document.tokens.filter((token) => token.kind !== "whitespace" && token.kind !== "comment"),
+        stack,
+        documentIndex,
+      );
+    });
+  return stack;
+}
+
+function scanVbEndCompletionTokens(
+  tokens: VbToken[],
+  stack: VbEndCompletionBlock[] = [],
+  documentIndex?: number,
+): VbEndCompletionBlock[] {
   for (let index = 0; index < tokens.length; index += 1) {
     if (!isCompletionStatementStart(tokens, index)) {
       continue;
@@ -1983,11 +2010,11 @@ function openVbEndCompletionBlocksBefore(
     const first = lowerToken(tokens[index]);
     const second = lowerToken(tokens[index + 1]);
     if (first === "class" && tokens[index + 1]?.kind === "identifier") {
-      stack.push({ kind: "Class", openingToken: tokens[index] });
+      stack.push({ kind: "Class", openingToken: tokens[index], documentIndex });
       continue;
     }
     if (first === "end") {
-      closeVbEndCompletionBlock(stack, second);
+      closeVbEndCompletionBlock(stack, second, documentIndex);
       continue;
     }
     const declarationStart =
@@ -2001,6 +2028,7 @@ function openVbEndCompletionBlocksBefore(
         kind: "Procedure",
         procedureKind: declarationStart,
         openingToken: tokens[index + declarationOffset],
+        documentIndex,
       });
       continue;
     }
@@ -2014,44 +2042,49 @@ function openVbEndCompletionBlocksBefore(
           kind: "Property",
           procedureKind: "property",
           openingToken: tokens[index + declarationOffset],
+          documentIndex,
         });
       }
       continue;
     }
     if (first === "loop") {
-      closeVbEndCompletionBlock(stack, "loop");
+      closeVbEndCompletionBlock(stack, "loop", documentIndex);
       continue;
     }
     if (first === "wend") {
-      closeVbEndCompletionBlock(stack, "wend");
+      closeVbEndCompletionBlock(stack, "wend", documentIndex);
       continue;
     }
     if (first === "next") {
-      closeVbEndCompletionBlock(stack, "next");
+      closeVbEndCompletionBlock(stack, "next", documentIndex);
       continue;
     }
     if (first === "if" && isCompletionMultilineIf(tokens, index)) {
-      stack.push({ kind: "If", openingToken: tokens[index] });
+      stack.push({ kind: "If", openingToken: tokens[index], documentIndex });
       continue;
     }
     if (first === "select" && second === "case") {
-      stack.push({ kind: "Select", openingToken: tokens[index] });
+      stack.push({ kind: "Select", openingToken: tokens[index], documentIndex });
       continue;
     }
     if (first === "with") {
-      stack.push({ kind: "With", openingToken: tokens[index] });
+      stack.push({ kind: "With", openingToken: tokens[index], documentIndex });
       continue;
     }
     if (first === "do") {
-      stack.push({ kind: "DoLoop", openingToken: tokens[index] });
+      stack.push({ kind: "DoLoop", openingToken: tokens[index], documentIndex });
       continue;
     }
     if (first === "while") {
-      stack.push({ kind: "While", openingToken: tokens[index] });
+      stack.push({ kind: "While", openingToken: tokens[index], documentIndex });
       continue;
     }
     if (first === "for") {
-      stack.push({ kind: second === "each" ? "ForEach" : "For", openingToken: tokens[index] });
+      stack.push({
+        kind: second === "each" ? "ForEach" : "For",
+        openingToken: tokens[index],
+        documentIndex,
+      });
     }
   }
   return stack;
@@ -2065,6 +2098,7 @@ function isCompletionStatementStart(tokens: VbToken[], index: number): boolean {
 function closeVbEndCompletionBlock(
   stack: VbEndCompletionBlock[],
   endKind: string | undefined,
+  documentIndex?: number,
 ): void {
   const targetKinds =
     endKind === "class"
@@ -2084,7 +2118,14 @@ function closeVbEndCompletionBlock(
                   : endKind === "next"
                     ? ["For", "ForEach"]
                     : ["Procedure"];
-  const index = findLastIndex(stack, (node) => targetKinds.includes(node.kind));
+  const index = findLastIndex(
+    stack,
+    (node) =>
+      targetKinds.includes(node.kind) &&
+      (endKind !== undefined ||
+        documentIndex === undefined ||
+        node.documentIndex === documentIndex),
+  );
   if (index !== -1) {
     stack.splice(index, 1);
   }
@@ -6743,24 +6784,22 @@ function diagnoseBlockEndSyntax(
   locale: AspLocale | undefined,
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
-  for (const document of vbDocuments(parsed)) {
-    const openBlocks = openVbEndCompletionBlocksBefore(document, document.end).filter(
-      (block) => block.kind !== "If",
-    );
-    for (const block of openBlocks) {
-      const terminator = blockCloseCompletionLabel(block);
-      const token = block.openingToken;
-      diagnostics.push({
-        severity: DiagnosticSeverity.Error,
-        range: rangeFromOffsets(parsed.text, token.start, token.end),
-        message: createLocalizer(locale).t("vb.diagnostic.missingBlockTerminator", {
-          kind: blockDisplayName(block),
-          terminator,
-        }),
-        code: blockEndSyntaxDiagnosticCode(block),
-        source: "asp-lsp-vbscript-syntax",
-      });
-    }
+  const openBlocks = openVbEndCompletionBlocksAcrossDocuments(vbDocuments(parsed)).filter(
+    (block) => block.kind !== "If",
+  );
+  for (const block of openBlocks) {
+    const terminator = blockCloseCompletionLabel(block);
+    const token = block.openingToken;
+    diagnostics.push({
+      severity: DiagnosticSeverity.Error,
+      range: rangeFromOffsets(parsed.text, token.start, token.end),
+      message: createLocalizer(locale).t("vb.diagnostic.missingBlockTerminator", {
+        kind: blockDisplayName(block),
+        terminator,
+      }),
+      code: blockEndSyntaxDiagnosticCode(block),
+      source: "asp-lsp-vbscript-syntax",
+    });
   }
   return diagnostics;
 }
