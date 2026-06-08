@@ -320,6 +320,22 @@ describe("VS Code extension package", () => {
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.maxSizeMb"]).toEqual(
       expect.objectContaining({ type: "number", default: 128, minimum: 1 }),
     );
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.workspace.includes"]).toEqual(
+      expect.objectContaining({
+        type: "array",
+        default: ["**/*.{asp,asa,inc}"],
+      }),
+    );
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.workspace.excludes"]).toEqual(
+      expect.objectContaining({ type: "array", default: [] }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.workspace.respectGitIgnore"],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
+    for (const name of ["includes", "excludes", "respectGitIgnore"]) {
+      expect(nls[`configuration.workspace.${name}.description`]).toBeTruthy();
+      expect(nlsJa[`configuration.workspace.${name}.description`]).toBeTruthy();
+    }
     const removedBackgroundAnalysis = "background" + "Analysis";
     const removedIdleAnalysisConcurrency = "i" + "dleAnalysisConcurrency";
     expect(

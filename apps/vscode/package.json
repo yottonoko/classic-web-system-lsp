@@ -761,6 +761,29 @@
           "default": 128,
           "description": "%configuration.cache.maxSizeMb.description%"
         },
+        "aspLsp.workspace.includes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/*.{asp,asa,inc}"
+          ],
+          "description": "%configuration.workspace.includes.description%"
+        },
+        "aspLsp.workspace.excludes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "%configuration.workspace.excludes.description%"
+        },
+        "aspLsp.workspace.respectGitIgnore": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.workspace.respectGitIgnore.description%"
+        },
         "aspLsp.workspace.maxIndexFiles": {
           "type": "number",
           "minimum": 1,

@@ -458,6 +458,26 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(docs.get("css")?.text).toContain("*{color: red; display: block}");
   });
 
+  it("extracts inline style attributes before and after the html root", () => {
+    const source = `<header style="color: #00f"></header>
+<html><body></body></html>
+<footer style='background: #fff'></footer>
+<% If showRow Then %>
+<tr style="border-color: #0f0"><td>x</td></tr>
+<% End If %>`;
+    const parsed = parseAspDocument("file:///site/outside-root.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    const styles = parsed.regions.filter((region) => region.kind === "style-attribute");
+    expect(styles.map((region) => source.slice(region.contentStart, region.contentEnd))).toEqual([
+      "color: #00f",
+      "background: #fff",
+      "border-color: #0f0",
+    ]);
+    expect(docs.get("css")?.text).toContain("*{color: #00f}");
+    expect(docs.get("css")?.text).toContain("*{background: #fff}");
+    expect(docs.get("css")?.text).toContain("*{border-color: #0f0}");
+  });
+
   it("reports missing ASP close delimiter", () => {
     const parsed = parseAspDocument("file:///broken.asp", "<html><% Response.Write 1");
     expect(parsed.diagnostics[0]?.message).toContain("closing %>");
@@ -1579,6 +1599,28 @@ End Function
       ],
       references: [{ name: "rs", role: "read", bindingScope: "global" }],
       callSites: [{ name: "MoveNext", callKind: "member", receiverName: "rs" }],
+    },
+    {
+      name: "RegExp assignments add internal types without source declarations for built-ins",
+      source: `<%
+Dim re, created, matches, firstMatch
+Set re = New RegExp
+Set created = CreateObject("VBScript.RegExp")
+Set matches = re.Execute("abc")
+Set firstMatch = matches.Item(0)
+%>`,
+      declarations: [
+        { name: "re", kind: "variable", typeName: "RegExp" },
+        { name: "created", kind: "variable", typeName: "RegExp" },
+        { name: "matches", kind: "variable", typeName: "Matches" },
+        { name: "firstMatch", kind: "variable", typeName: "Match" },
+      ],
+      absentDeclarations: [{ name: "RegExp" }],
+      callSites: [
+        { name: "RegExp", callKind: "constructor" },
+        { name: "Execute", callKind: "member", receiverName: "re" },
+        { name: "Item", callKind: "member", receiverName: "matches" },
+      ],
     },
     {
       name: "server object with uppercase tag and attributes keeps the id",
@@ -4012,6 +4054,119 @@ command.
     expect(
       getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("adInteger"))),
     ).toContain("Const adInteger As Number");
+  });
+
+  it("treats RegExp as a typed VBScript built-in object", () => {
+    const parsed = parseAspDocument(
+      "file:///site/regexp.asp",
+      `<%
+Option Explicit
+Dim re, created, matches, firstMatch, subItems, subText, replaced, found
+Set re = New RegExp
+Set created = CreateObject("VBScript.RegExp")
+re.Pattern = "(\\w+)-(\\d+)"
+re.Global = True
+re.IgnoreCase = True
+re.MultiLine = True
+Set matches = re.Execute("abc-123")
+Set firstMatch = matches.Item(0)
+Set subItems = firstMatch.SubMatches
+subText = subItems.Item(0)
+replaced = re.Replace("abc-123", "$1")
+found = created.Test("abc-123")
+re.
+created.
+matches.
+firstMatch.
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const diagnostics = analyzeVbscript(parsed, {
+      symbols,
+      unusedDiagnostics: false,
+    }).diagnostics;
+    expect(
+      diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript"),
+    ).toHaveLength(0);
+    expect(symbols.find((symbol) => symbol.name === "re")?.typeName).toBe("RegExp");
+    expect(symbols.find((symbol) => symbol.name === "created")?.typeName).toBe("RegExp");
+    expect(symbols.find((symbol) => symbol.name === "matches")?.typeName).toBe("Matches");
+    expect(symbols.find((symbol) => symbol.name === "firstMatch")?.typeName).toBe("Match");
+    expect(symbols.find((symbol) => symbol.name === "subItems")?.typeName).toBe("SubMatches");
+    expect(symbols.find((symbol) => symbol.name === "subText")?.typeName).toBe("String");
+    expect(symbols.find((symbol) => symbol.name === "replaced")?.typeName).toBe("String");
+    expect(symbols.find((symbol) => symbol.name === "found")?.typeName).toBe("Boolean");
+
+    const completionLabelsAt = (text: string): string[] =>
+      getVbscriptCompletions(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf(text) + text.length),
+        { symbols },
+      ).map((item) => item.label);
+    expect(completionLabelsAt("re.")).toEqual(
+      expect.arrayContaining(["Pattern", "Global", "IgnoreCase", "MultiLine", "Execute"]),
+    );
+    expect(completionLabelsAt("created.")).toContain("Test");
+    expect(completionLabelsAt("matches.")).toEqual(expect.arrayContaining(["Count", "Item"]));
+    expect(completionLabelsAt("firstMatch.")).toEqual(
+      expect.arrayContaining(["FirstIndex", "Length", "Value", "SubMatches"]),
+    );
+
+    const topLevelCompletions = getVbscriptCompletions(
+      parsed,
+      { line: 1, character: 0 },
+      { symbols },
+    );
+    expect(topLevelCompletions.find((item) => item.label === "RegExp")).toMatchObject({
+      kind: CompletionItemKind.Class,
+    });
+    const topLevelCompletionsJa = getVbscriptCompletions(
+      parsed,
+      { line: 1, character: 0 },
+      { symbols, locale: "ja" },
+    );
+    expect(
+      String(
+        resolveVbscriptCompletionItem(
+          topLevelCompletionsJa.find((item) => item.label === "RegExp")!,
+          parsed,
+          { symbols, locale: "ja" },
+        ).documentation,
+      ),
+    ).toContain("Pattern を使って");
+
+    expect(
+      getVbscriptHover(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf("New RegExp") + "New ".length),
+        { symbols, locale: "en" },
+      ),
+    ).toContain("Class RegExp");
+    expect(
+      getVbscriptHover(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf('re.Execute("') + "re.".length),
+        { symbols, locale: "en" },
+      ),
+    ).toContain("RegExp.Execute(source)");
+    expect(
+      getVbscriptSignatureHelp(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf('re.Execute("') + "re.Execute(".length),
+        { symbols, locale: "en" },
+      )?.signatures[0],
+    ).toEqual(
+      expect.objectContaining({
+        label: "re.Execute(source)",
+        documentation: expect.stringContaining("Matches collection"),
+        parameters: [
+          expect.objectContaining({
+            label: "source",
+            documentation: "String to search with the current Pattern.",
+          }),
+        ],
+      }),
+    );
   });
 
   it("keeps ADO constants built-in without treating member names as globals", () => {

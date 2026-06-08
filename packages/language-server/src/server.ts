@@ -202,6 +202,7 @@ const pendingSemanticJavascriptTokenBuilds = new Map<string, Promise<void>>();
 const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
+const defaultWorkspaceIncludes = ["**/*.{asp,asa,inc}"];
 const defaultDiagnosticsDebounceMs = 250;
 const graphFileIndexCacheMaxEntries = 64;
 const reindexWorkspaceCommand = "aspLsp.reindexWorkspace";
@@ -1162,6 +1163,24 @@ interface VbTypeHierarchyData {
   character: number;
 }
 
+interface WorkspaceGlobPattern {
+  pattern: string;
+  regex: RegExp;
+  matchBasename: boolean;
+}
+
+interface WorkspaceGitIgnoreRule extends WorkspaceGlobPattern {
+  directoryOnly: boolean;
+  negated: boolean;
+}
+
+interface WorkspaceScanFilter {
+  root: string;
+  includes: WorkspaceGlobPattern[];
+  excludes: WorkspaceGlobPattern[];
+  gitIgnoreRules: WorkspaceGitIgnoreRule[];
+}
+
 function aspFileOperationFilter() {
   return {
     scheme: "file",
@@ -1621,7 +1640,7 @@ documents.onDidChangeContent((event) => {
 });
 documents.onDidSave(async (event) => {
   noteForegroundActivity();
-  await indexWorkspaceFileAsync(uriToFileName(event.document.uri));
+  await indexWorkspaceFileAsync(uriToFileName(event.document.uri), globalSettings);
   invalidateCachedAnalysisForUris(new Set([event.document.uri]), "document.save");
   scheduleProjectUpdate("document.save");
   validate(event.document);
@@ -1720,8 +1739,11 @@ connection.onDidChangeWatchedFiles(async (change) => {
       if (file.type === FileChangeType.Deleted) {
         workspaceIndex.delete(fileName);
       } else {
-        await indexWorkspaceFileAsync(fileName);
+        await indexWorkspaceFileAsync(fileName, globalSettings);
       }
+    }
+    if (path.basename(fileName) === ".gitignore" && globalSettings.workspace?.respectGitIgnore) {
+      invalidateWorkspaceIndex("gitignore.changed");
     }
     if (isScriptWorkspaceFile(fileName) || isJavaScriptProjectEnvironmentFile(fileName)) {
       scriptChanged = true;
@@ -2110,7 +2132,8 @@ connection.onSignatureHelp(async (params): Promise<SignatureHelp | null> => {
 connection.onWorkspaceSymbol(async (params, token) => {
   await ensureWorkspaceIndexAsync(globalSettings, token);
   const query = params.query.toLowerCase();
-  const openedUris = new Set(documents.all().map((document) => document.uri));
+  const openDocuments = await workspaceAnalyzableOpenDocumentsAsync(globalSettings);
+  const openedUris = new Set(openDocuments.map((document) => document.uri));
   const matchesQuery = (name: string): boolean =>
     query.length === 0 || name.toLowerCase().includes(query);
   const indexedSymbols = (
@@ -2136,7 +2159,7 @@ connection.onWorkspaceSymbol(async (params, token) => {
   ).flat();
   const openSymbols = (
     await Promise.all(
-      documents.all().map(async (document) => {
+      openDocuments.map(async (document) => {
         const cached = await ensureFreshCachedDocumentAsync(document);
         return cached
           ? ((
@@ -2149,7 +2172,7 @@ connection.onWorkspaceSymbol(async (params, token) => {
   const vbSymbols = openSymbols.map(vbSymbolInformation);
   const openRichSymbols = (
     await Promise.all(
-      documents.all().map(async (document) => {
+      openDocuments.map(async (document) => {
         const cached = await ensureFreshCachedDocumentAsync(document);
         return cached
           ? (await workspaceSymbolsForCachedAsync(cached)).filter((symbol) =>
@@ -2273,7 +2296,8 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
   const cancellation: AnalysisCancellation = {
     isCancellationRequested: () => token.isCancellationRequested,
   };
-  const openedUris = new Set(documents.all().map((document) => document.uri));
+  const openDocuments = await workspaceAnalyzableOpenDocumentsAsync(globalSettings);
+  const openedUris = new Set(openDocuments.map((document) => document.uri));
   const concurrency = analysisConcurrency(globalSettings);
   const indexedEntries = workspaceEntriesAffectedFirst(
     [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri)),
@@ -2284,7 +2308,7 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
     version: null,
     items: await diagnosticsForIndexed(entry, cachedSettings(entry.uri), token),
   }));
-  const openItems = await mapWithConcurrency(documents.all(), concurrency, async (document) => {
+  const openItems = await mapWithConcurrency(openDocuments, concurrency, async (document) => {
     const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
     return cached
       ? {
@@ -7284,8 +7308,8 @@ async function workspaceVbReferenceWorkerCandidates(
 ): Promise<VbReferencesWorkerCandidate[]> {
   await ensureWorkspaceIndexAsync(settings);
   const candidates = new Map<string, VbReferencesWorkerCandidate>();
-  for (const document of documents.all()) {
-    if (!isClassicAspGraphUri(document.uri) || excludedUris.has(document.uri)) {
+  for (const document of await workspaceAnalyzableOpenDocumentsAsync(settings)) {
+    if (excludedUris.has(document.uri)) {
       continue;
     }
     const fileName = normalizeFileName(uriToFileName(document.uri));
@@ -9722,6 +9746,7 @@ function remapWorkspaceEdit(
   edit: WorkspaceEdit,
   sourceUri: string,
 ): WorkspaceEdit {
+  const result: WorkspaceEdit = {};
   const changes: NonNullable<WorkspaceEdit["changes"]> = {};
   for (const [uri, textEdits] of Object.entries(edit.changes ?? {})) {
     const targetUri = uri === virtual.uri ? sourceUri : uri;
@@ -9738,7 +9763,56 @@ function remapWorkspaceEdit(
         .filter((textEdit): textEdit is TextEdit => Boolean(textEdit)),
     ];
   }
-  return { changes };
+  if (Object.keys(changes).length > 0) {
+    result.changes = changes;
+  }
+  const documentChanges = edit.documentChanges
+    ?.map((change) => remapDocumentChange(virtual, change, sourceUri))
+    .filter((change): change is NonNullable<WorkspaceEdit["documentChanges"]>[number] =>
+      Boolean(change),
+    );
+  if (documentChanges && documentChanges.length > 0) {
+    result.documentChanges = documentChanges;
+  }
+  if (edit.changeAnnotations) {
+    result.changeAnnotations = edit.changeAnnotations;
+  }
+  return result;
+}
+
+function remapDocumentChange(
+  virtual: VirtualDocument,
+  change: NonNullable<WorkspaceEdit["documentChanges"]>[number],
+  sourceUri: string,
+): NonNullable<WorkspaceEdit["documentChanges"]>[number] | undefined {
+  if (!isTextDocumentEdit(change)) {
+    return change;
+  }
+  const uri = change.textDocument.uri;
+  const targetUri = uri === virtual.uri ? sourceUri : uri;
+  const edits = change.edits
+    .map((edit) => {
+      const range =
+        uri === virtual.uri ? sourceRangeFromVirtualRange(virtual, edit.range) : edit.range;
+      return range ? { ...edit, range } : undefined;
+    })
+    .filter((edit): edit is (typeof change.edits)[number] => Boolean(edit));
+  return { ...change, textDocument: { ...change.textDocument, uri: targetUri }, edits };
+}
+
+function isTextDocumentEdit(
+  change: NonNullable<WorkspaceEdit["documentChanges"]>[number],
+): change is Extract<
+  NonNullable<WorkspaceEdit["documentChanges"]>[number],
+  { textDocument: { uri: string }; edits: TextEdit[] }
+> {
+  return (
+    "textDocument" in change &&
+    typeof change.textDocument === "object" &&
+    change.textDocument !== null &&
+    "uri" in change.textDocument &&
+    Array.isArray((change as { edits?: unknown }).edits)
+  );
 }
 
 function tsDiagnosticToLsp(
@@ -10016,12 +10090,18 @@ async function ensureWorkspaceIndexAsync(
     if (token?.isCancellationRequested || scannedFiles >= maxFiles) {
       break;
     }
-    scannedFiles = await indexWorkspaceRootAsync(root, {
-      scannedFiles,
-      maxFiles,
-      chunkSize,
-      token,
-    });
+    const filter = await createWorkspaceScanFilter(root, settings);
+    scannedFiles = await indexWorkspaceRootAsync(
+      root,
+      {
+        scannedFiles,
+        maxFiles,
+        chunkSize,
+        token,
+      },
+      filter,
+      settings,
+    );
   }
   workspaceIndexTruncated = scannedFiles >= maxFiles;
   workspaceIndexDirty = Boolean(token?.isCancellationRequested);
@@ -10040,6 +10120,8 @@ async function indexWorkspaceRootAsync(
     chunkSize: number;
     token?: { isCancellationRequested?: boolean };
   },
+  filter: WorkspaceScanFilter,
+  settings: AspSettings,
 ): Promise<number> {
   const stat = await fs.promises.stat(root).catch(() => undefined);
   if (!stat?.isDirectory()) {
@@ -10060,11 +10142,11 @@ async function indexWorkspaceRootAsync(
       }
       const fullPath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
-        if (!isExcludedWorkspaceDirectory(entry.name, fullPath)) {
+        if (workspaceScanFilterShouldVisitDirectory(filter, fullPath)) {
           directories.push(fullPath);
         }
-      } else if (entry.isFile() && isAspWorkspaceFile(entry.name)) {
-        await indexWorkspaceFileAsync(fullPath);
+      } else if (entry.isFile() && workspaceScanFilterIncludesFile(filter, fullPath)) {
+        await indexWorkspaceFileAsync(fullPath, settings);
         scannedFiles += 1;
       }
       operations += 1;
@@ -10076,8 +10158,12 @@ async function indexWorkspaceRootAsync(
   return scannedFiles;
 }
 
-async function indexWorkspaceFileAsync(fileName: string): Promise<void> {
+async function indexWorkspaceFileAsync(fileName: string, settings: AspSettings): Promise<void> {
   const normalized = normalizeFileName(fileName);
+  if (!(await shouldIndexWorkspaceFileAsync(normalized, settings))) {
+    workspaceIndex.delete(normalized);
+    return;
+  }
   const stat = await fs.promises.stat(normalized).catch(() => undefined);
   if (!stat?.isFile()) {
     workspaceIndex.delete(normalized);
@@ -10262,12 +10348,286 @@ async function closeDiagnosticsWorkerPools(reason: string): Promise<void> {
   }
 }
 
-function isExcludedWorkspaceDirectory(name: string, fullPath: string): boolean {
+function isHardExcludedWorkspaceDirectory(name: string, fullPath: string): boolean {
   const normalized = fullPath.split(path.sep).join("/");
   return (
     [".git", "node_modules", "dist", "out"].includes(name) ||
     normalized.endsWith("/server/language-server/node_modules")
   );
+}
+
+async function createWorkspaceScanFilter(
+  root: string,
+  settings: AspSettings,
+): Promise<WorkspaceScanFilter> {
+  const normalizedRoot = normalizeFileName(root);
+  return {
+    root: normalizedRoot,
+    includes: compileWorkspaceGlobPatterns(
+      settings.workspace?.includes ?? defaultWorkspaceIncludes,
+    ),
+    excludes: compileWorkspaceGlobPatterns(settings.workspace?.excludes ?? []),
+    gitIgnoreRules:
+      settings.workspace?.respectGitIgnore === true
+        ? await readWorkspaceGitIgnoreRulesAsync(normalizedRoot)
+        : [],
+  };
+}
+
+async function shouldIndexWorkspaceFileAsync(
+  fileName: string,
+  settings: AspSettings,
+): Promise<boolean> {
+  if (!isAspWorkspaceFile(fileName)) {
+    return false;
+  }
+  const root = workspaceRootForFileName(fileName);
+  if (!root) {
+    return false;
+  }
+  const filter = await createWorkspaceScanFilter(root, settings);
+  return workspaceScanFilterIncludesFile(filter, fileName);
+}
+
+async function workspaceAnalyzableOpenDocumentsAsync(
+  settings: AspSettings,
+): Promise<TextDocument[]> {
+  const items: TextDocument[] = [];
+  for (const document of documents.all()) {
+    if (!isClassicAspGraphUri(document.uri)) {
+      continue;
+    }
+    if (await shouldIndexWorkspaceFileAsync(uriToFileName(document.uri), settings)) {
+      items.push(document);
+    }
+  }
+  return items;
+}
+
+function workspaceScanFilterIncludesFile(filter: WorkspaceScanFilter, fileName: string): boolean {
+  const relative = workspaceRelativePath(filter.root, fileName);
+  if (!relative) {
+    return false;
+  }
+  return (
+    workspacePatternListMatches(filter.includes, relative, false) &&
+    !workspacePatternListExcludesPath(filter.excludes, relative, false) &&
+    !workspaceGitIgnoreRulesIgnorePath(filter.gitIgnoreRules, relative, false)
+  );
+}
+
+function workspaceScanFilterShouldVisitDirectory(
+  filter: WorkspaceScanFilter,
+  directory: string,
+): boolean {
+  const normalized = normalizeFileName(directory);
+  if (normalized === filter.root) {
+    return true;
+  }
+  if (isHardExcludedWorkspaceDirectory(path.basename(normalized), normalized)) {
+    return false;
+  }
+  const relative = workspaceRelativePath(filter.root, normalized);
+  if (!relative) {
+    return false;
+  }
+  return (
+    !workspacePatternListExcludesPath(filter.excludes, relative, true) &&
+    !workspaceGitIgnoreRulesIgnorePath(filter.gitIgnoreRules, relative, true)
+  );
+}
+
+function workspacePatternListMatches(
+  patterns: WorkspaceGlobPattern[],
+  relativePath: string,
+  isDirectory: boolean,
+): boolean {
+  return patterns.some((pattern) => workspacePatternMatches(pattern, relativePath, isDirectory));
+}
+
+function workspacePatternListExcludesPath(
+  patterns: WorkspaceGlobPattern[],
+  relativePath: string,
+  isDirectory: boolean,
+): boolean {
+  return patterns.some(
+    (pattern) =>
+      workspacePatternMatches(pattern, relativePath, isDirectory) ||
+      workspacePatternMatchesAncestorDirectory(pattern, relativePath),
+  );
+}
+
+function workspaceGitIgnoreRulesIgnorePath(
+  rules: WorkspaceGitIgnoreRule[],
+  relativePath: string,
+  isDirectory: boolean,
+): boolean {
+  let ignored = false;
+  for (const rule of rules) {
+    if (
+      workspacePatternMatches(rule, relativePath, isDirectory) ||
+      workspacePatternMatchesAncestorDirectory(rule, relativePath)
+    ) {
+      ignored = !rule.negated;
+    }
+  }
+  return ignored;
+}
+
+function workspacePatternMatchesAncestorDirectory(
+  pattern: WorkspaceGlobPattern,
+  relativePath: string,
+): boolean {
+  const parts = relativePath.split("/").filter((part) => part.length > 0);
+  for (let index = 1; index < parts.length; index += 1) {
+    if (workspacePatternMatches(pattern, parts.slice(0, index).join("/"), true)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function workspacePatternMatches(
+  pattern: WorkspaceGlobPattern,
+  relativePath: string,
+  isDirectory: boolean,
+): boolean {
+  const normalized = normalizeWorkspaceRelativePath(relativePath);
+  const candidates = [normalized];
+  if (isDirectory) {
+    candidates.push(`${normalized}/`);
+  }
+  if (pattern.matchBasename) {
+    const basename = path.posix.basename(normalized);
+    candidates.push(basename);
+    if (isDirectory) {
+      candidates.push(`${basename}/`);
+    }
+  }
+  return candidates.some((candidate) => pattern.regex.test(candidate));
+}
+
+async function readWorkspaceGitIgnoreRulesAsync(root: string): Promise<WorkspaceGitIgnoreRule[]> {
+  const text = await fs.promises
+    .readFile(path.join(root, ".gitignore"), "utf8")
+    .catch(() => undefined);
+  return text === undefined ? [] : parseWorkspaceGitIgnoreRules(text);
+}
+
+function parseWorkspaceGitIgnoreRules(text: string): WorkspaceGitIgnoreRule[] {
+  const rules: WorkspaceGitIgnoreRule[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    let line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    let negated = false;
+    if (line.startsWith("!")) {
+      negated = true;
+      line = line.slice(1);
+    }
+    line = line.replace(/\\#/g, "#").replace(/\\!/g, "!");
+    const directoryOnly = line.endsWith("/");
+    line = line.replace(/^\/+/, "").replace(/\/+$/, "");
+    if (!line) {
+      continue;
+    }
+    const compiled = compileWorkspaceGlobPattern(directoryOnly ? `${line}/**` : line);
+    rules.push({ ...compiled, directoryOnly, negated });
+  }
+  return rules;
+}
+
+function compileWorkspaceGlobPatterns(patterns: string[]): WorkspaceGlobPattern[] {
+  return patterns.map(compileWorkspaceGlobPattern);
+}
+
+function compileWorkspaceGlobPattern(pattern: string): WorkspaceGlobPattern {
+  const normalized = normalizeWorkspaceGlobPattern(pattern);
+  return {
+    pattern: normalized,
+    regex: new RegExp(`^${workspaceGlobToRegExpSource(normalized)}$`, "i"),
+    matchBasename: !normalized.includes("/"),
+  };
+}
+
+function normalizeWorkspaceGlobPattern(pattern: string): string {
+  return normalizeWorkspaceRelativePath(pattern).replace(/^\/+/, "");
+}
+
+function normalizeWorkspaceRelativePath(value: string): string {
+  return value.split(path.sep).join("/").replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function workspaceRelativePath(root: string, fileName: string): string | undefined {
+  const relative = path.relative(root, normalizeFileName(fileName));
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return undefined;
+  }
+  return normalizeWorkspaceRelativePath(relative);
+}
+
+function workspaceRootForFileName(fileName: string): string | undefined {
+  const normalized = normalizeFileName(fileName);
+  return [...workspaceRoots]
+    .map(normalizeFileName)
+    .sort((left, right) => right.length - left.length)
+    .find((root) => normalized === root || normalized.startsWith(`${root}${path.sep}`));
+}
+
+function workspaceGlobToRegExpSource(pattern: string): string {
+  let source = "";
+  for (let index = 0; index < pattern.length; ) {
+    const character = pattern[index];
+    if (character === "*") {
+      if (pattern[index + 1] === "*") {
+        index += 2;
+        if (pattern[index] === "/") {
+          index += 1;
+          source += "(?:.*/)?";
+        } else {
+          source += ".*";
+        }
+      } else {
+        index += 1;
+        source += "[^/]*";
+      }
+      continue;
+    }
+    if (character === "?") {
+      source += "[^/]";
+      index += 1;
+      continue;
+    }
+    if (character === "{") {
+      const close = pattern.indexOf("}", index + 1);
+      if (close !== -1) {
+        const alternatives = pattern
+          .slice(index + 1, close)
+          .split(",")
+          .map((part) => workspaceGlobToRegExpSource(part));
+        source += `(?:${alternatives.join("|")})`;
+        index = close + 1;
+        continue;
+      }
+    }
+    if (character === "[") {
+      const close = pattern.indexOf("]", index + 1);
+      if (close > index + 1) {
+        const content = pattern.slice(index + 1, close).replace(/\\/g, "\\\\");
+        source += `[${content.startsWith("!") ? `^${content.slice(1)}` : content}]`;
+        index = close + 1;
+        continue;
+      }
+    }
+    source += escapeRegExpCharacter(character);
+    index += 1;
+  }
+  return source;
+}
+
+function escapeRegExpCharacter(character: string): string {
+  return String.raw`\^$+?.()|{}[]`.includes(character) ? `\\${character}` : character;
 }
 
 function isAspWorkspaceFile(fileName: string): boolean {
@@ -10445,6 +10805,9 @@ function jsProjectSettingsIdentity(settings: AspSettings): string {
 function workspaceIndexSettingsIdentity(settings: AspSettings): string {
   return JSON.stringify({
     roots: workspaceRoots.map(normalizeFileName).sort(),
+    includes: settings.workspace?.includes ?? defaultWorkspaceIncludes,
+    excludes: settings.workspace?.excludes ?? [],
+    respectGitIgnore: settings.workspace?.respectGitIgnore === true,
     maxIndexFiles: settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles,
     scanChunkSize: settings.workspace?.scanChunkSize ?? defaultScanChunkSize,
   });
@@ -10616,6 +10979,9 @@ function normalizeWorkspaceSettings(
   const raw = settings.workspace;
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
+    includes: normalizeStringArraySetting(record.includes, defaultWorkspaceIncludes),
+    excludes: normalizeStringArraySetting(record.excludes, []),
+    respectGitIgnore: record.respectGitIgnore === true,
     maxIndexFiles:
       typeof record.maxIndexFiles === "number" && record.maxIndexFiles > 0
         ? Math.floor(record.maxIndexFiles)
@@ -10639,6 +11005,16 @@ function normalizeWorkspaceSettings(
       positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", 1024 * 1024),
     ),
   };
+}
+
+function normalizeStringArraySetting(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) {
+    return [...fallback];
+  }
+  const items = value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
+  return items.length > 0 ? items : [...fallback];
 }
 
 function positiveIntegerSetting(value: unknown, fallback: number): number {
@@ -14132,10 +14508,32 @@ function cssCodeActions(
   if (!css || !virtual || !start || !end) {
     return [];
   }
+  const virtualContext = cssCodeActionContextToVirtual(virtual, context);
   return cssService
-    .doCodeActions2(css.document, { start, end }, context, css.stylesheet)
+    .doCodeActions2(css.document, { start, end }, virtualContext, css.stylesheet)
     .map((action) => remapCssCodeAction(virtual, action, cached.source.uri))
     .filter((action): action is CodeAction => Boolean(action));
+}
+
+function cssCodeActionContextToVirtual(
+  virtual: VirtualDocument,
+  context: CodeActionContext,
+): CodeActionContext {
+  return {
+    ...context,
+    diagnostics: context.diagnostics
+      .map((diagnostic) => diagnosticToVirtualRange(virtual, diagnostic))
+      .filter((diagnostic): diagnostic is Diagnostic => Boolean(diagnostic)),
+  };
+}
+
+function diagnosticToVirtualRange(
+  virtual: VirtualDocument,
+  diagnostic: Diagnostic,
+): Diagnostic | undefined {
+  const start = virtual.sourceMap.toVirtualPosition(diagnostic.range.start);
+  const end = virtual.sourceMap.toVirtualPosition(diagnostic.range.end);
+  return start && end ? { ...diagnostic, range: { start, end } } : undefined;
 }
 
 function remapCssCodeAction(
@@ -14143,11 +14541,15 @@ function remapCssCodeAction(
   action: CodeAction,
   sourceUri: string,
 ): CodeAction | undefined {
+  const diagnostics = action.diagnostics
+    ?.map((diagnostic) => remapDiagnostic(virtual, diagnostic, diagnostic.source ?? "asp-lsp-css"))
+    .filter((diagnostic): diagnostic is Diagnostic => Boolean(diagnostic));
   if (!action.edit) {
-    return action;
+    return { ...action, diagnostics };
   }
   return {
     ...action,
+    diagnostics,
     edit: remapWorkspaceEdit(virtual, action.edit, sourceUri),
   };
 }
@@ -14374,10 +14776,7 @@ async function buildFolderAspGraphAsync(uri: string | undefined): Promise<AspGra
   await ensureWorkspaceIndexAsync(settings);
   const opened = new Set<string>();
   const documentsForGraph: AspGraphDocument[] = [];
-  for (const document of documents.all()) {
-    if (!isClassicAspGraphUri(document.uri)) {
-      continue;
-    }
+  for (const document of await workspaceAnalyzableOpenDocumentsAsync(settings)) {
     const fileName = normalizeFileName(uriToFileName(document.uri));
     if (!isFileInDirectory(fileName, folderName)) {
       continue;
@@ -14412,10 +14811,7 @@ async function buildWorkspaceAspGraphAsync(): Promise<AspGraphPayload> {
   await ensureWorkspaceIndexAsync(settings);
   const opened = new Set<string>();
   const documentsForGraph: AspGraphDocument[] = [];
-  for (const document of documents.all()) {
-    if (!isClassicAspGraphUri(document.uri)) {
-      continue;
-    }
+  for (const document of await workspaceAnalyzableOpenDocumentsAsync(settings)) {
     const cached = await ensureFreshCachedDocumentAsync(document);
     opened.add(cached.source.uri);
     documentsForGraph.push(
@@ -14765,7 +15161,7 @@ async function addDocumentStructureToAspGraphAsync(
       bindingScope: declaration.bindingScope,
       procedureKind: declaration.procedureKind,
       implicit: declaration.implicit,
-      typeName: declaration.typeName,
+      typeName: visibleAspGraphTypeName(declaration.typeName),
       arrayKind: declaration.arrayKind,
       arrayDimensions: declaration.arrayDimensions,
       group: declaration.kind,
@@ -14902,6 +15298,14 @@ function isSuppressedBuiltinGraphExternalSymbol(
   symbol: VbGraphExternalSymbol | undefined,
 ): boolean {
   return symbol?.origin === "builtin";
+}
+
+function visibleAspGraphTypeName(typeName: string | undefined): string | undefined {
+  return typeName && !isSuppressedBuiltinGraphTypeName(typeName) ? typeName : undefined;
+}
+
+function isSuppressedBuiltinGraphTypeName(typeName: string): boolean {
+  return ["regexp", "match", "matches", "submatches"].includes(typeName.toLowerCase());
 }
 
 function isCrossFileSourceGraphDeclaration(

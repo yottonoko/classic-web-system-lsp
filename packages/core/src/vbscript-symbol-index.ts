@@ -2,7 +2,7 @@ import type { Range } from "vscode-languageserver-types";
 import type { AspInclude, AspRegion, AspServerObject, AspSettings, VbToken } from "./types";
 import { normalizeScriptLanguage, parseAttributes, scanHtmlAndAsp } from "./asp-scanner";
 import { offsetAt } from "./position";
-import { tokenizeVbscript } from "./vbscript-cst";
+import { tokenizeVbscript, unquoteVbString } from "./vbscript-cst";
 import builtinCatalogData from "./vbscript-builtin-catalog.json";
 
 export type VbIndexedDeclarationKind =
@@ -170,6 +170,20 @@ interface IndexedReferenceToken {
   tokenIndex: number;
 }
 
+interface BuiltinIndexObjectSpec {
+  typeName: string;
+  members: Array<{ name: string; type?: string }>;
+}
+
+const builtinClassicAspObjects = builtinCatalogData.classicAspObjects as Record<
+  string,
+  BuiltinIndexObjectSpec
+>;
+const builtinExternalObjects = builtinCatalogData.externalObjects as Record<
+  string,
+  BuiltinIndexObjectSpec
+>;
+
 const defaultOptions: Required<VbSymbolIndexOptions> = {
   includeReferences: true,
   includeParameters: true,
@@ -249,6 +263,7 @@ export function extractVbscriptSymbolIndex(
   };
   addServerObjectDeclarations(state, input.serverObjects);
   collectDeclarations(state);
+  applySimpleAssignmentTypes(state);
   const referenceResult = resolvedOptions.includeReferences
     ? collectReferences(state)
     : { references: [], callSites: [], deferredExternalRefs: [] };
@@ -370,7 +385,9 @@ function addServerObjectDeclarations(
       scopeId: globalScopeId,
       bindingScope: "global",
       sourceRange: serverObject.range,
-      typeName: serverObject.progId,
+      typeName: serverObject.progId
+        ? (canonicalBuiltinObjectTypeName(serverObject.progId) ?? serverObject.progId)
+        : undefined,
     });
   }
 }
@@ -622,6 +639,135 @@ function addDeclaration(
   state.declarations.push(declaration);
   state.declarationNameKeys.add(tokenKey(input.nameToken));
   return declaration;
+}
+
+function applySimpleAssignmentTypes(state: SymbolIndexBuildState): void {
+  const lookup = declarationLookup(state.declarations);
+  for (let index = 0; index < state.tokens.length; index += 1) {
+    const token = state.tokens[index];
+    if (!isStatementStart(state.tokens, index) || isBoundaryToken(token)) {
+      continue;
+    }
+    const endIndex = statementEndIndex(state.tokens, index);
+    const targetIndex = simpleAssignmentTargetIndex(state.tokens, index, endIndex);
+    if (targetIndex === -1) {
+      continue;
+    }
+    const target = state.tokens[targetIndex];
+    const equalsIndex = nextTokenIndexInStatement(state.tokens, targetIndex + 1, endIndex, "=");
+    if (target.kind !== "identifier" || equalsIndex === -1) {
+      continue;
+    }
+    const typeName = simpleAssignmentTypeName(state, lookup, equalsIndex + 1, endIndex);
+    if (!typeName) {
+      continue;
+    }
+    const declaration = resolveDeclaration(state, lookup, target, "write", undefined);
+    if (declaration && !declaration.typeName) {
+      declaration.typeName = typeName;
+    }
+  }
+}
+
+function simpleAssignmentTargetIndex(
+  tokens: VbToken[],
+  startIndex: number,
+  endIndex: number,
+): number {
+  const first = lower(tokens[startIndex]);
+  if (first === "set" || first === "let") {
+    return nextTokenIndexInStatement(tokens, startIndex + 1, endIndex);
+  }
+  return tokens[startIndex]?.kind === "identifier" ? startIndex : -1;
+}
+
+function simpleAssignmentTypeName(
+  state: SymbolIndexBuildState,
+  lookup: DeclarationLookup,
+  startIndex: number,
+  endIndex: number,
+): string | undefined {
+  const firstIndex = nextTokenIndexInStatement(state.tokens, startIndex, endIndex);
+  if (firstIndex === -1) {
+    return undefined;
+  }
+  const first = state.tokens[firstIndex];
+  if (lower(first) === "new") {
+    const classToken =
+      state.tokens[nextTokenIndexInStatement(state.tokens, firstIndex + 1, endIndex)];
+    return classToken?.kind === "identifier"
+      ? canonicalBuiltinObjectTypeName(classToken.text)
+      : undefined;
+  }
+  const createObjectTypeName = createObjectAssignmentTypeName(state.tokens, firstIndex, endIndex);
+  if (createObjectTypeName) {
+    return createObjectTypeName;
+  }
+  const dotIndex = nextTokenIndexInStatement(state.tokens, firstIndex + 1, endIndex, ".");
+  if (first.kind !== "identifier" || dotIndex === -1) {
+    return undefined;
+  }
+  const memberIndex = nextTokenIndexInStatement(state.tokens, dotIndex + 1, endIndex);
+  const member = state.tokens[memberIndex];
+  if (member?.kind !== "identifier") {
+    return undefined;
+  }
+  const receiver = resolveDeclaration(state, lookup, first, "read", undefined);
+  return receiver?.typeName ? builtinMemberTypeName(receiver.typeName, member.text) : undefined;
+}
+
+function createObjectAssignmentTypeName(
+  tokens: VbToken[],
+  startIndex: number,
+  endIndex: number,
+): string | undefined {
+  const first = lower(tokens[startIndex]);
+  const createObjectIndex =
+    first === "createobject"
+      ? startIndex
+      : first === "server" &&
+          tokens[nextTokenIndexInStatement(tokens, startIndex + 1, endIndex)]?.text === "." &&
+          lower(tokens[nextTokenIndexInStatement(tokens, startIndex + 2, endIndex)]) ===
+            "createobject"
+        ? nextTokenIndexInStatement(tokens, startIndex + 2, endIndex)
+        : -1;
+  if (createObjectIndex === -1) {
+    return undefined;
+  }
+  for (let index = createObjectIndex + 1; index <= endIndex; index += 1) {
+    const token = tokens[index];
+    if (token?.kind === "string") {
+      const progId = token.value ?? unquoteVbString(token.text);
+      return canonicalBuiltinObjectTypeName(progId) ?? progId;
+    }
+  }
+  return undefined;
+}
+
+function builtinMemberTypeName(ownerTypeName: string, memberName: string): string | undefined {
+  const objectSpec = builtinObjectSpecForTypeName(ownerTypeName);
+  const member = objectSpec?.members.find(
+    (candidate) => candidate.name.toLowerCase() === memberName.toLowerCase(),
+  );
+  return member?.type ? (canonicalBuiltinObjectTypeName(member.type) ?? member.type) : undefined;
+}
+
+function builtinObjectSpecForTypeName(typeName: string): BuiltinIndexObjectSpec | undefined {
+  const lowerName = typeName.toLowerCase();
+  const objects = [
+    ...Object.values(builtinClassicAspObjects),
+    ...Object.values(builtinExternalObjects),
+  ];
+  return objects.find((candidate) => candidate.typeName.toLowerCase() === lowerName);
+}
+
+function canonicalBuiltinObjectTypeName(name: string): string | undefined {
+  const lowerName = name.toLowerCase();
+  return (
+    builtinObjectSpecForTypeName(name)?.typeName ??
+    builtinClassicAspObjects[lowerName]?.typeName ??
+    builtinExternalObjects[lowerName]?.typeName
+  );
 }
 
 function collectReferences(state: SymbolIndexBuildState): {
@@ -1325,6 +1471,24 @@ function nextInStatement(tokens: VbToken[], index: number): VbToken | undefined 
 function nextNonBoundaryIndex(tokens: VbToken[], index: number): number {
   for (let cursor = index; cursor < tokens.length; cursor += 1) {
     if (!isBoundaryToken(tokens[cursor])) {
+      return cursor;
+    }
+  }
+  return -1;
+}
+
+function nextTokenIndexInStatement(
+  tokens: VbToken[],
+  index: number,
+  endIndex: number,
+  text?: string,
+): number {
+  for (let cursor = index; cursor <= endIndex; cursor += 1) {
+    const token = tokens[cursor];
+    if (!token || isStatementBoundary(token)) {
+      break;
+    }
+    if (!isBoundaryToken(token) && (text === undefined || token.text === text)) {
       return cursor;
     }
   }

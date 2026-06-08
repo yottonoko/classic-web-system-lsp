@@ -200,6 +200,9 @@ export interface AspCacheSettings {
 }
 
 export interface AspWorkspaceSettings {
+  includes?: string[];
+  excludes?: string[];
+  respectGitIgnore?: boolean;
   maxIndexFiles?: number;
   scanChunkSize?: number;
   busyAnalysisConcurrency?: number;

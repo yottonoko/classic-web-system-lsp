@@ -317,6 +317,77 @@ Server.HTMLEe▮
       }
     });
 
+    it("returns CSS completions and colors for style attributes outside the html root", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/css-style-attribute-outside-root.asp";
+        const marked = markedDocument(`<header style="colo▮; border-color: #00ff00"></header>
+<html><body></body></html>
+<footer style='background: #ff0000; accent-color: #0000ff'></footer>`);
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+        });
+        const colorItem = completionItems(completions).find((item) => item.label === "color");
+        expect(colorItem).toBeDefined();
+        expect(completionEditRange(colorItem)).toEqual({
+          start: positionAt(marked.text, marked.text.indexOf("colo")),
+          end: positionAt(marked.text, marked.text.indexOf("colo") + "colo".length),
+        });
+
+        const colors = (await server.request("textDocument/documentColor", {
+          textDocument: { uri },
+        })) as Array<{ range: { start: { line: number; character: number } }; color: unknown }>;
+        expect(colors.map((color) => color.range.start).sort(comparePositions)).toEqual([
+          positionAt(marked.text, marked.text.indexOf("#00ff00")),
+          positionAt(marked.text, marked.text.indexOf("#ff0000")),
+          positionAt(marked.text, marked.text.indexOf("#0000ff")),
+        ]);
+
+        const footerColor = colors.find(
+          (color) =>
+            comparePositions(
+              color.range.start,
+              positionAt(marked.text, marked.text.indexOf("#ff0000")),
+            ) === 0,
+        );
+        expect(footerColor).toBeDefined();
+        const presentations = (await server.request("textDocument/colorPresentation", {
+          textDocument: { uri },
+          color: footerColor?.color,
+          range: {
+            start: positionAt(marked.text, marked.text.indexOf("#ff0000")),
+            end: positionAt(marked.text, marked.text.indexOf("#ff0000") + "#ff0000".length),
+          },
+        })) as Array<{ label?: string; textEdit?: { range?: unknown } }>;
+        expect(presentations.map((presentation) => presentation.label)).toEqual(
+          expect.arrayContaining(["rgb(255, 0, 0)"]),
+        );
+        expect(presentations.every((presentation) => presentation.textEdit?.range)).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("resolves HTML and CSS completion items", async () => {
       const server = new RpcServer();
       try {
@@ -6153,6 +6224,71 @@ End Function
       }
     });
 
+    it("honors workspace include and exclude globs plus .gitignore for workspace analysis", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-filter-"));
+      const appDir = path.join(tempDir, "app");
+      const generatedDir = path.join(appDir, "generated");
+      const legacyDir = path.join(tempDir, "legacy");
+      const ignoredDir = path.join(tempDir, "ignored");
+      fs.mkdirSync(generatedDir, { recursive: true });
+      fs.mkdirSync(legacyDir);
+      fs.mkdirSync(ignoredDir);
+      fs.writeFileSync(path.join(tempDir, ".gitignore"), "ignored/\n", "utf8");
+      fs.writeFileSync(
+        path.join(appDir, "default.asp"),
+        `<%\nFunction IncludedTitle()\nEnd Function\n%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(generatedDir, "generated.asp"),
+        `<%\nFunction GeneratedTitle()\nEnd Function\n%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(legacyDir, "legacy.asp"),
+        `<%\nFunction LegacyTitle()\nEnd Function\n%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(ignoredDir, "ignored.asp"),
+        `<%\nFunction IgnoredTitle()\nEnd Function\n%>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              workspace: {
+                includes: ["app/**/*.asp", "ignored/**/*.asp"],
+                excludes: ["app/generated/**"],
+                respectGitIgnore: true,
+              },
+            },
+          },
+        });
+
+        const symbols = await server.request("workspace/symbol", { query: "Title" });
+        const serialized = JSON.stringify(symbols);
+        expect(serialized).toContain("IncludedTitle");
+        expect(serialized).not.toContain("GeneratedTitle");
+        expect(serialized).not.toContain("LegacyTitle");
+        expect(serialized).not.toContain("IgnoredTitle");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns workspace diagnostics for unopened ASP files", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-diag-"));
       fs.writeFileSync(path.join(tempDir, "broken.asp"), `<style>.x { color: }</style>`, "utf8");
@@ -6267,6 +6403,71 @@ End Sub
         expect(graph.links?.some((link) => link.kind === "calls")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "unresolvedReference")).toBe(true);
         expect(graph.stats?.missingIncludes).toBe(1);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps RegExp built-ins out of the graph while preserving source declaration types", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-regexp-graph-"));
+      const page = path.join(tempDir, "regexp.asp");
+      const uri = pathToFileURL(page).href;
+      const source = `<%
+Option Explicit
+Dim re, matches
+Set re = New RegExp
+re.Pattern = "\\w+"
+Set matches = re.Execute("abc")
+%>`;
+      fs.writeFileSync(page, source, "utf8");
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri }],
+        })) as {
+          nodes?: Array<Record<string, unknown>>;
+        };
+
+        expect(
+          graph.nodes?.find((node) => node.kind === "vbDeclaration" && node.label === "re"),
+        ).toEqual(expect.objectContaining({ origin: "source" }));
+        expect(
+          graph.nodes?.find((node) => node.kind === "vbDeclaration" && node.label === "matches"),
+        ).toEqual(expect.objectContaining({ origin: "source" }));
+        expect(JSON.stringify(graph.nodes)).not.toContain("RegExp");
+        expect(
+          graph.nodes?.some(
+            (node) =>
+              node.origin === "builtin" &&
+              (node.label === "RegExp" || node.label === "RegExp.Execute"),
+          ),
+        ).toBe(false);
+        expect(
+          graph.nodes?.some(
+            (node) =>
+              node.kind === "vbUnresolved" && (node.label === "RegExp" || node.label === "Execute"),
+          ),
+        ).toBe(false);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -7049,6 +7250,74 @@ End Sub
       }
     });
 
+    it("applies workspace patterns to folder graph candidate files", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-folder-filter-"));
+      const appDir = path.join(tempDir, "app");
+      const generatedDir = path.join(appDir, "generated");
+      const ignoredDir = path.join(appDir, "ignored");
+      fs.mkdirSync(generatedDir, { recursive: true });
+      fs.mkdirSync(ignoredDir);
+      fs.writeFileSync(path.join(tempDir, ".gitignore"), "app/ignored/\n", "utf8");
+      fs.writeFileSync(
+        path.join(appDir, "default.asp"),
+        `<%\nSub IncludedGraphEntry()\nEnd Sub\n%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "local.inc"),
+        `<%\nFunction IncludedGraphHelper()\nEnd Function\n%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(generatedDir, "generated.asp"),
+        `<%\nSub GeneratedGraphEntry()\nEnd Sub\n%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(ignoredDir, "ignored.asp"),
+        `<%\nSub IgnoredGraphEntry()\nEnd Sub\n%>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              workspace: {
+                includes: ["app/**/*.asp", "app/**/*.inc"],
+                excludes: ["app/generated/**"],
+                respectGitIgnore: true,
+              },
+            },
+          },
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "folder", uri: pathToFileURL(appDir).toString() }],
+        })) as {
+          nodes?: Array<Record<string, unknown>>;
+        };
+        const serialized = JSON.stringify(graph.nodes ?? []);
+        expect(serialized).toContain("IncludedGraphEntry");
+        expect(serialized).toContain("IncludedGraphHelper");
+        expect(serialized).not.toContain("GeneratedGraphEntry");
+        expect(serialized).not.toContain("IgnoredGraphEntry");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("restores graph include refs and VB symbol indexes from disk cache after server restart", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-cache-"));
       const cacheDir = path.join(tempDir, ".cache");
@@ -7462,6 +7731,51 @@ console.log(z, a);
           context: { diagnostics: [], only: ["source.organizeImports"] },
         });
         expect(JSON.stringify(actions)).toContain("Organize JavaScript imports");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("returns CSS quick fixes for style attributes outside the html root", async () => {
+      const source = `<html><body></body></html>
+<section style="colr: red; background: #ff0000">x</section>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/css-style-attribute-quickfix-outside-root.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        const diagnostics = await waitForDiagnosticsContaining(server, "Unknown property");
+        const diagnostic = diagnosticContaining(diagnostics, "Unknown property");
+        expect(diagnostic?.range.start).toEqual(positionAt(source, source.indexOf("colr")));
+
+        const actions = (await server.request("textDocument/codeAction", {
+          textDocument: { uri },
+          range: diagnostic?.range,
+          context: { diagnostics: diagnostic ? [diagnostic] : [], only: ["quickfix"] },
+        })) as CodeAction[];
+        const renameAction = actions.find((action) => action.title === "Rename to 'color'");
+        expect(renameAction).toBeDefined();
+        expect(JSON.stringify(renameAction)).not.toContain(".css.virtual");
+        expect(renameAction?.diagnostics?.[0]?.range).toEqual(diagnostic?.range);
+        expect(applyWorkspaceEditForText(source, renameAction?.edit)).toBe(
+          `<html><body></body></html>
+<section style="color: red; background: #ff0000">x</section>`,
+        );
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -11809,8 +12123,15 @@ function inlineStyleActionByTitle(
 }
 
 function applyWorkspaceEditForText(text: string, edit: WorkspaceEdit | undefined): string {
-  const edits = Object.values(edit?.changes ?? {})[0] ?? [];
-  return applyTextEdits(text, edits);
+  return applyTextEdits(text, workspaceTextEdits(edit));
+}
+
+function workspaceTextEdits(edit: WorkspaceEdit | undefined): TextEdit[] {
+  const changes = Object.values(edit?.changes ?? {}).flat();
+  const documentChanges = (edit?.documentChanges ?? []).flatMap((change) =>
+    "edits" in change ? change.edits : [],
+  );
+  return [...changes, ...documentChanges];
 }
 
 function applyTextEdits(text: string, edits: TextEdit[]): string {

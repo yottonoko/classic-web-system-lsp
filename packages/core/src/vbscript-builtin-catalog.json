@@ -382,6 +382,106 @@
     }
   },
   "externalObjects": {
+    "vbscript.regexp": {
+      "typeName": "RegExp",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Pattern",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Global",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "IgnoreCase",
+          "type": "Boolean"
+        },
+        {
+          "kind": "property",
+          "name": "MultiLine",
+          "type": "Boolean"
+        },
+        {
+          "kind": "method",
+          "name": "Execute",
+          "type": "Matches",
+          "signature": "RegExp.Execute(source)"
+        },
+        {
+          "kind": "method",
+          "name": "Replace",
+          "type": "String",
+          "signature": "RegExp.Replace(source, replacement)"
+        },
+        {
+          "kind": "method",
+          "name": "Test",
+          "type": "Boolean",
+          "signature": "RegExp.Test(source)"
+        }
+      ]
+    },
+    "regexp.match": {
+      "typeName": "Match",
+      "members": [
+        {
+          "kind": "property",
+          "name": "FirstIndex",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Length",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Value",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "SubMatches",
+          "type": "SubMatches"
+        }
+      ]
+    },
+    "regexp.matches": {
+      "typeName": "Matches",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Count",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Item",
+          "type": "Match",
+          "signature": "Matches.Item(index)"
+        }
+      ]
+    },
+    "regexp.submatches": {
+      "typeName": "SubMatches",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Count",
+          "type": "Number"
+        },
+        {
+          "kind": "property",
+          "name": "Item",
+          "type": "String",
+          "signature": "SubMatches.Item(index)"
+        }
+      ]
+    },
     "scripting.filesystemobject": {
       "typeName": "Scripting.FileSystemObject",
       "members": [

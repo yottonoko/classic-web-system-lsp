@@ -288,6 +288,15 @@ function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
     ),
     withBuiltinCompletionLabel(
       {
+        label: "RegExp",
+        kind: CompletionItemKind.Class,
+        detail: "VBScript RegExp object",
+        documentation: builtinDocumentationMarkdown(builtinObjectDocumentation("RegExp"), locale),
+      },
+      locale,
+    ),
+    withBuiltinCompletionLabel(
+      {
         label: "Nothing",
         kind: CompletionItemKind.Constant,
         detail: "VBScript Nothing literal",
@@ -410,6 +419,14 @@ function withBuiltinCompletionLabel(
 }
 
 function builtinDescription(name: string, locale: AspLocale | undefined): string | undefined {
+  const objectDocumentation = builtinObjectDocumentation(name);
+  if (objectDocumentation) {
+    return appendBuiltinDocumentation(
+      markdownHover(`Class ${canonicalBuiltinObjectTypeName(name) ?? name}`),
+      objectDocumentation,
+      locale,
+    );
+  }
   const key = `vb.hover.builtin.${name.toLowerCase()}` as const;
   if (
     key === "vb.hover.builtin.request" ||
@@ -591,13 +608,18 @@ function objectCatalogFromData(
       name,
       {
         typeName: objectSpec.typeName,
-        members: objectSpec.members.map(completeBuiltinMemberSpec),
+        members: objectSpec.members.map((member) =>
+          completeBuiltinMemberSpecForType(member, objectSpec.typeName),
+        ),
       },
     ]),
   );
 }
 
-function completeBuiltinMemberSpec(member: BuiltinCatalogMemberSpec): BuiltinMemberSpec {
+function completeBuiltinMemberSpecForType(
+  member: BuiltinCatalogMemberSpec,
+  ownerTypeName: string,
+): BuiltinMemberSpec {
   const type = member.type ?? "Variant";
   return {
     ...member,
@@ -605,8 +627,31 @@ function completeBuiltinMemberSpec(member: BuiltinCatalogMemberSpec): BuiltinMem
     parameters: member.signature
       ? parametersFromSignature(member.signature).map(completeParameterSpec)
       : [],
-    documentation: builtinMemberDocumentation(member.kind, member.name, type, member.signature),
+    documentation: builtinMemberDocumentation(
+      ownerTypeName,
+      member.kind,
+      member.name,
+      type,
+      member.signature,
+    ),
   };
+}
+
+function builtinObjectDocumentation(typeName: string): BuiltinDocumentationSpec | undefined {
+  const canonical = canonicalBuiltinObjectTypeName(typeName);
+  if (canonical?.toLowerCase() !== "regexp") {
+    return undefined;
+  }
+  return documentation(
+    "Creates a VBScript regular expression object for matching, replacing, and extracting text with a Pattern.",
+    "Pattern を使って text の match、replace、extract を行う VBScript regular expression object です。",
+    {
+      remarks: text(
+        'Classic ASP VBScript can create it with `Set re = New RegExp` or `Set re = CreateObject("VBScript.RegExp")`.',
+        'Classic ASP VBScript では `Set re = New RegExp` または `Set re = CreateObject("VBScript.RegExp")` で作成できます。',
+      ),
+    },
+  );
 }
 
 function text(en: string, ja: string): LocalizedText {
@@ -901,12 +946,14 @@ function genericParameterDocumentation(name: string): LocalizedText {
 }
 
 function builtinMemberDocumentation(
+  ownerTypeName: string,
   kind: VbBuiltinMemberKind,
   name: string,
   type: string,
   signature: string | undefined,
 ): BuiltinDocumentationSpec {
   const key = signature?.toLowerCase() ?? name.toLowerCase();
+  const ownerKey = ownerTypeName ? `${ownerTypeName.toLowerCase()}.${key}` : undefined;
   const overrides: Record<string, BuiltinDocumentationSpec> = {
     buffer: documentation(
       "Controls whether ASP buffers page output before sending it to the browser.",
@@ -975,6 +1022,163 @@ function builtinMemberDocumentation(
         ),
       },
     ),
+    "regexp.pattern": documentation(
+      "Sets or returns the regular expression pattern searched by this RegExp object.",
+      "この RegExp object が検索する regular expression pattern を設定または返します。",
+      {
+        value: text(
+          "String pattern using VBScript regular expression syntax.",
+          "VBScript regular expression syntax の string pattern です。",
+        ),
+      },
+    ),
+    "regexp.global": documentation(
+      "Controls whether Execute and Replace process every match or only the first match.",
+      "Execute と Replace がすべての match を処理するか、最初の match のみを処理するかを制御します。",
+      {
+        value: text(
+          "Boolean. False searches the first occurrence; True searches all occurrences.",
+          "Boolean です。False は最初の occurrence、True はすべての occurrence を検索します。",
+        ),
+      },
+    ),
+    "regexp.ignorecase": documentation(
+      "Controls whether pattern matching ignores character case.",
+      "pattern matching で character case を無視するかを制御します。",
+      {
+        value: text(
+          "Boolean. False is case-sensitive; True is case-insensitive.",
+          "Boolean です。False は case-sensitive、True は case-insensitive です。",
+        ),
+      },
+    ),
+    "regexp.multiline": documentation(
+      "Controls whether ^ and $ also match positions after or before line breaks.",
+      "^ と $ が line break の直後または直前の位置にも match するかを制御します。",
+      {
+        value: text(
+          "Boolean flag for multiline anchor behavior. It does not make . match line breaks.",
+          "multiline anchor behavior の Boolean flag です。. が line break に match するようにはしません。",
+        ),
+      },
+    ),
+    "regexp.regexp.execute(source)": documentation(
+      "Runs the Pattern against a string and returns a Matches collection.",
+      "string に対して Pattern を実行し、Matches collection を返します。",
+      {
+        parameters: {
+          source: text(
+            "String to search with the current Pattern.",
+            "現在の Pattern で検索する string です。",
+          ),
+        },
+        returns: text(
+          "A Matches collection containing one Match object for each result. It is empty when there is no match.",
+          "result ごとに Match object を含む Matches collection です。match がない場合は空です。",
+        ),
+      },
+    ),
+    "regexp.regexp.replace(source, replacement)": documentation(
+      "Replaces text matched by the Pattern and returns the resulting string.",
+      "Pattern に match した text を置換し、結果の string を返します。",
+      {
+        parameters: {
+          source: text("String to search.", "検索する string です。"),
+          replacement: text(
+            "Replacement string. Captured groups can be referenced with $1 through $9.",
+            "replacement string です。captured group は $1 から $9 で参照できます。",
+          ),
+        },
+        returns: text("String after replacements are applied.", "置換を適用した後の string です。"),
+      },
+    ),
+    "regexp.regexp.test(source)": documentation(
+      "Tests whether the Pattern matches a string and returns a Boolean result.",
+      "Pattern が string に match するかを調べ、Boolean result を返します。",
+      {
+        parameters: {
+          source: text(
+            "String to test with the current Pattern.",
+            "現在の Pattern で test する string です。",
+          ),
+        },
+        returns: text(
+          "True when at least one match is found; otherwise False.",
+          "match が 1 つ以上見つかると True、それ以外は False です。",
+        ),
+      },
+    ),
+    "match.firstindex": documentation(
+      "Returns the zero-based character offset where this match begins.",
+      "この match が始まる zero-based character offset を返します。",
+      {
+        value: text(
+          "Number. Add 1 before passing it to VBScript string functions that use one-based indexes.",
+          "Number です。one-based index を使う VBScript string function に渡す前に 1 を足します。",
+        ),
+      },
+    ),
+    "match.length": documentation(
+      "Returns the number of characters in this match.",
+      "この match の文字数を返します。",
+      {
+        value: text("Number of matched characters.", "match した文字数です。"),
+      },
+    ),
+    "match.value": documentation(
+      "Returns the text matched by the regular expression.",
+      "regular expression に match した text を返します。",
+      {
+        value: text("Matched string value.", "match した string value です。"),
+      },
+    ),
+    "match.submatches": documentation(
+      "Returns the captured sub-expression values for this match.",
+      "この match の captured sub-expression values を返します。",
+      {
+        value: text(
+          "SubMatches collection. Use Item(index) or the default indexed property to read a captured group.",
+          "SubMatches collection です。captured group を読むには Item(index) または default indexed property を使います。",
+        ),
+      },
+    ),
+    "matches.count": documentation(
+      "Returns the number of Match objects in this collection.",
+      "この collection に含まれる Match objects の数を返します。",
+      {
+        value: text("Number of matches.", "match 数です。"),
+      },
+    ),
+    "matches.matches.item(index)": documentation(
+      "Returns a Match object by zero-based index.",
+      "zero-based index で Match object を返します。",
+      {
+        parameters: {
+          index: text("Zero-based match index.", "zero-based match index です。"),
+        },
+        returns: text(
+          "The Match object at the requested index.",
+          "指定 index の Match object です。",
+        ),
+      },
+    ),
+    "submatches.count": documentation(
+      "Returns the number of captured sub-expression values.",
+      "captured sub-expression values の数を返します。",
+      {
+        value: text("Number of captured groups.", "captured group 数です。"),
+      },
+    ),
+    "submatches.submatches.item(index)": documentation(
+      "Returns a captured sub-expression value by zero-based index.",
+      "zero-based index で captured sub-expression value を返します。",
+      {
+        parameters: {
+          index: text("Zero-based submatch index.", "zero-based submatch index です。"),
+        },
+        returns: text("The captured string value.", "captured string value です。"),
+      },
+    ),
   };
   const generic =
     kind === "event"
@@ -992,7 +1196,7 @@ function builtinMemberDocumentation(
             `この object の ${name} ${kind} を表します。`,
             { value: text(`Value type: ${type}.`, `値の型は ${type} です。`) },
           );
-  return overrides[key] ?? generic;
+  return (ownerKey ? overrides[ownerKey] : undefined) ?? overrides[key] ?? generic;
 }
 
 function parametersForDocumentation(
@@ -8433,7 +8637,8 @@ function parseTypeRef(text: string): VbTypeRef {
 }
 
 function singleTypeRef(name: string): VbTypeRef {
-  const normalized = name.trim() || "Variant";
+  const raw = name.trim() || "Variant";
+  const normalized = canonicalBuiltinObjectTypeName(raw) ?? raw;
   return { name: normalized, object: isObjectTypeName(normalized) };
 }
 
@@ -8541,6 +8746,18 @@ function typeMemberKey(typeName: string, memberName: string): string {
 
 function canonicalBuiltinTypeName(name: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function canonicalBuiltinObjectTypeName(name: string): string | undefined {
+  const lower = name.toLowerCase();
+  const objectSpec = [
+    ...Object.values(classicAspObjectCatalog),
+    ...Object.values(externalObjectCatalog),
+  ].find((candidate) => candidate.typeName.toLowerCase() === lower);
+  if (objectSpec) {
+    return objectSpec.typeName;
+  }
+  return classicAspObjectCatalog[lower]?.typeName ?? externalObjectCatalog[lower]?.typeName;
 }
 
 function classicAspObjectTypeRef(name: string): VbTypeRef | undefined {
