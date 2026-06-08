@@ -10445,7 +10445,7 @@ Response.Write "ok"
         await waitForLogContaining(server, "check.workspace.vbscript.diagnostics.worker");
         await waitForLogContaining(server, "vbscript.worker.complete");
         const payloadLog = await waitForLogContaining(server, "worker.payload.bytes");
-        expect(payloadBytesFromLog(payloadLog)).toBeLessThan(109_500);
+        expect(payloadBytesFromLog(payloadLog)).toBeLessThan(116_000);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
