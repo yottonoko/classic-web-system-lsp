@@ -214,6 +214,34 @@ function parseVbscriptCstTypeScript(text: string, sourceText = text, baseOffset 
       );
       continue;
     }
+    if (
+      first === "for" &&
+      second !== "each" &&
+      significant[index + 1]?.kind === "identifier" &&
+      statementHasSymbol(significant, index, "=")
+    ) {
+      const nameToken = significant[index + 1];
+      const node: VbCstNode = {
+        kind: "For",
+        start: token.start,
+        end: statementEnd(significant, index),
+        nameToken,
+        tokens: statementTokens(significant, index),
+        children: [],
+        declarationKind: "for",
+        identifiers: [nameToken],
+        memberOf: current.kind === "Class" ? current.nameToken?.text : current.memberOf,
+        scopeName:
+          current.kind === "Procedure" || current.kind === "Property"
+            ? current.nameToken?.text
+            : undefined,
+        scopeStart: token.start,
+        scopeEnd: statementEnd(significant, index),
+      };
+      addChild(current, node);
+      stack.push(node);
+      continue;
+    }
     if (first === "for" && second === "each" && significant[index + 2]?.kind === "identifier") {
       const nameToken = significant[index + 2];
       const node: VbCstNode = {
@@ -543,6 +571,16 @@ function addChild(parent: VbCstNode, child: VbCstNode): void {
 }
 
 function closeBlock(stack: VbCstNode[], endKind: string | undefined, endToken: VbToken): void {
+  if (endKind === "next") {
+    const index = findLastIndex(stack, (node) => node.kind === "For" || node.kind === "ForEach");
+    if (index <= 0) {
+      return;
+    }
+    const [node] = stack.splice(index, 1);
+    node.end = endToken.end;
+    node.scopeEnd = endToken.end;
+    return;
+  }
   const targetKind =
     endKind === "class"
       ? "Class"
@@ -558,9 +596,7 @@ function closeBlock(stack: VbCstNode[], endKind: string | undefined, endToken: V
                 ? "DoLoop"
                 : endKind === "wend"
                   ? "While"
-                  : endKind === "next"
-                    ? "ForEach"
-                    : "Procedure";
+                  : "Procedure";
   const index = findLastIndex(stack, (node) => node.kind === targetKind);
   if (index <= 0) {
     return;

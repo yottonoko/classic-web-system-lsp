@@ -462,6 +462,19 @@ function collectDeclarations(state: SymbolIndexBuildState): void {
       addVariableDeclarations(state, "constant", token, index + 1, undefined);
       continue;
     }
+    if (first === "for" && second === "each" && tokens[index + 2]?.kind === "identifier") {
+      addLoopVariableDeclaration(state, token, tokens[index + 2]);
+      continue;
+    }
+    if (
+      first === "for" &&
+      second !== "each" &&
+      tokens[index + 1]?.kind === "identifier" &&
+      nextTokenIndexInStatement(tokens, index + 2, statementEndIndex(tokens, index), "=") !== -1
+    ) {
+      addLoopVariableDeclaration(state, token, tokens[index + 1]);
+      continue;
+    }
     if (visibility) {
       if (second === "const") {
         addVariableDeclarations(state, "constant", token, index + 2, visibility);
@@ -475,6 +488,26 @@ function collectDeclarations(state: SymbolIndexBuildState): void {
     scope.end = Math.max(scope.end, end);
     updateProcedureDeclarationSourceRange(state, scope);
   }
+}
+
+function addLoopVariableDeclaration(
+  state: SymbolIndexBuildState,
+  startToken: VbToken,
+  nameToken: VbToken,
+): void {
+  const current = currentScope(state);
+  const classScope = current.kind === "class" ? current : undefined;
+  const procedureScope = current.kind === "procedure" ? current : undefined;
+  addDeclaration(state, {
+    kind: classScope ? "field" : "variable",
+    nameToken,
+    start: startToken.start,
+    end: nameToken.end,
+    scopeId: classScope?.id ?? procedureScope?.id ?? globalScopeId,
+    parentId: classScope?.declarationId,
+    memberOf: classScope?.name,
+    bindingScope: classScope ? undefined : procedureScope ? "local" : "global",
+  });
 }
 
 function openClassScope(

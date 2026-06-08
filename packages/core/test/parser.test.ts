@@ -787,6 +787,8 @@ Do While ready
 Loop
 While ready
 Wend
+For index = 1 To 3
+Next
 For Each item In items
 Next
 value = _
@@ -797,6 +799,7 @@ value = _
     expect(allNodes).toContain("Select");
     expect(allNodes).toContain("DoLoop");
     expect(allNodes).toContain("While");
+    expect(allNodes).toContain("For");
     expect(allNodes).toContain("ForEach");
     expect(allNodes).toContain("Assignment");
   });
@@ -2535,6 +2538,52 @@ If enabled Then Set objectValue = New Widget
     );
   });
 
+  it("marks loop variables and procedure implicit assignments as local in the symbol index", () => {
+    const source = `<%
+Sub Render()
+  For index = 1 To 3
+    loopValue = index
+  Next
+  For Each item In items
+    eachValue = item
+  Next
+End Sub
+%>`;
+    const index = extractVbscriptSymbolIndex(
+      "file:///site/local-loop-implicit-index.asp",
+      source,
+      {},
+      { includeImplicitVariables: true },
+    );
+    const declaration = (name: string) => index.declarations.find((item) => item.name === name);
+    const reference = (name: string) =>
+      index.references.find((item) => item.name === name && item.role !== "call");
+
+    expect(declaration("index")).toMatchObject({ kind: "variable", bindingScope: "local" });
+    expect(declaration("item")).toMatchObject({ kind: "variable", bindingScope: "local" });
+    expect(declaration("loopValue")).toMatchObject({
+      kind: "variable",
+      bindingScope: "local",
+      implicit: true,
+    });
+    expect(declaration("eachValue")).toMatchObject({
+      kind: "variable",
+      bindingScope: "local",
+      implicit: true,
+    });
+    expect(reference("index")).toMatchObject({
+      resolvedId: declaration("index")?.id,
+      bindingScope: "local",
+    });
+    expect(reference("item")).toMatchObject({
+      resolvedId: declaration("item")?.id,
+      bindingScope: "local",
+    });
+    expect(index.deferredExternalRefs.map((item) => item.name)).not.toEqual(
+      expect.arrayContaining(["index", "item", "loopValue", "eachValue"]),
+    );
+  });
+
   it("keeps function return assignments out of VBScript symbol index references", () => {
     const source = `<%
 Class Customer
@@ -2750,6 +2799,8 @@ Class Customer
     Dim localValue
     For Each item In items
     Next
+    For index = 1 To 3
+    Next
   End Sub
 End Class
 %>`;
@@ -2780,6 +2831,11 @@ End Class
     expect(loopItem?.kind).toBe("variable");
     expect(loopItem?.memberOf).toBeUndefined();
     expect(loopItem?.scopeName).toBe("Save");
+
+    const loopIndex = symbol("index");
+    expect(loopIndex?.kind).toBe("variable");
+    expect(loopIndex?.memberOf).toBeUndefined();
+    expect(loopIndex?.scopeName).toBe("Save");
   });
 
   it("can count only VBScript usage references for functions", () => {

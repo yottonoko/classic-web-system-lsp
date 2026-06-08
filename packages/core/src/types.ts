@@ -414,6 +414,7 @@ export type VbCstNodeKind =
   | "Property"
   | "VariableDeclaration"
   | "ConstantDeclaration"
+  | "For"
   | "ForEach"
   | "With"
   | "If"
@@ -437,7 +438,7 @@ export interface VbCstNode {
   children: VbCstNode[];
   procedureKind?: "sub" | "function" | "property";
   propertyAccessor?: "get" | "let" | "set";
-  declarationKind?: "dim" | "redim" | "public" | "private" | "const" | "forEach";
+  declarationKind?: "dim" | "redim" | "public" | "private" | "const" | "for" | "forEach";
   visibility?: "public" | "private";
   identifiers?: VbToken[];
   arrayDeclarations?: VbArrayDeclaration[];

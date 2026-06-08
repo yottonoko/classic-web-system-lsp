@@ -4356,6 +4356,7 @@ function addSymbolsFromVbNode(
   if (
     node.kind === "VariableDeclaration" ||
     node.kind === "ConstantDeclaration" ||
+    node.kind === "For" ||
     node.kind === "ForEach"
   ) {
     const baseKind: "variable" | "constant" =
