@@ -351,6 +351,322 @@ const dynamic = <% Response.Write clientValue %>;</script>`;
     expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(1);
   });
 
+  const complexJavaScriptAspIslandCases = [
+    {
+      name: "multiple expressions on one line",
+      body: `const pair = [<%= GlobalOne %>, <%= GlobalTwo %>];`,
+      expressions: 2,
+      blocks: 0,
+      mapped: ["const pair"],
+      unmapped: ["GlobalOne", "GlobalTwo"],
+      virtualContains: ["const pair = [0"],
+    },
+    {
+      name: "adjacent expressions without JavaScript glue",
+      body: `const adjacent = "<%= FirstChunk %><%= SecondChunk %>";`,
+      expressions: 2,
+      blocks: 0,
+      mapped: ["const adjacent"],
+      unmapped: ["FirstChunk", "SecondChunk"],
+      virtualContains: ['const adjacent = "0'],
+    },
+    {
+      name: "expression and block value placeholders on one statement",
+      body: `const dynamic = <%= PrefixValue %> + <% Response.Write SuffixValue %>;`,
+      expressions: 1,
+      blocks: 1,
+      mapped: ["const dynamic"],
+      unmapped: ["PrefixValue", "SuffixValue"],
+      virtualContains: ["const dynamic = 0"],
+    },
+    {
+      name: "object literal with quoted expression and raw block",
+      body: `const payload = { id: <%= CustomerId %>, name: "<%= CustomerName %>", raw: <% Response.Write CustomerJson %> };`,
+      expressions: 2,
+      blocks: 1,
+      mapped: ["const payload"],
+      unmapped: ["CustomerId", "CustomerName", "CustomerJson"],
+      virtualContains: ["const payload = { id: 0"],
+    },
+    {
+      name: "array entries with impossible VBScript branches",
+      body: `const rows = [
+  <%= FirstRowJson %>,
+  <% If showSecond Then Response.Write SecondRowJson Else Response.Write "null" End If %>,
+  <%= ThirdRowJson %>
+];`,
+      expressions: 2,
+      blocks: 1,
+      mapped: ["const rows", "];"],
+      unmapped: ["FirstRowJson", "SecondRowJson", "ThirdRowJson"],
+      virtualContains: ["const rows = ["],
+    },
+    {
+      name: "ternary expression branches",
+      body: `const label = isReady ? <%= ReadyLabelJson %> : <% Response.Write FallbackLabelJson %>;`,
+      expressions: 1,
+      blocks: 1,
+      mapped: ["const label"],
+      unmapped: ["ReadyLabelJson", "FallbackLabelJson"],
+      virtualContains: ["const label = isReady ? 0"],
+    },
+    {
+      name: "function call argument list",
+      body: `renderWidget(<%= WidgetId %>, <% Response.Write WidgetOptions %>, "<%= WidgetTitle %>");`,
+      expressions: 2,
+      blocks: 1,
+      mapped: ["renderWidget"],
+      unmapped: ["WidgetId", "WidgetOptions", "WidgetTitle"],
+      virtualContains: ["renderWidget(0"],
+    },
+    {
+      name: "logical expression operands",
+      body: `const allowed = <%= IsReady %> && (<% Response.Write HasAccess %> || localFallback);`,
+      expressions: 1,
+      blocks: 1,
+      mapped: ["const allowed", "localFallback"],
+      unmapped: ["IsReady", "HasAccess"],
+      virtualContains: ["const allowed = 0"],
+    },
+    {
+      name: "optional chaining and nullish coalescing",
+      body: `const title = registry?.[<%= RegistryKey %>]?.title ?? "<%= DefaultTitle %>";`,
+      expressions: 2,
+      blocks: 0,
+      mapped: ["const title", "registry"],
+      unmapped: ["RegistryKey", "DefaultTitle"],
+      virtualContains: ["registry?.[0"],
+    },
+    {
+      name: "template literal server fragments",
+      body: 'const url = `/api/<%= RouteSegment %>?q=${encodeURIComponent("<%= QueryText %>")}`;',
+      expressions: 2,
+      blocks: 0,
+      mapped: ["const url", "encodeURIComponent"],
+      unmapped: ["RouteSegment", "QueryText"],
+      virtualContains: ["`/api/0"],
+    },
+    {
+      name: "fake string delimiter before real expression",
+      body: `const fake = "<% not an island";
+const real = <%= RealAfterFakeString %>;`,
+      expressions: 1,
+      blocks: 0,
+      mapped: ["const fake", "const real"],
+      unmapped: ["RealAfterFakeString"],
+      virtualContains: ['const fake = "<% not an island"'],
+    },
+    {
+      name: "fake line comment delimiter before real block",
+      body: `// <% not an island
+const value = <% Response.Write ValueAfterLineComment %>;`,
+      expressions: 0,
+      blocks: 1,
+      mapped: ["const value"],
+      unmapped: ["ValueAfterLineComment"],
+      virtualContains: ["// <% not an island"],
+    },
+    {
+      name: "fake block comment delimiter before real expression",
+      body: `/* <% not an island */
+const width = <%= WidthAfterBlockComment %>;`,
+      expressions: 1,
+      blocks: 0,
+      mapped: ["const width"],
+      unmapped: ["WidthAfterBlockComment"],
+      virtualContains: ["/* <% not an island */"],
+    },
+    {
+      name: "multiline expression placeholder preserves later JavaScript",
+      body: `const multiline = <%=
+  BuildMultilineValue(
+    GlobalThing)
+%>;
+const afterMultiline = multiline + 1;`,
+      expressions: 1,
+      blocks: 0,
+      mapped: ["const multiline", "const afterMultiline"],
+      unmapped: ["BuildMultilineValue", "GlobalThing"],
+      virtualContains: ["const afterMultiline = multiline + 1;"],
+    },
+    {
+      name: "ASP block containing raw script close text",
+      body: `const beforeBlock = 1;
+<%
+Response.Write "</script>"
+Response.Write "%" & ">"
+%>
+const afterBlock = beforeBlock + 1;`,
+      expressions: 0,
+      blocks: 1,
+      mapped: ["const beforeBlock", "const afterBlock"],
+      unmapped: ["Response.Write"],
+      virtualContains: ["const afterBlock = beforeBlock + 1;"],
+    },
+    {
+      name: "implicit VBScript assignment in value position",
+      body: `const implicit = <% implicitGlobalValue = Request("x") : Response.Write implicitGlobalValue %>;`,
+      expressions: 0,
+      blocks: 1,
+      mapped: ["const implicit"],
+      unmapped: ["implicitGlobalValue", "Request"],
+      virtualContains: ["const implicit = 0"],
+    },
+    {
+      name: "global and local Dim shadowing inside one island",
+      body: `const shadowed = <%
+Dim sharedName
+sharedName = "global"
+Function Shadow()
+  Dim sharedName
+  sharedName = "local"
+  Shadow = sharedName
+End Function
+Response.Write Shadow()
+%>;`,
+      expressions: 0,
+      blocks: 1,
+      mapped: ["const shadowed"],
+      unmapped: ["sharedName", "Shadow"],
+      virtualContains: ["const shadowed = 0"],
+    },
+    {
+      name: "unused function and local inside island",
+      body: `const unusedResult = <%
+Function NeverCalled(value)
+  Dim unusedInsideFunction
+  NeverCalled = value
+End Function
+Response.Write 1
+%>;`,
+      expressions: 0,
+      blocks: 1,
+      mapped: ["const unusedResult"],
+      unmapped: ["NeverCalled", "unusedInsideFunction"],
+      virtualContains: ["const unusedResult = 0"],
+    },
+    {
+      name: "arrow function return object with many islands",
+      body: `const makeRow = () => ({
+  id: <%= RowId %>,
+  active: <% Response.Write RowActive %>,
+  text: "<%= RowText %>"
+});`,
+      expressions: 2,
+      blocks: 1,
+      mapped: ["const makeRow", "});"],
+      unmapped: ["RowId", "RowActive", "RowText"],
+      virtualContains: ["const makeRow = () => ({"],
+    },
+    {
+      name: "nested arrays and object members",
+      body: `const matrix = [
+  [{ key: <%= MatrixKey %> }, <% Response.Write MatrixCell %>],
+  ["<%= MatrixLabel %>", localValue]
+];`,
+      expressions: 2,
+      blocks: 1,
+      mapped: ["const matrix", "localValue"],
+      unmapped: ["MatrixKey", "MatrixCell", "MatrixLabel"],
+      virtualContains: ["const matrix = ["],
+    },
+    {
+      name: "for of collection from expression",
+      body: `for (const item of <%= ItemsJson %>) {
+  renderItem(item, <% Response.Write RenderOptions %>);
+}`,
+      expressions: 1,
+      blocks: 1,
+      mapped: ["for (const item", "renderItem"],
+      unmapped: ["ItemsJson", "RenderOptions"],
+      virtualContains: ["for (const item of 0"],
+    },
+    {
+      name: "destructuring default values",
+      body: `const { a = <%= DefaultA %>, b = <% Response.Write DefaultB %> } = config;`,
+      expressions: 1,
+      blocks: 1,
+      mapped: ["const { a", "config"],
+      unmapped: ["DefaultA", "DefaultB"],
+      virtualContains: ["const { a = 0"],
+    },
+    {
+      name: "class field and method body",
+      body: `class WeirdComponent {
+  field = <%= FieldValue %>;
+  render() {
+    return <% Response.Write RenderedValue %>;
+  }
+}`,
+      expressions: 1,
+      blocks: 1,
+      mapped: ["class WeirdComponent", "render()"],
+      unmapped: ["FieldValue", "RenderedValue"],
+      virtualContains: ["field = 0"],
+    },
+    {
+      name: "try catch with island in catch path",
+      body: `try {
+  risky(<%= RiskInput %>);
+} catch (error) {
+  recover(error, <% Response.Write RecoveryPayload %>);
+}`,
+      expressions: 1,
+      blocks: 1,
+      mapped: ["try {", "recover"],
+      unmapped: ["RiskInput", "RecoveryPayload"],
+      virtualContains: ["risky(0"],
+    },
+    {
+      name: "server expressions around import-like string",
+      body: `const moduleName = "<%= ModuleName %>";
+const loaded = await import(moduleName + <% Response.Write ModuleSuffix %>);`,
+      expressions: 1,
+      blocks: 1,
+      mapped: ["const moduleName", "await import"],
+      unmapped: ["ModuleName", "ModuleSuffix"],
+      virtualContains: ["await import(moduleName + 0"],
+    },
+  ] as const;
+
+  it.each(complexJavaScriptAspIslandCases)(
+    "masks complex JavaScript ASP island case: $name",
+    (testCase) => {
+      const source = `<script>\n${testCase.body}\n</script>`;
+      const parsed = parseAspDocument(`file:///site/${testCase.name}.asp`, source);
+      const javascript = buildVirtualDocuments(parsed).get("javascript");
+
+      expect(parsed.diagnostics, testCase.name).toHaveLength(0);
+      expect(javascript, testCase.name).toBeTruthy();
+      expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(
+        testCase.expressions,
+      );
+      expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(
+        testCase.blocks,
+      );
+
+      for (const needle of testCase.mapped) {
+        const offset = source.indexOf(needle);
+        expect(offset, `${testCase.name}: ${needle}`).toBeGreaterThanOrEqual(0);
+        expect(javascript!.sourceMap.toVirtualOffset(offset), `${testCase.name}: ${needle}`).toBe(
+          offset - source.indexOf("<script>") - "<script>".length,
+        );
+      }
+      for (const needle of testCase.unmapped) {
+        const offset = source.indexOf(needle);
+        expect(offset, `${testCase.name}: ${needle}`).toBeGreaterThanOrEqual(0);
+        expect(
+          javascript!.sourceMap.toVirtualOffset(offset),
+          `${testCase.name}: ${needle}`,
+        ).toBeUndefined();
+        expect(javascript!.text, `${testCase.name}: ${needle}`).not.toContain(needle);
+      }
+      for (const fragment of testCase.virtualContains) {
+        expect(javascript!.text, `${testCase.name}: ${fragment}`).toContain(fragment);
+      }
+    },
+  );
+
   it("keeps CSS and JavaScript virtual documents stable after ASP comments inside comments", () => {
     const source = `<style>
 /* <% 'css comment %> */

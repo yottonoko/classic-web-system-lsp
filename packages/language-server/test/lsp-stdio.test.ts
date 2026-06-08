@@ -74,6 +74,11 @@ const semanticTokenModifier = {
   byref: 1 << 4,
   byval: 1 << 5,
 } as const;
+const jsCheckDiagnosticsSettings = {
+  checkJs: true,
+  diagnostics: { debounceMs: 0 },
+  javascript: { ignoreProjectConfig: true },
+} as const;
 
 describe(
   "stdio LSP server",
@@ -9598,73 +9603,138 @@ function demo(unusedParam) {
     });
 
     it("maps JavaScript semantic diagnostics directly to source ranges", async () => {
-      const server = new RpcServer();
-      try {
-        await server.start();
-        await server.request("initialize", {
-          processId: process.pid,
-          rootUri: "file:///tmp",
-          capabilities: {},
-        });
-        server.notify("workspace/didChangeConfiguration", {
-          settings: {
-            aspLsp: {
-              checkJs: true,
-              diagnostics: { debounceMs: 0 },
-              javascript: { ignoreProjectConfig: true },
-            },
-          },
-        });
-        const uri = "file:///tmp/js-semantic-range.asp";
-        const source = `<div>before</div>
+      await withInitializedServer(
+        { aspLspSettings: jsCheckDiagnosticsSettings },
+        async (server) => {
+          const uri = "file:///tmp/js-semantic-range.asp";
+          const source = `<div>before</div>
 <script>
 const fromAsp = <%= Request("id") %>;
 missingThing.toFixed();
 </script>`;
-        server.notify("textDocument/didOpen", {
-          textDocument: {
-            uri,
-            languageId: "classic-asp",
-            version: 1,
-            text: source,
-          },
-        });
-        const diagnostics = await waitForDiagnosticsContaining(server, "missingThing");
-        const semanticDiagnostics =
-          (
-            diagnostics.params as {
-              diagnostics?: Array<{
-                message?: string;
-                range: {
-                  start: { line: number; character: number };
-                  end: { line: number; character: number };
-                };
-                source?: string;
-              }>;
-            }
-          ).diagnostics?.filter((diagnostic) => diagnostic.source === "asp-lsp-typescript") ?? [];
-        const missingThing = semanticDiagnostics.find((diagnostic) =>
-          diagnostic.message?.includes("missingThing"),
-        );
-        expect(missingThing?.range).toEqual({
-          start: { line: 3, character: 0 },
-          end: { line: 3, character: "missingThing".length },
-        });
-        const aspStart = source.indexOf("<%=");
-        const aspEnd = source.indexOf("%>", aspStart) + "%>".length;
-        expect(
-          semanticDiagnostics.every((diagnostic) => {
-            const start = offsetAt(source, diagnostic.range.start);
-            const end = offsetAt(source, diagnostic.range.end);
-            return end <= aspStart || start >= aspEnd;
-          }),
-        ).toBe(true);
+          openClassicAspDocument(server, uri, source);
 
-        await server.request("shutdown", null);
-        server.notify("exit", undefined);
-      } finally {
-        server.stop();
-      }
+          const diagnostics = await waitForDiagnosticsContaining(server, "missingThing");
+          const semanticDiagnostics = diagnosticsFromSource(diagnostics, "asp-lsp-typescript");
+          expectDiagnosticRange(semanticDiagnostics, "missingThing", {
+            start: { line: 3, character: 0 },
+            end: { line: 3, character: "missingThing".length },
+          });
+          expectDiagnosticsOutsideAspIslands(source, semanticDiagnostics, ["<%= Request"]);
+        },
+      );
+    });
+
+    it("keeps JavaScript semantic diagnostics outside many ASP island source-map holes", async () => {
+      await withInitializedServer(
+        { aspLspSettings: jsCheckDiagnosticsSettings },
+        async (server) => {
+          const uri = "file:///tmp/js-many-islands-semantic.asp";
+          const source = `<div>before</div>
+<script>
+const fromAsp = <%= Request("id") %> + <% Response.Write ServerSideNumber %>;
+const object = { key: "<%= ServerKey %>", more: <% implicitValue = 1 : Response.Write implicitValue %> };
+const fake = "<% not an island";
+missingAfterIslands.toFixed();
+const after = maybeMissingAgain(<%= AfterArg %>);
+</script>`;
+          openClassicAspDocument(server, uri, source);
+
+          const diagnostics = await waitForDiagnosticsContaining(server, "missingAfterIslands");
+          const semanticDiagnostics = diagnosticsFromSource(diagnostics, "asp-lsp-typescript");
+          expectDiagnosticRange(semanticDiagnostics, "missingAfterIslands", {
+            start: { line: 5, character: 0 },
+            end: { line: 5, character: "missingAfterIslands".length },
+          });
+          expect(
+            semanticDiagnostics.some((diagnostic) => diagnostic.message?.includes("AfterArg")),
+          ).toBe(false);
+          expectDiagnosticsOutsideAspIslands(source, semanticDiagnostics, [
+            "<%= Request",
+            "<% Response.Write ServerSideNumber",
+            "<%= ServerKey",
+            "<% implicitValue",
+            "<%= AfterArg",
+          ]);
+        },
+      );
+    });
+
+    it("reports JavaScript unused diagnostics after multiple ASP island line shifts", async () => {
+      await withInitializedServer(
+        { aspLspSettings: { diagnostics: { debounceMs: 0 } } },
+        async (server) => {
+          const uri = "file:///tmp/js-unused-many-islands.asp";
+          const source = `<script>
+const first = <%= ServerFirst %>;
+<%
+Response.Write ServerBlock
+%>
+function demoWithIsland(unusedParam) {
+  const unusedBetweenIslands = "<%= ServerString %>";
+  return first;
+}
+</script>`;
+          openClassicAspDocument(server, uri, source);
+
+          const diagnostics = await waitForDiagnosticsContaining(server, "unusedBetweenIslands");
+          const unusedDiagnostics = diagnosticsFromSource(diagnostics, "asp-lsp-typescript-unused");
+          expectDiagnosticRange(unusedDiagnostics, "unusedBetweenIslands", {
+            start: { line: 6, character: 8 },
+            end: { line: 6, character: 8 + "unusedBetweenIslands".length },
+          });
+          expectDiagnosticsOutsideAspIslands(source, unusedDiagnostics, [
+            "<%= ServerFirst",
+            "<%\nResponse.Write ServerBlock",
+            "<%= ServerString",
+          ]);
+        },
+      );
+    });
+
+    it("maps JavaScript semantic diagnostics after multiline ASP islands", async () => {
+      await withInitializedServer(
+        { aspLspSettings: jsCheckDiagnosticsSettings },
+        async (server) => {
+          const uri = "file:///tmp/js-multiline-island-range.asp";
+          const source = `<script>
+const before = <%=
+  BuildValue(
+    Request("id"))
+%>;
+<%
+Dim shadowedName
+shadowedName = "global"
+Function LocalShadow()
+  Dim shadowedName
+  shadowedName = "local"
+  LocalShadow = shadowedName
+End Function
+Response.Write LocalShadow()
+%>
+missingAfterMultilineIsland();
+</script>`;
+          openClassicAspDocument(server, uri, source);
+
+          const diagnostics = await waitForDiagnosticsContaining(
+            server,
+            "missingAfterMultilineIsland",
+          );
+          const semanticDiagnostics = diagnosticsFromSource(diagnostics, "asp-lsp-typescript");
+          const start = positionAt(source, source.indexOf("missingAfterMultilineIsland"));
+          expectDiagnosticRange(semanticDiagnostics, "missingAfterMultilineIsland", {
+            start,
+            end: {
+              line: start.line,
+              character: start.character + "missingAfterMultilineIsland".length,
+            },
+          });
+          expectDiagnosticsOutsideAspIslands(source, semanticDiagnostics, [
+            "<%=\n  BuildValue",
+            "<%\nDim shadowedName",
+          ]);
+        },
+      );
     });
 
     it("does not duplicate the active virtual document in JavaScript worker payloads", async () => {
@@ -10819,6 +10889,7 @@ beta
           position: positionAt(source, source.lastIndexOf("alph") + "alph".length),
         });
         expect(JSON.stringify(alpha)).toContain("alphaValue");
+        await waitForLogContaining(server, "javascript.openProjectFiles.collect");
         await waitForLogContaining(server, "javascript.languageService.create");
         server.takePendingNotifications("window/logMessage");
 
@@ -10827,6 +10898,7 @@ beta
           position: positionAt(source, source.lastIndexOf("alph") + "alph".length),
         });
         expect(JSON.stringify(alphaReused)).toContain("alphaValue");
+        await waitForLogContaining(server, "javascript.openProjectFiles.reuse");
         await waitForLogContaining(server, "javascript.languageService.reuse");
         server.takePendingNotifications("window/logMessage");
 
@@ -10843,6 +10915,7 @@ beta
         });
         expect(JSON.stringify(beta)).toContain("betaValue");
         expect(JSON.stringify(beta)).not.toContain("alphaValue");
+        await waitForLogContaining(server, "javascript.openProjectFiles.collect");
         await waitForLogContaining(server, "javascript.languageService.reuse");
         server.takePendingNotifications("window/logMessage");
 
@@ -11280,6 +11353,88 @@ End Function
         server.notify("exit", undefined);
       } finally {
         server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps dependent JavaScript island diagnostics idle after private include changes", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-js-private-"));
+      const include = path.join(tempDir, "shared.inc");
+      const page = path.join(tempDir, "default.asp");
+      fs.writeFileSync(
+        include,
+        `<%
+Function SharedValue()
+  Dim privateValue
+  privateValue = "old"
+  SharedValue = privateValue
+End Function
+
+Function PrivateOnlyUtility()
+  Dim unusedPrivateLocal
+  PrivateOnlyUtility = "old"
+End Function
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="shared.inc" -->
+<script>
+const fromServer = <%= SharedValue() %>;
+const stableClient = 1;
+</script>
+<% Response.Write SharedValue() %>`,
+        "utf8",
+      );
+      try {
+        await withInitializedServer(
+          {
+            rootUri: `file://${tempDir}`,
+            aspLspSettings: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+          async (server) => {
+            const uri = `file://${page}`;
+            openClassicAspDocument(server, uri, fs.readFileSync(page, "utf8"));
+            await waitForLogContaining(server, "LSP check completed");
+            server.takePendingNotifications("window/logMessage");
+            server.takePendingNotifications("textDocument/publishDiagnostics");
+
+            fs.writeFileSync(
+              include,
+              `<%
+Function SharedValue()
+  Dim privateValue
+  privateValue = "old"
+  SharedValue = privateValue
+End Function
+
+Function PrivateOnlyUtility()
+  Dim unusedPrivateLocal
+  unusedPrivateLocal = "changed"
+  PrivateOnlyUtility = unusedPrivateLocal
+End Function
+%>`,
+              "utf8",
+            );
+            server.notify("workspace/didChangeWatchedFiles", {
+              changes: [{ uri: `file://${include}`, type: 2 }],
+            });
+            await delay(350);
+
+            const logs = JSON.stringify(server.takePendingNotifications("window/logMessage"));
+            const diagnostics = JSON.stringify(
+              server.takePendingNotifications("textDocument/publishDiagnostics"),
+            );
+            expect(logs).toContain("include.publicBoundary.reuse");
+            expect(logs).not.toContain(`LSP check started: ${uri}`);
+            expect(diagnostics).not.toContain(uri);
+          },
+        );
+      } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
@@ -11728,6 +11883,125 @@ Response.Write Shared▮Title()
       }
     });
 
+    it("resolves deep file and virtual includes while JavaScript ASP islands produce diagnostics", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-include-chain-"));
+      const pageDir = path.join(tempDir, "pages");
+      const includeDir = path.join(tempDir, "includes");
+      const sharedDir = path.join(tempDir, "shared");
+      fs.mkdirSync(pageDir, { recursive: true });
+      fs.mkdirSync(includeDir, { recursive: true });
+      fs.mkdirSync(sharedDir, { recursive: true });
+      const owner = path.join(pageDir, "default.asp");
+      fs.writeFileSync(
+        path.join(includeDir, "first.inc"),
+        `<!-- #include file="second.inc" -->
+<%
+Function FromFileChain()
+  FromFileChain = "file"
+End Function
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(includeDir, "second.inc"),
+        `<!-- #include file="third.inc" -->
+<%
+Const ShadowedThing = "global"
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(includeDir, "third.inc"),
+        `<%
+Function FromDeepChain()
+  FromDeepChain = "deep"
+End Function
+
+Function UnusedIncludeUtility()
+  Dim unusedIncludeLocal
+  UnusedIncludeUtility = "unused"
+End Function
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(sharedDir, "root.inc"),
+        `<!-- #include file="leaf.inc" -->
+<%
+Function FromVirtualRoot()
+  FromVirtualRoot = "root"
+End Function
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(sharedDir, "leaf.inc"),
+        `<%
+Function FromVirtualLeaf()
+  FromVirtualLeaf = "leaf"
+End Function
+%>`,
+        "utf8",
+      );
+      const marked = markedDocument(`<!-- #include file="../includes/first.inc" -->
+<!-- #include virtual="/shared/root.inc" -->
+<%
+Dim implicitPageValue
+implicitPageValue = FromDeepChain()
+Sub LocalOddity()
+  Dim ShadowedThing
+  ShadowedThing = "local"
+End Sub
+Response.Write From▮VirtualLeaf()
+%>
+<script>
+const fileValue = <%= FromFileChain() %>;
+const virtualValue = <% Response.Write FromVirtualRoot() %>;
+missingIncludeJs.toFixed();
+</script>`);
+      fs.writeFileSync(owner, marked.text, "utf8");
+
+      try {
+        await withInitializedServer(
+          {
+            rootUri: `file://${pageDir}`,
+            aspLspSettings: {
+              checkJs: true,
+              diagnostics: { debounceMs: 0 },
+              javascript: { ignoreProjectConfig: true },
+              virtualRoots: [tempDir],
+            },
+          },
+          async (server) => {
+            const uri = `file://${owner}`;
+            openClassicAspDocument(server, uri, marked.text);
+
+            const diagnostics = await waitForDiagnosticsContaining(server, "missingIncludeJs");
+            const diagnosticPayload = diagnosticText(diagnostics);
+            expect(diagnosticPayload).toContain("asp-lsp-typescript");
+            expect(diagnosticPayload).not.toContain("FromDeepChain");
+            expect(diagnosticPayload).not.toContain("FromVirtualLeaf");
+            expectDiagnosticsOutsideAspIslands(marked.text, lspDiagnostics(diagnostics), [
+              "<%= FromFileChain",
+              "<% Response.Write FromVirtualRoot",
+            ]);
+
+            const completions = await waitForCompletionContaining(
+              server,
+              { uri, position: marked.position },
+              "FromVirtualLeaf",
+            );
+            const labels = completionLabels(completions);
+            expect(labels).toContain("FromFileChain");
+            expect(labels).toContain("FromVirtualLeaf");
+            expect(labels).toContain("FromVirtualRoot");
+          },
+        );
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("auto-detects Shift_JIS include directives in unopened include files", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-auto-include-"));
       const owner = path.join(tempDir, "default.asp");
@@ -11946,6 +12220,49 @@ Response.Write Shared▮Thing()
       }
     });
 
+    it("reports include cycles without swallowing JavaScript diagnostics around ASP islands", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-cycle-js-"));
+      const owner = path.join(tempDir, "default.asp");
+      const first = path.join(tempDir, "first.inc");
+      const second = path.join(tempDir, "second.inc");
+      const third = path.join(tempDir, "third.inc");
+      const source = `<!-- #include file="first.inc" -->
+<script>
+const cycleValue = <%= CycleValue %>;
+const shifted = <% Response.Write ShiftedValue %>;
+missingCycleJs.toFixed();
+</script>`;
+      fs.writeFileSync(owner, source, "utf8");
+      fs.writeFileSync(first, '<!-- #include file="second.inc" -->', "utf8");
+      fs.writeFileSync(second, '<!-- #include file="third.inc" -->', "utf8");
+      fs.writeFileSync(third, '<!-- #include file="first.inc" -->', "utf8");
+
+      try {
+        await withInitializedServer(
+          { rootUri: `file://${tempDir}`, aspLspSettings: jsCheckDiagnosticsSettings },
+          async (server) => {
+            openClassicAspDocument(server, `file://${owner}`, source);
+
+            const includeDiagnostics = await waitForDiagnosticsContaining(
+              server,
+              "Include cycle detected",
+            );
+            const includeDiagnosticsText = diagnosticText(includeDiagnostics);
+            expect(includeDiagnosticsText).toContain("Include cycle detected");
+            const jsDiagnostics = diagnosticText(
+              includeDiagnosticsText.includes("missingCycleJs")
+                ? includeDiagnostics
+                : await waitForDiagnosticsContaining(server, "missingCycleJs"),
+            );
+            expect(jsDiagnostics).toContain("asp-lsp-typescript");
+            expect(jsDiagnostics).toContain("missingCycleJs");
+          },
+        );
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("refreshes dependent diagnostics after include directive changes", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-graph-"));
       const owner = path.join(tempDir, "default.asp");
@@ -12147,6 +12464,47 @@ function markedDocument(source: string): MarkedDocument {
   }
   const text = source.slice(0, offset) + source.slice(offset + "▮".length);
   return { text, position: positionAt(text, offset) };
+}
+
+async function withInitializedServer<T>(
+  options: {
+    rootUri?: string;
+    aspLspSettings?: Record<string, unknown>;
+    env?: Record<string, string>;
+  },
+  run: (server: RpcServer) => Promise<T>,
+): Promise<T> {
+  const server = new RpcServer(options.env ? { env: options.env } : undefined);
+  try {
+    await server.start();
+    await server.request("initialize", {
+      processId: process.pid,
+      rootUri: options.rootUri ?? "file:///tmp",
+      capabilities: {},
+    });
+    if (options.aspLspSettings) {
+      server.notify("workspace/didChangeConfiguration", {
+        settings: { aspLsp: options.aspLspSettings },
+      });
+    }
+    const result = await run(server);
+    await server.request("shutdown", null);
+    server.notify("exit", undefined);
+    return result;
+  } finally {
+    server.stop();
+  }
+}
+
+function openClassicAspDocument(server: RpcServer, uri: string, text: string, version = 1): void {
+  server.notify("textDocument/didOpen", {
+    textDocument: {
+      uri,
+      languageId: "classic-asp",
+      version,
+      text,
+    },
+  });
 }
 
 async function inlineStyleCodeActionsForSource(
@@ -12411,6 +12769,60 @@ function diagnosticFromSource(message: JsonRpcMessage, source: string) {
       }
     )?.diagnostics ?? [];
   return diagnostics.find((diagnostic) => diagnostic.source === source);
+}
+
+interface LspDiagnostic {
+  message?: string;
+  source?: string;
+  severity?: number;
+  tags?: number[];
+  range: LspRange;
+}
+
+function lspDiagnostics(message: JsonRpcMessage): LspDiagnostic[] {
+  return (message.params as { diagnostics?: LspDiagnostic[] })?.diagnostics ?? [];
+}
+
+function diagnosticsFromSource(message: JsonRpcMessage, source: string): LspDiagnostic[] {
+  return lspDiagnostics(message).filter((diagnostic) => diagnostic.source === source);
+}
+
+function expectDiagnosticRange(
+  diagnostics: readonly LspDiagnostic[],
+  expectedMessage: string,
+  range: LspRange,
+): void {
+  const diagnostic = diagnostics.find((item) => item.message?.includes(expectedMessage));
+  expect(diagnostic?.range).toEqual(range);
+}
+
+function expectDiagnosticsOutsideAspIslands(
+  source: string,
+  diagnostics: readonly LspDiagnostic[],
+  islandStartNeedles: readonly string[],
+): void {
+  const islandRanges = islandStartNeedles.map((needle) => aspIslandRange(source, needle));
+  for (const diagnostic of diagnostics) {
+    const diagnosticStart = offsetAt(source, diagnostic.range.start);
+    const diagnosticEnd = offsetAt(source, diagnostic.range.end);
+    for (const island of islandRanges) {
+      expect(
+        diagnosticEnd <= island.start || diagnosticStart >= island.end,
+        `${diagnostic.source ?? "diagnostic"} ${diagnostic.message ?? ""} overlaps ${island.needle}`,
+      ).toBe(true);
+    }
+  }
+}
+
+function aspIslandRange(
+  source: string,
+  needle: string,
+): { needle: string; start: number; end: number } {
+  const start = source.indexOf(needle);
+  expect(start, `ASP island start ${needle}`).toBeGreaterThanOrEqual(0);
+  const close = source.indexOf("%>", start);
+  expect(close, `ASP island close ${needle}`).toBeGreaterThanOrEqual(0);
+  return { needle, start, end: close + "%>".length };
 }
 
 async function waitForCompletionContaining(

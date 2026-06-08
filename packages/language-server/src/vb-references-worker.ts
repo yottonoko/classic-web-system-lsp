@@ -6,7 +6,6 @@ import { analyse, detect } from "chardet";
 import {
   buildVbTypeEnvironment,
   extractAspIncludeRefs,
-  extractVbscriptSymbolIndex,
   getVbscriptReferencesForSymbols,
   hydrateVbscriptCst,
   parseAspDocumentAsync,
@@ -165,8 +164,6 @@ async function collectLightweightIncludeClosure(
         if (textLength > request.limits.maxTextLength) {
           return { next: [], reason: "text-limit" };
         }
-        // Build the fast VB index in the worker so the main LSP thread never pays this cost.
-        extractVbscriptSymbolIndex(item.uri, text.text, request.settings);
         const includeRefs = extractAspIncludeRefs(text.text);
         const next = await mapWithConcurrency(
           includeRefs,

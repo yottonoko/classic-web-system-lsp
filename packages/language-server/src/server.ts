@@ -186,6 +186,7 @@ const includeReverseDependencies = new Map<string, Set<string>>();
 const includePublicSummaries = new Map<string, IncludePublicSummaryState>();
 const workspaceIndex = new Map<string, WorkspaceIndexedDocument>();
 const jsLanguageServiceCache = new Map<string, JsLanguageServiceCacheEntry>();
+const jsOpenProjectFilesCache = new Map<string, JsOpenProjectFilesCacheEntry>();
 const jsProjectConfigCache = new Map<string, JsProjectConfigCacheEntry>();
 const jsDocumentRegistry = ts.createDocumentRegistry(ts.sys.useCaseSensitiveFileNames);
 const jsScriptSnapshots = new Map<string, AspJsScriptSnapshot>();
@@ -253,6 +254,7 @@ let pendingOpenFileMaintenanceReason: string | undefined;
 let jsDiagnosticsWorkerPool: JsDiagnosticsWorkerPool | undefined;
 let jsDiagnosticsWorkerRequestId = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
+const maxJsOpenProjectFilesCacheEntries = 32;
 const maxLightweightJsUnusedCacheEntries = 32;
 const lightweightJsUnusedDiagnosticsCache = new Map<string, LightweightJsUnusedCacheEntry>();
 const hiddenJavaScriptGlobalCompletions = new Set(["__dirname", "__filename"]);
@@ -551,6 +553,11 @@ interface JsLanguageServiceProject {
 
 interface JsLanguageServiceCacheEntry {
   project: JsLanguageServiceProject;
+  lastUsed: number;
+}
+
+interface JsOpenProjectFilesCacheEntry {
+  files: Map<string, JsProjectFile>;
   lastUsed: number;
 }
 
@@ -12064,6 +12071,7 @@ function clearJsLanguageServiceCache(): void {
 
 function clearJsProjectCaches(): void {
   clearJsLanguageServiceCache();
+  jsOpenProjectFilesCache.clear();
   jsProjectConfigCache.clear();
   jsScriptSnapshots.clear();
   lightweightJsUnusedDiagnosticsCache.clear();
@@ -12388,6 +12396,16 @@ async function collectOpenJsProjectFilesAsync(
   activeVirtual: VirtualDocument,
   settings: AspSettings,
 ): Promise<Map<string, JsProjectFile>> {
+  const cacheKey = jsOpenProjectFilesCacheKey(activeVirtual, settings);
+  const cached = jsOpenProjectFilesCache.get(cacheKey);
+  if (cached) {
+    cached.lastUsed = ++jsLanguageServiceCacheTick;
+    logDebugSummary(
+      settings,
+      `[asp-lsp] javascript.openProjectFiles.reuse: ${virtualSourceUri(activeVirtual)}, files=${cached.files.size}`,
+    );
+    return new Map(cached.files);
+  }
   const files = new Map<string, JsProjectFile>();
   addJsProjectVirtualFile(files, activeVirtual, settings);
   const cachedDocuments = await Promise.all(
@@ -12398,7 +12416,45 @@ async function collectOpenJsProjectFilesAsync(
       addJsProjectVirtualFile(files, virtual, settings);
     }
   }
+  jsOpenProjectFilesCache.set(cacheKey, {
+    files: new Map(files),
+    lastUsed: ++jsLanguageServiceCacheTick,
+  });
+  logDebugSummary(
+    settings,
+    `[asp-lsp] javascript.openProjectFiles.collect: ${virtualSourceUri(activeVirtual)}, files=${files.size}`,
+  );
+  pruneJsOpenProjectFilesCache();
   return files;
+}
+
+function jsOpenProjectFilesCacheKey(activeVirtual: VirtualDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    generation: jsProjectGeneration,
+    settings: jsProjectSettingsIdentity(settings),
+    activeVirtual: jsDiagnosticsVirtualKey(activeVirtual),
+    openDocuments: documents
+      .all()
+      .map((document) => ({
+        uri: document.uri,
+        version: document.version,
+        languageId: document.languageId,
+        parse: parseSettingsIdentity(cachedSettings(document.uri)),
+      }))
+      .sort((left, right) => left.uri.localeCompare(right.uri)),
+  });
+}
+
+function pruneJsOpenProjectFilesCache(): void {
+  while (jsOpenProjectFilesCache.size > maxJsOpenProjectFilesCacheEntries) {
+    const oldest = [...jsOpenProjectFilesCache.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0];
+    if (!oldest) {
+      return;
+    }
+    jsOpenProjectFilesCache.delete(oldest[0]);
+  }
 }
 
 function addJsProjectVirtualFile(
@@ -14947,7 +15003,7 @@ async function collectDocumentGraphDocumentsAsync(
     }
     visited.add(document.uri);
     documentsForGraph.push(document);
-    const includeRefs = (await graphFileIndexForDocumentAsync(document, settings)).includeRefs;
+    const includeRefs = await graphIncludeRefsForDocumentAsync(document, settings);
     throwIfGraphCancelled(cancellation);
     for (const include of includeRefs) {
       throwIfGraphCancelled(cancellation);
@@ -14979,6 +15035,29 @@ async function collectDocumentGraphDocumentsAsync(
 
   await visit(await graphDocumentFromCachedAsync(root, settings), 0);
   return documentsForGraph;
+}
+
+async function graphIncludeRefsForDocumentAsync(
+  document: AspGraphDocument,
+  settings: AspSettings,
+): Promise<AspInclude[]> {
+  const includeRefsEntry = await readGraphIncludeRefsEntryAsync(document.fileName, settings);
+  if (includeRefsEntry && sameDiskAnalysisSource(includeRefsEntry.source, document.source)) {
+    return includeRefsEntry.includeRefs;
+  }
+  return extractAspIncludeRefs(document.text);
+}
+
+async function readGraphIncludeRefsEntryAsync(
+  fileName: string,
+  settings: AspSettings,
+): Promise<IncludeRefsCacheEntry | undefined> {
+  return includeDocumentLoader
+    .readIncludeRefsAsync(fileName, settings, { allowRead: true })
+    .catch((error) => {
+      logDiskAnalysisCacheError("graphIncludeRefs.read", error);
+      return undefined;
+    });
 }
 
 async function graphPayloadFromDocumentsAsync(
@@ -15541,12 +15620,7 @@ async function graphFileIndexForDocumentAsync(
     return pending;
   }
   const promise = (async () => {
-    const includeRefsEntry = await includeDocumentLoader
-      .readIncludeRefsAsync(document.fileName, settings, { allowRead: true })
-      .catch((error) => {
-        logDiskAnalysisCacheError("graphIncludeRefs.read", error);
-        return undefined;
-      });
+    const includeRefsEntry = await readGraphIncludeRefsEntryAsync(document.fileName, settings);
     if (document.diskBacked) {
       const cachedIndex = await diskAnalysisCache
         .readVbSymbolIndex({ source: document.source, settingsKey })
