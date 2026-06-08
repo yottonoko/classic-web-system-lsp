@@ -1,11 +1,6 @@
 import type { Range } from "vscode-languageserver-types";
 import type { AspInclude, AspRegion, AspServerObject, AspSettings, VbToken } from "./types";
-import {
-  extractAspIncludeRefs,
-  normalizeScriptLanguage,
-  parseAttributes,
-  scanHtmlAndAsp,
-} from "./asp-scanner";
+import { normalizeScriptLanguage, parseAttributes, scanHtmlAndAsp } from "./asp-scanner";
 import { offsetAt } from "./position";
 import { tokenizeVbscript } from "./vbscript-cst";
 import builtinCatalogData from "./vbscript-builtin-catalog.json";
@@ -175,15 +170,6 @@ interface IndexedReferenceToken {
   tokenIndex: number;
 }
 
-interface IndexHtmlTag {
-  name: "script" | "style";
-  start: number;
-  end: number;
-  attributes: Record<string, string | true>;
-  closing: boolean;
-  selfClosing: boolean;
-}
-
 const defaultOptions: Required<VbSymbolIndexOptions> = {
   includeReferences: true,
   includeParameters: true,
@@ -285,71 +271,29 @@ export function extractVbscriptSymbolIndex(
 }
 
 function collectVbscriptIndexInput(text: string, settings: AspSettings): VbRegionIndexInput {
-  const candidates: AspRegion[] = [];
-  let directiveLanguage: string | undefined;
-  const specialPattern = /<!--|<%|<\/?script\b|<\/?style\b/gi;
-  let match: RegExpExecArray | null;
-  while ((match = specialPattern.exec(text)) !== null) {
-    const start = match.index;
-    if (isInsideHtmlTagAt(text, start)) {
-      continue;
-    }
-    const token = match[0].toLowerCase();
-    if (token === "<!--") {
-      const commentEnd = text.indexOf("-->", start + 4);
-      specialPattern.lastIndex = commentEnd === -1 ? text.length : commentEnd + 3;
-      continue;
-    }
-    if (token === "<%") {
-      const close = text.indexOf("%>", start + 2);
-      const marker = text[start + 2];
-      const kind =
-        marker === "=" ? "asp-expression" : marker === "@" ? "asp-directive" : "asp-block";
-      const contentStart = start + (marker === "=" || marker === "@" ? 3 : 2);
-      const contentEnd = close === -1 ? text.length : close;
-      const region: AspRegion = {
-        kind,
-        language: kind === "asp-directive" ? "asp-directive" : "vbscript",
-        start,
-        end: close === -1 ? text.length : close + 2,
-        contentStart,
-        contentEnd,
-      };
-      candidates.push(region);
-      if (kind === "asp-directive" && !directiveLanguage) {
-        directiveLanguage = directiveLanguageFromRegion(text, region);
-      }
-      specialPattern.lastIndex = region.end;
-      continue;
-    }
-    const tag = readIndexHtmlTag(text, start);
-    if (!tag) {
-      continue;
-    }
-    if ((tag.name === "script" || tag.name === "style") && !tag.closing && !tag.selfClosing) {
-      const close = findElementClose(text, tag.name, tag.end);
-      if (tag.name === "script" && isServerScriptTag(tag)) {
-        candidates.push({
-          kind: "server-script",
-          language:
-            normalizeScriptLanguage(
-              String(tag.attributes.language ?? tag.attributes.type ?? "VBScript"),
-            ).toLowerCase() === "jscript"
-              ? "jscript"
-              : "vbscript",
-          start: tag.start,
-          end: close?.end ?? text.length,
-          contentStart: tag.end,
-          contentEnd: close?.start ?? text.length,
-          attributes: tag.attributes,
-        });
-      }
-      specialPattern.lastIndex = close?.end ?? tag.end;
-    }
-  }
+  const scan = scanHtmlAndAsp(text, [], settings);
+  const directiveLanguage = scan.inlineRegions
+    .filter((region) => region.kind === "asp-directive")
+    .map((region) => directiveLanguageFromRegion(text, region))
+    .find((language): language is string => language !== undefined);
   const defaultLanguage = normalizeScriptLanguage(
     directiveLanguage ?? settings.defaultLanguage ?? "VBScript",
   );
+  const scriptRegions = scan.tagRegions.map((region): AspRegion => {
+    if (region.kind !== "server-script") {
+      return region;
+    }
+    return {
+      ...region,
+      language:
+        normalizeScriptLanguage(
+          String(region.attributes?.language ?? region.attributes?.type ?? defaultLanguage),
+        ).toLowerCase() === "jscript"
+          ? "jscript"
+          : "vbscript",
+    };
+  });
+  const candidates = [...scan.inlineRegions, ...scriptRegions];
   const regions = candidates
     .filter((region) => region.end > region.start)
     .map((region): AspRegion => {
@@ -370,10 +314,7 @@ function collectVbscriptIndexInput(text: string, settings: AspSettings): VbRegio
     .sort(
       (left, right) => left.contentStart - right.contentStart || left.contentEnd - right.contentEnd,
     );
-  const serverObjects = /<\s*object\b/i.test(text)
-    ? scanHtmlAndAsp(text, [], settings).serverObjects
-    : [];
-  return { regions, includeRefs: extractAspIncludeRefs(text), serverObjects };
+  return { regions, includeRefs: scan.includes, serverObjects: scan.serverObjects };
 }
 
 function directiveLanguageFromRegion(text: string, region: AspRegion): string | undefined {
@@ -387,101 +328,6 @@ function directiveLanguageFromRegion(text: string, region: AspRegion): string | 
     : typeof attributes.LANGUAGE === "string"
       ? attributes.LANGUAGE
       : undefined;
-}
-
-function isInsideHtmlTagAt(text: string, index: number): boolean {
-  const tagStart = text.lastIndexOf("<", index - 1);
-  if (tagStart === -1 || text.startsWith("<!--", tagStart) || text.startsWith("<%", tagStart)) {
-    return false;
-  }
-  const tagEnd = text.lastIndexOf(">", index - 1);
-  return tagStart > tagEnd;
-}
-
-function readIndexHtmlTag(text: string, start: number): IndexHtmlTag | undefined {
-  if (text[start] !== "<") {
-    return undefined;
-  }
-  let cursor = start + 1;
-  const closing = text[cursor] === "/";
-  if (closing) {
-    cursor += 1;
-  }
-  while (isHtmlWhitespaceCode(text.charCodeAt(cursor))) {
-    cursor += 1;
-  }
-  const nameStart = cursor;
-  while (isAsciiAlphaCode(text.charCodeAt(cursor))) {
-    cursor += 1;
-  }
-  const name = text.slice(nameStart, cursor).toLowerCase();
-  if (name !== "script" && name !== "style") {
-    return undefined;
-  }
-  const tagEnd = findTagEnd(text, cursor);
-  if (tagEnd === -1) {
-    return undefined;
-  }
-  const attributesText = text.slice(cursor, tagEnd).replace(/\/\s*$/, "");
-  return {
-    name,
-    start,
-    end: tagEnd + 1,
-    attributes: parseAttributes(attributesText),
-    closing,
-    selfClosing: /\/\s*$/.test(text.slice(cursor, tagEnd)),
-  };
-}
-
-function isServerScriptTag(tag: IndexHtmlTag): boolean {
-  return String(tag.attributes.runat ?? "").toLowerCase() === "server";
-}
-
-function findElementClose(
-  text: string,
-  tagName: "script" | "style",
-  offset: number,
-): { start: number; end: number } | undefined {
-  const pattern = new RegExp(`</\\s*${tagName}\\b`, "gi");
-  pattern.lastIndex = offset;
-  const match = pattern.exec(text);
-  if (!match) {
-    return undefined;
-  }
-  const tagEnd = findTagEnd(text, match.index + match[0].length);
-  if (tagEnd === -1) {
-    return undefined;
-  }
-  return { start: match.index, end: tagEnd + 1 };
-}
-
-function findTagEnd(text: string, offset: number): number {
-  let quote: string | undefined;
-  for (let index = offset; index < text.length; index += 1) {
-    const char = text[index];
-    if (quote) {
-      if (char === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-    if (char === ">") {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function isAsciiAlphaCode(code: number): boolean {
-  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
-}
-
-function isHtmlWhitespaceCode(code: number): boolean {
-  return code === 32 || code === 9 || code === 10 || code === 12 || code === 13;
 }
 
 function tokensForRegions(text: string, regions: AspRegion[]): VbToken[] {
@@ -592,7 +438,7 @@ function collectDeclarations(state: SymbolIndexBuildState): void {
     }
     if (first === "dim" || first === "redim") {
       const startIndex = first === "redim" && second === "preserve" ? index + 2 : index + 1;
-      addVariableDeclarations(state, "variable", token, startIndex, undefined);
+      addVariableDeclarations(state, "variable", token, startIndex, undefined, first === "redim");
       continue;
     }
     if (first === "const") {
@@ -706,6 +552,7 @@ function addVariableDeclarations(
   startToken: VbToken,
   startIndex: number,
   visibility?: "public" | "private",
+  redim = false,
 ): void {
   const current = currentScope(state);
   const classScope = current.kind === "class" ? current : undefined;
@@ -725,7 +572,7 @@ function addVariableDeclarations(
       visibility,
       bindingScope,
       typeName: entry.arrayKind ? "Array" : undefined,
-      arrayKind: entry.arrayKind,
+      arrayKind: redim && entry.arrayKind ? "dynamic" : entry.arrayKind,
       arrayDimensions: entry.arrayDimensions,
     });
   }
@@ -1326,10 +1173,13 @@ function isWriteTarget(tokens: VbToken[], index: number): boolean {
   if (next?.text !== "=") {
     return false;
   }
+  const previousLower = lower(previous);
   return (
     isStatementFirstIdentifier(tokens, index) ||
-    lower(previous) === "set" ||
-    lower(previous) === "let"
+    previousLower === "set" ||
+    previousLower === "let" ||
+    previousLower === "then" ||
+    previousLower === "else"
   );
 }
 

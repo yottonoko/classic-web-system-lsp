@@ -6721,7 +6721,7 @@ End Sub
           declarationKind: "variable",
           bindingScope: "local",
           typeName: "Array",
-          arrayKind: "fixed",
+          arrayKind: "dynamic",
           arrayDimensions: ["2"],
           origin: "source",
         });

@@ -172,6 +172,7 @@ interface VbAnalysisSnapshot {
   significantTokens: VbToken[];
   identifierTokens: VbToken[];
   statements: VbToken[][];
+  assignmentStatements: VbToken[][];
   declarationTokens: Set<VbToken>;
   previousSignificantTokenByToken: Map<VbToken, VbToken | undefined>;
   nextSignificantTokenByToken: Map<VbToken, VbToken | undefined>;
@@ -4241,9 +4242,9 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
   for (const symbol of symbols) {
     pushMapItem(existingSymbols, implicitAssignmentSymbolKey(symbol), symbol);
   }
-  for (const statement of vbStatements(parsed)) {
+  for (const statement of vbAssignmentStatements(parsed)) {
     const first = lowerToken(statement[0]);
-    const targetIndex = first === "set" ? 1 : 0;
+    const targetIndex = first === "set" || first === "let" ? 1 : 0;
     const target = statement[targetIndex];
     const equalsIndex = statement.findIndex((token) => token.text === "=");
     if (
@@ -4369,7 +4370,7 @@ function inferStatementTypes(
   context: VbProjectContext,
 ): void {
   const env = buildVbTypeEnvironment(parsed, { ...context, symbols });
-  for (const statement of vbStatements(parsed)) {
+  for (const statement of vbAssignmentStatements(parsed)) {
     const first = lowerToken(statement[0]);
     const targetIndex = first === "set" || first === "let" || first === "const" ? 1 : 0;
     const target = statement[targetIndex];
@@ -4433,7 +4434,7 @@ function inferFunctionReturnTypes(
     .sort((left, right) => left.start - right.start);
   const returnStatementsByFunction = new Map<VbCstNode, VbToken[][]>();
   let functionIndex = 0;
-  for (const statement of vbStatements(parsed)) {
+  for (const statement of vbAssignmentStatements(parsed)) {
     const target = statement[0];
     if (target?.kind === "identifier" && statement[1]?.text === "=") {
       while (
@@ -5631,6 +5632,10 @@ function vbStatements(parsed: AspParsedDocument): VbToken[][] {
   return snapshotFor(parsed).statements;
 }
 
+function vbAssignmentStatements(parsed: AspParsedDocument): VbToken[][] {
+  return snapshotFor(parsed).assignmentStatements;
+}
+
 function computeVbStatements(documents: VbCstNode[]): VbToken[][] {
   const statements: VbToken[][] = [];
   for (const document of documents) {
@@ -5655,6 +5660,51 @@ function computeVbStatements(documents: VbCstNode[]): VbToken[][] {
     }
   }
   return statements;
+}
+
+function computeVbAssignmentStatements(statements: VbToken[][]): VbToken[][] {
+  return statements.flatMap((statement) => [statement, ...singleLineIfBranchStatements(statement)]);
+}
+
+function singleLineIfBranchStatements(statement: VbToken[]): VbToken[][] {
+  const first = lowerToken(statement[0]);
+  if (first !== "if" && first !== "elseif") {
+    return [];
+  }
+  const thenIndex = topLevelKeywordIndex(statement, "then");
+  if (thenIndex === -1 || thenIndex === statement.length - 1) {
+    return [];
+  }
+  const branches: VbToken[][] = [];
+  let branchStart = thenIndex + 1;
+  let depth = 0;
+  for (let index = branchStart; index < statement.length; index += 1) {
+    const token = statement[index];
+    if (token.text === "(") {
+      depth += 1;
+      continue;
+    }
+    if (token.text === ")") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth === 0 && lowerToken(token) === "else") {
+      const branch = normalizedSingleLineIfBranch(statement.slice(branchStart, index));
+      if (branch.length > 0) {
+        branches.push(branch);
+      }
+      branchStart = index + 1;
+    }
+  }
+  const trailing = normalizedSingleLineIfBranch(statement.slice(branchStart));
+  if (trailing.length > 0) {
+    branches.push(trailing);
+  }
+  return branches;
+}
+
+function normalizedSingleLineIfBranch(tokens: VbToken[]): VbToken[] {
+  return tokens.filter((token) => token.text !== "_");
 }
 
 function inferExpressionType(
@@ -5948,6 +5998,7 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
     .filter((token) => !isTriviaToken(token));
   const identifierTokens = significantTokens.filter((token) => token.kind === "identifier");
   const statements = computeVbStatements(documents);
+  const assignmentStatements = computeVbAssignmentStatements(statements);
   const declarationTokens = new Set<VbToken>();
   for (const node of nodes) {
     if (
@@ -5978,6 +6029,7 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
     significantTokens,
     identifierTokens,
     statements,
+    assignmentStatements,
     declarationTokens,
     previousSignificantTokenByToken,
     nextSignificantTokenByToken,

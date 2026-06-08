@@ -1543,6 +1543,743 @@ End Function
     });
   });
 
+  type SymbolIndexExpected = Record<string, unknown> & {
+    name: string;
+    kind?: string;
+    role?: string;
+  };
+  type SymbolIndexAbsent = {
+    name: string;
+    kind?: string;
+    role?: string;
+  };
+  type SymbolIndexSpecialCase = {
+    name: string;
+    source: string;
+    settings?: Parameters<typeof extractVbscriptSymbolIndex>[2];
+    options?: Parameters<typeof extractVbscriptSymbolIndex>[3];
+    declarations?: SymbolIndexExpected[];
+    absentDeclarations?: SymbolIndexAbsent[];
+    references?: SymbolIndexExpected[];
+    callSites?: SymbolIndexExpected[];
+    deferredExternalRefs?: SymbolIndexExpected[];
+  };
+  const symbolIndexSpecialCases: SymbolIndexSpecialCase[] = [
+    {
+      name: "server object with lowercase attributes becomes a typed global",
+      source: `<object runat="server" id="rs" progid="ADODB.Recordset"></object>
+<% rs.MoveNext %>`,
+      declarations: [
+        {
+          name: "rs",
+          kind: "variable",
+          bindingScope: "global",
+          typeName: "ADODB.Recordset",
+        },
+      ],
+      references: [{ name: "rs", role: "read", bindingScope: "global" }],
+      callSites: [{ name: "MoveNext", callKind: "member", receiverName: "rs" }],
+    },
+    {
+      name: "server object with uppercase tag and attributes keeps the id",
+      source: `<OBJECT RUNAT="server" ID="UpperObj" CLASSID="clsid:00000000"></OBJECT>`,
+      declarations: [{ name: "UpperObj", kind: "variable", bindingScope: "global" }],
+    },
+    {
+      name: "server object accepts single quoted attributes",
+      source: `<object runat='server' id='singleObj' progid='Scripting.Dictionary'></object>`,
+      declarations: [
+        {
+          name: "singleObj",
+          kind: "variable",
+          bindingScope: "global",
+          typeName: "Scripting.Dictionary",
+        },
+      ],
+    },
+    {
+      name: "server object accepts unquoted attributes",
+      source: `<object runat=server id=unquotedObj progid=RepositoryType></object>`,
+      declarations: [
+        {
+          name: "unquotedObj",
+          kind: "variable",
+          bindingScope: "global",
+          typeName: "RepositoryType",
+        },
+      ],
+    },
+    {
+      name: "self-closing server object still becomes a declaration",
+      source: `<object runat="server" id="selfObj" progid="RepositoryType" />`,
+      declarations: [
+        {
+          name: "selfObj",
+          kind: "variable",
+          bindingScope: "global",
+          typeName: "RepositoryType",
+        },
+      ],
+    },
+    {
+      name: "server object tolerates multiline attributes",
+      source: `<object
+  runat="server"
+  id="multiObj"
+  progid="RepositoryType">
+</object>`,
+      declarations: [
+        {
+          name: "multiObj",
+          kind: "variable",
+          bindingScope: "global",
+          typeName: "RepositoryType",
+        },
+      ],
+    },
+    {
+      name: "server object id may start with underscore",
+      source: `<object runat="server" id="_sessionObj" progid="RepositoryType"></object>`,
+      declarations: [
+        {
+          name: "_sessionObj",
+          kind: "variable",
+          bindingScope: "global",
+          typeName: "RepositoryType",
+        },
+      ],
+    },
+    {
+      name: "server object id with a hyphen is ignored for VBScript",
+      source: `<object runat="server" id="bad-name" progid="RepositoryType"></object>`,
+      absentDeclarations: [{ name: "bad-name" }],
+    },
+    {
+      name: "server object id starting with a digit is ignored for VBScript",
+      source: `<object runat="server" id="1bad" progid="RepositoryType"></object>`,
+      absentDeclarations: [{ name: "1bad" }],
+    },
+    {
+      name: "object without runat server is ignored",
+      source: `<object id="clientObj" progid="RepositoryType"></object>`,
+      absentDeclarations: [{ name: "clientObj" }],
+    },
+    {
+      name: "object with client runat is ignored",
+      source: `<object runat="client" id="clientObj" progid="RepositoryType"></object>`,
+      absentDeclarations: [{ name: "clientObj" }],
+    },
+    {
+      name: "server object without id is ignored",
+      source: `<object runat="server" progid="RepositoryType"></object>`,
+      absentDeclarations: [{ name: "RepositoryType" }],
+    },
+    {
+      name: "object inside an HTML comment is ignored",
+      source: `<!-- <object runat="server" id="commentObj" progid="RepositoryType"></object> -->`,
+      absentDeclarations: [{ name: "commentObj" }],
+    },
+    {
+      name: "object markup inside an ASP string is ignored as HTML",
+      source: `<%
+Dim markup
+markup = "<object runat=""server"" id=""stringObj"" progid=""RepositoryType""></object>"
+%>`,
+      declarations: [{ name: "markup", kind: "variable", bindingScope: "global" }],
+      absentDeclarations: [{ name: "stringObj" }],
+    },
+    {
+      name: "fixed Dim array records array metadata",
+      source: `<%
+Dim fixedItems(10)
+%>`,
+      declarations: [
+        {
+          name: "fixedItems",
+          kind: "variable",
+          bindingScope: "global",
+          typeName: "Array",
+          arrayKind: "fixed",
+          arrayDimensions: ["10"],
+        },
+      ],
+    },
+    {
+      name: "multi-dimensional Dim array keeps every dimension",
+      source: `<%
+Dim matrix(2, 3)
+%>`,
+      declarations: [
+        {
+          name: "matrix",
+          kind: "variable",
+          typeName: "Array",
+          arrayKind: "fixed",
+          arrayDimensions: ["2", "3"],
+        },
+      ],
+    },
+    {
+      name: "dynamic Dim array records an empty dimension list",
+      source: `<%
+Dim dynamicItems()
+%>`,
+      declarations: [
+        {
+          name: "dynamicItems",
+          kind: "variable",
+          typeName: "Array",
+          arrayKind: "dynamic",
+          arrayDimensions: [],
+        },
+      ],
+    },
+    {
+      name: "mixed Dim statement keeps scalar fixed and dynamic declarations separate",
+      source: `<%
+Dim scalarValue, fixedItems(1), dynamicItems()
+%>`,
+      declarations: [
+        { name: "scalarValue", kind: "variable", bindingScope: "global" },
+        {
+          name: "fixedItems",
+          kind: "variable",
+          typeName: "Array",
+          arrayKind: "fixed",
+          arrayDimensions: ["1"],
+        },
+        {
+          name: "dynamicItems",
+          kind: "variable",
+          typeName: "Array",
+          arrayKind: "dynamic",
+          arrayDimensions: [],
+        },
+      ],
+    },
+    {
+      name: "array dimension expressions are preserved without whitespace",
+      source: `<%
+Dim values(count + 1, maxValue - 1)
+%>`,
+      declarations: [
+        {
+          name: "values",
+          kind: "variable",
+          arrayDimensions: ["count+1", "maxValue-1"],
+        },
+      ],
+    },
+    {
+      name: "nested calls inside array dimensions stay within one dimension",
+      source: `<%
+Dim buckets(Left(name, 1), Right(name, 2))
+%>`,
+      declarations: [
+        {
+          name: "buckets",
+          kind: "variable",
+          arrayDimensions: ["Left(name,1)", "Right(name,2)"],
+        },
+      ],
+    },
+    {
+      name: "sized ReDim is tracked as a dynamic array resize",
+      source: `<%
+ReDim resized(20)
+%>`,
+      declarations: [
+        {
+          name: "resized",
+          kind: "variable",
+          bindingScope: "global",
+          typeName: "Array",
+          arrayKind: "dynamic",
+          arrayDimensions: ["20"],
+        },
+      ],
+    },
+    {
+      name: "empty ReDim is tracked as a dynamic array",
+      source: `<%
+ReDim resized()
+%>`,
+      declarations: [
+        {
+          name: "resized",
+          kind: "variable",
+          typeName: "Array",
+          arrayKind: "dynamic",
+          arrayDimensions: [],
+        },
+      ],
+    },
+    {
+      name: "ReDim Preserve skips Preserve and keeps the resized array",
+      source: `<%
+ReDim Preserve resized(30)
+%>`,
+      declarations: [
+        {
+          name: "resized",
+          kind: "variable",
+          typeName: "Array",
+          arrayKind: "dynamic",
+          arrayDimensions: ["30"],
+        },
+      ],
+      absentDeclarations: [{ name: "Preserve" }],
+    },
+    {
+      name: "lowercase redim preserve also skips preserve",
+      source: `<%
+redim preserve lowercaseItems(40)
+%>`,
+      declarations: [
+        {
+          name: "lowercaseItems",
+          kind: "variable",
+          arrayKind: "dynamic",
+          arrayDimensions: ["40"],
+        },
+      ],
+      absentDeclarations: [{ name: "preserve" }],
+    },
+    {
+      name: "global ReDim keeps global binding scope",
+      source: `<%
+ReDim globalItems(1)
+globalItems = Array()
+%>`,
+      declarations: [{ name: "globalItems", kind: "variable", bindingScope: "global" }],
+      references: [{ name: "globalItems", role: "write", bindingScope: "global" }],
+    },
+    {
+      name: "local ReDim keeps procedure-local binding scope",
+      source: `<%
+Sub Resize()
+  ReDim localItems(1)
+  localItems = Array()
+End Sub
+%>`,
+      declarations: [{ name: "localItems", kind: "variable", bindingScope: "local" }],
+      references: [{ name: "localItems", role: "write", bindingScope: "local" }],
+    },
+    {
+      name: "public class array field keeps member metadata",
+      source: `<%
+Class Bag
+  Public Items(5)
+End Class
+%>`,
+      declarations: [
+        {
+          name: "Items",
+          kind: "field",
+          memberOf: "Bag",
+          visibility: "public",
+          typeName: "Array",
+          arrayKind: "fixed",
+          arrayDimensions: ["5"],
+        },
+      ],
+    },
+    {
+      name: "private class dynamic array field keeps member metadata",
+      source: `<%
+Class Bag
+  Private Items()
+End Class
+%>`,
+      declarations: [
+        {
+          name: "Items",
+          kind: "field",
+          memberOf: "Bag",
+          visibility: "private",
+          typeName: "Array",
+          arrayKind: "dynamic",
+          arrayDimensions: [],
+        },
+      ],
+    },
+    {
+      name: "public class constant remains a constant member",
+      source: `<%
+Class Bag
+  Public Const Kind = "bag"
+End Class
+%>`,
+      declarations: [
+        {
+          name: "Kind",
+          kind: "constant",
+          memberOf: "Bag",
+          visibility: "public",
+        },
+      ],
+    },
+    {
+      name: "colon separated Dim and ReDim statements keep array declarations",
+      source: `<%
+Sub Resize()
+  Dim colonItems() : ReDim Preserve colonItems(2)
+End Sub
+%>`,
+      declarations: [
+        {
+          name: "colonItems",
+          kind: "variable",
+          bindingScope: "local",
+          typeName: "Array",
+          arrayKind: "dynamic",
+        },
+      ],
+      absentDeclarations: [{ name: "Preserve" }],
+    },
+    {
+      name: "local Dim inside Sub stays local",
+      source: `<%
+Sub Work()
+  Dim localValue
+  localValue = 1
+End Sub
+%>`,
+      declarations: [{ name: "localValue", kind: "variable", bindingScope: "local" }],
+      references: [{ name: "localValue", role: "write", bindingScope: "local" }],
+    },
+    {
+      name: "local Const inside Function stays local",
+      source: `<%
+Function Work()
+  Const localConst = 1
+  Work = localConst
+End Function
+%>`,
+      declarations: [{ name: "localConst", kind: "constant", bindingScope: "local" }],
+      references: [{ name: "localConst", role: "read", bindingScope: "local" }],
+    },
+    {
+      name: "ByVal parameter is indexed as local",
+      source: `<%
+Sub Save(ByVal item)
+  Response.Write item
+End Sub
+%>`,
+      declarations: [{ name: "item", kind: "parameter", bindingScope: "local" }],
+      references: [{ name: "item", role: "read", bindingScope: "local" }],
+    },
+    {
+      name: "Optional ByRef parameter is indexed as local",
+      source: `<%
+Sub Save(Optional ByRef item)
+  item = 1
+End Sub
+%>`,
+      declarations: [{ name: "item", kind: "parameter", bindingScope: "local" }],
+      references: [{ name: "item", role: "write", bindingScope: "local" }],
+    },
+    {
+      name: "ParamArray parameter is indexed as local",
+      source: `<%
+Sub Save(ParamArray items)
+  Response.Write items
+End Sub
+%>`,
+      declarations: [{ name: "items", kind: "parameter", bindingScope: "local" }],
+      references: [{ name: "items", role: "read", bindingScope: "local" }],
+    },
+    {
+      name: "typed parameter records only the parameter name",
+      source: `<%
+Sub Save(ByVal amount As Integer)
+  Response.Write amount
+End Sub
+%>`,
+      declarations: [{ name: "amount", kind: "parameter", bindingScope: "local" }],
+      absentDeclarations: [{ name: "Integer" }],
+    },
+    {
+      name: "property Get is indexed as a class property",
+      source: `<%
+Class Customer
+  Public Property Get Title()
+    Title = "A"
+  End Property
+End Class
+%>`,
+      declarations: [
+        {
+          name: "Title",
+          kind: "property",
+          memberOf: "Customer",
+          procedureKind: "property",
+          visibility: "public",
+        },
+      ],
+    },
+    {
+      name: "property Let parameter is indexed inside the property scope",
+      source: `<%
+Class Customer
+  Public Property Let Title(ByVal value)
+    m_title = value
+  End Property
+End Class
+%>`,
+      declarations: [
+        { name: "Title", kind: "property", memberOf: "Customer" },
+        { name: "value", kind: "parameter", bindingScope: "local" },
+      ],
+      references: [{ name: "value", role: "read", bindingScope: "local" }],
+    },
+    {
+      name: "property Set parameter is indexed inside the property scope",
+      source: `<%
+Class Customer
+  Public Property Set Repository(ByRef value)
+    Set m_repository = value
+  End Property
+End Class
+%>`,
+      declarations: [
+        { name: "Repository", kind: "property", memberOf: "Customer" },
+        { name: "value", kind: "parameter", bindingScope: "local" },
+      ],
+      references: [{ name: "value", role: "read", bindingScope: "local" }],
+    },
+    {
+      name: "private class Function is indexed as a private method",
+      source: `<%
+Class Customer
+  Private Function Build()
+  End Function
+End Class
+%>`,
+      declarations: [
+        {
+          name: "Build",
+          kind: "method",
+          memberOf: "Customer",
+          procedureKind: "function",
+          visibility: "private",
+        },
+      ],
+    },
+    {
+      name: "public class Sub is indexed as a public method",
+      source: `<%
+Class Customer
+  Public Sub Save()
+  End Sub
+End Class
+%>`,
+      declarations: [
+        {
+          name: "Save",
+          kind: "method",
+          memberOf: "Customer",
+          procedureKind: "sub",
+          visibility: "public",
+        },
+      ],
+    },
+    {
+      name: "plain class field becomes a member field",
+      source: `<%
+Class Customer
+  Public Name
+End Class
+%>`,
+      declarations: [
+        {
+          name: "Name",
+          kind: "field",
+          memberOf: "Customer",
+          visibility: "public",
+        },
+      ],
+    },
+    {
+      name: "Me member access resolves to the class field",
+      source: `<%
+Class Customer
+  Public Name
+  Public Sub Save()
+    Me.Name = "A"
+  End Sub
+End Class
+%>`,
+      declarations: [{ name: "Name", kind: "field", memberOf: "Customer" }],
+      references: [{ name: "Name", role: "member" }],
+    },
+    {
+      name: "local declaration shadows a global declaration",
+      source: `<%
+Dim Value
+Sub Save()
+  Dim Value
+  Value = 1
+End Sub
+%>`,
+      declarations: [{ name: "Value", kind: "variable", bindingScope: "local" }],
+      references: [{ name: "Value", role: "write", bindingScope: "local" }],
+    },
+    {
+      name: "class field shadows a global declaration inside a method",
+      source: `<%
+Dim Name
+Class Customer
+  Public Name
+  Public Sub Save()
+    Name = "A"
+  End Sub
+End Class
+%>`,
+      declarations: [{ name: "Name", kind: "field", memberOf: "Customer" }],
+      references: [{ name: "Name", role: "write" }],
+    },
+    {
+      name: "missing read becomes a deferred include candidate",
+      source: `<%
+Sub Save()
+  Response.Write MissingRead
+End Sub
+%>`,
+      deferredExternalRefs: [
+        {
+          name: "MissingRead",
+          role: "read",
+          bindingScope: "unknown",
+          expectedKinds: ["variable", "constant"],
+        },
+      ],
+    },
+    {
+      name: "missing write becomes a deferred include candidate",
+      source: `<%
+Sub Save()
+  MissingWrite = 1
+End Sub
+%>`,
+      deferredExternalRefs: [
+        {
+          name: "MissingWrite",
+          role: "write",
+          bindingScope: "unknown",
+          expectedKinds: ["variable"],
+        },
+      ],
+    },
+    {
+      name: "New class usage is indexed as a constructor call site",
+      source: `<%
+Class Widget
+End Class
+Sub Make()
+  Set item = New Widget
+End Sub
+%>`,
+      declarations: [{ name: "Widget", kind: "class" }],
+      callSites: [{ name: "Widget", callKind: "constructor" }],
+    },
+    {
+      name: "Call and bare Sub calls are both indexed",
+      source: `<%
+Sub Log(message)
+End Sub
+Sub Run()
+  Call Log("a")
+  Log "b"
+End Sub
+%>`,
+      declarations: [{ name: "Log", kind: "sub" }],
+      callSites: [{ name: "Log", callKind: "procedure" }],
+    },
+    {
+      name: "server-side VBScript script tag contributes declarations",
+      source: `<script runat="server" language="VBScript">
+Sub FromServerScript()
+End Sub
+</script>
+<script runat="server" type="JScript">
+function fromJScriptTag() {}
+</script>
+<script>
+function fromClientScript() {}
+</script>`,
+      declarations: [{ name: "FromServerScript", kind: "sub" }],
+      absentDeclarations: [{ name: "fromJScriptTag" }, { name: "fromClientScript" }],
+    },
+  ];
+
+  it.each(symbolIndexSpecialCases)("covers VBScript symbol index edge case: $name", (testCase) => {
+    const index = extractVbscriptSymbolIndex(
+      "file:///site/special-case.asp",
+      testCase.source,
+      testCase.settings,
+      testCase.options,
+    );
+    const matchesExpected = (actual: Record<string, unknown>, expected: Record<string, unknown>) =>
+      Object.entries(expected).every(([key, value]) => {
+        if (key === "name" || key === "kind" || key === "role") {
+          return true;
+        }
+        return JSON.stringify(actual[key]) === JSON.stringify(value);
+      });
+    const findDeclaration = (expected: SymbolIndexExpected | SymbolIndexAbsent) =>
+      index.declarations.find(
+        (item) =>
+          item.name === expected.name &&
+          (expected.kind === undefined || item.kind === expected.kind) &&
+          matchesExpected(item as unknown as Record<string, unknown>, expected),
+      );
+    const findReference = (expected: SymbolIndexExpected | SymbolIndexAbsent) =>
+      index.references.find(
+        (item) =>
+          item.name === expected.name &&
+          (expected.role === undefined || item.role === expected.role) &&
+          matchesExpected(item as unknown as Record<string, unknown>, expected),
+      );
+    const findCallSite = (expected: SymbolIndexExpected) =>
+      index.callSites.find(
+        (item) =>
+          item.name === expected.name &&
+          matchesExpected(item as unknown as Record<string, unknown>, expected),
+      );
+    const findDeferredExternalRef = (expected: SymbolIndexExpected) =>
+      index.deferredExternalRefs.find(
+        (item) =>
+          item.name === expected.name &&
+          (expected.role === undefined || item.role === expected.role) &&
+          matchesExpected(item as unknown as Record<string, unknown>, expected),
+      );
+
+    for (const expected of testCase.declarations ?? []) {
+      expect(findDeclaration(expected), `declaration ${expected.name}`).toEqual(
+        expect.objectContaining(expected),
+      );
+    }
+    for (const expected of testCase.absentDeclarations ?? []) {
+      expect(findDeclaration(expected), `absent declaration ${expected.name}`).toBeUndefined();
+    }
+    for (const expected of testCase.references ?? []) {
+      expect(findReference(expected), `reference ${expected.name}`).toEqual(
+        expect.objectContaining(expected),
+      );
+    }
+    for (const expected of testCase.callSites ?? []) {
+      expect(findCallSite(expected), `call site ${expected.name}`).toEqual(
+        expect.objectContaining(expected),
+      );
+    }
+    for (const expected of testCase.deferredExternalRefs ?? []) {
+      expect(findDeferredExternalRef(expected), `deferred ref ${expected.name}`).toEqual(
+        expect.objectContaining(expected),
+      );
+    }
+  });
+
   it("ignores symbol index declarations inside strings, comments, and client content", () => {
     const source = `<script>
 const ignored = "Function ClientFake()";
@@ -1671,6 +2408,89 @@ missingValue = 1
       { includeImplicitVariables: true },
     );
     expect(explicitIndex.declarations.some((item) => item.name === "missingValue")).toBe(false);
+  });
+
+  it("adds implicit variable declarations from single-line If assignments to the symbol index", () => {
+    const source = `<%
+If enabled Then oneLineValue = 1
+If enabled Then branchValue = 2 Else fallbackValue = "fallback"
+If enabled Then Let letValue = 3
+If enabled Then _
+  continuedValue = 4
+Sub Render()
+  If enabled Then localValue = "local"
+End Sub
+Class Widget
+End Class
+If enabled Then Set objectValue = New Widget
+%>`;
+    const index = extractVbscriptSymbolIndex(
+      "file:///site/single-line-if-implicit-index.asp",
+      source,
+      {},
+      { includeImplicitVariables: true },
+    );
+    const declaration = (name: string) => index.declarations.find((item) => item.name === name);
+    const writeReference = (name: string) =>
+      index.references.find((item) => item.name === name && item.role === "write");
+
+    expect(declaration("oneLineValue")).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+    });
+    expect(declaration("branchValue")).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+    });
+    expect(declaration("fallbackValue")).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+    });
+    expect(declaration("letValue")).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+    });
+    expect(declaration("continuedValue")).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+    });
+    expect(declaration("localValue")).toMatchObject({
+      kind: "variable",
+      bindingScope: "local",
+      implicit: true,
+    });
+    expect(declaration("objectValue")).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+    });
+    for (const name of [
+      "oneLineValue",
+      "branchValue",
+      "fallbackValue",
+      "letValue",
+      "continuedValue",
+      "localValue",
+      "objectValue",
+    ]) {
+      expect(writeReference(name)).toMatchObject({ resolvedId: declaration(name)?.id });
+    }
+    expect(index.deferredExternalRefs.map((item) => item.name)).not.toEqual(
+      expect.arrayContaining([
+        "oneLineValue",
+        "branchValue",
+        "fallbackValue",
+        "letValue",
+        "continuedValue",
+        "localValue",
+        "objectValue",
+      ]),
+    );
   });
 
   it("keeps function return assignments out of VBScript symbol index references", () => {
@@ -2308,6 +3128,60 @@ Next
           diagnostic.code === "missingNext",
       ),
     ).toBe(false);
+  });
+
+  it("does not treat standalone End across ASP islands as a VBScript block terminator", () => {
+    const parsed = parseAspDocument(
+      "file:///site/island-standalone-end.asp",
+      `<%
+Sub Render()
+%>
+<p>body</p>
+<% end %>
+<%
+Function BuildTitle()
+%>
+<%= "title" %>
+<% End %>`,
+    );
+    const syntaxCodes = analyzeVbscript(parsed, {
+      unusedDiagnostics: false,
+    })
+      .diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax")
+      .map((diagnostic) => diagnostic.code);
+    expect(syntaxCodes).toEqual(expect.arrayContaining(["missingEndSub", "missingEndFunction"]));
+  });
+
+  it("keeps explicit ASP-island-spanning VBScript block terminators valid", () => {
+    const parsed = parseAspDocument(
+      "file:///site/island-block-ends.asp",
+      `<%
+Sub Render()
+%>
+<p>body</p>
+<% End Sub %>
+<%
+Function BuildTitle()
+%>
+<%= "title" %>
+<% End Function %>
+<%
+If ready Then
+%>
+<span>ready</span>
+<% Else %>
+<span>fallback</span>
+<% End If %>`,
+    );
+    const syntaxCodes = analyzeVbscript(parsed, {
+      ifSyntaxDiagnostics: "strict",
+      unusedDiagnostics: false,
+    })
+      .diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax")
+      .map((diagnostic) => diagnostic.code);
+    expect(syntaxCodes).not.toEqual(
+      expect.arrayContaining(["missingEndSub", "missingEndFunction", "missingEndIf"]),
+    );
   });
 
   it("keeps valid VBScript If syntax out of syntax diagnostics", () => {
@@ -4547,6 +5421,61 @@ Response.Write a
           token.tokenModifiers?.includes("library"),
       ),
     ).toBe(true);
+  });
+
+  it("creates implicit variables from single-line If assignments for hover and inlay hints", () => {
+    const source = `<%
+If enabled Then oneLineValue = 1
+If enabled Then branchValue = 2 Else fallbackValue = "fallback"
+If enabled Then Let letValue = 3
+If enabled Then _
+  continuedValue = 4
+Sub Render()
+  If enabled Then localValue = "local"
+End Sub
+%>`;
+    const parsed = parseAspDocument("file:///site/single-line-if-implicit.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+
+    expect(symbols.find((symbol) => symbol.name === "oneLineValue")).toMatchObject({
+      implicit: true,
+      typeName: "Number",
+    });
+    expect(symbols.find((symbol) => symbol.name === "branchValue")).toMatchObject({
+      implicit: true,
+      typeName: "Number",
+    });
+    expect(symbols.find((symbol) => symbol.name === "fallbackValue")).toMatchObject({
+      implicit: true,
+      typeName: "String",
+    });
+    expect(symbols.find((symbol) => symbol.name === "letValue")).toMatchObject({
+      implicit: true,
+      typeName: "Number",
+    });
+    expect(symbols.find((symbol) => symbol.name === "continuedValue")).toMatchObject({
+      implicit: true,
+      typeName: "Number",
+    });
+    expect(symbols.find((symbol) => symbol.name === "localValue")).toMatchObject({
+      implicit: true,
+      scopeName: "Render",
+      typeName: "String",
+    });
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("oneLineValue")), { symbols }),
+    ).toContain("(global) Dim oneLineValue As Number");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("localValue")), { symbols }),
+    ).toContain("(local) Dim localValue As String");
+    expect(
+      getVbscriptInlayHints(
+        parsed,
+        { start: { line: 0, character: 0 }, end: positionAt(source, source.length) },
+        { symbols },
+        { globalVariableMarkers: "all" },
+      ).map((hint) => hint.label),
+    ).toEqual(expect.arrayContaining([" (global) As Number", " (local) As String"]));
   });
 
   it("uses uncertain markers only before include-aware implicit variable analysis is available", () => {
