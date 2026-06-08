@@ -178,6 +178,11 @@ interface VbAnalysisSnapshot {
   nextSignificantTokenByToken: Map<VbToken, VbToken | undefined>;
 }
 
+interface VbStatementEntry {
+  tokens: VbToken[];
+  documentIndex: number;
+}
+
 interface VbSymbolIndex {
   byLowerName: Map<string, VbSymbol[]>;
   memberByOwner: Map<string, VbSymbol[]>;
@@ -5878,13 +5883,21 @@ function vbStatements(parsed: AspParsedDocument): VbToken[][] {
   return snapshotFor(parsed).statements;
 }
 
+function vbIfSyntaxStatements(parsed: AspParsedDocument): VbToken[][] {
+  return computeVbIfSyntaxStatements(parsed.text, vbDocuments(parsed));
+}
+
 function vbAssignmentStatements(parsed: AspParsedDocument): VbToken[][] {
   return snapshotFor(parsed).assignmentStatements;
 }
 
 function computeVbStatements(documents: VbCstNode[]): VbToken[][] {
-  const statements: VbToken[][] = [];
-  for (const document of documents) {
+  return computeVbStatementEntries(documents).map((entry) => entry.tokens);
+}
+
+function computeVbStatementEntries(documents: VbCstNode[]): VbStatementEntry[] {
+  const statements: VbStatementEntry[] = [];
+  documents.forEach((document, documentIndex) => {
     let current: VbToken[] = [];
     for (const token of document.tokens.filter(
       (item) => item.kind !== "whitespace" && item.kind !== "comment",
@@ -5894,7 +5907,7 @@ function computeVbStatements(documents: VbCstNode[]): VbToken[][] {
           continue;
         }
         if (current.length > 0) {
-          statements.push(current);
+          statements.push({ tokens: current, documentIndex });
           current = [];
         }
         continue;
@@ -5902,10 +5915,53 @@ function computeVbStatements(documents: VbCstNode[]): VbToken[][] {
       current.push(token);
     }
     if (current.length > 0) {
-      statements.push(current);
+      statements.push({ tokens: current, documentIndex });
     }
+  });
+  return statements;
+}
+
+function computeVbIfSyntaxStatements(text: string, documents: VbCstNode[]): VbToken[][] {
+  const entries = computeVbStatementEntries(documents);
+  const statements: VbToken[][] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const current = entries[index];
+    const next = entries[index + 1];
+    if (next && shouldMergeIfThenStatementAcrossAspBoundary(text, current, next)) {
+      statements.push([...current.tokens, ...next.tokens]);
+      index += 1;
+      continue;
+    }
+    statements.push(current.tokens);
   }
   return statements;
+}
+
+function shouldMergeIfThenStatementAcrossAspBoundary(
+  text: string,
+  current: VbStatementEntry,
+  next: VbStatementEntry,
+): boolean {
+  const first = lowerToken(current.tokens[0]);
+  const last = current.tokens.at(-1);
+  const then = next.tokens[0];
+  return (
+    (first === "if" || first === "elseif") &&
+    keywordIndex(current.tokens, "then") === -1 &&
+    current.documentIndex !== next.documentIndex &&
+    lowerToken(then) === "then" &&
+    last !== undefined &&
+    isAspBoundaryTriviaOnly(text, last.end, then.start)
+  );
+}
+
+function isAspBoundaryTriviaOnly(text: string, start: number, end: number): boolean {
+  return (
+    text
+      .slice(start, end)
+      .replace(/<%=?|%>/g, "")
+      .trim().length === 0
+  );
 }
 
 function computeVbAssignmentStatements(statements: VbToken[][]): VbToken[][] {
@@ -6747,7 +6803,7 @@ function diagnoseIfSyntax(
   }
   const diagnostics: Diagnostic[] = [];
   const openIfs: VbToken[] = [];
-  for (const statement of vbStatements(parsed)) {
+  for (const statement of vbIfSyntaxStatements(parsed)) {
     const first = lowerToken(statement[0]);
     const second = lowerToken(statement[1]);
     if (first === "end" && second === "if") {

@@ -3347,6 +3347,44 @@ If ready Then
     );
   });
 
+  it("keeps ASP-island-spanning If Then headers valid when Then is explicit", () => {
+    const parsed = parseAspDocument(
+      "file:///site/island-if-then.asp",
+      `<%
+If ready
+%><% Then %>
+<span>ready</span>
+<% ElseIf fallback %><% Then %>
+<span>fallback</span>
+<% End If %>`,
+    );
+    const syntaxCodes = analyzeVbscript(parsed, {
+      ifSyntaxDiagnostics: "strict",
+      unusedDiagnostics: false,
+    })
+      .diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax")
+      .map((diagnostic) => diagnostic.code);
+    expect(syntaxCodes).toEqual([]);
+  });
+
+  it("does not merge split If Then headers across template content", () => {
+    const parsed = parseAspDocument(
+      "file:///site/island-if-template-then.asp",
+      `<%
+If ready
+%><span>not gated</span><% Then %>
+<span>ready</span>
+<% End If %>`,
+    );
+    const syntaxCodes = analyzeVbscript(parsed, {
+      ifSyntaxDiagnostics: "strict",
+      unusedDiagnostics: false,
+    })
+      .diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax")
+      .map((diagnostic) => diagnostic.code);
+    expect(syntaxCodes).toEqual(["missingThen"]);
+  });
+
   it("keeps ASP-island-spanning For blocks valid when Next is explicit", () => {
     const parsed = parseAspDocument(
       "file:///site/island-for-blocks.asp",
