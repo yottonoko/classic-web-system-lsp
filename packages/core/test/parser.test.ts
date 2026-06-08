@@ -3994,6 +3994,90 @@ typeCode = VarType(joinedText)
     );
   });
 
+  it("recognizes VBScript built-in functions from the language reference", () => {
+    const source = `<%
+Option Explicit
+Dim ascByte, ascUnicode, chrByte, chrUnicode
+Dim bytePosition, byteLength, leftBytes, midBytes, rightBytes
+Dim localeValue, previousLocale, objectValue, refValue, inputValue, pictureValue, messageResult
+ascByte = AscB("A")
+ascUnicode = AscW("A")
+chrByte = ChrB(65)
+chrUnicode = ChrW(65)
+bytePosition = InStrB(1, "abc", "b")
+byteLength = LenB("abc")
+leftBytes = LeftB("abc", 1)
+midBytes = MidB("abc", 2, 1)
+rightBytes = RightB("abc", 1)
+localeValue = GetLocale()
+previousLocale = SetLocale(localeValue)
+Set objectValue = GetObject("", "Scripting.Dictionary")
+Set refValue = GetRef("Handler")
+inputValue = InputBox("Prompt")
+Set pictureValue = LoadPicture("image.bmp")
+messageResult = MsgBox("Hello")
+%>`;
+    const parsed = parseAspDocument("file:///site/reference-builtins.asp", source);
+    const result = analyzeVbscript(parsed, { unusedDiagnostics: false });
+    const tokens = getVbscriptSemanticTokens(parsed, { symbols: result.symbols });
+    const symbolType = (name: string) =>
+      result.symbols.find((symbol) => symbol.name === name)?.typeName;
+    const tokenAt = (text: string) => {
+      const position = positionAt(parsed.text, parsed.text.indexOf(text));
+      return tokens.find(
+        (token) =>
+          token.range.start.line === position.line &&
+          token.range.start.character === position.character,
+      );
+    };
+
+    expect(result.diagnostics).toHaveLength(0);
+    for (const name of [
+      "ascByte",
+      "ascUnicode",
+      "bytePosition",
+      "byteLength",
+      "localeValue",
+      "previousLocale",
+      "messageResult",
+    ]) {
+      expect(symbolType(name)).toBe("Number");
+    }
+    for (const name of [
+      "chrByte",
+      "chrUnicode",
+      "leftBytes",
+      "midBytes",
+      "rightBytes",
+      "inputValue",
+    ]) {
+      expect(symbolType(name)).toBe("String");
+    }
+    expect(symbolType("objectValue")).toBe("Object");
+    expect(symbolType("refValue")).toBe("Object");
+    expect(symbolType("pictureValue")).toBe("Object");
+    for (const label of ["LenB", "GetObject", "InputBox", "MsgBox"]) {
+      expect(tokenAt(label)).toEqual(
+        expect.objectContaining({ tokenType: "function", tokenModifiers: ["library"] }),
+      );
+    }
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("LenB"))),
+    ).toContain("Function LenB(value) As Number");
+    expect(
+      getVbscriptSignatureHelp(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf('MsgBox("Hello"') + "MsgBox(".length),
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        signatures: [
+          expect.objectContaining({ label: "MsgBox(prompt, buttons, title, helpfile, context)" }),
+        ],
+      }),
+    );
+  });
+
   it("covers W3Schools ASP object members, runtime events and member hover", () => {
     const parsed = parseAspDocument(
       "file:///site/Global.asa",

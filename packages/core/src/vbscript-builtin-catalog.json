@@ -2637,10 +2637,34 @@
       "summary": "Returns the ANSI character code for a string."
     },
     {
+      "label": "AscB",
+      "signature": "AscB(string)",
+      "returnType": "Number",
+      "summary": "Returns the first byte of a string."
+    },
+    {
+      "label": "AscW",
+      "signature": "AscW(string)",
+      "returnType": "Number",
+      "summary": "Returns the Unicode character code for a string."
+    },
+    {
       "label": "Chr",
       "signature": "Chr(charCode)",
       "returnType": "String",
       "summary": "Returns the character for an ANSI code."
+    },
+    {
+      "label": "ChrB",
+      "signature": "ChrB(charCode)",
+      "returnType": "String",
+      "summary": "Returns a single-byte character for a code."
+    },
+    {
+      "label": "ChrW",
+      "signature": "ChrW(charCode)",
+      "returnType": "String",
+      "summary": "Returns the Unicode character for a code."
     },
     {
       "label": "Hex",
@@ -2727,10 +2751,22 @@
       "summary": "Returns the number of characters in a string."
     },
     {
+      "label": "LenB",
+      "signature": "LenB(value)",
+      "returnType": "Number",
+      "summary": "Returns the number of bytes in a string."
+    },
+    {
       "label": "InStr",
       "signature": "InStr(start, string1, string2, compare)",
       "returnType": "Number",
       "summary": "Returns the position of one string within another."
+    },
+    {
+      "label": "InStrB",
+      "signature": "InStrB(start, string1, string2, compare)",
+      "returnType": "Number",
+      "summary": "Returns the byte position of one string within another."
     },
     {
       "label": "InStrRev",
@@ -2751,16 +2787,34 @@
       "summary": "Returns the left part of a string."
     },
     {
+      "label": "LeftB",
+      "signature": "LeftB(value, length)",
+      "returnType": "String",
+      "summary": "Returns the left bytes of a string."
+    },
+    {
       "label": "Right",
       "signature": "Right(value, length)",
       "returnType": "String",
       "summary": "Returns the right part of a string."
     },
     {
+      "label": "RightB",
+      "signature": "RightB(value, length)",
+      "returnType": "String",
+      "summary": "Returns the right bytes of a string."
+    },
+    {
       "label": "Mid",
       "signature": "Mid(value, start, length)",
       "returnType": "String",
       "summary": "Returns part of a string."
+    },
+    {
+      "label": "MidB",
+      "signature": "MidB(value, start, length)",
+      "returnType": "String",
+      "summary": "Returns bytes from a string."
     },
     {
       "label": "Space",
@@ -2937,6 +2991,18 @@
       "summary": "Formats an expression as a percentage."
     },
     {
+      "label": "GetLocale",
+      "signature": "GetLocale()",
+      "returnType": "Number",
+      "summary": "Returns the current locale identifier."
+    },
+    {
+      "label": "SetLocale",
+      "signature": "SetLocale(locale)",
+      "returnType": "Number",
+      "summary": "Sets the current locale and returns the previous locale."
+    },
+    {
       "label": "Abs",
       "signature": "Abs(number)",
       "returnType": "Number",
@@ -3019,6 +3085,36 @@
       "signature": "CreateObject(progId)",
       "returnType": "Object",
       "summary": "Creates an automation object."
+    },
+    {
+      "label": "GetObject",
+      "signature": "GetObject(pathName, class)",
+      "returnType": "Object",
+      "summary": "Returns an existing automation object."
+    },
+    {
+      "label": "GetRef",
+      "signature": "GetRef(procedureName)",
+      "returnType": "Object",
+      "summary": "Returns a reference to a procedure."
+    },
+    {
+      "label": "InputBox",
+      "signature": "InputBox(prompt, title, default, xpos, ypos, helpfile, context)",
+      "returnType": "String",
+      "summary": "Displays an input dialog box."
+    },
+    {
+      "label": "LoadPicture",
+      "signature": "LoadPicture(pictureName)",
+      "returnType": "Object",
+      "summary": "Returns a picture object."
+    },
+    {
+      "label": "MsgBox",
+      "signature": "MsgBox(prompt, buttons, title, helpfile, context)",
+      "returnType": "Number",
+      "summary": "Displays a message dialog box."
     },
     {
       "label": "Eval",
