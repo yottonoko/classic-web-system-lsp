@@ -6338,6 +6338,9 @@ End Function
 Dim PageValue
 Function Render(value)
   PageValue = value
+  PageValue = &HFF
+  PageValue = &077
+  PageValue = &O10
   Render = value
 End Function
 Sub Main()
@@ -6386,6 +6389,12 @@ End Sub
         expect(
           graph.nodes?.some((node) => node.kind === "vbUnresolved" && node.label === "MissingName"),
         ).toBe(true);
+        expect(
+          graph.nodes?.some(
+            (node) =>
+              node.kind === "vbUnresolved" && (node.label === "HFF" || node.label === "O10"),
+          ),
+        ).toBe(false);
         expect(graph.links?.some((link) => link.kind === "include")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "declares")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "references")).toBe(true);

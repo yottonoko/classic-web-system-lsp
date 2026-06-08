@@ -777,6 +777,23 @@ value = Rem`);
     expect(cst.tokens.some((token) => token.kind === "keyword" && token.text === "Rem")).toBe(true);
   });
 
+  it("tokenizes VBScript hex and octal integer literals as numbers", () => {
+    const cst = parseVbscriptCst(`hexValue = &HFF
+lowerHex = &ha
+octValue = &077
+explicitOctal = &O10
+zeroOctal = &0`);
+    const numbers = cst.tokens
+      .filter((token) => token.kind === "number")
+      .map((token) => token.text);
+    expect(numbers).toEqual(["&HFF", "&ha", "&077", "&O10", "&0"]);
+    expect(
+      cst.tokens.some(
+        (token) => token.kind === "identifier" && ["HFF", "ha", "O10"].includes(token.text),
+      ),
+    ).toBe(false);
+  });
+
   it("builds VBScript statement CST nodes for blocks, calls and assignments", () => {
     const cst = parseVbscriptCst(`If ready Then
   Call Save(name)
@@ -2323,6 +2340,23 @@ function fromClientScript() {}
         expect.objectContaining(expected),
       );
     }
+  });
+
+  it("keeps VBScript radix integer literals out of undeclared analysis and symbol index refs", () => {
+    const source = `<%
+Option Explicit
+Dim hexValue, lowerHex, octValue, explicitOctal, zeroOctal
+hexValue = &HFF
+lowerHex = &ha
+octValue = &077
+explicitOctal = &O10
+zeroOctal = &0
+%>`;
+    const parsed = parseAspDocument("file:///site/radix-literals.asp", source);
+    expect(analyzeVbscript(parsed, { unusedDiagnostics: false }).diagnostics).toHaveLength(0);
+
+    const index = extractVbscriptSymbolIndex("file:///site/radix-literals.asp", source);
+    expect(index.deferredExternalRefs.map((reference) => reference.name)).toEqual([]);
   });
 
   it("ignores symbol index declarations inside strings, comments, and client content", () => {

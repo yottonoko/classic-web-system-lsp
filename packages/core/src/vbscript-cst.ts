@@ -411,6 +411,14 @@ export function tokenizeVbscript(text: string, baseOffset: number): VbToken[] {
       tokens.push(result);
       continue;
     }
+    if (code === 38) {
+      const numberEnd = prefixedIntegerLiteralEnd(text, index);
+      if (numberEnd !== undefined) {
+        index = numberEnd;
+        tokens.push(token("number", text, start, index, baseOffset));
+        continue;
+      }
+    }
     if (isIdentifierStartCode(code)) {
       index += 1;
       while (index < length && isIdentifierPartCode(text.charCodeAt(index))) {
@@ -464,8 +472,40 @@ function isDigitCode(code: number): boolean {
   return code >= 48 && code <= 57;
 }
 
+function isOctalDigitCode(code: number): boolean {
+  return code >= 48 && code <= 55;
+}
+
+function isHexDigitCode(code: number): boolean {
+  return isDigitCode(code) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102);
+}
+
 function isNumberPartCode(code: number): boolean {
   return code === 46 || isDigitCode(code);
+}
+
+function prefixedIntegerLiteralEnd(text: string, start: number): number | undefined {
+  const prefix = text.charCodeAt(start + 1);
+  if (prefix === 72 || prefix === 104) {
+    return consumeRadixDigits(text, start + 2, isHexDigitCode);
+  }
+  const digitStart = prefix === 79 || prefix === 111 ? start + 2 : start + 1;
+  return consumeRadixDigits(text, digitStart, isOctalDigitCode);
+}
+
+function consumeRadixDigits(
+  text: string,
+  start: number,
+  predicate: (code: number) => boolean,
+): number | undefined {
+  if (!predicate(text.charCodeAt(start))) {
+    return undefined;
+  }
+  let index = start + 1;
+  while (index < text.length && predicate(text.charCodeAt(index))) {
+    index += 1;
+  }
+  return index;
 }
 
 function isRemCommentStart(text: string, index: number): boolean {
