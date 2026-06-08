@@ -2455,6 +2455,37 @@ missingValue = 1
     expect(explicitIndex.declarations.some((item) => item.name === "missingValue")).toBe(false);
   });
 
+  it("indexes VBScript array element access as variable references", () => {
+    const source = `<%
+Dim declaredItems(2)
+declaredItems(0) = "first"
+Response.Write declaredItems(0)
+implicitItems(0) = "created"
+Response.Write implicitItems(0)
+If declaredItems(0) = "first" Then Response.Write "ok"
+%>`;
+    const index = extractVbscriptSymbolIndex(
+      "file:///site/indexed-reference.asp",
+      source,
+      {},
+      { includeImplicitVariables: true },
+    );
+    const declared = index.declarations.find((item) => item.name === "declaredItems");
+    const implicit = index.declarations.find((item) => item.name === "implicitItems");
+    const declaredReferences = index.references.filter((item) => item.name === "declaredItems");
+    const implicitReferences = index.references.filter((item) => item.name === "implicitItems");
+
+    expect(declared).toMatchObject({ kind: "variable", typeName: "Array" });
+    expect(implicit).toMatchObject({ kind: "variable", bindingScope: "global", implicit: true });
+    expect(declaredReferences.map((item) => item.role)).toEqual(["write", "read", "read"]);
+    expect(implicitReferences.map((item) => item.role)).toEqual(["write", "read"]);
+    expect(declaredReferences.every((item) => item.resolvedId === declared?.id)).toBe(true);
+    expect(implicitReferences.every((item) => item.resolvedId === implicit?.id)).toBe(true);
+    expect(index.callSites.map((item) => item.name)).not.toEqual(
+      expect.arrayContaining(["declaredItems", "implicitItems"]),
+    );
+  });
+
   it("adds implicit variable declarations from single-line If assignments to the symbol index", () => {
     const source = `<%
 If enabled Then oneLineValue = 1
@@ -5643,6 +5674,7 @@ If enabled Then _
   continuedValue = 4
 Sub Render()
   If enabled Then localValue = "local"
+  implicitIndexed(0) = "indexed"
 End Sub
 %>`;
     const parsed = parseAspDocument("file:///site/single-line-if-implicit.asp", source);
@@ -5673,12 +5705,19 @@ End Sub
       scopeName: "Render",
       typeName: "String",
     });
+    expect(symbols.find((symbol) => symbol.name === "implicitIndexed")).toMatchObject({
+      implicit: true,
+      scopeName: "Render",
+    });
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("oneLineValue")), { symbols }),
     ).toContain("(global) Dim oneLineValue As Number");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("localValue")), { symbols }),
     ).toContain("(local) Dim localValue As String");
+    expect(
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("implicitIndexed")), { symbols }),
+    ).toContain("(local) Dim implicitIndexed");
     expect(
       getVbscriptInlayHints(
         parsed,

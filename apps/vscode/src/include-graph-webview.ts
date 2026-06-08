@@ -6,6 +6,7 @@ export interface AspGraphPayload {
   nodes: AspGraphNode[];
   links: AspGraphLink[];
   settings?: {
+    initialViewMode?: "2d" | "3d";
     hideSingleNodes?: boolean;
     showOutgoingSelectionLinks?: boolean;
     hiddenNodeCategories?: AspGraphNodeCategory[];

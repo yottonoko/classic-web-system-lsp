@@ -45,9 +45,11 @@ import {
   InitializeParams,
   InitializeResult,
   Location,
+  LSPErrorCodes,
   MonikerKind,
   ProposedFeatures,
   ReferenceParams,
+  ResponseError,
   SemanticTokensBuilder,
   SymbolInformation,
   SymbolKind,
@@ -494,6 +496,8 @@ interface AnalysisCancellation {
   isCancellationRequested(): boolean;
 }
 
+type GraphCancellationToken = { isCancellationRequested?: boolean };
+
 type AnalysisExecutionMode = "foreground" | "workspace";
 
 interface OffsetEdit {
@@ -749,6 +753,7 @@ interface AspGraphPayload {
   nodes: AspGraphNode[];
   links: AspGraphLink[];
   settings?: {
+    initialViewMode: "2d" | "3d";
     hideSingleNodes: boolean;
     showOutgoingSelectionLinks: boolean;
     hiddenNodeCategories: AspGraphNodeCategory[];
@@ -2330,7 +2335,7 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
   };
 });
 
-connection.onExecuteCommand(async (params) => {
+connection.onExecuteCommand(async (params, token) => {
   if (
     params.command === reindexWorkspaceCommand ||
     params.command === reindexWorkspaceServerCommand
@@ -2362,7 +2367,7 @@ connection.onExecuteCommand(async (params) => {
     return { ok: true, cleared: "process" };
   }
   if (params.command === buildGraphServerCommand) {
-    return buildAspGraphForCommand(params.arguments?.[0]);
+    return buildAspGraphForCommand(params.arguments?.[0], token);
   }
   return {
     ok: false,
@@ -11132,6 +11137,7 @@ function normalizeGraphSettings(
   const raw = settings.graph;
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
+    initialViewMode: record.initialViewMode === "3d" ? "3d" : "2d",
     showRootNodes: record.showRootNodes !== false,
     showFileNodes: record.showFileNodes !== false,
     showFunctionNodes: record.showFunctionNodes !== false,
@@ -14724,16 +14730,21 @@ function mergeWorkspaceEdits(
   return Object.keys(changes).length > 0 ? { changes } : undefined;
 }
 
-async function buildAspGraphForCommand(argument: unknown): Promise<AspGraphPayload> {
+async function buildAspGraphForCommand(
+  argument: unknown,
+  token?: GraphCancellationToken,
+): Promise<AspGraphPayload> {
+  const cancellation = analysisCancellationFromToken(token);
+  throwIfGraphCancelled(cancellation);
   const scope = graphCommandScope(argument);
   const uri = graphCommandUri(argument);
   if (scope === "workspace") {
-    return buildWorkspaceAspGraphAsync();
+    return buildWorkspaceAspGraphAsync(token, cancellation);
   }
   if (scope === "folder") {
-    return buildFolderAspGraphAsync(uri);
+    return buildFolderAspGraphAsync(uri, token, cancellation);
   }
-  return buildDocumentAspGraphAsync(uri ?? documents.all()[0]?.uri);
+  return buildDocumentAspGraphAsync(uri ?? documents.all()[0]?.uri, cancellation);
 }
 
 function graphCommandScope(argument: unknown): AspGraphScope {
@@ -14754,44 +14765,81 @@ function graphCommandUri(argument: unknown): string | undefined {
   return typeof uri === "string" ? uri : undefined;
 }
 
-async function buildDocumentAspGraphAsync(uri: string | undefined): Promise<AspGraphPayload> {
+function analysisCancellationFromToken(
+  token: GraphCancellationToken | undefined,
+): AnalysisCancellation {
+  return {
+    isCancellationRequested: () => token?.isCancellationRequested === true,
+  };
+}
+
+function throwIfGraphCancelled(cancellation: AnalysisCancellation): void {
+  if (cancellation.isCancellationRequested()) {
+    throw new ResponseError(LSPErrorCodes.RequestCancelled, "Graph generation was cancelled.");
+  }
+}
+
+async function buildDocumentAspGraphAsync(
+  uri: string | undefined,
+  cancellation: AnalysisCancellation = neverCancelled,
+): Promise<AspGraphPayload> {
+  throwIfGraphCancelled(cancellation);
   const cached = uri ? await cachedDocumentForGraphAsync(uri) : undefined;
+  throwIfGraphCancelled(cancellation);
   if (!cached) {
     return emptyAspGraphPayload("document", uri);
   }
   const settings = cachedSettings(cached.source.uri);
-  const documentsForGraph = await collectDocumentGraphDocumentsAsync(cached, settings);
+  const documentsForGraph = await collectDocumentGraphDocumentsAsync(
+    cached,
+    settings,
+    cancellation,
+  );
   const payload = await graphPayloadFromDocumentsAsync("document", documentsForGraph, settings, {
     rootUri: cached.source.uri,
+    cancellation,
   });
   return payload;
 }
 
-async function buildFolderAspGraphAsync(uri: string | undefined): Promise<AspGraphPayload> {
+async function buildFolderAspGraphAsync(
+  uri: string | undefined,
+  token?: GraphCancellationToken,
+  cancellation: AnalysisCancellation = neverCancelled,
+): Promise<AspGraphPayload> {
+  throwIfGraphCancelled(cancellation);
   const folderName = await graphCommandFolderNameAsync(uri);
+  throwIfGraphCancelled(cancellation);
   if (!folderName) {
     return emptyAspGraphPayload("folder", uri);
   }
   const settings = globalSettings;
-  await ensureWorkspaceIndexAsync(settings);
+  await ensureWorkspaceIndexAsync(settings, token);
+  throwIfGraphCancelled(cancellation);
   const opened = new Set<string>();
   const documentsForGraph: AspGraphDocument[] = [];
-  for (const document of await workspaceAnalyzableOpenDocumentsAsync(settings)) {
+  const openDocuments = await workspaceAnalyzableOpenDocumentsAsync(settings);
+  throwIfGraphCancelled(cancellation);
+  for (const document of openDocuments) {
+    throwIfGraphCancelled(cancellation);
     const fileName = normalizeFileName(uriToFileName(document.uri));
     if (!isFileInDirectory(fileName, folderName)) {
       continue;
     }
     const cached = await ensureFreshCachedDocumentAsync(document);
+    throwIfGraphCancelled(cancellation);
     opened.add(cached.source.uri);
     documentsForGraph.push(
       await graphDocumentFromCachedAsync(cached, cachedSettings(cached.source.uri)),
     );
   }
   for (const entry of workspaceIndex.values()) {
+    throwIfGraphCancelled(cancellation);
     if (opened.has(entry.uri) || !isFileInDirectory(entry.fileName, folderName)) {
       continue;
     }
     const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
+    throwIfGraphCancelled(cancellation);
     documentsForGraph.push(await graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri)));
     await yieldToEventLoop();
   }
@@ -14802,27 +14850,39 @@ async function buildFolderAspGraphAsync(uri: string | undefined): Promise<AspGra
           reason: `workspaceIndex>${settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles}`,
         }
       : undefined,
+    cancellation,
   });
   return payload;
 }
 
-async function buildWorkspaceAspGraphAsync(): Promise<AspGraphPayload> {
+async function buildWorkspaceAspGraphAsync(
+  token?: GraphCancellationToken,
+  cancellation: AnalysisCancellation = neverCancelled,
+): Promise<AspGraphPayload> {
+  throwIfGraphCancelled(cancellation);
   const settings = globalSettings;
-  await ensureWorkspaceIndexAsync(settings);
+  await ensureWorkspaceIndexAsync(settings, token);
+  throwIfGraphCancelled(cancellation);
   const opened = new Set<string>();
   const documentsForGraph: AspGraphDocument[] = [];
-  for (const document of await workspaceAnalyzableOpenDocumentsAsync(settings)) {
+  const openDocuments = await workspaceAnalyzableOpenDocumentsAsync(settings);
+  throwIfGraphCancelled(cancellation);
+  for (const document of openDocuments) {
+    throwIfGraphCancelled(cancellation);
     const cached = await ensureFreshCachedDocumentAsync(document);
+    throwIfGraphCancelled(cancellation);
     opened.add(cached.source.uri);
     documentsForGraph.push(
       await graphDocumentFromCachedAsync(cached, cachedSettings(cached.source.uri)),
     );
   }
   for (const entry of workspaceIndex.values()) {
+    throwIfGraphCancelled(cancellation);
     if (opened.has(entry.uri)) {
       continue;
     }
     const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
+    throwIfGraphCancelled(cancellation);
     documentsForGraph.push(await graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri)));
     await yieldToEventLoop();
   }
@@ -14832,6 +14892,7 @@ async function buildWorkspaceAspGraphAsync(): Promise<AspGraphPayload> {
           reason: `workspaceIndex>${settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles}`,
         }
       : undefined,
+    cancellation,
   });
   return payload;
 }
@@ -14872,6 +14933,7 @@ async function cachedDocumentForGraphAsync(uri: string): Promise<CachedDocument 
 async function collectDocumentGraphDocumentsAsync(
   root: CachedDocument,
   settings: AspSettings,
+  cancellation: AnalysisCancellation = neverCancelled,
 ): Promise<AspGraphDocument[]> {
   const limits = vbProjectContextLimits(settings);
   const documentsForGraph: AspGraphDocument[] = [];
@@ -14879,28 +14941,34 @@ async function collectDocumentGraphDocumentsAsync(
   let textLength = root.parsed.text.length;
 
   const visit = async (document: AspGraphDocument, depth: number): Promise<void> => {
+    throwIfGraphCancelled(cancellation);
     if (depth > 20 || visited.has(document.uri)) {
       return;
     }
     visited.add(document.uri);
     documentsForGraph.push(document);
     const includeRefs = (await graphFileIndexForDocumentAsync(document, settings)).includeRefs;
+    throwIfGraphCancelled(cancellation);
     for (const include of includeRefs) {
+      throwIfGraphCancelled(cancellation);
       const resolved = await resolveIncludePathDetailsAsync(
         document.uri,
         include.path,
         include.mode,
         settings,
       );
+      throwIfGraphCancelled(cancellation);
       const includeUri = pathToFileUri(resolved.fileName);
       if (!resolved.exists || visited.has(includeUri) || visited.size >= limits.maxDocuments) {
         continue;
       }
       const size = await fileSizeAsync(resolved.fileName);
+      throwIfGraphCancelled(cancellation);
       if (size !== undefined && textLength + size > limits.maxTextLength) {
         continue;
       }
       const entry = await includeDocumentLoader.readAsync(resolved.fileName, settings);
+      throwIfGraphCancelled(cancellation);
       if (!entry) {
         continue;
       }
@@ -14917,23 +14985,34 @@ async function graphPayloadFromDocumentsAsync(
   scope: AspGraphScope,
   documentsForGraph: AspGraphDocument[],
   settings: AspSettings,
-  options: { rootUri?: string; truncated?: AspGraphPayload["truncated"] } = {},
+  options: {
+    rootUri?: string;
+    truncated?: AspGraphPayload["truncated"];
+    cancellation?: AnalysisCancellation;
+  } = {},
 ): Promise<AspGraphPayload> {
+  const cancellation = options.cancellation ?? neverCancelled;
+  throwIfGraphCancelled(cancellation);
   const state = createAspGraphBuildState(settings, options.rootUri, options.truncated);
   const indexedDocuments: AspGraphIndexedDocument[] = [];
   for (const document of documentsForGraph) {
+    throwIfGraphCancelled(cancellation);
     addFileGraphNode(state, document.uri, document.fileName, true);
     indexedDocuments.push({
       document,
       graphIndex: await graphFileIndexForDocumentAsync(document, settings),
     });
+    throwIfGraphCancelled(cancellation);
     await yieldToEventLoop();
   }
   for (const indexed of indexedDocuments) {
+    throwIfGraphCancelled(cancellation);
     await addDocumentStructureToAspGraphAsync(state, indexed, settings);
+    throwIfGraphCancelled(cancellation);
     await yieldToEventLoop();
   }
   for (const indexed of indexedDocuments) {
+    throwIfGraphCancelled(cancellation);
     addDocumentUsageToAspGraph(state, indexed);
   }
   state.stats = recomputeAspGraphStats(state.nodes.values(), state.links.values());
@@ -15237,20 +15316,9 @@ function addDocumentUsageToAspGraph(
         ? declarationGraphNodeId(sourceDeclaration.id)
         : external
           ? addExternalGraphNode(state, external)
-          : unresolvedGraphNodeId(
-              document.uri,
-              callSite.deferredKey ?? callSite.name,
-              callSite.name,
-            );
+          : unresolvedGraphNodeId(callSite.name);
     if (!callSite.resolvedId && !sourceDeclaration && !external) {
-      addUnresolvedGraphNode(
-        state,
-        document.uri,
-        callSite.deferredKey ?? callSite.name,
-        callSite.name,
-        callSite.range,
-        callSite.callKind,
-      );
+      addUnresolvedGraphNode(state, document.uri, callSite.name, callSite.range, callSite.callKind);
     }
     addAspGraphLink(state, {
       source: scopeGraphNodeId(state, document.uri, callSite.scopeId),
@@ -15274,15 +15342,8 @@ function addDocumentUsageToAspGraph(
       continue;
     }
     state.stats.unresolvedReferences += 1;
-    const target = unresolvedGraphNodeId(document.uri, deferred.key, deferred.name);
-    addUnresolvedGraphNode(
-      state,
-      document.uri,
-      deferred.key,
-      deferred.name,
-      deferred.range,
-      deferred.role,
-    );
+    const target = unresolvedGraphNodeId(deferred.name);
+    addUnresolvedGraphNode(state, document.uri, deferred.name, deferred.range, deferred.role);
     addAspGraphLink(state, {
       source: scopeGraphNodeId(state, document.uri, deferred.scopeId),
       target,
@@ -15592,12 +15653,11 @@ function addFileGraphNode(
 function addUnresolvedGraphNode(
   state: AspGraphBuildState,
   uri: string,
-  key: string,
   name: string,
   range: Range,
   role: string,
 ): void {
-  const id = unresolvedGraphNodeId(uri, key, name);
+  const id = unresolvedGraphNodeId(name);
   if (state.nodes.has(id)) {
     return;
   }
@@ -15639,6 +15699,7 @@ function addAspGraphLink(
 function graphPayloadSettings(settings: AspSettings): NonNullable<AspGraphPayload["settings"]> {
   const graphSettings = normalizeGraphSettings(settings);
   return {
+    initialViewMode: graphSettings.initialViewMode === "3d" ? "3d" : "2d",
     hideSingleNodes: graphSettings.hideSingleNodes !== false,
     showOutgoingSelectionLinks: graphSettings.showOutgoingSelectionLinks !== false,
     hiddenNodeCategories: graphNodeCategoryOrder.filter(
@@ -15788,8 +15849,8 @@ function declarationGraphNodeId(id: string): string {
   return `vb:${id}`;
 }
 
-function unresolvedGraphNodeId(uri: string, key: string, name: string): string {
-  return `unresolved:${uri}:${key}:${name.toLowerCase()}`;
+function unresolvedGraphNodeId(name: string): string {
+  return `unresolved:${name.toLowerCase()}`;
 }
 
 function scopeGraphNodeId(

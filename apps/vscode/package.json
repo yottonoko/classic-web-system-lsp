@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -729,6 +729,15 @@
           "type": "boolean",
           "default": true,
           "description": "%configuration.graph.showMemberLinks.description%"
+        },
+        "aspLsp.graph.initialViewMode": {
+          "type": "string",
+          "enum": [
+            "2d",
+            "3d"
+          ],
+          "default": "2d",
+          "description": "%configuration.graph.initialViewMode.description%"
         },
         "aspLsp.graph.openLocation": {
           "type": "string",

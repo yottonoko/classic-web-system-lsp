@@ -285,7 +285,7 @@ const paneResizeHandleWidth = 6;
 const paneResizeKeyboardStep = 16;
 
 function App(): React.ReactElement {
-  const [mode, setMode] = useState<ViewMode>("3d");
+  const [mode, setMode] = useState<ViewMode>(graph?.settings?.initialViewMode ?? "2d");
   const [selection, setSelection] = useState<Selection>();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatchCase, setSearchMatchCase] = useState(false);

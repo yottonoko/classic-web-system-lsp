@@ -76,6 +76,7 @@
   "configuration.graph.showCallLinks.description": "Show call links in graph views.",
   "configuration.graph.showUnresolvedLinks.description": "Show unresolved reference links in graph views.",
   "configuration.graph.showMemberLinks.description": "Show object member reference and call links in graph views.",
+  "configuration.graph.initialViewMode.description": "Controls whether graph views open in 2D or 3D by default.",
   "configuration.graph.openLocation.description": "Controls where graph views open: active editor group or beside the current editor.",
   "configuration.cache.enabled.description": "Persist unopened workspace analysis results on disk.",
   "configuration.cache.directory.description": "Directory used for Classic ASP LSP disk analysis cache. Leave empty to use the OS temporary directory.",

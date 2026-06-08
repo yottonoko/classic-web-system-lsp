@@ -299,6 +299,17 @@ describe("VS Code extension package", () => {
         default: "active",
       }),
     );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.graph.initialViewMode"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["2d", "3d"],
+        default: "2d",
+      }),
+    );
+    expect(nls["configuration.graph.initialViewMode.description"]).toBeTruthy();
+    expect(nlsJa["configuration.graph.initialViewMode.description"]).toBeTruthy();
     expect(nls["configuration.graph.openLocation.description"]).toBeTruthy();
     expect(nlsJa["configuration.graph.openLocation.description"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
@@ -437,6 +448,8 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain('registerCommand("aspLsp.showFolderGraph"');
     expect(extensionSource).toContain('registerCommand("aspLsp.showWorkspaceGraph"');
     expect(extensionSource).toContain('get<GraphOpenLocation>("graph.openLocation", "active")');
+    expect(extensionSource).toContain("cancellable: true");
+    expect(extensionSource).toContain("isGraphCancellationError");
     expect(extensionSource).toContain("vscode.ViewColumn.Active");
     expect(extensionSource).toContain("vscode.ViewColumn.Beside");
     expect(extensionSource).toContain('"aspLsp.server.buildGraph"');

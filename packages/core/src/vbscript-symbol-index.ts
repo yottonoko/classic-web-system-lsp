@@ -855,9 +855,6 @@ function collectReferences(state: SymbolIndexBuildState): {
       memberName: role === "member" ? token.text : undefined,
     };
     references.push(reference);
-    if (role === "call" || role === "new" || role === "member") {
-      callSites.push(callSiteFromReference(lookup, reference, role));
-    }
     if (collectImplicitReferences && !resolved && expectedKinds) {
       const item = { reference, token, tokenIndex: index };
       deferredReferenceTokens.push(item);
@@ -894,6 +891,11 @@ function collectReferences(state: SymbolIndexBuildState): {
       implicitNames,
     );
     deferredExternalRefs.push(...deferredExternalRefsForReferences(state, deferredReferenceTokens));
+  }
+  for (const reference of references) {
+    if (reference.role === "call" || reference.role === "new" || reference.role === "member") {
+      callSites.push(callSiteFromReference(lookup, reference, reference.role));
+    }
   }
   return { references, callSites, deferredExternalRefs };
 }
@@ -957,7 +959,14 @@ function resolveReferencesWithImplicitDeclarations(
     ) {
       continue;
     }
-    const resolved = resolveDeclaration(state, lookup, token, reference.role, reference.baseName);
+    let resolved = resolveDeclaration(state, lookup, token, reference.role, reference.baseName);
+    if (!resolved && reference.role === "call") {
+      const valueResolved = resolveDeclaration(state, lookup, token, "read", reference.baseName);
+      if (valueResolved && declarationCanBeIndexed(valueResolved.kind)) {
+        reference.role = "read";
+        resolved = valueResolved;
+      }
+    }
     if (!resolved || isFunctionReturnAssignmentReference(state, tokenIndex, resolved)) {
       continue;
     }
@@ -1349,7 +1358,7 @@ function referenceRole(tokens: VbToken[], index: number): VbIndexedReferenceRole
 function isWriteTarget(tokens: VbToken[], index: number): boolean {
   const previous = previousInStatement(tokens, index);
   const next = nextInStatement(tokens, index + 1);
-  if (next?.text !== "=") {
+  if (next?.text !== "=" && !isIndexedWriteTarget(tokens, index)) {
     return false;
   }
   const previousLower = lower(previous);
@@ -1360,6 +1369,20 @@ function isWriteTarget(tokens: VbToken[], index: number): boolean {
     previousLower === "then" ||
     previousLower === "else"
   );
+}
+
+function isIndexedWriteTarget(tokens: VbToken[], index: number): boolean {
+  const endIndex = statementEndIndex(tokens, index);
+  const openIndex = nextTokenIndexInStatement(tokens, index + 1, endIndex);
+  if (tokens[openIndex]?.text !== "(") {
+    return false;
+  }
+  const closeIndex = matchingCloseParenIndex(tokens, openIndex, endIndex);
+  if (closeIndex === -1) {
+    return false;
+  }
+  const nextIndex = nextTokenIndexInStatement(tokens, closeIndex + 1, endIndex);
+  return tokens[nextIndex]?.text === "=";
 }
 
 function isFunctionReturnAssignmentReference(

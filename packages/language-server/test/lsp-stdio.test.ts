@@ -6690,6 +6690,15 @@ Sub Main(arg)
   End If
   localMain = arg
   localMain("value") = arg
+  bareImplicit = arg
+  For loopIndex = 1 To 2
+    loopImplicit = loopIndex
+  Next
+  For Each loopItem In dynamicItems
+    eachImplicit = loopItem
+  Next
+  implicitIndexed(0) = arg
+  Response.Write implicitIndexed(0)
   localMain = IncludedGlobal
   localMain = IncludedConst
   localMain = Err.Number
@@ -6697,6 +6706,7 @@ Sub Main(arg)
   Err.Clear
   Response.Write CStr(GlobalConst)
   Repository.Find arg
+  MissingName
   MissingName
 End Sub
 Class WithProperty
@@ -6731,6 +6741,7 @@ End Sub
         },
       };
       const allGraphSettings = {
+        initialViewMode: "3d",
         showRootNodes: true,
         showFileNodes: true,
         showFunctionNodes: true,
@@ -6821,6 +6832,7 @@ End Sub
           expect.objectContaining({
             hideSingleNodes: true,
             showOutgoingSelectionLinks: true,
+            initialViewMode: "2d",
             hiddenNodeCategories: expect.arrayContaining([
               "method",
               "methodFunction",
@@ -6850,6 +6862,12 @@ End Sub
         expect(hasNode(defaultGraph, (node) => node.label === "localItems")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "dynamicItems")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "redimItems")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "bareImplicit")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "loopIndex")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "loopItem")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "loopImplicit")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "eachImplicit")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "implicitIndexed")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "Preserve")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "arg")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "Response")).toBe(false);
@@ -6881,7 +6899,9 @@ End Sub
 
         configure(allGraphSettings);
         const visibleGraph = await buildGraph();
-        expect(visibleGraph.settings).toEqual(expect.objectContaining({ hideSingleNodes: false }));
+        expect(visibleGraph.settings).toEqual(
+          expect.objectContaining({ hideSingleNodes: false, initialViewMode: "3d" }),
+        );
         expectNode(visibleGraph, "GlobalValue", {
           declarationKind: "variable",
           bindingScope: "global",
@@ -6924,6 +6944,28 @@ End Sub
           typeName: "Array",
           arrayKind: "dynamic",
           arrayDimensions: ["2"],
+          origin: "source",
+        });
+        for (const label of [
+          "bareImplicit",
+          "loopIndex",
+          "loopItem",
+          "loopImplicit",
+          "eachImplicit",
+        ]) {
+          expectNode(visibleGraph, label, {
+            declarationKind: "variable",
+            bindingScope: "local",
+            origin: "source",
+          });
+        }
+        expectNode(visibleGraph, "bareImplicit", { implicit: true });
+        expectNode(visibleGraph, "loopImplicit", { implicit: true });
+        expectNode(visibleGraph, "eachImplicit", { implicit: true });
+        expectNode(visibleGraph, "implicitIndexed", {
+          declarationKind: "variable",
+          bindingScope: "local",
+          implicit: true,
           origin: "source",
         });
         expect(hasNode(visibleGraph, (node) => node.label === "Preserve")).toBe(false);
@@ -6989,10 +7031,20 @@ End Sub
         expect(hasDeclaresLink(visibleGraph, "localItems", "Main")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "dynamicItems", "Main")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "redimItems", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "bareImplicit", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "loopIndex", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "loopItem", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "loopImplicit", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "eachImplicit", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "implicitIndexed", "Main")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "WithProperty.Title", "WithProperty")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "repoObject", "default.asp")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "arg")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "localMain")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Main", "bareImplicit")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Main", "loopIndex")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Main", "loopItem")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Main", "implicitIndexed")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "ObjectMain", "repoObject")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Customer.Save", "localConst")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "IncludedGlobal")).toBe(true);
@@ -7023,6 +7075,22 @@ End Sub
               node.externalKind === "member",
           ),
         ).toBe(true);
+        {
+          const missingNodes =
+            visibleGraph.nodes?.filter(
+              (node) => node.kind === "vbUnresolved" && node.label === "MissingName",
+            ) ?? [];
+          const mainNode = nodeByLabel(visibleGraph, "Main");
+          expect(missingNodes).toHaveLength(1);
+          expect(
+            visibleGraph.links?.find(
+              (link) =>
+                link.kind === "unresolvedReference" &&
+                link.source === mainNode?.id &&
+                link.target === missingNodes[0]?.id,
+            ),
+          ).toEqual(expect.objectContaining({ count: 2 }));
+        }
 
         configure({ ...allGraphSettings, showIncludeLinks: false });
         {

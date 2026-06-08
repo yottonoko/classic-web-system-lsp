@@ -234,20 +234,46 @@ async function showGraph(
     return;
   }
   const title = extensionLocalizer()(graphTitleKey(scope));
-  const payload = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title },
-    async () =>
-      activeClient.sendRequest<AspGraphPayload>("workspace/executeCommand", {
-        command: buildGraphServerCommand,
-        arguments: [{ scope, uri }],
-      }),
-  );
+  let payload: AspGraphPayload;
+  try {
+    payload = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+      async (_progress, token) =>
+        activeClient.sendRequest<AspGraphPayload>(
+          "workspace/executeCommand",
+          {
+            command: buildGraphServerCommand,
+            arguments: [{ scope, uri }],
+          },
+          token,
+        ),
+    );
+  } catch (error) {
+    if (isGraphCancellationError(error)) {
+      return;
+    }
+    throw error;
+  }
   showAspGraphWebview(
     context,
     payload,
     graphPanelTitle(payload, activeDocument),
     graphViewColumn(),
   );
+}
+
+function isGraphCancellationError(error: unknown): boolean {
+  if (error instanceof vscode.CancellationError) {
+    return true;
+  }
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { code?: unknown; message?: unknown };
+  if (candidate.code === -32800) {
+    return true;
+  }
+  return typeof candidate.message === "string" && /\bcancell?ed\b/i.test(candidate.message);
 }
 
 function graphTitleKey(scope: GraphScope): ExtensionMessageKey {

@@ -166,6 +166,7 @@ export interface AspStyleExtractionSettings {
 }
 
 export interface AspGraphSettings {
+  initialViewMode?: "2d" | "3d";
   showRootNodes?: boolean;
   showFileNodes?: boolean;
   showFunctionNodes?: boolean;
