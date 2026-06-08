@@ -1,6 +1,12 @@
 import type { Range } from "vscode-languageserver-types";
-import type { AspInclude, AspRegion, AspSettings, VbToken } from "./types";
-import { extractAspIncludeRefs, normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
+import type { AspInclude, AspRegion, AspServerObject, AspSettings, VbToken } from "./types";
+import {
+  extractAspIncludeRefs,
+  normalizeScriptLanguage,
+  parseAttributes,
+  scanHtmlAndAsp,
+} from "./asp-scanner";
+import { offsetAt } from "./position";
 import { tokenizeVbscript } from "./vbscript-cst";
 import builtinCatalogData from "./vbscript-builtin-catalog.json";
 
@@ -53,6 +59,9 @@ export interface VbIndexedDeclaration {
   procedureKind?: VbIndexedProcedureKind;
   parameters?: VbIndexedParameter[];
   implicit?: boolean;
+  typeName?: string;
+  arrayKind?: "fixed" | "dynamic";
+  arrayDimensions?: string[];
 }
 
 export interface VbIndexedReference {
@@ -145,6 +154,13 @@ interface SymbolIndexBuildState {
 interface VbRegionIndexInput {
   regions: AspRegion[];
   includeRefs: AspInclude[];
+  serverObjects: AspServerObject[];
+}
+
+interface DeclarationNameEntry {
+  token: VbToken;
+  arrayKind?: "fixed" | "dynamic";
+  arrayDimensions?: string[];
 }
 
 interface DeclarationLookup {
@@ -245,6 +261,7 @@ export function extractVbscriptSymbolIndex(
     ],
     tokens,
   };
+  addServerObjectDeclarations(state, input.serverObjects);
   collectDeclarations(state);
   const referenceResult = resolvedOptions.includeReferences
     ? collectReferences(state)
@@ -353,7 +370,10 @@ function collectVbscriptIndexInput(text: string, settings: AspSettings): VbRegio
     .sort(
       (left, right) => left.contentStart - right.contentStart || left.contentEnd - right.contentEnd,
     );
-  return { regions, includeRefs: extractAspIncludeRefs(text) };
+  const serverObjects = /<\s*object\b/i.test(text)
+    ? scanHtmlAndAsp(text, [], settings).serverObjects
+    : [];
+  return { regions, includeRefs: extractAspIncludeRefs(text), serverObjects };
 }
 
 function directiveLanguageFromRegion(text: string, region: AspRegion): string | undefined {
@@ -480,6 +500,39 @@ function tokensForRegions(text: string, regions: AspRegion[]): VbToken[] {
   return tokens.filter((token) => token.kind !== "whitespace" && token.kind !== "comment");
 }
 
+function addServerObjectDeclarations(
+  state: SymbolIndexBuildState,
+  serverObjects: AspServerObject[],
+): void {
+  for (const serverObject of serverObjects) {
+    if (!isVbServerObjectIdentifier(serverObject.id)) {
+      continue;
+    }
+    const start = offsetAt(state.text, serverObject.idRange.start);
+    const end = offsetAt(state.text, serverObject.idRange.end);
+    const nameToken: VbToken = {
+      kind: "identifier",
+      start,
+      end,
+      text: serverObject.id,
+    };
+    addDeclaration(state, {
+      kind: "variable",
+      nameToken,
+      start,
+      end,
+      scopeId: globalScopeId,
+      bindingScope: "global",
+      sourceRange: serverObject.range,
+      typeName: serverObject.progId,
+    });
+  }
+}
+
+function isVbServerObjectIdentifier(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
 function collectDeclarations(state: SymbolIndexBuildState): void {
   const tokens = state.tokens;
   for (let index = 0; index < tokens.length; index += 1) {
@@ -538,7 +591,8 @@ function collectDeclarations(state: SymbolIndexBuildState): void {
       continue;
     }
     if (first === "dim" || first === "redim") {
-      addVariableDeclarations(state, "variable", token, index + 1, undefined);
+      const startIndex = first === "redim" && second === "preserve" ? index + 2 : index + 1;
+      addVariableDeclarations(state, "variable", token, startIndex, undefined);
       continue;
     }
     if (first === "const") {
@@ -659,17 +713,20 @@ function addVariableDeclarations(
   const kind: VbIndexedDeclarationKind = baseKind === "variable" && classScope ? "field" : baseKind;
   const bindingScope: VbBindingScope | undefined =
     kind === "field" || classScope ? undefined : procedureScope ? "local" : "global";
-  for (const nameToken of declarationNameTokens(state.tokens, startIndex)) {
+  for (const entry of declarationNameEntries(state.tokens, startIndex)) {
     addDeclaration(state, {
       kind,
-      nameToken,
+      nameToken: entry.token,
       start: startToken.start,
-      end: nameToken.end,
+      end: entry.token.end,
       scopeId: classScope?.id ?? procedureScope?.id ?? globalScopeId,
       parentId: classScope?.declarationId,
       memberOf: classScope?.name,
       visibility,
       bindingScope,
+      typeName: entry.arrayKind ? "Array" : undefined,
+      arrayKind: entry.arrayKind,
+      arrayDimensions: entry.arrayDimensions,
     });
   }
 }
@@ -689,6 +746,10 @@ function addDeclaration(
     procedureKind?: VbIndexedProcedureKind;
     parameters?: VbIndexedParameter[];
     implicit?: boolean;
+    sourceRange?: Range;
+    typeName?: string;
+    arrayKind?: "fixed" | "dynamic";
+    arrayDimensions?: string[];
   },
 ): VbIndexedDeclaration {
   const declaration: VbIndexedDeclaration = {
@@ -706,6 +767,10 @@ function addDeclaration(
     procedureKind: input.procedureKind,
     parameters: input.parameters,
     implicit: input.implicit,
+    sourceRange: input.sourceRange,
+    typeName: input.typeName,
+    arrayKind: input.arrayKind,
+    arrayDimensions: input.arrayDimensions,
   };
   state.declarations.push(declaration);
   state.declarationNameKeys.add(tokenKey(input.nameToken));
@@ -1056,8 +1121,8 @@ function collectParameterTokens(tokens: VbToken[], index: number): VbToken[] {
   return parameters;
 }
 
-function declarationNameTokens(tokens: VbToken[], startIndex: number): VbToken[] {
-  const names: VbToken[] = [];
+function declarationNameEntries(tokens: VbToken[], startIndex: number): DeclarationNameEntry[] {
+  const names: DeclarationNameEntry[] = [];
   const endIndex = statementEndIndex(tokens, startIndex - 1);
   let canReadIdentifier = true;
   let depth = 0;
@@ -1088,11 +1153,78 @@ function declarationNameTokens(tokens: VbToken[], startIndex: number): VbToken[]
       continue;
     }
     if (current.kind === "identifier" && canReadIdentifier) {
-      names.push(current);
+      names.push({
+        token: current,
+        ...arrayMetadataAfterName(tokens, index, endIndex),
+      });
       canReadIdentifier = false;
     }
   }
   return names;
+}
+
+function arrayMetadataAfterName(
+  tokens: VbToken[],
+  nameIndex: number,
+  endIndex: number,
+): Pick<DeclarationNameEntry, "arrayKind" | "arrayDimensions"> {
+  const openIndex = nextNonBoundaryIndex(tokens, nameIndex + 1);
+  if (openIndex === -1 || openIndex > endIndex || tokens[openIndex]?.text !== "(") {
+    return {};
+  }
+  const closeIndex = matchingCloseParenIndex(tokens, openIndex, endIndex);
+  if (closeIndex === -1) {
+    return {};
+  }
+  const dimensions = arrayDimensionTexts(tokens, openIndex + 1, closeIndex);
+  return {
+    arrayKind: dimensions.length === 0 ? "dynamic" : "fixed",
+    arrayDimensions: dimensions,
+  };
+}
+
+function matchingCloseParenIndex(tokens: VbToken[], openIndex: number, endIndex: number): number {
+  let depth = 0;
+  for (let index = openIndex; index <= endIndex; index += 1) {
+    const token = tokens[index];
+    if (token?.text === "(") {
+      depth += 1;
+    } else if (token?.text === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
+}
+
+function arrayDimensionTexts(tokens: VbToken[], startIndex: number, endIndex: number): string[] {
+  const dimensions: string[] = [];
+  let current = "";
+  let depth = 0;
+  for (let index = startIndex; index < endIndex; index += 1) {
+    const token = tokens[index];
+    if (!token || isBoundaryToken(token)) {
+      continue;
+    }
+    if (token.text === "," && depth === 0) {
+      dimensions.push(current.trim());
+      current = "";
+      continue;
+    }
+    if (token.text === "(") {
+      depth += 1;
+    } else if (token.text === ")") {
+      depth = Math.max(0, depth - 1);
+    }
+    current += token.text;
+  }
+  const trailing = current.trim();
+  if (trailing.length > 0 || dimensions.length > 0) {
+    dimensions.push(trailing);
+  }
+  return dimensions.filter((dimension) => dimension.length > 0);
 }
 
 function resolveDeclaration(

@@ -6481,6 +6481,9 @@ End Function
 Sub Main(arg)
   Dim localMain
   Const localMainConst = 4
+  Dim localItems(1)
+  Dim dynamicItems()
+  ReDim Preserve redimItems(2)
   If arg Then
     localMain = 1
   End If
@@ -6495,7 +6498,18 @@ Sub Main(arg)
   Repository.Find arg
   MissingName
 End Sub
-%>`,
+Class WithProperty
+  Public Property Get Title()
+    Title = "title"
+  End Property
+End Class
+%>
+<object runat="server" id="repoObject" progid="RepositoryType"></object>
+<script runat="server" language="VBScript">
+Sub ObjectMain()
+  repoObject.Find "value"
+End Sub
+</script>`,
         "utf8",
       );
       const server = new RpcServer();
@@ -6632,6 +6646,10 @@ End Sub
         expect(hasNode(defaultGraph, (node) => node.label === "localValue")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "localConst")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "localMain")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "localItems")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "dynamicItems")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "redimItems")).toBe(true);
+        expect(hasNode(defaultGraph, (node) => node.label === "Preserve")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "arg")).toBe(true);
         expect(hasNode(defaultGraph, (node) => node.label === "Response")).toBe(false);
         expect(hasNode(defaultGraph, (node) => node.label === "Response.Write")).toBe(false);
@@ -6683,10 +6701,47 @@ End Sub
           bindingScope: "local",
           origin: "source",
         });
+        expectNode(visibleGraph, "localItems", {
+          declarationKind: "variable",
+          bindingScope: "local",
+          typeName: "Array",
+          arrayKind: "fixed",
+          arrayDimensions: ["1"],
+          origin: "source",
+        });
+        expectNode(visibleGraph, "dynamicItems", {
+          declarationKind: "variable",
+          bindingScope: "local",
+          typeName: "Array",
+          arrayKind: "dynamic",
+          arrayDimensions: [],
+          origin: "source",
+        });
+        expectNode(visibleGraph, "redimItems", {
+          declarationKind: "variable",
+          bindingScope: "local",
+          typeName: "Array",
+          arrayKind: "fixed",
+          arrayDimensions: ["2"],
+          origin: "source",
+        });
+        expect(hasNode(visibleGraph, (node) => node.label === "Preserve")).toBe(false);
         expectNode(visibleGraph, "arg", { declarationKind: "parameter", bindingScope: "local" });
         expectNode(visibleGraph, "Customer", { declarationKind: "class", origin: "source" });
         expectNode(visibleGraph, "Render", { declarationKind: "function", origin: "source" });
         expectNode(visibleGraph, "Shared", { declarationKind: "sub", origin: "source" });
+        expectNode(visibleGraph, "WithProperty.Title", {
+          declarationKind: "property",
+          memberOf: "WithProperty",
+          procedureKind: "property",
+          origin: "source",
+        });
+        expectNode(visibleGraph, "repoObject", {
+          declarationKind: "variable",
+          bindingScope: "global",
+          typeName: "RepositoryType",
+          origin: "source",
+        });
         expectNode(visibleGraph, "Customer.Save", {
           declarationKind: "method",
           memberOf: "Customer",
@@ -6730,8 +6785,14 @@ End Sub
         expect(hasDeclaresLink(visibleGraph, "arg", "Main")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "localMain", "Main")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "localMainConst", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "localItems", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "dynamicItems", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "redimItems", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "WithProperty.Title", "WithProperty")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "repoObject", "default.asp")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "arg")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "localMain")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "ObjectMain", "repoObject")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Customer.Save", "localConst")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "IncludedGlobal")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "IncludedConst")).toBe(true);
@@ -6740,6 +6801,7 @@ End Sub
         expect(hasGraphLink(visibleGraph, "calls", "Main", "ErrObject.Clear")).toBe(false);
         expect(hasGraphLink(visibleGraph, "calls", "Main", "Response.Write")).toBe(false);
         expect(hasGraphLink(visibleGraph, "calls", "Main", "CStr")).toBe(false);
+        expect(hasGraphLink(visibleGraph, "calls", "ObjectMain", "RepositoryType.Find")).toBe(true);
         expect(hasNode(visibleGraph, (node) => node.origin === "builtin")).toBe(false);
         expect(hasNode(visibleGraph, (node) => node.label === "CStr")).toBe(false);
         expect(

@@ -714,6 +714,9 @@ interface AspGraphNode {
   bindingScope?: string;
   procedureKind?: string;
   implicit?: boolean;
+  typeName?: string;
+  arrayKind?: string;
+  arrayDimensions?: string[];
   group?: string;
   origin?: AspGraphNodeOrigin;
   externalKind?: AspGraphExternalKind;
@@ -9009,7 +9012,7 @@ function includeRefsSettingsKey(settings: AspSettings): string {
 
 function graphFileIndexSettingsKey(settings: AspSettings): string {
   return JSON.stringify({
-    scanner: "asp-graph-file-index-v6",
+    scanner: "asp-graph-file-index-v7",
     parse: parseSettingsIdentity(settings),
     legacyEncoding: settings.legacyEncoding,
     vbscript: vbProjectContextSettings(settings),
@@ -14638,8 +14641,19 @@ function resolveExternalGraphMember(
     return undefined;
   }
   const receiver = resolveExternalGraphSymbol(state, receiverName);
-  const ownerName = receiver?.typeName ?? receiver?.name ?? receiverName;
+  const ownerName =
+    receiver?.typeName ??
+    receiver?.name ??
+    sourceGraphReceiverTypeName(state, receiverName) ??
+    receiverName;
   return state.externalSymbols.memberByOwnerAndName.get(externalMemberKey(ownerName, memberName));
+}
+
+function sourceGraphReceiverTypeName(
+  state: AspGraphBuildState,
+  receiverName: string,
+): string | undefined {
+  return resolveSourceGraphDeclaration(state, receiverName, ["variable"])?.typeName;
 }
 
 function addExternalGraphNode(
@@ -14751,6 +14765,9 @@ async function addDocumentStructureToAspGraphAsync(
       bindingScope: declaration.bindingScope,
       procedureKind: declaration.procedureKind,
       implicit: declaration.implicit,
+      typeName: declaration.typeName,
+      arrayKind: declaration.arrayKind,
+      arrayDimensions: declaration.arrayDimensions,
       group: declaration.kind,
       origin: "source",
     });
