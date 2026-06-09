@@ -10,7 +10,7 @@
     { "include": "text.html.basic" }
   ],
   "injections": {
-    "source.css, source.js": {
+    "L:source.css, L:source.js": {
       "patterns": [
         { "include": "#asp-expression" },
         { "include": "#asp-directive" },

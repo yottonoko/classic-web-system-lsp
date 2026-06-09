@@ -326,6 +326,11 @@ function embeddedContentStateAt(
 ): EmbeddedContentState {
   let state: EmbeddedContentState = { kind: "normal" };
   for (let index = start; index < offset; index += 1) {
+    const aspEnd = embeddedAspRegionEndAt(text, index, offset, state);
+    if (aspEnd !== undefined) {
+      index = aspEnd - 1;
+      continue;
+    }
     state = advanceEmbeddedContentState(text, index, offset, embeddedLanguage, state);
   }
   return state;
@@ -340,9 +345,56 @@ function embeddedContentStateEnd(
 ): number {
   let current = state;
   for (let index = start; index < end; index += 1) {
+    const aspEnd = embeddedAspRegionEndAt(text, index, end, current);
+    if (aspEnd !== undefined) {
+      index = aspEnd - 1;
+      continue;
+    }
     current = advanceEmbeddedContentState(text, index, end, embeddedLanguage, current);
     if (current.kind === "normal") {
       return index + 1;
+    }
+  }
+  return end;
+}
+
+function embeddedAspRegionEndAt(
+  text: string,
+  start: number,
+  end: number,
+  state: EmbeddedContentState,
+): number | undefined {
+  if (!text.startsWith("<%", start)) {
+    return undefined;
+  }
+  const close = findAspClose(text, start + 2, embeddedAspCloseSearchEnd(text, start, end, state));
+  return close === -1 ? undefined : close + 2;
+}
+
+function embeddedAspCloseSearchEnd(
+  text: string,
+  start: number,
+  end: number,
+  state: EmbeddedContentState,
+): number {
+  if (state.kind === "lineComment") {
+    return lineEndOffset(text, start, end);
+  }
+  if (state.kind === "blockComment") {
+    const commentEnd = text.indexOf("*/", start + 2);
+    return commentEnd === -1 || commentEnd > end ? end : commentEnd;
+  }
+  if (state.kind === "string") {
+    return lineEndOffset(text, start, end);
+  }
+  return end;
+}
+
+function lineEndOffset(text: string, start: number, end: number): number {
+  for (let index = start; index < end; index += 1) {
+    const char = text[index];
+    if (char === "\n" || char === "\r") {
+      return index;
     }
   }
   return end;
@@ -476,6 +528,14 @@ function findTagEnd(text: string, offset: number): number {
   for (let index = offset; index < text.length; index += 1) {
     const char = text[index];
     if (quote) {
+      if (text.startsWith("<%", index)) {
+        const close = findAspClose(text, index + 2, text.length);
+        if (close === -1) {
+          return -1;
+        }
+        index = close + 1;
+        continue;
+      }
       if (char === quote) {
         quote = undefined;
       }
@@ -541,7 +601,15 @@ function parseAttributeSpans(text: string, start: number, end: number): Attribut
     const valueStart = quote ? cursor + 1 : cursor;
     if (quote) {
       cursor += 1;
-      while (cursor < end && text[cursor] !== quote) {
+      while (cursor < end) {
+        if (text.startsWith("<%", cursor)) {
+          const close = findAspClose(text, cursor + 2, end);
+          cursor = close === -1 ? end : close + 2;
+          continue;
+        }
+        if (text[cursor] === quote) {
+          break;
+        }
         cursor += 1;
       }
       const valueEnd = cursor;
@@ -552,6 +620,11 @@ function parseAttributeSpans(text: string, start: number, end: number): Attribut
       continue;
     }
     while (cursor < end) {
+      if (text.startsWith("<%", cursor)) {
+        const close = findAspClose(text, cursor + 2, end);
+        cursor = close === -1 ? end : close + 2;
+        continue;
+      }
       const code = text.charCodeAt(cursor);
       if (code === 62 || isHtmlWhitespaceCode(code)) {
         break;

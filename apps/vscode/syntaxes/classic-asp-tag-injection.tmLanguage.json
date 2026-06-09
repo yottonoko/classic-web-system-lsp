@@ -4,11 +4,53 @@
   "scopeName": "classic-asp.tag-injection",
   "injectionSelector": "L:text.html.classic-asp meta.tag, L:text.html.classic-asp meta.tag string.quoted",
   "patterns": [
+    { "include": "#style-attribute-double" },
+    { "include": "#style-attribute-single" },
     { "include": "#asp-expression" },
     { "include": "#asp-directive" },
     { "include": "#asp-block" }
   ],
   "repository": {
+    "style-attribute-double": {
+      "name": "meta.attribute.style.html",
+      "begin": "(?i)\\b(style)\\b\\s*(=)\\s*(\")",
+      "beginCaptures": {
+        "1": { "name": "entity.other.attribute-name.html" },
+        "2": { "name": "punctuation.separator.key-value.html" },
+        "3": { "name": "punctuation.definition.string.begin.html" }
+      },
+      "end": "\"",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.html" }
+      },
+      "contentName": "source.css.embedded.html",
+      "patterns": [
+        { "include": "#asp-expression" },
+        { "include": "#asp-directive" },
+        { "include": "#asp-block" },
+        { "include": "source.css" }
+      ]
+    },
+    "style-attribute-single": {
+      "name": "meta.attribute.style.html",
+      "begin": "(?i)\\b(style)\\b\\s*(=)\\s*(')",
+      "beginCaptures": {
+        "1": { "name": "entity.other.attribute-name.html" },
+        "2": { "name": "punctuation.separator.key-value.html" },
+        "3": { "name": "punctuation.definition.string.begin.html" }
+      },
+      "end": "'",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.html" }
+      },
+      "contentName": "source.css.embedded.html",
+      "patterns": [
+        { "include": "#asp-expression" },
+        { "include": "#asp-directive" },
+        { "include": "#asp-block" },
+        { "include": "source.css" }
+      ]
+    },
     "asp-expression": {
       "name": "source.vbscript.embedded.asp.expression",
       "begin": "<%=",

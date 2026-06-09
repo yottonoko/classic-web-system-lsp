@@ -170,6 +170,59 @@ Server.HTMLEe▮
       }
     });
 
+    it("keeps quoted ASP islands from leaking into embedded diagnostics", async () => {
+      const source = [
+        '<div title="<%= "double title" %>" style="content: \'<%= "css title" %>\'; color: #fff"></div>',
+        "<style>",
+        '.banner::before { content: "<%= "double css" %>"; }',
+        ".banner::after { content: '<% 'single css %>'; }",
+        "</style>",
+        "<script>",
+        'const doubleQuoted = "<%= "double js" %>";',
+        "const singleQuoted = '<% 'single js %>';",
+        "const templated = `<% `template js` %>`;",
+        "document.querySelector('.banner');",
+        "</script>",
+      ].join("\n");
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { checkJs: true, diagnostics: { debounceMs: 0 } } },
+        });
+
+        const uri = "file:///tmp/quoted-asp-island-diagnostics.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const diagnostics = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        const serialized = JSON.stringify(diagnostics);
+        expect(serialized).not.toContain("Unterminated string literal");
+        expect(serialized).not.toContain("Declaration or statement expected");
+        expect(serialized).not.toContain("asp-lsp-css");
+        expect(serialized).not.toContain("asp-lsp-typescript");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns configurable VBScript syntax snippet completions over JSON-RPC", async () => {
       const server = new RpcServer();
       try {

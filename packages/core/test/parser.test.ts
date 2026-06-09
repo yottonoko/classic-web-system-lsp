@@ -762,6 +762,47 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(1);
   });
 
+  it("masks ASP islands that contain host quote characters inside attributes and embedded strings", () => {
+    const source = [
+      '<div title="<%= "double title" %>" data-single=\'<% \'single title %>\' style="content: \'<%= "css title" %>\'; color: #fff"></div>',
+      "<style>",
+      '.banner::before { content: "<%= "double css" %>"; }',
+      ".banner::after { content: '<% 'single css %>'; }",
+      "</style>",
+      "<script>",
+      'const doubleQuoted = "<%= "double js" %>";',
+      "const singleQuoted = '<% 'single js %>';",
+      "const templated = `<% `template js` %>`;",
+      "const afterAsp = 1;",
+      "</script>",
+    ].join("\n");
+    const parsed = parseAspDocument("file:///site/quoted-asp-islands.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    const html = docs.get("html");
+    const css = docs.get("css");
+    const javascript = docs.get("javascript");
+
+    expect(parsed.diagnostics).toHaveLength(0);
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(4);
+    expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(4);
+    expect(parsed.regions.filter((region) => region.kind === "style-attribute")).toHaveLength(1);
+
+    expect(html?.text).not.toContain("double title");
+    expect(html?.text).not.toContain("single title");
+    expect(html?.sourceMap.toVirtualOffset(source.indexOf("data-single"))).toBeDefined();
+    expect(css?.text).toContain("color: #fff");
+    expect(css?.text).toContain(".banner::before");
+    expect(css?.text).not.toContain("css title");
+    expect(css?.text).not.toContain("double css");
+    expect(css?.text).not.toContain("single css");
+    expect(javascript?.text).toContain("const afterAsp = 1;");
+    expect(javascript?.text).not.toContain("double js");
+    expect(javascript?.text).not.toContain("single js");
+    expect(javascript?.text).not.toContain("template js");
+    expect(javascript?.sourceMap.toVirtualOffset(source.indexOf("double js"))).toBeUndefined();
+    expect(javascript?.sourceMap.toVirtualOffset(source.indexOf("afterAsp"))).toBeDefined();
+  });
+
   it("extracts inline style attributes as CSS virtual documents", () => {
     const source = `<div style="color: red; display: block"></div>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);

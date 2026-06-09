@@ -87,8 +87,9 @@ describe("VS Code extension package", () => {
     const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
 
     expect(graphWebviewSource).toContain("function initialGraphNodePosition");
-    expect(graphWebviewSource).toContain("captureGraphViewSpan(");
-    expect(graphWebviewSource).toContain("applyPendingViewState(");
+    expect(graphWebviewSource).toContain("forceFitForModeRef");
+    expect(graphWebviewSource).toContain("graph2dCoordsFromScreen(");
+    expect(graphWebviewSource).toContain("graph3dCoordsFromScreen(");
     expect(graphWebviewSource).toContain("configureGraphForces(");
     expect(graphWebviewSource).toContain("graphNodeChargeStrength");
     expect(graphWebviewSource).toContain("d3VelocityDecay={graphForceVelocityDecay}");
@@ -776,7 +777,12 @@ describe("VS Code extension package", () => {
       patterns?: Array<{ include?: string }>;
       repository?: Record<
         string,
-        { begin?: string; end?: string; patterns?: Array<{ include?: string }> }
+        {
+          begin?: string;
+          contentName?: string;
+          end?: string;
+          patterns?: Array<{ include?: string }>;
+        }
       >;
     };
     expect(classicAspGrammar.patterns?.some((pattern) => pattern.include === "#asp-include")).toBe(
@@ -808,8 +814,19 @@ describe("VS Code extension package", () => {
     );
     expect(classicAspTagInjection.patterns).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({ include: "#style-attribute-double" }),
+        expect.objectContaining({ include: "#style-attribute-single" }),
         expect.objectContaining({ include: "#asp-expression" }),
         expect.objectContaining({ include: "#asp-block" }),
+      ]),
+    );
+    expect(classicAspTagInjection.repository?.["style-attribute-double"]?.contentName).toBe(
+      "source.css.embedded.html",
+    );
+    expect(classicAspTagInjection.repository?.["style-attribute-double"]?.patterns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ include: "#asp-expression" }),
+        expect.objectContaining({ include: "source.css" }),
       ]),
     );
     expect(classicAspTagInjection.repository?.["asp-expression"]?.end).toBe("%>");
@@ -820,7 +837,10 @@ describe("VS Code extension package", () => {
         expect.objectContaining({ include: "source.vbscript" }),
       ]),
     );
-    expect(classicAspGrammar.injections?.["source.css, source.js"]?.patterns).toEqual(
+    const embeddedInjection = Object.entries(classicAspGrammar.injections ?? {}).find(
+      ([selector]) => selector.includes("source.css") && selector.includes("source.js"),
+    )?.[1];
+    expect(embeddedInjection?.patterns).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ include: "#asp-expression" }),
         expect.objectContaining({ include: "#asp-block" }),
@@ -1005,6 +1025,66 @@ console.log(a);
         token?.scopes.findIndex((scope) => scope.includes("string.quoted.double.html")) ?? -1;
       expect(vbscriptIndex).toBeGreaterThan(stringIndex);
     }
+  });
+
+  it("tokenizes quoted ASP islands in embedded strings and style attributes as ASP", async () => {
+    const grammar = await loadClassicAspTextMateGrammar();
+    const source = [
+      '<div style="color: <%= "styleColor" %>; background: #fff" title="<%= "titleText" %>"></div>',
+      "<style>",
+      '.banner::before { content: "<%= "cssDoubleText" %>"; }',
+      ".banner::after { content: '<% 'cssSingleText %>'; }",
+      "</style>",
+      "<script>",
+      'const jsDouble = "<%= "jsDoubleText" %>";',
+      "const jsSingle = '<% 'jsSingleText %>';",
+      "const jsTemplate = `<% `jsTemplateText` %>`;",
+      "const afterTemplate = 1;",
+      "</script>",
+    ].join("\n");
+    const lines = source.split("\n");
+
+    const styleProperty = tokenAtText(grammar, lines, 0, "color");
+    expect(styleProperty?.scopes).toContain("source.css.embedded.html");
+    expect(styleProperty?.scopes).toContain("support.type.property-name.css");
+    expect(styleProperty?.scopes.some((scope) => scope.includes("string.quoted.double.html"))).toBe(
+      false,
+    );
+
+    for (const { line, needle } of [
+      { line: 0, needle: "styleColor" },
+      { line: 0, needle: "titleText" },
+      { line: 2, needle: "cssDoubleText" },
+      { line: 3, needle: "cssSingleText" },
+      { line: 6, needle: "jsDoubleText" },
+      { line: 7, needle: "jsSingleText" },
+      { line: 8, needle: "jsTemplateText" },
+    ]) {
+      const token = tokenAtText(grammar, lines, line, needle);
+      expect(
+        token?.scopes.some((scope) => scope.includes("source.vbscript.embedded.asp")),
+        needle,
+      ).toBe(true);
+      const vbscriptIndex =
+        token?.scopes.findIndex((scope) => scope.includes("source.vbscript.embedded.asp")) ?? -1;
+      const hostStringIndex =
+        token?.scopes.findIndex(
+          (scope) =>
+            scope.includes("string.quoted.double.html") ||
+            scope.includes("string.quoted.double.css") ||
+            scope.includes("string.quoted.single.css") ||
+            scope.includes("string.quoted.double.js") ||
+            scope.includes("string.quoted.single.js") ||
+            scope.includes("string.template.js"),
+        ) ?? -1;
+      expect(vbscriptIndex, needle).toBeGreaterThan(hostStringIndex);
+    }
+
+    const afterTemplate = tokenAtText(grammar, lines, 9, "afterTemplate");
+    expect(afterTemplate?.scopes).toContain("source.js");
+    expect(
+      afterTemplate?.scopes.some((scope) => scope.includes("source.vbscript.embedded.asp")),
+    ).toBe(false);
   });
 
   it("describes the COM type catalog schema for settings UI", () => {
@@ -1286,6 +1366,16 @@ function minimalCssGrammar() {
     name: "source.css",
     patterns: [
       {
+        begin: '"',
+        end: '"',
+        name: "string.quoted.double.css",
+      },
+      {
+        begin: "'",
+        end: "'",
+        name: "string.quoted.single.css",
+      },
+      {
         begin: "/\\*",
         end: "\\*/",
         name: "comment.block.css",
@@ -1302,6 +1392,21 @@ function minimalJavaScriptGrammar() {
     scopeName: "source.js",
     name: "source.js",
     patterns: [
+      {
+        begin: '"',
+        end: '"',
+        name: "string.quoted.double.js",
+      },
+      {
+        begin: "'",
+        end: "'",
+        name: "string.quoted.single.js",
+      },
+      {
+        begin: "`",
+        end: "`",
+        name: "string.template.js",
+      },
       {
         begin: "//",
         end: "$",
