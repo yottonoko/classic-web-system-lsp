@@ -11,7 +11,9 @@ import {
   type DiskAnalysisBuilderState,
   type DiskIncludeRefsCacheEntry,
   type DiskAnalysisSourceMetadata,
+  type DiskParsedDocumentCacheEntry,
   type DiskSummaryCacheEntry,
+  type DiskWorkspaceIndexedDocument,
   type DiskVbSymbolIndexCacheEntry,
 } from "./disk-analysis-cache";
 import type {
@@ -25,6 +27,7 @@ import type {
 } from "./vb-diagnostics-protocol";
 import type {
   VbReferencesWorkerCandidate,
+  VbReferencesWorkerCacheOptions,
   VbReferencesWorkerOpenDocument,
   VbReferencesWorkerResponse,
   VbReferencesWorkerTargetSymbol,
@@ -244,6 +247,7 @@ let workspaceRoots: string[] = [];
 let clientLocale = "en";
 let workspaceIndexDirty = true;
 let workspaceIndexTruncated = false;
+let workspaceIndexRestoreAllowed = true;
 let vbReferencesWorkerPool: VbReferencesWorkerPool | undefined;
 let vbReferencesWorkerRequestId = 0;
 let jsLanguageServiceCacheTick = 0;
@@ -257,6 +261,7 @@ let workspaceGeneration = 0;
 let includeResolutionGeneration = 0;
 let jsProjectGeneration = 0;
 let diskAnalysisCache = createDiskAnalysisCache(globalSettings);
+const sourceManifest = new Map<string, DiskAnalysisSourceMetadata>();
 let lastForegroundActivityAt = 0;
 let projectUpdateTimer: ReturnType<typeof setTimeout> | undefined;
 let openFileProjectMaintenanceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1268,6 +1273,30 @@ class IncludeDocumentLoader {
     let promise: Promise<IncludeDocumentCacheEntry | undefined> | undefined;
     promise = (async () => {
       try {
+        if (diskBacked) {
+          const cachedParsed = await diskAnalysisCache
+            .readParsedDocument({ source, settingsKey: includeSummarySettingsKey(settings) })
+            .catch((error) => {
+              logDiskAnalysisCacheError("diskParsed.read", error);
+              return undefined;
+            });
+          if (cachedParsed) {
+            const entry = includeDocumentCacheEntryFromDisk(normalized, key, cachedParsed);
+            if (this.generation(normalized) === generation) {
+              this.cache.set(normalized, entry);
+              this.summaryCache.set(normalized, entry);
+              this.includeRefsCache.set(
+                normalized,
+                includeRefsCacheEntryFromSummary(entry, settings),
+              );
+              rememberIncludePublicSummary(entry, settings);
+              rememberSourceMetadata(entry.source);
+              logDebugSummary(settings, `[asp-lsp] diskParsed.hit: ${entry.uri}`);
+            }
+            return entry;
+          }
+          logDebugSummary(settings, `[asp-lsp] diskParsed.miss: ${pathToFileUri(normalized)}`);
+        }
         const nextText = text ?? (await readTextFileAsync(normalized, settings.legacyEncoding));
         const entry = await createIncludeDocumentCacheEntryAsync(
           normalized,
@@ -1282,9 +1311,7 @@ class IncludeDocumentLoader {
           this.includeRefsCache.set(normalized, includeRefsCacheEntryFromSummary(entry, settings));
           rememberIncludePublicSummary(entry, settings);
           if (diskBacked) {
-            void diskAnalysisCache
-              .writeSummary(diskSummaryCacheEntry(entry, settings))
-              .catch((error) => logDiskAnalysisCacheError("diskSummary.write", error));
+            void writeIncludeDocumentDiskEntries(entry, settings);
           }
         }
         return entry;
@@ -1349,6 +1376,7 @@ class IncludeDocumentLoader {
                 includeRefsCacheEntryFromSummary(entry, settings),
               );
               rememberIncludePublicSummary(entry, settings);
+              rememberSourceMetadata(entry.source);
               logDebugSummary(settings, `[asp-lsp] diskSummary.hit: ${entry.uri}`);
             }
             return entry;
@@ -1372,8 +1400,7 @@ class IncludeDocumentLoader {
           this.includeRefsCache.set(normalized, includeRefsCacheEntryFromSummary(entry, settings));
           rememberIncludePublicSummary(entry, settings);
           if (diskBacked) {
-            await diskAnalysisCache.writeSummary(diskSummaryCacheEntry(entry, settings));
-            logDebugSummary(settings, `[asp-lsp] diskSummary.write: ${entry.uri}`);
+            await writeIncludeDocumentDiskEntries(entry, settings);
           }
         }
         return entry;
@@ -1435,6 +1462,7 @@ class IncludeDocumentLoader {
             const entry = includeRefsCacheEntryFromDisk(normalized, key, cachedRefs);
             if (this.generation(normalized) === generation) {
               this.includeRefsCache.set(normalized, entry);
+              rememberSourceMetadata(entry.source);
               logDebugSummary(settings, `[asp-lsp] diskIncludeRefs.hit: ${entry.uri}`);
             }
             return entry;
@@ -1684,6 +1712,9 @@ documents.onDidChangeContent((event) => {
 documents.onDidSave(async (event) => {
   noteForegroundActivity();
   await indexWorkspaceFileAsync(uriToFileName(event.document.uri), globalSettings);
+  if (!workspaceIndexDirty && cacheFreshness(globalSettings) === "watch") {
+    await writeWorkspaceIndexToDiskAsync(globalSettings);
+  }
   invalidateCachedAnalysisForUris(new Set([event.document.uri]), "document.save");
   scheduleProjectUpdate("document.save");
   validate(event.document);
@@ -1750,6 +1781,7 @@ connection.onNotification(
 );
 
 connection.onDidChangeConfiguration((change) => {
+  const previousGlobalSettings = globalSettings;
   const previousSettingsByUri = currentOpenDocumentSettingsByUri();
   const incoming = readSettingsFromChange(change.settings);
   if (incoming) {
@@ -1758,6 +1790,7 @@ connection.onDidChangeConfiguration((change) => {
   void configureDiskAnalysisCacheAsync().catch((error) =>
     logDiskAnalysisCacheError("diskCache.configure", error),
   );
+  clearCacheSettingProcessStateIfChanged(previousGlobalSettings, globalSettings);
   settingsByUri.clear();
   const impact = settingsInvalidationImpact(previousSettingsByUri);
   applySettingsInvalidation(impact);
@@ -1782,6 +1815,7 @@ connection.onDidChangeWatchedFiles(async (change) => {
       aspChanges.push({ fileName, type: file.type });
       if (file.type === FileChangeType.Deleted) {
         workspaceIndex.delete(fileName);
+        forgetSourceMetadata(fileName);
       } else {
         await indexWorkspaceFileAsync(fileName, globalSettings);
       }
@@ -1810,6 +1844,9 @@ connection.onDidChangeWatchedFiles(async (change) => {
     includeCycleCache.clear();
     if (aspChanges.some((change) => change.type !== FileChangeType.Changed)) {
       invalidateIncludeResolution("watchedAsp.structureChanged");
+    }
+    if (!workspaceIndexDirty && cacheFreshness(globalSettings) === "watch") {
+      await writeWorkspaceIndexToDiskAsync(globalSettings);
     }
   }
   if (aspChanged || scriptChanged) {
@@ -3633,7 +3670,16 @@ async function fileExistsAsync(fileName: string): Promise<boolean> {
   return Boolean(stat?.isFile());
 }
 
-async function fileSizeAsync(fileName: string): Promise<number | undefined> {
+async function fileSizeAsync(
+  fileName: string,
+  settings: AspSettings = globalSettings,
+): Promise<number | undefined> {
+  if (cacheFreshness(settings) === "watch") {
+    const source = sourceMetadataFromManifest(fileName);
+    if (source) {
+      return source.size;
+    }
+  }
   const stat = await fs.promises.stat(fileName).catch(() => undefined);
   return stat?.isFile() ? stat.size : undefined;
 }
@@ -3798,6 +3844,25 @@ function createDiskAnalysisCache(settings: AspSettings): DiskAnalysisCache {
     namespace: diskAnalysisNamespace(),
     toolVersion: languageServerVersion,
   });
+}
+
+function cacheFreshness(settings: AspSettings): "metadata" | "watch" {
+  return settings.cache?.freshness === "watch" ? "watch" : "metadata";
+}
+
+function rememberSourceMetadata(source: DiskAnalysisSourceMetadata): void {
+  sourceManifest.set(normalizeFileName(source.fileName), {
+    ...source,
+    fileName: normalizeFileName(source.fileName),
+  });
+}
+
+function sourceMetadataFromManifest(fileName: string): DiskAnalysisSourceMetadata | undefined {
+  return sourceManifest.get(normalizeFileName(fileName));
+}
+
+function forgetSourceMetadata(fileName: string): void {
+  sourceManifest.delete(normalizeFileName(fileName));
 }
 
 async function configureDiskAnalysisCacheAsync(): Promise<void> {
@@ -8319,6 +8384,26 @@ function vbReferencesWorkerOpenDocumentsKey(
   );
 }
 
+function vbReferencesWorkerCacheOptions(settings: AspSettings): VbReferencesWorkerCacheOptions {
+  return {
+    disk: {
+      enabled: settings.cache?.enabled !== false,
+      directory: settings.cache?.directory,
+      ttlHours: settings.cache?.ttlHours,
+      maxSizeMb: settings.cache?.maxSizeMb,
+      namespace: diskAnalysisNamespace(),
+      toolVersion: languageServerVersion,
+    },
+    freshness: cacheFreshness(settings),
+    sourceManifest: [...workspaceIndex.values()].map((entry) => ({
+      uri: entry.uri,
+      fileName: normalizeFileName(entry.fileName),
+      mtimeMs: entry.mtimeMs,
+      size: entry.size,
+    })),
+  };
+}
+
 async function workspaceVbReferenceWorkerResponse(
   candidate: VbReferencesWorkerCandidate,
   target: VbReferencesWorkerTargetSymbol,
@@ -8354,6 +8439,7 @@ async function workspaceVbReferenceWorkerResponse(
     settings,
     workspaceRoots,
     openDocuments,
+    cache: vbReferencesWorkerCacheOptions(settings),
     options: workspaceVbReferenceWorkerOptions(options),
     limits: {
       ...vbProjectContextLimits(settings),
@@ -8369,7 +8455,7 @@ async function workspaceVbReferenceWorkerResponse(
         !sameVbReferencesWorkerCandidate(candidate, response.candidate) ||
         vbReferencesWorkerOpenDocumentsKey(vbReferencesWorkerOpenDocuments()) !==
           openDocumentsKey ||
-        !(await isCurrentVbReferencesWorkerCandidate(candidate))
+        !(await isCurrentVbReferencesWorkerCandidate(candidate, settings))
       ) {
         logDebugSummary(settings, `[asp-lsp] vb.references.worker.stale: ${candidate.uri}`);
         return { ...response, references: [] };
@@ -8384,7 +8470,7 @@ async function workspaceVbReferenceWorkerResponse(
       } else {
         logDebugSummary(
           settings,
-          `[asp-lsp] vb.references.worker.complete: ${candidate.uri}, references=${response.references?.length ?? 0}, fallback=${response.fallbackReasons?.join("|") ?? ""}`,
+          `[asp-lsp] vb.references.worker.complete: ${candidate.uri}, references=${response.references?.length ?? 0}, fallback=${response.fallbackReasons?.join("|") ?? ""}, cacheHits=${response.cacheHits ?? 0}`,
         );
       }
       return response;
@@ -8444,6 +8530,7 @@ async function workspaceVbReferenceWorkerBatchResponse(
     settings,
     workspaceRoots,
     openDocuments,
+    cache: vbReferencesWorkerCacheOptions(settings),
     options: workspaceVbReferenceWorkerOptions(options),
     limits: {
       ...vbProjectContextLimits(settings),
@@ -8459,7 +8546,7 @@ async function workspaceVbReferenceWorkerBatchResponse(
         !sameVbReferencesWorkerCandidate(candidate, response.candidate) ||
         vbReferencesWorkerOpenDocumentsKey(vbReferencesWorkerOpenDocuments()) !==
           openDocumentsKey ||
-        !(await isCurrentVbReferencesWorkerCandidate(candidate))
+        !(await isCurrentVbReferencesWorkerCandidate(candidate, settings))
       ) {
         logDebugSummary(settings, `[asp-lsp] vb.references.worker.stale: ${candidate.uri}`);
         return { ...response, references: [], referencesByTarget: {} };
@@ -8487,7 +8574,7 @@ async function workspaceVbReferenceWorkerBatchResponse(
       } else {
         logDebugSummary(
           settings,
-          `[asp-lsp] vb.references.worker.batch.complete: ${candidate.uri}, symbols=${targets.length}, fallback=${response.fallbackReasons?.join("|") ?? ""}`,
+          `[asp-lsp] vb.references.worker.batch.complete: ${candidate.uri}, symbols=${targets.length}, fallback=${response.fallbackReasons?.join("|") ?? ""}, cacheHits=${response.cacheHits ?? 0}`,
         );
       }
       return response;
@@ -8588,6 +8675,7 @@ function sameVbReferencesWorkerCandidate(
 
 async function isCurrentVbReferencesWorkerCandidate(
   candidate: VbReferencesWorkerCandidate,
+  settings: AspSettings,
 ): Promise<boolean> {
   const document = documents.get(candidate.uri);
   if (document) {
@@ -8595,6 +8683,16 @@ async function isCurrentVbReferencesWorkerCandidate(
       candidate.source.openVersion === document.version &&
       candidate.source.size === document.getText().length
     );
+  }
+  if (cacheFreshness(settings) === "watch") {
+    const source = sourceMetadataFromManifest(candidate.fileName);
+    if (source) {
+      return (
+        candidate.source.openVersion === undefined &&
+        candidate.source.mtimeMs === source.mtimeMs &&
+        candidate.source.size === source.size
+      );
+    }
   }
   const stat = await fs.promises.stat(candidate.fileName).catch(() => undefined);
   return Boolean(
@@ -8878,7 +8976,7 @@ async function collectIncludeDependencyGraphForCachedAsync(
         noteTruncated(`documents>${limits.maxDocuments}`);
         continue;
       }
-      const size = await fileSizeAsync(resolved.fileName);
+      const size = await fileSizeAsync(resolved.fileName, settings);
       if (size !== undefined && textLength + size > limits.maxTextLength) {
         noteTruncated(`text>${limits.maxTextLength}`);
         continue;
@@ -9318,7 +9416,7 @@ async function collectFullVbProjectDocumentsForWorkspaceOperationAsync(
         noteTruncated(`documents>${limits.maxDocuments}`);
         continue;
       }
-      const size = await fileSizeAsync(resolved.fileName);
+      const size = await fileSizeAsync(resolved.fileName, settings);
       if (size !== undefined && textLength + size > limits.maxTextLength) {
         noteTruncated(`text>${limits.maxTextLength}`);
         continue;
@@ -9412,7 +9510,7 @@ async function collectVbProjectSummaryGraphAsync(
         noteTruncated(`documents>${limits.maxDocuments}`);
         continue;
       }
-      const size = await fileSizeAsync(resolved.fileName);
+      const size = await fileSizeAsync(resolved.fileName, settings);
       if (size !== undefined && textLength + size > limits.maxTextLength) {
         noteTruncated(`text>${limits.maxTextLength}`);
         continue;
@@ -9603,18 +9701,19 @@ async function includeDocumentSourceIdentityAsync(
   fileName: string,
   settings: AspSettings,
 ): Promise<IncludeDocumentSourceIdentity | undefined> {
-  const uri = pathToFileUri(fileName);
+  const normalized = normalizeFileName(fileName);
+  const uri = pathToFileUri(normalized);
   const openDocument = documents.get(uri);
   if (openDocument) {
     const text = openDocument.getText();
     const source = {
-      fileName,
+      fileName: normalized,
       mtimeMs: openDocument.version,
       size: text.length,
     };
     return {
       key: JSON.stringify({
-        fileName,
+        fileName: normalized,
         openVersion: openDocument.version,
         text: textFingerprint(text),
         settings: includeDocumentSettingsIdentity(settings),
@@ -9624,15 +9723,31 @@ async function includeDocumentSourceIdentityAsync(
       diskBacked: false,
     };
   }
-  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  if (cacheFreshness(settings) === "watch") {
+    const source = sourceMetadataFromManifest(normalized);
+    if (source) {
+      logDebugSummary(settings, `[asp-lsp] sourceIdentity.watch.hit: ${uri}`);
+      return {
+        key: JSON.stringify({
+          ...source,
+          settings: includeDocumentSettingsIdentity(settings),
+        }),
+        source,
+        diskBacked: true,
+      };
+    }
+  }
+  const stat = await fs.promises.stat(normalized).catch(() => undefined);
   if (!stat?.isFile()) {
+    forgetSourceMetadata(normalized);
     return undefined;
   }
   const source = {
-    fileName,
+    fileName: normalized,
     mtimeMs: stat.mtimeMs,
     size: stat.size,
   };
+  rememberSourceMetadata(source);
   return {
     key: JSON.stringify({
       ...source,
@@ -9702,6 +9817,26 @@ function includeSummaryCacheEntryFromDisk(
   };
 }
 
+function includeDocumentCacheEntryFromDisk(
+  fileName: string,
+  key: string,
+  entry: DiskParsedDocumentCacheEntry,
+): IncludeDocumentCacheEntry {
+  const publicSignature =
+    (entry.publicSignature as FilePublicSignature | undefined) ??
+    filePublicSignature(entry.summary);
+  return {
+    key,
+    fileName,
+    uri: entry.parsed.uri,
+    source: entry.source,
+    parsed: entry.parsed,
+    summary: entry.summary,
+    publicFingerprint: publicSignature.fingerprint,
+    publicSignature,
+  };
+}
+
 function includeRefsCacheEntryFromDisk(
   fileName: string,
   key: string,
@@ -9765,6 +9900,19 @@ function diskSummaryCacheEntry(
   };
 }
 
+function diskParsedDocumentCacheEntry(
+  entry: IncludeDocumentCacheEntry,
+  settings: AspSettings,
+): DiskParsedDocumentCacheEntry {
+  return {
+    source: entry.source,
+    settingsKey: includeSummarySettingsKey(settings),
+    parsed: entry.parsed,
+    summary: entry.summary,
+    publicSignature: entry.publicSignature,
+  };
+}
+
 function diskIncludeRefsCacheEntry(
   entry: IncludeRefsCacheEntry,
   settings: AspSettings,
@@ -9775,6 +9923,27 @@ function diskIncludeRefsCacheEntry(
     includeRefs: entry.includeRefs,
     fingerprint: entry.fingerprint,
   };
+}
+
+async function writeIncludeDocumentDiskEntries(
+  entry: IncludeDocumentCacheEntry,
+  settings: AspSettings,
+): Promise<void> {
+  if (!diskAnalysisCache.enabled) {
+    return;
+  }
+  const includeRefsEntry = includeRefsCacheEntryFromSummary(entry, settings);
+  await Promise.all([
+    diskAnalysisCache
+      .writeParsedDocument(diskParsedDocumentCacheEntry(entry, settings))
+      .then(() => logDebugSummary(settings, `[asp-lsp] diskParsed.write: ${entry.uri}`)),
+    diskAnalysisCache
+      .writeSummary(diskSummaryCacheEntry(entry, settings))
+      .then(() => logDebugSummary(settings, `[asp-lsp] diskSummary.write: ${entry.uri}`)),
+    diskAnalysisCache
+      .writeIncludeRefs(diskIncludeRefsCacheEntry(includeRefsEntry, settings))
+      .then(() => logDebugSummary(settings, `[asp-lsp] diskIncludeRefs.write: ${entry.uri}`)),
+  ]).catch((error) => logDiskAnalysisCacheError("diskParsed.write", error));
 }
 
 function diskVbSymbolIndexCacheEntry(
@@ -10132,7 +10301,7 @@ async function findIncludeCycleAsync(
       noteTruncated(`documents>${limits.maxDocuments}`);
       return undefined;
     }
-    const size = await fileSizeAsync(normalized);
+    const size = await fileSizeAsync(normalized, settings);
     if (size !== undefined && totalTextLength + size > limits.maxTextLength) {
       noteTruncated(`text>${limits.maxTextLength}`);
       return undefined;
@@ -10537,11 +10706,14 @@ async function cachedFromIndexedAsync(
   entry: WorkspaceIndexedDocument,
   settings: AspSettings,
 ): Promise<CachedDocument> {
-  const parsed = await parseAspDocumentAsync(
-    entry.uri,
-    await readTextFileAsync(entry.fileName, settings.legacyEncoding),
-    settings,
-  );
+  const includeEntry = await includeDocumentLoader.readAsync(entry.fileName, settings);
+  const parsed =
+    includeEntry?.parsed ??
+    (await parseAspDocumentAsync(
+      entry.uri,
+      await readTextFileAsync(entry.fileName, settings.legacyEncoding),
+      settings,
+    ));
   return createCachedDocument(
     TextDocument.create(entry.uri, "classic-asp", 0, parsed.text),
     parsed,
@@ -10774,6 +10946,12 @@ async function ensureWorkspaceIndexAsync(
   if (!workspaceIndexDirty) {
     return;
   }
+  if (workspaceIndexRestoreAllowed && cacheFreshness(settings) === "watch") {
+    const restored = await restoreWorkspaceIndexFromDiskAsync(settings);
+    if (restored) {
+      return;
+    }
+  }
   workspaceIndex.clear();
   workspaceIndexTruncated = false;
   let scannedFiles = 0;
@@ -10798,6 +10976,10 @@ async function ensureWorkspaceIndexAsync(
   }
   workspaceIndexTruncated = scannedFiles >= maxFiles;
   workspaceIndexDirty = Boolean(token?.isCancellationRequested);
+  workspaceIndexRestoreAllowed = workspaceIndexDirty;
+  if (!workspaceIndexDirty) {
+    await writeWorkspaceIndexToDiskAsync(settings);
+  }
   if (workspaceIndexTruncated) {
     connection.console.warn(
       createLocalizer(settings.resolvedLocale).t("server.workspaceIndex.truncated", { maxFiles }),
@@ -10855,11 +11037,13 @@ async function indexWorkspaceFileAsync(fileName: string, settings: AspSettings):
   const normalized = normalizeFileName(fileName);
   if (!(await shouldIndexWorkspaceFileAsync(normalized, settings))) {
     workspaceIndex.delete(normalized);
+    forgetSourceMetadata(normalized);
     return;
   }
   const stat = await fs.promises.stat(normalized).catch(() => undefined);
   if (!stat?.isFile()) {
     workspaceIndex.delete(normalized);
+    forgetSourceMetadata(normalized);
     return;
   }
   const existing = workspaceIndex.get(normalized);
@@ -10873,6 +11057,62 @@ async function indexWorkspaceFileAsync(fileName: string, settings: AspSettings):
     mtimeMs: stat.mtimeMs,
     size: stat.size,
   });
+  rememberSourceMetadata({
+    fileName: normalized,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+  });
+}
+
+async function restoreWorkspaceIndexFromDiskAsync(settings: AspSettings): Promise<boolean> {
+  const settingsKey = workspaceIndexSettingsIdentity(settings);
+  const entry = await diskAnalysisCache.readWorkspaceIndex(settingsKey).catch((error) => {
+    logDiskAnalysisCacheError("workspaceIndex.restore", error);
+    return undefined;
+  });
+  if (!entry) {
+    return false;
+  }
+  workspaceIndex.clear();
+  workspaceIndexTruncated = entry.truncated;
+  sourceManifest.clear();
+  for (const indexed of entry.entries) {
+    const normalized = normalizeFileName(indexed.fileName);
+    const restored = {
+      uri: indexed.uri,
+      fileName: normalized,
+      mtimeMs: indexed.mtimeMs,
+      size: indexed.size,
+    };
+    workspaceIndex.set(normalized, restored);
+    rememberSourceMetadata(restored);
+  }
+  workspaceIndexDirty = false;
+  workspaceIndexRestoreAllowed = false;
+  logDebugSummary(settings, `[asp-lsp] workspaceIndex.restore: files=${workspaceIndex.size}`);
+  return true;
+}
+
+async function writeWorkspaceIndexToDiskAsync(settings: AspSettings): Promise<void> {
+  if (!diskAnalysisCache.enabled) {
+    return;
+  }
+  const entries: DiskWorkspaceIndexedDocument[] = [...workspaceIndex.values()].map((entry) => ({
+    uri: entry.uri,
+    fileName: normalizeFileName(entry.fileName),
+    mtimeMs: entry.mtimeMs,
+    size: entry.size,
+  }));
+  await diskAnalysisCache
+    .writeWorkspaceIndex({
+      settingsKey: workspaceIndexSettingsIdentity(settings),
+      entries,
+      truncated: workspaceIndexTruncated,
+    })
+    .then(() =>
+      logDebugSummary(settings, `[asp-lsp] workspaceIndex.write: files=${entries.length}`),
+    )
+    .catch((error) => logDiskAnalysisCacheError("workspaceIndex.write", error));
 }
 
 async function readTextFileAsync(
@@ -10954,7 +11194,9 @@ function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
   workspaceGeneration += 1;
   workspaceIndexDirty = true;
   workspaceIndexTruncated = false;
+  workspaceIndexRestoreAllowed = false;
   workspaceIndex.clear();
+  sourceManifest.clear();
   clearWorkspaceVbReferenceCaches();
   logInvalidation("workspaceIndex", reason, workspaceGeneration);
 }
@@ -10999,7 +11241,9 @@ async function clearProcessCachesByCommand(reason: string): Promise<void> {
 function clearWorkspaceIndexProcessCaches(reason: string): void {
   workspaceIndexDirty = true;
   workspaceIndexTruncated = false;
+  workspaceIndexRestoreAllowed = true;
   workspaceIndex.clear();
+  sourceManifest.clear();
   clearWorkspaceVbReferenceCaches();
   logDebugSummary(globalSettings, `[asp-lsp] processCache.workspaceIndex.clear: ${reason}`);
 }
@@ -11525,6 +11769,19 @@ function workspaceIndexSettingsIdentity(settings: AspSettings): string {
   });
 }
 
+function cacheSettingsIdentity(settings: AspSettings): string {
+  return JSON.stringify(normalizeCacheSettings(settings));
+}
+
+function clearCacheSettingProcessStateIfChanged(previous: AspSettings, next: AspSettings): void {
+  if (cacheSettingsIdentity(previous) === cacheSettingsIdentity(next)) {
+    return;
+  }
+  clearWorkspaceIndexProcessCaches("settings.cache");
+  clearIncludeCaches();
+  clearWorkspaceVbReferenceCaches();
+}
+
 function settingsInvalidationImpact(
   previousSettingsByUri: Map<string, AspSettings>,
 ): Map<string, SettingsInvalidationImpact> {
@@ -11604,11 +11861,13 @@ function localizerForUri(uri: string) {
 
 async function refreshConfiguration(): Promise<void> {
   try {
+    const previousGlobalSettings = globalSettings;
     const previousSettingsByUri = currentOpenDocumentSettingsByUri();
     globalSettings = normalizeSettings(
       (await connection.workspace.getConfiguration("aspLsp")) as Record<string, unknown>,
     );
     await configureDiskAnalysisCacheAsync();
+    clearCacheSettingProcessStateIfChanged(previousGlobalSettings, globalSettings);
     settingsByUri.clear();
     const impact = settingsInvalidationImpact(previousSettingsByUri);
     applySettingsInvalidation(impact);
@@ -11741,6 +12000,7 @@ function normalizeCacheSettings(
   return {
     enabled: record.enabled !== false,
     directory: typeof record.directory === "string" ? record.directory : undefined,
+    freshness: record.freshness === "watch" ? "watch" : "metadata",
     ttlHours:
       typeof record.ttlHours === "number" && record.ttlHours > 0
         ? Math.floor(record.ttlHours)
@@ -15870,7 +16130,7 @@ async function collectDocumentGraphDocumentsAsync(
       if (!resolved.exists || visited.has(includeKey) || visited.size >= limits.maxDocuments) {
         continue;
       }
-      const size = await fileSizeAsync(resolved.fileName);
+      const size = await fileSizeAsync(resolved.fileName, settings);
       throwIfGraphCancelled(cancellation);
       if (size !== undefined && textLength + size > limits.maxTextLength) {
         continue;

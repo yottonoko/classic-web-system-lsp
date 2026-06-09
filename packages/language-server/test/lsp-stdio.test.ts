@@ -5050,6 +5050,7 @@ Error R
     });
 
     it("supports VBScript rename, highlights, signature help, workspace symbols and semantic tokens", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vbscript-editing-"));
       const marked = markedDocument(`<%
 Function BuildName(ByVal firstName, lastName)
   BuildName = firstName & " " & lastName
@@ -5061,7 +5062,7 @@ Response.Write Build▮Name("Ada", "Lovelace")
         await server.start();
         const initialize = await server.request("initialize", {
           processId: process.pid,
-          rootUri: "file:///tmp",
+          rootUri: pathToFileURL(tempDir).toString(),
           capabilities: {},
         });
         const initializeText = JSON.stringify(initialize);
@@ -5075,7 +5076,7 @@ Response.Write Build▮Name("Ada", "Lovelace")
         expect(initializeText).toContain('"string"');
         expect(initializeText).toContain('"operator"');
         expect(initializeText).toContain('"constant"');
-        const uri = "file:///tmp/vbscript-editing.asp";
+        const uri = pathToFileURL(path.join(tempDir, "vbscript-editing.asp")).toString();
         server.notify("textDocument/didOpen", {
           textDocument: {
             uri,
@@ -5177,6 +5178,7 @@ Response.Write Build▮Name("Ada", "Lovelace")
         server.notify("exit", undefined);
       } finally {
         server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
 
@@ -6809,6 +6811,98 @@ Response.Write SharedTitle()
         )) as Record<string, unknown>;
         expect(JSON.stringify(resolvedCodeLens.command)).not.toContain(pageUri);
         await waitForLogContaining(server, "vb.references.worker");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("uses disk parsed and include refs cache in worker-backed workspace references", async () => {
+      const tempDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "asp-lsp-workspace-refs-worker-cache-"),
+      );
+      const cacheDir = path.join(tempDir, ".cache");
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "default.asp");
+      const commonSource = `<%
+Function SharedTitle()
+  SharedTitle = "Dashboard"
+End Function
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="common.inc" -->
+<%
+Function SharedTitle()
+  SharedTitle = "Local"
+End Function
+Response.Write SharedTitle()
+%>`,
+        "utf8",
+      );
+      const commonUri = pathToFileURL(common).href;
+      const settings = {
+        aspLsp: {
+          debug: { output: "summary" },
+          cache: { enabled: true, directory: cacheDir },
+          codeLens: { referenceScope: "workspace" },
+        },
+      };
+      let server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        const symbols = await server.request("workspace/symbol", { query: "SharedTitle" });
+        expect(JSON.stringify(symbols)).toContain("SharedTitle");
+        await waitForLogContaining(server, "diskParsed.write");
+        await waitForLogContaining(server, "diskIncludeRefs.write");
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+        server.stop();
+
+        server = new RpcServer();
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: commonUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: commonSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: commonUri },
+        })) as Array<Record<string, unknown>>;
+        const referencesCodeLens = codeLens.find((lens) => {
+          const data = lens.data as { kind?: unknown; line?: unknown } | undefined;
+          return data?.kind === "vbscript-reference" && data.line === 1;
+        });
+        const resolvedCodeLens = (await server.request(
+          "codeLens/resolve",
+          referencesCodeLens,
+        )) as Record<string, unknown>;
+        expect(JSON.stringify(resolvedCodeLens.command)).toContain("references");
+        const workerLog = await waitForLogContaining(server, "vb.references.worker.complete");
+        const workerLogText = JSON.stringify(workerLog.params);
+        const cacheHits = Number(/cacheHits=(\d+)/.exec(workerLogText)?.[1] ?? 0);
+        expect(cacheHits).toBeGreaterThan(0);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -9281,6 +9375,7 @@ End Sub
             (node) => node.kind === "vbDeclaration" && node.label === "PageEntry",
           ),
         ).toBe(true);
+        await waitForLogContaining(server, "diskParsed.write");
         await waitForLogContaining(server, "diskIncludeRefs.write");
         await waitForLogContaining(server, "graphVbIndex.write");
         await server.request("shutdown", null);
@@ -9304,8 +9399,121 @@ End Sub
           stats?: Record<string, unknown>;
         };
         expect(normalizeGraph(secondGraph)).toEqual(normalizeGraph(firstGraph));
-        await waitForLogContaining(server, "diskIncludeRefs.hit");
+        await waitForLogContaining(server, "diskParsed.hit");
         await waitForLogContaining(server, "graphVbIndex.hit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("restores workspace index and parsed files in watch freshness mode", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-watch-cache-"));
+      const cacheDir = path.join(tempDir, ".cache");
+      fs.writeFileSync(
+        path.join(tempDir, "default.asp"),
+        `<%
+Sub WatchIndexed()
+End Sub
+%>`,
+        "utf8",
+      );
+      const settings = {
+        aspLsp: {
+          debug: { output: "verbose" },
+          cache: { enabled: true, directory: cacheDir, freshness: "watch" },
+        },
+      };
+      let server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        const firstSymbols = await server.request("workspace/symbol", { query: "WatchIndexed" });
+        expect(JSON.stringify(firstSymbols)).toContain("WatchIndexed");
+        await waitForLogContaining(server, "workspaceIndex.write");
+        await waitForLogContaining(server, "diskParsed.write");
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+        server.stop();
+
+        server = new RpcServer();
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        const restoredSymbols = await server.request("workspace/symbol", {
+          query: "WatchIndexed",
+        });
+        expect(JSON.stringify(restoredSymbols)).toContain("WatchIndexed");
+        await waitForLogContaining(server, "workspaceIndex.restore");
+        await waitForLogContaining(server, "sourceIdentity.watch.hit");
+        await waitForLogContaining(server, "diskParsed.hit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps metadata freshness current for unchanged workspace indexes", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-metadata-cache-"));
+      const cacheDir = path.join(tempDir, ".cache");
+      const fileName = path.join(tempDir, "default.asp");
+      fs.writeFileSync(
+        fileName,
+        `<%
+Sub OldCachedName()
+End Sub
+%>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              cache: { enabled: true, directory: cacheDir, freshness: "metadata" },
+            },
+          },
+        });
+        const oldSymbols = await server.request("workspace/symbol", { query: "OldCachedName" });
+        expect(JSON.stringify(oldSymbols)).toContain("OldCachedName");
+        await waitForLogContaining(server, "diskParsed.write");
+        server.takePendingNotifications("window/logMessage");
+
+        fs.writeFileSync(
+          fileName,
+          `<%
+Sub NewCachedNameLonger()
+End Sub
+%>`,
+          "utf8",
+        );
+        const newSymbols = await server.request("workspace/symbol", {
+          query: "NewCachedNameLonger",
+        });
+        expect(JSON.stringify(newSymbols)).toContain("NewCachedNameLonger");
+        await waitForLogContaining(server, "diskParsed.miss");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

@@ -270,6 +270,7 @@ export interface AspFlowchartInclude {
 export interface AspCacheSettings {
   enabled?: boolean;
   directory?: string;
+  freshness?: "metadata" | "watch";
   ttlHours?: number;
   maxSizeMb?: number;
 }

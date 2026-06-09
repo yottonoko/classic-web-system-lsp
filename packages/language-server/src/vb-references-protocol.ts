@@ -1,5 +1,6 @@
 import type { AspSettings, VbReference, VbReferenceOptions, VbSymbolKind } from "@asp-lsp/core";
 import type { Range } from "vscode-languageserver-types";
+import type { DiskAnalysisCacheOptions, DiskWorkspaceIndexedDocument } from "./disk-analysis-cache";
 
 export interface VbReferencesWorkerSource {
   fileName: string;
@@ -39,6 +40,12 @@ export interface VbReferencesWorkerLimits {
   includeReadConcurrency: number;
 }
 
+export interface VbReferencesWorkerCacheOptions {
+  disk: DiskAnalysisCacheOptions;
+  freshness: "metadata" | "watch";
+  sourceManifest: DiskWorkspaceIndexedDocument[];
+}
+
 export interface VbReferencesWorkerRequest {
   id: number;
   candidate: VbReferencesWorkerCandidate;
@@ -47,6 +54,7 @@ export interface VbReferencesWorkerRequest {
   settings: AspSettings;
   workspaceRoots: string[];
   openDocuments: VbReferencesWorkerOpenDocument[];
+  cache?: VbReferencesWorkerCacheOptions;
   options: VbReferenceOptions;
   limits: VbReferencesWorkerLimits;
 }

@@ -83,6 +83,7 @@
   "configuration.graph.openLocation.description": "Controls where graph views open: active editor group or beside the current editor.",
   "configuration.cache.enabled.description": "Persist unopened workspace analysis results on disk.",
   "configuration.cache.directory.description": "Directory used for Classic ASP LSP disk analysis cache. Leave empty to use the OS temporary directory.",
+  "configuration.cache.freshness.description": "Controls how disk cache freshness is checked. metadata verifies file metadata before reuse, and watch trusts file watcher changes to minimize network drive IO.",
   "configuration.cache.ttlHours.description": "Hours before disk analysis cache entries expire.",
   "configuration.cache.maxSizeMb.description": "Maximum disk analysis cache size in megabytes.",
   "configuration.workspace.includes.description": "Workspace-relative glob patterns included in Classic ASP workspace analysis, workspace graphs, and folder graphs.",

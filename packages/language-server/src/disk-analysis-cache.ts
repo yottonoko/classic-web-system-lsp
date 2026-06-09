@@ -2,13 +2,24 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { decode, encode } from "cbor-x";
-import type { AspInclude, FileAnalysisSummary, VbSymbolIndex } from "@asp-lsp/core";
+import type {
+  AspInclude,
+  AspParsedDocument,
+  FileAnalysisSummary,
+  VbSymbolIndex,
+} from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver-types";
 
-const formatVersion = 4;
+const formatVersion = 5;
 const defaultTtlHours = 24 * 14;
 const defaultMaxSizeMb = 128;
-type DiskCacheEntryKind = "diagnostics" | "summary" | "includeRefs" | "vbSymbolIndex";
+type DiskCacheEntryKind =
+  | "diagnostics"
+  | "summary"
+  | "includeRefs"
+  | "vbSymbolIndex"
+  | "parsedDocument"
+  | "workspaceIndex";
 
 export interface DiskAnalysisCacheOptions {
   enabled: boolean;
@@ -50,6 +61,25 @@ export interface DiskVbSymbolIndexCacheEntry extends DiskAnalysisCacheLookup {
   fingerprint: string;
 }
 
+export interface DiskParsedDocumentCacheEntry extends DiskAnalysisCacheLookup {
+  parsed: AspParsedDocument;
+  summary: FileAnalysisSummary;
+  publicSignature?: unknown;
+}
+
+export interface DiskWorkspaceIndexedDocument {
+  uri: string;
+  fileName: string;
+  mtimeMs: number;
+  size: number;
+}
+
+export interface DiskWorkspaceIndexCacheEntry {
+  settingsKey: string;
+  entries: DiskWorkspaceIndexedDocument[];
+  truncated: boolean;
+}
+
 export interface DiskAnalysisBuilderState {
   publicSignature?: unknown;
   includeDeps?: unknown[];
@@ -89,11 +119,29 @@ interface PersistedDiskVbSymbolIndexEntry extends DiskVbSymbolIndexCacheEntry {
   writtenAt: number;
 }
 
+interface PersistedDiskParsedDocumentEntry extends DiskParsedDocumentCacheEntry {
+  kind: "parsedDocument";
+  formatVersion: number;
+  toolVersion: string;
+  namespace: string;
+  writtenAt: number;
+}
+
+interface PersistedDiskWorkspaceIndexEntry extends DiskWorkspaceIndexCacheEntry {
+  kind: "workspaceIndex";
+  formatVersion: number;
+  toolVersion: string;
+  namespace: string;
+  writtenAt: number;
+}
+
 type PersistedDiskEntry =
   | PersistedDiskAnalysisEntry
   | PersistedDiskSummaryEntry
   | PersistedDiskIncludeRefsEntry
-  | PersistedDiskVbSymbolIndexEntry;
+  | PersistedDiskVbSymbolIndexEntry
+  | PersistedDiskParsedDocumentEntry
+  | PersistedDiskWorkspaceIndexEntry;
 
 export class DiskAnalysisCache {
   private readonly root: string;
@@ -169,6 +217,38 @@ export class DiskAnalysisCache {
     return entry;
   }
 
+  async readParsedDocument(
+    lookup: DiskAnalysisCacheLookup,
+  ): Promise<DiskParsedDocumentCacheEntry | undefined> {
+    if (!this.enabled) {
+      return undefined;
+    }
+    const entry = await this.readEntry(this.fileNameForLookup(lookup, "parsedDocument"));
+    if (
+      !entry ||
+      entry.kind !== "parsedDocument" ||
+      !this.matches(entry, lookup, "parsedDocument")
+    ) {
+      return undefined;
+    }
+    return entry;
+  }
+
+  async readWorkspaceIndex(settingsKey: string): Promise<DiskWorkspaceIndexCacheEntry | undefined> {
+    if (!this.enabled) {
+      return undefined;
+    }
+    const entry = await this.readEntry(this.fileNameForKey(settingsKey, "workspaceIndex"));
+    if (
+      !entry ||
+      entry.kind !== "workspaceIndex" ||
+      !this.matchesWorkspaceIndex(entry, settingsKey)
+    ) {
+      return undefined;
+    }
+    return entry;
+  }
+
   async write(entry: DiskAnalysisCacheEntry): Promise<void> {
     if (!this.enabled) {
       return;
@@ -233,6 +313,41 @@ export class DiskAnalysisCache {
     await fs.promises.writeFile(this.fileNameForLookup(entry, "vbSymbolIndex"), encode(payload));
   }
 
+  async writeParsedDocument(entry: DiskParsedDocumentCacheEntry): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
+    await fs.promises.mkdir(this.root, { recursive: true });
+    const payload: PersistedDiskParsedDocumentEntry = {
+      ...entry,
+      kind: "parsedDocument",
+      formatVersion,
+      toolVersion: this.options.toolVersion,
+      namespace: this.options.namespace,
+      writtenAt: Date.now(),
+    };
+    await fs.promises.writeFile(this.fileNameForLookup(entry, "parsedDocument"), encode(payload));
+  }
+
+  async writeWorkspaceIndex(entry: DiskWorkspaceIndexCacheEntry): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
+    await fs.promises.mkdir(this.root, { recursive: true });
+    const payload: PersistedDiskWorkspaceIndexEntry = {
+      ...entry,
+      kind: "workspaceIndex",
+      formatVersion,
+      toolVersion: this.options.toolVersion,
+      namespace: this.options.namespace,
+      writtenAt: Date.now(),
+    };
+    await fs.promises.writeFile(
+      this.fileNameForKey(entry.settingsKey, "workspaceIndex"),
+      encode(payload),
+    );
+  }
+
   async clear(): Promise<void> {
     await fs.promises.rm(this.root, { recursive: true, force: true });
   }
@@ -276,6 +391,7 @@ export class DiskAnalysisCache {
   ): boolean {
     return (
       entry.kind === kind &&
+      "source" in entry &&
       entry.formatVersion === formatVersion &&
       entry.toolVersion === this.options.toolVersion &&
       entry.namespace === this.options.namespace &&
@@ -283,6 +399,20 @@ export class DiskAnalysisCache {
       entry.source.fileName === lookup.source.fileName &&
       entry.source.mtimeMs === lookup.source.mtimeMs &&
       entry.source.size === lookup.source.size &&
+      Date.now() - entry.writtenAt <= this.ttlMs
+    );
+  }
+
+  private matchesWorkspaceIndex(
+    entry: PersistedDiskWorkspaceIndexEntry,
+    settingsKey: string,
+  ): boolean {
+    return (
+      entry.kind === "workspaceIndex" &&
+      entry.formatVersion === formatVersion &&
+      entry.toolVersion === this.options.toolVersion &&
+      entry.namespace === this.options.namespace &&
+      entry.settingsKey === settingsKey &&
       Date.now() - entry.writtenAt <= this.ttlMs
     );
   }
@@ -297,14 +427,23 @@ export class DiskAnalysisCache {
   }
 
   private fileNameForLookup(lookup: DiskAnalysisCacheLookup, kind: DiskCacheEntryKind): string {
+    return this.fileNameForKey(
+      JSON.stringify({
+        fileName: lookup.source.fileName,
+        settingsKey: lookup.settingsKey,
+      }),
+      kind,
+    );
+  }
+
+  private fileNameForKey(key: string, kind: DiskCacheEntryKind): string {
     return path.join(
       this.root,
       `${stableHash(
         JSON.stringify({
           kind,
           namespace: this.options.namespace,
-          fileName: lookup.source.fileName,
-          settingsKey: lookup.settingsKey,
+          key,
         }),
       )}.cbor`,
     );
