@@ -108,6 +108,8 @@
   "command.showCurrentFileGraph.title": "Classic ASP: Show Current File Graph",
   "command.showFolderGraph.title": "Classic ASP: Show Folder Graph",
   "command.showWorkspaceGraph.title": "Classic ASP: Show Workspace Graph",
+  "command.showCurrentFileFlowchart.title": "Classic ASP: Show Current File Flowchart",
+  "command.exportCurrentFileFlowchart.title": "Classic ASP: Export Current File Flowchart as Mermaid",
   "command.debugIisUrl.title": "Classic ASP: Debug IIS URL",
   "command.debugIisExpressUrl.title": "Classic ASP: Debug IIS Express URL",
   "command.createLaunchConfig.title": "Classic ASP: Create Browser Launch Config",

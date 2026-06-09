@@ -109,6 +109,7 @@ describe(
         expect(initializeText).toContain('"aspLsp.server.clearDiskCache"');
         expect(initializeText).toContain('"aspLsp.server.clearProcessCache"');
         expect(initializeText).toContain('"aspLsp.server.buildGraph"');
+        expect(initializeText).toContain('"aspLsp.server.buildFlowchart"');
         expect(initializeText).not.toContain('"aspLsp.reindexWorkspace"');
         expect(initializeText).not.toContain('"aspLsp.clearCache"');
         expect(initializeText).not.toContain('"aspLsp.clearDiskCache"');
@@ -7781,6 +7782,80 @@ End Sub
         expect(graph.links?.some((link) => link.kind === "calls")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "unresolvedReference")).toBe(true);
         expect(graph.stats?.missingIncludes).toBe(1);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("builds a flowchart for the current ASP file with include metadata", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-flowchart-"));
+      const page = path.join(tempDir, "default.asp");
+      fs.writeFileSync(path.join(tempDir, "common.inc"), `<%\nSub Included()\nEnd Sub\n%>`, "utf8");
+      const uri = `file://${page}`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<!-- #include file="common.inc" -->
+<%
+Sub Main()
+  If ready Then
+    Call Render()
+  Else
+    Exit Sub
+  End If
+End Sub
+%>`,
+          },
+        });
+
+        const flowchart = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildFlowchart",
+          arguments: [{ uri }],
+        })) as {
+          uri?: string;
+          fileName?: string;
+          sections?: Array<Record<string, unknown>>;
+          nodes?: Array<Record<string, unknown>>;
+          edges?: Array<Record<string, unknown>>;
+          includes?: Array<Record<string, unknown>>;
+          mermaid?: string;
+          stats?: Record<string, unknown>;
+        };
+
+        expect(flowchart.uri).toBe(uri);
+        expect(flowchart.fileName).toBe("default.asp");
+        expect(flowchart.sections?.some((section) => section.label === "Sub Main")).toBe(true);
+        expect(
+          flowchart.nodes?.some((node) => node.kind === "if" && node.label === "If ready"),
+        ).toBe(true);
+        expect(flowchart.nodes?.some((node) => node.kind === "call")).toBe(true);
+        expect(flowchart.nodes?.some((node) => node.kind === "exit")).toBe(true);
+        expect(flowchart.edges?.some((edge) => edge.label === "Yes")).toBe(true);
+        expect(flowchart.includes?.[0]).toEqual(
+          expect.objectContaining({
+            path: "common.inc",
+            mode: "file",
+            exists: true,
+            resolvedUri: `file://${path.join(tempDir, "common.inc")}`,
+          }),
+        );
+        expect(flowchart.mermaid).toContain("flowchart TD");
+        expect(flowchart.mermaid).toContain("Sub Main");
+        expect(flowchart.stats?.includes).toBe(1);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

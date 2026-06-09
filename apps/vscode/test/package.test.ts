@@ -464,6 +464,8 @@ describe("VS Code extension package", () => {
     expect(commands).toContain("aspLsp.showCurrentFileGraph");
     expect(commands).toContain("aspLsp.showFolderGraph");
     expect(commands).toContain("aspLsp.showWorkspaceGraph");
+    expect(commands).toContain("aspLsp.showCurrentFileFlowchart");
+    expect(commands).toContain("aspLsp.exportCurrentFileFlowchart");
     expect(
       manifest.contributes?.commands?.find(
         (command) => command.command === "aspLsp.showCurrentFileGraph",
@@ -472,6 +474,13 @@ describe("VS Code extension package", () => {
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
       expect.objectContaining({
         command: "aspLsp.showCurrentFileGraph",
+        when: "editorLangId == classic-asp",
+        group: "navigation",
+      }),
+    );
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showCurrentFileFlowchart",
         when: "editorLangId == classic-asp",
         group: "navigation",
       }),
@@ -490,24 +499,40 @@ describe("VS Code extension package", () => {
         group: "navigation",
       }),
     );
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showCurrentFileFlowchart",
+        when: "resourceExtname =~ /\\.(asp|asa|inc)$/i",
+        group: "navigation",
+      }),
+    );
     expect(nls["command.showCurrentFileGraph.title"]).toBeTruthy();
     expect(nls["command.showFolderGraph.title"]).toBeTruthy();
     expect(nls["command.showWorkspaceGraph.title"]).toBeTruthy();
+    expect(nls["command.showCurrentFileFlowchart.title"]).toBeTruthy();
+    expect(nls["command.exportCurrentFileFlowchart.title"]).toBeTruthy();
     expect(nlsJa["command.showCurrentFileGraph.title"]).toBeTruthy();
     expect(nlsJa["command.showFolderGraph.title"]).toBeTruthy();
     expect(nlsJa["command.showWorkspaceGraph.title"]).toBeTruthy();
+    expect(nlsJa["command.showCurrentFileFlowchart.title"]).toBeTruthy();
+    expect(nlsJa["command.exportCurrentFileFlowchart.title"]).toBeTruthy();
     expect(manifest.activationEvents).toContain("onCommand:aspLsp.showCurrentFileGraph");
     expect(manifest.activationEvents).toContain("onCommand:aspLsp.showFolderGraph");
     expect(manifest.activationEvents).toContain("onCommand:aspLsp.showWorkspaceGraph");
+    expect(manifest.activationEvents).toContain("onCommand:aspLsp.showCurrentFileFlowchart");
+    expect(manifest.activationEvents).toContain("onCommand:aspLsp.exportCurrentFileFlowchart");
     expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileGraph"');
     expect(extensionSource).toContain('registerCommand("aspLsp.showFolderGraph"');
     expect(extensionSource).toContain('registerCommand("aspLsp.showWorkspaceGraph"');
+    expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileFlowchart"');
+    expect(extensionSource).toContain('registerCommand("aspLsp.exportCurrentFileFlowchart"');
     expect(extensionSource).toContain('get<GraphOpenLocation>("graph.openLocation", "active")');
     expect(extensionSource).toContain("cancellable: true");
     expect(extensionSource).toContain("isGraphCancellationError");
     expect(extensionSource).toContain("vscode.ViewColumn.Active");
     expect(extensionSource).toContain("vscode.ViewColumn.Beside");
     expect(extensionSource).toContain('"aspLsp.server.buildGraph"');
+    expect(extensionSource).toContain('"aspLsp.server.buildFlowchart"');
     expect(extensionSource).toContain('"editor.action.showReferences"');
     expect(extensionSource).toContain('registerCommand("aspLsp.toggleLineComment"');
     expect(keybindings).toContainEqual(

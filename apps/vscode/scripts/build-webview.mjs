@@ -5,29 +5,34 @@ import { build } from "vite";
 
 const extensionRoot = path.resolve(import.meta.dirname, "..");
 
-await build({
-  root: extensionRoot,
-  configFile: false,
-  define: {
-    "process.env.NODE_ENV": JSON.stringify("production"),
-  },
-  plugins: [tailwindcss(), react()],
-  build: {
-    emptyOutDir: true,
-    outDir: path.join(extensionRoot, "dist", "webview"),
-    cssCodeSplit: false,
-    minify: true,
-    sourcemap: false,
-    lib: {
-      entry: path.join(extensionRoot, "src", "webview", "include-graph.tsx"),
-      name: "AspLspGraphWebview",
-      formats: ["iife"],
-      fileName: () => "include-graph.js",
+await buildWebview("include-graph.tsx", "AspLspGraphWebview", "include-graph.js", true);
+await buildWebview("flowchart.tsx", "AspLspFlowchartWebview", "flowchart.js", false);
+
+async function buildWebview(entry, name, fileName, emptyOutDir) {
+  await build({
+    root: extensionRoot,
+    configFile: false,
+    define: {
+      "process.env.NODE_ENV": JSON.stringify("production"),
     },
-    rollupOptions: {
-      output: {
-        inlineDynamicImports: true,
+    plugins: [tailwindcss(), react()],
+    build: {
+      emptyOutDir,
+      outDir: path.join(extensionRoot, "dist", "webview"),
+      cssCodeSplit: false,
+      minify: true,
+      sourcemap: false,
+      lib: {
+        entry: path.join(extensionRoot, "src", "webview", entry),
+        name,
+        formats: ["iife"],
+        fileName: () => fileName,
+      },
+      rollupOptions: {
+        output: {
+          inlineDynamicImports: true,
+        },
       },
     },
-  },
-});
+  });
+}

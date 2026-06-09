@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CompletionItemKind, DiagnosticTag, InsertTextFormat } from "vscode-languageserver-types";
 import {
   analyzeVbscript,
+  buildAspFlowchart,
   buildVbTypeEnvironment,
   buildVirtualDocuments,
   collectVbscriptPublicSymbols,
@@ -47,6 +48,90 @@ function collectVbTokenTexts(node: AspCstNode): string[] {
     ...node.children.flatMap((child) => collectVbTokenTexts(child)),
   ];
 }
+
+describe("buildAspFlowchart", () => {
+  it("builds Mermaid flow sections for VBScript control flow", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Sub Main()
+  If enabled Then branchValue = 2 Else fallbackValue = "fallback"
+  If ready Then
+    Call Render()
+  ElseIf fallback Then
+    Exit Sub
+  Else
+    Response.Write "x"
+  End If
+  Select Case kind
+  Case "a"
+    Call A()
+  Case Else
+    Call B()
+  End Select
+  For index = 1 To 3
+    Call Tick()
+  Next
+  Do While active
+    Call Tick()
+  Loop
+  While waiting
+    Call Tick()
+  Wend
+End Sub
+%>`,
+    );
+
+    const flowchart = buildAspFlowchart(parsed, { fileName: "default.asp" });
+    const nodeKinds = flowchart.nodes.map((node) => node.kind);
+
+    expect(flowchart.sections.map((section) => section.label)).toContain("Sub Main");
+    expect(nodeKinds).toEqual(
+      expect.arrayContaining([
+        "start",
+        "end",
+        "if",
+        "elseif",
+        "else",
+        "select",
+        "case",
+        "for",
+        "do",
+        "while",
+        "call",
+        "exit",
+        "statement",
+      ]),
+    );
+    expect(flowchart.edges.some((edge) => edge.label === "Yes")).toBe(true);
+    expect(flowchart.edges.some((edge) => edge.label === "Repeat")).toBe(true);
+    expect(flowchart.mermaid).toContain("flowchart TD");
+    expect(flowchart.mermaid).toContain("Sub Main");
+    expect(flowchart.stats.nodes).toBe(flowchart.nodes.length);
+  });
+
+  it("keeps split ASP islands and UTF-16 source ranges in the flowchart", () => {
+    const source = `<% If enabled Then %>
+<div><%= title %></div>
+<% Call Render("😀") %>
+<% End If %>`;
+    const parsed = parseAspDocument("file:///site/split.asp", source);
+
+    const flowchart = buildAspFlowchart(parsed);
+    const ifNode = flowchart.nodes.find((node) => node.kind === "if");
+    const callNode = flowchart.nodes.find((node) => node.kind === "call");
+
+    expect(ifNode?.label).toBe("If enabled");
+    expect(callNode?.label).toBe('Call Render ("😀")');
+    expect(callNode?.range).toEqual({
+      start: { line: 2, character: 3 },
+      end: { line: 2, character: '<% Call Render("😀")'.length },
+    });
+    expect(flowchart.edges.some((edge) => edge.source === ifNode?.id && edge.label === "Yes")).toBe(
+      true,
+    );
+  });
+});
 
 describe("parseAspDocument", () => {
   it("marks skeleton parses as needing VBScript CST hydration before direct CST walks", async () => {

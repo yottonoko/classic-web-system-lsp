@@ -14,6 +14,7 @@ import {
   type AspGraphLocale,
   type AspGraphPayload,
 } from "./include-graph-webview";
+import { showAspFlowchartWebview, type AspFlowchartPayload } from "./flowchart-webview";
 import { getServerModulePath } from "./server-path";
 
 const maxCrashRestartCount = 4;
@@ -23,6 +24,7 @@ const clearCacheServerCommand = "aspLsp.server.clearCache";
 const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
+const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const htmlTagCompleteLookBehind = 2000;
 type GraphOpenLocation = "active" | "beside";
 type GraphScope = "document" | "folder" | "workspace";
@@ -67,6 +69,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     vscode.commands.registerCommand("aspLsp.showWorkspaceGraph", async () =>
       showGraph(context, "workspace"),
+    ),
+    vscode.commands.registerCommand("aspLsp.showCurrentFileFlowchart", async (uri?: vscode.Uri) =>
+      showFlowchart(context, uri),
+    ),
+    vscode.commands.registerCommand("aspLsp.exportCurrentFileFlowchart", async (uri?: vscode.Uri) =>
+      exportFlowchart(uri),
     ),
     vscode.commands.registerCommand("aspLsp.showReferences", async (uri, position, locations) =>
       showReferences(uri, position, locations),
@@ -222,6 +230,89 @@ function booleanEditorOption(value: string | boolean | undefined, fallback: bool
 
 async function executeServerCommand(command: string): Promise<unknown> {
   return client?.sendRequest("workspace/executeCommand", { command });
+}
+
+async function showFlowchart(
+  context: vscode.ExtensionContext,
+  selectedUri?: vscode.Uri,
+): Promise<void> {
+  const uri = currentClassicAspUri(selectedUri);
+  if (!uri) {
+    void vscode.window.showWarningMessage(extensionLocalizer()("flowchart.noActiveFile"));
+    return;
+  }
+  const result = await loadFlowchartPayload(uri);
+  showAspFlowchartWebview(
+    context,
+    result.payload,
+    result.title,
+    graphViewColumn(),
+    extensionLocale(),
+    loadFlowchartPayload,
+  );
+}
+
+async function exportFlowchart(selectedUri?: vscode.Uri): Promise<void> {
+  const uri = currentClassicAspUri(selectedUri);
+  if (!uri) {
+    void vscode.window.showWarningMessage(extensionLocalizer()("flowchart.noActiveFile"));
+    return;
+  }
+  const { payload } = await loadFlowchartPayload(uri);
+  const document = await vscode.workspace.openTextDocument(
+    vscode.Uri.parse(`untitled:${flowchartUntitledName(payload)}.mmd`),
+  );
+  const editor = await vscode.window.showTextDocument(document, { preview: false });
+  await editor.edit((builder) => {
+    builder.replace(new vscode.Range(0, 0, document.lineCount, 0), `${payload.mermaid}\n`);
+  });
+}
+
+async function loadFlowchartPayload(
+  uri: string | vscode.Uri,
+): Promise<{ payload: AspFlowchartPayload; title: string }> {
+  if (!client) {
+    throw new Error(extensionLocalizer()("flowchart.serverUnavailable"));
+  }
+  const uriText = uri instanceof vscode.Uri ? uri.toString() : uri;
+  const title = extensionLocalizer()("flowchart.currentTitle");
+  const payload = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+    async (_progress, token) =>
+      client!.sendRequest<AspFlowchartPayload>(
+        "workspace/executeCommand",
+        {
+          command: buildFlowchartServerCommand,
+          arguments: [{ uri: uriText }],
+        },
+        token,
+      ),
+  );
+  return {
+    payload,
+    title: flowchartPanelTitle(payload),
+  };
+}
+
+function currentClassicAspUri(selectedUri: vscode.Uri | undefined): vscode.Uri | undefined {
+  if (selectedUri) {
+    return selectedUri;
+  }
+  const activeDocument = vscode.window.activeTextEditor?.document;
+  return activeDocument?.languageId === "classic-asp" ? activeDocument.uri : undefined;
+}
+
+function flowchartPanelTitle(payload: AspFlowchartPayload): string {
+  const name = payload.fileName ?? baseNameFromUri(payload.uri) ?? "Current File";
+  return extensionLocalizer()("flowchart.documentPanelTitle", { name });
+}
+
+function flowchartUntitledName(payload: AspFlowchartPayload): string {
+  const name = (payload.fileName ?? baseNameFromUri(payload.uri) ?? "flowchart")
+    .split("/")
+    .at(-1)
+    ?.replace(/\.[^.]+$/, "");
+  return (name || "flowchart").replace(/[^A-Za-z0-9._-]+/g, "-");
 }
 
 async function showGraph(
@@ -643,7 +734,11 @@ type ExtensionMessageKey =
   | "graph.folderTitle"
   | "graph.workspaceTitle"
   | "graph.documentPanelTitle"
-  | "graph.workspacePanelTitle";
+  | "graph.workspacePanelTitle"
+  | "flowchart.serverUnavailable"
+  | "flowchart.noActiveFile"
+  | "flowchart.currentTitle"
+  | "flowchart.documentPanelTitle";
 
 type ExtensionMessageArgs = Record<string, string>;
 
@@ -662,6 +757,11 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "graph.workspaceTitle": "Classic ASP: Workspace Graph",
     "graph.documentPanelTitle": "Classic ASP Graph: {name}",
     "graph.workspacePanelTitle": "Classic ASP Graph: Workspace",
+    "flowchart.serverUnavailable":
+      "Start the Classic ASP Language Server before building a flowchart.",
+    "flowchart.noActiveFile": "Open a Classic ASP file before building the current file flowchart.",
+    "flowchart.currentTitle": "Classic ASP: Current File Flowchart",
+    "flowchart.documentPanelTitle": "Classic ASP Flowchart: {name}",
   },
   ja: {
     "status.tooltip": "Classic ASP Language Server",
@@ -678,6 +778,12 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "graph.workspaceTitle": "Classic ASP: Workspace Graph",
     "graph.documentPanelTitle": "Classic ASP Graph: {name}",
     "graph.workspacePanelTitle": "Classic ASP Graph: Workspace",
+    "flowchart.serverUnavailable":
+      "flowchart を作成する前に Classic ASP Language Server を起動してください。",
+    "flowchart.noActiveFile":
+      "current file flowchart を作成する前に Classic ASP file を開いてください。",
+    "flowchart.currentTitle": "Classic ASP: Current File Flowchart",
+    "flowchart.documentPanelTitle": "Classic ASP Flowchart: {name}",
   },
 };
 

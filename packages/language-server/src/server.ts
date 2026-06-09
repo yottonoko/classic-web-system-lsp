@@ -93,6 +93,7 @@ import type {
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
   analyzeVbscriptFromTextAsync,
+  buildAspFlowchart,
   buildVbTypeEnvironment,
   buildVirtualDocuments,
   collectVbscriptSymbols,
@@ -136,6 +137,8 @@ import {
   type AspFormattingOptions,
   type AspEmbeddedLanguage,
   type AspEditImpact,
+  type AspFlowchartInclude,
+  type AspFlowchartPayload,
   type AspIncrementalChange,
   type AspInclude,
   type AspLegacyEncoding,
@@ -223,6 +226,7 @@ const clearCacheServerCommand = "aspLsp.server.clearCache";
 const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
+const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const languageServerVersion = "0.5.12";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
@@ -1593,6 +1597,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
           clearDiskCacheServerCommand,
           clearProcessCacheServerCommand,
           buildGraphServerCommand,
+          buildFlowchartServerCommand,
         ],
       },
       codeLensProvider: { resolveProvider: true },
@@ -2407,6 +2412,9 @@ connection.onExecuteCommand(async (params, token) => {
   }
   if (params.command === buildGraphServerCommand) {
     return buildAspGraphForCommand(params.arguments?.[0], token);
+  }
+  if (params.command === buildFlowchartServerCommand) {
+    return buildAspFlowchartForCommand(params.arguments?.[0]);
   }
   return {
     ok: false,
@@ -15491,6 +15499,77 @@ function mergeWorkspaceEdits(
     }
   }
   return Object.keys(changes).length > 0 ? { changes } : undefined;
+}
+
+async function buildAspFlowchartForCommand(argument: unknown): Promise<AspFlowchartPayload> {
+  const uri = graphCommandUri(argument) ?? documents.all()[0]?.uri;
+  const cached = uri ? await cachedDocumentForGraphAsync(uri) : undefined;
+  if (!cached) {
+    return emptyAspFlowchartPayload(uri);
+  }
+  const settings = cachedSettings(cached.source.uri);
+  await hydrateCachedVbscriptCstAsync(cached, settings, "flowchart");
+  return buildAspFlowchart(cached.parsed, {
+    fileName: flowchartDisplayFileName(graphFileNameFromUri(cached.source.uri)),
+    includes: await flowchartIncludesForDocumentAsync(cached.parsed, settings),
+  });
+}
+
+async function flowchartIncludesForDocumentAsync(
+  parsed: AspParsedDocument,
+  settings: AspSettings,
+): Promise<AspFlowchartInclude[]> {
+  const includes: AspFlowchartInclude[] = [];
+  for (const include of parsed.includes) {
+    const resolved = await resolveIncludePathDetailsAsync(
+      parsed.uri,
+      include.path,
+      include.mode,
+      settings,
+    );
+    includes.push({
+      path: include.path,
+      mode: include.mode,
+      range: include.range,
+      exists: resolved.exists,
+      resolvedUri: pathToFileUri(normalizeFileName(resolved.fileName)),
+      actualPath: resolved.actualPath
+        ? flowchartDisplayFileName(normalizeFileName(resolved.actualPath))
+        : undefined,
+      pathCaseMatches: resolved.pathCaseMatches,
+    });
+  }
+  return includes;
+}
+
+function flowchartDisplayFileName(fileName: string): string {
+  const normalized = normalizeFileName(fileName);
+  const workspaceRoot = workspaceRoots
+    .map(normalizeFileName)
+    .sort((left, right) => right.length - left.length)
+    .find((root) => isFileInDirectoryOrEqual(normalized, root));
+  if (!workspaceRoot) {
+    return normalized;
+  }
+  const relative = path.relative(workspaceRoot, normalized);
+  return (relative || path.basename(normalized)).split(path.sep).join("/");
+}
+
+function emptyAspFlowchartPayload(uri: string | undefined): AspFlowchartPayload {
+  const payload: Omit<AspFlowchartPayload, "mermaid"> = {
+    uri: uri ?? "",
+    sections: [],
+    nodes: [],
+    edges: [],
+    includes: [],
+    stats: {
+      sections: 0,
+      nodes: 0,
+      edges: 0,
+      includes: 0,
+    },
+  };
+  return { ...payload, mermaid: "flowchart TD" };
 }
 
 async function buildAspGraphForCommand(
