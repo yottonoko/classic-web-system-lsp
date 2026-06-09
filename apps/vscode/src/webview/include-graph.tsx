@@ -165,23 +165,43 @@ const graphMessageEn = {
   "direction.from": "from",
   "direction.to": "to",
   "detail.actualPath": "Actual path",
+  "detail.actualPathHint":
+    "Filesystem path VS Code resolved for the include target, when it differs from the directive text.",
   "detail.count": "count",
+  "detail.countHint": "Number of source occurrences represented by this graph link.",
   "detail.declaration": "Declaration",
   "detail.directive": "Directive {source}",
   "detail.exists": "Exists",
+  "detail.existsHint": "Whether the include target resolved to an existing file.",
   "detail.file": "File",
+  "detail.fileHint": "Source file that owns or contains the selected graph node.",
   "detail.include": "Include",
+  "detail.includeHint": "Include path written in the Classic ASP directive.",
   "detail.label": "Label",
+  "detail.labelHint": "Raw graph label when it differs from the displayed link type.",
   "detail.line": "Line {line}",
   "detail.memberOf": "Member of",
+  "detail.memberOfHint": "Class, object, or container that owns the selected declaration.",
   "detail.mode": "Mode",
+  "detail.modeHint": "Include resolution mode used for this link.",
+  "detail.nodeReferencesHint":
+    "Number of visible include, assignment, reference, call, or unresolved-reference links targeting this node.",
+  "detail.nodeStatusHint":
+    "Additional node state such as root file, built-in symbol, or configured symbol.",
+  "detail.nodeTypeHint": "Graph category assigned to the selected node.",
   "detail.references": "References",
   "detail.role": "Role",
+  "detail.roleHint":
+    "Extra graph role used to distinguish member links or other specialized relationships.",
   "detail.scope": "Scope",
+  "detail.scopeHint": "VBScript binding scope for the selected declaration.",
   "detail.source": "Source",
+  "detail.sourceHint": "Node where the selected graph link starts.",
   "detail.status": "Status",
   "detail.target": "Target",
+  "detail.targetHint": "Node where the selected graph link ends.",
   "detail.type": "Type",
+  "detail.linkTypeHint": "Graph category assigned to the selected link.",
   "empty.declarationSource": "Declaration source is unavailable.",
   "empty.graphData": "Graph data is unavailable.",
   "empty.includeSources": "No include sources found.",
@@ -315,23 +335,41 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "direction.from": "from",
     "direction.to": "to",
     "detail.actualPath": "実際の path",
+    "detail.actualPathHint":
+      "include 先として VS Code が解決した file system path です。directive の文字列と異なる時に出ます。",
     "detail.count": "count",
+    "detail.countHint": "この graph link が表す source 上の出現数です。",
     "detail.declaration": "宣言",
     "detail.directive": "Directive {source}",
     "detail.exists": "存在",
+    "detail.existsHint": "include 先が実在する file に解決できたかどうかです。",
     "detail.file": "File",
+    "detail.fileHint": "選択した graph node を所有、または含んでいる source file です。",
     "detail.include": "Include",
+    "detail.includeHint": "Classic ASP directive に書かれている include path です。",
     "detail.label": "Label",
+    "detail.labelHint": "表示中の link type と異なる場合の、生の graph label です。",
     "detail.line": "{line} 行目",
     "detail.memberOf": "Member of",
+    "detail.memberOfHint": "選択した declaration を所有する class、object、container です。",
     "detail.mode": "Mode",
+    "detail.modeHint": "この link で使われた include 解決 mode です。",
+    "detail.nodeReferencesHint":
+      "この node を target にする visible な include、代入、参照、呼び出し、未解決参照 link の数です。",
+    "detail.nodeStatusHint": "root file、built-in symbol、configured symbol などの追加状態です。",
+    "detail.nodeTypeHint": "選択した node に割り当てられた graph category です。",
     "detail.references": "参照",
     "detail.role": "Role",
+    "detail.roleHint": "member link など、特別な関係を区別するための追加 role です。",
     "detail.scope": "Scope",
+    "detail.scopeHint": "選択した declaration の VBScript binding scope です。",
     "detail.source": "Source",
+    "detail.sourceHint": "選択した graph link が始まる node です。",
     "detail.status": "Status",
     "detail.target": "Target",
+    "detail.targetHint": "選択した graph link が終わる node です。",
     "detail.type": "Type",
+    "detail.linkTypeHint": "選択した link に割り当てられた graph category です。",
     "empty.declarationSource": "宣言 source は利用できません。",
     "empty.graphData": "graph data は利用できません。",
     "empty.includeSources": "include 元は見つかりません。",
@@ -2830,12 +2868,36 @@ function OpenLocationButton({
 function NodeDetails({ node }: { node: GraphNode }): React.ReactElement {
   return (
     <dl className="mb-3.5 grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
-      <Detail label={graphText("detail.type")} value={nodeTypeLabel(node)} />
-      <Detail label={graphText("detail.references")} value={String(node.referenceCount)} />
-      <Detail label={graphText("detail.file")} value={nodeFileLabel(node)} />
-      <Detail label={graphText("detail.memberOf")} value={node.memberOf} />
-      <Detail label={graphText("detail.scope")} value={nodeScopeLabel(node)} />
-      <Detail label={graphText("detail.status")} value={nodeStatusLabel(node)} />
+      <Detail
+        hint={graphText("detail.nodeTypeHint")}
+        label={graphText("detail.type")}
+        value={nodeTypeLabel(node)}
+      />
+      <Detail
+        hint={graphText("detail.nodeReferencesHint")}
+        label={graphText("detail.references")}
+        value={String(node.referenceCount)}
+      />
+      <Detail
+        hint={graphText("detail.fileHint")}
+        label={graphText("detail.file")}
+        value={nodeFileLabel(node)}
+      />
+      <Detail
+        hint={graphText("detail.memberOfHint")}
+        label={graphText("detail.memberOf")}
+        value={node.memberOf}
+      />
+      <Detail
+        hint={graphText("detail.scopeHint")}
+        label={graphText("detail.scope")}
+        value={nodeScopeLabel(node)}
+      />
+      <Detail
+        hint={graphText("detail.nodeStatusHint")}
+        label={graphText("detail.status")}
+        value={nodeStatusLabel(node)}
+      />
     </dl>
   );
 }
@@ -3007,30 +3069,64 @@ function LinkDetails({
               />
             </div>
           </div>
-          <div className="grid min-w-[58px] shrink-0 justify-items-end rounded border border-[#405068] bg-[#151a22] px-2 py-1">
+          <div
+            className="grid min-w-[58px] shrink-0 justify-items-end rounded border border-[#405068] bg-[#151a22] px-2 py-1"
+            title={graphText("detail.countHint")}
+          >
             <span className="text-sm leading-none font-semibold text-[#f4f7fb]">{link.count}</span>
-            <span className="text-[10px] leading-[1.2] text-[#9aa7b8]">
+            <span className="inline-flex items-center gap-1 text-[10px] leading-[1.2] text-[#9aa7b8]">
               {graphText("detail.count")}
+              <DetailHint hint={graphText("detail.countHint")} label={graphText("detail.count")} />
             </span>
           </div>
         </div>
       </section>
       <dl className="grid grid-cols-[86px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
-        <Detail label={graphText("detail.type")} value={typeLabel} />
-        <Detail label={graphText("detail.source")} value={sourceLabel} />
-        <Detail label={graphText("detail.target")} value={targetLabel} />
-        <Detail label={graphText("detail.role")} value={link.role} />
         <Detail
+          hint={graphText("detail.linkTypeHint")}
+          label={graphText("detail.type")}
+          value={typeLabel}
+        />
+        <Detail
+          hint={graphText("detail.sourceHint")}
+          label={graphText("detail.source")}
+          value={sourceLabel}
+        />
+        <Detail
+          hint={graphText("detail.targetHint")}
+          label={graphText("detail.target")}
+          value={targetLabel}
+        />
+        <Detail
+          hint={graphText("detail.roleHint")}
+          label={graphText("detail.role")}
+          value={link.role}
+        />
+        <Detail
+          hint={graphText("detail.labelHint")}
           label={graphText("detail.label")}
           value={link.label !== typeLabel ? link.label : undefined}
         />
-        <Detail label={graphText("detail.include")} value={link.include?.path} />
-        <Detail label={graphText("detail.mode")} value={link.include?.mode} />
         <Detail
+          hint={graphText("detail.includeHint")}
+          label={graphText("detail.include")}
+          value={link.include?.path}
+        />
+        <Detail
+          hint={graphText("detail.modeHint")}
+          label={graphText("detail.mode")}
+          value={link.include?.mode}
+        />
+        <Detail
+          hint={graphText("detail.existsHint")}
           label={graphText("detail.exists")}
           value={link.include ? String(link.include.exists) : undefined}
         />
-        <Detail label={graphText("detail.actualPath")} value={link.include?.actualPath} />
+        <Detail
+          hint={graphText("detail.actualPathHint")}
+          label={graphText("detail.actualPath")}
+          value={link.include?.actualPath}
+        />
       </dl>
     </div>
   );
@@ -3063,9 +3159,11 @@ function SelectEndpointButton({
 }
 
 function Detail({
+  hint,
   label,
   value,
 }: {
+  hint?: string;
   label: string;
   value: string | undefined;
 }): React.ReactElement | null {
@@ -3074,7 +3172,10 @@ function Detail({
   }
   return (
     <>
-      <dt className="text-[11px] text-[#8d98a8]">{label}</dt>
+      <dt className="flex min-w-0 items-center gap-1 text-[11px] text-[#8d98a8]">
+        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{label}</span>
+        {hint ? <DetailHint hint={hint} label={label} /> : null}
+      </dt>
       <dd
         className="m-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-[#d7dde8]"
         title={value}
@@ -3082,6 +3183,26 @@ function Detail({
         {value}
       </dd>
     </>
+  );
+}
+
+function DetailHint({ hint, label }: { hint: string; label: string }): React.ReactElement {
+  return (
+    <span className="group relative inline-flex shrink-0 items-center">
+      <span
+        tabIndex={0}
+        aria-label={`${label}: ${hint}`}
+        className="inline-grid h-3.5 w-3.5 cursor-help place-items-center rounded-full border border-[#405068] text-[10px] leading-none text-[#8d98a8] outline-none hover:border-[#89ddff] hover:text-[#d7dde8] focus:border-[#89ddff] focus:text-[#d7dde8]"
+      >
+        ?
+      </span>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute top-[calc(100%_+_6px)] left-0 z-30 hidden w-[min(260px,calc(100vw_-_40px))] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)] group-focus-within:block group-hover:block"
+      >
+        {hint}
+      </span>
+    </span>
   );
 }
 
