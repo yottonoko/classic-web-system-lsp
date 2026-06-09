@@ -7398,6 +7398,7 @@ async function workspaceVbReferenceSummaryReferencesForCandidate(
   if (!summaries) {
     return undefined;
   }
+  const includeGraph = await workspaceVbReferenceSummaryIncludeGraph(summaries, settings);
   const localSymbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
   const referencesByTarget = new Map<string, VbReference[]>();
   for (const target of targets) {
@@ -7406,7 +7407,7 @@ async function workspaceVbReferenceSummaryReferencesForCandidate(
         !symbol.memberOf &&
         !symbol.scopeName &&
         symbol.name.toLowerCase() === target.name.toLowerCase() &&
-        ["function", "sub", "class"].includes(symbol.kind),
+        ["function", "sub", "class", "variable", "constant"].includes(symbol.kind),
     );
     if (!sameNameSymbols.some((symbol) => sameVbReferenceTargetIdentity(symbol, target))) {
       return undefined;
@@ -7419,11 +7420,161 @@ async function workspaceVbReferenceSummaryReferencesForCandidate(
       summaries.flatMap((summary) =>
         summaryVbReferenceUsages(summary)
           .filter((usage) => usage.key === target.name.toLowerCase())
-          .flatMap((usage) => usage.ranges.map((range) => ({ uri: summary.uri, range }))),
+          .flatMap((usage) =>
+            usage.ranges
+              .filter((range) =>
+                isSummaryFallbackTargetVisibleAt(includeGraph, summary.uri, target, range),
+              )
+              .map((range) => ({ uri: summary.uri, range })),
+          ),
       ),
     );
   }
   return referencesByTarget;
+}
+
+interface WorkspaceVbReferenceSummaryIncludeGraph {
+  directIncludesByOwnerUri: Map<string, Array<{ range: Range; targetUri: string }>>;
+  parentIncludesByTargetUri: Map<string, Array<{ ownerUri: string; range: Range }>>;
+}
+
+async function workspaceVbReferenceSummaryIncludeGraph(
+  summaries: FileAnalysisSummary[],
+  settings: AspSettings,
+): Promise<WorkspaceVbReferenceSummaryIncludeGraph> {
+  const graph: WorkspaceVbReferenceSummaryIncludeGraph = {
+    directIncludesByOwnerUri: new Map(),
+    parentIncludesByTargetUri: new Map(),
+  };
+  await mapWithConcurrency(
+    summaries,
+    workspaceVbReferenceReachabilityConcurrency,
+    async (summary) => {
+      for (const include of summary.includeRefs) {
+        const resolved = await resolveIncludePathDetailsAsync(
+          summary.uri,
+          include.path,
+          include.mode,
+          settings,
+        );
+        if (!resolved.exists) {
+          continue;
+        }
+        const targetUri = pathToFileUri(resolved.fileName);
+        pushAspGraphMapItem(graph.directIncludesByOwnerUri, summary.uri, {
+          range: include.range,
+          targetUri,
+        });
+        pushAspGraphMapItem(graph.parentIncludesByTargetUri, targetUri, {
+          ownerUri: summary.uri,
+          range: include.range,
+        });
+      }
+    },
+  );
+  return graph;
+}
+
+function isSummaryFallbackTargetVisibleAt(
+  graph: WorkspaceVbReferenceSummaryIncludeGraph,
+  ownerUri: string,
+  target: VbReferencesWorkerTargetSymbol,
+  referenceRange: Range,
+): boolean {
+  if (!target.sourceUri.startsWith("file://")) {
+    return true;
+  }
+  if (target.sourceUri === ownerUri) {
+    return true;
+  }
+  if (hasEarlierReachableSummaryInclude(graph, ownerUri, target.sourceUri, referenceRange)) {
+    return true;
+  }
+  return isSummaryFallbackTargetVisibleFromParentContext(
+    graph,
+    ownerUri,
+    target,
+    new Set([ownerUri]),
+  );
+}
+
+function isSummaryFallbackTargetVisibleFromParentContext(
+  graph: WorkspaceVbReferenceSummaryIncludeGraph,
+  ownerUri: string,
+  target: VbReferencesWorkerTargetSymbol,
+  visited: Set<string>,
+): boolean {
+  const parentIncludes = graph.parentIncludesByTargetUri.get(ownerUri) ?? [];
+  for (const parentInclude of parentIncludes) {
+    if (visited.has(parentInclude.ownerUri)) {
+      continue;
+    }
+    const nextVisited = new Set(visited);
+    nextVisited.add(parentInclude.ownerUri);
+    if (
+      isSummaryFallbackTargetVisibleBeforeParentInclude(
+        graph,
+        parentInclude.ownerUri,
+        target,
+        parentInclude.range,
+        nextVisited,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isSummaryFallbackTargetVisibleBeforeParentInclude(
+  graph: WorkspaceVbReferenceSummaryIncludeGraph,
+  parentUri: string,
+  target: VbReferencesWorkerTargetSymbol,
+  includeRange: Range,
+  visited: Set<string>,
+): boolean {
+  if (target.sourceUri === parentUri) {
+    return positionBeforeOrEqual(target.range.start, includeRange.start);
+  }
+  if (hasEarlierReachableSummaryInclude(graph, parentUri, target.sourceUri, includeRange)) {
+    return true;
+  }
+  return isSummaryFallbackTargetVisibleFromParentContext(graph, parentUri, target, visited);
+}
+
+function hasEarlierReachableSummaryInclude(
+  graph: WorkspaceVbReferenceSummaryIncludeGraph,
+  ownerUri: string,
+  targetUri: string,
+  referenceRange: Range,
+): boolean {
+  const includes = graph.directIncludesByOwnerUri.get(ownerUri) ?? [];
+  return includes.some(
+    (include) =>
+      positionBeforeOrEqual(include.range.start, referenceRange.start) &&
+      (include.targetUri === targetUri ||
+        isSummaryIncludeReachable(graph, include.targetUri, targetUri, new Set([ownerUri]))),
+  );
+}
+
+function isSummaryIncludeReachable(
+  graph: WorkspaceVbReferenceSummaryIncludeGraph,
+  startUri: string,
+  targetUri: string,
+  visited: Set<string>,
+): boolean {
+  if (startUri === targetUri) {
+    return true;
+  }
+  if (visited.has(startUri)) {
+    return false;
+  }
+  visited.add(startUri);
+  return (graph.directIncludesByOwnerUri.get(startUri) ?? []).some(
+    (include) =>
+      include.targetUri === targetUri ||
+      isSummaryIncludeReachable(graph, include.targetUri, targetUri, visited),
+  );
 }
 
 async function workspaceVbReferenceCandidateSummaryClosure(
@@ -8271,7 +8422,7 @@ function isGlobalWorkspaceReferenceFallbackTarget(symbol: VbReferencesWorkerTarg
     !symbol.scopeName &&
     !symbol.memberOf &&
     symbol.visibility !== "private" &&
-    ["function", "sub", "class"].includes(symbol.kind)
+    ["function", "sub", "class", "variable", "constant"].includes(symbol.kind)
   );
 }
 

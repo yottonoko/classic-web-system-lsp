@@ -5334,6 +5334,116 @@ Response.Write SharedTitle()
       }
     });
 
+    it("counts include-reachable workspace variable usages in reference CodeLens", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-var-refs-"));
+      const first = path.join(tempDir, "1.asp");
+      const second = path.join(tempDir, "2.asp");
+      const shadow = path.join(tempDir, "3.asp");
+      const firstSource = `<%
+Dim a
+a=1
+%>`;
+      fs.writeFileSync(first, firstSource, "utf8");
+      fs.writeFileSync(
+        second,
+        `<!-- #include file="1.asp" -->
+<%
+aim b
+b = a
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        shadow,
+        `<%
+Dim a
+a = 3
+%>`,
+        "utf8",
+      );
+      const firstUri = pathToFileURL(first).href;
+      const secondUri = pathToFileURL(second).href;
+      const shadowUri = pathToFileURL(shadow).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              codeLens: { referenceScope: "workspace" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: firstUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: firstSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: firstUri },
+        })) as Array<Record<string, unknown>>;
+        const referencesCodeLens = codeLens.find((lens) => {
+          const data = lens.data as
+            | { kind?: unknown; name?: unknown; symbolKind?: unknown }
+            | undefined;
+          return (
+            data?.kind === "vbscript-reference" &&
+            data.name === "a" &&
+            data.symbolKind === "variable"
+          );
+        });
+        expect(referencesCodeLens).toBeDefined();
+        const resolvedCodeLens = (await server.request("codeLens/resolve", referencesCodeLens)) as {
+          command?: { title?: string; arguments?: unknown[] };
+        };
+        const codeLensLocations = (resolvedCodeLens.command?.arguments?.[2] ?? []) as Array<{
+          uri?: string;
+        }>;
+
+        expect(resolvedCodeLens.command?.title).toContain("2 references");
+        expect(codeLensLocations.map((location) => location.uri)).toContain(firstUri);
+        expect(codeLensLocations.map((location) => location.uri)).toContain(secondUri);
+        expect(codeLensLocations.map((location) => location.uri)).not.toContain(shadowUri);
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "workspace" }],
+        })) as {
+          nodes?: Array<Record<string, unknown>>;
+          links?: Array<Record<string, unknown>>;
+        };
+        const aNode = graph.nodes?.find(
+          (node) => node.kind === "vbDeclaration" && node.label === "a" && node.uri === firstUri,
+        );
+        expect(aNode).toBeDefined();
+        const aReferenceCount = (graph.links ?? [])
+          .filter(
+            (link) =>
+              link.target === aNode?.id &&
+              (link.kind === "references" || link.kind === "assignments"),
+          )
+          .reduce((count, link) => count + (typeof link.count === "number" ? link.count : 0), 0);
+        expect(aReferenceCount).toBe(2);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("shares workspace references between CodeLens and references", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-cache-"));
       const common = path.join(tempDir, "common.inc");
