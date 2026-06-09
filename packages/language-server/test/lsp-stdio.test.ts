@@ -564,11 +564,12 @@ Server.HTMLEe▮
         const labels = completionLabels(completions);
         expect(labels).toContain("display");
         expect(labels).not.toContain("/div");
-        expect(
-          completionEditRange(
-            completionItems(completions).find((item) => item.label === "display"),
-          ),
-        ).toEqual({ start: marked.position, end: marked.position });
+        const displayItem = completionItems(completions).find((item) => item.label === "display");
+        expect(completionEditRange(displayItem)).toEqual({
+          start: marked.position,
+          end: marked.position,
+        });
+        expect(completionEditNewText(displayItem)).toMatch(/^ display\b/);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -14406,6 +14407,10 @@ function completionEditRange(
       }
     | undefined;
   return textEdit?.range ?? textEdit?.insert ?? textEdit?.replace;
+}
+
+function completionEditNewText(item: Record<string, unknown> | undefined): string | undefined {
+  return (item?.textEdit as { newText?: string } | undefined)?.newText;
 }
 
 function expectSelectionRangesToBeNested(selection: unknown): void {

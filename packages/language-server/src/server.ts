@@ -5147,18 +5147,35 @@ function cssStyleAttributeSemicolonCompletions(
   const sourceRange = { start: params.position, end: params.position };
   return cssService
     .doComplete(syntheticDocument, syntheticPosition, cssService.parseStylesheet(syntheticDocument))
-    .items.map((item) => completionItemAtSourceRange(item, sourceRange));
+    .items.map((item) => completionItemAtSourceRange(item, sourceRange, " "));
 }
 
-function completionItemAtSourceRange(item: CompletionItem, range: Range): CompletionItem {
+function completionItemAtSourceRange(
+  item: CompletionItem,
+  range: Range,
+  newTextPrefix = "",
+): CompletionItem {
   if (!item.textEdit) {
-    return item;
+    return {
+      ...item,
+      insertText:
+        newTextPrefix && typeof item.insertText === "string"
+          ? `${newTextPrefix}${item.insertText}`
+          : item.insertText,
+      additionalTextEdits: undefined,
+    };
   }
   const textEdit =
     "range" in item.textEdit
       ? { ...item.textEdit, range }
       : { ...item.textEdit, insert: range, replace: range };
-  return { ...item, textEdit, additionalTextEdits: undefined };
+  return {
+    ...item,
+    textEdit: newTextPrefix
+      ? { ...textEdit, newText: `${newTextPrefix}${textEdit.newText}` }
+      : textEdit,
+    additionalTextEdits: undefined,
+  };
 }
 
 type AspIncludeCompletionContextKind = "html" | "comment" | "includeMode";
