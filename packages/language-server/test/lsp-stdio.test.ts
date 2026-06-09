@@ -5554,6 +5554,114 @@ c.Name = "Alice"
       }
     });
 
+    it("counts included object variable member and default-member usages as workspace references", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-object-"));
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "default.asp");
+      const commonSource = `<%
+Dim db
+Set db = Server.CreateObject("ADODB.Connection")
+%>`;
+      const pageSource = `<!-- #include file="common.inc" -->
+<%
+Function Render()
+  Dim localDb
+  db.Open()
+  localDb.Open()
+  Response.Write db("value")
+End Function
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(page, pageSource, "utf8");
+      const commonUri = pathToFileURL(common).href;
+      const pageUri = pathToFileURL(page).href;
+      const memberPosition = positionAt(pageSource, pageSource.indexOf("db.Open") + 1);
+      const defaultMemberPosition = positionAt(pageSource, pageSource.indexOf('db("value")') + 1);
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              codeLens: { referenceScope: "workspace" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: pageUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: pageSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        for (const position of [memberPosition, defaultMemberPosition]) {
+          const definition = await waitForDefinitionContaining(
+            server,
+            { uri: pageUri, position },
+            "common.inc",
+          );
+          expect(JSON.stringify(definition)).toContain(commonUri);
+        }
+
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: commonUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: commonSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: commonUri },
+        })) as Array<Record<string, unknown>>;
+        const referencesCodeLens = codeLens.find((lens) => {
+          const data = lens.data as { kind?: unknown; line?: unknown; name?: unknown } | undefined;
+          return data?.kind === "vbscript-reference" && data.name === "db" && data.line === 1;
+        });
+        expect(referencesCodeLens).toBeDefined();
+        const resolvedCodeLens = (await server.request("codeLens/resolve", referencesCodeLens)) as {
+          command?: { title?: string; arguments?: unknown[] };
+        };
+        const codeLensLocations = (resolvedCodeLens.command?.arguments?.[2] ?? []) as Array<{
+          uri?: string;
+          range?: { start?: { line?: number } };
+        }>;
+        const codeLensPageLocations = codeLensLocations.filter(
+          (location) => location.uri === pageUri,
+        );
+        expect(codeLensPageLocations).toHaveLength(2);
+        expect(codeLensPageLocations.map((location) => location.range?.start?.line)).toEqual([
+          4, 6,
+        ]);
+
+        const references = (await server.request("textDocument/references", {
+          textDocument: { uri: commonUri },
+          position: { line: 1, character: 4 },
+          context: { includeDeclaration: false },
+        })) as Array<{ uri?: string; range?: { start?: { line?: number } } }>;
+        const pageReferences = references.filter((reference) => reference.uri === pageUri);
+        expect(pageReferences).toHaveLength(2);
+        expect(pageReferences.map((reference) => reference.range?.start?.line)).toEqual([4, 6]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("batch resolves workspace reference CodeLens and skips unreachable candidates", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-batch-"));
       const common = path.join(tempDir, "common.inc");
@@ -6760,6 +6868,103 @@ End Sub
         expect(graph.links?.some((link) => link.kind === "calls")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "unresolvedReference")).toBe(true);
         expect(graph.stats?.missingIncludes).toBe(1);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("resolves included object variable member and default-member usages in the graph", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-object-graph-"));
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "default.asp");
+      const commonSource = `<%
+Dim db : Set db = CreateObject("Custom.Database")
+%>`;
+      const pageSource = `<!-- #include file="common.inc" -->
+<%
+Function Render()
+  Dim localDb
+  db.Open()
+  Call db.Open()
+  localDb.Open()
+  Response.Write db("value")
+End Function
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(page, pageSource, "utf8");
+      const commonUri = pathToFileURL(common).href;
+      const pageUri = pathToFileURL(page).href;
+      const server = new RpcServer();
+      type TestGraph = {
+        nodes?: Array<Record<string, unknown>>;
+        links?: Array<Record<string, unknown>>;
+      };
+      const nodeByLabelAndUri = (graph: TestGraph, label: string, uri: string) =>
+        (graph.nodes ?? []).find((node) => node.label === label && node.uri === uri);
+      const hasGraphLink = (
+        graph: TestGraph,
+        kind: string,
+        source: Record<string, unknown> | undefined,
+        target: Record<string, unknown> | undefined,
+      ) =>
+        Boolean(
+          source &&
+          target &&
+          (graph.links ?? []).some(
+            (link) => link.kind === kind && link.source === source.id && link.target === target.id,
+          ),
+        );
+
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: pageUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: pageSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri: pageUri }],
+        })) as TestGraph;
+        const renderNode = nodeByLabelAndUri(graph, "Render", pageUri);
+        const dbNode = nodeByLabelAndUri(graph, "db", commonUri);
+
+        expect(dbNode).toEqual(
+          expect.objectContaining({
+            declarationKind: "variable",
+            bindingScope: "global",
+            typeName: "Custom.Database",
+          }),
+        );
+        expect(hasGraphLink(graph, "references", renderNode, dbNode)).toBe(true);
+        expect(
+          (graph.nodes ?? []).some(
+            (node) =>
+              node.kind === "vbUnresolved" &&
+              (node.label === "db" || node.label === "localDb" || node.label === "Open"),
+          ),
+        ).toBe(false);
+        expect(
+          (graph.links ?? []).some(
+            (link) =>
+              link.kind === "unresolvedReference" &&
+              (link.label === "member" || link.role === "member"),
+          ),
+        ).toBe(false);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

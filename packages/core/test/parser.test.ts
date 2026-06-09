@@ -3147,6 +3147,11 @@ Response.Write SharedCatalog.Name
           count: 1,
           ranges: [expect.objectContaining({ start: expect.objectContaining({ line: 6 }) })],
         }),
+        expect.objectContaining({
+          key: "sharedcatalog",
+          count: 1,
+          ranges: [expect.objectContaining({ start: expect.objectContaining({ line: 6 }) })],
+        }),
       ]),
     );
   });
@@ -3368,6 +3373,41 @@ c.Name = "Alice"
 
     expect(setterReferences).toEqual(getterReferences);
     expect(setterReferences.map((reference) => reference.range.start.line)).toEqual([10, 11]);
+  });
+
+  it("counts included object variable member and default-member usages as references", () => {
+    const include = parseAspDocument(
+      "file:///site/common.inc",
+      `<%
+Dim db
+Set db = Server.CreateObject("ADODB.Connection")
+%>`,
+    );
+    const page = parseAspDocument(
+      "file:///site/default.asp",
+      `<!-- #include file="common.inc" -->
+<%
+Function Render()
+  db.Open()
+  Response.Write db("value")
+End Function
+%>`,
+    );
+    const symbols = [...collectVbscriptSymbols(include), ...collectVbscriptSymbols(page)];
+    const db = symbols.find((symbol) => symbol.name === "db" && symbol.sourceUri === include.uri);
+    expect(db).toBeDefined();
+
+    const references = getVbscriptReferencesForSymbol(db!, {
+      documents: [include, page],
+      symbols,
+    });
+
+    expect(references.map((reference) => reference.uri)).toEqual(
+      expect.arrayContaining([page.uri, page.uri]),
+    );
+    expect(references.map((reference) => reference.range.start.line)).toEqual(
+      expect.arrayContaining([3, 4]),
+    );
   });
 
   it("keeps user-defined completion candidates for mixed-case prefixes", () => {

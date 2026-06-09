@@ -15582,6 +15582,30 @@ function addDocumentUsageToAspGraph(
     if (isSuppressedBuiltinGraphExternalSymbol(external)) {
       continue;
     }
+    if (
+      !callSite.resolvedId &&
+      !sourceDeclaration &&
+      !external &&
+      resolveSourceGraphMemberReceiverDeclaration(state, indexed, callSite)
+    ) {
+      continue;
+    }
+    const defaultMemberReceiver =
+      !callSite.resolvedId && !sourceDeclaration && !external
+        ? resolveVisibleSourceGraphDefaultMemberReceiver(state, indexed, callSite)
+        : undefined;
+    if (defaultMemberReceiver) {
+      state.stats.references += 1;
+      addAspGraphLink(state, {
+        source: scopeGraphNodeId(state, document.uri, callSite.scopeId),
+        target: declarationGraphNodeId(defaultMemberReceiver.id),
+        kind: "references",
+        label: "read",
+        role: "read",
+        ranges: [{ uri: document.uri, range: callSite.range }],
+      });
+      continue;
+    }
     const target = callSite.resolvedId
       ? declarationGraphNodeId(callSite.resolvedId)
       : sourceDeclaration
@@ -15612,7 +15636,12 @@ function addDocumentUsageToAspGraph(
     const external = sourceDeclaration
       ? undefined
       : resolveExternalGraphDeferredRef(state, deferred);
-    if (sourceDeclaration || external) {
+    if (
+      sourceDeclaration ||
+      external ||
+      resolveSourceGraphMemberReceiverDeclaration(state, indexed, deferred) ||
+      resolveVisibleSourceGraphDefaultMemberReceiver(state, indexed, deferred)
+    ) {
       continue;
     }
     state.stats.unresolvedReferences += 1;
@@ -15641,6 +15670,70 @@ function visibleAspGraphTypeName(typeName: string | undefined): string | undefin
 
 function isSuppressedBuiltinGraphTypeName(typeName: string): boolean {
   return ["regexp", "match", "matches", "submatches"].includes(typeName.toLowerCase());
+}
+
+function resolveSourceGraphMemberReceiverDeclaration(
+  state: AspGraphBuildState,
+  indexed: AspGraphIndexedDocument,
+  item: Pick<
+    VbSymbolIndex["callSites"][number],
+    "memberName" | "receiverName" | "range" | "scopeId"
+  >,
+): VbSymbolIndex["declarations"][number] | undefined {
+  if (!item.memberName || !item.receiverName) {
+    return undefined;
+  }
+  return (
+    resolveIndexedSourceGraphReceiverDeclaration(state, indexed, item.receiverName, item) ??
+    resolveVisibleSourceGraphDeclaration(
+      state,
+      indexed.document.uri,
+      item.receiverName,
+      ["variable", "constant"],
+      item.range,
+    )
+  );
+}
+
+function resolveIndexedSourceGraphReceiverDeclaration(
+  state: AspGraphBuildState,
+  indexed: AspGraphIndexedDocument,
+  name: string,
+  item: Pick<VbSymbolIndex["callSites"][number], "range" | "scopeId">,
+): VbSymbolIndex["declarations"][number] | undefined {
+  const normalizedName = name.toLowerCase();
+  let best: VbSymbolIndex["references"][number] | undefined;
+  for (const reference of indexed.graphIndex.vbSymbolIndex.references) {
+    if (
+      !reference.resolvedId ||
+      reference.normalizedName !== normalizedName ||
+      reference.scopeId !== item.scopeId ||
+      !positionBeforeOrEqual(reference.range.end, item.range.start)
+    ) {
+      continue;
+    }
+    if (!best || positionBeforeOrEqual(best.range.start, reference.range.start)) {
+      best = reference;
+    }
+  }
+  return best?.resolvedId ? state.sourceDeclarationsById.get(best.resolvedId) : undefined;
+}
+
+function resolveVisibleSourceGraphDefaultMemberReceiver(
+  state: AspGraphBuildState,
+  indexed: AspGraphIndexedDocument,
+  item: Pick<VbSymbolIndex["callSites"][number], "name" | "memberName" | "range">,
+): VbSymbolIndex["declarations"][number] | undefined {
+  if (item.memberName) {
+    return undefined;
+  }
+  return resolveVisibleSourceGraphDeclaration(
+    state,
+    indexed.document.uri,
+    item.name,
+    ["variable", "constant"],
+    item.range,
+  );
 }
 
 function isCrossFileSourceGraphDeclaration(

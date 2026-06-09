@@ -4189,29 +4189,38 @@ function externalRefKey(ref: VbExternalRef): string {
 function externalRefUsagesForRefs(refs: VbExternalRef[]): VbExternalRefUsage[] {
   const usages = new Map<string, VbExternalRefUsage>();
   for (const ref of refs) {
-    const key = externalRefUsageKey(ref);
-    const existing = usages.get(key);
-    if (existing) {
-      existing.count += 1;
-      existing.ranges.push(ref.range);
-      continue;
+    addExternalRefUsage(usages, ref, ref.memberName);
+    if (ref.memberName) {
+      addExternalRefUsage(usages, ref, undefined);
     }
-    usages.set(key, {
-      key,
-      name: ref.name,
-      memberName: ref.memberName,
-      kindHint: ref.kindHint,
-      count: 1,
-      ranges: [ref.range],
-    });
   }
   return [...usages.values()];
 }
 
-function externalRefUsageKey(ref: VbExternalRef): string {
-  return ref.memberName
-    ? `${ref.name.toLowerCase()}.${ref.memberName.toLowerCase()}`
-    : ref.name.toLowerCase();
+function addExternalRefUsage(
+  usages: Map<string, VbExternalRefUsage>,
+  ref: VbExternalRef,
+  memberName: string | undefined,
+): void {
+  const key = externalRefUsageKey(ref.name, memberName);
+  const existing = usages.get(key);
+  if (existing) {
+    existing.count += 1;
+    existing.ranges.push(ref.range);
+    return;
+  }
+  usages.set(key, {
+    key,
+    name: ref.name,
+    memberName,
+    kindHint: memberName ? ref.kindHint : undefined,
+    count: 1,
+    ranges: [ref.range],
+  });
+}
+
+function externalRefUsageKey(name: string, memberName: string | undefined): string {
+  return memberName ? `${name.toLowerCase()}.${memberName.toLowerCase()}` : name.toLowerCase();
 }
 
 function isPublicSummarySymbol(symbol: VbSymbol): boolean {
