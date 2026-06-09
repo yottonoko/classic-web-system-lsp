@@ -815,6 +815,16 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(docs.get("css")?.text).toContain("*{color: red; display: block}");
   });
 
+  it("extracts inline style attributes from incomplete open tags", () => {
+    const source = `<div class="card" style="color: re`;
+    const parsed = parseAspDocument("file:///site/incomplete-style.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    const style = parsed.regions.find((region) => region.kind === "style-attribute");
+    expect(style).toBeDefined();
+    expect(source.slice(style?.contentStart, style?.contentEnd)).toBe("color: re");
+    expect(docs.get("css")?.text).toContain("*{color: re}");
+  });
+
   it("maps empty and ASP-only inline style attribute positions to CSS virtual documents", () => {
     const emptySource = `<div style=""></div>`;
     const emptyParsed = parseAspDocument("file:///site/empty-style.asp", emptySource);

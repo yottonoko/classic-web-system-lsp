@@ -493,6 +493,45 @@ Server.HTMLEe▮
       }
     });
 
+    it("returns CSS value completions inside incomplete HTML style attributes", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/incomplete-css-style-attribute.asp";
+        const marked = markedDocument('<div class="card" style="color: r▮');
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+        });
+        const redItem = completionItems(completions).find((item) => item.label === "red");
+        expect(redItem).toBeDefined();
+        expect(completionEditRange(redItem)).toEqual({
+          start: positionAt(marked.text, marked.text.indexOf("color: r") + "color: ".length),
+          end: marked.position,
+        });
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns CSS completions and colors for style attributes outside the html root", async () => {
       const server = new RpcServer();
       try {

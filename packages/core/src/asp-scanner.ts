@@ -37,6 +37,10 @@ interface AttributeSpan {
   valueEnd: number;
 }
 
+interface ReadHtmlTagOptions {
+  allowIncomplete?: boolean;
+}
+
 export function extractAspIncludeRefs(text: string): AspInclude[] {
   const includes: AspInclude[] = [];
   const specialPattern = /<!--|<%|<\/?script\b|<\/?style\b/gi;
@@ -123,7 +127,7 @@ export function scanHtmlAndAsp(
       cursor += 1;
       continue;
     }
-    const tag = readHtmlTag(text, cursor);
+    const tag = readHtmlTag(text, cursor, { allowIncomplete: true });
     if (!tag) {
       cursor += 1;
       continue;
@@ -477,7 +481,11 @@ function findAspClose(text: string, offset: number, maxEnd: number): number {
   return -1;
 }
 
-function readHtmlTag(text: string, start: number): HtmlTag | undefined {
+function readHtmlTag(
+  text: string,
+  start: number,
+  options: ReadHtmlTagOptions = {},
+): HtmlTag | undefined {
   if (text[start] !== "<" || text.startsWith("<!--", start) || text[start + 1] === "%") {
     return undefined;
   }
@@ -499,11 +507,11 @@ function readHtmlTag(text: string, start: number): HtmlTag | undefined {
   }
   const name = text.slice(nameStart, cursor).toLowerCase();
   const tagEnd = findTagEnd(text, cursor);
-  if (tagEnd === -1) {
+  if (tagEnd === -1 && !options.allowIncomplete) {
     return undefined;
   }
+  const attributesEnd = tagEnd === -1 ? text.length : tagEnd;
   const attributesStart = cursor;
-  const attributesEnd = tagEnd;
   const attributeSpans = parseAttributeSpans(text, attributesStart, attributesEnd);
   const attributes: Record<string, string | true> = {};
   for (const attribute of attributeSpans) {
@@ -513,7 +521,7 @@ function readHtmlTag(text: string, start: number): HtmlTag | undefined {
   return {
     name,
     start,
-    end: tagEnd + 1,
+    end: tagEnd === -1 ? text.length : tagEnd + 1,
     attributesStart,
     attributesEnd,
     attributes,
