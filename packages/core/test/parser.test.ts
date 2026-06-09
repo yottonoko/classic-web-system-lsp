@@ -133,6 +133,41 @@ Response.Write message
     expect(updated.parsed).toEqual(parseAspDocument("file:///site/default.asp", expectedText));
   });
 
+  it("falls back when typed HTML edits create style attribute regions", () => {
+    const source = `<div ></div>`;
+    const result = updateParsedDocumentByTyping(
+      "file:///site/typed-style-attribute.asp",
+      source,
+      source.indexOf("<div ") + "<div ".length,
+      'style="di"',
+    );
+
+    expect(result.impacts.some((impact) => impact.kind === "full")).toBe(true);
+    expect(result.parsed).toEqual(parseAspDocument(result.uri, result.text));
+    expect(result.parsed.regions.some((region) => region.kind === "style-attribute")).toBe(true);
+    expect(buildVirtualDocuments(result.parsed).get("css")?.text).toContain("*{di}");
+  });
+
+  it("falls back when typed HTML edits create ASP regions", () => {
+    const source = `<div></div>`;
+    const result = updateParsedDocumentByTyping(
+      "file:///site/typed-asp-region.asp",
+      source,
+      source.indexOf("</div>"),
+      "<% Response.Wri %>",
+    );
+
+    expect(result.impacts.some((impact) => impact.kind === "full")).toBe(true);
+    expect(result.parsed).toEqual(parseAspDocument(result.uri, result.text));
+    expect(
+      result.parsed.regions.some(
+        (region) =>
+          region.language === "vbscript" &&
+          result.text.slice(region.contentStart, region.contentEnd).includes("Response.Wri"),
+      ),
+    ).toBe(true);
+  });
+
   it("falls back to full parse for unsafe incremental edits", () => {
     const source = `<%@ LANGUAGE="VBScript" %>
 <script>const value = 1;</script>
@@ -7264,6 +7299,34 @@ function markedDocument(source: string): {
   }
   const text = source.slice(0, offset) + source.slice(offset + "▮".length);
   return { text, position: positionAt(text, offset) };
+}
+
+function updateParsedDocumentByTyping(
+  uri: string,
+  source: string,
+  insertOffset: number,
+  insertedText: string,
+) {
+  let text = source;
+  let offset = insertOffset;
+  let parsed = parseAspDocument(uri, text);
+  const impacts: Array<ReturnType<typeof updateAspParsedDocument>["impact"]> = [];
+  for (const character of insertedText) {
+    const position = positionAt(text, offset);
+    const updated = updateAspParsedDocument(parsed, [
+      {
+        range: { start: position, end: position },
+        rangeOffset: offset,
+        rangeLength: 0,
+        text: character,
+      },
+    ]);
+    impacts.push(updated.impact);
+    text = text.slice(0, offset) + character + text.slice(offset);
+    offset += character.length;
+    parsed = updated.parsed;
+  }
+  return { uri, text, parsed, impacts };
 }
 
 function flattenVbNodes(node: VbCstNode): VbCstNode[] {

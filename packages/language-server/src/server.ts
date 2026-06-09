@@ -172,7 +172,12 @@ const documentOpenContentVersions = new Map<string, number>();
 const documents = new TextDocuments({
   create: TextDocument.create,
   update: (document, changes, version) => {
-    pendingDocumentChanges.set(document.uri, pendingChangeFromContentChanges(version, changes));
+    const pending = pendingChangeFromContentChanges(version, changes);
+    const existing = pendingDocumentChanges.get(document.uri);
+    pendingDocumentChanges.set(
+      document.uri,
+      existing ? mergePendingDocumentChanges(existing, pending) : pending,
+    );
     return TextDocument.update(document, changes, version);
   },
 });
@@ -2704,7 +2709,7 @@ function refreshCachedDocument(document: TextDocument, impactReason?: string): C
   }
   const cacheStartedAt = process.hrtime.bigint();
   const cached = createCachedDocument(document, parsed, settings);
-  cache.set(document.uri, cached);
+  cacheDocumentIfCurrent(document, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
   finishAnalysisLog(settings, document.uri, startedAt, "skeleton");
   return cached;
@@ -2736,7 +2741,7 @@ async function refreshCachedDocumentSkeletonAsync(
   }
   const cacheStartedAt = process.hrtime.bigint();
   const cached = createCachedDocument(document, parsed, settings, [], "skeleton");
-  cache.set(document.uri, cached);
+  cacheDocumentIfCurrent(document, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
   finishAnalysisLog(settings, document.uri, startedAt, "skeleton");
   return cached;
@@ -2793,7 +2798,7 @@ function refreshCachedDocumentIncremental(
   seedVbReuseAfterIncrementalChange(previous, cached, settings, change, updated.impact);
   seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, change, updated.impact);
   seedJsDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
-  cache.set(document.uri, cached);
+  cacheDocumentIfCurrent(document, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
   finishAnalysisLog(settings, document.uri, startedAt, updated.impact.kind);
   return cached;
@@ -2846,7 +2851,7 @@ async function refreshCachedDiagnosticsDocumentIncrementalAsync(
   seedVbReuseAfterIncrementalChange(previous, cached, settings, change, updated.impact);
   seedSyntaxDiagnosticsAfterIncrementalChange(previous, cached, change, updated.impact);
   seedJsDiagnosticsAfterIncrementalChange(previous, cached, updated.impact);
-  cache.set(document.uri, cached);
+  cacheDocumentIfCurrent(document, cached);
   finishDebugStep(settings, document.uri, "analysis.cacheUpdate", cacheStartedAt);
   finishAnalysisLog(settings, document.uri, startedAt, updated.impact.kind);
   return cached;
@@ -2882,7 +2887,7 @@ function ensureFreshCachedDocument(document: TextDocument): CachedDocument {
     const pending = pendingDocumentChanges.get(document.uri);
     if (pending?.version === document.version) {
       pendingDocumentChanges.delete(document.uri);
-      if (pending.ranged && pending.changes.length === 1) {
+      if (canApplyPendingIncremental(existing, pending)) {
         return refreshCachedDocumentIncremental(existing, document, settings, pending.changes[0]);
       }
       return refreshCachedDocument(document, pending?.reason ?? "non-incremental document change");
@@ -2890,6 +2895,17 @@ function ensureFreshCachedDocument(document: TextDocument): CachedDocument {
   }
   pendingDocumentChanges.delete(document.uri);
   return refreshCachedDocument(document);
+}
+
+function canApplyPendingIncremental(
+  existing: CachedDocument,
+  pending: PendingDocumentChange,
+): pending is PendingDocumentChange & { changes: [AspIncrementalChange] } {
+  return (
+    pending.ranged &&
+    pending.changes.length === 1 &&
+    existing.identity.version + 1 === pending.version
+  );
 }
 
 async function ensureFreshCachedDocumentAsync(document: TextDocument): Promise<CachedDocument> {
@@ -2917,7 +2933,7 @@ async function ensureFreshCachedDocumentAsync(document: TextDocument): Promise<C
     const pending = pendingDocumentChanges.get(document.uri);
     if (pending?.version === document.version) {
       pendingDocumentChanges.delete(document.uri);
-      if (pending.ranged && pending.changes.length === 1) {
+      if (canApplyPendingIncremental(existing, pending)) {
         return rememberInFlightDocumentRefresh(
           document,
           parseIdentity,
@@ -2999,6 +3015,14 @@ function createCachedDocument(
   return cached;
 }
 
+function cacheDocumentIfCurrent(document: TextDocument, cached: CachedDocument): void {
+  const current = documents.get(document.uri);
+  if (current && current.version !== document.version) {
+    return;
+  }
+  cache.set(document.uri, cached);
+}
+
 function updateCachedDocumentRuntimeIdentity(cached: CachedDocument, settings: AspSettings): void {
   cached.includeResolutionIdentity = includeResolutionIdentity(settings);
   cached.diagnosticsIdentity = diagnosticsIdentity(settings);
@@ -3055,6 +3079,18 @@ function pendingChangeFromContentChanges(
     ],
     reason: "single ranged edit",
     ranged: true,
+  };
+}
+
+function mergePendingDocumentChanges(
+  _previous: PendingDocumentChange,
+  next: PendingDocumentChange,
+): PendingDocumentChange {
+  return {
+    version: next.version,
+    changes: [],
+    reason: "multiple pending document changes",
+    ranged: false,
   };
 }
 

@@ -337,6 +337,9 @@ function tryUpdateAspParsedDocumentIncremental(
   if (region.kind === "asp-directive") {
     return fallback("ASP directive region edit", change, nextText);
   }
+  if (changeCreatesStructuralMarker(previous.text, nextText, change, region)) {
+    return fallback("structural marker edit", change, nextText);
+  }
   if (changeTouchesRegionBoundary(region, change.startOffset, change.endOffset)) {
     return fallback("region boundary edit", change, nextText);
   }
@@ -542,6 +545,70 @@ function boundarySensitiveText(text: string): boolean {
   );
 }
 
+function changeCreatesStructuralMarker(
+  previousText: string,
+  nextText: string,
+  change: NormalizedIncrementalChange,
+  region: AspRegion,
+): boolean {
+  if (changeClosesStyleAttributeQuote(previousText, change, region)) {
+    return true;
+  }
+  const pattern = structuralMarkerPatternForRegion(region);
+  if (!pattern) {
+    return false;
+  }
+  const nextChangeStart = change.startOffset;
+  const nextChangeEnd = Math.max(change.startOffset + change.text.length, change.startOffset + 1);
+  const scanStart = Math.max(0, nextChangeStart - 64);
+  const scanEnd = Math.min(nextText.length, nextChangeEnd + 64);
+  const segment = nextText.slice(scanStart, scanEnd);
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(segment)) !== null) {
+    const markerStart = scanStart + match.index;
+    const markerEnd = markerStart + match[0].length;
+    if (rangesOverlap(markerStart, markerEnd, nextChangeStart, nextChangeEnd)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function changeClosesStyleAttributeQuote(
+  previousText: string,
+  change: NormalizedIncrementalChange,
+  region: AspRegion,
+): boolean {
+  if (region.kind !== "style-attribute" || change.text.length === 0) {
+    return false;
+  }
+  const quote = previousText[region.contentStart - 1];
+  return (
+    (quote === '"' || quote === "'") &&
+    change.startOffset >= region.contentStart &&
+    change.text.includes(quote)
+  );
+}
+
+function structuralMarkerPatternForRegion(region: AspRegion): RegExp | undefined {
+  if (region.kind === "html") {
+    return /<%|%>|<!--|#\s*include|<\s*\/?\s*script\b|<\s*\/?\s*style\b|<\s*\/?\s*object\b|(?:^|[\s<])(?:runat|language|progid|classid|style)\s*=\s*(?:"|'?)?/gi;
+  }
+  if (region.kind === "style") {
+    return /<%|<\s*\/?\s*style\b/gi;
+  }
+  if (region.kind === "style-attribute") {
+    return /<%/gi;
+  }
+  if (region.kind === "client-script") {
+    return /<%|<\s*\/?\s*script\b/gi;
+  }
+  if (region.language === "vbscript") {
+    return /%>/g;
+  }
+  return undefined;
+}
+
 function changeOverlapsInclude(
   parsed: AspParsedDocument,
   startOffset: number,
@@ -596,6 +663,15 @@ function rangeOverlapsOrTouches(
   return startOffset === endOffset
     ? startOffset >= rangeStart && startOffset <= rangeEnd
     : startOffset < rangeEnd && endOffset > rangeStart;
+}
+
+function rangesOverlap(
+  startOffset: number,
+  endOffset: number,
+  rangeStart: number,
+  rangeEnd: number,
+): boolean {
+  return startOffset < rangeEnd && endOffset > rangeStart;
 }
 
 function changeTouchesEmbeddedContentBoundary(

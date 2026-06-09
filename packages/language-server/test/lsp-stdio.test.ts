@@ -488,6 +488,50 @@ Server.HTMLEe▮
       }
     });
 
+    it("returns CSS completions after unsaved typed style attribute insertion", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/typed-css-style-attribute.asp";
+        const initial = "<div ></div>";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: initial,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const typed = notifyTypedInsertion(
+          server,
+          uri,
+          initial,
+          1,
+          initial.indexOf("<div ") + "<div ".length,
+          'style="di"',
+        );
+        const styleValueOffset = typed.text.indexOf('style="') + 'style="'.length;
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(typed.text, styleValueOffset + "di".length),
+          context: { triggerKind: 1 },
+        });
+        expect(completionLabels(completions)).toContain("display");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns CSS completions inside empty HTML style attributes", async () => {
       const server = new RpcServer();
       try {
@@ -526,6 +570,49 @@ Server.HTMLEe▮
           start: marked.position,
           end: marked.position,
         });
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("returns VBScript completions after unsaved typed ASP region insertion", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/typed-asp-region.asp";
+        const initial = "<div></div>";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: initial,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const typed = notifyTypedInsertion(
+          server,
+          uri,
+          initial,
+          1,
+          initial.indexOf("</div>"),
+          "<% Response.Wri %>",
+        );
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(typed.text, typed.text.indexOf("Wri") + "Wri".length),
+          context: { triggerKind: 1 },
+        });
+        expect(completionLabels(completions)).toContain("Write");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -2531,7 +2618,7 @@ Response.Write known
         await waitForLogContaining(server, "LSP check completed");
         server.takePendingNotifications("window/logMessage");
 
-        source = notifyRangedReplacement(server, uri, source, 0, "safe", "safe <%");
+        source = notifyRangedReplacement(server, uri, source, 2, "safe", "safe <%");
 
         await server.waitForNotification("textDocument/publishDiagnostics");
         await waitForLogContaining(server, "analysis.parse.skeleton");
@@ -14560,6 +14647,36 @@ function notifyRangedReplacement(
     ],
   });
   return current.slice(0, start) + replacement + current.slice(end);
+}
+
+function notifyTypedInsertion(
+  server: RpcServer,
+  uri: string,
+  current: string,
+  version: number,
+  insertOffset: number,
+  insertedText: string,
+): { text: string; version: number } {
+  let text = current;
+  let nextVersion = version;
+  let offset = insertOffset;
+  for (const character of insertedText) {
+    const position = positionAt(text, offset);
+    nextVersion += 1;
+    server.notify("textDocument/didChange", {
+      textDocument: { uri, version: nextVersion },
+      contentChanges: [
+        {
+          range: { start: position, end: position },
+          rangeLength: 0,
+          text: character,
+        },
+      ],
+    });
+    text = text.slice(0, offset) + character + text.slice(offset);
+    offset += character.length;
+  }
+  return { text, version: nextVersion };
 }
 
 function applyTextEdit(text: string, edit: TextEdit): string {
