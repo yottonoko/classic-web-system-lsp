@@ -1106,7 +1106,7 @@ function buildRegions(
   defaultLanguage: "VBScript" | "JScript",
 ): AspRegion[] {
   const sorted = embeddedRegions
-    .filter((region) => region.end > region.start)
+    .filter((region) => region.end > region.start || region.kind === "style-attribute")
     .sort((left, right) => left.start - right.start || right.end - left.end);
   const accepted: AspRegion[] = [];
   const topLevel: AspRegion[] = [];
@@ -1123,7 +1123,8 @@ function buildRegions(
       if (
         region.kind === "asp-block" ||
         region.kind === "asp-expression" ||
-        region.kind === "asp-directive"
+        region.kind === "asp-directive" ||
+        region.kind === "style-attribute"
       ) {
         accepted.push(normalized);
       }

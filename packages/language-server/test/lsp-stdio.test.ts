@@ -451,6 +451,48 @@ Server.HTMLEe▮
       }
     });
 
+    it("returns CSS completions inside empty HTML style attributes", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/empty-css-style-attribute.asp";
+        const marked = markedDocument('<div style="▮"></div>');
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+        });
+        const displayItem = completionItems(completions).find((item) => item.label === "display");
+        expect(displayItem).toBeDefined();
+        expect((displayItem?.textEdit as { newText?: unknown } | undefined)?.newText).toBe(
+          "display: $0;",
+        );
+        expect(completionEditRange(displayItem)).toEqual({
+          start: marked.position,
+          end: marked.position,
+        });
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns CSS completions and colors for style attributes outside the html root", async () => {
       const server = new RpcServer();
       try {

@@ -815,6 +815,26 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(docs.get("css")?.text).toContain("*{color: red; display: block}");
   });
 
+  it("maps empty and ASP-only inline style attribute positions to CSS virtual documents", () => {
+    const emptySource = `<div style=""></div>`;
+    const emptyParsed = parseAspDocument("file:///site/empty-style.asp", emptySource);
+    const emptyStyle = emptyParsed.regions.find((region) => region.kind === "style-attribute");
+    const emptyCss = buildVirtualDocuments(emptyParsed).get("css");
+    expect(emptyStyle).toBeDefined();
+    expect(emptyStyle?.contentStart).toBe(emptyStyle?.contentEnd);
+    expect(emptyCss?.text).toContain("*{}");
+    expect(emptyCss?.sourceMap.toVirtualOffset(emptyStyle?.contentStart ?? -1)).toBe(
+      emptyCss?.text.indexOf("}") ?? -1,
+    );
+
+    const aspOnlySource = `<div style="<%= IIf(ok, "color:red;", "") %>"></div>`;
+    const aspOnlyParsed = parseAspDocument("file:///site/asp-only-style.asp", aspOnlySource);
+    const aspOnlyStyle = aspOnlyParsed.regions.find((region) => region.kind === "style-attribute");
+    const aspOnlyCss = buildVirtualDocuments(aspOnlyParsed).get("css");
+    expect(aspOnlyStyle).toBeDefined();
+    expect(aspOnlyCss?.sourceMap.toVirtualOffset(aspOnlyStyle?.contentEnd ?? -1)).toBeDefined();
+  });
+
   it("extracts inline style attributes before and after the html root", () => {
     const source = `<header style="color: #00f"></header>
 <html><body></body></html>

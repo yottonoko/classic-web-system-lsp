@@ -123,15 +123,32 @@ function sourceMapSegmentsForRegion(
 ): SourceMapSegment[] {
   const holes = nestedRegions.filter(isAspRegionHole);
   const segments: SourceMapSegment[] = [];
+  const pushBoundarySegment = (sourceOffset: number): void => {
+    const segment = sourceMapSegment(owner, virtualStart, sourceOffset, sourceOffset);
+    const previous = segments.at(-1);
+    if (
+      previous?.virtualStart === segment.virtualStart &&
+      previous.virtualEnd === segment.virtualEnd &&
+      previous.sourceStart === segment.sourceStart &&
+      previous.sourceEnd === segment.sourceEnd
+    ) {
+      return;
+    }
+    segments.push(segment);
+  };
   let cursor = owner.contentStart;
+  pushBoundarySegment(cursor);
   for (const hole of holes) {
     if (cursor < hole.start) {
       segments.push(sourceMapSegment(owner, virtualStart, cursor, hole.start));
     }
     cursor = Math.max(cursor, hole.end);
+    pushBoundarySegment(cursor);
   }
   if (cursor < owner.contentEnd) {
     segments.push(sourceMapSegment(owner, virtualStart, cursor, owner.contentEnd));
+  } else {
+    pushBoundarySegment(owner.contentEnd);
   }
   return segments;
 }
