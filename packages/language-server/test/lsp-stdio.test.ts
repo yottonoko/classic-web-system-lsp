@@ -5524,6 +5524,7 @@ a = 3
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-rootless-var-refs-"));
       const first = path.join(tempDir, "1.asp");
       const second = path.join(tempDir, "2.asp");
+      const shadow = path.join(tempDir, "3.asp");
       const firstSource = `<%
 Dim a
 a=1
@@ -5538,8 +5539,17 @@ b = a
 %>`,
         "utf8",
       );
+      fs.writeFileSync(
+        shadow,
+        `<%
+Dim a
+a = 3
+%>`,
+        "utf8",
+      );
       const firstUri = pathToFileURL(first).href;
       const secondUri = pathToFileURL(second).href;
+      const shadowUri = pathToFileURL(shadow).href;
       const server = new RpcServer();
       try {
         await server.start();
@@ -5591,6 +5601,7 @@ b = a
         expect(resolvedCodeLens.command?.title).toContain("2 references");
         expect(codeLensLocations.map((location) => location.uri)).toContain(firstUri);
         expect(codeLensLocations.map((location) => location.uri)).toContain(secondUri);
+        expect(codeLensLocations.map((location) => location.uri)).not.toContain(shadowUri);
 
         const references = (await server.request("textDocument/references", {
           textDocument: { uri: firstUri },
@@ -5599,6 +5610,7 @@ b = a
         })) as Array<{ uri?: string }>;
         expect(references.map((reference) => reference.uri)).toContain(firstUri);
         expect(references.map((reference) => reference.uri)).toContain(secondUri);
+        expect(references.map((reference) => reference.uri)).not.toContain(shadowUri);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
