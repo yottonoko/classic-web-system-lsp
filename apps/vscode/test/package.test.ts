@@ -95,6 +95,16 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain("d3VelocityDecay={graphForceVelocityDecay}");
   });
 
+  it("keeps graph node reference totals independent from link filters", () => {
+    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+
+    expect(graphWebviewSource).toContain(
+      "const referenceCounts = graphReferenceCounts(payload.links)",
+    );
+    expect(graphWebviewSource).not.toContain("node.referenceCount = referenceCount");
+    expect(graphWebviewSource).toContain("node.value = nodeValue(referenceCount)");
+  });
+
   it("contributes commands, task definition and IIS debug settings", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       repository?: { url?: string };

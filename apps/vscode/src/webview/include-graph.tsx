@@ -3610,7 +3610,6 @@ function filterGraphData(
   const referenceCounts = graphReferenceCountsForGraphLinks(visibleLinks);
   for (const node of visibleNodes) {
     const referenceCount = referenceCounts.get(node.id) ?? 0;
-    node.referenceCount = referenceCount;
     node.value = nodeValue(referenceCount);
   }
   return {
