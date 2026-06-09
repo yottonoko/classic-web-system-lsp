@@ -569,6 +569,9 @@ describe("VS Code extension package", () => {
       "editor.selection = new vscode.Selection(position, position)",
     );
     expect(extensionSource).toContain("textDocument/onTypeFormatting");
+    expect(extensionSource).toContain("await waitForLanguageClientTextDocumentSync()");
+    expect(extensionSource).toContain("document.version !== documentVersion");
+    expect(extensionSource).toContain("setTimeout(resolve, 0)");
     expect(extensionSource).toContain("autoCloseAspBlock");
     expect(extensionSource).not.toContain("autoCloseApostrophe");
     expect(extensionSource).not.toContain("pendingApostropheAutoCloseEdits");

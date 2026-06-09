@@ -96,14 +96,24 @@ async function autoCloseHtmlTag(event: vscode.TextDocumentChangeEvent): Promise<
     return;
   }
   const change = event.contentChanges[0];
+  const document = event.document;
+  const documentVersion = document.version;
   const position = new vscode.Position(change.range.start.line, change.range.start.character + 1);
-  if (!couldTriggerHtmlTagCompleteBefore(event.document, position)) {
+  if (!couldTriggerHtmlTagCompleteBefore(document, position)) {
+    return;
+  }
+  // Let vscode-languageclient enqueue the matching didChange before this custom request.
+  await waitForLanguageClientTextDocumentSync();
+  if (
+    document.version !== documentVersion ||
+    !couldTriggerHtmlTagCompleteBefore(document, position)
+  ) {
     return;
   }
   const editor = vscode.window.visibleTextEditors.find(
-    (candidate) => candidate.document.uri.toString() === event.document.uri.toString(),
+    (candidate) => candidate.document.uri.toString() === document.uri.toString(),
   );
-  if (vscode.workspace.getConfiguration("editor", event.document.uri).get("formatOnType")) {
+  if (vscode.workspace.getConfiguration("editor", document.uri).get("formatOnType")) {
     return;
   }
   const edits = await client.sendRequest<
@@ -115,7 +125,7 @@ async function autoCloseHtmlTag(event: vscode.TextDocumentChangeEvent): Promise<
       newText: string;
     }>
   >("textDocument/onTypeFormatting", {
-    textDocument: { uri: event.document.uri.toString() },
+    textDocument: { uri: document.uri.toString() },
     position: { line: position.line, character: position.character },
     ch: ">",
     options: {
@@ -123,17 +133,21 @@ async function autoCloseHtmlTag(event: vscode.TextDocumentChangeEvent): Promise<
       insertSpaces: booleanEditorOption(editor?.options.insertSpaces, true),
     },
   });
-  if (!edits || edits.length === 0) {
+  if (document.version !== documentVersion || !edits || edits.length === 0) {
     return;
   }
   const workspaceEdit = new vscode.WorkspaceEdit();
   for (const edit of edits) {
-    workspaceEdit.replace(event.document.uri, toVscodeRange(edit.range), edit.newText);
+    workspaceEdit.replace(document.uri, toVscodeRange(edit.range), edit.newText);
   }
   const applied = await vscode.workspace.applyEdit(workspaceEdit);
   if (applied && editor) {
     editor.selection = new vscode.Selection(position, position);
   }
+}
+
+function waitForLanguageClientTextDocumentSync(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 async function autoCloseAspBlock(event: vscode.TextDocumentChangeEvent): Promise<void> {
