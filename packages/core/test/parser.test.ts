@@ -3119,6 +3119,8 @@ Function LocalTitle()
 End Function
 Response.Write SharedTitle(localValue)
 Response.Write SharedCatalog.Name
+''' <see cref="SharedTitle" />
+''' <see cref="SharedCatalog.Name" />
 %>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
     const summary = summarizeAspFileAnalysis(parsed);
@@ -3144,6 +3146,20 @@ Response.Write SharedCatalog.Name
           key: "sharedcatalog.name",
           count: 1,
           ranges: [expect.objectContaining({ start: expect.objectContaining({ line: 6 }) })],
+        }),
+      ]),
+    );
+    expect(summary.vbscript?.docCommentRefUsages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "sharedtitle",
+          count: 1,
+          ranges: [expect.objectContaining({ start: expect.objectContaining({ line: 7 }) })],
+        }),
+        expect.objectContaining({
+          key: "sharedcatalog.name",
+          count: 1,
+          ranges: [expect.objectContaining({ start: expect.objectContaining({ line: 8 }) })],
         }),
       ]),
     );
@@ -3323,6 +3339,49 @@ Response.Write c.Name
       );
       expect(batch.get(vbscriptReferenceSymbolKey(target))).toEqual(single);
     }
+  });
+
+  it("treats VBScript property accessors as one reference target", () => {
+    const source = `<%
+Class Customer
+  Public Property Get Name()
+  End Property
+  Public Property Let Name(value)
+  End Property
+End Class
+
+Dim c
+Set c = New Customer
+Response.Write c.Name
+c.Name = "Alice"
+%>`;
+    const parsed = parseAspDocument("file:///site/property-accessors.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const accessors = symbols.filter(
+      (symbol) =>
+        symbol.kind === "property" && symbol.name === "Name" && symbol.memberOf === "Customer",
+    );
+    expect(accessors).toHaveLength(2);
+
+    const [getter, setter] = accessors;
+    expect(vbscriptReferenceSymbolKey(getter)).toBe(vbscriptReferenceSymbolKey(setter));
+    const options = {
+      includeDeclaration: false,
+      includeFunctionReturnAssignments: false,
+    };
+    const getterReferences = getVbscriptReferencesForSymbol(
+      getter,
+      { documents: [parsed], symbols },
+      options,
+    );
+    const setterReferences = getVbscriptReferencesForSymbol(
+      setter,
+      { documents: [parsed], symbols },
+      options,
+    );
+
+    expect(setterReferences).toEqual(getterReferences);
+    expect(setterReferences.map((reference) => reference.range.start.line)).toEqual([10, 11]);
   });
 
   it("keeps user-defined completion candidates for mixed-case prefixes", () => {

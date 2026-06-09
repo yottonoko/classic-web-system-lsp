@@ -4087,6 +4087,7 @@ function summarizeVbscriptFileTypeScript(
   const publicSymbols = publicSymbolsFromLocalSymbols(localSymbols);
   const typeEnvironment = buildVbTypeEnvironment(parsed, { ...context, symbols: localSymbols });
   const externalRefs = collectVbscriptExternalRefs(parsed, localSymbols);
+  const docCommentRefs = docCommentExternalRefs(parsed);
   return {
     fingerprint: textFingerprint(
       JSON.stringify({
@@ -4101,8 +4102,23 @@ function summarizeVbscriptFileTypeScript(
     exports: exportSummariesForSymbols(publicSymbols),
     externalRefs,
     externalRefUsages: externalRefUsagesForRefs(externalRefs),
+    docCommentRefUsages: externalRefUsagesForRefs(docCommentRefs),
     typeFacts: typeEnvironment.types,
   };
+}
+
+function docCommentExternalRefs(parsed: AspParsedDocument): VbExternalRef[] {
+  return docCommentReferences(parsed).map((reference) => {
+    const normalized = reference.name.trim();
+    const [owner, member] = normalized.includes(".")
+      ? normalized.split(".", 2)
+      : [undefined, normalized];
+    return {
+      name: owner ?? member,
+      memberName: owner ? member : undefined,
+      range: reference.range,
+    };
+  });
 }
 
 function publicSymbolsFromLocalSymbols(symbols: VbSymbol[]): VbSymbol[] {
@@ -9272,16 +9288,21 @@ function symbolKey(symbol: VbSymbol): string {
   if (cached) {
     return cached;
   }
+  const range = symbolReferenceIdentityRange(symbol);
   const key = [
     symbol.sourceUri,
     symbol.kind,
     symbol.memberOf ?? "",
     symbol.name.toLowerCase(),
-    symbol.range.start.line,
-    symbol.range.start.character,
+    range?.start.line ?? "",
+    range?.start.character ?? "",
   ].join("|");
   symbolKeys.set(symbol, key);
   return key;
+}
+
+function symbolReferenceIdentityRange(symbol: VbSymbol): Range | undefined {
+  return symbol.kind === "property" ? undefined : symbol.range;
 }
 
 function isLikelyDynamicCall(name: string): boolean {
@@ -9303,6 +9324,9 @@ function isClassicAspObjectName(name: string): boolean {
 }
 
 function sameSymbol(left: VbSymbol, right: VbSymbol): boolean {
+  if (samePropertyReferenceSymbol(left, right)) {
+    return true;
+  }
   return (
     left.sourceUri === right.sourceUri &&
     left.name.toLowerCase() === right.name.toLowerCase() &&
@@ -9312,6 +9336,16 @@ function sameSymbol(left: VbSymbol, right: VbSymbol): boolean {
     left.range.start.character === right.range.start.character &&
     left.range.end.line === right.range.end.line &&
     left.range.end.character === right.range.end.character
+  );
+}
+
+function samePropertyReferenceSymbol(left: VbSymbol, right: VbSymbol): boolean {
+  return (
+    left.sourceUri === right.sourceUri &&
+    left.kind === "property" &&
+    right.kind === "property" &&
+    left.name.toLowerCase() === right.name.toLowerCase() &&
+    (left.memberOf ?? "").toLowerCase() === (right.memberOf ?? "").toLowerCase()
   );
 }
 

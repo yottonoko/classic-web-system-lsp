@@ -121,6 +121,7 @@ export interface VbLocalSummary {
   exports: VbExportSummary[];
   externalRefs: VbExternalRef[];
   externalRefUsages: VbExternalRefUsage[];
+  docCommentRefUsages?: VbExternalRefUsage[];
   typeFacts: VbType[];
 }
 

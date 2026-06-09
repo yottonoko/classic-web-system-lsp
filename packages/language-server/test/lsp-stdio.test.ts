@@ -5361,6 +5361,199 @@ Response.Write SharedTitle()
       }
     });
 
+    it("counts included VBScript symbols referenced from XML documentation comments", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-cref-"));
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "default.asp");
+      const commonSource = `<%
+Function SharedTitle()
+End Function
+%>`;
+      const pageDocument = markedDocument(`<!-- #include file="common.inc" -->
+<%
+''' <see cref="Shared▮Title" />
+Sub Caller()
+End Sub
+%>`);
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(page, pageDocument.text, "utf8");
+      const commonUri = pathToFileURL(common).href;
+      const pageUri = pathToFileURL(page).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "summary" },
+              codeLens: { referenceScope: "workspace" },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: pageUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: pageDocument.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const definition = await waitForDefinitionContaining(
+          server,
+          { uri: pageUri, position: pageDocument.position },
+          "common.inc",
+        );
+        expect(JSON.stringify(definition)).toContain(commonUri);
+
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: commonUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: commonSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: commonUri },
+        })) as Array<Record<string, unknown>>;
+        const referencesCodeLens = codeLens.find((lens) => {
+          const data = lens.data as { kind?: unknown; line?: unknown } | undefined;
+          return data?.kind === "vbscript-reference" && data.line === 1;
+        });
+        expect(referencesCodeLens).toBeDefined();
+        const resolvedCodeLens = (await server.request("codeLens/resolve", referencesCodeLens)) as {
+          command?: { title?: string; arguments?: unknown[] };
+        };
+        const codeLensLocations = (resolvedCodeLens.command?.arguments?.[2] ?? []) as Array<{
+          uri?: string;
+        }>;
+        expect(resolvedCodeLens.command?.title).toContain("1 reference");
+        expect(codeLensLocations.map((location) => location.uri)).toEqual([pageUri]);
+
+        const references = (await server.request("textDocument/references", {
+          textDocument: { uri: commonUri },
+          position: { line: 1, character: 10 },
+          context: { includeDeclaration: false },
+        })) as Array<{ uri?: string }>;
+        expect(references.map((reference) => reference.uri)).toContain(pageUri);
+        await waitForLogContaining(server, "vb.references.summary.fastPath");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("counts workspace references from every VBScript property accessor declaration", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-property-"));
+      const common = path.join(tempDir, "common.inc");
+      const readPage = path.join(tempDir, "read.asp");
+      const writePage = path.join(tempDir, "write.asp");
+      const commonSource = `<%
+Class Customer
+  Public Property Get Name()
+  End Property
+  Public Property Let Name(value)
+  End Property
+End Class
+%>`;
+      const readSource = `<!-- #include file="common.inc" -->
+<%
+Dim c
+Set c = New Customer
+Response.Write c.Name
+%>`;
+      const writeSource = `<!-- #include file="common.inc" -->
+<%
+Dim c
+Set c = New Customer
+c.Name = "Alice"
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(readPage, readSource, "utf8");
+      fs.writeFileSync(writePage, writeSource, "utf8");
+      const commonUri = pathToFileURL(common).href;
+      const readUri = pathToFileURL(readPage).href;
+      const writeUri = pathToFileURL(writePage).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              codeLens: { referenceScope: "workspace" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        for (const [uri, text] of [
+          [readUri, readSource],
+          [writeUri, writeSource],
+          [commonUri, commonSource],
+        ]) {
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri,
+              languageId: "classic-asp",
+              version: 1,
+              text,
+            },
+          });
+          await server.waitForNotification("textDocument/publishDiagnostics");
+        }
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: commonUri },
+        })) as Array<Record<string, unknown>>;
+        const setterCodeLens = codeLens.find((lens) => {
+          const data = lens.data as { kind?: unknown; line?: unknown; name?: unknown } | undefined;
+          return data?.kind === "vbscript-reference" && data.name === "Name" && data.line === 4;
+        });
+        expect(setterCodeLens).toBeDefined();
+        const resolvedCodeLens = (await server.request("codeLens/resolve", setterCodeLens)) as {
+          command?: { title?: string; arguments?: unknown[] };
+        };
+        const codeLensLocations = (resolvedCodeLens.command?.arguments?.[2] ?? []) as Array<{
+          uri?: string;
+        }>;
+        expect(resolvedCodeLens.command?.title).toContain("2 references");
+        expect(codeLensLocations.map((location) => location.uri)).toEqual(
+          expect.arrayContaining([readUri, writeUri]),
+        );
+
+        const references = (await server.request("textDocument/references", {
+          textDocument: { uri: commonUri },
+          position: { line: 4, character: 22 },
+          context: { includeDeclaration: false },
+        })) as Array<{ uri?: string }>;
+        expect(references.map((reference) => reference.uri)).toEqual(
+          expect.arrayContaining([readUri, writeUri]),
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("batch resolves workspace reference CodeLens and skips unreachable candidates", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-batch-"));
       const common = path.join(tempDir, "common.inc");

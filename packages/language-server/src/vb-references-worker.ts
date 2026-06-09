@@ -308,7 +308,7 @@ async function cachedFullFallbackAnalysis(
     documents,
     symbols,
     typeEnvironment,
-    externalRefUsages: summaries.flatMap((summary) => summary.vbscript?.externalRefUsages ?? []),
+    externalRefUsages: summaries.flatMap((summary) => summaryVbReferenceUsages(summary)),
     ...contextSettings,
   };
   const analysis = { context, summaries, symbols, includeGraph };
@@ -373,14 +373,21 @@ function emptyReferenceMap(
 }
 
 function targetSymbolKey(symbol: VbReferencesWorkerTargetSymbol): string {
+  const range = targetSymbolIdentityRange(symbol);
   return [
     symbol.sourceUri,
     symbol.kind,
     symbol.memberOf ?? "",
     symbol.name.toLowerCase(),
-    symbol.range.start.line,
-    symbol.range.start.character,
+    range?.start.line ?? "",
+    range?.start.character ?? "",
   ].join("|");
+}
+
+function targetSymbolIdentityRange(
+  symbol: VbReferencesWorkerTargetSymbol,
+): VbReferencesWorkerTargetSymbol["range"] | undefined {
+  return symbol.kind === "property" ? undefined : symbol.range;
 }
 
 function textFingerprint(text: string): string {
@@ -669,7 +676,7 @@ function fallbackWorkspaceExternalReferences(
     return [];
   }
   return analysis.summaries.flatMap((summary) =>
-    (summary.vbscript?.externalRefUsages ?? [])
+    summaryVbReferenceUsages(summary)
       .filter((usage) => usage.key === symbol.name.toLowerCase())
       .flatMap((usage) =>
         usage.ranges
@@ -677,6 +684,15 @@ function fallbackWorkspaceExternalReferences(
           .map((range) => ({ uri: summary.uri, range })),
       ),
   );
+}
+
+function summaryVbReferenceUsages(
+  summary: FileAnalysisSummary,
+): NonNullable<NonNullable<FileAnalysisSummary["vbscript"]>["externalRefUsages"]> {
+  return [
+    ...(summary.vbscript?.externalRefUsages ?? []),
+    ...(summary.vbscript?.docCommentRefUsages ?? []),
+  ];
 }
 
 function isGlobalWorkspaceReferenceFallbackSymbol(symbol: VbReferencesWorkerTargetSymbol): boolean {

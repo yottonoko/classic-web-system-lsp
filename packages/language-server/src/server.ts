@@ -892,7 +892,7 @@ class AspProjectBuilderState {
       includeDeps: summary.includeRefs.map(
         (include) => `${include.mode}:${include.path.toLowerCase()}`,
       ),
-      externalRefUsageKeys: summary.vbscript?.externalRefUsages.map((usage) => usage.key) ?? [],
+      externalRefUsageKeys: summaryVbReferenceUsages(summary).map((usage) => usage.key),
       diagnosticsLayers: previous?.diagnosticsLayers ?? {},
       changedReasons,
     });
@@ -923,8 +923,7 @@ class AspProjectBuilderState {
       includeDeps: entry.summary.includeRefs.map(
         (include) => `${include.mode}:${include.path.toLowerCase()}`,
       ),
-      externalRefUsageKeys:
-        entry.summary.vbscript?.externalRefUsages.map((usage) => usage.key) ?? [],
+      externalRefUsageKeys: summaryVbReferenceUsages(entry.summary).map((usage) => usage.key),
       diagnosticsLayers: previous?.diagnosticsLayers ?? {},
       changedReasons:
         previous?.publicSignature.fingerprint === signature.fingerprint ? [] : ["publicSignature"],
@@ -7027,7 +7026,7 @@ async function buildFullVbProjectContextForWorkspaceOperationAsync(
       summaries.flatMap((summary) => summary.vbscript?.typeFacts ?? []),
       symbols,
     ),
-    externalRefUsages: summaries.flatMap((summary) => summary.vbscript?.externalRefUsages ?? []),
+    externalRefUsages: summaries.flatMap((summary) => summaryVbReferenceUsages(summary)),
     ...contextSettings,
   };
   rememberVbProjectContext(key, context);
@@ -7405,7 +7404,7 @@ async function workspaceVbReferenceSummaryReferencesForCandidate(
     referencesByTarget.set(
       vbReferencesWorkerTargetKey(target),
       summaries.flatMap((summary) =>
-        (summary.vbscript?.externalRefUsages ?? [])
+        summaryVbReferenceUsages(summary)
           .filter((usage) => usage.key === target.name.toLowerCase())
           .flatMap((usage) => usage.ranges.map((range) => ({ uri: summary.uri, range }))),
       ),
@@ -8101,14 +8100,21 @@ function workspaceVbReferenceWorkerOptions(_options: VbReferenceOptions): VbRefe
 }
 
 function vbReferencesWorkerTargetKey(symbol: VbReferencesWorkerTargetSymbol): string {
+  const range = vbReferencesWorkerTargetIdentityRange(symbol);
   return [
     symbol.sourceUri,
     symbol.kind,
     symbol.memberOf ?? "",
     symbol.name.toLowerCase(),
-    symbol.range.start.line,
-    symbol.range.start.character,
+    range?.start.line ?? "",
+    range?.start.character ?? "",
   ].join("|");
+}
+
+function vbReferencesWorkerTargetIdentityRange(
+  symbol: VbReferencesWorkerTargetSymbol,
+): VbReferencesWorkerTargetSymbol["range"] | undefined {
+  return symbol.kind === "property" ? undefined : symbol.range;
 }
 
 function workspaceVbReferenceWorkerTaskKey(
@@ -8302,9 +8308,18 @@ function fallbackWorkspaceExternalReferences(
   if (!isGlobalWorkspaceReferenceFallbackSymbol(symbol)) {
     return [];
   }
-  return (summary.vbscript?.externalRefUsages ?? [])
+  return summaryVbReferenceUsages(summary)
     .filter((usage) => usage.key === symbol.name.toLowerCase())
     .flatMap((usage) => usage.ranges.map((range) => ({ uri: summary.uri, range })));
+}
+
+function summaryVbReferenceUsages(
+  summary: FileAnalysisSummary,
+): NonNullable<NonNullable<FileAnalysisSummary["vbscript"]>["externalRefUsages"]> {
+  return [
+    ...(summary.vbscript?.externalRefUsages ?? []),
+    ...(summary.vbscript?.docCommentRefUsages ?? []),
+  ];
 }
 
 function isGlobalWorkspaceReferenceFallbackSymbol(symbol: VbSymbol): boolean {
@@ -8748,7 +8763,7 @@ async function collectCachedVbProjectAnalysisAsync(
     complete: graph.complete,
     symbols,
     typeEnvironment,
-    externalRefUsages: summaries.flatMap((summary) => summary.vbscript?.externalRefUsages ?? []),
+    externalRefUsages: summaries.flatMap((summary) => summaryVbReferenceUsages(summary)),
   };
   analysisFor(cached).vbProjectAnalysis = { key, analysis };
   return analysis;
@@ -9416,14 +9431,13 @@ function rememberIncludePublicSummary(
 function filePublicSignature(summary: FileAnalysisSummary): FilePublicSignature {
   const languages = [...new Set(summary.languageRegions.map((region) => region.language))].sort();
   const exports = summary.vbscript?.exports.map(publicExportBoundary) ?? [];
-  const externalRefUsages =
-    summary.vbscript?.externalRefUsages.map((usage) => ({
-      key: usage.key,
-      name: usage.name,
-      memberName: usage.memberName,
-      kindHint: usage.kindHint,
-      count: usage.count,
-    })) ?? [];
+  const externalRefUsages = summaryVbReferenceUsages(summary).map((usage) => ({
+    key: usage.key,
+    name: usage.name,
+    memberName: usage.memberName,
+    kindHint: usage.kindHint,
+    count: usage.count,
+  }));
   const affectsGlobalScope =
     summary.defaultLanguage === "VBScript" ||
     exports.length > 0 ||
@@ -16625,14 +16639,13 @@ async function localVbReferenceContextAsync(
   const contextSettings = vbProjectContextSettings(settings);
   await hydrateCachedVbscriptCstAsync(cached, settings, "references");
   const symbols = await collectVbscriptSymbolsAsync(cached.parsed, contextSettings);
+  const summary = await cachedFileAnalysisSummaryAsync(cached, contextSettings, settings);
   return {
     documents: [cached.parsed],
     includeSummaryUris: [cached.source.uri],
     symbols,
     typeEnvironment: buildVbTypeEnvironment(cached.parsed, { ...contextSettings, symbols }),
-    externalRefUsages:
-      (await cachedFileAnalysisSummaryAsync(cached, contextSettings, settings)).vbscript
-        ?.externalRefUsages ?? [],
+    externalRefUsages: summaryVbReferenceUsages(summary),
     ...contextSettings,
   };
 }

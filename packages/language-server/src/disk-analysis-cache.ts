@@ -5,7 +5,7 @@ import { decode, encode } from "cbor-x";
 import type { AspInclude, FileAnalysisSummary, VbSymbolIndex } from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver-types";
 
-const formatVersion = 3;
+const formatVersion = 4;
 const defaultTtlHours = 24 * 14;
 const defaultMaxSizeMb = 128;
 type DiskCacheEntryKind = "diagnostics" | "summary" | "includeRefs" | "vbSymbolIndex";
