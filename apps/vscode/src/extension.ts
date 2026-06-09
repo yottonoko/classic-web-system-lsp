@@ -28,9 +28,11 @@ const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
+const serverStatusNotificationMethod = "aspLsp/status";
 const htmlTagCompleteLookBehind = 2000;
 type GraphOpenLocation = "active" | "beside";
 type GraphScope = "document" | "folder" | "workspace";
+type ServerStatusKind = "idle" | "loading" | "analyzing";
 
 interface GraphCommandRequest {
   scope: GraphScope;
@@ -41,6 +43,8 @@ interface GraphCommandRequest {
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
+let statusNotificationSubscription: vscode.Disposable | undefined;
+let serverStatusKind: ServerStatusKind = "idle";
 let restartPromise: Promise<void> | undefined;
 let isDeactivating = false;
 let isManualRestarting = false;
@@ -207,7 +211,15 @@ async function autoCloseAspBlock(event: vscode.TextDocumentChangeEvent): Promise
   } else {
     workspaceEdit.insert(event.document.uri, position, "%>");
   }
-  await vscode.workspace.applyEdit(workspaceEdit);
+  const applied = await vscode.workspace.applyEdit(workspaceEdit);
+  if (applied) {
+    const editor = vscode.window.visibleTextEditors.find(
+      (candidate) => candidate.document.uri.toString() === event.document.uri.toString(),
+    );
+    if (editor) {
+      editor.selection = new vscode.Selection(position, position);
+    }
+  }
 }
 
 function couldTriggerHtmlTagCompleteBefore(
@@ -614,14 +626,24 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     serverOptions,
     clientOptions,
   );
+  statusNotificationSubscription?.dispose();
+  statusNotificationSubscription = nextClient.onNotification(
+    serverStatusNotificationMethod,
+    handleServerStatusNotification,
+  );
   client = nextClient;
+  serverStatusKind = "idle";
   updateStatusBar();
   try {
     await nextClient.start();
   } catch (error) {
+    statusNotificationSubscription?.dispose();
+    statusNotificationSubscription = undefined;
     if (client === nextClient) {
       client = undefined;
     }
+    serverStatusKind = "idle";
+    updateStatusBar();
     throw error;
   }
   context.subscriptions.push(nextClient);
@@ -632,6 +654,9 @@ export async function deactivate(): Promise<void> {
   await restartPromise?.catch(() => undefined);
   await client?.stop();
   client = undefined;
+  statusNotificationSubscription?.dispose();
+  statusNotificationSubscription = undefined;
+  serverStatusKind = "idle";
   outputChannel?.dispose();
   outputChannel = undefined;
   statusBarItem?.dispose();
@@ -749,6 +774,9 @@ async function restartServerOnce(context: vscode.ExtensionContext): Promise<void
   try {
     await client?.stop();
     client = undefined;
+    statusNotificationSubscription?.dispose();
+    statusNotificationSubscription = undefined;
+    serverStatusKind = "idle";
     updateStatusBar();
     crashRestartTimestamps = [];
   } finally {
@@ -762,8 +790,27 @@ function updateStatusBar(): void {
     return;
   }
   const localizer = extensionLocalizer();
+  if (serverStatusKind === "loading") {
+    statusBarItem.text = `$(sync~spin) ${localizer("status.loading.text")}`;
+    statusBarItem.tooltip = localizer("status.loading.tooltip");
+    return;
+  }
+  if (serverStatusKind === "analyzing") {
+    statusBarItem.text = `$(loading~spin) ${localizer("status.analyzing.text")}`;
+    statusBarItem.tooltip = localizer("status.analyzing.tooltip");
+    return;
+  }
   statusBarItem.text = "$(code) ASP LSP";
   statusBarItem.tooltip = localizer("status.tooltip");
+}
+
+function handleServerStatusNotification(params: unknown): void {
+  const status = (params as { status?: unknown } | undefined)?.status;
+  if (status !== "idle" && status !== "loading" && status !== "analyzing") {
+    return;
+  }
+  serverStatusKind = status;
+  updateStatusBar();
 }
 
 function createLanguageClientErrorHandler(): ErrorHandler {
@@ -775,6 +822,8 @@ function createLanguageClientErrorHandler(): ErrorHandler {
       return { action: ErrorAction.Shutdown };
     },
     closed() {
+      serverStatusKind = "idle";
+      updateStatusBar();
       if (isDeactivating || isManualRestarting) {
         return { action: CloseAction.DoNotRestart, handled: true };
       }
@@ -859,6 +908,10 @@ async function createLaunchConfig(): Promise<void> {
 
 type ExtensionMessageKey =
   | "status.tooltip"
+  | "status.loading.text"
+  | "status.loading.tooltip"
+  | "status.analyzing.text"
+  | "status.analyzing.tooltip"
   | "debug.iis.name"
   | "debug.iisExpress.name"
   | "launch.noWorkspace"
@@ -888,6 +941,10 @@ type ExtensionMessageArgs = Record<string, string>;
 const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>> = {
   en: {
     "status.tooltip": "Classic ASP Language Server",
+    "status.loading.text": "ASP Loading",
+    "status.loading.tooltip": "Classic ASP Language Server is loading workspace data.",
+    "status.analyzing.text": "ASP Analyzing",
+    "status.analyzing.tooltip": "Classic ASP Language Server is analyzing ASP files.",
     "debug.iis.name": "Debug Classic ASP URL",
     "debug.iisExpress.name": "Debug Classic ASP IIS Express URL",
     "launch.noWorkspace": "Open a workspace before creating launch.json.",
@@ -915,6 +972,10 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
   },
   ja: {
     "status.tooltip": "Classic ASP Language Server",
+    "status.loading.text": "ASP 読み込み中",
+    "status.loading.tooltip": "Classic ASP Language Server が workspace data を読み込み中です。",
+    "status.analyzing.text": "ASP 解析中",
+    "status.analyzing.tooltip": "Classic ASP Language Server が ASP file を解析中です。",
     "debug.iis.name": "Classic ASP URL をデバッグ",
     "debug.iisExpress.name": "Classic ASP IIS Express URL をデバッグ",
     "launch.noWorkspace": "launch.json を作成する前に workspace を開いてください。",

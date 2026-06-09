@@ -11,6 +11,7 @@ import {
   InsertTextFormat,
 } from "vscode-languageserver-types";
 import type { CodeAction, TextEdit, WorkspaceEdit } from "vscode-languageserver-types";
+import { fileIdentityKeyFromUri } from "../src/file-identity";
 
 interface JsonRpcMessage {
   id?: number;
@@ -84,6 +85,15 @@ const jsCheckDiagnosticsSettings = {
 describe(
   "stdio LSP server",
   () => {
+    it("normalizes file identity keys for Windows file URI spellings", () => {
+      expect(fileIdentityKeyFromUri("file:///C:/site/default.asp")).toBe(
+        fileIdentityKeyFromUri("file:///c:/site/default.asp"),
+      );
+      expect(fileIdentityKeyFromUri("file:///C:/site/default.asp")).toBe(
+        fileIdentityKeyFromUri("file:///c%3A/site/default.asp"),
+      );
+    });
+
     it("handles initialize, didOpen, diagnostics and completion over JSON-RPC", async () => {
       const server = new RpcServer();
       try {
@@ -135,6 +145,34 @@ describe(
           position: { line: 1, character: 9 },
         });
         expect(JSON.stringify(completions)).toContain("Write");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("notifies clients while ASP files are being analyzed", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+
+        const uri = "file:///tmp/status.asp";
+        openClassicAspDocument(server, uri, '<% Dim value\nvalue = "ok" %>');
+
+        expect((await waitForStatus(server, "analyzing")).params).toEqual(
+          expect.objectContaining({ status: "analyzing" }),
+        );
+        await waitForDiagnosticsPublished(server, uri);
+        expect((await waitForStatus(server, "idle")).params).toEqual(
+          expect.objectContaining({ status: "idle" }),
+        );
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -5824,6 +5862,91 @@ a = 3
           )
           .reduce((count, link) => count + (typeof link.count === "number" ? link.count : 0), 0);
         expect(aReferenceCount).toBe(2);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("uses open workspace reference candidates when file URI spelling differs", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-uri-refs-"));
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "page.asp");
+      const commonSource = `<%
+Function SharedTitle()
+End Function
+%>`;
+      const openPageSource = `<!-- #include file="common.inc" -->
+<%
+Response.Write SharedTitle()
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(page, "<%\n%>", "utf8");
+      const commonUri = pathToFileURL(common).href;
+      const pageUri = pathToFileURL(page).href;
+      const encodedPageUri = pageUri.replace("page.asp", "p%61ge.asp");
+      expect(fileIdentityKeyFromUri(encodedPageUri)).toBe(fileIdentityKeyFromUri(pageUri));
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              codeLens: { referenceScope: "workspace" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: commonUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: commonSource,
+          },
+        });
+        await waitForDiagnosticsPublished(server, commonUri);
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: encodedPageUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: openPageSource,
+          },
+        });
+        await waitForDiagnosticsPublished(server, encodedPageUri);
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: commonUri },
+        })) as Array<Record<string, unknown>>;
+        const referencesCodeLens = codeLens.find((lens) => {
+          const data = lens.data as
+            | { kind?: unknown; name?: unknown; symbolKind?: unknown }
+            | undefined;
+          return (
+            data?.kind === "vbscript-reference" &&
+            data.name === "SharedTitle" &&
+            data.symbolKind === "function"
+          );
+        });
+        expect(referencesCodeLens).toBeDefined();
+        const resolvedCodeLens = (await server.request("codeLens/resolve", referencesCodeLens)) as {
+          command?: { title?: string; arguments?: unknown[] };
+        };
+        const codeLensLocations = (resolvedCodeLens.command?.arguments?.[2] ?? []) as Array<{
+          uri?: string;
+        }>;
+
+        expect(resolvedCodeLens.command?.title).toContain("1 reference");
+        expect(codeLensLocations.map((location) => location.uri)).toContain(encodedPageUri);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -14925,6 +15048,32 @@ async function waitForLogContaining(server: RpcServer, expected: string): Promis
   }
   server.prependPendingNotifications("window/logMessage", skipped);
   throw new Error(`Timed out waiting for log containing ${expected}.`);
+}
+
+async function waitForStatus(server: RpcServer, status: string): Promise<JsonRpcMessage> {
+  const deadline = Date.now() + rpcTimeoutMs;
+  const skipped: JsonRpcMessage[] = [];
+  while (Date.now() < deadline) {
+    const pending = server.takePendingNotifications("aspLsp/status");
+    for (const [index, message] of pending.entries()) {
+      if ((message.params as { status?: unknown })?.status === status) {
+        server.prependPendingNotifications("aspLsp/status", [
+          ...skipped,
+          ...pending.slice(index + 1),
+        ]);
+        return message;
+      }
+      skipped.push(message);
+    }
+    const message = await server.waitForNotification("aspLsp/status");
+    if ((message.params as { status?: unknown })?.status === status) {
+      server.prependPendingNotifications("aspLsp/status", skipped);
+      return message;
+    }
+    skipped.push(message);
+  }
+  server.prependPendingNotifications("aspLsp/status", skipped);
+  throw new Error(`Timed out waiting for status ${status}.`);
 }
 
 function delay(ms: number): Promise<void> {

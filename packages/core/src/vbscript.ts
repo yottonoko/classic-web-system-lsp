@@ -25,6 +25,7 @@ import type {
 import { offsetAt, positionAt, rangeFromOffsets } from "./position";
 import { hydrateVbscriptCst, needsVbscriptCstHydration, parseAspDocument } from "./parser";
 import { createLocalizer } from "./localize";
+import { sameSourceUri, sourceUriIdentityKey } from "./source-uri";
 import builtinCatalogData from "./vbscript-builtin-catalog.json";
 import type {
   AspCstNode,
@@ -2641,6 +2642,11 @@ function analyzeVbscriptTypeScript(
       ),
     );
   }
+  if (context.deadCodeDiagnostics !== false) {
+    diagnostics.push(
+      ...measureVbDebugStep(context, "deadCode", () => diagnoseDeadCode(parsed, context)),
+    );
+  }
   diagnostics.push(
     ...measureVbDebugStep(context, "identifierCase", () =>
       diagnoseIdentifierCase(parsed, symbols, context),
@@ -2694,7 +2700,7 @@ export function getVbscriptDocumentSymbols(parsed: AspParsedDocument): DocumentS
   return collectVbscriptSymbols(parsed)
     .filter(
       (symbol) =>
-        symbol.sourceUri === parsed.uri &&
+        sameSourceUri(symbol.sourceUri, parsed.uri) &&
         (symbol.kind === "function" ||
           symbol.kind === "sub" ||
           symbol.kind === "class" ||
@@ -3111,7 +3117,7 @@ function isImplicitSymbolDeclarationToken(
 ): boolean {
   return (
     symbol.implicit === true &&
-    symbol.sourceUri === parsed.uri &&
+    sameSourceUri(symbol.sourceUri, parsed.uri) &&
     sameRange(symbol.range, rangeFromOffsets(parsed.text, token.start, token.end))
   );
 }
@@ -3353,7 +3359,7 @@ export function getVbscriptDocumentHighlights(
   context: VbProjectContext = {},
 ): DocumentHighlight[] {
   return getVbscriptReferences(parsed, position, context)
-    .filter((reference) => reference.uri === parsed.uri)
+    .filter((reference) => sameSourceUri(reference.uri, parsed.uri))
     .map((reference) => ({
       range: reference.range,
       kind: DocumentHighlightKind.Text,
@@ -3524,7 +3530,7 @@ export function getVbscriptInlayHints(
   if (settings.variableTypes) {
     for (const symbol of symbols) {
       if (
-        symbol.sourceUri !== parsed.uri ||
+        !sameSourceUri(symbol.sourceUri, parsed.uri) ||
         !["variable", "constant", "field"].includes(symbol.kind) ||
         !symbol.typeName ||
         isHiddenInlayType(symbol.typeName) ||
@@ -3546,7 +3552,7 @@ export function getVbscriptInlayHints(
   if (settings.functionReturnTypes) {
     for (const symbol of symbols) {
       if (
-        symbol.sourceUri !== parsed.uri ||
+        !sameSourceUri(symbol.sourceUri, parsed.uri) ||
         !["function", "property"].includes(symbol.kind) ||
         !symbol.typeName ||
         isHiddenInlayType(symbol.typeName) ||
@@ -3742,7 +3748,7 @@ function isUncertainIncludeImplicitSymbol(
 ): boolean {
   return (
     symbol.implicit === true &&
-    symbol.sourceUri === parsed.uri &&
+    sameSourceUri(symbol.sourceUri, parsed.uri) &&
     isGlobalVariableLikeSymbol(symbol) &&
     parsed.includes.length > 0 &&
     !hasIncludeAwareDocuments(parsed, context)
@@ -3751,10 +3757,12 @@ function isUncertainIncludeImplicitSymbol(
 
 function hasIncludeAwareDocuments(parsed: AspParsedDocument, context: VbProjectContext): boolean {
   return (
-    context.includeSummaryUris?.some((uri) => uri !== parsed.uri) === true ||
-    context.documents?.some((document) => document.uri !== parsed.uri) === true ||
+    context.includeSummaryUris?.some((uri) => !sameSourceUri(uri, parsed.uri)) === true ||
+    context.documents?.some((document) => !sameSourceUri(document.uri, parsed.uri)) === true ||
     context.symbols?.some(
-      (symbol) => symbol.sourceUri !== parsed.uri && !symbol.sourceUri.includes("#runtime-global"),
+      (symbol) =>
+        !sameSourceUri(symbol.sourceUri, parsed.uri) &&
+        !symbol.sourceUri.includes("#runtime-global"),
     ) === true
   );
 }
@@ -3861,7 +3869,7 @@ export function getVbscriptOutgoingCalls(
   if (!source?.scopeRange) {
     return [];
   }
-  const document = documents.find((candidate) => candidate.uri === source.sourceUri);
+  const document = documents.find((candidate) => sameSourceUri(candidate.uri, source.sourceUri));
   if (!document) {
     return [];
   }
@@ -5612,7 +5620,7 @@ function documentationActionSymbolAt(
   return symbols
     .filter(
       (symbol) =>
-        symbol.sourceUri === parsed.uri &&
+        sameSourceUri(symbol.sourceUri, parsed.uri) &&
         !symbol.implicit &&
         isDocumentationActionSymbol(symbol) &&
         rangeContainsOffset(parsed.text, symbol.range, offset),
@@ -5637,7 +5645,7 @@ function isDocumentationActionSymbol(symbol: VbSymbol): boolean {
 function callableOwnerForParameter(parameter: VbSymbol, symbols: VbSymbol[]): VbSymbol | undefined {
   return symbols.find(
     (candidate) =>
-      candidate.sourceUri === parameter.sourceUri &&
+      sameSourceUri(candidate.sourceUri, parameter.sourceUri) &&
       candidate.scopeRange &&
       parameter.scopeRange &&
       sameRange(candidate.scopeRange, parameter.scopeRange) &&
@@ -5811,7 +5819,7 @@ function parameterSymbolForCallable(
     (candidate) =>
       candidate.kind === "parameter" &&
       candidate.name.toLowerCase() === parameterName.toLowerCase() &&
-      candidate.sourceUri === callable.sourceUri &&
+      sameSourceUri(candidate.sourceUri, callable.sourceUri) &&
       candidate.scopeRange &&
       callable.scopeRange &&
       sameRange(candidate.scopeRange, callable.scopeRange),
@@ -6415,7 +6423,7 @@ function currentClassName(
   return symbols.find(
     (symbol) =>
       symbol.kind === "class" &&
-      symbol.sourceUri === parsed.uri &&
+      sameSourceUri(symbol.sourceUri, parsed.uri) &&
       rangeContainsOffset(parsed.text, symbol.scopeRange, offset),
   )?.name;
 }
@@ -6596,7 +6604,7 @@ function isSymbolVisibleAt(
   offset: number,
   index?: VbSymbolIndex,
 ): boolean {
-  if (symbol.sourceUri !== uri) {
+  if (!sameSourceUri(symbol.sourceUri, uri)) {
     return !symbol.scopeName && !symbol.memberOf;
   }
   if (
@@ -6695,7 +6703,7 @@ function symbolIndexFor(symbols: VbSymbol[], parsed?: AspParsedDocument): VbSymb
       pushMapItem(memberByOwner, symbol.memberOf.toLowerCase(), symbol);
       pushMapItem(memberByOwnerAndName, memberSymbolKey(symbol.memberOf, symbol.name), symbol);
     }
-    if (parsed && symbol.sourceUri === parsed.uri && symbol.scopeRange) {
+    if (parsed && sameSourceUri(symbol.sourceUri, parsed.uri) && symbol.scopeRange) {
       scopeOffsets.set(symbol, {
         start: offsetAt(parsed.text, symbol.scopeRange.start),
         end: offsetAt(parsed.text, symbol.scopeRange.end),
@@ -7517,7 +7525,7 @@ function unusedReferenceCandidates(
   const candidates: VbSymbol[] = [];
   for (const symbol of symbols) {
     if (
-      symbol.sourceUri !== parsed.uri ||
+      !sameSourceUri(symbol.sourceUri, parsed.uri) ||
       isBuiltinName(symbol.name) ||
       isRuntimeEntryPoint(parsed, symbol) ||
       !isUnusedDiagnosticCandidate(symbol)
@@ -7574,6 +7582,115 @@ function unusedDiagnosticMessage(symbol: VbSymbol, locale: AspLocale | undefined
   return localizer.t("vb.diagnostic.unusedSymbol", { name: symbol.name });
 }
 
+function diagnoseDeadCode(parsed: AspParsedDocument, context: VbProjectContext): Diagnostic[] {
+  const localizer = createLocalizer(context.locale);
+  const diagnostics: Diagnostic[] = [];
+  const reported = new Set<string>();
+  let unreachableUntil: number | undefined;
+  for (const statement of vbStatements(parsed)) {
+    const first = statement[0];
+    const last = statement.at(-1);
+    if (!first || !last) {
+      continue;
+    }
+    if (
+      unreachableUntil !== undefined &&
+      (first.start >= unreachableUntil || isDeadCodeReachabilityBoundary(statement))
+    ) {
+      unreachableUntil = undefined;
+    }
+    if (unreachableUntil !== undefined && first.start < unreachableUntil) {
+      const key = `${first.start}:${last.end}`;
+      if (!reported.has(key)) {
+        reported.add(key);
+        diagnostics.push({
+          severity: DiagnosticSeverity.Hint,
+          range: rangeFromOffsets(parsed.text, first.start, last.end),
+          message: localizer.t("vb.diagnostic.unreachableCode"),
+          source: "asp-lsp-vbscript-dead-code",
+          code: "unreachableCode",
+          tags: [DiagnosticTag.Unnecessary],
+        });
+      }
+    }
+    const terminalUntil = deadCodeTerminalEnd(parsed, statement);
+    if (terminalUntil !== undefined) {
+      unreachableUntil = terminalUntil;
+    }
+  }
+  return diagnostics;
+}
+
+function deadCodeTerminalEnd(parsed: AspParsedDocument, statement: VbToken[]): number | undefined {
+  const first = lowerToken(statement[0]);
+  const second = lowerToken(statement[1]);
+  if (!first || isSingleLineConditionalStatement(statement)) {
+    return undefined;
+  }
+  if (first === "exit") {
+    if (second === "sub" || second === "function" || second === "property") {
+      const callable = innermostContainingVbNode(parsed, statement[0].start, [
+        "Procedure",
+        "Property",
+      ]);
+      if (
+        (second === "property" && callable?.kind === "Property") ||
+        (second !== "property" &&
+          callable?.kind === "Procedure" &&
+          callable.procedureKind === second)
+      ) {
+        return callable.end;
+      }
+      return undefined;
+    }
+    if (second === "for") {
+      return innermostContainingVbNode(parsed, statement[0].start, ["For", "ForEach"])?.end;
+    }
+    if (second === "do") {
+      return innermostContainingVbNode(parsed, statement[0].start, ["DoLoop"])?.end;
+    }
+    return undefined;
+  }
+  if (first === "end" && !second) {
+    return (
+      innermostContainingVbNode(parsed, statement[0].start, ["Procedure", "Property"])?.end ??
+      parsed.text.length
+    );
+  }
+  return undefined;
+}
+
+function isSingleLineConditionalStatement(statement: VbToken[]): boolean {
+  const first = lowerToken(statement[0]);
+  if (first !== "if" && first !== "elseif") {
+    return false;
+  }
+  const thenIndex = topLevelKeywordIndex(statement, "then");
+  return thenIndex !== -1 && thenIndex < statement.length - 1;
+}
+
+function isDeadCodeReachabilityBoundary(statement: VbToken[]): boolean {
+  const first = lowerToken(statement[0]);
+  const second = lowerToken(statement[1]);
+  if (["else", "elseif", "case", "loop", "wend", "next"].includes(first ?? "")) {
+    return true;
+  }
+  return (
+    first === "end" &&
+    ["if", "select", "sub", "function", "property", "class", "with"].includes(second ?? "")
+  );
+}
+
+function innermostContainingVbNode(
+  parsed: AspParsedDocument,
+  offset: number,
+  kinds: readonly VbCstNode["kind"][],
+): VbCstNode | undefined {
+  return vbNodes(parsed)
+    .filter((node) => kinds.includes(node.kind) && node.start <= offset && offset < node.end)
+    .sort((left, right) => left.end - left.start - (right.end - right.start))[0];
+}
+
 function diagnoseIdentifierCase(
   parsed: AspParsedDocument,
   symbols: VbSymbol[],
@@ -7583,7 +7700,7 @@ function diagnoseIdentifierCase(
   return symbols
     .filter(
       (symbol) =>
-        symbol.sourceUri === parsed.uri &&
+        sameSourceUri(symbol.sourceUri, parsed.uri) &&
         /^[A-Za-z][A-Za-z0-9_]*$/.test(symbol.name) &&
         !symbol.implicit &&
         !isRuntimeEntryPoint(parsed, symbol) &&
@@ -9213,7 +9330,7 @@ function callHierarchyTargetSymbol(
   const data = item.data as Partial<VbCallHierarchyData> | undefined;
   return symbols.find(
     (symbol) =>
-      symbol.sourceUri === (data?.uri ?? item.uri) &&
+      sameSourceUri(symbol.sourceUri, data?.uri ?? item.uri) &&
       symbol.name.toLowerCase() ===
         (data?.name ?? item.name.split(".").at(-1) ?? "").toLowerCase() &&
       symbol.kind === (data?.kind ?? symbol.kind) &&
@@ -9286,7 +9403,7 @@ function enclosingCallableSymbol(
   return symbols
     .filter(
       (symbol) =>
-        symbol.sourceUri === parsed.uri &&
+        sameSourceUri(symbol.sourceUri, parsed.uri) &&
         isCallableHierarchySymbol(symbol) &&
         rangeContainsOffset(parsed.text, symbol.scopeRange, offset),
     )
@@ -9303,7 +9420,7 @@ function symbolKey(symbol: VbSymbol): string {
   }
   const range = symbolReferenceIdentityRange(symbol);
   const key = [
-    symbol.sourceUri,
+    sourceUriIdentityKey(symbol.sourceUri),
     symbol.kind,
     symbol.memberOf ?? "",
     symbol.name.toLowerCase(),
@@ -9341,7 +9458,7 @@ function sameSymbol(left: VbSymbol, right: VbSymbol): boolean {
     return true;
   }
   return (
-    left.sourceUri === right.sourceUri &&
+    sameSourceUri(left.sourceUri, right.sourceUri) &&
     left.name.toLowerCase() === right.name.toLowerCase() &&
     left.kind === right.kind &&
     (left.memberOf ?? "").toLowerCase() === (right.memberOf ?? "").toLowerCase() &&
@@ -9354,7 +9471,7 @@ function sameSymbol(left: VbSymbol, right: VbSymbol): boolean {
 
 function samePropertyReferenceSymbol(left: VbSymbol, right: VbSymbol): boolean {
   return (
-    left.sourceUri === right.sourceUri &&
+    sameSourceUri(left.sourceUri, right.sourceUri) &&
     left.kind === "property" &&
     right.kind === "property" &&
     left.name.toLowerCase() === right.name.toLowerCase() &&
@@ -9403,7 +9520,8 @@ function compareSymbolsForResolution(
   return (
     symbolResolutionPriority(parsed, right, symbols) -
       symbolResolutionPriority(parsed, left, symbols) ||
-    Number(right.sourceUri === parsed.uri) - Number(left.sourceUri === parsed.uri)
+    Number(sameSourceUri(right.sourceUri, parsed.uri)) -
+      Number(sameSourceUri(left.sourceUri, parsed.uri))
   );
 }
 
@@ -9428,7 +9546,7 @@ function isImplicitAssignmentDuplicateOfEarlierIncludeGlobal(
   symbols: VbSymbol[],
 ): boolean {
   if (
-    symbol.sourceUri !== parsed.uri ||
+    !sameSourceUri(symbol.sourceUri, parsed.uri) ||
     symbol.implicit !== true ||
     !isVariableMarkerSymbol(symbol) ||
     !hasEarlierIncludeDirective(parsed, symbol)
@@ -9439,7 +9557,7 @@ function isImplicitAssignmentDuplicateOfEarlierIncludeGlobal(
   return symbols.some(
     (candidate) =>
       candidate !== symbol &&
-      candidate.sourceUri !== parsed.uri &&
+      !sameSourceUri(candidate.sourceUri, parsed.uri) &&
       !candidate.sourceUri.includes("#runtime-global") &&
       candidate.name.toLowerCase() === lowerName &&
       isGlobalVariableLikeSymbol(candidate),

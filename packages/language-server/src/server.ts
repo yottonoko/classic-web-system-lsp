@@ -16,6 +16,11 @@ import {
   type DiskWorkspaceIndexedDocument,
   type DiskVbSymbolIndexCacheEntry,
 } from "./disk-analysis-cache";
+import {
+  fileIdentityKeyFromFileName,
+  fileIdentityKeyFromUri,
+  sameFileIdentityUri,
+} from "./file-identity";
 import type {
   JsDiagnosticsWorkerResponse,
   JsDiagnosticsWorkerVirtualDocument,
@@ -230,6 +235,7 @@ const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
+const statusNotificationMethod = "aspLsp/status";
 const languageServerVersion = "0.5.12";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
@@ -267,6 +273,9 @@ let projectUpdateTimer: ReturnType<typeof setTimeout> | undefined;
 let openFileProjectMaintenanceTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingProjectUpdateReason: string | undefined;
 let pendingOpenFileMaintenanceReason: string | undefined;
+let loadingStatusDepth = 0;
+let analyzingStatusDepth = 0;
+let currentStatusKind: AspLspStatusKind = "idle";
 let jsDiagnosticsWorkerPool: JsDiagnosticsWorkerPool | undefined;
 let jsDiagnosticsWorkerRequestId = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
@@ -275,6 +284,9 @@ const maxLightweightJsUnusedCacheEntries = 32;
 const lightweightJsUnusedDiagnosticsCache = new Map<string, LightweightJsUnusedCacheEntry>();
 const hiddenJavaScriptGlobalCompletions = new Set(["__dirname", "__filename"]);
 const browserJavaScriptLibs = ["lib.esnext.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"];
+
+type AspLspStatusKind = "idle" | "loading" | "analyzing";
+type ActiveAspLspStatusKind = Exclude<AspLspStatusKind, "idle">;
 
 interface PathResolution {
   fileName: string;
@@ -1089,7 +1101,7 @@ class CompletionSessionCache {
     const entry = this.entries.get(this.baseKey(cached, settings, region));
     if (
       !entry ||
-      entry.uri !== cached.source.uri ||
+      !sameFileIdentityUri(entry.uri, cached.source.uri) ||
       entry.language !== region.language ||
       entry.contextIdentity !== contextIdentity
     ) {
@@ -1159,9 +1171,15 @@ class CompletionSessionCache {
   }
 
   clearUris(uris: Set<string>, reason: string): void {
+    const fileKeys = new Set(
+      [...uris]
+        .filter((uri) => uri.startsWith("file://"))
+        .map((uri) => fileIdentityKeyFromUri(uri)),
+    );
     let removed = 0;
     for (const [key, entry] of this.entries) {
-      if (!uris.has(entry.uri)) {
+      const entryKey = entry.uri.startsWith("file://") ? fileIdentityKeyFromUri(entry.uri) : "";
+      if (!uris.has(entry.uri) && !fileKeys.has(entryKey)) {
         continue;
       }
       this.entries.delete(key);
@@ -1177,7 +1195,7 @@ class CompletionSessionCache {
 
   private baseKey(cached: CachedDocument, settings: AspSettings, region: AspRegion): string {
     return JSON.stringify({
-      uri: cached.source.uri,
+      uri: fileIdentityKeyFromUri(cached.source.uri),
       language: region.language,
       regionKind: region.kind,
       regionStart: region.start,
@@ -1255,21 +1273,22 @@ class IncludeDocumentLoader {
     settings: AspSettings,
   ): Promise<IncludeDocumentCacheEntry | undefined> {
     const normalized = normalizeFileName(fileName);
+    const fileKey = fileIdentityKeyFromFileName(normalized);
     const identity = await includeDocumentSourceIdentityAsync(normalized, settings);
     if (!identity) {
       return undefined;
     }
-    const { key, source, text, diskBacked } = identity;
-    const existing = this.cache.get(normalized);
+    const { key, source, text, uri, diskBacked } = identity;
+    const existing = this.cache.get(fileKey);
     if (existing?.key === key) {
       return existing;
     }
-    const inFlightKey = `${normalized}:${key}`;
+    const inFlightKey = `${fileKey}:${key}`;
     const pending = this.inFlight.get(inFlightKey);
     if (pending) {
       return pending;
     }
-    const generation = this.generation(normalized);
+    const generation = this.generation(fileKey);
     let promise: Promise<IncludeDocumentCacheEntry | undefined> | undefined;
     promise = (async () => {
       try {
@@ -1282,13 +1301,10 @@ class IncludeDocumentLoader {
             });
           if (cachedParsed) {
             const entry = includeDocumentCacheEntryFromDisk(normalized, key, cachedParsed);
-            if (this.generation(normalized) === generation) {
-              this.cache.set(normalized, entry);
-              this.summaryCache.set(normalized, entry);
-              this.includeRefsCache.set(
-                normalized,
-                includeRefsCacheEntryFromSummary(entry, settings),
-              );
+            if (this.generation(fileKey) === generation) {
+              this.cache.set(fileKey, entry);
+              this.summaryCache.set(fileKey, entry);
+              this.includeRefsCache.set(fileKey, includeRefsCacheEntryFromSummary(entry, settings));
               rememberIncludePublicSummary(entry, settings);
               rememberSourceMetadata(entry.source);
               logDebugSummary(settings, `[asp-lsp] diskParsed.hit: ${entry.uri}`);
@@ -1300,15 +1316,16 @@ class IncludeDocumentLoader {
         const nextText = text ?? (await readTextFileAsync(normalized, settings.legacyEncoding));
         const entry = await createIncludeDocumentCacheEntryAsync(
           normalized,
+          uri,
           nextText,
           settings,
           key,
           source,
         );
-        if (this.generation(normalized) === generation) {
-          this.cache.set(normalized, entry);
-          this.summaryCache.set(normalized, entry);
-          this.includeRefsCache.set(normalized, includeRefsCacheEntryFromSummary(entry, settings));
+        if (this.generation(fileKey) === generation) {
+          this.cache.set(fileKey, entry);
+          this.summaryCache.set(fileKey, entry);
+          this.includeRefsCache.set(fileKey, includeRefsCacheEntryFromSummary(entry, settings));
           rememberIncludePublicSummary(entry, settings);
           if (diskBacked) {
             void writeIncludeDocumentDiskEntries(entry, settings);
@@ -1331,21 +1348,22 @@ class IncludeDocumentLoader {
     options: { allowRead?: boolean } = {},
   ): Promise<IncludeSummaryCacheEntry | undefined> {
     const normalized = normalizeFileName(fileName);
+    const fileKey = fileIdentityKeyFromFileName(normalized);
     const identity = await includeDocumentSourceIdentityAsync(normalized, settings);
     if (!identity) {
       return undefined;
     }
-    const { key, source, text, diskBacked } = identity;
-    const existing = this.summaryCache.get(normalized);
+    const { key, source, text, uri, diskBacked } = identity;
+    const existing = this.summaryCache.get(fileKey);
     if (existing?.key === key) {
       return existing;
     }
-    const existingDocument = this.cache.get(normalized);
+    const existingDocument = this.cache.get(fileKey);
     if (existingDocument?.key === key) {
-      this.summaryCache.set(normalized, existingDocument);
+      this.summaryCache.set(fileKey, existingDocument);
       return existingDocument;
     }
-    const baseInFlightKey = `${normalized}:${key}`;
+    const baseInFlightKey = `${fileKey}:${key}`;
     const readAllowed = options.allowRead !== false;
     const readInFlightKey = `${baseInFlightKey}:read`;
     const noReadInFlightKey = `${baseInFlightKey}:no-read`;
@@ -1356,7 +1374,7 @@ class IncludeDocumentLoader {
     if (pending) {
       return pending;
     }
-    const generation = this.generation(normalized);
+    const generation = this.generation(fileKey);
     let promise: Promise<IncludeSummaryCacheEntry | undefined> | undefined;
     promise = (async () => {
       try {
@@ -1369,12 +1387,9 @@ class IncludeDocumentLoader {
             });
           if (cachedSummary) {
             const entry = includeSummaryCacheEntryFromDisk(normalized, key, cachedSummary);
-            if (this.generation(normalized) === generation) {
-              this.summaryCache.set(normalized, entry);
-              this.includeRefsCache.set(
-                normalized,
-                includeRefsCacheEntryFromSummary(entry, settings),
-              );
+            if (this.generation(fileKey) === generation) {
+              this.summaryCache.set(fileKey, entry);
+              this.includeRefsCache.set(fileKey, includeRefsCacheEntryFromSummary(entry, settings));
               rememberIncludePublicSummary(entry, settings);
               rememberSourceMetadata(entry.source);
               logDebugSummary(settings, `[asp-lsp] diskSummary.hit: ${entry.uri}`);
@@ -1389,15 +1404,16 @@ class IncludeDocumentLoader {
         const nextText = text ?? (await readTextFileAsync(normalized, settings.legacyEncoding));
         const entry = await createIncludeDocumentCacheEntryAsync(
           normalized,
+          uri,
           nextText,
           settings,
           key,
           source,
         );
-        if (this.generation(normalized) === generation) {
-          this.cache.set(normalized, entry);
-          this.summaryCache.set(normalized, entry);
-          this.includeRefsCache.set(normalized, includeRefsCacheEntryFromSummary(entry, settings));
+        if (this.generation(fileKey) === generation) {
+          this.cache.set(fileKey, entry);
+          this.summaryCache.set(fileKey, entry);
+          this.includeRefsCache.set(fileKey, includeRefsCacheEntryFromSummary(entry, settings));
           rememberIncludePublicSummary(entry, settings);
           if (diskBacked) {
             await writeIncludeDocumentDiskEntries(entry, settings);
@@ -1420,25 +1436,26 @@ class IncludeDocumentLoader {
     options: { allowRead?: boolean } = {},
   ): Promise<IncludeRefsCacheEntry | undefined> {
     const normalized = normalizeFileName(fileName);
+    const fileKey = fileIdentityKeyFromFileName(normalized);
     const identity = await includeDocumentSourceIdentityAsync(normalized, settings);
     if (!identity) {
       return undefined;
     }
-    const { source, text, diskBacked } = identity;
+    const { source, text, uri, diskBacked } = identity;
     const key = includeRefsCacheKey(normalized, source, settings);
-    const existing = this.includeRefsCache.get(normalized);
+    const existing = this.includeRefsCache.get(fileKey);
     if (existing?.key === key) {
       return existing;
     }
-    const existingSummary = this.summaryCache.get(normalized);
+    const existingSummary = this.summaryCache.get(fileKey);
     if (existingSummary && sameDiskAnalysisSource(existingSummary.source, source)) {
       const entry = includeRefsCacheEntryFromSummary(existingSummary, settings);
-      this.includeRefsCache.set(normalized, entry);
+      this.includeRefsCache.set(fileKey, entry);
       return entry;
     }
     const readAllowed = options.allowRead !== false;
-    const readInFlightKey = `${normalized}:${key}:read`;
-    const noReadInFlightKey = `${normalized}:${key}:no-read`;
+    const readInFlightKey = `${fileKey}:${key}:read`;
+    const noReadInFlightKey = `${fileKey}:${key}:no-read`;
     const inFlightKey = readAllowed ? readInFlightKey : noReadInFlightKey;
     const pending = readAllowed
       ? this.includeRefsInFlight.get(readInFlightKey)
@@ -1447,7 +1464,7 @@ class IncludeDocumentLoader {
     if (pending) {
       return pending;
     }
-    const generation = this.generation(normalized);
+    const generation = this.generation(fileKey);
     let promise: Promise<IncludeRefsCacheEntry | undefined> | undefined;
     promise = (async () => {
       try {
@@ -1460,8 +1477,8 @@ class IncludeDocumentLoader {
             });
           if (cachedRefs) {
             const entry = includeRefsCacheEntryFromDisk(normalized, key, cachedRefs);
-            if (this.generation(normalized) === generation) {
-              this.includeRefsCache.set(normalized, entry);
+            if (this.generation(fileKey) === generation) {
+              this.includeRefsCache.set(fileKey, entry);
               rememberSourceMetadata(entry.source);
               logDebugSummary(settings, `[asp-lsp] diskIncludeRefs.hit: ${entry.uri}`);
             }
@@ -1473,9 +1490,9 @@ class IncludeDocumentLoader {
           return undefined;
         }
         const nextText = text ?? (await readTextFileAsync(normalized, settings.legacyEncoding));
-        const entry = createIncludeRefsCacheEntry(normalized, nextText, key, source);
-        if (this.generation(normalized) === generation) {
-          this.includeRefsCache.set(normalized, entry);
+        const entry = createIncludeRefsCacheEntry(normalized, uri, nextText, key, source);
+        if (this.generation(fileKey) === generation) {
+          this.includeRefsCache.set(fileKey, entry);
           if (diskBacked) {
             await diskAnalysisCache.writeIncludeRefs(diskIncludeRefsCacheEntry(entry, settings));
             logDebugSummary(settings, `[asp-lsp] diskIncludeRefs.write: ${entry.uri}`);
@@ -1493,32 +1510,33 @@ class IncludeDocumentLoader {
   }
 
   cachedIncludeRefs(fileName: string): IncludeRefsCacheEntry | undefined {
-    return this.includeRefsCache.get(normalizeFileName(fileName));
+    return this.includeRefsCache.get(fileIdentityKeyFromFileName(fileName));
   }
 
   cachedPublicSummary(fileName: string): IncludePublicSummaryState | undefined {
-    return includePublicSummaries.get(normalizeFileName(fileName));
+    return includePublicSummaries.get(fileIdentityKeyFromFileName(fileName));
   }
 
   invalidateFiles(fileNames: Iterable<string>): void {
     for (const fileName of fileNames) {
       const normalized = normalizeFileName(fileName);
-      this.generations.set(normalized, this.generation(normalized) + 1);
-      this.cache.delete(normalized);
-      this.summaryCache.delete(normalized);
-      this.includeRefsCache.delete(normalized);
+      const fileKey = fileIdentityKeyFromFileName(normalized);
+      this.generations.set(fileKey, this.generation(fileKey) + 1);
+      this.cache.delete(fileKey);
+      this.summaryCache.delete(fileKey);
+      this.includeRefsCache.delete(fileKey);
       for (const key of this.inFlight.keys()) {
-        if (key.startsWith(`${normalized}:`)) {
+        if (key.startsWith(`${fileKey}:`)) {
           this.inFlight.delete(key);
         }
       }
       for (const key of this.summaryInFlight.keys()) {
-        if (key.startsWith(`${normalized}:`)) {
+        if (key.startsWith(`${fileKey}:`)) {
           this.summaryInFlight.delete(key);
         }
       }
       for (const key of this.includeRefsInFlight.keys()) {
-        if (key.startsWith(`${normalized}:`)) {
+        if (key.startsWith(`${fileKey}:`)) {
           this.includeRefsInFlight.delete(key);
         }
       }
@@ -1672,7 +1690,7 @@ documents.onDidOpen((event) => {
   documentOpenContentVersions.set(event.document.uri, event.document.version);
   pendingDocumentChanges.delete(event.document.uri);
   publishedDiagnosticsByUri.delete(event.document.uri);
-  cache.delete(event.document.uri);
+  deleteCachedDocumentsForUri(event.document.uri);
   invalidateRootlessWorkspaceIndex("document.open");
   scheduleOpenFileProjectMaintenance("document.open");
   validate(event.document);
@@ -1697,7 +1715,7 @@ documents.onDidChangeContent((event) => {
   )
     .then((cached) => {
       if (
-        documents.get(event.document.uri)?.version === cached.identity.version &&
+        openDocumentForUri(event.document.uri)?.version === cached.identity.version &&
         shouldScheduleProjectUpdateForDocumentChange(cached)
       ) {
         scheduleProjectUpdate("document.change");
@@ -1724,7 +1742,7 @@ documents.onDidClose((event) => {
   documentOpenContentVersions.delete(event.document.uri);
   pendingDocumentChanges.delete(event.document.uri);
   inFlightDocumentRefreshes.delete(event.document.uri);
-  cache.delete(event.document.uri);
+  deleteCachedDocumentsForUri(event.document.uri);
   clearSemanticTokensForUri(event.document.uri);
   stagedDiagnosticsByUri.delete(event.document.uri);
   publishedDiagnosticsByUri.delete(event.document.uri);
@@ -1814,7 +1832,7 @@ connection.onDidChangeWatchedFiles(async (change) => {
       aspChanged = true;
       aspChanges.push({ fileName, type: file.type });
       if (file.type === FileChangeType.Deleted) {
-        workspaceIndex.delete(fileName);
+        workspaceIndex.delete(fileIdentityKeyFromFileName(fileName));
         forgetSourceMetadata(fileName);
       } else {
         await indexWorkspaceFileAsync(fileName, globalSettings);
@@ -2366,7 +2384,7 @@ connection.languages.inlayHint.on(
 
 connection.languages.diagnostics.on(async (params) => {
   noteForegroundActivity();
-  const document = documents.get(params.textDocument.uri);
+  const document = openDocumentForUri(params.textDocument.uri);
   const cached = document
     ? await ensureFreshDiagnosticsCachedDocumentAsync(document)
     : await getIndexedCachedAsync(params.textDocument.uri, globalSettings);
@@ -2700,12 +2718,12 @@ connection.languages.semanticTokens.onDelta(
     }
     const previous = semanticTokenResults.get(params.previousResultId);
     const next = (await buildSemanticTokensAsync(cached)).data;
-    if (!previous || previous.uri !== cached.source.uri) {
+    if (!previous || !sameFileIdentityUri(previous.uri, cached.source.uri)) {
       return cacheSemanticTokens(cached.source.uri, next);
     }
     const resultId = nextSemanticTokenResultId();
     semanticTokenResults.set(resultId, { uri: cached.source.uri, data: next });
-    latestSemanticTokenResultByUri.set(cached.source.uri, resultId);
+    latestSemanticTokenResultByUri.set(semanticTokenUriKey(cached.source.uri), resultId);
     semanticTokenResults.delete(params.previousResultId);
     return {
       resultId,
@@ -2723,7 +2741,7 @@ function validate(document: TextDocument): void {
 
 async function validateAsync(document: TextDocument): Promise<void> {
   const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
-  if (documents.get(document.uri)?.version !== cached.identity.version) {
+  if (openDocumentForUri(document.uri)?.version !== cached.identity.version) {
     return;
   }
   startStagedDiagnostics(cached, cachedSettings(document.uri), true, {
@@ -2982,15 +3000,19 @@ async function ensureFreshCachedDocumentAsync(document: TextDocument): Promise<C
         return rememberInFlightDocumentRefresh(
           document,
           parseIdentity,
-          refreshCachedDocumentIncrementalAsync(existing, document, settings, pending.changes[0]),
+          withServerStatusAsync("analyzing", "document.analysis", () =>
+            refreshCachedDocumentIncrementalAsync(existing, document, settings, pending.changes[0]),
+          ),
         );
       }
       return rememberInFlightDocumentRefresh(
         document,
         parseIdentity,
-        refreshCachedDocumentSkeletonAsync(
-          document,
-          pending?.reason ?? "non-incremental document change",
+        withServerStatusAsync("analyzing", "document.analysis", () =>
+          refreshCachedDocumentSkeletonAsync(
+            document,
+            pending?.reason ?? "non-incremental document change",
+          ),
         ),
       );
     }
@@ -2999,7 +3021,9 @@ async function ensureFreshCachedDocumentAsync(document: TextDocument): Promise<C
   return rememberInFlightDocumentRefresh(
     document,
     parseIdentity,
-    refreshCachedDocumentSkeletonAsync(document),
+    withServerStatusAsync("analyzing", "document.analysis", () =>
+      refreshCachedDocumentSkeletonAsync(document),
+    ),
   );
 }
 
@@ -3029,7 +3053,7 @@ function rememberInFlightDocumentRefresh(
 }
 
 async function getFreshCachedAsync(uri: string): Promise<CachedDocument | undefined> {
-  const document = documents.get(uri);
+  const document = openDocumentForUri(uri);
   return document ? ensureFreshCachedDocumentAsync(document) : getCached(uri);
 }
 
@@ -3061,7 +3085,7 @@ function createCachedDocument(
 }
 
 function cacheDocumentIfCurrent(document: TextDocument, cached: CachedDocument): void {
-  const current = documents.get(document.uri);
+  const current = openDocumentForUri(document.uri);
   if (current && current.version !== document.version) {
     return;
   }
@@ -3085,7 +3109,7 @@ function documentIdentityFor(document: TextDocument): DocumentIdentity {
 }
 
 function sameDocumentIdentity(left: DocumentIdentity, right: DocumentIdentity): boolean {
-  return left.uri === right.uri && left.version === right.version;
+  return sameFileIdentityUri(left.uri, right.uri) && left.version === right.version;
 }
 
 function pendingChangeFromContentChanges(
@@ -3160,7 +3184,7 @@ async function scheduleDiagnosticsAsync(document: TextDocument): Promise<CachedD
   cancelScheduledDiagnostics(document.uri);
   const settings = cachedSettings(document.uri);
   const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
-  if (documents.get(document.uri)?.version !== cached.identity.version) {
+  if (openDocumentForUri(document.uri)?.version !== cached.identity.version) {
     return cached;
   }
   const state = startStagedDiagnostics(cached, settings, false, {
@@ -3168,7 +3192,9 @@ async function scheduleDiagnosticsAsync(document: TextDocument): Promise<CachedD
   });
   const delay = settings.diagnostics?.debounceMs ?? defaultDiagnosticsDebounceMs;
   if (delay <= 0) {
-    void runStagedDiagnostics(cached, settings, state);
+    void withServerStatusAsync("analyzing", "diagnostics", () =>
+      runStagedDiagnostics(cached, settings, state),
+    );
     return cached;
   }
   diagnosticsTimers.set(
@@ -3179,7 +3205,9 @@ async function scheduleDiagnosticsAsync(document: TextDocument): Promise<CachedD
         logStaleStagedDiagnostics(settings, state, "include");
         return;
       }
-      void runStagedDiagnostics(cached, settings, state);
+      void withServerStatusAsync("analyzing", "diagnostics", () =>
+        runStagedDiagnostics(cached, settings, state),
+      );
     }, delay),
   );
   return cached;
@@ -3233,7 +3261,9 @@ function startStagedDiagnostics(
   );
   publishStagedDiagnosticsLayer(cached, settings, state, "fast");
   if (runAsyncLayers) {
-    void runStagedDiagnostics(cached, settings, state);
+    void withServerStatusAsync("analyzing", "diagnostics", () =>
+      runStagedDiagnostics(cached, settings, state),
+    );
   }
   return state;
 }
@@ -3377,7 +3407,7 @@ function isCurrentStagedDiagnostics(
   cached: CachedDocument,
   state: StagedDiagnosticsState,
 ): boolean {
-  const document = documents.get(state.uri);
+  const document = openDocumentForUri(state.uri);
   const active = stagedDiagnosticsByUri.get(state.uri);
   const current = cache.get(state.uri);
   return (
@@ -3733,6 +3763,51 @@ function noteForegroundActivity(): void {
   lastForegroundActivityAt = Date.now();
 }
 
+function beginServerStatus(kind: ActiveAspLspStatusKind, reason: string): () => void {
+  if (kind === "loading") {
+    loadingStatusDepth += 1;
+  } else {
+    analyzingStatusDepth += 1;
+  }
+  publishServerStatus(reason);
+  let ended = false;
+  return () => {
+    if (ended) {
+      return;
+    }
+    ended = true;
+    if (kind === "loading") {
+      loadingStatusDepth = Math.max(0, loadingStatusDepth - 1);
+    } else {
+      analyzingStatusDepth = Math.max(0, analyzingStatusDepth - 1);
+    }
+    publishServerStatus(reason);
+  };
+}
+
+async function withServerStatusAsync<T>(
+  kind: ActiveAspLspStatusKind,
+  reason: string,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const end = beginServerStatus(kind, reason);
+  try {
+    return await callback();
+  } finally {
+    end();
+  }
+}
+
+function publishServerStatus(reason: string): void {
+  const nextKind =
+    analyzingStatusDepth > 0 ? "analyzing" : loadingStatusDepth > 0 ? "loading" : "idle";
+  if (nextKind === currentStatusKind) {
+    return;
+  }
+  currentStatusKind = nextKind;
+  connection.sendNotification(statusNotificationMethod, { status: nextKind, reason });
+}
+
 function scheduleProjectUpdate(reason: string): void {
   pendingProjectUpdateReason = reason;
   if (projectUpdateTimer) {
@@ -3783,35 +3858,40 @@ async function flushPendingProjectUpdatesAsync(
   if (!pendingProjectUpdateReason && reason === "foreground.flush") {
     return false;
   }
+  const endStatus = beginServerStatus("loading", "project.update");
   const startedAt = process.hrtime.bigint();
-  let refreshed = 0;
-  for (const document of documents.all()) {
-    const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
-    await collectCachedVbProjectDocumentsAsync(cached, cachedSettings(document.uri));
-    for (const virtual of jsVirtualDocuments(cached)) {
-      await prefetchJsProjectFilesAsync(virtual, cachedSettings(document.uri));
-      await createJsLanguageServiceAsync(virtual, cachedSettings(document.uri));
+  try {
+    let refreshed = 0;
+    for (const document of documents.all()) {
+      const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
+      await collectCachedVbProjectDocumentsAsync(cached, cachedSettings(document.uri));
+      for (const virtual of jsVirtualDocuments(cached)) {
+        await prefetchJsProjectFilesAsync(virtual, cachedSettings(document.uri));
+        await createJsLanguageServiceAsync(virtual, cachedSettings(document.uri));
+      }
+      refreshed += 1;
+      await yieldToEventLoop();
+      if (Date.now() - lastForegroundActivityAt < projectUpdateDelayMs) {
+        scheduleProjectUpdate(reason);
+        logDebugSummary(globalSettings, `[asp-lsp] projectUpdate.interrupted: reason=${reason}`);
+        return false;
+      }
     }
-    refreshed += 1;
-    await yieldToEventLoop();
-    if (Date.now() - lastForegroundActivityAt < projectUpdateDelayMs) {
-      scheduleProjectUpdate(reason);
-      logDebugSummary(globalSettings, `[asp-lsp] projectUpdate.interrupted: reason=${reason}`);
-      return false;
-    }
+    pendingProjectUpdateReason = undefined;
+    logDebugElapsed(
+      globalSettings,
+      "workspace",
+      "projectUpdate.flush",
+      Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+    );
+    logDebugSummary(
+      globalSettings,
+      `[asp-lsp] projectUpdate.flushed: reason=${reason}, openFiles=${refreshed}`,
+    );
+    return true;
+  } finally {
+    endStatus();
   }
-  pendingProjectUpdateReason = undefined;
-  logDebugElapsed(
-    globalSettings,
-    "workspace",
-    "projectUpdate.flush",
-    Number(process.hrtime.bigint() - startedAt) / 1_000_000,
-  );
-  logDebugSummary(
-    globalSettings,
-    `[asp-lsp] projectUpdate.flushed: reason=${reason}, openFiles=${refreshed}`,
-  );
-  return true;
 }
 
 function flushOpenFileProjectMaintenance(
@@ -3851,23 +3931,25 @@ function cacheFreshness(settings: AspSettings): "metadata" | "watch" {
 }
 
 function rememberSourceMetadata(source: DiskAnalysisSourceMetadata): void {
-  sourceManifest.set(normalizeFileName(source.fileName), {
+  sourceManifest.set(fileIdentityKeyFromFileName(source.fileName), {
     ...source,
     fileName: normalizeFileName(source.fileName),
   });
 }
 
 function sourceMetadataFromManifest(fileName: string): DiskAnalysisSourceMetadata | undefined {
-  return sourceManifest.get(normalizeFileName(fileName));
+  return sourceManifest.get(fileIdentityKeyFromFileName(fileName));
 }
 
 function forgetSourceMetadata(fileName: string): void {
-  sourceManifest.delete(normalizeFileName(fileName));
+  sourceManifest.delete(fileIdentityKeyFromFileName(fileName));
 }
 
 async function configureDiskAnalysisCacheAsync(): Promise<void> {
-  diskAnalysisCache = createDiskAnalysisCache(globalSettings);
-  await diskAnalysisCache.sweep();
+  await withServerStatusAsync("loading", "diskCache.configure", async () => {
+    diskAnalysisCache = createDiskAnalysisCache(globalSettings);
+    await diskAnalysisCache.sweep();
+  });
 }
 
 function logDiskAnalysisCacheError(operation: string, error: unknown): void {
@@ -4568,6 +4650,7 @@ function cloneableVbProjectContext(context: VbProjectContext): VbDiagnosticsWork
     comTypes: context.comTypes,
     typeEnvironment: context.typeEnvironment,
     unusedDiagnostics: context.unusedDiagnostics,
+    deadCodeDiagnostics: context.deadCodeDiagnostics,
     syntaxSnippets: context.syntaxSnippets,
     syntaxKeywords: context.syntaxKeywords,
     locale: context.locale,
@@ -4679,7 +4762,9 @@ function seedVbProjectDocumentsAfterStableIncludeGraph(
     collectionKey: vbProjectDocumentCollectionKey(cached, settings),
     documents: [
       cached.parsed,
-      ...previousDocuments.documents.filter((document) => document.uri !== previous.source.uri),
+      ...previousDocuments.documents.filter(
+        (document) => !sameFileIdentityUri(document.uri, previous.source.uri),
+      ),
     ],
   };
 }
@@ -4964,13 +5049,12 @@ function shiftDiagnosticForIncrementalChange(
     range: shiftAspRangeAfterChange(diagnostic.range, previousText, nextText, change),
     relatedInformation: diagnostic.relatedInformation?.map((info) => ({
       ...info,
-      location:
-        info.location.uri === rootUri
-          ? {
-              ...info.location,
-              range: shiftAspRangeAfterChange(info.location.range, previousText, nextText, change),
-            }
-          : info.location,
+      location: sameFileIdentityUri(info.location.uri, rootUri)
+        ? {
+            ...info.location,
+            range: shiftAspRangeAfterChange(info.location.range, previousText, nextText, change),
+          }
+        : info.location,
     })),
   };
 }
@@ -4990,7 +5074,8 @@ function shiftVbProjectContextForIncrementalChange(
     ...context,
     documents: [
       currentRoot,
-      ...(context.documents?.filter((document) => document.uri !== rootUri) ?? []),
+      ...(context.documents?.filter((document) => !sameFileIdentityUri(document.uri, rootUri)) ??
+        []),
     ],
     symbols,
     typeEnvironment: context.typeEnvironment
@@ -5020,7 +5105,8 @@ function replaceVbProjectContextRootDocument(
     ...context,
     documents: [
       currentRoot,
-      ...(context.documents?.filter((document) => document.uri !== rootUri) ?? []),
+      ...(context.documents?.filter((document) => !sameFileIdentityUri(document.uri, rootUri)) ??
+        []),
     ],
   };
 }
@@ -5032,7 +5118,7 @@ function shiftVbSymbolForIncrementalChange(
   nextText: string,
   change: AspIncrementalChange,
 ): VbSymbol {
-  if (symbol.sourceUri !== rootUri) {
+  if (!sameFileIdentityUri(symbol.sourceUri, rootUri)) {
     return symbol;
   }
   return {
@@ -6410,7 +6496,7 @@ function vbInlineValues(cached: CachedDocument, range: Range): InlineValue[] {
   return (context.symbols ?? [])
     .filter(
       (symbol) =>
-        symbol.sourceUri === cached.source.uri &&
+        sameFileIdentityUri(symbol.sourceUri, cached.source.uri) &&
         isInlineValueSymbol(symbol.kind) &&
         rangesOverlap(symbol.range, range),
     )
@@ -6594,7 +6680,8 @@ function fallbackVbscriptSymbolAt(
   return (context.symbols ?? []).find(
     (symbol) =>
       symbol.name.toLowerCase() === lower &&
-      (symbol.sourceUri === cached.parsed.uri || (!symbol.scopeName && !symbol.memberOf)),
+      (sameFileIdentityUri(symbol.sourceUri, cached.parsed.uri) ||
+        (!symbol.scopeName && !symbol.memberOf)),
   );
 }
 
@@ -6614,7 +6701,8 @@ function fallbackVbMemberCompletions(
   const symbol = (context.symbols ?? []).find(
     (candidate) =>
       candidate.name.toLowerCase() === owner.toLowerCase() &&
-      (candidate.sourceUri === cached.parsed.uri || (!candidate.scopeName && !candidate.memberOf)),
+      (sameFileIdentityUri(candidate.sourceUri, cached.parsed.uri) ||
+        (!candidate.scopeName && !candidate.memberOf)),
   );
   const typeName = symbol?.type?.name ?? symbol?.typeName;
   const type = (
@@ -7043,7 +7131,9 @@ async function jsFoldingRangesAsync(cached: CachedDocument): Promise<FoldingRang
 function vbscriptFoldingRanges(cached: CachedDocument): FoldingRange[] {
   const context = bestEffortVbProjectContext(cached, cachedSettings(cached.source.uri));
   const symbolRanges = (context.symbols ?? [])
-    .filter((symbol) => symbol.sourceUri === cached.source.uri && symbol.scopeRange)
+    .filter(
+      (symbol) => sameFileIdentityUri(symbol.sourceUri, cached.source.uri) && symbol.scopeRange,
+    )
     .map((symbol) => symbol.scopeRange)
     .filter((range): range is Range => Boolean(range))
     .filter((range) => range.start.line < range.end.line)
@@ -7357,7 +7447,7 @@ async function buildFullVbProjectContextForWorkspaceOperationAsync(
   }
   const summaries = await Promise.all(
     documents.map((document) =>
-      document.uri === cached.source.uri
+      sameFileIdentityUri(document.uri, cached.source.uri)
         ? cachedFileAnalysisSummaryAsync(cached, contextSettings, settings)
         : summarizeAspFileAnalysisAsync(document, contextSettings),
     ),
@@ -7502,6 +7592,7 @@ function buildImmediateLocalVbProjectContext(
       identifierCaseByKind: contextSettings.identifierCaseByKind,
       comTypes: contextSettings.comTypes,
       unusedDiagnostics: contextSettings.unusedDiagnostics,
+      deadCodeDiagnostics: contextSettings.deadCodeDiagnostics,
       syntaxSnippets: contextSettings.syntaxSnippets,
       syntaxKeywords: contextSettings.syntaxKeywords,
     },
@@ -7539,6 +7630,7 @@ async function buildImmediateLocalVbProjectContextAsync(
       identifierCaseByKind: contextSettings.identifierCaseByKind,
       comTypes: contextSettings.comTypes,
       unusedDiagnostics: contextSettings.unusedDiagnostics,
+      deadCodeDiagnostics: contextSettings.deadCodeDiagnostics,
       syntaxSnippets: contextSettings.syntaxSnippets,
       syntaxKeywords: contextSettings.syntaxKeywords,
     },
@@ -7725,7 +7817,7 @@ async function workspaceVbReferenceSummaryReferencesForCandidate(
   targets: VbReferencesWorkerTargetSymbol[],
   settings: AspSettings,
 ): Promise<Map<string, VbReference[]> | undefined> {
-  if (targets.some((target) => target.sourceUri === candidate.uri)) {
+  if (targets.some((target) => sameFileIdentityUri(target.sourceUri, candidate.uri))) {
     return undefined;
   }
   const summaries = await workspaceVbReferenceCandidateSummaryClosure(candidate, settings);
@@ -7768,8 +7860,8 @@ async function workspaceVbReferenceSummaryReferencesForCandidate(
 }
 
 interface WorkspaceVbReferenceSummaryIncludeGraph {
-  directIncludesByOwnerUri: Map<string, Array<{ range: Range; targetUri: string }>>;
-  parentIncludesByTargetUri: Map<string, Array<{ ownerUri: string; range: Range }>>;
+  directIncludesByOwnerKey: Map<string, Array<{ range: Range; targetKey: string }>>;
+  parentIncludesByTargetKey: Map<string, Array<{ ownerKey: string; range: Range }>>;
 }
 
 async function workspaceVbReferenceSummaryIncludeGraph(
@@ -7777,8 +7869,8 @@ async function workspaceVbReferenceSummaryIncludeGraph(
   settings: AspSettings,
 ): Promise<WorkspaceVbReferenceSummaryIncludeGraph> {
   const graph: WorkspaceVbReferenceSummaryIncludeGraph = {
-    directIncludesByOwnerUri: new Map(),
-    parentIncludesByTargetUri: new Map(),
+    directIncludesByOwnerKey: new Map(),
+    parentIncludesByTargetKey: new Map(),
   };
   await mapWithConcurrency(
     summaries,
@@ -7794,13 +7886,14 @@ async function workspaceVbReferenceSummaryIncludeGraph(
         if (!resolved.exists) {
           continue;
         }
-        const targetUri = pathToFileUri(resolved.fileName);
-        pushAspGraphMapItem(graph.directIncludesByOwnerUri, summary.uri, {
+        const ownerKey = fileIdentityKeyFromUri(summary.uri);
+        const targetKey = fileIdentityKeyFromFileName(resolved.fileName);
+        pushAspGraphMapItem(graph.directIncludesByOwnerKey, ownerKey, {
           range: include.range,
-          targetUri,
+          targetKey,
         });
-        pushAspGraphMapItem(graph.parentIncludesByTargetUri, targetUri, {
-          ownerUri: summary.uri,
+        pushAspGraphMapItem(graph.parentIncludesByTargetKey, targetKey, {
+          ownerKey,
           range: include.range,
         });
       }
@@ -7818,37 +7911,39 @@ function isSummaryFallbackTargetVisibleAt(
   if (!target.sourceUri.startsWith("file://")) {
     return true;
   }
-  if (target.sourceUri === ownerUri) {
+  const ownerKey = fileIdentityKeyFromUri(ownerUri);
+  const targetKey = fileIdentityKeyFromUri(target.sourceUri);
+  if (targetKey === ownerKey) {
     return true;
   }
-  if (hasEarlierReachableSummaryInclude(graph, ownerUri, target.sourceUri, referenceRange)) {
+  if (hasEarlierReachableSummaryInclude(graph, ownerKey, targetKey, referenceRange)) {
     return true;
   }
   return isSummaryFallbackTargetVisibleFromParentContext(
     graph,
-    ownerUri,
+    ownerKey,
     target,
-    new Set([ownerUri]),
+    new Set([ownerKey]),
   );
 }
 
 function isSummaryFallbackTargetVisibleFromParentContext(
   graph: WorkspaceVbReferenceSummaryIncludeGraph,
-  ownerUri: string,
+  ownerKey: string,
   target: VbReferencesWorkerTargetSymbol,
   visited: Set<string>,
 ): boolean {
-  const parentIncludes = graph.parentIncludesByTargetUri.get(ownerUri) ?? [];
+  const parentIncludes = graph.parentIncludesByTargetKey.get(ownerKey) ?? [];
   for (const parentInclude of parentIncludes) {
-    if (visited.has(parentInclude.ownerUri)) {
+    if (visited.has(parentInclude.ownerKey)) {
       continue;
     }
     const nextVisited = new Set(visited);
-    nextVisited.add(parentInclude.ownerUri);
+    nextVisited.add(parentInclude.ownerKey);
     if (
       isSummaryFallbackTargetVisibleBeforeParentInclude(
         graph,
-        parentInclude.ownerUri,
+        parentInclude.ownerKey,
         target,
         parentInclude.range,
         nextVisited,
@@ -7862,52 +7957,53 @@ function isSummaryFallbackTargetVisibleFromParentContext(
 
 function isSummaryFallbackTargetVisibleBeforeParentInclude(
   graph: WorkspaceVbReferenceSummaryIncludeGraph,
-  parentUri: string,
+  parentKey: string,
   target: VbReferencesWorkerTargetSymbol,
   includeRange: Range,
   visited: Set<string>,
 ): boolean {
-  if (target.sourceUri === parentUri) {
+  const targetKey = fileIdentityKeyFromUri(target.sourceUri);
+  if (targetKey === parentKey) {
     return positionBeforeOrEqual(target.range.start, includeRange.start);
   }
-  if (hasEarlierReachableSummaryInclude(graph, parentUri, target.sourceUri, includeRange)) {
+  if (hasEarlierReachableSummaryInclude(graph, parentKey, targetKey, includeRange)) {
     return true;
   }
-  return isSummaryFallbackTargetVisibleFromParentContext(graph, parentUri, target, visited);
+  return isSummaryFallbackTargetVisibleFromParentContext(graph, parentKey, target, visited);
 }
 
 function hasEarlierReachableSummaryInclude(
   graph: WorkspaceVbReferenceSummaryIncludeGraph,
-  ownerUri: string,
-  targetUri: string,
+  ownerKey: string,
+  targetKey: string,
   referenceRange: Range,
 ): boolean {
-  const includes = graph.directIncludesByOwnerUri.get(ownerUri) ?? [];
+  const includes = graph.directIncludesByOwnerKey.get(ownerKey) ?? [];
   return includes.some(
     (include) =>
       positionBeforeOrEqual(include.range.start, referenceRange.start) &&
-      (include.targetUri === targetUri ||
-        isSummaryIncludeReachable(graph, include.targetUri, targetUri, new Set([ownerUri]))),
+      (include.targetKey === targetKey ||
+        isSummaryIncludeReachable(graph, include.targetKey, targetKey, new Set([ownerKey]))),
   );
 }
 
 function isSummaryIncludeReachable(
   graph: WorkspaceVbReferenceSummaryIncludeGraph,
-  startUri: string,
-  targetUri: string,
+  startKey: string,
+  targetKey: string,
   visited: Set<string>,
 ): boolean {
-  if (startUri === targetUri) {
+  if (startKey === targetKey) {
     return true;
   }
-  if (visited.has(startUri)) {
+  if (visited.has(startKey)) {
     return false;
   }
-  visited.add(startUri);
-  return (graph.directIncludesByOwnerUri.get(startUri) ?? []).some(
+  visited.add(startKey);
+  return (graph.directIncludesByOwnerKey.get(startKey) ?? []).some(
     (include) =>
-      include.targetUri === targetUri ||
-      isSummaryIncludeReachable(graph, include.targetUri, targetUri, visited),
+      include.targetKey === targetKey ||
+      isSummaryIncludeReachable(graph, include.targetKey, targetKey, visited),
   );
 }
 
@@ -7927,13 +8023,14 @@ async function workspaceVbReferenceCandidateSummaryClosure(
     const entry = await includeDocumentLoader.readSummaryAsync(fileName, settings, {
       allowRead: true,
     });
-    if (!entry || visited.has(entry.uri)) {
+    const entryKey = entry ? fileIdentityKeyFromFileName(entry.fileName) : undefined;
+    if (!entry || !entryKey || visited.has(entryKey)) {
       return Boolean(entry);
     }
     if (textLength + entry.source.size > limits.maxTextLength) {
       return false;
     }
-    visited.add(entry.uri);
+    visited.add(entryKey);
     textLength += entry.source.size;
     summaries.push(entry.summary);
     for (const include of entry.summary.includeRefs) {
@@ -7962,9 +8059,15 @@ async function workspaceVbReferenceWorkerCandidates(
   targets: VbReferencesWorkerTargetSymbol[] = [],
 ): Promise<VbReferencesWorkerCandidate[]> {
   await ensureWorkspaceIndexAsync(settings);
+  const excludedFileKeys = new Set(
+    [...excludedUris]
+      .filter((uri) => uri.startsWith("file://"))
+      .map((uri) => fileIdentityKeyFromUri(uri)),
+  );
   const candidates = new Map<string, VbReferencesWorkerCandidate>();
   for (const document of await workspaceAnalyzableOpenDocumentsAsync(settings)) {
-    if (excludedUris.has(document.uri)) {
+    const fileKey = fileIdentityKeyFromUri(document.uri);
+    if (excludedUris.has(document.uri) || excludedFileKeys.has(fileKey)) {
       continue;
     }
     const fileName = normalizeFileName(uriToFileName(document.uri));
@@ -7980,10 +8083,11 @@ async function workspaceVbReferenceWorkerCandidates(
         openVersion: document.version,
       },
     };
-    candidates.set(document.uri, candidate);
+    candidates.set(fileKey, candidate);
   }
   for (const entry of workspaceIndex.values()) {
-    if (excludedUris.has(entry.uri) || candidates.has(entry.uri)) {
+    const fileKey = fileIdentityKeyFromFileName(entry.fileName);
+    if (excludedUris.has(entry.uri) || excludedFileKeys.has(fileKey) || candidates.has(fileKey)) {
       continue;
     }
     const candidate = {
@@ -7995,7 +8099,7 @@ async function workspaceVbReferenceWorkerCandidates(
         size: entry.size,
       },
     };
-    candidates.set(entry.uri, candidate);
+    candidates.set(fileKey, candidate);
   }
   return filterWorkspaceVbReferenceWorkerCandidates([...candidates.values()], targets, settings);
 }
@@ -8012,7 +8116,7 @@ async function filterWorkspaceVbReferenceWorkerCandidates(
     targets
       .map((target) =>
         target.sourceUri.startsWith("file://")
-          ? normalizeFileName(uriToFileName(target.sourceUri))
+          ? fileIdentityKeyFromUri(target.sourceUri)
           : undefined,
       )
       .filter((fileName): fileName is string => Boolean(fileName)),
@@ -8034,9 +8138,9 @@ async function workspaceVbReferenceReachability(
       JSON.stringify(
         candidates
           .map((candidate) => ({
-            uri: candidate.uri,
-            fileName: candidate.fileName,
-            source: candidate.source,
+            uri: fileIdentityKeyFromUri(candidate.uri),
+            fileName: fileIdentityKeyFromFileName(candidate.fileName),
+            source: diskAnalysisSourceIdentity(candidate.source),
           }))
           .sort((left, right) => left.uri.localeCompare(right.uri)),
       ),
@@ -8083,25 +8187,25 @@ async function workspaceVbReferenceReachability(
     depth: number,
     pathStack: Set<string>,
   ): WorkspaceVbReferenceReachabilityState => {
-    const normalized = normalizeFileName(fileName);
-    if (targetFiles.has(normalized)) {
+    const fileKey = fileIdentityKeyFromFileName(fileName);
+    if (targetFiles.has(fileKey)) {
       return { reachesTarget: true, complete: true, documents: 1 };
     }
-    const cachedState = stateCache.get(normalized);
+    const cachedState = stateCache.get(fileKey);
     if (cachedState) {
       return cachedState;
     }
     if (depth > 20 || pathStack.size > maxWorkspaceVbReferenceReachabilityDocuments) {
       return { reachesTarget: false, complete: false, documents: 1 };
     }
-    if (pathStack.has(normalized)) {
+    if (pathStack.has(fileKey)) {
       return { reachesTarget: false, complete: true, documents: 0 };
     }
 
-    pathStack.add(normalized);
-    const node = graph.get(normalized);
+    pathStack.add(fileKey);
+    const node = graph.get(fileKey);
     if (!node) {
-      pathStack.delete(normalized);
+      pathStack.delete(fileKey);
       return { reachesTarget: false, complete: false, documents: 1 };
     }
 
@@ -8123,10 +8227,10 @@ async function workspaceVbReferenceReachability(
         break;
       }
     }
-    pathStack.delete(normalized);
+    pathStack.delete(fileKey);
 
     const state = { reachesTarget, complete: stateComplete, documents };
-    stateCache.set(normalized, state);
+    stateCache.set(fileKey, state);
     return state;
   };
 
@@ -8176,11 +8280,11 @@ async function workspaceVbReferenceBasenameReachability(
     candidates,
     workspaceVbReferenceReachabilityConcurrency,
     async (candidate) => {
-      const openDocument = documents.get(candidate.uri);
+      const fallbackOpenDocument = openDocumentForFileName(candidate.fileName);
       const bytes =
-        openDocument === undefined
+        fallbackOpenDocument === undefined
           ? await fs.promises.readFile(candidate.fileName).catch(() => undefined)
-          : Buffer.from(openDocument.getText(), "utf8");
+          : Buffer.from(fallbackOpenDocument.getText(), "utf8");
       if (bytes === undefined) {
         return { candidate, unknown: true, containsTargetBasename: false };
       }
@@ -8281,7 +8385,12 @@ async function workspaceVbReferenceReachabilityGraph(
   settings: AspSettings,
 ): Promise<Map<string, WorkspaceVbReferenceReachabilityGraphNode>> {
   const fileNames = [
-    ...new Set(candidates.map((candidate) => normalizeFileName(candidate.fileName))),
+    ...new Map(
+      candidates.map((candidate) => [
+        fileIdentityKeyFromFileName(candidate.fileName),
+        normalizeFileName(candidate.fileName),
+      ]),
+    ).values(),
   ];
   const nodes = new Map<string, WorkspaceVbReferenceReachabilityGraphNode>();
   const includeRefsEntries = await mapWithConcurrency(
@@ -8301,8 +8410,9 @@ async function workspaceVbReferenceReachabilityGraph(
   }> = [];
   for (const { fileName, entry } of includeRefsEntries) {
     const normalized = normalizeFileName(fileName);
+    const fileKey = fileIdentityKeyFromFileName(normalized);
     if (!entry) {
-      nodes.set(normalized, {
+      nodes.set(fileKey, {
         uri: pathToFileUri(normalized),
         fileName: normalized,
         includes: [],
@@ -8310,7 +8420,7 @@ async function workspaceVbReferenceReachabilityGraph(
       });
       continue;
     }
-    nodes.set(normalized, {
+    nodes.set(fileKey, {
       uri: entry.uri,
       fileName: normalized,
       includes: [],
@@ -8325,7 +8435,7 @@ async function workspaceVbReferenceReachabilityGraph(
     includeEdges,
     workspaceVbReferenceReachabilityConcurrency,
     async ({ ownerUri, ownerFileName, include }) => {
-      const node = nodes.get(ownerFileName);
+      const node = nodes.get(fileIdentityKeyFromFileName(ownerFileName));
       if (!node) {
         return;
       }
@@ -8376,7 +8486,7 @@ function vbReferencesWorkerOpenDocumentsKey(
   return JSON.stringify(
     openDocuments
       .map((document) => ({
-        uri: document.uri,
+        uri: fileIdentityKeyFromUri(document.uri),
         version: document.version,
         text: textFingerprint(document.text),
       }))
@@ -8622,7 +8732,7 @@ function workspaceVbReferenceWorkerOptions(_options: VbReferenceOptions): VbRefe
 function vbReferencesWorkerTargetKey(symbol: VbReferencesWorkerTargetSymbol): string {
   const range = vbReferencesWorkerTargetIdentityRange(symbol);
   return [
-    symbol.sourceUri,
+    fileIdentityKeyFromUri(symbol.sourceUri),
     symbol.kind,
     symbol.memberOf ?? "",
     symbol.name.toLowerCase(),
@@ -8645,8 +8755,19 @@ function workspaceVbReferenceWorkerTaskKey(
   openDocumentsKey: string,
 ): string {
   return JSON.stringify({
-    target,
-    candidate,
+    target: {
+      ...target,
+      sourceUri: fileIdentityKeyFromUri(target.sourceUri),
+    },
+    candidate: {
+      ...candidate,
+      uri: fileIdentityKeyFromUri(candidate.uri),
+      fileName: fileIdentityKeyFromFileName(candidate.fileName),
+      source: {
+        ...candidate.source,
+        fileName: fileIdentityKeyFromFileName(candidate.source.fileName),
+      },
+    },
     settings: {
       parse: parseSettingsIdentity(settings),
       include: includeResolutionSettingsIdentity(settings),
@@ -8664,9 +8785,10 @@ function sameVbReferencesWorkerCandidate(
   right: VbReferencesWorkerCandidate,
 ): boolean {
   return (
-    left.uri === right.uri &&
-    left.fileName === right.fileName &&
-    left.source.fileName === right.source.fileName &&
+    sameFileIdentityUri(left.uri, right.uri) &&
+    fileIdentityKeyFromFileName(left.fileName) === fileIdentityKeyFromFileName(right.fileName) &&
+    fileIdentityKeyFromFileName(left.source.fileName) ===
+      fileIdentityKeyFromFileName(right.source.fileName) &&
     left.source.mtimeMs === right.source.mtimeMs &&
     left.source.size === right.source.size &&
     left.source.openVersion === right.source.openVersion
@@ -8677,7 +8799,7 @@ async function isCurrentVbReferencesWorkerCandidate(
   candidate: VbReferencesWorkerCandidate,
   settings: AspSettings,
 ): Promise<boolean> {
-  const document = documents.get(candidate.uri);
+  const document = openDocumentForFileName(candidate.fileName);
   if (document) {
     return (
       candidate.source.openVersion === document.version &&
@@ -8757,7 +8879,7 @@ function equivalentVbSymbol(symbols: VbSymbol[], target: VbSymbol): VbSymbol | u
 
 function sameVbSymbolIdentity(left: VbSymbol, right: VbSymbol): boolean {
   return (
-    left.sourceUri === right.sourceUri &&
+    sameFileIdentityUri(left.sourceUri, right.sourceUri) &&
     left.name.toLowerCase() === right.name.toLowerCase() &&
     left.kind === right.kind &&
     (left.memberOf ?? "").toLowerCase() === (right.memberOf ?? "").toLowerCase() &&
@@ -8773,7 +8895,7 @@ function sameVbReferenceTargetIdentity(
   right: VbReferencesWorkerTargetSymbol,
 ): boolean {
   return (
-    left.sourceUri === right.sourceUri &&
+    sameFileIdentityUri(left.sourceUri, right.sourceUri) &&
     left.name.toLowerCase() === right.name.toLowerCase() &&
     left.kind === right.kind &&
     (left.memberOf ?? "").toLowerCase() === (right.memberOf ?? "").toLowerCase() &&
@@ -8867,12 +8989,16 @@ async function refreshIncludeStateForAspChangesAsync(
   const previousIncludeRefs = new Map<string, IncludeRefsCacheEntry | undefined>();
   for (const change of changes) {
     const fileName = normalizeFileName(change.fileName);
-    previousIncludeRefs.set(fileName, includeDocumentLoader.cachedIncludeRefs(fileName));
+    previousIncludeRefs.set(
+      fileIdentityKeyFromFileName(fileName),
+      includeDocumentLoader.cachedIncludeRefs(fileName),
+    );
   }
   includeDocumentLoader.invalidateFiles(changes.map((change) => change.fileName));
   invalidateGraphFileIndexFiles(changes.map((change) => change.fileName));
   for (const change of changes) {
     const fileName = normalizeFileName(change.fileName);
+    const fileKey = fileIdentityKeyFromFileName(fileName);
     const previous = includeDocumentLoader.cachedPublicSummary(fileName);
     const uri = pathToFileUri(fileName);
     const settings = cachedSettings(uri);
@@ -8882,7 +9008,7 @@ async function refreshIncludeStateForAspChangesAsync(
         : await includeDocumentLoader.readIncludeRefsAsync(fileName, settings, {
             allowRead: true,
           });
-    const previousIncludeFingerprint = previousIncludeRefs.get(fileName)?.fingerprint ?? "missing";
+    const previousIncludeFingerprint = previousIncludeRefs.get(fileKey)?.fingerprint ?? "missing";
     const nextIncludeFingerprint = nextIncludeRefs?.fingerprint ?? "missing";
     if (previousIncludeFingerprint === nextIncludeFingerprint) {
       logDebugSummary(
@@ -8890,7 +9016,7 @@ async function refreshIncludeStateForAspChangesAsync(
         `[asp-lsp] include.refs.reuse: ${uri}, fingerprint=${nextIncludeFingerprint}`,
       );
     } else {
-      includeRefsChangedFiles.add(fileName);
+      includeRefsChangedFiles.add(fileKey);
       aspProjectBuilderState.markFileAffected(fileName, "watchedAsp.includeRefs");
       logInvalidation(
         "includeRefs",
@@ -8911,7 +9037,7 @@ async function refreshIncludeStateForAspChangesAsync(
       );
       continue;
     }
-    publicChangedFiles.add(fileName);
+    publicChangedFiles.add(fileKey);
     aspProjectBuilderState.markFileAffected(fileName, "watchedAsp.publicBoundary");
     logInvalidation(
       "includePublicBoundary",
@@ -8922,14 +9048,15 @@ async function refreshIncludeStateForAspChangesAsync(
 }
 
 async function ensureIncludeGraphForOpenDocumentsAsync(changedFiles: Set<string>): Promise<void> {
-  const changedUris = new Set([...changedFiles].map(pathToFileUri));
+  const changedFileKeys = new Set([...changedFiles].map(fileIdentityKeyFromFileName));
   for (const document of documents.all()) {
     const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
-    const existing = includeForwardDependencies.get(cached.source.uri);
+    const ownerKey = fileIdentityKeyFromUri(cached.source.uri);
+    const existing = includeForwardDependencies.get(ownerKey);
     const affected =
-      changedUris.has(cached.source.uri) ||
-      (existing ? setsIntersect(existing, changedUris) : false) ||
-      reverseDependenciesInclude(changedUris, cached.source.uri);
+      changedFileKeys.has(ownerKey) ||
+      (existing ? setsIntersect(existing, changedFileKeys) : false) ||
+      reverseDependenciesInclude(changedFileKeys, ownerKey);
     if (!affected) {
       continue;
     }
@@ -8942,7 +9069,7 @@ async function collectIncludeDependencyGraphForCachedAsync(
   settings: AspSettings,
 ): Promise<void> {
   const limits = vbProjectContextLimits(settings);
-  const visited = new Set<string>([cached.source.uri]);
+  const visited = new Set<string>([fileIdentityKeyFromUri(cached.source.uri)]);
   let textLength = cached.parsed.text.length;
   let truncatedReason: string | undefined;
   resetIncludeDependencies(cached.source.uri);
@@ -8969,7 +9096,8 @@ async function collectIncludeDependencyGraphForCachedAsync(
       );
       const includeUri = pathToFileUri(resolved.fileName);
       recordIncludeDependency(cached.source.uri, includeUri);
-      if (!resolved.exists || visited.has(includeUri)) {
+      const includeKey = fileIdentityKeyFromFileName(resolved.fileName);
+      if (!resolved.exists || visited.has(includeKey)) {
         continue;
       }
       if (visited.size >= limits.maxDocuments) {
@@ -8993,7 +9121,7 @@ async function collectIncludeDependencyGraphForCachedAsync(
         );
         continue;
       }
-      visited.add(entry.uri);
+      visited.add(fileIdentityKeyFromFileName(entry.fileName));
       textLength += entry.source.size;
       await visitRefs(entry.uri, entry.includeRefs, depth + 1);
     }
@@ -9022,9 +9150,9 @@ function setsIntersect<T>(left: Set<T>, right: Set<T>): boolean {
   return false;
 }
 
-function reverseDependenciesInclude(includeUris: Set<string>, ownerUri: string): boolean {
-  for (const includeUri of includeUris) {
-    if (includeReverseDependencies.get(includeUri)?.has(ownerUri)) {
+function reverseDependenciesInclude(includeKeys: Set<string>, ownerKey: string): boolean {
+  for (const includeKey of includeKeys) {
+    if (includeReverseDependencies.get(includeKey)?.has(ownerKey)) {
       return true;
     }
   }
@@ -9035,19 +9163,21 @@ function affectedOpenUrisForAspChanges(
   changes: WatchedAspFileChange[],
   publicChangedFiles: Set<string>,
 ): Set<string> {
-  const allOpenUris = openDocumentUris();
+  const openUrisByFileKey = openDocumentUrisByFileKey();
   const affected = new Set<string>();
   for (const change of changes) {
-    const changedUri = pathToFileUri(change.fileName);
-    if (allOpenUris.has(changedUri)) {
-      affected.add(changedUri);
+    const changedKey = fileIdentityKeyFromFileName(change.fileName);
+    const changedOpenUri = openUrisByFileKey.get(changedKey);
+    if (changedOpenUri) {
+      affected.add(changedOpenUri);
     }
-    if (!publicChangedFiles.has(normalizeFileName(change.fileName))) {
+    if (!publicChangedFiles.has(fileIdentityKeyFromFileName(change.fileName))) {
       continue;
     }
-    for (const dependent of includeReverseDependencies.get(changedUri) ?? []) {
-      if (allOpenUris.has(dependent)) {
-        affected.add(dependent);
+    for (const dependentKey of includeReverseDependencies.get(changedKey) ?? []) {
+      const dependentUri = openUrisByFileKey.get(dependentKey);
+      if (dependentUri) {
+        affected.add(dependentUri);
       }
     }
   }
@@ -9058,34 +9188,43 @@ function openDocumentUris(): Set<string> {
   return new Set(documents.all().map((document) => document.uri));
 }
 
+function openDocumentUrisByFileKey(): Map<string, string> {
+  return new Map(
+    documents.all().map((document) => [fileIdentityKeyFromUri(document.uri), document.uri]),
+  );
+}
+
 function resetIncludeDependencies(ownerUri: string): void {
-  const previous = includeForwardDependencies.get(ownerUri);
+  const ownerKey = fileIdentityKeyFromUri(ownerUri);
+  const previous = includeForwardDependencies.get(ownerKey);
   if (!previous) {
     return;
   }
-  for (const includeUri of previous) {
-    const owners = includeReverseDependencies.get(includeUri);
-    owners?.delete(ownerUri);
+  for (const includeKey of previous) {
+    const owners = includeReverseDependencies.get(includeKey);
+    owners?.delete(ownerKey);
     if (owners?.size === 0) {
-      includeReverseDependencies.delete(includeUri);
+      includeReverseDependencies.delete(includeKey);
     }
   }
-  includeForwardDependencies.delete(ownerUri);
+  includeForwardDependencies.delete(ownerKey);
 }
 
 function recordIncludeDependency(ownerUri: string, includeUri: string): void {
-  let forward = includeForwardDependencies.get(ownerUri);
+  const ownerKey = fileIdentityKeyFromUri(ownerUri);
+  const includeKey = fileIdentityKeyFromUri(includeUri);
+  let forward = includeForwardDependencies.get(ownerKey);
   if (!forward) {
     forward = new Set();
-    includeForwardDependencies.set(ownerUri, forward);
+    includeForwardDependencies.set(ownerKey, forward);
   }
-  forward.add(includeUri);
-  let reverse = includeReverseDependencies.get(includeUri);
+  forward.add(includeKey);
+  let reverse = includeReverseDependencies.get(includeKey);
   if (!reverse) {
     reverse = new Set();
-    includeReverseDependencies.set(includeUri, reverse);
+    includeReverseDependencies.set(includeKey, reverse);
   }
-  reverse.add(ownerUri);
+  reverse.add(ownerKey);
 }
 
 function clearIncludeGraph(): void {
@@ -9106,8 +9245,7 @@ function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.i
     logInvalidation("analysis", `${reason}, files=${uris.size}`);
   }
   for (const uri of uris) {
-    const cached = cache.get(uri);
-    if (cached) {
+    for (const cached of cachedDocumentsForUri(uri)) {
       cached.analysis = undefined;
     }
     clearSemanticTokensForUri(uri);
@@ -9153,6 +9291,7 @@ function vbProjectContextSettings(
     identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
     comTypes: settings.vbscript?.comTypes,
     unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+    deadCodeDiagnostics: settings.vbscript?.deadCodeDiagnostics !== false,
     syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
     syntaxKeywords: settings.vbscript?.syntaxKeywords !== false,
   };
@@ -9168,6 +9307,7 @@ function vbProjectRootContextCacheKey(cached: CachedDocument, settings: AspSetti
       identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
       comTypes: settings.vbscript?.comTypes,
       unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+      deadCodeDiagnostics: settings.vbscript?.deadCodeDiagnostics !== false,
       syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
       syntaxKeywords: settings.vbscript?.syntaxKeywords !== false,
     },
@@ -9201,6 +9341,7 @@ function vbProjectContextCacheKey(documents: AspParsedDocument[], settings: AspS
       identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
       comTypes: settings.vbscript?.comTypes,
       unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+      deadCodeDiagnostics: settings.vbscript?.deadCodeDiagnostics !== false,
       syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
       syntaxKeywords: settings.vbscript?.syntaxKeywords !== false,
     },
@@ -9319,6 +9460,7 @@ async function cachedFileAnalysisSummaryAsync(
       identifierCaseByKind: context.identifierCaseByKind,
       comTypes: context.comTypes,
       unusedDiagnostics: context.unusedDiagnostics,
+      deadCodeDiagnostics: context.deadCodeDiagnostics,
       syntaxSnippets: context.syntaxSnippets,
       syntaxKeywords: context.syntaxKeywords,
     },
@@ -9387,7 +9529,7 @@ async function collectFullVbProjectDocumentsForWorkspaceOperationAsync(
 ): Promise<AspParsedDocument[]> {
   const limits = vbProjectContextLimits(settings);
   const documents: AspParsedDocument[] = [cached.parsed];
-  const visited = new Set<string>([cached.source.uri]);
+  const visited = new Set<string>([fileIdentityKeyFromUri(cached.source.uri)]);
   let textLength = cached.parsed.text.length;
   let truncatedReason: string | undefined;
 
@@ -9409,7 +9551,8 @@ async function collectFullVbProjectDocumentsForWorkspaceOperationAsync(
       );
       const includeUri = pathToFileUri(resolved.fileName);
       recordIncludeDependency(cached.source.uri, includeUri);
-      if (!resolved.exists || visited.has(includeUri)) {
+      const includeKey = fileIdentityKeyFromFileName(resolved.fileName);
+      if (!resolved.exists || visited.has(includeKey)) {
         continue;
       }
       if (documents.length >= limits.maxDocuments) {
@@ -9425,7 +9568,7 @@ async function collectFullVbProjectDocumentsForWorkspaceOperationAsync(
       if (!entry) {
         continue;
       }
-      visited.add(entry.uri);
+      visited.add(fileIdentityKeyFromFileName(entry.fileName));
       documents.push(entry.parsed);
       textLength += entry.parsed.text.length;
       await visit(entry.parsed, depth + 1);
@@ -9479,7 +9622,7 @@ async function collectVbProjectSummaryGraphAsync(
   const rootSummary = await cachedFileAnalysisSummaryAsync(cached, contextSettings, settings);
   const summaries: FileAnalysisSummary[] = [rootSummary];
   const projectDocuments: AspParsedDocument[] = [cached.parsed];
-  const visited = new Set<string>([cached.source.uri]);
+  const visited = new Set<string>([fileIdentityKeyFromUri(cached.source.uri)]);
   const missingFiles: string[] = [];
   let textLength = cached.parsed.text.length;
   let truncatedReason: string | undefined;
@@ -9503,7 +9646,8 @@ async function collectVbProjectSummaryGraphAsync(
       );
       const includeUri = pathToFileUri(resolved.fileName);
       recordIncludeDependency(cached.source.uri, includeUri);
-      if (!resolved.exists || visited.has(includeUri)) {
+      const includeKey = fileIdentityKeyFromFileName(resolved.fileName);
+      if (!resolved.exists || visited.has(includeKey)) {
         continue;
       }
       if (summaries.length >= limits.maxDocuments) {
@@ -9530,7 +9674,7 @@ async function collectVbProjectSummaryGraphAsync(
         }
         continue;
       }
-      visited.add(entry.uri);
+      visited.add(fileIdentityKeyFromFileName(entry.fileName));
       textLength += entry.source.size;
       summaries.push(entry.summary);
       if (entry.parsed) {
@@ -9629,12 +9773,18 @@ function scheduleIncludeSummaryRefresh(
         return;
       }
       const affected = new Set<string>();
-      if (documents.get(ownerUri)) {
-        affected.add(ownerUri);
+      const ownerDocument = openDocumentForUri(ownerUri);
+      if (ownerDocument) {
+        affected.add(ownerDocument.uri);
       }
-      for (const dependent of includeReverseDependencies.get(entry.uri) ?? []) {
-        if (documents.get(dependent)) {
-          affected.add(dependent);
+      for (const dependentKey of includeReverseDependencies.get(
+        fileIdentityKeyFromUri(entry.uri),
+      ) ?? []) {
+        const dependent = documents
+          .all()
+          .find((document) => fileIdentityKeyFromUri(document.uri) === dependentKey);
+        if (dependent) {
+          affected.add(dependent.uri);
         }
       }
       if (affected.size === 0) {
@@ -9692,6 +9842,7 @@ function positiveIntegerFromEnv(name: string, fallback: number): number {
 
 interface IncludeDocumentSourceIdentity {
   key: string;
+  uri: string;
   source: DiskAnalysisSourceMetadata;
   text?: string;
   diskBacked: boolean;
@@ -9703,7 +9854,7 @@ async function includeDocumentSourceIdentityAsync(
 ): Promise<IncludeDocumentSourceIdentity | undefined> {
   const normalized = normalizeFileName(fileName);
   const uri = pathToFileUri(normalized);
-  const openDocument = documents.get(uri);
+  const openDocument = openDocumentForFileName(normalized);
   if (openDocument) {
     const text = openDocument.getText();
     const source = {
@@ -9713,11 +9864,12 @@ async function includeDocumentSourceIdentityAsync(
     };
     return {
       key: JSON.stringify({
-        fileName: normalized,
+        fileName: fileIdentityKeyFromFileName(normalized),
         openVersion: openDocument.version,
         text: textFingerprint(text),
         settings: includeDocumentSettingsIdentity(settings),
       }),
+      uri: openDocument.uri,
       source,
       text,
       diskBacked: false,
@@ -9733,6 +9885,7 @@ async function includeDocumentSourceIdentityAsync(
           settings: includeDocumentSettingsIdentity(settings),
         }),
         source,
+        uri,
         diskBacked: true,
       };
     }
@@ -9751,8 +9904,10 @@ async function includeDocumentSourceIdentityAsync(
   return {
     key: JSON.stringify({
       ...source,
+      fileName: fileIdentityKeyFromFileName(source.fileName),
       settings: includeDocumentSettingsIdentity(settings),
     }),
+    uri,
     source,
     diskBacked: true,
   };
@@ -9792,8 +9947,8 @@ function includeRefsCacheKey(
   settings: AspSettings,
 ): string {
   return JSON.stringify({
-    fileName: normalizeFileName(fileName),
-    source,
+    fileName: fileIdentityKeyFromFileName(fileName),
+    source: diskAnalysisSourceIdentity(source),
     settings: includeRefsSettingsKey(settings),
   });
 }
@@ -9960,6 +10115,7 @@ function diskVbSymbolIndexCacheEntry(
 
 function createIncludeRefsCacheEntry(
   fileName: string,
+  uri: string,
   text: string,
   key: string,
   source: DiskAnalysisSourceMetadata,
@@ -9968,7 +10124,7 @@ function createIncludeRefsCacheEntry(
   return {
     key,
     fileName,
-    uri: pathToFileUri(fileName),
+    uri,
     source,
     includeRefs,
     fingerprint: includeRefsFingerprint(includeRefs),
@@ -9977,12 +10133,13 @@ function createIncludeRefsCacheEntry(
 
 async function createIncludeDocumentCacheEntryAsync(
   fileName: string,
+  uri: string,
   text: string,
   settings: AspSettings,
   key: string,
   source: DiskAnalysisSourceMetadata,
 ): Promise<IncludeDocumentCacheEntry> {
-  const parsed = await parseAspDocumentAsync(pathToFileUri(fileName), text, settings);
+  const parsed = await parseAspDocumentAsync(uri, text, settings);
   await hydrateVbscriptCst(parsed, settings);
   const summary = await summarizeAspFileAnalysisAsync(parsed, vbProjectContextSettings(settings));
   const publicSignature = filePublicSignature(summary);
@@ -10009,15 +10166,26 @@ function sameDiskAnalysisSource(
   right: DiskAnalysisSourceMetadata,
 ): boolean {
   return (
-    left.fileName === right.fileName && left.mtimeMs === right.mtimeMs && left.size === right.size
+    fileIdentityKeyFromFileName(left.fileName) === fileIdentityKeyFromFileName(right.fileName) &&
+    left.mtimeMs === right.mtimeMs &&
+    left.size === right.size
   );
+}
+
+function diskAnalysisSourceIdentity(
+  source: DiskAnalysisSourceMetadata,
+): DiskAnalysisSourceMetadata {
+  return {
+    ...source,
+    fileName: fileIdentityKeyFromFileName(source.fileName),
+  };
 }
 
 function rememberIncludePublicSummary(
   entry: IncludeSummaryCacheEntry,
   settings?: AspSettings,
 ): void {
-  includePublicSummaries.set(entry.fileName, {
+  includePublicSummaries.set(fileIdentityKeyFromFileName(entry.fileName), {
     fileName: entry.fileName,
     uri: entry.uri,
     key: entry.key,
@@ -10677,19 +10845,48 @@ function toTextDocument(virtual: VirtualDocument): TextDocument {
   return TextDocument.create(virtual.uri, virtual.languageId, 0, virtual.text);
 }
 
+function cachedDocumentForUri(uri: string): CachedDocument | undefined {
+  return (
+    cache.get(uri) ??
+    (uri.startsWith("file://")
+      ? [...cache.values()].find((cached) => sameFileIdentityUri(cached.source.uri, uri))
+      : undefined)
+  );
+}
+
+function cachedDocumentsForUri(uri: string): CachedDocument[] {
+  const direct = cache.get(uri);
+  if (!uri.startsWith("file://")) {
+    return direct ? [direct] : [];
+  }
+  const fileKey = fileIdentityKeyFromUri(uri);
+  const matches = [...cache.values()].filter(
+    (cached) => fileIdentityKeyFromUri(cached.source.uri) === fileKey,
+  );
+  return direct && !matches.includes(direct) ? [direct, ...matches] : matches;
+}
+
+function deleteCachedDocumentsForUri(uri: string): void {
+  for (const [key, cached] of cache) {
+    if (key === uri || (uri.startsWith("file://") && sameFileIdentityUri(cached.source.uri, uri))) {
+      cache.delete(key);
+    }
+  }
+}
+
 function getCached(uri: string): CachedDocument | undefined {
-  const existing = cache.get(uri);
+  const existing = cachedDocumentForUri(uri);
   if (existing) {
     return existing;
   }
-  const document = documents.get(uri);
+  const document = openDocumentForUri(uri);
   if (!document) {
     return undefined;
   }
-  const settings = cachedSettings(uri);
-  const parsed = parseAspDocument(uri, document.getText(), settings);
+  const settings = cachedSettings(document.uri);
+  const parsed = parseAspDocument(document.uri, document.getText(), settings);
   const cached = createCachedDocument(document, parsed, settings);
-  cache.set(uri, cached);
+  cache.set(document.uri, cached);
   return cached;
 }
 
@@ -10698,7 +10895,7 @@ async function getIndexedCachedAsync(
   settings: AspSettings,
 ): Promise<CachedDocument | undefined> {
   await ensureWorkspaceIndexAsync(settings);
-  const entry = workspaceIndex.get(normalizeFileName(uriToFileName(uri)));
+  const entry = workspaceIndex.get(fileIdentityKeyFromUri(uri));
   return entry ? cachedFromIndexedAsync(entry, cachedSettings(entry.uri)) : undefined;
 }
 
@@ -10952,39 +11149,41 @@ async function ensureWorkspaceIndexAsync(
       return;
     }
   }
-  workspaceIndex.clear();
-  workspaceIndexTruncated = false;
-  let scannedFiles = 0;
-  const maxFiles = settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles;
-  const chunkSize = settings.workspace?.scanChunkSize ?? defaultScanChunkSize;
-  for (const root of workspaceIndexRoots()) {
-    if (token?.isCancellationRequested || scannedFiles >= maxFiles) {
-      break;
+  await withServerStatusAsync("loading", "workspace.index", async () => {
+    workspaceIndex.clear();
+    workspaceIndexTruncated = false;
+    let scannedFiles = 0;
+    const maxFiles = settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles;
+    const chunkSize = settings.workspace?.scanChunkSize ?? defaultScanChunkSize;
+    for (const root of workspaceIndexRoots()) {
+      if (token?.isCancellationRequested || scannedFiles >= maxFiles) {
+        break;
+      }
+      const filter = await createWorkspaceScanFilter(root, settings);
+      scannedFiles = await indexWorkspaceRootAsync(
+        root,
+        {
+          scannedFiles,
+          maxFiles,
+          chunkSize,
+          token,
+        },
+        filter,
+        settings,
+      );
     }
-    const filter = await createWorkspaceScanFilter(root, settings);
-    scannedFiles = await indexWorkspaceRootAsync(
-      root,
-      {
-        scannedFiles,
-        maxFiles,
-        chunkSize,
-        token,
-      },
-      filter,
-      settings,
-    );
-  }
-  workspaceIndexTruncated = scannedFiles >= maxFiles;
-  workspaceIndexDirty = Boolean(token?.isCancellationRequested);
-  workspaceIndexRestoreAllowed = workspaceIndexDirty;
-  if (!workspaceIndexDirty) {
-    await writeWorkspaceIndexToDiskAsync(settings);
-  }
-  if (workspaceIndexTruncated) {
-    connection.console.warn(
-      createLocalizer(settings.resolvedLocale).t("server.workspaceIndex.truncated", { maxFiles }),
-    );
-  }
+    workspaceIndexTruncated = scannedFiles >= maxFiles;
+    workspaceIndexDirty = Boolean(token?.isCancellationRequested);
+    workspaceIndexRestoreAllowed = workspaceIndexDirty;
+    if (!workspaceIndexDirty) {
+      await writeWorkspaceIndexToDiskAsync(settings);
+    }
+    if (workspaceIndexTruncated) {
+      connection.console.warn(
+        createLocalizer(settings.resolvedLocale).t("server.workspaceIndex.truncated", { maxFiles }),
+      );
+    }
+  });
 }
 
 async function indexWorkspaceRootAsync(
@@ -11034,33 +11233,36 @@ async function indexWorkspaceRootAsync(
 }
 
 async function indexWorkspaceFileAsync(fileName: string, settings: AspSettings): Promise<void> {
-  const normalized = normalizeFileName(fileName);
-  if (!(await shouldIndexWorkspaceFileAsync(normalized, settings))) {
-    workspaceIndex.delete(normalized);
-    forgetSourceMetadata(normalized);
-    return;
-  }
-  const stat = await fs.promises.stat(normalized).catch(() => undefined);
-  if (!stat?.isFile()) {
-    workspaceIndex.delete(normalized);
-    forgetSourceMetadata(normalized);
-    return;
-  }
-  const existing = workspaceIndex.get(normalized);
-  if (existing && existing.mtimeMs === stat.mtimeMs && existing.size === stat.size) {
-    return;
-  }
-  const uri = pathToFileUri(normalized);
-  workspaceIndex.set(normalized, {
-    uri,
-    fileName: normalized,
-    mtimeMs: stat.mtimeMs,
-    size: stat.size,
-  });
-  rememberSourceMetadata({
-    fileName: normalized,
-    mtimeMs: stat.mtimeMs,
-    size: stat.size,
+  await withServerStatusAsync("loading", "workspace.indexFile", async () => {
+    const normalized = normalizeFileName(fileName);
+    const fileKey = fileIdentityKeyFromFileName(normalized);
+    if (!(await shouldIndexWorkspaceFileAsync(normalized, settings))) {
+      workspaceIndex.delete(fileKey);
+      forgetSourceMetadata(normalized);
+      return;
+    }
+    const stat = await fs.promises.stat(normalized).catch(() => undefined);
+    if (!stat?.isFile()) {
+      workspaceIndex.delete(fileKey);
+      forgetSourceMetadata(normalized);
+      return;
+    }
+    const existing = workspaceIndex.get(fileKey);
+    if (existing && existing.mtimeMs === stat.mtimeMs && existing.size === stat.size) {
+      return;
+    }
+    const uri = pathToFileUri(normalized);
+    workspaceIndex.set(fileKey, {
+      uri,
+      fileName: normalized,
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+    });
+    rememberSourceMetadata({
+      fileName: normalized,
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+    });
   });
 }
 
@@ -11078,13 +11280,14 @@ async function restoreWorkspaceIndexFromDiskAsync(settings: AspSettings): Promis
   sourceManifest.clear();
   for (const indexed of entry.entries) {
     const normalized = normalizeFileName(indexed.fileName);
+    const fileKey = fileIdentityKeyFromFileName(normalized);
     const restored = {
       uri: indexed.uri,
       fileName: normalized,
       mtimeMs: indexed.mtimeMs,
       size: indexed.size,
     };
-    workspaceIndex.set(normalized, restored);
+    workspaceIndex.set(fileKey, restored);
     rememberSourceMetadata(restored);
   }
   workspaceIndexDirty = false;
@@ -11512,10 +11715,14 @@ function workspaceRelativePath(root: string, fileName: string): string | undefin
 
 function workspaceRootForFileName(fileName: string): string | undefined {
   const normalized = normalizeFileName(fileName);
+  const fileKey = fileIdentityKeyFromFileName(normalized);
   return workspaceIndexRoots()
     .map(normalizeFileName)
     .sort((left, right) => right.length - left.length)
-    .find((root) => normalized === root || normalized.startsWith(`${root}${path.sep}`));
+    .find((root) => {
+      const rootKey = fileIdentityKeyFromFileName(root);
+      return fileIdentityKeyIsWithinOrEqual(fileKey, rootKey);
+    });
 }
 
 function workspaceIndexRoots(): string[] {
@@ -11528,7 +11735,13 @@ function workspaceIndexRoots(): string[] {
           .map((document) => path.dirname(uriToFileName(document.uri)));
   return roots
     .map(normalizeFileName)
-    .filter((root, index, items) => root.length > 0 && items.indexOf(root) === index);
+    .filter(
+      (root, index, items) =>
+        root.length > 0 &&
+        items.findIndex(
+          (item) => fileIdentityKeyFromFileName(item) === fileIdentityKeyFromFileName(root),
+        ) === index,
+    );
 }
 
 function workspaceGlobToRegExpSource(pattern: string): string {
@@ -11734,6 +11947,7 @@ function diagnosticsIdentity(settings: AspSettings): string {
       comTypes: settings.vbscript?.comTypes,
       globals: settings.vbscript?.globals,
       unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+      deadCodeDiagnostics: settings.vbscript?.deadCodeDiagnostics !== false,
     },
     locale: settings.resolvedLocale ?? "en",
   });
@@ -11824,12 +12038,12 @@ function applyDocumentSettingsInvalidation(
   uri: string,
   impact: SettingsInvalidationImpact | undefined,
 ): void {
-  const cached = cache.get(uri);
+  const cached = cachedDocumentForUri(uri);
   if (!impact) {
     return;
   }
   if (impact.parse) {
-    cache.delete(uri);
+    deleteCachedDocumentsForUri(uri);
     vbProjectContextCache.clear();
     clearSemanticTokensForUri(uri);
     logInvalidation("parseCache", `settings.parse, uri=${uri}`);
@@ -12154,6 +12368,7 @@ function normalizeVbscriptSettings(
         ? (record.globals as NonNullable<AspSettings["vbscript"]>["globals"])
         : undefined,
     unusedDiagnostics: record.unusedDiagnostics !== false,
+    deadCodeDiagnostics: record.deadCodeDiagnostics !== false,
     syntaxSnippets: record.syntaxSnippets !== false,
     syntaxKeywords: record.syntaxKeywords !== false,
     initializedDimQuickFixStyle: normalizeInitializedDimQuickFixStyle(
@@ -13973,7 +14188,7 @@ function pathResolutionCacheKey(
   settings: AspSettings,
 ): string {
   return JSON.stringify({
-    baseDirectory: normalizeFileName(baseDirectory),
+    baseDirectory: fileIdentityKeyFromFileName(baseDirectory),
     requestedPath,
     windowsPathResolution: settings.windowsPathResolution !== false,
   });
@@ -13982,20 +14197,22 @@ function pathResolutionCacheKey(
 function includeResolutionSettingsKey(settings: AspSettings): unknown {
   return {
     virtualRoot: settings.virtualRoot,
-    virtualRoots: settings.virtualRoots?.map(normalizeFileName),
-    includePaths: settings.includePaths?.map(normalizeFileName),
+    virtualRoots: settings.virtualRoots?.map(fileIdentityKeyFromFileName),
+    includePaths: settings.includePaths?.map(fileIdentityKeyFromFileName),
     windowsPathResolution: settings.windowsPathResolution !== false,
     legacyEncoding: settings.legacyEncoding,
-    roots: workspaceRoots.map(normalizeFileName).sort(),
+    roots: workspaceRoots.map(fileIdentityKeyFromFileName).sort(),
   };
 }
 
 function workspaceRootFromUri(uri: string): string {
   const fileName = uriToFileName(uri);
   const normalized = normalizeFileName(fileName);
+  const fileKey = fileIdentityKeyFromFileName(normalized);
   const root = workspaceRoots.find((candidate) => {
     const normalizedRoot = normalizeFileName(candidate);
-    return normalized === normalizedRoot || normalized.startsWith(`${normalizedRoot}${path.sep}`);
+    const rootKey = fileIdentityKeyFromFileName(normalizedRoot);
+    return fileIdentityKeyIsWithinOrEqual(fileKey, rootKey);
   });
   return root ?? path.dirname(fileName);
 }
@@ -14013,11 +14230,13 @@ function sourceUriDocumentationLink(uri: string): string {
   }
   const fileName = uriToFileName(baseUri);
   const normalized = normalizeFileName(fileName);
+  const fileKey = fileIdentityKeyFromFileName(normalized);
   const root = workspaceRoots
     .map(normalizeFileName)
-    .filter(
-      (candidate) => normalized === candidate || normalized.startsWith(`${candidate}${path.sep}`),
-    )
+    .filter((candidate) => {
+      const candidateKey = fileIdentityKeyFromFileName(candidate);
+      return fileIdentityKeyIsWithinOrEqual(fileKey, candidateKey);
+    })
     .sort((left, right) => right.length - left.length)[0];
   const label = (root ? path.relative(root, fileName) || path.basename(fileName) : fileName)
     .split(path.sep)
@@ -14059,20 +14278,52 @@ function normalizeFileName(fileName: string): string {
   return path.resolve(fileName);
 }
 
+function openDocumentForFileName(fileName: string): TextDocument | undefined {
+  const uri = pathToFileUri(fileName);
+  return (
+    documents.get(uri) ??
+    documents
+      .all()
+      .find(
+        (document) =>
+          fileIdentityKeyFromUri(document.uri) === fileIdentityKeyFromFileName(fileName),
+      )
+  );
+}
+
+function openDocumentForUri(uri: string): TextDocument | undefined {
+  return (
+    documents.get(uri) ??
+    (uri.startsWith("file://")
+      ? documents
+          .all()
+          .find((document) => fileIdentityKeyFromUri(document.uri) === fileIdentityKeyFromUri(uri))
+      : undefined)
+  );
+}
+
 function graphFileNameFromUri(uri: string): string {
   return normalizeFileName(uriToFileName(uri));
 }
 
 function graphFileKey(fileName: string): string {
-  return normalizeFileName(fileName);
+  return fileIdentityKeyFromFileName(fileName);
 }
 
 function graphFileKeyFromUri(uri: string): string {
   return graphFileKey(graphFileNameFromUri(uri));
 }
 
+function fileIdentityKeyIsWithinOrEqual(fileKey: string, directoryKey: string): boolean {
+  if (fileKey === directoryKey) {
+    return true;
+  }
+  const prefix = directoryKey.endsWith("/") ? directoryKey : `${directoryKey}/`;
+  return fileKey.startsWith(prefix);
+}
+
 function sameFile(left: string, right: string): boolean {
-  return normalizeFileName(left) === normalizeFileName(right);
+  return fileIdentityKeyFromFileName(left) === fileIdentityKeyFromFileName(right);
 }
 
 function isIncDocument(uri: string): boolean {
@@ -14321,7 +14572,8 @@ async function vbscriptNamingDiagnosticActionsAsync(
   );
   const symbol = context.symbols?.find(
     (candidate) =>
-      candidate.sourceUri === cached.source.uri && sameRange(candidate.range, diagnostic.range),
+      sameFileIdentityUri(candidate.sourceUri, cached.source.uri) &&
+      sameRange(candidate.range, diagnostic.range),
   );
   if (!symbol || hasVbscriptIdentifierCollision(symbol, expectedName, context.symbols ?? [])) {
     return [];
@@ -14364,7 +14616,7 @@ function hasVbscriptIdentifierCollision(
 
 function sameVbscriptSymbol(left: VbSymbol, right: VbSymbol): boolean {
   return (
-    left.sourceUri === right.sourceUri &&
+    sameFileIdentityUri(left.sourceUri, right.sourceUri) &&
     left.kind === right.kind &&
     (left.memberOf ?? "").toLowerCase() === (right.memberOf ?? "").toLowerCase() &&
     (left.scopeName ?? "").toLowerCase() === (right.scopeName ?? "").toLowerCase() &&
@@ -14378,7 +14630,7 @@ function sameVbscriptNamingScope(left: VbSymbol, right: VbSymbol): boolean {
   }
   if (left.scopeName || right.scopeName) {
     return (
-      left.sourceUri === right.sourceUri &&
+      sameFileIdentityUri(left.sourceUri, right.sourceUri) &&
       (left.scopeName ?? "").toLowerCase() === (right.scopeName ?? "").toLowerCase()
     );
   }
@@ -14466,7 +14718,8 @@ async function removeUnusedVbscriptDeclarationActionsAsync(
   const context = await buildVbProjectContextAsync(cached, cachedSettings(cached.source.uri));
   const symbol = context.symbols?.find(
     (candidate) =>
-      candidate.sourceUri === cached.source.uri && sameRange(candidate.range, diagnostic.range),
+      sameFileIdentityUri(candidate.sourceUri, cached.source.uri) &&
+      sameRange(candidate.range, diagnostic.range),
   );
   if (!symbol || symbol.kind === "class" || symbol.kind === "function" || symbol.kind === "sub") {
     return [];
@@ -16072,7 +16325,7 @@ function isFileInDirectory(fileName: string, directory: string): boolean {
 }
 
 async function cachedDocumentForGraphAsync(uri: string): Promise<CachedDocument | undefined> {
-  const document = documents.get(uri);
+  const document = openDocumentForUri(uri);
   if (document) {
     return ensureFreshCachedDocumentAsync(document);
   }
@@ -16169,7 +16422,7 @@ async function collectIncomingIncludeGraphDocumentsAsync(
     token?: GraphCancellationToken;
   } = {},
 ): Promise<AspGraphDocument[]> {
-  const targets = new Set([...targetFileNames].map(normalizeFileName));
+  const targets = new Set([...targetFileNames].map(fileIdentityKeyFromFileName));
   if (targets.size === 0) {
     return [];
   }
@@ -16277,7 +16530,7 @@ async function includeRefsDirectlyIncludeAnyTarget(
       include.mode,
       settings,
     );
-    if (resolved.exists && targetFileNames.has(normalizeFileName(resolved.fileName))) {
+    if (resolved.exists && targetFileNames.has(fileIdentityKeyFromFileName(resolved.fileName))) {
       return true;
     }
   }
@@ -17102,12 +17355,13 @@ async function graphFileIndexForDocumentAsync(
 ): Promise<GraphFileIndex> {
   const settingsKey = graphFileIndexSettingsKey(settings);
   const key = JSON.stringify({
-    fileName: document.fileName,
-    source: document.source,
+    fileName: graphFileKey(document.fileName),
+    source: diskAnalysisSourceIdentity(document.source),
     settings: settingsKey,
     text: document.diskBacked ? undefined : textFingerprint(document.text),
   });
-  const existing = graphFileIndexCache.get(document.fileName);
+  const documentKey = graphFileKey(document.fileName);
+  const existing = graphFileIndexCache.get(documentKey);
   if (existing?.key === key) {
     existing.lastUsed = Date.now();
     return existing;
@@ -17127,7 +17381,7 @@ async function graphFileIndexForDocumentAsync(
         });
       if (cachedIndex) {
         const entry = graphFileIndexFromDisk(document.fileName, key, cachedIndex, includeRefsEntry);
-        graphFileIndexCache.set(document.fileName, entry);
+        graphFileIndexCache.set(documentKey, entry);
         pruneGraphFileIndexCache();
         logDebugSummary(settings, `[asp-lsp] graphVbIndex.hit: ${document.uri}`);
         return entry;
@@ -17152,7 +17406,7 @@ async function graphFileIndexForDocumentAsync(
       fingerprint: graphFileIndexFingerprint(vbSymbolIndex),
       lastUsed: Date.now(),
     };
-    graphFileIndexCache.set(document.fileName, entry);
+    graphFileIndexCache.set(documentKey, entry);
     pruneGraphFileIndexCache();
     if (document.diskBacked) {
       await diskAnalysisCache.writeVbSymbolIndex(diskVbSymbolIndexCacheEntry(entry, settings));
@@ -17189,7 +17443,7 @@ function pruneGraphFileIndexCache(): void {
 function invalidateGraphFileIndexFiles(fileNames: Iterable<string>): void {
   for (const fileName of fileNames) {
     const normalized = normalizeFileName(fileName);
-    graphFileIndexCache.delete(normalized);
+    graphFileIndexCache.delete(graphFileKey(normalized));
   }
   graphFileIndexInFlight.clear();
 }
@@ -17520,7 +17774,7 @@ function shouldShowVbReferenceCodeLens(
   sourceUri: string,
   settings: AspSettings["codeLens"],
 ): boolean {
-  if (symbol.sourceUri !== sourceUri) {
+  if (!sameFileIdentityUri(symbol.sourceUri, sourceUri)) {
     return false;
   }
   if (["function", "sub", "method", "property"].includes(symbol.kind)) {
@@ -17736,7 +17990,7 @@ function workspaceVbReferenceBatchCacheKey(
   return JSON.stringify({
     scope: "workspaceCodeLens",
     source: {
-      uri: cached.source.uri,
+      uri: fileIdentityKeyFromUri(cached.source.uri),
       version: cached.source.version,
       text: textFingerprint(cached.source.getText()),
       parsed: vbProjectDocumentFingerprint(cached.parsed),
@@ -17827,7 +18081,7 @@ async function vbSymbolForCodeLensDataAsync(
 
 function vbSymbolMatchesCodeLensIdentity(symbol: VbSymbol, data: VbReferenceCodeLensData): boolean {
   return (
-    symbol.sourceUri === data.uri &&
+    sameFileIdentityUri(symbol.sourceUri, data.uri) &&
     symbol.name.toLowerCase() === data.name.toLowerCase() &&
     symbol.kind === data.symbolKind &&
     (symbol.memberOf ?? "").toLowerCase() === (data.memberOf ?? "").toLowerCase() &&
@@ -17853,7 +18107,7 @@ async function analyzedVbscriptReferencesForSymbolAsync(
   );
 
   for (const candidate of analyzed) {
-    if (candidate.source.uri === cached.source.uri) {
+    if (sameFileIdentityUri(candidate.source.uri, cached.source.uri)) {
       continue;
     }
     const warmed = candidate.analysis?.vbProjectContext?.context;
@@ -18357,7 +18611,7 @@ function addFallbackVbSemanticTokens(
   }
   const candidates = (context.symbols ?? []).filter(
     (symbol) =>
-      symbol.sourceUri !== cached.parsed.uri &&
+      !sameFileIdentityUri(symbol.sourceUri, cached.parsed.uri) &&
       !symbol.scopeName &&
       !symbol.memberOf &&
       tokensByLowerName.has(symbol.name.toLowerCase()),
@@ -18489,13 +18743,14 @@ function semanticTokenModifierBitset(modifiers: readonly string[] | undefined): 
 }
 
 function cacheSemanticTokens(uri: string, data: number[]): SemanticTokens {
-  const previous = latestSemanticTokenResultByUri.get(uri);
+  const uriKey = semanticTokenUriKey(uri);
+  const previous = latestSemanticTokenResultByUri.get(uriKey);
   if (previous) {
     semanticTokenResults.delete(previous);
   }
   const resultId = nextSemanticTokenResultId();
   semanticTokenResults.set(resultId, { uri, data });
-  latestSemanticTokenResultByUri.set(uri, resultId);
+  latestSemanticTokenResultByUri.set(uriKey, resultId);
   return { data, resultId };
 }
 
@@ -18527,11 +18782,16 @@ function semanticTokenDeltaEdit(previous: number[], next: number[]) {
 }
 
 function clearSemanticTokensForUri(uri: string): void {
-  const resultId = latestSemanticTokenResultByUri.get(uri);
+  const uriKey = semanticTokenUriKey(uri);
+  const resultId = latestSemanticTokenResultByUri.get(uriKey);
   if (resultId) {
     semanticTokenResults.delete(resultId);
-    latestSemanticTokenResultByUri.delete(uri);
+    latestSemanticTokenResultByUri.delete(uriKey);
   }
+}
+
+function semanticTokenUriKey(uri: string): string {
+  return uri.startsWith("file://") ? fileIdentityKeyFromUri(uri) : uri;
 }
 
 function semanticTokensFullCacheKey(

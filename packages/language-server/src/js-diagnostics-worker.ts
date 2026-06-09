@@ -10,6 +10,7 @@ import type {
   JsDiagnosticsWorkerTsDiagnostic,
   JsDiagnosticsWorkerVirtualDocument,
 } from "./js-diagnostics-protocol";
+import { fileIdentityKeyFromFileName } from "./file-identity";
 
 if (!parentPort) {
   throw new Error("JavaScript diagnostics worker requires a parent port.");
@@ -510,7 +511,7 @@ function safeNormalizeFileName(fileName: string): string {
 }
 
 function normalizeFileName(fileName: string): string {
-  return path.resolve(fileName);
+  return fileIdentityKeyFromFileName(fileName);
 }
 
 function uriToFileName(uri: string): string {

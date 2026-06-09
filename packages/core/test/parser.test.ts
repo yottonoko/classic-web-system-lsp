@@ -35,6 +35,7 @@ import {
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
   shiftAspRangeAfterChange,
+  sourceUriIdentityKey,
   summarizeAspFileAnalysis,
   summarizeAspFileAnalysisAsync,
   updateAspParsedDocument,
@@ -3520,6 +3521,48 @@ Set c = MakeCustomer()
     expect(factorialUsages[0].range.start.character).toBe("    Factorial = n * ".length);
   });
 
+  it("matches VBScript symbol identity across Windows file URI spellings", () => {
+    const target = parseAspDocument(
+      "file:///C:/site/default.asp",
+      `<%
+Function BuildTitle()
+End Function
+%>`,
+    );
+    const usage = parseAspDocument(
+      "file:///c%3A/site/default.asp",
+      `<%
+Function BuildTitle()
+End Function
+Response.Write BuildTitle()
+%>`,
+    );
+    const targetSymbol = collectVbscriptSymbols(target).find(
+      (symbol) => symbol.name === "BuildTitle" && symbol.kind === "function",
+    );
+    expect(targetSymbol).toBeDefined();
+    const references = getVbscriptReferencesForSymbol(
+      targetSymbol!,
+      {
+        documents: [usage],
+        symbols: collectVbscriptSymbols(usage),
+      },
+      { includeDeclaration: false, includeFunctionReturnAssignments: false },
+    );
+
+    expect(vbscriptReferenceSymbolKey(targetSymbol!)).toBe(
+      vbscriptReferenceSymbolKey({
+        ...targetSymbol!,
+        sourceUri: "file:///c:/site/default.asp",
+      }),
+    );
+    expect(sourceUriIdentityKey("file:///C:/site/default.asp#runtime-global")).not.toBe(
+      sourceUriIdentityKey("file:///c%3A/site/default.asp"),
+    );
+    expect(references).toHaveLength(1);
+    expect(references[0].uri).toBe("file:///c%3A/site/default.asp");
+  });
+
   it("matches single-symbol VBScript references when resolving symbols in a batch", () => {
     const source = `<%
 ''' <summary>Uses <see cref="MakeCustomer" /> and <see cref="Customer.Name" />.</summary>
@@ -4267,6 +4310,99 @@ End Sub
         .filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-unused")
         .every((diagnostic) => diagnostic.tags?.includes(DiagnosticTag.Unnecessary)),
     ).toBe(true);
+  });
+
+  it("reports unreachable VBScript statements as unnecessary hints", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Sub StopSub()
+  Exit Sub
+  Response.Write "after-sub"
+End Sub
+Function StopFunction()
+  Exit Function
+  StopFunction = 1
+End Function
+Sub StopLoops()
+  For i = 0 To 1
+    Exit For
+    Response.Write "after-for"
+  Next
+  Do
+    Exit Do
+    Response.Write "after-do"
+  Loop
+  Response.Write "after-loops"
+End Sub
+End
+Response.Write "after-end"
+%>`,
+    );
+    const diagnostics = analyzeVbscript(parsed).diagnostics.filter(
+      (diagnostic) => diagnostic.source === "asp-lsp-vbscript-dead-code",
+    );
+    const lines = parsed.text.split(/\r?\n/);
+    const deadLines = diagnostics.map((diagnostic) => lines[diagnostic.range.start.line]?.trim());
+    expect(deadLines).toContain('Response.Write "after-sub"');
+    expect(deadLines).toContain("StopFunction = 1");
+    expect(deadLines).toContain('Response.Write "after-for"');
+    expect(deadLines).toContain('Response.Write "after-do"');
+    expect(deadLines).toContain('Response.Write "after-end"');
+    expect(deadLines).not.toContain('Response.Write "after-loops"');
+    expect(diagnostics.every((diagnostic) => diagnostic.severity === 4)).toBe(true);
+    expect(
+      diagnostics.every((diagnostic) => diagnostic.tags?.includes(DiagnosticTag.Unnecessary)),
+    ).toBe(true);
+  });
+
+  it("keeps conditional VBScript exits and block terminators reachable", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Sub ConditionalExit(flag, values)
+  If flag Then Exit Sub
+  Response.Write "after-single-line-if"
+  If flag Then
+    Exit Sub
+  Else
+    Response.Write "reachable-else"
+  End If
+  Response.Write "after-if"
+  For Each value In values
+    If value Then
+      Exit For
+    End If
+    Response.Write "after-conditional-exit-for"
+  Next
+  Response.Write "after-loop"
+End Sub
+%>`,
+    );
+    const diagnostics = analyzeVbscript(parsed).diagnostics.filter(
+      (diagnostic) => diagnostic.source === "asp-lsp-vbscript-dead-code",
+    );
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("can disable VBScript dead code diagnostics separately from unused declarations", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Sub StopSub()
+  Dim unusedValue
+  Exit Sub
+  Response.Write "after-sub"
+End Sub
+%>`,
+    );
+    const diagnostics = analyzeVbscript(parsed, { deadCodeDiagnostics: false }).diagnostics;
+    expect(
+      diagnostics.some((diagnostic) => diagnostic.source === "asp-lsp-vbscript-dead-code"),
+    ).toBe(false);
+    expect(diagnostics.some((diagnostic) => diagnostic.source === "asp-lsp-vbscript-unused")).toBe(
+      true,
+    );
   });
 
   it("reports VBScript identifier casing hints", () => {

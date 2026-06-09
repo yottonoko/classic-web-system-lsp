@@ -35,6 +35,7 @@
   "configuration.vbscript.globals.string.description": "global object type の省略表記です。例: MyCompany.Repository または String | Nothing。",
   "configuration.vbscript.globals.type.description": "global object type です。Union type は | で指定します。",
   "configuration.vbscript.unusedDiagnostics.description": "未使用の VBScript declaration を hint diagnostic として報告します。",
+  "configuration.vbscript.deadCodeDiagnostics.description": "到達不能な VBScript code を hint diagnostic として報告します。",
   "configuration.vbscript.syntaxSnippets.description": "よく使う制御構文と宣言 block の VBScript syntax snippet completion を有効にします。",
   "configuration.vbscript.syntaxKeywords.description": "文脈に応じた VBScript syntax keyword completion を有効にします。",
   "configuration.vbscript.initializedDimQuickFixStyle.description": "初期化つき VBScript Dim declaration の quick fix style を制御します。newline は 2 つの statement を別行に分け、sameLineColon は Dim a : a = value に書き換えます。",

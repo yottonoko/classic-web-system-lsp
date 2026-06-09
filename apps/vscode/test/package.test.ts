@@ -182,6 +182,10 @@ describe("VS Code extension package", () => {
     const extensionSourceText = fs.readFileSync("src/extension.ts", "utf8");
     expect(extensionSourceText).not.toContain(removedAnalysisEnv);
     expect(extensionSourceText).not.toContain(`aspLsp.${removedAnalysisSetting}`);
+    expect(extensionSourceText).toContain('const serverStatusNotificationMethod = "aspLsp/status"');
+    expect(extensionSourceText).toContain("handleServerStatusNotification");
+    expect(extensionSourceText).toContain("status.loading.text");
+    expect(extensionSourceText).toContain("status.analyzing.text");
     expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(
       true,
     );
@@ -630,6 +634,17 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("document.version !== documentVersion");
     expect(extensionSource).toContain("setTimeout(resolve, 0)");
     expect(extensionSource).toContain("autoCloseAspBlock");
+    const autoCloseAspBlockSource = extensionSource.slice(
+      extensionSource.indexOf("async function autoCloseAspBlock"),
+      extensionSource.indexOf("function couldTriggerHtmlTagCompleteBefore"),
+    );
+    expect(autoCloseAspBlockSource).toContain(
+      "const applied = await vscode.workspace.applyEdit(workspaceEdit)",
+    );
+    expect(autoCloseAspBlockSource).toContain("vscode.window.visibleTextEditors.find");
+    expect(autoCloseAspBlockSource).toContain(
+      "editor.selection = new vscode.Selection(position, position)",
+    );
     expect(extensionSource).not.toContain("autoCloseApostrophe");
     expect(extensionSource).not.toContain("pendingApostropheAutoCloseEdits");
     expect(extensionSource).not.toContain("consumePendingApostropheAutoClose");
@@ -901,7 +916,16 @@ describe("VS Code extension package", () => {
     expect(classicAspTagInjection.repository?.["style-attribute-double"]?.patterns).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ include: "#asp-expression" }),
-        expect.objectContaining({ include: "source.css" }),
+        expect.objectContaining({ include: "#style-css" }),
+      ]),
+    );
+    expect(classicAspTagInjection.repository?.["style-css"]?.patterns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          captures: expect.objectContaining({
+            "1": expect.objectContaining({ name: "support.type.property-name.css" }),
+          }),
+        }),
       ]),
     );
     expect(classicAspTagInjection.repository?.["asp-expression"]?.end).toBe("%>");
@@ -1125,6 +1149,9 @@ console.log(a);
     expect(styleProperty?.scopes.some((scope) => scope.includes("string.quoted.double.html"))).toBe(
       false,
     );
+    const closingTagStart = tokenAtText(grammar, lines, 0, "</div>");
+    expect(closingTagStart?.scopes).toContain("punctuation.definition.tag.begin.html");
+    expect(closingTagStart?.scopes).not.toContain("source.css.embedded.html");
 
     for (const { line, needle } of [
       { line: 0, needle: "styleColor" },
@@ -1397,10 +1424,23 @@ function minimalHtmlGrammar() {
     patterns: [
       { include: "#style" },
       { include: "#script" },
+      { include: "#end-tag" },
       { include: "#tag" },
       { match: "[^<]+" },
     ],
     repository: {
+      "end-tag": {
+        begin: "(</)([A-Za-z][A-Za-z0-9:-]*)\\b",
+        beginCaptures: {
+          "1": { name: "punctuation.definition.tag.begin.html" },
+          "2": { name: "entity.name.tag.html" },
+        },
+        end: ">",
+        endCaptures: {
+          "0": { name: "punctuation.definition.tag.end.html" },
+        },
+        name: "meta.tag.structure.end.html",
+      },
       tag: {
         begin: "<[A-Za-z][A-Za-z0-9:-]*\\b",
         end: ">",

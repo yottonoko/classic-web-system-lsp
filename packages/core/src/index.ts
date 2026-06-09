@@ -3,6 +3,7 @@ export * from "./parser";
 export { extractAspIncludeRefs } from "./asp-scanner";
 export * from "./vbscript-symbol-index";
 export * from "./virtual-documents";
+export * from "./source-uri";
 export * from "./vbscript";
 export * from "./formatter";
 export * from "./localize";

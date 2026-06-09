@@ -23,6 +23,11 @@ import {
   type VbType,
   type VbTypeEnvironment,
 } from "@asp-lsp/core";
+import {
+  fileIdentityKeyFromFileName,
+  fileIdentityKeyFromUri,
+  sameFileIdentityUri,
+} from "./file-identity";
 import type {
   VbReferencesWorkerOpenDocument,
   VbReferencesWorkerRequest,
@@ -76,7 +81,7 @@ async function runWorkspaceReferenceAnalysis(
   if (
     closure.complete &&
     targetFileNames.length > 0 &&
-    !targetFileNames.some((fileName) => closure.files.has(fileName))
+    !targetFileNames.some((fileName) => closure.files.has(fileIdentityKeyFromFileName(fileName)))
   ) {
     return {
       id: request.id,
@@ -171,10 +176,11 @@ async function collectLightweightIncludeClosure(
         if (item.depth > request.limits.maxDepth) {
           return { next: [], reason: "depth-limit" };
         }
-        if (files.has(item.fileName)) {
+        const fileKey = fileIdentityKeyFromFileName(item.fileName);
+        if (files.has(fileKey)) {
           return { next: [] };
         }
-        files.add(item.fileName);
+        files.add(fileKey);
         if (files.size > request.limits.maxDocuments) {
           return { next: [], reason: "document-limit" };
         }
@@ -227,7 +233,9 @@ async function collectLightweightIncludeClosure(
       }
       nextFrontier.push(...result.next);
     }
-    frontier = nextFrontier.filter((item) => !files.has(item.fileName));
+    frontier = nextFrontier.filter(
+      (item) => !files.has(fileIdentityKeyFromFileName(item.fileName)),
+    );
   }
 
   return { files, complete, reasons: [...new Set(reasons)], openHits };
@@ -366,13 +374,14 @@ async function fullFallbackIncludeGraph(
       if (!resolved.exists) {
         continue;
       }
-      const targetUri = pathToFileUri(resolved.fileName);
-      pushMapItem(graph.directIncludesByOwnerUri, document.uri, {
+      const ownerKey = fileIdentityKeyFromUri(document.uri);
+      const targetKey = fileIdentityKeyFromFileName(resolved.fileName);
+      pushMapItem(graph.directIncludesByOwnerUri, ownerKey, {
         range: include.range,
-        targetUri,
+        targetUri: targetKey,
       });
-      pushMapItem(graph.parentIncludesByTargetUri, targetUri, {
-        ownerUri: document.uri,
+      pushMapItem(graph.parentIncludesByTargetUri, targetKey, {
+        ownerUri: ownerKey,
         range: include.range,
       });
     }
@@ -382,12 +391,20 @@ async function fullFallbackIncludeGraph(
 
 function fullFallbackAnalysisCacheKey(request: VbReferencesWorkerRequest): string {
   return JSON.stringify({
-    candidate: request.candidate,
+    candidate: {
+      ...request.candidate,
+      uri: fileIdentityKeyFromUri(request.candidate.uri),
+      fileName: fileIdentityKeyFromFileName(request.candidate.fileName),
+      source: {
+        ...request.candidate.source,
+        fileName: fileIdentityKeyFromFileName(request.candidate.source.fileName),
+      },
+    },
     settings: request.settings,
-    workspaceRoots: request.workspaceRoots,
+    workspaceRoots: request.workspaceRoots.map(fileIdentityKeyFromFileName),
     openDocuments: request.openDocuments.map((document) => ({
-      uri: document.uri,
-      fileName: document.fileName,
+      uri: fileIdentityKeyFromUri(document.uri),
+      fileName: fileIdentityKeyFromFileName(document.fileName),
       version: document.version,
       length: document.text.length,
       fingerprint: textFingerprint(document.text),
@@ -405,7 +422,7 @@ function emptyReferenceMap(
 function targetSymbolKey(symbol: VbReferencesWorkerTargetSymbol): string {
   const range = targetSymbolIdentityRange(symbol);
   return [
-    symbol.sourceUri,
+    fileIdentityKeyFromUri(symbol.sourceUri),
     symbol.kind,
     symbol.memberOf ?? "",
     symbol.name.toLowerCase(),
@@ -452,9 +469,10 @@ async function collectFullDocuments(
 
   const visit = async (uri: string, fileName: string, depth: number): Promise<void> => {
     const normalized = normalizeFileName(fileName);
+    const fileKey = fileIdentityKeyFromFileName(normalized);
     if (
       depth > request.limits.maxDepth ||
-      visited.has(normalized) ||
+      visited.has(fileKey) ||
       documents.length >= request.limits.maxDocuments ||
       textLength > request.limits.maxTextLength
     ) {
@@ -463,7 +481,7 @@ async function collectFullDocuments(
     const cachedParsed = await readDiskParsedDocument(normalized, request, openDocuments);
     if (cachedParsed) {
       cacheStats.parsedDocumentHits += 1;
-      visited.add(normalized);
+      visited.add(fileKey);
       textLength += cachedParsed.parsed.text.length;
       documents.push(cachedParsed.parsed);
       for (const include of cachedParsed.parsed.includes) {
@@ -483,7 +501,7 @@ async function collectFullDocuments(
     if (!text) {
       return;
     }
-    visited.add(normalized);
+    visited.add(fileKey);
     textLength += text.text.length;
     const parsed = await parseAspDocumentAsync(uri, text.text, request.settings);
     await hydrateVbscriptCst(parsed, request.settings);
@@ -561,7 +579,7 @@ async function readDiskParsedDocument(
   request: VbReferencesWorkerRequest,
   openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
 ): Promise<DiskParsedDocumentCacheEntry | undefined> {
-  if (openDocuments.has(normalizeFileName(fileName))) {
+  if (openDocuments.has(fileIdentityKeyFromFileName(fileName))) {
     return undefined;
   }
   const cache = diskCacheForRequest(request);
@@ -589,7 +607,7 @@ async function writeDiskParsedDocuments(
   await Promise.all(
     documents.map(async (document, index) => {
       const fileName = normalizeFileName(uriToFileName(document.uri));
-      if (openDocuments.has(fileName)) {
+      if (openDocuments.has(fileIdentityKeyFromFileName(fileName))) {
         return;
       }
       const source = await sourceMetadataForDiskRead(fileName, request);
@@ -632,7 +650,7 @@ async function sourceMetadataForDiskRead(
 ): Promise<DiskAnalysisSourceMetadata | undefined> {
   const normalized = normalizeFileName(fileName);
   if (request.cache?.freshness === "watch") {
-    const source = sourceManifestForRequest(request).get(normalized);
+    const source = sourceManifestForRequest(request).get(fileIdentityKeyFromFileName(normalized));
     if (source) {
       return source;
     }
@@ -661,7 +679,7 @@ function sourceManifestForRequest(
   }
   const manifest = new Map(
     (request.cache?.sourceManifest ?? []).map((source) => [
-      normalizeFileName(source.fileName),
+      fileIdentityKeyFromFileName(source.fileName),
       {
         fileName: normalizeFileName(source.fileName),
         mtimeMs: source.mtimeMs,
@@ -684,7 +702,7 @@ async function readWorkspaceText(
   openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
 ): Promise<ReadWorkspaceText | undefined> {
   const normalized = normalizeFileName(fileName);
-  const openDocument = openDocuments.get(normalized);
+  const openDocument = openDocuments.get(fileIdentityKeyFromFileName(normalized));
   if (openDocument) {
     return { text: openDocument.text, openDocument: true };
   }
@@ -907,7 +925,7 @@ function equivalentVbSymbol(
 
 function sameVbSymbolIdentity(left: VbSymbol, right: VbReferencesWorkerTargetSymbol): boolean {
   return (
-    left.sourceUri === right.sourceUri &&
+    sameFileIdentityUri(left.sourceUri, right.sourceUri) &&
     left.name.toLowerCase() === right.name.toLowerCase() &&
     left.kind === right.kind &&
     (left.memberOf ?? "").toLowerCase() === (right.memberOf ?? "").toLowerCase() &&
@@ -960,14 +978,14 @@ function isFallbackTargetVisibleAt(
   if (!target.sourceUri.startsWith("file://")) {
     return true;
   }
-  if (target.sourceUri === ownerUri) {
+  if (sameFileIdentityUri(target.sourceUri, ownerUri)) {
     return true;
   }
   if (
     hasEarlierReachableFallbackInclude(
       analysis.includeGraph,
-      ownerUri,
-      target.sourceUri,
+      fileIdentityKeyFromUri(ownerUri),
+      fileIdentityKeyFromUri(target.sourceUri),
       referenceRange,
     )
   ) {
@@ -975,9 +993,9 @@ function isFallbackTargetVisibleAt(
   }
   return isFallbackTargetVisibleFromParentContext(
     analysis.includeGraph,
-    ownerUri,
+    fileIdentityKeyFromUri(ownerUri),
     target,
-    new Set([ownerUri]),
+    new Set([fileIdentityKeyFromUri(ownerUri)]),
   );
 }
 
@@ -1016,10 +1034,17 @@ function isFallbackTargetVisibleBeforeParentInclude(
   includeRange: VbReference["range"],
   visited: Set<string>,
 ): boolean {
-  if (target.sourceUri === parentUri) {
+  if (fileIdentityKeyFromUri(target.sourceUri) === parentUri) {
     return positionBeforeOrEqual(target.range.start, includeRange.start);
   }
-  if (hasEarlierReachableFallbackInclude(graph, parentUri, target.sourceUri, includeRange)) {
+  if (
+    hasEarlierReachableFallbackInclude(
+      graph,
+      parentUri,
+      fileIdentityKeyFromUri(target.sourceUri),
+      includeRange,
+    )
+  ) {
     return true;
   }
   return isFallbackTargetVisibleFromParentContext(graph, parentUri, target, visited);
@@ -1106,7 +1131,9 @@ async function mapWithConcurrency<T, U>(
 function openDocumentMap(
   openDocuments: VbReferencesWorkerOpenDocument[],
 ): Map<string, VbReferencesWorkerOpenDocument> {
-  return new Map(openDocuments.map((document) => [normalizeFileName(document.fileName), document]));
+  return new Map(
+    openDocuments.map((document) => [fileIdentityKeyFromFileName(document.fileName), document]),
+  );
 }
 
 function targetFileNameFromSymbol(symbol: VbReferencesWorkerTargetSymbol): string | undefined {
@@ -1120,7 +1147,11 @@ function workspaceRootFromUri(uri: string, workspaceRoots: string[]): string | u
   const fileName = normalizeFileName(uriToFileName(uri));
   return workspaceRoots
     .map(normalizeFileName)
-    .filter((root) => fileName === root || fileName.startsWith(`${root}${path.sep}`))
+    .filter((root) => {
+      const fileKey = fileIdentityKeyFromFileName(fileName);
+      const rootKey = fileIdentityKeyFromFileName(root);
+      return fileKey === rootKey || fileKey.startsWith(`${rootKey}/`);
+    })
     .sort((left, right) => right.length - left.length)[0];
 }
 

@@ -28,7 +28,7 @@
         { "include": "#asp-expression" },
         { "include": "#asp-directive" },
         { "include": "#asp-block" },
-        { "include": "source.css" }
+        { "include": "#style-css" }
       ]
     },
     "style-attribute-single": {
@@ -48,7 +48,26 @@
         { "include": "#asp-expression" },
         { "include": "#asp-directive" },
         { "include": "#asp-block" },
-        { "include": "source.css" }
+        { "include": "#style-css" }
+      ]
+    },
+    "style-css": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(-?[_a-z][_a-z0-9-]*)(\\s*)(:)",
+          "captures": {
+            "1": { "name": "support.type.property-name.css" },
+            "3": { "name": "punctuation.separator.key-value.css" }
+          }
+        },
+        {
+          "match": ";",
+          "name": "punctuation.terminator.rule.css"
+        },
+        {
+          "match": "[^\"'<%;:]+",
+          "name": "source.css.embedded.html"
+        }
       ]
     },
     "asp-expression": {

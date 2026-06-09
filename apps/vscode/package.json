@@ -506,6 +506,11 @@
           "default": true,
           "description": "%configuration.vbscript.unusedDiagnostics.description%"
         },
+        "aspLsp.vbscript.deadCodeDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.vbscript.deadCodeDiagnostics.description%"
+        },
         "aspLsp.vbscript.syntaxSnippets": {
           "type": "boolean",
           "default": true,

@@ -56,6 +56,7 @@ export type LocalizeKey =
   | "vb.diagnostic.undeclared"
   | "vb.diagnostic.unusedParameter"
   | "vb.diagnostic.unusedSymbol"
+  | "vb.diagnostic.unreachableCode"
   | "vb.diagnostic.initializedDeclaration"
   | "vb.diagnostic.typedDeclaration"
   | "vb.diagnostic.invalidCallSyntax"
@@ -162,6 +163,7 @@ const en: Record<LocalizeKey, string> = {
   "vb.diagnostic.undeclared": "'{name}' is not declared under Option Explicit.",
   "vb.diagnostic.unusedParameter": "Parameter '{name}' is never used.",
   "vb.diagnostic.unusedSymbol": "'{name}' is declared but never used.",
+  "vb.diagnostic.unreachableCode": "This VBScript code is unreachable.",
   "vb.diagnostic.initializedDeclaration":
     "VBScript {keyword} declarations cannot include initializers.",
   "vb.diagnostic.typedDeclaration": "VBScript {keyword} declarations cannot include As types.",
@@ -276,6 +278,7 @@ const ja: Record<LocalizeKey, string> = {
   "vb.diagnostic.undeclared": "'{name}' は Option Explicit のもとで宣言されていません。",
   "vb.diagnostic.unusedParameter": "パラメーター '{name}' は使われていません。",
   "vb.diagnostic.unusedSymbol": "'{name}' は宣言されていますが使われていません。",
+  "vb.diagnostic.unreachableCode": "この VBScript code には到達できません。",
   "vb.diagnostic.initializedDeclaration": "VBScript の {keyword} 宣言には初期値を含められません。",
   "vb.diagnostic.typedDeclaration": "VBScript の {keyword} 宣言には As 型指定を含められません。",
   "vb.diagnostic.invalidCallSyntax": "'{name}' の VBScript 呼び出し構文が無効です。",

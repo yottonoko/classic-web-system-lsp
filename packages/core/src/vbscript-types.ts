@@ -87,6 +87,7 @@ export interface VbProjectContext {
   comTypes?: Record<string, AspVbscriptComType>;
   typeEnvironment?: VbTypeEnvironment;
   unusedDiagnostics?: boolean;
+  deadCodeDiagnostics?: boolean;
   syntaxSnippets?: boolean;
   syntaxKeywords?: boolean;
   locale?: AspLocale;

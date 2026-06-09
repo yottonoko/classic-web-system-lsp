@@ -106,6 +106,7 @@ export interface AspVbscriptSettings {
   comTypes?: Record<string, AspVbscriptComType>;
   globals?: Record<string, string | AspVbscriptGlobal>;
   unusedDiagnostics?: boolean;
+  deadCodeDiagnostics?: boolean;
   syntaxSnippets?: boolean;
   syntaxKeywords?: boolean;
   initializedDimQuickFixStyle?: AspVbscriptInitializedDimQuickFixStyle;
