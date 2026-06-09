@@ -6646,6 +6646,8 @@ Set matches = re.Execute("abc")
       const shared = path.join(tempDir, "shared.inc");
       const page = path.join(tempDir, "default.asp");
       const child = path.join(tempDir, "child.inc");
+      const lateChild = path.join(tempDir, "late-child.inc");
+      const latePage = path.join(tempDir, "late.asp");
       const before = path.join(tempDir, "before.asp");
       const unrelated = path.join(tempDir, "unrelated.asp");
       const sharedSource = `<%
@@ -6663,6 +6665,11 @@ End Function
       const childSource = `<%
 Response.Write sharedTitle
 %>`;
+      const lateChildSource = `<%
+Response.Write sharedTitle
+%>`;
+      const latePageSource = `<!-- #include file="late-child.inc" -->
+<!-- #include file="shared.inc" -->`;
       const beforeSource = `<%
 sharedTitle = "before"
 %>
@@ -6670,12 +6677,15 @@ sharedTitle = "before"
       fs.writeFileSync(shared, sharedSource, "utf8");
       fs.writeFileSync(page, pageSource, "utf8");
       fs.writeFileSync(child, childSource, "utf8");
+      fs.writeFileSync(lateChild, lateChildSource, "utf8");
+      fs.writeFileSync(latePage, latePageSource, "utf8");
       fs.writeFileSync(before, beforeSource, "utf8");
       fs.writeFileSync(unrelated, `<%\nResponse.Write sharedTitle\n%>`, "utf8");
 
       const sharedUri = pathToFileURL(shared).href;
       const pageUri = pathToFileURL(page).href;
       const childUri = pathToFileURL(child).href;
+      const lateChildUri = pathToFileURL(lateChild).href;
       const beforeUri = pathToFileURL(before).href;
       const unrelatedUri = pathToFileURL(unrelated).href;
       const server = new RpcServer();
@@ -6794,13 +6804,15 @@ sharedTitle = "before"
         const codeLensLocations = (resolvedCodeLens.command?.arguments?.[2] ?? []) as Array<{
           uri?: string;
         }>;
-        expect(resolvedCodeLens.command?.title).toContain("3 references");
+        expect(resolvedCodeLens.command?.title).toContain("4 references");
         expect(codeLensLocations.map((location) => location.uri)).toEqual([
+          childUri,
           pageUri,
           pageUri,
           pageUri,
         ]);
         expect(JSON.stringify(codeLensLocations)).not.toContain(beforeUri);
+        expect(JSON.stringify(codeLensLocations)).not.toContain(lateChildUri);
         expect(JSON.stringify(codeLensLocations)).not.toContain(unrelatedUri);
 
         const references = (await server.request("textDocument/references", {
@@ -6808,7 +6820,13 @@ sharedTitle = "before"
           position: { line: 1, character: 1 },
           context: { includeDeclaration: false },
         })) as Array<{ uri?: string }>;
-        expect(references.map((reference) => reference.uri)).toEqual([pageUri, pageUri, pageUri]);
+        expect(references.map((reference) => reference.uri)).toEqual([
+          childUri,
+          pageUri,
+          pageUri,
+          pageUri,
+        ]);
+        expect(JSON.stringify(references)).not.toContain(lateChildUri);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

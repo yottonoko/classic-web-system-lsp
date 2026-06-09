@@ -7223,7 +7223,7 @@ async function workspaceVbscriptReferencesForPosition(
   options: VbReferenceOptions = {},
 ): Promise<VbReference[]> {
   const settings = cachedSettings(cached.source.uri);
-  const context = await buildFullVbProjectContextForWorkspaceOperationAsync(cached, settings);
+  const context = await interactiveVbProjectContextAsync(cached, settings);
   const symbol = getVbscriptDefinition(cached.parsed, position, context);
   return symbol ? workspaceVbscriptReferencesForSymbol(cached, symbol, settings, options) : [];
 }
@@ -7250,7 +7250,7 @@ async function workspaceVbscriptReferencesForSymbols(
   options: VbReferenceOptions = {},
   logOptions: { logSymbol?: string } = {},
 ): Promise<Map<string, VbReference[]>> {
-  const context = await buildFullVbProjectContextForWorkspaceOperationAsync(cached, settings);
+  const context = await localVbReferenceContextAsync(cached, settings);
   const targets = symbols.map(
     (symbol) => equivalentVbSymbol(context.symbols ?? [], symbol) ?? symbol,
   );
@@ -7271,10 +7271,9 @@ async function workspaceVbscriptReferencesForSymbols(
     );
   }
 
-  const contextUris = new Set((context.documents ?? []).map((document) => document.uri));
   const targetForWorkers = targets.map(vbReferencesWorkerTargetSymbol);
   const candidates = await workspaceVbReferenceWorkerCandidates(
-    contextUris,
+    new Set(),
     settings,
     targetForWorkers,
   );
@@ -7380,6 +7379,9 @@ async function workspaceVbReferenceSummaryReferencesForCandidate(
   targets: VbReferencesWorkerTargetSymbol[],
   settings: AspSettings,
 ): Promise<Map<string, VbReference[]> | undefined> {
+  if (targets.some((target) => target.sourceUri === candidate.uri)) {
+    return undefined;
+  }
   const summaries = await workspaceVbReferenceCandidateSummaryClosure(candidate, settings);
   if (!summaries) {
     return undefined;

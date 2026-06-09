@@ -218,15 +218,21 @@ async function fullFallbackReferencesForTargets(
   }
   const equivalentTargets: VbSymbol[] = [];
   const equivalentKeys = new Map<string, string>();
+  const targetByEquivalentKey = new Map<string, VbReferencesWorkerTargetSymbol>();
+  const supplementalReferencesByTarget = new Map<string, VbReference[]>();
   for (const target of targets) {
     const targetKey = targetSymbolKey(target);
+    const supplementalReferences = fallbackWorkspaceExternalReferences(analysis, target);
     const equivalent = equivalentVbSymbol(analysis.symbols, target);
     if (equivalent) {
+      const equivalentKey = vbscriptReferenceSymbolKey(equivalent);
       equivalentTargets.push(equivalent);
-      equivalentKeys.set(vbscriptReferenceSymbolKey(equivalent), targetKey);
+      equivalentKeys.set(equivalentKey, targetKey);
+      targetByEquivalentKey.set(equivalentKey, target);
+      supplementalReferencesByTarget.set(targetKey, supplementalReferences);
       continue;
     }
-    referencesByTarget[targetKey] = fallbackWorkspaceExternalReferences(analysis.summaries, target);
+    referencesByTarget[targetKey] = supplementalReferences;
   }
   const batch = getVbscriptReferencesForSymbols(
     equivalentTargets,
@@ -236,7 +242,16 @@ async function fullFallbackReferencesForTargets(
   for (const [equivalentKey, references] of batch) {
     const targetKey = equivalentKeys.get(equivalentKey);
     if (targetKey) {
-      referencesByTarget[targetKey] = references;
+      const target = targetByEquivalentKey.get(equivalentKey);
+      const visibleReferences = target
+        ? references.filter((reference) =>
+            isFallbackTargetVisibleAt(analysis, reference.uri, target, reference.range),
+          )
+        : references;
+      referencesByTarget[targetKey] = mergeReferences(
+        visibleReferences,
+        supplementalReferencesByTarget.get(targetKey) ?? [],
+      );
     }
   }
   return referencesByTarget;
@@ -246,6 +261,12 @@ interface FullFallbackAnalysis {
   context: VbProjectContext;
   summaries: FileAnalysisSummary[];
   symbols: VbSymbol[];
+  includeGraph: FullFallbackIncludeGraph;
+}
+
+interface FullFallbackIncludeGraph {
+  directIncludesByOwnerUri: Map<string, Array<{ range: VbReference["range"]; targetUri: string }>>;
+  parentIncludesByTargetUri: Map<string, Array<{ ownerUri: string; range: VbReference["range"] }>>;
 }
 
 interface FullFallbackAnalysisCacheEntry {
@@ -275,6 +296,7 @@ async function cachedFullFallbackAnalysis(
   const summaries = await Promise.all(
     documents.map((document) => summarizeAspFileAnalysisAsync(document, contextSettings)),
   );
+  const includeGraph = await fullFallbackIncludeGraph(documents, request);
   const symbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
   symbols.push(...configuredVbscriptGlobals(documents[0], request.settings));
   const typeEnvironment = mergeVbTypeEnvironment(
@@ -289,10 +311,43 @@ async function cachedFullFallbackAnalysis(
     externalRefUsages: summaries.flatMap((summary) => summary.vbscript?.externalRefUsages ?? []),
     ...contextSettings,
   };
-  const analysis = { context, summaries, symbols };
+  const analysis = { context, summaries, symbols, includeGraph };
   fullFallbackAnalysisCache.set(key, { key, analysis, lastUsed: Date.now() });
   pruneFullFallbackAnalysisCache();
   return analysis;
+}
+
+async function fullFallbackIncludeGraph(
+  documents: AspParsedDocument[],
+  request: VbReferencesWorkerRequest,
+): Promise<FullFallbackIncludeGraph> {
+  const graph: FullFallbackIncludeGraph = {
+    directIncludesByOwnerUri: new Map(),
+    parentIncludesByTargetUri: new Map(),
+  };
+  await mapWithConcurrency(documents, request.limits.includeReadConcurrency, async (document) => {
+    for (const include of document.includes) {
+      const resolved = await resolveIncludePath(
+        document.uri,
+        include,
+        request.settings,
+        request.workspaceRoots,
+      );
+      if (!resolved.exists) {
+        continue;
+      }
+      const targetUri = pathToFileUri(resolved.fileName);
+      pushMapItem(graph.directIncludesByOwnerUri, document.uri, {
+        range: include.range,
+        targetUri,
+      });
+      pushMapItem(graph.parentIncludesByTargetUri, targetUri, {
+        ownerUri: document.uri,
+        range: include.range,
+      });
+    }
+  });
+  return graph;
 }
 
 function fullFallbackAnalysisCacheKey(request: VbReferencesWorkerRequest): string {
@@ -607,16 +662,20 @@ function sameVbSymbolIdentity(left: VbSymbol, right: VbReferencesWorkerTargetSym
 }
 
 function fallbackWorkspaceExternalReferences(
-  summaries: FileAnalysisSummary[],
+  analysis: FullFallbackAnalysis,
   symbol: VbReferencesWorkerTargetSymbol,
 ): VbReference[] {
   if (!isGlobalWorkspaceReferenceFallbackSymbol(symbol)) {
     return [];
   }
-  return summaries.flatMap((summary) =>
+  return analysis.summaries.flatMap((summary) =>
     (summary.vbscript?.externalRefUsages ?? [])
       .filter((usage) => usage.key === symbol.name.toLowerCase())
-      .flatMap((usage) => usage.ranges.map((range) => ({ uri: summary.uri, range }))),
+      .flatMap((usage) =>
+        usage.ranges
+          .filter((range) => isFallbackTargetVisibleAt(analysis, summary.uri, symbol, range))
+          .map((range) => ({ uri: summary.uri, range })),
+      ),
   );
 }
 
@@ -625,8 +684,141 @@ function isGlobalWorkspaceReferenceFallbackSymbol(symbol: VbReferencesWorkerTarg
     !symbol.scopeName &&
     !symbol.memberOf &&
     symbol.visibility !== "private" &&
-    ["function", "sub", "class"].includes(symbol.kind)
+    ["function", "sub", "class", "variable", "constant"].includes(symbol.kind)
   );
+}
+
+function isFallbackTargetVisibleAt(
+  analysis: FullFallbackAnalysis,
+  ownerUri: string,
+  target: VbReferencesWorkerTargetSymbol,
+  referenceRange: VbReference["range"],
+): boolean {
+  if (!target.sourceUri.startsWith("file://")) {
+    return true;
+  }
+  if (target.sourceUri === ownerUri) {
+    return true;
+  }
+  if (
+    hasEarlierReachableFallbackInclude(
+      analysis.includeGraph,
+      ownerUri,
+      target.sourceUri,
+      referenceRange,
+    )
+  ) {
+    return true;
+  }
+  return isFallbackTargetVisibleFromParentContext(
+    analysis.includeGraph,
+    ownerUri,
+    target,
+    new Set([ownerUri]),
+  );
+}
+
+function isFallbackTargetVisibleFromParentContext(
+  graph: FullFallbackIncludeGraph,
+  ownerUri: string,
+  target: VbReferencesWorkerTargetSymbol,
+  visited: Set<string>,
+): boolean {
+  const parentIncludes = graph.parentIncludesByTargetUri.get(ownerUri) ?? [];
+  for (const parentInclude of parentIncludes) {
+    if (visited.has(parentInclude.ownerUri)) {
+      continue;
+    }
+    const nextVisited = new Set(visited);
+    nextVisited.add(parentInclude.ownerUri);
+    if (
+      isFallbackTargetVisibleBeforeParentInclude(
+        graph,
+        parentInclude.ownerUri,
+        target,
+        parentInclude.range,
+        nextVisited,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isFallbackTargetVisibleBeforeParentInclude(
+  graph: FullFallbackIncludeGraph,
+  parentUri: string,
+  target: VbReferencesWorkerTargetSymbol,
+  includeRange: VbReference["range"],
+  visited: Set<string>,
+): boolean {
+  if (target.sourceUri === parentUri) {
+    return positionBeforeOrEqual(target.range.start, includeRange.start);
+  }
+  if (hasEarlierReachableFallbackInclude(graph, parentUri, target.sourceUri, includeRange)) {
+    return true;
+  }
+  return isFallbackTargetVisibleFromParentContext(graph, parentUri, target, visited);
+}
+
+function hasEarlierReachableFallbackInclude(
+  graph: FullFallbackIncludeGraph,
+  ownerUri: string,
+  targetUri: string,
+  referenceRange: VbReference["range"],
+): boolean {
+  const includes = graph.directIncludesByOwnerUri.get(ownerUri) ?? [];
+  return includes.some(
+    (include) =>
+      positionBeforeOrEqual(include.range.start, referenceRange.start) &&
+      (include.targetUri === targetUri ||
+        isFallbackIncludeReachable(graph, include.targetUri, targetUri, new Set([ownerUri]))),
+  );
+}
+
+function isFallbackIncludeReachable(
+  graph: FullFallbackIncludeGraph,
+  startUri: string,
+  targetUri: string,
+  visited: Set<string>,
+): boolean {
+  if (startUri === targetUri) {
+    return true;
+  }
+  if (visited.has(startUri)) {
+    return false;
+  }
+  visited.add(startUri);
+  return (graph.directIncludesByOwnerUri.get(startUri) ?? []).some(
+    (include) =>
+      include.targetUri === targetUri ||
+      isFallbackIncludeReachable(graph, include.targetUri, targetUri, visited),
+  );
+}
+
+function positionBeforeOrEqual(
+  left: VbReference["range"]["start"],
+  right: VbReference["range"]["start"],
+): boolean {
+  return left.line < right.line || (left.line === right.line && left.character <= right.character);
+}
+
+function mergeReferences(left: VbReference[], right: VbReference[]): VbReference[] {
+  const merged = new Map<string, VbReference>();
+  for (const reference of [...left, ...right]) {
+    merged.set(JSON.stringify({ uri: reference.uri, range: reference.range }), reference);
+  }
+  return [...merged.values()];
+}
+
+function pushMapItem<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  const existing = map.get(key);
+  if (existing) {
+    existing.push(value);
+  } else {
+    map.set(key, [value]);
+  }
 }
 
 async function mapWithConcurrency<T, U>(
