@@ -36,6 +36,7 @@
   "dependencies": {
     "@asp-lsp/core": "workspace:*",
     "@asp-lsp/language-server": "workspace:*",
+    "mermaid": "^11.15.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "react-force-graph-2d": "1.29.1",
@@ -927,6 +928,15 @@
         "title": "%command.exportWorkspaceAnalysisExcel.title%"
       },
       {
+        "command": "aspLsp.showCurrentFileFlowchart",
+        "title": "%command.showCurrentFileFlowchart.title%",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "aspLsp.exportCurrentFileFlowchart",
+        "title": "%command.exportCurrentFileFlowchart.title%"
+      },
+      {
         "command": "aspLsp.debugIisUrl",
         "title": "%command.debugIisUrl.title%"
       },
@@ -953,6 +963,11 @@
           "command": "aspLsp.showCurrentFileGraph",
           "when": "editorLangId == classic-asp",
           "group": "navigation"
+        },
+        {
+          "command": "aspLsp.showCurrentFileFlowchart",
+          "when": "editorLangId == classic-asp",
+          "group": "navigation"
         }
       ],
       "explorer/context": [
@@ -973,6 +988,11 @@
         },
         {
           "command": "aspLsp.exportCurrentFileAnalysisExcel",
+          "when": "resourceExtname =~ /\\.(asp|asa|inc)$/i",
+          "group": "navigation"
+        },
+        {
+          "command": "aspLsp.showCurrentFileFlowchart",
           "when": "resourceExtname =~ /\\.(asp|asa|inc)$/i",
           "group": "navigation"
         }
@@ -1016,6 +1036,8 @@
     "onCommand:aspLsp.exportCurrentFileAnalysisExcel",
     "onCommand:aspLsp.exportFolderAnalysisExcel",
     "onCommand:aspLsp.exportWorkspaceAnalysisExcel",
+    "onCommand:aspLsp.exportCurrentFileFlowchart",
+    "onCommand:aspLsp.showCurrentFileFlowchart",
     "onCommand:aspLsp.showCurrentFileGraph",
     "onCommand:aspLsp.showFolderGraph",
     "onCommand:aspLsp.showWorkspaceGraph",

@@ -111,6 +111,8 @@
   "command.exportCurrentFileAnalysisExcel.title": "Classic ASP: Current file analysis を Excel export",
   "command.exportFolderAnalysisExcel.title": "Classic ASP: Folder analysis を Excel export",
   "command.exportWorkspaceAnalysisExcel.title": "Classic ASP: Workspace analysis を Excel export",
+  "command.showCurrentFileFlowchart.title": "Classic ASP: Current file flowchart を表示",
+  "command.exportCurrentFileFlowchart.title": "Classic ASP: Current file flowchart を Mermaid として出力",
   "command.debugIisUrl.title": "Classic ASP: IIS URL をデバッグ",
   "command.debugIisExpressUrl.title": "Classic ASP: IIS Express URL をデバッグ",
   "command.createLaunchConfig.title": "Classic ASP: Browser launch config を作成",

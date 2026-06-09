@@ -196,6 +196,77 @@ export interface AspGraphSettings {
   showIncomingFolderIncludes?: boolean;
 }
 
+export interface AspFlowchartBuildOptions {
+  fileName?: string;
+  includes?: AspFlowchartInclude[];
+}
+
+export interface AspFlowchartPayload {
+  uri: string;
+  fileName?: string;
+  sections: AspFlowchartSection[];
+  nodes: AspFlowchartNode[];
+  edges: AspFlowchartEdge[];
+  includes: AspFlowchartInclude[];
+  mermaid: string;
+  stats: {
+    sections: number;
+    nodes: number;
+    edges: number;
+    includes: number;
+  };
+}
+
+export interface AspFlowchartSection {
+  id: string;
+  label: string;
+  kind: "topLevel" | "procedure" | "property";
+  range?: Range;
+  nodeIds: string[];
+}
+
+export type AspFlowchartNodeKind =
+  | "start"
+  | "end"
+  | "if"
+  | "elseif"
+  | "else"
+  | "select"
+  | "case"
+  | "for"
+  | "forEach"
+  | "do"
+  | "while"
+  | "call"
+  | "exit"
+  | "statement";
+
+export interface AspFlowchartNode {
+  id: string;
+  sectionId: string;
+  kind: AspFlowchartNodeKind;
+  label: string;
+  range?: Range;
+}
+
+export interface AspFlowchartEdge {
+  id: string;
+  sectionId: string;
+  source: string;
+  target: string;
+  label?: string;
+}
+
+export interface AspFlowchartInclude {
+  path: string;
+  mode: AspInclude["mode"];
+  range: Range;
+  exists?: boolean;
+  resolvedUri?: string;
+  actualPath?: string;
+  pathCaseMatches?: boolean;
+}
+
 export interface AspCacheSettings {
   enabled?: boolean;
   directory?: string;
