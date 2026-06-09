@@ -9,7 +9,11 @@ import {
   type LanguageClientOptions,
   type ServerOptions,
 } from "vscode-languageclient/node";
-import { showAspGraphWebview, type AspGraphPayload } from "./include-graph-webview";
+import {
+  showAspGraphWebview,
+  type AspGraphLocale,
+  type AspGraphPayload,
+} from "./include-graph-webview";
 import { getServerModulePath } from "./server-path";
 
 const maxCrashRestartCount = 4;
@@ -259,6 +263,7 @@ async function showGraph(
     payload,
     graphPanelTitle(payload, activeDocument),
     graphViewColumn(),
+    extensionLocale(),
   );
 }
 
@@ -663,11 +668,7 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
 };
 
 function extensionLocalizer(): (key: ExtensionMessageKey, args?: ExtensionMessageArgs) => string {
-  const configLocale = vscode.workspace.getConfiguration("aspLsp").get<string>("locale") ?? "auto";
-  const locale =
-    configLocale === "ja" || (configLocale !== "en" && vscode.env.language.startsWith("ja"))
-      ? "ja"
-      : "en";
+  const locale = extensionLocale();
   return (key, args) => {
     let message = extensionMessages[locale][key] ?? extensionMessages.en[key];
     for (const [name, value] of Object.entries(args ?? {})) {
@@ -675,6 +676,13 @@ function extensionLocalizer(): (key: ExtensionMessageKey, args?: ExtensionMessag
     }
     return message;
   };
+}
+
+function extensionLocale(): AspGraphLocale {
+  const configLocale = vscode.workspace.getConfiguration("aspLsp").get<string>("locale") ?? "auto";
+  return configLocale === "ja" || (configLocale !== "en" && vscode.env.language.startsWith("ja"))
+    ? "ja"
+    : "en";
 }
 
 class AspLspTaskProvider implements vscode.TaskProvider {

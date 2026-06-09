@@ -1,8 +1,11 @@
 import * as vscode from "vscode";
 
+export type AspGraphLocale = "en" | "ja";
+
 export interface AspGraphPayload {
   scope: "document" | "folder" | "workspace";
   rootUri?: string;
+  locale?: AspGraphLocale;
   nodes: AspGraphNode[];
   links: AspGraphLink[];
   settings?: {
@@ -131,6 +134,7 @@ export function showAspGraphWebview(
   payload: AspGraphPayload,
   title: string,
   viewColumn: vscode.ViewColumn,
+  locale: AspGraphLocale,
 ): void {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
   const panel = vscode.window.createWebviewPanel("aspLsp.graph", title, viewColumn, {
@@ -142,10 +146,10 @@ export function showAspGraphWebview(
     if (message.type === "openRange") {
       void openGraphRange(message.uri, message.range);
     } else if (message.type === "readSourceRanges") {
-      void readGraphSourceRanges(panel.webview, message);
+      void readGraphSourceRanges(panel.webview, message, locale);
     }
   });
-  panel.webview.html = graphWebviewHtml(panel.webview, webviewRoot, payload, title);
+  panel.webview.html = graphWebviewHtml(panel.webview, webviewRoot, payload, title, locale);
 }
 
 async function openGraphRange(uriText: string, range: AspGraphRange | undefined): Promise<void> {
@@ -160,13 +164,15 @@ async function openGraphRange(uriText: string, range: AspGraphRange | undefined)
 async function readGraphSourceRanges(
   webview: vscode.Webview,
   message: ReadSourceRangesMessage,
+  locale: AspGraphLocale,
 ): Promise<void> {
-  const items = await Promise.all(message.items.map((item) => readGraphSourceRange(item)));
+  const items = await Promise.all(message.items.map((item) => readGraphSourceRange(item, locale)));
   await webview.postMessage({ type: "sourceRanges", requestId: message.requestId, items });
 }
 
 async function readGraphSourceRange(
   item: AspGraphSourceRangeRequestItem,
+  locale: AspGraphLocale,
 ): Promise<AspGraphSourceRangeResponseItem> {
   try {
     const uri = vscode.Uri.parse(item.uri);
@@ -176,7 +182,7 @@ async function readGraphSourceRange(
         id: item.id,
         uri: item.uri,
         fileName: graphSourceFileName(document),
-        error: "Source range is unavailable.",
+        error: graphHostText(locale, "sourceRangeUnavailable"),
       };
     }
     const displayRange = displayRangeForGraphSource(document, toVscodeRange(item.range));
@@ -247,12 +253,13 @@ function graphWebviewHtml(
   webviewRoot: vscode.Uri,
   payload: AspGraphPayload,
   title: string,
+  locale: AspGraphLocale,
 ): string {
   const nonce = nonceString();
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, "include-graph.js"));
-  const graphJson = JSON.stringify(payload).replaceAll("</", "<\\/");
+  const graphJson = JSON.stringify({ ...payload, locale }).replaceAll("</", "<\\/");
   return `<!doctype html>
-<html lang="en">
+<html lang="${locale}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -282,4 +289,16 @@ function escapeHtml(value: string): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function graphHostText(locale: AspGraphLocale, key: "sourceRangeUnavailable"): string {
+  const messages: Record<AspGraphLocale, Record<"sourceRangeUnavailable", string>> = {
+    en: {
+      sourceRangeUnavailable: "Source range is unavailable.",
+    },
+    ja: {
+      sourceRangeUnavailable: "source range は利用できません。",
+    },
+  };
+  return messages[locale][key] ?? messages.en[key];
 }

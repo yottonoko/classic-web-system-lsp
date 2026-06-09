@@ -143,6 +143,269 @@ interface HighlightOffsets {
 const vscode = acquireVsCodeApi();
 const graph = window.__ASP_LSP_GRAPH__;
 
+type GraphLocale = "en" | "ja";
+
+const graphMessageEn = {
+  "action.fit": "Fit",
+  "action.fitGraph": "Fit graph to canvas",
+  "action.open": "Open",
+  "action.openDirective": "Open directive",
+  "action.openFile": "Open file",
+  "action.openFirst": "Open first",
+  "action.selectSource": "Select source",
+  "action.selectTarget": "Select target",
+  "direction.from": "from",
+  "direction.to": "to",
+  "detail.actualPath": "Actual path",
+  "detail.count": "count",
+  "detail.declaration": "Declaration",
+  "detail.directive": "Directive {source}",
+  "detail.exists": "Exists",
+  "detail.file": "File",
+  "detail.include": "Include",
+  "detail.label": "Label",
+  "detail.line": "Line {line}",
+  "detail.memberOf": "Member of",
+  "detail.mode": "Mode",
+  "detail.references": "References",
+  "detail.role": "Role",
+  "detail.scope": "Scope",
+  "detail.source": "Source",
+  "detail.status": "Status",
+  "detail.target": "Target",
+  "detail.type": "Type",
+  "empty.declarationSource": "Declaration source is unavailable.",
+  "empty.graphData": "Graph data is unavailable.",
+  "empty.includeSources": "No include sources found.",
+  "empty.incomingLinks": "No incoming links found in the current graph.",
+  "empty.includedFiles": "No included files found.",
+  "empty.matchingItems": "No matching items in the current graph view.",
+  "empty.outgoingLinks": "No outgoing links found in the current graph.",
+  "empty.referencesOrCalls": "No references or calls found in this graph.",
+  "empty.sourceRanges": "No source ranges found for this link.",
+  "empty.sourceUnavailable": "Source is unavailable.",
+  "inspector.close": "Close inspector",
+  "inspector.selectPrompt": "Select a node or link.",
+  "label.class": "Class",
+  "label.builtin": "Built-in",
+  "label.classConstant": "Class constant",
+  "label.classMethod": "Class method",
+  "label.configured": "Configured",
+  "label.event": "Event",
+  "label.field": "Field",
+  "label.file": "File",
+  "label.function": "Function",
+  "label.functionMethod": "Function method",
+  "label.global": "Global",
+  "label.globalConstant": "Global constant",
+  "label.globalVariable": "Global variable",
+  "label.local": "Local",
+  "label.localConstant": "Local constant",
+  "label.localVariable": "Local variable",
+  "label.member": "Member",
+  "label.method": "Method",
+  "label.missing": "Missing",
+  "label.missingFile": "Missing file",
+  "label.object": "Object",
+  "label.parameter": "Parameter",
+  "label.property": "Property",
+  "label.root": "Root",
+  "label.sub": "Sub",
+  "label.subMethod": "Sub method",
+  "label.unknown": "Unknown",
+  "label.unresolved": "Unresolved",
+  "label.unresolvedMember": "Unresolved member",
+  "legend.heading": "Legend",
+  "legend.hideSingleNodes": "Hide single nodes",
+  "legend.hideSingleNodesDescription": "Hide non-root nodes that have no visible links.",
+  "legend.linkFilters": "Link filters",
+  "legend.nodeFilters": "Node filters",
+  "legend.outgoingLinks": "Outgoing links",
+  "legend.outgoingLinksDescription": "Also highlight links that start from the selected node.",
+  "legend.selection": "Selection",
+  "link.calls.description": "VBScript calls a procedure, function, method, constructor, or member.",
+  "link.calls.label": "Call",
+  "link.declares.description": "A file or containing scope declares a VBScript symbol.",
+  "link.declares.label": "Declares",
+  "link.include.description": "A Classic ASP file includes another file.",
+  "link.include.label": "Include",
+  "link.member.description": "VBScript references or calls an object member.",
+  "link.member.label": "Member",
+  "link.memberType": "Member {label}",
+  "link.references.description":
+    "VBScript reads, writes, or otherwise references a resolved symbol.",
+  "link.references.label": "Reference",
+  "link.unresolvedReference.description":
+    "VBScript references a symbol that could not be resolved.",
+  "link.unresolvedReference.label": "Unresolved",
+  "occurrence.includeDirective": "Include directive",
+  "occurrence.one": "1 occurrence",
+  "occurrence.other": "{count} occurrences",
+  "section.declaration": "Declaration",
+  "section.includedBy": "Included By",
+  "section.includes": "Includes",
+  "section.incomingLinks": "Incoming links",
+  "section.occurrences": "Occurrences",
+  "section.outgoingLinks": "Outgoing links",
+  "section.referencesCalls": "References / Calls",
+  "snippet.loadingSource": "Loading source...",
+  "stats.heading": "Graph stats",
+  "stats.metric.files": "Files",
+  "stats.metric.links": "Links",
+  "stats.metric.missing": "Missing",
+  "stats.metric.vb": "VB",
+  "stats.show": "Show graph statistics",
+  "stats.title": "Graph statistics",
+  "toolbar.graphMode": "Graph mode",
+  "toolbar.matchCase": "Match case",
+  "toolbar.searchNodes": "Search nodes",
+  "toolbar.stats": "Stats",
+  "toolbar.truncated": "truncated: {reason}",
+  "view.currentFileGraph": "Current File Graph",
+  "view.folderGraph": "Folder Graph",
+  "view.inspector": "Inspector",
+  "view.resizeInspector": "Resize inspector pane",
+  "view.workspaceGraph": "Workspace Graph",
+} as const;
+
+type GraphTextKey = keyof typeof graphMessageEn;
+type GraphTextParams = Record<string, string | number>;
+
+const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
+  en: graphMessageEn,
+  ja: {
+    "action.fit": "合わせる",
+    "action.fitGraph": "グラフをキャンバスに合わせる",
+    "action.open": "開く",
+    "action.openDirective": "directive を開く",
+    "action.openFile": "file を開く",
+    "action.openFirst": "最初を開く",
+    "action.selectSource": "source を選択",
+    "action.selectTarget": "target を選択",
+    "direction.from": "from",
+    "direction.to": "to",
+    "detail.actualPath": "実際の path",
+    "detail.count": "count",
+    "detail.declaration": "宣言",
+    "detail.directive": "Directive {source}",
+    "detail.exists": "存在",
+    "detail.file": "File",
+    "detail.include": "Include",
+    "detail.label": "Label",
+    "detail.line": "{line} 行目",
+    "detail.memberOf": "Member of",
+    "detail.mode": "Mode",
+    "detail.references": "参照",
+    "detail.role": "Role",
+    "detail.scope": "Scope",
+    "detail.source": "Source",
+    "detail.status": "Status",
+    "detail.target": "Target",
+    "detail.type": "Type",
+    "empty.declarationSource": "宣言 source は利用できません。",
+    "empty.graphData": "graph data は利用できません。",
+    "empty.includeSources": "include 元は見つかりません。",
+    "empty.incomingLinks": "現在の graph に incoming link はありません。",
+    "empty.includedFiles": "include file は見つかりません。",
+    "empty.matchingItems": "現在の graph view に一致する項目はありません。",
+    "empty.outgoingLinks": "現在の graph に outgoing link はありません。",
+    "empty.referencesOrCalls": "この graph に参照または呼び出しはありません。",
+    "empty.sourceRanges": "この link の source range は見つかりません。",
+    "empty.sourceUnavailable": "source は利用できません。",
+    "inspector.close": "inspector を閉じる",
+    "inspector.selectPrompt": "node または link を選択してください。",
+    "label.class": "Class",
+    "label.builtin": "Built-in",
+    "label.classConstant": "Class constant",
+    "label.classMethod": "Class method",
+    "label.configured": "Configured",
+    "label.event": "Event",
+    "label.field": "Field",
+    "label.file": "File",
+    "label.function": "Function",
+    "label.functionMethod": "Function method",
+    "label.global": "Global",
+    "label.globalConstant": "Global constant",
+    "label.globalVariable": "Global variable",
+    "label.local": "Local",
+    "label.localConstant": "Local constant",
+    "label.localVariable": "Local variable",
+    "label.member": "Member",
+    "label.method": "Method",
+    "label.missing": "Missing",
+    "label.missingFile": "Missing file",
+    "label.object": "Object",
+    "label.parameter": "Parameter",
+    "label.property": "Property",
+    "label.root": "Root",
+    "label.sub": "Sub",
+    "label.subMethod": "Sub method",
+    "label.unknown": "Unknown",
+    "label.unresolved": "Unresolved",
+    "label.unresolvedMember": "Unresolved member",
+    "legend.heading": "凡例",
+    "legend.hideSingleNodes": "単独 node を隠す",
+    "legend.hideSingleNodesDescription": "visible link を持たない root 以外の node を隠します。",
+    "legend.linkFilters": "Link filter",
+    "legend.nodeFilters": "Node filter",
+    "legend.outgoingLinks": "Outgoing links",
+    "legend.outgoingLinksDescription": "選択 node から出る link も highlight します。",
+    "legend.selection": "選択",
+    "link.calls.description":
+      "VBScript の procedure、function、method、constructor、member 呼び出しです。",
+    "link.calls.label": "呼び出し",
+    "link.declares.description": "file または包含 scope が VBScript symbol を宣言します。",
+    "link.declares.label": "宣言",
+    "link.include.description": "Classic ASP file が別の file を include します。",
+    "link.include.label": "Include",
+    "link.member.description": "VBScript が object member を参照または呼び出します。",
+    "link.member.label": "Member",
+    "link.memberType": "Member {label}",
+    "link.references.description": "VBScript が解決済み symbol を読み書きまたは参照します。",
+    "link.references.label": "参照",
+    "link.unresolvedReference.description": "VBScript が解決できなかった symbol を参照します。",
+    "link.unresolvedReference.label": "未解決",
+    "occurrence.includeDirective": "Include directive",
+    "occurrence.one": "1 件",
+    "occurrence.other": "{count} 件",
+    "section.declaration": "宣言",
+    "section.includedBy": "Included By",
+    "section.includes": "Includes",
+    "section.incomingLinks": "Incoming links",
+    "section.occurrences": "出現箇所",
+    "section.outgoingLinks": "Outgoing links",
+    "section.referencesCalls": "参照 / 呼び出し",
+    "snippet.loadingSource": "source を読み込み中...",
+    "stats.heading": "Graph stats",
+    "stats.metric.files": "Files",
+    "stats.metric.links": "Links",
+    "stats.metric.missing": "Missing",
+    "stats.metric.vb": "VB",
+    "stats.show": "graph statistics を表示",
+    "stats.title": "Graph statistics",
+    "toolbar.graphMode": "Graph mode",
+    "toolbar.matchCase": "大文字小文字を区別",
+    "toolbar.searchNodes": "node を検索",
+    "toolbar.stats": "Stats",
+    "toolbar.truncated": "truncated: {reason}",
+    "view.currentFileGraph": "Current File Graph",
+    "view.folderGraph": "Folder Graph",
+    "view.inspector": "Inspector",
+    "view.resizeInspector": "inspector pane の幅を変更",
+    "view.workspaceGraph": "Workspace Graph",
+  },
+};
+
+const graphLocale: GraphLocale = graph?.locale === "ja" ? "ja" : "en";
+
+function graphText(key: GraphTextKey, params?: GraphTextParams): string {
+  let message = graphMessages[graphLocale][key] ?? graphMessages.en[key];
+  for (const [name, value] of Object.entries(params ?? {})) {
+    message = message.replaceAll(`{${name}}`, String(value));
+  }
+  return message;
+}
+
 const nodeColors: Record<NodeColorCategory, string> = {
   root: "#ffffff",
   file: "#67d8ef",
@@ -177,62 +440,62 @@ const linkFilterColors: Record<LinkFilterCategory, string> = {
 
 const linkMeanings: Record<AspGraphLink["kind"], { label: string; description: string }> = {
   include: {
-    label: "Include",
-    description: "A Classic ASP file includes another file.",
+    label: graphText("link.include.label"),
+    description: graphText("link.include.description"),
   },
   declares: {
-    label: "Declares",
-    description: "A file or containing scope declares a VBScript symbol.",
+    label: graphText("link.declares.label"),
+    description: graphText("link.declares.description"),
   },
   references: {
-    label: "Reference",
-    description: "VBScript reads, writes, or otherwise references a resolved symbol.",
+    label: graphText("link.references.label"),
+    description: graphText("link.references.description"),
   },
   calls: {
-    label: "Call",
-    description: "VBScript calls a procedure, function, method, constructor, or member.",
+    label: graphText("link.calls.label"),
+    description: graphText("link.calls.description"),
   },
   unresolvedReference: {
-    label: "Unresolved",
-    description: "VBScript references a symbol that could not be resolved.",
+    label: graphText("link.unresolvedReference.label"),
+    description: graphText("link.unresolvedReference.description"),
   },
 };
 
 const linkFilterLabels: Record<LinkFilterCategory, string> = {
-  include: "Include",
-  declares: "Declares",
-  references: "Reference",
-  calls: "Call",
-  unresolvedReference: "Unresolved",
-  member: "Member",
+  include: graphText("link.include.label"),
+  declares: graphText("link.declares.label"),
+  references: graphText("link.references.label"),
+  calls: graphText("link.calls.label"),
+  unresolvedReference: graphText("link.unresolvedReference.label"),
+  member: graphText("link.member.label"),
 };
 
 const linkFilterDescriptions: Record<LinkFilterCategory, string> = {
-  include: "A Classic ASP file includes another file.",
-  declares: "A file or containing scope declares a VBScript symbol.",
-  references: "VBScript reads, writes, or otherwise references a resolved symbol.",
-  calls: "VBScript calls a procedure, function, method, constructor, or member.",
-  unresolvedReference: "VBScript references a symbol that could not be resolved.",
-  member: "VBScript references or calls an object member.",
+  include: graphText("link.include.description"),
+  declares: graphText("link.declares.description"),
+  references: graphText("link.references.description"),
+  calls: graphText("link.calls.description"),
+  unresolvedReference: graphText("link.unresolvedReference.description"),
+  member: graphText("link.member.description"),
 };
 
 const nodeCategoryLabels: Record<NodeColorCategory, string> = {
-  root: "Root",
-  file: "File",
-  function: "Function",
-  sub: "Sub",
-  class: "Class",
-  method: "Method",
-  methodFunction: "Function method",
-  methodSub: "Sub method",
-  property: "Property",
-  member: "Member",
-  globalVariable: "Global variable",
-  globalConstant: "Global constant",
-  localVariable: "Local variable",
-  localConstant: "Local constant",
-  parameter: "Parameter",
-  unresolved: "Unresolved",
+  root: graphText("label.root"),
+  file: graphText("label.file"),
+  function: graphText("label.function"),
+  sub: graphText("label.sub"),
+  class: graphText("label.class"),
+  method: graphText("label.method"),
+  methodFunction: graphText("label.functionMethod"),
+  methodSub: graphText("label.subMethod"),
+  property: graphText("label.property"),
+  member: graphText("label.member"),
+  globalVariable: graphText("label.globalVariable"),
+  globalConstant: graphText("label.globalConstant"),
+  localVariable: graphText("label.localVariable"),
+  localConstant: graphText("label.localConstant"),
+  parameter: graphText("label.parameter"),
+  unresolved: graphText("label.unresolved"),
 };
 
 const nodeCategoryOrder: NodeColorCategory[] = [
@@ -561,7 +824,9 @@ function App(): React.ReactElement {
   if (!graph) {
     return (
       <Shell>
-        <main className="grid place-items-center text-[#9aa7b8]">Graph data is unavailable.</main>
+        <main className="grid place-items-center text-[#9aa7b8]">
+          {graphText("empty.graphData")}
+        </main>
       </Shell>
     );
   }
@@ -582,15 +847,17 @@ function App(): React.ReactElement {
             </span>
           ) : null}
           {graph.truncated ? (
-            <span className="text-[11px] text-[#ffcb6b]">truncated: {graph.truncated.reason}</span>
+            <span className="text-[11px] text-[#ffcb6b]">
+              {graphText("toolbar.truncated", { reason: graph.truncated.reason })}
+            </span>
           ) : null}
         </div>
         <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
           <input
             type="search"
             className="h-7 min-w-0 rounded-md border border-[#394456] bg-[#11151c] px-2.5 text-xs text-[#d7dde8] outline-none placeholder:text-[#717b8c] focus:border-[#89ddff]"
-            aria-label="Search nodes"
-            placeholder="Search nodes"
+            aria-label={graphText("toolbar.searchNodes")}
+            placeholder={graphText("toolbar.searchNodes")}
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.currentTarget.value)}
           />
@@ -601,7 +868,7 @@ function App(): React.ReactElement {
               checked={searchMatchCase}
               onChange={(event) => setSearchMatchCase(event.currentTarget.checked)}
             />
-            Match case
+            {graphText("toolbar.matchCase")}
           </label>
         </div>
         <GraphStatsPopover
@@ -611,7 +878,7 @@ function App(): React.ReactElement {
         />
         <div
           className="inline-grid grid-cols-2 overflow-hidden rounded-md border border-[#394456]"
-          aria-label="Graph mode"
+          aria-label={graphText("toolbar.graphMode")}
         >
           <button
             type="button"
@@ -639,12 +906,12 @@ function App(): React.ReactElement {
         <button
           type="button"
           className="h-7 min-w-[42px] cursor-pointer rounded-md border border-[#394456] bg-[#151a22] px-2.5 text-xs text-[#b5c0d0] disabled:cursor-not-allowed disabled:text-[#717b8c]"
-          aria-label="Fit graph to canvas"
-          title="Fit graph to canvas"
+          aria-label={graphText("action.fitGraph")}
+          title={graphText("action.fitGraph")}
           disabled={!canFitGraph}
           onClick={() => fitGraphToCanvas(mode)}
         >
-          Fit
+          {graphText("action.fit")}
         </button>
       </header>
       <main
@@ -790,7 +1057,7 @@ function GraphLegend({
         onClick={() => setOpen((current) => !current)}
       >
         <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
-          Legend
+          {graphText("legend.heading")}
         </span>
         <span className="text-[11px] text-[#8d98a8]" aria-hidden="true">
           {isOpen ? "-" : "+"}
@@ -798,7 +1065,7 @@ function GraphLegend({
       </button>
       {isOpen ? (
         <div className="grid gap-2 pt-1.5 pb-2">
-          <LegendFilterGroup title="Link filters">
+          <LegendFilterGroup title={graphText("legend.linkFilters")}>
             {linkCategories.map((category) => (
               <LegendFilterItem
                 key={category}
@@ -811,7 +1078,7 @@ function GraphLegend({
               />
             ))}
           </LegendFilterGroup>
-          <LegendFilterGroup title="Node filters">
+          <LegendFilterGroup title={graphText("legend.nodeFilters")}>
             {nodeCategories.map((category) => (
               <LegendFilterItem
                 key={category}
@@ -825,18 +1092,18 @@ function GraphLegend({
             <LegendFilterItem
               checked={hideSingleNodes}
               color="#8d98a8"
-              label="Hide single nodes"
-              title="Hide non-root nodes that have no visible links."
+              label={graphText("legend.hideSingleNodes")}
+              title={graphText("legend.hideSingleNodesDescription")}
               variant="node"
               onToggle={onToggleHideSingleNodes}
             />
           </LegendFilterGroup>
-          <LegendFilterGroup title="Selection">
+          <LegendFilterGroup title={graphText("legend.selection")}>
             <LegendFilterItem
               checked={showOutgoingSelectionLinks}
               color="#c792ea"
-              label="Outgoing links"
-              title="Also highlight links that start from the selected node."
+              label={graphText("legend.outgoingLinks")}
+              title={graphText("legend.outgoingLinksDescription")}
               variant="link"
               onToggle={onToggleShowOutgoingSelectionLinks}
             />
@@ -1013,45 +1280,45 @@ function GraphStatsPopover({
         className="inline-flex h-7 cursor-pointer items-center rounded-md border border-[#394456] bg-[#151a22] px-2.5 text-xs text-[#b5c0d0] hover:border-[#4b5a70] hover:text-[#d7dde8]"
         aria-haspopup="dialog"
         aria-expanded={isOpen}
-        aria-label="Show graph statistics"
+        aria-label={graphText("stats.show")}
         onClick={() => setOpen((current) => !current)}
       >
-        <span className="font-semibold text-[#d7dde8]">Stats</span>
+        <span className="font-semibold text-[#d7dde8]">{graphText("toolbar.stats")}</span>
       </button>
       {isOpen ? (
         <div
           role="dialog"
-          aria-label="Graph statistics"
+          aria-label={graphText("stats.title")}
           className="absolute top-[calc(100%_+_6px)] right-0 z-20 grid w-[min(430px,calc(100vw_-_24px))] gap-2 rounded-md border border-[#303a49] bg-[#171c25] p-2 shadow-[0_14px_34px_rgb(0_0_0_/_34%)] max-[980px]:right-auto max-[980px]:left-0"
         >
           <div className="text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
-            Graph stats
+            {graphText("stats.heading")}
           </div>
           <div className="grid grid-cols-2 gap-2 max-[360px]:grid-cols-1">
             <MetricButton
               activeMetric={activeMetric}
-              label="Files"
+              label={graphText("stats.metric.files")}
               metric="files"
               value={stats.files}
               onSelect={setActiveMetric}
             />
             <MetricButton
               activeMetric={activeMetric}
-              label="VB"
+              label={graphText("stats.metric.vb")}
               metric="declarations"
               value={stats.declarations}
               onSelect={setActiveMetric}
             />
             <MetricButton
               activeMetric={activeMetric}
-              label="Links"
+              label={graphText("stats.metric.links")}
               metric="links"
               value={stats.links}
               onSelect={setActiveMetric}
             />
             <MetricButton
               activeMetric={activeMetric}
-              label="Missing"
+              label={graphText("stats.metric.missing")}
               metric="missingIncludes"
               value={stats.missingIncludes}
               onSelect={setActiveMetric}
@@ -1111,7 +1378,7 @@ function GraphStatsList({
   if (items.length === 0) {
     return (
       <p className="m-0 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-xs text-[#8d98a8]">
-        No matching items in the current graph view.
+        {graphText("empty.matchingItems")}
       </p>
     );
   }
@@ -1213,11 +1480,13 @@ function missingIncludeStatsItems(graphData: GraphData): GraphStatsListItem[] {
         title: link.include?.path ?? link.label,
         target: { type: "link", id: link.id },
         detail: detailParts(
-          directive ? `Directive ${directiveSourceLabel(directive)}` : undefined,
+          directive
+            ? graphText("detail.directive", { source: directiveSourceLabel(directive) })
+            : undefined,
           `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
           link.include?.mode,
         ).join(" · "),
-        status: "Missing",
+        status: graphText("label.missing"),
         color: link.color,
       };
     });
@@ -1225,10 +1494,10 @@ function missingIncludeStatsItems(graphData: GraphData): GraphStatsListItem[] {
 
 function fileStatsStatus(node: GraphNode): string {
   const status = detailParts(
-    node.isRoot ? "Root" : undefined,
-    node.exists === false ? "Missing" : undefined,
+    node.isRoot ? graphText("label.root") : undefined,
+    node.exists === false ? graphText("label.missing") : undefined,
   );
-  return status.length > 0 ? status.join(" / ") : "File";
+  return status.length > 0 ? status.join(" / ") : graphText("label.file");
 }
 
 function linkStatsTitle(link: GraphLink): string {
@@ -1254,7 +1523,7 @@ function directiveSourceLabel(location: { uri: string; range: AspGraphRange }): 
 }
 
 function rangeLineLabel(range: AspGraphRange | undefined): string | undefined {
-  return range ? `Line ${range.start.line + 1}` : undefined;
+  return range ? graphText("detail.line", { line: range.start.line + 1 }) : undefined;
 }
 
 function detailParts(...values: Array<string | undefined>): string[] {
@@ -1330,7 +1599,7 @@ function PaneResizeHandle({
     <div
       role="separator"
       tabIndex={0}
-      aria-label="Resize inspector pane"
+      aria-label={graphText("view.resizeInspector")}
       aria-orientation="vertical"
       aria-valuemin={minWidth}
       aria-valuemax={maxWidth}
@@ -1364,9 +1633,9 @@ function Inspector({
     return (
       <aside className={className}>
         <h2 className="mb-3 text-sm leading-[1.35] font-semibold [overflow-wrap:anywhere]">
-          Inspector
+          {graphText("view.inspector")}
         </h2>
-        <p className="m-0 text-xs text-[#8d98a8]">Select a node or link.</p>
+        <p className="m-0 text-xs text-[#8d98a8]">{graphText("inspector.selectPrompt")}</p>
       </aside>
     );
   }
@@ -1379,7 +1648,7 @@ function Inspector({
         <button
           type="button"
           className="hidden h-7 w-7 shrink-0 rounded-md border border-[#405068] bg-[#202735] text-sm leading-none text-[#d7dde8] max-[780px]:inline-grid max-[780px]:place-items-center"
-          aria-label="Close inspector"
+          aria-label={graphText("inspector.close")}
           onClick={onClose}
         >
           x
@@ -1401,7 +1670,7 @@ function Inspector({
 
 function inspectorTitleForSelection(selection: Selection, graphData: GraphData): string {
   if (!selection) {
-    return "Inspector";
+    return graphText("view.inspector");
   }
   if (selection.type === "node") {
     return selection.item.label;
@@ -1438,7 +1707,7 @@ function NodeInspector({
         <OpenLocationButton
           className="mt-3 h-[30px] w-full"
           disabled={!location?.uri}
-          label="Open File"
+          label={graphText("action.openFile")}
           range={location?.range}
           uri={location?.uri}
         />
@@ -1471,18 +1740,18 @@ function LinkInspector({
             location ? (
               <OpenLocationButton
                 className="h-7 px-2"
-                label="Open first"
+                label={graphText("action.openFirst")}
                 range={location.range}
                 uri={location.uri}
               />
             ) : undefined
           }
-          title="Occurrences"
+          title={graphText("section.occurrences")}
         >
           {sourceItems.length > 0 ? (
             <SourceFileGroups items={sourceItems} sourceState={sourceState} />
           ) : (
-            <EmptyInspectorText>No source ranges found for this link.</EmptyInspectorText>
+            <EmptyInspectorText>{graphText("empty.sourceRanges")}</EmptyInspectorText>
           )}
         </Accordion>
       </div>
@@ -1534,7 +1803,11 @@ function NodeLinkSections({
   const nodesById = useMemo(() => graphNodeMap(graphData.nodes), [graphData.nodes]);
   return (
     <div className="mb-3 grid gap-2">
-      <Accordion count={outgoing.length} defaultOpen={outgoing.length > 0} title="Outgoing links">
+      <Accordion
+        count={outgoing.length}
+        defaultOpen={outgoing.length > 0}
+        title={graphText("section.outgoingLinks")}
+      >
         {outgoing.length > 0 ? (
           <NodeLinkList
             direction="outgoing"
@@ -1543,10 +1816,14 @@ function NodeLinkSections({
             onSelectLink={onSelectLink}
           />
         ) : (
-          <EmptyInspectorText>No outgoing links found in the current graph.</EmptyInspectorText>
+          <EmptyInspectorText>{graphText("empty.outgoingLinks")}</EmptyInspectorText>
         )}
       </Accordion>
-      <Accordion count={incoming.length} defaultOpen={incoming.length > 0} title="Incoming links">
+      <Accordion
+        count={incoming.length}
+        defaultOpen={incoming.length > 0}
+        title={graphText("section.incomingLinks")}
+      >
         {incoming.length > 0 ? (
           <NodeLinkList
             direction="incoming"
@@ -1555,7 +1832,7 @@ function NodeLinkSections({
             onSelectLink={onSelectLink}
           />
         ) : (
-          <EmptyInspectorText>No incoming links found in the current graph.</EmptyInspectorText>
+          <EmptyInspectorText>{graphText("empty.incomingLinks")}</EmptyInspectorText>
         )}
       </Accordion>
     </div>
@@ -1602,7 +1879,7 @@ function NodeLinkList({
               nodesById,
             )}`}
           >
-            {direction === "outgoing" ? "to" : "from"}{" "}
+            {direction === "outgoing" ? graphText("direction.to") : graphText("direction.from")}{" "}
             {endpointLabel(direction === "outgoing" ? link.target : link.source, nodesById)}
           </div>
           {nodeLinkDetail(link) ? (
@@ -1641,25 +1918,29 @@ function NodeSourceSections({
           declarationItem ? (
             <OpenLocationButton
               className="h-7 px-2"
-              label="Open"
+              label={graphText("action.open")}
               range={declarationItem.highlightRange}
               uri={declarationItem.uri}
             />
           ) : undefined
         }
-        title="Declaration"
+        title={graphText("section.declaration")}
       >
         {declarationItem ? (
           <DeclarationSource item={declarationItem} sourceState={sourceState} />
         ) : (
-          <EmptyInspectorText>Declaration source is unavailable.</EmptyInspectorText>
+          <EmptyInspectorText>{graphText("empty.declarationSource")}</EmptyInspectorText>
         )}
       </Accordion>
-      <Accordion count={usageItems.length} defaultOpen={true} title="References / Calls">
+      <Accordion
+        count={usageItems.length}
+        defaultOpen={true}
+        title={graphText("section.referencesCalls")}
+      >
         {usageItems.length > 0 ? (
           <SourceFileGroups items={usageItems} sourceState={sourceState} />
         ) : (
-          <EmptyInspectorText>No references or calls found in this graph.</EmptyInspectorText>
+          <EmptyInspectorText>{graphText("empty.referencesOrCalls")}</EmptyInspectorText>
         )}
       </Accordion>
     </div>
@@ -1679,18 +1960,22 @@ function FileNodeRelations({
   );
   return (
     <div className="mb-3 grid gap-2">
-      <Accordion count={outgoing.length} defaultOpen={true} title="Includes">
+      <Accordion count={outgoing.length} defaultOpen={true} title={graphText("section.includes")}>
         {outgoing.length > 0 ? (
           <IncludeRelationList relations={outgoing} />
         ) : (
-          <EmptyInspectorText>No included files found.</EmptyInspectorText>
+          <EmptyInspectorText>{graphText("empty.includedFiles")}</EmptyInspectorText>
         )}
       </Accordion>
-      <Accordion count={incoming.length} defaultOpen={incoming.length > 0} title="Included By">
+      <Accordion
+        count={incoming.length}
+        defaultOpen={incoming.length > 0}
+        title={graphText("section.includedBy")}
+      >
         {incoming.length > 0 ? (
           <IncludeRelationList relations={incoming} />
         ) : (
-          <EmptyInspectorText>No include sources found.</EmptyInspectorText>
+          <EmptyInspectorText>{graphText("empty.includeSources")}</EmptyInspectorText>
         )}
       </Accordion>
     </div>
@@ -1748,7 +2033,7 @@ function DeclarationSource({
   return (
     <div className="grid gap-2">
       <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]">
-        {item.detail ?? `Line ${displayRange.start.line + 1}`}
+        {item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 })}
       </div>
       {source?.error ? (
         <p className="m-0 text-[11px] text-[#ff9cac]">{source.error}</p>
@@ -1822,12 +2107,12 @@ function SourceRangeCard({
             {item.title}
           </div>
           <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]">
-            {item.detail ?? `Line ${displayRange.start.line + 1}`}
+            {item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 })}
           </div>
         </div>
         <OpenLocationButton
           className="h-7 shrink-0 px-2"
-          label="Open"
+          label={graphText("action.open")}
           range={item.highlightRange}
           uri={item.uri}
         />
@@ -1852,7 +2137,9 @@ function SourceCodeSnippet({
   loading: boolean;
   source: AspGraphSourceRangeResponseItem | undefined;
 }): React.ReactElement {
-  const text = source?.text ?? (loading ? "Loading source..." : "Source is unavailable.");
+  const text =
+    source?.text ??
+    (loading ? graphText("snippet.loadingSource") : graphText("empty.sourceUnavailable"));
   const highlightState = useSnippetHighlightState(Boolean(source?.text));
   const highlightOffsets = sourceHighlightOffsets(source);
   const language = snippetLanguageForSourceItem(item);
@@ -2334,58 +2621,64 @@ function OpenLocationButton({
 function NodeDetails({ node }: { node: GraphNode }): React.ReactElement {
   return (
     <dl className="mb-3.5 grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
-      <Detail label="Type" value={nodeTypeLabel(node)} />
-      <Detail label="References" value={String(node.referenceCount)} />
-      <Detail label="File" value={nodeFileLabel(node)} />
-      <Detail label="Member of" value={node.memberOf} />
-      <Detail label="Scope" value={nodeScopeLabel(node)} />
-      <Detail label="Status" value={nodeStatusLabel(node)} />
+      <Detail label={graphText("detail.type")} value={nodeTypeLabel(node)} />
+      <Detail label={graphText("detail.references")} value={String(node.referenceCount)} />
+      <Detail label={graphText("detail.file")} value={nodeFileLabel(node)} />
+      <Detail label={graphText("detail.memberOf")} value={node.memberOf} />
+      <Detail label={graphText("detail.scope")} value={nodeScopeLabel(node)} />
+      <Detail label={graphText("detail.status")} value={nodeStatusLabel(node)} />
     </dl>
   );
 }
 
 function nodeTypeLabel(node: GraphNode): string {
   if (node.kind === "file") {
-    return node.exists === false ? "Missing file" : "File";
+    return node.exists === false ? graphText("label.missingFile") : graphText("label.file");
   }
   if (node.kind === "vbUnresolved") {
-    return node.role === "member" ? "Unresolved member" : "Unresolved";
+    return node.role === "member"
+      ? graphText("label.unresolvedMember")
+      : graphText("label.unresolved");
   }
   switch (node.declarationKind) {
     case "function":
-      return "Function";
+      return graphText("label.function");
     case "sub":
-      return "Sub";
+      return graphText("label.sub");
     case "class":
-      return "Class";
+      return graphText("label.class");
     case "method":
       if (node.procedureKind === "function") {
-        return "Function method";
+        return graphText("label.functionMethod");
       }
       if (node.procedureKind === "sub") {
-        return "Sub method";
+        return graphText("label.subMethod");
       }
-      return "Class method";
+      return graphText("label.classMethod");
     case "property":
-      return "Property";
+      return graphText("label.property");
     case "field":
-      return "Field";
+      return graphText("label.field");
     case "parameter":
-      return "Parameter";
+      return graphText("label.parameter");
     case "variable":
-      return node.bindingScope === "local" ? "Local variable" : "Global variable";
+      return node.bindingScope === "local"
+        ? graphText("label.localVariable")
+        : graphText("label.globalVariable");
     case "constant":
       if (node.memberOf) {
-        return "Class constant";
+        return graphText("label.classConstant");
       }
-      return node.bindingScope === "local" ? "Local constant" : "Global constant";
+      return node.bindingScope === "local"
+        ? graphText("label.localConstant")
+        : graphText("label.globalConstant");
     case "object":
-      return "Object";
+      return graphText("label.object");
     case "event":
-      return "Event";
+      return graphText("label.event");
     default:
       return node.externalKind
-        ? titleCaseWords(node.externalKind)
+        ? externalKindLabel(node.externalKind)
         : nodeCategoryLabels[node.category];
   }
 }
@@ -2397,11 +2690,11 @@ function nodeFileLabel(node: GraphNode): string | undefined {
 function nodeScopeLabel(node: GraphNode): string | undefined {
   switch (node.bindingScope) {
     case "global":
-      return "Global";
+      return graphText("label.global");
     case "local":
-      return "Local";
+      return graphText("label.local");
     case "unknown":
-      return "Unknown";
+      return graphText("label.unknown");
     default:
       return undefined;
   }
@@ -2409,13 +2702,13 @@ function nodeScopeLabel(node: GraphNode): string | undefined {
 
 function nodeStatusLabel(node: GraphNode): string | undefined {
   if (node.kind === "file") {
-    return node.isRoot ? "Root" : undefined;
+    return node.isRoot ? graphText("label.root") : undefined;
   }
   if (node.origin === "builtin") {
-    return "Built-in";
+    return graphText("label.builtin");
   }
   if (node.origin === "configured") {
-    return "Configured";
+    return graphText("label.configured");
   }
   return undefined;
 }
@@ -2444,12 +2737,19 @@ function safeDecodeURIComponent(value: string): string {
   }
 }
 
-function titleCaseWords(value: string): string {
-  return value
-    .split(/[\s_-]+/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
+function externalKindLabel(value: NonNullable<GraphNode["externalKind"]>): string {
+  switch (value) {
+    case "function":
+      return graphText("label.function");
+    case "constant":
+      return graphText("label.globalConstant");
+    case "member":
+      return graphText("label.member");
+    case "object":
+      return graphText("label.object");
+    case "event":
+      return graphText("label.event");
+  }
 }
 
 function LinkDetails({
@@ -2487,12 +2787,12 @@ function LinkDetails({
             </div>
             <div className="mt-2 flex flex-wrap gap-2">
               <SelectEndpointButton
-                label="Select source"
+                label={graphText("action.selectSource")}
                 node={sourceNode}
                 onSelectNode={onSelectNode}
               />
               <SelectEndpointButton
-                label="Select target"
+                label={graphText("action.selectTarget")}
                 node={targetNode}
                 onSelectNode={onSelectNode}
               />
@@ -2500,20 +2800,28 @@ function LinkDetails({
           </div>
           <div className="grid min-w-[58px] shrink-0 justify-items-end rounded border border-[#405068] bg-[#151a22] px-2 py-1">
             <span className="text-sm leading-none font-semibold text-[#f4f7fb]">{link.count}</span>
-            <span className="text-[10px] leading-[1.2] text-[#9aa7b8]">count</span>
+            <span className="text-[10px] leading-[1.2] text-[#9aa7b8]">
+              {graphText("detail.count")}
+            </span>
           </div>
         </div>
       </section>
       <dl className="grid grid-cols-[86px_minmax(0,1fr)] gap-x-2.5 gap-y-2">
-        <Detail label="Type" value={typeLabel} />
-        <Detail label="Source" value={sourceLabel} />
-        <Detail label="Target" value={targetLabel} />
-        <Detail label="Role" value={link.role} />
-        <Detail label="Label" value={link.label !== typeLabel ? link.label : undefined} />
-        <Detail label="Include" value={link.include?.path} />
-        <Detail label="Mode" value={link.include?.mode} />
-        <Detail label="Exists" value={link.include ? String(link.include.exists) : undefined} />
-        <Detail label="Actual path" value={link.include?.actualPath} />
+        <Detail label={graphText("detail.type")} value={typeLabel} />
+        <Detail label={graphText("detail.source")} value={sourceLabel} />
+        <Detail label={graphText("detail.target")} value={targetLabel} />
+        <Detail label={graphText("detail.role")} value={link.role} />
+        <Detail
+          label={graphText("detail.label")}
+          value={link.label !== typeLabel ? link.label : undefined}
+        />
+        <Detail label={graphText("detail.include")} value={link.include?.path} />
+        <Detail label={graphText("detail.mode")} value={link.include?.mode} />
+        <Detail
+          label={graphText("detail.exists")}
+          value={link.include ? String(link.include.exists) : undefined}
+        />
+        <Detail label={graphText("detail.actualPath")} value={link.include?.actualPath} />
       </dl>
     </div>
   );
@@ -2636,7 +2944,7 @@ function sourceItemsForNode(
             range: node.sourceRange ?? node.range,
             highlightRange: node.range,
             kind: "declaration" as const,
-            title: "Declaration",
+            title: graphText("detail.declaration"),
             detail: nodeTypeLabel(node),
           },
         ]
@@ -2703,9 +3011,7 @@ function nodeLinkDetail(link: GraphLink): string | undefined {
   const parts = detailParts(
     link.role,
     link.label !== typeLabel ? link.label : undefined,
-    link.ranges.length > 0
-      ? `${link.ranges.length} occurrence${link.ranges.length === 1 ? "" : "s"}`
-      : undefined,
+    link.ranges.length > 0 ? occurrenceCountLabel(link.ranges.length) : undefined,
   );
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
@@ -2726,10 +3032,10 @@ function sourceKindForLink(link: GraphLink): AspGraphSourceRangeRequestItem["kin
 
 function linkOccurrenceTitle(link: GraphLink): string {
   if (link.kind === "include") {
-    return "Include directive";
+    return graphText("occurrence.includeDirective");
   }
   if (link.kind === "declares") {
-    return "Declaration";
+    return graphText("detail.declaration");
   }
   return sourceUsageTitle(link);
 }
@@ -2747,13 +3053,25 @@ function linkOccurrenceDetail(
 }
 
 function sourceUsageTitle(link: GraphLink): string {
-  const label = link.kind === "unresolvedReference" ? "Unresolved" : linkMeanings[link.kind].label;
+  const label =
+    link.kind === "unresolvedReference"
+      ? graphText("label.unresolved")
+      : linkMeanings[link.kind].label;
   return link.role ? `${label}: ${link.role}` : label;
+}
+
+function occurrenceCountLabel(count: number): string {
+  return graphText(count === 1 ? "occurrence.one" : "occurrence.other", { count });
 }
 
 function linkInspectorTypeLabel(link: GraphLink): string {
   const label = linkMeanings[link.kind].label;
-  return graphLinkFilterCategory(link) === "member" ? `Member ${label.toLowerCase()}` : label;
+  if (graphLinkFilterCategory(link) !== "member") {
+    return label;
+  }
+  return graphText("link.memberType", {
+    label: graphLocale === "en" ? label.toLowerCase() : label,
+  });
 }
 
 function compareSourceItems(left: GraphSourceItem, right: GraphSourceItem): number {
@@ -2824,10 +3142,10 @@ function includeTargetRelation(
     title: target?.label ?? link.include?.path ?? link.label,
     detail: includeRelationDetail(link),
     fileUri: targetUri,
-    fileLabel: "Open file",
+    fileLabel: graphText("action.openFile"),
     directiveUri: directive?.uri,
     directiveRange: directive?.range,
-    directiveLabel: "Open directive",
+    directiveLabel: graphText("action.openDirective"),
     exists: link.include?.exists,
   };
 }
@@ -2843,10 +3161,10 @@ function includeSourceRelation(
     title: source?.label ?? baseNameFromUri(directive?.uri) ?? link.label,
     detail: includeRelationDetail(link),
     fileUri: source?.uri ?? directive?.uri,
-    fileLabel: "Open file",
+    fileLabel: graphText("action.openFile"),
     directiveUri: directive?.uri,
     directiveRange: directive?.range,
-    directiveLabel: "Open directive",
+    directiveLabel: graphText("action.openDirective"),
     exists: true,
   };
 }
@@ -2855,7 +3173,7 @@ function includeRelationDetail(link: GraphLink): string {
   const parts = [
     link.include?.mode,
     link.include?.path,
-    link.include?.exists === false ? "missing" : undefined,
+    link.include?.exists === false ? graphText("label.missing") : undefined,
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : link.label;
 }
@@ -2975,12 +3293,12 @@ function positionSyncPositionFor3d(
 
 function graphScopeTitle(scope: AspGraphPayload["scope"]): string {
   if (scope === "document") {
-    return "Current File Graph";
+    return graphText("view.currentFileGraph");
   }
   if (scope === "folder") {
-    return "Folder Graph";
+    return graphText("view.folderGraph");
   }
-  return "Workspace Graph";
+  return graphText("view.workspaceGraph");
 }
 
 function graphRootName(payload: AspGraphPayload | undefined): string | undefined {
@@ -3926,7 +4244,7 @@ function externalNodeCategory(node: AspGraphNode): NodeColorCategory {
 
 function nodeLabel(node: GraphNode): string {
   if (node.kind === "vbDeclaration" && node.declarationKind) {
-    return `${node.declarationKind}: ${node.label}`;
+    return `${nodeTypeLabel(node)}: ${node.label}`;
   }
   if (node.kind === "vbUnresolved" && node.role) {
     return `${node.role}: ${node.label}`;
@@ -3936,7 +4254,7 @@ function nodeLabel(node: GraphNode): string {
 
 function linkLabel(link: GraphLink): string {
   const meaning = linkMeanings[link.kind];
-  const count = link.count === 1 ? "1 occurrence" : `${link.count} occurrences`;
+  const count = occurrenceCountLabel(link.count);
   return `${meaning.label}: ${link.label} (${count})\n${meaning.description}`;
 }
 

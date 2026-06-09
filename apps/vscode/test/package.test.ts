@@ -53,6 +53,22 @@ describe("VS Code extension package", () => {
     expect(extensionSource).not.toContain(`aspLsp.${removedAnalysisSetting}`);
   });
 
+  it("passes the configured locale into the graph webview UI", () => {
+    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    const graphHostSource = fs.readFileSync("src/include-graph-webview.ts", "utf8");
+    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+
+    expect(extensionSource).toContain("extensionLocale()");
+    expect(graphHostSource).toContain("JSON.stringify({ ...payload, locale })");
+    expect(graphHostSource).toContain('<html lang="${locale}">');
+    expect(graphHostSource).toContain('graphHostText(locale, "sourceRangeUnavailable")');
+    expect(graphWebviewSource).toContain(
+      'const graphLocale: GraphLocale = graph?.locale === "ja" ? "ja" : "en"',
+    );
+    expect(graphWebviewSource).toContain('"legend.heading": "凡例"');
+    expect(graphWebviewSource).toContain('graphText("toolbar.searchNodes")');
+  });
+
   it("contributes commands, task definition and IIS debug settings", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       repository?: { url?: string };
