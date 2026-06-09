@@ -814,6 +814,7 @@ interface AspGraphBuildState {
   sourceDeclarationsById: Map<string, VbSymbolIndex["declarations"][number]>;
   sourceDeclarationUrisById: Map<string, string>;
   directIncludesByOwnerUri: Map<string, Array<{ range: Range; targetUri: string }>>;
+  parentIncludesByTargetUri: Map<string, Array<{ ownerUri: string; range: Range }>>;
   externalSymbols: AspGraphExternalIndex;
   rootUri?: string;
   stats: AspGraphPayload["stats"];
@@ -15287,6 +15288,7 @@ function createAspGraphBuildState(
     sourceDeclarationsById: new Map(),
     sourceDeclarationUrisById: new Map(),
     directIncludesByOwnerUri: new Map(),
+    parentIncludesByTargetUri: new Map(),
     externalSymbols: createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings)),
     rootUri,
     truncated,
@@ -15446,6 +15448,10 @@ async function addDocumentStructureToAspGraphAsync(
       range: include.range,
       targetUri,
     });
+    pushAspGraphMapItem(state.parentIncludesByTargetUri, targetUri, {
+      ownerUri: document.uri,
+      range: include.range,
+    });
     addFileGraphNode(state, targetUri, resolved.fileName, resolved.exists);
     state.stats.includes += 1;
     if (!resolved.exists) {
@@ -15518,7 +15524,13 @@ function addDocumentUsageToAspGraph(
     }
     const sourceDeclaration = reference.resolvedId
       ? resolveIncludedImplicitSourceGraphDeclaration(state, indexed, reference)
-      : resolveSourceGraphDeclaration(state, reference.name, reference.expectedKinds);
+      : resolveVisibleSourceGraphDeclaration(
+          state,
+          document.uri,
+          reference.name,
+          reference.expectedKinds,
+          reference.range,
+        );
     const external =
       reference.resolvedId || sourceDeclaration
         ? undefined
@@ -15548,7 +15560,7 @@ function addDocumentUsageToAspGraph(
     state.stats.calls += 1;
     const sourceDeclaration = callSite.resolvedId
       ? undefined
-      : resolveSourceGraphCallSite(state, callSite);
+      : resolveSourceGraphCallSite(state, indexed, callSite);
     const external = callSite.resolvedId
       ? undefined
       : sourceDeclaration
@@ -15577,10 +15589,12 @@ function addDocumentUsageToAspGraph(
     });
   }
   for (const deferred of index.deferredExternalRefs) {
-    const sourceDeclaration = resolveSourceGraphDeclaration(
+    const sourceDeclaration = resolveVisibleSourceGraphDeclaration(
       state,
+      document.uri,
       deferred.name,
       deferred.expectedKinds,
+      deferred.range,
     );
     const external = sourceDeclaration
       ? undefined
@@ -15624,15 +15638,18 @@ function isCrossFileSourceGraphDeclaration(
 
 function resolveSourceGraphCallSite(
   state: AspGraphBuildState,
+  indexed: AspGraphIndexedDocument,
   callSite: VbSymbolIndex["callSites"][number],
 ): VbSymbolIndex["declarations"][number] | undefined {
   if (callSite.memberName) {
     return undefined;
   }
-  return resolveSourceGraphDeclaration(
+  return resolveVisibleSourceGraphDeclaration(
     state,
+    indexed.document.uri,
     callSite.name,
     expectedSourceGraphKindsForCallSite(callSite),
+    callSite.range,
   );
 }
 
@@ -15647,6 +15664,24 @@ function resolveSourceGraphDeclaration(
   const candidates = state.sourceDeclarationsByName.get(name.toLowerCase());
   return candidates?.find(
     (declaration) => !expectedKinds || expectedKinds.includes(declaration.kind),
+  );
+}
+
+function resolveVisibleSourceGraphDeclaration(
+  state: AspGraphBuildState,
+  ownerUri: string,
+  name: string | undefined,
+  expectedKinds: VbSymbolIndex["references"][number]["expectedKinds"],
+  referenceRange: Range,
+): VbSymbolIndex["declarations"][number] | undefined {
+  if (!name) {
+    return undefined;
+  }
+  const candidates = state.sourceDeclarationsByName.get(name.toLowerCase());
+  return candidates?.find(
+    (declaration) =>
+      matchesGraphExpectedKinds(declaration, expectedKinds) &&
+      isSourceGraphDeclarationVisibleFromDocument(state, ownerUri, declaration, referenceRange),
   );
 }
 
@@ -15670,7 +15705,12 @@ function resolveIncludedImplicitSourceGraphDeclaration(
       candidateUri !== indexed.document.uri &&
       isCrossFileSourceGraphDeclaration(candidate) &&
       matchesGraphExpectedKinds(candidate, [resolvedDeclaration.kind]) &&
-      hasEarlierReachableGraphInclude(state, indexed.document.uri, candidateUri, reference.range)
+      isSourceGraphDeclarationVisibleFromDocument(
+        state,
+        indexed.document.uri,
+        candidate,
+        reference.range,
+      )
     );
   });
 }
@@ -15695,6 +15735,78 @@ function hasEarlierReachableGraphInclude(
       (include.targetUri === targetUri ||
         isGraphIncludeReachable(state, include.targetUri, targetUri, new Set([ownerUri]))),
   );
+}
+
+function isSourceGraphDeclarationVisibleFromDocument(
+  state: AspGraphBuildState,
+  ownerUri: string,
+  declaration: VbSymbolIndex["declarations"][number],
+  referenceRange: Range,
+): boolean {
+  const declarationUri = state.sourceDeclarationUrisById.get(declaration.id);
+  if (!declarationUri) {
+    return false;
+  }
+  if (declarationUri === ownerUri) {
+    return true;
+  }
+  if (hasEarlierReachableGraphInclude(state, ownerUri, declarationUri, referenceRange)) {
+    return true;
+  }
+  return isSourceGraphDeclarationVisibleFromParentContext(
+    state,
+    ownerUri,
+    declaration,
+    new Set([ownerUri]),
+  );
+}
+
+function isSourceGraphDeclarationVisibleFromParentContext(
+  state: AspGraphBuildState,
+  ownerUri: string,
+  declaration: VbSymbolIndex["declarations"][number],
+  visited: Set<string>,
+): boolean {
+  const parentIncludes = state.parentIncludesByTargetUri.get(ownerUri) ?? [];
+  for (const parentInclude of parentIncludes) {
+    if (visited.has(parentInclude.ownerUri)) {
+      continue;
+    }
+    const nextVisited = new Set(visited);
+    nextVisited.add(parentInclude.ownerUri);
+    if (
+      isSourceGraphDeclarationVisibleBeforeParentInclude(
+        state,
+        parentInclude.ownerUri,
+        declaration,
+        parentInclude.range,
+        nextVisited,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isSourceGraphDeclarationVisibleBeforeParentInclude(
+  state: AspGraphBuildState,
+  parentUri: string,
+  declaration: VbSymbolIndex["declarations"][number],
+  includeRange: Range,
+  visited: Set<string>,
+): boolean {
+  const declarationUri = state.sourceDeclarationUrisById.get(declaration.id);
+  if (!declarationUri) {
+    return false;
+  }
+  if (declarationUri === parentUri) {
+    return positionBeforeOrEqual(declaration.nameRange.start, includeRange.start);
+  }
+  if (hasEarlierReachableGraphInclude(state, parentUri, declarationUri, includeRange)) {
+    return true;
+  }
+  return isSourceGraphDeclarationVisibleFromParentContext(state, parentUri, declaration, visited);
 }
 
 function isGraphIncludeReachable(

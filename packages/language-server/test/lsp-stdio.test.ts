@@ -6645,12 +6645,14 @@ Set matches = re.Execute("abc")
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-implicit-graph-"));
       const shared = path.join(tempDir, "shared.inc");
       const page = path.join(tempDir, "default.asp");
+      const child = path.join(tempDir, "child.inc");
       const before = path.join(tempDir, "before.asp");
       const unrelated = path.join(tempDir, "unrelated.asp");
       const sharedSource = `<%
 sharedTitle = "include"
 %>`;
       const pageSource = `<!-- #include file="shared.inc" -->
+<!-- #include file="child.inc" -->
 <%
 Response.Write sharedTitle
 sharedTitle = "page"
@@ -6658,17 +6660,22 @@ Function Render()
   sharedTitle = "function"
 End Function
 %>`;
+      const childSource = `<%
+Response.Write sharedTitle
+%>`;
       const beforeSource = `<%
 sharedTitle = "before"
 %>
 <!-- #include file="shared.inc" -->`;
       fs.writeFileSync(shared, sharedSource, "utf8");
       fs.writeFileSync(page, pageSource, "utf8");
+      fs.writeFileSync(child, childSource, "utf8");
       fs.writeFileSync(before, beforeSource, "utf8");
       fs.writeFileSync(unrelated, `<%\nResponse.Write sharedTitle\n%>`, "utf8");
 
       const sharedUri = pathToFileURL(shared).href;
       const pageUri = pathToFileURL(page).href;
+      const childUri = pathToFileURL(child).href;
       const beforeUri = pathToFileURL(before).href;
       const unrelatedUri = pathToFileURL(unrelated).href;
       const server = new RpcServer();
@@ -6723,9 +6730,11 @@ sharedTitle = "before"
         })) as TestGraph;
         const sharedFileNode = nodeByLabelAndUri(pageGraph, "shared.inc", sharedUri);
         const pageFileNode = nodeByLabelAndUri(pageGraph, "default.asp", pageUri);
+        const childFileNode = nodeByLabelAndUri(pageGraph, "child.inc", childUri);
         const renderNode = nodeByLabelAndUri(pageGraph, "Render", pageUri);
         const includeSharedTitleNode = nodeByLabelAndUri(pageGraph, "sharedTitle", sharedUri);
         const pageSharedTitleNode = nodeByLabelAndUri(pageGraph, "sharedTitle", pageUri);
+        const childSharedTitleNode = nodeByLabelAndUri(pageGraph, "sharedTitle", childUri);
 
         expect(includeSharedTitleNode).toEqual(
           expect.objectContaining({
@@ -6743,7 +6752,13 @@ sharedTitle = "before"
         expect(hasGraphLink(pageGraph, "references", renderNode, includeSharedTitleNode)).toBe(
           true,
         );
+        expect(hasGraphLink(pageGraph, "references", childFileNode, includeSharedTitleNode)).toBe(
+          true,
+        );
         expect(hasGraphLink(pageGraph, "references", pageFileNode, pageSharedTitleNode)).toBe(
+          false,
+        );
+        expect(hasGraphLink(pageGraph, "references", childFileNode, childSharedTitleNode)).toBe(
           false,
         );
 
