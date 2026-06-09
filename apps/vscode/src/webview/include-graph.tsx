@@ -2893,7 +2893,7 @@ function nodeTypeLabel(node: GraphNode): string {
 }
 
 function nodeFileLabel(node: GraphNode): string | undefined {
-  return basenameForDisplay(node.fileName ?? node.uri);
+  return node.fileName ?? basenameForDisplay(node.uri);
 }
 
 function nodeScopeLabel(node: GraphNode): string | undefined {

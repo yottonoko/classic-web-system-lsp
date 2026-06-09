@@ -216,7 +216,9 @@ async function textDocumentForGraphSource(uri: vscode.Uri): Promise<vscode.TextD
 }
 
 function graphSourceFileName(document: vscode.TextDocument): string {
-  return document.uri.scheme === "file" ? document.fileName : document.uri.toString();
+  return document.uri.scheme === "file"
+    ? vscode.workspace.asRelativePath(document.uri, false)
+    : document.uri.toString();
 }
 
 function displayRangeForGraphSource(

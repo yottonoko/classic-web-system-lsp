@@ -276,6 +276,82 @@ Server.HTMLEe▮
       }
     });
 
+    it("returns Classic ASP include completions in HTML comment contexts", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+
+        const cases = [
+          {
+            uri: "file:///tmp/include-snippet.asp",
+            markedSource: "inc▮",
+            assert: (items: Array<Record<string, unknown>>) => {
+              const fileSnippet = items.find((item) => item.label === "#include file");
+              expect(fileSnippet).toMatchObject({
+                kind: CompletionItemKind.Snippet,
+                insertTextFormat: InsertTextFormat.Snippet,
+              });
+              expect(fileSnippet?.insertText).toBe('<!-- #include file="${1:path}" -->');
+            },
+          },
+          {
+            uri: "file:///tmp/include-comment.asp",
+            markedSource: "<!-- ▮",
+            assert: (items: Array<Record<string, unknown>>) => {
+              expect(items.find((item) => item.label === "#include")).toMatchObject({
+                kind: CompletionItemKind.Keyword,
+              });
+              expect(items.find((item) => item.label === "#include file")?.insertText).toBe(
+                '#include file="${1:path}" -->',
+              );
+            },
+          },
+          {
+            uri: "file:///tmp/include-mode.asp",
+            markedSource: "<!-- #include ▮",
+            assert: (items: Array<Record<string, unknown>>) => {
+              const fileMode = items.find((item) => item.label === "file");
+              const virtualMode = items.find((item) => item.label === "virtual");
+              expect(fileMode).toMatchObject({
+                kind: CompletionItemKind.Property,
+                insertTextFormat: InsertTextFormat.Snippet,
+              });
+              expect(fileMode?.insertText).toBe('file="${1:path}"');
+              expect(virtualMode?.insertText).toBe('virtual="${1:path}"');
+            },
+          },
+        ];
+
+        for (const testCase of cases) {
+          const document = markedDocument(testCase.markedSource);
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri: testCase.uri,
+              languageId: "classic-asp",
+              version: 1,
+              text: document.text,
+            },
+          });
+          await server.waitForNotification("textDocument/publishDiagnostics");
+          const completions = await server.request("textDocument/completion", {
+            textDocument: { uri: testCase.uri },
+            position: document.position,
+          });
+          testCase.assert(completionItems(completions));
+        }
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns HTML, CSS and JavaScript completions over JSON-RPC", async () => {
       const cases = [
         {
@@ -7212,6 +7288,81 @@ End Sub
         expect(graph.links?.some((link) => link.kind === "calls")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "unresolvedReference")).toBe(true);
         expect(graph.stats?.missingIncludes).toBe(1);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("deduplicates graph files by normalized paths when file URI encoding differs", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-encoded-graph-"));
+      const page = path.join(tempDir, "default page.asp");
+      const openPageUri = `file://${page}`;
+      const canonicalPageUri = pathToFileURL(page).href;
+      fs.writeFileSync(page, `<%\nSub DiskOnly()\nEnd Sub\n%>`, "utf8");
+      expect(openPageUri).not.toBe(canonicalPageUri);
+      const server = new RpcServer();
+      type TestGraph = {
+        scope?: string;
+        rootUri?: string;
+        nodes?: Array<Record<string, unknown>>;
+      };
+      const pageFileNodes = (graph: TestGraph) =>
+        (graph.nodes ?? []).filter(
+          (node) => node.kind === "file" && node.label === "default page.asp",
+        );
+      const hasDeclaration = (graph: TestGraph, label: string) =>
+        (graph.nodes ?? []).some((node) => node.kind === "vbDeclaration" && node.label === label);
+
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: openPageUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<%\nSub OpenOnly()\nEnd Sub\n%>`,
+          },
+        });
+
+        const documentGraph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri: canonicalPageUri }],
+        })) as TestGraph;
+        expect(documentGraph.scope).toBe("document");
+        expect(documentGraph.rootUri).toBe(canonicalPageUri);
+        expect(pageFileNodes(documentGraph)).toEqual([
+          expect.objectContaining({
+            id: `file:${page}`,
+            uri: canonicalPageUri,
+            fileName: "default page.asp",
+            isRoot: true,
+          }),
+        ]);
+        expect(hasDeclaration(documentGraph, "OpenOnly")).toBe(true);
+        expect(hasDeclaration(documentGraph, "DiskOnly")).toBe(false);
+
+        const workspaceGraph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "workspace" }],
+        })) as TestGraph;
+        expect(pageFileNodes(workspaceGraph)).toEqual([
+          expect.objectContaining({
+            id: `file:${page}`,
+            uri: canonicalPageUri,
+            fileName: "default page.asp",
+          }),
+        ]);
+        expect(hasDeclaration(workspaceGraph, "OpenOnly")).toBe(true);
+        expect(hasDeclaration(workspaceGraph, "DiskOnly")).toBe(false);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

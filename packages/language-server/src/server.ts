@@ -44,6 +44,7 @@ import {
   InlineValueVariableLookup,
   InitializeParams,
   InitializeResult,
+  InsertTextFormat,
   Location,
   LSPErrorCodes,
   MonikerKind,
@@ -825,11 +826,13 @@ interface AspGraphBuildState {
   declarations: Set<string>;
   sourceDeclarationsByName: Map<string, Array<VbSymbolIndex["declarations"][number]>>;
   sourceDeclarationsById: Map<string, VbSymbolIndex["declarations"][number]>;
-  sourceDeclarationUrisById: Map<string, string>;
-  directIncludesByOwnerUri: Map<string, Array<{ range: Range; targetUri: string }>>;
-  parentIncludesByTargetUri: Map<string, Array<{ ownerUri: string; range: Range }>>;
+  sourceDeclarationFileKeysById: Map<string, string>;
+  directIncludesByOwnerKey: Map<string, Array<{ range: Range; targetKey: string }>>;
+  parentIncludesByTargetKey: Map<string, Array<{ ownerKey: string; range: Range }>>;
   externalSymbols: AspGraphExternalIndex;
   rootUri?: string;
+  rootFileKey?: string;
+  workspaceRootFileNames: string[];
   stats: AspGraphPayload["stats"];
   truncated?: AspGraphPayload["truncated"];
 }
@@ -1886,13 +1889,14 @@ connection.onCompletion((params) =>
         return [];
       }
       const virtualDocument = toTextDocument(virtual);
+      const htmlItems = htmlService.doComplete(
+        virtualDocument,
+        params.position,
+        htmlService.parseHTMLDocument(virtualDocument),
+      ).items;
       return remember(
         withCompletionData(
-          htmlService.doComplete(
-            virtualDocument,
-            params.position,
-            htmlService.parseHTMLDocument(virtualDocument),
-          ).items,
+          [...aspIncludeCompletions(cached, params.position, settings), ...htmlItems],
           {
             kind: "html",
             uri: cached.source.uri,
@@ -5055,6 +5059,102 @@ function cssCompletion(
     .doComplete(document, position, stylesheet)
     .items.map((item) => remapCompletionItem(virtual, item))
     .filter((item): item is CompletionItem => Boolean(item));
+}
+
+type AspIncludeCompletionContext = "html" | "comment" | "includeMode";
+
+function aspIncludeCompletions(
+  cached: CachedDocument,
+  position: Position,
+  settings: AspSettings,
+): CompletionItem[] {
+  const offset = cached.source.offsetAt(position);
+  const context = aspIncludeCompletionContextAt(cached.source.getText(), offset);
+  if (!context) {
+    return [];
+  }
+  const localizer = createLocalizer(settings.resolvedLocale);
+  const detail = localizer.t("server.completion.include.detail");
+  const documentation = localizer.t("server.completion.include.documentation");
+  if (context === "includeMode") {
+    return ["file", "virtual"].map((mode) => ({
+      label: mode,
+      kind: CompletionItemKind.Property,
+      detail,
+      documentation,
+      insertText: `${mode}="\${1:path}"`,
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: `0_${mode}`,
+    }));
+  }
+  const prefix = context === "comment" ? "" : "<!-- ";
+  const snippets: CompletionItem[] = [
+    {
+      label: "#include file",
+      kind: CompletionItemKind.Snippet,
+      detail,
+      documentation,
+      insertText: `${prefix}#include file="\${1:path}" -->`,
+      insertTextFormat: InsertTextFormat.Snippet,
+      filterText: "include file #include",
+      sortText: "0_include_file",
+    },
+    {
+      label: "#include virtual",
+      kind: CompletionItemKind.Snippet,
+      detail,
+      documentation,
+      insertText: `${prefix}#include virtual="\${1:path}" -->`,
+      insertTextFormat: InsertTextFormat.Snippet,
+      filterText: "include virtual #include",
+      sortText: "0_include_virtual",
+    },
+  ];
+  return context === "comment"
+    ? [
+        {
+          label: "#include",
+          kind: CompletionItemKind.Keyword,
+          detail,
+          documentation,
+          insertText: "#include ",
+          filterText: "include #include",
+          sortText: "0_include",
+        },
+        ...snippets,
+      ]
+    : snippets;
+}
+
+function aspIncludeCompletionContextAt(
+  text: string,
+  offset: number,
+): AspIncludeCompletionContext | undefined {
+  const before = text.slice(0, offset);
+  const commentStart = Math.max(before.lastIndexOf("<!--"), before.lastIndexOf("<!—"));
+  if (commentStart >= 0 && before.lastIndexOf("-->") < commentStart) {
+    const body = before.slice(commentStart + (before.startsWith("<!—", commentStart) ? 3 : 4));
+    if (/^\s*#include\s+[A-Za-z]*$/i.test(body)) {
+      return "includeMode";
+    }
+    if (/^\s*#?[A-Za-z]*$/i.test(body)) {
+      return "comment";
+    }
+    return undefined;
+  }
+  if (isHtmlTextCompletionContext(text, offset)) {
+    return "html";
+  }
+  return undefined;
+}
+
+function isHtmlTextCompletionContext(text: string, offset: number): boolean {
+  const lineStart =
+    Math.max(text.lastIndexOf("\n", offset - 1), text.lastIndexOf("\r", offset - 1)) + 1;
+  const prefix = text.slice(lineStart, offset);
+  const lastOpen = prefix.lastIndexOf("<");
+  const lastClose = prefix.lastIndexOf(">");
+  return lastOpen <= lastClose;
 }
 
 function remapCompletionItem(
@@ -13511,6 +13611,18 @@ function normalizeFileName(fileName: string): string {
   return path.resolve(fileName);
 }
 
+function graphFileNameFromUri(uri: string): string {
+  return normalizeFileName(uriToFileName(uri));
+}
+
+function graphFileKey(fileName: string): string {
+  return normalizeFileName(fileName);
+}
+
+function graphFileKeyFromUri(uri: string): string {
+  return graphFileKey(graphFileNameFromUri(uri));
+}
+
 function sameFile(left: string, right: string): boolean {
   return normalizeFileName(left) === normalizeFileName(right);
 }
@@ -15269,11 +15381,13 @@ async function buildDocumentAspGraphAsync(
   if (settings.graph?.showIncomingDocumentIncludes === true) {
     documentsForGraph.push(
       ...(await collectIncomingIncludeGraphDocumentsAsync(
-        new Set([normalizeFileName(uriToFileName(cached.source.uri))]),
+        new Set([graphFileNameFromUri(cached.source.uri)]),
         settings,
         cancellation,
         {
-          excludedUris: new Set(documentsForGraph.map((document) => document.uri)),
+          excludedFileKeys: new Set(
+            documentsForGraph.map((document) => graphFileKey(document.fileName)),
+          ),
         },
       )),
     );
@@ -15309,7 +15423,7 @@ async function buildFolderAspGraphAsync(
     concurrency,
     async (document): Promise<AspGraphDocument | undefined> => {
       throwIfGraphCancelled(cancellation);
-      const fileName = normalizeFileName(uriToFileName(document.uri));
+      const fileName = graphFileNameFromUri(document.uri);
       if (!isFileInDirectory(fileName, folderName)) {
         return undefined;
       }
@@ -15322,11 +15436,12 @@ async function buildFolderAspGraphAsync(
     if (!graphDocument) {
       continue;
     }
-    opened.add(graphDocument.uri);
+    opened.add(graphFileKey(graphDocument.fileName));
     documentsForGraph.push(graphDocument);
   }
   const indexedEntries = [...workspaceIndex.values()].filter(
-    (entry) => !opened.has(entry.uri) && isFileInDirectory(entry.fileName, folderName),
+    (entry) =>
+      !opened.has(graphFileKey(entry.fileName)) && isFileInDirectory(entry.fileName, folderName),
   );
   const indexedGraphDocuments = await mapWithConcurrency(
     indexedEntries,
@@ -15351,7 +15466,9 @@ async function buildFolderAspGraphAsync(
         settings,
         cancellation,
         {
-          excludedUris: new Set(documentsForGraph.map((document) => document.uri)),
+          excludedFileKeys: new Set(
+            documentsForGraph.map((document) => graphFileKey(document.fileName)),
+          ),
           token,
         },
       )),
@@ -15393,10 +15510,12 @@ async function buildWorkspaceAspGraphAsync(
     },
   );
   for (const graphDocument of openGraphDocuments) {
-    opened.add(graphDocument.uri);
+    opened.add(graphFileKey(graphDocument.fileName));
     documentsForGraph.push(graphDocument);
   }
-  const indexedEntries = [...workspaceIndex.values()].filter((entry) => !opened.has(entry.uri));
+  const indexedEntries = [...workspaceIndex.values()].filter(
+    (entry) => !opened.has(graphFileKey(entry.fileName)),
+  );
   const indexedGraphDocuments = await mapWithConcurrency(
     indexedEntries,
     concurrency,
@@ -15423,7 +15542,7 @@ async function graphCommandFolderNameAsync(uri: string | undefined): Promise<str
   if (!uri?.startsWith("file://")) {
     return undefined;
   }
-  const folderName = normalizeFileName(uriToFileName(uri));
+  const folderName = graphFileNameFromUri(uri);
   const stat = await fs.promises.stat(folderName).catch(() => undefined);
   return stat?.isDirectory() ? folderName : undefined;
 }
@@ -15438,17 +15557,24 @@ async function cachedDocumentForGraphAsync(uri: string): Promise<CachedDocument 
   if (document) {
     return ensureFreshCachedDocumentAsync(document);
   }
+  const fileName = graphFileNameFromUri(uri);
+  const openDocument = documents
+    .all()
+    .find((candidate) => graphFileKeyFromUri(candidate.uri) === graphFileKey(fileName));
+  if (openDocument) {
+    return ensureFreshCachedDocumentAsync(openDocument);
+  }
   if (!isClassicAspGraphUri(uri)) {
     return undefined;
   }
-  const fileName = normalizeFileName(uriToFileName(uri));
   const stat = await fs.promises.stat(fileName).catch(() => undefined);
   if (!stat?.isFile()) {
     return undefined;
   }
+  const canonicalUri = pathToFileUri(fileName);
   return cachedFromIndexedAsync(
-    { uri, fileName, mtimeMs: stat.mtimeMs, size: stat.size },
-    cachedSettings(uri),
+    { uri: canonicalUri, fileName, mtimeMs: stat.mtimeMs, size: stat.size },
+    cachedSettings(canonicalUri),
   );
 }
 
@@ -15464,10 +15590,11 @@ async function collectDocumentGraphDocumentsAsync(
 
   const visit = async (document: AspGraphDocument, depth: number): Promise<void> => {
     throwIfGraphCancelled(cancellation);
-    if (depth > 20 || visited.has(document.uri)) {
+    const documentKey = graphFileKey(document.fileName);
+    if (depth > 20 || visited.has(documentKey)) {
       return;
     }
-    visited.add(document.uri);
+    visited.add(documentKey);
     documentsForGraph.push(document);
     const includeRefs = await graphIncludeRefsForDocumentAsync(document, settings);
     throwIfGraphCancelled(cancellation);
@@ -15480,8 +15607,8 @@ async function collectDocumentGraphDocumentsAsync(
         settings,
       );
       throwIfGraphCancelled(cancellation);
-      const includeUri = pathToFileUri(resolved.fileName);
-      if (!resolved.exists || visited.has(includeUri) || visited.size >= limits.maxDocuments) {
+      const includeKey = graphFileKey(resolved.fileName);
+      if (!resolved.exists || visited.has(includeKey) || visited.size >= limits.maxDocuments) {
         continue;
       }
       const size = await fileSizeAsync(resolved.fileName);
@@ -15519,7 +15646,7 @@ async function collectIncomingIncludeGraphDocumentsAsync(
   settings: AspSettings,
   cancellation: AnalysisCancellation,
   options: {
-    excludedUris?: Set<string>;
+    excludedFileKeys?: Set<string>;
     token?: GraphCancellationToken;
   } = {},
 ): Promise<AspGraphDocument[]> {
@@ -15529,7 +15656,7 @@ async function collectIncomingIncludeGraphDocumentsAsync(
   }
   await ensureWorkspaceIndexAsync(settings, options.token);
   throwIfGraphCancelled(cancellation);
-  const excludedUris = options.excludedUris ?? new Set<string>();
+  const excludedFileKeys = options.excludedFileKeys ?? new Set<string>();
   const documentsForGraph: AspGraphDocument[] = [];
   const opened = new Set<string>();
   const concurrency = analysisConcurrency(settings);
@@ -15539,7 +15666,7 @@ async function collectIncomingIncludeGraphDocumentsAsync(
     concurrency,
     async (document): Promise<AspGraphDocument | undefined> => {
       throwIfGraphCancelled(cancellation);
-      if (excludedUris.has(document.uri)) {
+      if (excludedFileKeys.has(graphFileKeyFromUri(document.uri))) {
         return undefined;
       }
       const cached = await ensureFreshCachedDocumentAsync(document);
@@ -15561,11 +15688,13 @@ async function collectIncomingIncludeGraphDocumentsAsync(
     if (!graphDocument) {
       continue;
     }
-    opened.add(graphDocument.uri);
+    opened.add(graphFileKey(graphDocument.fileName));
     documentsForGraph.push(graphDocument);
   }
   const indexedEntries = [...workspaceIndex.values()].filter(
-    (entry) => !opened.has(entry.uri) && !excludedUris.has(entry.uri),
+    (entry) =>
+      !opened.has(graphFileKey(entry.fileName)) &&
+      !excludedFileKeys.has(graphFileKey(entry.fileName)),
   );
   const indexedGraphDocuments = await mapWithConcurrency(
     indexedEntries,
@@ -15661,12 +15790,13 @@ async function graphPayloadFromDocumentsAsync(
   const cancellation = options.cancellation ?? neverCancelled;
   throwIfGraphCancelled(cancellation);
   const state = createAspGraphBuildState(settings, options.rootUri, options.truncated);
-  for (const document of documentsForGraph) {
+  const uniqueDocuments = uniqueAspGraphDocuments(documentsForGraph);
+  for (const document of uniqueDocuments) {
     throwIfGraphCancelled(cancellation);
-    addFileGraphNode(state, document.uri, document.fileName, true);
+    addFileGraphNode(state, document.fileName, true);
   }
   const indexedDocuments = await mapWithConcurrency(
-    documentsForGraph,
+    uniqueDocuments,
     analysisConcurrency(settings),
     async (document): Promise<AspGraphIndexedDocument> => {
       throwIfGraphCancelled(cancellation);
@@ -15689,7 +15819,7 @@ async function graphPayloadFromDocumentsAsync(
   state.stats = recomputeAspGraphStats(state.nodes.values(), state.links.values());
   return {
     scope,
-    rootUri: options.rootUri,
+    rootUri: state.rootUri,
     nodes: [...state.nodes.values()],
     links: [...state.links.values()],
     settings: graphPayloadSettings(settings),
@@ -15703,17 +15833,24 @@ function createAspGraphBuildState(
   rootUri?: string,
   truncated?: AspGraphPayload["truncated"],
 ): AspGraphBuildState {
+  const rootFileKey = rootUri?.startsWith("file://") ? graphFileKeyFromUri(rootUri) : undefined;
+  const canonicalRootUri = rootFileKey ? pathToFileUri(rootFileKey) : rootUri;
+  const workspaceRootFileNames = workspaceRoots
+    .map(normalizeFileName)
+    .sort((left, right) => right.length - left.length);
   return {
     nodes: new Map(),
     links: new Map(),
     declarations: new Set(),
     sourceDeclarationsByName: new Map(),
     sourceDeclarationsById: new Map(),
-    sourceDeclarationUrisById: new Map(),
-    directIncludesByOwnerUri: new Map(),
-    parentIncludesByTargetUri: new Map(),
+    sourceDeclarationFileKeysById: new Map(),
+    directIncludesByOwnerKey: new Map(),
+    parentIncludesByTargetKey: new Map(),
     externalSymbols: createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings)),
-    rootUri,
+    rootUri: canonicalRootUri,
+    rootFileKey,
+    workspaceRootFileNames,
     truncated,
     stats: {
       files: 0,
@@ -15728,6 +15865,40 @@ function createAspGraphBuildState(
       links: 0,
     },
   };
+}
+
+function uniqueAspGraphDocuments(documentsForGraph: AspGraphDocument[]): AspGraphDocument[] {
+  const seen = new Set<string>();
+  const unique: AspGraphDocument[] = [];
+  for (const document of documentsForGraph) {
+    const key = graphFileKey(document.fileName);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(document);
+  }
+  return unique;
+}
+
+function graphDisplayFileName(state: AspGraphBuildState, fileName: string): string {
+  const normalized = normalizeFileName(fileName);
+  const workspaceRoot = state.workspaceRootFileNames.find((root) =>
+    isFileInDirectoryOrEqual(normalized, root),
+  );
+  if (!workspaceRoot) {
+    return normalized;
+  }
+  const relative = path.relative(workspaceRoot, normalized);
+  return (relative || path.basename(normalized)).split(path.sep).join("/");
+}
+
+function isFileInDirectoryOrEqual(fileName: string, directory: string): boolean {
+  const relative = path.relative(directory, normalizeFileName(fileName));
+  return (
+    relative === "" ||
+    (relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative))
+  );
 }
 
 function createAspGraphExternalIndex(symbols: VbGraphExternalSymbol[]): AspGraphExternalIndex {
@@ -15849,7 +16020,7 @@ function declarationSourceGraphNodeId(
 ): string {
   return scopeId && state.declarations.has(scopeId)
     ? declarationGraphNodeId(scopeId)
-    : fileGraphNodeId(uri);
+    : fileGraphNodeIdFromUri(uri);
 }
 
 async function addDocumentStructureToAspGraphAsync(
@@ -15859,7 +16030,8 @@ async function addDocumentStructureToAspGraphAsync(
 ): Promise<void> {
   const { document, graphIndex } = indexed;
   const index = graphIndex.vbSymbolIndex;
-  const fileNode = fileGraphNodeId(document.uri);
+  const documentKey = graphFileKey(document.fileName);
+  const fileNode = fileGraphNodeId(document.fileName);
   for (const include of graphIndex.includeRefs) {
     const resolved = await resolveIncludePathDetailsAsync(
       document.uri,
@@ -15867,23 +16039,25 @@ async function addDocumentStructureToAspGraphAsync(
       include.mode,
       settings,
     );
-    const targetUri = pathToFileUri(resolved.fileName);
-    pushAspGraphMapItem(state.directIncludesByOwnerUri, document.uri, {
+    const targetFileName = normalizeFileName(resolved.fileName);
+    const targetKey = graphFileKey(targetFileName);
+    const targetUri = pathToFileUri(targetFileName);
+    pushAspGraphMapItem(state.directIncludesByOwnerKey, documentKey, {
       range: include.range,
-      targetUri,
+      targetKey,
     });
-    pushAspGraphMapItem(state.parentIncludesByTargetUri, targetUri, {
-      ownerUri: document.uri,
+    pushAspGraphMapItem(state.parentIncludesByTargetKey, targetKey, {
+      ownerKey: documentKey,
       range: include.range,
     });
-    addFileGraphNode(state, targetUri, resolved.fileName, resolved.exists);
+    addFileGraphNode(state, targetFileName, resolved.exists);
     state.stats.includes += 1;
     if (!resolved.exists) {
       state.stats.missingIncludes += 1;
     }
     addAspGraphLink(state, {
       source: fileNode,
-      target: fileGraphNodeId(targetUri),
+      target: fileGraphNodeId(targetFileName),
       kind: "include",
       label: include.mode === "virtual" ? `virtual ${include.path}` : include.path,
       ranges: [{ uri: document.uri, range: include.range }],
@@ -15892,7 +16066,9 @@ async function addDocumentStructureToAspGraphAsync(
         mode: include.mode,
         exists: resolved.exists,
         resolvedUri: targetUri,
-        actualPath: resolved.actualPath,
+        actualPath: resolved.actualPath
+          ? graphDisplayFileName(state, resolved.actualPath)
+          : undefined,
         pathCaseMatches: resolved.pathCaseMatches,
       },
     });
@@ -15901,7 +16077,7 @@ async function addDocumentStructureToAspGraphAsync(
     const declarationNode = declarationGraphNodeId(declaration.id);
     state.declarations.add(declaration.id);
     state.sourceDeclarationsById.set(declaration.id, declaration);
-    state.sourceDeclarationUrisById.set(declaration.id, document.uri);
+    state.sourceDeclarationFileKeysById.set(declaration.id, documentKey);
     state.stats.declarations += 1;
     state.nodes.set(declarationNode, {
       id: declarationNode,
@@ -16199,11 +16375,12 @@ function resolveVisibleSourceGraphDeclaration(
   if (!name) {
     return undefined;
   }
+  const ownerKey = graphFileKeyFromUri(ownerUri);
   const candidates = state.sourceDeclarationsByName.get(name.toLowerCase());
   return candidates?.find(
     (declaration) =>
       matchesGraphExpectedKinds(declaration, expectedKinds) &&
-      isSourceGraphDeclarationVisibleFromDocument(state, ownerUri, declaration, referenceRange),
+      isSourceGraphDeclarationVisibleFromDocument(state, ownerKey, declaration, referenceRange),
   );
 }
 
@@ -16220,19 +16397,15 @@ function resolveIncludedImplicitSourceGraphDeclaration(
     return undefined;
   }
   const candidates = state.sourceDeclarationsByName.get(reference.normalizedName);
+  const ownerKey = graphFileKey(indexed.document.fileName);
   return candidates?.find((candidate) => {
-    const candidateUri = state.sourceDeclarationUrisById.get(candidate.id);
+    const candidateKey = state.sourceDeclarationFileKeysById.get(candidate.id);
     return (
-      candidateUri !== undefined &&
-      candidateUri !== indexed.document.uri &&
+      candidateKey !== undefined &&
+      candidateKey !== ownerKey &&
       isCrossFileSourceGraphDeclaration(candidate) &&
       matchesGraphExpectedKinds(candidate, [resolvedDeclaration.kind]) &&
-      isSourceGraphDeclarationVisibleFromDocument(
-        state,
-        indexed.document.uri,
-        candidate,
-        reference.range,
-      )
+      isSourceGraphDeclarationVisibleFromDocument(state, ownerKey, candidate, reference.range)
     );
   });
 }
@@ -16246,60 +16419,60 @@ function matchesGraphExpectedKinds(
 
 function hasEarlierReachableGraphInclude(
   state: AspGraphBuildState,
-  ownerUri: string,
-  targetUri: string,
+  ownerKey: string,
+  targetKey: string,
   referenceRange: Range,
 ): boolean {
-  const includes = state.directIncludesByOwnerUri.get(ownerUri) ?? [];
+  const includes = state.directIncludesByOwnerKey.get(ownerKey) ?? [];
   return includes.some(
     (include) =>
       positionBeforeOrEqual(include.range.start, referenceRange.start) &&
-      (include.targetUri === targetUri ||
-        isGraphIncludeReachable(state, include.targetUri, targetUri, new Set([ownerUri]))),
+      (include.targetKey === targetKey ||
+        isGraphIncludeReachable(state, include.targetKey, targetKey, new Set([ownerKey]))),
   );
 }
 
 function isSourceGraphDeclarationVisibleFromDocument(
   state: AspGraphBuildState,
-  ownerUri: string,
+  ownerKey: string,
   declaration: VbSymbolIndex["declarations"][number],
   referenceRange: Range,
 ): boolean {
-  const declarationUri = state.sourceDeclarationUrisById.get(declaration.id);
-  if (!declarationUri) {
+  const declarationKey = state.sourceDeclarationFileKeysById.get(declaration.id);
+  if (!declarationKey) {
     return false;
   }
-  if (declarationUri === ownerUri) {
+  if (declarationKey === ownerKey) {
     return true;
   }
-  if (hasEarlierReachableGraphInclude(state, ownerUri, declarationUri, referenceRange)) {
+  if (hasEarlierReachableGraphInclude(state, ownerKey, declarationKey, referenceRange)) {
     return true;
   }
   return isSourceGraphDeclarationVisibleFromParentContext(
     state,
-    ownerUri,
+    ownerKey,
     declaration,
-    new Set([ownerUri]),
+    new Set([ownerKey]),
   );
 }
 
 function isSourceGraphDeclarationVisibleFromParentContext(
   state: AspGraphBuildState,
-  ownerUri: string,
+  ownerKey: string,
   declaration: VbSymbolIndex["declarations"][number],
   visited: Set<string>,
 ): boolean {
-  const parentIncludes = state.parentIncludesByTargetUri.get(ownerUri) ?? [];
+  const parentIncludes = state.parentIncludesByTargetKey.get(ownerKey) ?? [];
   for (const parentInclude of parentIncludes) {
-    if (visited.has(parentInclude.ownerUri)) {
+    if (visited.has(parentInclude.ownerKey)) {
       continue;
     }
     const nextVisited = new Set(visited);
-    nextVisited.add(parentInclude.ownerUri);
+    nextVisited.add(parentInclude.ownerKey);
     if (
       isSourceGraphDeclarationVisibleBeforeParentInclude(
         state,
-        parentInclude.ownerUri,
+        parentInclude.ownerKey,
         declaration,
         parentInclude.range,
         nextVisited,
@@ -16313,41 +16486,41 @@ function isSourceGraphDeclarationVisibleFromParentContext(
 
 function isSourceGraphDeclarationVisibleBeforeParentInclude(
   state: AspGraphBuildState,
-  parentUri: string,
+  parentKey: string,
   declaration: VbSymbolIndex["declarations"][number],
   includeRange: Range,
   visited: Set<string>,
 ): boolean {
-  const declarationUri = state.sourceDeclarationUrisById.get(declaration.id);
-  if (!declarationUri) {
+  const declarationKey = state.sourceDeclarationFileKeysById.get(declaration.id);
+  if (!declarationKey) {
     return false;
   }
-  if (declarationUri === parentUri) {
+  if (declarationKey === parentKey) {
     return positionBeforeOrEqual(declaration.nameRange.start, includeRange.start);
   }
-  if (hasEarlierReachableGraphInclude(state, parentUri, declarationUri, includeRange)) {
+  if (hasEarlierReachableGraphInclude(state, parentKey, declarationKey, includeRange)) {
     return true;
   }
-  return isSourceGraphDeclarationVisibleFromParentContext(state, parentUri, declaration, visited);
+  return isSourceGraphDeclarationVisibleFromParentContext(state, parentKey, declaration, visited);
 }
 
 function isGraphIncludeReachable(
   state: AspGraphBuildState,
-  startUri: string,
-  targetUri: string,
+  startKey: string,
+  targetKey: string,
   visited: Set<string>,
 ): boolean {
-  if (startUri === targetUri) {
+  if (startKey === targetKey) {
     return true;
   }
-  if (visited.has(startUri)) {
+  if (visited.has(startKey)) {
     return false;
   }
-  visited.add(startUri);
-  return (state.directIncludesByOwnerUri.get(startUri) ?? []).some(
+  visited.add(startKey);
+  return (state.directIncludesByOwnerKey.get(startKey) ?? []).some(
     (include) =>
-      include.targetUri === targetUri ||
-      isGraphIncludeReachable(state, include.targetUri, targetUri, visited),
+      include.targetKey === targetKey ||
+      isGraphIncludeReachable(state, include.targetKey, targetKey, visited),
   );
 }
 
@@ -16376,10 +16549,10 @@ async function graphDocumentFromCachedAsync(
   cached: CachedDocument,
   settings: AspSettings,
 ): Promise<AspGraphDocument> {
-  const fileName = normalizeFileName(uriToFileName(cached.source.uri));
+  const fileName = graphFileNameFromUri(cached.source.uri);
   const identity = await includeDocumentSourceIdentityAsync(fileName, settings);
   return {
-    uri: cached.source.uri,
+    uri: pathToFileUri(fileName),
     fileName,
     text: identity?.text ?? cached.parsed.text,
     source: identity?.source ?? {
@@ -16392,12 +16565,15 @@ async function graphDocumentFromCachedAsync(
 }
 
 function graphDocumentFromIncludeEntry(entry: IncludeDocumentCacheEntry): AspGraphDocument {
+  const fileName = normalizeFileName(entry.fileName);
   return {
-    uri: entry.uri,
-    fileName: entry.fileName,
+    uri: pathToFileUri(fileName),
+    fileName,
     text: entry.parsed.text,
     source: entry.source,
-    diskBacked: !documents.get(entry.uri),
+    diskBacked: !documents
+      .all()
+      .some((document) => graphFileKeyFromUri(document.uri) === graphFileKey(fileName)),
   };
 }
 
@@ -16504,25 +16680,26 @@ function clearGraphFileIndexCache(): void {
   graphFileIndexInFlight.clear();
 }
 
-function addFileGraphNode(
-  state: AspGraphBuildState,
-  uri: string,
-  fileName: string,
-  exists: boolean,
-): void {
-  const id = fileGraphNodeId(uri);
-  if (!state.nodes.has(id)) {
+function addFileGraphNode(state: AspGraphBuildState, fileName: string, exists: boolean): void {
+  const normalizedFileName = normalizeFileName(fileName);
+  const key = graphFileKey(normalizedFileName);
+  const id = fileGraphNodeId(normalizedFileName);
+  const canonicalUri = pathToFileUri(normalizedFileName);
+  const existing = state.nodes.get(id);
+  if (!existing) {
     state.stats.files += 1;
   }
+  const nextExists = existing?.exists === true || exists;
   state.nodes.set(id, {
+    ...existing,
     id,
     kind: "file",
-    label: path.basename(fileName),
-    uri,
-    fileName,
-    exists,
-    group: exists ? "file" : "missing",
-    isRoot: uri === state.rootUri ? true : undefined,
+    label: path.basename(normalizedFileName),
+    uri: canonicalUri,
+    fileName: graphDisplayFileName(state, normalizedFileName),
+    exists: nextExists,
+    group: nextExists ? "file" : "missing",
+    isRoot: existing?.isRoot === true || key === state.rootFileKey ? true : undefined,
   });
 }
 
@@ -16725,8 +16902,12 @@ function recomputeAspGraphStats(
   return stats;
 }
 
-function fileGraphNodeId(uri: string): string {
-  return `file:${uri}`;
+function fileGraphNodeId(fileName: string): string {
+  return `file:${graphFileKey(fileName)}`;
+}
+
+function fileGraphNodeIdFromUri(uri: string): string {
+  return fileGraphNodeId(graphFileNameFromUri(uri));
 }
 
 function declarationGraphNodeId(id: string): string {
@@ -16744,13 +16925,16 @@ function scopeGraphNodeId(
 ): string {
   return scopeId && state.declarations.has(scopeId)
     ? declarationGraphNodeId(scopeId)
-    : fileGraphNodeId(uri);
+    : fileGraphNodeIdFromUri(uri);
 }
 
 function emptyAspGraphPayload(scope: AspGraphScope, rootUri?: string): AspGraphPayload {
+  const normalizedRootUri = rootUri?.startsWith("file://")
+    ? pathToFileUri(graphFileNameFromUri(rootUri))
+    : rootUri;
   return {
     scope,
-    rootUri,
+    rootUri: normalizedRootUri,
     nodes: [],
     links: [],
     stats: {
