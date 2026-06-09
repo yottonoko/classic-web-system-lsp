@@ -775,6 +775,15 @@
           "default": "",
           "description": "%configuration.cache.directory.description%"
         },
+        "aspLsp.cache.freshness": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "watch"
+          ],
+          "default": "metadata",
+          "description": "%configuration.cache.freshness.description%"
+        },
         "aspLsp.cache.ttlHours": {
           "type": "number",
           "minimum": 1,

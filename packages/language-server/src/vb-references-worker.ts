@@ -29,6 +29,12 @@ import type {
   VbReferencesWorkerResponse,
   VbReferencesWorkerTargetSymbol,
 } from "./vb-references-protocol";
+import {
+  DiskAnalysisCache,
+  type DiskIncludeRefsCacheEntry,
+  type DiskAnalysisSourceMetadata,
+  type DiskParsedDocumentCacheEntry,
+} from "./disk-analysis-cache";
 
 if (!parentPort) {
   throw new Error("VBScript references worker requires a parent port.");
@@ -61,7 +67,8 @@ async function runWorkspaceReferenceAnalysis(
 ): Promise<VbReferencesWorkerResponse> {
   await testDelayFromEnv();
   const openDocuments = openDocumentMap(request.openDocuments);
-  const closure = await collectLightweightIncludeClosure(request, openDocuments);
+  const cacheStats: WorkerDiskCacheStats = { includeRefsHits: 0, parsedDocumentHits: 0 };
+  const closure = await collectLightweightIncludeClosure(request, openDocuments, cacheStats);
   const targets = request.targets?.length ? request.targets : [request.target];
   const targetFileNames = targets
     .map(targetFileNameFromSymbol)
@@ -78,7 +85,7 @@ async function runWorkspaceReferenceAnalysis(
       referencesByTarget: emptyReferenceMap(targets),
       fallbackReasons: [],
       scannedFiles: closure.files.size,
-      cacheHits: closure.openHits,
+      cacheHits: closure.openHits + workerDiskCacheHits(cacheStats),
     };
   }
 
@@ -86,6 +93,7 @@ async function runWorkspaceReferenceAnalysis(
     request,
     openDocuments,
     targets,
+    cacheStats,
   );
   const references = referencesByTarget[targetSymbolKey(request.target)] ?? [];
   return {
@@ -98,7 +106,7 @@ async function runWorkspaceReferenceAnalysis(
       ...closure.reasons,
     ],
     scannedFiles: closure.files.size,
-    cacheHits: closure.openHits,
+    cacheHits: closure.openHits + workerDiskCacheHits(cacheStats),
   };
 }
 
@@ -120,9 +128,26 @@ interface LightweightClosure {
   openHits: number;
 }
 
+interface WorkspaceIncludeRefsRead {
+  includeRefs: AspInclude[];
+  size: number;
+  openDocument: boolean;
+  cacheHit: boolean;
+}
+
+interface WorkerDiskCacheStats {
+  includeRefsHits: number;
+  parsedDocumentHits: number;
+}
+
+function workerDiskCacheHits(stats: WorkerDiskCacheStats): number {
+  return stats.includeRefsHits + stats.parsedDocumentHits;
+}
+
 async function collectLightweightIncludeClosure(
   request: VbReferencesWorkerRequest,
   openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
+  cacheStats: WorkerDiskCacheStats,
 ): Promise<LightweightClosure> {
   const files = new Set<string>();
   const reasons: string[] = [];
@@ -153,20 +178,22 @@ async function collectLightweightIncludeClosure(
         if (files.size > request.limits.maxDocuments) {
           return { next: [], reason: "document-limit" };
         }
-        const text = await readWorkspaceText(item.fileName, request.settings, openDocuments);
-        if (!text) {
+        const includeRefs = await readWorkspaceIncludeRefs(item.fileName, request, openDocuments);
+        if (!includeRefs) {
           return { next: [], reason: "read-missing" };
         }
-        if (text.openDocument) {
+        if (includeRefs.openDocument) {
           openHits += 1;
         }
-        textLength += text.text.length;
+        if (includeRefs.cacheHit) {
+          cacheStats.includeRefsHits += 1;
+        }
+        textLength += includeRefs.size;
         if (textLength > request.limits.maxTextLength) {
           return { next: [], reason: "text-limit" };
         }
-        const includeRefs = extractAspIncludeRefs(text.text);
         const next = await mapWithConcurrency(
-          includeRefs,
+          includeRefs.includeRefs,
           request.limits.includeReadConcurrency,
           async (include) => {
             const resolved = await resolveIncludePath(
@@ -210,8 +237,9 @@ async function fullFallbackReferencesForTargets(
   request: VbReferencesWorkerRequest,
   openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
   targets: VbReferencesWorkerTargetSymbol[],
+  cacheStats: WorkerDiskCacheStats,
 ): Promise<Record<string, VbReference[]>> {
-  const analysis = await cachedFullFallbackAnalysis(request, openDocuments);
+  const analysis = await cachedFullFallbackAnalysis(request, openDocuments, cacheStats);
   const referencesByTarget = emptyReferenceMap(targets);
   if (!analysis) {
     return referencesByTarget;
@@ -281,6 +309,7 @@ const maxFullFallbackAnalysisCacheEntries = 64;
 async function cachedFullFallbackAnalysis(
   request: VbReferencesWorkerRequest,
   openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
+  cacheStats: WorkerDiskCacheStats,
 ): Promise<FullFallbackAnalysis | undefined> {
   const key = fullFallbackAnalysisCacheKey(request);
   const cached = fullFallbackAnalysisCache.get(key);
@@ -288,7 +317,7 @@ async function cachedFullFallbackAnalysis(
     cached.lastUsed = Date.now();
     return cached.analysis;
   }
-  const documents = await collectFullDocuments(request, openDocuments);
+  const documents = await collectFullDocuments(request, openDocuments, cacheStats);
   if (documents.length === 0) {
     return undefined;
   }
@@ -296,6 +325,7 @@ async function cachedFullFallbackAnalysis(
   const summaries = await Promise.all(
     documents.map((document) => summarizeAspFileAnalysisAsync(document, contextSettings)),
   );
+  await writeDiskParsedDocuments(documents, summaries, request, openDocuments);
   const includeGraph = await fullFallbackIncludeGraph(documents, request);
   const symbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
   symbols.push(...configuredVbscriptGlobals(documents[0], request.settings));
@@ -414,6 +444,7 @@ function pruneFullFallbackAnalysisCache(): void {
 async function collectFullDocuments(
   request: VbReferencesWorkerRequest,
   openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
+  cacheStats: WorkerDiskCacheStats,
 ): Promise<AspParsedDocument[]> {
   const documents: AspParsedDocument[] = [];
   const visited = new Set<string>();
@@ -427,6 +458,25 @@ async function collectFullDocuments(
       documents.length >= request.limits.maxDocuments ||
       textLength > request.limits.maxTextLength
     ) {
+      return;
+    }
+    const cachedParsed = await readDiskParsedDocument(normalized, request, openDocuments);
+    if (cachedParsed) {
+      cacheStats.parsedDocumentHits += 1;
+      visited.add(normalized);
+      textLength += cachedParsed.parsed.text.length;
+      documents.push(cachedParsed.parsed);
+      for (const include of cachedParsed.parsed.includes) {
+        const resolved = await resolveIncludePath(
+          cachedParsed.parsed.uri,
+          include,
+          request.settings,
+          request.workspaceRoots,
+        );
+        if (resolved.exists) {
+          await visit(pathToFileUri(resolved.fileName), resolved.fileName, depth + 1);
+        }
+      }
       return;
     }
     const text = await readWorkspaceText(normalized, request.settings, openDocuments);
@@ -453,6 +503,174 @@ async function collectFullDocuments(
 
   await visit(request.candidate.uri, request.candidate.fileName, 0);
   return documents;
+}
+
+async function readWorkspaceIncludeRefs(
+  fileName: string,
+  request: VbReferencesWorkerRequest,
+  openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
+): Promise<WorkspaceIncludeRefsRead | undefined> {
+  const normalized = normalizeFileName(fileName);
+  const openDocument = openDocuments.get(normalized);
+  if (openDocument) {
+    return {
+      includeRefs: extractAspIncludeRefs(openDocument.text),
+      size: openDocument.text.length,
+      openDocument: true,
+      cacheHit: false,
+    };
+  }
+  const cached = await readDiskIncludeRefs(normalized, request);
+  if (cached) {
+    return {
+      includeRefs: cached.includeRefs,
+      size: cached.source.size,
+      openDocument: false,
+      cacheHit: true,
+    };
+  }
+  const text = await readWorkspaceText(normalized, request.settings, openDocuments);
+  return text
+    ? {
+        includeRefs: extractAspIncludeRefs(text.text),
+        size: text.text.length,
+        openDocument: text.openDocument,
+        cacheHit: false,
+      }
+    : undefined;
+}
+
+async function readDiskIncludeRefs(
+  fileName: string,
+  request: VbReferencesWorkerRequest,
+): Promise<DiskIncludeRefsCacheEntry | undefined> {
+  const cache = diskCacheForRequest(request);
+  if (!cache) {
+    return undefined;
+  }
+  const source = await sourceMetadataForDiskRead(fileName, request);
+  return source
+    ? cache
+        .readIncludeRefs({ source, settingsKey: includeRefsSettingsKey(request.settings) })
+        .catch(() => undefined)
+    : undefined;
+}
+
+async function readDiskParsedDocument(
+  fileName: string,
+  request: VbReferencesWorkerRequest,
+  openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
+): Promise<DiskParsedDocumentCacheEntry | undefined> {
+  if (openDocuments.has(normalizeFileName(fileName))) {
+    return undefined;
+  }
+  const cache = diskCacheForRequest(request);
+  if (!cache) {
+    return undefined;
+  }
+  const source = await sourceMetadataForDiskRead(fileName, request);
+  return source
+    ? cache
+        .readParsedDocument({ source, settingsKey: includeSummarySettingsKey(request.settings) })
+        .catch(() => undefined)
+    : undefined;
+}
+
+async function writeDiskParsedDocuments(
+  documents: AspParsedDocument[],
+  summaries: FileAnalysisSummary[],
+  request: VbReferencesWorkerRequest,
+  openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
+): Promise<void> {
+  const cache = diskCacheForRequest(request);
+  if (!cache) {
+    return;
+  }
+  await Promise.all(
+    documents.map(async (document, index) => {
+      const fileName = normalizeFileName(uriToFileName(document.uri));
+      if (openDocuments.has(fileName)) {
+        return;
+      }
+      const source = await sourceMetadataForDiskRead(fileName, request);
+      const summary = summaries[index];
+      if (!source || !summary) {
+        return;
+      }
+      await Promise.all([
+        cache.writeParsedDocument({
+          source,
+          settingsKey: includeSummarySettingsKey(request.settings),
+          parsed: document,
+          summary,
+        }),
+        cache.writeSummary({
+          source,
+          settingsKey: includeSummarySettingsKey(request.settings),
+          summary,
+        }),
+        cache.writeIncludeRefs({
+          source,
+          settingsKey: includeRefsSettingsKey(request.settings),
+          includeRefs: summary.includeRefs,
+          fingerprint: includeRefsFingerprint(summary.includeRefs),
+        }),
+      ]).catch(() => undefined);
+    }),
+  );
+}
+
+function diskCacheForRequest(request: VbReferencesWorkerRequest): DiskAnalysisCache | undefined {
+  return request.cache?.disk.enabled === false || !request.cache
+    ? undefined
+    : new DiskAnalysisCache(request.cache.disk);
+}
+
+async function sourceMetadataForDiskRead(
+  fileName: string,
+  request: VbReferencesWorkerRequest,
+): Promise<DiskAnalysisSourceMetadata | undefined> {
+  const normalized = normalizeFileName(fileName);
+  if (request.cache?.freshness === "watch") {
+    const source = sourceManifestForRequest(request).get(normalized);
+    if (source) {
+      return source;
+    }
+  }
+  const stat = await fs.promises.stat(normalized).catch(() => undefined);
+  return stat?.isFile()
+    ? {
+        fileName: normalized,
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+      }
+    : undefined;
+}
+
+const sourceManifestCache = new WeakMap<
+  VbReferencesWorkerRequest,
+  Map<string, DiskAnalysisSourceMetadata>
+>();
+
+function sourceManifestForRequest(
+  request: VbReferencesWorkerRequest,
+): Map<string, DiskAnalysisSourceMetadata> {
+  const cached = sourceManifestCache.get(request);
+  if (cached) {
+    return cached;
+  }
+  const manifest = new Map(
+    (request.cache?.sourceManifest ?? []).map((source) => [
+      normalizeFileName(source.fileName),
+      {
+        fileName: normalizeFileName(source.fileName),
+        mtimeMs: source.mtimeMs,
+        size: source.size,
+      },
+    ]),
+  );
+  sourceManifestCache.set(request, manifest);
+  return manifest;
 }
 
 interface ReadWorkspaceText {
@@ -582,6 +800,38 @@ function vbProjectContextSettings(
     syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
     syntaxKeywords: settings.vbscript?.syntaxKeywords !== false,
   };
+}
+
+function parseSettingsIdentity(settings: AspSettings): string {
+  return JSON.stringify({
+    defaultLanguage: settings.defaultLanguage ?? "VBScript",
+    resolvedLocale: settings.resolvedLocale ?? "en",
+  });
+}
+
+function includeDocumentSettingsIdentity(settings: AspSettings): string {
+  return JSON.stringify({
+    parse: parseSettingsIdentity(settings),
+    legacyEncoding: settings.legacyEncoding,
+    vbscript: vbProjectContextSettings(settings),
+  });
+}
+
+function includeSummarySettingsKey(settings: AspSettings): string {
+  return includeDocumentSettingsIdentity(settings);
+}
+
+function includeRefsSettingsKey(settings: AspSettings): string {
+  return JSON.stringify({
+    scanner: "asp-include-refs-v1",
+    legacyEncoding: settings.legacyEncoding,
+  });
+}
+
+function includeRefsFingerprint(includeRefs: AspInclude[]): string {
+  return textFingerprint(
+    JSON.stringify(includeRefs.map((include) => ({ mode: include.mode, path: include.path }))),
+  );
 }
 
 function configuredVbscriptGlobals(parsed: AspParsedDocument, settings: AspSettings): VbSymbol[] {
