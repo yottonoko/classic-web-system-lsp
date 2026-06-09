@@ -77,6 +77,8 @@
   "configuration.graph.showCallLinks.description": "Show call links in graph views.",
   "configuration.graph.showUnresolvedLinks.description": "Show unresolved reference links in graph views.",
   "configuration.graph.showMemberLinks.description": "Show object member reference and call links in graph views.",
+  "configuration.graph.showIncomingDocumentIncludes.description": "Include files that directly include the current file in current-file graph views.",
+  "configuration.graph.showIncomingFolderIncludes.description": "Include files that directly include files under the selected folder in folder graph views.",
   "configuration.graph.initialViewMode.description": "Controls whether graph views open in 2D or 3D by default.",
   "configuration.graph.openLocation.description": "Controls where graph views open: active editor group or beside the current editor.",
   "configuration.cache.enabled.description": "Persist unopened workspace analysis results on disk.",

@@ -297,6 +297,8 @@ describe("VS Code extension package", () => {
       showCallLinks: true,
       showUnresolvedLinks: true,
       showMemberLinks: true,
+      showIncomingDocumentIncludes: false,
+      showIncomingFolderIncludes: false,
     };
     for (const [name, defaultValue] of Object.entries(graphDefaults)) {
       const setting = `aspLsp.graph.${name}`;

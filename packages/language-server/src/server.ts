@@ -677,8 +677,12 @@ interface VbReferenceCodeLensData {
   name: string;
   symbolKind: VbSymbolKind;
   memberOf?: string;
+  scopeName?: string;
+  propertyAccessor?: VbSymbol["propertyAccessor"];
   line: number;
   character: number;
+  endLine?: number;
+  endCharacter?: number;
 }
 
 type AspGraphScope = "document" | "folder" | "workspace";
@@ -769,6 +773,8 @@ interface AspGraphPayload {
     initialViewMode: "2d" | "3d";
     hideSingleNodes: boolean;
     showOutgoingSelectionLinks: boolean;
+    showIncomingDocumentIncludes: boolean;
+    showIncomingFolderIncludes: boolean;
     hiddenNodeCategories: AspGraphNodeCategory[];
     hiddenLinkCategories: AspGraphLinkFilterCategory[];
   };
@@ -10138,30 +10144,51 @@ async function diagnosticsForIndexed(
   const cancellation: AnalysisCancellation = {
     isCancellationRequested: () => token?.isCancellationRequested === true,
   };
+  const includeRefsEntry = await includeDocumentLoader
+    .readIncludeRefsAsync(entry.fileName, settings, { allowRead: true })
+    .catch((error) => {
+      logDiskAnalysisCacheError("diskIncludeRefs.preflight", error);
+      return undefined;
+    });
+  let settingsKey =
+    includeRefsEntry && sameDiskAnalysisSource(includeRefsEntry.source, sourceMetadata)
+      ? await diskAnalysisSettingsKeyFromIncludeRefs(
+          settings,
+          entry.uri,
+          includeRefsEntry.includeRefs,
+          cancellation,
+        )
+      : undefined;
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
+  if (settingsKey) {
+    const cachedDiagnostics = await readDiskAnalysisDiagnostics(
+      entry,
+      sourceMetadata,
+      settingsKey,
+      settings,
+    );
+    if (cachedDiagnostics) {
+      return cachedDiagnostics;
+    }
+  }
   const cached = await cachedFromIndexedAsync(entry, settings);
   if (cancellation.isCancellationRequested()) {
     return [];
   }
-  const settingsKey = await diskAnalysisSettingsKey(settings, cached.parsed, cancellation);
+  settingsKey ??= await diskAnalysisSettingsKey(settings, cached.parsed, cancellation);
   if (cancellation.isCancellationRequested()) {
     return [];
   }
-  const lookup = {
-    source: sourceMetadata,
+  const cachedDiagnostics = await readDiskAnalysisDiagnostics(
+    entry,
+    sourceMetadata,
     settingsKey,
-  };
-  const cachedAnalysis = await diskAnalysisCache.readAnalysis(lookup);
-  if (cachedAnalysis) {
-    logDebugSummary(settings, `[asp-lsp] diskCache.hit: ${entry.uri}`);
-    aspProjectBuilderState.restoreDiskState(
-      entry.uri,
-      normalizeFileName(entry.fileName),
-      sourceMetadata,
-      cachedAnalysis.builderState,
-      cachedAnalysis.diagnostics,
-      settings,
-    );
-    return cachedAnalysis.diagnostics;
+    settings,
+  );
+  if (cachedDiagnostics) {
+    return cachedDiagnostics;
   }
   logDebugSummary(settings, `[asp-lsp] diskCache.miss: ${entry.uri}`);
   logDebugSummary(settings, `[asp-lsp] disk.builder.restore.miss: ${entry.uri}`);
@@ -10189,6 +10216,31 @@ async function diagnosticsForIndexed(
   return items;
 }
 
+async function readDiskAnalysisDiagnostics(
+  entry: WorkspaceIndexedDocument,
+  sourceMetadata: DiskAnalysisSourceMetadata,
+  settingsKey: string,
+  settings: AspSettings,
+): Promise<Diagnostic[] | undefined> {
+  const cachedAnalysis = await diskAnalysisCache.readAnalysis({
+    source: sourceMetadata,
+    settingsKey,
+  });
+  if (!cachedAnalysis) {
+    return undefined;
+  }
+  logDebugSummary(settings, `[asp-lsp] diskCache.hit: ${entry.uri}`);
+  aspProjectBuilderState.restoreDiskState(
+    entry.uri,
+    normalizeFileName(entry.fileName),
+    sourceMetadata,
+    cachedAnalysis.builderState,
+    cachedAnalysis.diagnostics,
+    settings,
+  );
+  return cachedAnalysis.diagnostics;
+}
+
 function diskAnalysisSourceMetadata(entry: WorkspaceIndexedDocument): DiskAnalysisSourceMetadata {
   return {
     fileName: normalizeFileName(entry.fileName),
@@ -10202,18 +10254,38 @@ async function diskAnalysisSettingsKey(
   parsed: AspParsedDocument,
   cancellation: AnalysisCancellation,
 ): Promise<string> {
+  return diskAnalysisSettingsKeyFromIncludeRefs(
+    settings,
+    parsed.uri,
+    parsed.includes,
+    cancellation,
+  );
+}
+
+async function diskAnalysisSettingsKeyFromIncludeRefs(
+  settings: AspSettings,
+  rootUri: string,
+  includeRefs: FileAnalysisSummary["includeRefs"],
+  cancellation: AnalysisCancellation,
+): Promise<string> {
   return JSON.stringify({
     parse: parseSettingsIdentity(settings),
     diagnostics: diagnosticsIdentity(settings),
     include: includeResolutionIdentity(settings),
-    includeDependencies: await diskAnalysisIncludeDependencyKey(parsed, settings, cancellation),
+    includeDependencies: await diskAnalysisIncludeDependencyKey(
+      rootUri,
+      includeRefs,
+      settings,
+      cancellation,
+    ),
     js: jsProjectSettingsIdentity(settings),
     workspace: workspaceIndexSettingsIdentity(settings),
   });
 }
 
 async function diskAnalysisIncludeDependencyKey(
-  root: AspParsedDocument,
+  rootUri: string,
+  rootIncludeRefs: FileAnalysisSummary["includeRefs"],
   settings: AspSettings,
   cancellation: AnalysisCancellation,
 ): Promise<string> {
@@ -10262,7 +10334,7 @@ async function diskAnalysisIncludeDependencyKey(
         await visitRefs(entry.uri, entry.includeRefs, depth + 1);
       } else {
         scheduleIncludeSummaryRefresh(
-          root.uri,
+          rootUri,
           normalizedFileName,
           settings,
           "diskKey.missingSummary",
@@ -10271,7 +10343,7 @@ async function diskAnalysisIncludeDependencyKey(
       await yieldToEventLoop();
     }
   };
-  await visitRefs(root.uri, root.includes, 0);
+  await visitRefs(rootUri, rootIncludeRefs, 0);
   return textFingerprint(JSON.stringify(dependencies));
 }
 
@@ -11359,6 +11431,8 @@ function normalizeGraphSettings(
     showCallLinks: record.showCallLinks !== false,
     showUnresolvedLinks: record.showUnresolvedLinks !== false,
     showMemberLinks: record.showMemberLinks !== false,
+    showIncomingDocumentIncludes: record.showIncomingDocumentIncludes === true,
+    showIncomingFolderIncludes: record.showIncomingFolderIncludes === true,
   };
 }
 
@@ -15041,6 +15115,18 @@ async function buildDocumentAspGraphAsync(
     settings,
     cancellation,
   );
+  if (settings.graph?.showIncomingDocumentIncludes === true) {
+    documentsForGraph.push(
+      ...(await collectIncomingIncludeGraphDocumentsAsync(
+        new Set([normalizeFileName(uriToFileName(cached.source.uri))]),
+        settings,
+        cancellation,
+        {
+          excludedUris: new Set(documentsForGraph.map((document) => document.uri)),
+        },
+      )),
+    );
+  }
   const payload = await graphPayloadFromDocumentsAsync("document", documentsForGraph, settings, {
     rootUri: cached.source.uri,
     cancellation,
@@ -15102,6 +15188,24 @@ async function buildFolderAspGraphAsync(
     },
   );
   documentsForGraph.push(...indexedGraphDocuments);
+  if (settings.graph?.showIncomingFolderIncludes === true) {
+    const folderTargetFileNames = new Set(
+      documentsForGraph
+        .map((document) => document.fileName)
+        .filter((fileName) => isFileInDirectory(fileName, folderName)),
+    );
+    documentsForGraph.push(
+      ...(await collectIncomingIncludeGraphDocumentsAsync(
+        folderTargetFileNames,
+        settings,
+        cancellation,
+        {
+          excludedUris: new Set(documentsForGraph.map((document) => document.uri)),
+          token,
+        },
+      )),
+    );
+  }
   const payload = await graphPayloadFromDocumentsAsync("folder", documentsForGraph, settings, {
     rootUri: pathToFileUri(folderName),
     truncated: workspaceIndexTruncated
@@ -15257,6 +15361,128 @@ async function graphIncludeRefsForDocumentAsync(
     return includeRefsEntry.includeRefs;
   }
   return extractAspIncludeRefs(document.text);
+}
+
+async function collectIncomingIncludeGraphDocumentsAsync(
+  targetFileNames: Set<string>,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+  options: {
+    excludedUris?: Set<string>;
+    token?: GraphCancellationToken;
+  } = {},
+): Promise<AspGraphDocument[]> {
+  const targets = new Set([...targetFileNames].map(normalizeFileName));
+  if (targets.size === 0) {
+    return [];
+  }
+  await ensureWorkspaceIndexAsync(settings, options.token);
+  throwIfGraphCancelled(cancellation);
+  const excludedUris = options.excludedUris ?? new Set<string>();
+  const documentsForGraph: AspGraphDocument[] = [];
+  const opened = new Set<string>();
+  const concurrency = analysisConcurrency(settings);
+  const openDocuments = await workspaceAnalyzableOpenDocumentsAsync(settings);
+  const openGraphDocuments = await mapWithConcurrency(
+    openDocuments,
+    concurrency,
+    async (document): Promise<AspGraphDocument | undefined> => {
+      throwIfGraphCancelled(cancellation);
+      if (excludedUris.has(document.uri)) {
+        return undefined;
+      }
+      const cached = await ensureFreshCachedDocumentAsync(document);
+      const graphDocument = await graphDocumentFromCachedAsync(
+        cached,
+        cachedSettings(document.uri),
+      );
+      return (await graphDocumentDirectlyIncludesAnyTargetAsync(
+        graphDocument,
+        targets,
+        settings,
+        cancellation,
+      ))
+        ? graphDocument
+        : undefined;
+    },
+  );
+  for (const graphDocument of openGraphDocuments) {
+    if (!graphDocument) {
+      continue;
+    }
+    opened.add(graphDocument.uri);
+    documentsForGraph.push(graphDocument);
+  }
+  const indexedEntries = [...workspaceIndex.values()].filter(
+    (entry) => !opened.has(entry.uri) && !excludedUris.has(entry.uri),
+  );
+  const indexedGraphDocuments = await mapWithConcurrency(
+    indexedEntries,
+    concurrency,
+    async (entry): Promise<AspGraphDocument | undefined> => {
+      throwIfGraphCancelled(cancellation);
+      if (
+        !(await indexedEntryDirectlyIncludesAnyTargetAsync(entry, targets, settings, cancellation))
+      ) {
+        return undefined;
+      }
+      const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
+      return graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri));
+    },
+  );
+  documentsForGraph.push(
+    ...indexedGraphDocuments.filter(
+      (document): document is AspGraphDocument => document !== undefined,
+    ),
+  );
+  return documentsForGraph;
+}
+
+async function indexedEntryDirectlyIncludesAnyTargetAsync(
+  entry: WorkspaceIndexedDocument,
+  targetFileNames: Set<string>,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<boolean> {
+  const includeRefsEntry = await readGraphIncludeRefsEntryAsync(entry.fileName, settings);
+  const includeRefs =
+    includeRefsEntry &&
+    sameDiskAnalysisSource(includeRefsEntry.source, diskAnalysisSourceMetadata(entry))
+      ? includeRefsEntry.includeRefs
+      : extractAspIncludeRefs(await readTextFileAsync(entry.fileName, settings.legacyEncoding));
+  throwIfGraphCancelled(cancellation);
+  return includeRefsDirectlyIncludeAnyTarget(entry.uri, includeRefs, targetFileNames, settings);
+}
+
+async function graphDocumentDirectlyIncludesAnyTargetAsync(
+  document: AspGraphDocument,
+  targetFileNames: Set<string>,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<boolean> {
+  const includeRefs = await graphIncludeRefsForDocumentAsync(document, settings);
+  throwIfGraphCancelled(cancellation);
+  return includeRefsDirectlyIncludeAnyTarget(document.uri, includeRefs, targetFileNames, settings);
+}
+
+async function includeRefsDirectlyIncludeAnyTarget(
+  ownerUri: string,
+  includeRefs: AspInclude[],
+  targetFileNames: Set<string>,
+  settings: AspSettings,
+): Promise<boolean> {
+  for (const include of includeRefs) {
+    const resolved = await resolveIncludePathDetailsAsync(
+      ownerUri,
+      include.path,
+      include.mode,
+      settings,
+    );
+    if (resolved.exists && targetFileNames.has(normalizeFileName(resolved.fileName))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function readGraphIncludeRefsEntryAsync(
@@ -16201,6 +16427,8 @@ function graphPayloadSettings(settings: AspSettings): NonNullable<AspGraphPayloa
     initialViewMode: graphSettings.initialViewMode === "3d" ? "3d" : "2d",
     hideSingleNodes: graphSettings.hideSingleNodes !== false,
     showOutgoingSelectionLinks: graphSettings.showOutgoingSelectionLinks !== false,
+    showIncomingDocumentIncludes: graphSettings.showIncomingDocumentIncludes === true,
+    showIncomingFolderIncludes: graphSettings.showIncomingFolderIncludes === true,
     hiddenNodeCategories: graphNodeCategoryOrder.filter(
       (category) => !isVisibleAspGraphNodeCategory(category, graphSettings),
     ),
@@ -16679,8 +16907,12 @@ function vbReferenceCodeLensData(symbol: VbSymbol): VbReferenceCodeLensData {
     name: symbol.name,
     symbolKind: symbol.kind,
     memberOf: symbol.memberOf,
+    scopeName: symbol.scopeName,
+    propertyAccessor: symbol.propertyAccessor,
     line: symbol.range.start.line,
     character: symbol.range.start.character,
+    endLine: symbol.range.end.line,
+    endCharacter: symbol.range.end.character,
   };
 }
 
@@ -16689,14 +16921,34 @@ function vbReferenceCodeLensDataFromUnknown(value: unknown): VbReferenceCodeLens
     return undefined;
   }
   const data = value as Partial<VbReferenceCodeLensData>;
-  return data.kind === "vbscript-reference" &&
-    typeof data.uri === "string" &&
-    typeof data.name === "string" &&
-    typeof data.symbolKind === "string" &&
-    typeof data.line === "number" &&
-    typeof data.character === "number"
-    ? (data as VbReferenceCodeLensData)
-    : undefined;
+  if (
+    data.kind !== "vbscript-reference" ||
+    typeof data.uri !== "string" ||
+    typeof data.name !== "string" ||
+    typeof data.symbolKind !== "string" ||
+    typeof data.line !== "number" ||
+    typeof data.character !== "number"
+  ) {
+    return undefined;
+  }
+  return {
+    kind: "vbscript-reference",
+    uri: data.uri,
+    name: data.name,
+    symbolKind: data.symbolKind,
+    memberOf: typeof data.memberOf === "string" ? data.memberOf : undefined,
+    scopeName: typeof data.scopeName === "string" ? data.scopeName : undefined,
+    propertyAccessor:
+      data.propertyAccessor === "get" ||
+      data.propertyAccessor === "let" ||
+      data.propertyAccessor === "set"
+        ? data.propertyAccessor
+        : undefined,
+    line: data.line,
+    character: data.character,
+    endLine: typeof data.endLine === "number" ? data.endLine : undefined,
+    endCharacter: typeof data.endCharacter === "number" ? data.endCharacter : undefined,
+  };
 }
 
 async function vbSymbolForCodeLensDataAsync(
@@ -16704,14 +16956,30 @@ async function vbSymbolForCodeLensDataAsync(
   data: VbReferenceCodeLensData,
 ): Promise<VbSymbol | undefined> {
   const settings = cachedSettings(data.uri);
-  return (await referenceCodeLensSymbolsForCachedDocumentAsync(cached, settings)).find(
+  const symbols = await referenceCodeLensSymbolsForCachedDocumentAsync(cached, settings);
+  const candidates = symbols.filter((symbol) => vbSymbolMatchesCodeLensIdentity(symbol, data));
+  const exact = candidates.find(
     (symbol) =>
-      symbol.sourceUri === data.uri &&
-      symbol.name.toLowerCase() === data.name.toLowerCase() &&
-      symbol.kind === data.symbolKind &&
-      (symbol.memberOf ?? "").toLowerCase() === (data.memberOf ?? "").toLowerCase() &&
       symbol.range.start.line === data.line &&
-      symbol.range.start.character === data.character,
+      symbol.range.start.character === data.character &&
+      (data.endLine === undefined || symbol.range.end.line === data.endLine) &&
+      (data.endCharacter === undefined || symbol.range.end.character === data.endCharacter),
+  );
+  if (exact) {
+    return exact;
+  }
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+function vbSymbolMatchesCodeLensIdentity(symbol: VbSymbol, data: VbReferenceCodeLensData): boolean {
+  return (
+    symbol.sourceUri === data.uri &&
+    symbol.name.toLowerCase() === data.name.toLowerCase() &&
+    symbol.kind === data.symbolKind &&
+    (symbol.memberOf ?? "").toLowerCase() === (data.memberOf ?? "").toLowerCase() &&
+    (data.scopeName === undefined ||
+      (symbol.scopeName ?? "").toLowerCase() === data.scopeName.toLowerCase()) &&
+    (data.propertyAccessor === undefined || symbol.propertyAccessor === data.propertyAccessor)
   );
 }
 

@@ -190,6 +190,20 @@ function parseVbscriptCstTypeScript(text: string, sourceText = text, baseOffset 
       );
       continue;
     }
+    if ((first === "public" || first === "private") && second === "const") {
+      addChild(
+        current,
+        createDeclarationNode(
+          token,
+          "ConstantDeclaration",
+          "const",
+          significant,
+          index + 2,
+          visibility,
+        ),
+      );
+      continue;
+    }
     if (
       (first === "public" || first === "private") &&
       !["sub", "function", "property"].includes(second ?? "")

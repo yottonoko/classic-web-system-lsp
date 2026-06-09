@@ -77,6 +77,8 @@
   "configuration.graph.showCallLinks.description": "graph view に call link を表示します。",
   "configuration.graph.showUnresolvedLinks.description": "graph view に unresolved reference link を表示します。",
   "configuration.graph.showMemberLinks.description": "graph view に object member reference と call link を表示します。",
+  "configuration.graph.showIncomingDocumentIncludes.description": "current-file graph view に、現在の file を直接 include している file も含めます。",
+  "configuration.graph.showIncomingFolderIncludes.description": "folder graph view に、選択 folder 配下の file を直接 include している file も含めます。",
   "configuration.graph.initialViewMode.description": "graph view の初期表示を 2D / 3D のどちらにするかを指定します。",
   "configuration.graph.openLocation.description": "graph view を現在の editor group に開くか、横の editor group に開くかを指定します。",
   "configuration.cache.enabled.description": "開いていない workspace file の analysis 結果を disk に永続化します。",

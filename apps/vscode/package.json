@@ -735,6 +735,16 @@
           "default": true,
           "description": "%configuration.graph.showMemberLinks.description%"
         },
+        "aspLsp.graph.showIncomingDocumentIncludes": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.showIncomingDocumentIncludes.description%"
+        },
+        "aspLsp.graph.showIncomingFolderIncludes": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.showIncomingFolderIncludes.description%"
+        },
         "aspLsp.graph.initialViewMode": {
           "type": "string",
           "enum": [

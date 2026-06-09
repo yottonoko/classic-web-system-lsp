@@ -12,6 +12,8 @@ export interface AspGraphPayload {
     initialViewMode?: "2d" | "3d";
     hideSingleNodes?: boolean;
     showOutgoingSelectionLinks?: boolean;
+    showIncomingDocumentIncludes?: boolean;
+    showIncomingFolderIncludes?: boolean;
     hiddenNodeCategories?: AspGraphNodeCategory[];
     hiddenLinkCategories?: AspGraphLinkFilterCategory[];
   };

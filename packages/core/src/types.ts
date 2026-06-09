@@ -192,6 +192,8 @@ export interface AspGraphSettings {
   showCallLinks?: boolean;
   showUnresolvedLinks?: boolean;
   showMemberLinks?: boolean;
+  showIncomingDocumentIncludes?: boolean;
+  showIncomingFolderIncludes?: boolean;
 }
 
 export interface AspCacheSettings {
