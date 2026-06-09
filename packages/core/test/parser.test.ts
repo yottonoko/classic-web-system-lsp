@@ -3149,20 +3149,6 @@ Response.Write SharedCatalog.Name
         }),
       ]),
     );
-    expect(summary.vbscript?.docCommentRefUsages).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          key: "sharedtitle",
-          count: 1,
-          ranges: [expect.objectContaining({ start: expect.objectContaining({ line: 7 }) })],
-        }),
-        expect.objectContaining({
-          key: "sharedcatalog.name",
-          count: 1,
-          ranges: [expect.objectContaining({ start: expect.objectContaining({ line: 8 }) })],
-        }),
-      ]),
-    );
   });
 
   it("summarizes VBScript public symbols without implicit or inferred exports", () => {

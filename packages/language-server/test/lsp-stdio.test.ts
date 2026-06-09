@@ -5361,7 +5361,7 @@ Response.Write SharedTitle()
       }
     });
 
-    it("counts included VBScript symbols referenced from XML documentation comments", async () => {
+    it("does not count XML documentation comments as workspace references", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-cref-"));
       const common = path.join(tempDir, "common.inc");
       const page = path.join(tempDir, "default.asp");
@@ -5436,15 +5436,15 @@ End Sub
         const codeLensLocations = (resolvedCodeLens.command?.arguments?.[2] ?? []) as Array<{
           uri?: string;
         }>;
-        expect(resolvedCodeLens.command?.title).toContain("1 reference");
-        expect(codeLensLocations.map((location) => location.uri)).toEqual([pageUri]);
+        expect(resolvedCodeLens.command?.title).toContain("0 references");
+        expect(codeLensLocations.map((location) => location.uri)).not.toContain(pageUri);
 
         const references = (await server.request("textDocument/references", {
           textDocument: { uri: commonUri },
           position: { line: 1, character: 10 },
           context: { includeDeclaration: false },
         })) as Array<{ uri?: string }>;
-        expect(references.map((reference) => reference.uri)).toContain(pageUri);
+        expect(references.map((reference) => reference.uri)).not.toContain(pageUri);
         await waitForLogContaining(server, "vb.references.summary.fastPath");
 
         await server.request("shutdown", null);

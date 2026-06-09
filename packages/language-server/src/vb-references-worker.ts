@@ -689,10 +689,7 @@ function fallbackWorkspaceExternalReferences(
 function summaryVbReferenceUsages(
   summary: FileAnalysisSummary,
 ): NonNullable<NonNullable<FileAnalysisSummary["vbscript"]>["externalRefUsages"]> {
-  return [
-    ...(summary.vbscript?.externalRefUsages ?? []),
-    ...(summary.vbscript?.docCommentRefUsages ?? []),
-  ];
+  return summary.vbscript?.externalRefUsages ?? [];
 }
 
 function isGlobalWorkspaceReferenceFallbackSymbol(symbol: VbReferencesWorkerTargetSymbol): boolean {
