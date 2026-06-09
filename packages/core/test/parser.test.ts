@@ -1371,6 +1371,10 @@ On
 On Error${" "}
 On Error R
 On Error G
+Er
+Error
+Error R
+Error G
 %>`;
     const parsed = parseAspDocument("file:///site/on-error-completion.asp", source);
     const onCompletions = getVbscriptCompletions(
@@ -1399,6 +1403,40 @@ On Error G
       positionAt(source, source.indexOf("On Error G") + "On Error G".length),
     );
     expect(gotoCompletions.map((item) => item.label)).toEqual(["On Error GoTo 0"]);
+
+    const erCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("\nEr\n") + "\nEr".length),
+    );
+    expect(erCompletions.map((item) => item.label)).toEqual(
+      expect.arrayContaining(["On Error Resume Next", "On Error GoTo 0"]),
+    );
+
+    const errorCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("\nError\n") + "\nError".length),
+    );
+    expect(errorCompletions.map((item) => item.label)).toEqual(
+      expect.arrayContaining(["On Error Resume Next", "On Error GoTo 0"]),
+    );
+    expect(errorCompletions.find((item) => item.label === "On Error Resume Next")).toMatchObject({
+      filterText: "Error Resume Next",
+      textEdit: {
+        newText: "On Error Resume Next",
+      },
+    });
+
+    const errorResumeCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("\nError R") + "\nError R".length),
+    );
+    expect(errorResumeCompletions.map((item) => item.label)).toEqual(["On Error Resume Next"]);
+
+    const errorGotoCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(source, source.indexOf("\nError G") + "\nError G".length),
+    );
+    expect(errorGotoCompletions.map((item) => item.label)).toEqual(["On Error GoTo 0"]);
 
     const disabled = getVbscriptCompletions(
       parsed,

@@ -5086,7 +5086,13 @@ function cssCompletion(
     .filter((item): item is CompletionItem => Boolean(item));
 }
 
-type AspIncludeCompletionContext = "html" | "comment" | "includeMode";
+type AspIncludeCompletionContextKind = "html" | "comment" | "includeMode";
+
+interface AspIncludeCompletionContext {
+  kind: AspIncludeCompletionContextKind;
+  prefix: string;
+  replaceStart: number;
+}
 
 function aspIncludeCompletions(
   cached: CachedDocument,
@@ -5098,21 +5104,26 @@ function aspIncludeCompletions(
   if (!context) {
     return [];
   }
+  const range = {
+    start: cached.source.positionAt(context.replaceStart),
+    end: position,
+  };
   const localizer = createLocalizer(settings.resolvedLocale);
   const detail = localizer.t("server.completion.include.detail");
   const documentation = localizer.t("server.completion.include.documentation");
-  if (context === "includeMode") {
+  if (context.kind === "includeMode") {
     return ["file", "virtual"].map((mode) => ({
       label: mode,
       kind: CompletionItemKind.Property,
       detail,
       documentation,
       insertText: `${mode}="\${1:path}"`,
+      textEdit: { range, newText: `${mode}="\${1:path}"` },
       insertTextFormat: InsertTextFormat.Snippet,
       sortText: `0_${mode}`,
     }));
   }
-  const prefix = context === "comment" ? "" : "<!-- ";
+  const prefix = context.kind === "comment" ? "" : "<!-- ";
   const snippets: CompletionItem[] = [
     {
       label: "#include file",
@@ -5120,8 +5131,9 @@ function aspIncludeCompletions(
       detail,
       documentation,
       insertText: `${prefix}#include file="\${1:path}" -->`,
+      textEdit: { range, newText: `${prefix}#include file="\${1:path}" -->` },
       insertTextFormat: InsertTextFormat.Snippet,
-      filterText: "include file #include",
+      filterText: includeSnippetFilterText("file", context.prefix),
       sortText: "0_include_file",
     },
     {
@@ -5130,12 +5142,13 @@ function aspIncludeCompletions(
       detail,
       documentation,
       insertText: `${prefix}#include virtual="\${1:path}" -->`,
+      textEdit: { range, newText: `${prefix}#include virtual="\${1:path}" -->` },
       insertTextFormat: InsertTextFormat.Snippet,
-      filterText: "include virtual #include",
+      filterText: includeSnippetFilterText("virtual", context.prefix),
       sortText: "0_include_virtual",
     },
   ];
-  return context === "comment"
+  return context.kind === "comment"
     ? [
         {
           label: "#include",
@@ -5143,12 +5156,23 @@ function aspIncludeCompletions(
           detail,
           documentation,
           insertText: "#include ",
-          filterText: "include #include",
+          textEdit: { range, newText: "#include " },
+          filterText: includeKeywordFilterText(context.prefix),
           sortText: "0_include",
         },
         ...snippets,
       ]
     : snippets;
+}
+
+function includeKeywordFilterText(prefix: string): string {
+  return prefix.startsWith("#") ? "#include include inc" : "include inc #include";
+}
+
+function includeSnippetFilterText(mode: "file" | "virtual", prefix: string): string {
+  return prefix.startsWith("#")
+    ? `#include ${mode} include ${mode} inc`
+    : `include ${mode} inc #include ${mode}`;
 }
 
 function aspIncludeCompletionContextAt(
@@ -5158,19 +5182,39 @@ function aspIncludeCompletionContextAt(
   const before = text.slice(0, offset);
   const commentStart = Math.max(before.lastIndexOf("<!--"), before.lastIndexOf("<!—"));
   if (commentStart >= 0 && before.lastIndexOf("-->") < commentStart) {
-    const body = before.slice(commentStart + (before.startsWith("<!—", commentStart) ? 3 : 4));
-    if (/^\s*#include\s+[A-Za-z]*$/i.test(body)) {
-      return "includeMode";
+    const bodyStart = commentStart + (before.startsWith("<!—", commentStart) ? 3 : 4);
+    const body = before.slice(bodyStart);
+    const modeMatch = /^(\s*#include\s+)([A-Za-z]*)$/i.exec(body);
+    if (modeMatch) {
+      return {
+        kind: "includeMode",
+        prefix: modeMatch[2],
+        replaceStart: bodyStart + modeMatch[1].length,
+      };
     }
-    if (/^\s*#?[A-Za-z]*$/i.test(body)) {
-      return "comment";
+    const includeMatch = /^(\s*)(#?[A-Za-z]*)$/i.exec(body);
+    if (includeMatch) {
+      return {
+        kind: "comment",
+        prefix: includeMatch[2],
+        replaceStart: bodyStart + includeMatch[1].length,
+      };
     }
     return undefined;
   }
   if (isHtmlTextCompletionContext(text, offset)) {
-    return "html";
+    const replaceStart = htmlTextCompletionReplaceStart(text, offset);
+    return { kind: "html", prefix: text.slice(replaceStart, offset), replaceStart };
   }
   return undefined;
+}
+
+function htmlTextCompletionReplaceStart(text: string, offset: number): number {
+  let start = offset;
+  while (start > 0 && /[#A-Za-z]/.test(text[start - 1])) {
+    start -= 1;
+  }
+  return start;
 }
 
 function isHtmlTextCompletionContext(text: string, offset: number): boolean {

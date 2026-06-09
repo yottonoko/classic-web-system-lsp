@@ -1738,6 +1738,7 @@ function vbscriptSyntaxKeywordCompletions(
     label,
     kind: CompletionItemKind.Keyword,
     detail,
+    filterText: statementKeywordCompletionFilterText(label, context.prefix),
     sortText: `00-${index}-${label}`,
     textEdit: {
       range: {
@@ -1811,9 +1812,28 @@ function statementKeywordCompletionLabels(
     labels.push(closeKeyword);
   }
   return labels.filter((label, index) => {
-    const lowerLabel = label.toLowerCase();
-    return lowerLabel.startsWith(prefix) && labels.indexOf(label) === index;
+    return statementKeywordLabelMatchesPrefix(label, prefix) && labels.indexOf(label) === index;
   });
+}
+
+function statementKeywordLabelMatchesPrefix(label: string, prefix: string): boolean {
+  return statementKeywordCompletionAliases(label).some((alias) =>
+    alias.toLowerCase().startsWith(prefix),
+  );
+}
+
+function statementKeywordCompletionFilterText(label: string, prefix: string): string | undefined {
+  const lowerLabel = label.toLowerCase();
+  if (lowerLabel.startsWith(prefix)) {
+    return undefined;
+  }
+  return statementKeywordCompletionAliases(label).find((alias) =>
+    alias.toLowerCase().startsWith(prefix),
+  );
+}
+
+function statementKeywordCompletionAliases(label: string): string[] {
+  return label.startsWith("On Error ") ? [label, label.slice("On ".length)] : [label];
 }
 
 function blockCloseCompletionKeyword(block: VbEndCompletionBlock | undefined): string | undefined {

@@ -305,8 +305,35 @@ Server.HTMLEe▮
               expect(fileSnippet).toMatchObject({
                 kind: CompletionItemKind.Snippet,
                 insertTextFormat: InsertTextFormat.Snippet,
+                filterText: "include file inc #include file",
               });
               expect(fileSnippet?.insertText).toBe('<!-- #include file="${1:path}" -->');
+              expect(fileSnippet?.textEdit).toMatchObject({
+                newText: '<!-- #include file="${1:path}" -->',
+              });
+              expect(completionEditRange(fileSnippet)).toEqual({
+                start: { line: 0, character: 0 },
+                end: { line: 0, character: 3 },
+              });
+            },
+          },
+          {
+            uri: "file:///tmp/include-comment-prefix.asp",
+            markedSource: "<!-- inc▮",
+            assert: (items: Array<Record<string, unknown>>) => {
+              const fileSnippet = items.find((item) => item.label === "#include file");
+              expect(fileSnippet).toMatchObject({
+                kind: CompletionItemKind.Snippet,
+                insertTextFormat: InsertTextFormat.Snippet,
+                filterText: "include file inc #include file",
+              });
+              expect(fileSnippet?.textEdit).toMatchObject({
+                newText: '#include file="${1:path}" -->',
+              });
+              expect(completionEditRange(fileSnippet)).toEqual({
+                start: { line: 0, character: 5 },
+                end: { line: 0, character: 8 },
+              });
             },
           },
           {
@@ -4849,7 +4876,7 @@ Err.
         );
 
         const completionSource = `<%
-On Error R
+Error R
 %>`;
         const completionUri = "file:///tmp/vbscript-on-error-completion.asp";
         server.notify("textDocument/didOpen", {
@@ -4861,14 +4888,25 @@ On Error R
           },
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
+        const erCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri: completionUri },
+          position: positionAt(completionSource, completionSource.indexOf("Error R") + "Er".length),
+        });
+        expect(completionLabels(erCompletions)).toEqual(
+          expect.arrayContaining(["On Error Resume Next", "On Error GoTo 0"]),
+        );
+
         const onErrorCompletions = await server.request("textDocument/completion", {
           textDocument: { uri: completionUri },
           position: positionAt(
             completionSource,
-            completionSource.indexOf("On Error R") + "On Error R".length,
+            completionSource.indexOf("Error R") + "Error R".length,
           ),
         });
         expect(completionLabels(onErrorCompletions)).toEqual(["On Error Resume Next"]);
+        expect(completionItems(onErrorCompletions).at(0)).toMatchObject({
+          filterText: "Error Resume Next",
+        });
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
