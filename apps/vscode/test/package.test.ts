@@ -69,6 +69,20 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain('graphText("toolbar.searchNodes")');
   });
 
+  it("keeps graph search responsive and keyboard-accessible", () => {
+    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+
+    expect(graphWebviewSource).toContain("startTransition");
+    expect(graphWebviewSource).toContain("const [searchInput, setSearchInput] = useState");
+    expect(graphWebviewSource).toContain("const searchInputRef = useRef<HTMLInputElement>");
+    expect(graphWebviewSource).toContain("function isSearchFocusShortcut");
+    expect(graphWebviewSource).toContain("function searchNavigationDirection");
+    expect(graphWebviewSource).toContain('event.key === "F3"');
+    expect(graphWebviewSource).toContain('isPrimaryModifierShortcut(event, "g")');
+    expect(graphWebviewSource).toContain('"toolbar.stats": "List"');
+    expect(graphWebviewSource).toContain('"toolbar.stats": "一覧"');
+  });
+
   it("contributes commands, task definition and IIS debug settings", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       repository?: { url?: string };

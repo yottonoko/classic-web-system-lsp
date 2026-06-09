@@ -1,4 +1,12 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  startTransition,
+  useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 import ForceGraph2D from "react-force-graph-2d";
 import ForceGraph3D from "react-force-graph-3d";
@@ -249,17 +257,17 @@ const graphMessageEn = {
   "section.outgoingLinks": "Outgoing links",
   "section.referencesCalls": "References / Calls",
   "snippet.loadingSource": "Loading source...",
-  "stats.heading": "Graph stats",
+  "stats.heading": "Graph list",
   "stats.metric.files": "Files",
   "stats.metric.links": "Links",
   "stats.metric.missing": "Missing",
   "stats.metric.vb": "VB",
-  "stats.show": "Show graph statistics",
-  "stats.title": "Graph statistics",
+  "stats.show": "Show graph list",
+  "stats.title": "Graph list",
   "toolbar.graphMode": "Graph mode",
   "toolbar.matchCase": "Match case",
   "toolbar.searchNodes": "Search nodes",
-  "toolbar.stats": "Stats",
+  "toolbar.stats": "List",
   "toolbar.truncated": "truncated: {reason}",
   "view.currentFileGraph": "Current File Graph",
   "view.folderGraph": "Folder Graph",
@@ -376,17 +384,17 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "section.outgoingLinks": "Outgoing links",
     "section.referencesCalls": "参照 / 呼び出し",
     "snippet.loadingSource": "source を読み込み中...",
-    "stats.heading": "Graph stats",
+    "stats.heading": "一覧",
     "stats.metric.files": "Files",
     "stats.metric.links": "Links",
     "stats.metric.missing": "Missing",
     "stats.metric.vb": "VB",
-    "stats.show": "graph statistics を表示",
-    "stats.title": "Graph statistics",
+    "stats.show": "graph 一覧を表示",
+    "stats.title": "graph 一覧",
     "toolbar.graphMode": "Graph mode",
     "toolbar.matchCase": "大文字小文字を区別",
     "toolbar.searchNodes": "node を検索",
-    "toolbar.stats": "Stats",
+    "toolbar.stats": "一覧",
     "toolbar.truncated": "truncated: {reason}",
     "view.currentFileGraph": "Current File Graph",
     "view.folderGraph": "Folder Graph",
@@ -547,10 +555,16 @@ const graphMinimumWidth = 360;
 const paneResizeHandleWidth = 6;
 const paneResizeKeyboardStep = 16;
 
+function positiveModulo(value: number, divisor: number): number {
+  return ((value % divisor) + divisor) % divisor;
+}
+
 function App(): React.ReactElement {
   const [mode, setMode] = useState<ViewMode>(graph?.settings?.initialViewMode ?? "2d");
   const [selection, setSelection] = useState<Selection>();
+  const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchCursor, setSearchCursor] = useState(-1);
   const [searchMatchCase, setSearchMatchCase] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(inspectorDefaultWidth);
   const [hideSingleNodes, setHideSingleNodes] = useState(graph?.settings?.hideSingleNodes ?? true);
@@ -571,6 +585,7 @@ function App(): React.ReactElement {
   const pendingSyncRef = useRef<PendingPositionSync | undefined>(undefined);
   const positionSyncGenerationRef = useRef(0);
   const positionSyncReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const skipAutoFitForModeRef = useRef(new Set<ViewMode>());
   const forceFitForModeRef = useRef(new Set<ViewMode>());
   const graphData = useMemo(() => graphDataFor(graph), []);
@@ -588,15 +603,13 @@ function App(): React.ReactElement {
   );
   const renderGraphData = mode === "3d" ? renderGraphData3d : renderGraphData2d;
   const filteredStats = useMemo(() => graphStatsFor(filteredGraphData), [filteredGraphData]);
+  const searchTargets = useMemo(
+    () => searchTargetsForSearch(searchQuery, searchMatchCase, filteredGraphData.nodes),
+    [searchQuery, searchMatchCase, filteredGraphData.nodes],
+  );
   const searchHighlight = useMemo(
-    () =>
-      highlightForSearch(
-        searchQuery,
-        searchMatchCase,
-        filteredGraphData.nodes,
-        filteredGraphData.links,
-      ),
-    [searchQuery, searchMatchCase, filteredGraphData.nodes, filteredGraphData.links],
+    () => highlightForSearchTargets(searchTargets, filteredGraphData.links),
+    [searchTargets, filteredGraphData.links],
   );
   const selectionHighlight = useMemo(
     () => highlightForSelection(selection, filteredGraphData.links, showOutgoingSelectionLinks),
@@ -619,6 +632,16 @@ function App(): React.ReactElement {
   const toggleLinkCategory = useCallback((category: LinkFilterCategory) => {
     setHiddenLinkCategories((current) => toggledSet(current, category));
   }, []);
+  const updateSearchInput = useCallback((nextValue: string) => {
+    setSearchInput(nextValue);
+    startTransition(() => {
+      setSearchQuery(nextValue);
+    });
+  }, []);
+  const clearSearchInput = useCallback(() => {
+    updateSearchInput("");
+    setSearchCursor(-1);
+  }, [updateSearchInput]);
   const fitGraphToCanvas = useCallback(
     (nextMode: ViewMode) => {
       if (!canFitGraph) {
@@ -679,6 +702,41 @@ function App(): React.ReactElement {
     (link: GraphLink) => selectAndFocusGraphTarget({ type: "link", id: link.id }),
     [selectAndFocusGraphTarget],
   );
+  const focusSearchResult = useCallback(
+    (direction: 1 | -1) => {
+      if (searchTargets.length === 0) {
+        return false;
+      }
+      const baseCursor =
+        searchCursor >= 0 && searchCursor < searchTargets.length
+          ? searchCursor
+          : direction > 0
+            ? -1
+            : 0;
+      const nextCursor = positiveModulo(baseCursor + direction, searchTargets.length);
+      const target = searchTargets[nextCursor];
+      if (!target) {
+        return false;
+      }
+      const nextSelection = selectionForStatsTarget(target, filteredGraphData);
+      if (!nextSelection) {
+        return false;
+      }
+      captureCurrentRenderPositions();
+      setSearchCursor(nextCursor);
+      setSelection(nextSelection);
+      focusGraphTarget(target, mode, renderGraphData, graph2dRef.current, graph3dRef.current);
+      return true;
+    },
+    [
+      captureCurrentRenderPositions,
+      filteredGraphData,
+      mode,
+      renderGraphData,
+      searchCursor,
+      searchTargets,
+    ],
+  );
   const switchGraphMode = useCallback(
     (nextMode: ViewMode) => {
       if (nextMode === mode) {
@@ -737,10 +795,46 @@ function App(): React.ReactElement {
     [fitGraphToCanvas],
   );
   useEffect(() => {
-    const clearSelectionOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setSelection(undefined);
+    setSearchCursor(-1);
+  }, [searchTargets]);
+
+  useEffect(() => {
+    const handleSearchKeyDown = (event: KeyboardEvent) => {
+      if (isSearchFocusShortcut(event)) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
       }
+      if (isSearchClearShortcut(event, searchInputRef.current)) {
+        event.preventDefault();
+        if (searchInput) {
+          clearSearchInput();
+        } else {
+          searchInputRef.current?.blur();
+        }
+        return;
+      }
+      const direction = searchNavigationDirection(event, searchInputRef.current);
+      if (direction && searchInput.trim()) {
+        event.preventDefault();
+        void focusSearchResult(direction);
+      }
+    };
+    window.addEventListener("keydown", handleSearchKeyDown);
+    return () => window.removeEventListener("keydown", handleSearchKeyDown);
+  }, [clearSearchInput, focusSearchResult, searchInput]);
+
+  useEffect(() => {
+    const clearSelectionOnEscape = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        document.activeElement === searchInputRef.current ||
+        event.key !== "Escape"
+      ) {
+        return;
+      }
+      setSelection(undefined);
     };
     window.addEventListener("keydown", clearSelectionOnEscape);
     return () => window.removeEventListener("keydown", clearSelectionOnEscape);
@@ -854,12 +948,13 @@ function App(): React.ReactElement {
         </div>
         <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
           <input
+            ref={searchInputRef}
             type="search"
             className="h-7 min-w-0 rounded-md border border-[#394456] bg-[#11151c] px-2.5 text-xs text-[#d7dde8] outline-none placeholder:text-[#717b8c] focus:border-[#89ddff]"
             aria-label={graphText("toolbar.searchNodes")}
             placeholder={graphText("toolbar.searchNodes")}
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.currentTarget.value)}
+            value={searchInput}
+            onChange={(event) => updateSearchInput(event.currentTarget.value)}
           />
           <label className="inline-flex h-7 cursor-pointer select-none items-center gap-1.5 whitespace-nowrap rounded-md border border-[#394456] bg-[#151a22] px-2 text-[11px] text-[#b5c0d0]">
             <input
@@ -4001,21 +4096,28 @@ function isSelectionVisible(selection: Selection, graphData: GraphData): boolean
   return true;
 }
 
-function highlightForSearch(
+function searchTargetsForSearch(
   query: string,
   matchCase: boolean,
   nodes: GraphNode[],
-  links: GraphLink[],
-): HighlightState | undefined {
+): GraphStatsTarget[] {
   const normalizedQuery = normalizeSearchText(query.trim(), matchCase);
   if (!normalizedQuery) {
+    return [];
+  }
+  return nodes
+    .filter((node) => searchableNodeText(node, matchCase).includes(normalizedQuery))
+    .map((node) => ({ type: "node" as const, id: node.id }));
+}
+
+function highlightForSearchTargets(
+  targets: GraphStatsTarget[],
+  links: GraphLink[],
+): HighlightState | undefined {
+  if (targets.length === 0) {
     return undefined;
   }
-  const activeNodeIds = new Set(
-    nodes
-      .filter((node) => searchableNodeText(node, matchCase).includes(normalizedQuery))
-      .map((node) => node.id),
-  );
+  const activeNodeIds = new Set(targets.map((target) => target.id));
   const activeLinkIds = new Set(
     links
       .filter(
@@ -4026,6 +4128,37 @@ function highlightForSearch(
       .map((link) => link.id),
   );
   return { activeNodeIds, activeLinkIds };
+}
+
+function isSearchFocusShortcut(event: KeyboardEvent): boolean {
+  return isPrimaryModifierShortcut(event, "f") && !event.shiftKey;
+}
+
+function isSearchClearShortcut(
+  event: KeyboardEvent,
+  searchInput: HTMLInputElement | null,
+): boolean {
+  return event.key === "Escape" && document.activeElement === searchInput;
+}
+
+function searchNavigationDirection(
+  event: KeyboardEvent,
+  searchInput: HTMLInputElement | null,
+): 1 | -1 | undefined {
+  if (event.key === "Enter" && document.activeElement === searchInput) {
+    return event.shiftKey ? -1 : 1;
+  }
+  if (event.key === "F3" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    return event.shiftKey ? -1 : 1;
+  }
+  if (isPrimaryModifierShortcut(event, "g")) {
+    return event.shiftKey ? -1 : 1;
+  }
+  return undefined;
+}
+
+function isPrimaryModifierShortcut(event: KeyboardEvent, key: string): boolean {
+  return event.key.toLowerCase() === key && (event.metaKey || event.ctrlKey) && !event.altKey;
 }
 
 function searchableNodeText(node: GraphNode, matchCase: boolean): string {
