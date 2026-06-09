@@ -1540,6 +1540,9 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
   workspaceRoots = [
     ...(params.workspaceFolders?.map((folder) => uriToFileName(folder.uri)) ?? []),
     ...(params.rootUri ? [uriToFileName(params.rootUri)] : []),
+    ...(!params.workspaceFolders?.length && !params.rootUri && params.rootPath
+      ? [params.rootPath]
+      : []),
   ].filter((root, index, roots) => root.length > 0 && roots.indexOf(root) === index);
   return {
     capabilities: {
@@ -1631,6 +1634,7 @@ documents.onDidOpen((event) => {
   pendingDocumentChanges.delete(event.document.uri);
   publishedDiagnosticsByUri.delete(event.document.uri);
   cache.delete(event.document.uri);
+  invalidateRootlessWorkspaceIndex("document.open");
   scheduleOpenFileProjectMaintenance("document.open");
   validate(event.document);
 });
@@ -1683,6 +1687,7 @@ documents.onDidClose((event) => {
   stagedDiagnosticsByUri.delete(event.document.uri);
   publishedDiagnosticsByUri.delete(event.document.uri);
   resetIncludeDependencies(event.document.uri);
+  invalidateRootlessWorkspaceIndex("document.close");
   scheduleOpenFileProjectMaintenance("document.close");
   connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
 });
@@ -10610,7 +10615,7 @@ async function ensureWorkspaceIndexAsync(
   let scannedFiles = 0;
   const maxFiles = settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles;
   const chunkSize = settings.workspace?.scanChunkSize ?? defaultScanChunkSize;
-  for (const root of workspaceRoots) {
+  for (const root of workspaceIndexRoots()) {
     if (token?.isCancellationRequested || scannedFiles >= maxFiles) {
       break;
     }
@@ -10833,6 +10838,12 @@ function clearWorkspaceIndexProcessCaches(reason: string): void {
   workspaceIndex.clear();
   clearWorkspaceVbReferenceCaches();
   logDebugSummary(globalSettings, `[asp-lsp] processCache.workspaceIndex.clear: ${reason}`);
+}
+
+function invalidateRootlessWorkspaceIndex(reason: string): void {
+  if (workspaceRoots.length === 0) {
+    invalidateWorkspaceIndex(`rootlessWorkspace.${reason}`);
+  }
 }
 
 async function closeDiagnosticsWorkerPools(reason: string): Promise<void> {
@@ -11093,10 +11104,23 @@ function workspaceRelativePath(root: string, fileName: string): string | undefin
 
 function workspaceRootForFileName(fileName: string): string | undefined {
   const normalized = normalizeFileName(fileName);
-  return [...workspaceRoots]
+  return workspaceIndexRoots()
     .map(normalizeFileName)
     .sort((left, right) => right.length - left.length)
     .find((root) => normalized === root || normalized.startsWith(`${root}${path.sep}`));
+}
+
+function workspaceIndexRoots(): string[] {
+  const roots =
+    workspaceRoots.length > 0
+      ? workspaceRoots
+      : documents
+          .all()
+          .filter((document) => isClassicAspGraphUri(document.uri))
+          .map((document) => path.dirname(uriToFileName(document.uri)));
+  return roots
+    .map(normalizeFileName)
+    .filter((root, index, items) => root.length > 0 && items.indexOf(root) === index);
 }
 
 function workspaceGlobToRegExpSource(pattern: string): string {
@@ -11328,7 +11352,7 @@ function jsProjectSettingsIdentity(settings: AspSettings): string {
 
 function workspaceIndexSettingsIdentity(settings: AspSettings): string {
   return JSON.stringify({
-    roots: workspaceRoots.map(normalizeFileName).sort(),
+    roots: workspaceIndexRoots().sort(),
     includes: settings.workspace?.includes ?? defaultWorkspaceIncludes,
     excludes: settings.workspace?.excludes ?? [],
     respectGitIgnore: settings.workspace?.respectGitIgnore === true,
