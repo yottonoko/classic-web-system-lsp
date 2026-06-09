@@ -236,7 +236,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.5.12";
+const languageServerVersion = "0.5.22";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -10455,14 +10455,15 @@ async function findIncludeCycleAsync(
       return undefined;
     }
     const normalized = normalizeFileName(fileName);
+    const fileKey = fileIdentityKeyFromFileName(normalized);
     if (sameFile(normalized, owner) && stack.length > 0) {
       return [...stack, owner];
     }
-    const existingStackIndex = stackIndexes.get(normalized);
+    const existingStackIndex = stackIndexes.get(fileKey);
     if (existingStackIndex !== undefined) {
       return [...stack.slice(existingStackIndex), normalized];
     }
-    if (visited.has(normalized)) {
+    if (visited.has(fileKey)) {
       return undefined;
     }
     if (visited.size >= limits.maxDocuments) {
@@ -10475,8 +10476,8 @@ async function findIncludeCycleAsync(
       return undefined;
     }
     totalTextLength += size ?? 0;
-    visited.add(normalized);
-    stackIndexes.set(normalized, stack.length);
+    visited.add(fileKey);
+    stackIndexes.set(fileKey, stack.length);
     stack.push(normalized);
     const entry = await includeDocumentLoader
       .readIncludeRefsAsync(normalized, settings, { allowRead: true })
@@ -10511,7 +10512,7 @@ async function findIncludeCycleAsync(
       }
     }
     stack.pop();
-    stackIndexes.delete(normalized);
+    stackIndexes.delete(fileKey);
     return undefined;
   };
   const cycle = await search(start, 0);
@@ -10529,8 +10530,8 @@ async function findIncludeCycleAsync(
 
 function includeCycleCacheKey(owner: string, start: string, settings: AspSettings): string {
   return JSON.stringify({
-    owner: normalizeFileName(owner),
-    start: normalizeFileName(start),
+    owner: fileIdentityKeyFromFileName(owner),
+    start: fileIdentityKeyFromFileName(start),
     limits: vbProjectContextLimits(settings),
     resolution: includeResolutionSettingsKey(settings),
   });
@@ -11099,6 +11100,7 @@ async function diskAnalysisIncludeDependencyKey(
         settings,
       );
       const normalizedFileName = normalizeFileName(resolved.fileName);
+      const fileKey = fileIdentityKeyFromFileName(normalizedFileName);
       const stat = await fs.promises.stat(normalizedFileName).catch(() => undefined);
       const exists = stat?.isFile() === true;
       dependencies.push({
@@ -11112,10 +11114,10 @@ async function diskAnalysisIncludeDependencyKey(
         pathCaseMatches: resolved.pathCaseMatches,
         actualPath: resolved.actualPath ? normalizeFileName(resolved.actualPath) : undefined,
       });
-      if (!exists || visited.has(normalizedFileName)) {
+      if (!exists || visited.has(fileKey)) {
         continue;
       }
-      visited.add(normalizedFileName);
+      visited.add(fileKey);
       const entry = await includeDocumentLoader
         .readIncludeRefsAsync(normalizedFileName, settings, { allowRead: true })
         .catch(() => undefined);

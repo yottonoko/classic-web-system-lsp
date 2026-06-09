@@ -25,6 +25,27 @@ describe("VS Code extension package", () => {
     expect(manifest.devDependencies?.["@asp-lsp/language-server"]).toBeUndefined();
   });
 
+  it("keeps release manifests and server cache version in sync", () => {
+    const rootManifest = JSON.parse(fs.readFileSync("../../package.json", "utf8")) as {
+      version?: string;
+    };
+    const coreManifest = JSON.parse(
+      fs.readFileSync("../../packages/core/package.json", "utf8"),
+    ) as { version?: string };
+    const serverManifest = JSON.parse(
+      fs.readFileSync("../../packages/language-server/package.json", "utf8"),
+    ) as { version?: string };
+    const extensionManifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      version?: string;
+    };
+    const serverSource = fs.readFileSync("../../packages/language-server/src/server.ts", "utf8");
+
+    expect(coreManifest.version).toBe(rootManifest.version);
+    expect(serverManifest.version).toBe(rootManifest.version);
+    expect(extensionManifest.version).toBe(rootManifest.version);
+    expect(serverSource).toContain(`const languageServerVersion = "${rootManifest.version}";`);
+  });
+
   it("declares a TypeScript-only VSIX packaging script", () => {
     const rootManifest = JSON.parse(fs.readFileSync("../../package.json", "utf8")) as {
       scripts?: Record<string, string>;
