@@ -117,6 +117,7 @@ interface PendingPositionSync {
   to: ViewMode;
   generation: number;
   entries: Map<string, PositionSyncEntry>;
+  viewSpan?: number;
 }
 
 interface PositionSyncTransform {
@@ -546,6 +547,20 @@ const graph3dMinimumFocusDistance = 70;
 const graph3dLinkDistanceScale = 1.35;
 const positionSyncPinMs = 600;
 const graph3dSyncSpan = 160;
+const graphInitialNodeSpacing = 28;
+const graphInitialNodeZSpacing = 12;
+const graphGoldenAngle = Math.PI * (3 - Math.sqrt(5));
+const graphSyncedViewPadding = 1.25;
+const graphMinimumSyncedViewSpan = 70;
+const graphMaximumSyncedViewSpan = 2400;
+const graph2dMinimumSyncedZoom = 0.08;
+const graph2dMaximumSyncedZoom = 5;
+const graph3dViewDistanceScale = 1.25;
+const graphForceVelocityDecay = 0.42;
+const graphChargeBaseStrength = 45;
+const graphChargeValueStrength = 8;
+const graphLinkDistanceBase = 36;
+const graphLinkDistanceValueScale = 2.5;
 const sourceHighlightMarkClassName =
   "rounded-sm bg-[#ffcb6b]/45 px-0.5 text-inherit shadow-[0_0_0_1px_rgb(255_203_107_/_75%)]";
 const inspectorDefaultWidth = 320;
@@ -587,7 +602,6 @@ function App(): React.ReactElement {
   const positionSyncReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const skipAutoFitForModeRef = useRef(new Set<ViewMode>());
-  const forceFitForModeRef = useRef(new Set<ViewMode>());
   const graphData = useMemo(() => graphDataFor(graph), []);
   const filteredGraphData = useMemo(
     () => filterGraphData(graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes),
@@ -749,6 +763,13 @@ function App(): React.ReactElement {
       }
       const generation = positionSyncGenerationRef.current + 1;
       positionSyncGenerationRef.current = generation;
+      const viewSpan = captureGraphViewSpan(
+        mode,
+        graph2dRef.current,
+        graph3dRef.current,
+        renderGraphData.nodes,
+        surfaceSize,
+      );
       const entries = capturePositionSyncEntries(
         mode,
         renderGraphData.nodes,
@@ -763,26 +784,19 @@ function App(): React.ReactElement {
               to: nextMode,
               generation,
               entries,
+              viewSpan,
             }
           : undefined;
       if (entries.size > 0) {
         skipAutoFitForModeRef.current.add(nextMode);
-        if (mode === "2d" && nextMode === "3d") {
-          forceFitForModeRef.current.add(nextMode);
-        }
       }
       setMode(nextMode);
     },
-    [mode, renderGraphData.nodes],
+    [mode, renderGraphData.nodes, surfaceSize],
   );
   const handleEngineStop = useCallback(
     (nextMode: ViewMode) => {
       const autoFitRef = nextMode === "3d" ? hasAutoFit3dRef : hasAutoFit2dRef;
-      if (forceFitForModeRef.current.delete(nextMode)) {
-        autoFitRef.current = fitGraphToCanvas(nextMode);
-        skipAutoFitForModeRef.current.delete(nextMode);
-        return;
-      }
       if (skipAutoFitForModeRef.current.delete(nextMode)) {
         autoFitRef.current = true;
         return;
@@ -850,6 +864,11 @@ function App(): React.ReactElement {
   );
 
   useEffect(() => {
+    configureGraphForces(graph2dRef.current);
+    configureGraphForces(graph3dRef.current);
+  }, [renderGraphData2d, renderGraphData3d]);
+
+  useEffect(() => {
     if (selection && !isSelectionVisible(selection, filteredGraphData)) {
       setSelection(undefined);
     }
@@ -875,12 +894,20 @@ function App(): React.ReactElement {
     }
     const pinnedNodeIds =
       mode === "3d"
-        ? applyPositionSyncTo3d(pending, renderGraphData.nodes, graph3dRef.current)
-        : applyPositionSyncTo2d(pending, renderGraphData.nodes, graph2dRef.current);
+        ? applyPositionSyncTo3d(pending, renderGraphData.nodes)
+        : applyPositionSyncTo2d(pending, renderGraphData.nodes);
     pendingSyncRef.current = undefined;
     if (pinnedNodeIds.size === 0) {
       return;
     }
+    applyPendingViewState(
+      pending,
+      mode,
+      renderGraphData.nodes,
+      graph2dRef.current,
+      graph3dRef.current,
+      surfaceSize,
+    );
     graphRef.d3ReheatSimulation();
     if (positionSyncReleaseTimerRef.current) {
       clearTimeout(positionSyncReleaseTimerRef.current);
@@ -1061,6 +1088,7 @@ function App(): React.ReactElement {
               onNodeClick={(node) => selectGraphNode(node as GraphNode)}
               onLinkClick={(link) => selectGraphLink(link as GraphLink)}
               onBackgroundClick={() => setSelection(undefined)}
+              d3VelocityDecay={graphForceVelocityDecay}
               cooldownTicks={100}
               onEngineStop={() => handleEngineStop("3d")}
             />
@@ -1095,6 +1123,7 @@ function App(): React.ReactElement {
               onNodeClick={(node) => selectGraphNode(node as GraphNode)}
               onLinkClick={(link) => selectGraphLink(link as GraphLink)}
               onBackgroundClick={() => setSelection(undefined)}
+              d3VelocityDecay={graphForceVelocityDecay}
               cooldownTicks={100}
               onEngineStop={() => handleEngineStop("2d")}
             />
@@ -3277,21 +3306,43 @@ function graphNodeMap(nodes: GraphNode[]): Map<string, GraphNode> {
   return new Map(nodes.map((node) => [node.id, node]));
 }
 
+function initialGraphNodePosition(
+  index: number,
+  totalCount: number,
+  value: number,
+): { x: number; y: number; z: number } {
+  if (totalCount <= 1) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const angle = index * graphGoldenAngle;
+  const radius = Math.sqrt(index + 1) * graphInitialNodeSpacing + value;
+  return {
+    x: Math.cos(angle) * radius,
+    y: Math.sin(angle) * radius,
+    z: (positiveModulo(index, 7) - 3) * graphInitialNodeZSpacing,
+  };
+}
+
 function graphDataFor(payload: AspGraphPayload | undefined): GraphData {
   if (!payload) {
     return { nodes: [], links: [] };
   }
   const referenceCounts = graphReferenceCounts(payload.links);
   return {
-    nodes: payload.nodes.map((node) => {
+    nodes: payload.nodes.map((node, index) => {
       const category = nodeCategoryForColor(node);
       const referenceCount = referenceCounts.get(node.id) ?? 0;
+      const value = nodeValue(referenceCount);
+      const position = initialGraphNodePosition(index, payload.nodes.length, value);
       return {
         ...node,
         category,
         referenceCount,
-        value: nodeValue(referenceCount),
+        value,
         color: nodeColors[category],
+        x: position.x,
+        y: position.y,
+        z: position.z,
       };
     }),
     links: payload.links.map((link) => ({
@@ -3331,6 +3382,23 @@ function graphDataForRender(
 function positionSyncTransformFor3d(
   nodes: GraphNode[],
   positions: ReadonlyMap<string, PositionSyncEntry>,
+  targetSpan = graph3dSyncSpan,
+): PositionSyncTransform | undefined {
+  return positionSyncTransformForPositions(nodes, positions, targetSpan);
+}
+
+function positionSyncTransformFor2d(
+  nodes: GraphNode[],
+  positions: ReadonlyMap<string, PositionSyncEntry>,
+  targetSpan: number | undefined,
+): PositionSyncTransform | undefined {
+  return positionSyncTransformForPositions(nodes, positions, targetSpan);
+}
+
+function positionSyncTransformForPositions(
+  nodes: GraphNode[],
+  positions: ReadonlyMap<string, PositionSyncEntry>,
+  targetSpan: number | undefined,
 ): PositionSyncTransform | undefined {
   let minimumX = Infinity;
   let maximumX = -Infinity;
@@ -3357,10 +3425,37 @@ function positionSyncTransformFor3d(
     return undefined;
   }
   const span = Math.max(maximumX - minimumX, maximumY - minimumY);
+  const nextTargetSpan = clamp(
+    finiteNumber(targetSpan) ?? span,
+    graphMinimumSyncedViewSpan,
+    graphMaximumSyncedViewSpan,
+  );
   return {
     centerX: (minimumX + maximumX) / 2,
     centerY: (minimumY + maximumY) / 2,
-    scale: span > 0 ? graph3dSyncSpan / span : 1,
+    scale: span > 0 ? nextTargetSpan / span : 1,
+  };
+}
+
+function positionSyncPositionFor2d(
+  position: PositionSyncEntry | undefined,
+  transform: PositionSyncTransform | undefined,
+): PositionSyncEntry | undefined {
+  if (!position) {
+    return undefined;
+  }
+  const x = finiteNumber(position?.x);
+  const y = finiteNumber(position?.y);
+  if (x === undefined || y === undefined) {
+    return position;
+  }
+  if (!transform) {
+    return position;
+  }
+  return {
+    ...position,
+    x: (x - transform.centerX) * transform.scale,
+    y: (y - transform.centerY) * transform.scale,
   };
 }
 
@@ -3566,6 +3661,51 @@ function toggledSet<T>(set: ReadonlySet<T>, value: T): Set<T> {
   return nextSet;
 }
 
+function captureGraphViewSpan(
+  mode: ViewMode,
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+  nodes: GraphNode[],
+  surfaceSize: { width: number; height: number },
+): number | undefined {
+  const span =
+    mode === "3d"
+      ? graph3dCurrentViewSpan(graph3d, nodes)
+      : graph2dCurrentViewSpan(graph2d, surfaceSize);
+  return syncedGraphViewSpan(span);
+}
+
+function graph2dCurrentViewSpan(
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+  surfaceSize: { width: number; height: number },
+): number | undefined {
+  try {
+    const zoom = finiteNumber(graph2d?.zoom());
+    if (zoom === undefined || zoom <= 0) {
+      return undefined;
+    }
+    return Math.max(surfaceSize.width, surfaceSize.height) / zoom;
+  } catch {
+    return undefined;
+  }
+}
+
+function graph3dCurrentViewSpan(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+  nodes: GraphNode[],
+): number | undefined {
+  const distance = graph3dFallbackCameraDistance(graph3d, nodes);
+  return distance === undefined ? undefined : distance / graph3dViewDistanceScale;
+}
+
+function syncedGraphViewSpan(span: number | undefined): number | undefined {
+  const value = finiteNumber(span);
+  if (value === undefined) {
+    return undefined;
+  }
+  return clamp(value, graphMinimumSyncedViewSpan, graphMaximumSyncedViewSpan);
+}
+
 function capturePositionSyncEntries(
   mode: ViewMode,
   nodes: GraphNode[],
@@ -3638,23 +3778,21 @@ function capturePositionSyncEntry2d(
   };
 }
 
-function applyPositionSyncTo2d(
-  pending: PendingPositionSync,
-  nodes: GraphNode[],
-  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
-): Set<string> {
+function applyPositionSyncTo2d(pending: PendingPositionSync, nodes: GraphNode[]): Set<string> {
   const pinnedNodeIds = new Set<string>();
+  const transform =
+    pending.from === "3d"
+      ? positionSyncTransformFor2d(nodes, pending.entries, pending.viewSpan)
+      : undefined;
   for (const node of nodes) {
-    const entry = pending.entries.get(node.id);
+    const capturedEntry = pending.entries.get(node.id);
+    const entry =
+      pending.from === "3d" ? positionSyncPositionFor2d(capturedEntry, transform) : capturedEntry;
     if (!entry) {
       continue;
     }
-    const projected =
-      pending.from === "3d"
-        ? graph2dCoordsFromScreen(graph2d, entry.screenX, entry.screenY)
-        : undefined;
-    const x = finiteNumber(projected?.x) ?? entry.x;
-    const y = finiteNumber(projected?.y) ?? entry.y;
+    const x = finiteNumber(entry.x);
+    const y = finiteNumber(entry.y);
     if (x === undefined || y === undefined) {
       continue;
     }
@@ -3672,35 +3810,21 @@ function applyPositionSyncTo2d(
   return pinnedNodeIds;
 }
 
-function applyPositionSyncTo3d(
-  pending: PendingPositionSync,
-  nodes: GraphNode[],
-  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
-): Set<string> {
+function applyPositionSyncTo3d(pending: PendingPositionSync, nodes: GraphNode[]): Set<string> {
   const pinnedNodeIds = new Set<string>();
-  const transform = positionSyncTransformFor3dFromEntries(nodes, pending.entries);
-  const fallbackDistance = graph3dFallbackCameraDistance(graph3d, nodes);
+  const transform = positionSyncTransformFor3dFromEntries(nodes, pending.entries, pending.viewSpan);
   for (const node of nodes) {
     const capturedEntry = pending.entries.get(node.id);
     const entry = positionSyncPositionFor3d(capturedEntry, transform);
     if (!entry) {
       continue;
     }
-    const projected =
-      pending.from === "2d"
-        ? graph3dCoordsFromScreen(
-            graph3d,
-            capturedEntry?.screenX,
-            capturedEntry?.screenY,
-            finiteNumber(capturedEntry?.cameraDistance) ?? fallbackDistance,
-          )
-        : undefined;
-    const x = finiteNumber(projected?.x) ?? finiteNumber(entry.x);
-    const y = finiteNumber(projected?.y) ?? finiteNumber(entry.y);
+    const x = finiteNumber(entry.x);
+    const y = finiteNumber(entry.y);
     if (x === undefined || y === undefined) {
       continue;
     }
-    const z = finiteNumber(projected?.z) ?? finiteNumber(entry.z) ?? 0;
+    const z = finiteNumber(entry.z) ?? 0;
     node.x = x;
     node.y = y;
     node.z = z;
@@ -3718,8 +3842,86 @@ function applyPositionSyncTo3d(
 function positionSyncTransformFor3dFromEntries(
   nodes: GraphNode[],
   entries: ReadonlyMap<string, PositionSyncEntry>,
+  targetSpan: number | undefined,
 ): PositionSyncTransform | undefined {
-  return positionSyncTransformFor3d(nodes, entries);
+  return positionSyncTransformFor3d(nodes, entries, targetSpan);
+}
+
+function applyPendingViewState(
+  pending: PendingPositionSync,
+  mode: ViewMode,
+  nodes: GraphNode[],
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+  surfaceSize: { width: number; height: number },
+): void {
+  const span = syncedGraphViewSpan(pending.viewSpan);
+  if (mode === "3d") {
+    applyPendingViewState3d(graph3d, nodes, span);
+  } else {
+    applyPendingViewState2d(graph2d, nodes, span, surfaceSize);
+  }
+}
+
+function applyPendingViewState2d(
+  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
+  nodes: GraphNode[],
+  span: number | undefined,
+  surfaceSize: { width: number; height: number },
+): void {
+  if (!graph2d) {
+    return;
+  }
+  const center = graphNodeCenter2d(nodes);
+  if (!center) {
+    return;
+  }
+  try {
+    graph2d.centerAt(center.x, center.y, 0);
+    if (span !== undefined) {
+      const zoom = clamp(
+        Math.max(surfaceSize.width, surfaceSize.height) / (span * graphSyncedViewPadding),
+        graph2dMinimumSyncedZoom,
+        graph2dMaximumSyncedZoom,
+      );
+      graph2d.zoom(zoom, 0);
+    }
+  } catch {
+    return;
+  }
+}
+
+function applyPendingViewState3d(
+  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
+  nodes: GraphNode[],
+  span: number | undefined,
+): void {
+  if (!graph3d) {
+    return;
+  }
+  const center = graphNodeCenter3d(nodes);
+  if (!center) {
+    return;
+  }
+  const direction = graph3dViewDirection(graph3d, nodes, center) ?? { x: 0, y: 0, z: 1 };
+  const distance = clamp(
+    (span ?? graph3dSyncSpan) * graphSyncedViewPadding * graph3dViewDistanceScale,
+    graph3dMinimumFocusDistance,
+    graphMaximumSyncedViewSpan * graph3dViewDistanceScale,
+  );
+  try {
+    graph3d.cameraPosition(
+      {
+        x: center.x + direction.x * distance,
+        y: center.y + direction.y * distance,
+        z: center.z + direction.z * distance,
+      },
+      center,
+      0,
+    );
+  } catch {
+    return;
+  }
 }
 
 function releasePositionSyncPins(nodes: GraphNode[], pinnedNodeIds: ReadonlySet<string>): void {
@@ -3943,22 +4145,6 @@ function graph3dScreenCoords(
   }
 }
 
-function graph3dCoordsFromScreen(
-  graph3d: ForceGraph3DMethods<GraphNode, GraphLink> | undefined,
-  screenX: number | undefined,
-  screenY: number | undefined,
-  distance: number | undefined,
-): { x: number; y: number; z?: number } | undefined {
-  if (screenX === undefined || screenY === undefined || distance === undefined) {
-    return undefined;
-  }
-  try {
-    return graph3d?.screen2GraphCoords(screenX, screenY, distance);
-  } catch {
-    return undefined;
-  }
-}
-
 function graph2dScreenCoords(
   graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
   x: number,
@@ -3966,21 +4152,6 @@ function graph2dScreenCoords(
 ): { x: number; y: number } | undefined {
   try {
     return graph2d?.graph2ScreenCoords(x, y);
-  } catch {
-    return undefined;
-  }
-}
-
-function graph2dCoordsFromScreen(
-  graph2d: ForceGraph2DMethods<GraphNode, GraphLink> | undefined,
-  screenX: number | undefined,
-  screenY: number | undefined,
-): { x: number; y: number } | undefined {
-  if (screenX === undefined || screenY === undefined) {
-    return undefined;
-  }
-  try {
-    return graph2d?.screen2GraphCoords(screenX, screenY);
   } catch {
     return undefined;
   }
@@ -4038,6 +4209,23 @@ function graph3dControlsTarget(
   } catch {
     return undefined;
   }
+}
+
+function graphNodeCenter2d(nodes: GraphNode[]): { x: number; y: number } | undefined {
+  let count = 0;
+  let totalX = 0;
+  let totalY = 0;
+  for (const node of nodes) {
+    const x = finiteNumber(node.x);
+    const y = finiteNumber(node.y);
+    if (x === undefined || y === undefined) {
+      continue;
+    }
+    count += 1;
+    totalX += x;
+    totalY += y;
+  }
+  return count > 0 ? { x: totalX / count, y: totalY / count } : undefined;
 }
 
 function graphNodeCenter3d(nodes: GraphNode[]): { x: number; y: number; z: number } | undefined {
@@ -4167,6 +4355,50 @@ function searchableNodeText(node: GraphNode, matchCase: boolean): string {
 
 function normalizeSearchText(value: string, matchCase: boolean): string {
   return matchCase ? value : value.toLowerCase();
+}
+
+function configureGraphForces(
+  graph:
+    | ForceGraph2DMethods<GraphNode, GraphLink>
+    | ForceGraph3DMethods<GraphNode, GraphLink>
+    | undefined,
+): void {
+  if (!graph) {
+    return;
+  }
+  try {
+    const chargeForce = graph.d3Force("charge") as
+      | { strength?: (strength: (node: GraphNode) => number) => unknown }
+      | undefined;
+    chargeForce?.strength?.(graphNodeChargeStrength);
+    const linkForce = graph.d3Force("link") as
+      | { distance?: (distance: (link: GraphLink) => number) => unknown }
+      | undefined;
+    linkForce?.distance?.(graphLinkDistance);
+    graph.d3ReheatSimulation();
+  } catch {
+    return;
+  }
+}
+
+function graphNodeChargeStrength(node: GraphNode): number {
+  return -(graphChargeBaseStrength + graphNodeForceValue(node) * graphChargeValueStrength);
+}
+
+function graphLinkDistance(link: GraphLink): number {
+  return (
+    graphLinkDistanceBase +
+    (graphEndpointForceValue(link.source) + graphEndpointForceValue(link.target)) *
+      graphLinkDistanceValueScale
+  );
+}
+
+function graphEndpointForceValue(endpoint: string | GraphNode): number {
+  return typeof endpoint === "string" ? minimumNodeValue : graphNodeForceValue(endpoint);
+}
+
+function graphNodeForceValue(node: GraphNode): number {
+  return finiteNumber(node.value) ?? minimumNodeValue;
 }
 
 function highlightForSelection(

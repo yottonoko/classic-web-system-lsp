@@ -83,6 +83,17 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain('"toolbar.stats": "一覧"');
   });
 
+  it("keeps graph layout transitions stable across 2D and 3D views", () => {
+    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+
+    expect(graphWebviewSource).toContain("function initialGraphNodePosition");
+    expect(graphWebviewSource).toContain("captureGraphViewSpan(");
+    expect(graphWebviewSource).toContain("applyPendingViewState(");
+    expect(graphWebviewSource).toContain("configureGraphForces(");
+    expect(graphWebviewSource).toContain("graphNodeChargeStrength");
+    expect(graphWebviewSource).toContain("d3VelocityDecay={graphForceVelocityDecay}");
+  });
+
   it("contributes commands, task definition and IIS debug settings", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       repository?: { url?: string };
