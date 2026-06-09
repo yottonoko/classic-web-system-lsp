@@ -15066,29 +15066,42 @@ async function buildFolderAspGraphAsync(
   const documentsForGraph: AspGraphDocument[] = [];
   const openDocuments = await workspaceAnalyzableOpenDocumentsAsync(settings);
   throwIfGraphCancelled(cancellation);
-  for (const document of openDocuments) {
-    throwIfGraphCancelled(cancellation);
-    const fileName = normalizeFileName(uriToFileName(document.uri));
-    if (!isFileInDirectory(fileName, folderName)) {
+  const concurrency = analysisConcurrency(settings);
+  const openGraphDocuments = await mapWithConcurrency(
+    openDocuments,
+    concurrency,
+    async (document): Promise<AspGraphDocument | undefined> => {
+      throwIfGraphCancelled(cancellation);
+      const fileName = normalizeFileName(uriToFileName(document.uri));
+      if (!isFileInDirectory(fileName, folderName)) {
+        return undefined;
+      }
+      const cached = await ensureFreshCachedDocumentAsync(document);
+      throwIfGraphCancelled(cancellation);
+      return graphDocumentFromCachedAsync(cached, cachedSettings(cached.source.uri));
+    },
+  );
+  for (const graphDocument of openGraphDocuments) {
+    if (!graphDocument) {
       continue;
     }
-    const cached = await ensureFreshCachedDocumentAsync(document);
-    throwIfGraphCancelled(cancellation);
-    opened.add(cached.source.uri);
-    documentsForGraph.push(
-      await graphDocumentFromCachedAsync(cached, cachedSettings(cached.source.uri)),
-    );
+    opened.add(graphDocument.uri);
+    documentsForGraph.push(graphDocument);
   }
-  for (const entry of workspaceIndex.values()) {
-    throwIfGraphCancelled(cancellation);
-    if (opened.has(entry.uri) || !isFileInDirectory(entry.fileName, folderName)) {
-      continue;
-    }
-    const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
-    throwIfGraphCancelled(cancellation);
-    documentsForGraph.push(await graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri)));
-    await yieldToEventLoop();
-  }
+  const indexedEntries = [...workspaceIndex.values()].filter(
+    (entry) => !opened.has(entry.uri) && isFileInDirectory(entry.fileName, folderName),
+  );
+  const indexedGraphDocuments = await mapWithConcurrency(
+    indexedEntries,
+    concurrency,
+    async (entry) => {
+      throwIfGraphCancelled(cancellation);
+      const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
+      throwIfGraphCancelled(cancellation);
+      return graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri));
+    },
+  );
+  documentsForGraph.push(...indexedGraphDocuments);
   const payload = await graphPayloadFromDocumentsAsync("folder", documentsForGraph, settings, {
     rootUri: pathToFileUri(folderName),
     truncated: workspaceIndexTruncated
@@ -15113,25 +15126,33 @@ async function buildWorkspaceAspGraphAsync(
   const documentsForGraph: AspGraphDocument[] = [];
   const openDocuments = await workspaceAnalyzableOpenDocumentsAsync(settings);
   throwIfGraphCancelled(cancellation);
-  for (const document of openDocuments) {
-    throwIfGraphCancelled(cancellation);
-    const cached = await ensureFreshCachedDocumentAsync(document);
-    throwIfGraphCancelled(cancellation);
-    opened.add(cached.source.uri);
-    documentsForGraph.push(
-      await graphDocumentFromCachedAsync(cached, cachedSettings(cached.source.uri)),
-    );
+  const concurrency = analysisConcurrency(settings);
+  const openGraphDocuments = await mapWithConcurrency(
+    openDocuments,
+    concurrency,
+    async (document) => {
+      throwIfGraphCancelled(cancellation);
+      const cached = await ensureFreshCachedDocumentAsync(document);
+      throwIfGraphCancelled(cancellation);
+      return graphDocumentFromCachedAsync(cached, cachedSettings(cached.source.uri));
+    },
+  );
+  for (const graphDocument of openGraphDocuments) {
+    opened.add(graphDocument.uri);
+    documentsForGraph.push(graphDocument);
   }
-  for (const entry of workspaceIndex.values()) {
-    throwIfGraphCancelled(cancellation);
-    if (opened.has(entry.uri)) {
-      continue;
-    }
-    const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
-    throwIfGraphCancelled(cancellation);
-    documentsForGraph.push(await graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri)));
-    await yieldToEventLoop();
-  }
+  const indexedEntries = [...workspaceIndex.values()].filter((entry) => !opened.has(entry.uri));
+  const indexedGraphDocuments = await mapWithConcurrency(
+    indexedEntries,
+    concurrency,
+    async (entry) => {
+      throwIfGraphCancelled(cancellation);
+      const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
+      throwIfGraphCancelled(cancellation);
+      return graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri));
+    },
+  );
+  documentsForGraph.push(...indexedGraphDocuments);
   const payload = await graphPayloadFromDocumentsAsync("workspace", documentsForGraph, settings, {
     truncated: workspaceIndexTruncated
       ? {
@@ -15263,17 +15284,21 @@ async function graphPayloadFromDocumentsAsync(
   const cancellation = options.cancellation ?? neverCancelled;
   throwIfGraphCancelled(cancellation);
   const state = createAspGraphBuildState(settings, options.rootUri, options.truncated);
-  const indexedDocuments: AspGraphIndexedDocument[] = [];
   for (const document of documentsForGraph) {
     throwIfGraphCancelled(cancellation);
     addFileGraphNode(state, document.uri, document.fileName, true);
-    indexedDocuments.push({
-      document,
-      graphIndex: await graphFileIndexForDocumentAsync(document, settings),
-    });
-    throwIfGraphCancelled(cancellation);
-    await yieldToEventLoop();
   }
+  const indexedDocuments = await mapWithConcurrency(
+    documentsForGraph,
+    analysisConcurrency(settings),
+    async (document): Promise<AspGraphIndexedDocument> => {
+      throwIfGraphCancelled(cancellation);
+      const graphIndex = await graphFileIndexForDocumentAsync(document, settings);
+      throwIfGraphCancelled(cancellation);
+      return { document, graphIndex };
+    },
+  );
+  throwIfGraphCancelled(cancellation);
   for (const indexed of indexedDocuments) {
     throwIfGraphCancelled(cancellation);
     await addDocumentStructureToAspGraphAsync(state, indexed, settings);
