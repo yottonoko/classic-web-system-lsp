@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.5.19",
+  "version": "0.5.20",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -94,6 +94,7 @@
         "embeddedLanguages": {
           "source.vbscript.embedded.asp": "vbscript",
           "source.vbscript.embedded.asp.expression": "vbscript",
+          "source.css.embedded.html": "css",
           "source.js": "javascript",
           "source.css": "css",
           "text.html.basic": "html"
@@ -107,7 +108,8 @@
         ],
         "embeddedLanguages": {
           "source.vbscript.embedded.asp": "vbscript",
-          "source.vbscript.embedded.asp.expression": "vbscript"
+          "source.vbscript.embedded.asp.expression": "vbscript",
+          "source.css.embedded.html": "css"
         }
       },
       {

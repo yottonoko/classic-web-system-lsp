@@ -671,6 +671,11 @@ describe("VS Code extension package", () => {
     expect(classicAspGrammar?.embeddedLanguages?.["source.vbscript.embedded.asp.expression"]).toBe(
       "vbscript",
     );
+    expect(classicAspGrammar?.embeddedLanguages?.["source.css.embedded.html"]).toBe("css");
+    const classicAspTagInjection = manifest.contributes?.grammars?.find(
+      (grammar) => grammar.scopeName === "classic-asp.tag-injection",
+    );
+    expect(classicAspTagInjection?.embeddedLanguages?.["source.css.embedded.html"]).toBe("css");
   });
 
   it("keeps package localization keys resolved", () => {

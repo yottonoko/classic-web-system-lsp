@@ -219,6 +219,7 @@ const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const languageServerVersion = "0.5.12";
+const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
 const semanticTokensLargeSourceThreshold = internalTestThreshold(
@@ -1554,7 +1555,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         save: { includeText: false },
       },
       completionProvider: {
-        triggerCharacters: ["<", ".", '"', "'", ":", "#", "("],
+        triggerCharacters: ["<", ".", '"', "'", ":", "#", "(", " ", ";"],
         resolveProvider: true,
       },
       signatureHelpProvider: { triggerCharacters: ["(", ",", " "] },
@@ -1849,6 +1850,10 @@ connection.onCompletion((params) =>
     const settings = cachedSettings(cached.source.uri);
     const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
     if (!region) {
+      return [];
+    }
+    const triggerCharacter = completionTriggerCharacter(params);
+    if (isCssOnlyCompletionTrigger(triggerCharacter) && region.language !== "css") {
       return [];
     }
     const remember = (items: CompletionItem[], contextIdentity?: string): CompletionItem[] => {
@@ -5044,6 +5049,21 @@ function completionItemMatchesPrefix(item: CompletionItem, prefix: string): bool
   return (
     label.toLowerCase().startsWith(lowerPrefix) || filterText.toLowerCase().startsWith(lowerPrefix)
   );
+}
+
+function completionTriggerCharacter(params: TextDocumentPositionParams): string | undefined {
+  const context = (
+    params as TextDocumentPositionParams & {
+      context?: { triggerKind?: number; triggerCharacter?: string };
+    }
+  ).context;
+  return context?.triggerKind === completionTriggerKindTriggerCharacter
+    ? context.triggerCharacter
+    : undefined;
+}
+
+function isCssOnlyCompletionTrigger(triggerCharacter: string | undefined): boolean {
+  return triggerCharacter === " " || triggerCharacter === ";";
 }
 
 function cssCompletion(

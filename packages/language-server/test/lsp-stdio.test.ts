@@ -47,6 +47,7 @@ interface DecodedSemanticToken {
 }
 
 const rpcTimeoutMs = 30_000;
+const completionTriggerKindTriggerCharacter = 2;
 const semanticTokenType = {
   keyword: 0,
   variable: 1,
@@ -94,6 +95,15 @@ describe(
         });
         const initializeText = JSON.stringify(initialize);
         expect(initializeText).toContain("completionProvider");
+        expect(
+          (
+            initialize as {
+              capabilities?: {
+                completionProvider?: { triggerCharacters?: string[] };
+              };
+            }
+          ).capabilities?.completionProvider?.triggerCharacters,
+        ).toEqual(expect.arrayContaining([" ", ";"]));
         expect(initializeText).toContain('"aspLsp.server.reindexWorkspace"');
         expect(initializeText).toContain('"aspLsp.server.clearCache"');
         expect(initializeText).toContain('"aspLsp.server.clearDiskCache"');
@@ -475,6 +485,10 @@ Server.HTMLEe▮
         const completions = await server.request("textDocument/completion", {
           textDocument: { uri },
           position: marked.position,
+          context: {
+            triggerKind: completionTriggerKindTriggerCharacter,
+            triggerCharacter: '"',
+          },
         });
         const displayItem = completionItems(completions).find((item) => item.label === "display");
         expect(displayItem).toBeDefined();
@@ -503,7 +517,7 @@ Server.HTMLEe▮
           capabilities: {},
         });
         const uri = "file:///tmp/incomplete-css-style-attribute.asp";
-        const marked = markedDocument('<div class="card" style="color: r▮');
+        const marked = markedDocument('<div class="card" style="color: ▮');
         server.notify("textDocument/didOpen", {
           textDocument: {
             uri,
@@ -517,13 +531,55 @@ Server.HTMLEe▮
         const completions = await server.request("textDocument/completion", {
           textDocument: { uri },
           position: marked.position,
+          context: {
+            triggerKind: completionTriggerKindTriggerCharacter,
+            triggerCharacter: " ",
+          },
         });
         const redItem = completionItems(completions).find((item) => item.label === "red");
         expect(redItem).toBeDefined();
         expect(completionEditRange(redItem)).toEqual({
-          start: positionAt(marked.text, marked.text.indexOf("color: r") + "color: ".length),
+          start: marked.position,
           end: marked.position,
         });
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("keeps CSS-only completion triggers quiet outside CSS regions", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/css-space-trigger-outside-css.asp";
+        const marked = markedDocument("<% Dim value ▮%>");
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+          context: {
+            triggerKind: completionTriggerKindTriggerCharacter,
+            triggerCharacter: " ",
+          },
+        });
+        expect(completionItems(completions)).toHaveLength(0);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
