@@ -1807,6 +1807,7 @@ const value = externalHe▮lper("ada");
     });
 
     it("returns JavaScript call hierarchy plus CSS and JavaScript symbols", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-symbols-"));
       const marked = markedDocument(`<style>
 .panel { color: red; }
 </style>
@@ -1823,10 +1824,10 @@ function boot() {
         await server.start();
         await server.request("initialize", {
           processId: process.pid,
-          rootUri: "file:///tmp",
+          rootUri: pathToFileURL(tempDir).href,
           capabilities: {},
         });
-        const uri = "file:///tmp/js-symbols.asp";
+        const uri = pathToFileURL(path.join(tempDir, "js-symbols.asp")).href;
         server.notify("textDocument/didOpen", {
           textDocument: {
             uri,
@@ -1864,6 +1865,7 @@ function boot() {
         server.notify("exit", undefined);
       } finally {
         server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
 
