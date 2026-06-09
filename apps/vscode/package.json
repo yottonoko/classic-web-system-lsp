@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -714,6 +714,11 @@
           "type": "boolean",
           "default": true,
           "description": "%configuration.graph.showReferenceLinks.description%"
+        },
+        "aspLsp.graph.showAssignmentLinks": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.graph.showAssignmentLinks.description%"
         },
         "aspLsp.graph.showCallLinks": {
           "type": "boolean",

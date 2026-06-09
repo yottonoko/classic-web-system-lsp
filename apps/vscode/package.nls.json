@@ -73,6 +73,7 @@
   "configuration.graph.showIncludeLinks.description": "Show include links in graph views.",
   "configuration.graph.showDeclareLinks.description": "Show declaration-to-source links in graph views.",
   "configuration.graph.showReferenceLinks.description": "Show reference links in graph views.",
+  "configuration.graph.showAssignmentLinks.description": "Show assignment links in graph views.",
   "configuration.graph.showCallLinks.description": "Show call links in graph views.",
   "configuration.graph.showUnresolvedLinks.description": "Show unresolved reference links in graph views.",
   "configuration.graph.showMemberLinks.description": "Show object member reference and call links in graph views.",

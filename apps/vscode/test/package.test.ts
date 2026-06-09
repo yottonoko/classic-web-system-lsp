@@ -293,6 +293,7 @@ describe("VS Code extension package", () => {
       showIncludeLinks: true,
       showDeclareLinks: true,
       showReferenceLinks: true,
+      showAssignmentLinks: true,
       showCallLinks: true,
       showUnresolvedLinks: true,
       showMemberLinks: true,

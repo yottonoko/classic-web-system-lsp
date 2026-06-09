@@ -689,7 +689,13 @@ type AspGraphNodeOrigin = "source" | "builtin" | "configured";
 
 type AspGraphExternalKind = "function" | "constant" | "object" | "member" | "event";
 
-type AspGraphLinkKind = "include" | "declares" | "references" | "calls" | "unresolvedReference";
+type AspGraphLinkKind =
+  | "include"
+  | "declares"
+  | "references"
+  | "assignments"
+  | "calls"
+  | "unresolvedReference";
 
 type AspGraphLinkFilterCategory = AspGraphLinkKind | "member";
 
@@ -770,6 +776,7 @@ interface AspGraphPayload {
     files: number;
     declarations: number;
     references: number;
+    assignments: number;
     calls: number;
     unresolvedReferences: number;
     includes: number;
@@ -11348,6 +11355,7 @@ function normalizeGraphSettings(
     showIncludeLinks: record.showIncludeLinks !== false,
     showDeclareLinks: record.showDeclareLinks !== false,
     showReferenceLinks: record.showReferenceLinks !== false,
+    showAssignmentLinks: record.showAssignmentLinks !== false,
     showCallLinks: record.showCallLinks !== false,
     showUnresolvedLinks: record.showUnresolvedLinks !== false,
     showMemberLinks: record.showMemberLinks !== false,
@@ -15309,6 +15317,7 @@ function createAspGraphBuildState(
       files: 0,
       declarations: 0,
       references: 0,
+      assignments: 0,
       calls: 0,
       unresolvedReferences: 0,
       includes: 0,
@@ -15559,11 +15568,16 @@ function addDocumentUsageToAspGraph(
       : reference.resolvedId
         ? declarationGraphNodeId(reference.resolvedId)
         : addExternalGraphNode(state, external);
-    state.stats.references += 1;
+    const linkKind = reference.role === "write" ? "assignments" : "references";
+    if (linkKind === "assignments") {
+      state.stats.assignments += 1;
+    } else {
+      state.stats.references += 1;
+    }
     addAspGraphLink(state, {
       source: scopeGraphNodeId(state, document.uri, reference.scopeId),
       target,
-      kind: "references",
+      kind: linkKind,
       label: reference.role,
       role: reference.role,
       ranges: [{ uri: document.uri, range: reference.range }],
@@ -16194,6 +16208,7 @@ const graphLinkFilterOrder: AspGraphLinkFilterCategory[] = [
   "include",
   "declares",
   "references",
+  "assignments",
   "calls",
   "unresolvedReference",
   "member",
@@ -16253,6 +16268,8 @@ function isVisibleAspGraphLinkCategory(
       return settings.showDeclareLinks !== false;
     case "references":
       return settings.showReferenceLinks !== false;
+    case "assignments":
+      return settings.showAssignmentLinks !== false;
     case "calls":
       return settings.showCallLinks !== false;
     case "unresolvedReference":
@@ -16268,6 +16285,7 @@ function recomputeAspGraphStats(
     files: 0,
     declarations: 0,
     references: 0,
+    assignments: 0,
     calls: 0,
     unresolvedReferences: 0,
     includes: 0,
@@ -16292,6 +16310,8 @@ function recomputeAspGraphStats(
       }
     } else if (link.kind === "references") {
       stats.references += 1;
+    } else if (link.kind === "assignments") {
+      stats.assignments += 1;
     } else if (link.kind === "calls") {
       stats.calls += 1;
     } else if (link.kind === "unresolvedReference") {
@@ -16333,6 +16353,7 @@ function emptyAspGraphPayload(scope: AspGraphScope, rootUri?: string): AspGraphP
       files: 0,
       declarations: 0,
       references: 0,
+      assignments: 0,
       calls: 0,
       unresolvedReferences: 0,
       includes: 0,

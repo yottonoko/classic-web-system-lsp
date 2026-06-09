@@ -188,6 +188,7 @@ export interface AspGraphSettings {
   showIncludeLinks?: boolean;
   showDeclareLinks?: boolean;
   showReferenceLinks?: boolean;
+  showAssignmentLinks?: boolean;
   showCallLinks?: boolean;
   showUnresolvedLinks?: boolean;
   showMemberLinks?: boolean;

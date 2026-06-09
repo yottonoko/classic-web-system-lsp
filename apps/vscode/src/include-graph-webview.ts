@@ -19,6 +19,7 @@ export interface AspGraphPayload {
     files: number;
     declarations: number;
     references: number;
+    assignments: number;
     calls: number;
     unresolvedReferences: number;
     includes: number;
@@ -75,7 +76,7 @@ export interface AspGraphLink {
   id: string;
   source: string;
   target: string;
-  kind: "include" | "declares" | "references" | "calls" | "unresolvedReference";
+  kind: "include" | "declares" | "references" | "assignments" | "calls" | "unresolvedReference";
   label: string;
   role?: string;
   count: number;

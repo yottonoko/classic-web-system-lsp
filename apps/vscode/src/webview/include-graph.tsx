@@ -190,7 +190,7 @@ const graphMessageEn = {
   "empty.includedFiles": "No included files found.",
   "empty.matchingItems": "No matching items in the current graph view.",
   "empty.outgoingLinks": "No outgoing links found in the current graph.",
-  "empty.referencesOrCalls": "No references or calls found in this graph.",
+  "empty.referencesOrCalls": "No assignments, references, or calls found in this graph.",
   "empty.sourceRanges": "No source ranges found for this link.",
   "empty.sourceUnavailable": "Source is unavailable.",
   "inspector.close": "Close inspector",
@@ -232,6 +232,9 @@ const graphMessageEn = {
   "legend.outgoingLinks": "Outgoing links",
   "legend.outgoingLinksDescription": "Also highlight links that start from the selected node.",
   "legend.selection": "Selection",
+  "link.assignments.description":
+    "VBScript assigns to a resolved variable, parameter, field, or property.",
+  "link.assignments.label": "Assignment",
   "link.calls.description": "VBScript calls a procedure, function, method, constructor, or member.",
   "link.calls.label": "Call",
   "link.declares.description": "A file or containing scope declares a VBScript symbol.",
@@ -241,12 +244,28 @@ const graphMessageEn = {
   "link.member.description": "VBScript references or calls an object member.",
   "link.member.label": "Member",
   "link.memberType": "Member {label}",
-  "link.references.description":
-    "VBScript reads, writes, or otherwise references a resolved symbol.",
+  "link.references.description": "VBScript reads or otherwise uses a resolved symbol.",
   "link.references.label": "Reference",
   "link.unresolvedReference.description":
     "VBScript references a symbol that could not be resolved.",
   "link.unresolvedReference.label": "Unresolved",
+  "node.class.description": "VBScript class declarations.",
+  "node.file.description": "Classic ASP source files and include files.",
+  "node.function.description": "Top-level VBScript Function declarations.",
+  "node.globalConstant.description": "Top-level VBScript Const declarations.",
+  "node.globalVariable.description":
+    "Top-level VBScript variables and inferred global object variables.",
+  "node.localConstant.description": "Procedure-local Const declarations and class constants.",
+  "node.localVariable.description": "Procedure-local variables and class fields.",
+  "node.member.description": "Built-in, configured, or unresolved object members.",
+  "node.method.description": "Class methods whose procedure kind is unknown.",
+  "node.methodFunction.description": "Class methods declared with Function.",
+  "node.methodSub.description": "Class methods declared with Sub.",
+  "node.parameter.description": "Function, Sub, method, and property parameters.",
+  "node.property.description": "Class Property Get, Let, and Set declarations.",
+  "node.root.description": "The graph root file or selected root context.",
+  "node.sub.description": "Top-level VBScript Sub declarations.",
+  "node.unresolved.description": "Names that could not be resolved to a visible declaration.",
   "occurrence.includeDirective": "Include directive",
   "occurrence.one": "1 occurrence",
   "occurrence.other": "{count} occurrences",
@@ -256,7 +275,7 @@ const graphMessageEn = {
   "section.incomingLinks": "Incoming links",
   "section.occurrences": "Occurrences",
   "section.outgoingLinks": "Outgoing links",
-  "section.referencesCalls": "References / Calls",
+  "section.referencesCalls": "Assignments / References / Calls",
   "snippet.loadingSource": "Loading source...",
   "stats.heading": "Graph list",
   "stats.metric.files": "Files",
@@ -266,7 +285,10 @@ const graphMessageEn = {
   "stats.show": "Show graph list",
   "stats.title": "Graph list",
   "toolbar.graphMode": "Graph mode",
+  "toolbar.graphModeDescription": "Switch between the 3D force graph and the 2D graph view.",
   "toolbar.matchCase": "Match case",
+  "toolbar.matchCaseDescription":
+    "Only match node names with the same uppercase and lowercase letters.",
   "toolbar.searchNodes": "Search nodes",
   "toolbar.stats": "List",
   "toolbar.truncated": "truncated: {reason}",
@@ -318,7 +340,7 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "empty.includedFiles": "include file は見つかりません。",
     "empty.matchingItems": "現在の graph view に一致する項目はありません。",
     "empty.outgoingLinks": "現在の graph に outgoing link はありません。",
-    "empty.referencesOrCalls": "この graph に参照または呼び出しはありません。",
+    "empty.referencesOrCalls": "この graph に代入、参照、呼び出しはありません。",
     "empty.sourceRanges": "この link の source range は見つかりません。",
     "empty.sourceUnavailable": "source は利用できません。",
     "inspector.close": "inspector を閉じる",
@@ -360,6 +382,9 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "legend.outgoingLinks": "Outgoing links",
     "legend.outgoingLinksDescription": "選択 node から出る link も highlight します。",
     "legend.selection": "選択",
+    "link.assignments.description":
+      "VBScript が解決済みの variable、parameter、field、property に代入します。",
+    "link.assignments.label": "代入",
     "link.calls.description":
       "VBScript の procedure、function、method、constructor、member 呼び出しです。",
     "link.calls.label": "呼び出し",
@@ -370,10 +395,27 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "link.member.description": "VBScript が object member を参照または呼び出します。",
     "link.member.label": "Member",
     "link.memberType": "Member {label}",
-    "link.references.description": "VBScript が解決済み symbol を読み書きまたは参照します。",
+    "link.references.description": "VBScript が解決済み symbol を読み取り、または利用します。",
     "link.references.label": "参照",
     "link.unresolvedReference.description": "VBScript が解決できなかった symbol を参照します。",
     "link.unresolvedReference.label": "未解決",
+    "node.class.description": "VBScript class declaration です。",
+    "node.file.description": "Classic ASP source file と include file です。",
+    "node.function.description": "top-level の VBScript Function declaration です。",
+    "node.globalConstant.description": "top-level の VBScript Const declaration です。",
+    "node.globalVariable.description":
+      "top-level の VBScript variable と推論された global object variable です。",
+    "node.localConstant.description": "procedure-local Const declaration と class constant です。",
+    "node.localVariable.description": "procedure-local variable と class field です。",
+    "node.member.description": "built-in、configured、未解決の object member です。",
+    "node.method.description": "procedure kind が不明な class method です。",
+    "node.methodFunction.description": "Function で宣言された class method です。",
+    "node.methodSub.description": "Sub で宣言された class method です。",
+    "node.parameter.description": "Function、Sub、method、property の parameter です。",
+    "node.property.description": "class Property Get、Let、Set declaration です。",
+    "node.root.description": "graph の root file または選択された root context です。",
+    "node.sub.description": "top-level の VBScript Sub declaration です。",
+    "node.unresolved.description": "visible declaration に解決できなかった name です。",
     "occurrence.includeDirective": "Include directive",
     "occurrence.one": "1 件",
     "occurrence.other": "{count} 件",
@@ -383,7 +425,7 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "section.incomingLinks": "Incoming links",
     "section.occurrences": "出現箇所",
     "section.outgoingLinks": "Outgoing links",
-    "section.referencesCalls": "参照 / 呼び出し",
+    "section.referencesCalls": "代入 / 参照 / 呼び出し",
     "snippet.loadingSource": "source を読み込み中...",
     "stats.heading": "一覧",
     "stats.metric.files": "Files",
@@ -393,7 +435,9 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "stats.show": "graph 一覧を表示",
     "stats.title": "graph 一覧",
     "toolbar.graphMode": "Graph mode",
+    "toolbar.graphModeDescription": "3D force graph と 2D graph view を切り替えます。",
     "toolbar.matchCase": "大文字小文字を区別",
+    "toolbar.matchCaseDescription": "node name の大文字小文字が一致するものだけを検索します。",
     "toolbar.searchNodes": "node を検索",
     "toolbar.stats": "一覧",
     "toolbar.truncated": "truncated: {reason}",
@@ -438,6 +482,7 @@ const linkColors: Record<AspGraphLink["kind"], string> = {
   include: "#82aaff",
   declares: "#89ddff",
   references: "#c3e88d",
+  assignments: "#ffcb6b",
   calls: "#f78c6c",
   unresolvedReference: "#ff5370",
 };
@@ -460,6 +505,10 @@ const linkMeanings: Record<AspGraphLink["kind"], { label: string; description: s
     label: graphText("link.references.label"),
     description: graphText("link.references.description"),
   },
+  assignments: {
+    label: graphText("link.assignments.label"),
+    description: graphText("link.assignments.description"),
+  },
   calls: {
     label: graphText("link.calls.label"),
     description: graphText("link.calls.description"),
@@ -474,6 +523,7 @@ const linkFilterLabels: Record<LinkFilterCategory, string> = {
   include: graphText("link.include.label"),
   declares: graphText("link.declares.label"),
   references: graphText("link.references.label"),
+  assignments: graphText("link.assignments.label"),
   calls: graphText("link.calls.label"),
   unresolvedReference: graphText("link.unresolvedReference.label"),
   member: graphText("link.member.label"),
@@ -483,6 +533,7 @@ const linkFilterDescriptions: Record<LinkFilterCategory, string> = {
   include: graphText("link.include.description"),
   declares: graphText("link.declares.description"),
   references: graphText("link.references.description"),
+  assignments: graphText("link.assignments.description"),
   calls: graphText("link.calls.description"),
   unresolvedReference: graphText("link.unresolvedReference.description"),
   member: graphText("link.member.description"),
@@ -507,6 +558,25 @@ const nodeCategoryLabels: Record<NodeColorCategory, string> = {
   unresolved: graphText("label.unresolved"),
 };
 
+const nodeCategoryDescriptions: Record<NodeColorCategory, string> = {
+  root: graphText("node.root.description"),
+  file: graphText("node.file.description"),
+  class: graphText("node.class.description"),
+  function: graphText("node.function.description"),
+  sub: graphText("node.sub.description"),
+  method: graphText("node.method.description"),
+  methodFunction: graphText("node.methodFunction.description"),
+  methodSub: graphText("node.methodSub.description"),
+  property: graphText("node.property.description"),
+  member: graphText("node.member.description"),
+  globalVariable: graphText("node.globalVariable.description"),
+  globalConstant: graphText("node.globalConstant.description"),
+  localVariable: graphText("node.localVariable.description"),
+  localConstant: graphText("node.localConstant.description"),
+  parameter: graphText("node.parameter.description"),
+  unresolved: graphText("node.unresolved.description"),
+};
+
 const nodeCategoryOrder: NodeColorCategory[] = [
   "root",
   "file",
@@ -529,6 +599,7 @@ const linkFilterOrder: LinkFilterCategory[] = [
   "include",
   "declares",
   "references",
+  "assignments",
   "calls",
   "unresolvedReference",
   "member",
@@ -983,7 +1054,10 @@ function App(): React.ReactElement {
             value={searchInput}
             onChange={(event) => updateSearchInput(event.currentTarget.value)}
           />
-          <label className="inline-flex h-7 cursor-pointer select-none items-center gap-1.5 whitespace-nowrap rounded-md border border-[#394456] bg-[#151a22] px-2 text-[11px] text-[#b5c0d0]">
+          <label
+            className="inline-flex h-7 cursor-pointer select-none items-center gap-1.5 whitespace-nowrap rounded-md border border-[#394456] bg-[#151a22] px-2 text-[11px] text-[#b5c0d0]"
+            title={graphText("toolbar.matchCaseDescription")}
+          >
             <input
               type="checkbox"
               className="m-0 h-3.5 w-3.5 accent-[#89ddff]"
@@ -1001,6 +1075,7 @@ function App(): React.ReactElement {
         <div
           className="inline-grid grid-cols-2 overflow-hidden rounded-md border border-[#394456]"
           aria-label={graphText("toolbar.graphMode")}
+          title={graphText("toolbar.graphModeDescription")}
         >
           <button
             type="button"
@@ -1009,6 +1084,7 @@ function App(): React.ReactElement {
                 ? "h-7 min-w-[42px] cursor-pointer border-0 bg-[#89ddff] text-[#11151c]"
                 : "h-7 min-w-[42px] cursor-pointer border-0 bg-[#151a22] text-[#b5c0d0]"
             }
+            title={graphText("toolbar.graphModeDescription")}
             onClick={() => switchGraphMode("3d")}
           >
             3D
@@ -1020,6 +1096,7 @@ function App(): React.ReactElement {
                 ? "h-7 min-w-[42px] cursor-pointer border-0 bg-[#89ddff] text-[#11151c]"
                 : "h-7 min-w-[42px] cursor-pointer border-0 bg-[#151a22] text-[#b5c0d0]"
             }
+            title={graphText("toolbar.graphModeDescription")}
             onClick={() => switchGraphMode("2d")}
           >
             2D
@@ -1178,6 +1255,7 @@ function GraphLegend({
         type="button"
         className="flex h-7 min-w-0 cursor-pointer items-center justify-between gap-3 border-0 bg-transparent p-0 text-left"
         aria-expanded={isOpen}
+        title={graphText("legend.heading")}
         onClick={() => setOpen((current) => !current)}
       >
         <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] font-semibold tracking-[0.08em] text-[#9aa7b8] uppercase">
@@ -1209,6 +1287,7 @@ function GraphLegend({
                 checked={!hiddenNodeCategories.has(category)}
                 color={nodeColors[category]}
                 label={nodeCategoryLabels[category]}
+                title={nodeCategoryDescriptions[category]}
                 variant="node"
                 onToggle={() => onToggleNodeCategory(category)}
               />
@@ -1280,7 +1359,7 @@ function LegendFilterItem({
 }): React.ReactElement {
   return (
     <label
-      className="flex min-w-0 cursor-pointer select-none items-center gap-2 text-[11px] text-[#d7dde8]"
+      className="group relative flex min-w-0 cursor-pointer select-none items-center gap-2 text-[11px] text-[#d7dde8]"
       title={title}
     >
       <input
@@ -1306,6 +1385,14 @@ function LegendFilterItem({
         />
       )}
       <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{label}</span>
+      {title ? (
+        <span
+          role="tooltip"
+          className="pointer-events-none absolute top-[calc(100%_+_6px)] left-0 z-30 hidden w-[min(260px,calc(100vw_-_40px))] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)] group-focus-within:block group-hover:block"
+        >
+          {title}
+        </span>
+      ) : null}
     </label>
   );
 }
@@ -1405,6 +1492,7 @@ function GraphStatsPopover({
         aria-haspopup="dialog"
         aria-expanded={isOpen}
         aria-label={graphText("stats.show")}
+        title={graphText("stats.show")}
         onClick={() => setOpen((current) => !current)}
       >
         <span className="font-semibold text-[#d7dde8]">{graphText("toolbar.stats")}</span>
@@ -1484,6 +1572,7 @@ function MetricButton({
           : "inline-flex cursor-pointer items-baseline gap-[5px] rounded-md border border-[#303a49] bg-transparent px-[7px] py-[3px] text-left text-[11px] text-[#9aa7b8] hover:border-[#4b5a70] hover:text-[#d7dde8]"
       }
       aria-pressed={active}
+      title={`${label}: ${value}`}
       onClick={() => onSelect(metric)}
     >
       <span>{label}</span>
@@ -1513,6 +1602,7 @@ function GraphStatsList({
           key={item.id}
           type="button"
           className="grid cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
+          title={detailParts(item.title, item.detail, item.status).join(" · ")}
           onClick={() => onSelectItem(item.target)}
         >
           <div className="flex min-w-0 items-center gap-2">
@@ -1728,6 +1818,7 @@ function PaneResizeHandle({
       aria-valuemin={minWidth}
       aria-valuemax={maxWidth}
       aria-valuenow={width}
+      title={graphText("view.resizeInspector")}
       className="relative cursor-col-resize bg-[#11151c] outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-[#2b3442] hover:bg-[#1c2430] focus:bg-[#1c2430] focus:before:bg-[#89ddff] max-[780px]:hidden"
       onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
@@ -1773,6 +1864,7 @@ function Inspector({
           type="button"
           className="hidden h-7 w-7 shrink-0 rounded-md border border-[#405068] bg-[#202735] text-sm leading-none text-[#d7dde8] max-[780px]:inline-grid max-[780px]:place-items-center"
           aria-label={graphText("inspector.close")}
+          title={graphText("inspector.close")}
           onClick={onClose}
         >
           x
@@ -1981,6 +2073,11 @@ function NodeLinkList({
           key={link.id}
           type="button"
           className="grid cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
+          title={detailParts(
+            linkInspectorTypeLabel(link),
+            `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
+            nodeLinkDetail(link),
+          ).join(" · ")}
           onClick={() => onSelectLink(link)}
         >
           <div className="flex min-w-0 items-center gap-2">
@@ -2127,6 +2224,7 @@ function Accordion({
           type="button"
           className="flex min-h-9 min-w-0 flex-1 cursor-pointer items-center justify-between gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left"
           aria-expanded={isOpen}
+          title={title}
           onClick={() => setOpen((current) => !current)}
         >
           <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
@@ -2730,6 +2828,7 @@ function OpenLocationButton({
       type="button"
       className={`cursor-pointer rounded-md border border-[#405068] bg-[#c3e88d] text-xs text-[#11151c] disabled:cursor-not-allowed disabled:bg-[#202735] disabled:text-[#717b8c] ${className ?? ""}`}
       disabled={disabled || !uri}
+      title={label}
       onClick={(event) => {
         event.stopPropagation();
         if (uri) {
@@ -2965,6 +3064,7 @@ function SelectEndpointButton({
       type="button"
       className="h-7 cursor-pointer rounded-md border border-[#405068] bg-[#202735] px-2 text-[11px] text-[#d7dde8] hover:border-[#4b5a70] disabled:cursor-not-allowed disabled:border-[#303a49] disabled:text-[#717b8c]"
       disabled={!node}
+      title={label}
       onClick={() => {
         if (node) {
           onSelectNode(node);
@@ -3077,7 +3177,10 @@ function sourceItemsForNode(
   for (const link of graphData.links) {
     if (
       nodeIdForEndpoint(link.target) !== node.id ||
-      (link.kind !== "references" && link.kind !== "calls" && link.kind !== "unresolvedReference")
+      (link.kind !== "references" &&
+        link.kind !== "assignments" &&
+        link.kind !== "calls" &&
+        link.kind !== "unresolvedReference")
     ) {
       continue;
     }
@@ -3148,6 +3251,7 @@ function sourceKindForLink(link: GraphLink): AspGraphSourceRangeRequestItem["kin
       return "declaration";
     case "calls":
       return "call";
+    case "assignments":
     case "references":
     case "unresolvedReference":
       return "reference";
@@ -3587,6 +3691,7 @@ function graphStatsFor(graphData: GraphData): AspGraphPayload["stats"] {
     files: 0,
     declarations: 0,
     references: 0,
+    assignments: 0,
     calls: 0,
     unresolvedReferences: 0,
     includes: 0,
@@ -3609,6 +3714,8 @@ function graphStatsFor(graphData: GraphData): AspGraphPayload["stats"] {
       }
     } else if (link.kind === "references") {
       stats.references += 1;
+    } else if (link.kind === "assignments") {
+      stats.assignments += 1;
     } else if (link.kind === "calls") {
       stats.calls += 1;
     } else if (link.kind === "unresolvedReference") {
@@ -3624,6 +3731,7 @@ function graphReferenceCounts(links: AspGraphLink[]): Map<string, number> {
     if (
       link.kind !== "include" &&
       link.kind !== "references" &&
+      link.kind !== "assignments" &&
       link.kind !== "calls" &&
       link.kind !== "unresolvedReference"
     ) {
@@ -3640,6 +3748,7 @@ function graphReferenceCountsForGraphLinks(links: GraphLink[]): Map<string, numb
     if (
       link.kind !== "include" &&
       link.kind !== "references" &&
+      link.kind !== "assignments" &&
       link.kind !== "calls" &&
       link.kind !== "unresolvedReference"
     ) {

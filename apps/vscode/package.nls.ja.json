@@ -73,6 +73,7 @@
   "configuration.graph.showIncludeLinks.description": "graph view に include link を表示します。",
   "configuration.graph.showDeclareLinks.description": "graph view に declaration-to-source link を表示します。",
   "configuration.graph.showReferenceLinks.description": "graph view に reference link を表示します。",
+  "configuration.graph.showAssignmentLinks.description": "graph view に assignment link を表示します。",
   "configuration.graph.showCallLinks.description": "graph view に call link を表示します。",
   "configuration.graph.showUnresolvedLinks.description": "graph view に unresolved reference link を表示します。",
   "configuration.graph.showMemberLinks.description": "graph view に object member reference と call link を表示します。",

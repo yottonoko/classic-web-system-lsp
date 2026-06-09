@@ -6854,13 +6854,15 @@ End Sub
         expect(graph.links?.some((link) => link.kind === "include")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "declares")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "references")).toBe(true);
+        expect(graph.links?.some((link) => link.kind === "assignments")).toBe(true);
         const renderNode = graph.nodes?.find(
           (node) => node.kind === "vbDeclaration" && node.label === "Render",
         );
         expect(
           graph.links?.some(
             (link) =>
-              link.kind === "references" &&
+              link.kind === "assignments" &&
+              link.role === "write" &&
               link.source === renderNode?.id &&
               link.target === renderNode?.id,
           ),
@@ -7157,7 +7159,7 @@ sharedTitle = "before"
         expect(hasGraphLink(pageGraph, "references", pageFileNode, includeSharedTitleNode)).toBe(
           true,
         );
-        expect(hasGraphLink(pageGraph, "references", renderNode, includeSharedTitleNode)).toBe(
+        expect(hasGraphLink(pageGraph, "assignments", renderNode, includeSharedTitleNode)).toBe(
           true,
         );
         expect(hasGraphLink(pageGraph, "references", childFileNode, includeSharedTitleNode)).toBe(
@@ -7181,9 +7183,9 @@ sharedTitle = "before"
           "sharedTitle",
           sharedUri,
         );
-        expect(hasGraphLink(beforeGraph, "references", beforeFileNode, beforeSharedTitleNode)).toBe(
-          true,
-        );
+        expect(
+          hasGraphLink(beforeGraph, "assignments", beforeFileNode, beforeSharedTitleNode),
+        ).toBe(true);
         expect(
           hasGraphLink(beforeGraph, "references", beforeFileNode, beforeIncludeSharedTitleNode),
         ).toBe(false);
@@ -7358,6 +7360,7 @@ End Sub
         showIncludeLinks: true,
         showDeclareLinks: true,
         showReferenceLinks: true,
+        showAssignmentLinks: true,
         showCallLinks: true,
         showUnresolvedLinks: true,
         showMemberLinks: true,
@@ -7635,8 +7638,8 @@ End Sub
         expect(hasDeclaresLink(visibleGraph, "WithProperty.Title", "WithProperty")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "repoObject", "default.asp")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "arg")).toBe(true);
-        expect(hasGraphLink(visibleGraph, "references", "Main", "localMain")).toBe(true);
-        expect(hasGraphLink(visibleGraph, "references", "Main", "bareImplicit")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "assignments", "Main", "localMain")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "assignments", "Main", "bareImplicit")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "loopIndex")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "loopItem")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "implicitIndexed")).toBe(true);
@@ -7704,6 +7707,12 @@ End Sub
           const graph = await buildGraph();
           expect(hasLink(graph, (link) => link.kind === "references")).toBe(true);
           expect(graph.settings?.hiddenLinkCategories).toContain("references");
+        }
+        configure({ ...allGraphSettings, showAssignmentLinks: false });
+        {
+          const graph = await buildGraph();
+          expect(hasLink(graph, (link) => link.kind === "assignments")).toBe(true);
+          expect(graph.settings?.hiddenLinkCategories).toContain("assignments");
         }
         configure({ ...allGraphSettings, showCallLinks: false });
         {
