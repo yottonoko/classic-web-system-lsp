@@ -5116,10 +5116,49 @@ function cssCompletion(
   if (!position) {
     return [];
   }
-  return cssService
+  const items = cssService
     .doComplete(document, position, stylesheet)
     .items.map((item) => remapCompletionItem(virtual, item))
     .filter((item): item is CompletionItem => Boolean(item));
+  return items.length > 0
+    ? items
+    : cssStyleAttributeSemicolonCompletions(cached, params, virtual, position);
+}
+
+function cssStyleAttributeSemicolonCompletions(
+  cached: CachedDocument,
+  params: TextDocumentPositionParams,
+  virtual: VirtualDocument,
+  position: Position,
+): CompletionItem[] {
+  const sourceOffset = cached.source.offsetAt(params.position);
+  const region = findRegionAt(cached.parsed, sourceOffset);
+  if (
+    region?.kind !== "style-attribute" ||
+    sourceOffset !== region.contentEnd ||
+    cached.source.getText()[sourceOffset - 1] !== ";"
+  ) {
+    return [];
+  }
+  const virtualOffset = offsetAtText(virtual.text, position);
+  const syntheticText = `${virtual.text.slice(0, virtualOffset)} ${virtual.text.slice(virtualOffset)}`;
+  const syntheticDocument = TextDocument.create(virtual.uri, virtual.languageId, 0, syntheticText);
+  const syntheticPosition = syntheticDocument.positionAt(virtualOffset + 1);
+  const sourceRange = { start: params.position, end: params.position };
+  return cssService
+    .doComplete(syntheticDocument, syntheticPosition, cssService.parseStylesheet(syntheticDocument))
+    .items.map((item) => completionItemAtSourceRange(item, sourceRange));
+}
+
+function completionItemAtSourceRange(item: CompletionItem, range: Range): CompletionItem {
+  if (!item.textEdit) {
+    return item;
+  }
+  const textEdit =
+    "range" in item.textEdit
+      ? { ...item.textEdit, range }
+      : { ...item.textEdit, insert: range, replace: range };
+  return { ...item, textEdit, additionalTextEdits: undefined };
 }
 
 type AspIncludeCompletionContextKind = "html" | "comment" | "includeMode";

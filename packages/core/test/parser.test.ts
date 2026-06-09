@@ -139,13 +139,15 @@ Response.Write message
       "file:///site/typed-style-attribute.asp",
       source,
       source.indexOf("<div ") + "<div ".length,
-      'style="di"',
+      'style="display: block;"',
     );
 
     expect(result.impacts.some((impact) => impact.kind === "full")).toBe(true);
     expect(result.parsed).toEqual(parseAspDocument(result.uri, result.text));
-    expect(result.parsed.regions.some((region) => region.kind === "style-attribute")).toBe(true);
-    expect(buildVirtualDocuments(result.parsed).get("css")?.text).toContain("*{di}");
+    const style = result.parsed.regions.find((region) => region.kind === "style-attribute");
+    expect(style).toBeDefined();
+    expect(result.text.slice(style?.contentStart, style?.contentEnd)).toBe("display: block;");
+    expect(buildVirtualDocuments(result.parsed).get("css")?.text).toContain("*{display: block;}");
   });
 
   it("falls back when typed HTML edits create ASP regions", () => {

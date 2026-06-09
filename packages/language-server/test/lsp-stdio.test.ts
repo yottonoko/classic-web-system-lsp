@@ -532,6 +532,51 @@ Server.HTMLEe▮
       }
     });
 
+    it("returns CSS completions after a trailing style attribute semicolon", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/css-style-attribute-semicolon.asp";
+        const marked = markedDocument('<div style="display: block; display: block;▮"></div>');
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+          context: {
+            triggerKind: completionTriggerKindTriggerCharacter,
+            triggerCharacter: ";",
+          },
+        });
+        const labels = completionLabels(completions);
+        expect(labels).toContain("display");
+        expect(labels).not.toContain("/div");
+        expect(
+          completionEditRange(
+            completionItems(completions).find((item) => item.label === "display"),
+          ),
+        ).toEqual({ start: marked.position, end: marked.position });
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns CSS completions inside empty HTML style attributes", async () => {
       const server = new RpcServer();
       try {
