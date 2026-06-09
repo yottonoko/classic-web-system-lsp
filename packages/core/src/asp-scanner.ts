@@ -77,12 +77,19 @@ export function extractAspIncludeRefs(text: string): AspInclude[] {
 }
 
 function isInsideHtmlTagAt(text: string, index: number): boolean {
+  return containingHtmlTagStartAt(text, index) !== undefined;
+}
+
+function containingHtmlTagStartAt(text: string, index: number): number | undefined {
+  if (index <= 0) {
+    return undefined;
+  }
   const tagStart = text.lastIndexOf("<", index - 1);
   if (tagStart === -1 || text.startsWith("<!--", tagStart) || text.startsWith("<%", tagStart)) {
-    return false;
+    return undefined;
   }
   const tagEnd = text.lastIndexOf(">", index - 1);
-  return tagStart > tagEnd;
+  return tagStart > tagEnd ? tagStart : undefined;
 }
 
 export function scanHtmlAndAsp(
@@ -160,6 +167,98 @@ export function scanHtmlAndAsp(
     cursor = tag.end;
   }
   return { inlineRegions, tagRegions, includes, serverObjects };
+}
+
+export function scanVbscriptIndexInput(
+  text: string,
+  diagnostics: AspParsedDocument["diagnostics"],
+  settings: AspSettings,
+): AspHtmlScan {
+  const inlineRegions: AspRegion[] = [];
+  const tagRegions: AspRegion[] = [];
+  const includes: AspInclude[] = [];
+  const serverObjects: AspServerObject[] = [];
+  const specialPattern = /<!--|<%|<\s*(?:script|style|object)\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = specialPattern.exec(text)) !== null) {
+    const start = match.index;
+    const containingTagStart = containingHtmlTagStartAt(text, start);
+    if (containingTagStart !== undefined) {
+      const tag = readHtmlTag(text, containingTagStart);
+      if (tag && tag.end > start) {
+        addVbscriptIndexTagInput(text, tag, diagnostics, settings, inlineRegions, serverObjects);
+        specialPattern.lastIndex = tag.end;
+      }
+      continue;
+    }
+
+    const token = match[0].toLowerCase();
+    if (token === "<%") {
+      const region = parseAspRegionAt(text, start, diagnostics, text.length, settings);
+      inlineRegions.push(region);
+      specialPattern.lastIndex = region.end;
+      continue;
+    }
+    if (token === "<!--") {
+      const commentEnd = text.indexOf("-->", start + 4);
+      const end = commentEnd === -1 ? text.length : commentEnd + 3;
+      const include = parseIncludeComment(text, start, end);
+      if (include) {
+        includes.push(include);
+      }
+      specialPattern.lastIndex = end;
+      continue;
+    }
+
+    const tag = readHtmlTag(text, start);
+    if (!tag) {
+      continue;
+    }
+    addVbscriptIndexTagInput(text, tag, diagnostics, settings, inlineRegions, serverObjects);
+    if ((tag.name === "script" || tag.name === "style") && !tag.closing && !tag.selfClosing) {
+      const close = findElementClose(text, tag.name, tag.end);
+      if (close) {
+        const region = elementRegionFromTag(tag, close);
+        if (region.kind === "server-script") {
+          tagRegions.push(region);
+        }
+        inlineRegions.push(
+          ...scanAspRegionsInRange(
+            text,
+            tag.end,
+            close.start,
+            diagnostics,
+            settings,
+            tag.name === "script" ? "javascript" : "css",
+          ),
+        );
+        specialPattern.lastIndex = close.end;
+        continue;
+      }
+    }
+    specialPattern.lastIndex = tag.end;
+  }
+  return { inlineRegions, tagRegions, includes, serverObjects };
+}
+
+function addVbscriptIndexTagInput(
+  text: string,
+  tag: HtmlTag,
+  diagnostics: AspParsedDocument["diagnostics"],
+  settings: AspSettings,
+  inlineRegions: AspRegion[],
+  serverObjects: AspServerObject[],
+): void {
+  if (tag.closing) {
+    return;
+  }
+  const serverObject = serverObjectFromTag(text, tag);
+  if (serverObject) {
+    serverObjects.push(serverObject);
+  }
+  inlineRegions.push(
+    ...scanAspRegionsInRange(text, tag.attributesStart, tag.attributesEnd, diagnostics, settings),
+  );
 }
 
 function scanAspRegionsInRange(

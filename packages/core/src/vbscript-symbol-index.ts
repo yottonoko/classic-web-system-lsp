@@ -1,6 +1,6 @@
 import type { Range } from "vscode-languageserver-types";
 import type { AspInclude, AspRegion, AspServerObject, AspSettings, VbToken } from "./types";
-import { normalizeScriptLanguage, parseAttributes, scanHtmlAndAsp } from "./asp-scanner";
+import { normalizeScriptLanguage, parseAttributes, scanVbscriptIndexInput } from "./asp-scanner";
 import { offsetAt } from "./position";
 import { tokenizeVbscript, unquoteVbString } from "./vbscript-cst";
 import builtinCatalogData from "./vbscript-builtin-catalog.json";
@@ -141,6 +141,7 @@ interface SymbolIndexBuildState {
   declarationNameKeys: Set<string>;
   hasOptionExplicit: boolean;
   lineStarts: number[];
+  positionLineCursor: number;
   scopes: ScopeFrame[];
   stack: ScopeFrame[];
   tokens: VbToken[];
@@ -150,6 +151,11 @@ interface VbRegionIndexInput {
   regions: AspRegion[];
   includeRefs: AspInclude[];
   serverObjects: AspServerObject[];
+}
+
+interface VbRegionTokenResult {
+  tokens: VbToken[];
+  significantTokenCount: number;
 }
 
 interface DeclarationNameEntry {
@@ -234,7 +240,8 @@ export function extractVbscriptSymbolIndex(
 ): VbSymbolIndex {
   const resolvedOptions = { ...defaultOptions, ...options };
   const input = collectVbscriptIndexInput(text, settings);
-  const tokens = tokensForRegions(text, input.regions);
+  const tokenResult = tokensForRegions(text, input.regions);
+  const tokens = tokenResult.tokens;
   const state: SymbolIndexBuildState = {
     uri,
     text,
@@ -243,6 +250,7 @@ export function extractVbscriptSymbolIndex(
     declarationNameKeys: new Set(),
     hasOptionExplicit: false,
     lineStarts: lineStartsForText(text),
+    positionLineCursor: 0,
     scopes: [
       {
         id: globalScopeId,
@@ -276,7 +284,7 @@ export function extractVbscriptSymbolIndex(
     includeRefs: input.includeRefs,
     stats: {
       regions: input.regions.length,
-      tokens: tokens.filter((token) => !isBoundaryToken(token)).length,
+      tokens: tokenResult.significantTokenCount,
       declarations: state.declarations.length,
       references: referenceResult.references.length,
       callSites: referenceResult.callSites.length,
@@ -286,7 +294,7 @@ export function extractVbscriptSymbolIndex(
 }
 
 function collectVbscriptIndexInput(text: string, settings: AspSettings): VbRegionIndexInput {
-  const scan = scanHtmlAndAsp(text, [], settings);
+  const scan = scanVbscriptIndexInput(text, [], settings);
   const directiveLanguage = scan.inlineRegions
     .filter((region) => region.kind === "asp-directive")
     .map((region) => directiveLanguageFromRegion(text, region))
@@ -345,12 +353,22 @@ function directiveLanguageFromRegion(text: string, region: AspRegion): string | 
       : undefined;
 }
 
-function tokensForRegions(text: string, regions: AspRegion[]): VbToken[] {
+function tokensForRegions(text: string, regions: AspRegion[]): VbRegionTokenResult {
   const tokens: VbToken[] = [];
+  let significantTokenCount = 0;
   for (const region of regions) {
-    tokens.push(
-      ...tokenizeVbscript(text.slice(region.contentStart, region.contentEnd), region.contentStart),
-    );
+    for (const token of tokenizeVbscript(
+      text.slice(region.contentStart, region.contentEnd),
+      region.contentStart,
+    )) {
+      if (token.kind === "whitespace" || token.kind === "comment") {
+        continue;
+      }
+      tokens.push(token);
+      if (!isBoundaryToken(token)) {
+        significantTokenCount += 1;
+      }
+    }
     tokens.push({
       kind: "newline",
       start: region.contentEnd,
@@ -358,7 +376,7 @@ function tokensForRegions(text: string, regions: AspRegion[]): VbToken[] {
       text: "\n",
     });
   }
-  return tokens.filter((token) => token.kind !== "whitespace" && token.kind !== "comment");
+  return { tokens, significantTokenCount };
 }
 
 function addServerObjectDeclarations(
@@ -1611,13 +1629,23 @@ function normalizeName(name: string): string {
 
 function rangeAt(state: SymbolIndexBuildState, start: number, end: number): Range {
   return {
-    start: positionAt(state.lineStarts, state.text.length, start),
-    end: positionAt(state.lineStarts, state.text.length, end),
+    start: positionAt(state, start),
+    end: positionAt(state, end),
   };
 }
 
-function positionAt(lineStarts: number[], textLength: number, offset: number): Range["start"] {
-  const safeOffset = Math.max(0, Math.min(offset, textLength));
+function positionAt(state: SymbolIndexBuildState, offset: number): Range["start"] {
+  const safeOffset = Math.max(0, Math.min(offset, state.text.length));
+  const lineStarts = state.lineStarts;
+  const cursor = state.positionLineCursor;
+  if (lineStarts[cursor] <= safeOffset) {
+    let line = cursor;
+    while (line + 1 < lineStarts.length && lineStarts[line + 1] <= safeOffset) {
+      line += 1;
+    }
+    state.positionLineCursor = line;
+    return { line, character: safeOffset - lineStarts[line] };
+  }
   let low = 0;
   let high = lineStarts.length - 1;
   let line = 0;
@@ -1630,6 +1658,7 @@ function positionAt(lineStarts: number[], textLength: number, offset: number): R
       high = middle - 1;
     }
   }
+  state.positionLineCursor = line;
   return { line, character: safeOffset - lineStarts[line] };
 }
 

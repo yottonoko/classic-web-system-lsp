@@ -2589,6 +2589,25 @@ function fromClientScript() {}
       declarations: [{ name: "FromServerScript", kind: "sub" }],
       absentDeclarations: [{ name: "fromJScriptTag" }, { name: "fromClientScript" }],
     },
+    {
+      name: "ASP islands inside attributes and client content stay indexed",
+      source: `<%
+Dim AttrValue, ScriptValue, StyleValue
+%>
+<div data-value="<%= AttrValue %>"></div>
+<script>const value = <%= ScriptValue %>;</script>
+<style>.x { color: <%= StyleValue %>; }</style>`,
+      declarations: [
+        { name: "AttrValue", kind: "variable" },
+        { name: "ScriptValue", kind: "variable" },
+        { name: "StyleValue", kind: "variable" },
+      ],
+      references: [
+        { name: "AttrValue", role: "read", bindingScope: "global" },
+        { name: "ScriptValue", role: "read", bindingScope: "global" },
+        { name: "StyleValue", role: "read", bindingScope: "global" },
+      ],
+    },
   ];
 
   it.each(symbolIndexSpecialCases)("covers VBScript symbol index edge case: $name", (testCase) => {
