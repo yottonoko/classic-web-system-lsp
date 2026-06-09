@@ -41,7 +41,8 @@
     "react-force-graph-2d": "1.29.1",
     "react-force-graph-3d": "1.29.1",
     "three-spritetext": "1.10.0",
-    "vscode-languageclient": "^9.0.1"
+    "vscode-languageclient": "^9.0.1",
+    "write-excel-file": "^4.1.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
@@ -912,6 +913,20 @@
         "title": "%command.showWorkspaceGraph.title%"
       },
       {
+        "command": "aspLsp.exportCurrentFileAnalysisExcel",
+        "title": "%command.exportCurrentFileAnalysisExcel.title%",
+        "icon": "$(file-media)"
+      },
+      {
+        "command": "aspLsp.exportFolderAnalysisExcel",
+        "title": "%command.exportFolderAnalysisExcel.title%",
+        "icon": "$(file-media)"
+      },
+      {
+        "command": "aspLsp.exportWorkspaceAnalysisExcel",
+        "title": "%command.exportWorkspaceAnalysisExcel.title%"
+      },
+      {
         "command": "aspLsp.debugIisUrl",
         "title": "%command.debugIisUrl.title%"
       },
@@ -947,7 +962,17 @@
           "group": "navigation"
         },
         {
+          "command": "aspLsp.exportFolderAnalysisExcel",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation"
+        },
+        {
           "command": "aspLsp.showCurrentFileGraph",
+          "when": "resourceExtname =~ /\\.(asp|asa|inc)$/i",
+          "group": "navigation"
+        },
+        {
+          "command": "aspLsp.exportCurrentFileAnalysisExcel",
           "when": "resourceExtname =~ /\\.(asp|asa|inc)$/i",
           "group": "navigation"
         }
@@ -988,6 +1013,9 @@
     ]
   },
   "activationEvents": [
+    "onCommand:aspLsp.exportCurrentFileAnalysisExcel",
+    "onCommand:aspLsp.exportFolderAnalysisExcel",
+    "onCommand:aspLsp.exportWorkspaceAnalysisExcel",
     "onCommand:aspLsp.showCurrentFileGraph",
     "onCommand:aspLsp.showFolderGraph",
     "onCommand:aspLsp.showWorkspaceGraph",

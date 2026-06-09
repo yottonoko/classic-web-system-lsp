@@ -68,6 +68,10 @@ export interface AspGraphNode {
   memberOf?: string;
   bindingScope?: string;
   procedureKind?: string;
+  implicit?: boolean;
+  typeName?: string;
+  arrayKind?: string;
+  arrayDimensions?: string[];
   group?: string;
   origin?: "source" | "builtin" | "configured";
   externalKind?: "function" | "constant" | "object" | "member" | "event";
