@@ -5281,7 +5281,7 @@ Response.Write SharedTitle()
       }
     });
 
-    it("reuses worker-backed workspace references between CodeLens and references", async () => {
+    it("shares workspace references between CodeLens and references", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-cache-"));
       const common = path.join(tempDir, "common.inc");
       const page = path.join(tempDir, "default.asp");
@@ -5351,7 +5351,7 @@ Response.Write SharedTitle()
         });
         expect(JSON.stringify(references)).toContain(pageUri);
         expect(JSON.stringify(references)).not.toContain(unrelatedUri);
-        await waitForLogContaining(server, "vb.references.worker.cache.hit");
+        await waitForLogContaining(server, "vb.references.summary.fastPath");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -5431,11 +5431,8 @@ Response.Write SharedSubtitle()
         >;
         expect(JSON.stringify(resolvedTitleLens.command)).toContain(pageUri);
         expect(JSON.stringify(resolvedTitleLens.command)).not.toContain(unrelatedUri);
-        const workerBatchLog = await waitForLogContaining(
-          server,
-          "vb.references.worker.batch.complete",
-        );
-        expect(JSON.stringify(workerBatchLog.params)).toContain("symbols=2");
+        const batchLog = await waitForLogContaining(server, "vb.references.batch.complete");
+        expect(JSON.stringify(batchLog.params)).toContain("symbols=2");
         await waitForLogContaining(server, "vb.references.reachability.skip");
 
         const subtitleLens = referenceLensAtLine(5);
@@ -5455,12 +5452,165 @@ Response.Write SharedSubtitle()
       }
     });
 
+    it("resolves the requested workspace reference CodeLens before warming the full batch", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-first-"));
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "default.asp");
+      const commonSource = `<%
+Function SharedTitle()
+  SharedTitle = "Dashboard"
+End Function
+
+Function SharedSubtitle()
+  SharedSubtitle = "Overview"
+End Function
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="common.inc" -->
+<%
+Response.Write SharedTitle()
+Response.Write SharedSubtitle()
+%>`,
+        "utf8",
+      );
+      const commonUri = pathToFileURL(common).href;
+      const pageUri = pathToFileURL(page).href;
+      const server = new RpcServer({
+        env: { ASP_LSP_TEST_VB_REFERENCES_WORKER_DELAY_MS: "100" },
+      });
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "summary" },
+              codeLens: { referenceScope: "workspace" },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: commonUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: commonSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: commonUri },
+        })) as Array<Record<string, unknown>>;
+        const referencesCodeLens = codeLens.find((lens) => {
+          const data = lens.data as { kind?: unknown; line?: unknown } | undefined;
+          return data?.kind === "vbscript-reference" && data.line === 1;
+        });
+        const resolvedCodeLens = (await server.request(
+          "codeLens/resolve",
+          referencesCodeLens,
+        )) as Record<string, unknown>;
+        expect(JSON.stringify(resolvedCodeLens.command)).toContain(pageUri);
+
+        const immediateLogs = JSON.stringify(server.takePendingNotifications("window/logMessage"));
+        expect(immediateLogs).toContain("symbol=SharedTitle");
+        expect(immediateLogs).toContain("symbols=1");
+        expect(immediateLogs).not.toContain("vb.references.batch.complete");
+
+        const batchLog = await waitForLogContaining(server, "vb.references.batch.complete");
+        expect(JSON.stringify(batchLog.params)).toContain("symbols=2");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("falls back from summary workspace references when a candidate has a same-name declaration", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-shadow-"));
+      const common = path.join(tempDir, "common.inc");
+      const page = path.join(tempDir, "default.asp");
+      const commonSource = `<%
+Function SharedTitle()
+  SharedTitle = "Dashboard"
+End Function
+%>`;
+      fs.writeFileSync(common, commonSource, "utf8");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="common.inc" -->
+<%
+Function SharedTitle()
+  SharedTitle = "Local"
+End Function
+Response.Write SharedTitle()
+%>`,
+        "utf8",
+      );
+      const commonUri = pathToFileURL(common).href;
+      const pageUri = pathToFileURL(page).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "summary" },
+              codeLens: { referenceScope: "workspace" },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: commonUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: commonSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: commonUri },
+        })) as Array<Record<string, unknown>>;
+        const referencesCodeLens = codeLens.find((lens) => {
+          const data = lens.data as { kind?: unknown; line?: unknown } | undefined;
+          return data?.kind === "vbscript-reference" && data.line === 1;
+        });
+        const resolvedCodeLens = (await server.request(
+          "codeLens/resolve",
+          referencesCodeLens,
+        )) as Record<string, unknown>;
+        expect(JSON.stringify(resolvedCodeLens.command)).not.toContain(pageUri);
+        await waitForLogContaining(server, "vb.references.worker");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("reuses in-flight worker-backed workspace references for concurrent requests", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-reuse-"));
       const common = path.join(tempDir, "common.inc");
       const page = path.join(tempDir, "default.asp");
       const commonSource = `<%
-Function SharedTitle()
+Private Function SharedTitle()
   SharedTitle = "Dashboard"
 End Function
 %>`;
@@ -5500,7 +5650,7 @@ Response.Write SharedTitle()
 
         const params = {
           textDocument: { uri: commonUri },
-          position: { line: 1, character: 10 },
+          position: { line: 1, character: 20 },
           context: { includeDeclaration: false },
         };
         const first = server.request("textDocument/references", params);
@@ -5523,7 +5673,7 @@ Response.Write SharedTitle()
       const common = path.join(tempDir, "common.inc");
       const page = path.join(tempDir, "default.asp");
       const commonSource = `<%
-Function SharedTitle()
+Private Function SharedTitle()
   SharedTitle = "Dashboard"
 End Function
 %>`;
@@ -5563,7 +5713,7 @@ Response.Write SharedTitle()
 
         const pendingReferences = server.request("textDocument/references", {
           textDocument: { uri: commonUri },
-          position: { line: 1, character: 10 },
+          position: { line: 1, character: 20 },
           context: { includeDeclaration: false },
         });
         await waitForLogContaining(server, "vb.references.workspace.candidates");

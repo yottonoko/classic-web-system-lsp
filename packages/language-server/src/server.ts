@@ -7281,10 +7281,25 @@ async function workspaceVbscriptReferencesForSymbols(
     settings,
     `[asp-lsp] vb.references.workspace.candidates: ${cached.source.uri}, symbol=${logOptions.logSymbol ?? targets[0]?.name ?? "(batch)"}, symbols=${targets.length}, candidates=${candidates.length}`,
   );
+  const summaryFastPath = await workspaceVbReferenceSummaryFastPath(
+    candidates,
+    targetForWorkers,
+    settings,
+  );
+  for (const [contextKey, references] of summaryFastPath.referencesByTarget) {
+    const requestedKey = targetKeyByContextKey.get(contextKey) ?? contextKey;
+    addVbReferencesToArray(referencesByTarget, requestedKey, references);
+  }
+  if (summaryFastPath.fastPathCandidates > 0) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vb.references.summary.fastPath: ${cached.source.uri}, candidates=${summaryFastPath.fastPathCandidates}, fallback=${summaryFastPath.workerCandidates.length}`,
+    );
+  }
   const openDocuments = vbReferencesWorkerOpenDocuments();
   const openDocumentsKey = vbReferencesWorkerOpenDocumentsKey(openDocuments);
   const workerResponses = await Promise.all(
-    candidates.map((candidate) =>
+    summaryFastPath.workerCandidates.map((candidate) =>
       workspaceVbReferenceWorkerBatchResponse(
         candidate,
         targetForWorkers,
@@ -7311,6 +7326,134 @@ async function workspaceVbscriptReferencesForSymbols(
     referencesByTarget.set(key, dedupeVbReferences(references).sort(vbReferenceOrder));
   }
   return referencesByTarget;
+}
+
+async function workspaceVbReferenceSummaryFastPath(
+  candidates: VbReferencesWorkerCandidate[],
+  targets: VbReferencesWorkerTargetSymbol[],
+  settings: AspSettings,
+): Promise<{
+  referencesByTarget: Map<string, VbReference[]>;
+  workerCandidates: VbReferencesWorkerCandidate[];
+  fastPathCandidates: number;
+}> {
+  const referencesByTarget = new Map<string, VbReference[]>(
+    targets.map((target) => [vbReferencesWorkerTargetKey(target), []]),
+  );
+  if (
+    candidates.length === 0 ||
+    targets.length === 0 ||
+    targets.some((target) => !isGlobalWorkspaceReferenceFallbackTarget(target))
+  ) {
+    return { referencesByTarget, workerCandidates: candidates, fastPathCandidates: 0 };
+  }
+  const results = await mapWithConcurrency(
+    candidates,
+    workspaceVbReferenceReachabilityConcurrency,
+    async (candidate) => ({
+      candidate,
+      referencesByTarget: await workspaceVbReferenceSummaryReferencesForCandidate(
+        candidate,
+        targets,
+        settings,
+      ),
+    }),
+  );
+  const workerCandidates: VbReferencesWorkerCandidate[] = [];
+  let fastPathCandidates = 0;
+  for (const result of results) {
+    if (!result.referencesByTarget) {
+      workerCandidates.push(result.candidate);
+      continue;
+    }
+    fastPathCandidates += 1;
+    for (const [key, references] of result.referencesByTarget) {
+      addVbReferencesToArray(referencesByTarget, key, references);
+    }
+  }
+  return { referencesByTarget, workerCandidates, fastPathCandidates };
+}
+
+async function workspaceVbReferenceSummaryReferencesForCandidate(
+  candidate: VbReferencesWorkerCandidate,
+  targets: VbReferencesWorkerTargetSymbol[],
+  settings: AspSettings,
+): Promise<Map<string, VbReference[]> | undefined> {
+  const summaries = await workspaceVbReferenceCandidateSummaryClosure(candidate, settings);
+  if (!summaries) {
+    return undefined;
+  }
+  const localSymbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
+  const referencesByTarget = new Map<string, VbReference[]>();
+  for (const target of targets) {
+    const sameNameSymbols = localSymbols.filter(
+      (symbol) =>
+        !symbol.memberOf &&
+        !symbol.scopeName &&
+        symbol.name.toLowerCase() === target.name.toLowerCase() &&
+        ["function", "sub", "class"].includes(symbol.kind),
+    );
+    if (!sameNameSymbols.some((symbol) => sameVbReferenceTargetIdentity(symbol, target))) {
+      return undefined;
+    }
+    if (sameNameSymbols.some((symbol) => !sameVbReferenceTargetIdentity(symbol, target))) {
+      return undefined;
+    }
+    referencesByTarget.set(
+      vbReferencesWorkerTargetKey(target),
+      summaries.flatMap((summary) =>
+        (summary.vbscript?.externalRefUsages ?? [])
+          .filter((usage) => usage.key === target.name.toLowerCase())
+          .flatMap((usage) => usage.ranges.map((range) => ({ uri: summary.uri, range }))),
+      ),
+    );
+  }
+  return referencesByTarget;
+}
+
+async function workspaceVbReferenceCandidateSummaryClosure(
+  candidate: VbReferencesWorkerCandidate,
+  settings: AspSettings,
+): Promise<FileAnalysisSummary[] | undefined> {
+  const limits = vbProjectContextLimits(settings);
+  const summaries: FileAnalysisSummary[] = [];
+  const visited = new Set<string>();
+  let textLength = 0;
+
+  const visit = async (uri: string, fileName: string, depth: number): Promise<boolean> => {
+    if (depth > 20 || summaries.length >= limits.maxDocuments) {
+      return false;
+    }
+    const entry = await includeDocumentLoader.readSummaryAsync(fileName, settings, {
+      allowRead: true,
+    });
+    if (!entry || visited.has(entry.uri)) {
+      return Boolean(entry);
+    }
+    if (textLength + entry.source.size > limits.maxTextLength) {
+      return false;
+    }
+    visited.add(entry.uri);
+    textLength += entry.source.size;
+    summaries.push(entry.summary);
+    for (const include of entry.summary.includeRefs) {
+      const resolved = await resolveIncludePathDetailsAsync(
+        uri,
+        include.path,
+        include.mode,
+        settings,
+      );
+      if (!resolved.exists) {
+        return false;
+      }
+      if (!(await visit(pathToFileUri(resolved.fileName), resolved.fileName, depth + 1))) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  return (await visit(candidate.uri, candidate.fileName, 0)) ? summaries : undefined;
 }
 
 async function workspaceVbReferenceWorkerCandidates(
@@ -8082,6 +8225,31 @@ function sameVbSymbolIdentity(left: VbSymbol, right: VbSymbol): boolean {
     left.range.start.character === right.range.start.character &&
     left.range.end.line === right.range.end.line &&
     left.range.end.character === right.range.end.character
+  );
+}
+
+function sameVbReferenceTargetIdentity(
+  left: VbSymbol,
+  right: VbReferencesWorkerTargetSymbol,
+): boolean {
+  return (
+    left.sourceUri === right.sourceUri &&
+    left.name.toLowerCase() === right.name.toLowerCase() &&
+    left.kind === right.kind &&
+    (left.memberOf ?? "").toLowerCase() === (right.memberOf ?? "").toLowerCase() &&
+    left.range.start.line === right.range.start.line &&
+    left.range.start.character === right.range.start.character &&
+    left.range.end.line === right.range.end.line &&
+    left.range.end.character === right.range.end.character
+  );
+}
+
+function isGlobalWorkspaceReferenceFallbackTarget(symbol: VbReferencesWorkerTargetSymbol): boolean {
+  return (
+    !symbol.scopeName &&
+    !symbol.memberOf &&
+    symbol.visibility !== "private" &&
+    ["function", "sub", "class"].includes(symbol.kind)
   );
 }
 
@@ -15969,13 +16137,9 @@ async function codeLensesAsync(cached: CachedDocument): Promise<CodeLens[]> {
   const settings = documentSettings.codeLens;
   const lenses: CodeLens[] = [];
   if (settings?.references !== false) {
-    await hydrateCachedVbscriptCstAsync(cached, documentSettings, "codeLens");
-    const symbols = await collectVbscriptSymbolsAsync(
-      cached.parsed,
-      vbProjectContextSettings(documentSettings),
-    );
-    for (const symbol of symbols.filter((item) =>
-      shouldShowVbReferenceCodeLens(item, cached.source.uri, settings),
+    for (const symbol of await referenceCodeLensSymbolsForCachedDocumentAsync(
+      cached,
+      documentSettings,
     )) {
       lenses.push({
         range: symbol.range,
@@ -16086,13 +16250,20 @@ async function workspaceVbscriptCodeLensReferencesForSymbol(
   const batchTargets = targets.some((target) => sameVbSymbolIdentity(target, symbol))
     ? targets
     : [...targets, symbol];
-  const batch = await workspaceVbscriptCodeLensBatchReferences(
+  const cachedBatch = workspaceVbscriptCompletedCodeLensBatchReferences(
     cached,
     batchTargets,
     settings,
     options,
   );
-  return batch.get(vbscriptReferenceSymbolKey(symbol)) ?? [];
+  if (cachedBatch) {
+    return cachedBatch.get(vbscriptReferenceSymbolKey(symbol)) ?? [];
+  }
+  const references = await workspaceVbscriptReferencesForSymbol(cached, symbol, settings, options);
+  if (batchTargets.length > 1) {
+    scheduleWorkspaceVbscriptCodeLensBatchReferences(cached, batchTargets, settings, options);
+  }
+  return references;
 }
 
 async function referenceCodeLensSymbolsForCachedDocumentAsync(
@@ -16166,6 +16337,47 @@ async function workspaceVbscriptCodeLensBatchReferences(
       workspaceVbReferenceBatchInFlight.delete(key);
     }
   }
+}
+
+function workspaceVbscriptCompletedCodeLensBatchReferences(
+  cached: CachedDocument,
+  targets: VbSymbol[],
+  settings: AspSettings,
+  options: VbReferenceOptions,
+): Map<string, VbReference[]> | undefined {
+  const openDocuments = vbReferencesWorkerOpenDocuments();
+  const openDocumentsKey = vbReferencesWorkerOpenDocumentsKey(openDocuments);
+  const key = workspaceVbReferenceBatchCacheKey(
+    cached,
+    targets,
+    settings,
+    options,
+    openDocumentsKey,
+  );
+  const cachedBatch = workspaceVbReferenceBatchCompleted.get(key);
+  if (!cachedBatch) {
+    return undefined;
+  }
+  cachedBatch.lastUsed = Date.now();
+  logDebugSummary(settings, `[asp-lsp] vb.references.batch.cache.hit: ${cached.source.uri}`);
+  return cachedBatch.referencesByTarget;
+}
+
+function scheduleWorkspaceVbscriptCodeLensBatchReferences(
+  cached: CachedDocument,
+  targets: VbSymbol[],
+  settings: AspSettings,
+  options: VbReferenceOptions,
+): void {
+  setTimeout(() => {
+    void workspaceVbscriptCodeLensBatchReferences(cached, targets, settings, options).catch(
+      (error: unknown) => {
+        connection.console.warn(
+          `[asp-lsp] vb.references.batch.failed: ${cached.source.uri}, error=${errorMessage(error)}`,
+        );
+      },
+    );
+  }, 0);
 }
 
 function workspaceVbReferenceBatchCacheKey(
