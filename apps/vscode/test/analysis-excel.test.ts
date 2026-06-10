@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAnalysisExcelSheets } from "../src/analysis-excel";
+import { analysisExcelWorkbookFeatures, createAnalysisExcelSheets } from "../src/analysis-excel";
 import type { AspGraphPayload } from "../src/include-graph-webview";
 
 describe("analysis Excel sheets", () => {
@@ -37,26 +37,53 @@ describe("analysis Excel sheets", () => {
     );
     expect(table(sheets, "分析サマリ")).toEqual(
       expect.arrayContaining([
-        ["変数", 2, 1, 1, 2 / 3, expect.stringContaining("2")],
-        ["関数", 1, 1, 0, 1 / 3, expect.stringContaining("1")],
-        ["グローバル", 3, 2, 1, 1 / 3, expect.stringContaining("3")],
-        ["未解決参照", 2, 2 / 8, expect.stringContaining("2"), "unresolved"],
+        ["他ファイルから未参照の宣言", 1, "要確認", "未使用 sheet で削除可否を確認"],
+        ["未解決", 2, "要確認", "未解決 sheet で名前解決を確認"],
+        ["他ファイルからの使用数", 3, "あり", "被参照と使用箇所 sheet で利用元を確認"],
+        ["include 先シンボル使用数", 3, "あり", "参照ファイル sheet で include 依存を確認"],
+        ["変数", 2, 1, 1, 2, expect.stringContaining("2")],
+        ["関数", 1, 1, 0, 1, expect.stringContaining("1")],
+        ["参照", 1, expect.stringContaining("1")],
+        ["代入", 1, expect.stringContaining("1")],
+        ["呼び出し", 1, expect.stringContaining("1")],
+        ["TargetValue", "変数", "main.asp", 3, 2, 1, 1, 0],
+        ["TargetProc", "関数", "main.asp", 4, 1, 0, 0, 1],
+        ["変数", 1, 2, 0.5, expect.stringContaining("1")],
       ]),
     );
     expect(sheets.find((sheet) => sheet.sheet === "分析サマリ")?.images).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ contentType: "image/svg", title: "種別ごとの宣言" }),
-        expect.objectContaining({ contentType: "image/svg", title: "使用種別" }),
-        expect.objectContaining({ contentType: "image/svg", title: "グローバルとローカル" }),
-        expect.objectContaining({ contentType: "image/svg", title: "種別ごとの未使用" }),
+        expect.objectContaining({
+          anchor: expect.objectContaining({ column: 1 }),
+          contentType: "image/svg",
+          title: "他ファイル参照サマリ",
+        }),
+        expect.objectContaining({
+          anchor: expect.objectContaining({ column: 1 }),
+          contentType: "image/svg",
+          title: "確認項目",
+        }),
       ]),
     );
+    expect(sheets.find((sheet) => sheet.sheet === "分析サマリ")?.autoFilterRef).toBeUndefined();
     expect(table(sheets, "チャート元データ")).toEqual(
       expect.arrayContaining([
-        ["変数", 2, 1, 1, 2 / 3],
-        ["関数", 1, 1, 0, 1 / 3],
+        ["他ファイルから未参照の宣言", 1, "要確認", "未使用 sheet で削除可否を確認"],
+        ["変数", 2, 1, 1, 2],
+        ["関数", 1, 1, 0, 1],
       ]),
     );
+    expect(sheets.find((sheet) => sheet.sheet === "チャート元データ")?.hidden).toBe(true);
+    expect(
+      sheets.find((sheet) => sheet.sheet === "チャート元データ")?.autoFilterRef,
+    ).toBeUndefined();
+    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B12");
+    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:O4");
+    expect(sheets.find((sheet) => sheet.sheet === "被参照")?.autoFilterRef).toBe("A1:K3");
+    expect(sheets.find((sheet) => sheet.sheet === "使用箇所")?.autoFilterRef).toBe("A1:H4");
+    expect(sheets.find((sheet) => sheet.sheet === "参照ファイル")?.autoFilterRef).toBe("A1:H4");
+    expect(sheets.find((sheet) => sheet.sheet === "未使用")?.autoFilterRef).toBe("A1:M2");
+    expect(sheets.find((sheet) => sheet.sheet === "未解決")?.autoFilterRef).toBe("A1:H3");
     expect(table(sheets, "宣言")).toEqual(
       expect.arrayContaining([
         [
@@ -143,6 +170,39 @@ describe("analysis Excel sheets", () => {
         ["未解決参照", "読み取り", "main.asp", "MissingValue", "main.asp", 10, 5, 1],
       ]),
     );
+  });
+
+  it("writes filter and hidden-sheet metadata through workbook features", () => {
+    const sheets = createAnalysisExcelSheets(analysisPayload(), "ja", {
+      generatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      targetUri: "file:///workspace/main.asp",
+    });
+    const chartDataIndex = sheets.findIndex((sheet) => sheet.sheet === "チャート元データ");
+    const workbookTransform =
+      analysisExcelWorkbookFeatures[0]?.files?.transform?.["xl/workbook.xml"]
+        ?.transformElementAttributes;
+    const worksheetTransform =
+      analysisExcelWorkbookFeatures[0]?.files?.transform?.["xl/worksheets/sheet{id}.xml"]
+        ?.transform;
+
+    expect(workbookTransform).toBeDefined();
+    expect(worksheetTransform).toBeDefined();
+    expect(
+      workbookTransform?.(
+        "sheet",
+        { "r:id": "rId3", name: "チャート元データ", sheetId: 3 },
+        chartDataIndex,
+        sheets,
+        {},
+      ),
+    ).toMatchObject({ state: "hidden" });
+    expect(
+      worksheetTransform?.(
+        '<worksheet><sheetData><row r="1"/></sheetData><pageMargins/></worksheet>',
+        sheets.find((sheet) => sheet.sheet === "宣言")!,
+        { sheetId: "4", sheetIndex: 3 },
+      ),
+    ).toContain('<autoFilter ref="A1:O4"/>');
   });
 });
 

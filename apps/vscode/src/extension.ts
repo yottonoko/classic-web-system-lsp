@@ -2,7 +2,7 @@ import path from "node:path";
 import * as vscode from "vscode";
 import { getClassicAspLineCommentEdits } from "@asp-lsp/core";
 import writeXlsxFile from "write-excel-file/node";
-import { createAnalysisExcelSheets } from "./analysis-excel";
+import { analysisExcelWorkbookFeatures, createAnalysisExcelSheets } from "./analysis-excel";
 import {
   CloseAction,
   ErrorAction,
@@ -425,6 +425,7 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
     },
     async () =>
       writeXlsxFile(sheets, {
+        features: analysisExcelWorkbookFeatures,
         fontFamily: "Calibri",
         fontSize: 11,
       }).toFile(target.fsPath),

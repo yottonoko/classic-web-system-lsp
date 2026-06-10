@@ -1,4 +1,6 @@
-import type { Cell, Sheet } from "write-excel-file/node";
+import type Stream from "node:stream";
+import type { Blob } from "node:buffer";
+import type { Cell, Feature, Sheet } from "write-excel-file/node";
 import type {
   AspGraphLink,
   AspGraphLocale,
@@ -7,13 +9,32 @@ import type {
   AspGraphRange,
 } from "./include-graph-webview";
 
-export type AnalysisExcelSheet = Sheet<Buffer>;
+type AnalysisExcelFileContent = Stream | Buffer | Blob;
+
+export type AnalysisExcelSheet = Sheet<AnalysisExcelFileContent> & {
+  autoFilterRef?: string;
+  hidden?: boolean;
+};
 type AnalysisExcelImage = NonNullable<AnalysisExcelSheet["images"]>[number];
 
 interface ChartDatum {
   label: string;
   value: number;
   detail?: string;
+}
+
+interface ReviewPriorityItem {
+  label: string;
+  count: number;
+  status: string;
+  action: string;
+  tone: SummaryTone;
+}
+
+interface AnalysisSheetOptions {
+  autoFilter?: boolean;
+  hidden?: boolean;
+  images?: AnalysisExcelImage[];
 }
 
 interface AnalysisExcelOptions {
@@ -26,6 +47,8 @@ interface UsageCounts {
   assignments: number;
   calls: number;
 }
+
+type SummaryTone = "good" | "warning" | "danger" | "info" | "neutral";
 
 interface AnalysisContext {
   targetUri?: string;
@@ -115,7 +138,27 @@ type AnalysisTextKey =
   | "unusedByKind"
   | "fileHealth"
   | "unresolvedUsageCount"
-  | "risk";
+  | "risk"
+  | "reviewPriority"
+  | "externalReferenceSummary"
+  | "includeUsageSummary"
+  | "topReferencedDeclarations"
+  | "analysisCharts"
+  | "unreferencedDeclarations"
+  | "externalUsageCount"
+  | "includedUsageCount"
+  | "issueSummary"
+  | "action"
+  | "needsReview"
+  | "ok"
+  | "present"
+  | "none"
+  | "reviewUnusedAction"
+  | "reviewUnresolvedAction"
+  | "reviewExternalUsagesAction"
+  | "reviewMissingExternalUsagesAction"
+  | "reviewIncludedUsagesAction"
+  | "reviewMissingIncludedUsagesAction";
 
 const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
   en: {
@@ -193,6 +236,26 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     fileHealth: "File health",
     unresolvedUsageCount: "Unresolved usages",
     risk: "Risk",
+    reviewPriority: "Review priority",
+    externalReferenceSummary: "External reference summary",
+    includeUsageSummary: "Included file usage",
+    topReferencedDeclarations: "Top referenced declarations",
+    analysisCharts: "Charts",
+    unreferencedDeclarations: "Declarations unreferenced by other files",
+    externalUsageCount: "External usages",
+    includedUsageCount: "Included symbol usages",
+    issueSummary: "Issue summary",
+    action: "Action",
+    needsReview: "Review needed",
+    ok: "OK",
+    present: "Present",
+    none: "None",
+    reviewUnusedAction: "Review the Unused sheet before removing declarations.",
+    reviewUnresolvedAction: "Review the Unresolved sheet and fix name resolution.",
+    reviewExternalUsagesAction: "Review Referenced and Usages sheets for callers.",
+    reviewMissingExternalUsagesAction: "No other-file usages were found for the target file.",
+    reviewIncludedUsagesAction: "Review Included file usage rows for include dependencies.",
+    reviewMissingIncludedUsagesAction: "No included-file symbol usages were found.",
   },
   ja: {
     summary: "概要",
@@ -269,6 +332,26 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     fileHealth: "ファイル別の状態",
     unresolvedUsageCount: "未解決の使用数",
     risk: "リスク",
+    reviewPriority: "確認優先",
+    externalReferenceSummary: "他ファイル参照サマリ",
+    includeUsageSummary: "include 先の使用",
+    topReferencedDeclarations: "よく使われている宣言",
+    analysisCharts: "グラフ",
+    unreferencedDeclarations: "他ファイルから未参照の宣言",
+    externalUsageCount: "他ファイルからの使用数",
+    includedUsageCount: "include 先シンボル使用数",
+    issueSummary: "確認項目",
+    action: "対応",
+    needsReview: "要確認",
+    ok: "問題なし",
+    present: "あり",
+    none: "なし",
+    reviewUnusedAction: "未使用 sheet で削除可否を確認",
+    reviewUnresolvedAction: "未解決 sheet で名前解決を確認",
+    reviewExternalUsagesAction: "被参照と使用箇所 sheet で利用元を確認",
+    reviewMissingExternalUsagesAction: "対象ファイルは他ファイルから使われていない可能性あり",
+    reviewIncludedUsagesAction: "参照ファイル sheet で include 依存を確認",
+    reviewMissingIncludedUsagesAction: "include 先シンボルの使用なし",
   },
 };
 
@@ -349,6 +432,38 @@ const valueText: Record<AspGraphLocale, Record<string, string>> = {
   },
 };
 
+const SHEET_DATA_END_TAG = "</sheetData>";
+
+export const analysisExcelWorkbookFeatures: Feature<AnalysisExcelFileContent>[] = [
+  {
+    files: {
+      transform: {
+        "xl/workbook.xml": {
+          transformElementAttributes(tagName, attributes, index, sheetsOptions) {
+            if (tagName !== "sheet" || index === undefined) {
+              return attributes;
+            }
+            const sheetOptions = sheetsOptions[index] as AnalysisExcelSheet | undefined;
+            return sheetOptions?.hidden === true ? { ...attributes, state: "hidden" } : attributes;
+          },
+        },
+        "xl/worksheets/sheet{id}.xml": {
+          transform(content, sheetOptions) {
+            const ref = (sheetOptions as AnalysisExcelSheet | undefined)?.autoFilterRef;
+            if (!ref || content.includes("<autoFilter ")) {
+              return content;
+            }
+            return content.replace(
+              SHEET_DATA_END_TAG,
+              `${SHEET_DATA_END_TAG}<autoFilter ref="${escapeXml(ref)}"/>`,
+            );
+          },
+        },
+      },
+    },
+  },
+];
+
 export function createAnalysisExcelSheets(
   payload: AspGraphPayload,
   locale: AspGraphLocale,
@@ -359,10 +474,23 @@ export function createAnalysisExcelSheets(
   const fileNamesByUri = fileNamesByUriMap(payload.nodes);
   const context = analysisContext(payload, options, nodesById, fileNamesByUri);
   const analysisRows = analysisSummaryRows(locale, context);
+  const analysisChartStartRow = analysisRows.length + 3;
+  const analysisRowsWithChartSpace = [
+    ...analysisRows,
+    [],
+    sectionTitle(text[locale].analysisCharts, 1),
+    ...blankRows(34),
+  ];
   return [
     sheet(text[locale].summary, summaryRows(payload, locale, generatedAt, context)),
-    sheet(text[locale].analysisSummary, analysisRows, analysisSummaryImages(locale, context)),
-    sheet(text[locale].chartData, chartDataRows(locale, context)),
+    sheet(text[locale].analysisSummary, analysisRowsWithChartSpace, {
+      autoFilter: false,
+      images: analysisSummaryImages(locale, context, analysisChartStartRow),
+    }),
+    sheet(text[locale].chartData, chartDataRows(locale, context), {
+      autoFilter: false,
+      hidden: true,
+    }),
     sheet(
       text[locale].declarations,
       declarationRows(
@@ -431,96 +559,101 @@ function summaryRows(
 function analysisSummaryRows(locale: AspGraphLocale, context: AnalysisContext): Cell[][] {
   const t = text[locale];
   return [
-    sectionTitle(t.declarationsByKind, 6),
-    header([t.kind, t.total, t.usedCount, t.unusedCount, t.share, t.bar]),
-    ...declarationKindChartRows(context.targetDeclarations, locale, context.externalUsageCounts),
+    sectionTitle(t.reviewPriority, 4),
+    header([t.metric, t.count, t.status, t.action]),
+    ...reviewPriorityRows(locale, context),
     [],
-    sectionTitle(t.scopeComparison, 6),
-    header([t.bindingScope, t.total, t.usedCount, t.unusedCount, t.unusedRate, t.bar]),
-    ...scopeComparisonRows(context.targetDeclarations, locale, context.externalUsageCounts),
+    sectionTitle(t.externalReferenceSummary, 6),
+    header([t.kind, t.total, t.usedCount, t.unusedCount, t.usageCount, t.bar]),
+    ...declarationKindSummaryRows(context.targetDeclarations, locale, context.externalUsageCounts),
     [],
-    sectionTitle(t.usageMix, 5),
-    header([t.usageKind, t.count, t.share, t.bar, t.risk]),
-    ...usageMixRows(
-      [...context.externalUsageLinks, ...context.includedUsageLinks],
-      context.unresolvedLinks,
+    sectionTitle(t.includeUsageSummary, 3),
+    header([t.usageKind, t.count, t.bar]),
+    ...usageCountRows(context.includedUsageLinks, locale),
+    [],
+    sectionTitle(t.topReferencedDeclarations, 8),
+    header([
+      t.name,
+      t.kind,
+      t.file,
+      t.line,
+      t.usageCount,
+      t.referenceCount,
+      t.assignmentCount,
+      t.callCount,
+    ]),
+    ...topReferencedDeclarationRows(
+      context.targetDeclarations,
       locale,
+      context.externalUsageCounts,
+      new Map(context.targetDeclarations.map((node) => [node.uri ?? "", context.targetFileName])),
     ),
     [],
-    sectionTitle(t.unusedByKind, 4),
-    header([t.kind, t.unusedCount, t.share, t.bar]),
-    ...unusedByKindRows(context.unusedDeclarations, locale),
+    sectionTitle(t.unusedByKind, 5),
+    header([t.kind, t.unusedCount, t.total, t.unusedRate, t.bar]),
+    ...unusedByKindRows(context.unusedDeclarations, context.targetDeclarations, locale),
   ];
 }
 
 function chartDataRows(locale: AspGraphLocale, context: AnalysisContext): Cell[][] {
   const t = text[locale];
   return [
-    sectionTitle(t.declarationsByKind, 5),
-    header([t.kind, t.total, t.usedCount, t.unusedCount, t.share]),
-    ...declarationKindChartRows(
+    sectionTitle(t.reviewPriority, 4),
+    header([t.metric, t.count, t.status, t.action]),
+    ...reviewPriorityRows(locale, context),
+    [],
+    sectionTitle(t.externalReferenceSummary, 5),
+    header([t.kind, t.total, t.usedCount, t.unusedCount, t.usageCount]),
+    ...declarationKindSummaryRows(
       context.targetDeclarations,
       locale,
       context.externalUsageCounts,
     ).map((row) => row.slice(0, 5)),
     [],
-    sectionTitle(t.scopeComparison, 5),
-    header([t.bindingScope, t.total, t.usedCount, t.unusedCount, t.unusedRate]),
-    ...scopeComparisonRows(context.targetDeclarations, locale, context.externalUsageCounts).map(
-      (row) => row.slice(0, 5),
+    sectionTitle(t.includeUsageSummary, 2),
+    header([t.usageKind, t.count]),
+    ...usageCountRows(context.includedUsageLinks, locale).map((row) => row.slice(0, 2)),
+    [],
+    sectionTitle(t.unusedByKind, 4),
+    header([t.kind, t.unusedCount, t.total, t.unusedRate]),
+    ...unusedByKindRows(context.unusedDeclarations, context.targetDeclarations, locale).map((row) =>
+      row.slice(0, 4),
     ),
-    [],
-    sectionTitle(t.usageMix, 4),
-    header([t.usageKind, t.count, t.share, t.risk]),
-    ...usageMixRows(
-      [...context.externalUsageLinks, ...context.includedUsageLinks],
-      context.unresolvedLinks,
-      locale,
-    ).map((row) => [row[0], row[1], row[2], row[4]]),
-    [],
-    sectionTitle(t.unusedByKind, 3),
-    header([t.kind, t.unusedCount, t.share]),
-    ...unusedByKindRows(context.unusedDeclarations, locale).map((row) => row.slice(0, 3)),
   ];
 }
 
 function analysisSummaryImages(
   locale: AspGraphLocale,
   context: AnalysisContext,
+  startRow: number,
 ): AnalysisExcelImage[] {
   const t = text[locale];
-  const declarationRows = declarationKindChartRows(
+  const declarationRows = declarationKindSummaryRows(
     context.targetDeclarations,
     locale,
     context.externalUsageCounts,
   );
-  const scopeRows = scopeComparisonRows(
-    context.targetDeclarations,
-    locale,
-    context.externalUsageCounts,
-  );
-  const usageRows = usageMixRows(
-    [...context.externalUsageLinks, ...context.includedUsageLinks],
-    context.unresolvedLinks,
-    locale,
-  );
-  const unusedRows = unusedByKindRows(context.unusedDeclarations, locale);
   return [
     chartImage(
-      barChartSvg(t.declarationsByKind, chartDataFromRows(declarationRows, 0, 1, 3), "#4F81BD"),
-      t.declarationsByKind,
-      2,
+      barChartSvg(t.externalReferenceSummary, chartDataFromRows(declarationRows, 0, 1, 3), [
+        "#2563EB",
+        "#16A34A",
+        "#DC2626",
+        "#7C3AED",
+        "#0891B2",
+      ]),
+      t.externalReferenceSummary,
+      startRow,
     ),
-    chartImage(pieChartSvg(t.usageMix, chartDataFromRows(usageRows, 0, 1, 4)), t.usageMix, 18),
     chartImage(
-      barChartSvg(t.scopeComparison, chartDataFromRows(scopeRows, 0, 1, 3), "#70AD47"),
-      t.scopeComparison,
-      34,
-    ),
-    chartImage(
-      barChartSvg(t.unusedByKind, chartDataFromRows(unusedRows, 0, 1, 2), "#C00000"),
-      t.unusedByKind,
-      50,
+      barChartSvg(t.issueSummary, reviewPriorityChartData(locale, context), [
+        "#DC2626",
+        "#EA580C",
+        "#2563EB",
+        "#16A34A",
+      ]),
+      t.issueSummary,
+      startRow + 17,
     ),
   ];
 }
@@ -547,21 +680,21 @@ function chartImage(svg: string, title: string, row: number): AnalysisExcelImage
   return {
     content: Buffer.from(svg, "utf8"),
     contentType: "image/svg",
-    width: 560,
+    width: 640,
     height: 260,
     dpi: 96,
-    anchor: { row, column: 12 },
+    anchor: { row, column: 1 },
     title,
     description: title,
   };
 }
 
-function barChartSvg(title: string, data: ChartDatum[], color: string): string {
-  const width = 560;
+function barChartSvg(title: string, data: ChartDatum[], colors: string | string[]): string {
+  const width = 640;
   const height = 260;
-  const chartX = 150;
+  const chartX = 190;
   const chartY = 46;
-  const chartWidth = 340;
+  const chartWidth = 360;
   const rowHeight = data.length > 0 ? Math.min(26, 166 / data.length) : 24;
   const max = Math.max(1, ...data.map((item) => item.value));
   const rows = data.slice(0, 8);
@@ -573,46 +706,15 @@ function barChartSvg(title: string, data: ChartDatum[], color: string): string {
       .map((item, index) => {
         const y = chartY + index * rowHeight;
         const barWidth = Math.max(3, (item.value / max) * chartWidth);
+        const color = Array.isArray(colors) ? colors[index % colors.length] : colors;
         return [
-          `<text x="18" y="${y + 15}" class="label">${escapeXml(item.label)}</text>`,
+          `<text x="18" y="${y + 15}" class="label">${escapeXml(truncateLabel(item.label, 24))}</text>`,
           `<rect x="${chartX}" y="${y}" width="${barWidth.toFixed(1)}" height="${Math.max(10, rowHeight - 7).toFixed(1)}" rx="3" fill="${color}"/>`,
           `<text x="${chartX + barWidth + 8}" y="${y + 15}" class="value">${item.value}${item.detail ? ` / ${escapeXml(item.detail)}` : ""}</text>`,
         ].join(" ");
       })
       .join("\n"),
   );
-}
-
-function pieChartSvg(title: string, data: ChartDatum[]): string {
-  const width = 560;
-  const height = 260;
-  const total = data.reduce((sum, item) => sum + item.value, 0);
-  const radius = 72;
-  const circumference = 2 * Math.PI * radius;
-  const colors = ["#4F81BD", "#C0504D", "#9BBB59", "#8064A2", "#4BACC6", "#F79646"];
-  let offset = 0;
-  const slices = data
-    .slice(0, colors.length)
-    .map((item, index) => {
-      const length = total > 0 ? (item.value / total) * circumference : 0;
-      const dashOffset = -offset;
-      offset += length;
-      return `<circle cx="132" cy="138" r="${radius}" fill="none" stroke="${colors[index]}" stroke-width="36" stroke-dasharray="${length.toFixed(2)} ${(circumference - length).toFixed(2)}" stroke-dashoffset="${dashOffset.toFixed(2)}" transform="rotate(-90 132 138)"/>`;
-    })
-    .join("\n");
-  const legend = data
-    .slice(0, colors.length)
-    .map((item, index) => {
-      const y = 72 + index * 24;
-      const share = total > 0 ? `${((item.value / total) * 100).toFixed(1)}%` : "0.0%";
-      return [
-        `<rect x="260" y="${y - 11}" width="12" height="12" rx="2" fill="${colors[index]}"/>`,
-        `<text x="280" y="${y}" class="label">${escapeXml(item.label)}</text>`,
-        `<text x="450" y="${y}" class="value">${item.value} (${share})</text>`,
-      ].join(" ");
-    })
-    .join("\n");
-  return svgFrame(width, height, title, `${slices}\n${legend}`);
 }
 
 function svgFrame(width: number, height: number, title: string, body: string): string {
@@ -637,17 +739,84 @@ function escapeXml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
-function declarationKindChartRows(
+function reviewPriorityRows(locale: AspGraphLocale, context: AnalysisContext): Cell[][] {
+  return reviewPriorityItems(locale, context).map((item) => [
+    item.label,
+    item.count,
+    toneCell(item.status, item.tone),
+    item.action,
+  ]);
+}
+
+function reviewPriorityItems(
+  locale: AspGraphLocale,
+  context: AnalysisContext,
+): ReviewPriorityItem[] {
+  const t = text[locale];
+  const externalUsageCount = usageLinkCount(context.externalUsageLinks);
+  const includedUsageCount = usageLinkCount(context.includedUsageLinks);
+  const unresolvedCount = usageLinkCount(context.unresolvedLinks);
+  const unusedCount = context.unusedDeclarations.length;
+  return [
+    {
+      label: t.unreferencedDeclarations,
+      count: unusedCount,
+      status: unusedCount > 0 ? t.needsReview : t.ok,
+      action: unusedCount > 0 ? t.reviewUnusedAction : t.ok,
+      tone: unusedCount > 0 ? "warning" : "good",
+    },
+    {
+      label: t.unresolved,
+      count: unresolvedCount,
+      status: unresolvedCount > 0 ? t.needsReview : t.ok,
+      action: unresolvedCount > 0 ? t.reviewUnresolvedAction : t.ok,
+      tone: unresolvedCount > 0 ? "danger" : "good",
+    },
+    {
+      label: t.externalUsageCount,
+      count: externalUsageCount,
+      status: externalUsageCount > 0 ? t.present : t.none,
+      action:
+        externalUsageCount > 0 ? t.reviewExternalUsagesAction : t.reviewMissingExternalUsagesAction,
+      tone: externalUsageCount > 0 ? "info" : "warning",
+    },
+    {
+      label: t.includedUsageCount,
+      count: includedUsageCount,
+      status: includedUsageCount > 0 ? t.present : t.none,
+      action:
+        includedUsageCount > 0 ? t.reviewIncludedUsagesAction : t.reviewMissingIncludedUsagesAction,
+      tone: includedUsageCount > 0 ? "info" : "neutral",
+    },
+  ];
+}
+
+function reviewPriorityChartData(locale: AspGraphLocale, context: AnalysisContext): ChartDatum[] {
+  return reviewPriorityItems(locale, context)
+    .map((item) => ({
+      label: item.label,
+      value: item.count,
+      detail: item.status,
+    }))
+    .filter((item) => item.value > 0);
+}
+
+function declarationKindSummaryRows(
   declarations: AspGraphNode[],
   locale: AspGraphLocale,
   usageCounts: Map<string, UsageCounts>,
 ): Cell[][] {
-  const counts = new Map<string, { total: number; used: number; unused: number }>();
+  const counts = new Map<
+    string,
+    { total: number; used: number; unused: number; usageCount: number }
+  >();
   for (const node of declarations) {
     const key = node.declarationKind ?? "unknown";
-    const entry = counts.get(key) ?? { total: 0, used: 0, unused: 0 };
+    const entry = counts.get(key) ?? { total: 0, used: 0, unused: 0, usageCount: 0 };
+    const usage = usageTotal(usageCounts.get(node.id));
     entry.total += 1;
-    if (usageTotal(usageCounts.get(node.id)) > 0) {
+    entry.usageCount += usage;
+    if (usage > 0) {
       entry.used += 1;
     } else {
       entry.unused += 1;
@@ -662,80 +831,77 @@ function declarationKindChartRows(
       entry.total,
       entry.used,
       entry.unused,
-      percentCell(ratio(entry.total, declarations.length)),
+      entry.usageCount,
       barString(entry.total, max),
     ]);
 }
 
-function scopeComparisonRows(
-  declarations: AspGraphNode[],
-  locale: AspGraphLocale,
-  usageCounts: Map<string, UsageCounts>,
-): Cell[][] {
-  const counts = new Map<string, { total: number; used: number; unused: number }>();
-  for (const node of declarations) {
-    const key = node.bindingScope ?? "unknown";
-    const entry = counts.get(key) ?? { total: 0, used: 0, unused: 0 };
-    entry.total += 1;
-    if (usageTotal(usageCounts.get(node.id)) > 0) {
-      entry.used += 1;
-    } else {
-      entry.unused += 1;
-    }
-    counts.set(key, entry);
-  }
-  const max = maxCount([...counts.values()].map((entry) => entry.total));
-  return [...counts.entries()]
-    .sort((left, right) => compareValues(valueLabel(left[0], locale), valueLabel(right[0], locale)))
-    .map(([scope, entry]) => [
-      valueLabel(scope, locale),
-      entry.total,
-      entry.used,
-      entry.unused,
-      percentCell(ratio(entry.unused, entry.total)),
-      barString(entry.total, max),
-    ]);
-}
-
-function usageMixRows(
-  usageLinks: AspGraphLink[],
-  unresolvedLinks: AspGraphLink[],
-  locale: AspGraphLocale,
-): Cell[][] {
-  const rows: Array<[string, number, string]> = [
-    ["references", usageLinkCount(usageLinks, "references"), ""],
-    ["assignments", usageLinkCount(usageLinks, "assignments"), ""],
-    ["calls", usageLinkCount(usageLinks, "calls"), ""],
-    ["unresolvedReference", usageLinkCount(unresolvedLinks), "unresolved"],
+function usageCountRows(usageLinks: AspGraphLink[], locale: AspGraphLocale): Cell[][] {
+  const rows: Array<[string, number]> = [
+    ["references", usageLinkCount(usageLinks, "references")],
+    ["assignments", usageLinkCount(usageLinks, "assignments")],
+    ["calls", usageLinkCount(usageLinks, "calls")],
   ];
-  const total = rows.reduce((sum, [, count]) => sum + count, 0);
   const max = maxCount(rows.map(([, count]) => count));
   return rows
     .filter(([, count]) => count > 0)
-    .map(([kind, count, risk]) => [
-      valueLabel(kind, locale),
-      count,
-      percentCell(ratio(count, total)),
-      barString(count, max),
-      risk,
+    .map(([kind, count]) => [valueLabel(kind, locale), count, barString(count, max)]);
+}
+
+function topReferencedDeclarationRows(
+  declarations: AspGraphNode[],
+  locale: AspGraphLocale,
+  usageCounts: Map<string, UsageCounts>,
+  fileNamesByUri: Map<string, string>,
+): Cell[][] {
+  return declarations
+    .map((node) => ({ node, usage: usageCounts.get(node.id) }))
+    .filter(({ usage }) => usageTotal(usage) > 0)
+    .sort((left, right) => {
+      const usageDifference = usageTotal(right.usage) - usageTotal(left.usage);
+      return usageDifference || compareValues(left.node.label, right.node.label);
+    })
+    .slice(0, 10)
+    .map(({ node, usage }) => [
+      node.label,
+      valueLabel(node.declarationKind, locale),
+      displayNameForUri(node.uri, fileNamesByUri),
+      oneBasedLine(node.range),
+      usageTotal(usage),
+      usage?.references ?? 0,
+      usage?.assignments ?? 0,
+      usage?.calls ?? 0,
     ]);
 }
 
-function unusedByKindRows(unusedDeclarations: AspGraphNode[], locale: AspGraphLocale): Cell[][] {
+function unusedByKindRows(
+  unusedDeclarations: AspGraphNode[],
+  declarations: AspGraphNode[],
+  locale: AspGraphLocale,
+): Cell[][] {
   const counts = new Map<string, number>();
   for (const node of unusedDeclarations) {
     const key = node.declarationKind ?? "unknown";
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
+  const totals = new Map<string, number>();
+  for (const node of declarations) {
+    const key = node.declarationKind ?? "unknown";
+    totals.set(key, (totals.get(key) ?? 0) + 1);
+  }
   const max = maxCount([...counts.values()]);
   return [...counts.entries()]
     .sort((left, right) => right[1] - left[1] || compareValues(left[0], right[0]))
-    .map(([kind, count]) => [
-      valueLabel(kind, locale),
-      count,
-      percentCell(ratio(count, unusedDeclarations.length)),
-      barString(count, max),
-    ]);
+    .map(([kind, count]) => {
+      const total = totals.get(kind) ?? count;
+      return [
+        valueLabel(kind, locale),
+        count,
+        total,
+        percentCell(ratio(count, total)),
+        barString(count, max),
+      ];
+    });
 }
 
 function includedUsageRows(
@@ -1202,7 +1368,8 @@ function header(values: string[]): Cell[] {
     value,
     type: String,
     fontWeight: "bold",
-    backgroundColor: "#DDEBF7",
+    textColor: "#FFFFFF",
+    backgroundColor: "#1F4E79",
   }));
 }
 
@@ -1212,11 +1379,28 @@ function sectionTitle(value: string, columnSpan: number): Cell[] {
       value,
       type: String,
       fontWeight: "bold",
-      backgroundColor: "#E2F0D9",
+      textColor: "#17365D",
+      backgroundColor: "#EAF2F8",
       columnSpan,
     },
     ...Array.from({ length: Math.max(0, columnSpan - 1) }, () => null),
   ];
+}
+
+function toneCell(value: string, tone: SummaryTone): Cell {
+  const style: Record<SummaryTone, { backgroundColor: string; textColor: string }> = {
+    danger: { backgroundColor: "#F4CCCC", textColor: "#990000" },
+    good: { backgroundColor: "#D9EAD3", textColor: "#274E13" },
+    info: { backgroundColor: "#CFE2F3", textColor: "#0B5394" },
+    neutral: { backgroundColor: "#E7E6E6", textColor: "#404040" },
+    warning: { backgroundColor: "#FCE5CD", textColor: "#B45F06" },
+  };
+  return {
+    value,
+    type: String,
+    fontWeight: "bold",
+    ...style[tone],
+  };
 }
 
 function percentCell(value: number): Cell {
@@ -1243,14 +1427,48 @@ function maxCount(values: number[]): number {
   return Math.max(0, ...values);
 }
 
-function sheet(name: string, rows: Cell[][], images?: AnalysisExcelImage[]): AnalysisExcelSheet {
+function sheet(
+  name: string,
+  rows: Cell[][],
+  options: AnalysisSheetOptions = {},
+): AnalysisExcelSheet {
+  const autoFilterRef = options.autoFilter === false ? undefined : autoFilterRefForRows(rows);
   return {
     sheet: name,
     data: rows,
     columns: columnsForRows(rows),
     stickyRowsCount: 1,
-    images,
+    autoFilterRef,
+    hidden: options.hidden === true ? true : undefined,
+    images: options.images,
   };
+}
+
+function autoFilterRefForRows(rows: Cell[][]): string | undefined {
+  const columnCount = Math.max(0, ...rows.map((row) => row.length));
+  if (rows.length === 0 || columnCount === 0) {
+    return undefined;
+  }
+  return `A1:${spreadsheetColumnName(columnCount - 1)}${rows.length}`;
+}
+
+function spreadsheetColumnName(columnIndex: number): string {
+  let name = "";
+  let current = columnIndex + 1;
+  while (current > 0) {
+    const remainder = (current - 1) % 26;
+    name = String.fromCharCode(65 + remainder) + name;
+    current = Math.floor((current - 1) / 26);
+  }
+  return name;
+}
+
+function blankRows(count: number): Cell[][] {
+  return Array.from({ length: count }, () => []);
+}
+
+function truncateLabel(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 1))}…` : value;
 }
 
 function columnsForRows(rows: Cell[][]): Array<{ width: number }> {
