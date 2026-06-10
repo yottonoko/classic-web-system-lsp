@@ -7037,7 +7037,7 @@ Response.Write SharedTitle()
       }
     });
 
-    it("reuses in-flight worker-backed workspace references for concurrent requests", async () => {
+    it("reuses in-flight workspace reference requests before repeating worker work", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-refs-reuse-"));
       const common = path.join(tempDir, "common.inc");
       const page = path.join(tempDir, "default.asp");
@@ -7090,7 +7090,7 @@ Response.Write SharedTitle()
         const [firstReferences, secondReferences] = await Promise.all([first, second]);
         expect(JSON.stringify(firstReferences)).toContain(pageUri);
         expect(JSON.stringify(secondReferences)).toContain(pageUri);
-        await waitForLogContaining(server, "vb.references.worker.reuse");
+        await waitForLogContaining(server, "vb.references.workspace.reuse");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

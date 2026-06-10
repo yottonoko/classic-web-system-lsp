@@ -236,7 +236,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.5.23";
+const languageServerVersion = "0.5.24";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -666,6 +666,22 @@ interface VbProjectSummaryGraph {
 interface WorkspaceVbReferenceWorkerTask {
   key: string;
   promise: Promise<VbReferencesWorkerResponse>;
+}
+
+interface WorkspaceVbReferenceWorkerBatchTask {
+  key: string;
+  promise: Promise<VbReferencesWorkerResponse>;
+}
+
+interface WorkspaceVbReferenceRequestTask {
+  key: string;
+  promise: Promise<WorkspaceVbReferenceRequestResult>;
+}
+
+interface WorkspaceVbReferenceRequestResult {
+  key: string;
+  referencesByTarget: Map<string, VbReference[]>;
+  lastUsed: number;
 }
 
 interface WorkspaceVbReferenceBatchTask {
@@ -1571,14 +1587,25 @@ const aspProjectBuilderState = new AspProjectBuilderState();
 const completionSessionCache = new CompletionSessionCache();
 const maxVbProjectContextCacheEntries = 32;
 const maxWorkspaceVbReferenceWorkerCacheEntries = 128;
+const maxWorkspaceVbReferenceRequestCacheEntries = 64;
 const maxWorkspaceVbReferenceBatchCacheEntries = 64;
 const maxWorkspaceVbReferenceReachabilityCacheEntries = 2048;
 const maxWorkspaceVbReferenceReachabilityDocuments = 50_000;
 const workspaceVbReferenceReachabilityConcurrency = 256;
 const workspaceVbReferenceWorkerInFlight = new Map<string, WorkspaceVbReferenceWorkerTask>();
+const workspaceVbReferenceWorkerBatchInFlight = new Map<
+  string,
+  WorkspaceVbReferenceWorkerBatchTask
+>();
 const workspaceVbReferenceWorkerCompleted = new Map<string, VbReferencesWorkerResponse>();
+const workspaceVbReferenceRequestInFlight = new Map<string, WorkspaceVbReferenceRequestTask>();
+const workspaceVbReferenceRequestCompleted = new Map<string, WorkspaceVbReferenceRequestResult>();
 const workspaceVbReferenceBatchInFlight = new Map<string, WorkspaceVbReferenceBatchTask>();
 const workspaceVbReferenceBatchCompleted = new Map<string, WorkspaceVbReferenceBatchResult>();
+const workspaceVbReferenceReachabilityInFlight = new Map<
+  string,
+  Promise<WorkspaceVbReferenceReachabilityEntry>
+>();
 const workspaceVbReferenceReachabilityCache = new Map<
   string,
   WorkspaceVbReferenceReachabilityEntry
@@ -7688,6 +7715,59 @@ async function workspaceVbscriptReferencesForSymbols(
   options: VbReferenceOptions = {},
   logOptions: { logSymbol?: string } = {},
 ): Promise<Map<string, VbReference[]>> {
+  const openDocuments = vbReferencesWorkerOpenDocuments();
+  const openDocumentsKey = vbReferencesWorkerOpenDocumentsKey(openDocuments);
+  const key = workspaceVbReferenceRequestCacheKey(
+    cached,
+    symbols,
+    settings,
+    options,
+    openDocumentsKey,
+  );
+  const cachedResult = workspaceVbReferenceRequestCompleted.get(key);
+  if (cachedResult) {
+    cachedResult.lastUsed = Date.now();
+    logDebugSummary(settings, `[asp-lsp] vb.references.workspace.cache.hit: ${cached.source.uri}`);
+    return cachedResult.referencesByTarget;
+  }
+  const inFlight = workspaceVbReferenceRequestInFlight.get(key);
+  if (inFlight) {
+    logDebugSummary(settings, `[asp-lsp] vb.references.workspace.reuse: ${cached.source.uri}`);
+    return (await inFlight.promise).referencesByTarget;
+  }
+  const promise = workspaceVbscriptReferencesForSymbolsUncached(
+    cached,
+    symbols,
+    settings,
+    options,
+    openDocuments,
+    openDocumentsKey,
+    logOptions,
+  ).then((referencesByTarget) => {
+    const result = { key, referencesByTarget, lastUsed: Date.now() };
+    workspaceVbReferenceRequestCompleted.set(key, result);
+    pruneWorkspaceVbReferenceRequestCompleted();
+    return result;
+  });
+  workspaceVbReferenceRequestInFlight.set(key, { key, promise });
+  try {
+    return (await promise).referencesByTarget;
+  } finally {
+    if (workspaceVbReferenceRequestInFlight.get(key)?.promise === promise) {
+      workspaceVbReferenceRequestInFlight.delete(key);
+    }
+  }
+}
+
+async function workspaceVbscriptReferencesForSymbolsUncached(
+  cached: CachedDocument,
+  symbols: VbSymbol[],
+  settings: AspSettings,
+  options: VbReferenceOptions,
+  openDocuments: VbReferencesWorkerOpenDocument[],
+  openDocumentsKey: string,
+  logOptions: { logSymbol?: string },
+): Promise<Map<string, VbReference[]>> {
   const context = await localVbReferenceContextAsync(cached, settings);
   const targets = symbols.map(
     (symbol) => equivalentVbSymbol(context.symbols ?? [], symbol) ?? symbol,
@@ -7734,8 +7814,6 @@ async function workspaceVbscriptReferencesForSymbols(
       `[asp-lsp] vb.references.summary.fastPath: ${cached.source.uri}, candidates=${summaryFastPath.fastPathCandidates}, fallback=${summaryFastPath.workerCandidates.length}`,
     );
   }
-  const openDocuments = vbReferencesWorkerOpenDocuments();
-  const openDocumentsKey = vbReferencesWorkerOpenDocumentsKey(openDocuments);
   const workerResponses = await Promise.all(
     summaryFastPath.workerCandidates.map((candidate) =>
       workspaceVbReferenceWorkerBatchResponse(
@@ -8160,7 +8238,29 @@ async function workspaceVbReferenceReachability(
     cached.lastUsed = Date.now();
     return cached;
   }
+  const inFlight = workspaceVbReferenceReachabilityInFlight.get(key);
+  if (inFlight) {
+    logDebugSummary(settings, "[asp-lsp] vb.references.reachability.reuse");
+    return inFlight;
+  }
 
+  const promise = computeWorkspaceVbReferenceReachability(key, candidates, targetFiles, settings);
+  workspaceVbReferenceReachabilityInFlight.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    if (workspaceVbReferenceReachabilityInFlight.get(key) === promise) {
+      workspaceVbReferenceReachabilityInFlight.delete(key);
+    }
+  }
+}
+
+async function computeWorkspaceVbReferenceReachability(
+  key: string,
+  candidates: VbReferencesWorkerCandidate[],
+  targetFiles: Set<string>,
+  settings: AspSettings,
+): Promise<WorkspaceVbReferenceReachabilityEntry> {
   const basenameReachability = await workspaceVbReferenceBasenameReachability(
     candidates,
     targetFiles,
@@ -8494,6 +8594,34 @@ function vbReferencesWorkerOpenDocumentsKey(
   );
 }
 
+function workspaceVbReferenceRequestCacheKey(
+  cached: CachedDocument,
+  symbols: VbSymbol[],
+  settings: AspSettings,
+  options: VbReferenceOptions,
+  openDocumentsKey: string,
+): string {
+  return JSON.stringify({
+    scope: "workspaceReferences",
+    source: {
+      uri: fileIdentityKeyFromUri(cached.source.uri),
+      version: cached.source.version,
+      text: textFingerprint(cached.source.getText()),
+      parsed: vbProjectDocumentFingerprint(cached.parsed),
+    },
+    symbols: symbols.map(vbscriptReferenceSymbolKey).sort(),
+    settings: {
+      parse: parseSettingsIdentity(settings),
+      include: includeResolutionSettingsIdentity(settings),
+      vbscript: vbProjectContextSettings(settings),
+      legacyEncoding: settings.legacyEncoding,
+    },
+    options,
+    workspaceGeneration,
+    openDocuments: openDocumentsKey,
+  });
+}
+
 function vbReferencesWorkerCacheOptions(settings: AspSettings): VbReferencesWorkerCacheOptions {
   return {
     disk: {
@@ -8632,6 +8760,18 @@ async function workspaceVbReferenceWorkerBatchResponse(
       },
     };
   }
+  const key = workspaceVbReferenceWorkerBatchTaskKey(
+    candidate,
+    targets,
+    settings,
+    workspaceVbReferenceWorkerOptions(options),
+    openDocumentsKey,
+  );
+  const inFlight = workspaceVbReferenceWorkerBatchInFlight.get(key);
+  if (inFlight) {
+    logDebugSummary(settings, `[asp-lsp] vb.references.worker.batch.reuse: ${candidate.uri}`);
+    return inFlight.promise;
+  }
   const request = {
     id: ++vbReferencesWorkerRequestId,
     candidate,
@@ -8649,7 +8789,7 @@ async function workspaceVbReferenceWorkerBatchResponse(
     },
   };
   const pool = getVbReferencesWorkerPool(settings);
-  return pool
+  const promise = pool
     .run(request)
     .then(async (response) => {
       if (
@@ -8700,7 +8840,14 @@ async function workspaceVbReferenceWorkerBatchResponse(
         referencesByTarget: {},
         error: { message: errorMessage(error) },
       } satisfies VbReferencesWorkerResponse;
+    })
+    .finally(() => {
+      if (workspaceVbReferenceWorkerBatchInFlight.get(key)?.promise === promise) {
+        workspaceVbReferenceWorkerBatchInFlight.delete(key);
+      }
     });
+  workspaceVbReferenceWorkerBatchInFlight.set(key, { key, promise });
+  return promise;
 }
 
 function seedWorkspaceVbReferenceWorkerCompleted(
@@ -8780,6 +8927,41 @@ function workspaceVbReferenceWorkerTaskKey(
   });
 }
 
+function workspaceVbReferenceWorkerBatchTaskKey(
+  candidate: VbReferencesWorkerCandidate,
+  targets: VbReferencesWorkerTargetSymbol[],
+  settings: AspSettings,
+  options: VbReferenceOptions,
+  openDocumentsKey: string,
+): string {
+  return JSON.stringify({
+    targets: targets
+      .map((target) => ({
+        ...target,
+        sourceUri: fileIdentityKeyFromUri(target.sourceUri),
+      }))
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+    candidate: {
+      ...candidate,
+      uri: fileIdentityKeyFromUri(candidate.uri),
+      fileName: fileIdentityKeyFromFileName(candidate.fileName),
+      source: {
+        ...candidate.source,
+        fileName: fileIdentityKeyFromFileName(candidate.source.fileName),
+      },
+    },
+    settings: {
+      parse: parseSettingsIdentity(settings),
+      include: includeResolutionSettingsIdentity(settings),
+      vbscript: vbProjectContextSettings(settings),
+      legacyEncoding: settings.legacyEncoding,
+    },
+    options,
+    workspaceGeneration,
+    openDocuments: openDocumentsKey,
+  });
+}
+
 function sameVbReferencesWorkerCandidate(
   left: VbReferencesWorkerCandidate,
   right: VbReferencesWorkerCandidate,
@@ -8835,6 +9017,18 @@ function pruneWorkspaceVbReferenceWorkerCompleted(): void {
   }
 }
 
+function pruneWorkspaceVbReferenceRequestCompleted(): void {
+  while (workspaceVbReferenceRequestCompleted.size > maxWorkspaceVbReferenceRequestCacheEntries) {
+    const oldest = [...workspaceVbReferenceRequestCompleted.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0];
+    if (!oldest) {
+      return;
+    }
+    workspaceVbReferenceRequestCompleted.delete(oldest[0]);
+  }
+}
+
 function pruneWorkspaceVbReferenceBatchCompleted(): void {
   while (workspaceVbReferenceBatchCompleted.size > maxWorkspaceVbReferenceBatchCacheEntries) {
     const oldest = workspaceVbReferenceBatchCompleted.keys().next().value;
@@ -8861,9 +9055,13 @@ function pruneWorkspaceVbReferenceReachabilityCache(): void {
 
 function clearWorkspaceVbReferenceCaches(): void {
   workspaceVbReferenceWorkerInFlight.clear();
+  workspaceVbReferenceWorkerBatchInFlight.clear();
   workspaceVbReferenceWorkerCompleted.clear();
+  workspaceVbReferenceRequestInFlight.clear();
+  workspaceVbReferenceRequestCompleted.clear();
   workspaceVbReferenceBatchInFlight.clear();
   workspaceVbReferenceBatchCompleted.clear();
+  workspaceVbReferenceReachabilityInFlight.clear();
   workspaceVbReferenceReachabilityCache.clear();
 }
 
