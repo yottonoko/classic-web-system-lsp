@@ -22,6 +22,7 @@ const vbKeywords = new Set([
   "elseif",
   "empty",
   "end",
+  "eqv",
   "error",
   "exit",
   "explicit",
@@ -31,6 +32,7 @@ const vbKeywords = new Set([
   "get",
   "goto",
   "if",
+  "imp",
   "in",
   "is",
   "let",
@@ -63,6 +65,7 @@ const vbKeywords = new Set([
   "wend",
   "while",
   "with",
+  "xor",
 ]);
 
 export function parseVbscriptCst(text: string, sourceText = text, baseOffset = 0): VbCstNode {

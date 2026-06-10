@@ -475,7 +475,7 @@ export function createAnalysisExcelSheets(
   const nodesById = new Map(payload.nodes.map((node) => [node.id, node]));
   const fileNamesByUri = fileNamesByUriMap(payload.nodes);
   const context = analysisContext(payload, options, nodesById, fileNamesByUri);
-  const analysisRows = analysisSummaryRows(locale, context);
+  const analysisRows = analysisSummaryRows(locale, context, fileNamesByUri);
   const analysisChartStartRow = analysisRows.length + 3;
   const analysisRowsWithChartSpace = [
     ...analysisRows,
@@ -553,7 +553,11 @@ function summaryRows(
   return [header([t.name, t.value ?? "Value"]), ...rows.map(([name, value]) => [name, value])];
 }
 
-function analysisSummaryRows(locale: AspGraphLocale, context: AnalysisContext): Cell[][] {
+function analysisSummaryRows(
+  locale: AspGraphLocale,
+  context: AnalysisContext,
+  fileNamesByUri: Map<string, string>,
+): Cell[][] {
   const t = text[locale];
   return [
     sectionTitle(t.reviewPriority, 4),
@@ -583,7 +587,7 @@ function analysisSummaryRows(locale: AspGraphLocale, context: AnalysisContext): 
       context.targetDeclarations,
       locale,
       context.targetUsageCounts,
-      new Map(context.targetDeclarations.map((node) => [node.uri ?? "", context.targetFileName])),
+      fileNamesByUri,
     ),
     [],
     sectionTitle(t.unusedByKind, 5),
@@ -1140,21 +1144,28 @@ function analysisContext(
 ): AnalysisContext {
   const targetUri = options.targetUri ?? defaultAnalysisTargetUri(payload);
   const targetFileName = displayNameForUri(targetUri, fileNamesByUri);
-  const targetDeclarations = sourceDeclarationNodes(payload.nodes)
+  const rootDeclarations = sourceDeclarationNodes(payload.nodes)
     .filter((node) => sameGraphUri(node.uri, targetUri) && isAnalysisDeclaration(node))
     .sort(compareNodesByLocation(fileNamesByUri));
-  const targetDeclarationIds = new Set(targetDeclarations.map((node) => node.id));
   const includedFileUris = includedFileUrisForTarget(payload, targetUri, nodesById);
-  const includedDeclarationIds = new Set(
-    sourceDeclarationNodes(payload.nodes)
-      .filter(
-        (node) =>
-          node.uri !== undefined &&
-          includedFileUris.has(graphUriIdentity(node.uri)) &&
-          isExternallyVisibleDeclaration(node),
-      )
-      .map((node) => node.id),
+  const includedDeclarations = sourceDeclarationNodes(payload.nodes).filter(
+    (node) =>
+      node.uri !== undefined &&
+      includedFileUris.has(graphUriIdentity(node.uri)) &&
+      isExternallyVisibleDeclaration(node),
   );
+  const includedDeclarationIds = new Set(includedDeclarations.map((node) => node.id));
+  const includedUsageLinks = filteredGraphLinks(
+    payload.links,
+    (link) => isUsageGraphLink(link) && includedDeclarationIds.has(link.target),
+    ({ uri }) => sameGraphUri(uri, targetUri),
+  );
+  const usedIncludedDeclarationIds = new Set(includedUsageLinks.map((link) => link.target));
+  const targetDeclarations = [
+    ...rootDeclarations,
+    ...includedDeclarations.filter((node) => usedIncludedDeclarationIds.has(node.id)),
+  ].sort(compareNodesByLocation(fileNamesByUri));
+  const targetDeclarationIds = new Set(targetDeclarations.map((node) => node.id));
   const externalUsageLinks = filteredGraphLinks(
     payload.links,
     (link) => isUsageGraphLink(link) && targetDeclarationIds.has(link.target),
@@ -1164,11 +1175,6 @@ function analysisContext(
     payload.links,
     (link) => isUsageGraphLink(link) && targetDeclarationIds.has(link.target),
     () => true,
-  );
-  const includedUsageLinks = filteredGraphLinks(
-    payload.links,
-    (link) => isUsageGraphLink(link) && includedDeclarationIds.has(link.target),
-    ({ uri }) => sameGraphUri(uri, targetUri),
   );
   const unresolvedLinks = filteredGraphLinks(
     payload.links,

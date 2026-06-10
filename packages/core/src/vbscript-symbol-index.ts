@@ -209,6 +209,7 @@ const memberExpectedKinds: VbIndexedDeclarationKind[] = [
 ];
 const writableExpectedKinds: VbIndexedDeclarationKind[] = ["variable"];
 const valueExpectedKinds: VbIndexedDeclarationKind[] = ["variable", "constant"];
+const operatorKeywordNames = new Set(["and", "or", "not", "mod", "is", "xor", "eqv", "imp"]);
 const implicitVariableExcludedNames = new Set(
   [
     "application",
@@ -837,6 +838,9 @@ function collectReferences(state: SymbolIndexBuildState): {
   for (let index = 0; index < state.tokens.length; index += 1) {
     const token = state.tokens[index];
     if (token.kind !== "identifier" || state.declarationNameKeys.has(tokenKey(token))) {
+      continue;
+    }
+    if (operatorKeywordNames.has(token.text.toLowerCase())) {
       continue;
     }
     if (isTypeAnnotationIdentifier(state.tokens, index)) {

@@ -4992,6 +4992,7 @@ Response.Write SharedFromMixed()
     it("returns hover and signature help for VBScript built-in functions", async () => {
       const source = `<%
 Dim textValue
+Randomize Timer
 textValue = CStr(42)
 Response.Write UBound(Array("a", "b"))
 %>`;
@@ -5022,6 +5023,15 @@ Response.Write UBound(Array("a", "b"))
         expect(JSON.stringify(hover)).toContain("Converts a value to String.");
         expect(JSON.stringify(hover)).not.toContain("VBScript built-in function.");
 
+        const randomizeHover = await server.request("textDocument/hover", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf("Randomize") + 1),
+        });
+        expect(JSON.stringify(randomizeHover)).toContain("Function Randomize(number) As Variant");
+        expect(JSON.stringify(randomizeHover)).toContain(
+          "Initializes the random-number generator.",
+        );
+
         const signature = await server.request("textDocument/signatureHelp", {
           textDocument: { uri },
           position: positionAt(source, source.indexOf('Array("a"') + 'Array("'.length),
@@ -5039,6 +5049,12 @@ Response.Write UBound(Array("a", "b"))
           );
         };
         expect(tokenAt("CStr")).toEqual(
+          expect.objectContaining({
+            tokenType: semanticTokenType.function,
+            tokenModifiers: semanticTokenModifier.library,
+          }),
+        );
+        expect(tokenAt("Randomize")).toEqual(
           expect.objectContaining({
             tokenType: semanticTokenType.function,
             tokenModifiers: semanticTokenModifier.library,
@@ -8028,10 +8044,15 @@ End Function
 <%
 Dim PageValue
 Function Render(value)
+  Dim flags
   PageValue = value
   PageValue = &HFF
   PageValue = &077
   PageValue = &O10
+  flags = value Xor PageValue
+  flags = flags Eqv (PageValue Imp value)
+  flags = flags And Not (PageValue Or value)
+  flags = flags Mod 2
   Render = value
 End Function
 Sub Main()
@@ -8083,7 +8104,16 @@ End Sub
         expect(
           graph.nodes?.some(
             (node) =>
-              node.kind === "vbUnresolved" && (node.label === "HFF" || node.label === "O10"),
+              node.kind === "vbUnresolved" &&
+              (node.label === "HFF" ||
+                node.label === "O10" ||
+                node.label === "Xor" ||
+                node.label === "Eqv" ||
+                node.label === "Imp" ||
+                node.label === "And" ||
+                node.label === "Not" ||
+                node.label === "Or" ||
+                node.label === "Mod"),
           ),
         ).toBe(false);
         expect(graph.links?.some((link) => link.kind === "include")).toBe(true);
@@ -8135,7 +8165,7 @@ End Sub
             text: `<!-- #include file="common.inc" -->
 <%
 Sub Main()
-  If ready Then
+  If ready Xor disabled Then
     Call Included()
   Else
     Exit Sub
@@ -8163,8 +8193,19 @@ End Sub
         expect(flowchart.fileName).toBe("default.asp");
         expect(flowchart.sections?.some((section) => section.label === "Sub Main")).toBe(true);
         expect(
-          flowchart.nodes?.some((node) => node.kind === "if" && node.label === "Check ready"),
+          flowchart.nodes?.some(
+            (node) => node.kind === "if" && String(node.label).includes("ready Xor disabled"),
+          ),
         ).toBe(true);
+        expect(
+          flowchart.nodes?.some(
+            (node) =>
+              Array.isArray(node.links) &&
+              node.links.some((link: Record<string, unknown>) =>
+                ["Xor", "Eqv", "Imp", "And", "Not", "Or", "Mod"].includes(String(link.label)),
+              ),
+          ),
+        ).toBe(false);
         expect(flowchart.nodes?.some((node) => node.kind === "call")).toBe(true);
         expect(
           flowchart.nodes?.some(

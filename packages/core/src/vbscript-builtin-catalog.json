@@ -3051,6 +3051,12 @@
       "summary": "Returns a random number."
     },
     {
+      "label": "Randomize",
+      "signature": "Randomize(number)",
+      "returnType": "Variant",
+      "summary": "Initializes the random-number generator."
+    },
+    {
       "label": "Round",
       "signature": "Round(number, decimalPlaces)",
       "returnType": "Number",

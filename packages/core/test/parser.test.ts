@@ -4349,21 +4349,27 @@ message = "hello" & _
     expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("'_'"))).toBe(false);
   });
 
-  it("does not report the Is operator as undeclared under Option Explicit", () => {
+  it("does not report VBScript word operators as undeclared under Option Explicit", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
       `<% Option Explicit
-Dim value
+Dim leftValue, rightValue, result, value
 Set value = Nothing
+result = leftValue Xor rightValue
+result = result Eqv (leftValue Imp rightValue)
+result = result And Not (leftValue Or rightValue)
+result = result Mod 2
 If value Is Nothing Then
   Response.Write "empty"
 End If
 %>`,
     );
     const result = analyzeVbscript(parsed);
-    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("'Is'"))).toBe(
-      false,
-    );
+    for (const operator of ["Xor", "Eqv", "Imp", "And", "Not", "Or", "Mod", "Is"]) {
+      expect(
+        result.diagnostics.some((diagnostic) => diagnostic.message.includes(`'${operator}'`)),
+      ).toBe(false);
+    }
   });
 
   it("localizes VBScript diagnostics, XML docs and completion details", () => {
@@ -7072,6 +7078,8 @@ Class Customer
   End Property
 End Class
 Const MaxCount = 10
+Dim flags
+flags = MaxCount Xor 2 Eqv 1
 Sub Render(ByVal metricMap, output)
   Response.Write MaxCount + vbCrLf
   Set output = Nothing
@@ -7116,6 +7124,8 @@ End Sub
       expect.objectContaining({ tokenType: "constant", tokenModifiers: ["readonly", "library"] }),
     );
     expect(tokenAt("+")).toEqual(expect.objectContaining({ tokenType: "operator" }));
+    expect(tokenAt("Xor")).toEqual(expect.objectContaining({ tokenType: "operator" }));
+    expect(tokenAt("Eqv")).toEqual(expect.objectContaining({ tokenType: "operator" }));
   });
 
   it("returns VBScript semantic tokens only inside the requested range", () => {

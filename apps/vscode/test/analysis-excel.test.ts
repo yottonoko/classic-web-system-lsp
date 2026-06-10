@@ -25,10 +25,10 @@ describe("analysis Excel sheets", () => {
       expect.arrayContaining([
         ["解析範囲", "ファイル"],
         ["ルート", "main.asp"],
-        ["宣言数", 5],
-        ["参照数", 2],
-        ["代入数", 2],
-        ["呼び出し数", 1],
+        ["宣言数", 9],
+        ["参照数", 5],
+        ["代入数", 3],
+        ["呼び出し数", 2],
         ["include 数", 1],
         ["未解決数", 2],
         ["未使用数", 2],
@@ -40,16 +40,22 @@ describe("analysis Excel sheets", () => {
         ["未使用の宣言", 2, "要確認", "未使用 sheet で削除可否を確認"],
         ["未解決", 2, "要確認", "未解決 sheet で名前解決を確認"],
         ["他ファイルからの使用数", 3, "あり", "使用箇所 sheet で他ファイルからの利用元を確認"],
-        ["include 先シンボル使用数", 3, "あり", "参照ファイル sheet で include 依存を確認"],
-        ["変数", 4, 2, 2, 4, expect.stringContaining("4")],
-        ["関数", 1, 1, 0, 1, expect.stringContaining("1")],
-        ["参照", 1, expect.stringContaining("1")],
+        ["include 先シンボル使用数", 5, "あり", "参照ファイル sheet で include 依存を確認"],
+        ["変数", 5, 3, 2, 6, expect.stringContaining("5")],
+        ["関数", 2, 2, 0, 2, expect.stringContaining("2")],
+        ["定数", 1, 1, 0, 1, expect.stringContaining("1")],
+        ["クラス", 1, 1, 0, 1, expect.stringContaining("1")],
+        ["参照", 3, expect.stringContaining("3")],
         ["代入", 1, expect.stringContaining("1")],
         ["呼び出し", 1, expect.stringContaining("1")],
+        ["SharedValue", "変数", "includes/util.inc", 1, 2, 1, 1, 0],
+        ["DoWork", "関数", "includes/util.inc", 2, 1, 0, 0, 1],
+        ["SharedConst", "定数", "includes/util.inc", 3, 1, 1, 0, 0],
+        ["SharedClass", "クラス", "includes/util.inc", 4, 1, 1, 0, 0],
         ["TargetValue", "変数", "main.asp", 3, 2, 1, 1, 0],
         ["TargetProc", "関数", "main.asp", 4, 1, 0, 0, 1],
         ["LocalOnlyValue", "変数", "main.asp", 6, 2, 1, 1, 0],
-        ["変数", 2, 4, 0.5, expect.stringContaining("2")],
+        ["変数", 2, 5, 0.4, expect.stringContaining("2")],
       ]),
     );
     expect(sheets.find((sheet) => sheet.sheet === "分析サマリ")?.images).toEqual(
@@ -70,8 +76,10 @@ describe("analysis Excel sheets", () => {
     expect(table(sheets, "チャート元データ")).toEqual(
       expect.arrayContaining([
         ["未使用の宣言", 2, "要確認", "未使用 sheet で削除可否を確認"],
-        ["変数", 4, 2, 2, 4],
-        ["関数", 1, 1, 0, 1],
+        ["変数", 5, 3, 2, 6],
+        ["関数", 2, 2, 0, 2],
+        ["定数", 1, 1, 0, 1],
+        ["クラス", 1, 1, 0, 1],
       ]),
     );
     expect(sheets.find((sheet) => sheet.sheet === "チャート元データ")?.hidden).toBe(true);
@@ -79,14 +87,82 @@ describe("analysis Excel sheets", () => {
       sheets.find((sheet) => sheet.sheet === "チャート元データ")?.autoFilterRef,
     ).toBeUndefined();
     expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B12");
-    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:O6");
-    expect(sheets.find((sheet) => sheet.sheet === "被参照")?.autoFilterRef).toBe("A1:K4");
+    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:O10");
+    expect(sheets.find((sheet) => sheet.sheet === "被参照")?.autoFilterRef).toBe("A1:K8");
     expect(sheets.find((sheet) => sheet.sheet === "使用箇所")?.autoFilterRef).toBe("A1:H4");
-    expect(sheets.find((sheet) => sheet.sheet === "参照ファイル")?.autoFilterRef).toBe("A1:H4");
+    expect(sheets.find((sheet) => sheet.sheet === "参照ファイル")?.autoFilterRef).toBe("A1:H6");
     expect(sheets.find((sheet) => sheet.sheet === "未使用")?.autoFilterRef).toBe("A1:M3");
     expect(sheets.find((sheet) => sheet.sheet === "未解決")?.autoFilterRef).toBe("A1:H3");
     expect(table(sheets, "宣言")).toEqual(
       expect.arrayContaining([
+        [
+          "includes/util.inc",
+          "SharedValue",
+          "変数",
+          "",
+          "グローバル",
+          "",
+          "String",
+          "なし",
+          "",
+          1,
+          5,
+          1,
+          1,
+          0,
+          "使用あり",
+        ],
+        [
+          "includes/util.inc",
+          "DoWork",
+          "関数",
+          "",
+          "グローバル",
+          "",
+          "",
+          "なし",
+          "",
+          2,
+          10,
+          0,
+          0,
+          1,
+          "使用あり",
+        ],
+        [
+          "includes/util.inc",
+          "SharedConst",
+          "定数",
+          "",
+          "グローバル",
+          "",
+          "Long",
+          "なし",
+          "",
+          3,
+          5,
+          1,
+          0,
+          0,
+          "使用あり",
+        ],
+        [
+          "includes/util.inc",
+          "SharedClass",
+          "クラス",
+          "",
+          "グローバル",
+          "",
+          "",
+          "なし",
+          "",
+          4,
+          5,
+          1,
+          0,
+          0,
+          "使用あり",
+        ],
         [
           "main.asp",
           "TargetValue",
@@ -176,6 +252,10 @@ describe("analysis Excel sheets", () => {
     );
     expect(table(sheets, "被参照")).toEqual(
       expect.arrayContaining([
+        ["includes/util.inc", "SharedValue", "変数", "", "ソース", 1, 5, 2, 1, 1, 0],
+        ["includes/util.inc", "DoWork", "関数", "", "ソース", 2, 10, 1, 0, 0, 1],
+        ["includes/util.inc", "SharedConst", "定数", "", "ソース", 3, 5, 1, 1, 0, 0],
+        ["includes/util.inc", "SharedClass", "クラス", "", "ソース", 4, 5, 1, 1, 0, 0],
         ["main.asp", "TargetValue", "変数", "", "ソース", 3, 5, 2, 1, 1, 0],
         ["main.asp", "TargetProc", "関数", "", "ソース", 4, 5, 1, 0, 0, 1],
         ["main.asp", "LocalOnlyValue", "変数", "", "ソース", 6, 5, 2, 1, 1, 0],
@@ -193,6 +273,8 @@ describe("analysis Excel sheets", () => {
         ["参照", "読み取り", "includes/util.inc", "SharedValue", "main.asp", 6, 5, 1],
         ["代入", "書き込み", "includes/util.inc", "SharedValue", "main.asp", 7, 5, 1],
         ["呼び出し", "関数", "includes/util.inc", "DoWork", "main.asp", 8, 5, 1],
+        ["参照", "読み取り", "includes/util.inc", "SharedConst", "main.asp", 16, 5, 1],
+        ["参照", "読み取り", "includes/util.inc", "SharedClass", "main.asp", 17, 5, 1],
       ]),
     );
     expect(table(sheets, "未使用")).toEqual(
@@ -341,7 +423,7 @@ describe("analysis Excel sheets", () => {
         sheets.find((sheet) => sheet.sheet === "宣言")!,
         { sheetId: "4", sheetIndex: 3 },
       ),
-    ).toContain('<autoFilter ref="A1:O6"/>');
+    ).toContain('<autoFilter ref="A1:O10"/>');
   });
 });
 
@@ -409,6 +491,27 @@ function analysisPayload(): AspGraphPayload {
         uri: utilUri,
         range: range(1, 9),
         declarationKind: "function",
+        bindingScope: "global",
+        origin: "source",
+      },
+      {
+        id: "vb:shared-const",
+        kind: "vbDeclaration",
+        label: "SharedConst",
+        uri: utilUri,
+        range: range(2, 4),
+        declarationKind: "constant",
+        bindingScope: "global",
+        typeName: "Long",
+        origin: "source",
+      },
+      {
+        id: "vb:shared-class",
+        kind: "vbDeclaration",
+        label: "SharedClass",
+        uri: utilUri,
+        range: range(3, 4),
+        declarationKind: "class",
         bindingScope: "global",
         origin: "source",
       },
@@ -571,6 +674,26 @@ function analysisPayload(): AspGraphPayload {
         ranges: [{ uri: mainUri, range: range(7, 4) }],
       },
       {
+        id: "link:ref-shared-const",
+        source: "file:/workspace/main.asp",
+        target: "vb:shared-const",
+        kind: "references",
+        label: "read",
+        role: "read",
+        count: 1,
+        ranges: [{ uri: mainUri, range: range(15, 4) }],
+      },
+      {
+        id: "link:ref-shared-class",
+        source: "file:/workspace/main.asp",
+        target: "vb:shared-class",
+        kind: "references",
+        label: "read",
+        role: "read",
+        count: 1,
+        ranges: [{ uri: mainUri, range: range(16, 4) }],
+      },
+      {
         id: "link:ref-target-value",
         source: "file:/workspace/consumer.asp",
         target: "vb:target-value",
@@ -643,15 +766,15 @@ function analysisPayload(): AspGraphPayload {
     ],
     stats: {
       files: 3,
-      declarations: 7,
-      references: 3,
+      declarations: 9,
+      references: 5,
       assignments: 3,
       calls: 3,
       unresolvedReferences: 1,
       includes: 1,
       missingIncludes: 0,
-      nodes: 12,
-      links: 16,
+      nodes: 14,
+      links: 18,
     },
     truncated: {
       reason: "workspaceIndex>10",
