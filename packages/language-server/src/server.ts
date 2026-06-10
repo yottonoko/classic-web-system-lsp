@@ -237,7 +237,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.5.43";
+const languageServerVersion = "0.5.44";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -766,11 +766,13 @@ type AspGraphNodeCategory =
   | "property"
   | "member"
   | "globalVariable"
+  | "implicitLocalVariable"
   | "unresolvedGlobalVariable"
   | "globalConstant"
   | "localVariable"
   | "localConstant"
   | "parameter"
+  | "unresolvedFunction"
   | "unresolved";
 
 interface AspGraphNode {
@@ -790,6 +792,7 @@ interface AspGraphNode {
   bindingScope?: string;
   procedureKind?: string;
   implicit?: boolean;
+  implicitLocal?: boolean;
   unresolvedGlobal?: boolean;
   typeName?: string;
   arrayKind?: string;
@@ -1986,12 +1989,20 @@ connection.onCompletion((params) =>
         warmedContext?.context ??
         (await buildImmediateLocalVbProjectContextAsync(cached, settings));
       const completions = getVbscriptCompletions(cached.parsed, params.position, context);
-      const items = withCompletionData(
+      const completionItems =
         completions.length > 0
-          ? completions
-          : fallbackVbMemberCompletions(cached, params.position, context),
-        { kind: "vbscript", uri: cached.source.uri },
-      );
+          ? withUnresolvedVbscriptCompletionItems(
+              cached,
+              settings,
+              context,
+              params.position,
+              completions,
+            )
+          : fallbackVbMemberCompletions(cached, params.position, context);
+      const items = withCompletionData(completionItems, {
+        kind: "vbscript",
+        uri: cached.source.uri,
+      });
       return shouldCache ? remember(items, contextIdentity) : items;
     }
     const cachedCompletion = completionSessionCache.get(cached, settings, region, params.position);
@@ -5254,6 +5265,7 @@ function pruneLightweightJsUnusedDiagnosticsCache(): void {
 function completionSettingsIdentity(settings: AspSettings): string {
   return JSON.stringify({
     vbscript: vbProjectContextSettings(settings),
+    unresolvedVbscriptCompletions: settings.vbscript?.showUnresolvedSymbolsInCompletion === true,
     javascript: settings.javascript,
     checkJs: settings.checkJs,
     locale: settings.resolvedLocale,
@@ -5354,6 +5366,99 @@ function cssStyleAttributeSemicolonCompletions(
   return cssService
     .doComplete(syntheticDocument, syntheticPosition, cssService.parseStylesheet(syntheticDocument))
     .items.map((item) => completionItemAtSourceRange(item, sourceRange, " "));
+}
+
+function withUnresolvedVbscriptCompletionItems(
+  cached: CachedDocument,
+  settings: AspSettings,
+  context: VbProjectContext,
+  position: Position,
+  items: CompletionItem[],
+): CompletionItem[] {
+  if (settings.vbscript?.showUnresolvedSymbolsInCompletion !== true) {
+    return items;
+  }
+  const additions = unresolvedVbscriptCompletionItems(cached, settings, context, position, items);
+  return additions.length > 0 ? [...items, ...additions] : items;
+}
+
+function unresolvedVbscriptCompletionItems(
+  cached: CachedDocument,
+  settings: AspSettings,
+  context: VbProjectContext,
+  position: Position,
+  existingItems: CompletionItem[],
+): CompletionItem[] {
+  const index = extractVbscriptSymbolIndex(cached.source.uri, cached.source.getText(), settings, {
+    includeImplicitVariables: true,
+  });
+  const existingNames = new Set(existingItems.map((item) => item.label.toLowerCase()));
+  const visibleNames = visibleVbscriptCompletionSymbolNames(cached, context);
+  const externalNames = new Set(
+    getVbscriptGraphExternalSymbols(settings).map((symbol) => symbol.name.toLowerCase()),
+  );
+  const items: CompletionItem[] = [];
+  const localizer = createLocalizer(settings.resolvedLocale);
+  const add = (item: CompletionItem): void => {
+    const key = item.label.toLowerCase();
+    if (existingNames.has(key) || visibleNames.has(key) || externalNames.has(key)) {
+      return;
+    }
+    existingNames.add(key);
+    items.push(item);
+  };
+  for (const declaration of index.declarations) {
+    if (
+      declaration.kind !== "variable" ||
+      declaration.unresolvedGlobal !== true ||
+      rangeContainsPosition(declaration.nameRange, position)
+    ) {
+      continue;
+    }
+    add({
+      label: declaration.name,
+      kind: CompletionItemKind.Variable,
+      detail: localizer.t("vb.completion.unresolvedGlobalVariable"),
+      sortText: `90-unresolved-global-${declaration.normalizedName}`,
+    });
+  }
+  for (const callSite of index.callSites) {
+    if (
+      callSite.resolvedId ||
+      callSite.memberName ||
+      !isCallableUnresolvedRole(callSite.callKind) ||
+      rangeContainsPosition(callSite.range, position)
+    ) {
+      continue;
+    }
+    add({
+      label: callSite.name,
+      kind: CompletionItemKind.Function,
+      detail: localizer.t("vb.completion.unresolvedFunction"),
+      sortText: `91-unresolved-call-${callSite.normalizedName}`,
+    });
+  }
+  return items;
+}
+
+function rangeContainsPosition(range: Range, position: Position): boolean {
+  return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
+}
+
+function visibleVbscriptCompletionSymbolNames(
+  cached: CachedDocument,
+  context: VbProjectContext,
+): Set<string> {
+  const names = new Set<string>();
+  for (const symbol of context.symbols ?? []) {
+    if (
+      sameFileIdentityUri(symbol.sourceUri, cached.parsed.uri) ||
+      (!symbol.scopeName && !symbol.memberOf)
+    ) {
+      names.add(symbol.name.toLowerCase());
+    }
+  }
+  return names;
 }
 
 function completionItemAtSourceRange(
@@ -12615,6 +12720,7 @@ function normalizeVbscriptSettings(
     deadCodeDiagnostics: record.deadCodeDiagnostics !== false,
     syntaxSnippets: record.syntaxSnippets !== false,
     syntaxKeywords: record.syntaxKeywords !== false,
+    showUnresolvedSymbolsInCompletion: record.showUnresolvedSymbolsInCompletion === true,
     initializedDimQuickFixStyle: normalizeInitializedDimQuickFixStyle(
       record.initializedDimQuickFixStyle,
     ),
@@ -16299,6 +16405,7 @@ function flowchartSymbolDocumentFromIndex(index: VbSymbolIndex): AspFlowchartSym
       bindingScope: declaration.bindingScope,
       procedureKind: declaration.procedureKind,
       implicit: declaration.implicit,
+      implicitLocal: declaration.implicitLocal,
       unresolvedGlobal: declaration.unresolvedGlobal,
       typeName: declaration.typeName,
     })),
@@ -17222,6 +17329,7 @@ async function addDocumentStructureToAspGraphAsync(
       bindingScope: declaration.bindingScope,
       procedureKind: declaration.procedureKind,
       implicit: declaration.implicit,
+      implicitLocal: declaration.implicitLocal,
       unresolvedGlobal: declaration.unresolvedGlobal,
       typeName: visibleAspGraphTypeName(declaration.typeName),
       arrayKind: declaration.arrayKind,
@@ -17348,7 +17456,7 @@ function addDocumentUsageToAspGraph(
         ? declarationGraphNodeId(sourceDeclaration.id)
         : external
           ? addExternalGraphNode(state, external)
-          : unresolvedGraphNodeId(callSite.name);
+          : unresolvedGraphNodeId(callSite.name, callSite.callKind);
     if (!callSite.resolvedId && !sourceDeclaration && !external) {
       addUnresolvedGraphNode(state, document.uri, callSite.name, callSite.range, callSite.callKind);
     }
@@ -17397,7 +17505,7 @@ function addDocumentUsageToAspGraph(
       continue;
     }
     state.stats.unresolvedReferences += 1;
-    const target = unresolvedGraphNodeId(deferred.name);
+    const target = unresolvedGraphNodeId(deferred.name, deferred.role);
     addUnresolvedGraphNode(state, document.uri, deferred.name, deferred.range, deferred.role);
     addAspGraphLink(state, {
       source: scopeGraphNodeId(state, document.uri, deferred.scopeId),
@@ -17836,7 +17944,7 @@ function addUnresolvedGraphNode(
     uri,
     range,
     role,
-    group: "unresolved",
+    group: isCallableUnresolvedRole(role) ? "unresolvedFunction" : "unresolved",
   });
 }
 
@@ -17919,11 +18027,13 @@ const graphNodeCategoryOrder: AspGraphNodeCategory[] = [
   "property",
   "member",
   "globalVariable",
+  "implicitLocalVariable",
   "unresolvedGlobalVariable",
   "globalConstant",
   "localVariable",
   "localConstant",
   "parameter",
+  "unresolvedFunction",
   "unresolved",
 ];
 
@@ -17966,6 +18076,8 @@ function isVisibleAspGraphNodeCategory(
       return settings.showMemberNodes === true;
     case "globalVariable":
       return settings.showGlobalVariableNodes !== false;
+    case "implicitLocalVariable":
+      return settings.showGlobalVariableNodes !== false;
     case "unresolvedGlobalVariable":
       return settings.showGlobalVariableNodes !== false;
     case "globalConstant":
@@ -17976,6 +18088,8 @@ function isVisibleAspGraphNodeCategory(
       return settings.showLocalConstantNodes === true;
     case "parameter":
       return settings.showParameterNodes === true;
+    case "unresolvedFunction":
+      return settings.showUnresolvedNodes !== false;
     case "unresolved":
       return settings.showUnresolvedNodes !== false;
   }
@@ -18060,8 +18174,13 @@ function declarationGraphNodeId(id: string): string {
   return `vb:${id}`;
 }
 
-function unresolvedGraphNodeId(name: string): string {
-  return `unresolved:${name.toLowerCase()}`;
+function unresolvedGraphNodeId(name: string, role?: string): string {
+  const prefix = isCallableUnresolvedRole(role) ? "unresolved-call" : "unresolved";
+  return `${prefix}:${name.toLowerCase()}`;
+}
+
+function isCallableUnresolvedRole(role: string | undefined): boolean {
+  return role === "function" || role === "procedure" || role === "unknown";
 }
 
 function memberReferenceGraphNodeId(receiverName: string | undefined, memberName: string): string {

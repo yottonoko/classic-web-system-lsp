@@ -251,6 +251,7 @@ const graphMessageEn = {
   "label.global": "Global",
   "label.globalConstant": "Global constant",
   "label.globalVariable": "Global variable",
+  "label.implicitLocalVariable": "Implicit local variable",
   "label.unresolvedGlobalVariable": "Unresolved global variable",
   "label.local": "Local",
   "label.localConstant": "Local constant",
@@ -269,6 +270,7 @@ const graphMessageEn = {
   "label.subMethod": "Sub method",
   "label.unknown": "Unknown",
   "label.unresolved": "Unresolved",
+  "label.unresolvedFunction": "Unresolved Function/Sub",
   "label.unresolvedMember": "Unresolved member",
   "label.virtual": "Virtual",
   "label.yes": "Yes",
@@ -283,6 +285,8 @@ const graphMessageEn = {
   "legend.outgoingLinks": "Outgoing links",
   "legend.outgoingLinksDescription": "Also highlight links that start from the selected node.",
   "legend.selection": "Selection",
+  "legend.unresolvedNodeFilters": "Unresolved nodes",
+  "legend.visibilityFilters": "Visibility",
   "link.assignments.description":
     "VBScript assigns to a resolved variable, parameter, field, or property.",
   "link.assignments.label": "Assignment",
@@ -308,6 +312,8 @@ const graphMessageEn = {
   "node.globalConstant.description": "Top-level VBScript Const declarations.",
   "node.globalVariable.description":
     "Top-level VBScript variables and inferred global object variables.",
+  "node.implicitLocalVariable.description":
+    "Variables inferred from procedure or class bodies without a Dim declaration. They may write through to globals.",
   "node.unresolvedGlobalVariable.description":
     "Names inferred as global variables because no visible declaration was found.",
   "node.localConstant.description": "Procedure-local Const declarations and class constants.",
@@ -320,6 +326,8 @@ const graphMessageEn = {
   "node.property.description": "Class Property Get, Let, and Set declarations.",
   "node.root.description": "The graph root file or selected root context.",
   "node.sub.description": "Top-level VBScript Sub declarations.",
+  "node.unresolvedFunction.description":
+    "Calls to Function or Sub symbols that could not be resolved.",
   "node.unresolved.description": "Names that could not be resolved to a visible declaration.",
   "occurrence.includeDirective": "Include directive",
   "occurrence.one": "1 occurrence",
@@ -440,6 +448,7 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "label.global": "グローバル",
     "label.globalConstant": "グローバル定数",
     "label.globalVariable": "グローバル変数",
+    "label.implicitLocalVariable": "dimなしローカル変数",
     "label.unresolvedGlobalVariable": "未解決グローバル変数",
     "label.local": "ローカル",
     "label.localConstant": "ローカル定数",
@@ -458,6 +467,7 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "label.subMethod": "Sub メソッド",
     "label.unknown": "不明",
     "label.unresolved": "未解決",
+    "label.unresolvedFunction": "未解決Function/Sub",
     "label.unresolvedMember": "未解決メンバー",
     "label.virtual": "仮想",
     "label.yes": "あり",
@@ -472,6 +482,8 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "legend.outgoingLinks": "出力リンク",
     "legend.outgoingLinksDescription": "選択 node から出る link も highlight します。",
     "legend.selection": "選択",
+    "legend.unresolvedNodeFilters": "未解決系",
+    "legend.visibilityFilters": "非表示系",
     "link.assignments.description":
       "VBScript が解決済みの variable、parameter、field、property に代入します。",
     "link.assignments.label": "代入",
@@ -497,6 +509,8 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "node.globalConstant.description": "top-level の VBScript Const declaration です。",
     "node.globalVariable.description":
       "top-level の VBScript variable と推論された global object variable です。",
+    "node.implicitLocalVariable.description":
+      "procedure や class 内で Dim なしのまま使われた variable です。global を操作している可能性があります。",
     "node.unresolvedGlobalVariable.description":
       "visible declaration が見つからないため global 変数として推論した名前です。",
     "node.localConstant.description": "procedure-local Const declaration と class constant です。",
@@ -509,6 +523,7 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "node.property.description": "class Property Get、Let、Set declaration です。",
     "node.root.description": "graph の root file または選択された root context です。",
     "node.sub.description": "top-level の VBScript Sub declaration です。",
+    "node.unresolvedFunction.description": "解決できなかった Function または Sub の呼び出しです。",
     "node.unresolved.description": "visible declaration に解決できなかった name です。",
     "occurrence.includeDirective": "include directive",
     "occurrence.one": "1 件",
@@ -574,11 +589,13 @@ const darkNodeColors: Record<NodeColorCategory, string> = {
   property: "#ff9cac",
   member: "#ffb86c",
   globalVariable: "#ffcb6b",
+  implicitLocalVariable: "#c3e88d",
   unresolvedGlobalVariable: "#f78c6c",
   globalConstant: "#82aaff",
   localVariable: "#dcdcaa",
   localConstant: "#80cbc4",
   parameter: "#b2ccd6",
+  unresolvedFunction: "#ff9cac",
   unresolved: "#ff5370",
 };
 
@@ -595,11 +612,13 @@ const lightNodeColors: Record<NodeColorCategory, string> = {
   property: "#be123c",
   member: "#b45309",
   globalVariable: "#b45309",
+  implicitLocalVariable: "#15803d",
   unresolvedGlobalVariable: "#c2410c",
   globalConstant: "#1d4ed8",
   localVariable: "#854d0e",
   localConstant: "#0f766e",
   parameter: "#475569",
+  unresolvedFunction: "#be123c",
   unresolved: "#dc2626",
 };
 
@@ -704,11 +723,13 @@ const nodeCategoryLabels: Record<NodeColorCategory, string> = {
   property: graphText("label.property"),
   member: graphText("label.member"),
   globalVariable: graphText("label.globalVariable"),
+  implicitLocalVariable: graphText("label.implicitLocalVariable"),
   unresolvedGlobalVariable: graphText("label.unresolvedGlobalVariable"),
   globalConstant: graphText("label.globalConstant"),
   localVariable: graphText("label.localVariable"),
   localConstant: graphText("label.localConstant"),
   parameter: graphText("label.parameter"),
+  unresolvedFunction: graphText("label.unresolvedFunction"),
   unresolved: graphText("label.unresolved"),
 };
 
@@ -725,11 +746,13 @@ const nodeCategoryDescriptions: Record<NodeColorCategory, string> = {
   property: graphText("node.property.description"),
   member: graphText("node.member.description"),
   globalVariable: graphText("node.globalVariable.description"),
+  implicitLocalVariable: graphText("node.implicitLocalVariable.description"),
   unresolvedGlobalVariable: graphText("node.unresolvedGlobalVariable.description"),
   globalConstant: graphText("node.globalConstant.description"),
   localVariable: graphText("node.localVariable.description"),
   localConstant: graphText("node.localConstant.description"),
   parameter: graphText("node.parameter.description"),
+  unresolvedFunction: graphText("node.unresolvedFunction.description"),
   unresolved: graphText("node.unresolved.description"),
 };
 
@@ -745,13 +768,22 @@ const nodeCategoryOrder: NodeColorCategory[] = [
   "property",
   "member",
   "globalVariable",
+  "implicitLocalVariable",
   "unresolvedGlobalVariable",
   "globalConstant",
   "localVariable",
   "localConstant",
   "parameter",
+  "unresolvedFunction",
   "unresolved",
 ];
+
+const unresolvedNodeCategorySet = new Set<NodeColorCategory>([
+  "missingInclude",
+  "unresolvedGlobalVariable",
+  "unresolvedFunction",
+  "unresolved",
+]);
 
 const linkFilterOrder: LinkFilterCategory[] = [
   "include",
@@ -1453,6 +1485,12 @@ function GraphLegend({
   onToggleShowOutgoingSelectionLinks(): void;
 }): React.ReactElement {
   const [isOpen, setOpen] = useState(false);
+  const regularNodeCategories = nodeCategories.filter(
+    (category) => !unresolvedNodeCategorySet.has(category),
+  );
+  const unresolvedNodeCategories = nodeCategories.filter((category) =>
+    unresolvedNodeCategorySet.has(category),
+  );
   return (
     <div className="absolute top-3 left-3 z-10 grid max-w-[min(560px,calc(100%_-_24px))] gap-0 rounded-md border border-[#303a49] bg-[#171c25]/90 px-2 py-0.5 shadow-[0_10px_26px_rgb(0_0_0_/_28%)] backdrop-blur">
       <button
@@ -1485,7 +1523,7 @@ function GraphLegend({
             ))}
           </LegendFilterGroup>
           <LegendFilterGroup title={graphText("legend.nodeFilters")}>
-            {nodeCategories.map((category) => (
+            {regularNodeCategories.map((category) => (
               <LegendFilterItem
                 key={category}
                 checked={!hiddenNodeCategories.has(category)}
@@ -1496,6 +1534,21 @@ function GraphLegend({
                 onToggle={() => onToggleNodeCategory(category)}
               />
             ))}
+          </LegendFilterGroup>
+          <LegendFilterGroup title={graphText("legend.unresolvedNodeFilters")}>
+            {unresolvedNodeCategories.map((category) => (
+              <LegendFilterItem
+                key={category}
+                checked={!hiddenNodeCategories.has(category)}
+                color={themePalette.nodeColors[category]}
+                label={nodeCategoryLabels[category]}
+                title={nodeCategoryDescriptions[category]}
+                variant="node"
+                onToggle={() => onToggleNodeCategory(category)}
+              />
+            ))}
+          </LegendFilterGroup>
+          <LegendFilterGroup title={graphText("legend.visibilityFilters")}>
             <LegendFilterItem
               checked={hideSingleNodes}
               color={themePalette.mutedNode}
@@ -3246,9 +3299,13 @@ function nodeTypeLabel(node: GraphNode): string {
     return node.exists === false ? graphText("label.missingFile") : graphText("label.file");
   }
   if (node.kind === "vbUnresolved") {
-    return node.role === "member"
-      ? graphText("label.unresolvedMember")
-      : graphText("label.unresolved");
+    if (node.role === "member") {
+      return graphText("label.unresolvedMember");
+    }
+    if (isCallableUnresolvedRole(node.role)) {
+      return graphText("label.unresolvedFunction");
+    }
+    return graphText("label.unresolved");
   }
   if (node.kind === "vbMemberReference") {
     return graphText("label.member");
@@ -3277,6 +3334,9 @@ function nodeTypeLabel(node: GraphNode): string {
     case "variable":
       if (node.unresolvedGlobal === true) {
         return graphText("label.unresolvedGlobalVariable");
+      }
+      if (node.implicitLocal === true) {
+        return graphText("label.implicitLocalVariable");
       }
       return node.bindingScope === "local"
         ? graphText("label.localVariable")
@@ -5187,7 +5247,10 @@ function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
     return "file";
   }
   if (node.kind === "vbUnresolved") {
-    return node.role === "member" ? "member" : "unresolved";
+    if (node.role === "member") {
+      return "member";
+    }
+    return isCallableUnresolvedRole(node.role) ? "unresolvedFunction" : "unresolved";
   }
   if (node.kind === "vbMemberReference") {
     return "member";
@@ -5219,6 +5282,9 @@ function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
     case "variable":
       if (node.unresolvedGlobal === true) {
         return "unresolvedGlobalVariable";
+      }
+      if (node.implicitLocal === true) {
+        return "implicitLocalVariable";
       }
       return node.bindingScope === "local" ? "localVariable" : "globalVariable";
     case "constant":
@@ -5253,12 +5319,16 @@ function nodeLabel(node: GraphNode): string {
     return `${nodeTypeLabel(node)}: ${node.label}`;
   }
   if (node.kind === "vbUnresolved" && node.role) {
-    return `${node.role}: ${node.label}`;
+    return `${nodeTypeLabel(node)}: ${node.label}`;
   }
   if (node.kind === "vbMemberReference") {
     return `${graphText("label.member")}: ${node.label}`;
   }
   return node.label;
+}
+
+function isCallableUnresolvedRole(role: string | undefined): boolean {
+  return role === "function" || role === "procedure" || role === "unknown";
 }
 
 function linkLabel(link: GraphLink): string {

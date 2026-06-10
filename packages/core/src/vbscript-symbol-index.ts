@@ -54,6 +54,7 @@ export interface VbIndexedDeclaration {
   procedureKind?: VbIndexedProcedureKind;
   parameters?: VbIndexedParameter[];
   implicit?: boolean;
+  implicitLocal?: boolean;
   unresolvedGlobal?: boolean;
   redim?: boolean;
   typeName?: string;
@@ -666,6 +667,7 @@ function addDeclaration(
     procedureKind?: VbIndexedProcedureKind;
     parameters?: VbIndexedParameter[];
     implicit?: boolean;
+    implicitLocal?: boolean;
     unresolvedGlobal?: boolean;
     redim?: boolean;
     sourceRange?: Range;
@@ -689,6 +691,7 @@ function addDeclaration(
     procedureKind: input.procedureKind,
     parameters: input.parameters,
     implicit: input.implicit,
+    implicitLocal: input.implicitLocal,
     unresolvedGlobal: input.unresolvedGlobal,
     redim: input.redim,
     sourceRange: input.sourceRange,
@@ -1009,14 +1012,29 @@ function addImplicitVariableDeclarationsFromReferences(
   references: IndexedReferenceToken[],
 ): Set<string> {
   const implicitNames = new Set<string>();
+  const referencesByName = new Map<string, IndexedReferenceToken[]>();
   for (const item of references) {
-    const { reference, token } = item;
+    const { reference } = item;
     if (!isImplicitVariableDeclarationCandidate(reference)) {
       continue;
     }
+    const existing = referencesByName.get(reference.normalizedName);
+    if (existing) {
+      existing.push(item);
+    } else {
+      referencesByName.set(reference.normalizedName, [item]);
+    }
+  }
+  for (const items of referencesByName.values()) {
+    const declarationItem = items.find((item) => item.reference.role === "write") ?? items[0];
+    const { reference, token } = declarationItem;
     if (resolveDeclaration(state, lookup, token, reference.role, reference.baseName)) {
       continue;
     }
+    const hasAssignment = items.some((item) => item.reference.role === "write");
+    const implicitLocal = Boolean(
+      activeScopeAt(state, token.start, "procedure") ?? activeScopeAt(state, token.start, "class"),
+    );
     const declaration = addDeclaration(state, {
       kind: "variable",
       nameToken: token,
@@ -1025,7 +1043,8 @@ function addImplicitVariableDeclarationsFromReferences(
       scopeId: globalScopeId,
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitLocal: implicitLocal ? true : undefined,
+      unresolvedGlobal: hasAssignment ? undefined : true,
     });
     addDeclarationToLookup(lookup, declaration);
     implicitNames.add(declaration.normalizedName);

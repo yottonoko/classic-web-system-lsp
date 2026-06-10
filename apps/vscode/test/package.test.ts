@@ -97,10 +97,13 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain('"action.openFlowchart": "フローチャートを開く"');
     expect(graphWebviewSource).toContain('type: "openFlowchart"');
     expect(graphWebviewSource).toContain('"legend.heading": "凡例"');
+    expect(graphWebviewSource).toContain('"legend.unresolvedNodeFilters": "未解決系"');
+    expect(graphWebviewSource).toContain('"legend.visibilityFilters": "非表示系"');
     expect(graphWebviewSource).toContain(
       '"legend.hideUnreferencedGlobalSymbols": "未外部参照を隠す"',
     );
     expect(graphWebviewSource).toContain('"legend.linkFilters": "リンクフィルター"');
+    expect(graphWebviewSource).toContain("unresolvedNodeCategorySet");
     expect(graphWebviewSource).toContain('"view.inspector": "情報"');
     expect(graphWebviewSource).toContain('missingInclude: "#ff4db8"');
     expect(graphWebviewSource).toContain('"label.missingInclude": "存在しない include"');
@@ -162,8 +165,11 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("payload.settings?.maxZoom");
     expect(flowchartSource).toContain("flowchartFitWidthZoom");
     expect(flowchartSource).toContain("fitWidthDescription");
+    expect(flowchartSource).toContain('scrollbarGutter: "stable"');
     expect(flowchartSource).toContain("style={scaledFlowchartCanvasStyle(svgSize, zoom)}");
-    expect(flowchartSource).toContain("style={{ transform: `scale(${zoom})`");
+    expect(flowchartSource).toContain("style={flowchartSvgLayerStyle(svgSize, zoom)}");
+    expect(flowchartSource).toContain("scrollFlowchartElementIntoViewport");
+    expect(flowchartSource).toContain("flowchartNodeForRange");
     expect(flowchartSource).toContain("const [open, setOpen] = useState(false)");
     expect(flowchartSource).toContain("shouldAutoOpen");
     expect(flowchartSource).toContain('container.querySelectorAll<SVGGElement>("g[id]")');
@@ -401,6 +407,22 @@ describe("VS Code extension package", () => {
     );
     expect(nls["configuration.styleExtraction.insertionMode.description"]).toBeTruthy();
     expect(nlsJa["configuration.styleExtraction.insertionMode.description"]).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.[
+        "aspLsp.vbscript.showUnresolvedSymbolsInCompletion"
+      ],
+    ).toEqual(
+      expect.objectContaining({
+        type: "boolean",
+        default: false,
+      }),
+    );
+    expect(
+      nls["configuration.vbscript.showUnresolvedSymbolsInCompletion.description"],
+    ).toBeTruthy();
+    expect(
+      nlsJa["configuration.vbscript.showUnresolvedSymbolsInCompletion.description"],
+    ).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.maxTextSize"],
     ).toEqual(

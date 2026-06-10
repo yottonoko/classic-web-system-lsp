@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.5.43",
+  "version": "0.5.44",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -520,6 +520,11 @@
           "type": "boolean",
           "default": true,
           "description": "%configuration.vbscript.syntaxKeywords.description%"
+        },
+        "aspLsp.vbscript.showUnresolvedSymbolsInCompletion": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.vbscript.showUnresolvedSymbolsInCompletion.description%"
         },
         "aspLsp.vbscript.initializedDimQuickFixStyle": {
           "type": "string",

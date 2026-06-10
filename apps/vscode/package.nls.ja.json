@@ -38,6 +38,7 @@
   "configuration.vbscript.deadCodeDiagnostics.description": "到達不能な VBScript code を hint diagnostic として報告します。",
   "configuration.vbscript.syntaxSnippets.description": "よく使う制御構文と宣言 block の VBScript syntax snippet completion を有効にします。",
   "configuration.vbscript.syntaxKeywords.description": "文脈に応じた VBScript syntax keyword completion を有効にします。",
+  "configuration.vbscript.showUnresolvedSymbolsInCompletion.description": "VBScript completion list に未解決グローバル変数と未解決 Function/Sub 呼び出し先を含めます。既定では無効です。",
   "configuration.vbscript.initializedDimQuickFixStyle.description": "初期化つき VBScript Dim declaration の quick fix style を制御します。newline は 2 つの statement を別行に分け、sameLineColon は Dim a : a = value に書き換えます。",
   "configuration.vbscript.ifSyntaxDiagnostics.description": "VBScript If / ElseIf 構文をどの程度厳しく診断するかを制御します。",
   "configuration.inlayHints.variableTypes.description": "推論された VBScript variable type の inlay hint を表示します。",

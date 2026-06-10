@@ -53,6 +53,8 @@ export type LocalizeKey =
   | "vb.completion.syntaxKeyword"
   | "vb.completion.definedIn"
   | "vb.completion.memberDocumentation"
+  | "vb.completion.unresolvedGlobalVariable"
+  | "vb.completion.unresolvedFunction"
   | "vb.diagnostic.undeclared"
   | "vb.diagnostic.unusedParameter"
   | "vb.diagnostic.unusedSymbol"
@@ -160,6 +162,8 @@ const en: Record<LocalizeKey, string> = {
   "vb.completion.syntaxKeyword": "VBScript syntax keyword",
   "vb.completion.definedIn": "Defined in {uri}.",
   "vb.completion.memberDocumentation": "{kind} {type}.{member}{suffix}",
+  "vb.completion.unresolvedGlobalVariable": "Unresolved global variable",
+  "vb.completion.unresolvedFunction": "Unresolved Function/Sub",
   "vb.diagnostic.undeclared": "'{name}' is not declared under Option Explicit.",
   "vb.diagnostic.unusedParameter": "Parameter '{name}' is never used.",
   "vb.diagnostic.unusedSymbol": "'{name}' is declared but never used.",
@@ -275,6 +279,8 @@ const ja: Record<LocalizeKey, string> = {
   "vb.completion.syntaxKeyword": "VBScript 構文キーワード",
   "vb.completion.definedIn": "{uri} で定義されています。",
   "vb.completion.memberDocumentation": "{type}.{member}{suffix} の {kind}",
+  "vb.completion.unresolvedGlobalVariable": "未解決グローバル変数",
+  "vb.completion.unresolvedFunction": "未解決 Function/Sub",
   "vb.diagnostic.undeclared": "'{name}' は Option Explicit のもとで宣言されていません。",
   "vb.diagnostic.unusedParameter": "パラメーター '{name}' は使われていません。",
   "vb.diagnostic.unusedSymbol": "'{name}' は宣言されていますが使われていません。",

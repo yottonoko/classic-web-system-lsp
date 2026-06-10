@@ -54,11 +54,13 @@ export type AspGraphNodeCategory =
   | "property"
   | "member"
   | "globalVariable"
+  | "implicitLocalVariable"
   | "unresolvedGlobalVariable"
   | "globalConstant"
   | "localVariable"
   | "localConstant"
   | "parameter"
+  | "unresolvedFunction"
   | "unresolved";
 
 export type AspGraphLinkFilterCategory = AspGraphLink["kind"] | "member";
@@ -81,6 +83,7 @@ export interface AspGraphNode {
   bindingScope?: string;
   procedureKind?: string;
   implicit?: boolean;
+  implicitLocal?: boolean;
   unresolvedGlobal?: boolean;
   typeName?: string;
   arrayKind?: string;

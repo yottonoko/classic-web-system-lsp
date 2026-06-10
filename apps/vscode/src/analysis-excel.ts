@@ -136,7 +136,7 @@ type AnalysisTextKey =
   | "memberOf"
   | "bindingScope"
   | "procedureKind"
-  | "type"
+  | "inferredType"
   | "implicit"
   | "array"
   | "referenceCount"
@@ -261,7 +261,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     memberOf: "Member of",
     bindingScope: "Binding scope",
     procedureKind: "Procedure kind",
-    type: "Type",
+    inferredType: "Inferred type",
     implicit: "Implicit",
     array: "Array",
     referenceCount: "References",
@@ -387,7 +387,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     memberOf: "所属",
     bindingScope: "scope",
     procedureKind: "procedure kind",
-    type: "型",
+    inferredType: "推論型",
     implicit: "暗黙宣言",
     array: "配列",
     referenceCount: "参照数",
@@ -473,6 +473,8 @@ const valueText: Record<AspGraphLocale, Record<string, string>> = {
     field: "Field",
     parameter: "Parameter",
     variable: "Variable",
+    implicitLocalVariable: "Implicit local variable",
+    unresolvedFunction: "Unresolved Function/Sub",
     unresolvedGlobalVariable: "Unresolved global variable",
     constant: "Constant",
     object: "Object",
@@ -511,6 +513,8 @@ const valueText: Record<AspGraphLocale, Record<string, string>> = {
     field: "フィールド",
     parameter: "パラメーター",
     variable: "変数",
+    implicitLocalVariable: "dimなしローカル変数",
+    unresolvedFunction: "未解決Function/Sub",
     unresolvedGlobalVariable: "未解決グローバル変数",
     constant: "定数",
     object: "オブジェクト",
@@ -1074,13 +1078,14 @@ function includedUsageRows(
         displayNameForUri(target?.uri, fileNamesByUri),
         target?.label ?? link.target,
         valueLabel(target ? declarationKindKey(target) : undefined, locale),
+        target?.typeName ?? "",
         displayNameForUri(uri, fileNamesByUri),
         oneBasedLine(range),
         oneBasedColumn(range),
         link.ranges.length > 1 ? 1 : link.count,
       ]);
     })
-    .sort(compareRows(2, 3, 5, 6, 0));
+    .sort(compareRows(2, 3, 6, 7, 0));
   return [
     header([
       t.usageKind,
@@ -1088,6 +1093,7 @@ function includedUsageRows(
       t.includeFile,
       t.includedSymbol,
       t.includedKind,
+      t.inferredType,
       t.usedFromFile,
       t.line,
       t.column,
@@ -1115,7 +1121,7 @@ function declarationRows(
       t.memberOf,
       t.bindingScope,
       t.procedureKind,
-      t.type,
+      t.inferredType,
       t.implicit,
       t.array,
       t.line,
@@ -1149,6 +1155,7 @@ function referencedRows(
         node.label,
         valueLabel(declarationKindKey(node), locale),
         node.memberOf ?? "",
+        node.typeName ?? "",
         valueLabel(node.origin, locale),
         oneBasedLine(node.range),
         oneBasedColumn(node.range),
@@ -1164,6 +1171,7 @@ function referencedRows(
       t.name,
       t.kind,
       t.memberOf,
+      t.inferredType,
       t.origin,
       t.line,
       t.column,
@@ -1185,7 +1193,7 @@ function usageRows(
   const t = text[locale];
   const rows = links
     .flatMap((link) => usageLinkRows(link, locale, nodesById, fileNamesByUri))
-    .sort(compareRows(2, 7, 8, 5));
+    .sort(compareRows(2, 8, 9, 5));
   return [
     header([
       t.usageKind,
@@ -1195,6 +1203,7 @@ function usageRows(
       t.declarationFile,
       t.declarationName,
       t.declarationKind,
+      t.inferredType,
       t.line,
       t.column,
       t.count,
@@ -1255,6 +1264,7 @@ function unresolvedGlobalRows(
       displayNameForUri(node.uri, fileNamesByUri),
       node.label,
       valueLabel(declarationKindKey(node), locale),
+      node.typeName ?? "",
       valueLabel(node.bindingScope, locale),
       oneBasedLine(node.range),
       oneBasedColumn(node.range),
@@ -1269,6 +1279,7 @@ function unresolvedGlobalRows(
       t.file,
       t.name,
       t.kind,
+      t.inferredType,
       t.bindingScope,
       t.line,
       t.column,
@@ -1330,7 +1341,7 @@ function unusedDeclarationRows(
       t.kind,
       t.memberOf,
       t.bindingScope,
-      t.type,
+      t.inferredType,
       t.implicit,
       t.line,
       t.column,
@@ -1369,9 +1380,9 @@ function unresolvedRows(
   const t = text[locale];
   const rows = links
     .flatMap((link) => usageLikeLinkRows(link, locale, nodesById, fileNamesByUri))
-    .sort(compareRows(4, 5, 3));
+    .sort(compareRows(5, 6, 4));
   return [
-    header([t.usageKind, t.role, t.source, t.name, t.file, t.line, t.column, t.count]),
+    header([t.usageKind, t.role, t.kind, t.source, t.name, t.file, t.line, t.column, t.count]),
     ...rows,
   ];
 }
@@ -1415,6 +1426,7 @@ function usageLikeLinkRows(
   return rangesForLink(link).map(({ uri, range }) => [
     valueLabel(link.kind, locale),
     valueLabel(link.role ?? link.label, locale),
+    valueLabel(unresolvedNodeKindKey(target), locale),
     source?.label ?? source?.fileName ?? link.source,
     target?.label ?? target?.fileName ?? link.target,
     displayNameForUri(uri, fileNamesByUri),
@@ -1422,6 +1434,16 @@ function usageLikeLinkRows(
     oneBasedColumn(range),
     rangeCount,
   ]);
+}
+
+function unresolvedNodeKindKey(node: AspGraphNode | undefined): string {
+  if (
+    node?.kind === "vbUnresolved" &&
+    (isCallableUnresolvedRole(node.role) || node.group === "unresolvedFunction")
+  ) {
+    return "unresolvedFunction";
+  }
+  return node?.kind === "vbUnresolved" ? "unresolvedReference" : "unknown";
 }
 
 function usageLinkRows(
@@ -1441,6 +1463,7 @@ function usageLinkRows(
     displayNameForUri(target?.uri, fileNamesByUri),
     target?.label ?? target?.fileName ?? link.target,
     valueLabel(target ? declarationKindKey(target) : undefined, locale),
+    target?.typeName ?? "",
     oneBasedLine(range),
     oneBasedColumn(range),
     rangeCount,
@@ -1566,9 +1589,13 @@ function isUnresolvedGlobalDeclaration(node: AspGraphNode): boolean {
 }
 
 function declarationKindKey(node: AspGraphNode): string {
-  return isUnresolvedGlobalDeclaration(node)
-    ? "unresolvedGlobalVariable"
-    : (node.declarationKind ?? "unknown");
+  if (isUnresolvedGlobalDeclaration(node)) {
+    return "unresolvedGlobalVariable";
+  }
+  if (node.declarationKind === "variable" && node.implicitLocal === true) {
+    return "implicitLocalVariable";
+  }
+  return node.declarationKind ?? "unknown";
 }
 
 function unresolvedGlobalAssignmentCandidatesForPayload(
@@ -1742,6 +1769,10 @@ function isMemberReferenceGraphLink(
     target?.kind === "vbMemberReference" ||
     (target?.kind === "vbUnresolved" && target.role === "member")
   );
+}
+
+function isCallableUnresolvedRole(role: string | undefined): boolean {
+  return role === "function" || role === "procedure" || role === "unknown";
 }
 
 function isUnresolvedGraphLink(link: AspGraphLink, nodesById: Map<string, AspGraphNode>): boolean {

@@ -3184,13 +3184,14 @@ Class Widget
     methodLocal = "method"
   End Sub
 End Class
+Response.Write readOnlyGlobal
 obj.Member = "member"
 Response = "builtin"
 CStr = "builtin"
 %>`;
     const defaultIndex = extractVbscriptSymbolIndex("file:///site/implicit-default.asp", source);
     expect(defaultIndex.declarations.map((item) => item.name)).not.toEqual(
-      expect.arrayContaining(["implicitGlobal", "implicitLocal", "methodLocal"]),
+      expect.arrayContaining(["implicitGlobal", "implicitLocal", "methodLocal", "readOnlyGlobal"]),
     );
 
     const index = extractVbscriptSymbolIndex(
@@ -3207,16 +3208,27 @@ CStr = "builtin"
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
     });
+    expect(implicitGlobal?.unresolvedGlobal).toBeUndefined();
+    expect(implicitGlobal?.implicitLocal).toBeUndefined();
     expect(index.declarations.filter((item) => item.name === "implicitGlobal")).toHaveLength(1);
-    expect(index.declarations.find((item) => item.name === "implicitLocal")).toMatchObject({
+    const implicitLocal = index.declarations.find((item) => item.name === "implicitLocal");
+    expect(implicitLocal).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitLocal: true,
     });
-    expect(index.declarations.find((item) => item.name === "methodLocal")).toMatchObject({
+    expect(implicitLocal?.unresolvedGlobal).toBeUndefined();
+    const methodLocal = index.declarations.find((item) => item.name === "methodLocal");
+    expect(methodLocal).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+      implicitLocal: true,
+    });
+    expect(methodLocal?.unresolvedGlobal).toBeUndefined();
+    expect(index.declarations.find((item) => item.name === "readOnlyGlobal")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
@@ -3236,7 +3248,7 @@ CStr = "builtin"
         .every((item) => item.resolvedId === implicitGlobal?.id),
     ).toBe(true);
     expect(index.deferredExternalRefs.map((item) => item.name)).not.toEqual(
-      expect.arrayContaining(["implicitGlobal", "implicitLocal", "methodLocal"]),
+      expect.arrayContaining(["implicitGlobal", "implicitLocal", "methodLocal", "readOnlyGlobal"]),
     );
 
     const explicitIndex = extractVbscriptSymbolIndex(
@@ -3252,8 +3264,10 @@ missingValue = 1
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
     });
+    expect(
+      explicitIndex.declarations.find((item) => item.name === "missingValue")?.unresolvedGlobal,
+    ).toBeUndefined();
   });
 
   it("indexes VBScript array element access as variable references", () => {
@@ -3281,8 +3295,8 @@ If declaredItems(0) = "first" Then Response.Write "ok"
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
     });
+    expect(implicit?.unresolvedGlobal).toBeUndefined();
     expect(declaredReferences.map((item) => item.role)).toEqual(["write", "read", "read"]);
     expect(implicitReferences.map((item) => item.role)).toEqual(["write", "read"]);
     expect(declaredReferences.every((item) => item.resolvedId === declared?.id)).toBe(true);
@@ -3320,44 +3334,45 @@ If enabled Then Set objectValue = New Widget
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
     });
+    expect(declaration("oneLineValue")?.unresolvedGlobal).toBeUndefined();
     expect(declaration("branchValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
     });
+    expect(declaration("branchValue")?.unresolvedGlobal).toBeUndefined();
     expect(declaration("fallbackValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
     });
+    expect(declaration("fallbackValue")?.unresolvedGlobal).toBeUndefined();
     expect(declaration("letValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
     });
+    expect(declaration("letValue")?.unresolvedGlobal).toBeUndefined();
     expect(declaration("continuedValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
     });
+    expect(declaration("continuedValue")?.unresolvedGlobal).toBeUndefined();
     expect(declaration("localValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitLocal: true,
     });
+    expect(declaration("localValue")?.unresolvedGlobal).toBeUndefined();
     expect(declaration("objectValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
     });
+    expect(declaration("objectValue")?.unresolvedGlobal).toBeUndefined();
     for (const name of [
       "oneLineValue",
       "branchValue",
@@ -3382,7 +3397,7 @@ If enabled Then Set objectValue = New Widget
     );
   });
 
-  it("keeps loop variables local but treats unresolved procedure variables as globals in the symbol index", () => {
+  it("keeps loop variables local while splitting implicit globals from unresolved globals in the symbol index", () => {
     const source = `<%
 Sub Render()
   For index = 1 To 3
@@ -3409,18 +3424,21 @@ End Sub
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitLocal: true,
     });
+    expect(declaration("loopValue")?.unresolvedGlobal).toBeUndefined();
     expect(declaration("eachValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitLocal: true,
     });
+    expect(declaration("eachValue")?.unresolvedGlobal).toBeUndefined();
     expect(declaration("items")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      implicitLocal: true,
       unresolvedGlobal: true,
     });
     expect(reference("index")).toMatchObject({

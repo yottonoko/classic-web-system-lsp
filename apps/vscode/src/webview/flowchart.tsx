@@ -541,11 +541,23 @@ const darkFlowchartSymbolKindStyles: Record<string, FlowchartVisualStyle> = {
     mermaidClass: "flowSymbolVariable",
     text: "#fff0b8",
   },
+  implicitlocalvariable: {
+    background: "#1f2c14",
+    border: "#c3e88d",
+    mermaidClass: "flowSymbolImplicitLocalVariable",
+    text: "#e5ffd0",
+  },
   unresolvedglobalvariable: {
     background: "#332014",
     border: "#f78c6c",
     mermaidClass: "flowSymbolUnresolvedGlobalVariable",
     text: "#ffe0cf",
+  },
+  unresolvedfunction: {
+    background: "#351c28",
+    border: "#ff9cac",
+    mermaidClass: "flowSymbolUnresolvedFunction",
+    text: "#ffdce8",
   },
   constant: {
     background: "#16243a",
@@ -610,11 +622,23 @@ const lightFlowchartSymbolKindStyles: Record<string, FlowchartVisualStyle> = {
     mermaidClass: "flowSymbolVariable",
     text: "#3f2a04",
   },
+  implicitlocalvariable: {
+    background: "#dcfce7",
+    border: "#16a34a",
+    mermaidClass: "flowSymbolImplicitLocalVariable",
+    text: "#14532d",
+  },
   unresolvedglobalvariable: {
     background: "#ffedd5",
     border: "#c2410c",
     mermaidClass: "flowSymbolUnresolvedGlobalVariable",
     text: "#7c2d12",
+  },
+  unresolvedfunction: {
+    background: "#ffe4e6",
+    border: "#e11d48",
+    mermaidClass: "flowSymbolUnresolvedFunction",
+    text: "#881337",
   },
   constant: {
     background: "#dbeafe",
@@ -727,8 +751,13 @@ function App(): React.ReactElement {
   const initialTargetRange = isRange(window.__ASP_LSP_FLOWCHART_TARGET_RANGE__)
     ? window.__ASP_LSP_FLOWCHART_TARGET_RANGE__
     : undefined;
+  const initialTargetNode = initialTargetRange
+    ? flowchartNodeForRange(initialPayload, initialTargetRange)
+    : undefined;
   const initialSectionId = initialTargetRange
-    ? (sectionIdForRange(initialPayload, initialTargetRange) ?? defaultSectionId(initialPayload))
+    ? (initialTargetNode?.sectionId ??
+      sectionIdForRange(initialPayload, initialTargetRange) ??
+      defaultSectionId(initialPayload))
     : defaultSectionId(initialPayload);
   const [payload, setPayload] = useState<FlowchartPayload>(initialPayload);
   const theme = useResolvedWebviewTheme(payload.settings?.theme);
@@ -739,7 +768,9 @@ function App(): React.ReactElement {
   const [autoOpenSectionId, setAutoOpenSectionId] = useState<string | undefined>(() =>
     initialTargetRange ? initialSectionId : undefined,
   );
-  const [focusedFlowchartNodeId, setFocusedFlowchartNodeId] = useState<string | undefined>();
+  const [focusedFlowchartNodeId, setFocusedFlowchartNodeId] = useState<string | undefined>(
+    () => initialTargetNode?.id,
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSearchIndex, setActiveSearchIndex] = useState(0);
   const [infoPanelWidth, setInfoPanelWidth] = useState(flowchartPanelDefaultWidth);
@@ -843,14 +874,19 @@ function App(): React.ReactElement {
     const listener = (event: MessageEvent) => {
       const message = event.data as { type?: unknown; payload?: unknown; targetRange?: unknown };
       if (message.type === "flowchartPayload" && isFlowchartPayload(message.payload)) {
-        const nextSectionId = isRange(message.targetRange)
-          ? (sectionIdForRange(message.payload, message.targetRange) ??
+        const targetRange = isRange(message.targetRange) ? message.targetRange : undefined;
+        const targetNode = targetRange
+          ? flowchartNodeForRange(message.payload, targetRange)
+          : undefined;
+        const nextSectionId = targetRange
+          ? (targetNode?.sectionId ??
+            sectionIdForRange(message.payload, targetRange) ??
             defaultSectionId(message.payload))
           : defaultSectionId(message.payload);
         setPayload(message.payload);
-        setFocusedFlowchartNodeId(undefined);
+        setFocusedFlowchartNodeId(targetNode?.id);
         setSelectedSectionId(nextSectionId);
-        setAutoOpenSectionId(isRange(message.targetRange) ? nextSectionId : undefined);
+        setAutoOpenSectionId(targetRange ? nextSectionId : undefined);
       }
     };
     window.addEventListener("message", listener);
@@ -1608,10 +1644,16 @@ function FlowchartCanvas({
     };
   }, [onOpenFlowchart, openContextMenu, payload, themePalette, text]);
   useEffect(() => {
-    if (!containerRef.current) {
+    if (!containerRef.current || !viewportRef.current) {
       return;
     }
-    syncSvgSearchHighlights(containerRef.current, payload, matchedNodeIds, activeSearchNodeId);
+    syncSvgSearchHighlights(
+      containerRef.current,
+      viewportRef.current,
+      payload,
+      matchedNodeIds,
+      activeSearchNodeId,
+    );
   }, [activeSearchNodeId, matchedNodeIds, payload, svg]);
   const exportSvg = useCallback(() => {
     vscode.postMessage({
@@ -1717,20 +1759,22 @@ function FlowchartCanvas({
           {text("exportSvg")}
         </button>
       </header>
-      <div ref={viewportRef} className="min-h-0 overflow-auto p-5" onWheel={handleWheel}>
+      <div
+        ref={viewportRef}
+        className="min-h-0 overflow-auto p-5"
+        style={flowchartViewportStyle}
+        onWheel={handleWheel}
+      >
         {error ? (
           <div className="rounded border border-[#7f3434] bg-[#291416] p-3 text-sm text-[#ffd2cc]">
             {text("renderError")} {error}
           </div>
         ) : null}
-        <div
-          className="relative min-h-full min-w-full"
-          style={scaledFlowchartCanvasStyle(svgSize, zoom)}
-        >
+        <div className="relative" style={scaledFlowchartCanvasStyle(svgSize, zoom)}>
           <div
             ref={containerRef}
-            className="absolute left-0 top-0 inline-block origin-top-left [&_svg]:h-auto [&_svg]:max-w-none"
-            style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }}
+            className="absolute left-0 top-0 inline-block origin-top-left [&_svg]:block [&_svg]:h-full [&_svg]:w-full [&_svg]:max-w-none"
+            style={flowchartSvgLayerStyle(svgSize, zoom)}
           />
         </div>
         {contextMenu && contextMenuPosition ? (
@@ -1795,6 +1839,7 @@ function attachSvgNodeHandlers(
 
 function syncSvgSearchHighlights(
   container: HTMLDivElement,
+  viewport: HTMLDivElement,
   payload: FlowchartPayload,
   matchedNodeIds: Set<string>,
   activeNodeId: string | undefined,
@@ -1819,7 +1864,33 @@ function syncSvgSearchHighlights(
       }
     }
   }
-  activeElement?.scrollIntoView({ block: "center", inline: "center" });
+  if (activeElement) {
+    scrollFlowchartElementIntoViewport(activeElement, viewport);
+  }
+}
+
+function scrollFlowchartElementIntoViewport(
+  element: SVGGraphicsElement,
+  viewport: HTMLElement,
+): void {
+  const elementRect = element.getBoundingClientRect();
+  const viewportRect = viewport.getBoundingClientRect();
+  const nextLeft =
+    viewport.scrollLeft +
+    elementRect.left +
+    elementRect.width / 2 -
+    viewportRect.left -
+    viewport.clientWidth / 2;
+  const nextTop =
+    viewport.scrollTop +
+    elementRect.top +
+    elementRect.height / 2 -
+    viewportRect.top -
+    viewport.clientHeight / 2;
+  viewport.scrollTo({
+    left: Math.max(0, nextLeft),
+    top: Math.max(0, nextTop),
+  });
 }
 
 function clampedContextMenuPosition(x: number, y: number): { left: number; top: number } {
@@ -2228,6 +2299,10 @@ interface FlowchartZoomRange {
   maximum: number;
 }
 
+const flowchartViewportStyle: React.CSSProperties = {
+  scrollbarGutter: "stable",
+};
+
 function flowchartZoomRange(payload: FlowchartPayload): FlowchartZoomRange {
   const minimum = positiveFiniteNumber(payload.settings?.minZoom, defaultMinimumFlowchartZoom);
   const maximum = positiveFiniteNumber(payload.settings?.maxZoom, defaultMaximumFlowchartZoom);
@@ -2249,8 +2324,26 @@ function scaledFlowchartCanvasStyle(
     return {};
   }
   return {
-    width: `${Math.max(flowchartCanvasMinimumWidth, Math.ceil(svgSize.width * zoom))}px`,
-    height: `${Math.ceil(svgSize.height * zoom)}px`,
+    width: `${Math.max(1, Math.ceil(svgSize.width * zoom))}px`,
+    height: `${Math.max(1, Math.ceil(svgSize.height * zoom))}px`,
+  };
+}
+
+function flowchartSvgLayerStyle(
+  svgSize: FlowchartSvgSize | undefined,
+  zoom: number,
+): React.CSSProperties {
+  const style: React.CSSProperties = {
+    transform: `scale(${zoom})`,
+    transformOrigin: "top left",
+  };
+  if (!svgSize) {
+    return style;
+  }
+  return {
+    ...style,
+    width: `${Math.max(1, Math.ceil(svgSize.width))}px`,
+    height: `${Math.max(1, Math.ceil(svgSize.height))}px`,
   };
 }
 
@@ -2398,12 +2491,50 @@ function sectionIdForRange(
   );
 }
 
+function flowchartNodeForRange(
+  payload: FlowchartPayload,
+  range: NonNullable<AspFlowchartTarget["range"]>,
+): AspFlowchartNode | undefined {
+  return (
+    bestFlowchartNodeForRange(payload, range, (nodeRange) => rangeContains(nodeRange, range)) ??
+    bestFlowchartNodeForRange(payload, range, (nodeRange) => rangesOverlap(nodeRange, range))
+  );
+}
+
+function bestFlowchartNodeForRange(
+  payload: FlowchartPayload,
+  range: NonNullable<AspFlowchartTarget["range"]>,
+  matches: (nodeRange: NonNullable<AspFlowchartNode["range"]>) => boolean,
+): AspFlowchartNode | undefined {
+  return payload.nodes
+    .filter((node) => node.kind !== "start" && node.kind !== "end")
+    .filter((node): node is AspFlowchartNode & { range: NonNullable<AspFlowchartNode["range"]> } =>
+      Boolean(node.range && matches(node.range)),
+    )
+    .sort((left, right) => rangeLength(left.range) - rangeLength(right.range))[0];
+}
+
 function rangeContains(
   outer: NonNullable<AspFlowchartNode["range"]>,
   inner: NonNullable<AspFlowchartTarget["range"]>,
 ): boolean {
   return (
     positionBeforeOrEqual(outer.start, inner.start) && positionBeforeOrEqual(inner.end, outer.end)
+  );
+}
+
+function rangesOverlap(
+  left: NonNullable<AspFlowchartNode["range"]>,
+  right: NonNullable<AspFlowchartTarget["range"]>,
+): boolean {
+  return (
+    positionBeforeOrEqual(left.start, right.end) && positionBeforeOrEqual(right.start, left.end)
+  );
+}
+
+function rangeLength(range: NonNullable<AspFlowchartNode["range"]>): number {
+  return (
+    (range.end.line - range.start.line) * 1_000_000 + range.end.character - range.start.character
   );
 }
 

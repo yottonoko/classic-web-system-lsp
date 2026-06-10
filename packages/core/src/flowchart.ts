@@ -1,4 +1,5 @@
 import { rangeFromOffsets } from "./position";
+import builtinCatalogData from "./vbscript-builtin-catalog.json";
 import { parseVbscriptCst } from "./vbscript-cst";
 import type { Range } from "vscode-languageserver-types";
 import type {
@@ -86,6 +87,12 @@ interface FlowchartSymbolContext {
 interface AspFlowchartResolvedDeclaration extends AspFlowchartSymbolDeclaration {
   uri: string;
 }
+
+const flowchartBuiltinCallNames = new Set<string>([
+  ...builtinCatalogData.functions.map((item) => normalizeFlowchartName(item.label)),
+  ...Object.keys(builtinCatalogData.classicAspObjects).map(normalizeFlowchartName),
+  ...Object.keys(builtinCatalogData.externalObjects).map(normalizeFlowchartName),
+]);
 
 interface FlowStatement {
   kind: "statement";
@@ -1466,6 +1473,8 @@ function statementLinks(context: FlowchartContext, statementRange: Range): AspFl
     const declaration = resolveFlowchartCallSite(context.symbols, callSite);
     if (declaration) {
       links.push(flowchartLink(context, flowchartCallSiteLabel(callSite), "call", declaration));
+    } else if (isUnresolvedFlowchartFunctionCall(callSite)) {
+      links.push(flowchartUnresolvedFunctionLink(context, callSite));
     }
   }
   return dedupeFlowchartLinks(links);
@@ -1712,8 +1721,46 @@ function flowchartLink(
   };
 }
 
+function flowchartUnresolvedFunctionLink(
+  context: FlowchartContext,
+  callSite: AspFlowchartCallSite,
+): AspFlowchartNodeLink {
+  const label =
+    context.locale === "ja"
+      ? `未解決Function/Sub ${flowchartCallSiteLabel(callSite)}`
+      : `Unresolved Function/Sub ${flowchartCallSiteLabel(callSite)}`;
+  return {
+    id: `unresolvedFunction:${callSite.normalizedName}:${callSite.range.start.line}:${callSite.range.start.character}`,
+    label,
+    role: "call",
+    symbolKind: "unresolvedFunction",
+    target: {
+      uri: context.symbols.currentUri,
+      range: callSite.range,
+      nameRange: callSite.range,
+    },
+  };
+}
+
+function isUnresolvedFlowchartFunctionCall(callSite: AspFlowchartCallSite): boolean {
+  if (callSite.memberName || !isFunctionLikeFlowchartCallKind(callSite.callKind)) {
+    return false;
+  }
+  return !flowchartBuiltinCallNames.has(normalizeFlowchartName(callSite.name));
+}
+
+function isFunctionLikeFlowchartCallKind(callKind: AspFlowchartCallSite["callKind"]): boolean {
+  return callKind === "function" || callKind === "procedure" || callKind === "unknown";
+}
+
 function flowchartSymbolKind(declaration: AspFlowchartResolvedDeclaration): string {
-  return declaration.unresolvedGlobal === true ? "unresolvedGlobalVariable" : declaration.kind;
+  if (declaration.unresolvedGlobal === true) {
+    return "unresolvedGlobalVariable";
+  }
+  if (declaration.kind === "variable" && declaration.implicitLocal === true) {
+    return "implicitLocalVariable";
+  }
+  return declaration.kind;
 }
 
 function flowchartDeclarationListLabel(
@@ -1739,7 +1786,7 @@ function flowchartSymbolLabel(
 function flowchartDeclarationKindLabel(
   declaration: Pick<
     AspFlowchartResolvedDeclaration,
-    "kind" | "bindingScope" | "memberOf" | "procedureKind"
+    "kind" | "bindingScope" | "memberOf" | "procedureKind" | "implicitLocal" | "unresolvedGlobal"
   >,
   context: FlowchartContext,
 ): string {
@@ -1747,6 +1794,12 @@ function flowchartDeclarationKindLabel(
   if (context.locale === "ja") {
     switch (declaration.kind) {
       case "variable":
+        if (declaration.unresolvedGlobal === true) {
+          return "未解決グローバル変数";
+        }
+        if (declaration.implicitLocal === true) {
+          return "dimなしローカル変数";
+        }
         return `${scope}変数`;
       case "constant":
         return `${scope}定数`;
@@ -1774,6 +1827,12 @@ function flowchartDeclarationKindLabel(
   }
   switch (declaration.kind) {
     case "variable":
+      if (declaration.unresolvedGlobal === true) {
+        return "unresolved global variable";
+      }
+      if (declaration.implicitLocal === true) {
+        return "implicit local variable";
+      }
       return `${scope}variable`;
     case "constant":
       return `${scope}constant`;

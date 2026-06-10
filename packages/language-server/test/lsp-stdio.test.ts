@@ -153,6 +153,75 @@ describe(
       }
     });
 
+    it("adds unresolved VBScript symbols to completions only when enabled", async () => {
+      const server = new RpcServer();
+      const uri = "file:///tmp/unresolved-completion.asp";
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<%
+MissingRead
+Call MissingProc()
+M
+%>`,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const defaultCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: { line: 3, character: 1 },
+        });
+        expect(completionLabels(defaultCompletions)).not.toEqual(
+          expect.arrayContaining(["MissingRead", "MissingProc"]),
+        );
+
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              vbscript: {
+                showUnresolvedSymbolsInCompletion: true,
+              },
+            },
+          },
+        });
+        const enabledCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: { line: 3, character: 1 },
+        });
+        const enabledItems = completionItems(enabledCompletions);
+        expect(completionLabels(enabledCompletions)).not.toContain("M");
+        expect(enabledItems).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              label: "MissingRead",
+              kind: CompletionItemKind.Variable,
+              detail: "Unresolved global variable",
+            }),
+            expect.objectContaining({
+              label: "MissingProc",
+              kind: CompletionItemKind.Function,
+              detail: "Unresolved Function/Sub",
+            }),
+          ]),
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("notifies clients while ASP files are being analyzed", async () => {
       const server = new RpcServer();
       try {
@@ -8183,6 +8252,7 @@ End Sub
             bindingScope: "global",
             declarationKind: "variable",
             implicit: true,
+            implicitLocal: true,
             unresolvedGlobal: true,
           }),
         );
@@ -8194,9 +8264,10 @@ End Sub
             bindingScope: "global",
             declarationKind: "variable",
             implicit: true,
-            unresolvedGlobal: true,
+            implicitLocal: true,
           }),
         );
+        expect(missingValueNode?.unresolvedGlobal).toBeUndefined();
         expect(
           graph.nodes?.some(
             (node) => node.kind === "vbUnresolved" && node.label === "MissingValue",
@@ -8358,8 +8429,8 @@ End Sub
               node.links.some(
                 (link: Record<string, unknown>) =>
                   link.symbolKind === "unresolvedGlobalVariable" &&
-                  (link.label === "global variable ready" ||
-                    link.label === "global variable disabled"),
+                  (link.label === "unresolved global variable ready" ||
+                    link.label === "unresolved global variable disabled"),
               ),
           ),
         ).toBe(true);
@@ -9180,14 +9251,20 @@ End Sub
             declarationKind: "variable",
             bindingScope: "global",
             implicit: true,
-            unresolvedGlobal: true,
+            implicitLocal: true,
             origin: "source",
           });
+          expect(
+            visibleGraph.nodes?.find(
+              (node) => node.kind === "vbDeclaration" && node.label === label,
+            )?.unresolvedGlobal,
+          ).toBeUndefined();
         }
         expectNode(visibleGraph, "MissingName", {
           declarationKind: "variable",
           bindingScope: "global",
           implicit: true,
+          implicitLocal: true,
           unresolvedGlobal: true,
           origin: "source",
         });

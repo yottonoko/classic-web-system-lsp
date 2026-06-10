@@ -110,6 +110,7 @@ export interface AspVbscriptSettings {
   deadCodeDiagnostics?: boolean;
   syntaxSnippets?: boolean;
   syntaxKeywords?: boolean;
+  showUnresolvedSymbolsInCompletion?: boolean;
   initializedDimQuickFixStyle?: AspVbscriptInitializedDimQuickFixStyle;
 }
 
@@ -306,6 +307,7 @@ export interface AspFlowchartSymbolDeclaration {
   procedureKind?: string;
   typeName?: string;
   implicit?: boolean;
+  implicitLocal?: boolean;
   unresolvedGlobal?: boolean;
 }
 
