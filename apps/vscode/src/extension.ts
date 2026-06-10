@@ -16,11 +16,13 @@ import {
   showAspGraphWebview,
   type AspGraphLocale,
   type AspGraphPayload,
+  type AspGraphWebviewThemeSetting,
 } from "./include-graph-webview";
 import {
   showAspFlowchartWebview,
   type AspFlowchartPayload,
   type AspFlowchartWebviewSettings,
+  type AspFlowchartWebviewThemeSetting,
 } from "./flowchart-webview";
 import { getServerModulePath } from "./server-path";
 
@@ -37,6 +39,7 @@ const htmlTagCompleteLookBehind = 2000;
 const defaultFlowchartMaxTextSize = 2_000_000;
 type GraphOpenLocation = "active" | "beside";
 type GraphScope = "document" | "folder" | "workspace";
+type WebviewThemeSetting = AspGraphWebviewThemeSetting & AspFlowchartWebviewThemeSetting;
 type ServerStatusKind = "idle" | "loading" | "analyzing";
 
 interface GraphCommandRequest {
@@ -380,6 +383,7 @@ async function showGraph(
     graphPanelTitle(payload, request.activeDocument),
     graphViewColumn(),
     extensionLocale(),
+    webviewThemeSetting(),
   );
 }
 
@@ -521,7 +525,13 @@ function flowchartWebviewSettings(): AspFlowchartWebviewSettings {
     .get<number>("flowchart.maxTextSize", defaultFlowchartMaxTextSize);
   return {
     maxTextSize: positiveNumberSetting(maxTextSize, defaultFlowchartMaxTextSize),
+    theme: webviewThemeSetting(),
   };
+}
+
+function webviewThemeSetting(): WebviewThemeSetting {
+  const value = vscode.workspace.getConfiguration("aspLsp").get<string>("webview.theme", "auto");
+  return value === "light" || value === "dark" || value === "auto" ? value : "auto";
 }
 
 function positiveNumberSetting(value: unknown, fallback: number): number {

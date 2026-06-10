@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.5.29",
+  "version": "0.5.30",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -624,6 +624,16 @@
           "minimum": 1,
           "default": 2000000,
           "description": "%configuration.flowchart.maxTextSize.description%"
+        },
+        "aspLsp.webview.theme": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "light",
+            "dark"
+          ],
+          "default": "auto",
+          "description": "%configuration.webview.theme.description%"
         },
         "aspLsp.graph.showRootNodes": {
           "type": "boolean",

@@ -21,3 +21,192 @@
     font: inherit;
   }
 }
+
+@layer components {
+  .asp-lsp-graph-shell {
+    color-scheme: dark;
+    --asp-lsp-bg: #11151c;
+    --asp-lsp-surface: #171c25;
+    --asp-lsp-surface-alpha: rgb(23 28 37 / 90%);
+    --asp-lsp-surface-muted: #151a22;
+    --asp-lsp-surface-alt: #0d1117;
+    --asp-lsp-active: #1c2d3a;
+    --asp-lsp-hover: #223044;
+    --asp-lsp-search-active: #17324a;
+    --asp-lsp-search-match: #2b2b18;
+    --asp-lsp-border: #2b3442;
+    --asp-lsp-border-muted: #303a49;
+    --asp-lsp-border-strong: #394456;
+    --asp-lsp-border-hover: #4b5a70;
+    --asp-lsp-border-tooltip: #405068;
+    --asp-lsp-text: #d7dde8;
+    --asp-lsp-text-strong: #f4f7fb;
+    --asp-lsp-text-muted: #9aa7b8;
+    --asp-lsp-text-subtle: #8d98a8;
+    --asp-lsp-text-control: #b5c0d0;
+    --asp-lsp-text-disabled: #717b8c;
+    --asp-lsp-accent: #89ddff;
+    --asp-lsp-accent-text: #11151c;
+    --asp-lsp-warning: #ffcb6b;
+    --asp-lsp-error-bg: #291416;
+    --asp-lsp-error-border: #7f3434;
+    --asp-lsp-error-text: #ffd2cc;
+  }
+
+  .asp-lsp-graph-shell[data-asp-lsp-theme="light"] {
+    color-scheme: light;
+    --asp-lsp-bg: #f8fafc;
+    --asp-lsp-surface: #ffffff;
+    --asp-lsp-surface-alpha: rgb(255 255 255 / 92%);
+    --asp-lsp-surface-muted: #f1f5f9;
+    --asp-lsp-surface-alt: #f8fafc;
+    --asp-lsp-active: #e0f2fe;
+    --asp-lsp-hover: #e2e8f0;
+    --asp-lsp-search-active: #dbeafe;
+    --asp-lsp-search-match: #fef3c7;
+    --asp-lsp-border: #d9e2ec;
+    --asp-lsp-border-muted: #dbe3ee;
+    --asp-lsp-border-strong: #cbd5e1;
+    --asp-lsp-border-hover: #94a3b8;
+    --asp-lsp-border-tooltip: #cbd5e1;
+    --asp-lsp-text: #1f2937;
+    --asp-lsp-text-strong: #0f172a;
+    --asp-lsp-text-muted: #475569;
+    --asp-lsp-text-subtle: #64748b;
+    --asp-lsp-text-control: #334155;
+    --asp-lsp-text-disabled: #94a3b8;
+    --asp-lsp-accent: #0284c7;
+    --asp-lsp-accent-text: #ffffff;
+    --asp-lsp-warning: #b45309;
+    --asp-lsp-error-bg: #fff1f2;
+    --asp-lsp-error-border: #f43f5e;
+    --asp-lsp-error-text: #9f1239;
+  }
+
+  .asp-lsp-graph-shell .bg-\[\#11151c\] {
+    background-color: var(--asp-lsp-bg);
+  }
+
+  .asp-lsp-graph-shell .bg-\[\#171c25\] {
+    background-color: var(--asp-lsp-surface);
+  }
+
+  .asp-lsp-graph-shell .bg-\[\#171c25\]\/90 {
+    background-color: var(--asp-lsp-surface-alpha);
+  }
+
+  .asp-lsp-graph-shell .bg-\[\#151a22\] {
+    background-color: var(--asp-lsp-surface-muted);
+  }
+
+  .asp-lsp-graph-shell .bg-\[\#0d1117\] {
+    background-color: var(--asp-lsp-surface-alt);
+  }
+
+  .asp-lsp-graph-shell .bg-\[\#1c2d3a\] {
+    background-color: var(--asp-lsp-active);
+  }
+
+  .asp-lsp-graph-shell .bg-\[\#17324a\] {
+    background-color: var(--asp-lsp-search-active);
+  }
+
+  .asp-lsp-graph-shell .bg-\[\#2b2b18\] {
+    background-color: var(--asp-lsp-search-match);
+  }
+
+  .asp-lsp-graph-shell .bg-\[\#291416\] {
+    background-color: var(--asp-lsp-error-bg);
+  }
+
+  .asp-lsp-graph-shell .hover\:bg-\[\#223044\]:hover,
+  .asp-lsp-graph-shell .hover\:bg-\[\#172131\]:hover {
+    background-color: var(--asp-lsp-hover);
+  }
+
+  .asp-lsp-graph-shell .border-\[\#2b3442\],
+  .asp-lsp-graph-shell .border-\[\#263140\] {
+    border-color: var(--asp-lsp-border);
+  }
+
+  .asp-lsp-graph-shell .border-\[\#303a49\] {
+    border-color: var(--asp-lsp-border-muted);
+  }
+
+  .asp-lsp-graph-shell .border-\[\#394456\],
+  .asp-lsp-graph-shell .border-\[\#3b4a5f\] {
+    border-color: var(--asp-lsp-border-strong);
+  }
+
+  .asp-lsp-graph-shell .border-\[\#405068\] {
+    border-color: var(--asp-lsp-border-tooltip);
+  }
+
+  .asp-lsp-graph-shell .border-\[\#89ddff\],
+  .asp-lsp-graph-shell .border-\[\#7dd3fc\],
+  .asp-lsp-graph-shell .focus\:border-\[\#89ddff\]:focus,
+  .asp-lsp-graph-shell .hover\:border-\[\#89ddff\]:hover,
+  .asp-lsp-graph-shell .hover\:border-\[\#7dd3fc\]:hover {
+    border-color: var(--asp-lsp-accent);
+  }
+
+  .asp-lsp-graph-shell .hover\:border-\[\#4b5a70\]:hover {
+    border-color: var(--asp-lsp-border-hover);
+  }
+
+  .asp-lsp-graph-shell .border-\[\#7f3434\] {
+    border-color: var(--asp-lsp-error-border);
+  }
+
+  .asp-lsp-graph-shell .text-\[\#d7dde8\] {
+    color: var(--asp-lsp-text);
+  }
+
+  .asp-lsp-graph-shell .text-\[\#f4f7fb\],
+  .asp-lsp-graph-shell .text-\[\#f1f5f9\] {
+    color: var(--asp-lsp-text-strong);
+  }
+
+  .asp-lsp-graph-shell .text-\[\#9aa7b8\] {
+    color: var(--asp-lsp-text-muted);
+  }
+
+  .asp-lsp-graph-shell .text-\[\#8d98a8\] {
+    color: var(--asp-lsp-text-subtle);
+  }
+
+  .asp-lsp-graph-shell .text-\[\#b5c0d0\] {
+    color: var(--asp-lsp-text-control);
+  }
+
+  .asp-lsp-graph-shell .text-\[\#717b8c\],
+  .asp-lsp-graph-shell .disabled\:text-\[\#717b8c\]:disabled {
+    color: var(--asp-lsp-text-disabled);
+  }
+
+  .asp-lsp-graph-shell .text-\[\#11151c\] {
+    color: var(--asp-lsp-accent-text);
+  }
+
+  .asp-lsp-graph-shell .text-\[\#ffcb6b\] {
+    color: var(--asp-lsp-warning);
+  }
+
+  .asp-lsp-graph-shell .text-\[\#ffd2cc\] {
+    color: var(--asp-lsp-error-text);
+  }
+
+  .asp-lsp-graph-shell .placeholder\:text-\[\#717b8c\]::placeholder {
+    color: var(--asp-lsp-text-disabled);
+  }
+
+  .asp-lsp-graph-shell .hover\:text-white:hover,
+  .asp-lsp-graph-shell .hover\:text-\[\#d7dde8\]:hover,
+  .asp-lsp-graph-shell .focus\:text-\[\#d7dde8\]:focus {
+    color: var(--asp-lsp-text-strong);
+  }
+
+  .asp-lsp-graph-shell .accent-\[\#89ddff\] {
+    accent-color: var(--asp-lsp-accent);
+  }
+}

@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 
 export type AspGraphLocale = "en" | "ja";
+export type AspGraphWebviewTheme = "light" | "dark";
+export type AspGraphWebviewThemeSetting = AspGraphWebviewTheme | "auto";
 
 export interface AspGraphPayload {
   scope: "document" | "folder" | "workspace";
@@ -10,6 +12,7 @@ export interface AspGraphPayload {
   links: AspGraphLink[];
   settings?: {
     initialViewMode?: "2d" | "3d";
+    theme?: AspGraphWebviewThemeSetting;
     hideSingleNodes?: boolean;
     showOutgoingSelectionLinks?: boolean;
     showIncomingDocumentIncludes?: boolean;
@@ -143,6 +146,7 @@ export function showAspGraphWebview(
   title: string,
   viewColumn: vscode.ViewColumn,
   locale: AspGraphLocale,
+  theme: AspGraphWebviewThemeSetting,
 ): void {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
   const panel = vscode.window.createWebviewPanel("aspLsp.graph", title, viewColumn, {
@@ -157,7 +161,7 @@ export function showAspGraphWebview(
       void readGraphSourceRanges(panel.webview, message, locale);
     }
   });
-  panel.webview.html = graphWebviewHtml(panel.webview, webviewRoot, payload, title, locale);
+  panel.webview.html = graphWebviewHtml(panel.webview, webviewRoot, payload, title, locale, theme);
 }
 
 async function openGraphRange(uriText: string, range: AspGraphRange | undefined): Promise<void> {
@@ -264,10 +268,15 @@ function graphWebviewHtml(
   payload: AspGraphPayload,
   title: string,
   locale: AspGraphLocale,
+  theme: AspGraphWebviewThemeSetting,
 ): string {
   const nonce = nonceString();
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, "include-graph.js"));
-  const graphJson = JSON.stringify({ ...payload, locale }).replaceAll("</", "<\\/");
+  const graphJson = JSON.stringify({
+    ...payload,
+    locale,
+    settings: { ...payload.settings, theme },
+  }).replaceAll("</", "<\\/");
   return `<!doctype html>
 <html lang="${locale}">
 <head>

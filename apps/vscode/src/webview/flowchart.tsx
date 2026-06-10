@@ -22,11 +22,14 @@ declare global {
 }
 
 type FlowchartLocale = "en" | "ja";
+type WebviewTheme = "light" | "dark";
+type WebviewThemeSetting = WebviewTheme | "auto";
 
 interface FlowchartPayload extends AspFlowchartPayload {
   locale?: FlowchartLocale;
   settings?: {
     maxTextSize?: number;
+    theme?: WebviewThemeSetting;
   };
 }
 
@@ -143,7 +146,15 @@ interface FlowchartVisualStyle {
   text: string;
 }
 
-const flowchartNodeKindStyles: Record<FlowchartNodeKind, FlowchartVisualStyle> = {
+interface FlowchartThemePalette {
+  mermaidTheme: "base" | "dark";
+  mermaidThemeVariables?: Record<string, string>;
+  nodeKindStyles: Record<FlowchartNodeKind, FlowchartVisualStyle>;
+  linkRoleStyles: Record<FlowchartNodeLinkRole, FlowchartVisualStyle>;
+  symbolKindStyles: Record<string, FlowchartVisualStyle>;
+}
+
+const darkFlowchartNodeKindStyles: Record<FlowchartNodeKind, FlowchartVisualStyle> = {
   start: {
     background: "#132538",
     border: "#7dd3fc",
@@ -236,6 +247,99 @@ const flowchartNodeKindStyles: Record<FlowchartNodeKind, FlowchartVisualStyle> =
   },
 };
 
+const lightFlowchartNodeKindStyles: Record<FlowchartNodeKind, FlowchartVisualStyle> = {
+  start: {
+    background: "#e0f2fe",
+    border: "#0284c7",
+    mermaidClass: "flowStart",
+    text: "#0f172a",
+  },
+  end: {
+    background: "#e2e8f0",
+    border: "#64748b",
+    mermaidClass: "flowEnd",
+    text: "#0f172a",
+  },
+  if: {
+    background: "#fef3c7",
+    border: "#b45309",
+    mermaidClass: "flowBranch",
+    text: "#3f2a04",
+  },
+  elseif: {
+    background: "#fef3c7",
+    border: "#b45309",
+    mermaidClass: "flowBranch",
+    text: "#3f2a04",
+  },
+  else: {
+    background: "#fef3c7",
+    border: "#b45309",
+    mermaidClass: "flowBranch",
+    text: "#3f2a04",
+  },
+  select: {
+    background: "#fef3c7",
+    border: "#b45309",
+    mermaidClass: "flowBranch",
+    text: "#3f2a04",
+  },
+  case: {
+    background: "#fef3c7",
+    border: "#b45309",
+    mermaidClass: "flowBranch",
+    text: "#3f2a04",
+  },
+  for: {
+    background: "#f3e8ff",
+    border: "#7e22ce",
+    mermaidClass: "flowLoop",
+    text: "#3b0764",
+  },
+  forEach: {
+    background: "#f3e8ff",
+    border: "#7e22ce",
+    mermaidClass: "flowLoop",
+    text: "#3b0764",
+  },
+  do: {
+    background: "#f3e8ff",
+    border: "#7e22ce",
+    mermaidClass: "flowLoop",
+    text: "#3b0764",
+  },
+  while: {
+    background: "#f3e8ff",
+    border: "#7e22ce",
+    mermaidClass: "flowLoop",
+    text: "#3b0764",
+  },
+  call: {
+    background: "#ccfbf1",
+    border: "#0f766e",
+    mermaidClass: "flowCall",
+    text: "#134e4a",
+  },
+  declaration: {
+    background: "#fef3c7",
+    border: "#ca8a04",
+    mermaidClass: "flowDeclaration",
+    text: "#3f2a04",
+  },
+  exit: {
+    background: "#ffe4e6",
+    border: "#e11d48",
+    mermaidClass: "flowExit",
+    text: "#881337",
+  },
+  statement: {
+    background: "#e0f2fe",
+    border: "#0284c7",
+    mermaidClass: "flowStatement",
+    text: "#0f172a",
+  },
+};
+
 const flowchartNodeKindLabels: Record<FlowchartLocale, Record<FlowchartNodeKind, string>> = {
   en: {
     start: "Start",
@@ -291,7 +395,7 @@ const flowchartSectionKindLabels: Record<
   },
 };
 
-const flowchartLinkRoleStyles: Record<FlowchartNodeLinkRole, FlowchartVisualStyle> = {
+const darkFlowchartLinkRoleStyles: Record<FlowchartNodeLinkRole, FlowchartVisualStyle> = {
   read: {
     background: "#162816",
     border: "#c3e88d",
@@ -336,7 +440,52 @@ const flowchartLinkRoleStyles: Record<FlowchartNodeLinkRole, FlowchartVisualStyl
   },
 };
 
-const flowchartSymbolKindStyles: Record<string, FlowchartVisualStyle> = {
+const lightFlowchartLinkRoleStyles: Record<FlowchartNodeLinkRole, FlowchartVisualStyle> = {
+  read: {
+    background: "#dcfce7",
+    border: "#16a34a",
+    mermaidClass: "flowLinkRead",
+    text: "#14532d",
+  },
+  write: {
+    background: "#fef3c7",
+    border: "#ca8a04",
+    mermaidClass: "flowLinkWrite",
+    text: "#3f2a04",
+  },
+  call: {
+    background: "#ffedd5",
+    border: "#ea580c",
+    mermaidClass: "flowLinkCall",
+    text: "#7c2d12",
+  },
+  new: {
+    background: "#f3e8ff",
+    border: "#7e22ce",
+    mermaidClass: "flowLinkNew",
+    text: "#3b0764",
+  },
+  member: {
+    background: "#ffedd5",
+    border: "#c2410c",
+    mermaidClass: "flowLinkMember",
+    text: "#7c2d12",
+  },
+  definition: {
+    background: "#e0f2fe",
+    border: "#0284c7",
+    mermaidClass: "flowLinkDefinition",
+    text: "#0c4a6e",
+  },
+  unknown: {
+    background: "#e2e8f0",
+    border: "#64748b",
+    mermaidClass: "flowLinkUnknown",
+    text: "#334155",
+  },
+};
+
+const darkFlowchartSymbolKindStyles: Record<string, FlowchartVisualStyle> = {
   function: {
     background: "#102a2a",
     border: "#63e6be",
@@ -399,9 +548,119 @@ const flowchartSymbolKindStyles: Record<string, FlowchartVisualStyle> = {
   },
 };
 
+const lightFlowchartSymbolKindStyles: Record<string, FlowchartVisualStyle> = {
+  function: {
+    background: "#ccfbf1",
+    border: "#0f766e",
+    mermaidClass: "flowSymbolFunction",
+    text: "#134e4a",
+  },
+  sub: {
+    background: "#e0f2fe",
+    border: "#0284c7",
+    mermaidClass: "flowSymbolSub",
+    text: "#0c4a6e",
+  },
+  class: {
+    background: "#dcfce7",
+    border: "#16a34a",
+    mermaidClass: "flowSymbolClass",
+    text: "#14532d",
+  },
+  method: {
+    background: "#ffedd5",
+    border: "#ea580c",
+    mermaidClass: "flowSymbolMethod",
+    text: "#7c2d12",
+  },
+  property: {
+    background: "#ffe4e6",
+    border: "#e11d48",
+    mermaidClass: "flowSymbolProperty",
+    text: "#881337",
+  },
+  variable: {
+    background: "#fef3c7",
+    border: "#ca8a04",
+    mermaidClass: "flowSymbolVariable",
+    text: "#3f2a04",
+  },
+  constant: {
+    background: "#dbeafe",
+    border: "#2563eb",
+    mermaidClass: "flowSymbolConstant",
+    text: "#1e3a8a",
+  },
+  parameter: {
+    background: "#e2e8f0",
+    border: "#64748b",
+    mermaidClass: "flowSymbolParameter",
+    text: "#334155",
+  },
+  field: {
+    background: "#ffedd5",
+    border: "#c2410c",
+    mermaidClass: "flowSymbolField",
+    text: "#7c2d12",
+  },
+  member: {
+    background: "#ffedd5",
+    border: "#c2410c",
+    mermaidClass: "flowSymbolMember",
+    text: "#7c2d12",
+  },
+};
+
+const flowchartThemePalettes: Record<WebviewTheme, FlowchartThemePalette> = {
+  dark: {
+    mermaidTheme: "dark",
+    nodeKindStyles: darkFlowchartNodeKindStyles,
+    linkRoleStyles: darkFlowchartLinkRoleStyles,
+    symbolKindStyles: darkFlowchartSymbolKindStyles,
+  },
+  light: {
+    mermaidTheme: "base",
+    mermaidThemeVariables: {
+      background: "#f8fafc",
+      mainBkg: "#ffffff",
+      primaryColor: "#e0f2fe",
+      primaryBorderColor: "#0284c7",
+      primaryTextColor: "#0f172a",
+      lineColor: "#64748b",
+      textColor: "#0f172a",
+      edgeLabelBackground: "#ffffff",
+    },
+    nodeKindStyles: lightFlowchartNodeKindStyles,
+    linkRoleStyles: lightFlowchartLinkRoleStyles,
+    symbolKindStyles: lightFlowchartSymbolKindStyles,
+  },
+};
+
+function useResolvedWebviewTheme(setting: WebviewThemeSetting | undefined): WebviewTheme {
+  const [vscodeTheme, setVsCodeTheme] = useState<WebviewTheme>(() => detectedVsCodeTheme());
+  useEffect(() => {
+    if (setting === "light" || setting === "dark") {
+      return undefined;
+    }
+    const observer = new MutationObserver(() => setVsCodeTheme(detectedVsCodeTheme()));
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, [setting]);
+  return setting === "light" || setting === "dark" ? setting : vscodeTheme;
+}
+
+function detectedVsCodeTheme(): WebviewTheme {
+  const classList = document.body.classList;
+  return classList.contains("vscode-light") || classList.contains("vscode-high-contrast-light")
+    ? "light"
+    : "dark";
+}
+
 function App(): React.ReactElement {
   const initialPayload = window.__ASP_LSP_FLOWCHART__ ?? fallbackPayload;
   const [payload, setPayload] = useState<FlowchartPayload>(initialPayload);
+  const theme = useResolvedWebviewTheme(payload.settings?.theme);
+  const themePalette = flowchartThemePalettes[theme];
   const [selectedSectionId, setSelectedSectionId] = useState<string | undefined>(() =>
     defaultSectionId(initialPayload),
   );
@@ -409,7 +668,10 @@ function App(): React.ReactElement {
   const [activeSearchIndex, setActiveSearchIndex] = useState(0);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const locale = payload.locale ?? "en";
-  const text = (key: string): string => messages[locale][key] ?? messages.en[key] ?? key;
+  const text = useCallback(
+    (key: string): string => messages[locale][key] ?? messages.en[key] ?? key,
+    [locale],
+  );
   const nodesBySection = useMemo(() => nodesBySectionId(payload), [payload]);
   const searchMatches = useMemo(
     () => flowchartSearchMatches(payload, searchQuery),
@@ -423,8 +685,8 @@ function App(): React.ReactElement {
     searchMatches.length > 0 ? Math.min(activeSearchIndex, searchMatches.length - 1) : 0;
   const activeSearchNode = searchMatches[activeSearchIndexForDisplay]?.node;
   const selectedFlowchart = useMemo(
-    () => flowchartForSection(payload, selectedSectionId),
-    [payload, selectedSectionId],
+    () => flowchartForSection(payload, selectedSectionId, themePalette),
+    [payload, selectedSectionId, themePalette],
   );
   const selectedSection = selectedFlowchart.sections[0];
   const openFlowchartForNode = useCallback(
@@ -503,7 +765,10 @@ function App(): React.ReactElement {
     );
   }, [activeSearchIndex, searchMatches]);
   return (
-    <main className="grid h-full grid-cols-[minmax(320px,380px)_1fr] bg-[#101419] text-[#d9e0ea]">
+    <main
+      className="asp-lsp-flowchart-shell grid h-full grid-cols-[minmax(320px,380px)_1fr] bg-[#101419] text-[#d9e0ea]"
+      data-asp-lsp-theme={theme}
+    >
       <aside className="flex min-h-0 flex-col border-r border-[#263140] bg-[#151b23]">
         <header className="border-b border-[#263140] px-4 py-3">
           <div className="text-sm font-semibold text-[#f1f5f9]">
@@ -571,6 +836,7 @@ function App(): React.ReactElement {
                 nodes={nodesBySection.get(section.id) ?? []}
                 selected={section.id === selectedSection?.id}
                 section={section}
+                themePalette={themePalette}
                 text={text}
                 activeSearchNodeId={activeSearchNode?.id}
                 matchedNodeIds={matchedNodeIds}
@@ -606,6 +872,7 @@ function App(): React.ReactElement {
       <FlowchartCanvas
         payload={selectedFlowchart}
         section={selectedSection}
+        themePalette={themePalette}
         text={text}
         activeSearchNodeId={activeSearchNode?.id}
         matchedNodeIds={matchedNodeIds}
@@ -746,6 +1013,7 @@ function FlowSection({
   nodes,
   selected,
   section,
+  themePalette,
   text,
   activeSearchNodeId,
   matchedNodeIds,
@@ -758,6 +1026,7 @@ function FlowSection({
   nodes: AspFlowchartNode[];
   selected: boolean;
   section: AspFlowchartSection;
+  themePalette: FlowchartThemePalette;
   text(key: string): string;
   activeSearchNodeId?: string;
   matchedNodeIds: Set<string>;
@@ -818,7 +1087,7 @@ function FlowSection({
               const isSearchMatch = matchedNodeIds.has(node.id);
               const isActiveSearchMatch = activeSearchNodeId === node.id;
               const nodeHint = flowchartNodeHint(node, text, locale);
-              const nodeStyle = flowchartNodeKindStyles[node.kind];
+              const nodeStyle = themePalette.nodeKindStyles[node.kind];
               return (
                 <div
                   key={node.id}
@@ -859,7 +1128,7 @@ function FlowSection({
                   {node.links?.length ? (
                     <div className="ml-1 mt-1 flex flex-wrap gap-1">
                       {node.links.map((link) => {
-                        const linkStyle = flowchartNodeLinkStyle(link);
+                        const linkStyle = flowchartNodeLinkStyle(link, themePalette);
                         return (
                           <button
                             key={link.id}
@@ -885,9 +1154,16 @@ function FlowSection({
   );
 }
 
+interface FlowchartContextMenuState {
+  node: AspFlowchartNode;
+  x: number;
+  y: number;
+}
+
 function FlowchartCanvas({
   payload,
   section,
+  themePalette,
   text,
   activeSearchNodeId,
   matchedNodeIds,
@@ -896,6 +1172,7 @@ function FlowchartCanvas({
 }: {
   payload: FlowchartPayload;
   section: AspFlowchartSection | undefined;
+  themePalette: FlowchartThemePalette;
   text(key: string): string;
   activeSearchNodeId?: string;
   matchedNodeIds: Set<string>;
@@ -906,6 +1183,7 @@ function FlowchartCanvas({
   const [error, setError] = useState<string>();
   const [svg, setSvg] = useState<string>("");
   const [zoom, setZoom] = useState(1);
+  const [contextMenu, setContextMenu] = useState<FlowchartContextMenuState>();
   const setClampedZoom = useCallback(
     (value: number) =>
       setZoom(Math.round(clamp(value, minimumFlowchartZoom, maximumFlowchartZoom) * 100) / 100),
@@ -926,6 +1204,44 @@ function FlowchartCanvas({
     },
     [setClampedZoom, zoom],
   );
+  const openContextMenu = useCallback((node: AspFlowchartNode, event: MouseEvent) => {
+    event.preventDefault();
+    setContextMenu({ node, x: event.clientX, y: event.clientY });
+  }, []);
+  const closeContextMenu = useCallback(() => setContextMenu(undefined), []);
+  const openContextMenuCode = useCallback(() => {
+    if (!contextMenu?.node.range) {
+      return;
+    }
+    onOpenCode(contextMenu.node.range);
+    closeContextMenu();
+  }, [closeContextMenu, contextMenu, onOpenCode]);
+  const openContextMenuFlowchart = useCallback(() => {
+    if (!contextMenu) {
+      return;
+    }
+    onOpenFlowchart(contextMenu.node);
+    closeContextMenu();
+  }, [closeContextMenu, contextMenu, onOpenFlowchart]);
+  useEffect(() => {
+    if (!contextMenu) {
+      return undefined;
+    }
+    const closeOnPointerDown = () => closeContextMenu();
+    const closeOnKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeContextMenu();
+      }
+    };
+    window.addEventListener("pointerdown", closeOnPointerDown);
+    window.addEventListener("keydown", closeOnKeyDown);
+    window.addEventListener("blur", closeContextMenu);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnPointerDown);
+      window.removeEventListener("keydown", closeOnKeyDown);
+      window.removeEventListener("blur", closeContextMenu);
+    };
+  }, [closeContextMenu, contextMenu]);
   useEffect(() => {
     let cancelled = false;
     const render = async (): Promise<void> => {
@@ -936,7 +1252,8 @@ function FlowchartCanvas({
         startOnLoad: false,
         maxTextSize: flowchartMaxTextSize(payload),
         securityLevel: "strict",
-        theme: "dark",
+        theme: themePalette.mermaidTheme,
+        themeVariables: themePalette.mermaidThemeVariables,
         flowchart: { htmlLabels: false, curve: "basis" },
       });
       try {
@@ -947,7 +1264,13 @@ function FlowchartCanvas({
         }
         containerRef.current.innerHTML = result.svg;
         setSvg(result.svg);
-        attachSvgNodeHandlers(containerRef.current, payload, text, onOpenFlowchart);
+        attachSvgNodeHandlers(
+          containerRef.current,
+          payload,
+          text,
+          onOpenFlowchart,
+          openContextMenu,
+        );
         setError(undefined);
       } catch (renderError) {
         if (!cancelled) {
@@ -960,13 +1283,16 @@ function FlowchartCanvas({
     return () => {
       cancelled = true;
     };
-  }, [onOpenFlowchart, payload]);
+  }, [onOpenFlowchart, openContextMenu, payload, themePalette, text]);
   useEffect(() => {
     if (!containerRef.current) {
       return;
     }
     syncSvgSearchHighlights(containerRef.current, payload, matchedNodeIds, activeSearchNodeId);
   }, [activeSearchNodeId, matchedNodeIds, payload, svg]);
+  const contextMenuPosition = contextMenu
+    ? clampedContextMenuPosition(contextMenu.x, contextMenu.y)
+    : undefined;
   return (
     <section className="grid min-h-0 grid-rows-[auto_1fr] overflow-hidden bg-[#0d1117]">
       <header className="flex items-center gap-2 border-b border-[#263140] px-5 py-3">
@@ -1066,6 +1392,33 @@ function FlowchartCanvas({
           className="min-h-full min-w-full overflow-auto [&_svg]:h-auto [&_svg]:max-w-none"
           style={{ zoom }}
         />
+        {contextMenu && contextMenuPosition ? (
+          <div
+            className="fixed z-50 grid min-w-40 overflow-hidden rounded-md border border-[#3b4a5f] bg-[#151b23] py-1 text-xs text-[#d9e0ea] shadow-[0_12px_28px_rgb(0_0_0_/_32%)]"
+            role="menu"
+            style={{ left: contextMenuPosition.left, top: contextMenuPosition.top }}
+            onContextMenu={(event) => event.preventDefault()}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <button
+              className="px-3 py-1.5 text-left hover:bg-[#172131] disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
+              disabled={!contextMenu.node.range}
+              role="menuitem"
+              type="button"
+              onClick={openContextMenuCode}
+            >
+              Code
+            </button>
+            <button
+              className="px-3 py-1.5 text-left hover:bg-[#172131]"
+              role="menuitem"
+              type="button"
+              onClick={openContextMenuFlowchart}
+            >
+              {text("openFlowchart")}
+            </button>
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -1076,6 +1429,7 @@ function attachSvgNodeHandlers(
   payload: FlowchartPayload,
   text: (key: string) => string,
   onOpenFlowchart: (node: AspFlowchartNode) => void,
+  onOpenContextMenu: (node: AspFlowchartNode, event: MouseEvent) => void,
 ): void {
   const locale = payload.locale ?? "en";
   for (const node of payload.nodes) {
@@ -1093,6 +1447,7 @@ function attachSvgNodeHandlers(
       titleElement.textContent = hint;
       element.style.cursor = "pointer";
       element.addEventListener("click", () => onOpenFlowchart(node));
+      element.addEventListener("contextmenu", (event) => onOpenContextMenu(node, event));
     }
   }
 }
@@ -1124,6 +1479,16 @@ function syncSvgSearchHighlights(
     }
   }
   activeElement?.scrollIntoView({ block: "center", inline: "center" });
+}
+
+function clampedContextMenuPosition(x: number, y: number): { left: number; top: number } {
+  const margin = 8;
+  const estimatedWidth = 180;
+  const estimatedHeight = 88;
+  return {
+    left: clamp(x, margin, Math.max(margin, window.innerWidth - estimatedWidth - margin)),
+    top: clamp(y, margin, Math.max(margin, window.innerHeight - estimatedHeight - margin)),
+  };
 }
 
 function svgElementsForFlowchartNode(
@@ -1173,6 +1538,7 @@ function defaultSectionId(payload: FlowchartPayload): string | undefined {
 function flowchartForSection(
   payload: FlowchartPayload,
   selectedSectionId: string | undefined,
+  themePalette: FlowchartThemePalette,
 ): FlowchartPayload {
   const section =
     payload.sections.find((candidate) => candidate.id === selectedSectionId) ??
@@ -1190,7 +1556,7 @@ function flowchartForSection(
     sections: [section],
     nodes,
     edges,
-    mermaid: mermaidForSelectedSection(nodes, edges),
+    mermaid: mermaidForSelectedSection(nodes, edges, themePalette),
     stats: {
       ...payload.stats,
       sections: 1,
@@ -1203,18 +1569,21 @@ function flowchartForSection(
 function mermaidForSelectedSection(
   nodes: AspFlowchartNode[],
   edges: FlowchartPayload["edges"],
+  themePalette: FlowchartThemePalette,
 ): string {
   const lines = ["flowchart TB"];
   for (const node of nodes) {
     lines.push(`  ${mermaidNode(node)}`);
-    lines.push(`  class ${mermaidId(node.id)} ${flowchartNodeKindStyles[node.kind].mermaidClass}`);
+    lines.push(
+      `  class ${mermaidId(node.id)} ${themePalette.nodeKindStyles[node.kind].mermaidClass}`,
+    );
   }
   for (const edge of edges) {
     lines.push(
       `  ${mermaidId(edge.source)} -->${edge.label ? `|${escapeMermaidEdgeLabel(edge.label)}|` : ""} ${mermaidId(edge.target)}`,
     );
   }
-  lines.push(...flowchartMermaidClassDefinitions());
+  lines.push(...flowchartMermaidClassDefinitions(themePalette));
   return lines.join("\n");
 }
 
@@ -1235,9 +1604,9 @@ function mermaidNode(node: AspFlowchartNode): string {
   return `${id}["${label}"]`;
 }
 
-function flowchartMermaidClassDefinitions(): string[] {
+function flowchartMermaidClassDefinitions(themePalette: FlowchartThemePalette): string[] {
   const stylesByClass = new Map<string, FlowchartVisualStyle>();
-  for (const style of Object.values(flowchartNodeKindStyles)) {
+  for (const style of Object.values(themePalette.nodeKindStyles)) {
     stylesByClass.set(style.mermaidClass, style);
   }
   return [...stylesByClass.values()].map(
@@ -1404,47 +1773,55 @@ function flowchartNodeLinkRoleLabel(role: FlowchartNodeLinkRole, locale: Flowcha
   return labels[locale][role] ?? labels.en[role] ?? role;
 }
 
-function flowchartNodeLinkStyle(link: AspFlowchartNodeLink): FlowchartVisualStyle {
-  return flowchartSymbolStyle(link.symbolKind) ?? flowchartLinkRoleStyles[link.role];
+function flowchartNodeLinkStyle(
+  link: AspFlowchartNodeLink,
+  themePalette: FlowchartThemePalette,
+): FlowchartVisualStyle {
+  return (
+    flowchartSymbolStyle(link.symbolKind, themePalette) ?? themePalette.linkRoleStyles[link.role]
+  );
 }
 
-function flowchartSymbolStyle(symbolKind: string | undefined): FlowchartVisualStyle | undefined {
+function flowchartSymbolStyle(
+  symbolKind: string | undefined,
+  themePalette: FlowchartThemePalette,
+): FlowchartVisualStyle | undefined {
   const normalized = normalizeFlowchartSymbolKind(symbolKind);
   if (!normalized) {
     return undefined;
   }
-  if (flowchartSymbolKindStyles[normalized]) {
-    return flowchartSymbolKindStyles[normalized];
+  if (themePalette.symbolKindStyles[normalized]) {
+    return themePalette.symbolKindStyles[normalized];
   }
   if (normalized.includes("function")) {
-    return flowchartSymbolKindStyles.function;
+    return themePalette.symbolKindStyles.function;
   }
   if (normalized.includes("sub")) {
-    return flowchartSymbolKindStyles.sub;
+    return themePalette.symbolKindStyles.sub;
   }
   if (normalized.includes("class")) {
-    return flowchartSymbolKindStyles.class;
+    return themePalette.symbolKindStyles.class;
   }
   if (normalized.includes("method")) {
-    return flowchartSymbolKindStyles.method;
+    return themePalette.symbolKindStyles.method;
   }
   if (normalized.includes("property")) {
-    return flowchartSymbolKindStyles.property;
+    return themePalette.symbolKindStyles.property;
   }
   if (normalized.includes("variable")) {
-    return flowchartSymbolKindStyles.variable;
+    return themePalette.symbolKindStyles.variable;
   }
   if (normalized.includes("constant")) {
-    return flowchartSymbolKindStyles.constant;
+    return themePalette.symbolKindStyles.constant;
   }
   if (normalized.includes("parameter")) {
-    return flowchartSymbolKindStyles.parameter;
+    return themePalette.symbolKindStyles.parameter;
   }
   if (normalized.includes("field")) {
-    return flowchartSymbolKindStyles.field;
+    return themePalette.symbolKindStyles.field;
   }
   if (normalized.includes("member")) {
-    return flowchartSymbolKindStyles.member;
+    return themePalette.symbolKindStyles.member;
   }
   return undefined;
 }

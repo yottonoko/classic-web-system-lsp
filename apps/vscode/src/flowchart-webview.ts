@@ -8,9 +8,12 @@ import type {
 } from "@asp-lsp/core";
 
 export type AspFlowchartLocale = "en" | "ja";
+export type AspFlowchartWebviewTheme = "light" | "dark";
+export type AspFlowchartWebviewThemeSetting = AspFlowchartWebviewTheme | "auto";
 
 export interface AspFlowchartWebviewSettings {
   maxTextSize: number;
+  theme: AspFlowchartWebviewThemeSetting;
 }
 
 interface FlowchartPayload extends AspFlowchartPayload {

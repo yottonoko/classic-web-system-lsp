@@ -73,6 +73,17 @@ type GraphData = {
   links: GraphLink[];
 };
 
+type WebviewTheme = "light" | "dark";
+type WebviewThemeSetting = WebviewTheme | "auto";
+
+interface GraphThemePalette {
+  canvasBackground: string;
+  mutedLink: string;
+  mutedNode: string;
+  nodeColors: Record<NodeColorCategory, string>;
+  linkFilterColors: Record<LinkFilterCategory, string>;
+}
+
 function isFileLikeGraphNode(node: Pick<AspGraphNode, "kind">): boolean {
   return node.kind === "file" || node.kind === "missingInclude";
 }
@@ -523,7 +534,7 @@ function graphText(key: GraphTextKey, params?: GraphTextParams): string {
   return message;
 }
 
-const nodeColors: Record<NodeColorCategory, string> = {
+const darkNodeColors: Record<NodeColorCategory, string> = {
   root: "#ffffff",
   file: "#67d8ef",
   missingInclude: "#ff4db8",
@@ -543,7 +554,27 @@ const nodeColors: Record<NodeColorCategory, string> = {
   unresolved: "#ff5370",
 };
 
-const linkColors: Record<AspGraphLink["kind"], string> = {
+const lightNodeColors: Record<NodeColorCategory, string> = {
+  root: "#111827",
+  file: "#0369a1",
+  missingInclude: "#be185d",
+  function: "#7e22ce",
+  sub: "#5b21b6",
+  class: "#15803d",
+  method: "#c2410c",
+  methodFunction: "#c2410c",
+  methodSub: "#b45309",
+  property: "#be123c",
+  member: "#b45309",
+  globalVariable: "#b45309",
+  globalConstant: "#1d4ed8",
+  localVariable: "#854d0e",
+  localConstant: "#0f766e",
+  parameter: "#475569",
+  unresolved: "#dc2626",
+};
+
+const darkLinkColors: Record<AspGraphLink["kind"], string> = {
   include: "#82aaff",
   declares: "#89ddff",
   references: "#c3e88d",
@@ -552,9 +583,36 @@ const linkColors: Record<AspGraphLink["kind"], string> = {
   unresolvedReference: "#ff5370",
 };
 
-const linkFilterColors: Record<LinkFilterCategory, string> = {
-  ...linkColors,
-  member: nodeColors.member,
+const lightLinkColors: Record<AspGraphLink["kind"], string> = {
+  include: "#2563eb",
+  declares: "#0284c7",
+  references: "#16a34a",
+  assignments: "#ca8a04",
+  calls: "#ea580c",
+  unresolvedReference: "#dc2626",
+};
+
+const graphThemePalettes: Record<WebviewTheme, GraphThemePalette> = {
+  dark: {
+    canvasBackground: "#11151c",
+    mutedLink: "#29313d",
+    mutedNode: "#2d3542",
+    nodeColors: darkNodeColors,
+    linkFilterColors: {
+      ...darkLinkColors,
+      member: darkNodeColors.member,
+    },
+  },
+  light: {
+    canvasBackground: "#f8fafc",
+    mutedLink: "#cbd5e1",
+    mutedNode: "#cbd5e1",
+    nodeColors: lightNodeColors,
+    linkFilterColors: {
+      ...lightLinkColors,
+      member: lightNodeColors.member,
+    },
+  },
 };
 
 const linkMeanings: Record<AspGraphLink["kind"], { label: string; description: string }> = {
@@ -707,7 +765,29 @@ function positiveModulo(value: number, divisor: number): number {
   return ((value % divisor) + divisor) % divisor;
 }
 
+function useResolvedWebviewTheme(setting: WebviewThemeSetting | undefined): WebviewTheme {
+  const [vscodeTheme, setVsCodeTheme] = useState<WebviewTheme>(() => detectedVsCodeTheme());
+  useEffect(() => {
+    if (setting === "light" || setting === "dark") {
+      return undefined;
+    }
+    const observer = new MutationObserver(() => setVsCodeTheme(detectedVsCodeTheme()));
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, [setting]);
+  return setting === "light" || setting === "dark" ? setting : vscodeTheme;
+}
+
+function detectedVsCodeTheme(): WebviewTheme {
+  const classList = document.body.classList;
+  return classList.contains("vscode-light") || classList.contains("vscode-high-contrast-light")
+    ? "light"
+    : "dark";
+}
+
 function App(): React.ReactElement {
+  const theme = useResolvedWebviewTheme(graph?.settings?.theme);
+  const themePalette = graphThemePalettes[theme];
   const [mode, setMode] = useState<ViewMode>(graph?.settings?.initialViewMode ?? "2d");
   const [selection, setSelection] = useState<Selection>();
   const [searchInput, setSearchInput] = useState("");
@@ -736,7 +816,7 @@ function App(): React.ReactElement {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const skipAutoFitForModeRef = useRef(new Set<ViewMode>());
   const forceFitForModeRef = useRef(new Set<ViewMode>());
-  const graphData = useMemo(() => graphDataFor(graph), []);
+  const graphData = useMemo(() => graphDataFor(graph, themePalette), [themePalette]);
   const filteredGraphData = useMemo(
     () => filterGraphData(graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes),
     [graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes],
@@ -1070,7 +1150,7 @@ function App(): React.ReactElement {
 
   if (!graph) {
     return (
-      <Shell>
+      <Shell theme={theme}>
         <main className="grid place-items-center text-[#9aa7b8]">
           {graphText("empty.graphData")}
         </main>
@@ -1079,7 +1159,7 @@ function App(): React.ReactElement {
   }
 
   return (
-    <Shell>
+    <Shell theme={theme}>
       <header className="grid grid-cols-[minmax(180px,1fr)_minmax(220px,320px)_auto_auto_auto] items-center gap-3 border-b border-[#2b3442] bg-[#171c25] px-3 py-2.5 max-[980px]:grid-cols-1 max-[980px]:items-stretch">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-semibold text-[#d7dde8]">
@@ -1183,6 +1263,7 @@ function App(): React.ReactElement {
             hideSingleNodes={hideSingleNodes}
             linkCategories={linkFilterOrder}
             nodeCategories={nodeCategoryOrder}
+            themePalette={themePalette}
             showOutgoingSelectionLinks={showOutgoingSelectionLinks}
             onToggleHideSingleNodes={() => setHideSingleNodes((current) => !current)}
             onToggleLinkCategory={toggleLinkCategory}
@@ -1202,19 +1283,21 @@ function App(): React.ReactElement {
               graphData={renderGraphData3d}
               width={surfaceSize.width}
               height={surfaceSize.height}
-              backgroundColor="#11151c"
-              nodeColor={(node) => nodeColor(node as GraphNode, highlight)}
+              backgroundColor={themePalette.canvasBackground}
+              nodeColor={(node) => nodeColor(node as GraphNode, highlight, themePalette)}
               nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
               nodeThreeObjectExtend={true}
-              nodeThreeObject={(node: GraphNode) => nodeTextObject(node, highlight)}
-              linkColor={(link) => linkColor(link as GraphLink, highlight)}
+              nodeThreeObject={(node: GraphNode) => nodeTextObject(node, highlight, themePalette)}
+              linkColor={(link) => linkColor(link as GraphLink, highlight, themePalette)}
               linkWidth={(link) => linkWidth3d(link as GraphLink, highlight)}
               linkLabel={(link) => linkLabel(link as GraphLink)}
               linkCurvature={0.25}
               linkDirectionalArrowLength={(link) => linkArrowLength(link as GraphLink)}
               linkDirectionalArrowRelPos={1}
-              linkDirectionalArrowColor={(link) => linkColor(link as GraphLink, highlight)}
+              linkDirectionalArrowColor={(link) =>
+                linkColor(link as GraphLink, highlight, themePalette)
+              }
               linkDirectionalParticles={(link) => linkParticleCount(link as GraphLink, highlight)}
               linkDirectionalParticleWidth={(link) => linkParticleWidth3d(link as GraphLink)}
               onNodeClick={(node) => selectGraphNode(node as GraphNode)}
@@ -1236,19 +1319,23 @@ function App(): React.ReactElement {
               graphData={renderGraphData2d}
               width={surfaceSize.width}
               height={surfaceSize.height}
-              backgroundColor="#11151c"
+              backgroundColor={themePalette.canvasBackground}
               nodeVal={(node) => (node as GraphNode).value}
               nodeLabel={(node) => nodeLabel(node as GraphNode)}
-              linkColor={(link) => linkColor(link as GraphLink, highlight)}
+              linkColor={(link) => linkColor(link as GraphLink, highlight, themePalette)}
               linkWidth={(link) => linkWidth2d(link as GraphLink, highlight)}
               linkLabel={(link) => linkLabel(link as GraphLink)}
               linkCurvature={0.25}
               linkDirectionalArrowLength={(link) => linkArrowLength(link as GraphLink)}
               linkDirectionalArrowRelPos={1}
-              linkDirectionalArrowColor={(link) => linkColor(link as GraphLink, highlight)}
+              linkDirectionalArrowColor={(link) =>
+                linkColor(link as GraphLink, highlight, themePalette)
+              }
               linkDirectionalParticles={(link) => linkParticleCount(link as GraphLink, highlight)}
               linkDirectionalParticleWidth={4.5}
-              nodeCanvasObject={(node, canvas) => paintNode(node as GraphNode, canvas, highlight)}
+              nodeCanvasObject={(node, canvas) =>
+                paintNode(node as GraphNode, canvas, highlight, themePalette)
+              }
               nodePointerAreaPaint={(node, color, canvas) =>
                 paintNodePointerArea(node as GraphNode, color, canvas)
               }
@@ -1286,6 +1373,7 @@ function GraphLegend({
   hideSingleNodes,
   linkCategories,
   nodeCategories,
+  themePalette,
   showOutgoingSelectionLinks,
   onToggleHideSingleNodes,
   onToggleLinkCategory,
@@ -1297,6 +1385,7 @@ function GraphLegend({
   hideSingleNodes: boolean;
   linkCategories: LinkFilterCategory[];
   nodeCategories: NodeColorCategory[];
+  themePalette: GraphThemePalette;
   showOutgoingSelectionLinks: boolean;
   onToggleHideSingleNodes(): void;
   onToggleLinkCategory(category: LinkFilterCategory): void;
@@ -1327,7 +1416,7 @@ function GraphLegend({
               <LegendFilterItem
                 key={category}
                 checked={!hiddenLinkCategories.has(category)}
-                color={linkFilterColors[category]}
+                color={themePalette.linkFilterColors[category]}
                 label={linkFilterLabels[category]}
                 title={linkFilterDescriptions[category]}
                 variant="link"
@@ -1340,7 +1429,7 @@ function GraphLegend({
               <LegendFilterItem
                 key={category}
                 checked={!hiddenNodeCategories.has(category)}
-                color={nodeColors[category]}
+                color={themePalette.nodeColors[category]}
                 label={nodeCategoryLabels[category]}
                 title={nodeCategoryDescriptions[category]}
                 variant="node"
@@ -1349,7 +1438,7 @@ function GraphLegend({
             ))}
             <LegendFilterItem
               checked={hideSingleNodes}
-              color="#8d98a8"
+              color={themePalette.mutedNode}
               label={graphText("legend.hideSingleNodes")}
               title={graphText("legend.hideSingleNodesDescription")}
               variant="node"
@@ -1359,7 +1448,7 @@ function GraphLegend({
           <LegendFilterGroup title={graphText("legend.selection")}>
             <LegendFilterItem
               checked={showOutgoingSelectionLinks}
-              color="#c792ea"
+              color={themePalette.nodeColors.function}
               label={graphText("legend.outgoingLinks")}
               title={graphText("legend.outgoingLinksDescription")}
               variant="link"
@@ -1487,11 +1576,20 @@ function useElementSize<TElement extends HTMLElement>(): [
   return [ref, size];
 }
 
-function Shell({ children }: { children: React.ReactNode }): React.ReactElement {
+function Shell({
+  children,
+  theme,
+}: {
+  children: React.ReactNode;
+  theme: WebviewTheme;
+}): React.ReactElement {
   return (
     <>
       <style>{tailwindStyles}</style>
-      <div className="grid h-full min-w-0 grid-rows-[auto_1fr] bg-[#11151c] text-[#d7dde8]">
+      <div
+        className="asp-lsp-graph-shell grid h-full min-w-0 grid-rows-[auto_1fr] bg-[#11151c] text-[#d7dde8]"
+        data-asp-lsp-theme={theme}
+      >
         {children}
       </div>
     </>
@@ -3618,7 +3716,10 @@ function initialGraphNodePosition(
   };
 }
 
-function graphDataFor(payload: AspGraphPayload | undefined): GraphData {
+function graphDataFor(
+  payload: AspGraphPayload | undefined,
+  themePalette: GraphThemePalette,
+): GraphData {
   if (!payload) {
     return { nodes: [], links: [] };
   }
@@ -3634,7 +3735,7 @@ function graphDataFor(payload: AspGraphPayload | undefined): GraphData {
         category,
         referenceCount,
         value,
-        color: nodeColors[category],
+        color: themePalette.nodeColors[category],
         x: position.x,
         y: position.y,
         z: position.z,
@@ -3642,7 +3743,7 @@ function graphDataFor(payload: AspGraphPayload | undefined): GraphData {
     }),
     links: payload.links.map((link) => ({
       ...link,
-      color: graphLinkColor(link),
+      color: graphLinkColor(link, themePalette),
     })),
   };
 }
@@ -3773,8 +3874,8 @@ function baseNameFromUri(value: string | undefined): string | undefined {
   }
 }
 
-function graphLinkColor(link: AspGraphLink): string {
-  return linkFilterColors[graphLinkFilterCategory(link)];
+function graphLinkColor(link: AspGraphLink, themePalette: GraphThemePalette): string {
+  return themePalette.linkFilterColors[graphLinkFilterCategory(link)];
 }
 
 function linkSwatchWidth(link: Pick<AspGraphLink, "kind" | "role">): number {
@@ -4623,18 +4724,30 @@ function isActiveLink(link: GraphLink, highlight: HighlightState | undefined): b
   return !highlight || highlight.activeLinkIds.has(link.id);
 }
 
-function nodeColor(node: GraphNode, highlight: HighlightState | undefined): string {
-  return isActiveNode(node, highlight) ? node.color : "#2d3542";
+function nodeColor(
+  node: GraphNode,
+  highlight: HighlightState | undefined,
+  themePalette: GraphThemePalette,
+): string {
+  return isActiveNode(node, highlight) ? node.color : themePalette.mutedNode;
 }
 
-function linkColor(link: GraphLink, highlight: HighlightState | undefined): string {
-  return isActiveLink(link, highlight) ? link.color : "#29313d";
+function linkColor(
+  link: GraphLink,
+  highlight: HighlightState | undefined,
+  themePalette: GraphThemePalette,
+): string {
+  return isActiveLink(link, highlight) ? link.color : themePalette.mutedLink;
 }
 
-function nodeTextObject(node: GraphNode, highlight: HighlightState | undefined): SpriteText {
+function nodeTextObject(
+  node: GraphNode,
+  highlight: HighlightState | undefined,
+  themePalette: GraphThemePalette,
+): SpriteText {
   const offset = nodeTextOffset3d(node);
   const textHeight = nodeTextHeight(node);
-  const sprite = new SpriteText(node.label, textHeight, nodeColor(node, highlight));
+  const sprite = new SpriteText(node.label, textHeight, nodeColor(node, highlight, themePalette));
   sprite.fontFace = "system-ui, sans-serif";
   sprite.fontWeight = nodeTextFontWeight(node);
   sprite.backgroundColor = false;
@@ -4798,17 +4911,18 @@ function paintNode(
   node: GraphNode,
   canvas: CanvasRenderingContext2D,
   highlight: HighlightState | undefined,
+  themePalette: GraphThemePalette,
 ): void {
   const radius = nodeRadius(node);
   const active = isActiveNode(node, highlight);
   canvas.beginPath();
   canvas.arc(node.x ?? 0, node.y ?? 0, radius, 0, 2 * Math.PI, false);
-  canvas.fillStyle = active ? node.color : "#2d3542";
+  canvas.fillStyle = active ? node.color : themePalette.mutedNode;
   canvas.fill();
   const offset = nodeTextOffset(node);
   canvas.save();
   canvas.font = `${nodeTextFontWeight(node)} ${nodeTextHeight(node)}px system-ui, sans-serif`;
-  canvas.fillStyle = nodeColor(node, highlight);
+  canvas.fillStyle = nodeColor(node, highlight, themePalette);
   canvas.textAlign = "center";
   canvas.textBaseline = "bottom";
   canvas.fillText(node.label, node.x ?? 0, (node.y ?? 0) - offset);
