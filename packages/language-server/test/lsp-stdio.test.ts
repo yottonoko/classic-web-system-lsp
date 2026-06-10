@@ -6133,6 +6133,100 @@ Response.Write SharedTitle()
       }
     });
 
+    it("counts related include family usages in reference CodeLens when unresolved analysis needs them", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-related-codelens-"));
+      const page = path.join(tempDir, "default.asp");
+      const parent = path.join(tempDir, "parent.asp");
+      const sibling = path.join(tempDir, "sibling.inc");
+      const pageSource = `<%
+Dim SharedValue
+MissingGlobal = 1
+%>`;
+      fs.writeFileSync(page, pageSource, "utf8");
+      fs.writeFileSync(
+        parent,
+        `<!-- #include file="default.asp" -->
+<!-- #include file="sibling.inc" -->`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        sibling,
+        `<%
+SharedValue = 2
+%>`,
+        "utf8",
+      );
+      const pageUri = pathToFileURL(page).href;
+      const siblingUri = pathToFileURL(sibling).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: pageUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: pageSource,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const codeLens = (await server.request("textDocument/codeLens", {
+          textDocument: { uri: pageUri },
+        })) as Array<Record<string, unknown>>;
+        const referencesCodeLens = codeLens.find((lens) => {
+          const data = lens.data as
+            | { kind?: unknown; name?: unknown; symbolKind?: unknown }
+            | undefined;
+          return (
+            data?.kind === "vbscript-reference" &&
+            data.name === "SharedValue" &&
+            data.symbolKind === "variable"
+          );
+        });
+        expect(referencesCodeLens).toBeDefined();
+        const resolvedCodeLens = (await server.request("codeLens/resolve", referencesCodeLens)) as {
+          command?: { title?: string; arguments?: unknown[] };
+        };
+        const codeLensLocations = (resolvedCodeLens.command?.arguments?.[2] ?? []) as Array<{
+          uri?: string;
+        }>;
+        expect(resolvedCodeLens.command?.title).toContain("1 reference");
+        expect(resolvedCodeLens.command?.title).toContain("(include family)");
+        expect(codeLensLocations.map((location) => location.uri)).toContain(siblingUri);
+
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              codeLens: { includeRelatedIncludeTreesForUnresolved: false },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const disabledResolvedCodeLens = (await server.request(
+          "codeLens/resolve",
+          referencesCodeLens,
+        )) as { command?: { title?: string; arguments?: unknown[] } };
+        const disabledLocations = (disabledResolvedCodeLens.command?.arguments?.[2] ??
+          []) as Array<{
+          uri?: string;
+        }>;
+        expect(disabledResolvedCodeLens.command?.title).toContain("0 references (analyzed only)");
+        expect(disabledLocations.map((location) => location.uri)).not.toContain(siblingUri);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("counts include-reachable workspace variable usages in reference CodeLens", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-var-refs-"));
       const first = path.join(tempDir, "1.asp");
@@ -8491,6 +8585,21 @@ End Sub
 %>`,
         "utf8",
       );
+      fs.writeFileSync(path.join(tempDir, "child.inc"), `<%\nDim ChildValue\n%>`, "utf8");
+      fs.writeFileSync(
+        path.join(tempDir, "child-parent.asp"),
+        `<!-- #include file="child.inc" -->
+<!-- #include file="child-sibling.inc" -->`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "child-sibling.inc"),
+        `<%
+Sub ChildSiblingDefinition()
+End Sub
+%>`,
+        "utf8",
+      );
       fs.writeFileSync(
         path.join(tempDir, "clean-parent.asp"),
         `<!-- #include file="clean.asp" -->
@@ -8507,7 +8616,8 @@ End Sub
       );
       fs.writeFileSync(
         page,
-        `<%
+        `<!-- #include file="child.inc" -->
+<%
 MissingGlobal = 1
 Call MissingProcedure()
 %>`,
@@ -8565,6 +8675,8 @@ Response.Write CleanValue
         const relatedGraph = await buildGraph(uri, true);
         expect(hasFileNode(relatedGraph, "parent.asp")).toBe(true);
         expect(hasFileNode(relatedGraph, "sibling.inc")).toBe(true);
+        expect(hasFileNode(relatedGraph, "child-parent.asp")).toBe(false);
+        expect(hasFileNode(relatedGraph, "child-sibling.inc")).toBe(false);
 
         const cleanGraph = await buildGraph(cleanUri, true);
         expect(hasFileNode(cleanGraph, "clean-parent.asp")).toBe(false);

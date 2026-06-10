@@ -238,7 +238,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.6.0";
+const languageServerVersion = "0.6.1";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -12802,6 +12802,8 @@ function normalizeCodeLensSettings(
     referenceGlobals: record.referenceGlobals !== false,
     referenceClasses: record.referenceClasses !== false,
     referenceClassMembers: record.referenceClassMembers !== false,
+    includeRelatedIncludeTreesForUnresolved:
+      record.includeRelatedIncludeTreesForUnresolved !== false,
   };
 }
 
@@ -16810,8 +16812,9 @@ async function buildDocumentAspGraphAsync(
     return emptyAspGraphPayload("document", uri);
   }
   const settings = cachedSettings(cached.source.uri);
-  const documentsForGraph = await collectDocumentGraphDocumentsAsync(
-    cached,
+  const targetGraphDocument = await graphDocumentFromCachedAsync(cached, settings);
+  const documentsForGraph = await collectIncludeTreeGraphDocumentsAsync(
+    targetGraphDocument,
     settings,
     cancellation,
   );
@@ -16826,13 +16829,14 @@ async function buildDocumentAspGraphAsync(
   ) {
     documentsForGraph.push(
       ...(await collectRelatedIncludeTreeGraphDocumentsAsync(
-        documentsForGraph,
+        [targetGraphDocument],
         settings,
         cancellation,
         {
           excludedFileKeys: new Set(
             documentsForGraph.map((document) => graphFileKey(document.fileName)),
           ),
+          initialTextLength: graphDocumentsTextLength(documentsForGraph),
         },
       )),
     );
@@ -17165,13 +17169,14 @@ async function collectRelatedIncludeTreeGraphDocumentsAsync(
   cancellation: AnalysisCancellation,
   options: {
     excludedFileKeys?: Set<string>;
+    initialTextLength?: number;
     token?: GraphCancellationToken;
   } = {},
 ): Promise<AspGraphDocument[]> {
   const limits = vbProjectContextLimits(settings);
   const excludedFileKeys = new Set(options.excludedFileKeys ?? []);
   const documentsForGraph: AspGraphDocument[] = [];
-  let textLength = rootDocuments.reduce((total, document) => total + document.text.length, 0);
+  let textLength = options.initialTextLength ?? graphDocumentsTextLength(rootDocuments);
   let frontier = new Set(rootDocuments.map((document) => document.fileName));
 
   for (let depth = 0; depth < 20 && frontier.size > 0; depth += 1) {
@@ -17227,6 +17232,60 @@ async function collectRelatedIncludeTreeGraphDocumentsAsync(
     frontier = nextFrontier;
   }
   return documentsForGraph;
+}
+
+async function collectRelatedIncludeTreeOwnerGraphDocumentsAsync(
+  rootDocuments: AspGraphDocument[],
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+  options: {
+    excludedFileKeys?: Set<string>;
+    token?: GraphCancellationToken;
+  } = {},
+): Promise<AspGraphDocument[]> {
+  const limits = vbProjectContextLimits(settings);
+  const excludedFileKeys = new Set(options.excludedFileKeys ?? []);
+  const ownerDocuments: AspGraphDocument[] = [];
+  let frontier = new Set(rootDocuments.map((document) => document.fileName));
+
+  for (let depth = 0; depth < 20 && frontier.size > 0; depth += 1) {
+    if (excludedFileKeys.size >= limits.maxDocuments) {
+      break;
+    }
+    throwIfGraphCancelled(cancellation);
+    const incoming = await collectIncomingIncludeGraphDocumentsAsync(
+      frontier,
+      settings,
+      cancellation,
+      {
+        excludedFileKeys,
+        token: options.token,
+      },
+    );
+    if (incoming.length === 0) {
+      break;
+    }
+    const nextFrontier = new Set<string>();
+    for (const owner of incoming) {
+      throwIfGraphCancelled(cancellation);
+      const ownerKey = graphFileKey(owner.fileName);
+      if (excludedFileKeys.has(ownerKey)) {
+        continue;
+      }
+      excludedFileKeys.add(ownerKey);
+      ownerDocuments.push(owner);
+      nextFrontier.add(owner.fileName);
+      if (excludedFileKeys.size >= limits.maxDocuments) {
+        break;
+      }
+    }
+    frontier = nextFrontier;
+  }
+  return ownerDocuments;
+}
+
+function graphDocumentsTextLength(documentsForGraph: AspGraphDocument[]): number {
+  return documentsForGraph.reduce((total, document) => total + document.text.length, 0);
 }
 
 async function graphIncludeRefsForDocumentAsync(
@@ -18933,10 +18992,24 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
     includeDeclaration: false,
     includeFunctionReturnAssignments: false,
   };
+  let relatedIncludeTreeReferences = false;
   const references =
     settings.codeLens?.referenceScope === "workspace"
       ? await workspaceVbscriptCodeLensReferencesForSymbol(cached, symbol, settings, options)
-      : await analyzedVbscriptReferencesForSymbolAsync(cached, symbol, settings, options);
+      : settings.codeLens?.includeRelatedIncludeTreesForUnresolved !== false
+        ? await relatedIncludeTreeVbscriptCodeLensReferencesForSymbol(
+            cached,
+            symbol,
+            settings,
+            options,
+          ).then((result) => {
+            if (!result) {
+              return analyzedVbscriptReferencesForSymbolAsync(cached, symbol, settings, options);
+            }
+            relatedIncludeTreeReferences = true;
+            return result;
+          })
+        : await analyzedVbscriptReferencesForSymbolAsync(cached, symbol, settings, options);
   const localizer = localizerForUri(cached.source.uri);
   const referenceTitle = localizer.t(
     references.length === 1 ? "server.codeLens.reference" : "server.codeLens.references",
@@ -18945,7 +19018,9 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
   const title =
     settings.codeLens?.referenceScope === "workspace"
       ? referenceTitle
-      : `${referenceTitle}${localizer.t("server.codeLens.analyzedOnlySuffix")}`;
+      : relatedIncludeTreeReferences
+        ? `${referenceTitle}${localizer.t("server.codeLens.relatedIncludeTreeSuffix")}`
+        : `${referenceTitle}${localizer.t("server.codeLens.analyzedOnlySuffix")}`;
   return {
     ...lens,
     command: {
@@ -18984,6 +19059,127 @@ async function workspaceVbscriptCodeLensReferencesForSymbol(
     scheduleWorkspaceVbscriptCodeLensBatchReferences(cached, batchTargets, settings, options);
   }
   return references;
+}
+
+async function relatedIncludeTreeVbscriptCodeLensReferencesForSymbol(
+  cached: CachedDocument,
+  symbol: VbSymbol,
+  settings: AspSettings,
+  options: VbReferenceOptions,
+): Promise<VbReference[] | undefined> {
+  const targetGraphDocument = await graphDocumentFromCachedAsync(cached, settings);
+  const documentsForGraph = await collectIncludeTreeGraphDocumentsAsync(
+    targetGraphDocument,
+    settings,
+    neverCancelled,
+  );
+  if (
+    !(await graphDocumentsNeedRelatedIncludeTreeAnalysisAsync(
+      documentsForGraph,
+      settings,
+      neverCancelled,
+    ))
+  ) {
+    return undefined;
+  }
+  const ownerDocuments = await collectRelatedIncludeTreeOwnerGraphDocumentsAsync(
+    [targetGraphDocument],
+    settings,
+    neverCancelled,
+    {
+      excludedFileKeys: new Set(
+        documentsForGraph.map((document) => graphFileKey(document.fileName)),
+      ),
+    },
+  );
+  if (ownerDocuments.length === 0) {
+    return undefined;
+  }
+  const candidates = ownerDocuments.map(vbReferenceCandidateFromGraphDocument);
+  return workspaceVbscriptReferencesForSymbolWithCandidates(
+    cached,
+    symbol,
+    settings,
+    options,
+    candidates,
+    { logSymbol: `${symbol.name} (include family)` },
+  );
+}
+
+async function workspaceVbscriptReferencesForSymbolWithCandidates(
+  cached: CachedDocument,
+  symbol: VbSymbol,
+  settings: AspSettings,
+  options: VbReferenceOptions,
+  candidates: VbReferencesWorkerCandidate[],
+  logOptions: { logSymbol?: string },
+): Promise<VbReference[]> {
+  const context = await localVbReferenceContextAsync(cached, settings);
+  const target = equivalentVbSymbol(context.symbols ?? [], symbol) ?? symbol;
+  const referencesByTarget = new Map<string, VbReference[]>([
+    [vbscriptReferenceSymbolKey(symbol), []],
+  ]);
+  const requestedKey = vbscriptReferenceSymbolKey(symbol);
+  addVbReferencesToArray(
+    referencesByTarget,
+    requestedKey,
+    getVbscriptReferencesForSymbol(target, context, options),
+  );
+
+  const targetForWorkers = [vbReferencesWorkerTargetSymbol(target)];
+  const workerTargetKey = vbReferencesWorkerTargetKey(targetForWorkers[0]);
+  logDebugSummary(
+    settings,
+    `[asp-lsp] vb.references.includeFamily.candidates: ${cached.source.uri}, symbol=${logOptions.logSymbol ?? target.name}, candidates=${candidates.length}`,
+  );
+  const summaryFastPath = await workspaceVbReferenceSummaryFastPath(
+    candidates,
+    targetForWorkers,
+    settings,
+  );
+  for (const [key, references] of summaryFastPath.referencesByTarget) {
+    addVbReferencesToArray(
+      referencesByTarget,
+      key === workerTargetKey ? requestedKey : key,
+      references,
+    );
+  }
+  const openDocuments = vbReferencesWorkerOpenDocuments();
+  const openDocumentsKey = vbReferencesWorkerOpenDocumentsKey(openDocuments);
+  const workerResponses = await Promise.all(
+    summaryFastPath.workerCandidates.map((candidate) =>
+      workspaceVbReferenceWorkerBatchResponse(
+        candidate,
+        targetForWorkers,
+        settings,
+        options,
+        openDocuments,
+        openDocumentsKey,
+      ),
+    ),
+  );
+  for (const response of workerResponses) {
+    addVbReferencesToArray(
+      referencesByTarget,
+      requestedKey,
+      response.referencesByTarget?.[workerTargetKey] ?? [],
+    );
+  }
+  return dedupeVbReferences(referencesByTarget.get(requestedKey) ?? []).sort(vbReferenceOrder);
+}
+
+function vbReferenceCandidateFromGraphDocument(
+  document: AspGraphDocument,
+): VbReferencesWorkerCandidate {
+  const openDocument = openDocumentForFileName(document.fileName);
+  return {
+    uri: document.uri,
+    fileName: document.fileName,
+    source: {
+      ...document.source,
+      openVersion: openDocument?.version,
+    },
+  };
 }
 
 async function referenceCodeLensSymbolsForCachedDocumentAsync(

@@ -168,6 +168,7 @@ export interface AspCodeLensSettings {
   referenceGlobals?: boolean;
   referenceClasses?: boolean;
   referenceClassMembers?: boolean;
+  includeRelatedIncludeTreesForUnresolved?: boolean;
 }
 
 export interface AspRenameSettings {

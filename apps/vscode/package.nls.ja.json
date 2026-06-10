@@ -54,6 +54,7 @@
   "configuration.codeLens.referenceClasses.description": "VBScript class の reference count CodeLens を表示します。",
   "configuration.codeLens.referenceClassMembers.description": "VBScript class field と class constant の reference count CodeLens を表示します。",
   "configuration.codeLens.referenceScope.description": "VBScript reference count CodeLens が workspace 全体を使うか現在解析済み file だけを使うかを制御します。",
+  "configuration.codeLens.includeRelatedIncludeTreesForUnresolved.description": "reference count CodeLens で対象 include tree に暗黙 global 変数や未解決参照が見つかった場合に、include 元、兄弟、祖先の子孫 include tree からの使用も数えます。既定で有効です。",
   "configuration.codeLens.includes.description": "Classic ASP include CodeLens を表示します。",
   "configuration.rename.updateIncludesOnFileRename.description": "file rename operation 時に Classic ASP include directive を更新します。既定では無効で、無効時は file rename で他ファイルを書き換えません。",
   "configuration.rename.workspaceSymbolRename.description": "symbol / selector rename operation で他の Classic ASP workspace file も編集することを許可します。既定では無効で、同一ファイル内の rename edit は有効のままです。",

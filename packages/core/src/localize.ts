@@ -105,6 +105,7 @@ export type LocalizeKey =
   | "server.codeLens.reference"
   | "server.codeLens.references"
   | "server.codeLens.analyzedOnlySuffix"
+  | "server.codeLens.relatedIncludeTreeSuffix"
   | "server.codeLens.include";
 
 const en: Record<LocalizeKey, string> = {
@@ -220,6 +221,7 @@ const en: Record<LocalizeKey, string> = {
   "server.codeLens.reference": "{count} reference",
   "server.codeLens.references": "{count} references",
   "server.codeLens.analyzedOnlySuffix": " (analyzed only)",
+  "server.codeLens.relatedIncludeTreeSuffix": " (include family)",
   "server.codeLens.include": "include {name}",
 };
 
@@ -339,6 +341,7 @@ const ja: Record<LocalizeKey, string> = {
   "server.codeLens.reference": "{count} 件の参照",
   "server.codeLens.references": "{count} 件の参照",
   "server.codeLens.analyzedOnlySuffix": " (解析済みのみ)",
+  "server.codeLens.relatedIncludeTreeSuffix": " (include 親族)",
   "server.codeLens.include": "{name} を include",
 };
 

@@ -54,6 +54,7 @@
   "configuration.codeLens.referenceClasses.description": "Show VBScript class reference count CodeLens entries.",
   "configuration.codeLens.referenceClassMembers.description": "Show VBScript class field and class constant reference count CodeLens entries.",
   "configuration.codeLens.referenceScope.description": "Controls whether VBScript reference count CodeLens uses the whole workspace or only currently analyzed files.",
+  "configuration.codeLens.includeRelatedIncludeTreesForUnresolved.description": "When reference count CodeLens finds implicit global variables or unresolved references in the target include tree, also count usages from include parents, siblings, and ancestor descendant include trees. Enabled by default.",
   "configuration.codeLens.includes.description": "Show Classic ASP include CodeLens entries.",
   "configuration.rename.updateIncludesOnFileRename.description": "Update Classic ASP include directives during file rename operations. Disabled by default; when disabled, file renames do not rewrite other files.",
   "configuration.rename.workspaceSymbolRename.description": "Allow symbol and selector rename operations to edit other Classic ASP workspace files. Disabled by default; same-file rename edits stay enabled.",

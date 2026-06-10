@@ -480,6 +480,17 @@ describe("VS Code extension package", () => {
       }),
     );
     expect(
+      manifest.contributes?.configuration?.properties?.[
+        "aspLsp.codeLens.includeRelatedIncludeTreesForUnresolved"
+      ],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
+    expect(
+      nls["configuration.codeLens.includeRelatedIncludeTreesForUnresolved.description"],
+    ).toBeTruthy();
+    expect(
+      nlsJa["configuration.codeLens.includeRelatedIncludeTreesForUnresolved.description"],
+    ).toBeTruthy();
+    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.styleExtraction.insertionMode"],
     ).toEqual(
       expect.objectContaining({
