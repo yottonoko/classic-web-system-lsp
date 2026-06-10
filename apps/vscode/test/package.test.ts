@@ -288,6 +288,19 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain("node.value = nodeValue(referenceCount)");
   });
 
+  it("uses one graph category for implicit global variables", () => {
+    const graphHostSource = fs.readFileSync("src/include-graph-webview.ts", "utf8");
+    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+
+    expect(graphHostSource).toContain('"implicitGlobalVariable"');
+    expect(graphWebviewSource).toContain('"label.implicitGlobalVariable"');
+    expect(graphWebviewSource).toContain('"node.implicitGlobalVariable.description"');
+    expect(graphHostSource).not.toContain("implicitLocalVariable");
+    expect(graphHostSource).not.toContain("unresolvedGlobalVariable");
+    expect(graphWebviewSource).not.toContain("implicitLocalVariable");
+    expect(graphWebviewSource).not.toContain("unresolvedGlobalVariable");
+  });
+
   it("contributes commands, task definition and IIS debug settings", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       repository?: { url?: string };

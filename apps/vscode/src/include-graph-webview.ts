@@ -54,8 +54,7 @@ export type AspGraphNodeCategory =
   | "property"
   | "member"
   | "globalVariable"
-  | "implicitLocalVariable"
-  | "unresolvedGlobalVariable"
+  | "implicitGlobalVariable"
   | "globalConstant"
   | "localVariable"
   | "localConstant"
@@ -83,8 +82,8 @@ export interface AspGraphNode {
   bindingScope?: string;
   procedureKind?: string;
   implicit?: boolean;
-  implicitLocal?: boolean;
-  unresolvedGlobal?: boolean;
+  implicitGlobal?: boolean;
+  implicitGlobalCandidate?: boolean;
   typeName?: string;
   arrayKind?: string;
   arrayDimensions?: string[];

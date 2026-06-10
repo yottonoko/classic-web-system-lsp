@@ -75,6 +75,11 @@ type GraphData = {
   links: GraphLink[];
 };
 
+type LegacyImplicitGlobalNodeFields = {
+  implicitLocal?: boolean;
+  unresolvedGlobal?: boolean;
+};
+
 interface OpenFlowchartMessage {
   type: "openFlowchart";
   uri: string;
@@ -256,8 +261,7 @@ const graphMessageEn = {
   "label.global": "Global",
   "label.globalConstant": "Global constant",
   "label.globalVariable": "Global variable",
-  "label.implicitLocalVariable": "Implicit global variable",
-  "label.unresolvedGlobalVariable": "Implicit global variable",
+  "label.implicitGlobalVariable": "Implicit global variable",
   "label.local": "Local",
   "label.localConstant": "Local constant",
   "label.localVariable": "Local variable",
@@ -315,12 +319,9 @@ const graphMessageEn = {
     "Include directives whose target file does not exist or could not be resolved.",
   "node.function.description": "Top-level VBScript Function declarations.",
   "node.globalConstant.description": "Top-level VBScript Const declarations.",
-  "node.globalVariable.description":
-    "Top-level VBScript variables and inferred global object variables.",
-  "node.implicitLocalVariable.description":
-    "Variables inferred from procedure or class bodies without a Dim declaration. They may write through to globals.",
-  "node.unresolvedGlobalVariable.description":
-    "Names inferred as global variables because no visible declaration was found.",
+  "node.globalVariable.description": "Top-level VBScript variables and global object variables.",
+  "node.implicitGlobalVariable.description":
+    "Global variables inferred from VBScript names used without a Dim declaration.",
   "node.localConstant.description": "Procedure-local Const declarations and class constants.",
   "node.localVariable.description": "Procedure-local variables and class fields.",
   "node.member.description": "Built-in, configured, or unresolved object members.",
@@ -453,8 +454,7 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "label.global": "グローバル",
     "label.globalConstant": "グローバル定数",
     "label.globalVariable": "グローバル変数",
-    "label.implicitLocalVariable": "暗黙global変数",
-    "label.unresolvedGlobalVariable": "暗黙global変数",
+    "label.implicitGlobalVariable": "暗黙global変数",
     "label.local": "ローカル",
     "label.localConstant": "ローカル定数",
     "label.localVariable": "ローカル変数",
@@ -513,11 +513,9 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "node.function.description": "top-level の VBScript Function declaration です。",
     "node.globalConstant.description": "top-level の VBScript Const declaration です。",
     "node.globalVariable.description":
-      "top-level の VBScript variable と推論された global object variable です。",
-    "node.implicitLocalVariable.description":
-      "procedure や class 内で Dim なしのまま使われた variable です。global を操作している可能性があります。",
-    "node.unresolvedGlobalVariable.description":
-      "visible declaration が見つからないため global 変数として推論した名前です。",
+      "top-level の VBScript variable と global object variable です。",
+    "node.implicitGlobalVariable.description":
+      "Dim 宣言なしで使われた VBScript 名から推論した global 変数です。",
     "node.localConstant.description": "procedure-local Const declaration と class constant です。",
     "node.localVariable.description": "procedure-local variable と class field です。",
     "node.member.description": "built-in、configured、未解決の object member です。",
@@ -594,8 +592,7 @@ const darkNodeColors: Record<NodeColorCategory, string> = {
   property: "#ff9cac",
   member: "#ffb86c",
   globalVariable: "#ffcb6b",
-  implicitLocalVariable: "#c3e88d",
-  unresolvedGlobalVariable: "#f78c6c",
+  implicitGlobalVariable: "#f78c6c",
   globalConstant: "#82aaff",
   localVariable: "#dcdcaa",
   localConstant: "#80cbc4",
@@ -617,8 +614,7 @@ const lightNodeColors: Record<NodeColorCategory, string> = {
   property: "#be123c",
   member: "#b45309",
   globalVariable: "#b45309",
-  implicitLocalVariable: "#15803d",
-  unresolvedGlobalVariable: "#c2410c",
+  implicitGlobalVariable: "#c2410c",
   globalConstant: "#1d4ed8",
   localVariable: "#854d0e",
   localConstant: "#0f766e",
@@ -728,8 +724,7 @@ const nodeCategoryLabels: Record<NodeColorCategory, string> = {
   property: graphText("label.property"),
   member: graphText("label.member"),
   globalVariable: graphText("label.globalVariable"),
-  implicitLocalVariable: graphText("label.implicitLocalVariable"),
-  unresolvedGlobalVariable: graphText("label.unresolvedGlobalVariable"),
+  implicitGlobalVariable: graphText("label.implicitGlobalVariable"),
   globalConstant: graphText("label.globalConstant"),
   localVariable: graphText("label.localVariable"),
   localConstant: graphText("label.localConstant"),
@@ -751,8 +746,7 @@ const nodeCategoryDescriptions: Record<NodeColorCategory, string> = {
   property: graphText("node.property.description"),
   member: graphText("node.member.description"),
   globalVariable: graphText("node.globalVariable.description"),
-  implicitLocalVariable: graphText("node.implicitLocalVariable.description"),
-  unresolvedGlobalVariable: graphText("node.unresolvedGlobalVariable.description"),
+  implicitGlobalVariable: graphText("node.implicitGlobalVariable.description"),
   globalConstant: graphText("node.globalConstant.description"),
   localVariable: graphText("node.localVariable.description"),
   localConstant: graphText("node.localConstant.description"),
@@ -773,8 +767,7 @@ const nodeCategoryOrder: NodeColorCategory[] = [
   "property",
   "member",
   "globalVariable",
-  "implicitLocalVariable",
-  "unresolvedGlobalVariable",
+  "implicitGlobalVariable",
   "globalConstant",
   "localVariable",
   "localConstant",
@@ -785,7 +778,6 @@ const nodeCategoryOrder: NodeColorCategory[] = [
 
 const unresolvedNodeCategorySet = new Set<NodeColorCategory>([
   "missingInclude",
-  "unresolvedGlobalVariable",
   "unresolvedFunction",
   "unresolved",
 ]);
@@ -3383,11 +3375,8 @@ function nodeTypeLabel(node: GraphNode): string {
     case "parameter":
       return graphText("label.parameter");
     case "variable":
-      if (node.unresolvedGlobal === true) {
-        return graphText("label.unresolvedGlobalVariable");
-      }
-      if (node.implicitLocal === true) {
-        return graphText("label.implicitLocalVariable");
+      if (isImplicitGlobalVariableNode(node)) {
+        return graphText("label.implicitGlobalVariable");
       }
       return node.bindingScope === "local"
         ? graphText("label.localVariable")
@@ -4132,12 +4121,13 @@ function graphDataFor(
   const referenceCounts = graphReferenceCounts(payload.links);
   return {
     nodes: payload.nodes.map((node, index) => {
-      const category = nodeCategoryForColor(node);
-      const referenceCount = referenceCounts.get(node.id) ?? 0;
+      const normalizedNode = normalizeGraphNode(node);
+      const category = nodeCategoryForColor(normalizedNode);
+      const referenceCount = referenceCounts.get(normalizedNode.id) ?? 0;
       const value = nodeValue(referenceCount);
       const position = initialGraphNodePosition(index, payload.nodes.length, value);
       return {
-        ...node,
+        ...normalizedNode,
         category,
         referenceCount,
         value,
@@ -4151,6 +4141,31 @@ function graphDataFor(
       ...link,
       color: graphLinkColor(link, themePalette),
     })),
+  };
+}
+
+function normalizeGraphNode(node: AspGraphNode): AspGraphNode {
+  const legacy = node as AspGraphNode & LegacyImplicitGlobalNodeFields;
+  if (node.declarationKind !== "variable") {
+    return node;
+  }
+  if (
+    node.implicitGlobal !== true &&
+    legacy.implicitLocal !== true &&
+    legacy.unresolvedGlobal !== true
+  ) {
+    return node;
+  }
+  const { implicitLocal: _implicitLocal, unresolvedGlobal: _unresolvedGlobal, ...rest } = legacy;
+  return {
+    ...rest,
+    implicitGlobal: true,
+    implicitGlobalCandidate:
+      node.implicitGlobalCandidate === true ||
+      legacy.implicitLocal === true ||
+      legacy.unresolvedGlobal === true
+        ? true
+        : undefined,
   };
 }
 
@@ -4403,11 +4418,18 @@ function isHideableGlobalSymbolNode(node: GraphNode): boolean {
     case "sub":
     case "class":
     case "globalVariable":
+    case "implicitGlobalVariable":
     case "globalConstant":
       return true;
     default:
       return false;
   }
+}
+
+function isImplicitGlobalVariableNode(
+  node: Pick<AspGraphNode, "declarationKind" | "implicitGlobal">,
+): boolean {
+  return node.declarationKind === "variable" && node.implicitGlobal === true;
 }
 
 function connectedNodeIdsFor(links: GraphLink[]): Set<string> {
@@ -5471,11 +5493,8 @@ function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
     case "parameter":
       return "parameter";
     case "variable":
-      if (node.unresolvedGlobal === true) {
-        return "unresolvedGlobalVariable";
-      }
-      if (node.implicitLocal === true) {
-        return "implicitLocalVariable";
+      if (isImplicitGlobalVariableNode(node)) {
+        return "implicitGlobalVariable";
       }
       return node.bindingScope === "local" ? "localVariable" : "globalVariable";
     case "constant":

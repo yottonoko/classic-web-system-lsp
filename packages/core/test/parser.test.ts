@@ -225,7 +225,8 @@ End Sub
           declarations: [
             declaration("missing-value", "MissingValue", "variable", "global", 2, 2, 14, {
               implicit: true,
-              unresolvedGlobal: true,
+              implicitGlobal: true,
+              implicitGlobalCandidate: true,
             }),
           ],
           references: [reference("MissingValue", "missing-value", "write", 2, 2, 14)],
@@ -237,7 +238,7 @@ End Sub
       flowchart.nodes.some(
         (node) =>
           node.label.includes("MissingValue") &&
-          node.links?.some((link) => link.symbolKind === "unresolvedGlobalVariable"),
+          node.links?.some((link) => link.symbolKind === "implicitGlobalVariable"),
       ),
     ).toBe(true);
   });
@@ -2180,9 +2181,14 @@ ReDim resizedItems(5)
       ]),
     );
     // The fixed-size array shows its dimensions and the hint sits after the array suffix.
-    expect(hints.find((hint) => hint.label === " (global) As Array(10)")?.position).toEqual(
-      positionAt(source, source.indexOf("fixedItems(10)") + "fixedItems(10)".length),
-    );
+    expect(
+      getVbscriptInlayHints(
+        parsed,
+        { start: { line: 0, character: 0 }, end: { line: 5, character: 0 } },
+        { symbols },
+        { scopeMarkers: { global: true } },
+      ).find((hint) => hint.label === " (global) As Array(10)")?.position,
+    ).toEqual(positionAt(source, source.indexOf("fixedItems(10)") + "fixedItems(10)".length));
   });
 
   it("renders fixed multi-dimensional arrays as Array(rows, cols)", () => {
@@ -3178,8 +3184,8 @@ End Sub
     const source = `<%
 implicitGlobal = "global"
 Function BuildValue()
-  implicitLocal = implicitGlobal
-  BuildValue = implicitLocal
+  nestedImplicit = implicitGlobal
+  BuildValue = nestedImplicit
 End Function
 Class Widget
   Public Sub Save()
@@ -3193,7 +3199,7 @@ CStr = "builtin"
 %>`;
     const defaultIndex = extractVbscriptSymbolIndex("file:///site/implicit-default.asp", source);
     expect(defaultIndex.declarations.map((item) => item.name)).not.toEqual(
-      expect.arrayContaining(["implicitGlobal", "implicitLocal", "methodLocal", "readOnlyGlobal"]),
+      expect.arrayContaining(["implicitGlobal", "nestedImplicit", "methodLocal", "readOnlyGlobal"]),
     );
 
     const index = extractVbscriptSymbolIndex(
@@ -3210,31 +3216,32 @@ CStr = "builtin"
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      implicitGlobal: true,
     });
-    expect(implicitGlobal?.unresolvedGlobal).toBeUndefined();
-    expect(implicitGlobal?.implicitLocal).toBeUndefined();
+    expect(implicitGlobal?.implicitGlobalCandidate).toBeUndefined();
     expect(index.declarations.filter((item) => item.name === "implicitGlobal")).toHaveLength(1);
-    const implicitLocal = index.declarations.find((item) => item.name === "implicitLocal");
-    expect(implicitLocal).toMatchObject({
+    const nestedImplicit = index.declarations.find((item) => item.name === "nestedImplicit");
+    expect(nestedImplicit).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitGlobal: true,
+      implicitGlobalCandidate: true,
     });
-    expect(implicitLocal?.implicitLocal).toBeUndefined();
     const methodLocal = index.declarations.find((item) => item.name === "methodLocal");
     expect(methodLocal).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitGlobal: true,
+      implicitGlobalCandidate: true,
     });
-    expect(methodLocal?.implicitLocal).toBeUndefined();
     expect(index.declarations.find((item) => item.name === "readOnlyGlobal")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitGlobal: true,
+      implicitGlobalCandidate: true,
     });
     expect(index.declarations.some((item) => item.name === "Member" && item.implicit)).toBe(false);
     expect(index.declarations.some((item) => item.name === "Response" && item.implicit)).toBe(
@@ -3250,7 +3257,7 @@ CStr = "builtin"
         .every((item) => item.resolvedId === implicitGlobal?.id),
     ).toBe(true);
     expect(index.deferredExternalRefs.map((item) => item.name)).not.toEqual(
-      expect.arrayContaining(["implicitGlobal", "implicitLocal", "methodLocal", "readOnlyGlobal"]),
+      expect.arrayContaining(["implicitGlobal", "nestedImplicit", "methodLocal", "readOnlyGlobal"]),
     );
 
     const explicitIndex = extractVbscriptSymbolIndex(
@@ -3266,9 +3273,11 @@ missingValue = 1
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      implicitGlobal: true,
     });
     expect(
-      explicitIndex.declarations.find((item) => item.name === "missingValue")?.unresolvedGlobal,
+      explicitIndex.declarations.find((item) => item.name === "missingValue")
+        ?.implicitGlobalCandidate,
     ).toBeUndefined();
   });
 
@@ -3297,8 +3306,9 @@ If declaredItems(0) = "first" Then Response.Write "ok"
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      implicitGlobal: true,
     });
-    expect(implicit?.unresolvedGlobal).toBeUndefined();
+    expect(implicit?.implicitGlobalCandidate).toBeUndefined();
     expect(declaredReferences.map((item) => item.role)).toEqual(["write", "read", "read"]);
     expect(implicitReferences.map((item) => item.role)).toEqual(["write", "read"]);
     expect(declaredReferences.every((item) => item.resolvedId === declared?.id)).toBe(true);
@@ -3336,45 +3346,51 @@ If enabled Then Set objectValue = New Widget
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      implicitGlobal: true,
     });
-    expect(declaration("oneLineValue")?.unresolvedGlobal).toBeUndefined();
+    expect(declaration("oneLineValue")?.implicitGlobalCandidate).toBeUndefined();
     expect(declaration("branchValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      implicitGlobal: true,
     });
-    expect(declaration("branchValue")?.unresolvedGlobal).toBeUndefined();
+    expect(declaration("branchValue")?.implicitGlobalCandidate).toBeUndefined();
     expect(declaration("fallbackValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      implicitGlobal: true,
     });
-    expect(declaration("fallbackValue")?.unresolvedGlobal).toBeUndefined();
+    expect(declaration("fallbackValue")?.implicitGlobalCandidate).toBeUndefined();
     expect(declaration("letValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      implicitGlobal: true,
     });
-    expect(declaration("letValue")?.unresolvedGlobal).toBeUndefined();
+    expect(declaration("letValue")?.implicitGlobalCandidate).toBeUndefined();
     expect(declaration("continuedValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      implicitGlobal: true,
     });
-    expect(declaration("continuedValue")?.unresolvedGlobal).toBeUndefined();
+    expect(declaration("continuedValue")?.implicitGlobalCandidate).toBeUndefined();
     expect(declaration("localValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitGlobal: true,
+      implicitGlobalCandidate: true,
     });
-    expect(declaration("localValue")?.implicitLocal).toBeUndefined();
     expect(declaration("objectValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      implicitGlobal: true,
     });
-    expect(declaration("objectValue")?.unresolvedGlobal).toBeUndefined();
+    expect(declaration("objectValue")?.implicitGlobalCandidate).toBeUndefined();
     for (const name of [
       "oneLineValue",
       "branchValue",
@@ -3426,23 +3442,23 @@ End Sub
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitGlobal: true,
+      implicitGlobalCandidate: true,
     });
-    expect(declaration("loopValue")?.implicitLocal).toBeUndefined();
     expect(declaration("eachValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitGlobal: true,
+      implicitGlobalCandidate: true,
     });
-    expect(declaration("eachValue")?.implicitLocal).toBeUndefined();
     expect(declaration("items")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: true,
+      implicitGlobal: true,
+      implicitGlobalCandidate: true,
     });
-    expect(declaration("items")?.implicitLocal).toBeUndefined();
     expect(reference("index")).toMatchObject({
       resolvedId: declaration("index")?.id,
       bindingScope: "local",
@@ -6717,7 +6733,7 @@ Dim sharedValue
 Sub Render()
   sharedValue = 1
   Dim localValue
-  implicitLocal = 1
+  nestedImplicit = 1
 End Sub
 %>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
@@ -6735,7 +6751,7 @@ End Sub
         ?.typeName,
     ).toBe("Variant");
     expect(
-      symbols.find((symbol) => symbol.name === "implicitLocal" && !symbol.scopeName)?.typeName,
+      symbols.find((symbol) => symbol.name === "nestedImplicit" && !symbol.scopeName)?.typeName,
     ).toBe("Number");
     expect(
       symbols.find((symbol) => symbol.name === "sharedValue" && symbol.scopeName === "Render"),
@@ -6784,7 +6800,7 @@ End Sub
       hintsWithLocalMarkers.some(
         (hint) =>
           hint.label === " (global) As Number" &&
-          hint.position.line === positionAt(source, source.indexOf("implicitLocal")).line,
+          hint.position.line === positionAt(source, source.indexOf("nestedImplicit")).line,
       ),
     ).toBe(true);
     const localOnlyHints = getVbscriptInlayHints(
@@ -6805,7 +6821,7 @@ End Sub
       localOnlyHints.some(
         (hint) =>
           hint.label === " As Number" &&
-          hint.position.line === positionAt(source, source.indexOf("implicitLocal")).line,
+          hint.position.line === positionAt(source, source.indexOf("nestedImplicit")).line,
       ),
     ).toBe(true);
 
@@ -6819,8 +6835,8 @@ End Sub
       getVbscriptHover(parsed, positionAt(source, source.indexOf("sharedValue =")), { symbols }),
     ).toContain("(global) Dim sharedValue As Number");
     expect(
-      getVbscriptHover(parsed, positionAt(source, source.indexOf("implicitLocal")), { symbols }),
-    ).toContain("(global) Dim implicitLocal As Number");
+      getVbscriptHover(parsed, positionAt(source, source.indexOf("nestedImplicit")), { symbols }),
+    ).toContain("(global) Dim nestedImplicit As Number");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
     ).not.toContain("VBScript variable");

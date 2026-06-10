@@ -1764,11 +1764,8 @@ function isFunctionLikeFlowchartCallKind(callKind: AspFlowchartCallSite["callKin
 }
 
 function flowchartSymbolKind(declaration: AspFlowchartResolvedDeclaration): string {
-  if (declaration.unresolvedGlobal === true) {
-    return "unresolvedGlobalVariable";
-  }
-  if (declaration.kind === "variable" && declaration.implicitLocal === true) {
-    return "implicitLocalVariable";
+  if (declaration.kind === "variable" && declaration.implicitGlobal === true) {
+    return "implicitGlobalVariable";
   }
   return declaration.kind;
 }
@@ -1796,7 +1793,7 @@ function flowchartSymbolLabel(
 function flowchartDeclarationKindLabel(
   declaration: Pick<
     AspFlowchartResolvedDeclaration,
-    "kind" | "bindingScope" | "memberOf" | "procedureKind" | "implicitLocal" | "unresolvedGlobal"
+    "kind" | "bindingScope" | "memberOf" | "procedureKind" | "implicitGlobal"
   >,
   context: FlowchartContext,
 ): string {
@@ -1804,10 +1801,7 @@ function flowchartDeclarationKindLabel(
   if (context.locale === "ja") {
     switch (declaration.kind) {
       case "variable":
-        if (declaration.unresolvedGlobal === true) {
-          return "暗黙global変数";
-        }
-        if (declaration.implicitLocal === true) {
+        if (declaration.implicitGlobal === true) {
           return "暗黙global変数";
         }
         return `${scope}変数`;
@@ -1837,10 +1831,7 @@ function flowchartDeclarationKindLabel(
   }
   switch (declaration.kind) {
     case "variable":
-      if (declaration.unresolvedGlobal === true) {
-        return "implicit global variable";
-      }
-      if (declaration.implicitLocal === true) {
+      if (declaration.implicitGlobal === true) {
         return "implicit global variable";
       }
       return `${scope}variable`;

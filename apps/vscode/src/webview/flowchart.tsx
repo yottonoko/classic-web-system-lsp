@@ -571,16 +571,10 @@ const darkFlowchartSymbolKindStyles: Record<string, FlowchartVisualStyle> = {
     mermaidClass: "flowSymbolVariable",
     text: "#fff0b8",
   },
-  implicitlocalvariable: {
-    background: "#1f2c14",
-    border: "#c3e88d",
-    mermaidClass: "flowSymbolImplicitLocalVariable",
-    text: "#e5ffd0",
-  },
-  unresolvedglobalvariable: {
+  implicitglobalvariable: {
     background: "#332014",
     border: "#f78c6c",
-    mermaidClass: "flowSymbolUnresolvedGlobalVariable",
+    mermaidClass: "flowSymbolImplicitGlobalVariable",
     text: "#ffe0cf",
   },
   unresolvedfunction: {
@@ -652,16 +646,10 @@ const lightFlowchartSymbolKindStyles: Record<string, FlowchartVisualStyle> = {
     mermaidClass: "flowSymbolVariable",
     text: "#3f2a04",
   },
-  implicitlocalvariable: {
-    background: "#dcfce7",
-    border: "#16a34a",
-    mermaidClass: "flowSymbolImplicitLocalVariable",
-    text: "#14532d",
-  },
-  unresolvedglobalvariable: {
+  implicitglobalvariable: {
     background: "#ffedd5",
     border: "#c2410c",
-    mermaidClass: "flowSymbolUnresolvedGlobalVariable",
+    mermaidClass: "flowSymbolImplicitGlobalVariable",
     text: "#7c2d12",
   },
   unresolvedfunction: {

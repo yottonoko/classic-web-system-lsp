@@ -766,8 +766,7 @@ type AspGraphNodeCategory =
   | "property"
   | "member"
   | "globalVariable"
-  | "implicitLocalVariable"
-  | "unresolvedGlobalVariable"
+  | "implicitGlobalVariable"
   | "globalConstant"
   | "localVariable"
   | "localConstant"
@@ -792,8 +791,8 @@ interface AspGraphNode {
   bindingScope?: string;
   procedureKind?: string;
   implicit?: boolean;
-  implicitLocal?: boolean;
-  unresolvedGlobal?: boolean;
+  implicitGlobal?: boolean;
+  implicitGlobalCandidate?: boolean;
   typeName?: string;
   arrayKind?: string;
   arrayDimensions?: string[];
@@ -5410,7 +5409,7 @@ function unresolvedVbscriptCompletionItems(
   for (const declaration of index.declarations) {
     if (
       declaration.kind !== "variable" ||
-      declaration.unresolvedGlobal !== true ||
+      declaration.implicitGlobalCandidate !== true ||
       rangeContainsPosition(declaration.nameRange, position)
     ) {
       continue;
@@ -5418,8 +5417,8 @@ function unresolvedVbscriptCompletionItems(
     add({
       label: declaration.name,
       kind: CompletionItemKind.Variable,
-      detail: localizer.t("vb.completion.unresolvedGlobalVariable"),
-      sortText: `90-unresolved-global-${declaration.normalizedName}`,
+      detail: localizer.t("vb.completion.implicitGlobalVariable"),
+      sortText: `90-implicit-global-${declaration.normalizedName}`,
     });
   }
   for (const callSite of index.callSites) {
@@ -16404,8 +16403,8 @@ function flowchartSymbolDocumentFromIndex(index: VbSymbolIndex): AspFlowchartSym
       bindingScope: declaration.bindingScope,
       procedureKind: declaration.procedureKind,
       implicit: declaration.implicit,
-      implicitLocal: declaration.implicitLocal,
-      unresolvedGlobal: declaration.unresolvedGlobal,
+      implicitGlobal: declaration.implicitGlobal,
+      implicitGlobalCandidate: declaration.implicitGlobalCandidate,
       typeName: declaration.typeName,
     })),
     references: index.references.map((reference) => ({
@@ -17021,7 +17020,7 @@ async function graphPayloadFromDocumentsAsync(
     throwIfGraphCancelled(cancellation);
     addDocumentUsageToAspGraph(state, indexed);
   }
-  removeUnusedUnresolvedGlobalGraphDeclarations(state);
+  removeUnusedImplicitGlobalCandidateGraphDeclarations(state);
   state.stats = recomputeAspGraphStats(state.nodes.values(), state.links.values());
   return {
     scope,
@@ -17034,7 +17033,7 @@ async function graphPayloadFromDocumentsAsync(
   };
 }
 
-function removeUnusedUnresolvedGlobalGraphDeclarations(state: AspGraphBuildState): void {
+function removeUnusedImplicitGlobalCandidateGraphDeclarations(state: AspGraphBuildState): void {
   const usedTargets = new Set(
     [...state.links.values()]
       .filter((link) => link.kind === "references" || link.kind === "assignments")
@@ -17044,7 +17043,7 @@ function removeUnusedUnresolvedGlobalGraphDeclarations(state: AspGraphBuildState
   for (const node of state.nodes.values()) {
     if (
       node.kind === "vbDeclaration" &&
-      node.unresolvedGlobal === true &&
+      node.implicitGlobalCandidate === true &&
       !usedTargets.has(node.id)
     ) {
       removableIds.add(node.id);
@@ -17328,8 +17327,8 @@ async function addDocumentStructureToAspGraphAsync(
       bindingScope: declaration.bindingScope,
       procedureKind: declaration.procedureKind,
       implicit: declaration.implicit,
-      implicitLocal: declaration.implicitLocal,
-      unresolvedGlobal: declaration.unresolvedGlobal,
+      implicitGlobal: declaration.implicitGlobal,
+      implicitGlobalCandidate: declaration.implicitGlobalCandidate,
       typeName: visibleAspGraphTypeName(declaration.typeName),
       arrayKind: declaration.arrayKind,
       arrayDimensions: declaration.arrayDimensions,
@@ -17372,7 +17371,8 @@ function addDocumentUsageToAspGraph(
           reference.range,
         );
     const external =
-      (reference.resolvedId && resolvedDeclaration?.unresolvedGlobal !== true) || sourceDeclaration
+      (reference.resolvedId && resolvedDeclaration?.implicitGlobalCandidate !== true) ||
+      sourceDeclaration
         ? undefined
         : resolveExternalGraphSymbol(state, reference.name);
     if (isSuppressedBuiltinGraphExternalSymbol(external)) {
@@ -18026,8 +18026,7 @@ const graphNodeCategoryOrder: AspGraphNodeCategory[] = [
   "property",
   "member",
   "globalVariable",
-  "implicitLocalVariable",
-  "unresolvedGlobalVariable",
+  "implicitGlobalVariable",
   "globalConstant",
   "localVariable",
   "localConstant",
@@ -18075,9 +18074,7 @@ function isVisibleAspGraphNodeCategory(
       return settings.showMemberNodes === true;
     case "globalVariable":
       return settings.showGlobalVariableNodes !== false;
-    case "implicitLocalVariable":
-      return settings.showGlobalVariableNodes !== false;
-    case "unresolvedGlobalVariable":
+    case "implicitGlobalVariable":
       return settings.showGlobalVariableNodes !== false;
     case "globalConstant":
       return settings.showGlobalConstantNodes !== false;

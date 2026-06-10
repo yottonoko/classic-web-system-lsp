@@ -48,14 +48,19 @@ interface UsageCounts {
   calls: number;
 }
 
-interface UnresolvedGlobalAssignmentCandidate {
-  unresolvedGlobal: AspGraphNode;
+interface ImplicitGlobalAssignmentCandidate {
+  implicitGlobal: AspGraphNode;
   assignmentTarget?: AspGraphNode;
   uri: string;
   range?: AspGraphRange;
   includeDepth: number;
   count: number;
 }
+
+type LegacyImplicitGlobalNodeFields = {
+  implicitLocal?: boolean;
+  unresolvedGlobal?: boolean;
+};
 
 type SummaryTone = "good" | "warning" | "danger" | "info" | "neutral";
 
@@ -71,9 +76,9 @@ interface AnalysisContext {
   externalUsageLinks: AspGraphLink[];
   includedUsageLinks: AspGraphLink[];
   memberUsageLinks: AspGraphLink[];
-  unresolvedGlobalDeclarations: AspGraphNode[];
-  unresolvedGlobalUsageCounts: Map<string, UsageCounts>;
-  unresolvedGlobalAssignmentCandidates: UnresolvedGlobalAssignmentCandidate[];
+  implicitGlobalDeclarations: AspGraphNode[];
+  implicitGlobalUsageCounts: Map<string, UsageCounts>;
+  implicitGlobalAssignmentCandidates: ImplicitGlobalAssignmentCandidate[];
   unresolvedLinks: AspGraphLink[];
   targetUsageCounts: Map<string, UsageCounts>;
   externalUsageCounts: Map<string, UsageCounts>;
@@ -93,8 +98,8 @@ type AnalysisTextKey =
   | "externalFileUsages"
   | "includedSymbolUsages"
   | "memberUsages"
-  | "unresolvedGlobals"
-  | "unresolvedGlobalAssignments"
+  | "implicitGlobals"
+  | "implicitGlobalAssignments"
   | "unused"
   | "unresolved"
   | "scope"
@@ -109,8 +114,8 @@ type AnalysisTextKey =
   | "includesCount"
   | "missingIncludesCount"
   | "unresolvedCount"
-  | "unresolvedGlobalCount"
-  | "unresolvedGlobalAssignmentCount"
+  | "implicitGlobalCount"
+  | "implicitGlobalAssignmentCount"
   | "unusedCount"
   | "truncated"
   | "yes"
@@ -161,8 +166,8 @@ type AnalysisTextKey =
   | "receiver"
   | "memberName"
   | "expression"
-  | "unresolvedGlobalFile"
-  | "unresolvedGlobalName"
+  | "implicitGlobalFile"
+  | "implicitGlobalName"
   | "assignmentFile"
   | "assignmentTarget"
   | "assignmentTargetFile"
@@ -197,8 +202,8 @@ type AnalysisTextKey =
   | "none"
   | "reviewUnusedAction"
   | "reviewUnresolvedAction"
-  | "reviewUnresolvedGlobalsAction"
-  | "reviewUnresolvedGlobalAssignmentsAction"
+  | "reviewImplicitGlobalsAction"
+  | "reviewImplicitGlobalAssignmentsAction"
   | "reviewExternalUsagesAction"
   | "reviewMissingExternalUsagesAction"
   | "reviewIncludedUsagesAction"
@@ -218,8 +223,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     externalFileUsages: "External File Usage",
     includedSymbolUsages: "Included Symbol Usage",
     memberUsages: "Member Usage",
-    unresolvedGlobals: "Implicit Global Variables",
-    unresolvedGlobalAssignments: "Implicit Global Assignment Candidates",
+    implicitGlobals: "Implicit Global Variables",
+    implicitGlobalAssignments: "Implicit Global Assignment Candidates",
     unused: "Unused",
     unresolved: "Unresolved",
     scope: "Scope",
@@ -234,8 +239,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     includesCount: "Includes",
     missingIncludesCount: "Missing includes",
     unresolvedCount: "Unresolved",
-    unresolvedGlobalCount: "Unresolved globals",
-    unresolvedGlobalAssignmentCount: "Unresolved global assignment candidates",
+    implicitGlobalCount: "Implicit global variables",
+    implicitGlobalAssignmentCount: "Implicit global assignment candidates",
     unusedCount: "Unused",
     truncated: "Truncated",
     yes: "Yes",
@@ -286,8 +291,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     receiver: "Receiver",
     memberName: "Member",
     expression: "Expression",
-    unresolvedGlobalFile: "Unresolved global file",
-    unresolvedGlobalName: "Unresolved global",
+    implicitGlobalFile: "Implicit global variable file",
+    implicitGlobalName: "Implicit global variable",
     assignmentFile: "Assignment file",
     assignmentTarget: "Assignment target",
     assignmentTargetFile: "Assignment target file",
@@ -322,9 +327,9 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     none: "None",
     reviewUnusedAction: "Review the Unused sheet before removing declarations.",
     reviewUnresolvedAction: "Review the Unresolved sheet and fix name resolution.",
-    reviewUnresolvedGlobalsAction:
+    reviewImplicitGlobalsAction:
       "Review the Implicit Global Variables sheet and decide whether declarations are missing.",
-    reviewUnresolvedGlobalAssignmentsAction:
+    reviewImplicitGlobalAssignmentsAction:
       "Review the Implicit Global Assignment Candidates sheet for possible cross-file writes.",
     reviewExternalUsagesAction: "Review the External File Usage sheet for other-file callers.",
     reviewMissingExternalUsagesAction: "No other-file usages were found for the target file.",
@@ -344,8 +349,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     externalFileUsages: "外部ファイルからの使用",
     includedSymbolUsages: "include 先シンボル使用",
     memberUsages: "メンバー使用",
-    unresolvedGlobals: "暗黙global変数",
-    unresolvedGlobalAssignments: "暗黙global変数代入候補",
+    implicitGlobals: "暗黙global変数",
+    implicitGlobalAssignments: "暗黙global変数代入候補",
     unused: "未使用",
     unresolved: "未解決",
     scope: "解析範囲",
@@ -360,8 +365,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     includesCount: "include 数",
     missingIncludesCount: "missing include 数",
     unresolvedCount: "未解決数",
-    unresolvedGlobalCount: "暗黙global変数数",
-    unresolvedGlobalAssignmentCount: "暗黙global変数代入候補数",
+    implicitGlobalCount: "暗黙global変数数",
+    implicitGlobalAssignmentCount: "暗黙global変数代入候補数",
     unusedCount: "未使用数",
     truncated: "切り詰め",
     yes: "あり",
@@ -412,8 +417,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     receiver: "receiver",
     memberName: "メンバー名",
     expression: "式",
-    unresolvedGlobalFile: "暗黙global変数ファイル",
-    unresolvedGlobalName: "暗黙global変数",
+    implicitGlobalFile: "暗黙global変数ファイル",
+    implicitGlobalName: "暗黙global変数",
     assignmentFile: "代入候補ファイル",
     assignmentTarget: "代入対象",
     assignmentTargetFile: "代入対象ファイル",
@@ -448,8 +453,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     none: "なし",
     reviewUnusedAction: "未使用 sheet で削除可否を確認",
     reviewUnresolvedAction: "未解決 sheet で名前解決を確認",
-    reviewUnresolvedGlobalsAction: "暗黙global変数 sheet で宣言漏れか確認",
-    reviewUnresolvedGlobalAssignmentsAction:
+    reviewImplicitGlobalsAction: "暗黙global変数 sheet で宣言漏れか確認",
+    reviewImplicitGlobalAssignmentsAction:
       "暗黙global変数代入候補 sheet で include 元からの代入を確認",
     reviewExternalUsagesAction: "外部ファイルからの使用 sheet で利用元を確認",
     reviewMissingExternalUsagesAction: "対象ファイルは他ファイルから使われていない可能性あり",
@@ -473,9 +478,8 @@ const valueText: Record<AspGraphLocale, Record<string, string>> = {
     field: "Field",
     parameter: "Parameter",
     variable: "Variable",
-    implicitLocalVariable: "Implicit global variable",
     unresolvedFunction: "Unresolved Function/Sub",
-    unresolvedGlobalVariable: "Implicit global variable",
+    implicitGlobalVariable: "Implicit global variable",
     constant: "Constant",
     object: "Object",
     event: "Event",
@@ -513,9 +517,8 @@ const valueText: Record<AspGraphLocale, Record<string, string>> = {
     field: "フィールド",
     parameter: "パラメーター",
     variable: "変数",
-    implicitLocalVariable: "暗黙global変数",
     unresolvedFunction: "未解決Function/Sub",
-    unresolvedGlobalVariable: "暗黙global変数",
+    implicitGlobalVariable: "暗黙global変数",
     constant: "定数",
     object: "オブジェクト",
     event: "イベント",
@@ -578,10 +581,11 @@ export function createAnalysisExcelSheets(
   locale: AspGraphLocale,
   options: AnalysisExcelOptions = {},
 ): AnalysisExcelSheet[] {
+  const normalizedPayload = normalizeAnalysisGraphPayload(payload);
   const generatedAt = options.generatedAt ?? new Date();
-  const nodesById = new Map(payload.nodes.map((node) => [node.id, node]));
-  const fileNamesByUri = fileNamesByUriMap(payload.nodes);
-  const context = analysisContext(payload, options, nodesById, fileNamesByUri);
+  const nodesById = new Map(normalizedPayload.nodes.map((node) => [node.id, node]));
+  const fileNamesByUri = fileNamesByUriMap(normalizedPayload.nodes);
+  const context = analysisContext(normalizedPayload, options, nodesById, fileNamesByUri);
   const analysisRows = analysisSummaryRows(locale, context, fileNamesByUri);
   const analysisChartStartRow = analysisRows.length + 3;
   const analysisRowsWithChartSpace = [
@@ -591,7 +595,7 @@ export function createAnalysisExcelSheets(
     ...blankRows(34),
   ];
   return [
-    sheet(text[locale].summary, summaryRows(payload, locale, generatedAt, context)),
+    sheet(text[locale].summary, summaryRows(normalizedPayload, locale, generatedAt, context)),
     sheet(text[locale].analysisSummary, analysisRowsWithChartSpace, {
       autoFilter: false,
       images: analysisSummaryImages(locale, context, analysisChartStartRow),
@@ -630,18 +634,18 @@ export function createAnalysisExcelSheets(
       memberUsageRows(context.memberUsageLinks, locale, nodesById, fileNamesByUri),
     ),
     sheet(
-      text[locale].unresolvedGlobals,
-      unresolvedGlobalRows(
-        context.unresolvedGlobalDeclarations,
+      text[locale].implicitGlobals,
+      implicitGlobalRows(
+        context.implicitGlobalDeclarations,
         locale,
-        context.unresolvedGlobalUsageCounts,
+        context.implicitGlobalUsageCounts,
         fileNamesByUri,
       ),
     ),
     sheet(
-      text[locale].unresolvedGlobalAssignments,
-      unresolvedGlobalAssignmentRows(
-        context.unresolvedGlobalAssignmentCandidates,
+      text[locale].implicitGlobalAssignments,
+      implicitGlobalAssignmentRows(
+        context.implicitGlobalAssignmentCandidates,
         locale,
         fileNamesByUri,
       ),
@@ -662,6 +666,38 @@ export function createAnalysisExcelSheets(
   ];
 }
 
+function normalizeAnalysisGraphPayload(payload: AspGraphPayload): AspGraphPayload {
+  return {
+    ...payload,
+    nodes: payload.nodes.map(normalizeAnalysisGraphNode),
+  };
+}
+
+function normalizeAnalysisGraphNode(node: AspGraphNode): AspGraphNode {
+  const legacy = node as AspGraphNode & LegacyImplicitGlobalNodeFields;
+  if (node.declarationKind !== "variable") {
+    return node;
+  }
+  if (
+    node.implicitGlobal !== true &&
+    legacy.implicitLocal !== true &&
+    legacy.unresolvedGlobal !== true
+  ) {
+    return node;
+  }
+  const { implicitLocal: _implicitLocal, unresolvedGlobal: _unresolvedGlobal, ...rest } = legacy;
+  return {
+    ...rest,
+    implicitGlobal: true,
+    implicitGlobalCandidate:
+      node.implicitGlobalCandidate === true ||
+      legacy.implicitLocal === true ||
+      legacy.unresolvedGlobal === true
+        ? true
+        : undefined,
+  };
+}
+
 function summaryRows(
   payload: AspGraphPayload,
   locale: AspGraphLocale,
@@ -679,10 +715,10 @@ function summaryRows(
     [t.callsCount, usageLinkCount(context.targetUsageLinks, "calls")],
     [t.includesCount, context.includedFileUris.size],
     [t.unresolvedCount, usageLinkCount(context.unresolvedLinks)],
-    [t.unresolvedGlobalCount, context.unresolvedGlobalDeclarations.length],
+    [t.implicitGlobalCount, context.implicitGlobalDeclarations.length],
     [
-      t.unresolvedGlobalAssignmentCount,
-      context.unresolvedGlobalAssignmentCandidates.reduce((sum, item) => sum + item.count, 0),
+      t.implicitGlobalAssignmentCount,
+      context.implicitGlobalAssignmentCandidates.reduce((sum, item) => sum + item.count, 0),
     ],
     [t.unusedCount, context.unusedDeclarations.length],
     [t.truncated, payload.truncated?.reason ?? ""],
@@ -894,8 +930,8 @@ function reviewPriorityItems(
   const externalUsageCount = usageLinkCount(context.externalUsageLinks);
   const includedUsageCount = usageLinkCount(context.includedUsageLinks);
   const unresolvedCount = usageLinkCount(context.unresolvedLinks);
-  const unresolvedGlobalCount = context.unresolvedGlobalDeclarations.length;
-  const unresolvedGlobalAssignmentCount = context.unresolvedGlobalAssignmentCandidates.reduce(
+  const implicitGlobalCount = context.implicitGlobalDeclarations.length;
+  const implicitGlobalAssignmentCount = context.implicitGlobalAssignmentCandidates.reduce(
     (sum, item) => sum + item.count,
     0,
   );
@@ -916,19 +952,18 @@ function reviewPriorityItems(
       tone: unresolvedCount > 0 ? "danger" : "good",
     },
     {
-      label: t.unresolvedGlobalCount,
-      count: unresolvedGlobalCount,
-      status: unresolvedGlobalCount > 0 ? t.needsReview : t.ok,
-      action: unresolvedGlobalCount > 0 ? t.reviewUnresolvedGlobalsAction : t.ok,
-      tone: unresolvedGlobalCount > 0 ? "warning" : "good",
+      label: t.implicitGlobalCount,
+      count: implicitGlobalCount,
+      status: implicitGlobalCount > 0 ? t.needsReview : t.ok,
+      action: implicitGlobalCount > 0 ? t.reviewImplicitGlobalsAction : t.ok,
+      tone: implicitGlobalCount > 0 ? "warning" : "good",
     },
     {
-      label: t.unresolvedGlobalAssignmentCount,
-      count: unresolvedGlobalAssignmentCount,
-      status: unresolvedGlobalAssignmentCount > 0 ? t.present : t.none,
-      action:
-        unresolvedGlobalAssignmentCount > 0 ? t.reviewUnresolvedGlobalAssignmentsAction : t.ok,
-      tone: unresolvedGlobalAssignmentCount > 0 ? "info" : "neutral",
+      label: t.implicitGlobalAssignmentCount,
+      count: implicitGlobalAssignmentCount,
+      status: implicitGlobalAssignmentCount > 0 ? t.present : t.none,
+      action: implicitGlobalAssignmentCount > 0 ? t.reviewImplicitGlobalAssignmentsAction : t.ok,
+      tone: implicitGlobalAssignmentCount > 0 ? "info" : "neutral",
     },
     {
       label: t.externalUsageCount,
@@ -1251,7 +1286,7 @@ function memberUsageRows(
   ];
 }
 
-function unresolvedGlobalRows(
+function implicitGlobalRows(
   declarations: AspGraphNode[],
   locale: AspGraphLocale,
   usageCounts: Map<string, UsageCounts>,
@@ -1292,16 +1327,16 @@ function unresolvedGlobalRows(
   ];
 }
 
-function unresolvedGlobalAssignmentRows(
-  candidates: UnresolvedGlobalAssignmentCandidate[],
+function implicitGlobalAssignmentRows(
+  candidates: ImplicitGlobalAssignmentCandidate[],
   locale: AspGraphLocale,
   fileNamesByUri: Map<string, string>,
 ): Cell[][] {
   const t = text[locale];
   const rows = candidates
     .map((candidate) => [
-      displayNameForUri(candidate.unresolvedGlobal.uri, fileNamesByUri),
-      candidate.unresolvedGlobal.label,
+      displayNameForUri(candidate.implicitGlobal.uri, fileNamesByUri),
+      candidate.implicitGlobal.label,
       displayNameForUri(candidate.uri, fileNamesByUri),
       candidate.assignmentTarget?.label ?? "",
       displayNameForUri(candidate.assignmentTarget?.uri, fileNamesByUri),
@@ -1313,8 +1348,8 @@ function unresolvedGlobalAssignmentRows(
     .sort(compareRows(0, 1, 5, 2, 6, 7));
   return [
     header([
-      t.unresolvedGlobalFile,
-      t.unresolvedGlobalName,
+      t.implicitGlobalFile,
+      t.implicitGlobalName,
       t.assignmentFile,
       t.assignmentTarget,
       t.assignmentTargetFile,
@@ -1501,19 +1536,20 @@ function analysisContext(
     ...includedDeclarations.filter((node) => usedIncludedDeclarationIds.has(node.id)),
   ].sort(compareNodesByLocation(fileNamesByUri));
   const targetDeclarationIds = new Set(targetDeclarations.map((node) => node.id));
-  const unresolvedGlobalDeclarations = targetDeclarations.filter(isUnresolvedGlobalDeclaration);
-  const unresolvedGlobalDeclarationIds = new Set(
-    unresolvedGlobalDeclarations.map((node) => node.id),
+  const implicitGlobalDeclarations = targetDeclarations.filter(isImplicitGlobalDeclaration);
+  const implicitGlobalCandidateDeclarations = implicitGlobalDeclarations.filter(
+    isImplicitGlobalCandidateDeclaration,
   );
-  const unresolvedGlobalUsageLinks = filteredGraphLinks(
+  const implicitGlobalDeclarationIds = new Set(implicitGlobalDeclarations.map((node) => node.id));
+  const implicitGlobalUsageLinks = filteredGraphLinks(
     payload.links,
-    (link) => isUsageGraphLink(link) && unresolvedGlobalDeclarationIds.has(link.target),
+    (link) => isUsageGraphLink(link) && implicitGlobalDeclarationIds.has(link.target),
     () => true,
   );
-  const unresolvedGlobalUsageCounts = usageCountsByTarget(unresolvedGlobalUsageLinks);
-  const unresolvedGlobalAssignmentCandidates = unresolvedGlobalAssignmentCandidatesForPayload(
+  const implicitGlobalUsageCounts = usageCountsByTarget(implicitGlobalUsageLinks);
+  const implicitGlobalAssignmentCandidates = implicitGlobalAssignmentCandidatesForPayload(
     payload,
-    unresolvedGlobalDeclarations,
+    implicitGlobalCandidateDeclarations,
     nodesById,
   );
   const internalUsageLinks = filteredGraphLinks(
@@ -1554,9 +1590,9 @@ function analysisContext(
     externalUsageLinks,
     includedUsageLinks,
     memberUsageLinks,
-    unresolvedGlobalDeclarations,
-    unresolvedGlobalUsageCounts,
-    unresolvedGlobalAssignmentCandidates,
+    implicitGlobalDeclarations,
+    implicitGlobalUsageCounts,
+    implicitGlobalAssignmentCandidates,
     unresolvedLinks,
     targetUsageCounts,
     externalUsageCounts,
@@ -1580,45 +1616,46 @@ function isAnalysisDeclaration(node: AspGraphNode): boolean {
   return node.kind === "vbDeclaration";
 }
 
-function isUnresolvedGlobalDeclaration(node: AspGraphNode): boolean {
+function isImplicitGlobalDeclaration(node: AspGraphNode): boolean {
   return (
     node.kind === "vbDeclaration" &&
     node.declarationKind === "variable" &&
-    node.unresolvedGlobal === true
+    node.implicitGlobal === true
   );
 }
 
+function isImplicitGlobalCandidateDeclaration(node: AspGraphNode): boolean {
+  return isImplicitGlobalDeclaration(node) && node.implicitGlobalCandidate === true;
+}
+
 function declarationKindKey(node: AspGraphNode): string {
-  if (isUnresolvedGlobalDeclaration(node)) {
-    return "unresolvedGlobalVariable";
-  }
-  if (node.declarationKind === "variable" && node.implicitLocal === true) {
-    return "implicitLocalVariable";
+  if (isImplicitGlobalDeclaration(node)) {
+    return "implicitGlobalVariable";
   }
   return node.declarationKind ?? "unknown";
 }
 
-function unresolvedGlobalAssignmentCandidatesForPayload(
+function implicitGlobalAssignmentCandidatesForPayload(
   payload: AspGraphPayload,
-  unresolvedGlobals: AspGraphNode[],
+  implicitGlobals: AspGraphNode[],
   nodesById: Map<string, AspGraphNode>,
-): UnresolvedGlobalAssignmentCandidate[] {
-  if (unresolvedGlobals.length === 0) {
+): ImplicitGlobalAssignmentCandidate[] {
+  if (implicitGlobals.length === 0) {
     return [];
   }
-  const candidates: UnresolvedGlobalAssignmentCandidate[] = [];
-  for (const unresolvedGlobal of unresolvedGlobals) {
-    const ancestorDepths = includeAncestorDepthsByUri(payload, unresolvedGlobal.uri, nodesById);
+  const candidates: ImplicitGlobalAssignmentCandidate[] = [];
+  for (const implicitGlobal of implicitGlobals) {
+    const ancestorDepths = includeAncestorDepthsByUri(payload, implicitGlobal.uri, nodesById);
     if (ancestorDepths.size === 0) {
       continue;
     }
-    const unresolvedName = graphNameKey(unresolvedGlobal.label);
+    const implicitGlobalName = graphNameKey(implicitGlobal.label);
     for (const link of payload.links) {
       if (link.kind !== "assignments") {
         continue;
       }
       const target = nodesById.get(link.target);
-      if (graphNameKey(target?.label ?? "") !== unresolvedName) {
+      if (graphNameKey(target?.label ?? "") !== implicitGlobalName) {
         continue;
       }
       for (const { uri, range } of rangesForLink(link)) {
@@ -1627,7 +1664,7 @@ function unresolvedGlobalAssignmentCandidatesForPayload(
           continue;
         }
         candidates.push({
-          unresolvedGlobal,
+          implicitGlobal,
           assignmentTarget: target,
           uri,
           range,

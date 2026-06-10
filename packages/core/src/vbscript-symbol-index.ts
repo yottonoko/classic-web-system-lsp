@@ -54,8 +54,8 @@ export interface VbIndexedDeclaration {
   procedureKind?: VbIndexedProcedureKind;
   parameters?: VbIndexedParameter[];
   implicit?: boolean;
-  implicitLocal?: boolean;
-  unresolvedGlobal?: boolean;
+  implicitGlobal?: boolean;
+  implicitGlobalCandidate?: boolean;
   redim?: boolean;
   typeName?: string;
   arrayKind?: "fixed" | "dynamic";
@@ -667,8 +667,8 @@ function addDeclaration(
     procedureKind?: VbIndexedProcedureKind;
     parameters?: VbIndexedParameter[];
     implicit?: boolean;
-    implicitLocal?: boolean;
-    unresolvedGlobal?: boolean;
+    implicitGlobal?: boolean;
+    implicitGlobalCandidate?: boolean;
     redim?: boolean;
     sourceRange?: Range;
     typeName?: string;
@@ -691,8 +691,8 @@ function addDeclaration(
     procedureKind: input.procedureKind,
     parameters: input.parameters,
     implicit: input.implicit,
-    implicitLocal: input.implicitLocal,
-    unresolvedGlobal: input.unresolvedGlobal,
+    implicitGlobal: input.implicitGlobal,
+    implicitGlobalCandidate: input.implicitGlobalCandidate,
     redim: input.redim,
     sourceRange: input.sourceRange,
     typeName: input.typeName,
@@ -1042,7 +1042,8 @@ function addImplicitVariableDeclarationsFromReferences(
       scopeId: globalScopeId,
       bindingScope: "global",
       implicit: true,
-      unresolvedGlobal: hasTopLevelAssignment ? undefined : true,
+      implicitGlobal: true,
+      implicitGlobalCandidate: hasTopLevelAssignment ? undefined : true,
     });
     addDeclarationToLookup(lookup, declaration);
     implicitNames.add(declaration.normalizedName);
@@ -1109,11 +1110,15 @@ function resolveReferencesWithImplicitDeclarations(
     }
     reference.resolvedId = resolved.id;
     reference.bindingScope = bindingScopeForReference(resolved, undefined);
-    if (resolved.unresolvedGlobal !== true) {
+    if (!isImplicitGlobalCandidateDeclaration(resolved)) {
       reference.expectedKinds = undefined;
     }
     reference.deferredKey = undefined;
   }
+}
+
+function isImplicitGlobalCandidateDeclaration(declaration: VbIndexedDeclaration): boolean {
+  return declaration.implicitGlobal === true && declaration.implicitGlobalCandidate === true;
 }
 
 function deferredExternalRefsForReferences(

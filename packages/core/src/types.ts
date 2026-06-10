@@ -311,8 +311,8 @@ export interface AspFlowchartSymbolDeclaration {
   procedureKind?: string;
   typeName?: string;
   implicit?: boolean;
-  implicitLocal?: boolean;
-  unresolvedGlobal?: boolean;
+  implicitGlobal?: boolean;
+  implicitGlobalCandidate?: boolean;
 }
 
 export interface AspFlowchartSymbolReference {

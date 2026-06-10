@@ -8254,7 +8254,8 @@ End Sub
             bindingScope: "global",
             declarationKind: "variable",
             implicit: true,
-            unresolvedGlobal: true,
+            implicitGlobal: true,
+            implicitGlobalCandidate: true,
           }),
         );
         const missingValueNode = graph.nodes?.find(
@@ -8265,9 +8266,12 @@ End Sub
             bindingScope: "global",
             declarationKind: "variable",
             implicit: true,
-            unresolvedGlobal: true,
+            implicitGlobal: true,
+            implicitGlobalCandidate: true,
           }),
         );
+        expect(graph.nodes?.some((node) => "implicitLocal" in node)).toBe(false);
+        expect(graph.nodes?.some((node) => "unresolvedGlobal" in node)).toBe(false);
         expect(
           graph.nodes?.some(
             (node) => node.kind === "vbUnresolved" && node.label === "MissingValue",
@@ -8428,7 +8432,7 @@ End Sub
               Array.isArray(node.links) &&
               node.links.some(
                 (link: Record<string, unknown>) =>
-                  link.symbolKind === "unresolvedGlobalVariable" &&
+                  link.symbolKind === "implicitGlobalVariable" &&
                   (link.label === "implicit global variable ready" ||
                     link.label === "implicit global variable disabled"),
               ),
@@ -9251,7 +9255,8 @@ End Sub
             declarationKind: "variable",
             bindingScope: "global",
             implicit: true,
-            unresolvedGlobal: true,
+            implicitGlobal: true,
+            implicitGlobalCandidate: true,
             origin: "source",
           });
         }
@@ -9259,7 +9264,8 @@ End Sub
           declarationKind: "variable",
           bindingScope: "global",
           implicit: true,
-          unresolvedGlobal: true,
+          implicitGlobal: true,
+          implicitGlobalCandidate: true,
           origin: "source",
         });
         expect(hasNode(visibleGraph, (node) => node.label === "Preserve")).toBe(false);
