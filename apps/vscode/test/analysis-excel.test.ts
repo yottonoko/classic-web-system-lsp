@@ -209,7 +209,7 @@ describe("analysis Excel sheets", () => {
     );
   });
 
-  it("checks unused functions, local variables and constants", () => {
+  it("checks unused functions, local variables, constants and parameters", () => {
     const sheets = createAnalysisExcelSheets(unusedDeclarationKindsPayload(), "ja", {
       generatedAt: new Date("2026-06-10T00:00:00.000Z"),
       targetUri: "file:///workspace/coverage.asp",
@@ -242,6 +242,21 @@ describe("analysis Excel sheets", () => {
           "",
           "なし",
           4,
+          5,
+          0,
+          0,
+          0,
+          "未使用",
+        ],
+        [
+          "coverage.asp",
+          "UnusedParameter",
+          "パラメーター",
+          "",
+          "ローカル",
+          "",
+          "なし",
+          10,
           5,
           0,
           0,
@@ -284,13 +299,14 @@ describe("analysis Excel sheets", () => {
     expect(unusedRows.flat()).not.toContain("UsedLocalValue");
     expect(unusedRows.flat()).not.toContain("UsedConst");
     expect(unusedRows.flat()).not.toContain("UsedLocalConst");
-    expect(unusedRows.flat()).not.toContain("ignoredParameter");
+    expect(unusedRows.flat()).not.toContain("UsedParameter");
     expect(table(sheets, "被参照")).toEqual(
       expect.arrayContaining([
         ["coverage.asp", "UsedFunction", "関数", "", "ソース", 1, 5, 1, 0, 0, 1],
         ["coverage.asp", "UsedLocalValue", "変数", "", "ソース", 3, 5, 1, 0, 1, 0],
         ["coverage.asp", "UsedConst", "定数", "", "ソース", 5, 5, 1, 1, 0, 0],
         ["coverage.asp", "UsedLocalConst", "定数", "", "ソース", 7, 5, 1, 1, 0, 0],
+        ["coverage.asp", "UsedParameter", "パラメーター", "", "ソース", 9, 5, 1, 1, 0, 0],
       ]),
     );
   });
@@ -739,11 +755,21 @@ function unusedDeclarationKindsPayload(): AspGraphPayload {
         origin: "source",
       },
       {
-        id: "vb:ignored-parameter",
+        id: "vb:used-parameter",
         kind: "vbDeclaration",
-        label: "ignoredParameter",
+        label: "UsedParameter",
         uri,
         range: range(8, 4),
+        declarationKind: "parameter",
+        bindingScope: "local",
+        origin: "source",
+      },
+      {
+        id: "vb:unused-parameter",
+        kind: "vbDeclaration",
+        label: "UnusedParameter",
+        uri,
+        range: range(9, 4),
         declarationKind: "parameter",
         bindingScope: "local",
         origin: "source",
@@ -790,18 +816,28 @@ function unusedDeclarationKindsPayload(): AspGraphPayload {
         count: 1,
         ranges: [{ uri, range: range(13, 4) }],
       },
+      {
+        id: "link:ref-used-parameter",
+        source: "file:/workspace/coverage.asp",
+        target: "vb:used-parameter",
+        kind: "references",
+        label: "read",
+        role: "read",
+        count: 1,
+        ranges: [{ uri, range: range(14, 4) }],
+      },
     ],
     stats: {
       files: 1,
-      declarations: 8,
-      references: 2,
+      declarations: 9,
+      references: 3,
       assignments: 1,
       calls: 1,
       unresolvedReferences: 0,
       includes: 0,
       missingIncludes: 0,
-      nodes: 9,
-      links: 4,
+      nodes: 10,
+      links: 5,
     },
   };
 }

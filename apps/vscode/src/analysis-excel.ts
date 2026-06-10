@@ -1211,7 +1211,7 @@ function isExternallyVisibleDeclaration(node: AspGraphNode): boolean {
 }
 
 function isAnalysisDeclaration(node: AspGraphNode): boolean {
-  return node.declarationKind !== "parameter";
+  return node.kind === "vbDeclaration";
 }
 
 function includedFileUrisForTarget(
