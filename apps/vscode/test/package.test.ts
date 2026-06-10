@@ -80,7 +80,12 @@ describe("VS Code extension package", () => {
     const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
 
     expect(extensionSource).toContain("extensionLocale()");
-    expect(graphHostSource).toContain("JSON.stringify({ ...payload, locale })");
+    expect(graphHostSource).toContain(
+      "graphPayloadForWebview(payload, locale, theme, infoPanelPosition)",
+    );
+    expect(graphHostSource).toContain(
+      "settings: { ...payload.settings, theme, infoPanelPosition }",
+    );
     expect(graphHostSource).toContain('<html lang="${locale}">');
     expect(graphHostSource).toContain('graphHostText(locale, "sourceRangeUnavailable")');
     expect(graphWebviewSource).toContain(
@@ -95,14 +100,17 @@ describe("VS Code extension package", () => {
   it("keeps flowchart rendering focused on the selected section", () => {
     const flowchartSource = fs.readFileSync("src/webview/flowchart.tsx", "utf8");
 
-    expect(flowchartSource).toContain("flowchartForSection(payload, selectedSectionId)");
-    expect(flowchartSource).toContain('const lines = ["flowchart TB"]');
     expect(flowchartSource).toContain(
-      "attachSvgNodeHandlers(containerRef.current, payload, text, onOpenFlowchart)",
+      "flowchartForSection(payload, selectedSectionId, themePalette)",
     );
-    expect(flowchartSource).toContain("flowchartNodeKindStyles");
+    expect(flowchartSource).toContain('const lines = ["flowchart TB"]');
+    expect(flowchartSource).toContain("attachSvgNodeHandlers(");
+    expect(flowchartSource).toContain("onOpenContextMenu");
+    expect(flowchartSource).toContain("flowchartThemePalettes");
+    expect(flowchartSource).toContain("darkFlowchartNodeKindStyles");
+    expect(flowchartSource).toContain("lightFlowchartNodeKindStyles");
     expect(flowchartSource).toContain("flowchartNodeHint(node, text, locale)");
-    expect(flowchartSource).toContain("flowchartMermaidClassDefinitions()");
+    expect(flowchartSource).toContain("flowchartMermaidClassDefinitions(themePalette)");
     expect(flowchartSource).toContain('type: "copyText"');
     expect(flowchartSource).toContain('format: "mermaid"');
     expect(flowchartSource).toContain('format: "svg"');
