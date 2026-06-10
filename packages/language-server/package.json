@@ -1,6 +1,6 @@
 {
   "name": "@asp-lsp/language-server",
-  "version": "0.5.44",
+  "version": "0.5.45",
   "private": true,
   "license": "MIT OR Apache-2.0",
   "bin": {
