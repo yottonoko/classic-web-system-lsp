@@ -2091,7 +2091,7 @@ function Inspector({
   if (!selection) {
     return (
       <aside className={className}>
-        <h2 className="mb-3 text-sm leading-[1.35] font-semibold [overflow-wrap:anywhere]">
+        <h2 className="asp-lsp-graph-inspector-title mb-3 text-sm leading-[1.35] font-semibold [overflow-wrap:anywhere]">
           {graphText("view.inspector")}
         </h2>
         <p className="m-0 text-xs text-[#8d98a8]">{graphText("inspector.selectPrompt")}</p>
@@ -2101,7 +2101,7 @@ function Inspector({
   return (
     <aside className={className}>
       <div className="mb-3 flex min-w-0 items-start gap-2">
-        <h2 className="m-0 min-w-0 flex-1 text-sm leading-[1.35] font-semibold [overflow-wrap:anywhere]">
+        <h2 className="asp-lsp-graph-inspector-title m-0 min-w-0 flex-1 text-sm leading-[1.35] font-semibold [overflow-wrap:anywhere]">
           {inspectorTitleForSelection(selection, graphData)}
         </h2>
         <button

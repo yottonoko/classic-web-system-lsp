@@ -105,6 +105,7 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain("booleanLabel(link.include.exists)");
     expect(graphWebviewSource).toContain("crossFileReferencedGlobalNodeIds");
     expect(graphWebviewSource).toContain("hideUnreferencedGlobalSymbols");
+    expect(graphWebviewSource).toContain("asp-lsp-graph-inspector-title");
     expect(graphWebviewSource).toContain(
       "tooltipPositionFor(triggerRef.current, tooltipRef.current)",
     );
@@ -141,6 +142,16 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("maxTextSize: flowchartMaxTextSize(payload)");
     expect(flowchartSource).toContain("const defaultFlowchartMaxTextSize = 2_000_000");
     expect(flowchartSource).toContain("payload.settings?.maxTextSize");
+    expect(flowchartSource).toContain("const defaultMaximumFlowchartZoom = 4");
+    expect(flowchartSource).toContain("payload.settings?.minZoom");
+    expect(flowchartSource).toContain("payload.settings?.maxZoom");
+    expect(flowchartSource).toContain("style={scaledFlowchartCanvasStyle(svgSize, zoom)}");
+    expect(flowchartSource).toContain("style={{ transform: `scale(${zoom})`");
+    expect(flowchartSource).toContain("const [open, setOpen] = useState(false)");
+    expect(flowchartSource).toContain("shouldAutoOpen");
+    expect(flowchartSource).toContain('container.querySelectorAll<SVGGElement>("g[id]")');
+    expect(flowchartSource).toContain("svgElementIdContainsMermaidNodeId(element.id, id)");
+    expect(flowchartSource).not.toContain('querySelectorAll<SVGGElement>(`[id*="${id}"]`)');
     expect(flowchartSource).toContain("wrapFlowchartLabel");
     expect(flowchartSource).toContain("setClampedZoom");
     expect(flowchartSource).toContain("zoomWithWheel");
@@ -374,6 +385,24 @@ describe("VS Code extension package", () => {
     );
     expect(nls["configuration.flowchart.maxTextSize.description"]).toBeTruthy();
     expect(nlsJa["configuration.flowchart.maxTextSize.description"]).toBeTruthy();
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.minZoom"]).toEqual(
+      expect.objectContaining({
+        type: "number",
+        minimum: 0.1,
+        default: 0.4,
+      }),
+    );
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.maxZoom"]).toEqual(
+      expect.objectContaining({
+        type: "number",
+        minimum: 0.1,
+        default: 4,
+      }),
+    );
+    expect(nls["configuration.flowchart.minZoom.description"]).toBeTruthy();
+    expect(nlsJa["configuration.flowchart.minZoom.description"]).toBeTruthy();
+    expect(nls["configuration.flowchart.maxZoom.description"]).toBeTruthy();
+    expect(nlsJa["configuration.flowchart.maxZoom.description"]).toBeTruthy();
     for (const key of [
       "referenceProcedures",
       "referenceGlobals",

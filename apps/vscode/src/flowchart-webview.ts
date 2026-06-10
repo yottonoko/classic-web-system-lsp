@@ -15,6 +15,8 @@ export type AspFlowchartInfoPanelPosition = "left" | "right";
 
 export interface AspFlowchartWebviewSettings {
   maxTextSize: number;
+  minZoom: number;
+  maxZoom: number;
   theme: AspFlowchartWebviewThemeSetting;
   infoPanelPosition: AspFlowchartInfoPanelPosition;
 }

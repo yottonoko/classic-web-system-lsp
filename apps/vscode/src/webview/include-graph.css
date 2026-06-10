@@ -40,6 +40,7 @@
   --asp-lsp-border-tooltip: #405068;
   --asp-lsp-text: #d7dde8;
   --asp-lsp-text-strong: #f4f7fb;
+  --asp-lsp-inspector-title: #d7dde8;
   --asp-lsp-text-muted: #9aa7b8;
   --asp-lsp-text-subtle: #8d98a8;
   --asp-lsp-text-control: #b5c0d0;
@@ -70,6 +71,7 @@
   --asp-lsp-border-tooltip: #cbd5e1;
   --asp-lsp-text: #1f2937;
   --asp-lsp-text-strong: #0f172a;
+  --asp-lsp-inspector-title: #334155;
   --asp-lsp-text-muted: #475569;
   --asp-lsp-text-subtle: #64748b;
   --asp-lsp-text-control: #334155;
@@ -164,6 +166,10 @@
 .asp-lsp-graph-shell .text-\[\#f4f7fb\],
 .asp-lsp-graph-shell .text-\[\#f1f5f9\] {
   color: var(--asp-lsp-text-strong);
+}
+
+.asp-lsp-graph-inspector-title {
+  color: var(--asp-lsp-inspector-title);
 }
 
 .asp-lsp-graph-shell .text-\[\#9aa7b8\] {

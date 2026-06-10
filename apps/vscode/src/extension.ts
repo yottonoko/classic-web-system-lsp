@@ -38,6 +38,8 @@ const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const serverStatusNotificationMethod = "aspLsp/status";
 const htmlTagCompleteLookBehind = 2000;
 const defaultFlowchartMaxTextSize = 2_000_000;
+const defaultFlowchartMinZoom = 0.4;
+const defaultFlowchartMaxZoom = 4;
 type GraphOpenLocation = "active" | "beside";
 type GraphScope = "document" | "folder" | "workspace";
 type WebviewThemeSetting = AspGraphWebviewThemeSetting & AspFlowchartWebviewThemeSetting;
@@ -523,11 +525,20 @@ function graphViewColumn(): vscode.ViewColumn {
 }
 
 function flowchartWebviewSettings(): AspFlowchartWebviewSettings {
-  const maxTextSize = vscode.workspace
-    .getConfiguration("aspLsp")
-    .get<number>("flowchart.maxTextSize", defaultFlowchartMaxTextSize);
+  const config = vscode.workspace.getConfiguration("aspLsp");
+  const maxTextSize = config.get<number>("flowchart.maxTextSize", defaultFlowchartMaxTextSize);
+  const minZoom = positiveFiniteNumberSetting(
+    config.get<number>("flowchart.minZoom", defaultFlowchartMinZoom),
+    defaultFlowchartMinZoom,
+  );
+  const maxZoom = positiveFiniteNumberSetting(
+    config.get<number>("flowchart.maxZoom", defaultFlowchartMaxZoom),
+    defaultFlowchartMaxZoom,
+  );
   return {
     maxTextSize: positiveNumberSetting(maxTextSize, defaultFlowchartMaxTextSize),
+    minZoom,
+    maxZoom: Math.max(minZoom, maxZoom),
     theme: webviewThemeSetting(),
     infoPanelPosition: infoPanelPositionSetting("flowchart.infoPanelPosition", "left"),
   };
@@ -550,6 +561,10 @@ function positiveNumberSetting(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 1
     ? Math.floor(value)
     : fallback;
+}
+
+function positiveFiniteNumberSetting(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 function graphPanelTitle(

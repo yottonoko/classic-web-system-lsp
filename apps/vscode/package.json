@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.5.35",
+  "version": "0.5.36",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -624,6 +624,18 @@
           "minimum": 1,
           "default": 2000000,
           "description": "%configuration.flowchart.maxTextSize.description%"
+        },
+        "aspLsp.flowchart.minZoom": {
+          "type": "number",
+          "minimum": 0.1,
+          "default": 0.4,
+          "description": "%configuration.flowchart.minZoom.description%"
+        },
+        "aspLsp.flowchart.maxZoom": {
+          "type": "number",
+          "minimum": 0.1,
+          "default": 4,
+          "description": "%configuration.flowchart.maxZoom.description%"
         },
         "aspLsp.flowchart.infoPanelPosition": {
           "type": "string",
