@@ -22,6 +22,7 @@ describe("VS Code extension package", () => {
       devDependencies?: Record<string, string>;
     };
     expect(manifest.dependencies?.["@asp-lsp/language-server"]).toBe("workspace:*");
+    expect(manifest.dependencies?.["@tanstack/react-virtual"]).toBe("^3.14.2");
     expect(manifest.devDependencies?.["@asp-lsp/language-server"]).toBeUndefined();
   });
 
@@ -132,9 +133,19 @@ describe("VS Code extension package", () => {
   it("keeps flowchart rendering focused on the selected section", () => {
     const flowchartSource = fs.readFileSync("src/webview/flowchart.tsx", "utf8");
     const flowchartHostSource = fs.readFileSync("src/flowchart-webview.ts", "utf8");
+    const virtualListSource = fs.readFileSync("src/webview/virtual-list.tsx", "utf8");
 
+    expect(virtualListSource).toContain('from "@tanstack/react-virtual"');
+    expect(virtualListSource).toContain("function VirtualList");
+    expect(virtualListSource).toContain("items.length > threshold");
+    expect(virtualListSource).toContain("virtualizer.measureElement");
     expect(flowchartSource).toContain(
       "flowchartForSection(payload, selectedSectionId, themePalette)",
+    );
+    expect(flowchartSource).toContain('from "./virtual-list"');
+    expect(flowchartSource).toContain("<VirtualList");
+    expect(flowchartSource).toContain(
+      "scrollToIndex={activeNodeIndex >= 0 ? activeNodeIndex : undefined}",
     );
     expect(flowchartSource).toContain('const lines = ["flowchart TB"]');
     expect(flowchartSource).toContain("attachSvgNodeHandlers(");
@@ -199,6 +210,11 @@ describe("VS Code extension package", () => {
   it("keeps graph search responsive and keyboard-accessible", () => {
     const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
 
+    expect(graphWebviewSource).toContain('from "./virtual-list"');
+    expect(graphWebviewSource).toContain("<VirtualList");
+    expect(graphWebviewSource).toContain("onVisibleItemsChange={setVisibleItems}");
+    expect(graphWebviewSource).toContain("requestedItems.map(sourceRangeRequestItem)");
+    expect(graphWebviewSource).not.toContain("items.map(sourceRangeRequestItem)");
     expect(graphWebviewSource).toContain("startTransition");
     expect(graphWebviewSource).toContain("const [searchInput, setSearchInput] = useState");
     expect(graphWebviewSource).toContain("const searchInputRef = useRef<HTMLInputElement>");

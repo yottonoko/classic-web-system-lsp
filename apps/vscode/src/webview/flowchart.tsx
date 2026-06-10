@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { createRoot } from "react-dom/client";
 import mermaid from "mermaid";
 import tailwindStyles from "./flowchart.css?inline";
+import { VirtualList } from "./virtual-list";
 import type {
   AspFlowchartInclude,
   AspFlowchartNode,
@@ -829,6 +830,10 @@ function App(): React.ReactElement {
     [payload, selectedSectionId, themePalette],
   );
   const selectedSection = selectedFlowchart.sections[0];
+  const selectedSectionIndex = useMemo(
+    () => payload.sections.findIndex((section) => section.id === selectedSection?.id),
+    [payload.sections, selectedSection?.id],
+  );
   const selectFlowchartNode = useCallback((node: AspFlowchartNode) => {
     setSelectedSectionId(node.sectionId);
     setAutoOpenSectionId(node.sectionId);
@@ -1021,38 +1026,46 @@ function App(): React.ReactElement {
           {payload.sections.length === 0 ? (
             <EmptyText>{text("emptyNodes")}</EmptyText>
           ) : (
-            payload.sections.map((section) => {
-              const sectionNodes = nodesBySection.get(section.id) ?? [];
-              const hasActiveNode = Boolean(
-                activeFlowchartNodeId &&
-                sectionNodes.some((node) => node.id === activeFlowchartNodeId),
-              );
-              return (
-                <FlowSection
-                  key={section.id}
-                  locale={locale}
-                  nodes={sectionNodes}
-                  selected={section.id === selectedSection?.id}
-                  section={section}
-                  shouldAutoOpen={autoOpenSectionId === section.id || hasActiveNode}
-                  themePalette={themePalette}
-                  text={text}
-                  activeSearchNodeId={activeFlowchartNodeId}
-                  matchedNodeIds={matchedNodeIds}
-                  onOpenCode={(range) =>
-                    range && vscode.postMessage({ type: "openRange", uri: payload.uri, range })
-                  }
-                  onOpenGraph={openGraph}
-                  onOpenTarget={openTarget}
-                  onSelect={() => {
-                    setSelectedSectionId(section.id);
-                    setAutoOpenSectionId(section.id);
-                    setFocusedFlowchartNodeId(undefined);
-                  }}
-                  onSelectNode={selectFlowchartNode}
-                />
-              );
-            })
+            <VirtualList
+              className="grid gap-3"
+              estimateSize={72}
+              getKey={(section) => section.id}
+              items={payload.sections}
+              maxHeight={560}
+              overscan={8}
+              scrollToIndex={selectedSectionIndex >= 0 ? selectedSectionIndex : undefined}
+              renderItem={(section) => {
+                const sectionNodes = nodesBySection.get(section.id) ?? [];
+                const hasActiveNode = Boolean(
+                  activeFlowchartNodeId &&
+                  sectionNodes.some((node) => node.id === activeFlowchartNodeId),
+                );
+                return (
+                  <FlowSection
+                    locale={locale}
+                    nodes={sectionNodes}
+                    selected={section.id === selectedSection?.id}
+                    section={section}
+                    shouldAutoOpen={autoOpenSectionId === section.id || hasActiveNode}
+                    themePalette={themePalette}
+                    text={text}
+                    activeSearchNodeId={activeFlowchartNodeId}
+                    matchedNodeIds={matchedNodeIds}
+                    onOpenCode={(range) =>
+                      range && vscode.postMessage({ type: "openRange", uri: payload.uri, range })
+                    }
+                    onOpenGraph={openGraph}
+                    onOpenTarget={openTarget}
+                    onSelect={() => {
+                      setSelectedSectionId(section.id);
+                      setAutoOpenSectionId(section.id);
+                      setFocusedFlowchartNodeId(undefined);
+                    }}
+                    onSelectNode={selectFlowchartNode}
+                  />
+                );
+              }}
+            />
           )}
           <div className="mb-2 mt-3 flex items-center gap-2">
             <SectionHeading>{text("mermaid")}</SectionHeading>
@@ -1218,12 +1231,15 @@ function IncludeList({
     return <EmptyText>{text("emptyIncludes")}</EmptyText>;
   }
   return (
-    <div className="grid gap-2">
-      {includes.map((include, index) => (
-        <div
-          key={`${include.mode}:${include.path}:${index}`}
-          className="min-w-0 overflow-hidden rounded border border-[#263140] bg-[#101820] p-2"
-        >
+    <VirtualList
+      className="grid gap-2"
+      estimateSize={84}
+      getKey={(include, index) => `${include.mode}:${include.path}:${index}`}
+      items={includes}
+      maxHeight={280}
+      overscan={8}
+      renderItem={(include) => (
+        <div className="min-w-0 overflow-hidden rounded border border-[#263140] bg-[#101820] p-2">
           <div className="flex min-w-0 items-start justify-between gap-2">
             <button
               className="min-w-0 flex-1 text-left text-sm font-medium text-[#8ec7ff] hover:underline disabled:cursor-not-allowed disabled:text-[#7b8796] disabled:no-underline"
@@ -1265,8 +1281,8 @@ function IncludeList({
             </div>
           ) : null}
         </div>
-      ))}
-    </div>
+      )}
+    />
   );
 }
 
@@ -1314,6 +1330,7 @@ function FlowSection({
       setOpen(true);
     }
   }, [shouldAutoOpen]);
+  const activeNodeIndex = visibleNodes.findIndex((node) => node.id === activeSearchNodeId);
   return (
     <div
       className={`mb-3 min-w-0 overflow-hidden rounded border bg-[#101820] ${
@@ -1359,83 +1376,91 @@ function FlowSection({
         </button>
       </div>
       {open ? (
-        <div className="grid gap-1 p-2">
+        <div className="p-2">
           {visibleNodes.length === 0 ? (
             <EmptyText>{text("emptySection")}</EmptyText>
           ) : (
-            visibleNodes.map((node) => {
-              const isSearchMatch = matchedNodeIds.has(node.id);
-              const isActiveSearchMatch = activeSearchNodeId === node.id;
-              const nodeHint = flowchartNodeHint(node, text, locale);
-              const nodeStyle = themePalette.nodeKindStyles[node.kind];
-              return (
-                <div
-                  key={node.id}
-                  className={`rounded px-1 py-1 hover:bg-[#223044] ${
-                    isActiveSearchMatch
-                      ? "bg-[#17324a] ring-1 ring-[#7dd3fc]"
-                      : isSearchMatch
-                        ? "bg-[#2b2b18] ring-1 ring-[#f6c177]"
-                        : ""
-                  }`}
-                >
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1">
-                    <button
-                      className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap px-1 py-1 text-left text-xs text-[#d9e0ea] hover:text-white"
-                      title={detailParts(text("openFlowchart"), node.label, nodeHint)}
-                      type="button"
-                      onClick={() => onSelectNode(node)}
-                    >
-                      <span
-                        className="mr-2 rounded border px-1 py-0.5 text-[10px]"
-                        style={flowchartSwatchStyle(nodeStyle)}
-                        title={flowchartNodeKindLabel(node.kind, locale)}
+            <VirtualList
+              className="grid gap-1"
+              estimateSize={(node) => (node.links?.length ? 76 : 42)}
+              getKey={(node) => node.id}
+              items={visibleNodes}
+              maxHeight={360}
+              overscan={10}
+              scrollToIndex={activeNodeIndex >= 0 ? activeNodeIndex : undefined}
+              renderItem={(node) => {
+                const isSearchMatch = matchedNodeIds.has(node.id);
+                const isActiveSearchMatch = activeSearchNodeId === node.id;
+                const nodeHint = flowchartNodeHint(node, text, locale);
+                const nodeStyle = themePalette.nodeKindStyles[node.kind];
+                return (
+                  <div
+                    className={`rounded px-1 py-1 hover:bg-[#223044] ${
+                      isActiveSearchMatch
+                        ? "bg-[#17324a] ring-1 ring-[#7dd3fc]"
+                        : isSearchMatch
+                          ? "bg-[#2b2b18] ring-1 ring-[#f6c177]"
+                          : ""
+                    }`}
+                  >
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1">
+                      <button
+                        className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap px-1 py-1 text-left text-xs text-[#d9e0ea] hover:text-white"
+                        title={detailParts(text("openFlowchart"), node.label, nodeHint)}
+                        type="button"
+                        onClick={() => onSelectNode(node)}
                       >
-                        {flowchartNodeKindLabel(node.kind, locale)}
-                      </span>
-                      {node.label}
-                    </button>
-                    <button
-                      className="mr-1 shrink-0 rounded border border-[#3b4a5f] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
-                      disabled={!node.range}
-                      title={text("openCode")}
-                      type="button"
-                      onClick={() => node.range && onOpenCode(node.range)}
-                    >
-                      Code
-                    </button>
-                    <button
-                      className="mr-1 shrink-0 rounded border border-[#3b4a5f] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
-                      disabled={!node.range}
-                      title={text("openGraph")}
-                      type="button"
-                      onClick={() => node.range && onOpenGraph(node.range)}
-                    >
-                      Graph
-                    </button>
-                  </div>
-                  {node.links?.length ? (
-                    <div className="ml-1 mt-1 flex flex-wrap gap-1">
-                      {node.links.map((link) => {
-                        const linkStyle = flowchartNodeLinkStyle(link, themePalette);
-                        return (
-                          <button
-                            key={link.id}
-                            className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] hover:text-white"
-                            style={flowchartSwatchStyle(linkStyle)}
-                            title={flowchartNodeLinkHint(link, text, locale)}
-                            type="button"
-                            onClick={() => onOpenTarget(link.target)}
-                          >
-                            {link.label}
-                          </button>
-                        );
-                      })}
+                        <span
+                          className="mr-2 rounded border px-1 py-0.5 text-[10px]"
+                          style={flowchartSwatchStyle(nodeStyle)}
+                          title={flowchartNodeKindLabel(node.kind, locale)}
+                        >
+                          {flowchartNodeKindLabel(node.kind, locale)}
+                        </span>
+                        {node.label}
+                      </button>
+                      <button
+                        className="mr-1 shrink-0 rounded border border-[#3b4a5f] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+                        disabled={!node.range}
+                        title={text("openCode")}
+                        type="button"
+                        onClick={() => node.range && onOpenCode(node.range)}
+                      >
+                        Code
+                      </button>
+                      <button
+                        className="mr-1 shrink-0 rounded border border-[#3b4a5f] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+                        disabled={!node.range}
+                        title={text("openGraph")}
+                        type="button"
+                        onClick={() => node.range && onOpenGraph(node.range)}
+                      >
+                        Graph
+                      </button>
                     </div>
-                  ) : null}
-                </div>
-              );
-            })
+                    {node.links?.length ? (
+                      <div className="ml-1 mt-1 flex flex-wrap gap-1">
+                        {node.links.map((link) => {
+                          const linkStyle = flowchartNodeLinkStyle(link, themePalette);
+                          return (
+                            <button
+                              key={link.id}
+                              className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] hover:text-white"
+                              style={flowchartSwatchStyle(linkStyle)}
+                              title={flowchartNodeLinkHint(link, text, locale)}
+                              type="button"
+                              onClick={() => onOpenTarget(link.target)}
+                            >
+                              {link.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              }}
+            />
           )}
         </div>
       ) : null}

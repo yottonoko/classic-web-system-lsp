@@ -18,6 +18,7 @@ import classicAspGrammarJson from "../../syntaxes/classic-asp.tmLanguage.json";
 import classicAspTagInjectionGrammarJson from "../../syntaxes/classic-asp-tag-injection.tmLanguage.json";
 import vbscriptGrammarJson from "../../syntaxes/vbscript.tmLanguage.json";
 import tailwindStyles from "./include-graph.css?inline";
+import { VirtualList } from "./virtual-list";
 import type {
   AspGraphLink,
   AspGraphLinkFilterCategory,
@@ -1886,10 +1887,15 @@ function GraphStatsList({
     );
   }
   return (
-    <div className="grid max-h-72 gap-1.5 overflow-auto pr-1">
-      {items.map((item) => (
+    <VirtualList
+      className="grid gap-1.5"
+      estimateSize={(item) => (item.detail ? 72 : 48)}
+      getKey={(item) => item.id}
+      items={items}
+      maxHeight={288}
+      overscan={8}
+      renderItem={(item) => (
         <button
-          key={item.id}
           type="button"
           className="grid cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
           title={detailParts(item.title, item.detail, item.status).join(" · ")}
@@ -1918,8 +1924,8 @@ function GraphStatsList({
             </div>
           ) : null}
         </button>
-      ))}
-    </div>
+      )}
+    />
   );
 }
 
@@ -2288,7 +2294,6 @@ function LinkInspector({
 }): React.ReactElement {
   const nodesById = useMemo(() => graphNodeMap(graphData.nodes), [graphData.nodes]);
   const sourceItems = useMemo(() => sourceItemsForLink(link), [link]);
-  const sourceState = useSourceRanges(sourceItems);
   const location = link.ranges[0];
   return (
     <>
@@ -2319,7 +2324,7 @@ function LinkInspector({
           title={graphText("section.occurrences")}
         >
           {sourceItems.length > 0 ? (
-            <SourceFileGroups items={sourceItems} sourceState={sourceState} />
+            <SourceFileGroups items={sourceItems} />
           ) : (
             <EmptyInspectorText>{graphText("empty.sourceRanges")}</EmptyInspectorText>
           )}
@@ -2424,10 +2429,15 @@ function NodeLinkList({
   onSelectLink(link: GraphLink): void;
 }): React.ReactElement {
   return (
-    <div className="grid gap-2">
-      {links.map((link) => (
+    <VirtualList
+      className="grid gap-2"
+      estimateSize={(link) => (nodeLinkDetail(link) ? 104 : 78)}
+      getKey={(link) => link.id}
+      items={links}
+      maxHeight={360}
+      overscan={8}
+      renderItem={(link) => (
         <button
-          key={link.id}
           type="button"
           className="grid cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
           title={detailParts(
@@ -2466,8 +2476,8 @@ function NodeLinkList({
             </div>
           ) : null}
         </button>
-      ))}
-    </div>
+      )}
+    />
   );
 }
 
@@ -2482,12 +2492,8 @@ function NodeSourceSections({
     () => sourceItemsForNode(node, graphData),
     [graphData, node],
   );
-  const sourceItems = useMemo(
-    () => [...declarationItems, ...usageItems],
-    [declarationItems, usageItems],
-  );
-  const sourceState = useSourceRanges(sourceItems);
   const declarationItem = declarationItems[0];
+  const declarationSourceState = useSourceRanges(declarationItems);
   return (
     <div className="mb-3 grid gap-2">
       <Accordion
@@ -2506,7 +2512,7 @@ function NodeSourceSections({
         title={graphText("section.declaration")}
       >
         {declarationItem ? (
-          <DeclarationSource item={declarationItem} sourceState={sourceState} />
+          <DeclarationSource item={declarationItem} sourceState={declarationSourceState} />
         ) : (
           <EmptyInspectorText>{graphText("empty.declarationSource")}</EmptyInspectorText>
         )}
@@ -2518,7 +2524,7 @@ function NodeSourceSections({
         title={graphText("section.referencesCalls")}
       >
         {usageItems.length > 0 ? (
-          <SourceFileGroups items={usageItems} sourceState={sourceState} />
+          <SourceFileGroups items={usageItems} />
         ) : (
           <EmptyInspectorText>{graphText("empty.referencesOrCalls")}</EmptyInspectorText>
         )}
@@ -2655,49 +2661,55 @@ function DeclarationSource({
   );
 }
 
-function SourceFileGroups({
-  items,
-  sourceState,
-}: {
-  items: GraphSourceItem[];
-  sourceState: GraphSourceState;
-}): React.ReactElement {
+function SourceFileGroups({ items }: { items: GraphSourceItem[] }): React.ReactElement {
   const groups = groupedSourceItems(items);
   return (
-    <div className="grid gap-2">
-      {groups.map((group) => (
+    <VirtualList
+      className="grid gap-2"
+      estimateSize={(group) => (group.items.length === 1 ? 68 : 96)}
+      getKey={(group) => group.uri}
+      items={groups}
+      maxHeight={620}
+      overscan={5}
+      renderItem={(group) => (
         <Accordion
-          key={group.uri}
           count={group.items.length}
           defaultOpen={groups.length === 1}
           hint={graphText("section.sourceFileHint")}
-          title={sourceGroupTitle(group.uri, group.items, sourceState.byId)}
+          title={sourceGroupTitle(group.uri, group.items)}
         >
-          <SourceRangeList items={group.items} sourceState={sourceState} />
+          <SourceRangeList items={group.items} />
         </Accordion>
-      ))}
-    </div>
+      )}
+    />
   );
 }
 
-function SourceRangeList({
-  items,
-  sourceState,
-}: {
-  items: GraphSourceItem[];
-  sourceState: GraphSourceState;
-}): React.ReactElement {
+function SourceRangeList({ items }: { items: GraphSourceItem[] }): React.ReactElement {
+  const [visibleItems, setVisibleItems] = useState<readonly GraphSourceItem[]>(() =>
+    items.slice(0, Math.min(items.length, 48)),
+  );
+  useEffect(() => {
+    setVisibleItems(items.slice(0, Math.min(items.length, 48)));
+  }, [items]);
+  const sourceState = useSourceRanges(visibleItems);
   return (
-    <div className="grid gap-2">
-      {items.map((item) => (
+    <VirtualList
+      className="grid gap-2"
+      estimateSize={220}
+      getKey={(item) => item.id}
+      items={items}
+      maxHeight={560}
+      onVisibleItemsChange={setVisibleItems}
+      overscan={8}
+      renderItem={(item) => (
         <SourceRangeCard
-          key={item.id}
           item={item}
-          loading={sourceState.loading && !sourceState.byId.has(item.id)}
+          loading={sourceState.loading && visibleItems.some((visible) => visible.id === item.id)}
           source={sourceState.byId.get(item.id)}
         />
-      ))}
-    </div>
+      )}
+    />
   );
 }
 
@@ -3174,12 +3186,15 @@ function positionOffsetInRangeText(
 
 function IncludeRelationList({ relations }: { relations: IncludeRelation[] }): React.ReactElement {
   return (
-    <div className="grid gap-2">
-      {relations.map((relation) => (
-        <article
-          key={relation.id}
-          className="grid min-w-0 gap-2 overflow-hidden rounded-md border border-[#303a49] bg-[#11151c] p-2"
-        >
+    <VirtualList
+      className="grid gap-2"
+      estimateSize={112}
+      getKey={(relation) => relation.id}
+      items={relations}
+      maxHeight={360}
+      overscan={8}
+      renderItem={(relation) => (
+        <article className="grid min-w-0 gap-2 overflow-hidden rounded-md border border-[#303a49] bg-[#11151c] p-2">
           <div className="min-w-0">
             <div
               className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]"
@@ -3218,8 +3233,8 @@ function IncludeRelationList({ relations }: { relations: IncludeRelation[] }): R
             />
           </div>
         </article>
-      ))}
-    </div>
+      )}
+    />
   );
 }
 
@@ -3756,7 +3771,9 @@ function tooltipMaximumWidth(): number {
   return Math.max(160, Math.min(280, window.innerWidth - margin * 2));
 }
 
-function useSourceRanges(items: GraphSourceItem[]): GraphSourceState {
+function useSourceRanges(items: readonly GraphSourceItem[]): GraphSourceState {
+  const cacheRef = useRef(new Map<string, AspGraphSourceRangeResponseItem>());
+  const loadingIdsRef = useRef(new Set<string>());
   const [state, setState] = useState<GraphSourceState>(() => ({
     loading: false,
     byId: new Map(),
@@ -3764,27 +3781,49 @@ function useSourceRanges(items: GraphSourceItem[]): GraphSourceState {
 
   useEffect(() => {
     if (items.length === 0) {
-      setState({ loading: false, byId: new Map() });
+      setState({ loading: false, byId: new Map(cacheRef.current) });
+      return undefined;
+    }
+    const requestedItems = items.filter(
+      (item) => !cacheRef.current.has(item.id) && !loadingIdsRef.current.has(item.id),
+    );
+    if (requestedItems.length === 0) {
+      setState({
+        loading: items.some((item) => loadingIdsRef.current.has(item.id)),
+        byId: new Map(cacheRef.current),
+      });
       return undefined;
     }
     const requestId = `source:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    for (const item of requestedItems) {
+      loadingIdsRef.current.add(item.id);
+    }
     const handleMessage = (event: MessageEvent<unknown>) => {
       if (!isSourceRangesMessage(event.data) || event.data.requestId !== requestId) {
         return;
       }
+      for (const item of event.data.items) {
+        cacheRef.current.set(item.id, item);
+        loadingIdsRef.current.delete(item.id);
+      }
       setState({
-        loading: false,
-        byId: new Map(event.data.items.map((item) => [item.id, item])),
+        loading: items.some((item) => loadingIdsRef.current.has(item.id)),
+        byId: new Map(cacheRef.current),
       });
     };
     window.addEventListener("message", handleMessage);
-    setState({ loading: true, byId: new Map() });
+    setState({ loading: true, byId: new Map(cacheRef.current) });
     vscode.postMessage({
       type: "readSourceRanges",
       requestId,
-      items: items.map(sourceRangeRequestItem),
+      items: requestedItems.map(sourceRangeRequestItem),
     });
-    return () => window.removeEventListener("message", handleMessage);
+    return () => {
+      window.removeEventListener("message", handleMessage);
+      for (const item of requestedItems) {
+        loadingIdsRef.current.delete(item.id);
+      }
+    };
   }, [items]);
 
   return state;
@@ -3987,13 +4026,8 @@ function groupedSourceItems(
   return [...groups.entries()].map(([uri, groupItems]) => ({ uri, items: groupItems }));
 }
 
-function sourceGroupTitle(
-  uri: string,
-  items: GraphSourceItem[],
-  sourcesById: ReadonlyMap<string, AspGraphSourceRangeResponseItem>,
-): string {
-  const source = items.map((item) => sourcesById.get(item.id)).find(Boolean);
-  return source?.fileName ?? items[0]?.displayPath ?? pathForDisplay(uri) ?? uri;
+function sourceGroupTitle(uri: string, items: GraphSourceItem[]): string {
+  return items[0]?.displayPath ?? pathForDisplay(uri) ?? uri;
 }
 
 function includeRelationsForFileNode(
