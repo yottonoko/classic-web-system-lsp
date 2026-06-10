@@ -162,7 +162,7 @@ const en: Record<LocalizeKey, string> = {
   "vb.completion.syntaxKeyword": "VBScript syntax keyword",
   "vb.completion.definedIn": "Defined in {uri}.",
   "vb.completion.memberDocumentation": "{kind} {type}.{member}{suffix}",
-  "vb.completion.unresolvedGlobalVariable": "Unresolved global variable",
+  "vb.completion.unresolvedGlobalVariable": "Implicit global variable",
   "vb.completion.unresolvedFunction": "Unresolved Function/Sub",
   "vb.diagnostic.undeclared": "'{name}' is not declared under Option Explicit.",
   "vb.diagnostic.unusedParameter": "Parameter '{name}' is never used.",

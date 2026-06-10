@@ -205,7 +205,7 @@ M
             expect.objectContaining({
               label: "MissingRead",
               kind: CompletionItemKind.Variable,
-              detail: "Unresolved global variable",
+              detail: "Implicit global variable",
             }),
             expect.objectContaining({
               label: "MissingProc",
@@ -8429,8 +8429,8 @@ End Sub
               node.links.some(
                 (link: Record<string, unknown>) =>
                   link.symbolKind === "unresolvedGlobalVariable" &&
-                  (link.label === "unresolved global variable ready" ||
-                    link.label === "unresolved global variable disabled"),
+                  (link.label === "implicit global variable ready" ||
+                    link.label === "implicit global variable disabled"),
               ),
           ),
         ).toBe(true);

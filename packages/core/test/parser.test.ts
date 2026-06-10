@@ -207,7 +207,7 @@ End Sub
     ).toBe(true);
   });
 
-  it("marks unresolved global variable links with a distinct flowchart symbol kind", () => {
+  it("marks implicit global variable links with a distinct flowchart symbol kind", () => {
     const uri = "file:///site/unresolved-global.asp";
     const parsed = parseAspDocument(
       uri,
@@ -3399,7 +3399,7 @@ If enabled Then Set objectValue = New Widget
     );
   });
 
-  it("keeps loop variables local while splitting implicit globals from unresolved globals in the symbol index", () => {
+  it("keeps loop variables local while splitting implicit global assignments from unresolved reads in the symbol index", () => {
     const source = `<%
 Sub Render()
   For index = 1 To 3

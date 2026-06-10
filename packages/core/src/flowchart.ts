@@ -1838,10 +1838,10 @@ function flowchartDeclarationKindLabel(
   switch (declaration.kind) {
     case "variable":
       if (declaration.unresolvedGlobal === true) {
-        return "unresolved global variable";
+        return "implicit global variable";
       }
       if (declaration.implicitLocal === true) {
-        return "implicit local variable";
+        return "implicit global variable";
       }
       return `${scope}variable`;
     case "constant":
