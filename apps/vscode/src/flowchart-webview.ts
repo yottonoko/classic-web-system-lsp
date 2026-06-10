@@ -15,6 +15,7 @@ export type AspFlowchartInfoPanelPosition = "left" | "right";
 
 export interface AspFlowchartWebviewSettings {
   maxTextSize: number;
+  maxEdges: number;
   minZoom: number;
   maxZoom: number;
   theme: AspFlowchartWebviewThemeSetting;
@@ -71,6 +72,7 @@ export function showAspFlowchartWebview(
   locale: AspFlowchartLocale,
   settings: AspFlowchartWebviewSettings,
   loadPayload: (uri: string) => Promise<{ payload: AspFlowchartPayload; title: string }>,
+  initialTargetRange?: AspFlowchartTarget["range"],
 ): void {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
   const panel = vscode.window.createWebviewPanel("aspLsp.flowchart", title, viewColumn, {
@@ -98,6 +100,7 @@ export function showAspFlowchartWebview(
     title,
     locale,
     settings,
+    initialTargetRange,
   );
 }
 
@@ -222,12 +225,14 @@ function flowchartWebviewHtml(
   title: string,
   locale: AspFlowchartLocale,
   settings: AspFlowchartWebviewSettings,
+  initialTargetRange?: AspFlowchartTarget["range"],
 ): string {
   const nonce = nonceString();
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, "flowchart.js"));
   const flowchartJson = JSON.stringify(
     flowchartPayloadForWebview(payload, locale, settings),
   ).replaceAll("</", "<\\/");
+  const targetRangeJson = JSON.stringify(initialTargetRange ?? null).replaceAll("</", "<\\/");
   return `<!doctype html>
 <html lang="${locale}">
 <head>
@@ -238,7 +243,7 @@ function flowchartWebviewHtml(
 </head>
 <body>
   <div id="root"></div>
-  <script nonce="${nonce}">window.__ASP_LSP_FLOWCHART__ = ${flowchartJson};</script>
+  <script nonce="${nonce}">window.__ASP_LSP_FLOWCHART__ = ${flowchartJson}; window.__ASP_LSP_FLOWCHART_TARGET_RANGE__ = ${targetRangeJson};</script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

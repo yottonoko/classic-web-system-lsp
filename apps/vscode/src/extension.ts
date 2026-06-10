@@ -17,6 +17,7 @@ import {
   type AspGraphInfoPanelPosition,
   type AspGraphLocale,
   type AspGraphPayload,
+  type AspGraphRange,
   type AspGraphWebviewThemeSetting,
 } from "./include-graph-webview";
 import {
@@ -38,6 +39,7 @@ const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const serverStatusNotificationMethod = "aspLsp/status";
 const htmlTagCompleteLookBehind = 2000;
 const defaultFlowchartMaxTextSize = 2_000_000;
+const defaultFlowchartMaxEdges = 100_000;
 const defaultFlowchartMinZoom = 0.4;
 const defaultFlowchartMaxZoom = 4;
 type GraphOpenLocation = "active" | "beside";
@@ -291,6 +293,24 @@ async function showFlowchart(
   );
 }
 
+async function showFlowchartFromGraph(
+  context: vscode.ExtensionContext,
+  uriText: string,
+  range?: AspGraphRange,
+): Promise<void> {
+  const result = await loadFlowchartPayload(uriText);
+  showAspFlowchartWebview(
+    context,
+    result.payload,
+    result.title,
+    graphViewColumn(),
+    extensionLocale(),
+    flowchartWebviewSettings(),
+    loadFlowchartPayload,
+    range,
+  );
+}
+
 async function exportFlowchart(selectedUri?: vscode.Uri): Promise<void> {
   const uri = currentClassicAspUri(selectedUri);
   if (!uri) {
@@ -389,6 +409,7 @@ async function showGraph(
     extensionLocale(),
     webviewThemeSetting(),
     infoPanelPositionSetting("graph.infoPanelPosition", "right"),
+    (uri, range) => showFlowchartFromGraph(context, uri, range),
   );
 }
 
@@ -527,6 +548,7 @@ function graphViewColumn(): vscode.ViewColumn {
 function flowchartWebviewSettings(): AspFlowchartWebviewSettings {
   const config = vscode.workspace.getConfiguration("aspLsp");
   const maxTextSize = config.get<number>("flowchart.maxTextSize", defaultFlowchartMaxTextSize);
+  const maxEdges = config.get<number>("flowchart.maxEdges", defaultFlowchartMaxEdges);
   const minZoom = positiveFiniteNumberSetting(
     config.get<number>("flowchart.minZoom", defaultFlowchartMinZoom),
     defaultFlowchartMinZoom,
@@ -537,6 +559,7 @@ function flowchartWebviewSettings(): AspFlowchartWebviewSettings {
   );
   return {
     maxTextSize: positiveNumberSetting(maxTextSize, defaultFlowchartMaxTextSize),
+    maxEdges: positiveNumberSetting(maxEdges, defaultFlowchartMaxEdges),
     minZoom,
     maxZoom: Math.max(minZoom, maxZoom),
     theme: webviewThemeSetting(),

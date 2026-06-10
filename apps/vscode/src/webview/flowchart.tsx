@@ -18,6 +18,7 @@ declare const acquireVsCodeApi: () => {
 declare global {
   interface Window {
     __ASP_LSP_FLOWCHART__?: FlowchartPayload;
+    __ASP_LSP_FLOWCHART_TARGET_RANGE__?: AspFlowchartTarget["range"] | null;
   }
 }
 
@@ -30,6 +31,7 @@ interface FlowchartPayload extends AspFlowchartPayload {
   locale?: FlowchartLocale;
   settings?: {
     maxTextSize?: number;
+    maxEdges?: number;
     minZoom?: number;
     maxZoom?: number;
     theme?: WebviewThemeSetting;
@@ -47,6 +49,7 @@ const defaultMinimumFlowchartZoom = 0.4;
 const defaultMaximumFlowchartZoom = 4;
 const flowchartZoomStep = 0.1;
 const defaultFlowchartMaxTextSize = 2_000_000;
+const defaultFlowchartMaxEdges = 100_000;
 const flowchartPanelDefaultWidth = 380;
 const flowchartPanelMinimumWidth = 320;
 const flowchartPanelMaximumWidth = 620;
@@ -99,6 +102,8 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     zoomOut: "Zoom out",
     zoomIn: "Zoom in",
     resetZoom: "Reset zoom",
+    fitWidth: "Fit",
+    fitWidthDescription: "Fit width to view",
     zoomWithWheel: "Hold Ctrl or Command and use the mouse wheel to zoom.",
     collapseSection: "Collapse section",
     expandSection: "Expand section",
@@ -137,6 +142,8 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     zoomOut: "縮小",
     zoomIn: "拡大",
     resetZoom: "ズームをリセット",
+    fitWidth: "フィット",
+    fitWidthDescription: "横幅にフィット",
     zoomWithWheel: "Ctrl または Command を押しながらホイールでズーム",
     collapseSection: "セクションを閉じる",
     expandSection: "セクションを開く",
@@ -717,13 +724,21 @@ function useElementSize<TElement extends HTMLElement>(): [
 
 function App(): React.ReactElement {
   const initialPayload = window.__ASP_LSP_FLOWCHART__ ?? fallbackPayload;
+  const initialTargetRange = isRange(window.__ASP_LSP_FLOWCHART_TARGET_RANGE__)
+    ? window.__ASP_LSP_FLOWCHART_TARGET_RANGE__
+    : undefined;
+  const initialSectionId = initialTargetRange
+    ? (sectionIdForRange(initialPayload, initialTargetRange) ?? defaultSectionId(initialPayload))
+    : defaultSectionId(initialPayload);
   const [payload, setPayload] = useState<FlowchartPayload>(initialPayload);
   const theme = useResolvedWebviewTheme(payload.settings?.theme);
   const themePalette = flowchartThemePalettes[theme];
-  const [selectedSectionId, setSelectedSectionId] = useState<string | undefined>(() =>
-    defaultSectionId(initialPayload),
+  const [selectedSectionId, setSelectedSectionId] = useState<string | undefined>(
+    () => initialSectionId,
   );
-  const [autoOpenSectionId, setAutoOpenSectionId] = useState<string | undefined>();
+  const [autoOpenSectionId, setAutoOpenSectionId] = useState<string | undefined>(() =>
+    initialTargetRange ? initialSectionId : undefined,
+  );
   const [focusedFlowchartNodeId, setFocusedFlowchartNodeId] = useState<string | undefined>();
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSearchIndex, setActiveSearchIndex] = useState(0);
@@ -1464,6 +1479,7 @@ function FlowchartCanvas({
   onOpenCode(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
   onOpenFlowchart(node: AspFlowchartNode): void;
 }): React.ReactElement {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string>();
   const [svg, setSvg] = useState<string>("");
@@ -1483,6 +1499,15 @@ function FlowchartCanvas({
     (direction: 1 | -1) => setClampedZoom(zoom + direction * flowchartZoomStep),
     [setClampedZoom, zoom],
   );
+  const fitFlowchartWidth = useCallback(() => {
+    if (!viewportRef.current || !svgSize) {
+      return;
+    }
+    const nextZoom = flowchartFitWidthZoom(viewportRef.current, svgSize, zoomRange);
+    if (nextZoom !== undefined) {
+      setClampedZoom(nextZoom);
+    }
+  }, [setClampedZoom, svgSize, zoomRange]);
   const handleWheel = useCallback(
     (event: React.WheelEvent<HTMLDivElement>) => {
       if (!event.ctrlKey && !event.metaKey) {
@@ -1546,6 +1571,7 @@ function FlowchartCanvas({
       mermaid.initialize({
         startOnLoad: false,
         maxTextSize: flowchartMaxTextSize(payload),
+        maxEdges: flowchartMaxEdges(payload),
         securityLevel: "strict",
         theme: themePalette.mermaidTheme,
         themeVariables: themePalette.mermaidThemeVariables,
@@ -1599,6 +1625,7 @@ function FlowchartCanvas({
   const contextMenuPosition = contextMenu
     ? clampedContextMenuPosition(contextMenu.x, contextMenu.y)
     : undefined;
+  const canFitFlowchartWidth = Boolean(svgSize);
   return (
     <section
       className={`${className ?? ""} grid min-h-0 grid-rows-[auto_1fr] overflow-hidden bg-[#0d1117]`}
@@ -1628,12 +1655,21 @@ function FlowchartCanvas({
             {Math.round(zoom * 100)}%
           </button>
           <button
-            className="h-7 min-w-7 px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
+            className="h-7 min-w-7 border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
             title={text("zoomIn")}
             type="button"
             onClick={() => adjustZoom(1)}
           >
             +
+          </button>
+          <button
+            className="h-7 min-w-[42px] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
+            disabled={!canFitFlowchartWidth}
+            title={text("fitWidthDescription")}
+            type="button"
+            onClick={fitFlowchartWidth}
+          >
+            {text("fitWidth")}
           </button>
         </div>
         <button
@@ -1681,7 +1717,7 @@ function FlowchartCanvas({
           {text("exportSvg")}
         </button>
       </header>
-      <div className="min-h-0 overflow-auto p-5" onWheel={handleWheel}>
+      <div ref={viewportRef} className="min-h-0 overflow-auto p-5" onWheel={handleWheel}>
         {error ? (
           <div className="rounded border border-[#7f3434] bg-[#291416] p-3 text-sm text-[#ffd2cc]">
             {text("renderError")} {error}
@@ -2218,6 +2254,33 @@ function scaledFlowchartCanvasStyle(
   };
 }
 
+function flowchartFitWidthZoom(
+  viewport: HTMLElement,
+  svgSize: FlowchartSvgSize,
+  zoomRange: FlowchartZoomRange,
+): number | undefined {
+  const availableWidth = positiveFiniteNumber(
+    viewport.clientWidth - horizontalPadding(viewport),
+    undefined,
+  );
+  if (!availableWidth) {
+    return undefined;
+  }
+  return roundFlowchartZoom(
+    clamp(availableWidth / svgSize.width, zoomRange.minimum, zoomRange.maximum),
+  );
+}
+
+function horizontalPadding(element: HTMLElement): number {
+  const style = window.getComputedStyle(element);
+  return cssPixelValue(style.paddingLeft) + cssPixelValue(style.paddingRight);
+}
+
+function cssPixelValue(value: string): number {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function measuredFlowchartSvgSize(container: HTMLDivElement): FlowchartSvgSize | undefined {
   const svgElement = container.querySelector<SVGSVGElement>("svg");
   if (!svgElement) {
@@ -2411,6 +2474,13 @@ function flowchartMaxTextSize(payload: FlowchartPayload): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 1
     ? Math.floor(value)
     : defaultFlowchartMaxTextSize;
+}
+
+function flowchartMaxEdges(payload: FlowchartPayload): number {
+  const value = payload.settings?.maxEdges;
+  return typeof value === "number" && Number.isFinite(value) && value >= 1
+    ? Math.floor(value)
+    : defaultFlowchartMaxEdges;
 }
 
 const style = document.createElement("style");

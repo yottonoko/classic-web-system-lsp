@@ -56,6 +56,7 @@
   "configuration.rename.workspaceSymbolRename.description": "Allow symbol and selector rename operations to edit other Classic ASP workspace files. Disabled by default; same-file rename edits stay enabled.",
   "configuration.styleExtraction.insertionMode.description": "Controls where inline style extraction code actions insert CSS rules. nearby creates a style element before the target tag, and reuseExistingStyleTag appends to the nearest existing style element when one exists.",
   "configuration.flowchart.maxTextSize.description": "Maximum Mermaid text size accepted when rendering Classic ASP flowcharts.",
+  "configuration.flowchart.maxEdges.description": "Maximum Mermaid edge count accepted when rendering Classic ASP flowcharts.",
   "configuration.flowchart.minZoom.description": "Minimum zoom factor available in Classic ASP flowchart webviews.",
   "configuration.flowchart.maxZoom.description": "Maximum zoom factor available in Classic ASP flowchart webviews.",
   "configuration.flowchart.infoPanelPosition.description": "Controls whether the flowchart information pane appears on the left or right side.",

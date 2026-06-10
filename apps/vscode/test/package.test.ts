@@ -86,12 +86,16 @@ describe("VS Code extension package", () => {
     expect(graphHostSource).toContain(
       "settings: { ...payload.settings, theme, infoPanelPosition }",
     );
+    expect(graphHostSource).toContain('message.type === "openFlowchart"');
+    expect(graphHostSource).toContain("openFlowchart(message.uri, message.range)");
     expect(graphHostSource).toContain('<html lang="${locale}">');
     expect(graphHostSource).toContain('graphHostText(locale, "sourceRangeUnavailable")');
     expect(graphWebviewSource).toContain(
       'const graphLocale: GraphLocale = graph?.locale === "ja" ? "ja" : "en"',
     );
     expect(graphWebviewSource).toContain('"action.fit": "フィット"');
+    expect(graphWebviewSource).toContain('"action.openFlowchart": "フローチャートを開く"');
+    expect(graphWebviewSource).toContain('type: "openFlowchart"');
     expect(graphWebviewSource).toContain('"legend.heading": "凡例"');
     expect(graphWebviewSource).toContain(
       '"legend.hideUnreferencedGlobalSymbols": "未外部参照を隠す"',
@@ -145,12 +149,19 @@ describe("VS Code extension package", () => {
     expect(flowchartHostSource).toContain("new TextEncoder().encode(content)");
     expect(flowchartHostSource).toContain("exportFailed");
     expect(flowchartHostSource).toContain('<?xml version="1.0" encoding="UTF-8"?>');
+    expect(flowchartHostSource).toContain("initialTargetRange");
+    expect(flowchartSource).toContain("__ASP_LSP_FLOWCHART_TARGET_RANGE__");
     expect(flowchartSource).toContain("maxTextSize: flowchartMaxTextSize(payload)");
+    expect(flowchartSource).toContain("maxEdges: flowchartMaxEdges(payload)");
     expect(flowchartSource).toContain("const defaultFlowchartMaxTextSize = 2_000_000");
+    expect(flowchartSource).toContain("const defaultFlowchartMaxEdges = 100_000");
     expect(flowchartSource).toContain("payload.settings?.maxTextSize");
+    expect(flowchartSource).toContain("payload.settings?.maxEdges");
     expect(flowchartSource).toContain("const defaultMaximumFlowchartZoom = 4");
     expect(flowchartSource).toContain("payload.settings?.minZoom");
     expect(flowchartSource).toContain("payload.settings?.maxZoom");
+    expect(flowchartSource).toContain("flowchartFitWidthZoom");
+    expect(flowchartSource).toContain("fitWidthDescription");
     expect(flowchartSource).toContain("style={scaledFlowchartCanvasStyle(svgSize, zoom)}");
     expect(flowchartSource).toContain("style={{ transform: `scale(${zoom})`");
     expect(flowchartSource).toContain("const [open, setOpen] = useState(false)");
@@ -401,6 +412,15 @@ describe("VS Code extension package", () => {
     );
     expect(nls["configuration.flowchart.maxTextSize.description"]).toBeTruthy();
     expect(nlsJa["configuration.flowchart.maxTextSize.description"]).toBeTruthy();
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.maxEdges"]).toEqual(
+      expect.objectContaining({
+        type: "number",
+        minimum: 1,
+        default: 100000,
+      }),
+    );
+    expect(nls["configuration.flowchart.maxEdges.description"]).toBeTruthy();
+    expect(nlsJa["configuration.flowchart.maxEdges.description"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.minZoom"]).toEqual(
       expect.objectContaining({
         type: "number",

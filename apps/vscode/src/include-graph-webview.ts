@@ -142,13 +142,19 @@ interface OpenRangeMessage {
   range?: AspGraphRange;
 }
 
+interface OpenFlowchartMessage {
+  type: "openFlowchart";
+  uri: string;
+  range?: AspGraphRange;
+}
+
 interface ReadSourceRangesMessage {
   type: "readSourceRanges";
   requestId: string;
   items: AspGraphSourceRangeRequestItem[];
 }
 
-type WebviewMessage = OpenRangeMessage | ReadSourceRangesMessage;
+type WebviewMessage = OpenRangeMessage | OpenFlowchartMessage | ReadSourceRangesMessage;
 
 export function showAspGraphWebview(
   context: vscode.ExtensionContext,
@@ -158,6 +164,7 @@ export function showAspGraphWebview(
   locale: AspGraphLocale,
   theme: AspGraphWebviewThemeSetting,
   infoPanelPosition: AspGraphInfoPanelPosition,
+  openFlowchart: (uri: string, range?: AspGraphRange) => Promise<void>,
 ): void {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
   const panel = vscode.window.createWebviewPanel("aspLsp.graph", title, viewColumn, {
@@ -168,6 +175,8 @@ export function showAspGraphWebview(
   panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
     if (message.type === "openRange") {
       void openGraphRange(message.uri, message.range);
+    } else if (message.type === "openFlowchart") {
+      void openFlowchart(message.uri, message.range);
     } else if (message.type === "readSourceRanges") {
       void readGraphSourceRanges(panel.webview, message, locale);
     }

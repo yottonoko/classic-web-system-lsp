@@ -73,6 +73,12 @@ type GraphData = {
   links: GraphLink[];
 };
 
+interface OpenFlowchartMessage {
+  type: "openFlowchart";
+  uri: string;
+  range?: AspGraphRange;
+}
+
 type WebviewTheme = "light" | "dark";
 type WebviewThemeSetting = WebviewTheme | "auto";
 type InfoPanelPosition = "left" | "right";
@@ -177,6 +183,7 @@ const graphMessageEn = {
   "action.openDirective": "Open directive",
   "action.openFile": "Open file",
   "action.openFirst": "Open first",
+  "action.openFlowchart": "Open flowchart",
   "action.selectSource": "Select source",
   "action.selectTarget": "Select target",
   "direction.from": "from",
@@ -367,6 +374,7 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "action.openDirective": "directive を開く",
     "action.openFile": "ファイルを開く",
     "action.openFirst": "最初を開く",
+    "action.openFlowchart": "フローチャートを開く",
     "action.selectSource": "元を選択",
     "action.selectTarget": "先を選択",
     "direction.from": "元",
@@ -2165,9 +2173,17 @@ function NodeInspector({
   visibleGraphData: GraphData;
 }): React.ReactElement {
   const location = node.uri ? { uri: node.uri, range: node.range } : undefined;
+  const canOpenFlowchart = Boolean(location?.uri && node.exists !== false);
   return (
     <>
       <NodeDetails node={node} />
+      <OpenFlowchartButton
+        className="mb-3 h-[30px] w-full"
+        disabled={!canOpenFlowchart}
+        label={graphText("action.openFlowchart")}
+        range={location?.range}
+        uri={location?.uri}
+      />
       {isFileLikeGraphNode(node) ? (
         <FileNodeRelations graphData={graphData} node={node} />
       ) : (
@@ -2210,12 +2226,20 @@ function LinkInspector({
           hint={graphText("section.occurrencesHint")}
           headerAction={
             location ? (
-              <OpenLocationButton
-                className="h-7 px-2"
-                label={graphText("action.openFirst")}
-                range={location.range}
-                uri={location.uri}
-              />
+              <div className="flex flex-wrap gap-1.5">
+                <OpenLocationButton
+                  className="h-7 px-2"
+                  label={graphText("action.openFirst")}
+                  range={location.range}
+                  uri={location.uri}
+                />
+                <OpenFlowchartButton
+                  className="h-7 px-2"
+                  label={graphText("action.openFlowchart")}
+                  range={location.range}
+                  uri={location.uri}
+                />
+              </div>
             ) : undefined
           }
           title={graphText("section.occurrences")}
@@ -2621,12 +2645,20 @@ function SourceRangeCard({
             {item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 })}
           </div>
         </div>
-        <OpenLocationButton
-          className="h-7 shrink-0 px-2"
-          label={graphText("action.open")}
-          range={item.highlightRange}
-          uri={item.uri}
-        />
+        <div className="flex shrink-0 flex-wrap gap-1.5">
+          <OpenLocationButton
+            className="h-7 px-2"
+            label={graphText("action.open")}
+            range={item.highlightRange}
+            uri={item.uri}
+          />
+          <OpenFlowchartButton
+            className="h-7 px-2"
+            label={graphText("action.openFlowchart")}
+            range={item.highlightRange}
+            uri={item.uri}
+          />
+        </div>
       </div>
       {source?.error ? (
         <p className="m-0 text-[11px] text-[#ff9cac]">{source.error}</p>
@@ -3081,6 +3113,13 @@ function IncludeRelationList({ relations }: { relations: IncludeRelation[] }): R
               range={relation.fileRange}
               uri={relation.fileUri}
             />
+            <OpenFlowchartButton
+              className="h-7 px-2"
+              disabled={relation.exists === false || !relation.fileUri}
+              label={graphText("action.openFlowchart")}
+              range={relation.fileRange}
+              uri={relation.fileUri}
+            />
             <OpenLocationButton
               className="h-7 px-2"
               disabled={!relation.directiveUri}
@@ -3122,6 +3161,38 @@ function OpenLocationButton({
         event.stopPropagation();
         if (uri) {
           vscode.postMessage({ type: "openRange", uri, range });
+        }
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function OpenFlowchartButton({
+  className,
+  disabled,
+  label,
+  range,
+  uri,
+}: {
+  className?: string;
+  disabled?: boolean;
+  label: string;
+  range?: AspGraphRange;
+  uri?: string;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      className={`cursor-pointer rounded-md border border-[#405068] bg-[#89ddff] text-xs text-[#11151c] disabled:cursor-not-allowed disabled:bg-[#202735] disabled:text-[#717b8c] ${className ?? ""}`}
+      disabled={disabled || !uri}
+      title={label}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (uri) {
+          const message: OpenFlowchartMessage = { type: "openFlowchart", uri, range };
+          vscode.postMessage(message);
         }
       }}
     >
