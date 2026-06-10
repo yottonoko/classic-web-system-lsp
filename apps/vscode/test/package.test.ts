@@ -180,6 +180,19 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("payload.settings?.maxZoom");
     expect(flowchartSource).toContain("flowchartFitWidthZoom");
     expect(flowchartSource).toContain("fitWidthDescription");
+    expect(flowchartSource).toContain("function FlowchartToolbar");
+    expect(flowchartSource).toContain('type FlowchartToolbarMode = "full"');
+    expect(flowchartSource).toContain("compactExports");
+    expect(flowchartSource).toContain("compactAll");
+    expect(flowchartSource).toContain("overflow-x-auto");
+    expect(flowchartSource).toContain('openMenu: "Open"');
+    expect(flowchartSource).toContain('exportMenu: "Export"');
+    expect(flowchartSource).toContain('title={section?.label ?? text("title")}');
+    expect(flowchartSource).toContain("<span title={section.label}>{section.label}</span>");
+    expect(flowchartSource).toContain("<span title={node.label}>{node.label}</span>");
+    expect(flowchartSource).not.toContain(
+      "text-left text-xs font-semibold uppercase tracking-wide text-[#9fb0c5] hover:text-[#f1f5f9]",
+    );
     expect(flowchartSource).toContain('scrollbarGutter: "stable"');
     expect(flowchartSource).toContain("new ResizeObserver(updateViewportSize)");
     expect(flowchartSource).toContain("centerFlowchartHorizontally");
@@ -211,6 +224,9 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain('openGraph: "グラフを開く"');
     expect(flowchartSource).toContain("escapeMermaidEdgeText");
     expect(flowchartSource).toContain('if (node.kind !== "call")');
+    expect(flowchartSource).toContain("function flowchartSearchText");
+    expect(flowchartSource).toContain("return node.label;");
+    expect(flowchartSource).not.toContain('${node.kind} ${node.label} ${section?.label ?? ""}');
     expect(flowchartSource).not.toContain(
       'vscode.postMessage({ type: "openRange", uri: payload.uri, range: node.range })',
     );

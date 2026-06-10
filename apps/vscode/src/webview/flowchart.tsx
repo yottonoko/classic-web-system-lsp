@@ -87,6 +87,7 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     openFlowchart: "Open flowchart",
     openCode: "Open code",
     openGraph: "Open graph",
+    openMenu: "Open",
     openDefinition: "Open definition",
     renderError: "Mermaid render failed.",
     resizeInfoPanel: "Resize information pane",
@@ -95,6 +96,7 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     sections: "Sections",
     definitions: "Definitions",
     copyMermaid: "Copy Mermaid",
+    exportMenu: "Export",
     exportMermaid: "Export Mermaid",
     exportSvg: "Export SVG",
     searchNodes: "Search nodes",
@@ -128,6 +130,7 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     openFlowchart: "フローチャートを開く",
     openCode: "コードを開く",
     openGraph: "グラフを開く",
+    openMenu: "Open",
     openDefinition: "定義を開く",
     renderError: "Mermaid render に失敗しました。",
     resizeInfoPanel: "情報 pane の幅を変更",
@@ -136,6 +139,7 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     sections: "セクション",
     definitions: "定義",
     copyMermaid: "Mermaid コピー",
+    exportMenu: "Export",
     exportMermaid: "Mermaid 出力",
     exportSvg: "SVG 出力",
     searchNodes: "ノード検索",
@@ -180,6 +184,15 @@ interface FlowchartPanState {
 interface FlowchartViewportSize {
   width: number;
   height: number;
+}
+
+type FlowchartToolbarMode = "full" | "compactExports" | "compactAll";
+type FlowchartToolbarMenuKind = "open" | "export";
+
+interface FlowchartToolbarMenuState {
+  kind: FlowchartToolbarMenuKind;
+  left: number;
+  top: number;
 }
 
 interface FlowchartThemePalette {
@@ -1353,12 +1366,12 @@ function FlowSection({
           {open ? "▾" : "▸"}
         </button>
         <button
-          className="min-w-0 flex-1 truncate text-left text-xs font-semibold uppercase tracking-wide text-[#9fb0c5] hover:text-[#f1f5f9]"
+          className="min-w-0 flex-1 truncate text-left text-xs font-semibold text-[#9fb0c5] hover:text-[#f1f5f9]"
           title={detailParts(text("selectFlowchart"), section.label, sectionHint)}
           type="button"
           onClick={onSelect}
         >
-          {section.label}
+          <span title={section.label}>{section.label}</span>
         </button>
         <FlowchartHint hint={sectionHint} label={section.label} />
         <button
@@ -1422,7 +1435,7 @@ function FlowSection({
                         >
                           {flowchartNodeKindLabel(node.kind, locale)}
                         </span>
-                        {node.label}
+                        <span title={node.label}>{node.label}</span>
                       </button>
                       <button
                         className="mr-1 shrink-0 rounded border border-[#3b4a5f] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
@@ -1859,6 +1872,21 @@ function FlowchartCanvas({
       content: serializedFlowchartSvg(containerRef.current) ?? svg,
     });
   }, [payload.uri, section?.label, svg]);
+  const copyMermaid = useCallback(() => {
+    vscode.postMessage({
+      type: "copyText",
+      content: payload.mermaid,
+    });
+  }, [payload.mermaid]);
+  const exportMermaid = useCallback(() => {
+    vscode.postMessage({
+      type: "exportFlowchart",
+      format: "mermaid",
+      uri: payload.uri,
+      sectionLabel: section?.label,
+      content: `${payload.mermaid}\n`,
+    });
+  }, [payload.mermaid, payload.uri, section?.label]);
   const contextMenuPosition = contextMenu
     ? clampedContextMenuPosition(contextMenu.x, contextMenu.y)
     : undefined;
@@ -1867,101 +1895,29 @@ function FlowchartCanvas({
     <section
       className={`${className ?? ""} grid min-h-0 grid-rows-[auto_1fr] overflow-hidden bg-[#0d1117]`}
     >
-      <header className="flex items-center gap-2 border-b border-[#263140] px-5 py-3">
-        <div className="min-w-0 flex-1 truncate text-sm font-semibold text-[#f1f5f9]">
+      <header className="flex min-w-0 items-center gap-2 border-b border-[#263140] px-5 py-3">
+        <div
+          className="min-w-0 flex-1 truncate text-sm font-semibold text-[#f1f5f9]"
+          title={section?.label ?? text("title")}
+        >
           {section?.label ?? text("title")}
         </div>
-        <div
-          className="flex items-center overflow-hidden rounded border border-[#3b4a5f]"
-          title={text("zoomWithWheel")}
-        >
-          <button
-            className="h-7 min-w-7 border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
-            title={text("zoomOut")}
-            type="button"
-            onClick={() => adjustZoom(-1)}
-          >
-            -
-          </button>
-          <button
-            className="h-7 min-w-[52px] border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
-            title={text("resetZoom")}
-            type="button"
-            onClick={() => setClampedZoom(1)}
-          >
-            {Math.round(zoom * 100)}%
-          </button>
-          <button
-            className="h-7 min-w-7 border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
-            title={text("zoomIn")}
-            type="button"
-            onClick={() => adjustZoom(1)}
-          >
-            +
-          </button>
-          <button
-            className="h-7 min-w-[42px] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
-            disabled={!canFitFlowchartWidth}
-            title={text("fitWidthDescription")}
-            type="button"
-            onClick={fitFlowchartWidth}
-          >
-            {text("fitWidth")}
-          </button>
-        </div>
-        <button
-          className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
-          disabled={!section?.range}
-          title={text("openCode")}
-          type="button"
-          onClick={() => section?.range && onOpenCode(section.range)}
-        >
-          Code
-        </button>
-        <button
-          className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
-          disabled={!section?.range}
-          title={text("openGraph")}
-          type="button"
-          onClick={() => section?.range && onOpenGraph(section.range)}
-        >
-          Graph
-        </button>
-        <button
-          className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#63e6be] hover:text-white"
-          type="button"
-          onClick={() =>
-            vscode.postMessage({
-              type: "copyText",
-              content: payload.mermaid,
-            })
-          }
-        >
-          {text("copyMermaid")}
-        </button>
-        <button
-          className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#63e6be] hover:text-white"
-          type="button"
-          onClick={() =>
-            vscode.postMessage({
-              type: "exportFlowchart",
-              format: "mermaid",
-              uri: payload.uri,
-              sectionLabel: section?.label,
-              content: `${payload.mermaid}\n`,
-            })
-          }
-        >
-          {text("exportMermaid")}
-        </button>
-        <button
-          className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#f6c177] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
-          disabled={!svg}
-          type="button"
-          onClick={exportSvg}
-        >
-          {text("exportSvg")}
-        </button>
+        <FlowchartToolbar
+          canExportSvg={Boolean(svg)}
+          canFitFlowchartWidth={canFitFlowchartWidth}
+          canOpenSection={Boolean(section?.range)}
+          text={text}
+          zoom={zoom}
+          onCopyMermaid={copyMermaid}
+          onExportMermaid={exportMermaid}
+          onExportSvg={exportSvg}
+          onFitFlowchartWidth={fitFlowchartWidth}
+          onOpenCode={() => section?.range && onOpenCode(section.range)}
+          onOpenGraph={() => section?.range && onOpenGraph(section.range)}
+          onResetZoom={() => setClampedZoom(1)}
+          onZoomIn={() => adjustZoom(1)}
+          onZoomOut={() => adjustZoom(-1)}
+        />
       </header>
       <div
         ref={viewportRef}
@@ -2029,6 +1985,293 @@ function FlowchartCanvas({
     </section>
   );
 }
+
+function FlowchartToolbar({
+  canExportSvg,
+  canFitFlowchartWidth,
+  canOpenSection,
+  text,
+  zoom,
+  onCopyMermaid,
+  onExportMermaid,
+  onExportSvg,
+  onFitFlowchartWidth,
+  onOpenCode,
+  onOpenGraph,
+  onResetZoom,
+  onZoomIn,
+  onZoomOut,
+}: {
+  canExportSvg: boolean;
+  canFitFlowchartWidth: boolean;
+  canOpenSection: boolean;
+  text(key: string): string;
+  zoom: number;
+  onCopyMermaid(): void;
+  onExportMermaid(): void;
+  onExportSvg(): void;
+  onFitFlowchartWidth(): void;
+  onOpenCode(): void;
+  onOpenGraph(): void;
+  onResetZoom(): void;
+  onZoomIn(): void;
+  onZoomOut(): void;
+}): React.ReactElement {
+  const [toolbarRef, toolbarSize] = useElementSize<HTMLDivElement>();
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [menu, setMenu] = useState<FlowchartToolbarMenuState>();
+  const toolbarMode = flowchartToolbarMode(toolbarSize.width);
+  const compactExports = toolbarMode === "compactExports" || toolbarMode === "compactAll";
+  const compactAll = toolbarMode === "compactAll";
+  const closeMenu = useCallback(() => setMenu(undefined), []);
+  const openMenu = useCallback((kind: FlowchartToolbarMenuKind, button: HTMLButtonElement) => {
+    const rect = button.getBoundingClientRect();
+    setMenu({
+      kind,
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - flowchartToolbarMenuWidth - 8)),
+      top: Math.min(rect.bottom + 6, window.innerHeight - 8),
+    });
+  }, []);
+  const runMenuAction = useCallback(
+    (action: () => void) => {
+      action();
+      closeMenu();
+    },
+    [closeMenu],
+  );
+
+  useEffect(() => {
+    if (!menu) {
+      return undefined;
+    }
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        closeMenu();
+      }
+    };
+    const closeOnOutsidePointerDown = (event: PointerEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        closeMenu();
+        return;
+      }
+      if (toolbarRef.current?.contains(target) || menuRef.current?.contains(target)) {
+        return;
+      }
+      closeMenu();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("pointerdown", closeOnOutsidePointerDown);
+    window.addEventListener("blur", closeMenu);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("pointerdown", closeOnOutsidePointerDown);
+      window.removeEventListener("blur", closeMenu);
+    };
+  }, [closeMenu, menu, toolbarRef]);
+
+  return (
+    <div ref={toolbarRef} className="min-w-0 max-w-full overflow-x-auto">
+      <div className="flex min-w-max items-center gap-2 pb-px">
+        <div
+          className="flex items-center overflow-hidden rounded border border-[#3b4a5f]"
+          title={text("zoomWithWheel")}
+        >
+          <button
+            className="h-7 min-w-7 border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
+            title={text("zoomOut")}
+            type="button"
+            onClick={onZoomOut}
+          >
+            -
+          </button>
+          <button
+            className="h-7 min-w-[52px] border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
+            title={text("resetZoom")}
+            type="button"
+            onClick={onResetZoom}
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <button
+            className="h-7 min-w-7 border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
+            title={text("zoomIn")}
+            type="button"
+            onClick={onZoomIn}
+          >
+            +
+          </button>
+          <button
+            className="h-7 min-w-[42px] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
+            disabled={!canFitFlowchartWidth}
+            title={text("fitWidthDescription")}
+            type="button"
+            onClick={onFitFlowchartWidth}
+          >
+            {text("fitWidth")}
+          </button>
+        </div>
+        {compactAll ? (
+          <button
+            aria-expanded={menu?.kind === "open"}
+            aria-haspopup="menu"
+            className={flowchartToolbarButtonClass}
+            title={text("openMenu")}
+            type="button"
+            onClick={(event) => openMenu("open", event.currentTarget)}
+          >
+            {text("openMenu")}
+          </button>
+        ) : (
+          <>
+            <FlowchartToolbarButton
+              disabled={!canOpenSection}
+              label="Code"
+              title={text("openCode")}
+              onClick={onOpenCode}
+            />
+            <FlowchartToolbarButton
+              disabled={!canOpenSection}
+              label="Graph"
+              title={text("openGraph")}
+              onClick={onOpenGraph}
+            />
+          </>
+        )}
+        {compactExports ? (
+          <button
+            aria-expanded={menu?.kind === "export"}
+            aria-haspopup="menu"
+            className={flowchartToolbarButtonClass}
+            title={text("exportMenu")}
+            type="button"
+            onClick={(event) => openMenu("export", event.currentTarget)}
+          >
+            {text("exportMenu")}
+          </button>
+        ) : (
+          <>
+            <FlowchartToolbarButton
+              label={text("copyMermaid")}
+              title={text("copyMermaid")}
+              onClick={onCopyMermaid}
+            />
+            <FlowchartToolbarButton
+              label={text("exportMermaid")}
+              title={text("exportMermaid")}
+              onClick={onExportMermaid}
+            />
+            <FlowchartToolbarButton
+              disabled={!canExportSvg}
+              label={text("exportSvg")}
+              title={text("exportSvg")}
+              onClick={onExportSvg}
+            />
+          </>
+        )}
+      </div>
+      {menu ? (
+        <div
+          ref={menuRef}
+          className="fixed z-50 grid w-[180px] overflow-hidden rounded-md border border-[#3b4a5f] bg-[#151b23] py-1 text-xs text-[#d9e0ea] shadow-[0_12px_28px_rgb(0_0_0_/_32%)]"
+          role="menu"
+          style={{ left: menu.left, top: menu.top }}
+        >
+          {menu.kind === "open" ? (
+            <>
+              <FlowchartToolbarMenuItem
+                disabled={!canOpenSection}
+                label="Code"
+                onClick={() => runMenuAction(onOpenCode)}
+              />
+              <FlowchartToolbarMenuItem
+                disabled={!canOpenSection}
+                label="Graph"
+                onClick={() => runMenuAction(onOpenGraph)}
+              />
+            </>
+          ) : (
+            <>
+              <FlowchartToolbarMenuItem
+                label={text("copyMermaid")}
+                onClick={() => runMenuAction(onCopyMermaid)}
+              />
+              <FlowchartToolbarMenuItem
+                label={text("exportMermaid")}
+                onClick={() => runMenuAction(onExportMermaid)}
+              />
+              <FlowchartToolbarMenuItem
+                disabled={!canExportSvg}
+                label={text("exportSvg")}
+                onClick={() => runMenuAction(onExportSvg)}
+              />
+            </>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FlowchartToolbarButton({
+  disabled,
+  label,
+  title,
+  onClick,
+}: {
+  disabled?: boolean;
+  label: string;
+  title: string;
+  onClick(): void;
+}): React.ReactElement {
+  return (
+    <button
+      className={flowchartToolbarButtonClass}
+      disabled={disabled}
+      title={title}
+      type="button"
+      onClick={onClick}
+    >
+      {label}
+    </button>
+  );
+}
+
+function FlowchartToolbarMenuItem({
+  disabled,
+  label,
+  onClick,
+}: {
+  disabled?: boolean;
+  label: string;
+  onClick(): void;
+}): React.ReactElement {
+  return (
+    <button
+      className="px-3 py-1.5 text-left hover:bg-[#172131] disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
+      disabled={disabled}
+      role="menuitem"
+      type="button"
+      onClick={onClick}
+    >
+      {label}
+    </button>
+  );
+}
+
+function flowchartToolbarMode(width: number): FlowchartToolbarMode {
+  if (width > 0 && width < 520) {
+    return "compactAll";
+  }
+  if (width > 0 && width < 760) {
+    return "compactExports";
+  }
+  return "full";
+}
+
+const flowchartToolbarButtonClass =
+  "rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]";
+const flowchartToolbarMenuWidth = 180;
 
 function attachSvgNodeHandlers(
   container: HTMLDivElement,
@@ -2178,16 +2421,16 @@ function flowchartSearchMatches(payload: FlowchartPayload, query: string): Flowc
   if (!normalizedQuery) {
     return [];
   }
-  const sectionsById = new Map(payload.sections.map((section) => [section.id, section]));
   return payload.nodes
     .filter((node) => node.kind !== "start" && node.kind !== "end")
-    .filter((node) => {
-      const section = sectionsById.get(node.sectionId);
-      return normalizeFlowchartSearchText(
-        `${node.kind} ${node.label} ${section?.label ?? ""}`,
-      ).includes(normalizedQuery);
-    })
+    .filter((node) =>
+      normalizeFlowchartSearchText(flowchartSearchText(node)).includes(normalizedQuery),
+    )
     .map((node) => ({ node }));
+}
+
+function flowchartSearchText(node: AspFlowchartNode): string {
+  return node.label;
 }
 
 function normalizeFlowchartSearchText(value: string): string {
