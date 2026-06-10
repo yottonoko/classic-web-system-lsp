@@ -16,8 +16,7 @@ describe("analysis Excel sheets", () => {
       "分析サマリ",
       "チャート元データ",
       "宣言",
-      "被参照",
-      "内部使用",
+      "ファイル内使用",
       "外部ファイルからの使用",
       "include 先シンボル使用",
       "メンバー使用",
@@ -30,7 +29,8 @@ describe("analysis Excel sheets", () => {
       expect.arrayContaining([
         ["解析範囲", "ファイル"],
         ["ルート", "main.asp"],
-        ["宣言数", 11],
+        ["生成時刻", expect.stringMatching(/GMT[+-]\d{2}:\d{2}$/)],
+        ["宣言数", 7],
         ["参照数", 7],
         ["代入数", 4],
         ["呼び出し数", 2],
@@ -39,7 +39,7 @@ describe("analysis Excel sheets", () => {
         ["暗黙global変数数", 2],
         ["暗黙global変数代入候補数", 1],
         ["未使用数", 2],
-        ["切り詰め", "workspaceIndex>10"],
+        ["切り詰め", "workspace index が 10 件を超えたため切り詰められました"],
       ]),
     );
     expect(table(sheets, "分析サマリ")).toEqual(
@@ -60,24 +60,18 @@ describe("analysis Excel sheets", () => {
           "あり",
           "include 先シンボル使用 sheet で include 依存を確認",
         ],
-        ["変数", 5, 3, 2, 6, expect.stringContaining("5")],
+        ["変数", 4, 2, 2, 4, expect.stringContaining("4")],
         ["暗黙global変数", 2, 2, 0, 3, expect.stringContaining("2")],
-        ["関数", 2, 2, 0, 2, expect.stringContaining("2")],
-        ["定数", 1, 1, 0, 1, expect.stringContaining("1")],
-        ["クラス", 1, 1, 0, 1, expect.stringContaining("1")],
+        ["関数", 1, 1, 0, 1, expect.stringContaining("1")],
         ["参照", 3, expect.stringContaining("3")],
         ["代入", 1, expect.stringContaining("1")],
         ["呼び出し", 1, expect.stringContaining("1")],
-        ["SharedValue", "変数", "includes/util.inc", 1, 2, 1, 1, 0],
-        ["DoWork", "関数", "includes/util.inc", 2, 1, 0, 0, 1],
-        ["SharedConst", "定数", "includes/util.inc", 3, 1, 1, 0, 0],
-        ["SharedClass", "クラス", "includes/util.inc", 4, 1, 1, 0, 0],
         ["TargetValue", "変数", "main.asp", 3, 2, 1, 1, 0],
         ["MissingValue", "暗黙global変数", "main.asp", 10, 2, 1, 1, 0],
         ["MissingRead", "暗黙global変数", "main.asp", 11, 1, 1, 0, 0],
         ["TargetProc", "関数", "main.asp", 4, 1, 0, 0, 1],
         ["LocalOnlyValue", "変数", "main.asp", 6, 2, 1, 1, 0],
-        ["変数", 2, 5, 0.4, expect.stringContaining("2")],
+        ["変数", 2, 4, 0.5, expect.stringContaining("2")],
       ]),
     );
     expect(sheets.find((sheet) => sheet.sheet === "分析サマリ")?.images).toEqual(
@@ -95,108 +89,65 @@ describe("analysis Excel sheets", () => {
       ]),
     );
     expect(sheets.find((sheet) => sheet.sheet === "分析サマリ")?.autoFilterRef).toBeUndefined();
+    expect(table(sheets, "概要")).toEqual(
+      expect.arrayContaining([
+        ["ヘッダー: 名前 / 値", null],
+        ["出力対象ファイルの解析件数と生成情報の概要です。", null],
+      ]),
+    );
+    expect(table(sheets, "宣言")).toEqual(
+      expect.arrayContaining([
+        [
+          "出力対象ファイル自身にある宣言だけを並べた表です。",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+        ],
+      ]),
+    );
     expect(table(sheets, "チャート元データ")).toEqual(
       expect.arrayContaining([
         ["未使用の宣言", 2, "要確認", "未使用 sheet で削除可否を確認"],
         ["他ファイルからの使用数", 4, "あり", "外部ファイルからの使用 sheet で利用元を確認"],
-        ["変数", 5, 3, 2, 6],
+        ["変数", 4, 2, 2, 4],
         ["暗黙global変数", 2, 2, 0, 3],
-        ["関数", 2, 2, 0, 2],
-        ["定数", 1, 1, 0, 1],
-        ["クラス", 1, 1, 0, 1],
+        ["関数", 1, 1, 0, 1],
       ]),
     );
+    expect(sheets.some((sheet) => sheet.sheet === "被参照")).toBe(false);
     expect(sheets.find((sheet) => sheet.sheet === "チャート元データ")?.hidden).toBe(true);
     expect(
       sheets.find((sheet) => sheet.sheet === "チャート元データ")?.autoFilterRef,
     ).toBeUndefined();
-    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B14");
-    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:O12");
-    expect(sheets.find((sheet) => sheet.sheet === "被参照")?.autoFilterRef).toBe("A1:L10");
-    expect(sheets.find((sheet) => sheet.sheet === "内部使用")?.autoFilterRef).toBe("A1:K5");
+    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A3:B16");
+    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A3:O10");
+    expect(sheets.find((sheet) => sheet.sheet === "ファイル内使用")?.autoFilterRef).toBe("A3:K7");
     expect(sheets.find((sheet) => sheet.sheet === "外部ファイルからの使用")?.autoFilterRef).toBe(
-      "A1:K5",
+      "A3:K7",
     );
     expect(sheets.find((sheet) => sheet.sheet === "include 先シンボル使用")?.autoFilterRef).toBe(
-      "A1:J6",
+      "A3:J8",
     );
-    expect(sheets.find((sheet) => sheet.sheet === "メンバー使用")?.autoFilterRef).toBe("A1:I2");
-    expect(sheets.find((sheet) => sheet.sheet === "暗黙global変数")?.autoFilterRef).toBe("A1:K3");
+    expect(sheets.find((sheet) => sheet.sheet === "メンバー使用")?.autoFilterRef).toBe("A3:I4");
+    expect(sheets.find((sheet) => sheet.sheet === "暗黙global変数")?.autoFilterRef).toBe("A3:K5");
     expect(sheets.find((sheet) => sheet.sheet === "暗黙global変数代入候補")?.autoFilterRef).toBe(
-      "A1:I2",
+      "A3:I4",
     );
-    expect(sheets.find((sheet) => sheet.sheet === "未使用")?.autoFilterRef).toBe("A1:M3");
-    expect(sheets.find((sheet) => sheet.sheet === "未解決")?.autoFilterRef).toBe("A1:I2");
+    expect(sheets.find((sheet) => sheet.sheet === "未使用")?.autoFilterRef).toBe("A3:M5");
+    expect(sheets.find((sheet) => sheet.sheet === "未解決")?.autoFilterRef).toBe("A3:I4");
     expect(table(sheets, "宣言")).toEqual(
       expect.arrayContaining([
-        [
-          "includes/util.inc",
-          "SharedValue",
-          "変数",
-          "",
-          "グローバル",
-          "",
-          "String",
-          "なし",
-          "",
-          1,
-          5,
-          1,
-          1,
-          0,
-          "使用あり",
-        ],
-        [
-          "includes/util.inc",
-          "DoWork",
-          "関数",
-          "",
-          "グローバル",
-          "",
-          "",
-          "なし",
-          "",
-          2,
-          10,
-          0,
-          0,
-          1,
-          "使用あり",
-        ],
-        [
-          "includes/util.inc",
-          "SharedConst",
-          "定数",
-          "",
-          "グローバル",
-          "",
-          "Long",
-          "なし",
-          "",
-          3,
-          5,
-          1,
-          0,
-          0,
-          "使用あり",
-        ],
-        [
-          "includes/util.inc",
-          "SharedClass",
-          "クラス",
-          "",
-          "グローバル",
-          "",
-          "",
-          "なし",
-          "",
-          4,
-          5,
-          1,
-          0,
-          0,
-          "使用あり",
-        ],
         [
           "main.asp",
           "TargetValue",
@@ -318,20 +269,8 @@ describe("analysis Excel sheets", () => {
         ],
       ]),
     );
-    expect(table(sheets, "被参照")).toEqual(
-      expect.arrayContaining([
-        ["includes/util.inc", "SharedValue", "変数", "", "String", "ソース", 1, 5, 2, 1, 1, 0],
-        ["includes/util.inc", "DoWork", "関数", "", "", "ソース", 2, 10, 1, 0, 0, 1],
-        ["includes/util.inc", "SharedConst", "定数", "", "Long", "ソース", 3, 5, 1, 1, 0, 0],
-        ["includes/util.inc", "SharedClass", "クラス", "", "", "ソース", 4, 5, 1, 1, 0, 0],
-        ["main.asp", "TargetValue", "変数", "", "String", "ソース", 3, 5, 2, 1, 1, 0],
-        ["main.asp", "TargetProc", "関数", "", "", "ソース", 4, 5, 1, 0, 0, 1],
-        ["main.asp", "LocalOnlyValue", "変数", "", "", "ソース", 6, 5, 2, 1, 1, 0],
-        ["main.asp", "MissingValue", "暗黙global変数", "", "", "ソース", 10, 5, 2, 1, 1, 0],
-        ["main.asp", "MissingRead", "暗黙global変数", "", "", "ソース", 11, 5, 1, 1, 0, 0],
-      ]),
-    );
-    expect(table(sheets, "内部使用")).toEqual(
+    expect(table(sheets, "宣言").flat()).not.toContain("SharedValue");
+    expect(table(sheets, "ファイル内使用")).toEqual(
       expect.arrayContaining([
         [
           "参照",
@@ -639,14 +578,34 @@ describe("analysis Excel sheets", () => {
     expect(unusedRows.flat()).not.toContain("UsedConst");
     expect(unusedRows.flat()).not.toContain("UsedLocalConst");
     expect(unusedRows.flat()).not.toContain("UsedParameter");
-    expect(table(sheets, "被参照")).toEqual(
-      expect.arrayContaining([
-        ["coverage.asp", "UsedFunction", "関数", "", "", "ソース", 1, 5, 1, 0, 0, 1],
-        ["coverage.asp", "UsedLocalValue", "変数", "", "", "ソース", 3, 5, 1, 0, 1, 0],
-        ["coverage.asp", "UsedConst", "定数", "", "", "ソース", 5, 5, 1, 1, 0, 0],
-        ["coverage.asp", "UsedLocalConst", "定数", "", "", "ソース", 7, 5, 1, 1, 0, 0],
-        ["coverage.asp", "UsedParameter", "パラメーター", "", "", "ソース", 9, 5, 1, 1, 0, 0],
-      ]),
+    expect(sheets.some((sheet) => sheet.sheet === "被参照")).toBe(false);
+  });
+
+  it("uses localized file-local usage labels and no-truncation text", () => {
+    const jaSheets = createAnalysisExcelSheets(
+      { ...analysisPayload(), truncated: undefined },
+      "ja",
+      {
+        generatedAt: new Date("2026-06-10T00:00:00.000Z"),
+        targetUri: "file:///workspace/main.asp",
+      },
+    );
+    const enSheets = createAnalysisExcelSheets(
+      { ...analysisPayload(), truncated: undefined },
+      "en",
+      {
+        generatedAt: new Date("2026-06-10T00:00:00.000Z"),
+        targetUri: "file:///workspace/main.asp",
+      },
+    );
+
+    expect(jaSheets.map((sheet) => sheet.sheet)).toContain("ファイル内使用");
+    expect(jaSheets.map((sheet) => sheet.sheet)).not.toContain("内部使用");
+    expect(enSheets.map((sheet) => sheet.sheet)).toContain("File-local Usage");
+    expect(enSheets.map((sheet) => sheet.sheet)).not.toContain("Internal Usage");
+    expect(table(jaSheets, "概要")).toEqual(expect.arrayContaining([["切り詰め", "切り詰めなし"]]));
+    expect(table(enSheets, "Summary")).toEqual(
+      expect.arrayContaining([["Truncated", "Not truncated"]]),
     );
   });
 
@@ -680,7 +639,7 @@ describe("analysis Excel sheets", () => {
         sheets.find((sheet) => sheet.sheet === "宣言")!,
         { sheetId: "4", sheetIndex: 3 },
       ),
-    ).toContain('<autoFilter ref="A1:O12"/>');
+    ).toContain('<autoFilter ref="A3:O10"/>');
   });
 
   it("can generate an xlsx workbook buffer with analysis charts and workbook features", async () => {
@@ -703,7 +662,7 @@ describe("analysis Excel sheets", () => {
 function table(sheets: ReturnType<typeof createAnalysisExcelSheets>, name: string): unknown[][] {
   const sheet = sheets.find((candidate) => candidate.sheet === name);
   expect(sheet).toBeDefined();
-  return sheet?.data.slice(1).map((row) => row.map(cellValue)) ?? [];
+  return sheet?.data.map((row) => row.map(cellValue)) ?? [];
 }
 
 function cellValue(cell: unknown): unknown {

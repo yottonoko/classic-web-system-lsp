@@ -39,6 +39,7 @@ export interface AspSettings {
   styleExtraction?: AspStyleExtractionSettings;
   flowchart?: AspFlowchartSettings;
   graph?: AspGraphSettings;
+  excel?: AspExcelSettings;
   cache?: AspCacheSettings;
   workspace?: AspWorkspaceSettings;
 }
@@ -208,23 +209,33 @@ export interface AspGraphSettings {
   showMemberLinks?: boolean;
   showIncomingDocumentIncludes?: boolean;
   showIncomingFolderIncludes?: boolean;
+  includeRelatedIncludeTreesForUnresolved?: boolean;
+}
+
+export interface AspExcelSettings {
+  includeRelatedIncludeTreesForUnresolved?: boolean;
 }
 
 export interface AspFlowchartBuildOptions {
   fileName?: string;
   includes?: AspFlowchartInclude[];
   labelLineLength?: number;
+  labelMode?: AspFlowchartLabelMode;
   locale?: AspLocale;
   symbols?: AspFlowchartSymbolDocument[];
 }
 
 export interface AspFlowchartSettings {
   labelLineLength?: number;
+  labelMode?: AspFlowchartLabelMode;
 }
+
+export type AspFlowchartLabelMode = "normal" | "raw" | "description";
 
 export interface AspFlowchartPayload {
   uri: string;
   fileName?: string;
+  labelMode?: AspFlowchartLabelMode;
   sections: AspFlowchartSection[];
   nodes: AspFlowchartNode[];
   edges: AspFlowchartEdge[];

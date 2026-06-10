@@ -92,7 +92,6 @@ type AnalysisTextKey =
   | "files"
   | "includes"
   | "declarations"
-  | "referenced"
   | "usages"
   | "internalUsages"
   | "externalFileUsages"
@@ -118,6 +117,7 @@ type AnalysisTextKey =
   | "implicitGlobalAssignmentCount"
   | "unusedCount"
   | "truncated"
+  | "notTruncated"
   | "yes"
   | "no"
   | "used"
@@ -217,9 +217,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     files: "Files",
     includes: "Includes",
     declarations: "Declarations",
-    referenced: "Referenced",
     usages: "Usages",
-    internalUsages: "Internal Usage",
+    internalUsages: "File-local Usage",
     externalFileUsages: "External File Usage",
     includedSymbolUsages: "Included Symbol Usage",
     memberUsages: "Member Usage",
@@ -243,6 +242,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     implicitGlobalAssignmentCount: "Implicit global assignment candidates",
     unusedCount: "Unused",
     truncated: "Truncated",
+    notTruncated: "Not truncated",
     yes: "Yes",
     no: "No",
     used: "Used",
@@ -343,9 +343,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     files: "ファイル",
     includes: "参照ファイル",
     declarations: "宣言",
-    referenced: "被参照",
     usages: "使用箇所",
-    internalUsages: "内部使用",
+    internalUsages: "ファイル内使用",
     externalFileUsages: "外部ファイルからの使用",
     includedSymbolUsages: "include 先シンボル使用",
     memberUsages: "メンバー使用",
@@ -369,6 +368,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     implicitGlobalAssignmentCount: "暗黙global変数代入候補数",
     unusedCount: "未使用数",
     truncated: "切り詰め",
+    notTruncated: "切り詰めなし",
     yes: "あり",
     no: "なし",
     used: "使用あり",
@@ -460,6 +460,51 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     reviewMissingExternalUsagesAction: "対象ファイルは他ファイルから使われていない可能性あり",
     reviewIncludedUsagesAction: "include 先シンボル使用 sheet で include 依存を確認",
     reviewMissingIncludedUsagesAction: "include 先シンボルの使用なし",
+  },
+};
+
+const tableDescriptions: Record<AspGraphLocale, Record<string, string>> = {
+  en: {
+    summary: "High-level counts and generation metadata for the exported target file analysis.",
+    reviewPriority: "Review-oriented summary of risks that usually need manual confirmation.",
+    externalReferenceSummary:
+      "Declaration counts grouped by kind, with how many are used or unused.",
+    includeUsageSummary:
+      "Usage counts for symbols declared in included files and used by the target file.",
+    topReferencedDeclarations: "Most-used declarations in the target file, ordered by usage count.",
+    unusedByKind: "Unused declaration totals grouped by declaration kind.",
+    chartData: "Source data used by the workbook charts.",
+    declarations: "Declarations that belong to the exported target file only.",
+    internalUsages:
+      "Usages inside the exported target file that point to target-file declarations.",
+    externalFileUsages:
+      "Usages from other files that point to declarations in the exported target file.",
+    includedSymbolUsages:
+      "Usages in the target file that point to declarations from included files.",
+    memberUsages: "Member expression usages found in the target file.",
+    implicitGlobals: "Implicit global variables inferred for the target file.",
+    implicitGlobalAssignments:
+      "Possible assignments from include-related context into inferred implicit globals.",
+    unused: "Target-file declarations that have no detected usages.",
+    unresolved: "Unresolved references, calls, and assignments found in the target file.",
+  },
+  ja: {
+    summary: "出力対象ファイルの解析件数と生成情報の概要です。",
+    reviewPriority: "手作業で確認した方がよいリスク項目をまとめた表です。",
+    externalReferenceSummary: "宣言種別ごとの総数、使用あり、未使用の内訳です。",
+    includeUsageSummary: "対象ファイルが include 先の宣言をどの種類で使っているかの集計です。",
+    topReferencedDeclarations: "対象ファイル内でよく使われている宣言を使用数順に並べた表です。",
+    unusedByKind: "未使用宣言を宣言種別ごとに集計した表です。",
+    chartData: "ワークブック内のグラフに使う元データです。",
+    declarations: "出力対象ファイル自身にある宣言だけを並べた表です。",
+    internalUsages: "出力対象ファイル内から同じファイル内の宣言へ向く使用箇所です。",
+    externalFileUsages: "他ファイルから出力対象ファイル内の宣言へ向く使用箇所です。",
+    includedSymbolUsages: "対象ファイルから include 先の宣言へ向く使用箇所です。",
+    memberUsages: "対象ファイル内で見つかったメンバー式の使用箇所です。",
+    implicitGlobals: "対象ファイルで推定された暗黙 global 変数です。",
+    implicitGlobalAssignments: "include 関係から暗黙 global へ代入している可能性がある箇所です。",
+    unused: "使用が検出されなかった対象ファイル内の宣言です。",
+    unresolved: "対象ファイル内で名前解決できなかった参照、呼び出し、代入です。",
   },
 };
 
@@ -614,16 +659,18 @@ export function createAnalysisExcelSheets(
       ),
     ),
     sheet(
-      text[locale].referenced,
-      referencedRows(context.targetDeclarations, locale, context.targetUsageCounts, fileNamesByUri),
-    ),
-    sheet(
       text[locale].internalUsages,
-      usageRows(context.internalUsageLinks, locale, nodesById, fileNamesByUri),
+      usageRows(context.internalUsageLinks, locale, nodesById, fileNamesByUri, "internalUsages"),
     ),
     sheet(
       text[locale].externalFileUsages,
-      usageRows(context.externalUsageLinks, locale, nodesById, fileNamesByUri),
+      usageRows(
+        context.externalUsageLinks,
+        locale,
+        nodesById,
+        fileNamesByUri,
+        "externalFileUsages",
+      ),
     ),
     sheet(
       text[locale].includedSymbolUsages,
@@ -708,7 +755,7 @@ function summaryRows(
   const rows: Array<[string, string | number]> = [
     [t.scope, valueLabel("file", locale)],
     [t.root, context.targetFileName],
-    [t.generatedAt, generatedAt.toISOString()],
+    [t.generatedAt, formatGeneratedAt(generatedAt)],
     [t.declarationsCount, context.targetDeclarations.length],
     [t.referencesCount, usageLinkCount(context.targetUsageLinks, "references")],
     [t.assignmentsCount, usageLinkCount(context.targetUsageLinks, "assignments")],
@@ -721,9 +768,68 @@ function summaryRows(
       context.implicitGlobalAssignmentCandidates.reduce((sum, item) => sum + item.count, 0),
     ],
     [t.unusedCount, context.unusedDeclarations.length],
-    [t.truncated, payload.truncated?.reason ?? ""],
+    [t.truncated, truncationDisplay(payload.truncated?.reason, locale)],
   ];
-  return [header([t.name, t.value ?? "Value"]), ...rows.map(([name, value]) => [name, value])];
+  return describedTable(
+    locale,
+    "summary",
+    [t.name, t.value],
+    rows.map(([name, value]) => [name, value]),
+  );
+}
+
+function formatGeneratedAt(date: Date): string {
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absoluteOffset = Math.abs(offsetMinutes);
+  const offsetHours = Math.floor(absoluteOffset / 60);
+  const offsetRemainderMinutes = absoluteOffset % 60;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(
+    date.getHours(),
+  )}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())} GMT${sign}${pad2(
+    offsetHours,
+  )}:${pad2(offsetRemainderMinutes)}`;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function truncationDisplay(reason: string | undefined, locale: AspGraphLocale): string {
+  if (!reason) {
+    return text[locale].notTruncated;
+  }
+  const match = /^([A-Za-z]+)>(\d+)$/.exec(reason);
+  if (!match) {
+    return reason;
+  }
+  const [, kind, limit] = match;
+  if (locale === "ja") {
+    switch (kind) {
+      case "documents":
+        return `ドキュメント数が ${limit} 件を超えたため切り詰められました`;
+      case "text":
+        return `解析対象テキストが ${limit} 文字を超えたため切り詰められました`;
+      case "depth":
+        return `include の深さが ${limit} を超えたため切り詰められました`;
+      case "workspaceIndex":
+        return `workspace index が ${limit} 件を超えたため切り詰められました`;
+      default:
+        return reason;
+    }
+  }
+  switch (kind) {
+    case "documents":
+      return `Truncated because the document count exceeded ${limit}.`;
+    case "text":
+      return `Truncated because the analyzed text exceeded ${limit} characters.`;
+    case "depth":
+      return `Truncated because the include depth exceeded ${limit}.`;
+    case "workspaceIndex":
+      return `Truncated because the workspace index exceeded ${limit} entries.`;
+    default:
+      return reason;
+  }
 }
 
 function analysisSummaryRows(
@@ -732,30 +838,39 @@ function analysisSummaryRows(
   fileNamesByUri: Map<string, string>,
 ): Cell[][] {
   const t = text[locale];
+  const reviewHeaders = [t.metric, t.count, t.status, t.action];
+  const externalSummaryHeaders = [t.kind, t.total, t.usedCount, t.unusedCount, t.usageCount, t.bar];
+  const includeUsageHeaders = [t.usageKind, t.count, t.bar];
+  const topReferencedHeaders = [
+    t.name,
+    t.kind,
+    t.file,
+    t.line,
+    t.usageCount,
+    t.referenceCount,
+    t.assignmentCount,
+    t.callCount,
+  ];
+  const unusedByKindHeaders = [t.kind, t.unusedCount, t.total, t.unusedRate, t.bar];
   return [
     sectionTitle(t.reviewPriority, 4),
-    header([t.metric, t.count, t.status, t.action]),
+    ...tableIntroRows(locale, "reviewPriority", reviewHeaders),
+    header(reviewHeaders),
     ...reviewPriorityRows(locale, context),
     [],
     sectionTitle(t.externalReferenceSummary, 6),
-    header([t.kind, t.total, t.usedCount, t.unusedCount, t.usageCount, t.bar]),
+    ...tableIntroRows(locale, "externalReferenceSummary", externalSummaryHeaders),
+    header(externalSummaryHeaders),
     ...declarationKindSummaryRows(context.targetDeclarations, locale, context.targetUsageCounts),
     [],
     sectionTitle(t.includeUsageSummary, 3),
-    header([t.usageKind, t.count, t.bar]),
+    ...tableIntroRows(locale, "includeUsageSummary", includeUsageHeaders),
+    header(includeUsageHeaders),
     ...usageCountRows(context.includedUsageLinks, locale),
     [],
     sectionTitle(t.topReferencedDeclarations, 8),
-    header([
-      t.name,
-      t.kind,
-      t.file,
-      t.line,
-      t.usageCount,
-      t.referenceCount,
-      t.assignmentCount,
-      t.callCount,
-    ]),
+    ...tableIntroRows(locale, "topReferencedDeclarations", topReferencedHeaders),
+    header(topReferencedHeaders),
     ...topReferencedDeclarationRows(
       context.targetDeclarations,
       locale,
@@ -764,20 +879,27 @@ function analysisSummaryRows(
     ),
     [],
     sectionTitle(t.unusedByKind, 5),
-    header([t.kind, t.unusedCount, t.total, t.unusedRate, t.bar]),
+    ...tableIntroRows(locale, "unusedByKind", unusedByKindHeaders),
+    header(unusedByKindHeaders),
     ...unusedByKindRows(context.unusedDeclarations, context.targetDeclarations, locale),
   ];
 }
 
 function chartDataRows(locale: AspGraphLocale, context: AnalysisContext): Cell[][] {
   const t = text[locale];
+  const reviewHeaders = [t.metric, t.count, t.status, t.action];
+  const externalSummaryHeaders = [t.kind, t.total, t.usedCount, t.unusedCount, t.usageCount];
+  const includeUsageHeaders = [t.usageKind, t.count];
+  const unusedByKindHeaders = [t.kind, t.unusedCount, t.total, t.unusedRate];
   return [
     sectionTitle(t.reviewPriority, 4),
-    header([t.metric, t.count, t.status, t.action]),
+    ...tableIntroRows(locale, "chartData", reviewHeaders),
+    header(reviewHeaders),
     ...reviewPriorityRows(locale, context),
     [],
     sectionTitle(t.externalReferenceSummary, 5),
-    header([t.kind, t.total, t.usedCount, t.unusedCount, t.usageCount]),
+    ...tableIntroRows(locale, "chartData", externalSummaryHeaders),
+    header(externalSummaryHeaders),
     ...declarationKindSummaryRows(
       context.targetDeclarations,
       locale,
@@ -785,11 +907,13 @@ function chartDataRows(locale: AspGraphLocale, context: AnalysisContext): Cell[]
     ).map((row) => row.slice(0, 5)),
     [],
     sectionTitle(t.includeUsageSummary, 2),
-    header([t.usageKind, t.count]),
+    ...tableIntroRows(locale, "chartData", includeUsageHeaders),
+    header(includeUsageHeaders),
     ...usageCountRows(context.includedUsageLinks, locale).map((row) => row.slice(0, 2)),
     [],
     sectionTitle(t.unusedByKind, 4),
-    header([t.kind, t.unusedCount, t.total, t.unusedRate]),
+    ...tableIntroRows(locale, "chartData", unusedByKindHeaders),
+    header(unusedByKindHeaders),
     ...unusedByKindRows(context.unusedDeclarations, context.targetDeclarations, locale).map((row) =>
       row.slice(0, 4),
     ),
@@ -1121,21 +1245,19 @@ function includedUsageRows(
       ]);
     })
     .sort(compareRows(2, 3, 6, 7, 0));
-  return [
-    header([
-      t.usageKind,
-      t.role,
-      t.includeFile,
-      t.includedSymbol,
-      t.includedKind,
-      t.inferredType,
-      t.usedFromFile,
-      t.line,
-      t.column,
-      t.count,
-    ]),
-    ...rows,
+  const headers = [
+    t.usageKind,
+    t.role,
+    t.includeFile,
+    t.includedSymbol,
+    t.includedKind,
+    t.inferredType,
+    t.usedFromFile,
+    t.line,
+    t.column,
+    t.count,
   ];
+  return describedTable(locale, "includedSymbolUsages", headers, rows);
 }
 
 function declarationRows(
@@ -1148,75 +1270,24 @@ function declarationRows(
   const rows = declarations
     .sort(compareNodesByLocation(fileNamesByUri))
     .map((node) => declarationRow(node, locale, usageCounts, fileNamesByUri));
-  return [
-    header([
-      t.file,
-      t.name,
-      t.kind,
-      t.memberOf,
-      t.bindingScope,
-      t.procedureKind,
-      t.inferredType,
-      t.implicit,
-      t.array,
-      t.line,
-      t.column,
-      t.referenceCount,
-      t.assignmentCount,
-      t.callCount,
-      t.status,
-    ]),
-    ...rows,
+  const headers = [
+    t.file,
+    t.name,
+    t.kind,
+    t.memberOf,
+    t.bindingScope,
+    t.procedureKind,
+    t.inferredType,
+    t.implicit,
+    t.array,
+    t.line,
+    t.column,
+    t.referenceCount,
+    t.assignmentCount,
+    t.callCount,
+    t.status,
   ];
-}
-
-function referencedRows(
-  declarations: AspGraphNode[],
-  locale: AspGraphLocale,
-  usageCounts: Map<string, UsageCounts>,
-  fileNamesByUri: Map<string, string>,
-): Cell[][] {
-  const t = text[locale];
-  const rows = declarations
-    .filter((node) => usageTotal(usageCounts.get(node.id)) > 0)
-    .sort((left, right) => {
-      const usage = usageTotal(usageCounts.get(right.id)) - usageTotal(usageCounts.get(left.id));
-      return usage || compareNodesByLocation(fileNamesByUri)(left, right);
-    })
-    .map((node) => {
-      const usage = usageCounts.get(node.id);
-      return [
-        displayNameForUri(node.uri, fileNamesByUri),
-        node.label,
-        valueLabel(declarationKindKey(node), locale),
-        node.memberOf ?? "",
-        node.typeName ?? "",
-        valueLabel(node.origin, locale),
-        oneBasedLine(node.range),
-        oneBasedColumn(node.range),
-        usageTotal(usage),
-        usage?.references ?? 0,
-        usage?.assignments ?? 0,
-        usage?.calls ?? 0,
-      ];
-    });
-  return [
-    header([
-      t.file,
-      t.name,
-      t.kind,
-      t.memberOf,
-      t.inferredType,
-      t.origin,
-      t.line,
-      t.column,
-      t.usageCount,
-      t.referenceCount,
-      t.assignmentCount,
-      t.callCount,
-    ]),
-    ...rows,
-  ];
+  return describedTable(locale, "declarations", headers, rows);
 }
 
 function usageRows(
@@ -1224,27 +1295,26 @@ function usageRows(
   locale: AspGraphLocale,
   nodesById: Map<string, AspGraphNode>,
   fileNamesByUri: Map<string, string>,
+  descriptionKey: string,
 ): Cell[][] {
   const t = text[locale];
   const rows = links
     .flatMap((link) => usageLinkRows(link, locale, nodesById, fileNamesByUri))
     .sort(compareRows(2, 8, 9, 5));
-  return [
-    header([
-      t.usageKind,
-      t.role,
-      t.usageFile,
-      t.usageOwner,
-      t.declarationFile,
-      t.declarationName,
-      t.declarationKind,
-      t.inferredType,
-      t.line,
-      t.column,
-      t.count,
-    ]),
-    ...rows,
+  const headers = [
+    t.usageKind,
+    t.role,
+    t.usageFile,
+    t.usageOwner,
+    t.declarationFile,
+    t.declarationName,
+    t.declarationKind,
+    t.inferredType,
+    t.line,
+    t.column,
+    t.count,
   ];
+  return describedTable(locale, descriptionKey, headers, rows);
 }
 
 function memberUsageRows(
@@ -1270,20 +1340,18 @@ function memberUsageRows(
       ]);
     })
     .sort(compareRows(5, 6, 2, 3));
-  return [
-    header([
-      t.usageKind,
-      t.role,
-      t.receiver,
-      t.memberName,
-      t.expression,
-      t.usageFile,
-      t.line,
-      t.column,
-      t.count,
-    ]),
-    ...rows,
+  const headers = [
+    t.usageKind,
+    t.role,
+    t.receiver,
+    t.memberName,
+    t.expression,
+    t.usageFile,
+    t.line,
+    t.column,
+    t.count,
   ];
+  return describedTable(locale, "memberUsages", headers, rows);
 }
 
 function implicitGlobalRows(
@@ -1309,22 +1377,20 @@ function implicitGlobalRows(
       usage?.calls ?? 0,
     ];
   });
-  return [
-    header([
-      t.file,
-      t.name,
-      t.kind,
-      t.inferredType,
-      t.bindingScope,
-      t.line,
-      t.column,
-      t.usageCount,
-      t.referenceCount,
-      t.assignmentCount,
-      t.callCount,
-    ]),
-    ...rows,
+  const headers = [
+    t.file,
+    t.name,
+    t.kind,
+    t.inferredType,
+    t.bindingScope,
+    t.line,
+    t.column,
+    t.usageCount,
+    t.referenceCount,
+    t.assignmentCount,
+    t.callCount,
   ];
+  return describedTable(locale, "implicitGlobals", headers, rows);
 }
 
 function implicitGlobalAssignmentRows(
@@ -1346,20 +1412,18 @@ function implicitGlobalAssignmentRows(
       candidate.count,
     ])
     .sort(compareRows(0, 1, 5, 2, 6, 7));
-  return [
-    header([
-      t.implicitGlobalFile,
-      t.implicitGlobalName,
-      t.assignmentFile,
-      t.assignmentTarget,
-      t.assignmentTargetFile,
-      t.includeDepth,
-      t.line,
-      t.column,
-      t.count,
-    ]),
-    ...rows,
+  const headers = [
+    t.implicitGlobalFile,
+    t.implicitGlobalName,
+    t.assignmentFile,
+    t.assignmentTarget,
+    t.assignmentTargetFile,
+    t.includeDepth,
+    t.line,
+    t.column,
+    t.count,
   ];
+  return describedTable(locale, "implicitGlobalAssignments", headers, rows);
 }
 
 function unusedDeclarationRows(
@@ -1369,41 +1433,40 @@ function unusedDeclarationRows(
   fileNamesByUri: Map<string, string>,
 ): Cell[][] {
   const t = text[locale];
-  return [
-    header([
-      t.file,
-      t.name,
-      t.kind,
-      t.memberOf,
-      t.bindingScope,
-      t.inferredType,
-      t.implicit,
-      t.line,
-      t.column,
-      t.referenceCount,
-      t.assignmentCount,
-      t.callCount,
-      t.status,
-    ]),
-    ...unusedDeclarations.map((node) => {
-      const usage = usageCounts.get(node.id);
-      return [
-        displayNameForUri(node.uri, fileNamesByUri),
-        node.label,
-        valueLabel(declarationKindKey(node), locale),
-        node.memberOf ?? "",
-        valueLabel(node.bindingScope, locale),
-        node.typeName ?? "",
-        yn(node.implicit === true, locale),
-        oneBasedLine(node.range),
-        oneBasedColumn(node.range),
-        usage?.references ?? 0,
-        usage?.assignments ?? 0,
-        usage?.calls ?? 0,
-        text[locale].unusedStatus,
-      ];
-    }),
+  const headers = [
+    t.file,
+    t.name,
+    t.kind,
+    t.memberOf,
+    t.bindingScope,
+    t.inferredType,
+    t.implicit,
+    t.line,
+    t.column,
+    t.referenceCount,
+    t.assignmentCount,
+    t.callCount,
+    t.status,
   ];
+  const rows = unusedDeclarations.map((node) => {
+    const usage = usageCounts.get(node.id);
+    return [
+      displayNameForUri(node.uri, fileNamesByUri),
+      node.label,
+      valueLabel(declarationKindKey(node), locale),
+      node.memberOf ?? "",
+      valueLabel(node.bindingScope, locale),
+      node.typeName ?? "",
+      yn(node.implicit === true, locale),
+      oneBasedLine(node.range),
+      oneBasedColumn(node.range),
+      usage?.references ?? 0,
+      usage?.assignments ?? 0,
+      usage?.calls ?? 0,
+      text[locale].unusedStatus,
+    ];
+  });
+  return describedTable(locale, "unused", headers, rows);
 }
 
 function unresolvedRows(
@@ -1416,10 +1479,18 @@ function unresolvedRows(
   const rows = links
     .flatMap((link) => usageLikeLinkRows(link, locale, nodesById, fileNamesByUri))
     .sort(compareRows(5, 6, 4));
-  return [
-    header([t.usageKind, t.role, t.kind, t.source, t.name, t.file, t.line, t.column, t.count]),
-    ...rows,
+  const headers = [
+    t.usageKind,
+    t.role,
+    t.kind,
+    t.source,
+    t.name,
+    t.file,
+    t.line,
+    t.column,
+    t.count,
   ];
+  return describedTable(locale, "unresolved", headers, rows);
 }
 
 function declarationRow(
@@ -1530,11 +1601,7 @@ function analysisContext(
     (link) => isUsageGraphLink(link) && includedDeclarationIds.has(link.target),
     ({ uri }) => sameGraphUri(uri, targetUri),
   );
-  const usedIncludedDeclarationIds = new Set(includedUsageLinks.map((link) => link.target));
-  const targetDeclarations = [
-    ...rootDeclarations,
-    ...includedDeclarations.filter((node) => usedIncludedDeclarationIds.has(node.id)),
-  ].sort(compareNodesByLocation(fileNamesByUri));
+  const targetDeclarations = rootDeclarations;
   const targetDeclarationIds = new Set(targetDeclarations.map((node) => node.id));
   const implicitGlobalDeclarations = targetDeclarations.filter(isImplicitGlobalDeclaration);
   const implicitGlobalCandidateDeclarations = implicitGlobalDeclarations.filter(
@@ -1949,6 +2016,46 @@ function header(values: string[]): Cell[] {
   }));
 }
 
+function describedTable(
+  locale: AspGraphLocale,
+  descriptionKey: string,
+  headers: string[],
+  rows: Cell[][],
+): Cell[][] {
+  return [...tableIntroRows(locale, descriptionKey, headers), header(headers), ...rows];
+}
+
+function tableIntroRows(
+  locale: AspGraphLocale,
+  descriptionKey: string,
+  headers: string[],
+): Cell[][] {
+  const description = tableDescriptions[locale][descriptionKey] ?? descriptionKey;
+  return [
+    descriptionRow(description, headers.length),
+    descriptionRow(headerMeaning(headers, locale), headers.length),
+  ];
+}
+
+function descriptionRow(value: string, columnSpan: number): Cell[] {
+  return [
+    {
+      value,
+      type: String,
+      textColor: "#374151",
+      backgroundColor: "#F3F4F6",
+      wrap: true,
+      columnSpan,
+    },
+    ...Array.from({ length: Math.max(0, columnSpan - 1) }, () => null),
+  ];
+}
+
+function headerMeaning(headers: string[], locale: AspGraphLocale): string {
+  const joined = headers.join(" / ");
+  return locale === "ja" ? `ヘッダー: ${joined}` : `Headers: ${joined}`;
+}
+
 function sectionTitle(value: string, columnSpan: number): Cell[] {
   return [
     {
@@ -2009,11 +2116,12 @@ function sheet(
   options: AnalysisSheetOptions = {},
 ): AnalysisExcelSheet {
   const autoFilterRef = options.autoFilter === false ? undefined : autoFilterRefForRows(rows);
+  const headerRowIndex = headerRowIndexForRows(rows);
   return {
     sheet: name,
     data: rows,
     columns: columnsForRows(rows),
-    stickyRowsCount: 1,
+    stickyRowsCount: headerRowIndex === undefined ? 1 : headerRowIndex + 1,
     autoFilterRef,
     hidden: options.hidden === true ? true : undefined,
     images: options.images,
@@ -2021,11 +2129,30 @@ function sheet(
 }
 
 function autoFilterRefForRows(rows: Cell[][]): string | undefined {
-  const columnCount = Math.max(0, ...rows.map((row) => row.length));
-  if (rows.length === 0 || columnCount === 0) {
+  const headerRowIndex = headerRowIndexForRows(rows);
+  if (headerRowIndex === undefined) {
     return undefined;
   }
-  return `A1:${spreadsheetColumnName(columnCount - 1)}${rows.length}`;
+  const columnCount = rows[headerRowIndex]?.length ?? 0;
+  if (columnCount === 0) {
+    return undefined;
+  }
+  const firstRow = headerRowIndex + 1;
+  return `A${firstRow}:${spreadsheetColumnName(columnCount - 1)}${rows.length}`;
+}
+
+function headerRowIndexForRows(rows: Cell[][]): number | undefined {
+  const index = rows.findIndex((row) => row.some(isHeaderCell));
+  return index >= 0 ? index : undefined;
+}
+
+function isHeaderCell(cell: Cell): boolean {
+  return (
+    typeof cell === "object" &&
+    cell !== null &&
+    "backgroundColor" in cell &&
+    (cell as { backgroundColor?: unknown }).backgroundColor === "#1F4E79"
+  );
 }
 
 function spreadsheetColumnName(columnIndex: number): string {

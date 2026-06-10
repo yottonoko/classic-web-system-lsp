@@ -482,12 +482,77 @@ Server.HTMLEe▮
               text: document.text,
             },
           });
-          await server.waitForNotification("textDocument/publishDiagnostics");
           const completions = await server.request("textDocument/completion", {
             textDocument: { uri: testCase.uri },
             position: document.position,
           });
           testCase.assert(completionItems(completions));
+        }
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("returns Classic ASP directive completions by caret context", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+
+        const cases = [
+          {
+            uri: "file:///tmp/directive-open.asp",
+            markedSource: "<%▮",
+            expectedLabels: ['<%@ Language="VBScript" CodePage=65001 %>'],
+          },
+          {
+            uri: "file:///tmp/directive-attributes.asp",
+            markedSource: "<%@ ▮ %>",
+            expectedLabels: ["Language", "CodePage", "LCID", "Transaction", "EnableSessionState"],
+          },
+          {
+            uri: "file:///tmp/directive-language-value.asp",
+            markedSource: "<%@ Language=▮ %>",
+            expectedLabels: ["VBScript", "JScript", "JavaScript"],
+          },
+          {
+            uri: "file:///tmp/directive-quoted-language-value.asp",
+            markedSource: '<%@ Language="▮" %>',
+            expectedLabels: ["VBScript", "JScript", "JavaScript"],
+          },
+          {
+            uri: "file:///tmp/directive-codepage-value.asp",
+            markedSource: "<%@ CodePage=▮ %>",
+            expectedLabels: ["65001", "932", "1252"],
+          },
+        ];
+
+        for (const testCase of cases) {
+          const document = markedDocument(testCase.markedSource);
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri: testCase.uri,
+              languageId: "classic-asp",
+              version: 1,
+              text: document.text,
+            },
+          });
+          await server.waitForNotification("textDocument/publishDiagnostics");
+          const completions = await server.request("textDocument/completion", {
+            textDocument: { uri: testCase.uri },
+            position: document.position,
+          });
+          const labels = completionLabels(completions);
+          for (const expected of testCase.expectedLabels) {
+            expect(labels, testCase.markedSource).toContain(expected);
+          }
         }
 
         await server.request("shutdown", null);
@@ -4690,6 +4755,50 @@ both.SharedName
       }
     });
 
+    it("marks ASP directive delimiters as keyword semantic tokens", async () => {
+      const source = `<%@ Language="VBScript" CodePage=65001 %>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/directive-semantic.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        const tokenAt = (text: string) => {
+          const position = positionAt(source, source.indexOf(text));
+          return decoded.find(
+            (token) => token.line === position.line && token.character === position.character,
+          );
+        };
+        expect(tokenAt("<%@")).toEqual(
+          expect.objectContaining({ tokenType: semanticTokenType.keyword }),
+        );
+        expect(tokenAt("%>")).toEqual(
+          expect.objectContaining({ tokenType: semanticTokenType.keyword }),
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("marks the ASP expression equals delimiter as a keyword semantic token", async () => {
       const source = `<%= title %>`;
       const equalsPosition = positionAt(source, source.indexOf("="));
@@ -8364,6 +8473,111 @@ End Sub
       }
     });
 
+    it("expands related include trees for unresolved analysis only when needed", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-related-graph-"));
+      const page = path.join(tempDir, "default.asp");
+      const cleanPage = path.join(tempDir, "clean.asp");
+      fs.writeFileSync(
+        path.join(tempDir, "parent.asp"),
+        `<!-- #include file="default.asp" -->
+<!-- #include file="sibling.inc" -->`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "sibling.inc"),
+        `<%
+Sub SiblingDefinition()
+End Sub
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "clean-parent.asp"),
+        `<!-- #include file="clean.asp" -->
+<!-- #include file="clean-sibling.inc" -->`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "clean-sibling.inc"),
+        `<%
+Sub CleanSiblingDefinition()
+End Sub
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        page,
+        `<%
+MissingGlobal = 1
+Call MissingProcedure()
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        cleanPage,
+        `<%
+Dim CleanValue
+CleanValue = 1
+Response.Write CleanValue
+%>`,
+        "utf8",
+      );
+      const uri = `file://${page}`;
+      const cleanUri = `file://${cleanPage}`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(page, "utf8"),
+          },
+        });
+
+        const buildGraph = async (
+          targetUri: string,
+          includeRelatedIncludeTreesForUnresolved: boolean,
+        ) =>
+          (await server.request("workspace/executeCommand", {
+            command: "aspLsp.server.buildGraph",
+            arguments: [
+              {
+                scope: "document",
+                uri: targetUri,
+                includeRelatedIncludeTreesForUnresolved,
+              },
+            ],
+          })) as { nodes?: Array<Record<string, unknown>> };
+        const hasFileNode = (graph: { nodes?: Array<Record<string, unknown>> }, label: string) =>
+          graph.nodes?.some((node) => node.kind === "file" && node.label === label) === true;
+
+        const normalGraph = await buildGraph(uri, false);
+        expect(hasFileNode(normalGraph, "parent.asp")).toBe(false);
+        expect(hasFileNode(normalGraph, "sibling.inc")).toBe(false);
+
+        const relatedGraph = await buildGraph(uri, true);
+        expect(hasFileNode(relatedGraph, "parent.asp")).toBe(true);
+        expect(hasFileNode(relatedGraph, "sibling.inc")).toBe(true);
+
+        const cleanGraph = await buildGraph(cleanUri, true);
+        expect(hasFileNode(cleanGraph, "clean-parent.asp")).toBe(false);
+        expect(hasFileNode(cleanGraph, "clean-sibling.inc")).toBe(false);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("builds a flowchart for the current ASP file with include metadata", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-flowchart-"));
       const page = path.join(tempDir, "default.asp");
@@ -8405,12 +8619,14 @@ End Sub
           nodes?: Array<Record<string, unknown>>;
           edges?: Array<Record<string, unknown>>;
           includes?: Array<Record<string, unknown>>;
+          labelMode?: string;
           mermaid?: string;
           stats?: Record<string, unknown>;
         };
 
         expect(flowchart.uri).toBe(uri);
         expect(flowchart.fileName).toBe("default.asp");
+        expect(flowchart.labelMode).toBe("normal");
         expect(flowchart.sections?.some((section) => section.label === "Sub Main")).toBe(true);
         expect(
           flowchart.nodes?.some(
@@ -8465,6 +8681,21 @@ End Sub
         expect(flowchart.mermaid).toContain("flowchart TB");
         expect(flowchart.mermaid).toContain("Sub Main");
         expect(flowchart.stats?.includes).toBe(1);
+
+        const rawFlowchart = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildFlowchart",
+          arguments: [{ uri, labelMode: "raw" }],
+        })) as { labelMode?: string };
+        expect(rawFlowchart.labelMode).toBe("raw");
+
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { flowchart: { labelMode: "description" } } },
+        });
+        const configuredFlowchart = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildFlowchart",
+          arguments: [{ uri }],
+        })) as { labelMode?: string };
+        expect(configuredFlowchart.labelMode).toBe("description");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -8657,6 +8888,88 @@ End Function
               (link.label === "member" || link.role === "member"),
           ),
         ).toBe(false);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("connects chained VBScript member graph nodes back to their receivers", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-member-chain-"));
+      const page = path.join(tempDir, "default.asp");
+      const source = `<%
+Function Render()
+  Dim a
+  a.b.c.d
+End Function
+%>`;
+      fs.writeFileSync(page, source, "utf8");
+      const uri = pathToFileURL(page).href;
+      const server = new RpcServer();
+      type TestGraph = {
+        nodes?: Array<Record<string, unknown>>;
+        links?: Array<Record<string, unknown>>;
+      };
+      const nodeByLabelAndUri = (graph: TestGraph, label: string, nodeUri: string) =>
+        (graph.nodes ?? []).find((node) => node.label === label && node.uri === nodeUri);
+      const hasGraphLink = (
+        graph: TestGraph,
+        kind: string,
+        sourceNode: Record<string, unknown> | undefined,
+        targetNode: Record<string, unknown> | undefined,
+      ) =>
+        Boolean(
+          sourceNode &&
+          targetNode &&
+          (graph.links ?? []).some(
+            (link) =>
+              link.kind === kind &&
+              link.role === "member" &&
+              link.source === sourceNode.id &&
+              link.target === targetNode.id,
+          ),
+        );
+
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri }],
+        })) as TestGraph;
+        const aNode = nodeByLabelAndUri(graph, "a", uri);
+        const abNode = nodeByLabelAndUri(graph, "a.b", uri);
+        const abcNode = nodeByLabelAndUri(graph, "a.b.c", uri);
+        const abcdNode = nodeByLabelAndUri(graph, "a.b.c.d", uri);
+
+        expect(aNode).toEqual(
+          expect.objectContaining({
+            declarationKind: "variable",
+            bindingScope: "local",
+          }),
+        );
+        expect(abNode).toEqual(expect.objectContaining({ kind: "vbMemberReference" }));
+        expect(abcNode).toEqual(expect.objectContaining({ kind: "vbMemberReference" }));
+        expect(abcdNode).toEqual(expect.objectContaining({ kind: "vbMemberReference" }));
+        expect(hasGraphLink(graph, "calls", abcdNode, abcNode)).toBe(true);
+        expect(hasGraphLink(graph, "calls", abcNode, abNode)).toBe(true);
+        expect(hasGraphLink(graph, "calls", abNode, aNode)).toBe(true);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

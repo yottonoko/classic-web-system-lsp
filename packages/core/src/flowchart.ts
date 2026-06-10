@@ -7,6 +7,7 @@ import type {
   AspFlowchartBuildOptions,
   AspFlowchartEdge,
   AspFlowchartInclude,
+  AspFlowchartLabelMode,
   AspFlowchartNode,
   AspFlowchartNodeKind,
   AspFlowchartNodeLink,
@@ -70,6 +71,7 @@ interface FlowchartText {
 }
 
 interface FlowchartContext {
+  labelMode: AspFlowchartLabelMode;
   locale: AspLocale;
   sourceText: string;
   text: FlowchartText;
@@ -163,8 +165,10 @@ export function buildAspFlowchart(
   options: AspFlowchartBuildOptions = {},
 ): AspFlowchartPayload {
   const locale = options.locale ?? "en";
+  const labelMode = options.labelMode ?? "normal";
   const labelLineLength = normalizeFlowchartLabelLineLength(options.labelLineLength);
   const context = {
+    labelMode,
     locale,
     sourceText: parsed.text,
     text: flowchartText(locale),
@@ -241,6 +245,7 @@ export function buildAspFlowchart(
   const payload = {
     uri: parsed.uri,
     fileName: options.fileName,
+    labelMode,
     sections: assembly.sections,
     nodes: assembly.nodes,
     edges: assembly.edges,
@@ -762,11 +767,7 @@ function renderIf(
       section,
       branch.statement,
       nodeKind,
-      branch.kind === "else"
-        ? context.text.else
-        : nodeKind === "if"
-          ? context.text.ifCondition(branch.label)
-          : context.text.elseifCondition(branch.label),
+      flowchartBranchLabel(branch, nodeKind, context),
     );
     connectMany(
       assembly,
@@ -1261,12 +1262,38 @@ function statementNodeKind(statement: VbStatement): AspFlowchartNodeKind {
   return "statement";
 }
 
+function flowchartBranchLabel(
+  branch: FlowIfBranch,
+  nodeKind: Extract<AspFlowchartNodeKind, "if" | "elseif" | "else">,
+  context: FlowchartContext,
+): string {
+  if (branch.kind === "else") {
+    return context.labelMode === "raw" ? tokensText(branch.statement.tokens) : context.text.else;
+  }
+  if (context.labelMode === "raw") {
+    return tokensText(branch.statement.tokens);
+  }
+  const condition =
+    context.labelMode === "description"
+      ? describeExpressionText(branch.label, context)
+      : branch.label;
+  return nodeKind === "if"
+    ? context.text.ifCondition(condition)
+    : context.text.elseifCondition(condition);
+}
+
 function statementLabel(
   statement: VbStatement,
   kind: AspFlowchartNodeKind,
   context: FlowchartContext,
   range: Range = statementRange(statement, context),
 ): string {
+  if (context.labelMode === "raw") {
+    return tokensText(statement.tokens);
+  }
+  if (context.labelMode === "description") {
+    return descriptiveStatementLabel(statement, kind, context, range);
+  }
   if (kind === "declaration") {
     const declarations = statementDeclarations(context, range);
     if (declarations.length > 0) {
@@ -1302,6 +1329,151 @@ function statementLabel(
   return context.text.statement(tokensText(statement.tokens));
 }
 
+function descriptiveStatementLabel(
+  statement: VbStatement,
+  kind: AspFlowchartNodeKind,
+  context: FlowchartContext,
+  range: Range,
+): string {
+  if (kind === "declaration") {
+    return statementLabel(statement, kind, { ...context, labelMode: "normal" }, range);
+  }
+  const assignment = assignmentParts(statement);
+  if (assignment) {
+    const arithmetic = descriptiveArithmeticAssignment(assignment, context);
+    if (arithmetic) {
+      return arithmetic;
+    }
+    return context.text.assign(
+      assignment.target,
+      describeExpressionText(assignment.value, context),
+    );
+  }
+  const call = callParts(statement);
+  if (kind === "call" && call) {
+    return descriptiveCallLabel(call.name, call.args, context);
+  }
+  if (kind === "exit") {
+    return context.text.exitStatement(tokensText(statement.tokens.slice(1)));
+  }
+  return context.text.statement(describeExpressionText(tokensText(statement.tokens), context));
+}
+
+function descriptiveArithmeticAssignment(
+  assignment: { target: string; value: string },
+  context: FlowchartContext,
+): string | undefined {
+  const pattern = new RegExp(`^${escapeRegExp(assignment.target)}\\s*([+\\-*/])\\s*(.+)$`, "i");
+  const match = pattern.exec(assignment.value);
+  if (!match) {
+    return undefined;
+  }
+  const operand = describeExpressionText(match[2].trim(), context);
+  if (context.locale === "ja") {
+    const operation =
+      match[1] === "+" ? "加算" : match[1] === "-" ? "減算" : match[1] === "*" ? "乗算" : "除算";
+    return `${assignment.target}に${operand}を${operation}`;
+  }
+  const operation =
+    match[1] === "+"
+      ? "Add"
+      : match[1] === "-"
+        ? "Subtract"
+        : match[1] === "*"
+          ? "Multiply"
+          : "Divide";
+  const tail =
+    match[1] === "+" || match[1] === "*" ? `to ${assignment.target}` : `from ${assignment.target}`;
+  return `${operation} ${operand} ${tail}`;
+}
+
+function descriptiveCallLabel(name: string, args: string, context: FlowchartContext): string {
+  const parts = splitFlowchartArguments(args).map((arg) => describeExpressionText(arg, context));
+  if (context.locale === "ja") {
+    return parts.length > 0 ? `${name}を引数${parts.join("、")}で呼び出し` : `${name}を呼び出し`;
+  }
+  return parts.length > 0 ? `Call ${name} with ${parts.join(", ")}` : `Call ${name}`;
+}
+
+function describeExpressionText(expression: string, context: FlowchartContext): string {
+  const trimmed = expression.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  const comparison = /^(.*?)\s*(<>|<=|>=|=|<|>)\s*(.*?)$/u.exec(trimmed);
+  if (comparison) {
+    const left = comparison[1].trim();
+    const right = comparison[3].trim();
+    if (context.locale === "ja") {
+      const operator =
+        comparison[2] === "="
+          ? "と等しい"
+          : comparison[2] === "<>"
+            ? "と等しくない"
+            : comparison[2] === "<"
+              ? "より小さい"
+              : comparison[2] === ">"
+                ? "より大きい"
+                : comparison[2] === "<="
+                  ? "以下"
+                  : "以上";
+      return `${left}が${right}${operator}`;
+    }
+    const operator =
+      comparison[2] === "="
+        ? "equals"
+        : comparison[2] === "<>"
+          ? "does not equal"
+          : comparison[2] === "<"
+            ? "is less than"
+            : comparison[2] === ">"
+              ? "is greater than"
+              : comparison[2] === "<="
+                ? "is at most"
+                : "is at least";
+    return `${left} ${operator} ${right}`;
+  }
+  return trimmed;
+}
+
+function splitFlowchartArguments(args: string): string[] {
+  const trimmed = args.trim();
+  if (!trimmed) {
+    return [];
+  }
+  const result: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let quote: string | undefined;
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (char === "," && depth === 0) {
+      result.push(trimmed.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  result.push(trimmed.slice(start).trim());
+  return result.filter(Boolean);
+}
+
 function statementDescription(
   statement: VbStatement,
   kind: AspFlowchartNodeKind,
@@ -1320,14 +1492,33 @@ function ifConditionLabel(statement: VbStatement): string {
 }
 
 function selectLabel(statement: VbStatement, context: FlowchartContext): string {
+  if (context.labelMode === "raw") {
+    return tokensText(statement.tokens);
+  }
+  if (context.labelMode === "description") {
+    return context.text.selectCase(
+      describeExpressionText(tokensText(statement.tokens.slice(2)), context),
+    );
+  }
   return context.text.selectCase(tokensText(statement.tokens.slice(2)));
 }
 
 function caseLabel(statement: VbStatement, context: FlowchartContext): string {
+  if (context.labelMode === "raw") {
+    return tokensText(statement.tokens);
+  }
+  if (context.labelMode === "description") {
+    return context.text.caseBranch(
+      describeExpressionText(tokensText(statement.tokens.slice(1)), context),
+    );
+  }
   return context.text.caseBranch(tokensText(statement.tokens.slice(1)));
 }
 
 function loopLabel(statement: VbStatement, context: FlowchartContext): string {
+  if (context.labelMode === "raw") {
+    return tokensText(statement.tokens);
+  }
   const first = lower(statement.tokens[0]);
   const second = lower(statement.tokens[1]);
   if (first === "for" && second === "each") {

@@ -135,6 +135,40 @@ End Sub
     );
   });
 
+  it("supports normal, raw and description flowchart label modes", () => {
+    const parsed = parseAspDocument(
+      "file:///site/labels.asp",
+      `<%
+Sub Main()
+  a = a + 100
+  F(1, 2, 3, 4, 5)
+  If a = 100 Then
+    Call Done()
+  End If
+End Sub
+%>`,
+    );
+
+    const normal = buildAspFlowchart(parsed, { labelMode: "normal", locale: "ja" });
+    const raw = buildAspFlowchart(parsed, { labelMode: "raw", locale: "ja" });
+    const description = buildAspFlowchart(parsed, { labelMode: "description", locale: "ja" });
+    const normalLabels = normal.nodes.map((node) => node.label);
+    const rawLabels = raw.nodes.map((node) => node.label);
+    const descriptionLabels = description.nodes.map((node) => node.label);
+
+    expect(normal.labelMode).toBe("normal");
+    expect(raw.labelMode).toBe("raw");
+    expect(description.labelMode).toBe("description");
+    expect(normalLabels).toContain("aにa + 100を代入");
+    expect(rawLabels).toContain("a = a + 100");
+    expect(
+      rawLabels.some((label) => label.includes("F") && label.includes("1") && label.includes("5")),
+    ).toBe(true);
+    expect(descriptionLabels).toContain("aに100を加算");
+    expect(descriptionLabels).toContain("Fを引数1、2、3、4、5で呼び出し");
+    expect(descriptionLabels).toContain("aが100と等しいを判定");
+  });
+
   it("labels resolved variables, constants and parameters with scope in flowcharts", () => {
     const uri = "file:///site/scoped.asp";
     const parsed = parseAspDocument(

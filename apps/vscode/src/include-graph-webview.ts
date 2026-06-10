@@ -21,6 +21,7 @@ export interface AspGraphPayload {
     showOutgoingSelectionLinks?: boolean;
     showIncomingDocumentIncludes?: boolean;
     showIncomingFolderIncludes?: boolean;
+    includeRelatedIncludeTreesForUnresolved?: boolean;
     hiddenNodeCategories?: AspGraphNodeCategory[];
     hiddenLinkCategories?: AspGraphLinkFilterCategory[];
   };

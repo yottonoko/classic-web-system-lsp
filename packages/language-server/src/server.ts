@@ -146,6 +146,7 @@ import {
   type AspEmbeddedLanguage,
   type AspEditImpact,
   type AspFlowchartInclude,
+  type AspFlowchartLabelMode,
   type AspFlowchartPayload,
   type AspFlowchartSymbolDocument,
   type AspIncrementalChange,
@@ -237,7 +238,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.5.46";
+const languageServerVersion = "0.6.0";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -833,6 +834,7 @@ interface AspGraphPayload {
     showOutgoingSelectionLinks: boolean;
     showIncomingDocumentIncludes: boolean;
     showIncomingFolderIncludes: boolean;
+    includeRelatedIncludeTreesForUnresolved: boolean;
     hiddenNodeCategories: AspGraphNodeCategory[];
     hiddenLinkCategories: AspGraphLinkFilterCategory[];
   };
@@ -1956,8 +1958,12 @@ connection.onCompletion((params) =>
     }
     const settings = cachedSettings(cached.source.uri);
     const region = findRegionAt(cached.parsed, cached.source.offsetAt(params.position));
+    const directiveOpenCompletions = aspDirectiveOpenCompletions(cached, params.position, region);
     if (!region) {
-      return [];
+      return withCompletionData(directiveOpenCompletions, {
+        kind: "aspDirective",
+        uri: cached.source.uri,
+      });
     }
     const triggerCharacter = completionTriggerCharacter(params);
     if (isCssOnlyCompletionTrigger(triggerCharacter) && region.language !== "css") {
@@ -1967,6 +1973,14 @@ connection.onCompletion((params) =>
       completionSessionCache.set(cached, settings, region, params.position, items, contextIdentity);
       return items;
     };
+    if (region.language === "asp-directive") {
+      return remember(
+        withCompletionData(aspDirectiveCompletions(cached, params.position, region), {
+          kind: "aspDirective",
+          uri: cached.source.uri,
+        }),
+      );
+    }
     if (region.language === "vbscript") {
       const warmedContext =
         cached.parsed.includes.length > 0
@@ -1998,11 +2012,14 @@ connection.onCompletion((params) =>
               completions,
             )
           : fallbackVbMemberCompletions(cached, params.position, context);
-      const items = withCompletionData(completionItems, {
+      const completionItemsWithDirective = directiveOpenCompletions.length
+        ? [...directiveOpenCompletions, ...completionItems]
+        : completionItems;
+      const itemsWithDirective = withCompletionData(completionItemsWithDirective, {
         kind: "vbscript",
         uri: cached.source.uri,
       });
-      return shouldCache ? remember(items, contextIdentity) : items;
+      return shouldCache ? remember(itemsWithDirective, contextIdentity) : itemsWithDirective;
     }
     const cachedCompletion = completionSessionCache.get(cached, settings, region, params.position);
     if (cachedCompletion) {
@@ -2021,7 +2038,11 @@ connection.onCompletion((params) =>
       ).items;
       return remember(
         withCompletionData(
-          [...aspIncludeCompletions(cached, params.position, settings), ...htmlItems],
+          [
+            ...aspIncludeCompletions(cached, params.position, settings),
+            ...directiveOpenCompletions,
+            ...htmlItems,
+          ],
           {
             kind: "html",
             uri: cached.source.uri,
@@ -5565,6 +5586,152 @@ function aspIncludeCompletions(
         ...snippets,
       ]
     : snippets;
+}
+
+function aspDirectiveOpenCompletions(
+  cached: CachedDocument,
+  position: Position,
+  region?: AspRegion,
+): CompletionItem[] {
+  const offset = cached.source.offsetAt(position);
+  const text = cached.source.getText();
+  const searchStart = Math.max(region?.start ?? 0, offset - 64);
+  const lastOpen = text.lastIndexOf("<", Math.max(0, offset - 1));
+  const start = lastOpen >= searchStart ? lastOpen : Math.max(0, offset - 3);
+  const prefix = text.slice(start, offset);
+  const match = /^<%@?[A-Za-z]*$/i.exec(prefix);
+  if (!match) {
+    return [];
+  }
+  const range = {
+    start: cached.source.positionAt(start),
+    end: position,
+  };
+  return [
+    {
+      label: '<%@ Language="VBScript" CodePage=65001 %>',
+      kind: CompletionItemKind.Snippet,
+      detail: "Classic ASP page directive",
+      documentation: "Inserts a Classic ASP page directive with language and code page.",
+      insertText: '<%@ Language="${1:VBScript}" CodePage=${2:65001} %>',
+      textEdit: {
+        range,
+        newText: '<%@ Language="${1:VBScript}" CodePage=${2:65001} %>',
+      },
+      insertTextFormat: InsertTextFormat.Snippet,
+      filterText: "asp directive language codepage page <%@",
+      sortText: "0_asp_directive_page",
+    },
+  ];
+}
+
+function aspDirectiveCompletions(
+  cached: CachedDocument,
+  position: Position,
+  region: AspRegion,
+): CompletionItem[] {
+  const offset = cached.source.offsetAt(position);
+  if (offset < region.contentStart || offset > region.contentEnd) {
+    return [];
+  }
+  const text = cached.source.getText();
+  const valueContext = aspDirectiveValueContextAt(text, region, offset);
+  if (valueContext) {
+    return aspDirectiveValueCompletions(cached, position, valueContext);
+  }
+  const range = aspDirectiveWordRange(cached, offset);
+  return aspDirectiveAttributeNames().map((name, index) => ({
+    label: name,
+    kind: CompletionItemKind.Property,
+    detail: "Classic ASP directive attribute",
+    textEdit: { range, newText: name },
+    sortText: `1_${String(index).padStart(2, "0")}_${name}`,
+  }));
+}
+
+function aspDirectiveValueCompletions(
+  cached: CachedDocument,
+  position: Position,
+  context: AspDirectiveValueCompletionContext,
+): CompletionItem[] {
+  const values = aspDirectiveValues(context.attribute);
+  const range = {
+    start: cached.source.positionAt(context.replaceStart),
+    end: position,
+  };
+  return values.map((value, index) => ({
+    label: value,
+    kind: /^\d+$/.test(value) ? CompletionItemKind.Value : CompletionItemKind.Constant,
+    detail: `${context.attribute} value`,
+    textEdit: { range, newText: value },
+    sortText: `0_${String(index).padStart(2, "0")}_${value}`,
+  }));
+}
+
+interface AspDirectiveValueCompletionContext {
+  attribute: string;
+  replaceStart: number;
+}
+
+function aspDirectiveValueContextAt(
+  text: string,
+  region: AspRegion,
+  offset: number,
+): AspDirectiveValueCompletionContext | undefined {
+  const before = text.slice(region.contentStart, offset);
+  const match = /([A-Za-z][A-Za-z0-9]*)\s*=\s*(?:"[^"]*|'[^']*|[^\s%>]*)$/i.exec(before);
+  if (!match) {
+    return undefined;
+  }
+  const attribute = aspDirectiveAttributeNames().find(
+    (name) => name.toLowerCase() === match[1].toLowerCase(),
+  );
+  if (!attribute) {
+    return undefined;
+  }
+  const equals = before.lastIndexOf("=");
+  const valuePrefixStart = region.contentStart + equals + 1;
+  let replaceStart = valuePrefixStart;
+  while (replaceStart < offset && /\s/.test(text[replaceStart])) {
+    replaceStart += 1;
+  }
+  if (text[replaceStart] === '"' || text[replaceStart] === "'") {
+    replaceStart += 1;
+  }
+  return { attribute, replaceStart };
+}
+
+function aspDirectiveWordRange(cached: CachedDocument, offset: number): Range {
+  const text = cached.source.getText();
+  let start = offset;
+  while (start > 0 && /[A-Za-z0-9_]/.test(text[start - 1])) {
+    start -= 1;
+  }
+  return {
+    start: cached.source.positionAt(start),
+    end: cached.source.positionAt(offset),
+  };
+}
+
+function aspDirectiveAttributeNames(): string[] {
+  return ["Language", "CodePage", "LCID", "Transaction", "EnableSessionState"];
+}
+
+function aspDirectiveValues(attribute: string): string[] {
+  switch (attribute.toLowerCase()) {
+    case "language":
+      return ["VBScript", "JScript", "JavaScript"];
+    case "codepage":
+      return ["65001", "932", "1252"];
+    case "lcid":
+      return ["1041", "1033"];
+    case "transaction":
+      return ["Required", "Requires_New", "Supported", "Not_Supported"];
+    case "enablesessionstate":
+      return ["True", "False"];
+    default:
+      return [];
+  }
 }
 
 function includeKeywordFilterText(prefix: string): string {
@@ -12479,6 +12646,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     styleExtraction: normalizeStyleExtractionSettings(settings),
     flowchart: normalizeFlowchartSettings(settings),
     graph: normalizeGraphSettings(settings),
+    excel: normalizeExcelSettings(settings),
     cache: normalizeCacheSettings(settings),
     workspace: normalizeWorkspaceSettings(settings),
   };
@@ -12666,6 +12834,7 @@ function normalizeFlowchartSettings(
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
     labelLineLength: Math.max(8, positiveIntegerSetting(record.labelLineLength, 34)),
+    labelMode: flowchartLabelMode(record.labelMode),
   };
 }
 
@@ -12704,6 +12873,19 @@ function normalizeGraphSettings(
     showMemberLinks: record.showMemberLinks !== false,
     showIncomingDocumentIncludes: record.showIncomingDocumentIncludes === true,
     showIncomingFolderIncludes: record.showIncomingFolderIncludes === true,
+    includeRelatedIncludeTreesForUnresolved:
+      record.includeRelatedIncludeTreesForUnresolved === true,
+  };
+}
+
+function normalizeExcelSettings(
+  settings: Record<string, unknown> | AspSettings,
+): NonNullable<AspSettings["excel"]> {
+  const raw = settings.excel;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    includeRelatedIncludeTreesForUnresolved:
+      record.includeRelatedIncludeTreesForUnresolved !== false,
   };
 }
 
@@ -16394,6 +16576,7 @@ async function buildAspFlowchartForCommand(argument: unknown): Promise<AspFlowch
     includes: await flowchartIncludesForDocumentAsync(cached.parsed, settings),
     labelLineLength:
       flowchartCommandLabelLineLength(argument) ?? settings.flowchart?.labelLineLength,
+    labelMode: flowchartCommandLabelMode(argument) ?? settings.flowchart?.labelMode,
     locale: flowchartCommandLocale(argument) ?? settings.resolvedLocale,
     symbols: indexedDocuments,
   });
@@ -16461,6 +16644,17 @@ function flowchartCommandLabelLineLength(argument: unknown): number | undefined 
   return typeof value === "number" && Number.isFinite(value) && value >= 8
     ? Math.floor(value)
     : undefined;
+}
+
+function flowchartCommandLabelMode(argument: unknown): AspFlowchartLabelMode | undefined {
+  if (!argument || typeof argument !== "object" || !("labelMode" in argument)) {
+    return undefined;
+  }
+  return flowchartLabelMode((argument as { labelMode?: unknown }).labelMode);
+}
+
+function flowchartLabelMode(value: unknown): AspFlowchartLabelMode {
+  return value === "raw" || value === "description" ? value : "normal";
 }
 
 async function flowchartIncludesForDocumentAsync(
@@ -16536,6 +16730,8 @@ async function buildAspGraphForCommand(
   }
   return buildDocumentAspGraphAsync(uri ?? documents.all()[0]?.uri, cancellation, {
     includeIncomingDocumentIncludes: graphCommandIncludeIncomingDocumentIncludes(argument),
+    includeRelatedIncludeTreesForUnresolved:
+      graphCommandIncludeRelatedIncludeTreesForUnresolved(argument),
   });
 }
 
@@ -16571,6 +16767,20 @@ function graphCommandIncludeIncomingDocumentIncludes(argument: unknown): boolean
   );
 }
 
+function graphCommandIncludeRelatedIncludeTreesForUnresolved(argument: unknown): boolean {
+  if (
+    !argument ||
+    typeof argument !== "object" ||
+    !("includeRelatedIncludeTreesForUnresolved" in argument)
+  ) {
+    return false;
+  }
+  return (
+    (argument as { includeRelatedIncludeTreesForUnresolved?: unknown })
+      .includeRelatedIncludeTreesForUnresolved === true
+  );
+}
+
 function analysisCancellationFromToken(
   token: GraphCancellationToken | undefined,
 ): AnalysisCancellation {
@@ -16588,7 +16798,10 @@ function throwIfGraphCancelled(cancellation: AnalysisCancellation): void {
 async function buildDocumentAspGraphAsync(
   uri: string | undefined,
   cancellation: AnalysisCancellation = neverCancelled,
-  options: { includeIncomingDocumentIncludes?: boolean } = {},
+  options: {
+    includeIncomingDocumentIncludes?: boolean;
+    includeRelatedIncludeTreesForUnresolved?: boolean;
+  } = {},
 ): Promise<AspGraphPayload> {
   throwIfGraphCancelled(cancellation);
   const cached = uri ? await cachedDocumentForGraphAsync(uri) : undefined;
@@ -16602,6 +16815,28 @@ async function buildDocumentAspGraphAsync(
     settings,
     cancellation,
   );
+  if (
+    (settings.graph?.includeRelatedIncludeTreesForUnresolved === true ||
+      options.includeRelatedIncludeTreesForUnresolved === true) &&
+    (await graphDocumentsNeedRelatedIncludeTreeAnalysisAsync(
+      documentsForGraph,
+      settings,
+      cancellation,
+    ))
+  ) {
+    documentsForGraph.push(
+      ...(await collectRelatedIncludeTreeGraphDocumentsAsync(
+        documentsForGraph,
+        settings,
+        cancellation,
+        {
+          excludedFileKeys: new Set(
+            documentsForGraph.map((document) => graphFileKey(document.fileName)),
+          ),
+        },
+      )),
+    );
+  }
   if (
     settings.graph?.showIncomingDocumentIncludes === true ||
     options.includeIncomingDocumentIncludes === true
@@ -16810,19 +17045,37 @@ async function collectDocumentGraphDocumentsAsync(
   settings: AspSettings,
   cancellation: AnalysisCancellation = neverCancelled,
 ): Promise<AspGraphDocument[]> {
+  return collectIncludeTreeGraphDocumentsAsync(
+    await graphDocumentFromCachedAsync(root, settings),
+    settings,
+    cancellation,
+  );
+}
+
+async function collectIncludeTreeGraphDocumentsAsync(
+  root: AspGraphDocument,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation = neverCancelled,
+  options: {
+    excludedFileKeys?: Set<string>;
+    initialTextLength?: number;
+  } = {},
+): Promise<AspGraphDocument[]> {
   const limits = vbProjectContextLimits(settings);
   const documentsForGraph: AspGraphDocument[] = [];
   const visited = new Set<string>();
-  let textLength = root.parsed.text.length;
+  const excludedFileKeys = options.excludedFileKeys ?? new Set<string>();
+  let textLength = options.initialTextLength ?? 0;
 
   const visit = async (document: AspGraphDocument, depth: number): Promise<void> => {
     throwIfGraphCancelled(cancellation);
     const documentKey = graphFileKey(document.fileName);
-    if (depth > 20 || visited.has(documentKey)) {
+    if (depth > 20 || visited.has(documentKey) || excludedFileKeys.has(documentKey)) {
       return;
     }
     visited.add(documentKey);
     documentsForGraph.push(document);
+    textLength += document.text.length;
     const includeRefs = await graphIncludeRefsForDocumentAsync(document, settings);
     throwIfGraphCancelled(cancellation);
     for (const include of includeRefs) {
@@ -16835,7 +17088,12 @@ async function collectDocumentGraphDocumentsAsync(
       );
       throwIfGraphCancelled(cancellation);
       const includeKey = graphFileKey(resolved.fileName);
-      if (!resolved.exists || visited.has(includeKey) || visited.size >= limits.maxDocuments) {
+      if (
+        !resolved.exists ||
+        visited.has(includeKey) ||
+        excludedFileKeys.has(includeKey) ||
+        visited.size + excludedFileKeys.size >= limits.maxDocuments
+      ) {
         continue;
       }
       const size = await fileSizeAsync(resolved.fileName, settings);
@@ -16848,12 +17106,126 @@ async function collectDocumentGraphDocumentsAsync(
       if (!entry) {
         continue;
       }
-      textLength += entry.source.size;
       await visit(graphDocumentFromIncludeEntry(entry), depth + 1);
     }
   };
 
-  await visit(await graphDocumentFromCachedAsync(root, settings), 0);
+  await visit(root, 0);
+  return documentsForGraph;
+}
+
+async function graphDocumentsNeedRelatedIncludeTreeAnalysisAsync(
+  documentsForGraph: AspGraphDocument[],
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<boolean> {
+  const externalSymbols = createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings));
+  const indexedDocuments = await mapWithConcurrency(
+    uniqueAspGraphDocuments(documentsForGraph),
+    analysisConcurrency(settings),
+    async (document): Promise<VbSymbolIndex> => {
+      throwIfGraphCancelled(cancellation);
+      const graphIndex = await graphFileIndexForDocumentAsync(document, settings);
+      throwIfGraphCancelled(cancellation);
+      return graphIndex.vbSymbolIndex;
+    },
+  );
+  return indexedDocuments.some((index) =>
+    vbSymbolIndexNeedsRelatedIncludeTreeAnalysis(index, externalSymbols),
+  );
+}
+
+function vbSymbolIndexNeedsRelatedIncludeTreeAnalysis(
+  index: VbSymbolIndex,
+  externalSymbols: AspGraphExternalIndex,
+): boolean {
+  return (
+    index.declarations.some(
+      (declaration) =>
+        declaration.implicitGlobal === true || declaration.implicitGlobalCandidate === true,
+    ) ||
+    index.references.some(
+      (reference) =>
+        !reference.resolvedId &&
+        !reference.memberName &&
+        !externalSymbols.byName.has(reference.name.toLowerCase()),
+    ) ||
+    index.callSites.some(
+      (callSite) =>
+        !callSite.resolvedId &&
+        !callSite.memberName &&
+        !externalSymbols.byName.has(callSite.name.toLowerCase()),
+    )
+  );
+}
+
+async function collectRelatedIncludeTreeGraphDocumentsAsync(
+  rootDocuments: AspGraphDocument[],
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+  options: {
+    excludedFileKeys?: Set<string>;
+    token?: GraphCancellationToken;
+  } = {},
+): Promise<AspGraphDocument[]> {
+  const limits = vbProjectContextLimits(settings);
+  const excludedFileKeys = new Set(options.excludedFileKeys ?? []);
+  const documentsForGraph: AspGraphDocument[] = [];
+  let textLength = rootDocuments.reduce((total, document) => total + document.text.length, 0);
+  let frontier = new Set(rootDocuments.map((document) => document.fileName));
+
+  for (let depth = 0; depth < 20 && frontier.size > 0; depth += 1) {
+    if (excludedFileKeys.size >= limits.maxDocuments) {
+      break;
+    }
+    throwIfGraphCancelled(cancellation);
+    const incoming = await collectIncomingIncludeGraphDocumentsAsync(
+      frontier,
+      settings,
+      cancellation,
+      {
+        excludedFileKeys,
+        token: options.token,
+      },
+    );
+    if (incoming.length === 0) {
+      break;
+    }
+    const nextFrontier = new Set<string>();
+    for (const owner of incoming) {
+      throwIfGraphCancelled(cancellation);
+      if (excludedFileKeys.size >= limits.maxDocuments) {
+        break;
+      }
+      const ownerKey = graphFileKey(owner.fileName);
+      if (excludedFileKeys.has(ownerKey)) {
+        continue;
+      }
+      const ownerTree = await collectIncludeTreeGraphDocumentsAsync(owner, settings, cancellation, {
+        excludedFileKeys,
+        initialTextLength: textLength,
+      });
+      const treeHasOwner = ownerTree.some(
+        (document) => graphFileKey(document.fileName) === ownerKey,
+      );
+      for (const document of ownerTree) {
+        const documentKey = graphFileKey(document.fileName);
+        if (excludedFileKeys.has(documentKey)) {
+          continue;
+        }
+        excludedFileKeys.add(documentKey);
+        documentsForGraph.push(document);
+        textLength += document.text.length;
+        if (excludedFileKeys.size >= limits.maxDocuments) {
+          break;
+        }
+      }
+      if (treeHasOwner) {
+        nextFrontier.add(owner.fileName);
+      }
+    }
+    frontier = nextFrontier;
+  }
   return documentsForGraph;
 }
 
@@ -17377,6 +17749,7 @@ function addDocumentUsageToAspGraph(
 ): void {
   const { document, graphIndex } = indexed;
   const index = graphIndex.vbSymbolIndex;
+  const memberChainPaths = graphMemberChainPaths(state, indexed);
   for (const reference of index.references) {
     if (reference.role === "call" || reference.role === "new" || reference.role === "member") {
       continue;
@@ -17442,12 +17815,11 @@ function addDocumentUsageToAspGraph(
     if (!callSite.resolvedId && !sourceDeclaration && !external && callSite.memberName) {
       addAspGraphLink(state, {
         source: scopeGraphNodeId(state, document.uri, callSite.scopeId),
-        target: addMemberReferenceGraphNode(
+        target: addMemberReferenceGraphNodeForAccess(
           state,
           document.uri,
-          callSite.receiverName,
-          callSite.memberName,
-          callSite.range,
+          callSite,
+          memberChainPaths.get(graphMemberAccessKey(callSite)),
         ),
         kind: "calls",
         label: "member",
@@ -17509,12 +17881,11 @@ function addDocumentUsageToAspGraph(
       state.stats.references += 1;
       addAspGraphLink(state, {
         source: scopeGraphNodeId(state, document.uri, deferred.scopeId),
-        target: addMemberReferenceGraphNode(
+        target: addMemberReferenceGraphNodeForAccess(
           state,
           document.uri,
-          deferred.receiverName,
-          deferred.memberName,
-          deferred.range,
+          deferred,
+          memberChainPaths.get(graphMemberAccessKey(deferred)),
         ),
         kind: "references",
         label: "member",
@@ -17538,6 +17909,236 @@ function addDocumentUsageToAspGraph(
       ranges: [{ uri: document.uri, range: deferred.range }],
     });
   }
+  addMemberChainLinksToAspGraph(state, indexed, memberChainPaths);
+}
+
+interface AspGraphMemberChainPath {
+  rootName: string;
+  receiverPath: string;
+  fullPath: string;
+  memberName: string;
+  range: Range;
+  scopeId?: string;
+  parentKey?: string;
+}
+
+type AspGraphMemberAccess = {
+  name: string;
+  range: Range;
+  scopeId?: string;
+  receiverName?: string;
+  memberName?: string;
+};
+
+type AspGraphMemberCallSite = VbSymbolIndex["callSites"][number] & {
+  receiverName: string;
+  memberName: string;
+};
+
+function graphMemberChainPaths(
+  state: AspGraphBuildState,
+  indexed: AspGraphIndexedDocument,
+): Map<string, AspGraphMemberChainPath> {
+  const paths = new Map<string, AspGraphMemberChainPath>();
+  const processed: AspGraphMemberCallSite[] = [];
+  const callSites = indexed.graphIndex.vbSymbolIndex.callSites
+    .filter((callSite): callSite is AspGraphMemberCallSite =>
+      shouldGraphMemberChainCallSite(state, indexed, callSite),
+    )
+    .sort(compareGraphMemberAccessStart);
+  for (const callSite of callSites) {
+    const parent = findGraphMemberChainParent(indexed.document.text, processed, callSite);
+    const parentKey = parent ? graphMemberAccessKey(parent) : undefined;
+    const parentPath = parentKey ? paths.get(parentKey) : undefined;
+    const receiverPath = parentPath?.fullPath ?? callSite.receiverName;
+    const fullPath = `${receiverPath}.${callSite.memberName}`;
+    paths.set(graphMemberAccessKey(callSite), {
+      rootName: parentPath?.rootName ?? callSite.receiverName,
+      receiverPath,
+      fullPath,
+      memberName: callSite.memberName,
+      range: callSite.range,
+      scopeId: callSite.scopeId,
+      parentKey,
+    });
+    processed.push(callSite);
+  }
+  return paths;
+}
+
+function shouldGraphMemberChainCallSite(
+  state: AspGraphBuildState,
+  indexed: AspGraphIndexedDocument,
+  callSite: VbSymbolIndex["callSites"][number],
+): callSite is AspGraphMemberCallSite {
+  if (!callSite.receiverName || !callSite.memberName || callSite.resolvedId) {
+    return false;
+  }
+  const sourceDeclaration = resolveSourceGraphCallSite(state, indexed, callSite);
+  if (sourceDeclaration) {
+    return false;
+  }
+  const external = resolveExternalGraphCallSite(state, callSite);
+  return !external && !isSuppressedBuiltinGraphExternalSymbol(external);
+}
+
+function compareGraphMemberAccessStart(left: AspGraphMemberAccess, right: AspGraphMemberAccess) {
+  if (left.range.start.line !== right.range.start.line) {
+    return left.range.start.line - right.range.start.line;
+  }
+  return left.range.start.character - right.range.start.character;
+}
+
+function findGraphMemberChainParent(
+  text: string,
+  processed: AspGraphMemberCallSite[],
+  callSite: AspGraphMemberCallSite,
+): AspGraphMemberCallSite | undefined {
+  for (let index = processed.length - 1; index >= 0; index -= 1) {
+    const candidate = processed[index];
+    if (
+      candidate.scopeId === callSite.scopeId &&
+      candidate.memberName.toLowerCase() === callSite.receiverName.toLowerCase() &&
+      isGraphMemberChainSeparator(text, candidate.range, callSite.range)
+    ) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function isGraphMemberChainSeparator(text: string, left: Range, right: Range): boolean {
+  if (left.end.line !== right.start.line) {
+    return false;
+  }
+  const between = text.slice(offsetAtText(text, left.end), offsetAtText(text, right.start));
+  return /^\s*\.\s*$/.test(between);
+}
+
+function addMemberReferenceGraphNodeForAccess(
+  state: AspGraphBuildState,
+  uri: string,
+  access: AspGraphMemberAccess,
+  chainPath: AspGraphMemberChainPath | undefined,
+): string {
+  const memberName = chainPath?.memberName ?? access.memberName ?? access.name;
+  return addMemberReferenceGraphNode(
+    state,
+    uri,
+    chainPath?.receiverPath ?? access.receiverName,
+    memberName,
+    access.range,
+    chainPath?.fullPath,
+  );
+}
+
+function addMemberChainLinksToAspGraph(
+  state: AspGraphBuildState,
+  indexed: AspGraphIndexedDocument,
+  paths: Map<string, AspGraphMemberChainPath>,
+): void {
+  for (const path of paths.values()) {
+    const source = addMemberReferenceGraphNode(
+      state,
+      indexed.document.uri,
+      path.receiverPath,
+      path.memberName,
+      path.range,
+      path.fullPath,
+    );
+    const parentPath = path.parentKey ? paths.get(path.parentKey) : undefined;
+    const target = parentPath
+      ? addMemberReferenceGraphNode(
+          state,
+          indexed.document.uri,
+          parentPath.receiverPath,
+          parentPath.memberName,
+          parentPath.range,
+          parentPath.fullPath,
+        )
+      : graphMemberChainBaseTarget(state, indexed, path);
+    addAspGraphLink(state, {
+      source,
+      target,
+      kind: "calls",
+      label: "member",
+      role: "member",
+      ranges: [{ uri: indexed.document.uri, range: path.range }],
+    });
+  }
+}
+
+function graphMemberChainBaseTarget(
+  state: AspGraphBuildState,
+  indexed: AspGraphIndexedDocument,
+  path: AspGraphMemberChainPath,
+): string {
+  const declaration = resolveGraphMemberChainBaseDeclaration(state, indexed, path);
+  return declaration
+    ? declarationGraphNodeId(declaration.id)
+    : addMemberReferenceGraphNode(
+        state,
+        indexed.document.uri,
+        undefined,
+        path.rootName,
+        path.range,
+        path.rootName,
+      );
+}
+
+function resolveGraphMemberChainBaseDeclaration(
+  state: AspGraphBuildState,
+  indexed: AspGraphIndexedDocument,
+  path: AspGraphMemberChainPath,
+): VbSymbolIndex["declarations"][number] | undefined {
+  const rootReference = findGraphMemberChainRootReference(indexed, path);
+  if (rootReference?.resolvedId) {
+    return (
+      resolveIncludedImplicitSourceGraphDeclaration(state, indexed, rootReference) ??
+      state.sourceDeclarationsById.get(rootReference.resolvedId)
+    );
+  }
+  return resolveVisibleSourceGraphDeclaration(
+    state,
+    indexed.document.uri,
+    path.rootName,
+    rootReference?.expectedKinds ?? ["variable", "constant", "parameter", "field"],
+    path.range,
+  );
+}
+
+function findGraphMemberChainRootReference(
+  indexed: AspGraphIndexedDocument,
+  path: AspGraphMemberChainPath,
+): VbSymbolIndex["references"][number] | undefined {
+  for (const reference of indexed.graphIndex.vbSymbolIndex.references) {
+    if (
+      reference.name.toLowerCase() === path.rootName.toLowerCase() &&
+      reference.scopeId === path.scopeId &&
+      reference.role !== "member" &&
+      isGraphMemberChainSeparator(indexed.document.text, reference.range, path.range)
+    ) {
+      return reference;
+    }
+  }
+  return indexed.graphIndex.vbSymbolIndex.references.find(
+    (reference) =>
+      reference.name.toLowerCase() === path.rootName.toLowerCase() &&
+      reference.role !== "member" &&
+      isGraphMemberChainSeparator(indexed.document.text, reference.range, path.range),
+  );
+}
+
+function graphMemberAccessKey(access: AspGraphMemberAccess): string {
+  return [
+    access.scopeId ?? "",
+    access.name.toLowerCase(),
+    access.memberName?.toLowerCase() ?? "",
+    access.range.start.line,
+    access.range.start.character,
+    access.range.end.line,
+    access.range.end.character,
+  ].join("|");
 }
 
 function isSuppressedBuiltinGraphExternalSymbol(
@@ -17976,13 +18577,15 @@ function addMemberReferenceGraphNode(
   receiverName: string | undefined,
   memberName: string,
   range: Range,
+  fullPath?: string,
 ): string {
-  const id = memberReferenceGraphNodeId(receiverName, memberName);
+  const label = fullPath ?? (receiverName ? `${receiverName}.${memberName}` : memberName);
+  const id = memberReferenceGraphNodeId(label);
   if (!state.nodes.has(id)) {
     state.nodes.set(id, {
       id,
       kind: "vbMemberReference",
-      label: receiverName ? `${receiverName}.${memberName}` : memberName,
+      label,
       uri,
       range,
       role: "member",
@@ -18027,6 +18630,8 @@ function graphPayloadSettings(settings: AspSettings): NonNullable<AspGraphPayloa
     showOutgoingSelectionLinks: graphSettings.showOutgoingSelectionLinks !== false,
     showIncomingDocumentIncludes: graphSettings.showIncomingDocumentIncludes === true,
     showIncomingFolderIncludes: graphSettings.showIncomingFolderIncludes === true,
+    includeRelatedIncludeTreesForUnresolved:
+      graphSettings.includeRelatedIncludeTreesForUnresolved === true,
     hiddenNodeCategories: graphNodeCategoryOrder.filter(
       (category) => !isVisibleAspGraphNodeCategory(category, graphSettings),
     ),
@@ -18202,8 +18807,8 @@ function isCallableUnresolvedRole(role: string | undefined): boolean {
   return role === "function" || role === "procedure" || role === "unknown";
 }
 
-function memberReferenceGraphNodeId(receiverName: string | undefined, memberName: string): string {
-  return `member:${receiverName?.toLowerCase() ?? ""}.${memberName.toLowerCase()}`;
+function memberReferenceGraphNodeId(memberPath: string): string {
+  return `member:${memberPath.toLowerCase()}`;
 }
 
 function scopeGraphNodeId(
@@ -18993,6 +19598,17 @@ async function buildSemanticTokensWithContextAsync(
         rangeStart,
         rangeEnd,
       );
+      if (region.end - region.contentEnd >= 2) {
+        addSemanticTokenInSourceRange(
+          tokens,
+          cached.source,
+          region.contentEnd,
+          2,
+          "keyword",
+          rangeStart,
+          rangeEnd,
+        );
+      }
     }
   }
   for (const semanticToken of getVbscriptSemanticTokens(cached.parsed, vbContext, range)) {

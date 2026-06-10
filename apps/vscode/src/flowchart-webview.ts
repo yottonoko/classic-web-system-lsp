@@ -4,11 +4,13 @@ import type {
   AspFlowchartPayload,
   AspFlowchartNode,
   AspFlowchartInclude,
+  AspFlowchartLabelMode,
   AspFlowchartTarget,
 } from "@asp-lsp/core";
 import { displayPathForPathOrUri, displayPathForUriText } from "./path-display";
 
 export type AspFlowchartLocale = "en" | "ja";
+export type { AspFlowchartLabelMode };
 export type AspFlowchartWebviewTheme = "light" | "dark";
 export type AspFlowchartWebviewThemeSetting = AspFlowchartWebviewTheme | "auto";
 export type AspFlowchartInfoPanelPosition = "left" | "right";
@@ -17,6 +19,7 @@ export interface AspFlowchartWebviewSettings {
   maxTextSize: number;
   maxEdges: number;
   labelLineLength: number;
+  labelMode: AspFlowchartLabelMode;
   minZoom: number;
   maxZoom: number;
   theme: AspFlowchartWebviewThemeSetting;
@@ -37,12 +40,20 @@ interface OpenRangeMessage {
 interface OpenIncludeFlowchartMessage {
   type: "openIncludeFlowchart";
   uri: string;
+  labelMode?: AspFlowchartLabelMode;
 }
 
 interface OpenFlowchartLocationMessage {
   type: "openFlowchartLocation";
   uri: string;
   range?: AspFlowchartTarget["range"];
+  labelMode?: AspFlowchartLabelMode;
+}
+
+interface ReloadFlowchartMessage {
+  type: "reloadFlowchart";
+  uri: string;
+  labelMode?: AspFlowchartLabelMode;
 }
 
 interface OpenGraphLocationMessage {
@@ -68,6 +79,7 @@ type WebviewMessage =
   | OpenRangeMessage
   | OpenIncludeFlowchartMessage
   | OpenFlowchartLocationMessage
+  | ReloadFlowchartMessage
   | OpenGraphLocationMessage
   | ExportFlowchartMessage
   | CopyTextMessage;
@@ -79,7 +91,10 @@ export function showAspFlowchartWebview(
   viewColumn: vscode.ViewColumn,
   locale: AspFlowchartLocale,
   settings: AspFlowchartWebviewSettings,
-  loadPayload: (uri: string) => Promise<{ payload: AspFlowchartPayload; title: string }>,
+  loadPayload: (
+    uri: string,
+    labelMode?: AspFlowchartLabelMode,
+  ) => Promise<{ payload: AspFlowchartPayload; title: string }>,
   openGraph: (uri: string, range?: AspFlowchartTarget["range"]) => Promise<void>,
   initialTargetRange?: AspFlowchartTarget["range"],
 ): void {
@@ -93,9 +108,35 @@ export function showAspFlowchartWebview(
     if (message.type === "openRange") {
       void openFlowchartRange(message.uri, message.range);
     } else if (message.type === "openIncludeFlowchart") {
-      void loadFlowchartLocation(panel, message.uri, undefined, locale, settings, loadPayload);
+      void loadFlowchartLocation(
+        panel,
+        message.uri,
+        undefined,
+        locale,
+        settings,
+        loadPayload,
+        message.labelMode,
+      );
     } else if (message.type === "openFlowchartLocation") {
-      void loadFlowchartLocation(panel, message.uri, message.range, locale, settings, loadPayload);
+      void loadFlowchartLocation(
+        panel,
+        message.uri,
+        message.range,
+        locale,
+        settings,
+        loadPayload,
+        message.labelMode,
+      );
+    } else if (message.type === "reloadFlowchart") {
+      void loadFlowchartLocation(
+        panel,
+        message.uri,
+        undefined,
+        locale,
+        settings,
+        loadPayload,
+        message.labelMode,
+      );
     } else if (message.type === "openGraphLocation") {
       void openGraph(message.uri, message.range);
     } else if (message.type === "exportFlowchart") {
@@ -126,9 +167,13 @@ async function loadFlowchartLocation(
   targetRange: AspFlowchartTarget["range"] | undefined,
   locale: AspFlowchartLocale,
   settings: AspFlowchartWebviewSettings,
-  loadPayload: (uri: string) => Promise<{ payload: AspFlowchartPayload; title: string }>,
+  loadPayload: (
+    uri: string,
+    labelMode?: AspFlowchartLabelMode,
+  ) => Promise<{ payload: AspFlowchartPayload; title: string }>,
+  labelMode?: AspFlowchartLabelMode,
 ): Promise<void> {
-  const result = await loadPayload(uri);
+  const result = await loadPayload(uri, labelMode);
   panel.title = result.title;
   await panel.webview.postMessage({
     type: "flowchartPayload",

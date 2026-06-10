@@ -59,7 +59,49 @@
       "endCaptures": {
         "0": { "name": "punctuation.section.embedded.end.asp" }
       },
-      "patterns": [{ "include": "#asp-vbscript" }]
+      "patterns": [{ "include": "#asp-directive-content" }]
+    },
+    "asp-directive-content": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(Language|CodePage|LCID|Transaction|EnableSessionState)\\b",
+          "name": "entity.other.attribute-name.directive.asp"
+        },
+        {
+          "match": "=",
+          "name": "punctuation.separator.key-value.directive.asp"
+        },
+        {
+          "begin": "\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.directive.asp" }
+          },
+          "end": "\"|(?=%>)",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.directive.asp" }
+          },
+          "name": "string.quoted.double.directive.asp"
+        },
+        {
+          "begin": "'",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.directive.asp" }
+          },
+          "end": "'|(?=%>)",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.directive.asp" }
+          },
+          "name": "string.quoted.single.directive.asp"
+        },
+        {
+          "match": "\\b\\d+\\b",
+          "name": "constant.numeric.directive.asp"
+        },
+        {
+          "match": "(?i)\\b(VBScript|JScript|JavaScript|True|False|Required|Requires_New|Supported|Not_Supported)\\b",
+          "name": "constant.language.directive.asp"
+        }
+      ]
     },
     "asp-block": {
       "name": "source.vbscript.embedded.asp",

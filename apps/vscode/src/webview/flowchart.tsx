@@ -5,6 +5,7 @@ import tailwindStyles from "./flowchart.css?inline";
 import { VirtualList } from "./virtual-list";
 import type {
   AspFlowchartInclude,
+  AspFlowchartLabelMode,
   AspFlowchartNode,
   AspFlowchartNodeLink,
   AspFlowchartPayload,
@@ -34,6 +35,7 @@ interface FlowchartPayload extends AspFlowchartPayload {
     maxTextSize?: number;
     maxEdges?: number;
     labelLineLength?: number;
+    labelMode?: AspFlowchartLabelMode;
     minZoom?: number;
     maxZoom?: number;
     theme?: WebviewThemeSetting;
@@ -61,6 +63,7 @@ const flowchartPanelMaximumWidth = 620;
 const flowchartCanvasMinimumWidth = 360;
 const flowchartPaneResizeHandleWidth = 6;
 const flowchartPaneResizeKeyboardStep = 16;
+const flowchartLabelModes: AspFlowchartLabelMode[] = ["normal", "raw", "description"];
 
 const fallbackPayload: FlowchartPayload = {
   uri: "",
@@ -112,6 +115,10 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     resetZoom: "Reset zoom",
     fitWidth: "Fit",
     fitWidthDescription: "Fit width to view",
+    labelMode: "Labels",
+    labelModeNormal: "Normal",
+    labelModeRaw: "Raw",
+    labelModeDescription: "Prose",
     zoomWithWheel: "Hold Ctrl or Command and use the mouse wheel to zoom.",
     collapseSection: "Collapse section",
     expandSection: "Expand section",
@@ -155,6 +162,10 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     resetZoom: "ズームをリセット",
     fitWidth: "フィット",
     fitWidthDescription: "横幅にフィット",
+    labelMode: "表示",
+    labelModeNormal: "通常",
+    labelModeRaw: "コード",
+    labelModeDescription: "文章",
     zoomWithWheel: "Ctrl または Command を押しながらホイールでズーム",
     collapseSection: "セクションを閉じる",
     expandSection: "セクションを開く",
@@ -782,11 +793,15 @@ function App(): React.ReactElement {
       defaultSectionId(initialPayload))
     : defaultSectionId(initialPayload);
   const [payload, setPayload] = useState<FlowchartPayload>(initialPayload);
+  const [labelMode, setLabelMode] = useState<AspFlowchartLabelMode>(() =>
+    flowchartLabelModeForPayload(initialPayload),
+  );
   const theme = useResolvedWebviewTheme(payload.settings?.theme);
   const themePalette = flowchartThemePalettes[theme];
   const [selectedSectionId, setSelectedSectionId] = useState<string | undefined>(
     () => initialSectionId,
   );
+  const selectedSectionIdRef = useRef<string | undefined>(initialSectionId);
   const [autoOpenSectionId, setAutoOpenSectionId] = useState<string | undefined>(() =>
     initialTargetRange ? initialSectionId : undefined,
   );
@@ -854,21 +869,21 @@ function App(): React.ReactElement {
       setFocusedFlowchartNodeId(undefined);
       const target = node.links?.[0]?.target;
       if (target) {
-        setAutoOpenSectionId(openFlowchartTarget(payload, target, setSelectedSectionId));
+        setAutoOpenSectionId(openFlowchartTarget(payload, target, setSelectedSectionId, labelMode));
       } else {
         const nextSectionId = sectionIdForNodeFlowchart(payload, node);
         setSelectedSectionId(nextSectionId);
         setAutoOpenSectionId(nextSectionId);
       }
     },
-    [payload],
+    [labelMode, payload],
   );
   const openTarget = useCallback(
     (target: AspFlowchartTarget) => {
       setFocusedFlowchartNodeId(undefined);
-      setAutoOpenSectionId(openFlowchartTarget(payload, target, setSelectedSectionId));
+      setAutoOpenSectionId(openFlowchartTarget(payload, target, setSelectedSectionId, labelMode));
     },
-    [payload],
+    [labelMode, payload],
   );
   const openGraph = useCallback(
     (range: AspFlowchartNode["range"] | AspFlowchartSection["range"]) => {
@@ -877,6 +892,16 @@ function App(): React.ReactElement {
       }
     },
     [payload.uri],
+  );
+  const changeLabelMode = useCallback(
+    (mode: AspFlowchartLabelMode) => {
+      if (mode === labelMode) {
+        return;
+      }
+      setLabelMode(mode);
+      vscode.postMessage({ type: "reloadFlowchart", uri: payload.uri, labelMode: mode });
+    },
+    [labelMode, payload.uri],
   );
   const selectSearchMatch = useCallback(
     (index: number) => {
@@ -905,6 +930,9 @@ function App(): React.ReactElement {
     [activeSearchIndex, selectSearchMatch],
   );
   useEffect(() => {
+    selectedSectionIdRef.current = selectedSectionId;
+  }, [selectedSectionId]);
+  useEffect(() => {
     const listener = (event: MessageEvent) => {
       const message = event.data as { type?: unknown; payload?: unknown; targetRange?: unknown };
       if (message.type === "flowchartPayload" && isFlowchartPayload(message.payload)) {
@@ -912,12 +940,19 @@ function App(): React.ReactElement {
         const targetNode = targetRange
           ? flowchartNodeForRange(message.payload, targetRange)
           : undefined;
+        const preservedSectionId =
+          !targetRange &&
+          selectedSectionIdRef.current &&
+          message.payload.sections.some((section) => section.id === selectedSectionIdRef.current)
+            ? selectedSectionIdRef.current
+            : undefined;
         const nextSectionId = targetRange
           ? (targetNode?.sectionId ??
             sectionIdForRange(message.payload, targetRange) ??
             defaultSectionId(message.payload))
-          : defaultSectionId(message.payload);
+          : (preservedSectionId ?? defaultSectionId(message.payload));
         setPayload(message.payload);
+        setLabelMode(flowchartLabelModeForPayload(message.payload));
         setFocusedFlowchartNodeId(targetNode?.id);
         setSelectedSectionId(nextSectionId);
         setAutoOpenSectionId(targetRange ? nextSectionId : undefined);
@@ -1030,7 +1065,12 @@ function App(): React.ReactElement {
             text={text}
             title={text("includes")}
           >
-            <IncludeList includes={payload.includes} text={text} uri={payload.uri} />
+            <IncludeList
+              includes={payload.includes}
+              labelMode={labelMode}
+              text={text}
+              uri={payload.uri}
+            />
           </SidebarAccordionSection>
           <SectionHeading>{text("flowcharts")}</SectionHeading>
           {payload.sections.length === 0 ? (
@@ -1118,6 +1158,8 @@ function App(): React.ReactElement {
         }
         onOpenFlowchart={openFlowchartForNode}
         onOpenGraph={openGraph}
+        labelMode={labelMode}
+        onLabelModeChange={changeLabelMode}
       />
     </main>
   );
@@ -1230,10 +1272,12 @@ function tooltipPositionFor(element: HTMLElement | null): TooltipPosition | unde
 
 function IncludeList({
   includes,
+  labelMode,
   text,
   uri,
 }: {
   includes: AspFlowchartInclude[];
+  labelMode: AspFlowchartLabelMode;
   text(key: string): string;
   uri: string;
 }): React.ReactElement {
@@ -1258,7 +1302,11 @@ function IncludeList({
               type="button"
               onClick={() =>
                 include.resolvedUri &&
-                vscode.postMessage({ type: "openIncludeFlowchart", uri: include.resolvedUri })
+                vscode.postMessage({
+                  type: "openIncludeFlowchart",
+                  uri: include.resolvedUri,
+                  labelMode,
+                })
               }
             >
               <span className="block overflow-hidden text-ellipsis whitespace-nowrap">
@@ -1588,6 +1636,7 @@ function FlowchartPaneResizeHandle({
 
 function FlowchartCanvas({
   className,
+  labelMode,
   payload,
   section,
   themePalette,
@@ -1597,8 +1646,10 @@ function FlowchartCanvas({
   onOpenCode,
   onOpenFlowchart,
   onOpenGraph,
+  onLabelModeChange,
 }: {
   className?: string;
+  labelMode: AspFlowchartLabelMode;
   payload: FlowchartPayload;
   section: AspFlowchartSection | undefined;
   themePalette: FlowchartThemePalette;
@@ -1608,6 +1659,7 @@ function FlowchartCanvas({
   onOpenCode(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
   onOpenFlowchart(node: AspFlowchartNode): void;
   onOpenGraph(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
+  onLabelModeChange(mode: AspFlowchartLabelMode): void;
 }): React.ReactElement {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1899,8 +1951,10 @@ function FlowchartCanvas({
           canExportSvg={Boolean(svg)}
           canFitFlowchartWidth={canFitFlowchartWidth}
           canOpenSection={Boolean(section?.range)}
+          labelMode={labelMode}
           text={text}
           zoom={zoom}
+          onLabelModeChange={onLabelModeChange}
           onCopyMermaid={copyMermaid}
           onExportMermaid={exportMermaid}
           onExportSvg={exportSvg}
@@ -1983,8 +2037,10 @@ function FlowchartToolbar({
   canExportSvg,
   canFitFlowchartWidth,
   canOpenSection,
+  labelMode,
   text,
   zoom,
+  onLabelModeChange,
   onCopyMermaid,
   onExportMermaid,
   onExportSvg,
@@ -1998,8 +2054,10 @@ function FlowchartToolbar({
   canExportSvg: boolean;
   canFitFlowchartWidth: boolean;
   canOpenSection: boolean;
+  labelMode: AspFlowchartLabelMode;
   text(key: string): string;
   zoom: number;
+  onLabelModeChange(mode: AspFlowchartLabelMode): void;
   onCopyMermaid(): void;
   onExportMermaid(): void;
   onExportSvg(): void;
@@ -2103,6 +2161,27 @@ function FlowchartToolbar({
           >
             {text("fitWidth")}
           </button>
+        </div>
+        <div
+          className="flex items-center overflow-hidden rounded border border-[#3b4a5f]"
+          title={text("labelMode")}
+        >
+          {flowchartLabelModes.map((mode) => (
+            <button
+              key={mode}
+              aria-pressed={labelMode === mode}
+              className={`h-7 min-w-[58px] border-r border-[#3b4a5f] px-2 text-xs last:border-r-0 ${
+                labelMode === mode
+                  ? "bg-[#17324a] text-white"
+                  : "text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
+              }`}
+              title={text(`labelMode${flowchartLabelModeTitleSuffix(mode)}`)}
+              type="button"
+              onClick={() => onLabelModeChange(mode)}
+            >
+              {text(`labelMode${flowchartLabelModeTitleSuffix(mode)}`)}
+            </button>
+          ))}
         </div>
         {compactAll ? (
           <button
@@ -2473,6 +2552,25 @@ function flowchartSearchText(node: AspFlowchartNode): string {
 
 function normalizeFlowchartSearchText(value: string): string {
   return value.trim().toLocaleLowerCase();
+}
+
+function flowchartLabelModeForPayload(payload: FlowchartPayload): AspFlowchartLabelMode {
+  const mode = payload.labelMode ?? payload.settings?.labelMode;
+  return flowchartLabelModes.includes(mode as AspFlowchartLabelMode)
+    ? (mode as AspFlowchartLabelMode)
+    : "normal";
+}
+
+function flowchartLabelModeTitleSuffix(mode: AspFlowchartLabelMode): string {
+  switch (mode) {
+    case "raw":
+      return "Raw";
+    case "description":
+      return "Description";
+    case "normal":
+    default:
+      return "Normal";
+  }
 }
 
 function defaultSectionId(payload: FlowchartPayload): string | undefined {
@@ -3016,6 +3114,7 @@ function openFlowchartTarget(
   payload: FlowchartPayload,
   target: AspFlowchartTarget,
   setSelectedSectionId: (sectionId: string | undefined) => void,
+  labelMode?: AspFlowchartLabelMode,
 ): string | undefined {
   const targetRange = target.nameRange ?? target.range;
   if (target.uri && target.uri !== payload.uri) {
@@ -3023,6 +3122,7 @@ function openFlowchartTarget(
       type: "openFlowchartLocation",
       uri: target.uri,
       range: targetRange,
+      labelMode,
     });
     return undefined;
   }

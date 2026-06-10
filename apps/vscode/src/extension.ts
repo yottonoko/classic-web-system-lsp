@@ -22,6 +22,7 @@ import {
 } from "./include-graph-webview";
 import {
   showAspFlowchartWebview,
+  type AspFlowchartLabelMode,
   type AspFlowchartPayload,
   type AspFlowchartWebviewSettings,
   type AspFlowchartWebviewThemeSetting,
@@ -54,6 +55,7 @@ interface GraphCommandRequest {
   uri?: string;
   activeDocument?: vscode.TextDocument;
   includeIncomingDocumentIncludes?: boolean;
+  includeRelatedIncludeTreesForUnresolved?: boolean;
 }
 
 let client: LanguageClient | undefined;
@@ -340,6 +342,7 @@ async function exportFlowchart(selectedUri?: vscode.Uri): Promise<void> {
 
 async function loadFlowchartPayload(
   uri: string | vscode.Uri,
+  labelMode?: AspFlowchartLabelMode,
 ): Promise<{ payload: AspFlowchartPayload; title: string }> {
   if (!client) {
     throw new Error(extensionLocalizer()("flowchart.serverUnavailable"));
@@ -358,6 +361,7 @@ async function loadFlowchartPayload(
               uri: uriText,
               locale: extensionLocale(),
               labelLineLength: flowchartWebviewSettings().labelLineLength,
+              labelMode: labelMode ?? flowchartWebviewSettings().labelMode,
             },
           ],
         },
@@ -406,6 +410,7 @@ async function showGraph(
   if (!request) {
     return;
   }
+  request.includeRelatedIncludeTreesForUnresolved = relatedIncludeTreeAnalysisSetting("graph");
   let payload: AspGraphPayload;
   try {
     payload = await requestAspGraphPayload(
@@ -450,7 +455,7 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
         scope: "document",
         uri: request.uri,
         activeDocument: request.activeDocument,
-        includeIncomingDocumentIncludes: true,
+        includeRelatedIncludeTreesForUnresolved: relatedIncludeTreeAnalysisSetting("excel"),
       },
       extensionLocalizer()("excel.currentTitle"),
     );
@@ -528,11 +533,25 @@ async function requestAspGraphPayload(
         "workspace/executeCommand",
         {
           command: buildGraphServerCommand,
-          arguments: [{ scope: request.scope, uri: request.uri }],
+          arguments: [
+            {
+              scope: request.scope,
+              uri: request.uri,
+              includeIncomingDocumentIncludes: request.includeIncomingDocumentIncludes,
+              includeRelatedIncludeTreesForUnresolved:
+                request.includeRelatedIncludeTreesForUnresolved,
+            },
+          ],
         },
         token,
       ),
   );
+}
+
+function relatedIncludeTreeAnalysisSetting(scope: "excel" | "graph"): boolean {
+  return vscode.workspace
+    .getConfiguration("aspLsp")
+    .get<boolean>(`${scope}.includeRelatedIncludeTreesForUnresolved`, scope === "excel");
 }
 
 function isGraphCancellationError(error: unknown): boolean {
@@ -589,11 +608,16 @@ function flowchartWebviewSettings(): AspFlowchartWebviewSettings {
       8,
       positiveNumberSetting(labelLineLength, defaultFlowchartLabelLineLength),
     ),
+    labelMode: flowchartLabelModeSetting(config.get<string>("flowchart.labelMode", "normal")),
     minZoom,
     maxZoom: Math.max(minZoom, maxZoom),
     theme: webviewThemeSetting(),
     infoPanelPosition: infoPanelPositionSetting("flowchart.infoPanelPosition", "left"),
   };
+}
+
+function flowchartLabelModeSetting(value: string): AspFlowchartLabelMode {
+  return value === "raw" || value === "description" ? value : "normal";
 }
 
 function webviewThemeSetting(): WebviewThemeSetting {

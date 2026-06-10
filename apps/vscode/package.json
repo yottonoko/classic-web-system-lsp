@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.5.46",
+  "version": "0.6.0",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -657,6 +657,16 @@
           "default": 34,
           "description": "%configuration.flowchart.labelLineLength.description%"
         },
+        "aspLsp.flowchart.labelMode": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "raw",
+            "description"
+          ],
+          "default": "normal",
+          "description": "%configuration.flowchart.labelMode.description%"
+        },
         "aspLsp.flowchart.minZoom": {
           "type": "number",
           "minimum": 0.1,
@@ -828,6 +838,11 @@
           "default": false,
           "description": "%configuration.graph.showIncomingFolderIncludes.description%"
         },
+        "aspLsp.graph.includeRelatedIncludeTreesForUnresolved": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.includeRelatedIncludeTreesForUnresolved.description%"
+        },
         "aspLsp.graph.initialViewMode": {
           "type": "string",
           "enum": [
@@ -854,6 +869,11 @@
           ],
           "default": "active",
           "description": "%configuration.graph.openLocation.description%"
+        },
+        "aspLsp.excel.includeRelatedIncludeTreesForUnresolved": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.excel.includeRelatedIncludeTreesForUnresolved.description%"
         },
         "aspLsp.cache.enabled": {
           "type": "boolean",
@@ -1049,6 +1069,11 @@
       "editor/title": [
         {
           "command": "aspLsp.showCurrentFileGraph",
+          "when": "editorLangId == classic-asp",
+          "group": "navigation"
+        },
+        {
+          "command": "aspLsp.exportCurrentFileAnalysisExcel",
           "when": "editorLangId == classic-asp",
           "group": "navigation"
         },

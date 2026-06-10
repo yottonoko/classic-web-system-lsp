@@ -185,10 +185,24 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("compactExports");
     expect(flowchartSource).toContain("compactAll");
     expect(flowchartSource).toContain("overflow-x-auto");
+    expect(flowchartSource).toContain(
+      'const flowchartLabelModes: AspFlowchartLabelMode[] = ["normal", "raw", "description"]',
+    );
+    expect(flowchartSource).toContain('labelModeNormal: "Normal"');
+    expect(flowchartSource).toContain('labelModeRaw: "Raw"');
+    expect(flowchartSource).toContain('labelModeDescription: "Prose"');
+    expect(flowchartSource).toContain('vscode.postMessage({ type: "reloadFlowchart"');
+    expect(flowchartSource).toContain("labelMode,");
+    expect(flowchartSource).toContain("flowchartLabelModeForPayload");
+    expect(flowchartSource).toContain("onLabelModeChange(mode)");
+    expect(flowchartSource).toContain("selectedSectionIdRef");
+    expect(flowchartHostSource).toContain('message.type === "reloadFlowchart"');
+    expect(flowchartHostSource).toContain("message.labelMode");
+    expect(flowchartHostSource).toContain("loadPayload(uri, labelMode)");
     expect(flowchartSource).toContain('openMenu: "Open"');
     expect(flowchartSource).toContain('exportMenu: "Export"');
     expect(flowchartSource).toContain('title={section?.label ?? text("title")}');
-    expect(flowchartSource).toContain("<span title={section.label}>{section.label}</span>");
+    expect(flowchartSource).toContain("<span>{section.label}</span>");
     expect(flowchartSource).toContain("<span title={node.label}>{node.label}</span>");
     expect(flowchartSource).not.toContain(
       "text-left text-xs font-semibold uppercase tracking-wide text-[#9fb0c5] hover:text-[#f1f5f9]",
@@ -512,6 +526,15 @@ describe("VS Code extension package", () => {
     );
     expect(nls["configuration.flowchart.maxEdges.description"]).toBeTruthy();
     expect(nlsJa["configuration.flowchart.maxEdges.description"]).toBeTruthy();
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.labelMode"]).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["normal", "raw", "description"],
+        default: "normal",
+      }),
+    );
+    expect(nls["configuration.flowchart.labelMode.description"]).toBeTruthy();
+    expect(nlsJa["configuration.flowchart.labelMode.description"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.minZoom"]).toEqual(
       expect.objectContaining({
         type: "number",
@@ -569,6 +592,7 @@ describe("VS Code extension package", () => {
       showMemberLinks: true,
       showIncomingDocumentIncludes: false,
       showIncomingFolderIncludes: false,
+      includeRelatedIncludeTreesForUnresolved: false,
     };
     for (const [name, defaultValue] of Object.entries(graphDefaults)) {
       const setting = `aspLsp.graph.${name}`;
@@ -626,6 +650,17 @@ describe("VS Code extension package", () => {
     expect(nlsJa["configuration.graph.initialViewMode.description"]).toBeTruthy();
     expect(nls["configuration.graph.openLocation.description"]).toBeTruthy();
     expect(nlsJa["configuration.graph.openLocation.description"]).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.[
+        "aspLsp.excel.includeRelatedIncludeTreesForUnresolved"
+      ],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
+    expect(
+      nls["configuration.excel.includeRelatedIncludeTreesForUnresolved.description"],
+    ).toBeTruthy();
+    expect(
+      nlsJa["configuration.excel.includeRelatedIncludeTreesForUnresolved.description"],
+    ).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.windowsPathResolution"],
@@ -742,6 +777,13 @@ describe("VS Code extension package", () => {
     );
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
       expect.objectContaining({
+        command: "aspLsp.exportCurrentFileAnalysisExcel",
+        when: "editorLangId == classic-asp",
+        group: "navigation",
+      }),
+    );
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
+      expect.objectContaining({
         command: "aspLsp.showCurrentFileFlowchart",
         when: "editorLangId == classic-asp",
         group: "navigation",
@@ -814,7 +856,8 @@ describe("VS Code extension package", () => {
     expect(extensionSource).not.toContain('"aspLsp.exportWorkspaceAnalysisExcel"');
     expect(extensionSource).toContain("createAnalysisExcelSheets");
     expect(extensionSource).toContain("targetUri: request.uri");
-    expect(extensionSource).toContain("includeIncomingDocumentIncludes: true");
+    expect(extensionSource).toContain("relatedIncludeTreeAnalysisSetting");
+    expect(extensionSource).toContain("includeRelatedIncludeTreesForUnresolved");
     expect(extensionSource).toContain("writeXlsxFile");
     expect(extensionSource).toContain(".toBuffer()");
     expect(extensionSource).toContain("vscode.workspace.fs.writeFile(target, workbook)");
@@ -1148,6 +1191,17 @@ describe("VS Code extension package", () => {
         (pattern) => pattern.include === "#asp-vbscript",
       ),
     ).toBe(true);
+    expect(
+      classicAspGrammar.repository?.["asp-directive"]?.patterns?.some(
+        (pattern) => pattern.include === "#asp-directive-content",
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(classicAspGrammar.repository?.["asp-directive-content"])).toContain(
+      "entity.other.attribute-name.directive.asp",
+    );
+    expect(JSON.stringify(classicAspGrammar.repository?.["asp-directive-content"])).toContain(
+      "constant.numeric.directive.asp",
+    );
     expect(classicAspGrammar.repository?.["asp-vbscript"]?.patterns).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ include: "#asp-vbscript-apostrophe-comment" }),
@@ -1166,6 +1220,7 @@ describe("VS Code extension package", () => {
         expect.objectContaining({ include: "#style-attribute-double" }),
         expect.objectContaining({ include: "#style-attribute-single" }),
         expect.objectContaining({ include: "#asp-expression" }),
+        expect.objectContaining({ include: "#asp-directive" }),
         expect.objectContaining({ include: "#asp-block" }),
       ]),
     );
@@ -1383,6 +1438,31 @@ console.log(a);
         token?.scopes.findIndex((scope) => scope.includes("string.quoted.double.html")) ?? -1;
       expect(vbscriptIndex).toBeGreaterThan(stringIndex);
     }
+  });
+
+  it("tokenizes ASP directives with directive-specific scopes", async () => {
+    const grammar = await loadClassicAspTextMateGrammar();
+    const source = `<%@ Language="VBScript" CodePage=65001 %>`;
+    const lines = [source];
+
+    expect(tokenAtText(grammar, lines, 0, "<%@")?.scopes).toContain(
+      "punctuation.section.embedded.begin.asp",
+    );
+    expect(tokenAtText(grammar, lines, 0, "Language")?.scopes).toContain(
+      "entity.other.attribute-name.directive.asp",
+    );
+    expect(tokenAtText(grammar, lines, 0, "VBScript")?.scopes).toContain(
+      "string.quoted.double.directive.asp",
+    );
+    expect(tokenAtText(grammar, lines, 0, "CodePage")?.scopes).toContain(
+      "entity.other.attribute-name.directive.asp",
+    );
+    expect(tokenAtText(grammar, lines, 0, "65001")?.scopes).toContain(
+      "constant.numeric.directive.asp",
+    );
+    expect(tokenAtText(grammar, lines, 0, "%>")?.scopes).toContain(
+      "punctuation.section.embedded.end.asp",
+    );
   });
 
   it("tokenizes quoted ASP islands in embedded strings and style attributes as ASP", async () => {
