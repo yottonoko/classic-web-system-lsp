@@ -238,7 +238,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.6.1";
+const languageServerVersion = "0.6.2";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -13007,6 +13007,11 @@ function normalizeFormatSettings(
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const indentStyle =
     record.indentStyle === "tab" || record.indentStyle === "space" ? record.indentStyle : undefined;
+  const vbscriptBlockIndent =
+    record.vbscriptBlockIndent === "alignWithDelimiter" ||
+    record.vbscriptBlockIndent === "indentInsideDelimiter"
+      ? record.vbscriptBlockIndent
+      : undefined;
   return {
     indentSize:
       typeof record.indentSize === "number" && record.indentSize > 0
@@ -13016,6 +13021,7 @@ function normalizeFormatSettings(
     uppercaseKeywords: record.uppercaseKeywords === true,
     alignAssignments: record.alignAssignments === true,
     onSave: record.onSave === true,
+    vbscriptBlockIndent,
     ignoreVbscriptTagIndent: record.ignoreVbscriptTagIndent === true,
     ignoreCssTagIndent: record.ignoreCssTagIndent === true,
     ignoreJavaScriptTagIndent: record.ignoreJavaScriptTagIndent === true,

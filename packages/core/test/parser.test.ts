@@ -7651,7 +7651,7 @@ End If
     expect(edits).toHaveLength(1);
     expect(edits[0].newText).toContain("<%");
     expect(edits[0].newText).toContain("%>");
-    expect(edits[0].newText).toContain("  Response.Write");
+    expect(edits[0].newText).toContain("    Response.Write");
     expect(edits[0].newText).toContain("<%= title %>");
   });
 
@@ -7673,7 +7673,7 @@ End If
       },
       { tabSize: 2, insertSpaces: true },
     );
-    expect(edits[0].newText).toContain("  Response.Write");
+    expect(edits[0].newText).toContain("    Response.Write");
     expect(edits[0].newText).not.toContain("<div>");
   });
 
@@ -7738,7 +7738,7 @@ longerName=2
       insertSpaces: true,
       alignAssignments: true,
     });
-    expect(edits[0].newText).toContain("first      = 1\nlongerName = 2");
+    expect(edits[0].newText).toContain("  first      = 1\n  longerName = 2");
   });
 
   it("indents VBScript line continuations one level deeper", () => {
@@ -7751,9 +7751,56 @@ a = _
 %>`,
     );
     const edits = formatAspDocument(parsed, { tabSize: 4, insertSpaces: true });
-    expect(edits[0].newText).toContain(`a = _
-    "aaa" & _
-    "bbb"`);
+    expect(edits[0].newText).toContain(`    a = _
+        "aaa" & _
+        "bbb"`);
+  });
+
+  it("indents nested If, ElseIf, and Else blocks consistently", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+If outer Then
+If inner Then
+a=1
+ElseIf fallback Then
+a=2
+Else
+a=3
+End If
+Else
+a=4
+End If
+%>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toBe(`<%
+  If outer Then
+    If inner Then
+      a = 1
+    ElseIf fallback Then
+      a = 2
+    Else
+      a = 3
+    End If
+  Else
+    a = 4
+  End If
+%>`);
+  });
+
+  it("indents block If bodies when Then is followed by a comment", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+If enabled Then ' keep comment
+Response.Write "ok"
+End If
+%>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toContain(`  If enabled Then ' keep comment
+    Response.Write "ok"`);
   });
 
   it("formats indented ASP blocks relative to their tag indentation", () => {
@@ -7769,10 +7816,31 @@ End If
     );
     const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
     expect(edits[0].newText).toContain(`    <%
-    If enabled Then
-      Response.Write "ok"
-    End If
+      If enabled Then
+        Response.Write "ok"
+      End If
     %>`);
+  });
+
+  it("can align ASP block statements with delimiters when configured", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+If enabled Then
+Response.Write "ok"
+End If
+%>`,
+    );
+    const edits = formatAspDocument(parsed, {
+      tabSize: 2,
+      insertSpaces: true,
+      vbscriptBlockIndent: "alignWithDelimiter",
+    });
+    expect(edits[0].newText).toBe(`<%
+If enabled Then
+  Response.Write "ok"
+End If
+%>`);
   });
 
   it("can ignore tag indentation when formatting ASP blocks", () => {
@@ -7792,9 +7860,9 @@ End If
       ignoreVbscriptTagIndent: true,
     });
     expect(edits[0].newText).toContain(`    <%
-If enabled Then
-  Response.Write "ok"
-End If
+  If enabled Then
+    Response.Write "ok"
+  End If
 %>`);
   });
 
@@ -7831,11 +7899,11 @@ End Select
     );
     const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
     expect(edits[0].newText).toContain(`Select Case kind
-  Case "a"
-    Response.Write "a"
-  Case Else
-    Response.Write "else"
-End Select`);
+    Case "a"
+      Response.Write "a"
+    Case Else
+      Response.Write "else"
+  End Select`);
   });
 
   it("toggles line comments by embedded Classic ASP region", () => {

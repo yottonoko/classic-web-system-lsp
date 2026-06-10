@@ -13261,9 +13261,9 @@ End If
     }
   </script>`);
         expect(fullText).toContain(`  <%
-  If enabled Then
-    Response.Write "ok"
-  End If
+    If enabled Then
+      Response.Write "ok"
+    End If
   %>`);
 
         const rangeEdits = await server.request("textDocument/rangeFormatting", {
@@ -13338,7 +13338,7 @@ End If
         expect(cssIgnored).toContain(`  <script>
     function greet() {`);
         expect(cssIgnored).toContain(`  <%
-  If enabled Then`);
+    If enabled Then`);
 
         const jsIgnored = await formatWithSettings("file:///tmp/format-ignore-js.asp", {
           ignoreJavaScriptTagIndent: true,
@@ -13348,7 +13348,7 @@ End If
         expect(jsIgnored).toContain(`  <script>
 function greet() {`);
         expect(jsIgnored).toContain(`  <%
-  If enabled Then`);
+    If enabled Then`);
 
         const vbscriptIgnored = await formatWithSettings("file:///tmp/format-ignore-vbs.asp", {
           ignoreVbscriptTagIndent: true,
@@ -13358,7 +13358,13 @@ function greet() {`);
         expect(vbscriptIgnored).toContain(`  <script>
     function greet() {`);
         expect(vbscriptIgnored).toContain(`  <%
-If enabled Then`);
+  If enabled Then`);
+
+        const vbscriptAligned = await formatWithSettings("file:///tmp/format-align-vbs.asp", {
+          vbscriptBlockIndent: "alignWithDelimiter",
+        });
+        expect(vbscriptAligned).toContain(`  <%
+  If enabled Then`);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

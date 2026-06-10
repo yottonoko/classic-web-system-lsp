@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -307,6 +307,18 @@
           "type": "boolean",
           "default": false,
           "description": "%configuration.format.alignAssignments.description%"
+        },
+        "aspLsp.format.vbscriptBlockIndent": {
+          "type": "string",
+          "enum": [
+            "alignWithDelimiter",
+            "indentInsideDelimiter"
+          ],
+          "default": "indentInsideDelimiter",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.vbscriptBlockIndent.description%"
         },
         "aspLsp.format.ignoreVbscriptTagIndent": {
           "type": "boolean",

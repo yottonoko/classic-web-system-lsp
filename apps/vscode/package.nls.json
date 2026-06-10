@@ -17,6 +17,7 @@
   "configuration.format.indentStyle.description": "Indent style used by the Classic ASP formatter. When unset, editor formatting options are used.",
   "configuration.format.uppercaseKeywords.description": "Format VBScript keywords using uppercase spelling.",
   "configuration.format.alignAssignments.description": "Align simple consecutive VBScript assignments.",
+  "configuration.format.vbscriptBlockIndent.description": "Controls whether multiline <% ... %> VBScript statements align with the delimiters or are indented one level inside them.",
   "configuration.format.ignoreVbscriptTagIndent.description": "Ignore parent tag indentation when formatting embedded VBScript regions.",
   "configuration.format.ignoreCssTagIndent.description": "Ignore parent tag indentation when formatting embedded CSS style elements.",
   "configuration.format.ignoreJavaScriptTagIndent.description": "Ignore parent tag indentation when formatting embedded JavaScript and JScript regions.",

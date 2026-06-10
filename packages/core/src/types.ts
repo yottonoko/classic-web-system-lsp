@@ -75,12 +75,15 @@ export type AspLocale = "en" | "ja";
 
 export type AspLegacyEncoding = "auto" | "utf8" | "shift_jis" | "cp932";
 
+export type AspVbscriptBlockIndent = "alignWithDelimiter" | "indentInsideDelimiter";
+
 export interface AspFormatSettings {
   indentSize?: number;
   indentStyle?: "space" | "tab";
   uppercaseKeywords?: boolean;
   alignAssignments?: boolean;
   onSave?: boolean;
+  vbscriptBlockIndent?: AspVbscriptBlockIndent;
   ignoreVbscriptTagIndent?: boolean;
   ignoreCssTagIndent?: boolean;
   ignoreJavaScriptTagIndent?: boolean;

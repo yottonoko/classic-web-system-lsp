@@ -731,6 +731,7 @@ describe("VS Code extension package", () => {
     for (const setting of [
       "aspLsp.format.indentSize",
       "aspLsp.format.indentStyle",
+      "aspLsp.format.vbscriptBlockIndent",
       "aspLsp.format.ignoreVbscriptTagIndent",
       "aspLsp.format.ignoreCssTagIndent",
       "aspLsp.format.ignoreJavaScriptTagIndent",
@@ -742,6 +743,15 @@ describe("VS Code extension package", () => {
     }
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.format.indentSize"]).toEqual(
       expect.objectContaining({ type: ["number", "null"], default: null, minimum: 1 }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.format.vbscriptBlockIndent"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["alignWithDelimiter", "indentInsideDelimiter"],
+        default: "indentInsideDelimiter",
+      }),
     );
     for (const setting of [
       "aspLsp.format.ignoreVbscriptTagIndent",

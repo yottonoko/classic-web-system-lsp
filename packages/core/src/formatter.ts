@@ -103,7 +103,8 @@ function formatRegion(
       return `<% ${formatVbscriptLine(content.trim(), options)} %>`;
     }
     const baseIndentLevel = vbscriptTagIndentLevel(parsed.text, region, options);
-    return `<%\n${formatVbscriptBlock(content, options, baseIndentLevel)}\n${indentUnit(options).repeat(baseIndentLevel)}%>`;
+    const contentIndentLevel = baseIndentLevel + vbscriptBlockIndentOffset(options);
+    return `<%\n${formatVbscriptBlock(content, options, contentIndentLevel)}\n${indentUnit(options).repeat(baseIndentLevel)}%>`;
   }
   const before = parsed.text.slice(region.start, region.contentStart);
   const after = parsed.text.slice(region.contentEnd, region.end);
@@ -141,27 +142,28 @@ function formatVbscriptBlock(
     }
     const continuesPreviousLine =
       previousSignificantLine !== undefined && isLineContinuation(previousSignificantLine);
-    if (!continuesPreviousLine && /^End\s+Select\b/i.test(trimmed)) {
+    const code = codeBeforeComment(trimmed);
+    if (!continuesPreviousLine && /^End\s+Select\b/i.test(code)) {
       indentLevel = selectIndentStack.pop() ?? Math.max(baseIndentLevel, indentLevel - 1);
-    } else if (!continuesPreviousLine && isCaseLine(trimmed)) {
+    } else if (!continuesPreviousLine && isCaseLine(code)) {
       const selectIndent = selectIndentStack.at(-1);
       if (selectIndent !== undefined) {
         indentLevel = previousSignificantLine
           ? selectIndent + 1
           : Math.max(baseIndentLevel, indentLevel);
       }
-    } else if (!continuesPreviousLine && dedentsBeforeLine(trimmed)) {
+    } else if (!continuesPreviousLine && dedentsBeforeLine(code)) {
       indentLevel = Math.max(baseIndentLevel, indentLevel - 1);
     }
     const lineIndentLevel = indentLevel + (continuesPreviousLine ? 1 : 0);
     const formattedLine = formatVbscriptLine(trimmed, options);
     formatted.push(`${unit.repeat(lineIndentLevel)}${formattedLine}`);
-    if (/^Select\b/i.test(trimmed)) {
+    if (/^Select\b/i.test(code)) {
       selectIndentStack.push(indentLevel);
       indentLevel += 1;
-    } else if (isCaseLine(trimmed)) {
+    } else if (isCaseLine(code)) {
       indentLevel += 1;
-    } else if (indentsAfterLine(trimmed)) {
+    } else if (indentsAfterLine(code)) {
       indentLevel += 1;
     }
     previousSignificantLine = formattedLine;
@@ -230,10 +232,16 @@ function dedentsBeforeLine(line: string): boolean {
 
 function indentsAfterLine(line: string): boolean {
   return (
-    (/^(Class|Sub|Function|Property\b.*\b(Get|Let|Set)|With|For\b|Do\b|While\b)/i.test(line) ||
+    /^Else$/i.test(line) ||
+    ((/^(Class|Sub|Function|Property\b.*\b(Get|Let|Set)|With|For\b|Do\b|While\b)/i.test(line) ||
       /\bThen$/i.test(line)) &&
-    !/^End\b/i.test(line)
+      !/^End\b/i.test(line))
   );
+}
+
+function codeBeforeComment(line: string): string {
+  const comment = parseVbscriptCst(line).tokens.find((token) => token.kind === "comment");
+  return (comment ? line.slice(0, comment.start) : line).trim();
 }
 
 function isCaseLine(line: string): boolean {
@@ -300,6 +308,10 @@ function vbscriptTagIndentLevel(
   return options.ignoreVbscriptTagIndent === true
     ? 0
     : leadingIndentLevel(text, region.start, options);
+}
+
+function vbscriptBlockIndentOffset(options: AspFormattingOptions): number {
+  return options.vbscriptBlockIndent === "alignWithDelimiter" ? 0 : 1;
 }
 
 function leadingIndentLevel(text: string, offset: number, options: AspFormattingOptions): number {

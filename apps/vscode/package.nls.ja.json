@@ -17,6 +17,7 @@
   "configuration.format.indentStyle.description": "Classic ASP formatter の indent style です。未設定なら editor formatting option を使います。",
   "configuration.format.uppercaseKeywords.description": "VBScript keyword を uppercase spelling で format します。",
   "configuration.format.alignAssignments.description": "単純な連続 VBScript assignment を align します。",
+  "configuration.format.vbscriptBlockIndent.description": "multiline <% ... %> VBScript statement を delimiter と同じ高さに揃えるか、一段内側に indent するかを制御します。",
   "configuration.format.ignoreVbscriptTagIndent.description": "embedded VBScript region を format するときに、親 tag の indent を無視します。",
   "configuration.format.ignoreCssTagIndent.description": "embedded CSS style element を format するときに、親 tag の indent を無視します。",
   "configuration.format.ignoreJavaScriptTagIndent.description": "embedded JavaScript / JScript region を format するときに、親 tag の indent を無視します。",
