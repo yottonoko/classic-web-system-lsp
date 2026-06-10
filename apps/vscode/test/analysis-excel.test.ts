@@ -21,8 +21,8 @@ describe("analysis Excel sheets", () => {
       "外部ファイルからの使用",
       "include 先シンボル使用",
       "メンバー使用",
-      "未解決グローバル変数",
-      "未解決グローバル変数代入候補",
+      "暗黙global変数",
+      "暗黙global変数代入候補",
       "未使用",
       "未解決",
     ]);
@@ -36,8 +36,8 @@ describe("analysis Excel sheets", () => {
         ["呼び出し数", 2],
         ["include 数", 1],
         ["未解決数", 1],
-        ["未解決グローバル変数数", 1],
-        ["未解決グローバル変数代入候補数", 0],
+        ["暗黙global変数数", 1],
+        ["暗黙global変数代入候補数", 0],
         ["未使用数", 2],
         ["切り詰め", "workspaceIndex>10"],
       ]),
@@ -46,8 +46,8 @@ describe("analysis Excel sheets", () => {
       expect.arrayContaining([
         ["未使用の宣言", 2, "要確認", "未使用 sheet で削除可否を確認"],
         ["未解決", 1, "要確認", "未解決 sheet で名前解決を確認"],
-        ["未解決グローバル変数数", 1, "要確認", "未解決グローバル変数 sheet で宣言漏れか確認"],
-        ["未解決グローバル変数代入候補数", 0, "なし", "問題なし"],
+        ["暗黙global変数数", 1, "要確認", "暗黙global変数 sheet で宣言漏れか確認"],
+        ["暗黙global変数代入候補数", 0, "なし", "問題なし"],
         ["他ファイルからの使用数", 4, "あり", "外部ファイルからの使用 sheet で利用元を確認"],
         [
           "include 先シンボル使用数",
@@ -56,8 +56,8 @@ describe("analysis Excel sheets", () => {
           "include 先シンボル使用 sheet で include 依存を確認",
         ],
         ["変数", 5, 3, 2, 6, expect.stringContaining("5")],
-        ["dimなしローカル変数", 1, 1, 0, 2, expect.stringContaining("1")],
-        ["未解決グローバル変数", 1, 1, 0, 1, expect.stringContaining("1")],
+        ["暗黙global変数", 1, 1, 0, 2, expect.stringContaining("1")],
+        ["暗黙global変数", 1, 1, 0, 1, expect.stringContaining("1")],
         ["関数", 2, 2, 0, 2, expect.stringContaining("2")],
         ["定数", 1, 1, 0, 1, expect.stringContaining("1")],
         ["クラス", 1, 1, 0, 1, expect.stringContaining("1")],
@@ -69,8 +69,8 @@ describe("analysis Excel sheets", () => {
         ["SharedConst", "定数", "includes/util.inc", 3, 1, 1, 0, 0],
         ["SharedClass", "クラス", "includes/util.inc", 4, 1, 1, 0, 0],
         ["TargetValue", "変数", "main.asp", 3, 2, 1, 1, 0],
-        ["MissingValue", "dimなしローカル変数", "main.asp", 10, 2, 1, 1, 0],
-        ["MissingRead", "未解決グローバル変数", "main.asp", 11, 1, 1, 0, 0],
+        ["MissingValue", "暗黙global変数", "main.asp", 10, 2, 1, 1, 0],
+        ["MissingRead", "暗黙global変数", "main.asp", 11, 1, 1, 0, 0],
         ["TargetProc", "関数", "main.asp", 4, 1, 0, 0, 1],
         ["LocalOnlyValue", "変数", "main.asp", 6, 2, 1, 1, 0],
         ["変数", 2, 5, 0.4, expect.stringContaining("2")],
@@ -96,8 +96,8 @@ describe("analysis Excel sheets", () => {
         ["未使用の宣言", 2, "要確認", "未使用 sheet で削除可否を確認"],
         ["他ファイルからの使用数", 4, "あり", "外部ファイルからの使用 sheet で利用元を確認"],
         ["変数", 5, 3, 2, 6],
-        ["dimなしローカル変数", 1, 1, 0, 2],
-        ["未解決グローバル変数", 1, 1, 0, 1],
+        ["暗黙global変数", 1, 1, 0, 2],
+        ["暗黙global変数", 1, 1, 0, 1],
         ["関数", 2, 2, 0, 2],
         ["定数", 1, 1, 0, 1],
         ["クラス", 1, 1, 0, 1],
@@ -118,12 +118,10 @@ describe("analysis Excel sheets", () => {
       "A1:J6",
     );
     expect(sheets.find((sheet) => sheet.sheet === "メンバー使用")?.autoFilterRef).toBe("A1:I2");
-    expect(sheets.find((sheet) => sheet.sheet === "未解決グローバル変数")?.autoFilterRef).toBe(
-      "A1:K2",
+    expect(sheets.find((sheet) => sheet.sheet === "暗黙global変数")?.autoFilterRef).toBe("A1:K2");
+    expect(sheets.find((sheet) => sheet.sheet === "暗黙global変数代入候補")?.autoFilterRef).toBe(
+      "A1:I1",
     );
-    expect(
-      sheets.find((sheet) => sheet.sheet === "未解決グローバル変数代入候補")?.autoFilterRef,
-    ).toBe("A1:I1");
     expect(sheets.find((sheet) => sheet.sheet === "未使用")?.autoFilterRef).toBe("A1:M3");
     expect(sheets.find((sheet) => sheet.sheet === "未解決")?.autoFilterRef).toBe("A1:I2");
     expect(table(sheets, "宣言")).toEqual(
@@ -267,7 +265,7 @@ describe("analysis Excel sheets", () => {
         [
           "main.asp",
           "MissingValue",
-          "dimなしローカル変数",
+          "暗黙global変数",
           "",
           "グローバル",
           "",
@@ -284,7 +282,7 @@ describe("analysis Excel sheets", () => {
         [
           "main.asp",
           "MissingRead",
-          "未解決グローバル変数",
+          "暗黙global変数",
           "",
           "グローバル",
           "",
@@ -326,8 +324,8 @@ describe("analysis Excel sheets", () => {
         ["main.asp", "TargetValue", "変数", "", "String", "ソース", 3, 5, 2, 1, 1, 0],
         ["main.asp", "TargetProc", "関数", "", "", "ソース", 4, 5, 1, 0, 0, 1],
         ["main.asp", "LocalOnlyValue", "変数", "", "", "ソース", 6, 5, 2, 1, 1, 0],
-        ["main.asp", "MissingValue", "dimなしローカル変数", "", "", "ソース", 10, 5, 2, 1, 1, 0],
-        ["main.asp", "MissingRead", "未解決グローバル変数", "", "", "ソース", 11, 5, 1, 1, 0, 0],
+        ["main.asp", "MissingValue", "暗黙global変数", "", "", "ソース", 10, 5, 2, 1, 1, 0],
+        ["main.asp", "MissingRead", "暗黙global変数", "", "", "ソース", 11, 5, 1, 1, 0, 0],
       ]),
     );
     expect(table(sheets, "内部使用")).toEqual(
@@ -365,7 +363,7 @@ describe("analysis Excel sheets", () => {
           "main.asp",
           "main.asp",
           "MissingValue",
-          "dimなしローカル変数",
+          "暗黙global変数",
           "",
           10,
           5,
@@ -378,7 +376,7 @@ describe("analysis Excel sheets", () => {
           "main.asp",
           "main.asp",
           "MissingRead",
-          "未解決グローバル変数",
+          "暗黙global変数",
           "",
           11,
           5,
@@ -434,7 +432,7 @@ describe("analysis Excel sheets", () => {
           "parent.asp",
           "main.asp",
           "MissingValue",
-          "dimなしローカル変数",
+          "暗黙global変数",
           "",
           4,
           5,
@@ -511,12 +509,12 @@ describe("analysis Excel sheets", () => {
         ],
       ]),
     );
-    expect(table(sheets, "未解決グローバル変数")).toEqual(
+    expect(table(sheets, "暗黙global変数")).toEqual(
       expect.arrayContaining([
-        ["main.asp", "MissingRead", "未解決グローバル変数", "", "グローバル", 11, 5, 1, 1, 0, 0],
+        ["main.asp", "MissingRead", "暗黙global変数", "", "グローバル", 11, 5, 1, 1, 0, 0],
       ]),
     );
-    expect(table(sheets, "未解決グローバル変数代入候補").flat()).not.toContain("MissingValue");
+    expect(table(sheets, "暗黙global変数代入候補").flat()).not.toContain("MissingValue");
     expect(table(sheets, "未使用")).toEqual(
       expect.arrayContaining([
         ["main.asp", "UnusedValue", "変数", "", "グローバル", "", "なし", 5, 5, 0, 0, 0, "未使用"],

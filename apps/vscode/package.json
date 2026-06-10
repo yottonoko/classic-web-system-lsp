@@ -566,16 +566,20 @@
           "default": false,
           "description": "%configuration.inlayHints.implicitByRef.description%"
         },
-        "aspLsp.inlayHints.globalVariableMarkers": {
-          "type": "string",
-          "enum": [
-            "global",
-            "local",
-            "all",
-            "off"
-          ],
-          "default": "off",
-          "description": "%configuration.inlayHints.globalVariableMarkers.description%"
+        "aspLsp.inlayHints.scopeMarkers.global": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.inlayHints.scopeMarkers.global.description%"
+        },
+        "aspLsp.inlayHints.scopeMarkers.local": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.inlayHints.scopeMarkers.local.description%"
+        },
+        "aspLsp.inlayHints.scopeMarkers.uncertain": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.inlayHints.scopeMarkers.uncertain.description%"
         },
         "aspLsp.codeLens.references": {
           "type": "boolean",

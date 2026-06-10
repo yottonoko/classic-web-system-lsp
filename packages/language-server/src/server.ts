@@ -12606,20 +12606,19 @@ function normalizeInlayHintSettings(
     parameterNames: record.parameterNames !== false,
     functionReturnTypes: record.functionReturnTypes === true,
     implicitByRef: record.implicitByRef === true,
-    globalVariableMarkers: normalizeInlayMarkerMode(record.globalVariableMarkers),
+    scopeMarkers: normalizeInlayScopeMarkerSettings(record.scopeMarkers),
   };
 }
 
-function normalizeInlayMarkerMode(
+function normalizeInlayScopeMarkerSettings(
   value: unknown,
-): NonNullable<NonNullable<AspSettings["inlayHints"]>["globalVariableMarkers"]> {
-  if (value === "all" || value === "local" || value === "global" || value === "off") {
-    return value;
-  }
-  if (value === false) {
-    return "off";
-  }
-  return "off";
+): NonNullable<NonNullable<AspSettings["inlayHints"]>["scopeMarkers"]> {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    global: record.global === true,
+    local: record.local === true,
+    uncertain: record.uncertain === true,
+  };
 }
 
 function normalizeCodeLensSettings(

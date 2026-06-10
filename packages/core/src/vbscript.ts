@@ -29,7 +29,7 @@ import { sameSourceUri, sourceUriIdentityKey } from "./source-uri";
 import builtinCatalogData from "./vbscript-builtin-catalog.json";
 import type {
   AspCstNode,
-  AspInlayHintMarkerMode,
+  AspInlayHintScopeMarkerSettings,
   AspLocale,
   AspParsedDocument,
   AspRegion,
@@ -3520,7 +3520,7 @@ export function getVbscriptInlayHints(
     parameterNames: options.parameterNames !== false,
     functionReturnTypes: options.functionReturnTypes !== false,
     implicitByRef: options.implicitByRef !== false,
-    globalVariableMarkers: options.globalVariableMarkers ?? "global",
+    scopeMarkers: options.scopeMarkers ?? {},
   };
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const env = context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
@@ -3541,7 +3541,7 @@ export function getVbscriptInlayHints(
       }
       hints.push({
         position: variableTypeHintPosition(parsed, symbol),
-        label: `${scopeInlayPrefix(parsed, symbol, context, settings.globalVariableMarkers)} As ${symbolTypeDisplay(symbol) ?? symbol.typeName}`,
+        label: `${scopeInlayPrefix(parsed, symbol, context, settings.scopeMarkers)} As ${symbolTypeDisplay(symbol) ?? symbol.typeName}`,
         kind: InlayHintKind.Type,
         paddingLeft: false,
         paddingRight: true,
@@ -3701,9 +3701,9 @@ function scopeInlayPrefix(
   parsed: AspParsedDocument,
   symbol: VbSymbol,
   context: VbProjectContext,
-  mode: AspInlayHintMarkerMode,
+  markers: AspInlayHintScopeMarkerSettings,
 ): string {
-  const marker = scopeMarker(parsed, symbol, context, mode);
+  const marker = scopeMarker(parsed, symbol, context, markers);
   return marker ? ` ${marker}` : "";
 }
 
@@ -3712,7 +3712,11 @@ function hoverScopePrefix(
   symbol: VbSymbol,
   context: VbProjectContext,
 ): string {
-  const marker = scopeMarker(parsed, symbol, context, "all");
+  const marker = scopeMarker(parsed, symbol, context, {
+    global: true,
+    local: true,
+    uncertain: true,
+  });
   return marker ? `${marker} ` : "";
 }
 
@@ -3720,19 +3724,19 @@ function scopeMarker(
   parsed: AspParsedDocument,
   symbol: VbSymbol,
   context: VbProjectContext,
-  mode: AspInlayHintMarkerMode,
+  markers: AspInlayHintScopeMarkerSettings,
 ): string {
-  if (mode === "off" || !isVariableMarkerSymbol(symbol)) {
+  if (!isVariableMarkerSymbol(symbol)) {
     return "";
   }
   if (isUncertainIncludeImplicitSymbol(parsed, symbol, context)) {
-    return "(?)";
+    return markers.uncertain === true ? "(?)" : "";
   }
   if (isGlobalVariableLikeSymbol(symbol)) {
-    return mode === "global" || mode === "all" ? "(global)" : "";
+    return markers.global === true ? "(global)" : "";
   }
   if (isLocalVariableLikeSymbol(symbol)) {
-    return mode === "local" || mode === "all" ? "(local)" : "";
+    return markers.local === true ? "(local)" : "";
   }
   return "";
 }
@@ -4642,10 +4646,7 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
   if (hasOptionExplicit(parsed)) {
     return;
   }
-  const existingSymbols = new Map<string, VbSymbol[]>();
-  for (const symbol of symbols) {
-    pushMapItem(existingSymbols, implicitAssignmentSymbolKey(symbol), symbol);
-  }
+  const candidates = new Map<string, ImplicitAssignmentCandidate[]>();
   for (const statement of vbAssignmentStatements(parsed)) {
     const first = lowerToken(statement[0]);
     const targetIndex = first === "set" || first === "let" ? 1 : 0;
@@ -4677,50 +4678,52 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
     ) {
       continue;
     }
-    const existing = existingSymbols.get(
-      implicitAssignmentKey(target.text, parsed.uri, scope?.nameToken?.text ?? "", memberOf ?? ""),
-    );
-    if (
-      existing?.some((symbol) => isSymbolVisibleAt(symbol, parsed.uri, parsed.text, target.start))
-    ) {
-      continue;
-    }
-    const symbol: VbSymbol = {
-      name: target.text,
-      kind: "variable",
-      range: rangeFromOffsets(parsed.text, target.start, target.end),
-      sourceUri: parsed.uri,
+    const key = implicitAssignmentKey(target.text, parsed.uri, scope ? "" : (memberOf ?? ""));
+    pushMapItem(candidates, key, {
       memberOf,
-      containerName: memberOf,
-      scopeName: scope?.nameToken?.text,
-      scopeRange: scope
-        ? rangeFromOffsets(parsed.text, scope.start, scope.end)
-        : memberOf
-          ? rangeFromOffsets(parsed.text, target.start, statement.at(-1)?.end ?? target.end)
-          : undefined,
+      statement,
+      target,
+      topLevel: !scope && !memberOf,
+    });
+  }
+  for (const items of candidates.values()) {
+    const representative = implicitAssignmentRepresentative(items);
+    const symbol: VbSymbol = {
+      name: representative.target.text,
+      kind: "variable",
+      range: rangeFromOffsets(parsed.text, representative.target.start, representative.target.end),
+      sourceUri: parsed.uri,
+      memberOf: representative.memberOf,
+      containerName: representative.memberOf,
+      scopeRange: representative.memberOf
+        ? rangeFromOffsets(
+            parsed.text,
+            representative.target.start,
+            representative.statement.at(-1)?.end ?? representative.target.end,
+          )
+        : undefined,
       implicit: true,
     };
     symbols.push(symbol);
-    pushMapItem(existingSymbols, implicitAssignmentSymbolKey(symbol), symbol);
   }
 }
 
-function implicitAssignmentSymbolKey(symbol: VbSymbol): string {
-  return implicitAssignmentKey(
-    symbol.name,
-    symbol.sourceUri,
-    symbol.scopeName ?? "",
-    symbol.memberOf ?? "",
-  );
+interface ImplicitAssignmentCandidate {
+  memberOf: string | undefined;
+  statement: VbToken[];
+  target: VbToken;
+  topLevel: boolean;
 }
 
-function implicitAssignmentKey(
-  name: string,
-  sourceUri: string,
-  scopeName: string,
-  memberOf: string,
-): string {
-  return `${sourceUri}\0${scopeName.toLowerCase()}\0${memberOf.toLowerCase()}\0${name.toLowerCase()}`;
+function implicitAssignmentRepresentative(
+  candidates: ImplicitAssignmentCandidate[],
+): ImplicitAssignmentCandidate {
+  const topLevelIndex = findLastIndex(candidates, (candidate) => candidate.topLevel);
+  return candidates[topLevelIndex] ?? candidates.at(-1) ?? candidates[0];
+}
+
+function implicitAssignmentKey(name: string, sourceUri: string, memberOf: string): string {
+  return `${sourceUri}\0${memberOf.toLowerCase()}\0${name.toLowerCase()}`;
 }
 
 function hasOptionExplicit(parsed: AspParsedDocument): boolean {

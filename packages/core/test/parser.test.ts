@@ -3219,17 +3219,17 @@ CStr = "builtin"
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      implicitLocal: true,
+      unresolvedGlobal: true,
     });
-    expect(implicitLocal?.unresolvedGlobal).toBeUndefined();
+    expect(implicitLocal?.implicitLocal).toBeUndefined();
     const methodLocal = index.declarations.find((item) => item.name === "methodLocal");
     expect(methodLocal).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      implicitLocal: true,
+      unresolvedGlobal: true,
     });
-    expect(methodLocal?.unresolvedGlobal).toBeUndefined();
+    expect(methodLocal?.implicitLocal).toBeUndefined();
     expect(index.declarations.find((item) => item.name === "readOnlyGlobal")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
@@ -3366,9 +3366,9 @@ If enabled Then Set objectValue = New Widget
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      implicitLocal: true,
+      unresolvedGlobal: true,
     });
-    expect(declaration("localValue")?.unresolvedGlobal).toBeUndefined();
+    expect(declaration("localValue")?.implicitLocal).toBeUndefined();
     expect(declaration("objectValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
@@ -3426,23 +3426,23 @@ End Sub
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      implicitLocal: true,
+      unresolvedGlobal: true,
     });
-    expect(declaration("loopValue")?.unresolvedGlobal).toBeUndefined();
+    expect(declaration("loopValue")?.implicitLocal).toBeUndefined();
     expect(declaration("eachValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      implicitLocal: true,
+      unresolvedGlobal: true,
     });
-    expect(declaration("eachValue")?.unresolvedGlobal).toBeUndefined();
+    expect(declaration("eachValue")?.implicitLocal).toBeUndefined();
     expect(declaration("items")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
-      implicitLocal: true,
       unresolvedGlobal: true,
     });
+    expect(declaration("items")?.implicitLocal).toBeUndefined();
     expect(reference("index")).toMatchObject({
       resolvedId: declaration("index")?.id,
       bindingScope: "local",
@@ -6735,8 +6735,7 @@ End Sub
         ?.typeName,
     ).toBe("Variant");
     expect(
-      symbols.find((symbol) => symbol.name === "implicitLocal" && symbol.scopeName === "Render")
-        ?.typeName,
+      symbols.find((symbol) => symbol.name === "implicitLocal" && !symbol.scopeName)?.typeName,
     ).toBe("Number");
     expect(
       symbols.find((symbol) => symbol.name === "sharedValue" && symbol.scopeName === "Render"),
@@ -6746,13 +6745,15 @@ End Sub
     ).toBe("Number");
 
     const hints = getVbscriptInlayHints(parsed, sourceRange, { symbols });
-    expect(hints.some((hint) => hint.label === " (global) As String | Number")).toBe(true);
-    expect(hints.some((hint) => hint.label === " (global) As Variant")).toBe(true);
+    expect(hints.some((hint) => hint.label === " As String | Number")).toBe(true);
+    expect(hints.some((hint) => hint.label === " As Variant")).toBe(true);
+    expect(JSON.stringify(hints)).not.toContain("(global)");
+    expect(JSON.stringify(hints)).not.toContain("(local)");
     const hintsWithoutGlobalMarkers = getVbscriptInlayHints(
       parsed,
       sourceRange,
       { symbols },
-      { globalVariableMarkers: "off" },
+      { scopeMarkers: {} },
     );
     expect(JSON.stringify(hintsWithoutGlobalMarkers)).not.toContain("(global)");
     expect(hintsWithoutGlobalMarkers.some((hint) => hint.label === " As String | Number")).toBe(
@@ -6770,7 +6771,7 @@ End Sub
       parsed,
       sourceRange,
       { symbols },
-      { globalVariableMarkers: "all" },
+      { scopeMarkers: { global: true, local: true, uncertain: true } },
     );
     expect(
       hintsWithLocalMarkers.some(
@@ -6782,7 +6783,7 @@ End Sub
     expect(
       hintsWithLocalMarkers.some(
         (hint) =>
-          hint.label === " (local) As Number" &&
+          hint.label === " (global) As Number" &&
           hint.position.line === positionAt(source, source.indexOf("implicitLocal")).line,
       ),
     ).toBe(true);
@@ -6790,7 +6791,7 @@ End Sub
       parsed,
       sourceRange,
       { symbols },
-      { globalVariableMarkers: "local" },
+      { scopeMarkers: { local: true } },
     );
     expect(JSON.stringify(localOnlyHints)).not.toContain("(global)");
     expect(
@@ -6803,7 +6804,7 @@ End Sub
     expect(
       localOnlyHints.some(
         (hint) =>
-          hint.label === " (local) As Number" &&
+          hint.label === " As Number" &&
           hint.position.line === positionAt(source, source.indexOf("implicitLocal")).line,
       ),
     ).toBe(true);
@@ -6819,7 +6820,7 @@ End Sub
     ).toContain("(global) Dim sharedValue As Number");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("implicitLocal")), { symbols }),
-    ).toContain("(local) Dim implicitLocal As Number");
+    ).toContain("(global) Dim implicitLocal As Number");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("unknownGlobal")), { symbols }),
     ).not.toContain("VBScript variable");
@@ -6883,9 +6884,7 @@ Response.Write a
         { symbols },
       ).some(
         (hint) =>
-          hint.label === " (global) As Number" &&
-          hint.paddingLeft === false &&
-          hint.paddingRight === true,
+          hint.label === " As Number" && hint.paddingLeft === false && hint.paddingRight === true,
       ),
     ).toBe(true);
     expect(
@@ -6903,6 +6902,119 @@ Response.Write a
           token.tokenModifiers?.includes("library"),
       ),
     ).toBe(true);
+  });
+
+  it("uses script-level representatives for dimless procedure implicit globals", () => {
+    const source = `<%
+Function A()
+  If N = 1 Then
+    A = N * 100
+  Else
+    A = 5
+  End If
+  N = 1
+End Function
+
+R = A()
+M = A()
+
+N = ""
+%>`;
+    const parsed = parseAspDocument("file:///site/dimless-global.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const n = symbols.find((symbol) => symbol.name === "N");
+    expect(n).toMatchObject({
+      implicit: true,
+      typeName: "Number | String",
+    });
+    expect(n?.scopeName).toBeUndefined();
+    const scriptAssignment = source.lastIndexOf('N = ""');
+    expect(n?.range).toEqual({
+      start: positionAt(source, scriptAssignment),
+      end: positionAt(source, scriptAssignment + 1),
+    });
+    expect(
+      getVbscriptDefinition(parsed, positionAt(source, source.indexOf("N = 1")), { symbols })
+        ?.range,
+    ).toEqual(n?.range);
+    expect(
+      getVbscriptInlayHints(
+        parsed,
+        { start: { line: 0, character: 0 }, end: positionAt(source, source.length) },
+        { symbols },
+        { scopeMarkers: { global: true } },
+      ).find((hint) => hint.label === " (global) As Number | String")?.position,
+    ).toEqual(n?.range.end);
+  });
+
+  it("uses the last procedure assignment for dimless implicit globals without script-level writes", () => {
+    const source = `<%
+Function A()
+  If N = 1 Then
+    A = N * 100
+  Else
+    A = 5
+  End If
+  N = 1
+End Function
+
+R = A()
+M = A()
+%>`;
+    const parsed = parseAspDocument("file:///site/dimless-unresolved-global.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const n = symbols.find((symbol) => symbol.name === "N");
+    const lastAssignment = source.lastIndexOf("N = 1");
+    expect(n).toMatchObject({
+      implicit: true,
+      typeName: "Number",
+    });
+    expect(n?.scopeName).toBeUndefined();
+    expect(n?.range).toEqual({
+      start: positionAt(source, lastAssignment),
+      end: positionAt(source, lastAssignment + 1),
+    });
+    expect(
+      getVbscriptDefinition(parsed, positionAt(source, source.indexOf("If N") + "If ".length), {
+        symbols,
+      })?.range,
+    ).toEqual(n?.range);
+    expect(
+      getVbscriptInlayHints(
+        parsed,
+        { start: { line: 0, character: 0 }, end: positionAt(source, source.length) },
+        { symbols },
+        { scopeMarkers: { global: true } },
+      ).find((hint) => hint.label === " (global) As Number")?.position,
+    ).toEqual(n?.range.end);
+  });
+
+  it("keeps explicit procedure locals and parameters ahead of dimless implicit globals", () => {
+    const source = `<%
+Function ExplicitLocal()
+  Dim N
+  N = 1
+End Function
+Function ExplicitParameter(N)
+  N = 2
+End Function
+%>`;
+    const parsed = parseAspDocument("file:///site/dimless-local-guards.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const local = symbols.find(
+      (symbol) => symbol.name === "N" && symbol.scopeName === "ExplicitLocal",
+    );
+    expect(local).toMatchObject({ kind: "variable" });
+    expect(local?.implicit).toBeUndefined();
+    expect(local?.scopeName).toBe("ExplicitLocal");
+    expect(
+      symbols.find((symbol) => symbol.name === "N" && symbol.scopeName === "ExplicitParameter"),
+    ).toMatchObject({ kind: "parameter" });
+    expect(
+      symbols.find((symbol) => symbol.name === "N" && symbol.scopeName === "ExplicitParameter")
+        ?.implicit,
+    ).toBeUndefined();
+    expect(symbols.some((symbol) => symbol.name === "N" && symbol.implicit)).toBe(false);
   });
 
   it("creates implicit variables from single-line If assignments for hover and inlay hints", () => {
@@ -6942,30 +7054,28 @@ End Sub
     });
     expect(symbols.find((symbol) => symbol.name === "localValue")).toMatchObject({
       implicit: true,
-      scopeName: "Render",
       typeName: "String",
     });
     expect(symbols.find((symbol) => symbol.name === "implicitIndexed")).toMatchObject({
       implicit: true,
-      scopeName: "Render",
     });
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("oneLineValue")), { symbols }),
     ).toContain("(global) Dim oneLineValue As Number");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("localValue")), { symbols }),
-    ).toContain("(local) Dim localValue As String");
+    ).toContain("(global) Dim localValue As String");
     expect(
       getVbscriptHover(parsed, positionAt(source, source.indexOf("implicitIndexed")), { symbols }),
-    ).toContain("(local) Dim implicitIndexed");
+    ).toContain("(global) Dim implicitIndexed");
     expect(
       getVbscriptInlayHints(
         parsed,
         { start: { line: 0, character: 0 }, end: positionAt(source, source.length) },
         { symbols },
-        { globalVariableMarkers: "all" },
+        { scopeMarkers: { global: true, local: true, uncertain: true } },
       ).map((hint) => hint.label),
-    ).toEqual(expect.arrayContaining([" (global) As Number", " (local) As String"]));
+    ).toEqual(expect.arrayContaining([" (global) As Number", " (global) As String"]));
   });
 
   it("uses uncertain markers only before include-aware implicit variable analysis is available", () => {
@@ -6982,11 +7092,11 @@ End Sub
       includeParsed,
       { start: { line: 0, character: 0 }, end: positionAt(includeSource, includeSource.length) },
       { symbols: includeSymbols },
-      { globalVariableMarkers: "all" },
+      { scopeMarkers: { global: true, local: true, uncertain: true } },
     );
     expect(includeHints.filter((hint) => hint.label === " (global) As Number")).toHaveLength(1);
-    expect(includeHints.filter((hint) => hint.label === " (global) As String")).toHaveLength(1);
-    expect(includeHints.filter((hint) => hint.label === " (local) As String")).toHaveLength(1);
+    expect(includeHints.filter((hint) => hint.label === " (global) As String")).toHaveLength(2);
+    expect(includeHints.filter((hint) => hint.label === " (local) As String")).toHaveLength(0);
     expect(JSON.stringify(includeHints)).not.toContain("(?)");
     expect(
       getVbscriptHover(includeParsed, positionAt(includeSource, includeSource.indexOf("a =")), {
@@ -6997,7 +7107,7 @@ End Sub
       getVbscriptHover(includeParsed, positionAt(includeSource, includeSource.indexOf("b =")), {
         symbols: includeSymbols,
       }),
-    ).toContain("(local) Dim b As String");
+    ).toContain("(global) Dim b As String");
 
     const pageSource = `<!-- #include file="shared.inc" -->
 <%
@@ -7014,20 +7124,20 @@ Response.Write b
       pageParsed,
       { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
       { symbols: pageSymbols },
-      { globalVariableMarkers: "all" },
+      { scopeMarkers: { global: true, local: true, uncertain: true } },
     );
     expect(pageHints.some((hint) => hint.label === " (?) As Number")).toBe(true);
-    expect(pageHints.some((hint) => hint.label === " (local) As String")).toBe(true);
+    expect(pageHints.some((hint) => hint.label === " (?) As String")).toBe(true);
     expect(JSON.stringify(pageHints)).not.toContain("(global) As Number");
 
     const includeAwarePageHints = getVbscriptInlayHints(
       pageParsed,
       { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
       { symbols: [...pageSymbols, ...includeSymbols], documents: [pageParsed, includeParsed] },
-      { globalVariableMarkers: "all" },
+      { scopeMarkers: { global: true, local: true, uncertain: true } },
     );
     expect(JSON.stringify(includeAwarePageHints)).not.toContain("(global) As Number");
-    expect(includeAwarePageHints.some((hint) => hint.label === " (local) As String")).toBe(true);
+    expect(JSON.stringify(includeAwarePageHints)).not.toContain("(local) As String");
     expect(JSON.stringify(includeAwarePageHints)).not.toContain("(?)");
     expect(
       getVbscriptHover(pageParsed, positionAt(pageSource, pageSource.indexOf("sharedTitle")), {
@@ -7040,13 +7150,13 @@ Response.Write b
         symbols: [...pageSymbols, ...includeSymbols],
         documents: [pageParsed, includeParsed],
       }),
-    ).toBeUndefined();
+    ).toContain("(global) Dim b As String");
 
     const disabled = getVbscriptInlayHints(
       includeParsed,
       { start: { line: 0, character: 0 }, end: positionAt(includeSource, includeSource.length) },
       { symbols: includeSymbols },
-      { globalVariableMarkers: "off" },
+      { scopeMarkers: {} },
     );
     expect(JSON.stringify(disabled)).not.toContain("(?)");
   });
@@ -7080,7 +7190,7 @@ sharedTitle = "page"
         pageParsed,
         { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
         context,
-        { globalVariableMarkers: "all" },
+        { scopeMarkers: { global: true, local: true, uncertain: true } },
       ).some((hint) => hint.label === " (global) As String"),
     ).toBe(false);
 
@@ -7111,7 +7221,7 @@ sharedTitle = "page"
           symbols: [...beforeIncludeSymbols, ...includeSymbols],
           documents: [beforeIncludeParsed, includeParsed],
         },
-        { globalVariableMarkers: "all" },
+        { scopeMarkers: { global: true, local: true, uncertain: true } },
       ).some((hint) => hint.label === " (global) As String"),
     ).toBe(true);
   });
@@ -7159,7 +7269,7 @@ End Class
       pageParsed,
       { start: { line: 0, character: 0 }, end: positionAt(pageSource, pageSource.length) },
       context,
-      { globalVariableMarkers: "all" },
+      { scopeMarkers: { global: true, local: true, uncertain: true } },
     );
     expect(JSON.stringify(hints)).not.toContain("(local) As String");
     expect(JSON.stringify(hints)).not.toContain("(global) As String");

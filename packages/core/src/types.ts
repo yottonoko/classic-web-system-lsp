@@ -149,10 +149,14 @@ export interface AspInlayHintSettings {
   parameterNames?: boolean;
   functionReturnTypes?: boolean;
   implicitByRef?: boolean;
-  globalVariableMarkers?: AspInlayHintMarkerMode;
+  scopeMarkers?: AspInlayHintScopeMarkerSettings;
 }
 
-export type AspInlayHintMarkerMode = "global" | "local" | "all" | "off";
+export interface AspInlayHintScopeMarkerSettings {
+  global?: boolean;
+  local?: boolean;
+  uncertain?: boolean;
+}
 
 export interface AspCodeLensSettings {
   references?: boolean;

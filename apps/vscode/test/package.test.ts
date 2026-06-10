@@ -432,14 +432,17 @@ describe("VS Code extension package", () => {
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.functionReturnTypes"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
     expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.scopeMarkers.global"],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.scopeMarkers.local"],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.scopeMarkers.uncertain"],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
+    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.globalVariableMarkers"],
-    ).toEqual(
-      expect.objectContaining({
-        type: "string",
-        enum: ["global", "local", "all", "off"],
-        default: "off",
-      }),
-    );
+    ).toBeUndefined();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.codeLens.referenceScope"],
     ).toEqual(

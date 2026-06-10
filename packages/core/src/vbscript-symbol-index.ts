@@ -1026,14 +1026,13 @@ function addImplicitVariableDeclarationsFromReferences(
     }
   }
   for (const items of referencesByName.values()) {
-    const declarationItem = items.find((item) => item.reference.role === "write") ?? items[0];
+    const declarationItem = implicitDeclarationRepresentative(state, items);
     const { reference, token } = declarationItem;
     if (resolveDeclaration(state, lookup, token, reference.role, reference.baseName)) {
       continue;
     }
-    const hasAssignment = items.some((item) => item.reference.role === "write");
-    const implicitLocal = Boolean(
-      activeScopeAt(state, token.start, "procedure") ?? activeScopeAt(state, token.start, "class"),
+    const hasTopLevelAssignment = items.some(
+      (item) => item.reference.role === "write" && isTopLevelImplicitReference(state, item.token),
     );
     const declaration = addDeclaration(state, {
       kind: "variable",
@@ -1043,13 +1042,33 @@ function addImplicitVariableDeclarationsFromReferences(
       scopeId: globalScopeId,
       bindingScope: "global",
       implicit: true,
-      implicitLocal: implicitLocal ? true : undefined,
-      unresolvedGlobal: hasAssignment ? undefined : true,
+      unresolvedGlobal: hasTopLevelAssignment ? undefined : true,
     });
     addDeclarationToLookup(lookup, declaration);
     implicitNames.add(declaration.normalizedName);
   }
   return implicitNames;
+}
+
+function implicitDeclarationRepresentative(
+  state: SymbolIndexBuildState,
+  items: IndexedReferenceToken[],
+): IndexedReferenceToken {
+  const topLevelWriteIndex = findLastIndex(
+    items,
+    (item) => item.reference.role === "write" && isTopLevelImplicitReference(state, item.token),
+  );
+  if (topLevelWriteIndex !== -1) {
+    return items[topLevelWriteIndex];
+  }
+  const writeIndex = findLastIndex(items, (item) => item.reference.role === "write");
+  return items[writeIndex] ?? items[0];
+}
+
+function isTopLevelImplicitReference(state: SymbolIndexBuildState, token: VbToken): boolean {
+  return !(
+    activeScopeAt(state, token.start, "procedure") ?? activeScopeAt(state, token.start, "class")
+  );
 }
 
 function isImplicitVariableDeclarationCandidate(reference: VbIndexedReference): boolean {

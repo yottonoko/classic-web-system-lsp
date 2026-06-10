@@ -3,7 +3,7 @@ import type {
   AspLocale,
   AspEmbeddedLanguage,
   AspInclude,
-  AspInlayHintMarkerMode,
+  AspInlayHintScopeMarkerSettings,
   AspParsedDocument,
   AspRegionKind,
   AspVbscriptComType,
@@ -159,7 +159,7 @@ export interface VbInlayHintOptions {
   parameterNames?: boolean;
   functionReturnTypes?: boolean;
   implicitByRef?: boolean;
-  globalVariableMarkers?: AspInlayHintMarkerMode;
+  scopeMarkers?: AspInlayHintScopeMarkerSettings;
 }
 
 export interface VbCallHierarchyData {

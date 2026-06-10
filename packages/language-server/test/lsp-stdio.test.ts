@@ -2755,7 +2755,7 @@ Response.Write known
           settings: {
             aspLsp: {
               diagnostics: { debounceMs: 0 },
-              inlayHints: { globalVariableMarkers: "all" },
+              inlayHints: { scopeMarkers: { global: true, local: true, uncertain: true } },
             },
           },
         });
@@ -4134,7 +4134,7 @@ Response.Write implicitValue
                 diagnostics: { debounceMs: 0 },
                 inlayHints: {
                   functionReturnTypes: true,
-                  globalVariableMarkers: "all",
+                  scopeMarkers: { global: true, local: true, uncertain: true },
                   variableTypes: true,
                 },
               },
@@ -4320,7 +4320,7 @@ Response.Write localValue
               diagnostics: { debounceMs: 0 },
               inlayHints: {
                 functionReturnTypes: true,
-                globalVariableMarkers: "all",
+                scopeMarkers: { global: true, local: true, uncertain: true },
                 variableTypes: true,
               },
               workspace: {
@@ -4581,7 +4581,7 @@ both.SharedName
             aspLsp: {
               inlayHints: {
                 functionReturnTypes: true,
-                globalVariableMarkers: "global",
+                scopeMarkers: { global: true },
                 variableTypes: true,
               },
             },
@@ -7428,7 +7428,7 @@ Response.Write SharedTitle()
       }
     });
 
-    it("honors the global variable marker inlay hint setting", async () => {
+    it("ignores the removed global variable marker inlay hint setting", async () => {
       const source = `<%
 Dim pageTitle
 pageTitle = "Dashboard"
@@ -7449,7 +7449,7 @@ End Sub
             aspLsp: {
               inlayHints: {
                 functionReturnTypes: true,
-                globalVariableMarkers: false,
+                globalVariableMarkers: "global",
                 variableTypes: true,
               },
             },
@@ -7532,6 +7532,7 @@ pageTitle = BuildName("Dashboard")
 <%
 a = 1
 Sub Render()
+  Dim b
   b = "local"
 End Sub
 %>`;
@@ -7548,7 +7549,7 @@ End Sub
             aspLsp: {
               inlayHints: {
                 functionReturnTypes: true,
-                globalVariableMarkers: "all",
+                scopeMarkers: { global: true, local: true, uncertain: true },
                 variableTypes: true,
               },
             },
@@ -7579,7 +7580,7 @@ End Sub
             aspLsp: {
               inlayHints: {
                 functionReturnTypes: true,
-                globalVariableMarkers: "local",
+                scopeMarkers: { local: true },
                 variableTypes: true,
               },
             },
@@ -7641,7 +7642,7 @@ a = 2
               diagnostics: { debounceMs: 0 },
               inlayHints: {
                 functionReturnTypes: true,
-                globalVariableMarkers: "all",
+                scopeMarkers: { global: true, local: true, uncertain: true },
                 variableTypes: true,
               },
             },
@@ -7706,6 +7707,7 @@ a = 2
 Response.Write sharedTitle
 a = 2
 Sub Render()
+  Dim b
   b = "local"
 End Sub
 %>`;
@@ -7724,7 +7726,7 @@ End Sub
               diagnostics: { debounceMs: 10_000 },
               inlayHints: {
                 functionReturnTypes: true,
-                globalVariableMarkers: "all",
+                scopeMarkers: { global: true, local: true, uncertain: true },
                 variableTypes: true,
               },
             },
@@ -8252,7 +8254,6 @@ End Sub
             bindingScope: "global",
             declarationKind: "variable",
             implicit: true,
-            implicitLocal: true,
             unresolvedGlobal: true,
           }),
         );
@@ -8264,10 +8265,9 @@ End Sub
             bindingScope: "global",
             declarationKind: "variable",
             implicit: true,
-            implicitLocal: true,
+            unresolvedGlobal: true,
           }),
         );
-        expect(missingValueNode?.unresolvedGlobal).toBeUndefined();
         expect(
           graph.nodes?.some(
             (node) => node.kind === "vbUnresolved" && node.label === "MissingValue",
@@ -9251,20 +9251,14 @@ End Sub
             declarationKind: "variable",
             bindingScope: "global",
             implicit: true,
-            implicitLocal: true,
+            unresolvedGlobal: true,
             origin: "source",
           });
-          expect(
-            visibleGraph.nodes?.find(
-              (node) => node.kind === "vbDeclaration" && node.label === label,
-            )?.unresolvedGlobal,
-          ).toBeUndefined();
         }
         expectNode(visibleGraph, "MissingName", {
           declarationKind: "variable",
           bindingScope: "global",
           implicit: true,
-          implicitLocal: true,
           unresolvedGlobal: true,
           origin: "source",
         });

@@ -279,7 +279,7 @@ const ja: Record<LocalizeKey, string> = {
   "vb.completion.syntaxKeyword": "VBScript 構文キーワード",
   "vb.completion.definedIn": "{uri} で定義されています。",
   "vb.completion.memberDocumentation": "{type}.{member}{suffix} の {kind}",
-  "vb.completion.unresolvedGlobalVariable": "未解決グローバル変数",
+  "vb.completion.unresolvedGlobalVariable": "暗黙global変数",
   "vb.completion.unresolvedFunction": "未解決 Function/Sub",
   "vb.diagnostic.undeclared": "'{name}' は Option Explicit のもとで宣言されていません。",
   "vb.diagnostic.unusedParameter": "パラメーター '{name}' は使われていません。",
