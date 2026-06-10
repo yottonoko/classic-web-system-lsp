@@ -12477,6 +12477,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     codeLens: normalizeCodeLensSettings(settings),
     rename: normalizeRenameSettings(settings),
     styleExtraction: normalizeStyleExtractionSettings(settings),
+    flowchart: normalizeFlowchartSettings(settings),
     graph: normalizeGraphSettings(settings),
     cache: normalizeCacheSettings(settings),
     workspace: normalizeWorkspaceSettings(settings),
@@ -12655,6 +12656,16 @@ function normalizeStyleExtractionSettings(
   return {
     insertionMode:
       record.insertionMode === "reuseExistingStyleTag" ? "reuseExistingStyleTag" : "nearby",
+  };
+}
+
+function normalizeFlowchartSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["flowchart"] {
+  const raw = settings.flowchart;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    labelLineLength: Math.max(8, positiveIntegerSetting(record.labelLineLength, 34)),
   };
 }
 
@@ -16381,6 +16392,8 @@ async function buildAspFlowchartForCommand(argument: unknown): Promise<AspFlowch
   return buildAspFlowchart(cached.parsed, {
     fileName: flowchartDisplayFileName(graphFileNameFromUri(cached.source.uri)),
     includes: await flowchartIncludesForDocumentAsync(cached.parsed, settings),
+    labelLineLength:
+      flowchartCommandLabelLineLength(argument) ?? settings.flowchart?.labelLineLength,
     locale: flowchartCommandLocale(argument) ?? settings.resolvedLocale,
     symbols: indexedDocuments,
   });
@@ -16438,6 +16451,16 @@ function flowchartCommandLocale(argument: unknown): AspLocale | undefined {
   }
   const locale = (argument as { locale?: unknown }).locale;
   return locale === "ja" || locale === "en" ? locale : undefined;
+}
+
+function flowchartCommandLabelLineLength(argument: unknown): number | undefined {
+  if (!argument || typeof argument !== "object" || !("labelLineLength" in argument)) {
+    return undefined;
+  }
+  const value = (argument as { labelLineLength?: unknown }).labelLineLength;
+  return typeof value === "number" && Number.isFinite(value) && value >= 8
+    ? Math.floor(value)
+    : undefined;
 }
 
 async function flowchartIncludesForDocumentAsync(

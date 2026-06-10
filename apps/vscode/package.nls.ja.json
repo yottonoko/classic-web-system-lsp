@@ -60,6 +60,7 @@
   "configuration.styleExtraction.insertionMode.description": "inline style 抽出 code action が CSS rule を挿入する場所を制御します。nearby は対象 tag の直前に style element を作り、reuseExistingStyleTag は既存 style element があれば一番近いものへ追記します。",
   "configuration.flowchart.maxTextSize.description": "Classic ASP flowchart を render するときに Mermaid が受け付ける text size の最大値です。",
   "configuration.flowchart.maxEdges.description": "Classic ASP flowchart を render するときに Mermaid が受け付ける edge 数の最大値です。",
+  "configuration.flowchart.labelLineLength.description": "Classic ASP flowchart node label を折り返す目安の文字数です。",
   "configuration.flowchart.minZoom.description": "Classic ASP flowchart webview で使える最小 zoom 倍率です。",
   "configuration.flowchart.maxZoom.description": "Classic ASP flowchart webview で使える最大 zoom 倍率です。",
   "configuration.flowchart.infoPanelPosition.description": "flowchart の情報 pane を左側または右側のどちらに表示するかを指定します。",

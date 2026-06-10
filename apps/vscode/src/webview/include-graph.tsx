@@ -1632,10 +1632,7 @@ function LegendFilterItem({
   variant: "link" | "node";
 }): React.ReactElement {
   return (
-    <label
-      className="group relative flex min-w-0 cursor-pointer select-none items-center gap-2 text-[11px] text-[#d7dde8]"
-      title={title}
-    >
+    <label className="group relative flex min-w-0 cursor-pointer select-none items-center gap-2 text-[11px] text-[#d7dde8]">
       <input
         type="checkbox"
         className="m-0 h-3.5 w-3.5 shrink-0 accent-[#89ddff]"
@@ -2591,7 +2588,7 @@ function Accordion({
           tabIndex={0}
           className="flex min-h-9 min-w-0 flex-1 cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-[#89ddff]"
           aria-expanded={isOpen}
-          title={headerTitle}
+          aria-label={headerTitle}
           onClick={() => setOpen((current) => !current)}
           onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " ") {
@@ -2601,9 +2598,11 @@ function Accordion({
           }}
         >
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
-              {title}
-            </span>
+            <TooltipText
+              className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]"
+              text={title}
+              tooltip={headerTitle}
+            />
             {hint ? (
               <span
                 className="shrink-0"
@@ -2636,14 +2635,13 @@ function DeclarationSource({
   const source = sourceState.byId.get(item.id);
   const displayRange = source?.range ?? item.range;
   const loading = sourceState.loading && !source;
+  const detail = item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 });
   return (
     <div className="grid gap-2">
-      <div
+      <TooltipText
         className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]"
-        title={item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 })}
-      >
-        {item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 })}
-      </div>
+        text={detail}
+      />
       {source?.error ? (
         <p className="m-0 text-[11px] text-[#ff9cac]">{source.error}</p>
       ) : (
@@ -2715,32 +2713,29 @@ function SourceRangeCard({
   source: AspGraphSourceRangeResponseItem | undefined;
 }): React.ReactElement {
   const displayRange = source?.range ?? item.range;
+  const detail = item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 });
   return (
     <article className="grid gap-2 rounded-md border border-[#303a49] bg-[#11151c] p-2">
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="min-w-0 flex-1">
-          <div
+      <div className="grid min-w-0 gap-2">
+        <div className="min-w-0">
+          <TooltipText
             className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]"
-            title={item.title}
-          >
-            {item.title}
-          </div>
-          <div
+            text={item.title}
+          />
+          <TooltipText
             className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]"
-            title={item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 })}
-          >
-            {item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 })}
-          </div>
+            text={detail}
+          />
         </div>
-        <div className="flex shrink-0 flex-wrap gap-1.5">
+        <div className="flex min-w-0 flex-wrap gap-1.5">
           <OpenLocationButton
-            className="h-7 px-2"
+            className="h-7 min-w-[52px] px-2"
             label={graphText("action.open")}
             range={item.highlightRange}
             uri={item.uri}
           />
           <OpenFlowchartButton
-            className="h-7 px-2"
+            className="h-7 min-w-[128px] px-2"
             label={graphText("action.openFlowchart")}
             range={item.highlightRange}
             uri={item.uri}
@@ -3188,18 +3183,14 @@ function IncludeRelationList({ relations }: { relations: IncludeRelation[] }): R
       renderItem={(relation) => (
         <article className="grid min-w-0 gap-2 overflow-hidden rounded-md border border-[#303a49] bg-[#11151c] p-2">
           <div className="min-w-0">
-            <div
+            <TooltipText
               className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]"
-              title={relation.title}
-            >
-              {relation.title}
-            </div>
-            <div
+              text={relation.title}
+            />
+            <TooltipText
               className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]"
-              title={relation.detail}
-            >
-              {relation.detail}
-            </div>
+              text={relation.detail}
+            />
           </div>
           <div className="flex flex-wrap gap-2">
             <OpenLocationButton
@@ -3544,10 +3535,7 @@ function LinkDetails({
               />
             </div>
           </div>
-          <div
-            className="grid min-w-[58px] shrink-0 justify-items-end rounded border border-[#405068] bg-[#151a22] px-2 py-1"
-            title={graphText("detail.countHint")}
-          >
+          <div className="grid min-w-[58px] shrink-0 justify-items-end rounded border border-[#405068] bg-[#151a22] px-2 py-1">
             <span className="text-sm leading-none font-semibold text-[#f4f7fb]">{link.count}</span>
             <span className="inline-flex items-center gap-1 text-[10px] leading-[1.2] text-[#9aa7b8]">
               {graphText("detail.count")}
@@ -3651,11 +3639,11 @@ function Detail({
         <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{label}</span>
         {hint ? <DetailHint hint={hint} label={label} /> : null}
       </dt>
-      <dd
-        className="m-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-[#d7dde8]"
-        title={value}
-      >
-        {value}
+      <dd className="m-0 min-w-0">
+        <TooltipText
+          className="block overflow-hidden text-ellipsis whitespace-nowrap text-xs text-[#d7dde8]"
+          text={value}
+        />
       </dd>
     </>
   );
@@ -3665,6 +3653,75 @@ interface TooltipPosition {
   left: number;
   top: number;
   maxWidth: number;
+}
+
+function TooltipText({
+  className,
+  text,
+  tooltip,
+}: {
+  className?: string;
+  text: string;
+  tooltip?: string;
+}): React.ReactElement {
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const tooltipRef = useRef<HTMLSpanElement>(null);
+  const [visible, setVisible] = useState(false);
+  const [position, setPosition] = useState<TooltipPosition>();
+  const tooltipText = tooltip ?? text;
+  const showTooltip = useCallback(() => {
+    setVisible(true);
+  }, []);
+  const hideTooltip = useCallback(() => {
+    setVisible(false);
+    setPosition(undefined);
+  }, []);
+  useLayoutEffect(() => {
+    if (!visible) {
+      return undefined;
+    }
+    const updatePosition = (): void => {
+      setPosition(tooltipPositionFor(triggerRef.current, tooltipRef.current));
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [visible]);
+  return (
+    <>
+      <span
+        ref={triggerRef}
+        tabIndex={0}
+        aria-label={tooltipText}
+        className={className}
+        onBlur={hideTooltip}
+        onFocus={showTooltip}
+        onPointerEnter={showTooltip}
+        onPointerLeave={hideTooltip}
+      >
+        {text}
+      </span>
+      {visible ? (
+        <span
+          ref={tooltipRef}
+          role="tooltip"
+          className="pointer-events-none fixed z-[1000] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)]"
+          style={{
+            left: position?.left ?? -9999,
+            top: position?.top ?? -9999,
+            maxWidth: position?.maxWidth ?? tooltipMaximumWidth(),
+            visibility: position ? "visible" : "hidden",
+          }}
+        >
+          {tooltipText}
+        </span>
+      ) : null}
+    </>
+  );
 }
 
 function DetailHint({ hint, label }: { hint: string; label: string }): React.ReactElement {

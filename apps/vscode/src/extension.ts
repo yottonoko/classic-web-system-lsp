@@ -40,6 +40,7 @@ const serverStatusNotificationMethod = "aspLsp/status";
 const htmlTagCompleteLookBehind = 2000;
 const defaultFlowchartMaxTextSize = 2_000_000;
 const defaultFlowchartMaxEdges = 100_000;
+const defaultFlowchartLabelLineLength = 34;
 const defaultFlowchartMinZoom = 0.4;
 const defaultFlowchartMaxZoom = 4;
 type GraphOpenLocation = "active" | "beside";
@@ -352,7 +353,13 @@ async function loadFlowchartPayload(
         "workspace/executeCommand",
         {
           command: buildFlowchartServerCommand,
-          arguments: [{ uri: uriText, locale: extensionLocale() }],
+          arguments: [
+            {
+              uri: uriText,
+              locale: extensionLocale(),
+              labelLineLength: flowchartWebviewSettings().labelLineLength,
+            },
+          ],
         },
         token,
       ),
@@ -563,6 +570,10 @@ function flowchartWebviewSettings(): AspFlowchartWebviewSettings {
   const config = vscode.workspace.getConfiguration("aspLsp");
   const maxTextSize = config.get<number>("flowchart.maxTextSize", defaultFlowchartMaxTextSize);
   const maxEdges = config.get<number>("flowchart.maxEdges", defaultFlowchartMaxEdges);
+  const labelLineLength = config.get<number>(
+    "flowchart.labelLineLength",
+    defaultFlowchartLabelLineLength,
+  );
   const minZoom = positiveFiniteNumberSetting(
     config.get<number>("flowchart.minZoom", defaultFlowchartMinZoom),
     defaultFlowchartMinZoom,
@@ -574,6 +585,10 @@ function flowchartWebviewSettings(): AspFlowchartWebviewSettings {
   return {
     maxTextSize: positiveNumberSetting(maxTextSize, defaultFlowchartMaxTextSize),
     maxEdges: positiveNumberSetting(maxEdges, defaultFlowchartMaxEdges),
+    labelLineLength: Math.max(
+      8,
+      positiveNumberSetting(labelLineLength, defaultFlowchartLabelLineLength),
+    ),
     minZoom,
     maxZoom: Math.max(minZoom, maxZoom),
     theme: webviewThemeSetting(),

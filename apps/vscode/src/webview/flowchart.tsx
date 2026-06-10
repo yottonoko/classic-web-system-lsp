@@ -33,6 +33,7 @@ interface FlowchartPayload extends AspFlowchartPayload {
   settings?: {
     maxTextSize?: number;
     maxEdges?: number;
+    labelLineLength?: number;
     minZoom?: number;
     maxZoom?: number;
     theme?: WebviewThemeSetting;
@@ -42,10 +43,12 @@ interface FlowchartPayload extends AspFlowchartPayload {
 
 const vscode = acquireVsCodeApi();
 
-const flowchartLabelLineLength = 28;
+const flowchartLabelLineLength = 34;
 const flowchartEdgeLabelLineLength = 22;
 const maximumFlowchartLabelCharacters = 180;
 const maximumFlowchartEdgeLabelCharacters = 80;
+const minimumFlowchartLabelLineLength = 8;
+const branchNodeHorizontalScale = 1.22;
 const defaultMinimumFlowchartZoom = 0.4;
 const defaultMaximumFlowchartZoom = 4;
 const flowchartZoomStep = 0.1;
@@ -1139,8 +1142,8 @@ function SidebarAccordionSection({
       <div className="flex items-center gap-2">
         <button
           aria-expanded={open}
+          aria-label={headerTitle}
           className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left hover:bg-[#172131]"
-          title={headerTitle}
           type="button"
           onClick={() => setOpen((current) => !current)}
         >
@@ -1346,20 +1349,20 @@ function FlowSection({
       <div className="flex items-center gap-2 border-b border-[#263140] px-2 py-1.5">
         <button
           aria-expanded={open}
+          aria-label={headerTitle}
           className="h-6 w-6 shrink-0 rounded border border-[#334255] text-xs text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white"
-          title={headerTitle}
           type="button"
           onClick={() => setOpen((current) => !current)}
         >
           {open ? "▾" : "▸"}
         </button>
         <button
+          aria-label={detailParts(text("selectFlowchart"), section.label, sectionHint)}
           className="min-w-0 flex-1 truncate text-left text-xs font-semibold text-[#9fb0c5] hover:text-[#f1f5f9]"
-          title={detailParts(text("selectFlowchart"), section.label, sectionHint)}
           type="button"
           onClick={onSelect}
         >
-          <span title={section.label}>{section.label}</span>
+          <span>{section.label}</span>
         </button>
         <FlowchartHint hint={sectionHint} label={section.label} />
         <button
@@ -1816,7 +1819,8 @@ function FlowchartCanvas({
           return;
         }
         containerRef.current.innerHTML = result.svg;
-        setSvg(result.svg);
+        adjustSvgBranchNodeShapes(containerRef.current, payload);
+        setSvg(containerRef.current.querySelector("svg")?.outerHTML ?? result.svg);
         setSvgSize(measuredFlowchartSvgSize(containerRef.current));
         attachSvgNodeHandlers(
           containerRef.current,
@@ -2273,20 +2277,65 @@ function attachSvgNodeHandlers(
     for (const element of svgElementsForFlowchartNode(container, node)) {
       const hint = flowchartNodeHint(node, text, locale);
       element.setAttribute("aria-label", hint);
-      let titleElement = element.querySelector<SVGTitleElement>("title");
-      if (!titleElement) {
-        titleElement = document.createElementNS(
-          "http://www.w3.org/2000/svg",
-          "title",
-        ) as SVGTitleElement;
-        element.prepend(titleElement);
-      }
-      titleElement.textContent = hint;
+      element.querySelector("title")?.remove();
       element.style.cursor = "pointer";
       element.addEventListener("click", () => onOpenFlowchart(node));
       element.addEventListener("contextmenu", (event) => onOpenContextMenu(node, event));
     }
   }
+}
+
+function adjustSvgBranchNodeShapes(container: HTMLDivElement, payload: FlowchartPayload): void {
+  for (const node of payload.nodes) {
+    if (!isBranchFlowchartNode(node)) {
+      continue;
+    }
+    for (const element of svgElementsForFlowchartNode(container, node)) {
+      for (const polygon of element.querySelectorAll<SVGPolygonElement>("polygon")) {
+        widenSvgPolygon(polygon, branchNodeHorizontalScale);
+      }
+    }
+  }
+}
+
+function isBranchFlowchartNode(node: AspFlowchartNode): boolean {
+  return (
+    node.kind === "if" || node.kind === "elseif" || node.kind === "select" || node.kind === "case"
+  );
+}
+
+function widenSvgPolygon(polygon: SVGPolygonElement, scaleX: number): void {
+  const points = svgPolygonPoints(polygon.getAttribute("points") ?? "");
+  if (points.length === 0) {
+    return;
+  }
+  const centerX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+  polygon.setAttribute(
+    "points",
+    points
+      .map(
+        (point) =>
+          `${formatSvgNumber(centerX + (point.x - centerX) * scaleX)},${formatSvgNumber(point.y)}`,
+      )
+      .join(" "),
+  );
+}
+
+function svgPolygonPoints(value: string): Array<{ x: number; y: number }> {
+  return value
+    .trim()
+    .split(/\s+/)
+    .map((point) => {
+      const [rawX, rawY] = point.split(",");
+      const x = Number(rawX);
+      const y = Number(rawY);
+      return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined;
+    })
+    .filter((point): point is { x: number; y: number } => Boolean(point));
+}
+
+function formatSvgNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, "");
 }
 
 function syncSvgSearchHighlights(
@@ -2457,7 +2506,7 @@ function flowchartForSection(
     sections: [section],
     nodes,
     edges,
-    mermaid: mermaidForSelectedSection(nodes, edges, themePalette),
+    mermaid: mermaidForSelectedSection(payload, nodes, edges, themePalette),
     stats: {
       ...payload.stats,
       sections: 1,
@@ -2468,13 +2517,15 @@ function flowchartForSection(
 }
 
 function mermaidForSelectedSection(
+  payload: FlowchartPayload,
   nodes: AspFlowchartNode[],
   edges: FlowchartPayload["edges"],
   themePalette: FlowchartThemePalette,
 ): string {
+  const labelLineLength = flowchartLabelLineLengthForPayload(payload);
   const lines = ["flowchart TB"];
   for (const node of nodes) {
-    lines.push(`  ${mermaidNode(node)}`);
+    lines.push(`  ${mermaidNode(node, labelLineLength)}`);
     lines.push(
       `  class ${mermaidId(node.id)} ${themePalette.nodeKindStyles[node.kind].mermaidClass}`,
     );
@@ -2488,9 +2539,9 @@ function mermaidForSelectedSection(
   return lines.join("\n");
 }
 
-function mermaidNode(node: AspFlowchartNode): string {
+function mermaidNode(node: AspFlowchartNode, labelLineLength: number): string {
   const id = mermaidId(node.id);
-  const label = mermaidLabel(node.label);
+  const label = mermaidLabel(node.label, { lineLength: labelLineLength });
   if (node.kind === "start" || node.kind === "end") {
     return `${id}(["${label}"])`;
   }
@@ -2557,6 +2608,15 @@ function mermaidLabel(
   const lines = wrapFlowchartLabel(clipped, options.lineLength ?? flowchartLabelLineLength);
   const escape = options.escape ?? escapeMermaidText;
   return (lines.length > 0 ? lines : [""]).map(escape).join("<br/>");
+}
+
+function flowchartLabelLineLengthForPayload(payload: FlowchartPayload): number {
+  const value = payload.settings?.labelLineLength;
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= minimumFlowchartLabelLineLength
+    ? Math.floor(value)
+    : flowchartLabelLineLength;
 }
 
 function escapeMermaidEdgeText(value: string): string {

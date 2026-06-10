@@ -651,6 +651,12 @@
           "default": 100000,
           "description": "%configuration.flowchart.maxEdges.description%"
         },
+        "aspLsp.flowchart.labelLineLength": {
+          "type": "number",
+          "minimum": 8,
+          "default": 34,
+          "description": "%configuration.flowchart.labelLineLength.description%"
+        },
         "aspLsp.flowchart.minZoom": {
           "type": "number",
           "minimum": 0.1,

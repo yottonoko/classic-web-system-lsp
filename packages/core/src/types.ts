@@ -37,6 +37,7 @@ export interface AspSettings {
   codeLens?: AspCodeLensSettings;
   rename?: AspRenameSettings;
   styleExtraction?: AspStyleExtractionSettings;
+  flowchart?: AspFlowchartSettings;
   graph?: AspGraphSettings;
   cache?: AspCacheSettings;
   workspace?: AspWorkspaceSettings;
@@ -212,8 +213,13 @@ export interface AspGraphSettings {
 export interface AspFlowchartBuildOptions {
   fileName?: string;
   includes?: AspFlowchartInclude[];
+  labelLineLength?: number;
   locale?: AspLocale;
   symbols?: AspFlowchartSymbolDocument[];
+}
+
+export interface AspFlowchartSettings {
+  labelLineLength?: number;
 }
 
 export interface AspFlowchartPayload {

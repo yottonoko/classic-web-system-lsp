@@ -152,16 +152,18 @@ interface FlowchartAssembly {
   nextEdgeIndex: number;
 }
 
-const flowchartLabelLineLength = 28;
+const flowchartLabelLineLength = 34;
 const flowchartEdgeLabelLineLength = 22;
 const maximumFlowchartLabelCharacters = 180;
 const maximumFlowchartEdgeLabelCharacters = 80;
+const minimumFlowchartLabelLineLength = 8;
 
 export function buildAspFlowchart(
   parsed: AspParsedDocument,
   options: AspFlowchartBuildOptions = {},
 ): AspFlowchartPayload {
   const locale = options.locale ?? "en";
+  const labelLineLength = normalizeFlowchartLabelLineLength(options.labelLineLength);
   const context = {
     locale,
     sourceText: parsed.text,
@@ -253,7 +255,7 @@ export function buildAspFlowchart(
   };
   return {
     ...payload,
-    mermaid: mermaidForFlowchart(payload),
+    mermaid: mermaidForFlowchart(payload, labelLineLength),
   };
 }
 
@@ -947,7 +949,10 @@ function addEdge(
   });
 }
 
-function mermaidForFlowchart(payload: Omit<AspFlowchartPayload, "mermaid">): string {
+function mermaidForFlowchart(
+  payload: Omit<AspFlowchartPayload, "mermaid">,
+  labelLineLength: number,
+): string {
   const lines = ["flowchart TB"];
   const nodesById = new Map(payload.nodes.map((node) => [node.id, node]));
   for (const section of payload.sections) {
@@ -957,7 +962,7 @@ function mermaidForFlowchart(payload: Omit<AspFlowchartPayload, "mermaid">): str
       if (!node) {
         continue;
       }
-      lines.push(`    ${mermaidNode(node)}`);
+      lines.push(`    ${mermaidNode(node, labelLineLength)}`);
     }
     lines.push("  end");
   }
@@ -969,9 +974,9 @@ function mermaidForFlowchart(payload: Omit<AspFlowchartPayload, "mermaid">): str
   return lines.join("\n");
 }
 
-function mermaidNode(node: AspFlowchartNode): string {
+function mermaidNode(node: AspFlowchartNode, labelLineLength: number): string {
   const id = mermaidId(node.id);
-  const label = mermaidLabel(node.label);
+  const label = mermaidLabel(node.label, { lineLength: labelLineLength });
   if (node.kind === "start" || node.kind === "end") {
     return `${id}(["${label}"])`;
   }
@@ -1078,6 +1083,14 @@ function flowchartWordParts(value: string, lineLength: number): string[] {
     parts.push(characters.slice(index, index + lineLength).join(""));
   }
   return parts;
+}
+
+function normalizeFlowchartLabelLineLength(value: number | undefined): number {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= minimumFlowchartLabelLineLength
+    ? Math.floor(value)
+    : flowchartLabelLineLength;
 }
 
 function isProcedureDeclaration(statement: VbStatement): boolean {
