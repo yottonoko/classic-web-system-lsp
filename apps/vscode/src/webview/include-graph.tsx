@@ -269,7 +269,7 @@ const graphMessageEn = {
   "legend.hideSingleNodesDescription": "Hide non-root nodes that have no visible links.",
   "legend.hideUnreferencedGlobalSymbols": "Hide unreferenced globals",
   "legend.hideUnreferencedGlobalSymbolsDescription":
-    "Hide source functions, subs, classes, global variables, and global constants that have no references from other files.",
+    "Hide source functions, subs, classes, global variables, and global constants that are not tied to the root and have no references from other files.",
   "legend.linkFilters": "Link filters",
   "legend.nodeFilters": "Node filters",
   "legend.outgoingLinks": "Outgoing links",
@@ -454,7 +454,7 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "legend.hideSingleNodesDescription": "visible link を持たない root 以外の node を隠します。",
     "legend.hideUnreferencedGlobalSymbols": "未外部参照を隠す",
     "legend.hideUnreferencedGlobalSymbolsDescription":
-      "他のファイルから参照されていない source の function、sub、class、global variable、global constant node を隠します。",
+      "root に紐付かず、他のファイルから参照されていない source の function、sub、class、global variable、global constant node を隠します。",
     "legend.linkFilters": "リンクフィルター",
     "legend.nodeFilters": "ノードフィルター",
     "legend.outgoingLinks": "出力リンク",
@@ -4069,15 +4069,16 @@ function filterGraphData(
   hideUnreferencedGlobalSymbols: boolean,
 ): GraphData {
   const hasPayloadRoot = graphData.nodes.some((node) => node.isRoot);
-  const referencedGlobalNodeIds = hideUnreferencedGlobalSymbols
-    ? crossFileReferencedGlobalNodeIds(graphData.nodes, graphData.links)
+  const canHideUnreferencedGlobalSymbols = hideUnreferencedGlobalSymbols && hasPayloadRoot;
+  const retainedGlobalNodeIds = canHideUnreferencedGlobalSymbols
+    ? retainedGlobalSymbolNodeIds(graphData.nodes, graphData.links)
     : undefined;
   let visibleNodes = graphData.nodes.filter(
     (node) =>
       !hiddenNodeCategories.has(node.category) &&
-      (!hideUnreferencedGlobalSymbols ||
+      (!canHideUnreferencedGlobalSymbols ||
         !isHideableGlobalSymbolNode(node) ||
-        referencedGlobalNodeIds?.has(node.id) === true),
+        retainedGlobalNodeIds?.has(node.id) === true),
   );
   let visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
   let visibleLinks = graphData.links.filter((link) => {
@@ -4095,6 +4096,7 @@ function filterGraphData(
       (node) =>
         node.isRoot ||
         connectedNodeIds.has(node.id) ||
+        retainedGlobalNodeIds?.has(node.id) === true ||
         (!hasPayloadRoot && isFileLikeGraphNode(node)),
     );
     visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
@@ -4115,26 +4117,46 @@ function filterGraphData(
   };
 }
 
-function crossFileReferencedGlobalNodeIds(nodes: GraphNode[], links: GraphLink[]): Set<string> {
+function retainedGlobalSymbolNodeIds(nodes: GraphNode[], links: GraphLink[]): Set<string> {
   const nodesById = graphNodeMap(nodes);
-  const referencedNodeIds = new Set<string>();
-  for (const link of links) {
-    if (!isSymbolReferenceGraphLink(link)) {
-      continue;
+  const retainedNodeIds = new Set<string>();
+  const rootNodes = nodes.filter((node) => node.isRoot);
+  const rootNodeIds = new Set(rootNodes.map((node) => node.id));
+  const rootUris = new Set(
+    rootNodes.map((node) => node.uri).filter((uri): uri is string => Boolean(uri)),
+  );
+  for (const node of nodes) {
+    if (node.uri && rootUris.has(node.uri) && isHideableGlobalSymbolNode(node)) {
+      retainedNodeIds.add(node.id);
     }
-    const sourceNode = nodesById.get(nodeIdForEndpoint(link.source));
-    const targetNode = nodesById.get(nodeIdForEndpoint(link.target));
+  }
+  for (const link of links) {
+    const sourceId = nodeIdForEndpoint(link.source);
+    const targetId = nodeIdForEndpoint(link.target);
+    const sourceNode = nodesById.get(sourceId);
+    const targetNode = nodesById.get(targetId);
+    if (rootNodeIds.has(sourceId) && targetNode && isHideableGlobalSymbolNode(targetNode)) {
+      retainedNodeIds.add(targetNode.id);
+    }
+    if (rootNodeIds.has(targetId) && sourceNode && isHideableGlobalSymbolNode(sourceNode)) {
+      retainedNodeIds.add(sourceNode.id);
+    }
     if (
+      !isSymbolReferenceGraphLink(link) ||
       !sourceNode?.uri ||
       !targetNode?.uri ||
-      sourceNode.uri === targetNode.uri ||
-      !isHideableGlobalSymbolNode(targetNode)
+      sourceNode.uri === targetNode.uri
     ) {
       continue;
     }
-    referencedNodeIds.add(targetNode.id);
+    if (isHideableGlobalSymbolNode(targetNode)) {
+      retainedNodeIds.add(targetNode.id);
+    }
+    if (isHideableGlobalSymbolNode(sourceNode)) {
+      retainedNodeIds.add(sourceNode.id);
+    }
   }
-  return referencedNodeIds;
+  return retainedNodeIds;
 }
 
 function isSymbolReferenceGraphLink(link: GraphLink): boolean {

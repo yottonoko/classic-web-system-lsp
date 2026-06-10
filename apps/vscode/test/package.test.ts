@@ -103,7 +103,13 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain("graphRoleLabel(link.role)");
     expect(graphWebviewSource).toContain("includeModeLabel(link.include?.mode)");
     expect(graphWebviewSource).toContain("booleanLabel(link.include.exists)");
-    expect(graphWebviewSource).toContain("crossFileReferencedGlobalNodeIds");
+    expect(graphWebviewSource).toContain(
+      "const canHideUnreferencedGlobalSymbols = hideUnreferencedGlobalSymbols && hasPayloadRoot",
+    );
+    expect(graphWebviewSource).toContain("retainedGlobalSymbolNodeIds");
+    expect(graphWebviewSource).toContain("retainedGlobalNodeIds?.has(node.id) === true");
+    expect(graphWebviewSource).toContain("rootNodeIds.has(sourceId)");
+    expect(graphWebviewSource).toContain("rootUris.has(node.uri)");
     expect(graphWebviewSource).toContain("hideUnreferencedGlobalSymbols");
     expect(graphWebviewSource).toContain("asp-lsp-graph-inspector-title");
     expect(graphWebviewSource).toContain(
