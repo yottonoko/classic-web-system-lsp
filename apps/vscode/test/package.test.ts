@@ -181,8 +181,17 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("flowchartFitWidthZoom");
     expect(flowchartSource).toContain("fitWidthDescription");
     expect(flowchartSource).toContain('scrollbarGutter: "stable"');
-    expect(flowchartSource).toContain("style={scaledFlowchartCanvasStyle(svgSize, zoom)}");
-    expect(flowchartSource).toContain("style={flowchartSvgLayerStyle(svgSize, zoom)}");
+    expect(flowchartSource).toContain("new ResizeObserver(updateViewportSize)");
+    expect(flowchartSource).toContain("centerFlowchartHorizontally");
+    expect(flowchartSource).toContain("flowchartHorizontalPanGutter");
+    expect(flowchartSource).toContain("userPannedFlowchartKeyRef");
+    expect(flowchartSource).toContain(
+      "style={scaledFlowchartCanvasStyle(svgSize, zoom, viewportSize)}",
+    );
+    expect(flowchartSource).toContain(
+      "style={flowchartSvgLayerStyle(svgSize, zoom, viewportSize)}",
+    );
+    expect(flowchartSource).not.toContain("style={scaledFlowchartCanvasStyle(svgSize, zoom)}");
     expect(flowchartSource).toContain("beginCanvasPan");
     expect(flowchartSource).toContain("moveCanvasPan");
     expect(flowchartSource).toContain("cursor-grab");

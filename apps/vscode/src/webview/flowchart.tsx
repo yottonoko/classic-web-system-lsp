@@ -177,6 +177,11 @@ interface FlowchartPanState {
   moved: boolean;
 }
 
+interface FlowchartViewportSize {
+  width: number;
+  height: number;
+}
+
 interface FlowchartThemePalette {
   mermaidTheme: "base" | "dark";
   mermaidThemeVariables?: Record<string, string>;
@@ -1603,12 +1608,18 @@ function FlowchartCanvas({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const panStateRef = useRef<FlowchartPanState | undefined>(undefined);
   const suppressNextCanvasClickRef = useRef(false);
+  const userPannedFlowchartKeyRef = useRef<string | undefined>(undefined);
   const [error, setError] = useState<string>();
   const [svg, setSvg] = useState<string>("");
   const [svgSize, setSvgSize] = useState<FlowchartSvgSize>();
   const [zoom, setZoom] = useState(1);
+  const [viewportSize, setViewportSize] = useState<FlowchartViewportSize>({ width: 0, height: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [contextMenu, setContextMenu] = useState<FlowchartContextMenuState>();
+  const flowchartViewKey = useMemo(
+    () => `${payload.uri}\n${section?.id ?? ""}\n${payload.mermaid}`,
+    [payload.mermaid, payload.uri, section?.id],
+  );
   const zoomRange = useMemo(
     () => flowchartZoomRange(payload),
     [payload.settings?.maxZoom, payload.settings?.minZoom],
@@ -1628,6 +1639,7 @@ function FlowchartCanvas({
     }
     const nextZoom = flowchartFitWidthZoom(viewportRef.current, svgSize, zoomRange);
     if (nextZoom !== undefined) {
+      userPannedFlowchartKeyRef.current = undefined;
       setClampedZoom(nextZoom);
     }
   }, [setClampedZoom, svgSize, zoomRange]);
@@ -1675,23 +1687,27 @@ function FlowchartCanvas({
     viewportRef.current.scrollTop = pan.scrollTop - deltaY;
     event.preventDefault();
   }, []);
-  const endCanvasPan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const pan = panStateRef.current;
-    if (!pan || pan.pointerId !== event.pointerId || !viewportRef.current) {
-      return;
-    }
-    if (viewportRef.current.hasPointerCapture(event.pointerId)) {
-      viewportRef.current.releasePointerCapture(event.pointerId);
-    }
-    if (pan.moved) {
-      suppressNextCanvasClickRef.current = true;
-      window.setTimeout(() => {
-        suppressNextCanvasClickRef.current = false;
-      }, 0);
-    }
-    panStateRef.current = undefined;
-    setIsPanning(false);
-  }, []);
+  const endCanvasPan = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const pan = panStateRef.current;
+      if (!pan || pan.pointerId !== event.pointerId || !viewportRef.current) {
+        return;
+      }
+      if (viewportRef.current.hasPointerCapture(event.pointerId)) {
+        viewportRef.current.releasePointerCapture(event.pointerId);
+      }
+      if (pan.moved) {
+        userPannedFlowchartKeyRef.current = flowchartViewKey;
+        suppressNextCanvasClickRef.current = true;
+        window.setTimeout(() => {
+          suppressNextCanvasClickRef.current = false;
+        }, 0);
+      }
+      panStateRef.current = undefined;
+      setIsPanning(false);
+    },
+    [flowchartViewKey],
+  );
   const suppressCanvasClickAfterPan = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (!suppressNextCanvasClickRef.current) {
       return;
@@ -1730,6 +1746,34 @@ function FlowchartCanvas({
       roundFlowchartZoom(clamp(currentZoom, zoomRange.minimum, zoomRange.maximum)),
     );
   }, [zoomRange]);
+  useEffect(() => {
+    userPannedFlowchartKeyRef.current = undefined;
+  }, [flowchartViewKey]);
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      return undefined;
+    }
+    const updateViewportSize = (): void => {
+      setViewportSize({ width: viewport.clientWidth, height: viewport.clientHeight });
+    };
+    updateViewportSize();
+    const resizeObserver = new ResizeObserver(updateViewportSize);
+    resizeObserver.observe(viewport);
+    return () => resizeObserver.disconnect();
+  }, []);
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (
+      !viewport ||
+      !svgSize ||
+      viewportSize.width <= 0 ||
+      userPannedFlowchartKeyRef.current === flowchartViewKey
+    ) {
+      return;
+    }
+    centerFlowchartHorizontally(viewport, svgSize, zoom, viewportSize);
+  }, [flowchartViewKey, svgSize, viewportSize, zoom]);
   useEffect(() => {
     if (!contextMenu) {
       return undefined;
@@ -1935,11 +1979,14 @@ function FlowchartCanvas({
             {text("renderError")} {error}
           </div>
         ) : null}
-        <div className="relative" style={scaledFlowchartCanvasStyle(svgSize, zoom)}>
+        <div
+          className="relative select-none"
+          style={scaledFlowchartCanvasStyle(svgSize, zoom, viewportSize)}
+        >
           <div
             ref={containerRef}
-            className="absolute left-0 top-0 inline-block origin-top-left [&_svg]:block [&_svg]:h-full [&_svg]:w-full [&_svg]:max-w-none"
-            style={flowchartSvgLayerStyle(svgSize, zoom)}
+            className="absolute top-0 inline-block origin-top-left [&_svg]:block [&_svg]:h-full [&_svg]:w-full [&_svg]:max-w-none"
+            style={flowchartSvgLayerStyle(svgSize, zoom, viewportSize)}
           />
         </div>
         {contextMenu && contextMenuPosition ? (
@@ -2485,6 +2532,7 @@ interface FlowchartZoomRange {
 
 const flowchartViewportStyle: React.CSSProperties = {
   scrollbarGutter: "stable",
+  touchAction: "none",
 };
 
 function flowchartZoomRange(payload: FlowchartPayload): FlowchartZoomRange {
@@ -2503,12 +2551,15 @@ function roundFlowchartZoom(value: number): number {
 function scaledFlowchartCanvasStyle(
   svgSize: FlowchartSvgSize | undefined,
   zoom: number,
+  viewportSize: FlowchartViewportSize,
 ): React.CSSProperties {
   if (!svgSize) {
     return {};
   }
+  const scaledWidth = scaledFlowchartWidth(svgSize, zoom);
+  const panGutter = flowchartHorizontalPanGutter(svgSize, zoom, viewportSize);
   return {
-    width: `${Math.max(1, Math.ceil(svgSize.width * zoom))}px`,
+    width: `${Math.max(1, Math.ceil(scaledWidth + panGutter * 2))}px`,
     height: `${Math.max(1, Math.ceil(svgSize.height * zoom))}px`,
   };
 }
@@ -2516,6 +2567,7 @@ function scaledFlowchartCanvasStyle(
 function flowchartSvgLayerStyle(
   svgSize: FlowchartSvgSize | undefined,
   zoom: number,
+  viewportSize: FlowchartViewportSize,
 ): React.CSSProperties {
   const style: React.CSSProperties = {
     transform: `scale(${zoom})`,
@@ -2526,9 +2578,38 @@ function flowchartSvgLayerStyle(
   }
   return {
     ...style,
+    left: `${Math.ceil(flowchartHorizontalPanGutter(svgSize, zoom, viewportSize))}px`,
     width: `${Math.max(1, Math.ceil(svgSize.width))}px`,
     height: `${Math.max(1, Math.ceil(svgSize.height))}px`,
   };
+}
+
+function centerFlowchartHorizontally(
+  viewport: HTMLElement,
+  svgSize: FlowchartSvgSize,
+  zoom: number,
+  viewportSize: FlowchartViewportSize,
+): void {
+  const scaledWidth = scaledFlowchartWidth(svgSize, zoom);
+  const svgLeft = flowchartHorizontalPanGutter(svgSize, zoom, viewportSize);
+  viewport.scrollLeft = Math.max(0, svgLeft + scaledWidth / 2 - viewport.clientWidth / 2);
+}
+
+function flowchartHorizontalPanGutter(
+  svgSize: FlowchartSvgSize,
+  zoom: number,
+  viewportSize: FlowchartViewportSize,
+): number {
+  const viewportWidth = positiveFiniteNumber(viewportSize.width, 0);
+  if (!viewportWidth) {
+    return 0;
+  }
+  const scaledWidth = scaledFlowchartWidth(svgSize, zoom);
+  return Math.max(viewportWidth / 2, (viewportWidth - scaledWidth) / 2, 0);
+}
+
+function scaledFlowchartWidth(svgSize: FlowchartSvgSize, zoom: number): number {
+  return Math.max(1, svgSize.width * zoom);
 }
 
 function flowchartFitWidthZoom(
