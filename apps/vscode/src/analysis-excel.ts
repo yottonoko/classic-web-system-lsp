@@ -8,6 +8,7 @@ import type {
   AspGraphPayload,
   AspGraphRange,
 } from "./include-graph-webview";
+import { displayPathForUriText } from "./path-display";
 
 type AnalysisExcelFileContent = Stream | Buffer | Blob;
 
@@ -1303,7 +1304,7 @@ function fileNamesByUriMap(nodes: AspGraphNode[]): Map<string, string> {
   const names = new Map<string, string>();
   for (const node of nodes) {
     if (isFileLikeGraphNode(node) && node.uri) {
-      names.set(node.uri, node.fileName ?? node.label);
+      names.set(node.uri, node.displayPath ?? node.fileName ?? node.label);
     }
   }
   return names;
@@ -1314,7 +1315,7 @@ function isFileLikeGraphNode(node: AspGraphNode): boolean {
 }
 
 function displayNameForUri(uri: string | undefined, fileNamesByUri: Map<string, string>): string {
-  return uri ? (fileNamesByUri.get(uri) ?? uri) : "";
+  return uri ? (fileNamesByUri.get(uri) ?? displayPathForUriText(uri) ?? uri) : "";
 }
 
 function sameGraphUri(left: string | undefined, right: string | undefined): boolean {

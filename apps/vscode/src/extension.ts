@@ -14,6 +14,7 @@ import {
 } from "vscode-languageclient/node";
 import {
   showAspGraphWebview,
+  type AspGraphInfoPanelPosition,
   type AspGraphLocale,
   type AspGraphPayload,
   type AspGraphWebviewThemeSetting,
@@ -40,6 +41,7 @@ const defaultFlowchartMaxTextSize = 2_000_000;
 type GraphOpenLocation = "active" | "beside";
 type GraphScope = "document" | "folder" | "workspace";
 type WebviewThemeSetting = AspGraphWebviewThemeSetting & AspFlowchartWebviewThemeSetting;
+type InfoPanelPosition = AspGraphInfoPanelPosition;
 type ServerStatusKind = "idle" | "loading" | "analyzing";
 
 interface GraphCommandRequest {
@@ -384,6 +386,7 @@ async function showGraph(
     graphViewColumn(),
     extensionLocale(),
     webviewThemeSetting(),
+    infoPanelPositionSetting("graph.infoPanelPosition", "right"),
   );
 }
 
@@ -526,12 +529,21 @@ function flowchartWebviewSettings(): AspFlowchartWebviewSettings {
   return {
     maxTextSize: positiveNumberSetting(maxTextSize, defaultFlowchartMaxTextSize),
     theme: webviewThemeSetting(),
+    infoPanelPosition: infoPanelPositionSetting("flowchart.infoPanelPosition", "left"),
   };
 }
 
 function webviewThemeSetting(): WebviewThemeSetting {
   const value = vscode.workspace.getConfiguration("aspLsp").get<string>("webview.theme", "auto");
   return value === "light" || value === "dark" || value === "auto" ? value : "auto";
+}
+
+function infoPanelPositionSetting(
+  key: "flowchart.infoPanelPosition" | "graph.infoPanelPosition",
+  fallback: InfoPanelPosition,
+): InfoPanelPosition {
+  const value = vscode.workspace.getConfiguration("aspLsp").get<string>(key, fallback);
+  return value === "left" || value === "right" ? value : fallback;
 }
 
 function positiveNumberSetting(value: unknown, fallback: number): number {

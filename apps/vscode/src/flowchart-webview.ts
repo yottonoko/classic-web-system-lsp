@@ -6,14 +6,17 @@ import type {
   AspFlowchartInclude,
   AspFlowchartTarget,
 } from "@asp-lsp/core";
+import { displayPathForPathOrUri, displayPathForUriText } from "./path-display";
 
 export type AspFlowchartLocale = "en" | "ja";
 export type AspFlowchartWebviewTheme = "light" | "dark";
 export type AspFlowchartWebviewThemeSetting = AspFlowchartWebviewTheme | "auto";
+export type AspFlowchartInfoPanelPosition = "left" | "right";
 
 export interface AspFlowchartWebviewSettings {
   maxTextSize: number;
   theme: AspFlowchartWebviewThemeSetting;
+  infoPanelPosition: AspFlowchartInfoPanelPosition;
 }
 
 interface FlowchartPayload extends AspFlowchartPayload {
@@ -223,7 +226,16 @@ function flowchartPayloadForWebview(
   locale: AspFlowchartLocale,
   settings: AspFlowchartWebviewSettings,
 ): FlowchartPayload {
-  return { ...payload, locale, settings };
+  return {
+    ...payload,
+    fileName: displayPathForUriText(payload.uri) ?? payload.fileName,
+    includes: payload.includes.map((include) => ({
+      ...include,
+      actualPath: displayPathForPathOrUri(include.actualPath),
+    })),
+    locale,
+    settings,
+  };
 }
 
 function flowchartHostText(

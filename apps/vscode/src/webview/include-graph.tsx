@@ -75,6 +75,7 @@ type GraphData = {
 
 type WebviewTheme = "light" | "dark";
 type WebviewThemeSetting = WebviewTheme | "auto";
+type InfoPanelPosition = "left" | "right";
 
 interface GraphThemePalette {
   canvasBackground: string;
@@ -805,6 +806,7 @@ function App(): React.ReactElement {
   const [hiddenLinkCategories, setHiddenLinkCategories] = useState<Set<LinkFilterCategory>>(
     () => new Set(graph?.settings?.hiddenLinkCategories ?? []),
   );
+  const inspectorPosition = graph?.settings?.infoPanelPosition ?? "right";
   const graph2dRef = useRef<ForceGraph2DMethods<GraphNode, GraphLink> | undefined>(undefined);
   const graph3dRef = useRef<ForceGraph3DMethods<GraphNode, GraphLink> | undefined>(undefined);
   const hasAutoFit2dRef = useRef(false);
@@ -852,6 +854,14 @@ function App(): React.ReactElement {
   const layoutStyle = {
     "--inspector-width": `${clampedInspectorWidth}px`,
   } as React.CSSProperties;
+  const layoutClassName =
+    inspectorPosition === "left"
+      ? "relative grid min-h-0 grid-cols-[var(--inspector-width)_6px_minmax(0,1fr)] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]"
+      : "relative grid min-h-0 grid-cols-[minmax(0,1fr)_6px_var(--inspector-width)] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]";
+  const surfaceClassName =
+    inspectorPosition === "left"
+      ? "relative order-3 min-h-0 min-w-0 overflow-hidden max-[780px]:order-1 [&_canvas]:block"
+      : "relative order-1 min-h-0 min-w-0 overflow-hidden [&_canvas]:block";
   const canFitGraph =
     filteredGraphData.nodes.length > 0 && surfaceSize.width > 0 && surfaceSize.height > 0;
   const toggleNodeCategory = useCallback((category: NodeColorCategory) => {
@@ -1248,15 +1258,8 @@ function App(): React.ReactElement {
           {graphText("action.fit")}
         </button>
       </header>
-      <main
-        ref={layoutRef}
-        className="relative grid min-h-0 grid-cols-[minmax(0,1fr)_6px_var(--inspector-width)] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]"
-        style={layoutStyle}
-      >
-        <section
-          ref={surfaceRef}
-          className="relative min-h-0 min-w-0 overflow-hidden [&_canvas]:block"
-        >
+      <main ref={layoutRef} className={layoutClassName} style={layoutStyle}>
+        <section ref={surfaceRef} className={surfaceClassName}>
           <GraphLegend
             hiddenLinkCategories={hiddenLinkCategories}
             hiddenNodeCategories={hiddenNodeCategories}
@@ -1351,6 +1354,7 @@ function App(): React.ReactElement {
         <PaneResizeHandle
           maxWidth={maximumInspectorWidth}
           minWidth={inspectorMinimumWidth}
+          position={inspectorPosition}
           width={clampedInspectorWidth}
           onWidthChange={setInspectorWidth}
         />
@@ -1358,6 +1362,7 @@ function App(): React.ReactElement {
           graphData={graphData}
           visibleGraphData={filteredGraphData}
           selection={selection}
+          position={inspectorPosition}
           onClose={() => setSelection(undefined)}
           onSelectLink={selectAndFocusGraphLink}
           onSelectNode={selectAndFocusGraphNode}
@@ -1820,7 +1825,7 @@ function statsItemsForMetric(metric: GraphStatsMetric, graphData: GraphData): Gr
         id: `file:${node.id}`,
         title: node.label,
         target: { type: "node", id: node.id },
-        detail: detailParts(nodeFileLabel(node), node.uri).join(" · "),
+        detail: detailParts(nodeFileLabel(node)).join(" · "),
         status: fileStatsStatus(node),
         color: node.color,
       }));
@@ -1909,9 +1914,13 @@ function endpointLabel(
   return nodesById.get(id)?.label ?? id;
 }
 
-function directiveSourceLabel(location: { uri: string; range: AspGraphRange }): string {
+function directiveSourceLabel(location: {
+  uri: string;
+  displayPath?: string;
+  range: AspGraphRange;
+}): string {
   return detailParts(
-    baseNameFromUri(location.uri) ?? location.uri,
+    location.displayPath ?? pathForDisplay(location.uri) ?? location.uri,
     rangeLineLabel(location.range),
   ).join(" ");
 }
@@ -1928,11 +1937,13 @@ function PaneResizeHandle({
   maxWidth,
   minWidth,
   onWidthChange,
+  position,
   width,
 }: {
   maxWidth: number;
   minWidth: number;
   onWidthChange(width: number): void;
+  position: InfoPanelPosition;
   width: number;
 }): React.ReactElement {
   const updateWidth = useCallback(
@@ -1954,7 +1965,8 @@ function PaneResizeHandle({
 
       const handlePointerMove = (moveEvent: PointerEvent) => {
         moveEvent.preventDefault();
-        updateWidth(startWidth - (moveEvent.clientX - startX));
+        const deltaX = moveEvent.clientX - startX;
+        updateWidth(position === "left" ? startWidth + deltaX : startWidth - deltaX);
       };
       const stopResize = () => {
         document.body.style.cursor = previousCursor;
@@ -1968,16 +1980,20 @@ function PaneResizeHandle({
       window.addEventListener("pointerup", stopResize);
       window.addEventListener("pointercancel", stopResize);
     },
-    [updateWidth, width],
+    [position, updateWidth, width],
   );
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (event.key === "ArrowLeft") {
         event.preventDefault();
-        updateWidth(width + paneResizeKeyboardStep);
+        updateWidth(
+          width + (position === "left" ? -paneResizeKeyboardStep : paneResizeKeyboardStep),
+        );
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
-        updateWidth(width - paneResizeKeyboardStep);
+        updateWidth(
+          width + (position === "left" ? paneResizeKeyboardStep : -paneResizeKeyboardStep),
+        );
       } else if (event.key === "Home") {
         event.preventDefault();
         updateWidth(minWidth);
@@ -1986,7 +2002,7 @@ function PaneResizeHandle({
         updateWidth(maxWidth);
       }
     },
-    [maxWidth, minWidth, updateWidth, width],
+    [maxWidth, minWidth, position, updateWidth, width],
   );
 
   return (
@@ -1999,7 +2015,7 @@ function PaneResizeHandle({
       aria-valuemax={maxWidth}
       aria-valuenow={width}
       title={graphText("view.resizeInspector")}
-      className="relative cursor-col-resize bg-[#11151c] outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-[#2b3442] hover:bg-[#1c2430] focus:bg-[#1c2430] focus:before:bg-[#89ddff] max-[780px]:hidden"
+      className="relative order-2 cursor-col-resize bg-[#11151c] outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-[#2b3442] hover:bg-[#1c2430] focus:bg-[#1c2430] focus:before:bg-[#89ddff] max-[780px]:hidden"
       onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
     />
@@ -2011,6 +2027,7 @@ function Inspector({
   visibleGraphData,
   onSelectLink,
   onSelectNode,
+  position,
   selection,
   onClose,
 }: {
@@ -2018,12 +2035,15 @@ function Inspector({
   visibleGraphData: GraphData;
   onSelectLink(link: GraphLink): void;
   onSelectNode(node: GraphNode): void;
+  position: InfoPanelPosition;
   selection: Selection;
   onClose(): void;
 }): React.ReactElement {
+  const borderClass = position === "left" ? "border-r" : "border-l";
+  const orderClass = position === "left" ? "order-1" : "order-3";
   const className = selection
-    ? "min-w-0 overflow-auto border-l border-[#2b3442] bg-[#171c25] p-3.5 max-[780px]:absolute max-[780px]:inset-x-2.5 max-[780px]:top-2.5 max-[780px]:z-10 max-[780px]:block max-[780px]:max-h-[min(260px,calc(100%_-_20px))] max-[780px]:rounded-md max-[780px]:border max-[780px]:shadow-[0_14px_34px_rgb(0_0_0_/_34%)]"
-    : "min-w-0 overflow-auto border-l border-[#2b3442] bg-[#171c25] p-3.5 max-[780px]:hidden";
+    ? `${orderClass} min-w-0 overflow-auto ${borderClass} border-[#2b3442] bg-[#171c25] p-3.5 max-[780px]:absolute max-[780px]:inset-x-2.5 max-[780px]:top-2.5 max-[780px]:z-10 max-[780px]:block max-[780px]:max-h-[min(260px,calc(100%_-_20px))] max-[780px]:rounded-md max-[780px]:border max-[780px]:shadow-[0_14px_34px_rgb(0_0_0_/_34%)]`
+    : `${orderClass} min-w-0 overflow-auto ${borderClass} border-[#2b3442] bg-[#171c25] p-3.5 max-[780px]:hidden`;
   if (!selection) {
     return (
       <aside className={className}>
@@ -2159,6 +2179,7 @@ function LinkInspector({
 interface GraphSourceItem {
   id: string;
   uri: string;
+  displayPath?: string;
   range: AspGraphRange;
   highlightRange: AspGraphRange;
   kind: AspGraphSourceRangeRequestItem["kind"];
@@ -3134,7 +3155,7 @@ function nodeTypeLabel(node: GraphNode): string {
 }
 
 function nodeFileLabel(node: GraphNode): string | undefined {
-  return node.fileName ?? basenameForDisplay(node.uri);
+  return node.displayPath ?? node.fileName ?? pathForDisplay(node.uri);
 }
 
 function nodeScopeLabel(node: GraphNode): string | undefined {
@@ -3166,20 +3187,21 @@ function nodeStatusLabel(node: GraphNode): string | undefined {
   return undefined;
 }
 
-function basenameForDisplay(value: string | undefined): string | undefined {
+function pathForDisplay(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
   }
   let normalized = value;
   if (normalized.startsWith("file://")) {
     try {
-      normalized = new URL(normalized).pathname;
+      const url = new URL(normalized);
+      normalized =
+        url.protocol === "file:" ? `${url.host ? `//${url.host}` : ""}${url.pathname}` : normalized;
     } catch {
       normalized = normalized.replace(/^file:\/\//, "");
     }
   }
-  const segments = safeDecodeURIComponent(normalized).split(/[\\/]/).filter(Boolean);
-  return segments.at(-1) ?? value;
+  return safeDecodeURIComponent(normalized);
 }
 
 function safeDecodeURIComponent(value: string): string {
@@ -3368,24 +3390,61 @@ function Detail({
   );
 }
 
+interface TooltipPosition {
+  left: number;
+  top: number;
+  maxWidth: number;
+}
+
 function DetailHint({ hint, label }: { hint: string; label: string }): React.ReactElement {
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const [position, setPosition] = useState<TooltipPosition>();
+  const showTooltip = useCallback(() => {
+    setPosition(tooltipPositionFor(triggerRef.current));
+  }, []);
+  const hideTooltip = useCallback(() => setPosition(undefined), []);
   return (
     <span className="group relative inline-flex shrink-0 items-center">
       <span
+        ref={triggerRef}
         tabIndex={0}
         aria-label={`${label}: ${hint}`}
         className="inline-grid h-3.5 w-3.5 cursor-help place-items-center rounded-full border border-[#405068] text-[10px] leading-none text-[#8d98a8] outline-none hover:border-[#89ddff] hover:text-[#d7dde8] focus:border-[#89ddff] focus:text-[#d7dde8]"
+        onBlur={hideTooltip}
+        onFocus={showTooltip}
+        onPointerEnter={showTooltip}
+        onPointerLeave={hideTooltip}
       >
         ?
       </span>
-      <span
-        role="tooltip"
-        className="pointer-events-none absolute top-[calc(100%_+_6px)] left-0 z-30 hidden w-[min(260px,calc(100vw_-_40px))] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)] group-focus-within:block group-hover:block"
-      >
-        {hint}
-      </span>
+      {position ? (
+        <span
+          role="tooltip"
+          className="pointer-events-none fixed z-[1000] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)]"
+          style={{
+            left: position.left,
+            top: position.top,
+            maxWidth: position.maxWidth,
+          }}
+        >
+          {hint}
+        </span>
+      ) : null}
     </span>
   );
+}
+
+function tooltipPositionFor(element: HTMLElement | null): TooltipPosition | undefined {
+  if (!element) {
+    return undefined;
+  }
+  const margin = 12;
+  const gap = 6;
+  const rect = element.getBoundingClientRect();
+  const maxWidth = Math.max(160, Math.min(260, window.innerWidth - margin * 2));
+  const left = clamp(rect.left, margin, Math.max(margin, window.innerWidth - maxWidth - margin));
+  const top = Math.min(rect.bottom + gap, Math.max(margin, window.innerHeight - margin - 96));
+  return { left, top, maxWidth };
 }
 
 function useSourceRanges(items: GraphSourceItem[]): GraphSourceState {
@@ -3454,6 +3513,7 @@ function sourceItemsForNode(
           {
             id: `declaration:${node.id}`,
             uri: node.uri,
+            displayPath: nodeFileLabel(node),
             range: node.sourceRange ?? node.range,
             highlightRange: node.range,
             kind: "declaration" as const,
@@ -3477,6 +3537,7 @@ function sourceItemsForNode(
       usageItems.push({
         id: `usage:${link.id}:${index}:${location.uri}:${location.range.start.line}:${location.range.start.character}`,
         uri: location.uri,
+        displayPath: location.displayPath ?? pathForDisplay(location.uri),
         range: location.range,
         highlightRange: location.range,
         kind: link.kind === "calls" ? "call" : "reference",
@@ -3493,6 +3554,7 @@ function sourceItemsForLink(link: GraphLink): GraphSourceItem[] {
     .map((location, index) => ({
       id: `link:${link.id}:${index}:${location.uri}:${location.range.start.line}:${location.range.start.character}`,
       uri: location.uri,
+      displayPath: location.displayPath ?? pathForDisplay(location.uri),
       range: location.range,
       highlightRange: location.range,
       kind: sourceKindForLink(link),
@@ -3621,7 +3683,7 @@ function sourceGroupTitle(
   sourcesById: ReadonlyMap<string, AspGraphSourceRangeResponseItem>,
 ): string {
   const source = items.map((item) => sourcesById.get(item.id)).find(Boolean);
-  return baseNameFromPath(source?.fileName) ?? baseNameFromUri(uri) ?? uri;
+  return source?.fileName ?? items[0]?.displayPath ?? pathForDisplay(uri) ?? uri;
 }
 
 function includeRelationsForFileNode(
@@ -3675,7 +3737,7 @@ function includeSourceRelation(
   const directive = link.ranges[0];
   return {
     id: `include-source:${link.id}`,
-    title: source?.label ?? baseNameFromUri(directive?.uri) ?? link.label,
+    title: source?.label ?? directive?.displayPath ?? pathForDisplay(directive?.uri) ?? link.label,
     detail: includeRelationDetail(link),
     fileUri: source?.uri ?? directive?.uri,
     fileLabel: graphText("action.openFile"),

@@ -237,7 +237,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.5.30";
+const languageServerVersion = "0.5.31";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -14440,9 +14440,7 @@ function sourceUriDocumentationLink(uri: string): string {
       return fileIdentityKeyIsWithinOrEqual(fileKey, candidateKey);
     })
     .sort((left, right) => right.length - left.length)[0];
-  const label = (root ? path.relative(root, fileName) || path.basename(fileName) : fileName)
-    .split(path.sep)
-    .join("/");
+  const label = root ? path.relative(root, fileName) || path.basename(fileName) : fileName;
   return `[${escapeMarkdownLinkText(label + fragment)}](${pathToFileUri(fileName)}${fragment})`;
 }
 
@@ -16329,7 +16327,7 @@ function flowchartDisplayFileName(fileName: string): string {
     return normalized;
   }
   const relative = path.relative(workspaceRoot, normalized);
-  return (relative || path.basename(normalized)).split(path.sep).join("/");
+  return relative || path.basename(normalized);
 }
 
 function emptyAspFlowchartPayload(uri: string | undefined): AspFlowchartPayload {
@@ -16946,7 +16944,7 @@ function graphDisplayFileName(state: AspGraphBuildState, fileName: string): stri
     return normalized;
   }
   const relative = path.relative(workspaceRoot, normalized);
-  return (relative || path.basename(normalized)).split(path.sep).join("/");
+  return relative || path.basename(normalized);
 }
 
 function isFileInDirectoryOrEqual(fileName: string, directory: string): boolean {

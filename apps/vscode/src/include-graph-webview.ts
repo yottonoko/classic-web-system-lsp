@@ -1,8 +1,10 @@
 import * as vscode from "vscode";
+import { displayPathForPathOrUri, displayPathForUri, displayPathForUriText } from "./path-display";
 
 export type AspGraphLocale = "en" | "ja";
 export type AspGraphWebviewTheme = "light" | "dark";
 export type AspGraphWebviewThemeSetting = AspGraphWebviewTheme | "auto";
+export type AspGraphInfoPanelPosition = "left" | "right";
 
 export interface AspGraphPayload {
   scope: "document" | "folder" | "workspace";
@@ -13,6 +15,7 @@ export interface AspGraphPayload {
   settings?: {
     initialViewMode?: "2d" | "3d";
     theme?: AspGraphWebviewThemeSetting;
+    infoPanelPosition?: AspGraphInfoPanelPosition;
     hideSingleNodes?: boolean;
     showOutgoingSelectionLinks?: boolean;
     showIncomingDocumentIncludes?: boolean;
@@ -64,6 +67,7 @@ export interface AspGraphNode {
   label: string;
   uri?: string;
   fileName?: string;
+  displayPath?: string;
   range?: AspGraphRange;
   sourceRange?: AspGraphRange;
   exists?: boolean;
@@ -90,13 +94,14 @@ export interface AspGraphLink {
   label: string;
   role?: string;
   count: number;
-  ranges: Array<{ uri: string; range: AspGraphRange }>;
+  ranges: Array<{ uri: string; displayPath?: string; range: AspGraphRange }>;
   include?: {
     path: string;
     mode: "file" | "virtual";
     exists: boolean;
     resolvedUri: string;
     actualPath?: string;
+    displayPath?: string;
     pathCaseMatches?: boolean;
   };
 }
@@ -147,6 +152,7 @@ export function showAspGraphWebview(
   viewColumn: vscode.ViewColumn,
   locale: AspGraphLocale,
   theme: AspGraphWebviewThemeSetting,
+  infoPanelPosition: AspGraphInfoPanelPosition,
 ): void {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
   const panel = vscode.window.createWebviewPanel("aspLsp.graph", title, viewColumn, {
@@ -161,7 +167,15 @@ export function showAspGraphWebview(
       void readGraphSourceRanges(panel.webview, message, locale);
     }
   });
-  panel.webview.html = graphWebviewHtml(panel.webview, webviewRoot, payload, title, locale, theme);
+  panel.webview.html = graphWebviewHtml(
+    panel.webview,
+    webviewRoot,
+    payload,
+    title,
+    locale,
+    theme,
+    infoPanelPosition,
+  );
 }
 
 async function openGraphRange(uriText: string, range: AspGraphRange | undefined): Promise<void> {
@@ -225,9 +239,7 @@ async function textDocumentForGraphSource(uri: vscode.Uri): Promise<vscode.TextD
 }
 
 function graphSourceFileName(document: vscode.TextDocument): string {
-  return document.uri.scheme === "file"
-    ? vscode.workspace.asRelativePath(document.uri, false)
-    : document.uri.toString();
+  return displayPathForUri(document.uri);
 }
 
 function displayRangeForGraphSource(
@@ -269,14 +281,13 @@ function graphWebviewHtml(
   title: string,
   locale: AspGraphLocale,
   theme: AspGraphWebviewThemeSetting,
+  infoPanelPosition: AspGraphInfoPanelPosition,
 ): string {
   const nonce = nonceString();
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, "include-graph.js"));
-  const graphJson = JSON.stringify({
-    ...payload,
-    locale,
-    settings: { ...payload.settings, theme },
-  }).replaceAll("</", "<\\/");
+  const graphJson = JSON.stringify(
+    graphPayloadForWebview(payload, locale, theme, infoPanelPosition),
+  ).replaceAll("</", "<\\/");
   return `<!doctype html>
 <html lang="${locale}">
 <head>
@@ -291,6 +302,37 @@ function graphWebviewHtml(
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
+}
+
+function graphPayloadForWebview(
+  payload: AspGraphPayload,
+  locale: AspGraphLocale,
+  theme: AspGraphWebviewThemeSetting,
+  infoPanelPosition: AspGraphInfoPanelPosition,
+): AspGraphPayload {
+  return {
+    ...payload,
+    locale,
+    nodes: payload.nodes.map((node) => ({
+      ...node,
+      displayPath: displayPathForUriText(node.uri) ?? node.fileName,
+    })),
+    links: payload.links.map((link) => ({
+      ...link,
+      ranges: link.ranges.map((range) => ({
+        ...range,
+        displayPath: displayPathForUriText(range.uri),
+      })),
+      include: link.include
+        ? {
+            ...link.include,
+            actualPath: displayPathForPathOrUri(link.include.actualPath),
+            displayPath: displayPathForUriText(link.include.resolvedUri),
+          }
+        : undefined,
+    })),
+    settings: { ...payload.settings, theme, infoPanelPosition },
+  };
 }
 
 function nonceString(): string {

@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.5.30",
+  "version": "0.5.31",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -625,6 +625,15 @@
           "default": 2000000,
           "description": "%configuration.flowchart.maxTextSize.description%"
         },
+        "aspLsp.flowchart.infoPanelPosition": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right"
+          ],
+          "default": "left",
+          "description": "%configuration.flowchart.infoPanelPosition.description%"
+        },
         "aspLsp.webview.theme": {
           "type": "string",
           "enum": [
@@ -778,6 +787,15 @@
           ],
           "default": "2d",
           "description": "%configuration.graph.initialViewMode.description%"
+        },
+        "aspLsp.graph.infoPanelPosition": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right"
+          ],
+          "default": "right",
+          "description": "%configuration.graph.infoPanelPosition.description%"
         },
         "aspLsp.graph.openLocation": {
           "type": "string",

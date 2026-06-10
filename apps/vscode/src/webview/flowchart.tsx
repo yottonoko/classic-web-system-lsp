@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import mermaid from "mermaid";
 import tailwindStyles from "./flowchart.css?inline";
@@ -24,12 +24,14 @@ declare global {
 type FlowchartLocale = "en" | "ja";
 type WebviewTheme = "light" | "dark";
 type WebviewThemeSetting = WebviewTheme | "auto";
+type InfoPanelPosition = "left" | "right";
 
 interface FlowchartPayload extends AspFlowchartPayload {
   locale?: FlowchartLocale;
   settings?: {
     maxTextSize?: number;
     theme?: WebviewThemeSetting;
+    infoPanelPosition?: InfoPanelPosition;
   };
 }
 
@@ -43,6 +45,12 @@ const minimumFlowchartZoom = 0.4;
 const maximumFlowchartZoom = 2.5;
 const flowchartZoomStep = 0.1;
 const defaultFlowchartMaxTextSize = 2_000_000;
+const flowchartPanelDefaultWidth = 380;
+const flowchartPanelMinimumWidth = 320;
+const flowchartPanelMaximumWidth = 620;
+const flowchartCanvasMinimumWidth = 360;
+const flowchartPaneResizeHandleWidth = 6;
+const flowchartPaneResizeKeyboardStep = 16;
 
 const fallbackPayload: FlowchartPayload = {
   uri: "",
@@ -74,6 +82,7 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     openCode: "Open code",
     openDefinition: "Open definition",
     renderError: "Mermaid render failed.",
+    resizeInfoPanel: "Resize information pane",
     selectFlowchart: "Select flowchart",
     emptySection: "Empty",
     sections: "Sections",
@@ -111,6 +120,7 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     openCode: "コードを開く",
     openDefinition: "定義を開く",
     renderError: "Mermaid render に失敗しました。",
+    resizeInfoPanel: "情報 pane の幅を変更",
     selectFlowchart: "フローチャートを選択",
     emptySection: "空です",
     sections: "セクション",
@@ -656,6 +666,41 @@ function detectedVsCodeTheme(): WebviewTheme {
     : "dark";
 }
 
+function useElementSize<TElement extends HTMLElement>(): [
+  React.RefObject<TElement | null>,
+  { width: number; height: number },
+] {
+  const ref = useRef<TElement>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) {
+      return undefined;
+    }
+
+    const updateSize = () => {
+      const { width, height } = element.getBoundingClientRect();
+      const nextSize = {
+        width: Math.max(1, Math.floor(width)),
+        height: Math.max(1, Math.floor(height)),
+      };
+      setSize((currentSize) =>
+        currentSize.width === nextSize.width && currentSize.height === nextSize.height
+          ? currentSize
+          : nextSize,
+      );
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  return [ref, size];
+}
+
 function App(): React.ReactElement {
   const initialPayload = window.__ASP_LSP_FLOWCHART__ ?? fallbackPayload;
   const [payload, setPayload] = useState<FlowchartPayload>(initialPayload);
@@ -666,7 +711,28 @@ function App(): React.ReactElement {
   );
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSearchIndex, setActiveSearchIndex] = useState(0);
+  const [infoPanelWidth, setInfoPanelWidth] = useState(flowchartPanelDefaultWidth);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [layoutRef, layoutSize] = useElementSize<HTMLElement>();
+  const infoPanelPosition = payload.settings?.infoPanelPosition ?? "left";
+  const maximumInfoPanelWidth = maxFlowchartInfoPanelWidthForLayout(layoutSize.width);
+  const clampedInfoPanelWidth = clamp(
+    infoPanelWidth,
+    flowchartPanelMinimumWidth,
+    maximumInfoPanelWidth,
+  );
+  const layoutStyle = {
+    "--flowchart-panel-width": `${clampedInfoPanelWidth}px`,
+  } as React.CSSProperties;
+  const layoutClassName =
+    infoPanelPosition === "right"
+      ? "asp-lsp-flowchart-shell grid h-full grid-cols-[minmax(0,1fr)_6px_var(--flowchart-panel-width)] bg-[#101419] text-[#d9e0ea]"
+      : "asp-lsp-flowchart-shell grid h-full grid-cols-[var(--flowchart-panel-width)_6px_minmax(0,1fr)] bg-[#101419] text-[#d9e0ea]";
+  const infoPanelClassName =
+    infoPanelPosition === "right"
+      ? "order-3 flex min-h-0 flex-col border-l border-[#263140] bg-[#151b23]"
+      : "order-1 flex min-h-0 flex-col border-r border-[#263140] bg-[#151b23]";
+  const canvasClassName = infoPanelPosition === "right" ? "order-1" : "order-3";
   const locale = payload.locale ?? "en";
   const text = useCallback(
     (key: string): string => messages[locale][key] ?? messages.en[key] ?? key,
@@ -764,12 +830,23 @@ function App(): React.ReactElement {
       searchMatches[Math.min(activeSearchIndex, searchMatches.length - 1)].node.sectionId,
     );
   }, [activeSearchIndex, searchMatches]);
+  useEffect(() => {
+    setInfoPanelWidth((currentWidth) =>
+      clamp(
+        currentWidth,
+        flowchartPanelMinimumWidth,
+        maxFlowchartInfoPanelWidthForLayout(layoutSize.width),
+      ),
+    );
+  }, [layoutSize.width]);
   return (
     <main
-      className="asp-lsp-flowchart-shell grid h-full grid-cols-[minmax(320px,380px)_1fr] bg-[#101419] text-[#d9e0ea]"
+      ref={layoutRef}
+      className={layoutClassName}
       data-asp-lsp-theme={theme}
+      style={layoutStyle}
     >
-      <aside className="flex min-h-0 flex-col border-r border-[#263140] bg-[#151b23]">
+      <aside className={infoPanelClassName}>
         <header className="border-b border-[#263140] px-4 py-3">
           <div className="text-sm font-semibold text-[#f1f5f9]">
             {selectedSection?.label ?? payload.fileName ?? text("title")}
@@ -843,7 +920,6 @@ function App(): React.ReactElement {
                 onOpenCode={(range) =>
                   range && vscode.postMessage({ type: "openRange", uri: payload.uri, range })
                 }
-                onOpenFlowchart={openFlowchartForNode}
                 onOpenTarget={openTarget}
                 onSelect={() => setSelectedSectionId(section.id)}
               />
@@ -869,7 +945,16 @@ function App(): React.ReactElement {
           </pre>
         </div>
       </aside>
+      <FlowchartPaneResizeHandle
+        label={text("resizeInfoPanel")}
+        maxWidth={maximumInfoPanelWidth}
+        minWidth={flowchartPanelMinimumWidth}
+        position={infoPanelPosition}
+        width={clampedInfoPanelWidth}
+        onWidthChange={setInfoPanelWidth}
+      />
       <FlowchartCanvas
+        className={canvasClassName}
         payload={selectedFlowchart}
         section={selectedSection}
         themePalette={themePalette}
@@ -933,24 +1018,61 @@ function SidebarAccordionSection({
   );
 }
 
+interface TooltipPosition {
+  left: number;
+  top: number;
+  maxWidth: number;
+}
+
 function FlowchartHint({ hint, label }: { hint: string; label: string }): React.ReactElement {
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const [position, setPosition] = useState<TooltipPosition>();
+  const showTooltip = useCallback(() => {
+    setPosition(tooltipPositionFor(triggerRef.current));
+  }, []);
+  const hideTooltip = useCallback(() => setPosition(undefined), []);
   return (
     <span className="group relative inline-flex shrink-0 items-center">
       <span
+        ref={triggerRef}
         tabIndex={0}
         aria-label={`${label}: ${hint}`}
         className="inline-grid h-3.5 w-3.5 cursor-help place-items-center rounded-full border border-[#405068] text-[10px] leading-none text-[#8d98a8] outline-none hover:border-[#89ddff] hover:text-[#d7dde8] focus:border-[#89ddff] focus:text-[#d7dde8]"
+        onBlur={hideTooltip}
+        onFocus={showTooltip}
+        onPointerEnter={showTooltip}
+        onPointerLeave={hideTooltip}
       >
         ?
       </span>
-      <span
-        role="tooltip"
-        className="pointer-events-none absolute top-[calc(100%_+_6px)] left-0 z-30 hidden w-[min(260px,calc(100vw_-_40px))] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)] group-focus-within:block group-hover:block"
-      >
-        {hint}
-      </span>
+      {position ? (
+        <span
+          role="tooltip"
+          className="pointer-events-none fixed z-[1000] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)]"
+          style={{
+            left: position.left,
+            top: position.top,
+            maxWidth: position.maxWidth,
+          }}
+        >
+          {hint}
+        </span>
+      ) : null}
     </span>
   );
+}
+
+function tooltipPositionFor(element: HTMLElement | null): TooltipPosition | undefined {
+  if (!element) {
+    return undefined;
+  }
+  const margin = 12;
+  const gap = 6;
+  const rect = element.getBoundingClientRect();
+  const maxWidth = Math.max(160, Math.min(260, window.innerWidth - margin * 2));
+  const left = clamp(rect.left, margin, Math.max(margin, window.innerWidth - maxWidth - margin));
+  const top = Math.min(rect.bottom + gap, Math.max(margin, window.innerHeight - margin - 96));
+  return { left, top, maxWidth };
 }
 
 function IncludeList({
@@ -1018,7 +1140,6 @@ function FlowSection({
   activeSearchNodeId,
   matchedNodeIds,
   onOpenCode,
-  onOpenFlowchart,
   onOpenTarget,
   onSelect,
 }: {
@@ -1031,7 +1152,6 @@ function FlowSection({
   activeSearchNodeId?: string;
   matchedNodeIds: Set<string>;
   onOpenCode(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
-  onOpenFlowchart(node: AspFlowchartNode): void;
   onOpenTarget(target: AspFlowchartTarget): void;
   onSelect(): void;
 }): React.ReactElement {
@@ -1101,10 +1221,11 @@ function FlowSection({
                 >
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1">
                     <button
-                      className="min-w-0 truncate px-1 py-1 text-left text-xs text-[#d9e0ea]"
-                      title={nodeHint}
+                      className="min-w-0 truncate px-1 py-1 text-left text-xs text-[#d9e0ea] disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
+                      disabled={!node.range}
+                      title={detailParts(text("openCode"), nodeHint)}
                       type="button"
-                      onClick={() => onOpenFlowchart(node)}
+                      onClick={() => node.range && onOpenCode(node.range)}
                     >
                       <span
                         className="mr-2 rounded border px-1 py-0.5 text-[10px]"
@@ -1160,7 +1281,105 @@ interface FlowchartContextMenuState {
   y: number;
 }
 
+function FlowchartPaneResizeHandle({
+  label,
+  maxWidth,
+  minWidth,
+  onWidthChange,
+  position,
+  width,
+}: {
+  label: string;
+  maxWidth: number;
+  minWidth: number;
+  onWidthChange(width: number): void;
+  position: InfoPanelPosition;
+  width: number;
+}): React.ReactElement {
+  const updateWidth = useCallback(
+    (nextWidth: number) => onWidthChange(clamp(nextWidth, minWidth, maxWidth)),
+    [maxWidth, minWidth, onWidthChange],
+  );
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = width;
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        moveEvent.preventDefault();
+        const deltaX = moveEvent.clientX - startX;
+        updateWidth(position === "left" ? startWidth + deltaX : startWidth - deltaX);
+      };
+      const stopResize = () => {
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", stopResize);
+        window.removeEventListener("pointercancel", stopResize);
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", stopResize);
+      window.addEventListener("pointercancel", stopResize);
+    },
+    [position, updateWidth, width],
+  );
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        updateWidth(
+          width +
+            (position === "left"
+              ? -flowchartPaneResizeKeyboardStep
+              : flowchartPaneResizeKeyboardStep),
+        );
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        updateWidth(
+          width +
+            (position === "left"
+              ? flowchartPaneResizeKeyboardStep
+              : -flowchartPaneResizeKeyboardStep),
+        );
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        updateWidth(minWidth);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        updateWidth(maxWidth);
+      }
+    },
+    [maxWidth, minWidth, position, updateWidth, width],
+  );
+
+  return (
+    <div
+      role="separator"
+      tabIndex={0}
+      aria-label={label}
+      aria-orientation="vertical"
+      aria-valuemin={minWidth}
+      aria-valuemax={maxWidth}
+      aria-valuenow={width}
+      title={label}
+      className="relative order-2 cursor-col-resize bg-[#101820] outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-[#263140] hover:bg-[#172131] focus:bg-[#172131] focus:before:bg-[#7dd3fc]"
+      onKeyDown={handleKeyDown}
+      onPointerDown={handlePointerDown}
+    />
+  );
+}
+
 function FlowchartCanvas({
+  className,
   payload,
   section,
   themePalette,
@@ -1170,6 +1389,7 @@ function FlowchartCanvas({
   onOpenCode,
   onOpenFlowchart,
 }: {
+  className?: string;
   payload: FlowchartPayload;
   section: AspFlowchartSection | undefined;
   themePalette: FlowchartThemePalette;
@@ -1294,7 +1514,9 @@ function FlowchartCanvas({
     ? clampedContextMenuPosition(contextMenu.x, contextMenu.y)
     : undefined;
   return (
-    <section className="grid min-h-0 grid-rows-[auto_1fr] overflow-hidden bg-[#0d1117]">
+    <section
+      className={`${className ?? ""} grid min-h-0 grid-rows-[auto_1fr] overflow-hidden bg-[#0d1117]`}
+    >
       <header className="flex items-center gap-2 border-b border-[#263140] px-5 py-3">
         <div className="min-w-0 flex-1 truncate text-sm font-semibold text-[#f1f5f9]">
           {section?.label ?? text("title")}
@@ -1851,6 +2073,19 @@ function detailParts(...parts: Array<string | undefined>): string {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function maxFlowchartInfoPanelWidthForLayout(containerWidth: number): number {
+  if (containerWidth <= 0) {
+    return flowchartPanelMaximumWidth;
+  }
+  return Math.max(
+    flowchartPanelMinimumWidth,
+    Math.min(
+      flowchartPanelMaximumWidth,
+      containerWidth - flowchartCanvasMinimumWidth - flowchartPaneResizeHandleWidth,
+    ),
+  );
 }
 
 function modulo(value: number, divisor: number): number {
