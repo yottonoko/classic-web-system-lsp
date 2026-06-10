@@ -90,6 +90,21 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain('graphText("toolbar.searchNodes")');
   });
 
+  it("keeps flowchart rendering focused on the selected section", () => {
+    const flowchartSource = fs.readFileSync("src/webview/flowchart.tsx", "utf8");
+
+    expect(flowchartSource).toContain("flowchartForSection(payload, selectedSectionId)");
+    expect(flowchartSource).toContain('const lines = ["flowchart TB"]');
+    expect(flowchartSource).toContain(
+      "attachSvgNodeHandlers(containerRef.current, payload, onOpenFlowchart)",
+    );
+    expect(flowchartSource).toContain('vscode.postMessage({ type: "openRange"');
+    expect(flowchartSource).toContain('if (node.kind !== "call")');
+    expect(flowchartSource).not.toContain(
+      'vscode.postMessage({ type: "openRange", uri: payload.uri, range: node.range })',
+    );
+  });
+
   it("keeps graph search responsive and keyboard-accessible", () => {
     const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
 

@@ -236,7 +236,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.5.22";
+const languageServerVersion = "0.5.23";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -16084,7 +16084,7 @@ function emptyAspFlowchartPayload(uri: string | undefined): AspFlowchartPayload 
       includes: 0,
     },
   };
-  return { ...payload, mermaid: "flowchart TD" };
+  return { ...payload, mermaid: "flowchart TB" };
 }
 
 async function buildAspGraphForCommand(

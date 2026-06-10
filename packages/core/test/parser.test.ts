@@ -106,7 +106,7 @@ End Sub
     );
     expect(flowchart.edges.some((edge) => edge.label === "Yes")).toBe(true);
     expect(flowchart.edges.some((edge) => edge.label === "Repeat")).toBe(true);
-    expect(flowchart.mermaid).toContain("flowchart TD");
+    expect(flowchart.mermaid).toContain("flowchart TB");
     expect(flowchart.mermaid).toContain("Sub Main");
     expect(flowchart.stats.nodes).toBe(flowchart.nodes.length);
   });

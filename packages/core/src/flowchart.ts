@@ -740,7 +740,7 @@ function addEdge(
 }
 
 function mermaidForFlowchart(payload: Omit<AspFlowchartPayload, "mermaid">): string {
-  const lines = ["flowchart TD"];
+  const lines = ["flowchart TB"];
   const nodesById = new Map(payload.nodes.map((node) => [node.id, node]));
   for (const section of payload.sections) {
     lines.push(`  subgraph ${mermaidId(section.id)}["${escapeMermaidText(section.label)}"]`);

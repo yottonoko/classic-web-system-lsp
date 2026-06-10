@@ -205,6 +205,79 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
   },
 };
 
+const valueText: Record<AspGraphLocale, Record<string, string>> = {
+  en: {
+    document: "Document",
+    folder: "Folder",
+    workspace: "Workspace",
+    file: "File",
+    virtual: "Virtual",
+    function: "Function",
+    sub: "Sub",
+    class: "Class",
+    method: "Method",
+    property: "Property",
+    field: "Field",
+    parameter: "Parameter",
+    variable: "Variable",
+    constant: "Constant",
+    object: "Object",
+    event: "Event",
+    global: "Global",
+    local: "Local",
+    unknown: "Unknown",
+    source: "Source",
+    builtin: "Built-in",
+    configured: "Configured",
+    references: "References",
+    assignments: "Assignments",
+    calls: "Calls",
+    unresolvedReference: "Unresolved reference",
+    read: "Read",
+    write: "Write",
+    procedure: "Procedure",
+    member: "Member",
+    fixed: "Fixed array",
+    dynamic: "Dynamic array",
+    array: "Array",
+  },
+  ja: {
+    document: "ドキュメント",
+    folder: "フォルダー",
+    workspace: "ワークスペース",
+    file: "ファイル",
+    virtual: "仮想",
+    function: "関数",
+    sub: "Sub",
+    class: "クラス",
+    method: "メソッド",
+    property: "プロパティ",
+    field: "フィールド",
+    parameter: "パラメーター",
+    variable: "変数",
+    constant: "定数",
+    object: "オブジェクト",
+    event: "イベント",
+    global: "グローバル",
+    local: "ローカル",
+    unknown: "不明",
+    source: "ソース",
+    builtin: "組み込み",
+    configured: "設定",
+    references: "参照",
+    assignments: "代入",
+    calls: "呼び出し",
+    unresolvedReference: "未解決参照",
+    read: "読み取り",
+    write: "書き込み",
+    procedure: "プロシージャ",
+    member: "メンバー",
+    fixed: "固定配列",
+    dynamic: "動的配列",
+    array: "配列",
+  },
+};
+
 export function createAnalysisExcelSheets(
   payload: AspGraphPayload,
   locale: AspGraphLocale,
@@ -240,7 +313,7 @@ function summaryRows(
 ): Cell[][] {
   const t = text[locale];
   const rows: Array<[string, string | number]> = [
-    [t.scope, payload.scope],
+    [t.scope, valueLabel(payload.scope, locale)],
     [t.root, payload.rootUri ? fileDisplayName(payload.rootUri, payload.nodes) : ""],
     [t.generatedAt, generatedAt.toISOString()],
     [t.filesCount, payload.stats.files],
@@ -299,7 +372,7 @@ function includeRows(
       return rangesForLink(link).map(({ uri, range }) => [
         source?.fileName ?? source?.label ?? displayNameForUri(uri, fileNamesByUri),
         link.include?.path ?? link.label,
-        link.include?.mode ?? "",
+        valueLabel(link.include?.mode, locale),
         target?.fileName ??
           target?.label ??
           displayNameForUri(link.include?.resolvedUri, fileNamesByUri),
@@ -377,9 +450,9 @@ function referencedRows(
       return [
         displayNameForUri(node.uri, fileNamesByUri),
         node.label,
-        node.declarationKind ?? "",
+        valueLabel(node.declarationKind, locale),
         node.memberOf ?? "",
-        node.origin ?? "",
+        valueLabel(node.origin, locale),
         oneBasedLine(node.range),
         oneBasedColumn(node.range),
         usageTotal(usage),
@@ -417,7 +490,7 @@ function usageRows(
     .filter(
       (link) => link.kind === "references" || link.kind === "assignments" || link.kind === "calls",
     )
-    .flatMap((link) => usageLikeLinkRows(link, nodesById, fileNamesByUri))
+    .flatMap((link) => usageLikeLinkRows(link, locale, nodesById, fileNamesByUri))
     .sort(compareRows(4, 5, 0, 3));
   return [
     header([t.usageKind, t.role, t.source, t.target, t.file, t.line, t.column, t.count]),
@@ -453,9 +526,9 @@ function unusedDeclarationRows(
       return [
         displayNameForUri(node.uri, fileNamesByUri),
         node.label,
-        node.declarationKind ?? "",
+        valueLabel(node.declarationKind, locale),
         node.memberOf ?? "",
-        node.bindingScope ?? "",
+        valueLabel(node.bindingScope, locale),
         node.typeName ?? "",
         yn(node.implicit === true, locale),
         oneBasedLine(node.range),
@@ -481,7 +554,7 @@ function unresolvedRows(
       (link) =>
         link.kind === "unresolvedReference" || nodesById.get(link.target)?.kind === "vbUnresolved",
     )
-    .flatMap((link) => usageLikeLinkRows(link, nodesById, fileNamesByUri))
+    .flatMap((link) => usageLikeLinkRows(link, locale, nodesById, fileNamesByUri))
     .sort(compareRows(4, 5, 3));
   return [
     header([t.usageKind, t.role, t.source, t.name, t.file, t.line, t.column, t.count]),
@@ -500,13 +573,13 @@ function declarationRow(
   return [
     displayNameForUri(node.uri, fileNamesByUri),
     node.label,
-    node.declarationKind ?? "",
+    valueLabel(node.declarationKind, locale),
     node.memberOf ?? "",
-    node.bindingScope ?? "",
-    node.procedureKind ?? "",
+    valueLabel(node.bindingScope, locale),
+    valueLabel(node.procedureKind, locale),
     node.typeName ?? "",
     yn(node.implicit === true, locale),
-    arrayDisplay(node),
+    arrayDisplay(node, locale),
     oneBasedLine(node.range),
     oneBasedColumn(node.range),
     usage?.references ?? 0,
@@ -518,14 +591,15 @@ function declarationRow(
 
 function usageLikeLinkRows(
   link: AspGraphLink,
+  locale: AspGraphLocale,
   nodesById: Map<string, AspGraphNode>,
   fileNamesByUri: Map<string, string>,
 ): Cell[][] {
   const source = nodesById.get(link.source);
   const target = nodesById.get(link.target);
   return rangesForLink(link).map(({ uri, range }) => [
-    link.kind,
-    link.role ?? link.label,
+    valueLabel(link.kind, locale),
+    valueLabel(link.role ?? link.label, locale),
     source?.label ?? source?.fileName ?? link.source,
     target?.label ?? target?.fileName ?? link.target,
     displayNameForUri(uri, fileNamesByUri),
@@ -610,12 +684,16 @@ function yn(value: boolean, locale: AspGraphLocale): string {
   return value ? text[locale].yes : text[locale].no;
 }
 
-function arrayDisplay(node: AspGraphNode): string {
+function arrayDisplay(node: AspGraphNode, locale: AspGraphLocale): string {
   if (!node.arrayKind && !node.arrayDimensions?.length) {
     return "";
   }
   const dimensions = node.arrayDimensions?.length ? `(${node.arrayDimensions.join(", ")})` : "";
-  return `${node.arrayKind ?? "array"}${dimensions}`;
+  return `${valueLabel(node.arrayKind ?? "array", locale)}${dimensions}`;
+}
+
+function valueLabel(value: string | undefined, locale: AspGraphLocale): string {
+  return value ? (valueText[locale][value] ?? value) : "";
 }
 
 function header(values: string[]): Cell[] {

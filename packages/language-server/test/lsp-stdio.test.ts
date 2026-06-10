@@ -8072,7 +8072,7 @@ End Sub
             resolvedUri: `file://${path.join(tempDir, "common.inc")}`,
           }),
         );
-        expect(flowchart.mermaid).toContain("flowchart TD");
+        expect(flowchart.mermaid).toContain("flowchart TB");
         expect(flowchart.mermaid).toContain("Sub Main");
         expect(flowchart.stats?.includes).toBe(1);
 

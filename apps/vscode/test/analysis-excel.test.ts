@@ -21,14 +21,25 @@ describe("analysis Excel sheets", () => {
     ]);
     expect(table(sheets, "概要")).toEqual(
       expect.arrayContaining([
+        ["解析範囲", "ワークスペース"],
         ["未使用候補数", 1],
         ["切り詰め", "workspaceIndex>10"],
       ]),
     );
     expect(table(sheets, "参照ファイル")).toEqual(
       expect.arrayContaining([
-        ["main.asp", "includes/util.inc", "file", "includes/util.inc", "あり", "", "あり", 1, 6],
-        ["main.asp", "/missing.inc", "virtual", "missing.inc", "なし", "", "", 2, 6],
+        [
+          "main.asp",
+          "includes/util.inc",
+          "ファイル",
+          "includes/util.inc",
+          "あり",
+          "",
+          "あり",
+          1,
+          6,
+        ],
+        ["main.asp", "/missing.inc", "仮想", "missing.inc", "なし", "", "", 2, 6],
       ]),
     );
     expect(table(sheets, "宣言")).toEqual(
@@ -36,9 +47,9 @@ describe("analysis Excel sheets", () => {
         [
           "includes/util.inc",
           "SharedValue",
-          "variable",
+          "変数",
           "",
-          "global",
+          "グローバル",
           "",
           "String",
           "なし",
@@ -53,9 +64,9 @@ describe("analysis Excel sheets", () => {
         [
           "main.asp",
           "UnusedValue",
-          "variable",
+          "変数",
           "",
-          "global",
+          "グローバル",
           "",
           "",
           "なし",
@@ -71,15 +82,15 @@ describe("analysis Excel sheets", () => {
     );
     expect(table(sheets, "被参照")).toEqual(
       expect.arrayContaining([
-        ["includes/util.inc", "SharedValue", "variable", "", "source", 1, 5, 2, 1, 1, 0],
-        ["includes/util.inc", "DoWork", "function", "", "source", 2, 10, 1, 0, 0, 1],
+        ["includes/util.inc", "SharedValue", "変数", "", "ソース", 1, 5, 2, 1, 1, 0],
+        ["includes/util.inc", "DoWork", "関数", "", "ソース", 2, 10, 1, 0, 0, 1],
       ]),
     );
     expect(table(sheets, "使用箇所")).toEqual(
       expect.arrayContaining([
-        ["references", "read", "main.asp", "SharedValue", "main.asp", 6, 5, 1],
-        ["assignments", "write", "main.asp", "SharedValue", "main.asp", 7, 5, 1],
-        ["calls", "function", "main.asp", "DoWork", "main.asp", 8, 5, 1],
+        ["参照", "読み取り", "main.asp", "SharedValue", "main.asp", 6, 5, 1],
+        ["代入", "書き込み", "main.asp", "SharedValue", "main.asp", 7, 5, 1],
+        ["呼び出し", "関数", "main.asp", "DoWork", "main.asp", 8, 5, 1],
       ]),
     );
     expect(table(sheets, "未使用候補")).toEqual(
@@ -87,9 +98,9 @@ describe("analysis Excel sheets", () => {
         [
           "main.asp",
           "UnusedValue",
-          "variable",
+          "変数",
           "",
-          "global",
+          "グローバル",
           "",
           "なし",
           4,
@@ -103,8 +114,8 @@ describe("analysis Excel sheets", () => {
     );
     expect(table(sheets, "未解決")).toEqual(
       expect.arrayContaining([
-        ["calls", "procedure", "main.asp", "MissingProc", "main.asp", 9, 5, 1],
-        ["unresolvedReference", "read", "main.asp", "MissingValue", "main.asp", 10, 5, 1],
+        ["呼び出し", "プロシージャ", "main.asp", "MissingProc", "main.asp", 9, 5, 1],
+        ["未解決参照", "読み取り", "main.asp", "MissingValue", "main.asp", 10, 5, 1],
       ]),
     );
   });
