@@ -111,8 +111,6 @@
   "command.showFolderGraph.title": "Classic ASP: Folder graph を表示",
   "command.showWorkspaceGraph.title": "Classic ASP: Workspace graph を表示",
   "command.exportCurrentFileAnalysisExcel.title": "Classic ASP: Current file analysis を Excel export",
-  "command.exportFolderAnalysisExcel.title": "Classic ASP: Folder analysis を Excel export",
-  "command.exportWorkspaceAnalysisExcel.title": "Classic ASP: Workspace analysis を Excel export",
   "command.showCurrentFileFlowchart.title": "Classic ASP: Current file flowchart を表示",
   "command.exportCurrentFileFlowchart.title": "Classic ASP: Current file flowchart を Mermaid として出力",
   "command.debugIisUrl.title": "Classic ASP: IIS URL をデバッグ",

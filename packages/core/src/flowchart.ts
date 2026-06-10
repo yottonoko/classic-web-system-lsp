@@ -145,6 +145,11 @@ interface FlowchartAssembly {
   nextEdgeIndex: number;
 }
 
+const flowchartLabelLineLength = 28;
+const flowchartEdgeLabelLineLength = 22;
+const maximumFlowchartLabelCharacters = 180;
+const maximumFlowchartEdgeLabelCharacters = 80;
+
 export function buildAspFlowchart(
   parsed: AspParsedDocument,
   options: AspFlowchartBuildOptions = {},
@@ -939,7 +944,7 @@ function mermaidForFlowchart(payload: Omit<AspFlowchartPayload, "mermaid">): str
   const lines = ["flowchart TB"];
   const nodesById = new Map(payload.nodes.map((node) => [node.id, node]));
   for (const section of payload.sections) {
-    lines.push(`  subgraph ${mermaidId(section.id)}["${escapeMermaidText(section.label)}"]`);
+    lines.push(`  subgraph ${mermaidId(section.id)}["${mermaidLabel(section.label)}"]`);
     for (const nodeId of section.nodeIds) {
       const node = nodesById.get(nodeId);
       if (!node) {
@@ -959,7 +964,7 @@ function mermaidForFlowchart(payload: Omit<AspFlowchartPayload, "mermaid">): str
 
 function mermaidNode(node: AspFlowchartNode): string {
   const id = mermaidId(node.id);
-  const label = escapeMermaidText(node.label);
+  const label = mermaidLabel(node.label);
   if (node.kind === "start" || node.kind === "end") {
     return `${id}(["${label}"])`;
   }
@@ -988,12 +993,74 @@ function escapeMermaidText(value: string): string {
     .replaceAll("]", "&#93;")
     .replaceAll("{", "&#123;")
     .replaceAll("}", "&#125;")
-    .replace(/\s+/g, " ")
     .trim();
 }
 
 function escapeMermaidEdgeLabel(value: string): string {
-  return escapeMermaidText(value).replaceAll("|", "/");
+  return mermaidLabel(value, {
+    lineLength: flowchartEdgeLabelLineLength,
+    maximumCharacters: maximumFlowchartEdgeLabelCharacters,
+  }).replaceAll("|", "/");
+}
+
+function mermaidLabel(
+  value: string,
+  options: { lineLength?: number; maximumCharacters?: number } = {},
+): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  const clipped = clipFlowchartLabel(
+    normalized,
+    options.maximumCharacters ?? maximumFlowchartLabelCharacters,
+  );
+  const lines = wrapFlowchartLabel(clipped, options.lineLength ?? flowchartLabelLineLength);
+  return (lines.length > 0 ? lines : [""]).map(escapeMermaidText).join("<br/>");
+}
+
+function clipFlowchartLabel(value: string, maximumCharacters: number): string {
+  const characters = Array.from(value);
+  if (characters.length <= maximumCharacters) {
+    return value;
+  }
+  return `${characters.slice(0, Math.max(0, maximumCharacters - 3)).join("")}...`;
+}
+
+function wrapFlowchartLabel(value: string, lineLength: number): string[] {
+  const lines: string[] = [];
+  let current = "";
+  for (const word of value.split(" ")) {
+    if (!word) {
+      continue;
+    }
+    for (const part of flowchartWordParts(word, lineLength)) {
+      if (!current) {
+        current = part;
+        continue;
+      }
+      const next = `${current} ${part}`;
+      if (Array.from(next).length <= lineLength) {
+        current = next;
+      } else {
+        lines.push(current);
+        current = part;
+      }
+    }
+  }
+  if (current) {
+    lines.push(current);
+  }
+  return lines;
+}
+
+function flowchartWordParts(value: string, lineLength: number): string[] {
+  const characters = Array.from(value);
+  if (characters.length <= lineLength) {
+    return [value];
+  }
+  const parts: string[] = [];
+  for (let index = 0; index < characters.length; index += lineLength) {
+    parts.push(characters.slice(index, index + lineLength).join(""));
+  }
+  return parts;
 }
 
 function isProcedureDeclaration(statement: VbStatement): boolean {

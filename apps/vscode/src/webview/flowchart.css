@@ -21,3 +21,24 @@
     font: inherit;
   }
 }
+
+@layer components {
+  .asp-lsp-flowchart-match rect,
+  .asp-lsp-flowchart-match polygon,
+  .asp-lsp-flowchart-match path,
+  .asp-lsp-flowchart-match circle,
+  .asp-lsp-flowchart-match ellipse {
+    stroke: #f6c177 !important;
+    stroke-width: 3px !important;
+  }
+
+  .asp-lsp-flowchart-active rect,
+  .asp-lsp-flowchart-active polygon,
+  .asp-lsp-flowchart-active path,
+  .asp-lsp-flowchart-active circle,
+  .asp-lsp-flowchart-active ellipse {
+    filter: drop-shadow(0 0 8px rgb(125 211 252 / 55%));
+    stroke: #7dd3fc !important;
+    stroke-width: 4px !important;
+  }
+}

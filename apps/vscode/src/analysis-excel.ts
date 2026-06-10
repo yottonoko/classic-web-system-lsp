@@ -18,12 +18,27 @@ interface ChartDatum {
 
 interface AnalysisExcelOptions {
   generatedAt?: Date;
+  targetUri?: string;
 }
 
 interface UsageCounts {
   references: number;
   assignments: number;
   calls: number;
+}
+
+interface AnalysisContext {
+  targetUri?: string;
+  targetFileName: string;
+  targetDeclarations: AspGraphNode[];
+  targetDeclarationIds: Set<string>;
+  includedFileUris: Set<string>;
+  includedDeclarationIds: Set<string>;
+  externalUsageLinks: AspGraphLink[];
+  includedUsageLinks: AspGraphLink[];
+  unresolvedLinks: AspGraphLink[];
+  externalUsageCounts: Map<string, UsageCounts>;
+  unusedDeclarations: AspGraphNode[];
 }
 
 type AnalysisTextKey =
@@ -126,12 +141,12 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     includesCount: "Includes",
     missingIncludesCount: "Missing includes",
     unresolvedCount: "Unresolved",
-    unusedCount: "Unused candidates",
+    unusedCount: "Unused",
     truncated: "Truncated",
     yes: "Yes",
     no: "No",
     used: "Used",
-    unusedStatus: "Unused candidate",
+    unusedStatus: "Unused",
     file: "File",
     exists: "Exists",
     rootFile: "Root",
@@ -188,7 +203,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     declarations: "宣言",
     referenced: "被参照",
     usages: "使用箇所",
-    unused: "未使用候補",
+    unused: "未使用",
     unresolved: "未解決",
     scope: "解析範囲",
     value: "値",
@@ -202,12 +217,12 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     includesCount: "include 数",
     missingIncludesCount: "missing include 数",
     unresolvedCount: "未解決数",
-    unusedCount: "未使用候補数",
+    unusedCount: "未使用数",
     truncated: "切り詰め",
     yes: "あり",
     no: "なし",
     used: "使用あり",
-    unusedStatus: "未使用候補",
+    unusedStatus: "未使用",
     file: "ファイル",
     exists: "存在",
     rootFile: "ルート",
@@ -341,39 +356,52 @@ export function createAnalysisExcelSheets(
 ): AnalysisExcelSheet[] {
   const generatedAt = options.generatedAt ?? new Date();
   const nodesById = new Map(payload.nodes.map((node) => [node.id, node]));
-  const usageCounts = usageCountsByTarget(payload.links);
   const fileNamesByUri = fileNamesByUriMap(payload.nodes);
-  const unusedDeclarations = sourceDeclarationNodes(payload.nodes)
-    .filter((node) => usageTotal(usageCounts.get(node.id)) === 0)
-    .sort(compareNodesByLocation(fileNamesByUri));
-  const analysisRows = analysisSummaryRows(
-    payload,
-    locale,
-    usageCounts,
-    fileNamesByUri,
-    unusedDeclarations,
-  );
+  const context = analysisContext(payload, options, nodesById, fileNamesByUri);
+  const analysisRows = analysisSummaryRows(locale, context);
   return [
-    sheet(text[locale].summary, summaryRows(payload, locale, generatedAt, unusedDeclarations)),
+    sheet(text[locale].summary, summaryRows(payload, locale, generatedAt, context)),
+    sheet(text[locale].analysisSummary, analysisRows, analysisSummaryImages(locale, context)),
+    sheet(text[locale].chartData, chartDataRows(locale, context)),
     sheet(
-      text[locale].analysisSummary,
-      analysisRows,
-      analysisSummaryImages(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations),
+      text[locale].declarations,
+      declarationRows(
+        context.targetDeclarations,
+        locale,
+        context.externalUsageCounts,
+        fileNamesByUri,
+      ),
     ),
     sheet(
-      text[locale].chartData,
-      chartDataRows(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations),
+      text[locale].referenced,
+      referencedRows(
+        context.targetDeclarations,
+        locale,
+        context.externalUsageCounts,
+        fileNamesByUri,
+      ),
     ),
-    sheet(text[locale].files, fileRows(payload, locale)),
-    sheet(text[locale].includes, includeRows(payload, locale, nodesById, fileNamesByUri)),
-    sheet(text[locale].declarations, declarationRows(payload, locale, usageCounts, fileNamesByUri)),
-    sheet(text[locale].referenced, referencedRows(payload, locale, usageCounts, fileNamesByUri)),
-    sheet(text[locale].usages, usageRows(payload, locale, nodesById, fileNamesByUri)),
+    sheet(
+      text[locale].usages,
+      usageRows(context.externalUsageLinks, locale, nodesById, fileNamesByUri),
+    ),
+    sheet(
+      text[locale].includes,
+      includedUsageRows(context.includedUsageLinks, locale, nodesById, fileNamesByUri),
+    ),
     sheet(
       text[locale].unused,
-      unusedDeclarationRows(unusedDeclarations, locale, usageCounts, fileNamesByUri),
+      unusedDeclarationRows(
+        context.unusedDeclarations,
+        locale,
+        context.externalUsageCounts,
+        fileNamesByUri,
+      ),
     ),
-    sheet(text[locale].unresolved, unresolvedRows(payload, locale, nodesById, fileNamesByUri)),
+    sheet(
+      text[locale].unresolved,
+      unresolvedRows(context.unresolvedLinks, locale, nodesById, fileNamesByUri),
+    ),
   ];
 }
 
@@ -381,125 +409,102 @@ function summaryRows(
   payload: AspGraphPayload,
   locale: AspGraphLocale,
   generatedAt: Date,
-  unusedDeclarations: AspGraphNode[],
+  context: AnalysisContext,
 ): Cell[][] {
   const t = text[locale];
   const rows: Array<[string, string | number]> = [
-    [t.scope, valueLabel(payload.scope, locale)],
-    [t.root, payload.rootUri ? fileDisplayName(payload.rootUri, payload.nodes) : ""],
+    [t.scope, valueLabel("file", locale)],
+    [t.root, context.targetFileName],
     [t.generatedAt, generatedAt.toISOString()],
-    [t.filesCount, payload.stats.files],
-    [t.declarationsCount, payload.stats.declarations],
-    [t.referencesCount, payload.stats.references],
-    [t.assignmentsCount, payload.stats.assignments],
-    [t.callsCount, payload.stats.calls],
-    [t.includesCount, payload.stats.includes],
-    [t.missingIncludesCount, payload.stats.missingIncludes],
-    [t.unresolvedCount, payload.stats.unresolvedReferences],
-    [t.unusedCount, unusedDeclarations.length],
+    [t.declarationsCount, context.targetDeclarations.length],
+    [t.referencesCount, usageLinkCount(context.externalUsageLinks, "references")],
+    [t.assignmentsCount, usageLinkCount(context.externalUsageLinks, "assignments")],
+    [t.callsCount, usageLinkCount(context.externalUsageLinks, "calls")],
+    [t.includesCount, context.includedFileUris.size],
+    [t.unresolvedCount, usageLinkCount(context.unresolvedLinks)],
+    [t.unusedCount, context.unusedDeclarations.length],
     [t.truncated, payload.truncated?.reason ?? ""],
   ];
   return [header([t.name, t.value ?? "Value"]), ...rows.map(([name, value]) => [name, value])];
 }
 
-function analysisSummaryRows(
-  payload: AspGraphPayload,
-  locale: AspGraphLocale,
-  usageCounts: Map<string, UsageCounts>,
-  fileNamesByUri: Map<string, string>,
-  unusedDeclarations: AspGraphNode[],
-): Cell[][] {
+function analysisSummaryRows(locale: AspGraphLocale, context: AnalysisContext): Cell[][] {
   const t = text[locale];
   return [
     sectionTitle(t.declarationsByKind, 6),
     header([t.kind, t.total, t.usedCount, t.unusedCount, t.share, t.bar]),
-    ...declarationKindChartRows(payload.nodes, locale, usageCounts),
+    ...declarationKindChartRows(context.targetDeclarations, locale, context.externalUsageCounts),
     [],
     sectionTitle(t.scopeComparison, 6),
     header([t.bindingScope, t.total, t.usedCount, t.unusedCount, t.unusedRate, t.bar]),
-    ...scopeComparisonRows(payload.nodes, locale, usageCounts),
+    ...scopeComparisonRows(context.targetDeclarations, locale, context.externalUsageCounts),
     [],
     sectionTitle(t.usageMix, 5),
     header([t.usageKind, t.count, t.share, t.bar, t.risk]),
-    ...usageMixRows(payload, locale),
+    ...usageMixRows(
+      [...context.externalUsageLinks, ...context.includedUsageLinks],
+      context.unresolvedLinks,
+      locale,
+    ),
     [],
     sectionTitle(t.unusedByKind, 4),
     header([t.kind, t.unusedCount, t.share, t.bar]),
-    ...unusedByKindRows(unusedDeclarations, locale),
-    [],
-    sectionTitle(t.fileHealth, 10),
-    header([
-      t.file,
-      t.declarationCount,
-      t.unusedCount,
-      t.unusedRate,
-      t.usageCount,
-      t.unresolvedUsageCount,
-      t.includesOut,
-      t.includedBy,
-      t.risk,
-      t.bar,
-    ]),
-    ...fileHealthRows(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations),
+    ...unusedByKindRows(context.unusedDeclarations, locale),
   ];
 }
 
-function chartDataRows(
-  payload: AspGraphPayload,
-  locale: AspGraphLocale,
-  usageCounts: Map<string, UsageCounts>,
-  fileNamesByUri: Map<string, string>,
-  unusedDeclarations: AspGraphNode[],
-): Cell[][] {
+function chartDataRows(locale: AspGraphLocale, context: AnalysisContext): Cell[][] {
   const t = text[locale];
   return [
     sectionTitle(t.declarationsByKind, 5),
     header([t.kind, t.total, t.usedCount, t.unusedCount, t.share]),
-    ...declarationKindChartRows(payload.nodes, locale, usageCounts).map((row) => row.slice(0, 5)),
+    ...declarationKindChartRows(
+      context.targetDeclarations,
+      locale,
+      context.externalUsageCounts,
+    ).map((row) => row.slice(0, 5)),
     [],
     sectionTitle(t.scopeComparison, 5),
     header([t.bindingScope, t.total, t.usedCount, t.unusedCount, t.unusedRate]),
-    ...scopeComparisonRows(payload.nodes, locale, usageCounts).map((row) => row.slice(0, 5)),
+    ...scopeComparisonRows(context.targetDeclarations, locale, context.externalUsageCounts).map(
+      (row) => row.slice(0, 5),
+    ),
     [],
     sectionTitle(t.usageMix, 4),
     header([t.usageKind, t.count, t.share, t.risk]),
-    ...usageMixRows(payload, locale).map((row) => [row[0], row[1], row[2], row[4]]),
+    ...usageMixRows(
+      [...context.externalUsageLinks, ...context.includedUsageLinks],
+      context.unresolvedLinks,
+      locale,
+    ).map((row) => [row[0], row[1], row[2], row[4]]),
     [],
     sectionTitle(t.unusedByKind, 3),
     header([t.kind, t.unusedCount, t.share]),
-    ...unusedByKindRows(unusedDeclarations, locale).map((row) => row.slice(0, 3)),
-    [],
-    sectionTitle(t.fileHealth, 9),
-    header([
-      t.file,
-      t.declarationCount,
-      t.unusedCount,
-      t.unusedRate,
-      t.usageCount,
-      t.unresolvedUsageCount,
-      t.includesOut,
-      t.includedBy,
-      t.risk,
-    ]),
-    ...fileHealthRows(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations).map((row) =>
-      row.slice(0, 9),
-    ),
+    ...unusedByKindRows(context.unusedDeclarations, locale).map((row) => row.slice(0, 3)),
   ];
 }
 
 function analysisSummaryImages(
-  payload: AspGraphPayload,
   locale: AspGraphLocale,
-  usageCounts: Map<string, UsageCounts>,
-  fileNamesByUri: Map<string, string>,
-  unusedDeclarations: AspGraphNode[],
+  context: AnalysisContext,
 ): AnalysisExcelImage[] {
   const t = text[locale];
-  const declarationRows = declarationKindChartRows(payload.nodes, locale, usageCounts);
-  const scopeRows = scopeComparisonRows(payload.nodes, locale, usageCounts);
-  const usageRows = usageMixRows(payload, locale);
-  const unusedRows = unusedByKindRows(unusedDeclarations, locale);
-  const fileRows = fileHealthRows(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations);
+  const declarationRows = declarationKindChartRows(
+    context.targetDeclarations,
+    locale,
+    context.externalUsageCounts,
+  );
+  const scopeRows = scopeComparisonRows(
+    context.targetDeclarations,
+    locale,
+    context.externalUsageCounts,
+  );
+  const usageRows = usageMixRows(
+    [...context.externalUsageLinks, ...context.includedUsageLinks],
+    context.unresolvedLinks,
+    locale,
+  );
+  const unusedRows = unusedByKindRows(context.unusedDeclarations, locale);
   return [
     chartImage(
       barChartSvg(t.declarationsByKind, chartDataFromRows(declarationRows, 0, 1, 3), "#4F81BD"),
@@ -516,17 +521,6 @@ function analysisSummaryImages(
       barChartSvg(t.unusedByKind, chartDataFromRows(unusedRows, 0, 1, 2), "#C00000"),
       t.unusedByKind,
       50,
-    ),
-    chartImage(
-      barChartSvg(
-        t.fileHealth,
-        chartDataFromRows(fileRows, 0, 8, 2)
-          .sort((left, right) => right.value - left.value || compareValues(left.label, right.label))
-          .slice(0, 8),
-        "#8064A2",
-      ),
-      t.fileHealth,
-      66,
     ),
   ];
 }
@@ -644,11 +638,10 @@ function escapeXml(value: string): string {
 }
 
 function declarationKindChartRows(
-  nodes: AspGraphNode[],
+  declarations: AspGraphNode[],
   locale: AspGraphLocale,
   usageCounts: Map<string, UsageCounts>,
 ): Cell[][] {
-  const declarations = sourceDeclarationNodes(nodes);
   const counts = new Map<string, { total: number; used: number; unused: number }>();
   for (const node of declarations) {
     const key = node.declarationKind ?? "unknown";
@@ -675,11 +668,10 @@ function declarationKindChartRows(
 }
 
 function scopeComparisonRows(
-  nodes: AspGraphNode[],
+  declarations: AspGraphNode[],
   locale: AspGraphLocale,
   usageCounts: Map<string, UsageCounts>,
 ): Cell[][] {
-  const declarations = sourceDeclarationNodes(nodes);
   const counts = new Map<string, { total: number; used: number; unused: number }>();
   for (const node of declarations) {
     const key = node.bindingScope ?? "unknown";
@@ -705,14 +697,16 @@ function scopeComparisonRows(
     ]);
 }
 
-function usageMixRows(payload: AspGraphPayload, locale: AspGraphLocale): Cell[][] {
+function usageMixRows(
+  usageLinks: AspGraphLink[],
+  unresolvedLinks: AspGraphLink[],
+  locale: AspGraphLocale,
+): Cell[][] {
   const rows: Array<[string, number, string]> = [
-    ["references", payload.stats.references, ""],
-    ["assignments", payload.stats.assignments, ""],
-    ["calls", payload.stats.calls, ""],
-    ["unresolvedReference", payload.stats.unresolvedReferences, "unresolved"],
-    ["include", payload.stats.includes, ""],
-    ["missingIncludes", payload.stats.missingIncludes, "missing"],
+    ["references", usageLinkCount(usageLinks, "references"), ""],
+    ["assignments", usageLinkCount(usageLinks, "assignments"), ""],
+    ["calls", usageLinkCount(usageLinks, "calls"), ""],
+    ["unresolvedReference", usageLinkCount(unresolvedLinks), "unresolved"],
   ];
   const total = rows.reduce((sum, [, count]) => sum + count, 0);
   const max = maxCount(rows.map(([, count]) => count));
@@ -744,164 +738,42 @@ function unusedByKindRows(unusedDeclarations: AspGraphNode[], locale: AspGraphLo
     ]);
 }
 
-function fileHealthRows(
-  payload: AspGraphPayload,
-  locale: AspGraphLocale,
-  usageCounts: Map<string, UsageCounts>,
-  fileNamesByUri: Map<string, string>,
-  unusedDeclarations: AspGraphNode[],
-): Cell[][] {
-  const declarationsByUri = new Map<string, number>();
-  const unusedByUri = new Map<string, number>();
-  const usagesByUri = new Map<string, number>();
-  const unresolvedByUri = new Map<string, number>();
-  for (const node of sourceDeclarationNodes(payload.nodes)) {
-    if (node.uri) {
-      declarationsByUri.set(node.uri, (declarationsByUri.get(node.uri) ?? 0) + 1);
-    }
-  }
-  for (const node of unusedDeclarations) {
-    if (node.uri) {
-      unusedByUri.set(node.uri, (unusedByUri.get(node.uri) ?? 0) + 1);
-    }
-  }
-  for (const link of payload.links) {
-    if (
-      link.kind !== "references" &&
-      link.kind !== "assignments" &&
-      link.kind !== "calls" &&
-      link.kind !== "unresolvedReference"
-    ) {
-      continue;
-    }
-    for (const range of link.ranges) {
-      usagesByUri.set(range.uri, (usagesByUri.get(range.uri) ?? 0) + link.count);
-      if (link.kind === "unresolvedReference") {
-        unresolvedByUri.set(range.uri, (unresolvedByUri.get(range.uri) ?? 0) + link.count);
-      }
-    }
-  }
-  const includeOut = countLinksByNode(payload.links, "source", "include");
-  const includeIn = countLinksByNode(payload.links, "target", "include");
-  const riskScores = payload.nodes
-    .filter(isFileLikeGraphNode)
-    .map((node) => fileRiskScore(node, declarationsByUri, unusedByUri, unresolvedByUri));
-  const maxRisk = maxCount(riskScores);
-  return payload.nodes
-    .filter(isFileLikeGraphNode)
-    .sort(compareFileNodes)
-    .map((node) => {
-      const uri = node.uri ?? "";
-      const declarations = declarationsByUri.get(uri) ?? 0;
-      const unused = unusedByUri.get(uri) ?? 0;
-      const unresolved = unresolvedByUri.get(uri) ?? 0;
-      const risk = fileRiskScore(node, declarationsByUri, unusedByUri, unresolvedByUri);
-      return [
-        displayNameForUri(uri, fileNamesByUri),
-        declarations,
-        unused,
-        percentCell(ratio(unused, declarations)),
-        usagesByUri.get(uri) ?? usageTotal(usageCounts.get(node.id)),
-        unresolved,
-        includeOut.get(node.id) ?? 0,
-        includeIn.get(node.id) ?? 0,
-        risk,
-        barString(risk, maxRisk),
-      ];
-    });
-}
-
-function fileRiskScore(
-  node: AspGraphNode,
-  declarationsByUri: Map<string, number>,
-  unusedByUri: Map<string, number>,
-  unresolvedByUri: Map<string, number>,
-): number {
-  const uri = node.uri ?? "";
-  const declarations = declarationsByUri.get(uri) ?? 0;
-  const unused = unusedByUri.get(uri) ?? 0;
-  const unresolved = unresolvedByUri.get(uri) ?? 0;
-  return unused + unresolved * 2 + (node.exists === false ? Math.max(1, declarations) : 0);
-}
-
-function fileRows(payload: AspGraphPayload, locale: AspGraphLocale): Cell[][] {
-  const t = text[locale];
-  const includeOut = countLinksByNode(payload.links, "source", "include");
-  const includeIn = countLinksByNode(payload.links, "target", "include");
-  const declarations = new Map<string, number>();
-  for (const node of sourceDeclarationNodes(payload.nodes)) {
-    if (node.uri) {
-      declarations.set(node.uri, (declarations.get(node.uri) ?? 0) + 1);
-    }
-  }
-  const rows = payload.nodes
-    .filter(isFileLikeGraphNode)
-    .sort(compareFileNodes)
-    .map((node) => [
-      node.fileName ?? node.label,
-      yn(node.exists !== false, locale),
-      yn(node.isRoot === true, locale),
-      includeOut.get(node.id) ?? 0,
-      includeIn.get(node.id) ?? 0,
-      declarations.get(node.uri ?? "") ?? 0,
-    ]);
-  return [
-    header([t.file, t.exists, t.rootFile, t.includesOut, t.includedBy, t.declarationCount]),
-    ...rows,
-  ];
-}
-
-function includeRows(
-  payload: AspGraphPayload,
+function includedUsageRows(
+  links: AspGraphLink[],
   locale: AspGraphLocale,
   nodesById: Map<string, AspGraphNode>,
   fileNamesByUri: Map<string, string>,
 ): Cell[][] {
   const t = text[locale];
-  const rows = payload.links
-    .filter((link) => link.kind === "include")
+  const rows = links
     .flatMap((link) => {
-      const source = nodesById.get(link.source);
       const target = nodesById.get(link.target);
       return rangesForLink(link).map(({ uri, range }) => [
-        source?.fileName ?? source?.label ?? displayNameForUri(uri, fileNamesByUri),
-        link.include?.path ?? link.label,
-        valueLabel(link.include?.mode, locale),
-        target?.fileName ??
-          target?.label ??
-          displayNameForUri(link.include?.resolvedUri, fileNamesByUri),
-        yn(link.include?.exists !== false, locale),
-        link.include?.actualPath ?? "",
-        link.include?.pathCaseMatches === undefined ? "" : yn(link.include.pathCaseMatches, locale),
+        valueLabel(link.kind, locale),
+        valueLabel(link.role ?? link.label, locale),
+        displayNameForUri(target?.uri, fileNamesByUri),
+        target?.label ?? link.target,
+        displayNameForUri(uri, fileNamesByUri),
         oneBasedLine(range),
         oneBasedColumn(range),
+        link.ranges.length > 1 ? 1 : link.count,
       ]);
     })
-    .sort(compareRows(0, 7, 1));
+    .sort(compareRows(2, 3, 4, 5, 0));
   return [
-    header([
-      t.sourceFile,
-      t.includePath,
-      t.includeMode,
-      t.resolvedTarget,
-      t.exists,
-      t.actualPath,
-      t.pathCaseMatches,
-      t.line,
-      t.column,
-    ]),
+    header([t.usageKind, t.role, t.file, t.name, t.sourceFile, t.line, t.column, t.count]),
     ...rows,
   ];
 }
 
 function declarationRows(
-  payload: AspGraphPayload,
+  declarations: AspGraphNode[],
   locale: AspGraphLocale,
   usageCounts: Map<string, UsageCounts>,
   fileNamesByUri: Map<string, string>,
 ): Cell[][] {
   const t = text[locale];
-  const rows = sourceDeclarationNodes(payload.nodes)
+  const rows = declarations
     .sort(compareNodesByLocation(fileNamesByUri))
     .map((node) => declarationRow(node, locale, usageCounts, fileNamesByUri));
   return [
@@ -927,14 +799,14 @@ function declarationRows(
 }
 
 function referencedRows(
-  payload: AspGraphPayload,
+  declarations: AspGraphNode[],
   locale: AspGraphLocale,
   usageCounts: Map<string, UsageCounts>,
   fileNamesByUri: Map<string, string>,
 ): Cell[][] {
   const t = text[locale];
-  const rows = payload.nodes
-    .filter((node) => node.kind === "vbDeclaration" && usageTotal(usageCounts.get(node.id)) > 0)
+  const rows = declarations
+    .filter((node) => usageTotal(usageCounts.get(node.id)) > 0)
     .sort((left, right) => {
       const usage = usageTotal(usageCounts.get(right.id)) - usageTotal(usageCounts.get(left.id));
       return usage || compareNodesByLocation(fileNamesByUri)(left, right);
@@ -974,16 +846,13 @@ function referencedRows(
 }
 
 function usageRows(
-  payload: AspGraphPayload,
+  links: AspGraphLink[],
   locale: AspGraphLocale,
   nodesById: Map<string, AspGraphNode>,
   fileNamesByUri: Map<string, string>,
 ): Cell[][] {
   const t = text[locale];
-  const rows = payload.links
-    .filter(
-      (link) => link.kind === "references" || link.kind === "assignments" || link.kind === "calls",
-    )
+  const rows = links
     .flatMap((link) => usageLikeLinkRows(link, locale, nodesById, fileNamesByUri))
     .sort(compareRows(4, 5, 0, 3));
   return [
@@ -1037,17 +906,13 @@ function unusedDeclarationRows(
 }
 
 function unresolvedRows(
-  payload: AspGraphPayload,
+  links: AspGraphLink[],
   locale: AspGraphLocale,
   nodesById: Map<string, AspGraphNode>,
   fileNamesByUri: Map<string, string>,
 ): Cell[][] {
   const t = text[locale];
-  const rows = payload.links
-    .filter(
-      (link) =>
-        link.kind === "unresolvedReference" || nodesById.get(link.target)?.kind === "vbUnresolved",
-    )
+  const rows = links
     .flatMap((link) => usageLikeLinkRows(link, locale, nodesById, fileNamesByUri))
     .sort(compareRows(4, 5, 3));
   return [
@@ -1091,6 +956,7 @@ function usageLikeLinkRows(
 ): Cell[][] {
   const source = nodesById.get(link.source);
   const target = nodesById.get(link.target);
+  const rangeCount = link.ranges.length > 1 ? 1 : link.count;
   return rangesForLink(link).map(({ uri, range }) => [
     valueLabel(link.kind, locale),
     valueLabel(link.role ?? link.label, locale),
@@ -1099,8 +965,138 @@ function usageLikeLinkRows(
     displayNameForUri(uri, fileNamesByUri),
     oneBasedLine(range),
     oneBasedColumn(range),
-    link.count,
+    rangeCount,
   ]);
+}
+
+function analysisContext(
+  payload: AspGraphPayload,
+  options: AnalysisExcelOptions,
+  nodesById: Map<string, AspGraphNode>,
+  fileNamesByUri: Map<string, string>,
+): AnalysisContext {
+  const targetUri = options.targetUri ?? defaultAnalysisTargetUri(payload);
+  const targetFileName = displayNameForUri(targetUri, fileNamesByUri);
+  const targetDeclarations = sourceDeclarationNodes(payload.nodes)
+    .filter((node) => sameGraphUri(node.uri, targetUri) && isExternallyVisibleDeclaration(node))
+    .sort(compareNodesByLocation(fileNamesByUri));
+  const targetDeclarationIds = new Set(targetDeclarations.map((node) => node.id));
+  const includedFileUris = includedFileUrisForTarget(payload, targetUri, nodesById);
+  const includedDeclarationIds = new Set(
+    sourceDeclarationNodes(payload.nodes)
+      .filter(
+        (node) =>
+          node.uri !== undefined &&
+          includedFileUris.has(graphUriIdentity(node.uri)) &&
+          isExternallyVisibleDeclaration(node),
+      )
+      .map((node) => node.id),
+  );
+  const externalUsageLinks = filteredGraphLinks(
+    payload.links,
+    (link) => isUsageGraphLink(link) && targetDeclarationIds.has(link.target),
+    ({ uri }) => !sameGraphUri(uri, targetUri),
+  );
+  const includedUsageLinks = filteredGraphLinks(
+    payload.links,
+    (link) => isUsageGraphLink(link) && includedDeclarationIds.has(link.target),
+    ({ uri }) => sameGraphUri(uri, targetUri),
+  );
+  const unresolvedLinks = filteredGraphLinks(
+    payload.links,
+    (link) =>
+      link.kind === "unresolvedReference" || nodesById.get(link.target)?.kind === "vbUnresolved",
+    ({ uri }) => sameGraphUri(uri, targetUri),
+  );
+  const externalUsageCounts = usageCountsByTarget(externalUsageLinks);
+  const unusedDeclarations = targetDeclarations
+    .filter((node) => usageTotal(externalUsageCounts.get(node.id)) === 0)
+    .sort(compareNodesByLocation(fileNamesByUri));
+  return {
+    targetUri,
+    targetFileName,
+    targetDeclarations,
+    targetDeclarationIds,
+    includedFileUris,
+    includedDeclarationIds,
+    externalUsageLinks,
+    includedUsageLinks,
+    unresolvedLinks,
+    externalUsageCounts,
+    unusedDeclarations,
+  };
+}
+
+function defaultAnalysisTargetUri(payload: AspGraphPayload): string | undefined {
+  return (
+    payload.rootUri ??
+    payload.nodes.find((node) => isFileLikeGraphNode(node) && node.isRoot === true)?.uri ??
+    payload.nodes.find(isFileLikeGraphNode)?.uri
+  );
+}
+
+function isExternallyVisibleDeclaration(node: AspGraphNode): boolean {
+  return node.bindingScope !== "local" && node.declarationKind !== "parameter";
+}
+
+function includedFileUrisForTarget(
+  payload: AspGraphPayload,
+  targetUri: string | undefined,
+  nodesById: Map<string, AspGraphNode>,
+): Set<string> {
+  const targetFileIds = new Set(
+    payload.nodes
+      .filter((node) => isFileLikeGraphNode(node) && sameGraphUri(node.uri, targetUri))
+      .map((node) => node.id),
+  );
+  const includesBySource = new Map<string, string[]>();
+  for (const link of payload.links) {
+    if (link.kind !== "include") {
+      continue;
+    }
+    const existing = includesBySource.get(link.source);
+    if (existing) {
+      existing.push(link.target);
+    } else {
+      includesBySource.set(link.source, [link.target]);
+    }
+  }
+  const result = new Set<string>();
+  const visited = new Set<string>(targetFileIds);
+  const queue = [...targetFileIds];
+  while (queue.length > 0) {
+    const source = queue.shift() ?? "";
+    for (const target of includesBySource.get(source) ?? []) {
+      if (visited.has(target)) {
+        continue;
+      }
+      visited.add(target);
+      const node = nodesById.get(target);
+      if (node?.uri) {
+        result.add(graphUriIdentity(node.uri));
+      }
+      queue.push(target);
+    }
+  }
+  return result;
+}
+
+function filteredGraphLinks(
+  links: AspGraphLink[],
+  linkPredicate: (link: AspGraphLink) => boolean,
+  rangePredicate: (range: { uri: string; range: AspGraphRange }) => boolean,
+): AspGraphLink[] {
+  return links.flatMap((link) => {
+    if (!linkPredicate(link)) {
+      return [];
+    }
+    const ranges = link.ranges.filter(rangePredicate);
+    return ranges.length > 0 ? [{ ...link, count: ranges.length, ranges }] : [];
+  });
+}
+
+function isUsageGraphLink(link: AspGraphLink): boolean {
+  return link.kind === "references" || link.kind === "assignments" || link.kind === "calls";
 }
 
 function usageCountsByTarget(links: AspGraphLink[]): Map<string, UsageCounts> {
@@ -1122,26 +1118,19 @@ function usageCountsByTarget(links: AspGraphLink[]): Map<string, UsageCounts> {
   return counts;
 }
 
+function usageLinkCount(links: AspGraphLink[], kind?: AspGraphLink["kind"]): number {
+  return links.reduce(
+    (sum, link) => (kind === undefined || link.kind === kind ? sum + link.count : sum),
+    0,
+  );
+}
+
 function sourceDeclarationNodes(nodes: AspGraphNode[]): AspGraphNode[] {
   return nodes.filter((node) => node.kind === "vbDeclaration" && node.origin === "source");
 }
 
 function usageTotal(usage: UsageCounts | undefined): number {
   return (usage?.references ?? 0) + (usage?.assignments ?? 0) + (usage?.calls ?? 0);
-}
-
-function countLinksByNode(
-  links: AspGraphLink[],
-  property: "source" | "target",
-  kind: AspGraphLink["kind"],
-): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const link of links) {
-    if (link.kind === kind) {
-      counts.set(link[property], (counts.get(link[property]) ?? 0) + link.count);
-    }
-  }
-  return counts;
 }
 
 function fileNamesByUriMap(nodes: AspGraphNode[]): Map<string, string> {
@@ -1158,12 +1147,26 @@ function isFileLikeGraphNode(node: AspGraphNode): boolean {
   return node.kind === "file" || node.kind === "missingInclude";
 }
 
-function fileDisplayName(uri: string, nodes: AspGraphNode[]): string {
-  return fileNamesByUriMap(nodes).get(uri) ?? uri;
-}
-
 function displayNameForUri(uri: string | undefined, fileNamesByUri: Map<string, string>): string {
   return uri ? (fileNamesByUri.get(uri) ?? uri) : "";
+}
+
+function sameGraphUri(left: string | undefined, right: string | undefined): boolean {
+  return (
+    left !== undefined && right !== undefined && graphUriIdentity(left) === graphUriIdentity(right)
+  );
+}
+
+function graphUriIdentity(uri: string): string {
+  try {
+    const parsed = new URL(uri);
+    if (parsed.protocol === "file:") {
+      return `file://${decodeURIComponent(parsed.pathname).replace(/\\/g, "/").toLowerCase()}`;
+    }
+  } catch {
+    // Fall through to a conservative string identity.
+  }
+  return uri;
 }
 
 function rangesForLink(link: AspGraphLink): Array<{ uri: string; range?: AspGraphRange }> {
@@ -1268,10 +1271,6 @@ function cellDisplayLength(cell: Cell): number {
     return String(cell.value ?? "").length;
   }
   return String(cell).length;
-}
-
-function compareFileNodes(left: AspGraphNode, right: AspGraphNode): number {
-  return compareValues(left.fileName ?? left.label, right.fileName ?? right.label);
 }
 
 function compareNodesByLocation(

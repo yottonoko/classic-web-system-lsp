@@ -111,8 +111,6 @@
   "command.showFolderGraph.title": "Classic ASP: Show Folder Graph",
   "command.showWorkspaceGraph.title": "Classic ASP: Show Workspace Graph",
   "command.exportCurrentFileAnalysisExcel.title": "Classic ASP: Export Current File Analysis to Excel",
-  "command.exportFolderAnalysisExcel.title": "Classic ASP: Export Folder Analysis to Excel",
-  "command.exportWorkspaceAnalysisExcel.title": "Classic ASP: Export Workspace Analysis to Excel",
   "command.showCurrentFileFlowchart.title": "Classic ASP: Show Current File Flowchart",
   "command.exportCurrentFileFlowchart.title": "Classic ASP: Export Current File Flowchart as Mermaid",
   "command.debugIisUrl.title": "Classic ASP: Debug IIS URL",

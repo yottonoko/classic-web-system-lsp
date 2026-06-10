@@ -103,6 +103,10 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain('type: "copyText"');
     expect(flowchartSource).toContain('format: "mermaid"');
     expect(flowchartSource).toContain('format: "svg"');
+    expect(flowchartSource).toContain("maxTextSize: 2_000_000");
+    expect(flowchartSource).toContain("wrapFlowchartLabel");
+    expect(flowchartSource).toContain("setClampedZoom");
+    expect(flowchartSource).toContain("zoomWithWheel");
     expect(flowchartSource).toContain('vscode.postMessage({ type: "openRange"');
     expect(flowchartSource).toContain('if (node.kind !== "call")');
     expect(flowchartSource).not.toContain(
@@ -511,8 +515,8 @@ describe("VS Code extension package", () => {
     expect(commands).toContain("aspLsp.showFolderGraph");
     expect(commands).toContain("aspLsp.showWorkspaceGraph");
     expect(commands).toContain("aspLsp.exportCurrentFileAnalysisExcel");
-    expect(commands).toContain("aspLsp.exportFolderAnalysisExcel");
-    expect(commands).toContain("aspLsp.exportWorkspaceAnalysisExcel");
+    expect(commands).not.toContain("aspLsp.exportFolderAnalysisExcel");
+    expect(commands).not.toContain("aspLsp.exportWorkspaceAnalysisExcel");
     expect(commands).toContain("aspLsp.showCurrentFileFlowchart");
     expect(commands).toContain("aspLsp.exportCurrentFileFlowchart");
     expect(
@@ -548,11 +552,9 @@ describe("VS Code extension package", () => {
         group: "navigation",
       }),
     );
-    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
+    expect(manifest.contributes?.menus?.["explorer/context"]).not.toContainEqual(
       expect.objectContaining({
         command: "aspLsp.exportFolderAnalysisExcel",
-        when: "explorerResourceIsFolder",
-        group: "navigation",
       }),
     );
     expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
@@ -573,33 +575,37 @@ describe("VS Code extension package", () => {
     expect(nls["command.showFolderGraph.title"]).toBeTruthy();
     expect(nls["command.showWorkspaceGraph.title"]).toBeTruthy();
     expect(nls["command.exportCurrentFileAnalysisExcel.title"]).toBeTruthy();
-    expect(nls["command.exportFolderAnalysisExcel.title"]).toBeTruthy();
-    expect(nls["command.exportWorkspaceAnalysisExcel.title"]).toBeTruthy();
+    expect(nls["command.exportFolderAnalysisExcel.title"]).toBeUndefined();
+    expect(nls["command.exportWorkspaceAnalysisExcel.title"]).toBeUndefined();
     expect(nls["command.showCurrentFileFlowchart.title"]).toBeTruthy();
     expect(nls["command.exportCurrentFileFlowchart.title"]).toBeTruthy();
     expect(nlsJa["command.showCurrentFileGraph.title"]).toBeTruthy();
     expect(nlsJa["command.showFolderGraph.title"]).toBeTruthy();
     expect(nlsJa["command.showWorkspaceGraph.title"]).toBeTruthy();
     expect(nlsJa["command.exportCurrentFileAnalysisExcel.title"]).toBeTruthy();
-    expect(nlsJa["command.exportFolderAnalysisExcel.title"]).toBeTruthy();
-    expect(nlsJa["command.exportWorkspaceAnalysisExcel.title"]).toBeTruthy();
+    expect(nlsJa["command.exportFolderAnalysisExcel.title"]).toBeUndefined();
+    expect(nlsJa["command.exportWorkspaceAnalysisExcel.title"]).toBeUndefined();
     expect(nlsJa["command.showCurrentFileFlowchart.title"]).toBeTruthy();
     expect(nlsJa["command.exportCurrentFileFlowchart.title"]).toBeTruthy();
     expect(manifest.activationEvents).toContain("onCommand:aspLsp.showCurrentFileGraph");
     expect(manifest.activationEvents).toContain("onCommand:aspLsp.showFolderGraph");
     expect(manifest.activationEvents).toContain("onCommand:aspLsp.showWorkspaceGraph");
     expect(manifest.activationEvents).toContain("onCommand:aspLsp.exportCurrentFileAnalysisExcel");
-    expect(manifest.activationEvents).toContain("onCommand:aspLsp.exportFolderAnalysisExcel");
-    expect(manifest.activationEvents).toContain("onCommand:aspLsp.exportWorkspaceAnalysisExcel");
+    expect(manifest.activationEvents).not.toContain("onCommand:aspLsp.exportFolderAnalysisExcel");
+    expect(manifest.activationEvents).not.toContain(
+      "onCommand:aspLsp.exportWorkspaceAnalysisExcel",
+    );
     expect(manifest.activationEvents).toContain("onCommand:aspLsp.showCurrentFileFlowchart");
     expect(manifest.activationEvents).toContain("onCommand:aspLsp.exportCurrentFileFlowchart");
     expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileGraph"');
     expect(extensionSource).toContain('registerCommand("aspLsp.showFolderGraph"');
     expect(extensionSource).toContain('registerCommand("aspLsp.showWorkspaceGraph"');
     expect(extensionSource).toContain('"aspLsp.exportCurrentFileAnalysisExcel"');
-    expect(extensionSource).toContain('"aspLsp.exportFolderAnalysisExcel"');
-    expect(extensionSource).toContain('"aspLsp.exportWorkspaceAnalysisExcel"');
+    expect(extensionSource).not.toContain('"aspLsp.exportFolderAnalysisExcel"');
+    expect(extensionSource).not.toContain('"aspLsp.exportWorkspaceAnalysisExcel"');
     expect(extensionSource).toContain("createAnalysisExcelSheets");
+    expect(extensionSource).toContain("targetUri: request.uri");
+    expect(extensionSource).toContain("includeIncomingDocumentIncludes: true");
     expect(extensionSource).toContain("writeXlsxFile");
     expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileFlowchart"');
     expect(extensionSource).toContain('registerCommand("aspLsp.exportCurrentFileFlowchart"');

@@ -38,6 +38,7 @@ interface GraphCommandRequest {
   scope: GraphScope;
   uri?: string;
   activeDocument?: vscode.TextDocument;
+  includeIncomingDocumentIncludes?: boolean;
 }
 
 let client: LanguageClient | undefined;
@@ -85,13 +86,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     vscode.commands.registerCommand(
       "aspLsp.exportCurrentFileAnalysisExcel",
-      async (uri?: vscode.Uri) => exportAnalysisExcel("document", uri),
-    ),
-    vscode.commands.registerCommand("aspLsp.exportFolderAnalysisExcel", async (uri?: vscode.Uri) =>
-      exportAnalysisExcel("folder", uri),
-    ),
-    vscode.commands.registerCommand("aspLsp.exportWorkspaceAnalysisExcel", async () =>
-      exportAnalysisExcel("workspace"),
+      async (uri?: vscode.Uri) => exportAnalysisExcel(uri),
     ),
     vscode.commands.registerCommand("aspLsp.showCurrentFileFlowchart", async (uri?: vscode.Uri) =>
       showFlowchart(context, uri),
@@ -382,12 +377,12 @@ async function showGraph(
   );
 }
 
-async function exportAnalysisExcel(scope: GraphScope, selectedUri?: vscode.Uri): Promise<void> {
+async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
   if (!client) {
     void vscode.window.showWarningMessage(extensionLocalizer()("excel.serverUnavailable"));
     return;
   }
-  const request = graphCommandRequest(scope, selectedUri);
+  const request = graphCommandRequest("document", selectedUri);
   if (!request) {
     return;
   }
@@ -396,8 +391,13 @@ async function exportAnalysisExcel(scope: GraphScope, selectedUri?: vscode.Uri):
   try {
     payload = await requestAspGraphPayload(
       activeClient,
-      request,
-      extensionLocalizer()(excelTitleKey(scope)),
+      {
+        scope: "document",
+        uri: request.uri,
+        activeDocument: request.activeDocument,
+        includeIncomingDocumentIncludes: true,
+      },
+      extensionLocalizer()("excel.currentTitle"),
     );
   } catch (error) {
     if (isGraphCancellationError(error)) {
@@ -406,14 +406,17 @@ async function exportAnalysisExcel(scope: GraphScope, selectedUri?: vscode.Uri):
     throw error;
   }
   const target = await vscode.window.showSaveDialog({
-    defaultUri: analysisExcelDefaultUri(payload, request.activeDocument),
+    defaultUri: analysisExcelDefaultUri(payload, request.uri, request.activeDocument),
     filters: { "Excel Workbook": ["xlsx"] },
     saveLabel: extensionLocalizer()("excel.saveLabel"),
   });
   if (!target) {
     return;
   }
-  const sheets = createAnalysisExcelSheets(payload, extensionLocale(), { generatedAt: new Date() });
+  const sheets = createAnalysisExcelSheets(payload, extensionLocale(), {
+    generatedAt: new Date(),
+    targetUri: request.uri,
+  });
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -498,16 +501,6 @@ function graphTitleKey(scope: GraphScope): ExtensionMessageKey {
   return "graph.workspaceTitle";
 }
 
-function excelTitleKey(scope: GraphScope): ExtensionMessageKey {
-  if (scope === "document") {
-    return "excel.currentTitle";
-  }
-  if (scope === "folder") {
-    return "excel.folderTitle";
-  }
-  return "excel.workspaceTitle";
-}
-
 function graphViewColumn(): vscode.ViewColumn {
   const openLocation = vscode.workspace
     .getConfiguration("aspLsp")
@@ -561,15 +554,13 @@ function baseNameFromUri(value: string | undefined): string | undefined {
 
 function analysisExcelDefaultUri(
   payload: AspGraphPayload,
+  targetUri: string | undefined,
   activeDocument: vscode.TextDocument | undefined,
 ): vscode.Uri | undefined {
-  const fileName = `${sanitizeFileName(analysisExcelBaseName(payload, activeDocument))}.xlsx`;
-  const root = payload.rootUri?.startsWith("file://")
-    ? vscode.Uri.parse(payload.rootUri)
-    : undefined;
+  const fileName = `${sanitizeFileName(analysisExcelBaseName(payload, targetUri, activeDocument))}.xlsx`;
+  const root = targetUri?.startsWith("file://") ? vscode.Uri.parse(targetUri) : undefined;
   if (root) {
-    const directory =
-      payload.scope === "document" ? vscode.Uri.file(path.dirname(root.fsPath)) : root;
+    const directory = vscode.Uri.file(path.dirname(root.fsPath));
     return vscode.Uri.joinPath(directory, fileName);
   }
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -578,14 +569,12 @@ function analysisExcelDefaultUri(
 
 function analysisExcelBaseName(
   payload: AspGraphPayload,
+  targetUri: string | undefined,
   activeDocument: vscode.TextDocument | undefined,
 ): string {
-  if (payload.scope === "workspace") {
-    return "classic-asp-workspace-analysis";
-  }
   const name =
+    baseNameFromUri(targetUri) ??
     currentFileGraphName(payload) ??
-    baseNameFromUri(payload.rootUri) ??
     baseNameFromPath(activeDocument?.fileName) ??
     "classic-asp-analysis";
   return `${name.replace(/\.[^.\\/]+$/, "")}-analysis`;
@@ -926,8 +915,6 @@ type ExtensionMessageKey =
   | "graph.workspacePanelTitle"
   | "excel.serverUnavailable"
   | "excel.currentTitle"
-  | "excel.folderTitle"
-  | "excel.workspaceTitle"
   | "excel.saveLabel"
   | "excel.writeTitle"
   | "excel.exported"
@@ -959,8 +946,6 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "graph.workspacePanelTitle": "Classic ASP Graph: Workspace",
     "excel.serverUnavailable": "Start the Classic ASP Language Server before exporting analysis.",
     "excel.currentTitle": "Classic ASP: Export Current File Analysis",
-    "excel.folderTitle": "Classic ASP: Export Folder Analysis",
-    "excel.workspaceTitle": "Classic ASP: Export Workspace Analysis",
     "excel.saveLabel": "Export",
     "excel.writeTitle": "Writing Classic ASP analysis workbook",
     "excel.exported": "Classic ASP analysis exported to {file}.",
@@ -992,8 +977,6 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "excel.serverUnavailable":
       "analysis を export する前に Classic ASP Language Server を起動してください。",
     "excel.currentTitle": "Classic ASP: Current file analysis を Excel export",
-    "excel.folderTitle": "Classic ASP: Folder analysis を Excel export",
-    "excel.workspaceTitle": "Classic ASP: Workspace analysis を Excel export",
     "excel.saveLabel": "Export",
     "excel.writeTitle": "Classic ASP analysis workbook を書き込み中",
     "excel.exported": "Classic ASP analysis を {file} に export しました。",

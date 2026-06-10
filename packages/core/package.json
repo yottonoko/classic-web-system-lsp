@@ -1,6 +1,6 @@
 {
   "name": "@asp-lsp/core",
-  "version": "0.5.26",
+  "version": "0.5.27",
   "private": true,
   "license": "MIT OR Apache-2.0",
   "main": "dist/index.js",

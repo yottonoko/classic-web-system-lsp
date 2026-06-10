@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.5.26",
+  "version": "0.5.27",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -933,15 +933,6 @@
         "icon": "$(file-media)"
       },
       {
-        "command": "aspLsp.exportFolderAnalysisExcel",
-        "title": "%command.exportFolderAnalysisExcel.title%",
-        "icon": "$(file-media)"
-      },
-      {
-        "command": "aspLsp.exportWorkspaceAnalysisExcel",
-        "title": "%command.exportWorkspaceAnalysisExcel.title%"
-      },
-      {
         "command": "aspLsp.showCurrentFileFlowchart",
         "title": "%command.showCurrentFileFlowchart.title%",
         "icon": "$(type-hierarchy)"
@@ -987,11 +978,6 @@
       "explorer/context": [
         {
           "command": "aspLsp.showFolderGraph",
-          "when": "explorerResourceIsFolder",
-          "group": "navigation"
-        },
-        {
-          "command": "aspLsp.exportFolderAnalysisExcel",
           "when": "explorerResourceIsFolder",
           "group": "navigation"
         },
@@ -1049,8 +1035,6 @@
   "activationEvents": [
     "onCommand:aspLsp.exportCurrentFileAnalysisExcel",
     "onCommand:aspLsp.exportCurrentFileFlowchart",
-    "onCommand:aspLsp.exportFolderAnalysisExcel",
-    "onCommand:aspLsp.exportWorkspaceAnalysisExcel",
     "onCommand:aspLsp.showCurrentFileFlowchart",
     "onCommand:aspLsp.showCurrentFileGraph",
     "onCommand:aspLsp.showFolderGraph",

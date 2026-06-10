@@ -28,6 +28,14 @@ interface FlowchartPayload extends AspFlowchartPayload {
 
 const vscode = acquireVsCodeApi();
 
+const flowchartLabelLineLength = 28;
+const flowchartEdgeLabelLineLength = 22;
+const maximumFlowchartLabelCharacters = 180;
+const maximumFlowchartEdgeLabelCharacters = 80;
+const minimumFlowchartZoom = 0.4;
+const maximumFlowchartZoom = 2.5;
+const flowchartZoomStep = 0.1;
+
 const fallbackPayload: FlowchartPayload = {
   uri: "",
   sections: [],
@@ -65,6 +73,14 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     copyMermaid: "Copy Mermaid",
     exportMermaid: "Export Mermaid",
     exportSvg: "Export SVG",
+    searchNodes: "Search nodes",
+    searchPlaceholder: "Search",
+    searchPrevious: "Previous match",
+    searchNext: "Next match",
+    zoomOut: "Zoom out",
+    zoomIn: "Zoom in",
+    resetZoom: "Reset zoom",
+    zoomWithWheel: "Hold Ctrl or Command and use the mouse wheel to zoom.",
   },
   ja: {
     title: "ASP Flowchart",
@@ -87,6 +103,14 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     copyMermaid: "Mermaid コピー",
     exportMermaid: "Mermaid 出力",
     exportSvg: "SVG 出力",
+    searchNodes: "ノード検索",
+    searchPlaceholder: "検索",
+    searchPrevious: "前の一致",
+    searchNext: "次の一致",
+    zoomOut: "縮小",
+    zoomIn: "拡大",
+    resetZoom: "ズームをリセット",
+    zoomWithWheel: "Ctrl または Command を押しながらホイールでズーム",
   },
 };
 
@@ -96,9 +120,23 @@ function App(): React.ReactElement {
   const [selectedSectionId, setSelectedSectionId] = useState<string | undefined>(() =>
     defaultSectionId(initialPayload),
   );
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeSearchIndex, setActiveSearchIndex] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const locale = payload.locale ?? "en";
   const text = (key: string): string => messages[locale][key] ?? messages.en[key] ?? key;
   const nodesBySection = useMemo(() => nodesBySectionId(payload), [payload]);
+  const searchMatches = useMemo(
+    () => flowchartSearchMatches(payload, searchQuery),
+    [payload, searchQuery],
+  );
+  const matchedNodeIds = useMemo(
+    () => new Set(searchMatches.map((match) => match.node.id)),
+    [searchMatches],
+  );
+  const activeSearchIndexForDisplay =
+    searchMatches.length > 0 ? Math.min(activeSearchIndex, searchMatches.length - 1) : 0;
+  const activeSearchNode = searchMatches[activeSearchIndexForDisplay]?.node;
   const selectedFlowchart = useMemo(
     () => flowchartForSection(payload, selectedSectionId),
     [payload, selectedSectionId],
@@ -119,6 +157,28 @@ function App(): React.ReactElement {
     (target: AspFlowchartTarget) => openFlowchartTarget(payload, target, setSelectedSectionId),
     [payload],
   );
+  const selectSearchMatch = useCallback(
+    (index: number) => {
+      if (searchMatches.length === 0) {
+        return;
+      }
+      const nextIndex = modulo(index, searchMatches.length);
+      setActiveSearchIndex(nextIndex);
+      setSelectedSectionId(searchMatches[nextIndex]?.node.sectionId);
+    },
+    [searchMatches],
+  );
+  const handleSearchKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        selectSearchMatch(activeSearchIndex + (event.shiftKey ? -1 : 1));
+      } else if (event.key === "Escape") {
+        setSearchQuery("");
+      }
+    },
+    [activeSearchIndex, selectSearchMatch],
+  );
   useEffect(() => {
     const listener = (event: MessageEvent) => {
       const message = event.data as { type?: unknown; payload?: unknown; targetRange?: unknown };
@@ -135,6 +195,28 @@ function App(): React.ReactElement {
     window.addEventListener("message", listener);
     return () => window.removeEventListener("message", listener);
   }, []);
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, []);
+  useEffect(() => {
+    setActiveSearchIndex(0);
+  }, [payload, searchQuery]);
+  useEffect(() => {
+    if (searchMatches.length === 0) {
+      return;
+    }
+    setSelectedSectionId(
+      searchMatches[Math.min(activeSearchIndex, searchMatches.length - 1)].node.sectionId,
+    );
+  }, [activeSearchIndex, searchMatches]);
   return (
     <main className="grid h-full grid-cols-[minmax(320px,380px)_1fr] bg-[#101419] text-[#d9e0ea]">
       <aside className="flex min-h-0 flex-col border-r border-[#263140] bg-[#151b23]">
@@ -147,6 +229,43 @@ function App(): React.ReactElement {
             {text("nodes")} / {payload.includes.length} {text("includes")}
           </div>
         </header>
+        <div className="border-b border-[#263140] px-3 py-2">
+          <div className="flex items-center gap-1">
+            <input
+              ref={searchInputRef}
+              aria-label={text("searchNodes")}
+              className="h-7 min-w-0 flex-1 rounded border border-[#334255] bg-[#0c1117] px-2 text-xs text-[#d9e0ea] outline-none placeholder:text-[#6f7e91] focus:border-[#7dd3fc]"
+              placeholder={text("searchPlaceholder")}
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              onKeyDown={handleSearchKeyDown}
+            />
+            <span className="min-w-[44px] text-center text-[11px] text-[#9fb0c5]">
+              {searchMatches.length > 0
+                ? `${activeSearchIndexForDisplay + 1}/${searchMatches.length}`
+                : "0"}
+            </span>
+            <button
+              className="h-7 w-7 rounded border border-[#334255] text-xs text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+              disabled={searchMatches.length === 0}
+              title={text("searchPrevious")}
+              type="button"
+              onClick={() => selectSearchMatch(activeSearchIndex - 1)}
+            >
+              ↑
+            </button>
+            <button
+              className="h-7 w-7 rounded border border-[#334255] text-xs text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+              disabled={searchMatches.length === 0}
+              title={text("searchNext")}
+              type="button"
+              onClick={() => selectSearchMatch(activeSearchIndex + 1)}
+            >
+              ↓
+            </button>
+          </div>
+        </div>
         <div className="min-h-0 flex-1 overflow-auto p-3">
           <SectionHeading>{text("includes")}</SectionHeading>
           <IncludeList includes={payload.includes} text={text} uri={payload.uri} />
@@ -161,6 +280,8 @@ function App(): React.ReactElement {
                 selected={section.id === selectedSection?.id}
                 section={section}
                 text={text}
+                activeSearchNodeId={activeSearchNode?.id}
+                matchedNodeIds={matchedNodeIds}
                 onOpenCode={(range) =>
                   range && vscode.postMessage({ type: "openRange", uri: payload.uri, range })
                 }
@@ -194,6 +315,8 @@ function App(): React.ReactElement {
         payload={selectedFlowchart}
         section={selectedSection}
         text={text}
+        activeSearchNodeId={activeSearchNode?.id}
+        matchedNodeIds={matchedNodeIds}
         onOpenCode={(range) =>
           range && vscode.postMessage({ type: "openRange", uri: payload.uri, range })
         }
@@ -263,6 +386,8 @@ function FlowSection({
   selected,
   section,
   text,
+  activeSearchNodeId,
+  matchedNodeIds,
   onOpenCode,
   onOpenFlowchart,
   onOpenTarget,
@@ -272,6 +397,8 @@ function FlowSection({
   selected: boolean;
   section: AspFlowchartSection;
   text(key: string): string;
+  activeSearchNodeId?: string;
+  matchedNodeIds: Set<string>;
   onOpenCode(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
   onOpenFlowchart(node: AspFlowchartNode): void;
   onOpenTarget(target: AspFlowchartTarget): void;
@@ -307,45 +434,58 @@ function FlowSection({
         {visibleNodes.length === 0 ? (
           <EmptyText>{text("emptySection")}</EmptyText>
         ) : (
-          visibleNodes.map((node) => (
-            <div key={node.id} className="rounded px-1 py-1 hover:bg-[#223044]">
-              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1">
-                <button
-                  className="min-w-0 truncate px-1 py-1 text-left text-xs text-[#d9e0ea]"
-                  title={text("openFlowchart")}
-                  type="button"
-                  onClick={() => onOpenFlowchart(node)}
-                >
-                  <span className="mr-2 text-[#7dd3fc]">{node.kind}</span>
-                  {node.label}
-                </button>
-                <button
-                  className="mr-1 shrink-0 rounded border border-[#3b4a5f] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
-                  disabled={!node.range}
-                  title={text("openCode")}
-                  type="button"
-                  onClick={() => node.range && onOpenCode(node.range)}
-                >
-                  Code
-                </button>
-              </div>
-              {node.links?.length ? (
-                <div className="ml-1 mt-1 flex flex-wrap gap-1">
-                  {node.links.map((link) => (
-                    <button
-                      key={link.id}
-                      className="rounded border border-[#315f58] bg-[#10241f] px-1.5 py-0.5 text-[11px] text-[#9ee7d0] hover:border-[#63e6be] hover:text-white"
-                      title={text("openDefinition")}
-                      type="button"
-                      onClick={() => onOpenTarget(link.target)}
-                    >
-                      {link.label}
-                    </button>
-                  ))}
+          visibleNodes.map((node) => {
+            const isSearchMatch = matchedNodeIds.has(node.id);
+            const isActiveSearchMatch = activeSearchNodeId === node.id;
+            return (
+              <div
+                key={node.id}
+                className={`rounded px-1 py-1 hover:bg-[#223044] ${
+                  isActiveSearchMatch
+                    ? "bg-[#17324a] ring-1 ring-[#7dd3fc]"
+                    : isSearchMatch
+                      ? "bg-[#2b2b18] ring-1 ring-[#f6c177]"
+                      : ""
+                }`}
+              >
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1">
+                  <button
+                    className="min-w-0 truncate px-1 py-1 text-left text-xs text-[#d9e0ea]"
+                    title={text("openFlowchart")}
+                    type="button"
+                    onClick={() => onOpenFlowchart(node)}
+                  >
+                    <span className="mr-2 text-[#7dd3fc]">{node.kind}</span>
+                    {node.label}
+                  </button>
+                  <button
+                    className="mr-1 shrink-0 rounded border border-[#3b4a5f] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+                    disabled={!node.range}
+                    title={text("openCode")}
+                    type="button"
+                    onClick={() => node.range && onOpenCode(node.range)}
+                  >
+                    Code
+                  </button>
                 </div>
-              ) : null}
-            </div>
-          ))
+                {node.links?.length ? (
+                  <div className="ml-1 mt-1 flex flex-wrap gap-1">
+                    {node.links.map((link) => (
+                      <button
+                        key={link.id}
+                        className="rounded border border-[#315f58] bg-[#10241f] px-1.5 py-0.5 text-[11px] text-[#9ee7d0] hover:border-[#63e6be] hover:text-white"
+                        title={text("openDefinition")}
+                        type="button"
+                        onClick={() => onOpenTarget(link.target)}
+                      >
+                        {link.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })
         )}
       </div>
     </div>
@@ -356,18 +496,43 @@ function FlowchartCanvas({
   payload,
   section,
   text,
+  activeSearchNodeId,
+  matchedNodeIds,
   onOpenCode,
   onOpenFlowchart,
 }: {
   payload: FlowchartPayload;
   section: AspFlowchartSection | undefined;
   text(key: string): string;
+  activeSearchNodeId?: string;
+  matchedNodeIds: Set<string>;
   onOpenCode(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
   onOpenFlowchart(node: AspFlowchartNode): void;
 }): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string>();
   const [svg, setSvg] = useState<string>("");
+  const [zoom, setZoom] = useState(1);
+  const setClampedZoom = useCallback(
+    (value: number) =>
+      setZoom(Math.round(clamp(value, minimumFlowchartZoom, maximumFlowchartZoom) * 100) / 100),
+    [],
+  );
+  const adjustZoom = useCallback(
+    (direction: 1 | -1) => setClampedZoom(zoom + direction * flowchartZoomStep),
+    [setClampedZoom, zoom],
+  );
+  const handleWheel = useCallback(
+    (event: React.WheelEvent<HTMLDivElement>) => {
+      if (!event.ctrlKey && !event.metaKey) {
+        return;
+      }
+      event.preventDefault();
+      const direction = event.deltaY < 0 ? 1 : -1;
+      setClampedZoom(zoom + direction * flowchartZoomStep);
+    },
+    [setClampedZoom, zoom],
+  );
   useEffect(() => {
     let cancelled = false;
     const render = async (): Promise<void> => {
@@ -376,6 +541,7 @@ function FlowchartCanvas({
       }
       mermaid.initialize({
         startOnLoad: false,
+        maxTextSize: 2_000_000,
         securityLevel: "strict",
         theme: "dark",
         flowchart: { htmlLabels: false, curve: "basis" },
@@ -402,11 +568,46 @@ function FlowchartCanvas({
       cancelled = true;
     };
   }, [onOpenFlowchart, payload]);
+  useEffect(() => {
+    if (!containerRef.current) {
+      return;
+    }
+    syncSvgSearchHighlights(containerRef.current, payload, matchedNodeIds, activeSearchNodeId);
+  }, [activeSearchNodeId, matchedNodeIds, payload, svg]);
   return (
     <section className="grid min-h-0 grid-rows-[auto_1fr] overflow-hidden bg-[#0d1117]">
       <header className="flex items-center gap-2 border-b border-[#263140] px-5 py-3">
         <div className="min-w-0 flex-1 truncate text-sm font-semibold text-[#f1f5f9]">
           {section?.label ?? text("title")}
+        </div>
+        <div
+          className="flex items-center overflow-hidden rounded border border-[#3b4a5f]"
+          title={text("zoomWithWheel")}
+        >
+          <button
+            className="h-7 min-w-7 border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
+            title={text("zoomOut")}
+            type="button"
+            onClick={() => adjustZoom(-1)}
+          >
+            -
+          </button>
+          <button
+            className="h-7 min-w-[52px] border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
+            title={text("resetZoom")}
+            type="button"
+            onClick={() => setClampedZoom(1)}
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <button
+            className="h-7 min-w-7 px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
+            title={text("zoomIn")}
+            type="button"
+            onClick={() => adjustZoom(1)}
+          >
+            +
+          </button>
         </div>
         <button
           className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
@@ -461,7 +662,7 @@ function FlowchartCanvas({
           {text("exportSvg")}
         </button>
       </header>
-      <div className="min-h-0 overflow-auto p-5">
+      <div className="min-h-0 overflow-auto p-5" onWheel={handleWheel}>
         {error ? (
           <div className="rounded border border-[#7f3434] bg-[#291416] p-3 text-sm text-[#ffd2cc]">
             {text("renderError")} {error}
@@ -470,6 +671,7 @@ function FlowchartCanvas({
         <div
           ref={containerRef}
           className="min-h-full min-w-full overflow-auto [&_svg]:h-auto [&_svg]:max-w-none"
+          style={{ zoom }}
         />
       </div>
     </section>
@@ -481,15 +683,74 @@ function attachSvgNodeHandlers(
   payload: FlowchartPayload,
   onOpenFlowchart: (node: AspFlowchartNode) => void,
 ): void {
-  const nodesWithRanges = payload.nodes.filter((node) => node.range);
-  for (const node of nodesWithRanges) {
-    const mermaidId = node.id.replace(/[^A-Za-z0-9_]/g, "_");
-    const elements = container.querySelectorAll<SVGGElement>(`[id*="${mermaidId}"]`);
-    for (const element of elements) {
+  for (const node of payload.nodes) {
+    for (const element of svgElementsForFlowchartNode(container, node)) {
       element.style.cursor = "pointer";
       element.addEventListener("click", () => onOpenFlowchart(node));
     }
   }
+}
+
+function syncSvgSearchHighlights(
+  container: HTMLDivElement,
+  payload: FlowchartPayload,
+  matchedNodeIds: Set<string>,
+  activeNodeId: string | undefined,
+): void {
+  for (const element of container.querySelectorAll<SVGGElement>(
+    ".asp-lsp-flowchart-match, .asp-lsp-flowchart-active",
+  )) {
+    element.classList.remove("asp-lsp-flowchart-match", "asp-lsp-flowchart-active");
+  }
+  let activeElement: SVGGElement | undefined;
+  for (const node of payload.nodes) {
+    if (!matchedNodeIds.has(node.id) && node.id !== activeNodeId) {
+      continue;
+    }
+    for (const element of svgElementsForFlowchartNode(container, node)) {
+      if (matchedNodeIds.has(node.id)) {
+        element.classList.add("asp-lsp-flowchart-match");
+      }
+      if (node.id === activeNodeId) {
+        element.classList.add("asp-lsp-flowchart-active");
+        activeElement = element;
+      }
+    }
+  }
+  activeElement?.scrollIntoView({ block: "center", inline: "center" });
+}
+
+function svgElementsForFlowchartNode(
+  container: HTMLDivElement,
+  node: AspFlowchartNode,
+): SVGGElement[] {
+  const id = mermaidId(node.id);
+  return [...container.querySelectorAll<SVGGElement>(`[id*="${id}"]`)];
+}
+
+interface FlowchartSearchMatch {
+  node: AspFlowchartNode;
+}
+
+function flowchartSearchMatches(payload: FlowchartPayload, query: string): FlowchartSearchMatch[] {
+  const normalizedQuery = normalizeFlowchartSearchText(query);
+  if (!normalizedQuery) {
+    return [];
+  }
+  const sectionsById = new Map(payload.sections.map((section) => [section.id, section]));
+  return payload.nodes
+    .filter((node) => node.kind !== "start" && node.kind !== "end")
+    .filter((node) => {
+      const section = sectionsById.get(node.sectionId);
+      return normalizeFlowchartSearchText(
+        `${node.kind} ${node.label} ${section?.label ?? ""}`,
+      ).includes(normalizedQuery);
+    })
+    .map((node) => ({ node }));
+}
+
+function normalizeFlowchartSearchText(value: string): string {
+  return value.trim().toLocaleLowerCase();
 }
 
 function defaultSectionId(payload: FlowchartPayload): string | undefined {
@@ -551,7 +812,7 @@ function mermaidForSelectedSection(
 
 function mermaidNode(node: AspFlowchartNode): string {
   const id = mermaidId(node.id);
-  const label = escapeMermaidText(node.label);
+  const label = mermaidLabel(node.label);
   if (node.kind === "start" || node.kind === "end") {
     return `${id}(["${label}"])`;
   }
@@ -580,12 +841,82 @@ function escapeMermaidText(value: string): string {
     .replaceAll("]", "&#93;")
     .replaceAll("{", "&#123;")
     .replaceAll("}", "&#125;")
-    .replace(/\s+/g, " ")
     .trim();
 }
 
 function escapeMermaidEdgeLabel(value: string): string {
-  return escapeMermaidText(value).replaceAll("|", "/");
+  return mermaidLabel(value, {
+    lineLength: flowchartEdgeLabelLineLength,
+    maximumCharacters: maximumFlowchartEdgeLabelCharacters,
+  }).replaceAll("|", "/");
+}
+
+function mermaidLabel(
+  value: string,
+  options: { lineLength?: number; maximumCharacters?: number } = {},
+): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  const clipped = clipFlowchartLabel(
+    normalized,
+    options.maximumCharacters ?? maximumFlowchartLabelCharacters,
+  );
+  const lines = wrapFlowchartLabel(clipped, options.lineLength ?? flowchartLabelLineLength);
+  return (lines.length > 0 ? lines : [""]).map(escapeMermaidText).join("<br/>");
+}
+
+function clipFlowchartLabel(value: string, maximumCharacters: number): string {
+  const characters = Array.from(value);
+  if (characters.length <= maximumCharacters) {
+    return value;
+  }
+  return `${characters.slice(0, Math.max(0, maximumCharacters - 3)).join("")}...`;
+}
+
+function wrapFlowchartLabel(value: string, lineLength: number): string[] {
+  const lines: string[] = [];
+  let current = "";
+  for (const word of value.split(" ")) {
+    if (!word) {
+      continue;
+    }
+    for (const part of flowchartWordParts(word, lineLength)) {
+      if (!current) {
+        current = part;
+        continue;
+      }
+      const next = `${current} ${part}`;
+      if (Array.from(next).length <= lineLength) {
+        current = next;
+      } else {
+        lines.push(current);
+        current = part;
+      }
+    }
+  }
+  if (current) {
+    lines.push(current);
+  }
+  return lines;
+}
+
+function flowchartWordParts(value: string, lineLength: number): string[] {
+  const characters = Array.from(value);
+  if (characters.length <= lineLength) {
+    return [value];
+  }
+  const parts: string[] = [];
+  for (let index = 0; index < characters.length; index += lineLength) {
+    parts.push(characters.slice(index, index + lineLength).join(""));
+  }
+  return parts;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function modulo(value: number, divisor: number): number {
+  return ((value % divisor) + divisor) % divisor;
 }
 
 function sectionIdForNodeFlowchart(payload: FlowchartPayload, node: AspFlowchartNode): string {

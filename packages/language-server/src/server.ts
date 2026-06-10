@@ -237,7 +237,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.5.26";
+const languageServerVersion = "0.5.27";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -16363,7 +16363,9 @@ async function buildAspGraphForCommand(
   if (scope === "folder") {
     return buildFolderAspGraphAsync(uri, token, cancellation);
   }
-  return buildDocumentAspGraphAsync(uri ?? documents.all()[0]?.uri, cancellation);
+  return buildDocumentAspGraphAsync(uri ?? documents.all()[0]?.uri, cancellation, {
+    includeIncomingDocumentIncludes: graphCommandIncludeIncomingDocumentIncludes(argument),
+  });
 }
 
 function graphCommandScope(argument: unknown): AspGraphScope {
@@ -16384,6 +16386,20 @@ function graphCommandUri(argument: unknown): string | undefined {
   return typeof uri === "string" ? uri : undefined;
 }
 
+function graphCommandIncludeIncomingDocumentIncludes(argument: unknown): boolean {
+  if (
+    !argument ||
+    typeof argument !== "object" ||
+    !("includeIncomingDocumentIncludes" in argument)
+  ) {
+    return false;
+  }
+  return (
+    (argument as { includeIncomingDocumentIncludes?: unknown }).includeIncomingDocumentIncludes ===
+    true
+  );
+}
+
 function analysisCancellationFromToken(
   token: GraphCancellationToken | undefined,
 ): AnalysisCancellation {
@@ -16401,6 +16417,7 @@ function throwIfGraphCancelled(cancellation: AnalysisCancellation): void {
 async function buildDocumentAspGraphAsync(
   uri: string | undefined,
   cancellation: AnalysisCancellation = neverCancelled,
+  options: { includeIncomingDocumentIncludes?: boolean } = {},
 ): Promise<AspGraphPayload> {
   throwIfGraphCancelled(cancellation);
   const cached = uri ? await cachedDocumentForGraphAsync(uri) : undefined;
@@ -16414,7 +16431,10 @@ async function buildDocumentAspGraphAsync(
     settings,
     cancellation,
   );
-  if (settings.graph?.showIncomingDocumentIncludes === true) {
+  if (
+    settings.graph?.showIncomingDocumentIncludes === true ||
+    options.includeIncomingDocumentIncludes === true
+  ) {
     documentsForGraph.push(
       ...(await collectIncomingIncludeGraphDocumentsAsync(
         new Set([graphFileNameFromUri(cached.source.uri)]),

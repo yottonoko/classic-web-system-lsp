@@ -7,24 +7,31 @@ describe("analysis Excel sheets", () => {
     const payload = analysisPayload();
     const sheets = createAnalysisExcelSheets(payload, "ja", {
       generatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      targetUri: "file:///workspace/main.asp",
     });
 
     expect(sheets.map((sheet) => sheet.sheet)).toEqual([
       "概要",
       "分析サマリ",
       "チャート元データ",
-      "ファイル",
-      "参照ファイル",
       "宣言",
       "被参照",
       "使用箇所",
-      "未使用候補",
+      "参照ファイル",
+      "未使用",
       "未解決",
     ]);
     expect(table(sheets, "概要")).toEqual(
       expect.arrayContaining([
-        ["解析範囲", "ワークスペース"],
-        ["未使用候補数", 1],
+        ["解析範囲", "ファイル"],
+        ["ルート", "main.asp"],
+        ["宣言数", 3],
+        ["参照数", 1],
+        ["代入数", 1],
+        ["呼び出し数", 1],
+        ["include 数", 1],
+        ["未解決数", 2],
+        ["未使用数", 1],
         ["切り詰め", "workspaceIndex>10"],
       ]),
     );
@@ -33,7 +40,7 @@ describe("analysis Excel sheets", () => {
         ["変数", 2, 1, 1, 2 / 3, expect.stringContaining("2")],
         ["関数", 1, 1, 0, 1 / 3, expect.stringContaining("1")],
         ["グローバル", 3, 2, 1, 1 / 3, expect.stringContaining("3")],
-        ["未解決参照", 1, 1 / 8, expect.stringContaining("1"), "unresolved"],
+        ["未解決参照", 2, 2 / 8, expect.stringContaining("2"), "unresolved"],
       ]),
     );
     expect(sheets.find((sheet) => sheet.sheet === "分析サマリ")?.images).toEqual(
@@ -42,7 +49,6 @@ describe("analysis Excel sheets", () => {
         expect.objectContaining({ contentType: "image/svg", title: "使用種別" }),
         expect.objectContaining({ contentType: "image/svg", title: "グローバルとローカル" }),
         expect.objectContaining({ contentType: "image/svg", title: "種別ごとの未使用" }),
-        expect.objectContaining({ contentType: "image/svg", title: "ファイル別の状態" }),
       ]),
     );
     expect(table(sheets, "チャート元データ")).toEqual(
@@ -51,27 +57,11 @@ describe("analysis Excel sheets", () => {
         ["関数", 1, 1, 0, 1 / 3],
       ]),
     );
-    expect(table(sheets, "参照ファイル")).toEqual(
-      expect.arrayContaining([
-        [
-          "main.asp",
-          "includes/util.inc",
-          "ファイル",
-          "includes/util.inc",
-          "あり",
-          "",
-          "あり",
-          1,
-          6,
-        ],
-        ["main.asp", "/missing.inc", "仮想", "missing.inc", "なし", "", "", 2, 6],
-      ]),
-    );
     expect(table(sheets, "宣言")).toEqual(
       expect.arrayContaining([
         [
-          "includes/util.inc",
-          "SharedValue",
+          "main.asp",
+          "TargetValue",
           "変数",
           "",
           "グローバル",
@@ -79,11 +69,28 @@ describe("analysis Excel sheets", () => {
           "String",
           "なし",
           "",
-          1,
+          3,
           5,
           1,
           1,
           0,
+          "使用あり",
+        ],
+        [
+          "main.asp",
+          "TargetProc",
+          "関数",
+          "",
+          "グローバル",
+          "",
+          "",
+          "なし",
+          "",
+          4,
+          5,
+          0,
+          0,
+          1,
           "使用あり",
         ],
         [
@@ -96,45 +103,38 @@ describe("analysis Excel sheets", () => {
           "",
           "なし",
           "",
-          4,
+          5,
           5,
           0,
           0,
           0,
-          "未使用候補",
+          "未使用",
         ],
       ]),
     );
     expect(table(sheets, "被参照")).toEqual(
       expect.arrayContaining([
-        ["includes/util.inc", "SharedValue", "変数", "", "ソース", 1, 5, 2, 1, 1, 0],
-        ["includes/util.inc", "DoWork", "関数", "", "ソース", 2, 10, 1, 0, 0, 1],
+        ["main.asp", "TargetValue", "変数", "", "ソース", 3, 5, 2, 1, 1, 0],
+        ["main.asp", "TargetProc", "関数", "", "ソース", 4, 5, 1, 0, 0, 1],
       ]),
     );
     expect(table(sheets, "使用箇所")).toEqual(
       expect.arrayContaining([
-        ["参照", "読み取り", "main.asp", "SharedValue", "main.asp", 6, 5, 1],
-        ["代入", "書き込み", "main.asp", "SharedValue", "main.asp", 7, 5, 1],
-        ["呼び出し", "関数", "main.asp", "DoWork", "main.asp", 8, 5, 1],
+        ["参照", "読み取り", "consumer.asp", "TargetValue", "consumer.asp", 12, 5, 1],
+        ["代入", "書き込み", "consumer.asp", "TargetValue", "consumer.asp", 13, 5, 1],
+        ["呼び出し", "関数", "consumer.asp", "TargetProc", "consumer.asp", 14, 5, 1],
       ]),
     );
-    expect(table(sheets, "未使用候補")).toEqual(
+    expect(table(sheets, "参照ファイル")).toEqual(
       expect.arrayContaining([
-        [
-          "main.asp",
-          "UnusedValue",
-          "変数",
-          "",
-          "グローバル",
-          "",
-          "なし",
-          4,
-          5,
-          0,
-          0,
-          0,
-          "未使用候補",
-        ],
+        ["参照", "読み取り", "includes/util.inc", "SharedValue", "main.asp", 6, 5, 1],
+        ["代入", "書き込み", "includes/util.inc", "SharedValue", "main.asp", 7, 5, 1],
+        ["呼び出し", "関数", "includes/util.inc", "DoWork", "main.asp", 8, 5, 1],
+      ]),
+    );
+    expect(table(sheets, "未使用")).toEqual(
+      expect.arrayContaining([
+        ["main.asp", "UnusedValue", "変数", "", "グローバル", "", "なし", 5, 5, 0, 0, 0, "未使用"],
       ]),
     );
     expect(table(sheets, "未解決")).toEqual(
@@ -162,10 +162,10 @@ function cellValue(cell: unknown): unknown {
 function analysisPayload(): AspGraphPayload {
   const mainUri = "file:///workspace/main.asp";
   const utilUri = "file:///workspace/includes/util.inc";
-  const missingUri = "file:///workspace/missing.inc";
+  const consumerUri = "file:///workspace/consumer.asp";
   return {
-    scope: "workspace",
-    rootUri: "file:///workspace",
+    scope: "document",
+    rootUri: mainUri,
     nodes: [
       {
         id: "file:/workspace/main.asp",
@@ -185,12 +185,12 @@ function analysisPayload(): AspGraphPayload {
         exists: true,
       },
       {
-        id: "file:/workspace/missing.inc",
-        kind: "missingInclude",
-        label: "missing.inc",
-        uri: missingUri,
-        fileName: "missing.inc",
-        exists: false,
+        id: "file:/workspace/consumer.asp",
+        kind: "file",
+        label: "consumer.asp",
+        uri: consumerUri,
+        fileName: "consumer.asp",
+        exists: true,
       },
       {
         id: "vb:shared",
@@ -214,13 +214,44 @@ function analysisPayload(): AspGraphPayload {
         origin: "source",
       },
       {
+        id: "vb:target-value",
+        kind: "vbDeclaration",
+        label: "TargetValue",
+        uri: mainUri,
+        range: range(2, 4),
+        declarationKind: "variable",
+        bindingScope: "global",
+        typeName: "String",
+        origin: "source",
+      },
+      {
+        id: "vb:target-proc",
+        kind: "vbDeclaration",
+        label: "TargetProc",
+        uri: mainUri,
+        range: range(3, 4),
+        declarationKind: "function",
+        bindingScope: "global",
+        origin: "source",
+      },
+      {
         id: "vb:unused",
         kind: "vbDeclaration",
         label: "UnusedValue",
         uri: mainUri,
-        range: range(3, 4),
+        range: range(4, 4),
         declarationKind: "variable",
         bindingScope: "global",
+        origin: "source",
+      },
+      {
+        id: "vb:local",
+        kind: "vbDeclaration",
+        label: "LocalValue",
+        uri: mainUri,
+        range: range(5, 4),
+        declarationKind: "variable",
+        bindingScope: "local",
         origin: "source",
       },
       {
@@ -256,21 +287,6 @@ function analysisPayload(): AspGraphPayload {
         },
       },
       {
-        id: "link:include-missing",
-        source: "file:/workspace/main.asp",
-        target: "file:/workspace/missing.inc",
-        kind: "include",
-        label: "/missing.inc",
-        count: 1,
-        ranges: [{ uri: mainUri, range: range(1, 5) }],
-        include: {
-          path: "/missing.inc",
-          mode: "virtual",
-          exists: false,
-          resolvedUri: missingUri,
-        },
-      },
-      {
         id: "link:declare-shared",
         source: "vb:shared",
         target: "file:/workspace/includes/util.inc",
@@ -278,6 +294,33 @@ function analysisPayload(): AspGraphPayload {
         label: "declares",
         count: 1,
         ranges: [{ uri: utilUri, range: range(0, 4) }],
+      },
+      {
+        id: "link:declare-target-value",
+        source: "vb:target-value",
+        target: "file:/workspace/main.asp",
+        kind: "declares",
+        label: "declares",
+        count: 1,
+        ranges: [{ uri: mainUri, range: range(2, 4) }],
+      },
+      {
+        id: "link:declare-target-proc",
+        source: "vb:target-proc",
+        target: "file:/workspace/main.asp",
+        kind: "declares",
+        label: "declares",
+        count: 1,
+        ranges: [{ uri: mainUri, range: range(3, 4) }],
+      },
+      {
+        id: "link:declare-unused",
+        source: "vb:unused",
+        target: "file:/workspace/main.asp",
+        kind: "declares",
+        label: "declares",
+        count: 1,
+        ranges: [{ uri: mainUri, range: range(4, 4) }],
       },
       {
         id: "link:ref-shared",
@@ -310,6 +353,36 @@ function analysisPayload(): AspGraphPayload {
         ranges: [{ uri: mainUri, range: range(7, 4) }],
       },
       {
+        id: "link:ref-target-value",
+        source: "file:/workspace/consumer.asp",
+        target: "vb:target-value",
+        kind: "references",
+        label: "read",
+        role: "read",
+        count: 1,
+        ranges: [{ uri: consumerUri, range: range(11, 4) }],
+      },
+      {
+        id: "link:assign-target-value",
+        source: "file:/workspace/consumer.asp",
+        target: "vb:target-value",
+        kind: "assignments",
+        label: "write",
+        role: "write",
+        count: 1,
+        ranges: [{ uri: consumerUri, range: range(12, 4) }],
+      },
+      {
+        id: "link:call-target-proc",
+        source: "file:/workspace/consumer.asp",
+        target: "vb:target-proc",
+        kind: "calls",
+        label: "function",
+        role: "function",
+        count: 1,
+        ranges: [{ uri: consumerUri, range: range(13, 4) }],
+      },
+      {
         id: "link:call-missing",
         source: "file:/workspace/main.asp",
         target: "unresolved:missingproc",
@@ -332,15 +405,15 @@ function analysisPayload(): AspGraphPayload {
     ],
     stats: {
       files: 3,
-      declarations: 3,
-      references: 1,
-      assignments: 1,
-      calls: 2,
+      declarations: 6,
+      references: 2,
+      assignments: 2,
+      calls: 3,
       unresolvedReferences: 1,
-      includes: 2,
-      missingIncludes: 1,
-      nodes: 8,
-      links: 8,
+      includes: 1,
+      missingIncludes: 0,
+      nodes: 11,
+      links: 13,
     },
     truncated: {
       reason: "workspaceIndex>10",
