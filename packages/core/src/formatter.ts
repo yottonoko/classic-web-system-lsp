@@ -231,12 +231,19 @@ function dedentsBeforeLine(line: string): boolean {
 }
 
 function indentsAfterLine(line: string): boolean {
+  const statement = withoutDeclarationModifiers(line);
   return (
     /^Else$/i.test(line) ||
-    ((/^(Class|Sub|Function|Property\b.*\b(Get|Let|Set)|With|For\b|Do\b|While\b)/i.test(line) ||
+    ((/^(Class|Sub|Function|Property\b.*\b(Get|Let|Set)|With|For\b|Do\b|While\b)/i.test(
+      statement,
+    ) ||
       /\bThen$/i.test(line)) &&
       !/^End\b/i.test(line))
   );
+}
+
+function withoutDeclarationModifiers(line: string): string {
+  return line.replace(/^(?:(?:Public|Private|Default|Static)\s+)+/i, "");
 }
 
 function codeBeforeComment(line: string): string {

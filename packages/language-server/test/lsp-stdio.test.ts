@@ -8711,6 +8711,7 @@ Response.Write CleanValue
             text: `<!-- #include file="common.inc" -->
 <%
 Sub Main()
+  On Error Resume Next
   If ready Xor disabled Then
     Call Included()
   Else
@@ -8770,6 +8771,12 @@ End Sub
         expect(
           flowchart.nodes?.some(
             (node) =>
+              node.kind === "exceptionHandling" && node.label === "Exception handling: resume next",
+          ),
+        ).toBe(true);
+        expect(
+          flowchart.nodes?.some(
+            (node) =>
               node.kind === "call" &&
               Array.isArray(node.links) &&
               node.links.some(
@@ -8793,6 +8800,14 @@ End Sub
         expect(flowchart.mermaid).toContain("flowchart TB");
         expect(flowchart.mermaid).toContain("Sub Main");
         expect(flowchart.stats?.includes).toBe(1);
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ uri }],
+        })) as { nodes?: Array<Record<string, unknown>>; links?: Array<Record<string, unknown>> };
+        const serializedGraph = JSON.stringify(graph);
+        expect(serializedGraph).not.toContain("On Error");
+        expect(serializedGraph).not.toContain("exceptionHandling");
 
         const rawFlowchart = (await server.request("workspace/executeCommand", {
           command: "aspLsp.server.buildFlowchart",

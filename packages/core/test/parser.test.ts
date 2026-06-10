@@ -169,6 +169,38 @@ End Sub
     expect(descriptionLabels).toContain("aが100と等しいを判定");
   });
 
+  it("uses a dedicated flowchart kind and labels for On Error statements", () => {
+    const parsed = parseAspDocument(
+      "file:///site/errors.asp",
+      `<%
+Sub Main()
+  On Error Resume Next
+  FailingCall()
+  On Error GoTo 0
+End Sub
+%>`,
+    );
+
+    const normal = buildAspFlowchart(parsed, { labelMode: "normal", locale: "ja" });
+    const raw = buildAspFlowchart(parsed, { labelMode: "raw", locale: "ja" });
+    const description = buildAspFlowchart(parsed, { labelMode: "description", locale: "ja" });
+    const normalExceptionNodes = normal.nodes.filter((node) => node.kind === "exceptionHandling");
+    const rawLabels = raw.nodes.map((node) => node.label);
+    const descriptionLabels = description.nodes.map((node) => node.label);
+
+    expect(normalExceptionNodes.map((node) => node.label)).toEqual([
+      "例外処理: エラー時は次へ進む",
+      "例外処理を解除",
+    ]);
+    expect(raw.nodes.filter((node) => node.kind === "exceptionHandling")).toHaveLength(2);
+    expect(rawLabels).toContain("On Error Resume Next");
+    expect(rawLabels).toContain("On Error GoTo 0");
+    expect(descriptionLabels).toContain(
+      "エラーが発生しても処理を止めず、次のステートメントから続行",
+    );
+    expect(descriptionLabels).toContain("現在の例外処理を解除し、以後のエラーを通常どおり発生");
+  });
+
   it("labels resolved variables, constants and parameters with scope in flowcharts", () => {
     const uri = "file:///site/scoped.asp";
     const parsed = parseAspDocument(
@@ -7883,6 +7915,82 @@ End If
       Response.Write "ok"
     End If
   </script>`);
+  });
+
+  it("indents common non-If VBScript block statements consistently", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+For i=0 To 1
+Response.Write i
+Next
+Do While ready
+ready=False
+Loop
+While active
+active=False
+Wend
+With Response
+.Write "ok"
+End With
+Sub Render()
+Response.Write "done"
+End Sub
+%>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toBe(`<%
+  For i = 0 To 1
+    Response.Write i
+  Next
+  Do While ready
+    ready = False
+  Loop
+  While active
+    active = False
+  Wend
+  With Response
+    .Write "ok"
+  End With
+  Sub Render()
+    Response.Write "done"
+  End Sub
+%>`);
+  });
+
+  it("indents procedure and property blocks with declaration modifiers", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Class Customer
+Private name
+Public Sub Render()
+Response.Write name
+End Sub
+Private Function Build()
+Build=name
+End Function
+Public Default Property Get Name
+Name=name
+End Property
+End Class
+%>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toBe(`<%
+  Class Customer
+    Private name
+    Public Sub Render()
+      Response.Write name
+    End Sub
+    Private Function Build()
+      Build = name
+    End Function
+    Public Default Property Get Name
+      Name = name
+    End Property
+  End Class
+%>`);
   });
 
   it("formats Select Case blocks with case bodies indented", () => {

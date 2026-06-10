@@ -275,6 +275,7 @@ export type AspFlowchartNodeKind =
   | "while"
   | "call"
   | "declaration"
+  | "exceptionHandling"
   | "exit"
   | "statement";
 

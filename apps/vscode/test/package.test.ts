@@ -156,6 +156,9 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("flowchartThemePalettes");
     expect(flowchartSource).toContain("darkFlowchartNodeKindStyles");
     expect(flowchartSource).toContain("lightFlowchartNodeKindStyles");
+    expect(flowchartSource).toContain("flowExceptionHandling");
+    expect(flowchartSource).toContain('exceptionHandling: "Exception handling"');
+    expect(flowchartSource).toContain('exceptionHandling: "例外処理"');
     expect(flowchartSource).toContain("flowchartNodeHint(node, text, locale)");
     expect(flowchartSource).toContain("flowchartMermaidClassDefinitions(themePalette)");
     expect(flowchartSource).toContain('type: "copyText"');

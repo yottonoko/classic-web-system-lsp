@@ -65,6 +65,8 @@ interface FlowchartText {
   call(name: string, args: string): string;
   assign(target: string, value: string): string;
   declare(symbols: string): string;
+  exceptionHandling(action: "resumeNext" | "goto0" | "custom", value: string): string;
+  exceptionHandlingDescription(action: "resumeNext" | "goto0" | "custom", value: string): string;
   exitStatement(kind: string): string;
   statement(value: string): string;
   symbolRole(role: AspFlowchartNodeLink["role"]): string;
@@ -1244,6 +1246,9 @@ function statementNodeKind(statement: VbStatement): AspFlowchartNodeKind {
   if (first === "exit") {
     return "exit";
   }
+  if (isOnErrorStatement(statement)) {
+    return "exceptionHandling";
+  }
   if (isDeclarationStatement(statement)) {
     return "declaration";
   }
@@ -1326,6 +1331,9 @@ function statementLabel(
   if (kind === "exit") {
     return context.text.exitStatement(tokensText(statement.tokens.slice(1)));
   }
+  if (kind === "exceptionHandling") {
+    return onErrorLabel(statement, context, false);
+  }
   return context.text.statement(tokensText(statement.tokens));
 }
 
@@ -1356,7 +1364,34 @@ function descriptiveStatementLabel(
   if (kind === "exit") {
     return context.text.exitStatement(tokensText(statement.tokens.slice(1)));
   }
+  if (kind === "exceptionHandling") {
+    return onErrorLabel(statement, context, true);
+  }
   return context.text.statement(describeExpressionText(tokensText(statement.tokens), context));
+}
+
+function onErrorLabel(
+  statement: VbStatement,
+  context: FlowchartContext,
+  description: boolean,
+): string {
+  const action = onErrorAction(statement);
+  const value = tokensText(statement.tokens);
+  return description
+    ? context.text.exceptionHandlingDescription(action, value)
+    : context.text.exceptionHandling(action, value);
+}
+
+function onErrorAction(statement: VbStatement): "resumeNext" | "goto0" | "custom" {
+  const third = lower(statement.tokens[2]);
+  const fourth = lower(statement.tokens[3]);
+  if (third === "resume" && fourth === "next") {
+    return "resumeNext";
+  }
+  if (third === "goto" && statement.tokens[3]?.text === "0") {
+    return "goto0";
+  }
+  return "custom";
 }
 
 function descriptiveArithmeticAssignment(
@@ -1602,6 +1637,10 @@ function isDeclarationStatement(statement: VbStatement): boolean {
     ((first === "public" || first === "private") &&
       (second === "dim" || second === "const" || second === "redim"))
   );
+}
+
+function isOnErrorStatement(statement: VbStatement): boolean {
+  return lower(statement.tokens[0]) === "on" && lower(statement.tokens[1]) === "error";
 }
 
 function callParts(statement: VbStatement): { name: string; args: string } | undefined {
@@ -2173,6 +2212,18 @@ function flowchartText(locale: AspLocale): FlowchartText {
       call: (name, args) => `${name}${args ? `(${args})` : ""}の呼び出し`,
       assign: (target, value) => `${target}に${value}を代入`,
       declare: (symbols) => `${symbols}を宣言`,
+      exceptionHandling: (action, value) =>
+        action === "resumeNext"
+          ? "例外処理: エラー時は次へ進む"
+          : action === "goto0"
+            ? "例外処理を解除"
+            : `例外処理: ${value}`,
+      exceptionHandlingDescription: (action, value) =>
+        action === "resumeNext"
+          ? "エラーが発生しても処理を止めず、次のステートメントから続行"
+          : action === "goto0"
+            ? "現在の例外処理を解除し、以後のエラーを通常どおり発生"
+            : `${value}で例外処理を設定`,
       exitStatement: (kind) => `${kind || "処理"}を終了`,
       statement: (value) => `${value}を実行`,
       symbolRole: (role) => flowchartRoleTextJa[role] ?? role,
@@ -2200,6 +2251,18 @@ function flowchartText(locale: AspLocale): FlowchartText {
     call: (name, args) => `Call ${name}${args ? `(${args})` : ""}`,
     assign: (target, value) => `Assign ${value} to ${target}`,
     declare: (symbols) => `Declare ${symbols}`,
+    exceptionHandling: (action, value) =>
+      action === "resumeNext"
+        ? "Exception handling: resume next"
+        : action === "goto0"
+          ? "Disable exception handling"
+          : `Exception handling: ${value}`,
+    exceptionHandlingDescription: (action, value) =>
+      action === "resumeNext"
+        ? "Continue with the next statement when an error occurs"
+        : action === "goto0"
+          ? "Disable the current exception handler and raise later errors normally"
+          : `Configure exception handling with ${value}`,
     exitStatement: (kind) => `Exit ${kind || "block"}`,
     statement: (value) => `Run ${value}`,
     symbolRole: (role) => flowchartRoleTextEn[role] ?? role,

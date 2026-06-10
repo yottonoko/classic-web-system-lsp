@@ -657,6 +657,27 @@ describe("analysis Excel sheets", () => {
     expect(workbook.subarray(0, 2).toString("utf8")).toBe("PK");
     expect(workbook.length).toBeGreaterThan(1000);
   });
+
+  it("does not render flowchart exception handling nodes in analysis sheets", () => {
+    const payload = analysisPayload();
+    payload.nodes.push({
+      id: "flow:on-error",
+      kind: "exceptionHandling",
+      label: "On Error Resume Next",
+      uri: "file:///workspace/main.asp",
+      range: range(12, 4),
+      origin: "source",
+    } as unknown as AspGraphPayload["nodes"][number]);
+
+    const sheets = createAnalysisExcelSheets(payload, "ja", {
+      generatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      targetUri: "file:///workspace/main.asp",
+    });
+    const values = sheets.flatMap((sheet) => table(sheets, sheet.sheet)).flat();
+
+    expect(values).not.toContain("On Error Resume Next");
+    expect(values).not.toContain("exceptionHandling");
+  });
 });
 
 function table(sheets: ReturnType<typeof createAnalysisExcelSheets>, name: string): unknown[][] {
