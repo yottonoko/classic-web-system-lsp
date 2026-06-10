@@ -73,6 +73,7 @@
   "configuration.graph.showParameterNodes.description": "Show function, sub, method, and property parameter nodes in graph views.",
   "configuration.graph.showUnresolvedNodes.description": "Show unresolved reference nodes in graph views.",
   "configuration.graph.hideSingleNodes.description": "Hide non-root nodes that have no visible links in graph views.",
+  "configuration.graph.hideUnreferencedGlobalSymbols.description": "Hide source functions, subs, classes, global variables, and global constants that have no references from other files in graph views.",
   "configuration.graph.showOutgoingSelectionLinks.description": "Also highlight links that start from the selected node in graph views.",
   "configuration.graph.showIncludeLinks.description": "Show include links in graph views.",
   "configuration.graph.showDeclareLinks.description": "Show declaration-to-source links in graph views.",

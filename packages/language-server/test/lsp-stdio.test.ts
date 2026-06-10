@@ -8649,6 +8649,7 @@ End Sub
         showParameterNodes: true,
         showUnresolvedNodes: true,
         hideSingleNodes: false,
+        hideUnreferencedGlobalSymbols: false,
         showOutgoingSelectionLinks: true,
         showIncludeLinks: true,
         showDeclareLinks: true,
@@ -8722,6 +8723,7 @@ End Sub
         expect(defaultGraph.settings).toEqual(
           expect.objectContaining({
             hideSingleNodes: true,
+            hideUnreferencedGlobalSymbols: true,
             showOutgoingSelectionLinks: true,
             initialViewMode: "2d",
             hiddenNodeCategories: expect.arrayContaining([
@@ -8791,7 +8793,11 @@ End Sub
         configure(allGraphSettings);
         const visibleGraph = await buildGraph();
         expect(visibleGraph.settings).toEqual(
-          expect.objectContaining({ hideSingleNodes: false, initialViewMode: "3d" }),
+          expect.objectContaining({
+            hideSingleNodes: false,
+            hideUnreferencedGlobalSymbols: false,
+            initialViewMode: "3d",
+          }),
         );
         expectNode(visibleGraph, "GlobalValue", {
           declarationKind: "variable",

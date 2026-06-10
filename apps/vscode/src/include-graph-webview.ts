@@ -17,6 +17,7 @@ export interface AspGraphPayload {
     theme?: AspGraphWebviewThemeSetting;
     infoPanelPosition?: AspGraphInfoPanelPosition;
     hideSingleNodes?: boolean;
+    hideUnreferencedGlobalSymbols?: boolean;
     showOutgoingSelectionLinks?: boolean;
     showIncomingDocumentIncludes?: boolean;
     showIncomingFolderIncludes?: boolean;

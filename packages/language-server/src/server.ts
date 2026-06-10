@@ -237,7 +237,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.5.33";
+const languageServerVersion = "0.5.34";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -818,6 +818,7 @@ interface AspGraphPayload {
   settings?: {
     initialViewMode: "2d" | "3d";
     hideSingleNodes: boolean;
+    hideUnreferencedGlobalSymbols: boolean;
     showOutgoingSelectionLinks: boolean;
     showIncomingDocumentIncludes: boolean;
     showIncomingFolderIncludes: boolean;
@@ -12538,6 +12539,7 @@ function normalizeGraphSettings(
     showParameterNodes: record.showParameterNodes === true,
     showUnresolvedNodes: record.showUnresolvedNodes !== false,
     hideSingleNodes: record.hideSingleNodes !== false,
+    hideUnreferencedGlobalSymbols: record.hideUnreferencedGlobalSymbols !== false,
     showOutgoingSelectionLinks: record.showOutgoingSelectionLinks !== false,
     showIncludeLinks: record.showIncludeLinks !== false,
     showDeclareLinks: record.showDeclareLinks !== false,
@@ -17810,6 +17812,7 @@ function graphPayloadSettings(settings: AspSettings): NonNullable<AspGraphPayloa
   return {
     initialViewMode: graphSettings.initialViewMode === "3d" ? "3d" : "2d",
     hideSingleNodes: graphSettings.hideSingleNodes !== false,
+    hideUnreferencedGlobalSymbols: graphSettings.hideUnreferencedGlobalSymbols !== false,
     showOutgoingSelectionLinks: graphSettings.showOutgoingSelectionLinks !== false,
     showIncomingDocumentIncludes: graphSettings.showIncomingDocumentIncludes === true,
     showIncomingFolderIncludes: graphSettings.showIncomingFolderIncludes === true,

@@ -93,6 +93,9 @@ describe("VS Code extension package", () => {
     );
     expect(graphWebviewSource).toContain('"action.fit": "フィット"');
     expect(graphWebviewSource).toContain('"legend.heading": "凡例"');
+    expect(graphWebviewSource).toContain(
+      '"legend.hideUnreferencedGlobalSymbols": "未外部参照を隠す"',
+    );
     expect(graphWebviewSource).toContain('"legend.linkFilters": "リンクフィルター"');
     expect(graphWebviewSource).toContain('"view.inspector": "情報"');
     expect(graphWebviewSource).toContain('missingInclude: "#ff4db8"');
@@ -100,6 +103,8 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain("graphRoleLabel(link.role)");
     expect(graphWebviewSource).toContain("includeModeLabel(link.include?.mode)");
     expect(graphWebviewSource).toContain("booleanLabel(link.include.exists)");
+    expect(graphWebviewSource).toContain("crossFileReferencedGlobalNodeIds");
+    expect(graphWebviewSource).toContain("hideUnreferencedGlobalSymbols");
     expect(graphWebviewSource).toContain(
       "tooltipPositionFor(triggerRef.current, tooltipRef.current)",
     );
@@ -397,6 +402,7 @@ describe("VS Code extension package", () => {
       showParameterNodes: false,
       showUnresolvedNodes: true,
       hideSingleNodes: true,
+      hideUnreferencedGlobalSymbols: true,
       showOutgoingSelectionLinks: true,
       showIncludeLinks: true,
       showDeclareLinks: true,

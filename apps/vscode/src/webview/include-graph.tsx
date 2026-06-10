@@ -267,6 +267,9 @@ const graphMessageEn = {
   "legend.heading": "Legend",
   "legend.hideSingleNodes": "Hide single nodes",
   "legend.hideSingleNodesDescription": "Hide non-root nodes that have no visible links.",
+  "legend.hideUnreferencedGlobalSymbols": "Hide unreferenced globals",
+  "legend.hideUnreferencedGlobalSymbolsDescription":
+    "Hide source functions, subs, classes, global variables, and global constants that have no references from other files.",
   "legend.linkFilters": "Link filters",
   "legend.nodeFilters": "Node filters",
   "legend.outgoingLinks": "Outgoing links",
@@ -449,6 +452,9 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "legend.heading": "凡例",
     "legend.hideSingleNodes": "単独 node を隠す",
     "legend.hideSingleNodesDescription": "visible link を持たない root 以外の node を隠します。",
+    "legend.hideUnreferencedGlobalSymbols": "未外部参照を隠す",
+    "legend.hideUnreferencedGlobalSymbolsDescription":
+      "他のファイルから参照されていない source の function、sub、class、global variable、global constant node を隠します。",
     "legend.linkFilters": "リンクフィルター",
     "legend.nodeFilters": "ノードフィルター",
     "legend.outgoingLinks": "出力リンク",
@@ -803,6 +809,9 @@ function App(): React.ReactElement {
   const [searchMatchCase, setSearchMatchCase] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(inspectorDefaultWidth);
   const [hideSingleNodes, setHideSingleNodes] = useState(graph?.settings?.hideSingleNodes ?? true);
+  const [hideUnreferencedGlobalSymbols, setHideUnreferencedGlobalSymbols] = useState(
+    graph?.settings?.hideUnreferencedGlobalSymbols ?? true,
+  );
   const [showOutgoingSelectionLinks, setShowOutgoingSelectionLinks] = useState(
     graph?.settings?.showOutgoingSelectionLinks ?? true,
   );
@@ -826,8 +835,21 @@ function App(): React.ReactElement {
   const forceFitForModeRef = useRef(new Set<ViewMode>());
   const graphData = useMemo(() => graphDataFor(graph, themePalette), [themePalette]);
   const filteredGraphData = useMemo(
-    () => filterGraphData(graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes),
-    [graphData, hiddenNodeCategories, hiddenLinkCategories, hideSingleNodes],
+    () =>
+      filterGraphData(
+        graphData,
+        hiddenNodeCategories,
+        hiddenLinkCategories,
+        hideSingleNodes,
+        hideUnreferencedGlobalSymbols,
+      ),
+    [
+      graphData,
+      hiddenNodeCategories,
+      hiddenLinkCategories,
+      hideSingleNodes,
+      hideUnreferencedGlobalSymbols,
+    ],
   );
   const renderGraphData2d = useMemo(
     () => graphDataForRender(filteredGraphData, positionSyncRef.current, "2d"),
@@ -1270,11 +1292,15 @@ function App(): React.ReactElement {
             hiddenLinkCategories={hiddenLinkCategories}
             hiddenNodeCategories={hiddenNodeCategories}
             hideSingleNodes={hideSingleNodes}
+            hideUnreferencedGlobalSymbols={hideUnreferencedGlobalSymbols}
             linkCategories={linkFilterOrder}
             nodeCategories={nodeCategoryOrder}
             themePalette={themePalette}
             showOutgoingSelectionLinks={showOutgoingSelectionLinks}
             onToggleHideSingleNodes={() => setHideSingleNodes((current) => !current)}
+            onToggleHideUnreferencedGlobalSymbols={() =>
+              setHideUnreferencedGlobalSymbols((current) => !current)
+            }
             onToggleLinkCategory={toggleLinkCategory}
             onToggleNodeCategory={toggleNodeCategory}
             onToggleShowOutgoingSelectionLinks={() =>
@@ -1382,11 +1408,13 @@ function GraphLegend({
   hiddenLinkCategories,
   hiddenNodeCategories,
   hideSingleNodes,
+  hideUnreferencedGlobalSymbols,
   linkCategories,
   nodeCategories,
   themePalette,
   showOutgoingSelectionLinks,
   onToggleHideSingleNodes,
+  onToggleHideUnreferencedGlobalSymbols,
   onToggleLinkCategory,
   onToggleNodeCategory,
   onToggleShowOutgoingSelectionLinks,
@@ -1394,11 +1422,13 @@ function GraphLegend({
   hiddenLinkCategories: ReadonlySet<LinkFilterCategory>;
   hiddenNodeCategories: ReadonlySet<NodeColorCategory>;
   hideSingleNodes: boolean;
+  hideUnreferencedGlobalSymbols: boolean;
   linkCategories: LinkFilterCategory[];
   nodeCategories: NodeColorCategory[];
   themePalette: GraphThemePalette;
   showOutgoingSelectionLinks: boolean;
   onToggleHideSingleNodes(): void;
+  onToggleHideUnreferencedGlobalSymbols(): void;
   onToggleLinkCategory(category: LinkFilterCategory): void;
   onToggleNodeCategory(category: NodeColorCategory): void;
   onToggleShowOutgoingSelectionLinks(): void;
@@ -1454,6 +1484,14 @@ function GraphLegend({
               title={graphText("legend.hideSingleNodesDescription")}
               variant="node"
               onToggle={onToggleHideSingleNodes}
+            />
+            <LegendFilterItem
+              checked={hideUnreferencedGlobalSymbols}
+              color={themePalette.mutedNode}
+              label={graphText("legend.hideUnreferencedGlobalSymbols")}
+              title={graphText("legend.hideUnreferencedGlobalSymbolsDescription")}
+              variant="node"
+              onToggle={onToggleHideUnreferencedGlobalSymbols}
             />
           </LegendFilterGroup>
           <LegendFilterGroup title={graphText("legend.selection")}>
@@ -4028,9 +4066,19 @@ function filterGraphData(
   hiddenNodeCategories: ReadonlySet<NodeColorCategory>,
   hiddenLinkCategories: ReadonlySet<LinkFilterCategory>,
   hideSingleNodes: boolean,
+  hideUnreferencedGlobalSymbols: boolean,
 ): GraphData {
   const hasPayloadRoot = graphData.nodes.some((node) => node.isRoot);
-  let visibleNodes = graphData.nodes.filter((node) => !hiddenNodeCategories.has(node.category));
+  const referencedGlobalNodeIds = hideUnreferencedGlobalSymbols
+    ? crossFileReferencedGlobalNodeIds(graphData.nodes, graphData.links)
+    : undefined;
+  let visibleNodes = graphData.nodes.filter(
+    (node) =>
+      !hiddenNodeCategories.has(node.category) &&
+      (!hideUnreferencedGlobalSymbols ||
+        !isHideableGlobalSymbolNode(node) ||
+        referencedGlobalNodeIds?.has(node.id) === true),
+  );
   let visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
   let visibleLinks = graphData.links.filter((link) => {
     const sourceId = nodeIdForEndpoint(link.source);
@@ -4065,6 +4113,48 @@ function filterGraphData(
     nodes: visibleNodes,
     links: visibleLinks,
   };
+}
+
+function crossFileReferencedGlobalNodeIds(nodes: GraphNode[], links: GraphLink[]): Set<string> {
+  const nodesById = graphNodeMap(nodes);
+  const referencedNodeIds = new Set<string>();
+  for (const link of links) {
+    if (!isSymbolReferenceGraphLink(link)) {
+      continue;
+    }
+    const sourceNode = nodesById.get(nodeIdForEndpoint(link.source));
+    const targetNode = nodesById.get(nodeIdForEndpoint(link.target));
+    if (
+      !sourceNode?.uri ||
+      !targetNode?.uri ||
+      sourceNode.uri === targetNode.uri ||
+      !isHideableGlobalSymbolNode(targetNode)
+    ) {
+      continue;
+    }
+    referencedNodeIds.add(targetNode.id);
+  }
+  return referencedNodeIds;
+}
+
+function isSymbolReferenceGraphLink(link: GraphLink): boolean {
+  return link.kind === "references" || link.kind === "assignments" || link.kind === "calls";
+}
+
+function isHideableGlobalSymbolNode(node: GraphNode): boolean {
+  if (node.kind !== "vbDeclaration" || node.origin !== "source") {
+    return false;
+  }
+  switch (node.category) {
+    case "function":
+    case "sub":
+    case "class":
+    case "globalVariable":
+    case "globalConstant":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function connectedNodeIdsFor(links: GraphLink[]): Set<string> {

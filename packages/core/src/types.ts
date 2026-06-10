@@ -185,6 +185,7 @@ export interface AspGraphSettings {
   showParameterNodes?: boolean;
   showUnresolvedNodes?: boolean;
   hideSingleNodes?: boolean;
+  hideUnreferencedGlobalSymbols?: boolean;
   showOutgoingSelectionLinks?: boolean;
   showIncludeLinks?: boolean;
   showDeclareLinks?: boolean;
