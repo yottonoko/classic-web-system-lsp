@@ -1001,6 +1001,23 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(1);
   });
 
+  it("masks CSS statement-boundary ASP blocks as whitespace", () => {
+    const source = `<style>.a {
+  display: block;
+
+<% if b = 1 then %>
+  background-color: black;
+<% end if %>
+}</style>`;
+    const parsed = parseAspDocument("file:///site/css-control-flow.asp", source);
+    const css = buildVirtualDocuments(parsed).get("css")?.text ?? "";
+
+    expect(css).toContain("background-color: black;");
+    expect(css).not.toContain("if b");
+    expect(css).not.toContain("end if");
+    expect(css).not.toContain("x");
+  });
+
   it("masks ASP islands that contain host quote characters inside attributes and embedded strings", () => {
     const source = [
       '<div title="<%= "double title" %>" data-single=\'<% \'single title %>\' style="content: \'<%= "css title" %>\'; color: #fff"></div>',

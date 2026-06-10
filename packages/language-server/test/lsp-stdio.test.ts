@@ -858,6 +858,57 @@ Server.HTMLEe▮
       }
     });
 
+    it("drops CSS document colors after color literals are deleted", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/css-color-delete.asp";
+        let source = `<style>.x { color: #ff0000; }</style>
+<div style="background: #00ff00"></div>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const firstColors = (await server.request("textDocument/documentColor", {
+          textDocument: { uri },
+        })) as Array<{ range: { start: { line: number; character: number } } }>;
+        expect(firstColors.map((color) => color.range.start).sort(comparePositions)).toEqual([
+          positionAt(source, source.indexOf("#ff0000")),
+          positionAt(source, source.indexOf("#00ff00")),
+        ]);
+
+        source = notifyRangedReplacement(server, uri, source, 2, "#ff0000", "");
+        const styleColors = (await server.request("textDocument/documentColor", {
+          textDocument: { uri },
+        })) as Array<{ range: { start: { line: number; character: number } } }>;
+        expect(styleColors.map((color) => color.range.start)).toEqual([
+          positionAt(source, source.indexOf("#00ff00")),
+        ]);
+
+        source = notifyRangedReplacement(server, uri, source, 3, "#00ff00", "");
+        const finalColors = await server.request("textDocument/documentColor", {
+          textDocument: { uri },
+        });
+        expect(finalColors).toEqual([]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("resolves HTML and CSS completion items", async () => {
       const server = new RpcServer();
       try {
@@ -2398,6 +2449,59 @@ console.log(label, fromServer, client, document.querySelector(".card"));
               token.tokenType === semanticTokenType.keyword,
           ),
         ).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("keeps CSS diagnostics and completions across statement-boundary ASP blocks", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { diagnostics: { debounceMs: 0 } } },
+        });
+
+        const uri = "file:///tmp/css-asp-block-between-declarations.asp";
+        const marked = markedDocument(`<style>
+.a {
+  display: block;
+
+<% if b = 1 then %>
+  backg▮round-color: black;
+<% end if %>
+}
+</style>`);
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await waitForDiagnosticsPublished(server, uri);
+
+        const pulled = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        expect(JSON.stringify(pulled)).not.toContain("asp-lsp-css");
+
+        const cssCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+        });
+        expect(completionLabels(cssCompletions)).toEqual(
+          expect.arrayContaining(["background", "background-color"]),
+        );
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

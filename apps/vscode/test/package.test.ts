@@ -186,6 +186,16 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain('"toolbar.stats": "一覧"');
   });
 
+  it("keeps graph accordion hints beside their section titles", () => {
+    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+
+    expect(graphWebviewSource).toContain('role="button"');
+    expect(graphWebviewSource).toContain('className="flex min-w-0 items-center gap-1.5"');
+    expect(graphWebviewSource).toContain("onClick={(event) => event.stopPropagation()}");
+    expect(graphWebviewSource).toContain("onKeyDown={(event) => event.stopPropagation()}");
+    expect(graphWebviewSource).not.toContain("</button>\n        {hint ? (");
+  });
+
   it("keeps graph layout transitions stable across 2D and 3D views", () => {
     const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
 
@@ -1324,6 +1334,22 @@ console.log(a);
     ).toBe(false);
   });
 
+  it("tokenizes CSS class selectors in style blocks without property coloring", async () => {
+    const grammar = await loadClassicAspTextMateGrammar();
+    const source = ["<style>", ".A > .b { color: black; }", "</style>"].join("\n");
+    const lines = source.split("\n");
+
+    for (const needle of [".A", ".b"]) {
+      const token = tokenAtText(grammar, lines, 1, needle);
+      expect(token?.scopes, needle).toContain("source.css");
+      expect(token?.scopes, needle).toContain("entity.other.attribute-name.class.css");
+      expect(token?.scopes, needle).not.toContain("support.type.property-name.css");
+    }
+
+    const property = tokenAtText(grammar, lines, 1, "color");
+    expect(property?.scopes).toContain("support.type.property-name.css");
+  });
+
   it("describes the COM type catalog schema for settings UI", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       contributes?: {
@@ -1633,7 +1659,7 @@ function minimalCssGrammar() {
         patterns: aspIslandPatterns(),
       },
       { match: "\\.[A-Za-z_][A-Za-z0-9_-]*", name: "entity.other.attribute-name.class.css" },
-      { match: "[A-Za-z_-][A-Za-z0-9_-]*", name: "support.type.property-name.css" },
+      { match: "-?[A-Za-z_][A-Za-z0-9_-]*(?=\\s*:)", name: "support.type.property-name.css" },
     ],
   };
 }

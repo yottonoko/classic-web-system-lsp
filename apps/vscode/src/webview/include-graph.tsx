@@ -2479,26 +2479,39 @@ function Accordion({
   return (
     <section className="overflow-hidden rounded-md border border-[#303a49] bg-[#151a22]">
       <div className="flex min-h-9 items-center gap-2">
-        <button
-          type="button"
-          className="flex min-h-9 min-w-0 flex-1 cursor-pointer items-center justify-between gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left"
+        <div
+          role="button"
+          tabIndex={0}
+          className="flex min-h-9 min-w-0 flex-1 cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-[#89ddff]"
           aria-expanded={isOpen}
           title={headerTitle}
           onClick={() => setOpen((current) => !current)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setOpen((current) => !current);
+            }
+          }}
         >
-          <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
-            {title}
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+              {title}
+            </span>
+            {hint ? (
+              <span
+                className="shrink-0"
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => event.stopPropagation()}
+              >
+                <DetailHint hint={hint} label={title} />
+              </span>
+            ) : null}
           </span>
           <span className="inline-flex shrink-0 items-center gap-2 text-[11px] text-[#8d98a8]">
             {count !== undefined ? <span>{count}</span> : null}
             <span aria-hidden="true">{isOpen ? "-" : "+"}</span>
           </span>
-        </button>
-        {hint ? (
-          <div className="shrink-0">
-            <DetailHint hint={hint} label={title} />
-          </div>
-        ) : null}
+        </div>
         {headerAction ? <div className="shrink-0 pr-2">{headerAction}</div> : null}
       </div>
       {isOpen ? <div className="grid gap-2 border-t border-[#303a49] p-2.5">{children}</div> : null}
@@ -2973,7 +2986,7 @@ function minimalCssGrammar(): unknown {
         patterns: aspIslandPatterns(),
       },
       { match: "\\.[A-Za-z_][A-Za-z0-9_-]*", name: "entity.other.attribute-name.class.css" },
-      { match: "[A-Za-z_-][A-Za-z0-9_-]*", name: "support.type.property-name.css" },
+      { match: "-?[A-Za-z_][A-Za-z0-9_-]*(?=\\s*:)", name: "support.type.property-name.css" },
     ],
   };
 }

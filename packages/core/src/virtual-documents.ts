@@ -256,12 +256,31 @@ function nestedRegionMask(
     return preserveLineEndingsRange(sourceText, nested.start, nested.end, " ");
   }
   if (languageId === "css") {
-    return preserveLineEndingsRange(sourceText, nested.start, nested.end, "x");
+    return cssAspMask(sourceText, owner, nested);
   }
   if (languageId === "javascript" || languageId === "jscript") {
     return javascriptAspMask(sourceText, owner, nested);
   }
   return preserveLineEndingsRange(sourceText, nested.start, nested.end, " ");
+}
+
+function cssAspMask(sourceText: string, owner: AspRegion, nested: AspRegion): string {
+  if (
+    (nested.kind === "asp-block" || nested.kind === "asp-directive") &&
+    !cssBlockNeedsValuePlaceholder(sourceText, owner, nested)
+  ) {
+    return preserveLineEndingsRange(sourceText, nested.start, nested.end, " ");
+  }
+  return preserveLineEndingsRange(sourceText, nested.start, nested.end, "x");
+}
+
+function cssBlockNeedsValuePlaceholder(
+  sourceText: string,
+  owner: AspRegion,
+  nested: AspRegion,
+): boolean {
+  const previous = previousSignificantChar(sourceText, owner.contentStart, nested.start);
+  return previous !== undefined && previous !== "{" && previous !== ";" && previous !== "}";
 }
 
 function javascriptAspMask(sourceText: string, owner: AspRegion, nested: AspRegion): string {

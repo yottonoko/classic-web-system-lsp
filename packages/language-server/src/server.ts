@@ -237,7 +237,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.5.37";
+const languageServerVersion = "0.5.38";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -1733,6 +1733,7 @@ documents.onDidChangeContent((event) => {
     return;
   }
   documentOpenContentVersions.delete(event.document.uri);
+  clearSemanticTokensForUri(event.document.uri);
   const settings = cachedSettings(event.document.uri);
   measureDebugStep(settings, event.document.uri, "documentChange.keepCachedDocument", () => {
     // Keep the previous parsed document available for updateAspParsedDocument.
