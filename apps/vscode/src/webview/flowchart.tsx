@@ -49,6 +49,7 @@ const maximumFlowchartLabelCharacters = 180;
 const maximumFlowchartEdgeLabelCharacters = 80;
 const minimumFlowchartLabelLineLength = 8;
 const branchNodeHorizontalScale = 1.4;
+const flowchartNodePadding = 6;
 const defaultMinimumFlowchartZoom = 0.4;
 const defaultMaximumFlowchartZoom = 4;
 const flowchartZoomStep = 0.1;
@@ -1810,7 +1811,7 @@ function FlowchartCanvas({
         securityLevel: "strict",
         theme: themePalette.mermaidTheme,
         themeVariables: themePalette.mermaidThemeVariables,
-        flowchart: { htmlLabels: false, curve: "basis" },
+        flowchart: { htmlLabels: false, curve: "basis", padding: flowchartNodePadding },
       });
       try {
         const id = `asp-lsp-flowchart-${Date.now().toString(36)}`;
