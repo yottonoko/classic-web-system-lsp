@@ -1174,6 +1174,9 @@ document.querySelector(".oldName");
           rootUri: pathToFileURL(tempDir).toString(),
           capabilities: {},
         });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { rename: { workspaceSymbolRename: true } } },
+        });
         server.notify("textDocument/didOpen", {
           textDocument: {
             uri: scriptUri,
@@ -4829,6 +4832,14 @@ Dim afterValue
           },
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
+        const disabledEdit = await server.request("workspace/willRenameFiles", {
+          files: [{ oldUri: `file://${include}`, newUri: `file://${renamed}` }],
+        });
+        expect(disabledEdit).toBeNull();
+
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { rename: { updateIncludesOnFileRename: true } } },
+        });
         const edit = await server.request("workspace/willRenameFiles", {
           files: [{ oldUri: `file://${include}`, newUri: `file://${renamed}` }],
         });
@@ -5338,6 +5349,69 @@ Response.Write Build▮Name("Ada", "Lovelace")
         server.notify("exit", undefined);
       } finally {
         server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps VBScript symbol rename in the current file unless workspace symbol rename is enabled", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vbscript-rename-scope-"));
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "common.inc");
+      fs.writeFileSync(include, `<%\nResponse.Write SharedValue\n%>`, "utf8");
+      const source = `<!-- #include file="common.inc" -->
+<%
+Dim SharedValue
+Response.Write SharedValue
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
+      const ownerUri = pathToFileURL(owner).toString();
+      const includeUri = pathToFileURL(include).toString();
+      const rename = async (workspaceSymbolRename: boolean) => {
+        const server = new RpcServer();
+        try {
+          await server.start();
+          await server.request("initialize", {
+            processId: process.pid,
+            rootUri: pathToFileURL(tempDir).toString(),
+            capabilities: {},
+          });
+          if (workspaceSymbolRename) {
+            server.notify("workspace/didChangeConfiguration", {
+              settings: { aspLsp: { rename: { workspaceSymbolRename: true } } },
+            });
+          }
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri: ownerUri,
+              languageId: "classic-asp",
+              version: 1,
+              text: source,
+            },
+          });
+          await server.waitForNotification("textDocument/publishDiagnostics");
+          const edit = (await server.request("textDocument/rename", {
+            textDocument: { uri: ownerUri },
+            position: positionAt(source, source.indexOf("SharedValue") + 1),
+            newName: "RenamedValue",
+          })) as { changes?: Record<string, unknown[]> } | null;
+          await server.request("shutdown", null);
+          server.notify("exit", undefined);
+          return edit;
+        } finally {
+          server.stop();
+        }
+      };
+
+      try {
+        const localEdit = await rename(false);
+        expect(Object.keys(localEdit?.changes ?? {})).toEqual([ownerUri]);
+        expect(JSON.stringify(localEdit)).not.toContain("common.inc");
+
+        const workspaceEdit = await rename(true);
+        expect(Object.keys(workspaceEdit?.changes ?? {}).sort()).toEqual(
+          [includeUri, ownerUri].sort(),
+        );
+      } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
@@ -8042,9 +8116,10 @@ End Function
             text: `<!-- #include file="common.inc" -->
 <!-- #include file="missing.inc" -->
 <%
-Dim PageValue
+Dim PageValue, PageItems
 Function Render(value)
   Dim flags
+  ReDim Preserve PageItems(2)
   PageValue = value
   PageValue = &HFF
   PageValue = &077
@@ -8058,6 +8133,8 @@ End Function
 Sub Main()
   Render "x"
   MissingName
+  MissingValue = PageValue
+  Response.Write MissingValue
 End Sub
 %>`,
           },
@@ -8098,9 +8175,33 @@ End Sub
         expect(
           graph.nodes?.some((node) => node.kind === "vbDeclaration" && node.label === "Render"),
         ).toBe(true);
+        const missingNameNode = graph.nodes?.find(
+          (node) => node.kind === "vbDeclaration" && node.label === "MissingName",
+        );
+        expect(missingNameNode).toEqual(
+          expect.objectContaining({
+            bindingScope: "global",
+            declarationKind: "variable",
+            implicit: true,
+            unresolvedGlobal: true,
+          }),
+        );
+        const missingValueNode = graph.nodes?.find(
+          (node) => node.kind === "vbDeclaration" && node.label === "MissingValue",
+        );
+        expect(missingValueNode).toEqual(
+          expect.objectContaining({
+            bindingScope: "global",
+            declarationKind: "variable",
+            implicit: true,
+            unresolvedGlobal: true,
+          }),
+        );
         expect(
-          graph.nodes?.some((node) => node.kind === "vbUnresolved" && node.label === "MissingName"),
-        ).toBe(true);
+          graph.nodes?.some(
+            (node) => node.kind === "vbUnresolved" && node.label === "MissingValue",
+          ),
+        ).toBe(false);
         expect(
           graph.nodes?.some(
             (node) =>
@@ -8120,9 +8221,53 @@ End Sub
         expect(graph.links?.some((link) => link.kind === "declares")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "references")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "assignments")).toBe(true);
+        expect(
+          graph.links?.some(
+            (link) =>
+              link.kind === "assignments" &&
+              link.role === "write" &&
+              link.target === missingValueNode?.id,
+          ),
+        ).toBe(true);
+        expect(
+          graph.links?.some(
+            (link) =>
+              link.kind === "references" &&
+              link.role === "read" &&
+              link.target === missingValueNode?.id,
+          ),
+        ).toBe(true);
         const renderNode = graph.nodes?.find(
           (node) => node.kind === "vbDeclaration" && node.label === "Render",
         );
+        const pageItemsNode = graph.nodes?.find(
+          (node) => node.kind === "vbDeclaration" && node.label === "PageItems",
+        );
+        expect(pageItemsNode).toEqual(
+          expect.objectContaining({
+            bindingScope: "global",
+            typeName: "Array",
+            arrayKind: "dynamic",
+            arrayDimensions: ["2"],
+          }),
+        );
+        expect(
+          graph.links?.some(
+            (link) =>
+              link.kind === "assignments" &&
+              link.role === "write" &&
+              link.source === renderNode?.id &&
+              link.target === pageItemsNode?.id,
+          ),
+        ).toBe(true);
+        expect(
+          graph.links?.some(
+            (link) =>
+              link.kind === "declares" &&
+              link.source === renderNode?.id &&
+              link.target === pageItemsNode?.id,
+          ),
+        ).toBe(false);
         expect(
           graph.links?.some(
             (link) =>
@@ -8133,7 +8278,7 @@ End Sub
           ),
         ).toBe(false);
         expect(graph.links?.some((link) => link.kind === "calls")).toBe(true);
-        expect(graph.links?.some((link) => link.kind === "unresolvedReference")).toBe(true);
+        expect(graph.links?.some((link) => link.kind === "unresolvedReference")).toBe(false);
         expect(graph.stats?.missingIncludes).toBe(1);
 
         await server.request("shutdown", null);
@@ -8206,6 +8351,18 @@ End Sub
               ),
           ),
         ).toBe(false);
+        expect(
+          flowchart.nodes?.some(
+            (node) =>
+              Array.isArray(node.links) &&
+              node.links.some(
+                (link: Record<string, unknown>) =>
+                  link.symbolKind === "unresolvedGlobalVariable" &&
+                  (link.label === "global variable ready" ||
+                    link.label === "global variable disabled"),
+              ),
+          ),
+        ).toBe(true);
         expect(flowchart.nodes?.some((node) => node.kind === "call")).toBe(true);
         expect(
           flowchart.nodes?.some(
@@ -8382,6 +8539,8 @@ End Function
         })) as TestGraph;
         const renderNode = nodeByLabelAndUri(graph, "Render", pageUri);
         const dbNode = nodeByLabelAndUri(graph, "db", commonUri);
+        const dbOpenNode = nodeByLabelAndUri(graph, "db.Open", pageUri);
+        const localDbOpenNode = nodeByLabelAndUri(graph, "localDb.Open", pageUri);
 
         expect(dbNode).toEqual(
           expect.objectContaining({
@@ -8391,6 +8550,24 @@ End Function
           }),
         );
         expect(hasGraphLink(graph, "references", renderNode, dbNode)).toBe(true);
+        expect(dbOpenNode).toEqual(
+          expect.objectContaining({
+            kind: "vbMemberReference",
+            role: "member",
+            receiverName: "db",
+            memberName: "Open",
+          }),
+        );
+        expect(localDbOpenNode).toEqual(
+          expect.objectContaining({
+            kind: "vbMemberReference",
+            role: "member",
+            receiverName: "localDb",
+            memberName: "Open",
+          }),
+        );
+        expect(hasGraphLink(graph, "calls", renderNode, dbOpenNode)).toBe(true);
+        expect(hasGraphLink(graph, "calls", renderNode, localDbOpenNode)).toBe(true);
         expect(
           (graph.nodes ?? []).some(
             (node) =>
@@ -8743,6 +8920,9 @@ Sub Main(arg)
   Repository.Find arg
   MissingName
   MissingName
+  Set missingObject = New MissingClass
+  Call MissingProc()
+  Call MissingProc()
 End Sub
 Class WithProperty
   Public Property Get Title()
@@ -8988,26 +9168,27 @@ End Sub
           arrayDimensions: ["2"],
           origin: "source",
         });
-        for (const label of [
-          "bareImplicit",
-          "loopIndex",
-          "loopItem",
-          "loopImplicit",
-          "eachImplicit",
-        ]) {
+        for (const label of ["loopIndex", "loopItem"]) {
           expectNode(visibleGraph, label, {
             declarationKind: "variable",
             bindingScope: "local",
             origin: "source",
           });
         }
-        expectNode(visibleGraph, "bareImplicit", { implicit: true });
-        expectNode(visibleGraph, "loopImplicit", { implicit: true });
-        expectNode(visibleGraph, "eachImplicit", { implicit: true });
-        expectNode(visibleGraph, "implicitIndexed", {
+        for (const label of ["bareImplicit", "loopImplicit", "eachImplicit", "implicitIndexed"]) {
+          expectNode(visibleGraph, label, {
+            declarationKind: "variable",
+            bindingScope: "global",
+            implicit: true,
+            unresolvedGlobal: true,
+            origin: "source",
+          });
+        }
+        expectNode(visibleGraph, "MissingName", {
           declarationKind: "variable",
-          bindingScope: "local",
+          bindingScope: "global",
           implicit: true,
+          unresolvedGlobal: true,
           origin: "source",
         });
         expect(hasNode(visibleGraph, (node) => node.label === "Preserve")).toBe(false);
@@ -9073,12 +9254,12 @@ End Sub
         expect(hasDeclaresLink(visibleGraph, "localItems", "Main")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "dynamicItems", "Main")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "redimItems", "Main")).toBe(true);
-        expect(hasDeclaresLink(visibleGraph, "bareImplicit", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "bareImplicit", "default.asp")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "loopIndex", "Main")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "loopItem", "Main")).toBe(true);
-        expect(hasDeclaresLink(visibleGraph, "loopImplicit", "Main")).toBe(true);
-        expect(hasDeclaresLink(visibleGraph, "eachImplicit", "Main")).toBe(true);
-        expect(hasDeclaresLink(visibleGraph, "implicitIndexed", "Main")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "loopImplicit", "default.asp")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "eachImplicit", "default.asp")).toBe(true);
+        expect(hasDeclaresLink(visibleGraph, "implicitIndexed", "default.asp")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "WithProperty.Title", "WithProperty")).toBe(true);
         expect(hasDeclaresLink(visibleGraph, "repoObject", "default.asp")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "arg")).toBe(true);
@@ -9087,6 +9268,7 @@ End Sub
         expect(hasGraphLink(visibleGraph, "references", "Main", "loopIndex")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "loopItem")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "implicitIndexed")).toBe(true);
+        expect(hasGraphLink(visibleGraph, "references", "Main", "MissingName")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "ObjectMain", "repoObject")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Customer.Save", "localConst")).toBe(true);
         expect(hasGraphLink(visibleGraph, "references", "Main", "IncludedGlobal")).toBe(true);
@@ -9120,7 +9302,7 @@ End Sub
         {
           const missingNodes =
             visibleGraph.nodes?.filter(
-              (node) => node.kind === "vbUnresolved" && node.label === "MissingName",
+              (node) => node.kind === "vbUnresolved" && node.label === "MissingClass",
             ) ?? [];
           const mainNode = nodeByLabel(visibleGraph, "Main");
           expect(missingNodes).toHaveLength(1);
@@ -9131,7 +9313,7 @@ End Sub
                 link.source === mainNode?.id &&
                 link.target === missingNodes[0]?.id,
             ),
-          ).toEqual(expect.objectContaining({ count: 2 }));
+          ).toEqual(expect.objectContaining({ count: 1 }));
         }
 
         configure({ ...allGraphSettings, showIncludeLinks: false });
@@ -11102,7 +11284,12 @@ Response.Write FOO
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { vbscript: { identifierCase: "PascalCase" } } },
+          settings: {
+            aspLsp: {
+              rename: { workspaceSymbolRename: true },
+              vbscript: { identifierCase: "PascalCase" },
+            },
+          },
         });
         const uri = "file:///tmp/vb-naming.asp";
         server.notify("textDocument/didOpen", {
@@ -11349,7 +11536,12 @@ Response.Write record.display_name
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { vbscript: { identifierCase: "PascalCase" } } },
+          settings: {
+            aspLsp: {
+              rename: { workspaceSymbolRename: true },
+              vbscript: { identifierCase: "PascalCase" },
+            },
+          },
         });
         const uri = "file:///tmp/vb-naming-declaration-kinds.asp";
         server.notify("textDocument/didOpen", {
@@ -11474,7 +11666,12 @@ Dim foo
           capabilities: {},
         });
         server.notify("workspace/didChangeConfiguration", {
-          settings: { aspLsp: { vbscript: { identifierCase: "PascalCase" } } },
+          settings: {
+            aspLsp: {
+              rename: { workspaceSymbolRename: true },
+              vbscript: { identifierCase: "PascalCase" },
+            },
+          },
         });
         const uri = `file://${owner}`;
         server.notify("textDocument/didOpen", {

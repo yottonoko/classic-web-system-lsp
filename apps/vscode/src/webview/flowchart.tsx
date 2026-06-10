@@ -534,6 +534,12 @@ const darkFlowchartSymbolKindStyles: Record<string, FlowchartVisualStyle> = {
     mermaidClass: "flowSymbolVariable",
     text: "#fff0b8",
   },
+  unresolvedglobalvariable: {
+    background: "#332014",
+    border: "#f78c6c",
+    mermaidClass: "flowSymbolUnresolvedGlobalVariable",
+    text: "#ffe0cf",
+  },
   constant: {
     background: "#16243a",
     border: "#82aaff",
@@ -596,6 +602,12 @@ const lightFlowchartSymbolKindStyles: Record<string, FlowchartVisualStyle> = {
     border: "#ca8a04",
     mermaidClass: "flowSymbolVariable",
     text: "#3f2a04",
+  },
+  unresolvedglobalvariable: {
+    background: "#ffedd5",
+    border: "#c2410c",
+    mermaidClass: "flowSymbolUnresolvedGlobalVariable",
+    text: "#7c2d12",
   },
   constant: {
     background: "#dbeafe",

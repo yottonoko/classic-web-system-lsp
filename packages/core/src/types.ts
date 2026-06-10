@@ -35,6 +35,7 @@ export interface AspSettings {
   vbscript?: AspVbscriptSettings;
   inlayHints?: AspInlayHintSettings;
   codeLens?: AspCodeLensSettings;
+  rename?: AspRenameSettings;
   styleExtraction?: AspStyleExtractionSettings;
   graph?: AspGraphSettings;
   cache?: AspCacheSettings;
@@ -160,6 +161,11 @@ export interface AspCodeLensSettings {
   referenceGlobals?: boolean;
   referenceClasses?: boolean;
   referenceClassMembers?: boolean;
+}
+
+export interface AspRenameSettings {
+  updateIncludesOnFileRename?: boolean;
+  workspaceSymbolRename?: boolean;
 }
 
 export interface AspStyleExtractionSettings {
@@ -299,6 +305,8 @@ export interface AspFlowchartSymbolDeclaration {
   bindingScope?: string;
   procedureKind?: string;
   typeName?: string;
+  implicit?: boolean;
+  unresolvedGlobal?: boolean;
 }
 
 export interface AspFlowchartSymbolReference {

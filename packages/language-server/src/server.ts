@@ -237,7 +237,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.5.41";
+const languageServerVersion = "0.5.42";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -732,7 +732,12 @@ interface VbReferenceCodeLensData {
 
 type AspGraphScope = "document" | "folder" | "workspace";
 
-type AspGraphNodeKind = "file" | "missingInclude" | "vbDeclaration" | "vbUnresolved";
+type AspGraphNodeKind =
+  | "file"
+  | "missingInclude"
+  | "vbDeclaration"
+  | "vbUnresolved"
+  | "vbMemberReference";
 
 type AspGraphNodeOrigin = "source" | "builtin" | "configured";
 
@@ -761,6 +766,7 @@ type AspGraphNodeCategory =
   | "property"
   | "member"
   | "globalVariable"
+  | "unresolvedGlobalVariable"
   | "globalConstant"
   | "localVariable"
   | "localConstant"
@@ -778,10 +784,13 @@ interface AspGraphNode {
   exists?: boolean;
   declarationKind?: string;
   role?: string;
+  receiverName?: string;
+  memberName?: string;
   memberOf?: string;
   bindingScope?: string;
   procedureKind?: string;
   implicit?: boolean;
+  unresolvedGlobal?: boolean;
   typeName?: string;
   arrayKind?: string;
   arrayDimensions?: string[];
@@ -2174,9 +2183,16 @@ connection.onRenameRequest(async (params: RenameParams): Promise<WorkspaceEdit |
   if (!cached) {
     return null;
   }
+  const settings = cachedSettings(cached.source.uri);
+  const symbolRenameScope = renameSymbolScope(settings);
   if (isJavaScriptPosition(cached, params.position)) {
-    const rename = await jsRenameAsync(cached, params.position, params.newName);
-    const crossLanguage = await crossLanguageRename(cached, params.position, params.newName);
+    const rename = await jsRenameAsync(cached, params.position, params.newName, symbolRenameScope);
+    const crossLanguage = await crossLanguageRename(
+      cached,
+      params.position,
+      params.newName,
+      symbolRenameScope,
+    );
     return mergeWorkspaceEdits([rename, crossLanguage]) ?? null;
   }
   if (isHtmlPosition(cached, params.position)) {
@@ -2202,10 +2218,10 @@ connection.onRenameRequest(async (params: RenameParams): Promise<WorkspaceEdit |
   if (!isVbscriptPosition(cached, params.position)) {
     return null;
   }
-  const context = await buildFullVbProjectContextForWorkspaceOperationAsync(
-    cached,
-    cachedSettings(cached.source.uri),
-  );
+  const context =
+    symbolRenameScope === "workspace"
+      ? await buildFullVbProjectContextForWorkspaceOperationAsync(cached, settings)
+      : await localVbReferenceContextAsync(cached, settings);
   const range = getVbscriptRenameRange(cached.parsed, params.position, context);
   if (!range || !/^[A-Za-z][A-Za-z0-9_]*$/.test(params.newName)) {
     return null;
@@ -5664,6 +5680,7 @@ async function jsRenameAsync(
   cached: CachedDocument,
   position: Position,
   newName: string,
+  scope: "document" | "workspace",
 ): Promise<WorkspaceEdit | null> {
   const context = await jsContextAtAsync(cached, position);
   if (!context || !/^[\p{ID_Start}_$][\p{ID_Continue}_$]*$/u.test(newName)) {
@@ -5685,12 +5702,19 @@ async function jsRenameAsync(
     if (!mapped) {
       continue;
     }
+    if (scope === "document" && !sameFileIdentityUri(mapped.uri, cached.source.uri)) {
+      continue;
+    }
     changes[mapped.uri] = [
       ...(changes[mapped.uri] ?? []),
       { range: mapped.range, newText: newName },
     ];
   }
   return Object.keys(changes).length > 0 ? { changes } : null;
+}
+
+function renameSymbolScope(settings: AspSettings): "document" | "workspace" {
+  return settings.rename?.workspaceSymbolRename === true ? "workspace" : "document";
 }
 
 function htmlPrepareRename(cached: CachedDocument, position: Position): Range | null {
@@ -10551,6 +10575,9 @@ async function includeDiagnosticsAsync(
 async function includeRenameWorkspaceEditAsync(
   files: Array<{ oldUri: string; newUri: string }>,
 ): Promise<WorkspaceEdit | null> {
+  if (globalSettings.rename?.updateIncludesOnFileRename !== true) {
+    return null;
+  }
   await ensureWorkspaceIndexAsync(globalSettings);
   const changes: NonNullable<WorkspaceEdit["changes"]> = {};
   const seenEdits = new Set<string>();
@@ -12344,6 +12371,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     vbscript: normalizeVbscriptSettings(settings),
     inlayHints: normalizeInlayHintSettings(settings),
     codeLens: normalizeCodeLensSettings(settings),
+    rename: normalizeRenameSettings(settings),
     styleExtraction: normalizeStyleExtractionSettings(settings),
     graph: normalizeGraphSettings(settings),
     cache: normalizeCacheSettings(settings),
@@ -12502,6 +12530,17 @@ function normalizeCodeLensSettings(
     referenceGlobals: record.referenceGlobals !== false,
     referenceClasses: record.referenceClasses !== false,
     referenceClassMembers: record.referenceClassMembers !== false,
+  };
+}
+
+function normalizeRenameSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["rename"] {
+  const raw = settings.rename;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    updateIncludesOnFileRename: record.updateIncludesOnFileRename === true,
+    workspaceSymbolRename: record.workspaceSymbolRename === true,
   };
 }
 
@@ -14769,10 +14808,11 @@ async function vbscriptNamingDiagnosticActionsAsync(
   ) {
     return [];
   }
-  const context = await buildFullVbProjectContextForWorkspaceOperationAsync(
-    cached,
-    cachedSettings(cached.source.uri),
-  );
+  const settings = cachedSettings(cached.source.uri);
+  const context =
+    renameSymbolScope(settings) === "workspace"
+      ? await buildFullVbProjectContextForWorkspaceOperationAsync(cached, settings)
+      : await localVbReferenceContextAsync(cached, settings);
   const symbol = context.symbols?.find(
     (candidate) =>
       sameFileIdentityUri(candidate.sourceUri, cached.source.uri) &&
@@ -16258,6 +16298,8 @@ function flowchartSymbolDocumentFromIndex(index: VbSymbolIndex): AspFlowchartSym
       memberOf: declaration.memberOf,
       bindingScope: declaration.bindingScope,
       procedureKind: declaration.procedureKind,
+      implicit: declaration.implicit,
+      unresolvedGlobal: declaration.unresolvedGlobal,
       typeName: declaration.typeName,
     })),
     references: index.references.map((reference) => ({
@@ -16873,6 +16915,7 @@ async function graphPayloadFromDocumentsAsync(
     throwIfGraphCancelled(cancellation);
     addDocumentUsageToAspGraph(state, indexed);
   }
+  removeUnusedUnresolvedGlobalGraphDeclarations(state);
   state.stats = recomputeAspGraphStats(state.nodes.values(), state.links.values());
   return {
     scope,
@@ -16883,6 +16926,35 @@ async function graphPayloadFromDocumentsAsync(
     stats: state.stats,
     truncated: state.truncated,
   };
+}
+
+function removeUnusedUnresolvedGlobalGraphDeclarations(state: AspGraphBuildState): void {
+  const usedTargets = new Set(
+    [...state.links.values()]
+      .filter((link) => link.kind === "references" || link.kind === "assignments")
+      .map((link) => link.target),
+  );
+  const removableIds = new Set<string>();
+  for (const node of state.nodes.values()) {
+    if (
+      node.kind === "vbDeclaration" &&
+      node.unresolvedGlobal === true &&
+      !usedTargets.has(node.id)
+    ) {
+      removableIds.add(node.id);
+    }
+  }
+  for (const id of removableIds) {
+    state.nodes.delete(id);
+  }
+  if (removableIds.size === 0) {
+    return;
+  }
+  for (const [id, link] of state.links) {
+    if (removableIds.has(link.source) || removableIds.has(link.target)) {
+      state.links.delete(id);
+    }
+  }
 }
 
 function createAspGraphBuildState(
@@ -17150,6 +17222,7 @@ async function addDocumentStructureToAspGraphAsync(
       bindingScope: declaration.bindingScope,
       procedureKind: declaration.procedureKind,
       implicit: declaration.implicit,
+      unresolvedGlobal: declaration.unresolvedGlobal,
       typeName: visibleAspGraphTypeName(declaration.typeName),
       arrayKind: declaration.arrayKind,
       arrayDimensions: declaration.arrayDimensions,
@@ -17179,6 +17252,9 @@ function addDocumentUsageToAspGraph(
     if (reference.role === "call" || reference.role === "new" || reference.role === "member") {
       continue;
     }
+    const resolvedDeclaration = reference.resolvedId
+      ? state.sourceDeclarationsById.get(reference.resolvedId)
+      : undefined;
     const sourceDeclaration = reference.resolvedId
       ? resolveIncludedImplicitSourceGraphDeclaration(state, indexed, reference)
       : resolveVisibleSourceGraphDeclaration(
@@ -17189,7 +17265,7 @@ function addDocumentUsageToAspGraph(
           reference.range,
         );
     const external =
-      reference.resolvedId || sourceDeclaration
+      (reference.resolvedId && resolvedDeclaration?.unresolvedGlobal !== true) || sourceDeclaration
         ? undefined
         : resolveExternalGraphSymbol(state, reference.name);
     if (isSuppressedBuiltinGraphExternalSymbol(external)) {
@@ -17200,9 +17276,11 @@ function addDocumentUsageToAspGraph(
     }
     const target = sourceDeclaration
       ? declarationGraphNodeId(sourceDeclaration.id)
-      : reference.resolvedId
-        ? declarationGraphNodeId(reference.resolvedId)
-        : addExternalGraphNode(state, external);
+      : external
+        ? addExternalGraphNode(state, external)
+        : reference.resolvedId
+          ? declarationGraphNodeId(reference.resolvedId)
+          : "";
     const linkKind = reference.role === "write" ? "assignments" : "references";
     if (linkKind === "assignments") {
       state.stats.assignments += 1;
@@ -17231,12 +17309,21 @@ function addDocumentUsageToAspGraph(
     if (isSuppressedBuiltinGraphExternalSymbol(external)) {
       continue;
     }
-    if (
-      !callSite.resolvedId &&
-      !sourceDeclaration &&
-      !external &&
-      resolveSourceGraphMemberReceiverDeclaration(state, indexed, callSite)
-    ) {
+    if (!callSite.resolvedId && !sourceDeclaration && !external && callSite.memberName) {
+      addAspGraphLink(state, {
+        source: scopeGraphNodeId(state, document.uri, callSite.scopeId),
+        target: addMemberReferenceGraphNode(
+          state,
+          document.uri,
+          callSite.receiverName,
+          callSite.memberName,
+          callSite.range,
+        ),
+        kind: "calls",
+        label: "member",
+        role: "member",
+        ranges: [{ uri: document.uri, range: callSite.range }],
+      });
       continue;
     }
     const defaultMemberReceiver =
@@ -17285,12 +17372,28 @@ function addDocumentUsageToAspGraph(
     const external = sourceDeclaration
       ? undefined
       : resolveExternalGraphDeferredRef(state, deferred);
-    if (
-      sourceDeclaration ||
-      external ||
-      resolveSourceGraphMemberReceiverDeclaration(state, indexed, deferred) ||
-      resolveVisibleSourceGraphDefaultMemberReceiver(state, indexed, deferred)
-    ) {
+    if (sourceDeclaration || external) {
+      continue;
+    }
+    if (deferred.memberName) {
+      state.stats.references += 1;
+      addAspGraphLink(state, {
+        source: scopeGraphNodeId(state, document.uri, deferred.scopeId),
+        target: addMemberReferenceGraphNode(
+          state,
+          document.uri,
+          deferred.receiverName,
+          deferred.memberName,
+          deferred.range,
+        ),
+        kind: "references",
+        label: "member",
+        role: "member",
+        ranges: [{ uri: document.uri, range: deferred.range }],
+      });
+      continue;
+    }
+    if (resolveVisibleSourceGraphDefaultMemberReceiver(state, indexed, deferred)) {
       continue;
     }
     state.stats.unresolvedReferences += 1;
@@ -17319,53 +17422,6 @@ function visibleAspGraphTypeName(typeName: string | undefined): string | undefin
 
 function isSuppressedBuiltinGraphTypeName(typeName: string): boolean {
   return ["regexp", "match", "matches", "submatches"].includes(typeName.toLowerCase());
-}
-
-function resolveSourceGraphMemberReceiverDeclaration(
-  state: AspGraphBuildState,
-  indexed: AspGraphIndexedDocument,
-  item: Pick<
-    VbSymbolIndex["callSites"][number],
-    "memberName" | "receiverName" | "range" | "scopeId"
-  >,
-): VbSymbolIndex["declarations"][number] | undefined {
-  if (!item.memberName || !item.receiverName) {
-    return undefined;
-  }
-  return (
-    resolveIndexedSourceGraphReceiverDeclaration(state, indexed, item.receiverName, item) ??
-    resolveVisibleSourceGraphDeclaration(
-      state,
-      indexed.document.uri,
-      item.receiverName,
-      ["variable", "constant"],
-      item.range,
-    )
-  );
-}
-
-function resolveIndexedSourceGraphReceiverDeclaration(
-  state: AspGraphBuildState,
-  indexed: AspGraphIndexedDocument,
-  name: string,
-  item: Pick<VbSymbolIndex["callSites"][number], "range" | "scopeId">,
-): VbSymbolIndex["declarations"][number] | undefined {
-  const normalizedName = name.toLowerCase();
-  let best: VbSymbolIndex["references"][number] | undefined;
-  for (const reference of indexed.graphIndex.vbSymbolIndex.references) {
-    if (
-      !reference.resolvedId ||
-      reference.normalizedName !== normalizedName ||
-      reference.scopeId !== item.scopeId ||
-      !positionBeforeOrEqual(reference.range.end, item.range.start)
-    ) {
-      continue;
-    }
-    if (!best || positionBeforeOrEqual(best.range.start, reference.range.start)) {
-      best = reference;
-    }
-  }
-  return best?.resolvedId ? state.sourceDeclarationsById.get(best.resolvedId) : undefined;
 }
 
 function resolveVisibleSourceGraphDefaultMemberReceiver(
@@ -17461,7 +17517,7 @@ function resolveIncludedImplicitSourceGraphDeclaration(
       candidateKey !== undefined &&
       candidateKey !== ownerKey &&
       isCrossFileSourceGraphDeclaration(candidate) &&
-      matchesGraphExpectedKinds(candidate, [resolvedDeclaration.kind]) &&
+      matchesGraphExpectedKinds(candidate, reference.expectedKinds ?? [resolvedDeclaration.kind]) &&
       isSourceGraphDeclarationVisibleFromDocument(state, ownerKey, candidate, reference.range)
     );
   });
@@ -17784,6 +17840,30 @@ function addUnresolvedGraphNode(
   });
 }
 
+function addMemberReferenceGraphNode(
+  state: AspGraphBuildState,
+  uri: string,
+  receiverName: string | undefined,
+  memberName: string,
+  range: Range,
+): string {
+  const id = memberReferenceGraphNodeId(receiverName, memberName);
+  if (!state.nodes.has(id)) {
+    state.nodes.set(id, {
+      id,
+      kind: "vbMemberReference",
+      label: receiverName ? `${receiverName}.${memberName}` : memberName,
+      uri,
+      range,
+      role: "member",
+      receiverName,
+      memberName,
+      group: "member",
+    });
+  }
+  return id;
+}
+
 function addAspGraphLink(
   state: AspGraphBuildState,
   input: Omit<AspGraphLink, "id" | "count">,
@@ -17839,6 +17919,7 @@ const graphNodeCategoryOrder: AspGraphNodeCategory[] = [
   "property",
   "member",
   "globalVariable",
+  "unresolvedGlobalVariable",
   "globalConstant",
   "localVariable",
   "localConstant",
@@ -17884,6 +17965,8 @@ function isVisibleAspGraphNodeCategory(
     case "member":
       return settings.showMemberNodes === true;
     case "globalVariable":
+      return settings.showGlobalVariableNodes !== false;
+    case "unresolvedGlobalVariable":
       return settings.showGlobalVariableNodes !== false;
     case "globalConstant":
       return settings.showGlobalConstantNodes !== false;
@@ -17979,6 +18062,10 @@ function declarationGraphNodeId(id: string): string {
 
 function unresolvedGraphNodeId(name: string): string {
   return `unresolved:${name.toLowerCase()}`;
+}
+
+function memberReferenceGraphNodeId(receiverName: string | undefined, memberName: string): string {
+  return `member:${receiverName?.toLowerCase() ?? ""}.${memberName.toLowerCase()}`;
 }
 
 function scopeGraphNodeId(

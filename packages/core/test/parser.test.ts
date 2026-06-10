@@ -204,6 +204,41 @@ End Sub
       ),
     ).toBe(true);
   });
+
+  it("marks unresolved global variable links with a distinct flowchart symbol kind", () => {
+    const uri = "file:///site/unresolved-global.asp";
+    const parsed = parseAspDocument(
+      uri,
+      `<%
+Sub Main()
+  MissingValue = 1
+End Sub
+%>`,
+    );
+    const flowchart = buildAspFlowchart(parsed, {
+      fileName: "unresolved-global.asp",
+      symbols: [
+        {
+          uri,
+          declarations: [
+            declaration("missing-value", "MissingValue", "variable", "global", 2, 2, 14, {
+              implicit: true,
+              unresolvedGlobal: true,
+            }),
+          ],
+          references: [reference("MissingValue", "missing-value", "write", 2, 2, 14)],
+        },
+      ],
+    });
+
+    expect(
+      flowchart.nodes.some(
+        (node) =>
+          node.label.includes("MissingValue") &&
+          node.links?.some((link) => link.symbolKind === "unresolvedGlobalVariable"),
+      ),
+    ).toBe(true);
+  });
 });
 
 function declaration(
@@ -214,6 +249,7 @@ function declaration(
   line: number,
   start: number,
   end: number,
+  extra: Record<string, unknown> = {},
 ) {
   return {
     id,
@@ -223,6 +259,7 @@ function declaration(
     bindingScope,
     range: flowRange(line, start, end),
     nameRange: flowRange(line, start, end),
+    ...extra,
   };
 }
 
@@ -2609,6 +2646,28 @@ End Sub
       references: [{ name: "localItems", role: "write", bindingScope: "local" }],
     },
     {
+      name: "procedure ReDim of global variable keeps the global declaration",
+      source: `<%
+Dim globalItems
+Sub Resize()
+  ReDim Preserve globalItems(2)
+  globalItems(0) = "value"
+End Sub
+%>`,
+      declarations: [
+        {
+          name: "globalItems",
+          kind: "variable",
+          bindingScope: "global",
+          typeName: "Array",
+          arrayKind: "dynamic",
+          arrayDimensions: ["2"],
+        },
+      ],
+      absentDeclarations: [{ name: "globalItems", kind: "variable", bindingScope: "local" }],
+      references: [{ name: "globalItems", role: "write", bindingScope: "global" }],
+    },
+    {
       name: "public class array field keeps member metadata",
       source: `<%
 Class Bag
@@ -3148,17 +3207,20 @@ CStr = "builtin"
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     expect(index.declarations.filter((item) => item.name === "implicitGlobal")).toHaveLength(1);
     expect(index.declarations.find((item) => item.name === "implicitLocal")).toMatchObject({
       kind: "variable",
-      bindingScope: "local",
+      bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     expect(index.declarations.find((item) => item.name === "methodLocal")).toMatchObject({
       kind: "variable",
-      bindingScope: "local",
+      bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     expect(index.declarations.some((item) => item.name === "Member" && item.implicit)).toBe(false);
     expect(index.declarations.some((item) => item.name === "Response" && item.implicit)).toBe(
@@ -3186,7 +3248,12 @@ missingValue = 1
       {},
       { includeImplicitVariables: true },
     );
-    expect(explicitIndex.declarations.some((item) => item.name === "missingValue")).toBe(false);
+    expect(explicitIndex.declarations.find((item) => item.name === "missingValue")).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+      unresolvedGlobal: true,
+    });
   });
 
   it("indexes VBScript array element access as variable references", () => {
@@ -3210,7 +3277,12 @@ If declaredItems(0) = "first" Then Response.Write "ok"
     const implicitReferences = index.references.filter((item) => item.name === "implicitItems");
 
     expect(declared).toMatchObject({ kind: "variable", typeName: "Array" });
-    expect(implicit).toMatchObject({ kind: "variable", bindingScope: "global", implicit: true });
+    expect(implicit).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+      unresolvedGlobal: true,
+    });
     expect(declaredReferences.map((item) => item.role)).toEqual(["write", "read", "read"]);
     expect(implicitReferences.map((item) => item.role)).toEqual(["write", "read"]);
     expect(declaredReferences.every((item) => item.resolvedId === declared?.id)).toBe(true);
@@ -3248,36 +3320,43 @@ If enabled Then Set objectValue = New Widget
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     expect(declaration("branchValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     expect(declaration("fallbackValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     expect(declaration("letValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     expect(declaration("continuedValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     expect(declaration("localValue")).toMatchObject({
       kind: "variable",
-      bindingScope: "local",
+      bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     expect(declaration("objectValue")).toMatchObject({
       kind: "variable",
       bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     for (const name of [
       "oneLineValue",
@@ -3303,7 +3382,7 @@ If enabled Then Set objectValue = New Widget
     );
   });
 
-  it("marks loop variables and procedure implicit assignments as local in the symbol index", () => {
+  it("keeps loop variables local but treats unresolved procedure variables as globals in the symbol index", () => {
     const source = `<%
 Sub Render()
   For index = 1 To 3
@@ -3328,13 +3407,21 @@ End Sub
     expect(declaration("item")).toMatchObject({ kind: "variable", bindingScope: "local" });
     expect(declaration("loopValue")).toMatchObject({
       kind: "variable",
-      bindingScope: "local",
+      bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     expect(declaration("eachValue")).toMatchObject({
       kind: "variable",
-      bindingScope: "local",
+      bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
+    });
+    expect(declaration("items")).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+      unresolvedGlobal: true,
     });
     expect(reference("index")).toMatchObject({
       resolvedId: declaration("index")?.id,
@@ -3345,7 +3432,7 @@ End Sub
       bindingScope: "local",
     });
     expect(index.deferredExternalRefs.map((item) => item.name)).not.toEqual(
-      expect.arrayContaining(["index", "item", "loopValue", "eachValue"]),
+      expect.arrayContaining(["index", "item", "items", "loopValue", "eachValue"]),
     );
   });
 
@@ -3896,6 +3983,35 @@ Const knownValue = 1
         (diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax",
       ),
     ).toBe(false);
+  });
+
+  it("treats procedure ReDim as a resize of a visible global symbol", () => {
+    const source = `<%
+Dim globalItems
+Sub Resize()
+  ReDim Preserve globalItems(2)
+  globalItems(0) = "value"
+End Sub
+%>`;
+    const parsed = parseAspDocument("file:///site/redim-global-symbol.asp", source);
+    const symbols = collectVbscriptSymbols(parsed);
+    const globalItems = symbols.filter((symbol) => symbol.name === "globalItems");
+    expect(globalItems).toHaveLength(1);
+    expect(globalItems[0]).toMatchObject({
+      kind: "variable",
+      typeName: "Array",
+      explicitType: true,
+      array: {
+        kind: "dynamic",
+        dimensions: ["2"],
+      },
+    });
+    expect(globalItems[0]?.scopeName).toBeUndefined();
+    expect(
+      getVbscriptDefinition(parsed, positionAt(source, source.indexOf("globalItems(2)") + 1), {
+        symbols,
+      })?.range,
+    ).toEqual(globalItems[0]?.range);
   });
 
   it("reports invalid VBScript procedure call syntax as errors", () => {

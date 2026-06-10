@@ -3948,6 +3948,7 @@ function collectVbscriptSymbolsTypeScript(
     addSymbolsFromVbNode(parsed, node, symbols, createDocCommentLookup(node));
   }
   addServerObjectSymbols(parsed, symbols);
+  retargetRedimSymbols(parsed, symbols);
   if (options.implicitAssignments !== false) {
     addImplicitAssignmentSymbols(parsed, symbols);
   }
@@ -4498,6 +4499,121 @@ function addSymbolsFromVbNode(
       childClassName,
     );
   }
+}
+
+function retargetRedimSymbols(parsed: AspParsedDocument, symbols: VbSymbol[]): void {
+  const redimSymbols = new WeakSet<VbSymbol>();
+  for (const node of vbNodes(parsed)) {
+    if (node.kind !== "VariableDeclaration" || node.declarationKind !== "redim") {
+      continue;
+    }
+    for (const identifier of node.identifiers ?? []) {
+      const range = rangeFromOffsets(parsed.text, identifier.start, identifier.end);
+      const symbol = symbols.find(
+        (candidate) =>
+          sameSourceUri(candidate.sourceUri, parsed.uri) &&
+          candidate.name.toLowerCase() === identifier.text.toLowerCase() &&
+          sameRange(candidate.range, range),
+      );
+      if (symbol) {
+        redimSymbols.add(symbol);
+      }
+    }
+  }
+
+  const removed = new WeakSet<VbSymbol>();
+  for (const node of vbNodes(parsed)) {
+    if (node.kind !== "VariableDeclaration" || node.declarationKind !== "redim") {
+      continue;
+    }
+    for (const identifier of node.identifiers ?? []) {
+      const range = rangeFromOffsets(parsed.text, identifier.start, identifier.end);
+      const redimSymbol = symbols.find(
+        (candidate) =>
+          sameSourceUri(candidate.sourceUri, parsed.uri) &&
+          candidate.name.toLowerCase() === identifier.text.toLowerCase() &&
+          sameRange(candidate.range, range),
+      );
+      if (!redimSymbol || removed.has(redimSymbol)) {
+        continue;
+      }
+      const target = redimTargetSymbol(
+        parsed,
+        symbols,
+        identifier,
+        redimSymbol,
+        redimSymbols,
+        removed,
+      );
+      if (!target) {
+        continue;
+      }
+      const array = node.arrayDeclarations?.find(
+        (item) => item.name.start === identifier.start && item.name.end === identifier.end,
+      );
+      target.type = typeRef("Array");
+      target.typeName = "Array";
+      target.explicitType = true;
+      target.array = {
+        kind: "dynamic",
+        dimensions: array?.dimensions ?? [],
+      };
+      removed.add(redimSymbol);
+    }
+  }
+  if ([...symbols].some((symbol) => removed.has(symbol))) {
+    const kept = symbols.filter((symbol) => !removed.has(symbol));
+    symbols.length = 0;
+    symbols.push(...kept);
+    symbolIndexes.delete(symbols);
+  }
+}
+
+function redimTargetSymbol(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+  identifier: VbToken,
+  redimSymbol: VbSymbol,
+  redimSymbols: WeakSet<VbSymbol>,
+  removed: WeakSet<VbSymbol>,
+): VbSymbol | undefined {
+  const lowerName = identifier.text.toLowerCase();
+  const scope = scopeNodeAt(parsed, identifier.start);
+  const scopeName = scope?.nameToken?.text.toLowerCase();
+  const className = parentClassName(parsed, identifier.start)?.toLowerCase();
+  const candidates = symbols.filter(
+    (symbol) =>
+      symbol !== redimSymbol &&
+      !removed.has(symbol) &&
+      symbol.name.toLowerCase() === lowerName &&
+      redimTargetSymbolKind(symbol.kind) &&
+      isSymbolVisibleAt(symbol, parsed.uri, parsed.text, identifier.start),
+  );
+  const realCandidates = candidates.filter((symbol) => !redimSymbols.has(symbol));
+  const sameScope = realCandidates.find(
+    (symbol) =>
+      !symbol.memberOf &&
+      (symbol.scopeName?.toLowerCase() ?? "") === (scopeName ?? "") &&
+      Boolean(symbol.scopeName) === Boolean(scopeName),
+  );
+  const classField = className
+    ? realCandidates.find((symbol) => symbol.memberOf?.toLowerCase() === className)
+    : undefined;
+  return (
+    sameScope ??
+    classField ??
+    realCandidates.find((symbol) => !symbol.scopeName && !symbol.memberOf) ??
+    candidates.find(
+      (symbol) =>
+        redimSymbols.has(symbol) &&
+        sameSourceUri(symbol.sourceUri, parsed.uri) &&
+        offsetAt(parsed.text, symbol.range.start) < identifier.start,
+    )
+  );
+}
+
+function redimTargetSymbolKind(kind: VbSymbolKind): boolean {
+  return kind === "variable" || kind === "field" || kind === "parameter";
 }
 
 function addServerObjectSymbols(parsed: AspParsedDocument, symbols: VbSymbol[]): void {

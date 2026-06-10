@@ -244,6 +244,7 @@ const graphMessageEn = {
   "label.global": "Global",
   "label.globalConstant": "Global constant",
   "label.globalVariable": "Global variable",
+  "label.unresolvedGlobalVariable": "Unresolved global variable",
   "label.local": "Local",
   "label.localConstant": "Local constant",
   "label.localVariable": "Local variable",
@@ -300,6 +301,8 @@ const graphMessageEn = {
   "node.globalConstant.description": "Top-level VBScript Const declarations.",
   "node.globalVariable.description":
     "Top-level VBScript variables and inferred global object variables.",
+  "node.unresolvedGlobalVariable.description":
+    "Names inferred as global variables because no visible declaration was found.",
   "node.localConstant.description": "Procedure-local Const declarations and class constants.",
   "node.localVariable.description": "Procedure-local variables and class fields.",
   "node.member.description": "Built-in, configured, or unresolved object members.",
@@ -429,6 +432,7 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "label.global": "グローバル",
     "label.globalConstant": "グローバル定数",
     "label.globalVariable": "グローバル変数",
+    "label.unresolvedGlobalVariable": "未解決グローバル変数",
     "label.local": "ローカル",
     "label.localConstant": "ローカル定数",
     "label.localVariable": "ローカル変数",
@@ -485,6 +489,8 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "node.globalConstant.description": "top-level の VBScript Const declaration です。",
     "node.globalVariable.description":
       "top-level の VBScript variable と推論された global object variable です。",
+    "node.unresolvedGlobalVariable.description":
+      "visible declaration が見つからないため global 変数として推論した名前です。",
     "node.localConstant.description": "procedure-local Const declaration と class constant です。",
     "node.localVariable.description": "procedure-local variable と class field です。",
     "node.member.description": "built-in、configured、未解決の object member です。",
@@ -560,6 +566,7 @@ const darkNodeColors: Record<NodeColorCategory, string> = {
   property: "#ff9cac",
   member: "#ffb86c",
   globalVariable: "#ffcb6b",
+  unresolvedGlobalVariable: "#f78c6c",
   globalConstant: "#82aaff",
   localVariable: "#dcdcaa",
   localConstant: "#80cbc4",
@@ -580,6 +587,7 @@ const lightNodeColors: Record<NodeColorCategory, string> = {
   property: "#be123c",
   member: "#b45309",
   globalVariable: "#b45309",
+  unresolvedGlobalVariable: "#c2410c",
   globalConstant: "#1d4ed8",
   localVariable: "#854d0e",
   localConstant: "#0f766e",
@@ -688,6 +696,7 @@ const nodeCategoryLabels: Record<NodeColorCategory, string> = {
   property: graphText("label.property"),
   member: graphText("label.member"),
   globalVariable: graphText("label.globalVariable"),
+  unresolvedGlobalVariable: graphText("label.unresolvedGlobalVariable"),
   globalConstant: graphText("label.globalConstant"),
   localVariable: graphText("label.localVariable"),
   localConstant: graphText("label.localConstant"),
@@ -708,6 +717,7 @@ const nodeCategoryDescriptions: Record<NodeColorCategory, string> = {
   property: graphText("node.property.description"),
   member: graphText("node.member.description"),
   globalVariable: graphText("node.globalVariable.description"),
+  unresolvedGlobalVariable: graphText("node.unresolvedGlobalVariable.description"),
   globalConstant: graphText("node.globalConstant.description"),
   localVariable: graphText("node.localVariable.description"),
   localConstant: graphText("node.localConstant.description"),
@@ -727,6 +737,7 @@ const nodeCategoryOrder: NodeColorCategory[] = [
   "property",
   "member",
   "globalVariable",
+  "unresolvedGlobalVariable",
   "globalConstant",
   "localVariable",
   "localConstant",
@@ -3168,6 +3179,9 @@ function nodeTypeLabel(node: GraphNode): string {
       ? graphText("label.unresolvedMember")
       : graphText("label.unresolved");
   }
+  if (node.kind === "vbMemberReference") {
+    return graphText("label.member");
+  }
   switch (node.declarationKind) {
     case "function":
       return graphText("label.function");
@@ -3190,6 +3204,9 @@ function nodeTypeLabel(node: GraphNode): string {
     case "parameter":
       return graphText("label.parameter");
     case "variable":
+      if (node.unresolvedGlobal === true) {
+        return graphText("label.unresolvedGlobalVariable");
+      }
       return node.bindingScope === "local"
         ? graphText("label.localVariable")
         : graphText("label.globalVariable");
@@ -5101,6 +5118,9 @@ function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
   if (node.kind === "vbUnresolved") {
     return node.role === "member" ? "member" : "unresolved";
   }
+  if (node.kind === "vbMemberReference") {
+    return "member";
+  }
   if (node.externalKind === "member") {
     return "member";
   }
@@ -5126,6 +5146,9 @@ function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
     case "parameter":
       return "parameter";
     case "variable":
+      if (node.unresolvedGlobal === true) {
+        return "unresolvedGlobalVariable";
+      }
       return node.bindingScope === "local" ? "localVariable" : "globalVariable";
     case "constant":
       if (node.bindingScope === "local") {
@@ -5160,6 +5183,9 @@ function nodeLabel(node: GraphNode): string {
   }
   if (node.kind === "vbUnresolved" && node.role) {
     return `${node.role}: ${node.label}`;
+  }
+  if (node.kind === "vbMemberReference") {
+    return `${graphText("label.member")}: ${node.label}`;
   }
   return node.label;
 }

@@ -48,6 +48,15 @@ interface UsageCounts {
   calls: number;
 }
 
+interface UnresolvedGlobalAssignmentCandidate {
+  unresolvedGlobal: AspGraphNode;
+  assignmentTarget?: AspGraphNode;
+  uri: string;
+  range?: AspGraphRange;
+  includeDepth: number;
+  count: number;
+}
+
 type SummaryTone = "good" | "warning" | "danger" | "info" | "neutral";
 
 interface AnalysisContext {
@@ -58,8 +67,13 @@ interface AnalysisContext {
   includedFileUris: Set<string>;
   includedDeclarationIds: Set<string>;
   targetUsageLinks: AspGraphLink[];
+  internalUsageLinks: AspGraphLink[];
   externalUsageLinks: AspGraphLink[];
   includedUsageLinks: AspGraphLink[];
+  memberUsageLinks: AspGraphLink[];
+  unresolvedGlobalDeclarations: AspGraphNode[];
+  unresolvedGlobalUsageCounts: Map<string, UsageCounts>;
+  unresolvedGlobalAssignmentCandidates: UnresolvedGlobalAssignmentCandidate[];
   unresolvedLinks: AspGraphLink[];
   targetUsageCounts: Map<string, UsageCounts>;
   externalUsageCounts: Map<string, UsageCounts>;
@@ -75,6 +89,12 @@ type AnalysisTextKey =
   | "declarations"
   | "referenced"
   | "usages"
+  | "internalUsages"
+  | "externalFileUsages"
+  | "includedSymbolUsages"
+  | "memberUsages"
+  | "unresolvedGlobals"
+  | "unresolvedGlobalAssignments"
   | "unused"
   | "unresolved"
   | "scope"
@@ -89,6 +109,8 @@ type AnalysisTextKey =
   | "includesCount"
   | "missingIncludesCount"
   | "unresolvedCount"
+  | "unresolvedGlobalCount"
+  | "unresolvedGlobalAssignmentCount"
   | "unusedCount"
   | "truncated"
   | "yes"
@@ -127,6 +149,24 @@ type AnalysisTextKey =
   | "role"
   | "source"
   | "target"
+  | "usageFile"
+  | "usageOwner"
+  | "declarationFile"
+  | "declarationName"
+  | "declarationKind"
+  | "includeFile"
+  | "includedSymbol"
+  | "includedKind"
+  | "usedFromFile"
+  | "receiver"
+  | "memberName"
+  | "expression"
+  | "unresolvedGlobalFile"
+  | "unresolvedGlobalName"
+  | "assignmentFile"
+  | "assignmentTarget"
+  | "assignmentTargetFile"
+  | "includeDepth"
   | "count"
   | "metric"
   | "total"
@@ -157,6 +197,8 @@ type AnalysisTextKey =
   | "none"
   | "reviewUnusedAction"
   | "reviewUnresolvedAction"
+  | "reviewUnresolvedGlobalsAction"
+  | "reviewUnresolvedGlobalAssignmentsAction"
   | "reviewExternalUsagesAction"
   | "reviewMissingExternalUsagesAction"
   | "reviewIncludedUsagesAction"
@@ -172,6 +214,12 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     declarations: "Declarations",
     referenced: "Referenced",
     usages: "Usages",
+    internalUsages: "Internal Usage",
+    externalFileUsages: "External File Usage",
+    includedSymbolUsages: "Included Symbol Usage",
+    memberUsages: "Member Usage",
+    unresolvedGlobals: "Unresolved Global Variables",
+    unresolvedGlobalAssignments: "Unresolved Global Assignment Candidates",
     unused: "Unused",
     unresolved: "Unresolved",
     scope: "Scope",
@@ -186,6 +234,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     includesCount: "Includes",
     missingIncludesCount: "Missing includes",
     unresolvedCount: "Unresolved",
+    unresolvedGlobalCount: "Unresolved globals",
+    unresolvedGlobalAssignmentCount: "Unresolved global assignment candidates",
     unusedCount: "Unused",
     truncated: "Truncated",
     yes: "Yes",
@@ -224,6 +274,24 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     role: "Role",
     source: "Source",
     target: "Target",
+    usageFile: "Usage file",
+    usageOwner: "Usage owner",
+    declarationFile: "Declaration file",
+    declarationName: "Declaration",
+    declarationKind: "Declaration kind",
+    includeFile: "Include file",
+    includedSymbol: "Included symbol",
+    includedKind: "Included kind",
+    usedFromFile: "Used from file",
+    receiver: "Receiver",
+    memberName: "Member",
+    expression: "Expression",
+    unresolvedGlobalFile: "Unresolved global file",
+    unresolvedGlobalName: "Unresolved global",
+    assignmentFile: "Assignment file",
+    assignmentTarget: "Assignment target",
+    assignmentTargetFile: "Assignment target file",
+    includeDepth: "Include depth",
     count: "Count",
     metric: "Metric",
     total: "Total",
@@ -254,9 +322,13 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     none: "None",
     reviewUnusedAction: "Review the Unused sheet before removing declarations.",
     reviewUnresolvedAction: "Review the Unresolved sheet and fix name resolution.",
-    reviewExternalUsagesAction: "Review the Usages sheet for other-file callers.",
+    reviewUnresolvedGlobalsAction:
+      "Review the Unresolved Global Variables sheet and decide whether declarations are missing.",
+    reviewUnresolvedGlobalAssignmentsAction:
+      "Review the Unresolved Global Assignment Candidates sheet for possible cross-file writes.",
+    reviewExternalUsagesAction: "Review the External File Usage sheet for other-file callers.",
     reviewMissingExternalUsagesAction: "No other-file usages were found for the target file.",
-    reviewIncludedUsagesAction: "Review Included file usage rows for include dependencies.",
+    reviewIncludedUsagesAction: "Review the Included Symbol Usage sheet for include dependencies.",
     reviewMissingIncludedUsagesAction: "No included-file symbol usages were found.",
   },
   ja: {
@@ -268,6 +340,12 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     declarations: "宣言",
     referenced: "被参照",
     usages: "使用箇所",
+    internalUsages: "内部使用",
+    externalFileUsages: "外部ファイルからの使用",
+    includedSymbolUsages: "include 先シンボル使用",
+    memberUsages: "メンバー使用",
+    unresolvedGlobals: "未解決グローバル変数",
+    unresolvedGlobalAssignments: "未解決グローバル変数代入候補",
     unused: "未使用",
     unresolved: "未解決",
     scope: "解析範囲",
@@ -282,6 +360,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     includesCount: "include 数",
     missingIncludesCount: "missing include 数",
     unresolvedCount: "未解決数",
+    unresolvedGlobalCount: "未解決グローバル変数数",
+    unresolvedGlobalAssignmentCount: "未解決グローバル変数代入候補数",
     unusedCount: "未使用数",
     truncated: "切り詰め",
     yes: "あり",
@@ -320,6 +400,24 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     role: "role",
     source: "使用元",
     target: "対象",
+    usageFile: "使用ファイル",
+    usageOwner: "使用元ノード",
+    declarationFile: "宣言ファイル",
+    declarationName: "宣言名",
+    declarationKind: "宣言種別",
+    includeFile: "include ファイル",
+    includedSymbol: "include 先シンボル",
+    includedKind: "include 先種別",
+    usedFromFile: "使用しているファイル",
+    receiver: "receiver",
+    memberName: "メンバー名",
+    expression: "式",
+    unresolvedGlobalFile: "未解決グローバル変数ファイル",
+    unresolvedGlobalName: "未解決グローバル変数",
+    assignmentFile: "代入候補ファイル",
+    assignmentTarget: "代入対象",
+    assignmentTargetFile: "代入対象ファイル",
+    includeDepth: "include 元距離",
     count: "数",
     metric: "指標",
     total: "合計",
@@ -350,9 +448,12 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     none: "なし",
     reviewUnusedAction: "未使用 sheet で削除可否を確認",
     reviewUnresolvedAction: "未解決 sheet で名前解決を確認",
-    reviewExternalUsagesAction: "使用箇所 sheet で他ファイルからの利用元を確認",
+    reviewUnresolvedGlobalsAction: "未解決グローバル変数 sheet で宣言漏れか確認",
+    reviewUnresolvedGlobalAssignmentsAction:
+      "未解決グローバル変数代入候補 sheet で include 元からの代入を確認",
+    reviewExternalUsagesAction: "外部ファイルからの使用 sheet で利用元を確認",
     reviewMissingExternalUsagesAction: "対象ファイルは他ファイルから使われていない可能性あり",
-    reviewIncludedUsagesAction: "参照ファイル sheet で include 依存を確認",
+    reviewIncludedUsagesAction: "include 先シンボル使用 sheet で include 依存を確認",
     reviewMissingIncludedUsagesAction: "include 先シンボルの使用なし",
   },
 };
@@ -372,6 +473,7 @@ const valueText: Record<AspGraphLocale, Record<string, string>> = {
     field: "Field",
     parameter: "Parameter",
     variable: "Variable",
+    unresolvedGlobalVariable: "Unresolved global variable",
     constant: "Constant",
     object: "Object",
     event: "Event",
@@ -409,6 +511,7 @@ const valueText: Record<AspGraphLocale, Record<string, string>> = {
     field: "フィールド",
     parameter: "パラメーター",
     variable: "変数",
+    unresolvedGlobalVariable: "未解決グローバル変数",
     constant: "定数",
     object: "オブジェクト",
     event: "イベント",
@@ -507,12 +610,37 @@ export function createAnalysisExcelSheets(
       referencedRows(context.targetDeclarations, locale, context.targetUsageCounts, fileNamesByUri),
     ),
     sheet(
-      text[locale].usages,
+      text[locale].internalUsages,
+      usageRows(context.internalUsageLinks, locale, nodesById, fileNamesByUri),
+    ),
+    sheet(
+      text[locale].externalFileUsages,
       usageRows(context.externalUsageLinks, locale, nodesById, fileNamesByUri),
     ),
     sheet(
-      text[locale].includes,
+      text[locale].includedSymbolUsages,
       includedUsageRows(context.includedUsageLinks, locale, nodesById, fileNamesByUri),
+    ),
+    sheet(
+      text[locale].memberUsages,
+      memberUsageRows(context.memberUsageLinks, locale, nodesById, fileNamesByUri),
+    ),
+    sheet(
+      text[locale].unresolvedGlobals,
+      unresolvedGlobalRows(
+        context.unresolvedGlobalDeclarations,
+        locale,
+        context.unresolvedGlobalUsageCounts,
+        fileNamesByUri,
+      ),
+    ),
+    sheet(
+      text[locale].unresolvedGlobalAssignments,
+      unresolvedGlobalAssignmentRows(
+        context.unresolvedGlobalAssignmentCandidates,
+        locale,
+        fileNamesByUri,
+      ),
     ),
     sheet(
       text[locale].unused,
@@ -547,6 +675,11 @@ function summaryRows(
     [t.callsCount, usageLinkCount(context.targetUsageLinks, "calls")],
     [t.includesCount, context.includedFileUris.size],
     [t.unresolvedCount, usageLinkCount(context.unresolvedLinks)],
+    [t.unresolvedGlobalCount, context.unresolvedGlobalDeclarations.length],
+    [
+      t.unresolvedGlobalAssignmentCount,
+      context.unresolvedGlobalAssignmentCandidates.reduce((sum, item) => sum + item.count, 0),
+    ],
     [t.unusedCount, context.unusedDeclarations.length],
     [t.truncated, payload.truncated?.reason ?? ""],
   ];
@@ -757,6 +890,11 @@ function reviewPriorityItems(
   const externalUsageCount = usageLinkCount(context.externalUsageLinks);
   const includedUsageCount = usageLinkCount(context.includedUsageLinks);
   const unresolvedCount = usageLinkCount(context.unresolvedLinks);
+  const unresolvedGlobalCount = context.unresolvedGlobalDeclarations.length;
+  const unresolvedGlobalAssignmentCount = context.unresolvedGlobalAssignmentCandidates.reduce(
+    (sum, item) => sum + item.count,
+    0,
+  );
   const unusedCount = context.unusedDeclarations.length;
   return [
     {
@@ -772,6 +910,21 @@ function reviewPriorityItems(
       status: unresolvedCount > 0 ? t.needsReview : t.ok,
       action: unresolvedCount > 0 ? t.reviewUnresolvedAction : t.ok,
       tone: unresolvedCount > 0 ? "danger" : "good",
+    },
+    {
+      label: t.unresolvedGlobalCount,
+      count: unresolvedGlobalCount,
+      status: unresolvedGlobalCount > 0 ? t.needsReview : t.ok,
+      action: unresolvedGlobalCount > 0 ? t.reviewUnresolvedGlobalsAction : t.ok,
+      tone: unresolvedGlobalCount > 0 ? "warning" : "good",
+    },
+    {
+      label: t.unresolvedGlobalAssignmentCount,
+      count: unresolvedGlobalAssignmentCount,
+      status: unresolvedGlobalAssignmentCount > 0 ? t.present : t.none,
+      action:
+        unresolvedGlobalAssignmentCount > 0 ? t.reviewUnresolvedGlobalAssignmentsAction : t.ok,
+      tone: unresolvedGlobalAssignmentCount > 0 ? "info" : "neutral",
     },
     {
       label: t.externalUsageCount,
@@ -812,7 +965,7 @@ function declarationKindSummaryRows(
     { total: number; used: number; unused: number; usageCount: number }
   >();
   for (const node of declarations) {
-    const key = node.declarationKind ?? "unknown";
+    const key = declarationKindKey(node);
     const entry = counts.get(key) ?? { total: 0, used: 0, unused: 0, usageCount: 0 };
     const usage = usageTotal(usageCounts.get(node.id));
     entry.total += 1;
@@ -865,7 +1018,7 @@ function topReferencedDeclarationRows(
     .slice(0, 10)
     .map(({ node, usage }) => [
       node.label,
-      valueLabel(node.declarationKind, locale),
+      valueLabel(declarationKindKey(node), locale),
       displayNameForUri(node.uri, fileNamesByUri),
       oneBasedLine(node.range),
       usageTotal(usage),
@@ -882,12 +1035,12 @@ function unusedByKindRows(
 ): Cell[][] {
   const counts = new Map<string, number>();
   for (const node of unusedDeclarations) {
-    const key = node.declarationKind ?? "unknown";
+    const key = declarationKindKey(node);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const totals = new Map<string, number>();
   for (const node of declarations) {
-    const key = node.declarationKind ?? "unknown";
+    const key = declarationKindKey(node);
     totals.set(key, (totals.get(key) ?? 0) + 1);
   }
   const max = maxCount([...counts.values()]);
@@ -920,15 +1073,26 @@ function includedUsageRows(
         valueLabel(link.role ?? link.label, locale),
         displayNameForUri(target?.uri, fileNamesByUri),
         target?.label ?? link.target,
+        valueLabel(target ? declarationKindKey(target) : undefined, locale),
         displayNameForUri(uri, fileNamesByUri),
         oneBasedLine(range),
         oneBasedColumn(range),
         link.ranges.length > 1 ? 1 : link.count,
       ]);
     })
-    .sort(compareRows(2, 3, 4, 5, 0));
+    .sort(compareRows(2, 3, 5, 6, 0));
   return [
-    header([t.usageKind, t.role, t.file, t.name, t.sourceFile, t.line, t.column, t.count]),
+    header([
+      t.usageKind,
+      t.role,
+      t.includeFile,
+      t.includedSymbol,
+      t.includedKind,
+      t.usedFromFile,
+      t.line,
+      t.column,
+      t.count,
+    ]),
     ...rows,
   ];
 }
@@ -983,7 +1147,7 @@ function referencedRows(
       return [
         displayNameForUri(node.uri, fileNamesByUri),
         node.label,
-        valueLabel(node.declarationKind, locale),
+        valueLabel(declarationKindKey(node), locale),
         node.memberOf ?? "",
         valueLabel(node.origin, locale),
         oneBasedLine(node.range),
@@ -1020,10 +1184,134 @@ function usageRows(
 ): Cell[][] {
   const t = text[locale];
   const rows = links
-    .flatMap((link) => usageLikeLinkRows(link, locale, nodesById, fileNamesByUri))
-    .sort(compareRows(4, 5, 0, 3));
+    .flatMap((link) => usageLinkRows(link, locale, nodesById, fileNamesByUri))
+    .sort(compareRows(2, 7, 8, 5));
   return [
-    header([t.usageKind, t.role, t.source, t.target, t.file, t.line, t.column, t.count]),
+    header([
+      t.usageKind,
+      t.role,
+      t.usageFile,
+      t.usageOwner,
+      t.declarationFile,
+      t.declarationName,
+      t.declarationKind,
+      t.line,
+      t.column,
+      t.count,
+    ]),
+    ...rows,
+  ];
+}
+
+function memberUsageRows(
+  links: AspGraphLink[],
+  locale: AspGraphLocale,
+  nodesById: Map<string, AspGraphNode>,
+  fileNamesByUri: Map<string, string>,
+): Cell[][] {
+  const t = text[locale];
+  const rows = links
+    .flatMap((link) => {
+      const target = nodesById.get(link.target);
+      return rangesForLink(link).map(({ uri, range }) => [
+        valueLabel(link.kind, locale),
+        valueLabel(link.role ?? link.label, locale),
+        target?.receiverName ?? "",
+        target?.memberName ?? target?.label ?? link.target,
+        target?.label ?? link.target,
+        displayNameForUri(uri, fileNamesByUri),
+        oneBasedLine(range),
+        oneBasedColumn(range),
+        link.ranges.length > 1 ? 1 : link.count,
+      ]);
+    })
+    .sort(compareRows(5, 6, 2, 3));
+  return [
+    header([
+      t.usageKind,
+      t.role,
+      t.receiver,
+      t.memberName,
+      t.expression,
+      t.usageFile,
+      t.line,
+      t.column,
+      t.count,
+    ]),
+    ...rows,
+  ];
+}
+
+function unresolvedGlobalRows(
+  declarations: AspGraphNode[],
+  locale: AspGraphLocale,
+  usageCounts: Map<string, UsageCounts>,
+  fileNamesByUri: Map<string, string>,
+): Cell[][] {
+  const t = text[locale];
+  const rows = declarations.sort(compareNodesByLocation(fileNamesByUri)).map((node) => {
+    const usage = usageCounts.get(node.id);
+    return [
+      displayNameForUri(node.uri, fileNamesByUri),
+      node.label,
+      valueLabel(declarationKindKey(node), locale),
+      valueLabel(node.bindingScope, locale),
+      oneBasedLine(node.range),
+      oneBasedColumn(node.range),
+      usageTotal(usage),
+      usage?.references ?? 0,
+      usage?.assignments ?? 0,
+      usage?.calls ?? 0,
+    ];
+  });
+  return [
+    header([
+      t.file,
+      t.name,
+      t.kind,
+      t.bindingScope,
+      t.line,
+      t.column,
+      t.usageCount,
+      t.referenceCount,
+      t.assignmentCount,
+      t.callCount,
+    ]),
+    ...rows,
+  ];
+}
+
+function unresolvedGlobalAssignmentRows(
+  candidates: UnresolvedGlobalAssignmentCandidate[],
+  locale: AspGraphLocale,
+  fileNamesByUri: Map<string, string>,
+): Cell[][] {
+  const t = text[locale];
+  const rows = candidates
+    .map((candidate) => [
+      displayNameForUri(candidate.unresolvedGlobal.uri, fileNamesByUri),
+      candidate.unresolvedGlobal.label,
+      displayNameForUri(candidate.uri, fileNamesByUri),
+      candidate.assignmentTarget?.label ?? "",
+      displayNameForUri(candidate.assignmentTarget?.uri, fileNamesByUri),
+      candidate.includeDepth,
+      oneBasedLine(candidate.range),
+      oneBasedColumn(candidate.range),
+      candidate.count,
+    ])
+    .sort(compareRows(0, 1, 5, 2, 6, 7));
+  return [
+    header([
+      t.unresolvedGlobalFile,
+      t.unresolvedGlobalName,
+      t.assignmentFile,
+      t.assignmentTarget,
+      t.assignmentTargetFile,
+      t.includeDepth,
+      t.line,
+      t.column,
+      t.count,
+    ]),
     ...rows,
   ];
 }
@@ -1056,7 +1344,7 @@ function unusedDeclarationRows(
       return [
         displayNameForUri(node.uri, fileNamesByUri),
         node.label,
-        valueLabel(node.declarationKind, locale),
+        valueLabel(declarationKindKey(node), locale),
         node.memberOf ?? "",
         valueLabel(node.bindingScope, locale),
         node.typeName ?? "",
@@ -1099,7 +1387,7 @@ function declarationRow(
   return [
     displayNameForUri(node.uri, fileNamesByUri),
     node.label,
-    valueLabel(node.declarationKind, locale),
+    valueLabel(declarationKindKey(node), locale),
     node.memberOf ?? "",
     valueLabel(node.bindingScope, locale),
     valueLabel(node.procedureKind, locale),
@@ -1136,6 +1424,29 @@ function usageLikeLinkRows(
   ]);
 }
 
+function usageLinkRows(
+  link: AspGraphLink,
+  locale: AspGraphLocale,
+  nodesById: Map<string, AspGraphNode>,
+  fileNamesByUri: Map<string, string>,
+): Cell[][] {
+  const source = nodesById.get(link.source);
+  const target = nodesById.get(link.target);
+  const rangeCount = link.ranges.length > 1 ? 1 : link.count;
+  return rangesForLink(link).map(({ uri, range }) => [
+    valueLabel(link.kind, locale),
+    valueLabel(link.role ?? link.label, locale),
+    displayNameForUri(uri, fileNamesByUri),
+    source?.label ?? source?.fileName ?? link.source,
+    displayNameForUri(target?.uri, fileNamesByUri),
+    target?.label ?? target?.fileName ?? link.target,
+    valueLabel(target ? declarationKindKey(target) : undefined, locale),
+    oneBasedLine(range),
+    oneBasedColumn(range),
+    rangeCount,
+  ]);
+}
+
 function analysisContext(
   payload: AspGraphPayload,
   options: AnalysisExcelOptions,
@@ -1147,6 +1458,7 @@ function analysisContext(
   const rootDeclarations = sourceDeclarationNodes(payload.nodes)
     .filter((node) => sameGraphUri(node.uri, targetUri) && isAnalysisDeclaration(node))
     .sort(compareNodesByLocation(fileNamesByUri));
+  const rootDeclarationIds = new Set(rootDeclarations.map((node) => node.id));
   const includedFileUris = includedFileUrisForTarget(payload, targetUri, nodesById);
   const includedDeclarations = sourceDeclarationNodes(payload.nodes).filter(
     (node) =>
@@ -1166,20 +1478,40 @@ function analysisContext(
     ...includedDeclarations.filter((node) => usedIncludedDeclarationIds.has(node.id)),
   ].sort(compareNodesByLocation(fileNamesByUri));
   const targetDeclarationIds = new Set(targetDeclarations.map((node) => node.id));
+  const unresolvedGlobalDeclarations = targetDeclarations.filter(isUnresolvedGlobalDeclaration);
+  const unresolvedGlobalDeclarationIds = new Set(
+    unresolvedGlobalDeclarations.map((node) => node.id),
+  );
+  const unresolvedGlobalUsageLinks = filteredGraphLinks(
+    payload.links,
+    (link) => isUsageGraphLink(link) && unresolvedGlobalDeclarationIds.has(link.target),
+    () => true,
+  );
+  const unresolvedGlobalUsageCounts = usageCountsByTarget(unresolvedGlobalUsageLinks);
+  const unresolvedGlobalAssignmentCandidates = unresolvedGlobalAssignmentCandidatesForPayload(
+    payload,
+    unresolvedGlobalDeclarations,
+    nodesById,
+  );
+  const internalUsageLinks = filteredGraphLinks(
+    payload.links,
+    (link) => isUsageGraphLink(link) && rootDeclarationIds.has(link.target),
+    ({ uri }) => sameGraphUri(uri, targetUri),
+  );
   const externalUsageLinks = filteredGraphLinks(
     payload.links,
-    (link) => isUsageGraphLink(link) && targetDeclarationIds.has(link.target),
+    (link) => isUsageGraphLink(link) && rootDeclarationIds.has(link.target),
     ({ uri }) => !sameGraphUri(uri, targetUri),
   );
-  const targetUsageLinks = filteredGraphLinks(
+  const targetUsageLinks = [...internalUsageLinks, ...externalUsageLinks, ...includedUsageLinks];
+  const memberUsageLinks = filteredGraphLinks(
     payload.links,
-    (link) => isUsageGraphLink(link) && targetDeclarationIds.has(link.target),
-    () => true,
+    (link) => isMemberReferenceGraphLink(link, nodesById),
+    ({ uri }) => sameGraphUri(uri, targetUri),
   );
   const unresolvedLinks = filteredGraphLinks(
     payload.links,
-    (link) =>
-      link.kind === "unresolvedReference" || nodesById.get(link.target)?.kind === "vbUnresolved",
+    (link) => isUnresolvedGraphLink(link, nodesById),
     ({ uri }) => sameGraphUri(uri, targetUri),
   );
   const targetUsageCounts = usageCountsByTarget(targetUsageLinks);
@@ -1195,8 +1527,13 @@ function analysisContext(
     includedFileUris,
     includedDeclarationIds,
     targetUsageLinks,
+    internalUsageLinks,
     externalUsageLinks,
     includedUsageLinks,
+    memberUsageLinks,
+    unresolvedGlobalDeclarations,
+    unresolvedGlobalUsageCounts,
+    unresolvedGlobalAssignmentCandidates,
     unresolvedLinks,
     targetUsageCounts,
     externalUsageCounts,
@@ -1218,6 +1555,118 @@ function isExternallyVisibleDeclaration(node: AspGraphNode): boolean {
 
 function isAnalysisDeclaration(node: AspGraphNode): boolean {
   return node.kind === "vbDeclaration";
+}
+
+function isUnresolvedGlobalDeclaration(node: AspGraphNode): boolean {
+  return (
+    node.kind === "vbDeclaration" &&
+    node.declarationKind === "variable" &&
+    node.unresolvedGlobal === true
+  );
+}
+
+function declarationKindKey(node: AspGraphNode): string {
+  return isUnresolvedGlobalDeclaration(node)
+    ? "unresolvedGlobalVariable"
+    : (node.declarationKind ?? "unknown");
+}
+
+function unresolvedGlobalAssignmentCandidatesForPayload(
+  payload: AspGraphPayload,
+  unresolvedGlobals: AspGraphNode[],
+  nodesById: Map<string, AspGraphNode>,
+): UnresolvedGlobalAssignmentCandidate[] {
+  if (unresolvedGlobals.length === 0) {
+    return [];
+  }
+  const candidates: UnresolvedGlobalAssignmentCandidate[] = [];
+  for (const unresolvedGlobal of unresolvedGlobals) {
+    const ancestorDepths = includeAncestorDepthsByUri(payload, unresolvedGlobal.uri, nodesById);
+    if (ancestorDepths.size === 0) {
+      continue;
+    }
+    const unresolvedName = graphNameKey(unresolvedGlobal.label);
+    for (const link of payload.links) {
+      if (link.kind !== "assignments") {
+        continue;
+      }
+      const target = nodesById.get(link.target);
+      if (graphNameKey(target?.label ?? "") !== unresolvedName) {
+        continue;
+      }
+      for (const { uri, range } of rangesForLink(link)) {
+        const depth = uri ? ancestorDepths.get(graphUriIdentity(uri)) : undefined;
+        if (depth === undefined) {
+          continue;
+        }
+        candidates.push({
+          unresolvedGlobal,
+          assignmentTarget: target,
+          uri,
+          range,
+          includeDepth: depth,
+          count: link.ranges.length > 1 ? 1 : link.count,
+        });
+      }
+    }
+  }
+  return candidates;
+}
+
+function includeAncestorDepthsByUri(
+  payload: AspGraphPayload,
+  targetUri: string | undefined,
+  nodesById: Map<string, AspGraphNode>,
+): Map<string, number> {
+  if (!targetUri) {
+    return new Map();
+  }
+  const targetFileNodeIds = new Set(
+    payload.nodes
+      .filter((node) => isFileLikeGraphNode(node) && sameGraphUri(node.uri, targetUri))
+      .map((node) => node.id),
+  );
+  if (targetFileNodeIds.size === 0) {
+    return new Map();
+  }
+  const parentIdsByTargetId = new Map<string, string[]>();
+  for (const link of payload.links) {
+    if (link.kind !== "include") {
+      continue;
+    }
+    const existing = parentIdsByTargetId.get(link.target);
+    if (existing) {
+      existing.push(link.source);
+    } else {
+      parentIdsByTargetId.set(link.target, [link.source]);
+    }
+  }
+  const result = new Map<string, number>();
+  const visited = new Set(targetFileNodeIds);
+  const queue = [...targetFileNodeIds].map((id) => ({ id, depth: 0 }));
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      break;
+    }
+    for (const parentId of parentIdsByTargetId.get(current.id) ?? []) {
+      if (visited.has(parentId)) {
+        continue;
+      }
+      visited.add(parentId);
+      const parent = nodesById.get(parentId);
+      const depth = current.depth + 1;
+      if (parent?.uri) {
+        const parentUriKey = graphUriIdentity(parent.uri);
+        const previousDepth = result.get(parentUriKey);
+        if (previousDepth === undefined || depth < previousDepth) {
+          result.set(parentUriKey, depth);
+        }
+      }
+      queue.push({ id: parentId, depth });
+    }
+  }
+  return result;
 }
 
 function includedFileUrisForTarget(
@@ -1262,6 +1711,10 @@ function includedFileUrisForTarget(
   return result;
 }
 
+function graphNameKey(value: string): string {
+  return value.toLowerCase();
+}
+
 function filteredGraphLinks(
   links: AspGraphLink[],
   linkPredicate: (link: AspGraphLink) => boolean,
@@ -1278,6 +1731,24 @@ function filteredGraphLinks(
 
 function isUsageGraphLink(link: AspGraphLink): boolean {
   return link.kind === "references" || link.kind === "assignments" || link.kind === "calls";
+}
+
+function isMemberReferenceGraphLink(
+  link: AspGraphLink,
+  nodesById: Map<string, AspGraphNode>,
+): boolean {
+  const target = nodesById.get(link.target);
+  return (
+    target?.kind === "vbMemberReference" ||
+    (target?.kind === "vbUnresolved" && target.role === "member")
+  );
+}
+
+function isUnresolvedGraphLink(link: AspGraphLink, nodesById: Map<string, AspGraphNode>): boolean {
+  if (isMemberReferenceGraphLink(link, nodesById)) {
+    return false;
+  }
+  return link.kind === "unresolvedReference" || nodesById.get(link.target)?.kind === "vbUnresolved";
 }
 
 function usageCountsByTarget(links: AspGraphLink[]): Map<string, UsageCounts> {

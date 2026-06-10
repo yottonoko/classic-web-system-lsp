@@ -16,8 +16,12 @@ describe("analysis Excel sheets", () => {
       "チャート元データ",
       "宣言",
       "被参照",
-      "使用箇所",
-      "参照ファイル",
+      "内部使用",
+      "外部ファイルからの使用",
+      "include 先シンボル使用",
+      "メンバー使用",
+      "未解決グローバル変数",
+      "未解決グローバル変数代入候補",
       "未使用",
       "未解決",
     ]);
@@ -25,12 +29,14 @@ describe("analysis Excel sheets", () => {
       expect.arrayContaining([
         ["解析範囲", "ファイル"],
         ["ルート", "main.asp"],
-        ["宣言数", 9],
-        ["参照数", 5],
-        ["代入数", 3],
+        ["宣言数", 10],
+        ["参照数", 6],
+        ["代入数", 4],
         ["呼び出し数", 2],
         ["include 数", 1],
-        ["未解決数", 2],
+        ["未解決数", 1],
+        ["未解決グローバル変数数", 1],
+        ["未解決グローバル変数代入候補数", 1],
         ["未使用数", 2],
         ["切り詰め", "workspaceIndex>10"],
       ]),
@@ -38,10 +44,23 @@ describe("analysis Excel sheets", () => {
     expect(table(sheets, "分析サマリ")).toEqual(
       expect.arrayContaining([
         ["未使用の宣言", 2, "要確認", "未使用 sheet で削除可否を確認"],
-        ["未解決", 2, "要確認", "未解決 sheet で名前解決を確認"],
-        ["他ファイルからの使用数", 3, "あり", "使用箇所 sheet で他ファイルからの利用元を確認"],
-        ["include 先シンボル使用数", 5, "あり", "参照ファイル sheet で include 依存を確認"],
+        ["未解決", 1, "要確認", "未解決 sheet で名前解決を確認"],
+        ["未解決グローバル変数数", 1, "要確認", "未解決グローバル変数 sheet で宣言漏れか確認"],
+        [
+          "未解決グローバル変数代入候補数",
+          1,
+          "あり",
+          "未解決グローバル変数代入候補 sheet で include 元からの代入を確認",
+        ],
+        ["他ファイルからの使用数", 4, "あり", "外部ファイルからの使用 sheet で利用元を確認"],
+        [
+          "include 先シンボル使用数",
+          5,
+          "あり",
+          "include 先シンボル使用 sheet で include 依存を確認",
+        ],
         ["変数", 5, 3, 2, 6, expect.stringContaining("5")],
+        ["未解決グローバル変数", 1, 1, 0, 2, expect.stringContaining("1")],
         ["関数", 2, 2, 0, 2, expect.stringContaining("2")],
         ["定数", 1, 1, 0, 1, expect.stringContaining("1")],
         ["クラス", 1, 1, 0, 1, expect.stringContaining("1")],
@@ -53,6 +72,7 @@ describe("analysis Excel sheets", () => {
         ["SharedConst", "定数", "includes/util.inc", 3, 1, 1, 0, 0],
         ["SharedClass", "クラス", "includes/util.inc", 4, 1, 1, 0, 0],
         ["TargetValue", "変数", "main.asp", 3, 2, 1, 1, 0],
+        ["MissingValue", "未解決グローバル変数", "main.asp", 10, 2, 1, 1, 0],
         ["TargetProc", "関数", "main.asp", 4, 1, 0, 0, 1],
         ["LocalOnlyValue", "変数", "main.asp", 6, 2, 1, 1, 0],
         ["変数", 2, 5, 0.4, expect.stringContaining("2")],
@@ -76,7 +96,9 @@ describe("analysis Excel sheets", () => {
     expect(table(sheets, "チャート元データ")).toEqual(
       expect.arrayContaining([
         ["未使用の宣言", 2, "要確認", "未使用 sheet で削除可否を確認"],
+        ["他ファイルからの使用数", 4, "あり", "外部ファイルからの使用 sheet で利用元を確認"],
         ["変数", 5, 3, 2, 6],
+        ["未解決グローバル変数", 1, 1, 0, 2],
         ["関数", 2, 2, 0, 2],
         ["定数", 1, 1, 0, 1],
         ["クラス", 1, 1, 0, 1],
@@ -86,13 +108,25 @@ describe("analysis Excel sheets", () => {
     expect(
       sheets.find((sheet) => sheet.sheet === "チャート元データ")?.autoFilterRef,
     ).toBeUndefined();
-    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B12");
-    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:O10");
-    expect(sheets.find((sheet) => sheet.sheet === "被参照")?.autoFilterRef).toBe("A1:K8");
-    expect(sheets.find((sheet) => sheet.sheet === "使用箇所")?.autoFilterRef).toBe("A1:H4");
-    expect(sheets.find((sheet) => sheet.sheet === "参照ファイル")?.autoFilterRef).toBe("A1:H6");
+    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B14");
+    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:O11");
+    expect(sheets.find((sheet) => sheet.sheet === "被参照")?.autoFilterRef).toBe("A1:K9");
+    expect(sheets.find((sheet) => sheet.sheet === "内部使用")?.autoFilterRef).toBe("A1:J4");
+    expect(sheets.find((sheet) => sheet.sheet === "外部ファイルからの使用")?.autoFilterRef).toBe(
+      "A1:J5",
+    );
+    expect(sheets.find((sheet) => sheet.sheet === "include 先シンボル使用")?.autoFilterRef).toBe(
+      "A1:I6",
+    );
+    expect(sheets.find((sheet) => sheet.sheet === "メンバー使用")?.autoFilterRef).toBe("A1:I2");
+    expect(sheets.find((sheet) => sheet.sheet === "未解決グローバル変数")?.autoFilterRef).toBe(
+      "A1:J2",
+    );
+    expect(
+      sheets.find((sheet) => sheet.sheet === "未解決グローバル変数代入候補")?.autoFilterRef,
+    ).toBe("A1:I2");
     expect(sheets.find((sheet) => sheet.sheet === "未使用")?.autoFilterRef).toBe("A1:M3");
-    expect(sheets.find((sheet) => sheet.sheet === "未解決")?.autoFilterRef).toBe("A1:H3");
+    expect(sheets.find((sheet) => sheet.sheet === "未解決")?.autoFilterRef).toBe("A1:H2");
     expect(table(sheets, "宣言")).toEqual(
       expect.arrayContaining([
         [
@@ -233,6 +267,23 @@ describe("analysis Excel sheets", () => {
         ],
         [
           "main.asp",
+          "MissingValue",
+          "未解決グローバル変数",
+          "",
+          "グローバル",
+          "",
+          "",
+          "あり",
+          "",
+          10,
+          5,
+          1,
+          1,
+          0,
+          "使用あり",
+        ],
+        [
+          "main.asp",
           "UnusedValue",
           "変数",
           "",
@@ -259,22 +310,134 @@ describe("analysis Excel sheets", () => {
         ["main.asp", "TargetValue", "変数", "", "ソース", 3, 5, 2, 1, 1, 0],
         ["main.asp", "TargetProc", "関数", "", "ソース", 4, 5, 1, 0, 0, 1],
         ["main.asp", "LocalOnlyValue", "変数", "", "ソース", 6, 5, 2, 1, 1, 0],
+        ["main.asp", "MissingValue", "未解決グローバル変数", "", "ソース", 10, 5, 2, 1, 1, 0],
       ]),
     );
-    expect(table(sheets, "使用箇所")).toEqual(
+    expect(table(sheets, "内部使用")).toEqual(
       expect.arrayContaining([
-        ["参照", "読み取り", "consumer.asp", "TargetValue", "consumer.asp", 12, 5, 1],
-        ["代入", "書き込み", "consumer.asp", "TargetValue", "consumer.asp", 13, 5, 1],
-        ["呼び出し", "関数", "consumer.asp", "TargetProc", "consumer.asp", 14, 5, 1],
+        [
+          "参照",
+          "読み取り",
+          "main.asp",
+          "main.asp",
+          "main.asp",
+          "LocalOnlyValue",
+          "変数",
+          15,
+          5,
+          1,
+        ],
+        [
+          "代入",
+          "書き込み",
+          "main.asp",
+          "main.asp",
+          "main.asp",
+          "LocalOnlyValue",
+          "変数",
+          16,
+          5,
+          1,
+        ],
+        [
+          "参照",
+          "読み取り",
+          "main.asp",
+          "main.asp",
+          "main.asp",
+          "MissingValue",
+          "未解決グローバル変数",
+          10,
+          5,
+          1,
+        ],
       ]),
     );
-    expect(table(sheets, "参照ファイル")).toEqual(
+    expect(table(sheets, "外部ファイルからの使用")).toEqual(
       expect.arrayContaining([
-        ["参照", "読み取り", "includes/util.inc", "SharedValue", "main.asp", 6, 5, 1],
-        ["代入", "書き込み", "includes/util.inc", "SharedValue", "main.asp", 7, 5, 1],
-        ["呼び出し", "関数", "includes/util.inc", "DoWork", "main.asp", 8, 5, 1],
-        ["参照", "読み取り", "includes/util.inc", "SharedConst", "main.asp", 16, 5, 1],
-        ["参照", "読み取り", "includes/util.inc", "SharedClass", "main.asp", 17, 5, 1],
+        [
+          "参照",
+          "読み取り",
+          "consumer.asp",
+          "consumer.asp",
+          "main.asp",
+          "TargetValue",
+          "変数",
+          12,
+          5,
+          1,
+        ],
+        [
+          "代入",
+          "書き込み",
+          "consumer.asp",
+          "consumer.asp",
+          "main.asp",
+          "TargetValue",
+          "変数",
+          13,
+          5,
+          1,
+        ],
+        [
+          "呼び出し",
+          "関数",
+          "consumer.asp",
+          "consumer.asp",
+          "main.asp",
+          "TargetProc",
+          "関数",
+          14,
+          5,
+          1,
+        ],
+        [
+          "代入",
+          "書き込み",
+          "parent.asp",
+          "parent.asp",
+          "main.asp",
+          "MissingValue",
+          "未解決グローバル変数",
+          4,
+          5,
+          1,
+        ],
+      ]),
+    );
+    expect(table(sheets, "外部ファイルからの使用").flat()).not.toContain("other.asp");
+    expect(table(sheets, "include 先シンボル使用")).toEqual(
+      expect.arrayContaining([
+        ["参照", "読み取り", "includes/util.inc", "SharedValue", "変数", "main.asp", 6, 5, 1],
+        ["代入", "書き込み", "includes/util.inc", "SharedValue", "変数", "main.asp", 7, 5, 1],
+        ["呼び出し", "関数", "includes/util.inc", "DoWork", "関数", "main.asp", 8, 5, 1],
+        ["参照", "読み取り", "includes/util.inc", "SharedConst", "定数", "main.asp", 16, 5, 1],
+        ["参照", "読み取り", "includes/util.inc", "SharedClass", "クラス", "main.asp", 17, 5, 1],
+      ]),
+    );
+    expect(table(sheets, "メンバー使用")).toEqual(
+      expect.arrayContaining([
+        [
+          "呼び出し",
+          "メンバー",
+          "Customer",
+          "UnknownMember",
+          "Customer.UnknownMember",
+          "main.asp",
+          18,
+          5,
+          1,
+        ],
+      ]),
+    );
+    expect(table(sheets, "未解決グローバル変数")).toEqual(
+      expect.arrayContaining([
+        ["main.asp", "MissingValue", "未解決グローバル変数", "グローバル", 10, 5, 2, 1, 1, 0],
+      ]),
+    );
+    expect(table(sheets, "未解決グローバル変数代入候補")).toEqual(
+      expect.arrayContaining([
+        ["main.asp", "MissingValue", "parent.asp", "MissingValue", "main.asp", 1, 4, 5, 1],
       ]),
     );
     expect(table(sheets, "未使用")).toEqual(
@@ -286,9 +449,10 @@ describe("analysis Excel sheets", () => {
     expect(table(sheets, "未解決")).toEqual(
       expect.arrayContaining([
         ["呼び出し", "プロシージャ", "main.asp", "MissingProc", "main.asp", 9, 5, 1],
-        ["未解決参照", "読み取り", "main.asp", "MissingValue", "main.asp", 10, 5, 1],
       ]),
     );
+    expect(table(sheets, "未解決").flat()).not.toContain("UnknownMember");
+    expect(table(sheets, "未解決").flat()).not.toContain("MissingValue");
   });
 
   it("checks unused functions, local variables, constants and parameters", () => {
@@ -423,7 +587,7 @@ describe("analysis Excel sheets", () => {
         sheets.find((sheet) => sheet.sheet === "宣言")!,
         { sheetId: "4", sheetIndex: 3 },
       ),
-    ).toContain('<autoFilter ref="A1:O10"/>');
+    ).toContain('<autoFilter ref="A1:O11"/>');
   });
 });
 
@@ -444,6 +608,8 @@ function analysisPayload(): AspGraphPayload {
   const mainUri = "file:///workspace/main.asp";
   const utilUri = "file:///workspace/includes/util.inc";
   const consumerUri = "file:///workspace/consumer.asp";
+  const otherUri = "file:///workspace/other.asp";
+  const parentUri = "file:///workspace/parent.asp";
   return {
     scope: "document",
     rootUri: mainUri,
@@ -471,6 +637,22 @@ function analysisPayload(): AspGraphPayload {
         label: "consumer.asp",
         uri: consumerUri,
         fileName: "consumer.asp",
+        exists: true,
+      },
+      {
+        id: "file:/workspace/other.asp",
+        kind: "file",
+        label: "other.asp",
+        uri: otherUri,
+        fileName: "other.asp",
+        exists: true,
+      },
+      {
+        id: "file:/workspace/parent.asp",
+        kind: "file",
+        label: "parent.asp",
+        uri: parentUri,
+        fileName: "parent.asp",
         exists: true,
       },
       {
@@ -574,11 +756,26 @@ function analysisPayload(): AspGraphPayload {
         range: range(8, 4),
       },
       {
-        id: "unresolved:missingvalue",
-        kind: "vbUnresolved",
+        id: "vb:missing-value",
+        kind: "vbDeclaration",
         label: "MissingValue",
         uri: mainUri,
         range: range(9, 4),
+        declarationKind: "variable",
+        bindingScope: "global",
+        implicit: true,
+        unresolvedGlobal: true,
+        origin: "source",
+      },
+      {
+        id: "member:customer.unknownmember",
+        kind: "vbMemberReference",
+        label: "Customer.UnknownMember",
+        uri: mainUri,
+        range: range(17, 4),
+        role: "member",
+        receiverName: "Customer",
+        memberName: "UnknownMember",
       },
     ],
     links: [
@@ -595,6 +792,22 @@ function analysisPayload(): AspGraphPayload {
           mode: "file",
           exists: true,
           resolvedUri: utilUri,
+          pathCaseMatches: true,
+        },
+      },
+      {
+        id: "link:include-main-from-parent",
+        source: "file:/workspace/parent.asp",
+        target: "file:/workspace/main.asp",
+        kind: "include",
+        label: "main.asp",
+        count: 1,
+        ranges: [{ uri: parentUri, range: range(0, 5) }],
+        include: {
+          path: "main.asp",
+          mode: "file",
+          exists: true,
+          resolvedUri: mainUri,
           pathCaseMatches: true,
         },
       },
@@ -694,6 +907,16 @@ function analysisPayload(): AspGraphPayload {
         ranges: [{ uri: mainUri, range: range(16, 4) }],
       },
       {
+        id: "link:other-ref-shared",
+        source: "file:/workspace/other.asp",
+        target: "vb:shared",
+        kind: "references",
+        label: "read",
+        role: "read",
+        count: 1,
+        ranges: [{ uri: otherUri, range: range(20, 4) }],
+      },
+      {
         id: "link:ref-target-value",
         source: "file:/workspace/consumer.asp",
         target: "vb:target-value",
@@ -756,25 +979,45 @@ function analysisPayload(): AspGraphPayload {
       {
         id: "link:ref-missing",
         source: "file:/workspace/main.asp",
-        target: "unresolved:missingvalue",
-        kind: "unresolvedReference",
+        target: "vb:missing-value",
+        kind: "references",
         label: "read",
         role: "read",
         count: 1,
         ranges: [{ uri: mainUri, range: range(9, 4) }],
       },
+      {
+        id: "link:assign-missing-parent",
+        source: "file:/workspace/parent.asp",
+        target: "vb:missing-value",
+        kind: "assignments",
+        label: "write",
+        role: "write",
+        count: 1,
+        ranges: [{ uri: parentUri, range: range(3, 4) }],
+      },
+      {
+        id: "link:member-unknown",
+        source: "file:/workspace/main.asp",
+        target: "member:customer.unknownmember",
+        kind: "calls",
+        label: "member",
+        role: "member",
+        count: 1,
+        ranges: [{ uri: mainUri, range: range(17, 4) }],
+      },
     ],
     stats: {
-      files: 3,
-      declarations: 9,
-      references: 5,
-      assignments: 3,
-      calls: 3,
+      files: 5,
+      declarations: 10,
+      references: 7,
+      assignments: 4,
+      calls: 4,
       unresolvedReferences: 1,
-      includes: 1,
+      includes: 2,
       missingIncludes: 0,
-      nodes: 14,
-      links: 18,
+      nodes: 17,
+      links: 22,
     },
     truncated: {
       reason: "workspaceIndex>10",

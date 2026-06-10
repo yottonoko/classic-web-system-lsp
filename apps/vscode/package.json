@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.5.41",
+  "version": "0.5.42",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -609,6 +609,16 @@
           "type": "boolean",
           "default": false,
           "description": "%configuration.codeLens.includes.description%"
+        },
+        "aspLsp.rename.updateIncludesOnFileRename": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.rename.updateIncludesOnFileRename.description%"
+        },
+        "aspLsp.rename.workspaceSymbolRename": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.rename.workspaceSymbolRename.description%"
         },
         "aspLsp.styleExtraction.insertionMode": {
           "type": "string",

@@ -1703,13 +1703,17 @@ function flowchartLink(
     id: `${role}:${declaration.id}:${label}`,
     label: displayLabel,
     role,
-    symbolKind: declaration.kind,
+    symbolKind: flowchartSymbolKind(declaration),
     target: {
       uri: declaration.uri,
       range: declaration.range,
       nameRange: declaration.nameRange,
     },
   };
+}
+
+function flowchartSymbolKind(declaration: AspFlowchartResolvedDeclaration): string {
+  return declaration.unresolvedGlobal === true ? "unresolvedGlobalVariable" : declaration.kind;
 }
 
 function flowchartDeclarationListLabel(

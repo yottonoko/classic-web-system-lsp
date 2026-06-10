@@ -52,6 +52,8 @@
   "configuration.codeLens.referenceClassMembers.description": "VBScript class field と class constant の reference count CodeLens を表示します。",
   "configuration.codeLens.referenceScope.description": "VBScript reference count CodeLens が workspace 全体を使うか現在解析済み file だけを使うかを制御します。",
   "configuration.codeLens.includes.description": "Classic ASP include CodeLens を表示します。",
+  "configuration.rename.updateIncludesOnFileRename.description": "file rename operation 時に Classic ASP include directive を更新します。既定では無効で、無効時は file rename で他ファイルを書き換えません。",
+  "configuration.rename.workspaceSymbolRename.description": "symbol / selector rename operation で他の Classic ASP workspace file も編集することを許可します。既定では無効で、同一ファイル内の rename edit は有効のままです。",
   "configuration.styleExtraction.insertionMode.description": "inline style 抽出 code action が CSS rule を挿入する場所を制御します。nearby は対象 tag の直前に style element を作り、reuseExistingStyleTag は既存 style element があれば一番近いものへ追記します。",
   "configuration.flowchart.maxTextSize.description": "Classic ASP flowchart を render するときに Mermaid が受け付ける text size の最大値です。",
   "configuration.flowchart.minZoom.description": "Classic ASP flowchart webview で使える最小 zoom 倍率です。",

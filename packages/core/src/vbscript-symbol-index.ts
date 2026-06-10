@@ -54,6 +54,8 @@ export interface VbIndexedDeclaration {
   procedureKind?: VbIndexedProcedureKind;
   parameters?: VbIndexedParameter[];
   implicit?: boolean;
+  unresolvedGlobal?: boolean;
+  redim?: boolean;
   typeName?: string;
   arrayKind?: "fixed" | "dynamic";
   arrayDimensions?: string[];
@@ -272,6 +274,7 @@ export function extractVbscriptSymbolIndex(
   };
   addServerObjectDeclarations(state, input.serverObjects);
   collectDeclarations(state);
+  retargetRedimDeclarations(state);
   applySimpleAssignmentTypes(state);
   const referenceResult = resolvedOptions.includeReferences
     ? collectReferences(state)
@@ -643,6 +646,7 @@ function addVariableDeclarations(
       typeName: entry.arrayKind ? "Array" : undefined,
       arrayKind: redim && entry.arrayKind ? "dynamic" : entry.arrayKind,
       arrayDimensions: entry.arrayDimensions,
+      redim,
     });
   }
 }
@@ -662,6 +666,8 @@ function addDeclaration(
     procedureKind?: VbIndexedProcedureKind;
     parameters?: VbIndexedParameter[];
     implicit?: boolean;
+    unresolvedGlobal?: boolean;
+    redim?: boolean;
     sourceRange?: Range;
     typeName?: string;
     arrayKind?: "fixed" | "dynamic";
@@ -683,6 +689,8 @@ function addDeclaration(
     procedureKind: input.procedureKind,
     parameters: input.parameters,
     implicit: input.implicit,
+    unresolvedGlobal: input.unresolvedGlobal,
+    redim: input.redim,
     sourceRange: input.sourceRange,
     typeName: input.typeName,
     arrayKind: input.arrayKind,
@@ -691,6 +699,80 @@ function addDeclaration(
   state.declarations.push(declaration);
   state.declarationNameKeys.add(tokenKey(input.nameToken));
   return declaration;
+}
+
+function retargetRedimDeclarations(state: SymbolIndexBuildState): void {
+  const removedIds = new Set<string>();
+  for (const declaration of state.declarations) {
+    if (!declaration.redim || removedIds.has(declaration.id)) {
+      continue;
+    }
+    const target = redimTargetDeclaration(state, declaration, removedIds);
+    if (!target) {
+      continue;
+    }
+    target.typeName = "Array";
+    target.arrayKind = declaration.arrayKind ?? "dynamic";
+    target.arrayDimensions = declaration.arrayDimensions;
+    removedIds.add(declaration.id);
+    state.declarationNameKeys.delete(declarationNameKey(state, declaration));
+  }
+  if (removedIds.size > 0) {
+    state.declarations = state.declarations.filter(
+      (declaration) => !removedIds.has(declaration.id),
+    );
+  }
+}
+
+function redimTargetDeclaration(
+  state: SymbolIndexBuildState,
+  declaration: VbIndexedDeclaration,
+  removedIds: Set<string>,
+): VbIndexedDeclaration | undefined {
+  const candidates = state.declarations.filter(
+    (candidate) =>
+      candidate.id !== declaration.id &&
+      !removedIds.has(candidate.id) &&
+      candidate.normalizedName === declaration.normalizedName &&
+      redimTargetKind(candidate.kind),
+  );
+  const realCandidates = candidates.filter((candidate) => !candidate.redim);
+  const declarationStart = declarationStartOffset(state, declaration);
+  const classScope = activeScopeAt(state, declarationStart, "class");
+
+  return (
+    realCandidates.find((candidate) => candidate.scopeId === declaration.scopeId) ??
+    (classScope?.declarationId
+      ? realCandidates.find((candidate) => candidate.parentId === classScope.declarationId)
+      : undefined) ??
+    realCandidates.find((candidate) => candidate.scopeId === globalScopeId) ??
+    candidates.find(
+      (candidate) =>
+        candidate.redim &&
+        candidate.scopeId === declaration.scopeId &&
+        declarationStartOffset(state, candidate) < declarationStart,
+    )
+  );
+}
+
+function redimTargetKind(kind: VbIndexedDeclarationKind): boolean {
+  return kind === "variable" || kind === "field" || kind === "parameter";
+}
+
+function declarationNameKey(
+  state: SymbolIndexBuildState,
+  declaration: VbIndexedDeclaration,
+): string {
+  const start = offsetAt(state.text, declaration.nameRange.start);
+  const end = offsetAt(state.text, declaration.nameRange.end);
+  return `${start}:${end}`;
+}
+
+function declarationStartOffset(
+  state: SymbolIndexBuildState,
+  declaration: VbIndexedDeclaration,
+): number {
+  return offsetAt(state.text, declaration.nameRange.start);
 }
 
 function applySimpleAssignmentTypes(state: SymbolIndexBuildState): void {
@@ -831,10 +913,9 @@ function collectReferences(state: SymbolIndexBuildState): {
   const callSites: VbIndexedCallSite[] = [];
   const deferredExternalRefs: VbDeferredExternalReference[] = [];
   const lookup = declarationLookup(state.declarations);
-  const collectImplicitReferences =
-    state.options.includeImplicitVariables && !state.hasOptionExplicit;
+  const collectImplicitReferences = state.options.includeImplicitVariables === true;
   const deferredReferenceTokens: IndexedReferenceToken[] = [];
-  const implicitWriteReferenceTokens: IndexedReferenceToken[] = [];
+  const implicitVariableReferenceTokens: IndexedReferenceToken[] = [];
   for (let index = 0; index < state.tokens.length; index += 1) {
     const token = state.tokens[index];
     if (token.kind !== "identifier" || state.declarationNameKeys.has(tokenKey(token))) {
@@ -881,7 +962,7 @@ function collectReferences(state: SymbolIndexBuildState): {
       const item = { reference, token, tokenIndex: index };
       deferredReferenceTokens.push(item);
       if (isImplicitVariableDeclarationCandidate(reference)) {
-        implicitWriteReferenceTokens.push(item);
+        implicitVariableReferenceTokens.push(item);
       }
     }
     if (!collectImplicitReferences && !resolved && expectedKinds) {
@@ -904,7 +985,7 @@ function collectReferences(state: SymbolIndexBuildState): {
     const implicitNames = addImplicitVariableDeclarationsFromReferences(
       state,
       lookup,
-      implicitWriteReferenceTokens,
+      implicitVariableReferenceTokens,
     );
     resolveReferencesWithImplicitDeclarations(
       state,
@@ -936,19 +1017,15 @@ function addImplicitVariableDeclarationsFromReferences(
     if (resolveDeclaration(state, lookup, token, reference.role, reference.baseName)) {
       continue;
     }
-    const procedureScope = activeScopeAt(state, token.start, "procedure");
-    const classScope = activeScopeAt(state, token.start, "class");
-    const classField = !procedureScope && classScope;
     const declaration = addDeclaration(state, {
-      kind: classField ? "field" : "variable",
+      kind: "variable",
       nameToken: token,
       start: token.start,
       end: token.end,
-      scopeId: procedureScope?.id ?? classScope?.id ?? globalScopeId,
-      parentId: classField ? classScope.declarationId : undefined,
-      memberOf: classField ? classScope.name : undefined,
-      bindingScope: classField ? undefined : procedureScope ? "local" : "global",
+      scopeId: globalScopeId,
+      bindingScope: "global",
       implicit: true,
+      unresolvedGlobal: true,
     });
     addDeclarationToLookup(lookup, declaration);
     implicitNames.add(declaration.normalizedName);
@@ -958,7 +1035,7 @@ function addImplicitVariableDeclarationsFromReferences(
 
 function isImplicitVariableDeclarationCandidate(reference: VbIndexedReference): boolean {
   return (
-    reference.role === "write" &&
+    (reference.role === "read" || reference.role === "write") &&
     !reference.resolvedId &&
     !reference.baseName &&
     reference.expectedKinds?.includes("variable") === true &&
@@ -994,7 +1071,9 @@ function resolveReferencesWithImplicitDeclarations(
     }
     reference.resolvedId = resolved.id;
     reference.bindingScope = bindingScopeForReference(resolved, undefined);
-    reference.expectedKinds = undefined;
+    if (resolved.unresolvedGlobal !== true) {
+      reference.expectedKinds = undefined;
+    }
     reference.deferredKey = undefined;
   }
 }
@@ -1368,6 +1447,9 @@ function referenceRole(tokens: VbToken[], index: number): VbIndexedReferenceRole
   if (previousLower === "new") {
     return "new";
   }
+  if (isRedimTargetToken(tokens, index)) {
+    return "write";
+  }
   if (isWriteTarget(tokens, index)) {
     return "write";
   }
@@ -1375,6 +1457,17 @@ function referenceRole(tokens: VbToken[], index: number): VbIndexedReferenceRole
     return "call";
   }
   return "read";
+}
+
+function isRedimTargetToken(tokens: VbToken[], index: number): boolean {
+  const startIndex = statementStartIndex(tokens, index);
+  const first = lower(tokens[startIndex]);
+  if (first !== "redim") {
+    return false;
+  }
+  const namesStart = lower(tokens[startIndex + 1]) === "preserve" ? startIndex + 2 : startIndex + 1;
+  const token = tokens[index];
+  return declarationNameEntries(tokens, namesStart).some((entry) => entry.token === token);
 }
 
 function isWriteTarget(tokens: VbToken[], index: number): boolean {
@@ -1427,12 +1520,17 @@ function isFunctionReturnAssignmentReference(
 }
 
 function assignmentTargetIndex(tokens: VbToken[], index: number): number {
+  let cursor = statementStartIndex(tokens, index);
+  const first = lower(tokens[cursor]);
+  return first === "set" || first === "let" ? nextNonBoundaryIndex(tokens, cursor + 1) : cursor;
+}
+
+function statementStartIndex(tokens: VbToken[], index: number): number {
   let cursor = index;
   while (cursor > 0 && !isStatementBoundary(tokens[cursor - 1])) {
     cursor -= 1;
   }
-  const first = lower(tokens[cursor]);
-  return first === "set" || first === "let" ? nextNonBoundaryIndex(tokens, cursor + 1) : cursor;
+  return cursor;
 }
 
 function statementHasEqualsAfter(tokens: VbToken[], index: number): boolean {

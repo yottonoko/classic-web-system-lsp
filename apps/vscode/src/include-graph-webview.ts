@@ -54,6 +54,7 @@ export type AspGraphNodeCategory =
   | "property"
   | "member"
   | "globalVariable"
+  | "unresolvedGlobalVariable"
   | "globalConstant"
   | "localVariable"
   | "localConstant"
@@ -64,7 +65,7 @@ export type AspGraphLinkFilterCategory = AspGraphLink["kind"] | "member";
 
 export interface AspGraphNode {
   id: string;
-  kind: "file" | "missingInclude" | "vbDeclaration" | "vbUnresolved";
+  kind: "file" | "missingInclude" | "vbDeclaration" | "vbUnresolved" | "vbMemberReference";
   label: string;
   uri?: string;
   fileName?: string;
@@ -74,10 +75,13 @@ export interface AspGraphNode {
   exists?: boolean;
   declarationKind?: string;
   role?: string;
+  receiverName?: string;
+  memberName?: string;
   memberOf?: string;
   bindingScope?: string;
   procedureKind?: string;
   implicit?: boolean;
+  unresolvedGlobal?: boolean;
   typeName?: string;
   arrayKind?: string;
   arrayDimensions?: string[];
