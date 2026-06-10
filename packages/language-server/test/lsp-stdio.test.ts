@@ -7967,9 +7967,9 @@ End Sub
             (node) => node.kind === "file" && node.label === "common.inc" && node.isRoot === true,
           ),
         ).toBe(false);
-        expect(graph.nodes?.some((node) => node.kind === "file" && node.exists === false)).toBe(
-          true,
-        );
+        expect(
+          graph.nodes?.some((node) => node.kind === "missingInclude" && node.exists === false),
+        ).toBe(true);
         expect(
           graph.nodes?.some((node) => node.kind === "vbDeclaration" && node.label === "Render"),
         ).toBe(true);
@@ -8032,7 +8032,7 @@ End Sub
 <%
 Sub Main()
   If ready Then
-    Call Render()
+    Call Included()
   Else
     Exit Sub
   End If
@@ -8059,9 +8059,22 @@ End Sub
         expect(flowchart.fileName).toBe("default.asp");
         expect(flowchart.sections?.some((section) => section.label === "Sub Main")).toBe(true);
         expect(
-          flowchart.nodes?.some((node) => node.kind === "if" && node.label === "If ready"),
+          flowchart.nodes?.some((node) => node.kind === "if" && node.label === "Check ready"),
         ).toBe(true);
         expect(flowchart.nodes?.some((node) => node.kind === "call")).toBe(true);
+        expect(
+          flowchart.nodes?.some(
+            (node) =>
+              node.kind === "call" &&
+              Array.isArray(node.links) &&
+              node.links.some(
+                (link: Record<string, unknown>) =>
+                  link.label === "Sub Included" &&
+                  (link.target as Record<string, unknown> | undefined)?.uri ===
+                    `file://${path.join(tempDir, "common.inc")}`,
+              ),
+          ),
+        ).toBe(true);
         expect(flowchart.nodes?.some((node) => node.kind === "exit")).toBe(true);
         expect(flowchart.edges?.some((edge) => edge.label === "Yes")).toBe(true);
         expect(flowchart.includes?.[0]).toEqual(

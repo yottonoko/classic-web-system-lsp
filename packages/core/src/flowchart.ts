@@ -2,13 +2,19 @@ import { rangeFromOffsets } from "./position";
 import { parseVbscriptCst } from "./vbscript-cst";
 import type { Range } from "vscode-languageserver-types";
 import type {
+  AspFlowchartCallSite,
   AspFlowchartBuildOptions,
   AspFlowchartEdge,
   AspFlowchartInclude,
   AspFlowchartNode,
   AspFlowchartNodeKind,
+  AspFlowchartNodeLink,
   AspFlowchartPayload,
   AspFlowchartSection,
+  AspFlowchartSymbolDeclaration,
+  AspFlowchartSymbolDocument,
+  AspFlowchartSymbolReference,
+  AspLocale,
   AspParsedDocument,
   AspRegion,
   VbToken,
@@ -27,6 +33,58 @@ interface ProcedureBlock {
   endIndex: number;
   label: string;
   kind: "procedure" | "property";
+}
+
+interface ClassBlock {
+  declaration: VbStatement;
+  startIndex: number;
+  endIndex: number;
+  label: string;
+}
+
+interface FlowchartText {
+  topLevel: string;
+  start: string;
+  end: string;
+  else: string;
+  yes: string;
+  no: string;
+  repeat: string;
+  exit: string;
+  ifCondition(condition: string): string;
+  elseifCondition(condition: string): string;
+  selectCase(expression: string): string;
+  caseBranch(expression: string): string;
+  forRange(variable: string, start: string, end: string, step?: string): string;
+  forEach(variable: string, collection: string): string;
+  loopWhile(condition: string): string;
+  loopUntil(condition: string): string;
+  repeatLoop(statement: string): string;
+  call(name: string, args: string): string;
+  assign(target: string, value: string): string;
+  declare(symbols: string): string;
+  exitStatement(kind: string): string;
+  statement(value: string): string;
+  symbolRole(role: AspFlowchartNodeLink["role"]): string;
+}
+
+interface FlowchartContext {
+  locale: AspLocale;
+  sourceText: string;
+  text: FlowchartText;
+  symbols: FlowchartSymbolContext;
+}
+
+interface FlowchartSymbolContext {
+  currentUri: string;
+  documents: AspFlowchartSymbolDocument[];
+  declarationsById: Map<string, AspFlowchartResolvedDeclaration>;
+  declarationsByName: Map<string, AspFlowchartResolvedDeclaration[]>;
+  membersByOwnerAndName: Map<string, AspFlowchartResolvedDeclaration[]>;
+}
+
+interface AspFlowchartResolvedDeclaration extends AspFlowchartSymbolDeclaration {
+  uri: string;
 }
 
 interface FlowStatement {
@@ -91,12 +149,26 @@ export function buildAspFlowchart(
   parsed: AspParsedDocument,
   options: AspFlowchartBuildOptions = {},
 ): AspFlowchartPayload {
+  const locale = options.locale ?? "en";
+  const context = {
+    locale,
+    sourceText: parsed.text,
+    text: flowchartText(locale),
+    symbols: createFlowchartSymbolContext(parsed.uri, options.symbols ?? []),
+  } satisfies FlowchartContext;
   const statements = vbStatements(parsed);
   const procedures = procedureBlocks(statements);
+  const classes = classBlocks(statements);
   const procedureStatementIndexes = new Set<number>();
   for (const procedure of procedures) {
     for (let index = procedure.startIndex; index <= procedure.endIndex; index += 1) {
       procedureStatementIndexes.add(index);
+    }
+  }
+  const classStatementIndexes = new Set<number>();
+  for (const classBlock of classes) {
+    for (let index = classBlock.startIndex; index <= classBlock.endIndex; index += 1) {
+      classStatementIndexes.add(index);
     }
   }
   const assembly: FlowchartAssembly = {
@@ -109,18 +181,41 @@ export function buildAspFlowchart(
   const topLevelStatements = statements.filter(
     (statement) =>
       !procedureStatementIndexes.has(statement.index) &&
+      !classStatementIndexes.has(statement.index) &&
       !isProcedureDeclaration(statement) &&
       !isProcedureEnd(statement) &&
       !isClassBoundary(statement),
   );
-  addSectionFlow(assembly, parsed, {
+  addSectionFlow(assembly, parsed, context, {
     id: "section-top-level",
-    label: "Top Level",
+    label: context.text.topLevel,
     kind: "topLevel",
     statements: topLevelStatements,
   });
+  for (const classBlock of classes) {
+    const statementsInClass = statements
+      .slice(classBlock.startIndex + 1, classBlock.endIndex)
+      .filter(
+        (statement) =>
+          !procedureStatementIndexes.has(statement.index) &&
+          !isProcedureDeclaration(statement) &&
+          !isProcedureEnd(statement) &&
+          !isClassBoundary(statement),
+      );
+    addSectionFlow(assembly, parsed, context, {
+      id: `section-${assembly.sections.length}`,
+      label: classBlock.label,
+      kind: "class",
+      range: rangeFromOffsets(
+        parsed.text,
+        classBlock.declaration.start,
+        classBlock.declaration.end,
+      ),
+      statements: statementsInClass,
+    });
+  }
   for (const procedure of procedures) {
-    addSectionFlow(assembly, parsed, {
+    addSectionFlow(assembly, parsed, context, {
       id: `section-${assembly.sections.length}`,
       label: procedure.label,
       kind: procedure.kind,
@@ -273,9 +368,43 @@ function procedureBlocks(statements: VbStatement[]): ProcedureBlock[] {
   return result;
 }
 
+function classBlocks(statements: VbStatement[]): ClassBlock[] {
+  const result: ClassBlock[] = [];
+  let current: { declaration: VbStatement; label: string } | undefined;
+  for (const statement of statements) {
+    const className = classDeclarationName(statement);
+    if (className && !current) {
+      current = {
+        declaration: statement,
+        label: `Class ${className}`,
+      };
+      continue;
+    }
+    if (current && isEndClass(statement)) {
+      result.push({
+        declaration: current.declaration,
+        startIndex: current.declaration.index,
+        endIndex: statement.index,
+        label: current.label,
+      });
+      current = undefined;
+    }
+  }
+  if (current) {
+    result.push({
+      declaration: current.declaration,
+      startIndex: current.declaration.index,
+      endIndex: statements.length,
+      label: current.label,
+    });
+  }
+  return result;
+}
+
 function addSectionFlow(
   assembly: FlowchartAssembly,
   parsed: AspParsedDocument,
+  context: FlowchartContext,
   sectionInput: {
     id: string;
     label: string;
@@ -292,10 +421,10 @@ function addSectionFlow(
     nodeIds: [],
   };
   assembly.sections.push(section);
-  const start = addNode(assembly, section, "start", "Start", sectionInput.range);
-  const end = addNode(assembly, section, "end", "End", sectionInput.range);
-  const elements = parseElements(sectionInput.statements, 0, () => false).elements;
-  const exits = renderElements(assembly, parsed, section, elements, [start.id], end.id);
+  const start = addNode(assembly, section, "start", context.text.start, sectionInput.range);
+  const end = addNode(assembly, section, "end", context.text.end, sectionInput.range);
+  const elements = parseElements(sectionInput.statements, 0, () => false, context).elements;
+  const exits = renderElements(assembly, parsed, context, section, elements, [start.id], end.id);
   for (const exit of exits) {
     addEdge(assembly, section, exit, end.id);
   }
@@ -305,6 +434,7 @@ function parseElements(
   statements: VbStatement[],
   startIndex: number,
   stop: StopPredicate,
+  context: FlowchartContext,
 ): ParseResult {
   const elements: FlowElement[] = [];
   let index = startIndex;
@@ -314,25 +444,25 @@ function parseElements(
       break;
     }
     if (isMultilineIf(statement)) {
-      const parsed = parseMultilineIf(statements, index);
+      const parsed = parseMultilineIf(statements, index, context);
       elements.push(parsed.element);
       index = parsed.index;
       continue;
     }
     if (isSingleLineIf(statement)) {
-      elements.push(inlineIfElement(statement));
+      elements.push(inlineIfElement(statement, context));
       index += 1;
       continue;
     }
     if (isSelectCaseStart(statement)) {
-      const parsed = parseSelect(statements, index);
+      const parsed = parseSelect(statements, index, context);
       elements.push(parsed.element);
       index = parsed.index;
       continue;
     }
     const loopKind = loopStartKind(statement);
     if (loopKind) {
-      const parsed = parseLoop(statements, index, loopKind);
+      const parsed = parseLoop(statements, index, loopKind, context);
       elements.push(parsed.element);
       index = parsed.index;
       continue;
@@ -340,7 +470,7 @@ function parseElements(
     if (isBlockTerminator(statement) || isBranchBoundary(statement)) {
       break;
     }
-    elements.push(statementElement(statement));
+    elements.push(statementElement(statement, context));
     index += 1;
   }
   return { elements, index };
@@ -349,6 +479,7 @@ function parseElements(
 function parseMultilineIf(
   statements: VbStatement[],
   startIndex: number,
+  context: FlowchartContext,
 ): { element: FlowIf; index: number } {
   const branches: FlowIfBranch[] = [];
   let cursor = startIndex;
@@ -360,13 +491,13 @@ function parseMultilineIf(
     body: [],
   });
   cursor += 1;
-  let body = parseElements(statements, cursor, isIfBranchOrEnd);
+  let body = parseElements(statements, cursor, isIfBranchOrEnd, context);
   branches[0].body = body.elements;
   cursor = body.index;
   while (cursor < statements.length && isElseIf(statements[cursor])) {
     statement = statements[cursor];
     cursor += 1;
-    body = parseElements(statements, cursor, isIfBranchOrEnd);
+    body = parseElements(statements, cursor, isIfBranchOrEnd, context);
     branches.push({
       kind: "elseif",
       statement,
@@ -378,11 +509,11 @@ function parseMultilineIf(
   if (cursor < statements.length && isElse(statements[cursor])) {
     statement = statements[cursor];
     cursor += 1;
-    body = parseElements(statements, cursor, isEndIf);
+    body = parseElements(statements, cursor, isEndIf, context);
     branches.push({
       kind: "else",
       statement,
-      label: "Else",
+      label: context.text.else,
       body: body.elements,
     });
     cursor = body.index;
@@ -393,7 +524,7 @@ function parseMultilineIf(
   return { element: { kind: "if", branches }, index: cursor };
 }
 
-function inlineIfElement(statement: VbStatement): FlowIf {
+function inlineIfElement(statement: VbStatement, context: FlowchartContext): FlowIf {
   const thenIndex = keywordIndex(statement.tokens, "then");
   const elseIndex = keywordIndex(statement.tokens, "else", thenIndex + 1);
   const trueTokens =
@@ -409,23 +540,27 @@ function inlineIfElement(statement: VbStatement): FlowIf {
       kind: "if",
       statement,
       label: ifConditionLabel(statement),
-      body: inlineBranchBody(statement, trueTokens),
+      body: inlineBranchBody(statement, trueTokens, context),
     },
   ];
   if (falseTokens.length > 0) {
     branches.push({
       kind: "else",
       statement: syntheticStatement(statement, falseTokens),
-      label: "Else",
-      body: inlineBranchBody(statement, falseTokens),
+      label: context.text.else,
+      body: inlineBranchBody(statement, falseTokens, context),
     });
   }
   return { kind: "if", branches };
 }
 
-function inlineBranchBody(parent: VbStatement, tokens: VbToken[]): FlowElement[] {
+function inlineBranchBody(
+  parent: VbStatement,
+  tokens: VbToken[],
+  context: FlowchartContext,
+): FlowElement[] {
   const bodyStatement = syntheticStatement(parent, tokens);
-  return bodyStatement.tokens.length > 0 ? [statementElement(bodyStatement)] : [];
+  return bodyStatement.tokens.length > 0 ? [statementElement(bodyStatement, context)] : [];
 }
 
 function syntheticStatement(parent: VbStatement, tokens: VbToken[]): VbStatement {
@@ -445,6 +580,7 @@ function syntheticStatement(parent: VbStatement, tokens: VbToken[]): VbStatement
 function parseSelect(
   statements: VbStatement[],
   startIndex: number,
+  context: FlowchartContext,
 ): { element: FlowSelect; index: number } {
   const statement = statements[startIndex];
   const cases: FlowCase[] = [];
@@ -460,10 +596,11 @@ function parseSelect(
       statements,
       cursor,
       (candidate) => isCase(candidate) || isEndSelect(candidate),
+      context,
     );
     cases.push({
       statement: caseStatement,
-      label: caseLabel(caseStatement),
+      label: caseLabel(caseStatement, context),
       body: body.elements,
     });
     cursor = body.index;
@@ -475,7 +612,7 @@ function parseSelect(
     element: {
       kind: "select",
       statement,
-      label: selectLabel(statement),
+      label: selectLabel(statement, context),
       cases,
     },
     index: cursor,
@@ -486,10 +623,11 @@ function parseLoop(
   statements: VbStatement[],
   startIndex: number,
   nodeKind: Extract<AspFlowchartNodeKind, "for" | "forEach" | "do" | "while">,
+  context: FlowchartContext,
 ): { element: FlowLoop; index: number } {
   const statement = statements[startIndex];
   const stop = loopStopPredicate(nodeKind);
-  const body = parseElements(statements, startIndex + 1, stop);
+  const body = parseElements(statements, startIndex + 1, stop, context);
   const index =
     body.index < statements.length && stop(statements[body.index]) ? body.index + 1 : body.index;
   return {
@@ -497,20 +635,21 @@ function parseLoop(
       kind: "loop",
       statement,
       nodeKind,
-      label: loopLabel(statement),
+      label: loopLabel(statement, context),
       body: body.elements,
     },
     index,
   };
 }
 
-function statementElement(statement: VbStatement): FlowStatement {
+function statementElement(statement: VbStatement, context: FlowchartContext): FlowStatement {
   const nodeKind = statementNodeKind(statement);
+  const range = statementRange(statement, context);
   return {
     kind: "statement",
     statement,
     nodeKind,
-    label: statementLabel(statement, nodeKind),
+    label: statementLabel(statement, nodeKind, context, range),
     terminates: nodeKind === "exit",
   };
 }
@@ -518,6 +657,7 @@ function statementElement(statement: VbStatement): FlowStatement {
 function renderElements(
   assembly: FlowchartAssembly,
   parsed: AspParsedDocument,
+  context: FlowchartContext,
   section: AspFlowchartSection,
   elements: FlowElement[],
   previousIds: string[],
@@ -531,6 +671,7 @@ function renderElements(
       const node = addStatementNode(
         assembly,
         parsed,
+        context,
         section,
         element.statement,
         element.nodeKind,
@@ -539,19 +680,46 @@ function renderElements(
       connectMany(assembly, section, exits, node.id, labelForNext);
       labelForNext = undefined;
       if (element.terminates) {
-        addEdge(assembly, section, node.id, sectionEndId, "Exit");
+        addEdge(assembly, section, node.id, sectionEndId, context.text.exit);
         exits = [];
       } else {
         exits = [node.id];
       }
     } else if (element.kind === "if") {
-      exits = renderIf(assembly, parsed, section, element, exits, sectionEndId, labelForNext);
+      exits = renderIf(
+        assembly,
+        parsed,
+        context,
+        section,
+        element,
+        exits,
+        sectionEndId,
+        labelForNext,
+      );
       labelForNext = undefined;
     } else if (element.kind === "select") {
-      exits = renderSelect(assembly, parsed, section, element, exits, sectionEndId, labelForNext);
+      exits = renderSelect(
+        assembly,
+        parsed,
+        context,
+        section,
+        element,
+        exits,
+        sectionEndId,
+        labelForNext,
+      );
       labelForNext = undefined;
     } else {
-      exits = renderLoop(assembly, parsed, section, element, exits, sectionEndId, labelForNext);
+      exits = renderLoop(
+        assembly,
+        parsed,
+        context,
+        section,
+        element,
+        exits,
+        sectionEndId,
+        labelForNext,
+      );
       labelForNext = undefined;
     }
   }
@@ -561,6 +729,7 @@ function renderElements(
 function renderIf(
   assembly: FlowchartAssembly,
   parsed: AspParsedDocument,
+  context: FlowchartContext,
   section: AspFlowchartSection,
   element: FlowIf,
   previousIds: string[],
@@ -575,21 +744,33 @@ function renderIf(
     const node = addStatementNode(
       assembly,
       parsed,
+      context,
       section,
       branch.statement,
       nodeKind,
-      branch.kind === "else" ? "Else" : `${nodeKind === "if" ? "If" : "ElseIf"} ${branch.label}`,
+      branch.kind === "else"
+        ? context.text.else
+        : nodeKind === "if"
+          ? context.text.ifCondition(branch.label)
+          : context.text.elseifCondition(branch.label),
     );
-    connectMany(assembly, section, falseSources, node.id, firstBranch ? incomingLabel : "No");
+    connectMany(
+      assembly,
+      section,
+      falseSources,
+      node.id,
+      firstBranch ? incomingLabel : context.text.no,
+    );
     firstBranch = false;
     const bodyExits = renderElements(
       assembly,
       parsed,
+      context,
       section,
       branch.body,
       [node.id],
       sectionEndId,
-      branch.kind === "else" ? undefined : "Yes",
+      branch.kind === "else" ? undefined : context.text.yes,
     );
     exits.push(...bodyExits);
     falseSources = branch.kind === "else" ? [] : [node.id];
@@ -601,6 +782,7 @@ function renderIf(
 function renderSelect(
   assembly: FlowchartAssembly,
   parsed: AspParsedDocument,
+  context: FlowchartContext,
   section: AspFlowchartSection,
   element: FlowSelect,
   previousIds: string[],
@@ -610,6 +792,7 @@ function renderSelect(
   const selectNode = addStatementNode(
     assembly,
     parsed,
+    context,
     section,
     element.statement,
     "select",
@@ -624,6 +807,7 @@ function renderSelect(
     const caseNode = addStatementNode(
       assembly,
       parsed,
+      context,
       section,
       branch.statement,
       "case",
@@ -631,7 +815,15 @@ function renderSelect(
     );
     addEdge(assembly, section, selectNode.id, caseNode.id, branch.label);
     exits.push(
-      ...renderElements(assembly, parsed, section, branch.body, [caseNode.id], sectionEndId),
+      ...renderElements(
+        assembly,
+        parsed,
+        context,
+        section,
+        branch.body,
+        [caseNode.id],
+        sectionEndId,
+      ),
     );
   }
   return uniqueIds(exits);
@@ -640,6 +832,7 @@ function renderSelect(
 function renderLoop(
   assembly: FlowchartAssembly,
   parsed: AspParsedDocument,
+  context: FlowchartContext,
   section: AspFlowchartSection,
   element: FlowLoop,
   previousIds: string[],
@@ -649,6 +842,7 @@ function renderLoop(
   const loopNode = addStatementNode(
     assembly,
     parsed,
+    context,
     section,
     element.statement,
     element.nodeKind,
@@ -658,15 +852,16 @@ function renderLoop(
   const bodyExits = renderElements(
     assembly,
     parsed,
+    context,
     section,
     element.body,
     [loopNode.id],
     sectionEndId,
-    "Yes",
+    context.text.yes,
   );
   for (const exit of bodyExits) {
     if (exit !== loopNode.id) {
-      addEdge(assembly, section, exit, loopNode.id, "Repeat");
+      addEdge(assembly, section, exit, loopNode.id, context.text.repeat);
     }
   }
   return [loopNode.id];
@@ -675,18 +870,17 @@ function renderLoop(
 function addStatementNode(
   assembly: FlowchartAssembly,
   parsed: AspParsedDocument,
+  context: FlowchartContext,
   section: AspFlowchartSection,
   statement: VbStatement,
   kind: AspFlowchartNodeKind,
   label: string,
 ): AspFlowchartNode {
-  return addNode(
-    assembly,
-    section,
-    kind,
-    label,
-    rangeFromOffsets(parsed.text, statement.start, statement.end),
-  );
+  const range = rangeFromOffsets(parsed.text, statement.start, statement.end);
+  return addNode(assembly, section, kind, label, range, {
+    description: statementDescription(statement, kind, context, range),
+    links: statementLinks(context, range),
+  });
 }
 
 function addNode(
@@ -695,6 +889,7 @@ function addNode(
   kind: AspFlowchartNodeKind,
   label: string,
   range?: Range,
+  options: Pick<AspFlowchartNode, "description" | "links"> = {},
 ): AspFlowchartNode {
   const node = {
     id: `node-${assembly.nextNodeIndex++}`,
@@ -702,6 +897,7 @@ function addNode(
     kind,
     label,
     range,
+    ...options,
   };
   assembly.nodes.push(node);
   section.nodeIds.push(node.id);
@@ -947,11 +1143,14 @@ function isBlockTerminator(statement: VbStatement): boolean {
 function statementNodeKind(statement: VbStatement): AspFlowchartNodeKind {
   const first = lower(statement.tokens[0]);
   const second = lower(statement.tokens[1]);
-  if (first === "call") {
-    return "call";
-  }
   if (first === "exit") {
     return "exit";
+  }
+  if (isDeclarationStatement(statement)) {
+    return "declaration";
+  }
+  if (first === "call" || callParts(statement)) {
+    return "call";
   }
   if (first === "for") {
     return second === "each" ? "forEach" : "for";
@@ -965,14 +1164,54 @@ function statementNodeKind(statement: VbStatement): AspFlowchartNodeKind {
   return "statement";
 }
 
-function statementLabel(statement: VbStatement, kind: AspFlowchartNodeKind): string {
-  if (kind === "call") {
-    return `Call ${tokensText(statement.tokens.slice(1))}`;
+function statementLabel(
+  statement: VbStatement,
+  kind: AspFlowchartNodeKind,
+  context: FlowchartContext,
+  range: Range = statementRange(statement, context),
+): string {
+  if (kind === "declaration") {
+    const declarations = statementDeclarations(context, range);
+    if (declarations.length > 0) {
+      return context.text.declare(flowchartDeclarationListLabel(declarations, context));
+    }
+    const declaration = declarationParts(statement);
+    return context.text.declare(`${declaration.kind} ${declaration.names}`);
+  }
+  const assignment = assignmentParts(statement);
+  if (assignment) {
+    const declaration = statementReferenceDeclaration(context, range, assignment.target, "write");
+    return context.text.assign(
+      flowchartSymbolLabel(assignment.target, declaration, context),
+      flowchartExpressionLabel(
+        context,
+        range,
+        assignment.value,
+        new Set(["read", "new", "member"]),
+      ),
+    );
+  }
+  const call = callParts(statement);
+  if (kind === "call" && call) {
+    const declaration = statementCallDeclaration(context, range, call.name);
+    return context.text.call(
+      flowchartSymbolLabel(call.name, declaration, context),
+      flowchartExpressionLabel(context, range, call.args, new Set(["read", "new", "member"])),
+    );
   }
   if (kind === "exit") {
-    return tokensText(statement.tokens);
+    return context.text.exitStatement(tokensText(statement.tokens.slice(1)));
   }
-  return tokensText(statement.tokens);
+  return context.text.statement(tokensText(statement.tokens));
+}
+
+function statementDescription(
+  statement: VbStatement,
+  kind: AspFlowchartNodeKind,
+  context: FlowchartContext,
+  range: Range = statementRange(statement, context),
+): string {
+  return statementLabel(statement, kind, context, range);
 }
 
 function ifConditionLabel(statement: VbStatement): string {
@@ -983,16 +1222,677 @@ function ifConditionLabel(statement: VbStatement): string {
   );
 }
 
-function selectLabel(statement: VbStatement): string {
-  return `Select Case ${tokensText(statement.tokens.slice(2))}`;
+function selectLabel(statement: VbStatement, context: FlowchartContext): string {
+  return context.text.selectCase(tokensText(statement.tokens.slice(2)));
 }
 
-function caseLabel(statement: VbStatement): string {
-  return `Case ${tokensText(statement.tokens.slice(1))}`;
+function caseLabel(statement: VbStatement, context: FlowchartContext): string {
+  return context.text.caseBranch(tokensText(statement.tokens.slice(1)));
 }
 
-function loopLabel(statement: VbStatement): string {
-  return tokensText(statement.tokens);
+function loopLabel(statement: VbStatement, context: FlowchartContext): string {
+  const first = lower(statement.tokens[0]);
+  const second = lower(statement.tokens[1]);
+  if (first === "for" && second === "each") {
+    const inIndex = keywordIndex(statement.tokens, "in", 2);
+    if (inIndex !== -1) {
+      return context.text.forEach(
+        tokensText(statement.tokens.slice(2, inIndex)),
+        tokensText(statement.tokens.slice(inIndex + 1)),
+      );
+    }
+  }
+  if (first === "for") {
+    const equalsIndex = tokenTextIndex(statement.tokens, "=", 1);
+    const toIndex = keywordIndex(statement.tokens, "to", equalsIndex + 1);
+    const stepIndex = keywordIndex(statement.tokens, "step", toIndex + 1);
+    if (equalsIndex !== -1 && toIndex !== -1) {
+      return context.text.forRange(
+        tokensText(statement.tokens.slice(1, equalsIndex)),
+        tokensText(statement.tokens.slice(equalsIndex + 1, toIndex)),
+        tokensText(statement.tokens.slice(toIndex + 1, stepIndex === -1 ? undefined : stepIndex)),
+        stepIndex === -1 ? undefined : tokensText(statement.tokens.slice(stepIndex + 1)),
+      );
+    }
+  }
+  if (first === "do" && (second === "while" || second === "until")) {
+    const condition = tokensText(statement.tokens.slice(2));
+    return second === "while"
+      ? context.text.loopWhile(condition)
+      : context.text.loopUntil(condition);
+  }
+  if (first === "while") {
+    return context.text.loopWhile(tokensText(statement.tokens.slice(1)));
+  }
+  return context.text.repeatLoop(tokensText(statement.tokens));
+}
+
+function assignmentParts(statement: VbStatement): { target: string; value: string } | undefined {
+  const first = lower(statement.tokens[0]);
+  const startIndex = first === "set" || first === "let" ? 1 : 0;
+  const equalsIndex = tokenTextIndex(statement.tokens, "=", startIndex);
+  if (equalsIndex <= startIndex || equalsIndex === statement.tokens.length - 1) {
+    return undefined;
+  }
+  if (["if", "elseif", "for", "select", "case", "do", "while"].includes(first ?? "")) {
+    return undefined;
+  }
+  const target = tokensText(statement.tokens.slice(startIndex, equalsIndex));
+  const value = tokensText(statement.tokens.slice(equalsIndex + 1));
+  return target && value ? { target, value } : undefined;
+}
+
+function declarationParts(statement: VbStatement): { kind: string; names: string } {
+  const tokens = statement.tokens;
+  let index =
+    lower(tokens[0]) === "public" || lower(tokens[0]) === "private" || lower(tokens[0]) === "dim"
+      ? lower(tokens[0]) === "dim"
+        ? 0
+        : 1
+      : 0;
+  const kind = lower(tokens[index]) ?? "";
+  if (kind === "public" || kind === "private") {
+    index += 1;
+  }
+  const nameStart =
+    lower(tokens[index]) === "redim" && lower(tokens[index + 1]) === "preserve"
+      ? index + 2
+      : index + 1;
+  return {
+    kind: titleKeyword(kind || "variable"),
+    names: tokensText(tokens.slice(nameStart)) || tokensText(tokens),
+  };
+}
+
+function isDeclarationStatement(statement: VbStatement): boolean {
+  const first = lower(statement.tokens[0]);
+  const second = lower(statement.tokens[1]);
+  return (
+    first === "dim" ||
+    first === "redim" ||
+    first === "const" ||
+    ((first === "public" || first === "private") &&
+      (second === "dim" || second === "const" || second === "redim"))
+  );
+}
+
+function callParts(statement: VbStatement): { name: string; args: string } | undefined {
+  const first = lower(statement.tokens[0]);
+  const startIndex = first === "call" ? 1 : 0;
+  if (assignmentParts(statement) || isDeclarationStatement(statement)) {
+    return undefined;
+  }
+  const nameEnd = callNameEndIndex(statement.tokens, startIndex);
+  if (nameEnd <= startIndex) {
+    return undefined;
+  }
+  const name = tokensText(statement.tokens.slice(startIndex, nameEnd));
+  const args = callArgumentsText(statement.tokens.slice(nameEnd));
+  if (
+    !name ||
+    (!args && first !== "call" && !looksLikeArgumentlessCall(statement.tokens, nameEnd))
+  ) {
+    return undefined;
+  }
+  return { name, args };
+}
+
+function callNameEndIndex(tokens: VbToken[], startIndex: number): number {
+  if (tokens[startIndex]?.kind !== "identifier") {
+    return startIndex;
+  }
+  let index = startIndex + 1;
+  while (tokens[index]?.text === "." && tokens[index + 1]?.kind === "identifier") {
+    index += 2;
+  }
+  return index;
+}
+
+function callArgumentsText(tokens: VbToken[]): string {
+  const trimmed = trimTokens(tokens);
+  if (trimmed[0]?.text === "(" && trimmed.at(-1)?.text === ")") {
+    return tokensText(trimmed.slice(1, -1));
+  }
+  return tokensText(trimmed);
+}
+
+function looksLikeArgumentlessCall(tokens: VbToken[], nameEnd: number): boolean {
+  return tokens[nameEnd]?.text === "(" && tokens[nameEnd + 1]?.text === ")";
+}
+
+function trimTokens(tokens: VbToken[]): VbToken[] {
+  let start = 0;
+  let end = tokens.length;
+  while (start < end && (tokens[start].kind === "whitespace" || tokens[start].kind === "newline")) {
+    start += 1;
+  }
+  while (
+    end > start &&
+    (tokens[end - 1].kind === "whitespace" || tokens[end - 1].kind === "newline")
+  ) {
+    end -= 1;
+  }
+  return tokens.slice(start, end);
+}
+
+function statementLinks(context: FlowchartContext, statementRange: Range): AspFlowchartNodeLink[] {
+  const current = context.symbols.documents.find(
+    (document) => document.uri === context.symbols.currentUri,
+  );
+  if (!current) {
+    return [];
+  }
+  const links: AspFlowchartNodeLink[] = [];
+  for (const reference of current.references ?? []) {
+    if (!rangeContainsRange(statementRange, reference.range)) {
+      continue;
+    }
+    const declaration = resolveFlowchartReference(context.symbols, reference);
+    if (declaration) {
+      links.push(flowchartLink(context, reference.name, reference.role, declaration));
+    }
+  }
+  for (const callSite of current.callSites ?? []) {
+    if (!rangeContainsRange(statementRange, callSite.range)) {
+      continue;
+    }
+    const declaration = resolveFlowchartCallSite(context.symbols, callSite);
+    if (declaration) {
+      links.push(flowchartLink(context, flowchartCallSiteLabel(callSite), "call", declaration));
+    }
+  }
+  return dedupeFlowchartLinks(links);
+}
+
+function statementRange(statement: VbStatement, context: FlowchartContext): Range {
+  return rangeFromOffsets(context.sourceText, statement.start, statement.end);
+}
+
+function statementDeclarations(
+  context: FlowchartContext,
+  statementRange: Range,
+): AspFlowchartResolvedDeclaration[] {
+  const current = currentFlowchartSymbolDocument(context);
+  if (!current) {
+    return [];
+  }
+  return current.declarations
+    .filter((declaration) => rangeContainsRange(statementRange, declaration.nameRange))
+    .map((declaration) => context.symbols.declarationsById.get(declaration.id))
+    .filter((declaration): declaration is AspFlowchartResolvedDeclaration => Boolean(declaration));
+}
+
+function statementReferenceDeclaration(
+  context: FlowchartContext,
+  statementRange: Range,
+  name: string,
+  role?: AspFlowchartSymbolReference["role"],
+): AspFlowchartResolvedDeclaration | undefined {
+  const current = currentFlowchartSymbolDocument(context);
+  if (!current) {
+    return undefined;
+  }
+  const normalizedName = normalizeFlowchartName(name);
+  return (current.references ?? [])
+    .filter((reference) => rangeContainsRange(statementRange, reference.range))
+    .map((reference) => ({
+      reference,
+      declaration: resolveFlowchartReference(context.symbols, reference),
+    }))
+    .find(
+      ({ reference, declaration }) =>
+        declaration &&
+        (!role || reference.role === role) &&
+        (normalizeFlowchartName(reference.name) === normalizedName ||
+          normalizeFlowchartName(reference.memberName ?? "") === normalizedName ||
+          normalizedName.endsWith(`.${normalizeFlowchartName(reference.name)}`) ||
+          normalizedName.endsWith(`.${normalizeFlowchartName(reference.memberName ?? "")}`)),
+    )?.declaration;
+}
+
+function statementCallDeclaration(
+  context: FlowchartContext,
+  statementRange: Range,
+  name: string,
+): AspFlowchartResolvedDeclaration | undefined {
+  const current = currentFlowchartSymbolDocument(context);
+  if (!current) {
+    return undefined;
+  }
+  const normalizedName = normalizeFlowchartName(name);
+  return (current.callSites ?? [])
+    .filter((callSite) => rangeContainsRange(statementRange, callSite.range))
+    .map((callSite) => ({
+      callSite,
+      declaration: resolveFlowchartCallSite(context.symbols, callSite),
+    }))
+    .find(
+      ({ callSite, declaration }) =>
+        declaration &&
+        (normalizeFlowchartName(callSite.name) === normalizedName ||
+          normalizeFlowchartName(callSite.memberName ?? "") === normalizedName ||
+          normalizedName.endsWith(`.${normalizeFlowchartName(callSite.name)}`) ||
+          normalizedName.endsWith(`.${normalizeFlowchartName(callSite.memberName ?? "")}`)),
+    )?.declaration;
+}
+
+function flowchartExpressionLabel(
+  context: FlowchartContext,
+  statementRange: Range,
+  expression: string,
+  roles: Set<AspFlowchartSymbolReference["role"]>,
+): string {
+  if (!expression) {
+    return expression;
+  }
+  const current = currentFlowchartSymbolDocument(context);
+  if (!current) {
+    return expression;
+  }
+  const seen = new Set<string>();
+  const replacements = (current.references ?? [])
+    .filter(
+      (reference) =>
+        roles.has(reference.role) && rangeContainsRange(statementRange, reference.range),
+    )
+    .map((reference) => ({
+      source: reference.memberName ?? reference.name,
+      target: flowchartSymbolLabel(
+        reference.memberName ?? reference.name,
+        resolveFlowchartReference(context.symbols, reference),
+        context,
+      ),
+    }))
+    .filter((replacement) => {
+      if (!replacement.source || replacement.source === replacement.target) {
+        return false;
+      }
+      const key = normalizeFlowchartName(replacement.source);
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => right.source.length - left.source.length);
+  let result = expression;
+  for (const replacement of replacements) {
+    result = replaceFlowchartIdentifier(result, replacement.source, replacement.target);
+  }
+  return result;
+}
+
+function replaceFlowchartIdentifier(value: string, source: string, target: string): string {
+  const pattern = new RegExp(`(^|[^A-Za-z0-9_])(${escapeRegExp(source)})(?=$|[^A-Za-z0-9_])`, "g");
+  return value.replace(pattern, `$1${target}`);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
+function currentFlowchartSymbolDocument(
+  context: FlowchartContext,
+): AspFlowchartSymbolDocument | undefined {
+  return context.symbols.documents.find((document) => document.uri === context.symbols.currentUri);
+}
+
+function resolveFlowchartReference(
+  context: FlowchartSymbolContext,
+  reference: AspFlowchartSymbolReference,
+): AspFlowchartResolvedDeclaration | undefined {
+  if (reference.resolvedId) {
+    return context.declarationsById.get(reference.resolvedId);
+  }
+  if (reference.memberName) {
+    return resolveFlowchartMember(context, reference.baseName, reference.memberName);
+  }
+  return resolveFlowchartDeclarationByName(
+    context,
+    reference.normalizedName,
+    reference.expectedKinds,
+  );
+}
+
+function resolveFlowchartCallSite(
+  context: FlowchartSymbolContext,
+  callSite: AspFlowchartCallSite,
+): AspFlowchartResolvedDeclaration | undefined {
+  if (callSite.resolvedId) {
+    return context.declarationsById.get(callSite.resolvedId);
+  }
+  if (callSite.memberName) {
+    return resolveFlowchartMember(context, callSite.receiverName, callSite.memberName);
+  }
+  return resolveFlowchartDeclarationByName(
+    context,
+    callSite.normalizedName,
+    expectedFlowchartKindsForCallSite(callSite),
+  );
+}
+
+function resolveFlowchartDeclarationByName(
+  context: FlowchartSymbolContext,
+  normalizedName: string,
+  expectedKinds: string[] | undefined,
+): AspFlowchartResolvedDeclaration | undefined {
+  return (context.declarationsByName.get(normalizedName) ?? []).find(
+    (declaration) =>
+      (!expectedKinds || expectedKinds.includes(declaration.kind)) &&
+      (declaration.uri === context.currentUri || declaration.bindingScope !== "local"),
+  );
+}
+
+function resolveFlowchartMember(
+  context: FlowchartSymbolContext,
+  receiverName: string | undefined,
+  memberName: string,
+): AspFlowchartResolvedDeclaration | undefined {
+  if (!receiverName) {
+    return undefined;
+  }
+  const receiverKey = receiverName.toLowerCase();
+  const direct = context.membersByOwnerAndName.get(
+    `${receiverKey}\0${memberName.toLowerCase()}`,
+  )?.[0];
+  if (direct) {
+    return direct;
+  }
+  const receiverDeclaration = resolveFlowchartDeclarationByName(context, receiverKey, [
+    "variable",
+    "field",
+    "parameter",
+  ]);
+  const owner = receiverDeclaration?.typeName ?? receiverName;
+  return context.membersByOwnerAndName.get(
+    `${owner.toLowerCase()}\0${memberName.toLowerCase()}`,
+  )?.[0];
+}
+
+function expectedFlowchartKindsForCallSite(callSite: AspFlowchartCallSite): string[] | undefined {
+  if (callSite.callKind === "constructor") {
+    return ["class"];
+  }
+  if (callSite.callKind === "function") {
+    return ["function"];
+  }
+  if (callSite.callKind === "procedure") {
+    return ["function", "sub", "method", "property"];
+  }
+  if (callSite.callKind === "unknown") {
+    return ["function", "sub", "class", "method", "property"];
+  }
+  return undefined;
+}
+
+function flowchartLink(
+  context: FlowchartContext,
+  label: string,
+  role: AspFlowchartNodeLink["role"],
+  declaration: AspFlowchartResolvedDeclaration,
+): AspFlowchartNodeLink {
+  const displayLabel = flowchartSymbolLabel(label, declaration, context);
+  return {
+    id: `${role}:${declaration.id}:${label}`,
+    label: displayLabel,
+    role,
+    symbolKind: declaration.kind,
+    target: {
+      uri: declaration.uri,
+      range: declaration.range,
+      nameRange: declaration.nameRange,
+    },
+  };
+}
+
+function flowchartDeclarationListLabel(
+  declarations: AspFlowchartResolvedDeclaration[],
+  context: FlowchartContext,
+): string {
+  return declarations
+    .map((declaration) => flowchartSymbolLabel(declaration.name, declaration, context))
+    .join(context.locale === "ja" ? "、" : ", ");
+}
+
+function flowchartSymbolLabel(
+  name: string,
+  declaration: AspFlowchartResolvedDeclaration | undefined,
+  context: FlowchartContext,
+): string {
+  if (!declaration) {
+    return name;
+  }
+  return `${flowchartDeclarationKindLabel(declaration, context)} ${name}`;
+}
+
+function flowchartDeclarationKindLabel(
+  declaration: Pick<
+    AspFlowchartResolvedDeclaration,
+    "kind" | "bindingScope" | "memberOf" | "procedureKind"
+  >,
+  context: FlowchartContext,
+): string {
+  const scope = flowchartScopeLabel(declaration.bindingScope, context);
+  if (context.locale === "ja") {
+    switch (declaration.kind) {
+      case "variable":
+        return `${scope}変数`;
+      case "constant":
+        return `${scope}定数`;
+      case "parameter":
+        return "引数";
+      case "field":
+        return "フィールド";
+      case "function":
+        return "関数";
+      case "sub":
+        return "Sub";
+      case "class":
+        return "クラス";
+      case "method":
+        return declaration.procedureKind === "function"
+          ? "関数メソッド"
+          : declaration.procedureKind === "sub"
+            ? "Subメソッド"
+            : "メソッド";
+      case "property":
+        return "プロパティ";
+      default:
+        return declaration.kind || "シンボル";
+    }
+  }
+  switch (declaration.kind) {
+    case "variable":
+      return `${scope}variable`;
+    case "constant":
+      return `${scope}constant`;
+    case "parameter":
+      return "parameter";
+    case "field":
+      return "field";
+    case "function":
+      return "function";
+    case "sub":
+      return "Sub";
+    case "class":
+      return "class";
+    case "method":
+      return declaration.procedureKind === "function"
+        ? "function method"
+        : declaration.procedureKind === "sub"
+          ? "Sub method"
+          : "method";
+    case "property":
+      return "property";
+    default:
+      return declaration.kind || "symbol";
+  }
+}
+
+function flowchartScopeLabel(scope: string | undefined, context: FlowchartContext): string {
+  if (context.locale === "ja") {
+    if (scope === "global") {
+      return "グローバル";
+    }
+    if (scope === "local") {
+      return "ローカル";
+    }
+    return "";
+  }
+  if (scope === "global") {
+    return "global ";
+  }
+  if (scope === "local") {
+    return "local ";
+  }
+  return "";
+}
+
+function flowchartCallSiteLabel(callSite: AspFlowchartCallSite): string {
+  return callSite.memberName && callSite.receiverName
+    ? `${callSite.receiverName}.${callSite.memberName}`
+    : callSite.name;
+}
+
+function dedupeFlowchartLinks(links: AspFlowchartNodeLink[]): AspFlowchartNodeLink[] {
+  const seen = new Set<string>();
+  const result: AspFlowchartNodeLink[] = [];
+  for (const link of links) {
+    const key = `${link.role}:${link.label}:${link.target.uri}:${JSON.stringify(link.target.nameRange ?? link.target.range)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(link);
+  }
+  return result;
+}
+
+function rangeContainsRange(outer: Range, inner: Range): boolean {
+  return (
+    positionBeforeOrEqual(outer.start, inner.start) && positionBeforeOrEqual(inner.end, outer.end)
+  );
+}
+
+function positionBeforeOrEqual(
+  left: { line: number; character: number },
+  right: { line: number; character: number },
+): boolean {
+  return left.line < right.line || (left.line === right.line && left.character <= right.character);
+}
+
+function createFlowchartSymbolContext(
+  currentUri: string,
+  documents: AspFlowchartSymbolDocument[],
+): FlowchartSymbolContext {
+  const declarationsById = new Map<string, AspFlowchartResolvedDeclaration>();
+  const declarationsByName = new Map<string, AspFlowchartResolvedDeclaration[]>();
+  const membersByOwnerAndName = new Map<string, AspFlowchartResolvedDeclaration[]>();
+  for (const document of documents) {
+    for (const declaration of document.declarations) {
+      const resolved = { ...declaration, uri: document.uri };
+      declarationsById.set(declaration.id, resolved);
+      pushMapItem(declarationsByName, declaration.normalizedName, resolved);
+      if (declaration.memberOf) {
+        pushMapItem(
+          membersByOwnerAndName,
+          `${declaration.memberOf.toLowerCase()}\0${declaration.normalizedName}`,
+          resolved,
+        );
+      }
+    }
+  }
+  return { currentUri, documents, declarationsById, declarationsByName, membersByOwnerAndName };
+}
+
+function pushMapItem<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  const existing = map.get(key);
+  if (existing) {
+    existing.push(value);
+  } else {
+    map.set(key, [value]);
+  }
+}
+
+function flowchartText(locale: AspLocale): FlowchartText {
+  if (locale === "ja") {
+    return {
+      topLevel: "トップレベル",
+      start: "開始",
+      end: "終了",
+      else: "それ以外",
+      yes: "はい",
+      no: "いいえ",
+      repeat: "繰り返し",
+      exit: "終了",
+      ifCondition: (condition) => `${condition}を判定`,
+      elseifCondition: (condition) => `${condition}を追加判定`,
+      selectCase: (expression) => `${expression}で分岐`,
+      caseBranch: (expression) => `${expression}の場合`,
+      forRange: (variable, start, end, step) =>
+        `${variable}を${start}から${end}まで${step ? ` ${step}ずつ` : ""}繰り返し`,
+      forEach: (variable, collection) => `${collection}の各${variable}で繰り返し`,
+      loopWhile: (condition) => `${condition}の間繰り返し`,
+      loopUntil: (condition) => `${condition}になるまで繰り返し`,
+      repeatLoop: (statement) => `${statement}を繰り返し`,
+      call: (name, args) => `${name}${args ? `(${args})` : ""}の呼び出し`,
+      assign: (target, value) => `${target}に${value}を代入`,
+      declare: (symbols) => `${symbols}を宣言`,
+      exitStatement: (kind) => `${kind || "処理"}を終了`,
+      statement: (value) => `${value}を実行`,
+      symbolRole: (role) => flowchartRoleTextJa[role] ?? role,
+    };
+  }
+  return {
+    topLevel: "Top level",
+    start: "Start",
+    end: "End",
+    else: "Otherwise",
+    yes: "Yes",
+    no: "No",
+    repeat: "Repeat",
+    exit: "Exit",
+    ifCondition: (condition) => `Check ${condition}`,
+    elseifCondition: (condition) => `Otherwise check ${condition}`,
+    selectCase: (expression) => `Branch by ${expression}`,
+    caseBranch: (expression) => `When ${expression}`,
+    forRange: (variable, start, end, step) =>
+      `Repeat ${variable} from ${start} to ${end}${step ? ` by ${step}` : ""}`,
+    forEach: (variable, collection) => `Repeat for each ${variable} in ${collection}`,
+    loopWhile: (condition) => `Repeat while ${condition}`,
+    loopUntil: (condition) => `Repeat until ${condition}`,
+    repeatLoop: (statement) => `Repeat ${statement}`,
+    call: (name, args) => `Call ${name}${args ? `(${args})` : ""}`,
+    assign: (target, value) => `Assign ${value} to ${target}`,
+    declare: (symbols) => `Declare ${symbols}`,
+    exitStatement: (kind) => `Exit ${kind || "block"}`,
+    statement: (value) => `Run ${value}`,
+    symbolRole: (role) => flowchartRoleTextEn[role] ?? role,
+  };
+}
+
+const flowchartRoleTextEn: Record<string, string> = {
+  read: "Read",
+  write: "Write",
+  call: "Call",
+  new: "Create",
+  member: "Member",
+  definition: "Definition",
+  unknown: "Reference",
+};
+
+const flowchartRoleTextJa: Record<string, string> = {
+  read: "参照",
+  write: "代入",
+  call: "呼び出し",
+  new: "作成",
+  member: "メンバー",
+  definition: "定義",
+  unknown: "参照",
+};
+
+function normalizeFlowchartName(value: string): string {
+  return value.replace(/\s+/g, "").toLowerCase();
 }
 
 function tokensText(tokens: VbToken[]): string {
@@ -1008,6 +1908,10 @@ function tokensText(tokens: VbToken[]): string {
 
 function keywordIndex(tokens: VbToken[], keyword: string, startIndex = 0): number {
   return tokens.findIndex((token, index) => index >= startIndex && lower(token) === keyword);
+}
+
+function tokenTextIndex(tokens: VbToken[], text: string, startIndex = 0): number {
+  return tokens.findIndex((token, index) => index >= startIndex && token.text === text);
 }
 
 function lower(token: VbToken | undefined): string | undefined {

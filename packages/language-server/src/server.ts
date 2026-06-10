@@ -147,6 +147,7 @@ import {
   type AspEditImpact,
   type AspFlowchartInclude,
   type AspFlowchartPayload,
+  type AspFlowchartSymbolDocument,
   type AspIncrementalChange,
   type AspInclude,
   type AspLegacyEncoding,
@@ -236,7 +237,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.5.24";
+const languageServerVersion = "0.5.25";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -731,7 +732,7 @@ interface VbReferenceCodeLensData {
 
 type AspGraphScope = "document" | "folder" | "workspace";
 
-type AspGraphNodeKind = "file" | "vbDeclaration" | "vbUnresolved";
+type AspGraphNodeKind = "file" | "missingInclude" | "vbDeclaration" | "vbUnresolved";
 
 type AspGraphNodeOrigin = "source" | "builtin" | "configured";
 
@@ -750,6 +751,7 @@ type AspGraphLinkFilterCategory = AspGraphLinkKind | "member";
 type AspGraphNodeCategory =
   | "root"
   | "file"
+  | "missingInclude"
   | "function"
   | "sub"
   | "class"
@@ -16222,10 +16224,72 @@ async function buildAspFlowchartForCommand(argument: unknown): Promise<AspFlowch
   }
   const settings = cachedSettings(cached.source.uri);
   await hydrateCachedVbscriptCstAsync(cached, settings, "flowchart");
+  const documentsForFlowchart = await collectDocumentGraphDocumentsAsync(cached, settings);
+  const indexedDocuments = await mapWithConcurrency(
+    uniqueAspGraphDocuments(documentsForFlowchart),
+    analysisConcurrency(settings),
+    async (document): Promise<AspFlowchartSymbolDocument> => {
+      const graphIndex = await graphFileIndexForDocumentAsync(document, settings);
+      return flowchartSymbolDocumentFromIndex(graphIndex.vbSymbolIndex);
+    },
+  );
   return buildAspFlowchart(cached.parsed, {
     fileName: flowchartDisplayFileName(graphFileNameFromUri(cached.source.uri)),
     includes: await flowchartIncludesForDocumentAsync(cached.parsed, settings),
+    locale: flowchartCommandLocale(argument) ?? settings.resolvedLocale,
+    symbols: indexedDocuments,
   });
+}
+
+function flowchartSymbolDocumentFromIndex(index: VbSymbolIndex): AspFlowchartSymbolDocument {
+  return {
+    uri: index.uri,
+    declarations: index.declarations.map((declaration) => ({
+      id: declaration.id,
+      name: declaration.name,
+      normalizedName: declaration.normalizedName,
+      kind: declaration.kind,
+      range: declaration.range,
+      nameRange: declaration.nameRange,
+      sourceRange: declaration.sourceRange,
+      scopeId: declaration.scopeId,
+      parentId: declaration.parentId,
+      memberOf: declaration.memberOf,
+      bindingScope: declaration.bindingScope,
+      procedureKind: declaration.procedureKind,
+      typeName: declaration.typeName,
+    })),
+    references: index.references.map((reference) => ({
+      name: reference.name,
+      normalizedName: reference.normalizedName,
+      range: reference.range,
+      scopeId: reference.scopeId,
+      resolvedId: reference.resolvedId,
+      role: reference.role,
+      expectedKinds: reference.expectedKinds,
+      baseName: reference.baseName,
+      memberName: reference.memberName,
+    })),
+    callSites: index.callSites.map((callSite) => ({
+      name: callSite.name,
+      normalizedName: callSite.normalizedName,
+      range: callSite.range,
+      scopeId: callSite.scopeId,
+      receiverName: callSite.receiverName,
+      memberName: callSite.memberName,
+      callKind: callSite.callKind,
+      argumentCount: callSite.argumentCount,
+      resolvedId: callSite.resolvedId,
+    })),
+  };
+}
+
+function flowchartCommandLocale(argument: unknown): AspLocale | undefined {
+  if (!argument || typeof argument !== "object" || !("locale" in argument)) {
+    return undefined;
+  }
+  const locale = (argument as { locale?: unknown }).locale;
+  return locale === "ja" || locale === "en" ? locale : undefined;
 }
 
 async function flowchartIncludesForDocumentAsync(
@@ -17663,15 +17727,16 @@ function addFileGraphNode(state: AspGraphBuildState, fileName: string, exists: b
     state.stats.files += 1;
   }
   const nextExists = existing?.exists === true || exists;
+  const nextKind: AspGraphNodeKind = nextExists ? "file" : "missingInclude";
   state.nodes.set(id, {
     ...existing,
     id,
-    kind: "file",
+    kind: nextKind,
     label: path.basename(normalizedFileName),
     uri: canonicalUri,
     fileName: graphDisplayFileName(state, normalizedFileName),
     exists: nextExists,
-    group: nextExists ? "file" : "missing",
+    group: nextExists ? "file" : "missingInclude",
     isRoot: existing?.isRoot === true || key === state.rootFileKey ? true : undefined,
   });
 }
@@ -17742,6 +17807,7 @@ function graphPayloadSettings(settings: AspSettings): NonNullable<AspGraphPayloa
 const graphNodeCategoryOrder: AspGraphNodeCategory[] = [
   "root",
   "file",
+  "missingInclude",
   "function",
   "sub",
   "class",
@@ -17776,6 +17842,8 @@ function isVisibleAspGraphNodeCategory(
     case "root":
       return settings.showRootNodes !== false;
     case "file":
+      return settings.showFileNodes !== false;
+    case "missingInclude":
       return settings.showFileNodes !== false;
     case "function":
       return settings.showFunctionNodes !== false;
@@ -17849,7 +17917,7 @@ function recomputeAspGraphStats(
   };
   for (const node of nodes) {
     stats.nodes += 1;
-    if (node.kind === "file") {
+    if (node.kind === "file" || node.kind === "missingInclude") {
       stats.files += 1;
     } else if (node.kind === "vbDeclaration") {
       stats.declarations += 1;

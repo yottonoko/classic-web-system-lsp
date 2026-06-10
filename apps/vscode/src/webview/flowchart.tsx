@@ -7,6 +7,7 @@ import type {
   AspFlowchartNode,
   AspFlowchartPayload,
   AspFlowchartSection,
+  AspFlowchartTarget,
 } from "@asp-lsp/core";
 
 declare const acquireVsCodeApi: () => {
@@ -55,27 +56,37 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     openDirective: "Open directive",
     openFlowchart: "Open flowchart",
     openCode: "Open code",
+    openDefinition: "Open definition",
     renderError: "Mermaid render failed.",
     selectFlowchart: "Select flowchart",
     emptySection: "Empty",
     sections: "Sections",
+    definitions: "Definitions",
+    copyMermaid: "Copy Mermaid",
+    exportMermaid: "Export Mermaid",
+    exportSvg: "Export SVG",
   },
   ja: {
     title: "ASP Flowchart",
-    includes: "Includes",
+    includes: "参照ファイル",
     flowcharts: "フローチャート",
-    nodes: "Nodes",
+    nodes: "ノード",
     mermaid: "Mermaid",
     emptyIncludes: "include は見つかりません。",
     emptyNodes: "VBScript flow node は見つかりません。",
     missing: "missing",
     openDirective: "directive を開く",
-    openFlowchart: "flowchart を開く",
-    openCode: "code を開く",
+    openFlowchart: "フローチャートを開く",
+    openCode: "コードを開く",
+    openDefinition: "定義を開く",
     renderError: "Mermaid render に失敗しました。",
-    selectFlowchart: "flowchart を選択",
+    selectFlowchart: "フローチャートを選択",
     emptySection: "空です",
-    sections: "Sections",
+    sections: "セクション",
+    definitions: "定義",
+    copyMermaid: "Mermaid コピー",
+    exportMermaid: "Mermaid 出力",
+    exportSvg: "SVG 出力",
   },
 };
 
@@ -95,16 +106,30 @@ function App(): React.ReactElement {
   const selectedSection = selectedFlowchart.sections[0];
   const openFlowchartForNode = useCallback(
     (node: AspFlowchartNode) => {
-      setSelectedSectionId(sectionIdForNodeFlowchart(payload, node));
+      const target = node.links?.[0]?.target;
+      if (target) {
+        openFlowchartTarget(payload, target, setSelectedSectionId);
+      } else {
+        setSelectedSectionId(sectionIdForNodeFlowchart(payload, node));
+      }
     },
+    [payload],
+  );
+  const openTarget = useCallback(
+    (target: AspFlowchartTarget) => openFlowchartTarget(payload, target, setSelectedSectionId),
     [payload],
   );
   useEffect(() => {
     const listener = (event: MessageEvent) => {
-      const message = event.data as { type?: unknown; payload?: unknown };
+      const message = event.data as { type?: unknown; payload?: unknown; targetRange?: unknown };
       if (message.type === "flowchartPayload" && isFlowchartPayload(message.payload)) {
         setPayload(message.payload);
-        setSelectedSectionId(defaultSectionId(message.payload));
+        setSelectedSectionId(
+          isRange(message.targetRange)
+            ? (sectionIdForRange(message.payload, message.targetRange) ??
+                defaultSectionId(message.payload))
+            : defaultSectionId(message.payload),
+        );
       }
     };
     window.addEventListener("message", listener);
@@ -140,11 +165,26 @@ function App(): React.ReactElement {
                   range && vscode.postMessage({ type: "openRange", uri: payload.uri, range })
                 }
                 onOpenFlowchart={openFlowchartForNode}
+                onOpenTarget={openTarget}
                 onSelect={() => setSelectedSectionId(section.id)}
               />
             ))
           )}
-          <SectionHeading>{text("mermaid")}</SectionHeading>
+          <div className="mb-2 mt-3 flex items-center gap-2">
+            <SectionHeading>{text("mermaid")}</SectionHeading>
+            <button
+              className="ml-auto rounded border border-[#3b4a5f] px-2 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white"
+              type="button"
+              onClick={() =>
+                vscode.postMessage({
+                  type: "copyText",
+                  content: selectedFlowchart.mermaid,
+                })
+              }
+            >
+              {text("copyMermaid")}
+            </button>
+          </div>
           <pre className="max-h-52 overflow-auto rounded border border-[#263140] bg-[#0c1117] p-2 text-xs leading-5 text-[#b9c5d6]">
             {selectedFlowchart.mermaid}
           </pre>
@@ -225,6 +265,7 @@ function FlowSection({
   text,
   onOpenCode,
   onOpenFlowchart,
+  onOpenTarget,
   onSelect,
 }: {
   nodes: AspFlowchartNode[];
@@ -233,6 +274,7 @@ function FlowSection({
   text(key: string): string;
   onOpenCode(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
   onOpenFlowchart(node: AspFlowchartNode): void;
+  onOpenTarget(target: AspFlowchartTarget): void;
   onSelect(): void;
 }): React.ReactElement {
   const visibleNodes = nodes.filter((node) => node.kind !== "start" && node.kind !== "end");
@@ -266,28 +308,42 @@ function FlowSection({
           <EmptyText>{text("emptySection")}</EmptyText>
         ) : (
           visibleNodes.map((node) => (
-            <div
-              key={node.id}
-              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded hover:bg-[#223044]"
-            >
-              <button
-                className="min-w-0 truncate px-2 py-1 text-left text-xs text-[#d9e0ea]"
-                title={text("openFlowchart")}
-                type="button"
-                onClick={() => onOpenFlowchart(node)}
-              >
-                <span className="mr-2 text-[#91c7ff]">{node.kind}</span>
-                {node.label}
-              </button>
-              <button
-                className="mr-1 shrink-0 rounded border border-[#334255] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#6fb6ff] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
-                disabled={!node.range}
-                title={text("openCode")}
-                type="button"
-                onClick={() => node.range && onOpenCode(node.range)}
-              >
-                Code
-              </button>
+            <div key={node.id} className="rounded px-1 py-1 hover:bg-[#223044]">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1">
+                <button
+                  className="min-w-0 truncate px-1 py-1 text-left text-xs text-[#d9e0ea]"
+                  title={text("openFlowchart")}
+                  type="button"
+                  onClick={() => onOpenFlowchart(node)}
+                >
+                  <span className="mr-2 text-[#7dd3fc]">{node.kind}</span>
+                  {node.label}
+                </button>
+                <button
+                  className="mr-1 shrink-0 rounded border border-[#3b4a5f] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+                  disabled={!node.range}
+                  title={text("openCode")}
+                  type="button"
+                  onClick={() => node.range && onOpenCode(node.range)}
+                >
+                  Code
+                </button>
+              </div>
+              {node.links?.length ? (
+                <div className="ml-1 mt-1 flex flex-wrap gap-1">
+                  {node.links.map((link) => (
+                    <button
+                      key={link.id}
+                      className="rounded border border-[#315f58] bg-[#10241f] px-1.5 py-0.5 text-[11px] text-[#9ee7d0] hover:border-[#63e6be] hover:text-white"
+                      title={text("openDefinition")}
+                      type="button"
+                      onClick={() => onOpenTarget(link.target)}
+                    >
+                      {link.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ))
         )}
@@ -311,6 +367,7 @@ function FlowchartCanvas({
 }): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string>();
+  const [svg, setSvg] = useState<string>("");
   useEffect(() => {
     let cancelled = false;
     const render = async (): Promise<void> => {
@@ -330,11 +387,13 @@ function FlowchartCanvas({
           return;
         }
         containerRef.current.innerHTML = result.svg;
+        setSvg(result.svg);
         attachSvgNodeHandlers(containerRef.current, payload, onOpenFlowchart);
         setError(undefined);
       } catch (renderError) {
         if (!cancelled) {
           setError(renderError instanceof Error ? renderError.message : String(renderError));
+          setSvg("");
         }
       }
     };
@@ -350,13 +409,56 @@ function FlowchartCanvas({
           {section?.label ?? text("title")}
         </div>
         <button
-          className="rounded border border-[#334255] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#6fb6ff] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+          className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
           disabled={!section?.range}
           title={text("openCode")}
           type="button"
           onClick={() => section?.range && onOpenCode(section.range)}
         >
           Code
+        </button>
+        <button
+          className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#63e6be] hover:text-white"
+          type="button"
+          onClick={() =>
+            vscode.postMessage({
+              type: "copyText",
+              content: payload.mermaid,
+            })
+          }
+        >
+          {text("copyMermaid")}
+        </button>
+        <button
+          className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#63e6be] hover:text-white"
+          type="button"
+          onClick={() =>
+            vscode.postMessage({
+              type: "exportFlowchart",
+              format: "mermaid",
+              uri: payload.uri,
+              sectionLabel: section?.label,
+              content: `${payload.mermaid}\n`,
+            })
+          }
+        >
+          {text("exportMermaid")}
+        </button>
+        <button
+          className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#f6c177] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+          disabled={!svg}
+          type="button"
+          onClick={() =>
+            vscode.postMessage({
+              type: "exportFlowchart",
+              format: "svg",
+              uri: payload.uri,
+              sectionLabel: section?.label,
+              content: svg,
+            })
+          }
+        >
+          {text("exportSvg")}
         </button>
       </header>
       <div className="min-h-0 overflow-auto p-5">
@@ -500,6 +602,62 @@ function sectionIdForNodeFlowchart(payload: FlowchartPayload, node: AspFlowchart
     return sectionName ? normalizeFlowchartName(sectionName) === normalizedCallable : false;
   });
   return targetSection?.id ?? node.sectionId;
+}
+
+function openFlowchartTarget(
+  payload: FlowchartPayload,
+  target: AspFlowchartTarget,
+  setSelectedSectionId: (sectionId: string | undefined) => void,
+): void {
+  const targetRange = target.nameRange ?? target.range;
+  if (target.uri && target.uri !== payload.uri) {
+    vscode.postMessage({
+      type: "openFlowchartLocation",
+      uri: target.uri,
+      range: targetRange,
+    });
+    return;
+  }
+  setSelectedSectionId(
+    targetRange
+      ? (sectionIdForRange(payload, targetRange) ?? defaultSectionId(payload))
+      : defaultSectionId(payload),
+  );
+}
+
+function sectionIdForRange(
+  payload: FlowchartPayload,
+  range: NonNullable<AspFlowchartTarget["range"]>,
+): string | undefined {
+  return (
+    payload.sections.find((section) => section.range && rangeContains(section.range, range))?.id ??
+    payload.sections.find((section) =>
+      section.nodeIds.some((nodeId) => {
+        const node = payload.nodes.find((candidate) => candidate.id === nodeId);
+        return node?.range ? rangeContains(node.range, range) : false;
+      }),
+    )?.id
+  );
+}
+
+function rangeContains(
+  outer: NonNullable<AspFlowchartNode["range"]>,
+  inner: NonNullable<AspFlowchartTarget["range"]>,
+): boolean {
+  return (
+    positionBeforeOrEqual(outer.start, inner.start) && positionBeforeOrEqual(inner.end, outer.end)
+  );
+}
+
+function positionBeforeOrEqual(
+  left: { line: number; character: number },
+  right: { line: number; character: number },
+): boolean {
+  return left.line < right.line || (left.line === right.line && left.character <= right.character);
+}
+
+function isRange(value: unknown): value is NonNullable<AspFlowchartTarget["range"]> {
+  return Boolean(value && typeof value === "object" && "start" in value && "end" in value);
 }
 
 function callableNameFromNodeLabel(label: string): string | undefined {

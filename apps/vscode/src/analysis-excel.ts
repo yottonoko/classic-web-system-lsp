@@ -21,6 +21,8 @@ interface UsageCounts {
 
 type AnalysisTextKey =
   | "summary"
+  | "analysisSummary"
+  | "chartData"
   | "files"
   | "includes"
   | "declarations"
@@ -78,11 +80,26 @@ type AnalysisTextKey =
   | "role"
   | "source"
   | "target"
-  | "count";
+  | "count"
+  | "metric"
+  | "total"
+  | "usedCount"
+  | "share"
+  | "unusedRate"
+  | "bar"
+  | "declarationsByKind"
+  | "scopeComparison"
+  | "usageMix"
+  | "unusedByKind"
+  | "fileHealth"
+  | "unresolvedUsageCount"
+  | "risk";
 
 const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
   en: {
     summary: "Summary",
+    analysisSummary: "Analysis Summary",
+    chartData: "Chart Data",
     files: "Files",
     includes: "Includes",
     declarations: "Declarations",
@@ -141,9 +158,24 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     source: "Source",
     target: "Target",
     count: "Count",
+    metric: "Metric",
+    total: "Total",
+    usedCount: "Used",
+    share: "Share",
+    unusedRate: "Unused rate",
+    bar: "Bar",
+    declarationsByKind: "Declarations by kind",
+    scopeComparison: "Global vs local",
+    usageMix: "Usage mix",
+    unusedByKind: "Unused by kind",
+    fileHealth: "File health",
+    unresolvedUsageCount: "Unresolved usages",
+    risk: "Risk",
   },
   ja: {
     summary: "概要",
+    analysisSummary: "分析サマリ",
+    chartData: "チャート元データ",
     files: "ファイル",
     includes: "参照ファイル",
     declarations: "宣言",
@@ -202,6 +234,19 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     source: "使用元",
     target: "対象",
     count: "数",
+    metric: "指標",
+    total: "合計",
+    usedCount: "使用あり",
+    share: "比率",
+    unusedRate: "未使用率",
+    bar: "棒グラフ",
+    declarationsByKind: "種別ごとの宣言",
+    scopeComparison: "グローバルとローカル",
+    usageMix: "使用種別",
+    unusedByKind: "種別ごとの未使用",
+    fileHealth: "ファイル別の状態",
+    unresolvedUsageCount: "未解決の使用数",
+    risk: "リスク",
   },
 };
 
@@ -233,6 +278,8 @@ const valueText: Record<AspGraphLocale, Record<string, string>> = {
     assignments: "Assignments",
     calls: "Calls",
     unresolvedReference: "Unresolved reference",
+    include: "Includes",
+    missingIncludes: "Missing includes",
     read: "Read",
     write: "Write",
     procedure: "Procedure",
@@ -268,6 +315,8 @@ const valueText: Record<AspGraphLocale, Record<string, string>> = {
     assignments: "代入",
     calls: "呼び出し",
     unresolvedReference: "未解決参照",
+    include: "include",
+    missingIncludes: "missing include",
     read: "読み取り",
     write: "書き込み",
     procedure: "プロシージャ",
@@ -292,6 +341,14 @@ export function createAnalysisExcelSheets(
     .sort(compareNodesByLocation(fileNamesByUri));
   return [
     sheet(text[locale].summary, summaryRows(payload, locale, generatedAt, unusedDeclarations)),
+    sheet(
+      text[locale].analysisSummary,
+      analysisSummaryRows(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations),
+    ),
+    sheet(
+      text[locale].chartData,
+      chartDataRows(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations),
+    ),
     sheet(text[locale].files, fileRows(payload, locale)),
     sheet(text[locale].includes, includeRows(payload, locale, nodesById, fileNamesByUri)),
     sheet(text[locale].declarations, declarationRows(payload, locale, usageCounts, fileNamesByUri)),
@@ -330,6 +387,272 @@ function summaryRows(
   return [header([t.name, t.value ?? "Value"]), ...rows.map(([name, value]) => [name, value])];
 }
 
+function analysisSummaryRows(
+  payload: AspGraphPayload,
+  locale: AspGraphLocale,
+  usageCounts: Map<string, UsageCounts>,
+  fileNamesByUri: Map<string, string>,
+  unusedDeclarations: AspGraphNode[],
+): Cell[][] {
+  const t = text[locale];
+  return [
+    sectionTitle(t.declarationsByKind, 6),
+    header([t.kind, t.total, t.usedCount, t.unusedCount, t.share, t.bar]),
+    ...declarationKindChartRows(payload.nodes, locale, usageCounts),
+    [],
+    sectionTitle(t.scopeComparison, 6),
+    header([t.bindingScope, t.total, t.usedCount, t.unusedCount, t.unusedRate, t.bar]),
+    ...scopeComparisonRows(payload.nodes, locale, usageCounts),
+    [],
+    sectionTitle(t.usageMix, 5),
+    header([t.usageKind, t.count, t.share, t.bar, t.risk]),
+    ...usageMixRows(payload, locale),
+    [],
+    sectionTitle(t.unusedByKind, 4),
+    header([t.kind, t.unusedCount, t.share, t.bar]),
+    ...unusedByKindRows(unusedDeclarations, locale),
+    [],
+    sectionTitle(t.fileHealth, 10),
+    header([
+      t.file,
+      t.declarationCount,
+      t.unusedCount,
+      t.unusedRate,
+      t.usageCount,
+      t.unresolvedUsageCount,
+      t.includesOut,
+      t.includedBy,
+      t.risk,
+      t.bar,
+    ]),
+    ...fileHealthRows(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations),
+  ];
+}
+
+function chartDataRows(
+  payload: AspGraphPayload,
+  locale: AspGraphLocale,
+  usageCounts: Map<string, UsageCounts>,
+  fileNamesByUri: Map<string, string>,
+  unusedDeclarations: AspGraphNode[],
+): Cell[][] {
+  const t = text[locale];
+  return [
+    sectionTitle(t.declarationsByKind, 5),
+    header([t.kind, t.total, t.usedCount, t.unusedCount, t.share]),
+    ...declarationKindChartRows(payload.nodes, locale, usageCounts).map((row) => row.slice(0, 5)),
+    [],
+    sectionTitle(t.scopeComparison, 5),
+    header([t.bindingScope, t.total, t.usedCount, t.unusedCount, t.unusedRate]),
+    ...scopeComparisonRows(payload.nodes, locale, usageCounts).map((row) => row.slice(0, 5)),
+    [],
+    sectionTitle(t.usageMix, 4),
+    header([t.usageKind, t.count, t.share, t.risk]),
+    ...usageMixRows(payload, locale).map((row) => [row[0], row[1], row[2], row[4]]),
+    [],
+    sectionTitle(t.unusedByKind, 3),
+    header([t.kind, t.unusedCount, t.share]),
+    ...unusedByKindRows(unusedDeclarations, locale).map((row) => row.slice(0, 3)),
+    [],
+    sectionTitle(t.fileHealth, 9),
+    header([
+      t.file,
+      t.declarationCount,
+      t.unusedCount,
+      t.unusedRate,
+      t.usageCount,
+      t.unresolvedUsageCount,
+      t.includesOut,
+      t.includedBy,
+      t.risk,
+    ]),
+    ...fileHealthRows(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations).map((row) =>
+      row.slice(0, 9),
+    ),
+  ];
+}
+
+function declarationKindChartRows(
+  nodes: AspGraphNode[],
+  locale: AspGraphLocale,
+  usageCounts: Map<string, UsageCounts>,
+): Cell[][] {
+  const declarations = sourceDeclarationNodes(nodes);
+  const counts = new Map<string, { total: number; used: number; unused: number }>();
+  for (const node of declarations) {
+    const key = node.declarationKind ?? "unknown";
+    const entry = counts.get(key) ?? { total: 0, used: 0, unused: 0 };
+    entry.total += 1;
+    if (usageTotal(usageCounts.get(node.id)) > 0) {
+      entry.used += 1;
+    } else {
+      entry.unused += 1;
+    }
+    counts.set(key, entry);
+  }
+  const max = maxCount([...counts.values()].map((entry) => entry.total));
+  return [...counts.entries()]
+    .sort((left, right) => right[1].total - left[1].total || compareValues(left[0], right[0]))
+    .map(([kind, entry]) => [
+      valueLabel(kind, locale),
+      entry.total,
+      entry.used,
+      entry.unused,
+      percentCell(ratio(entry.total, declarations.length)),
+      barString(entry.total, max),
+    ]);
+}
+
+function scopeComparisonRows(
+  nodes: AspGraphNode[],
+  locale: AspGraphLocale,
+  usageCounts: Map<string, UsageCounts>,
+): Cell[][] {
+  const declarations = sourceDeclarationNodes(nodes);
+  const counts = new Map<string, { total: number; used: number; unused: number }>();
+  for (const node of declarations) {
+    const key = node.bindingScope ?? "unknown";
+    const entry = counts.get(key) ?? { total: 0, used: 0, unused: 0 };
+    entry.total += 1;
+    if (usageTotal(usageCounts.get(node.id)) > 0) {
+      entry.used += 1;
+    } else {
+      entry.unused += 1;
+    }
+    counts.set(key, entry);
+  }
+  const max = maxCount([...counts.values()].map((entry) => entry.total));
+  return [...counts.entries()]
+    .sort((left, right) => compareValues(valueLabel(left[0], locale), valueLabel(right[0], locale)))
+    .map(([scope, entry]) => [
+      valueLabel(scope, locale),
+      entry.total,
+      entry.used,
+      entry.unused,
+      percentCell(ratio(entry.unused, entry.total)),
+      barString(entry.total, max),
+    ]);
+}
+
+function usageMixRows(payload: AspGraphPayload, locale: AspGraphLocale): Cell[][] {
+  const rows: Array<[string, number, string]> = [
+    ["references", payload.stats.references, ""],
+    ["assignments", payload.stats.assignments, ""],
+    ["calls", payload.stats.calls, ""],
+    ["unresolvedReference", payload.stats.unresolvedReferences, "unresolved"],
+    ["include", payload.stats.includes, ""],
+    ["missingIncludes", payload.stats.missingIncludes, "missing"],
+  ];
+  const total = rows.reduce((sum, [, count]) => sum + count, 0);
+  const max = maxCount(rows.map(([, count]) => count));
+  return rows
+    .filter(([, count]) => count > 0)
+    .map(([kind, count, risk]) => [
+      valueLabel(kind, locale),
+      count,
+      percentCell(ratio(count, total)),
+      barString(count, max),
+      risk,
+    ]);
+}
+
+function unusedByKindRows(unusedDeclarations: AspGraphNode[], locale: AspGraphLocale): Cell[][] {
+  const counts = new Map<string, number>();
+  for (const node of unusedDeclarations) {
+    const key = node.declarationKind ?? "unknown";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const max = maxCount([...counts.values()]);
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || compareValues(left[0], right[0]))
+    .map(([kind, count]) => [
+      valueLabel(kind, locale),
+      count,
+      percentCell(ratio(count, unusedDeclarations.length)),
+      barString(count, max),
+    ]);
+}
+
+function fileHealthRows(
+  payload: AspGraphPayload,
+  locale: AspGraphLocale,
+  usageCounts: Map<string, UsageCounts>,
+  fileNamesByUri: Map<string, string>,
+  unusedDeclarations: AspGraphNode[],
+): Cell[][] {
+  const declarationsByUri = new Map<string, number>();
+  const unusedByUri = new Map<string, number>();
+  const usagesByUri = new Map<string, number>();
+  const unresolvedByUri = new Map<string, number>();
+  for (const node of sourceDeclarationNodes(payload.nodes)) {
+    if (node.uri) {
+      declarationsByUri.set(node.uri, (declarationsByUri.get(node.uri) ?? 0) + 1);
+    }
+  }
+  for (const node of unusedDeclarations) {
+    if (node.uri) {
+      unusedByUri.set(node.uri, (unusedByUri.get(node.uri) ?? 0) + 1);
+    }
+  }
+  for (const link of payload.links) {
+    if (
+      link.kind !== "references" &&
+      link.kind !== "assignments" &&
+      link.kind !== "calls" &&
+      link.kind !== "unresolvedReference"
+    ) {
+      continue;
+    }
+    for (const range of link.ranges) {
+      usagesByUri.set(range.uri, (usagesByUri.get(range.uri) ?? 0) + link.count);
+      if (link.kind === "unresolvedReference") {
+        unresolvedByUri.set(range.uri, (unresolvedByUri.get(range.uri) ?? 0) + link.count);
+      }
+    }
+  }
+  const includeOut = countLinksByNode(payload.links, "source", "include");
+  const includeIn = countLinksByNode(payload.links, "target", "include");
+  const riskScores = payload.nodes
+    .filter(isFileLikeGraphNode)
+    .map((node) => fileRiskScore(node, declarationsByUri, unusedByUri, unresolvedByUri));
+  const maxRisk = maxCount(riskScores);
+  return payload.nodes
+    .filter(isFileLikeGraphNode)
+    .sort(compareFileNodes)
+    .map((node) => {
+      const uri = node.uri ?? "";
+      const declarations = declarationsByUri.get(uri) ?? 0;
+      const unused = unusedByUri.get(uri) ?? 0;
+      const unresolved = unresolvedByUri.get(uri) ?? 0;
+      const risk = fileRiskScore(node, declarationsByUri, unusedByUri, unresolvedByUri);
+      return [
+        displayNameForUri(uri, fileNamesByUri),
+        declarations,
+        unused,
+        percentCell(ratio(unused, declarations)),
+        usagesByUri.get(uri) ?? usageTotal(usageCounts.get(node.id)),
+        unresolved,
+        includeOut.get(node.id) ?? 0,
+        includeIn.get(node.id) ?? 0,
+        risk,
+        barString(risk, maxRisk),
+      ];
+    });
+}
+
+function fileRiskScore(
+  node: AspGraphNode,
+  declarationsByUri: Map<string, number>,
+  unusedByUri: Map<string, number>,
+  unresolvedByUri: Map<string, number>,
+): number {
+  const uri = node.uri ?? "";
+  const declarations = declarationsByUri.get(uri) ?? 0;
+  const unused = unusedByUri.get(uri) ?? 0;
+  const unresolved = unresolvedByUri.get(uri) ?? 0;
+  return unused + unresolved * 2 + (node.exists === false ? Math.max(1, declarations) : 0);
+}
+
 function fileRows(payload: AspGraphPayload, locale: AspGraphLocale): Cell[][] {
   const t = text[locale];
   const includeOut = countLinksByNode(payload.links, "source", "include");
@@ -341,7 +664,7 @@ function fileRows(payload: AspGraphPayload, locale: AspGraphLocale): Cell[][] {
     }
   }
   const rows = payload.nodes
-    .filter((node) => node.kind === "file")
+    .filter(isFileLikeGraphNode)
     .sort(compareFileNodes)
     .map((node) => [
       node.fileName ?? node.label,
@@ -653,11 +976,15 @@ function countLinksByNode(
 function fileNamesByUriMap(nodes: AspGraphNode[]): Map<string, string> {
   const names = new Map<string, string>();
   for (const node of nodes) {
-    if (node.kind === "file" && node.uri) {
+    if (isFileLikeGraphNode(node) && node.uri) {
       names.set(node.uri, node.fileName ?? node.label);
     }
   }
   return names;
+}
+
+function isFileLikeGraphNode(node: AspGraphNode): boolean {
+  return node.kind === "file" || node.kind === "missingInclude";
 }
 
 function fileDisplayName(uri: string, nodes: AspGraphNode[]): string {
@@ -703,6 +1030,43 @@ function header(values: string[]): Cell[] {
     fontWeight: "bold",
     backgroundColor: "#DDEBF7",
   }));
+}
+
+function sectionTitle(value: string, columnSpan: number): Cell[] {
+  return [
+    {
+      value,
+      type: String,
+      fontWeight: "bold",
+      backgroundColor: "#E2F0D9",
+      columnSpan,
+    },
+    ...Array.from({ length: Math.max(0, columnSpan - 1) }, () => null),
+  ];
+}
+
+function percentCell(value: number): Cell {
+  return {
+    value,
+    type: Number,
+    format: "0.0%",
+  };
+}
+
+function ratio(numerator: number, denominator: number): number {
+  return denominator > 0 ? numerator / denominator : 0;
+}
+
+function barString(value: number, max: number): string {
+  if (value <= 0 || max <= 0) {
+    return "";
+  }
+  const filled = Math.max(1, Math.round((value / max) * 20));
+  return `${"█".repeat(filled)} ${value}`;
+}
+
+function maxCount(values: number[]): number {
+  return Math.max(0, ...values);
 }
 
 function sheet(name: string, rows: Cell[][]): AnalysisExcelSheet {

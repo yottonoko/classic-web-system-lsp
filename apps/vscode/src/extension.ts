@@ -314,7 +314,7 @@ async function loadFlowchartPayload(
         "workspace/executeCommand",
         {
           command: buildFlowchartServerCommand,
-          arguments: [{ uri: uriText }],
+          arguments: [{ uri: uriText, locale: extensionLocale() }],
         },
         token,
       ),

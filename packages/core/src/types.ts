@@ -200,6 +200,8 @@ export interface AspGraphSettings {
 export interface AspFlowchartBuildOptions {
   fileName?: string;
   includes?: AspFlowchartInclude[];
+  locale?: AspLocale;
+  symbols?: AspFlowchartSymbolDocument[];
 }
 
 export interface AspFlowchartPayload {
@@ -221,7 +223,7 @@ export interface AspFlowchartPayload {
 export interface AspFlowchartSection {
   id: string;
   label: string;
-  kind: "topLevel" | "procedure" | "property";
+  kind: "topLevel" | "class" | "procedure" | "property";
   range?: Range;
   nodeIds: string[];
 }
@@ -239,6 +241,7 @@ export type AspFlowchartNodeKind =
   | "do"
   | "while"
   | "call"
+  | "declaration"
   | "exit"
   | "statement";
 
@@ -247,7 +250,23 @@ export interface AspFlowchartNode {
   sectionId: string;
   kind: AspFlowchartNodeKind;
   label: string;
+  description?: string;
+  links?: AspFlowchartNodeLink[];
   range?: Range;
+}
+
+export interface AspFlowchartNodeLink {
+  id: string;
+  label: string;
+  role: "read" | "write" | "call" | "new" | "member" | "definition" | "unknown";
+  symbolKind?: string;
+  target: AspFlowchartTarget;
+}
+
+export interface AspFlowchartTarget {
+  uri: string;
+  range?: Range;
+  nameRange?: Range;
 }
 
 export interface AspFlowchartEdge {
@@ -256,6 +275,53 @@ export interface AspFlowchartEdge {
   source: string;
   target: string;
   label?: string;
+}
+
+export interface AspFlowchartSymbolDocument {
+  uri: string;
+  declarations: AspFlowchartSymbolDeclaration[];
+  references?: AspFlowchartSymbolReference[];
+  callSites?: AspFlowchartCallSite[];
+}
+
+export interface AspFlowchartSymbolDeclaration {
+  id: string;
+  name: string;
+  normalizedName: string;
+  kind: string;
+  range: Range;
+  nameRange: Range;
+  sourceRange?: Range;
+  scopeId?: string;
+  parentId?: string;
+  memberOf?: string;
+  bindingScope?: string;
+  procedureKind?: string;
+  typeName?: string;
+}
+
+export interface AspFlowchartSymbolReference {
+  name: string;
+  normalizedName: string;
+  range: Range;
+  scopeId?: string;
+  resolvedId?: string;
+  role: "read" | "write" | "call" | "new" | "member" | "unknown";
+  expectedKinds?: string[];
+  baseName?: string;
+  memberName?: string;
+}
+
+export interface AspFlowchartCallSite {
+  name: string;
+  normalizedName: string;
+  range: Range;
+  scopeId?: string;
+  receiverName?: string;
+  memberName?: string;
+  callKind: "procedure" | "function" | "constructor" | "member" | "unknown";
+  argumentCount?: number;
+  resolvedId?: string;
 }
 
 export interface AspFlowchartInclude {

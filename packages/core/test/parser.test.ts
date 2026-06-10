@@ -122,8 +122,8 @@ End Sub
     const ifNode = flowchart.nodes.find((node) => node.kind === "if");
     const callNode = flowchart.nodes.find((node) => node.kind === "call");
 
-    expect(ifNode?.label).toBe("If enabled");
-    expect(callNode?.label).toBe('Call Render ("😀")');
+    expect(ifNode?.label).toBe("Check enabled");
+    expect(callNode?.label).toBe('Call Render("😀")');
     expect(callNode?.range).toEqual({
       start: { line: 2, character: 3 },
       end: { line: 2, character: '<% Call Render("😀")'.length },
@@ -132,7 +132,123 @@ End Sub
       true,
     );
   });
+
+  it("labels resolved variables, constants and parameters with scope in flowcharts", () => {
+    const uri = "file:///site/scoped.asp";
+    const parsed = parseAspDocument(
+      uri,
+      `<%
+Dim GlobalValue
+Const GlobalLimit = 10
+Sub Main(argValue)
+  Dim LocalValue
+  Const LocalLimit = 1
+  LocalValue = GlobalLimit
+  Call Render(argValue)
+End Sub
+Sub Render(value)
+End Sub
+%>`,
+    );
+
+    const flowchart = buildAspFlowchart(parsed, {
+      fileName: "scoped.asp",
+      symbols: [
+        {
+          uri,
+          declarations: [
+            declaration("global-value", "GlobalValue", "variable", "global", 1, 4, 15),
+            declaration("global-limit", "GlobalLimit", "constant", "global", 2, 6, 17),
+            declaration("main", "Main", "sub", "global", 3, 4, 8),
+            declaration("arg-value", "argValue", "parameter", "local", 3, 9, 17),
+            declaration("local-value", "LocalValue", "variable", "local", 4, 6, 16),
+            declaration("local-limit", "LocalLimit", "constant", "local", 5, 8, 18),
+            declaration("render", "Render", "sub", "global", 9, 4, 10),
+            declaration("value", "value", "parameter", "local", 9, 11, 16),
+          ],
+          references: [
+            reference("LocalValue", "local-value", "write", 6, 2, 12),
+            reference("GlobalLimit", "global-limit", "read", 6, 15, 26),
+            reference("argValue", "arg-value", "read", 7, 14, 22),
+          ],
+          callSites: [
+            {
+              name: "Render",
+              normalizedName: "render",
+              range: flowRange(7, 7, 23),
+              callKind: "procedure",
+              argumentCount: 1,
+              resolvedId: "render",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(flowchart.nodes.map((node) => node.label)).toEqual(
+      expect.arrayContaining([
+        "Declare global variable GlobalValue",
+        "Declare global constant GlobalLimit",
+        "Declare local variable LocalValue",
+        "Declare local constant LocalLimit",
+        "Assign global constant GlobalLimit to local variable LocalValue",
+        "Call Sub Render(parameter argValue)",
+      ]),
+    );
+    expect(
+      flowchart.nodes.some(
+        (node) =>
+          node.label === "Assign global constant GlobalLimit to local variable LocalValue" &&
+          node.links?.some((link) => link.label === "local variable LocalValue") &&
+          node.links?.some((link) => link.label === "global constant GlobalLimit"),
+      ),
+    ).toBe(true);
+  });
 });
+
+function declaration(
+  id: string,
+  name: string,
+  kind: string,
+  bindingScope: string,
+  line: number,
+  start: number,
+  end: number,
+) {
+  return {
+    id,
+    name,
+    normalizedName: name.toLowerCase(),
+    kind,
+    bindingScope,
+    range: flowRange(line, start, end),
+    nameRange: flowRange(line, start, end),
+  };
+}
+
+function reference(
+  name: string,
+  resolvedId: string,
+  role: "read" | "write" | "call" | "new" | "member" | "unknown",
+  line: number,
+  start: number,
+  end: number,
+) {
+  return {
+    name,
+    normalizedName: name.toLowerCase(),
+    range: flowRange(line, start, end),
+    resolvedId,
+    role,
+  };
+}
+
+function flowRange(line: number, start: number, end: number) {
+  return {
+    start: { line, character: start },
+    end: { line, character: end },
+  };
+}
 
 describe("parseAspDocument", () => {
   it("marks skeleton parses as needing VBScript CST hydration before direct CST walks", async () => {

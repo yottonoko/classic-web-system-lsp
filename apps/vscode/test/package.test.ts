@@ -87,6 +87,8 @@ describe("VS Code extension package", () => {
       'const graphLocale: GraphLocale = graph?.locale === "ja" ? "ja" : "en"',
     );
     expect(graphWebviewSource).toContain('"legend.heading": "凡例"');
+    expect(graphWebviewSource).toContain('missingInclude: "#ff4db8"');
+    expect(graphWebviewSource).toContain('"label.missingInclude": "存在しない include"');
     expect(graphWebviewSource).toContain('graphText("toolbar.searchNodes")');
   });
 
@@ -98,6 +100,9 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain(
       "attachSvgNodeHandlers(containerRef.current, payload, onOpenFlowchart)",
     );
+    expect(flowchartSource).toContain('type: "copyText"');
+    expect(flowchartSource).toContain('format: "mermaid"');
+    expect(flowchartSource).toContain('format: "svg"');
     expect(flowchartSource).toContain('vscode.postMessage({ type: "openRange"');
     expect(flowchartSource).toContain('if (node.kind !== "call")');
     expect(flowchartSource).not.toContain(

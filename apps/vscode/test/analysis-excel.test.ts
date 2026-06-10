@@ -11,6 +11,8 @@ describe("analysis Excel sheets", () => {
 
     expect(sheets.map((sheet) => sheet.sheet)).toEqual([
       "概要",
+      "分析サマリ",
+      "チャート元データ",
       "ファイル",
       "参照ファイル",
       "宣言",
@@ -24,6 +26,20 @@ describe("analysis Excel sheets", () => {
         ["解析範囲", "ワークスペース"],
         ["未使用候補数", 1],
         ["切り詰め", "workspaceIndex>10"],
+      ]),
+    );
+    expect(table(sheets, "分析サマリ")).toEqual(
+      expect.arrayContaining([
+        ["変数", 2, 1, 1, 2 / 3, expect.stringContaining("2")],
+        ["関数", 1, 1, 0, 1 / 3, expect.stringContaining("1")],
+        ["グローバル", 3, 2, 1, 1 / 3, expect.stringContaining("3")],
+        ["未解決参照", 1, 1 / 8, expect.stringContaining("1"), "unresolved"],
+      ]),
+    );
+    expect(table(sheets, "チャート元データ")).toEqual(
+      expect.arrayContaining([
+        ["変数", 2, 1, 1, 2 / 3],
+        ["関数", 1, 1, 0, 1 / 3],
       ]),
     );
     expect(table(sheets, "参照ファイル")).toEqual(
@@ -161,7 +177,7 @@ function analysisPayload(): AspGraphPayload {
       },
       {
         id: "file:/workspace/missing.inc",
-        kind: "file",
+        kind: "missingInclude",
         label: "missing.inc",
         uri: missingUri,
         fileName: "missing.inc",

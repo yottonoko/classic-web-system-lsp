@@ -73,6 +73,10 @@ type GraphData = {
   links: GraphLink[];
 };
 
+function isFileLikeGraphNode(node: Pick<AspGraphNode, "kind">): boolean {
+  return node.kind === "file" || node.kind === "missingInclude";
+}
+
 type Selection = { type: "node"; item: GraphNode } | { type: "link"; item: GraphLink } | undefined;
 
 type GraphStatsMetric = "files" | "declarations" | "links" | "missingIncludes";
@@ -234,6 +238,7 @@ const graphMessageEn = {
   "label.method": "Method",
   "label.missing": "Missing",
   "label.missingFile": "Missing file",
+  "label.missingInclude": "Missing include",
   "label.object": "Object",
   "label.parameter": "Parameter",
   "label.property": "Property",
@@ -270,6 +275,8 @@ const graphMessageEn = {
   "link.unresolvedReference.label": "Unresolved",
   "node.class.description": "VBScript class declarations.",
   "node.file.description": "Classic ASP source files and include files.",
+  "node.missingInclude.description":
+    "Include directives whose target file does not exist or could not be resolved.",
   "node.function.description": "Top-level VBScript Function declarations.",
   "node.globalConstant.description": "Top-level VBScript Const declarations.",
   "node.globalVariable.description":
@@ -402,6 +409,7 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "label.method": "Method",
     "label.missing": "Missing",
     "label.missingFile": "Missing file",
+    "label.missingInclude": "存在しない include",
     "label.object": "Object",
     "label.parameter": "Parameter",
     "label.property": "Property",
@@ -438,6 +446,8 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "link.unresolvedReference.label": "未解決",
     "node.class.description": "VBScript class declaration です。",
     "node.file.description": "Classic ASP source file と include file です。",
+    "node.missingInclude.description":
+      "include directive の target file が存在しない、または解決できなかった node です。",
     "node.function.description": "top-level の VBScript Function declaration です。",
     "node.globalConstant.description": "top-level の VBScript Const declaration です。",
     "node.globalVariable.description":
@@ -499,6 +509,7 @@ function graphText(key: GraphTextKey, params?: GraphTextParams): string {
 const nodeColors: Record<NodeColorCategory, string> = {
   root: "#ffffff",
   file: "#67d8ef",
+  missingInclude: "#ff4db8",
   function: "#c792ea",
   sub: "#b39ddb",
   class: "#c3e88d",
@@ -579,6 +590,7 @@ const linkFilterDescriptions: Record<LinkFilterCategory, string> = {
 const nodeCategoryLabels: Record<NodeColorCategory, string> = {
   root: graphText("label.root"),
   file: graphText("label.file"),
+  missingInclude: graphText("label.missingInclude"),
   function: graphText("label.function"),
   sub: graphText("label.sub"),
   class: graphText("label.class"),
@@ -598,6 +610,7 @@ const nodeCategoryLabels: Record<NodeColorCategory, string> = {
 const nodeCategoryDescriptions: Record<NodeColorCategory, string> = {
   root: graphText("node.root.description"),
   file: graphText("node.file.description"),
+  missingInclude: graphText("node.missingInclude.description"),
   class: graphText("node.class.description"),
   function: graphText("node.function.description"),
   sub: graphText("node.sub.description"),
@@ -617,6 +630,7 @@ const nodeCategoryDescriptions: Record<NodeColorCategory, string> = {
 const nodeCategoryOrder: NodeColorCategory[] = [
   "root",
   "file",
+  "missingInclude",
   "class",
   "function",
   "sub",
@@ -1660,16 +1674,14 @@ function GraphStatsList({
 function statsItemsForMetric(metric: GraphStatsMetric, graphData: GraphData): GraphStatsListItem[] {
   switch (metric) {
     case "files":
-      return graphData.nodes
-        .filter((node) => node.kind === "file")
-        .map((node) => ({
-          id: `file:${node.id}`,
-          title: node.label,
-          target: { type: "node", id: node.id },
-          detail: detailParts(nodeFileLabel(node), node.uri).join(" · "),
-          status: fileStatsStatus(node),
-          color: node.color,
-        }));
+      return graphData.nodes.filter(isFileLikeGraphNode).map((node) => ({
+        id: `file:${node.id}`,
+        title: node.label,
+        target: { type: "node", id: node.id },
+        detail: detailParts(nodeFileLabel(node), node.uri).join(" · "),
+        status: fileStatsStatus(node),
+        color: node.color,
+      }));
     case "declarations":
       return graphData.nodes
         .filter((node) => node.kind === "vbDeclaration")
@@ -1937,13 +1949,13 @@ function NodeInspector({
   return (
     <>
       <NodeDetails node={node} />
-      {node.kind === "file" ? (
+      {isFileLikeGraphNode(node) ? (
         <FileNodeRelations graphData={graphData} node={node} />
       ) : (
         <NodeSourceSections graphData={graphData} node={node} />
       )}
       <NodeLinkSections graphData={visibleGraphData} node={node} onSelectLink={onSelectLink} />
-      {node.kind === "file" ? (
+      {isFileLikeGraphNode(node) ? (
         <OpenLocationButton
           className="mt-3 h-[30px] w-full"
           disabled={!location?.uri}
@@ -2903,6 +2915,9 @@ function NodeDetails({ node }: { node: GraphNode }): React.ReactElement {
 }
 
 function nodeTypeLabel(node: GraphNode): string {
+  if (node.kind === "missingInclude") {
+    return graphText("label.missingInclude");
+  }
   if (node.kind === "file") {
     return node.exists === false ? graphText("label.missingFile") : graphText("label.file");
   }
@@ -2972,6 +2987,9 @@ function nodeScopeLabel(node: GraphNode): string | undefined {
 }
 
 function nodeStatusLabel(node: GraphNode): string | undefined {
+  if (node.kind === "missingInclude") {
+    return graphText("label.missing");
+  }
   if (node.kind === "file") {
     return node.isRoot ? graphText("label.root") : undefined;
   }
@@ -3719,7 +3737,9 @@ function filterGraphData(
     const connectedNodeIds = connectedNodeIdsFor(visibleLinks);
     visibleNodes = visibleNodes.filter(
       (node) =>
-        node.isRoot || connectedNodeIds.has(node.id) || (!hasPayloadRoot && node.kind === "file"),
+        node.isRoot ||
+        connectedNodeIds.has(node.id) ||
+        (!hasPayloadRoot && isFileLikeGraphNode(node)),
     );
     visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
     visibleLinks = visibleLinks.filter(
@@ -3762,7 +3782,7 @@ function graphStatsFor(graphData: GraphData): AspGraphPayload["stats"] {
     links: graphData.links.length,
   };
   for (const node of graphData.nodes) {
-    if (node.kind === "file") {
+    if (isFileLikeGraphNode(node)) {
       stats.files += 1;
     } else if (node.kind === "vbDeclaration") {
       stats.declarations += 1;
@@ -4554,15 +4574,15 @@ function nodeTextObject(node: GraphNode, highlight: HighlightState | undefined):
 }
 
 function nodeTextHeight(node: GraphNode): number {
-  return node.kind === "file" ? 5 : 4;
+  return isFileLikeGraphNode(node) ? 5 : 4;
 }
 
 function nodeTextOffset(node: GraphNode): number {
-  return nodeRadius(node) + (node.kind === "file" ? 2.5 : 1.5);
+  return nodeRadius(node) + (isFileLikeGraphNode(node) ? 2.5 : 1.5);
 }
 
 function nodeTextOffset3d(node: GraphNode): number {
-  return nodeRadius(node) + (node.kind === "file" ? 1.5 : 0.75);
+  return nodeRadius(node) + (isFileLikeGraphNode(node) ? 1.5 : 0.75);
 }
 
 function nodeTextAnchor(offset: number, textHeight: number): number {
@@ -4570,7 +4590,7 @@ function nodeTextAnchor(offset: number, textHeight: number): number {
 }
 
 function nodeTextFontWeight(node: GraphNode): "500" | "600" {
-  return node.kind === "file" ? "600" : "500";
+  return isFileLikeGraphNode(node) ? "600" : "500";
 }
 
 function nodeValue(referenceCount: number): number {
@@ -4625,6 +4645,9 @@ function maxInspectorWidthForLayout(containerWidth: number): number {
 function nodeCategoryForColor(node: AspGraphNode): NodeColorCategory {
   if (node.isRoot) {
     return "root";
+  }
+  if (node.kind === "missingInclude") {
+    return "missingInclude";
   }
   if (node.kind === "file") {
     return "file";
@@ -4734,7 +4757,7 @@ function paintNodePointerArea(
 }
 
 function nodeRadius(node: GraphNode): number {
-  return (node.kind === "file" ? 3.4 : 3) + node.value;
+  return (isFileLikeGraphNode(node) ? 3.4 : 3) + node.value;
 }
 
 createRoot(document.getElementById("root") ?? document.body).render(<App />);

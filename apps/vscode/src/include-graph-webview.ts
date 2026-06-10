@@ -37,6 +37,7 @@ export interface AspGraphPayload {
 export type AspGraphNodeCategory =
   | "root"
   | "file"
+  | "missingInclude"
   | "function"
   | "sub"
   | "class"
@@ -56,7 +57,7 @@ export type AspGraphLinkFilterCategory = AspGraphLink["kind"] | "member";
 
 export interface AspGraphNode {
   id: string;
-  kind: "file" | "vbDeclaration" | "vbUnresolved";
+  kind: "file" | "missingInclude" | "vbDeclaration" | "vbUnresolved";
   label: string;
   uri?: string;
   fileName?: string;
