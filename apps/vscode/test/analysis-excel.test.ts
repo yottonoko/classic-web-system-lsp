@@ -25,30 +25,31 @@ describe("analysis Excel sheets", () => {
       expect.arrayContaining([
         ["解析範囲", "ファイル"],
         ["ルート", "main.asp"],
-        ["宣言数", 3],
-        ["参照数", 1],
-        ["代入数", 1],
+        ["宣言数", 5],
+        ["参照数", 2],
+        ["代入数", 2],
         ["呼び出し数", 1],
         ["include 数", 1],
         ["未解決数", 2],
-        ["未使用数", 1],
+        ["未使用数", 2],
         ["切り詰め", "workspaceIndex>10"],
       ]),
     );
     expect(table(sheets, "分析サマリ")).toEqual(
       expect.arrayContaining([
-        ["他ファイルから未参照の宣言", 1, "要確認", "未使用 sheet で削除可否を確認"],
+        ["未使用の宣言", 2, "要確認", "未使用 sheet で削除可否を確認"],
         ["未解決", 2, "要確認", "未解決 sheet で名前解決を確認"],
-        ["他ファイルからの使用数", 3, "あり", "被参照と使用箇所 sheet で利用元を確認"],
+        ["他ファイルからの使用数", 3, "あり", "使用箇所 sheet で他ファイルからの利用元を確認"],
         ["include 先シンボル使用数", 3, "あり", "参照ファイル sheet で include 依存を確認"],
-        ["変数", 2, 1, 1, 2, expect.stringContaining("2")],
+        ["変数", 4, 2, 2, 4, expect.stringContaining("4")],
         ["関数", 1, 1, 0, 1, expect.stringContaining("1")],
         ["参照", 1, expect.stringContaining("1")],
         ["代入", 1, expect.stringContaining("1")],
         ["呼び出し", 1, expect.stringContaining("1")],
         ["TargetValue", "変数", "main.asp", 3, 2, 1, 1, 0],
         ["TargetProc", "関数", "main.asp", 4, 1, 0, 0, 1],
-        ["変数", 1, 2, 0.5, expect.stringContaining("1")],
+        ["LocalOnlyValue", "変数", "main.asp", 6, 2, 1, 1, 0],
+        ["変数", 2, 4, 0.5, expect.stringContaining("2")],
       ]),
     );
     expect(sheets.find((sheet) => sheet.sheet === "分析サマリ")?.images).toEqual(
@@ -56,7 +57,7 @@ describe("analysis Excel sheets", () => {
         expect.objectContaining({
           anchor: expect.objectContaining({ column: 1 }),
           contentType: "image/svg",
-          title: "他ファイル参照サマリ",
+          title: "使用サマリ",
         }),
         expect.objectContaining({
           anchor: expect.objectContaining({ column: 1 }),
@@ -68,8 +69,8 @@ describe("analysis Excel sheets", () => {
     expect(sheets.find((sheet) => sheet.sheet === "分析サマリ")?.autoFilterRef).toBeUndefined();
     expect(table(sheets, "チャート元データ")).toEqual(
       expect.arrayContaining([
-        ["他ファイルから未参照の宣言", 1, "要確認", "未使用 sheet で削除可否を確認"],
-        ["変数", 2, 1, 1, 2],
+        ["未使用の宣言", 2, "要確認", "未使用 sheet で削除可否を確認"],
+        ["変数", 4, 2, 2, 4],
         ["関数", 1, 1, 0, 1],
       ]),
     );
@@ -78,11 +79,11 @@ describe("analysis Excel sheets", () => {
       sheets.find((sheet) => sheet.sheet === "チャート元データ")?.autoFilterRef,
     ).toBeUndefined();
     expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B12");
-    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:O4");
-    expect(sheets.find((sheet) => sheet.sheet === "被参照")?.autoFilterRef).toBe("A1:K3");
+    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:O6");
+    expect(sheets.find((sheet) => sheet.sheet === "被参照")?.autoFilterRef).toBe("A1:K4");
     expect(sheets.find((sheet) => sheet.sheet === "使用箇所")?.autoFilterRef).toBe("A1:H4");
     expect(sheets.find((sheet) => sheet.sheet === "参照ファイル")?.autoFilterRef).toBe("A1:H4");
-    expect(sheets.find((sheet) => sheet.sheet === "未使用")?.autoFilterRef).toBe("A1:M2");
+    expect(sheets.find((sheet) => sheet.sheet === "未使用")?.autoFilterRef).toBe("A1:M3");
     expect(sheets.find((sheet) => sheet.sheet === "未解決")?.autoFilterRef).toBe("A1:H3");
     expect(table(sheets, "宣言")).toEqual(
       expect.arrayContaining([
@@ -122,6 +123,40 @@ describe("analysis Excel sheets", () => {
         ],
         [
           "main.asp",
+          "LocalOnlyValue",
+          "変数",
+          "",
+          "グローバル",
+          "",
+          "",
+          "なし",
+          "",
+          6,
+          5,
+          1,
+          1,
+          0,
+          "使用あり",
+        ],
+        [
+          "main.asp",
+          "LocalValue",
+          "変数",
+          "",
+          "ローカル",
+          "",
+          "",
+          "なし",
+          "",
+          7,
+          5,
+          0,
+          0,
+          0,
+          "未使用",
+        ],
+        [
+          "main.asp",
           "UnusedValue",
           "変数",
           "",
@@ -143,6 +178,7 @@ describe("analysis Excel sheets", () => {
       expect.arrayContaining([
         ["main.asp", "TargetValue", "変数", "", "ソース", 3, 5, 2, 1, 1, 0],
         ["main.asp", "TargetProc", "関数", "", "ソース", 4, 5, 1, 0, 0, 1],
+        ["main.asp", "LocalOnlyValue", "変数", "", "ソース", 6, 5, 2, 1, 1, 0],
       ]),
     );
     expect(table(sheets, "使用箇所")).toEqual(
@@ -162,12 +198,99 @@ describe("analysis Excel sheets", () => {
     expect(table(sheets, "未使用")).toEqual(
       expect.arrayContaining([
         ["main.asp", "UnusedValue", "変数", "", "グローバル", "", "なし", 5, 5, 0, 0, 0, "未使用"],
+        ["main.asp", "LocalValue", "変数", "", "ローカル", "", "なし", 7, 5, 0, 0, 0, "未使用"],
       ]),
     );
     expect(table(sheets, "未解決")).toEqual(
       expect.arrayContaining([
         ["呼び出し", "プロシージャ", "main.asp", "MissingProc", "main.asp", 9, 5, 1],
         ["未解決参照", "読み取り", "main.asp", "MissingValue", "main.asp", 10, 5, 1],
+      ]),
+    );
+  });
+
+  it("checks unused functions, local variables and constants", () => {
+    const sheets = createAnalysisExcelSheets(unusedDeclarationKindsPayload(), "ja", {
+      generatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      targetUri: "file:///workspace/coverage.asp",
+    });
+    const unusedRows = table(sheets, "未使用");
+
+    expect(unusedRows).toEqual(
+      expect.arrayContaining([
+        [
+          "coverage.asp",
+          "UnusedFunction",
+          "関数",
+          "",
+          "グローバル",
+          "",
+          "なし",
+          2,
+          5,
+          0,
+          0,
+          0,
+          "未使用",
+        ],
+        [
+          "coverage.asp",
+          "UnusedLocalValue",
+          "変数",
+          "",
+          "ローカル",
+          "",
+          "なし",
+          4,
+          5,
+          0,
+          0,
+          0,
+          "未使用",
+        ],
+        [
+          "coverage.asp",
+          "UnusedConst",
+          "定数",
+          "",
+          "グローバル",
+          "",
+          "なし",
+          6,
+          5,
+          0,
+          0,
+          0,
+          "未使用",
+        ],
+        [
+          "coverage.asp",
+          "UnusedLocalConst",
+          "定数",
+          "",
+          "ローカル",
+          "",
+          "なし",
+          8,
+          5,
+          0,
+          0,
+          0,
+          "未使用",
+        ],
+      ]),
+    );
+    expect(unusedRows.flat()).not.toContain("UsedFunction");
+    expect(unusedRows.flat()).not.toContain("UsedLocalValue");
+    expect(unusedRows.flat()).not.toContain("UsedConst");
+    expect(unusedRows.flat()).not.toContain("UsedLocalConst");
+    expect(unusedRows.flat()).not.toContain("ignoredParameter");
+    expect(table(sheets, "被参照")).toEqual(
+      expect.arrayContaining([
+        ["coverage.asp", "UsedFunction", "関数", "", "ソース", 1, 5, 1, 0, 0, 1],
+        ["coverage.asp", "UsedLocalValue", "変数", "", "ソース", 3, 5, 1, 0, 1, 0],
+        ["coverage.asp", "UsedConst", "定数", "", "ソース", 5, 5, 1, 1, 0, 0],
+        ["coverage.asp", "UsedLocalConst", "定数", "", "ソース", 7, 5, 1, 1, 0, 0],
       ]),
     );
   });
@@ -202,7 +325,7 @@ describe("analysis Excel sheets", () => {
         sheets.find((sheet) => sheet.sheet === "宣言")!,
         { sheetId: "4", sheetIndex: 3 },
       ),
-    ).toContain('<autoFilter ref="A1:O4"/>');
+    ).toContain('<autoFilter ref="A1:O6"/>');
   });
 });
 
@@ -305,11 +428,21 @@ function analysisPayload(): AspGraphPayload {
         origin: "source",
       },
       {
+        id: "vb:local-only",
+        kind: "vbDeclaration",
+        label: "LocalOnlyValue",
+        uri: mainUri,
+        range: range(5, 4),
+        declarationKind: "variable",
+        bindingScope: "global",
+        origin: "source",
+      },
+      {
         id: "vb:local",
         kind: "vbDeclaration",
         label: "LocalValue",
         uri: mainUri,
-        range: range(5, 4),
+        range: range(6, 4),
         declarationKind: "variable",
         bindingScope: "local",
         origin: "source",
@@ -383,6 +516,15 @@ function analysisPayload(): AspGraphPayload {
         ranges: [{ uri: mainUri, range: range(4, 4) }],
       },
       {
+        id: "link:declare-local-only",
+        source: "vb:local-only",
+        target: "file:/workspace/main.asp",
+        kind: "declares",
+        label: "declares",
+        count: 1,
+        ranges: [{ uri: mainUri, range: range(5, 4) }],
+      },
+      {
         id: "link:ref-shared",
         source: "file:/workspace/main.asp",
         target: "vb:shared",
@@ -443,6 +585,26 @@ function analysisPayload(): AspGraphPayload {
         ranges: [{ uri: consumerUri, range: range(13, 4) }],
       },
       {
+        id: "link:ref-local-only",
+        source: "file:/workspace/main.asp",
+        target: "vb:local-only",
+        kind: "references",
+        label: "read",
+        role: "read",
+        count: 1,
+        ranges: [{ uri: mainUri, range: range(14, 4) }],
+      },
+      {
+        id: "link:assign-local-only",
+        source: "file:/workspace/main.asp",
+        target: "vb:local-only",
+        kind: "assignments",
+        label: "write",
+        role: "write",
+        count: 1,
+        ranges: [{ uri: mainUri, range: range(15, 4) }],
+      },
+      {
         id: "link:call-missing",
         source: "file:/workspace/main.asp",
         target: "unresolved:missingproc",
@@ -465,18 +627,181 @@ function analysisPayload(): AspGraphPayload {
     ],
     stats: {
       files: 3,
-      declarations: 6,
-      references: 2,
-      assignments: 2,
+      declarations: 7,
+      references: 3,
+      assignments: 3,
       calls: 3,
       unresolvedReferences: 1,
       includes: 1,
       missingIncludes: 0,
-      nodes: 11,
-      links: 13,
+      nodes: 12,
+      links: 16,
     },
     truncated: {
       reason: "workspaceIndex>10",
+    },
+  };
+}
+
+function unusedDeclarationKindsPayload(): AspGraphPayload {
+  const uri = "file:///workspace/coverage.asp";
+  return {
+    scope: "document",
+    rootUri: uri,
+    nodes: [
+      {
+        id: "file:/workspace/coverage.asp",
+        kind: "file",
+        label: "coverage.asp",
+        uri,
+        fileName: "coverage.asp",
+        exists: true,
+        isRoot: true,
+      },
+      {
+        id: "vb:used-function",
+        kind: "vbDeclaration",
+        label: "UsedFunction",
+        uri,
+        range: range(0, 4),
+        declarationKind: "function",
+        bindingScope: "global",
+        origin: "source",
+      },
+      {
+        id: "vb:unused-function",
+        kind: "vbDeclaration",
+        label: "UnusedFunction",
+        uri,
+        range: range(1, 4),
+        declarationKind: "function",
+        bindingScope: "global",
+        origin: "source",
+      },
+      {
+        id: "vb:used-local",
+        kind: "vbDeclaration",
+        label: "UsedLocalValue",
+        uri,
+        range: range(2, 4),
+        declarationKind: "variable",
+        bindingScope: "local",
+        origin: "source",
+      },
+      {
+        id: "vb:unused-local",
+        kind: "vbDeclaration",
+        label: "UnusedLocalValue",
+        uri,
+        range: range(3, 4),
+        declarationKind: "variable",
+        bindingScope: "local",
+        origin: "source",
+      },
+      {
+        id: "vb:used-const",
+        kind: "vbDeclaration",
+        label: "UsedConst",
+        uri,
+        range: range(4, 4),
+        declarationKind: "constant",
+        bindingScope: "global",
+        origin: "source",
+      },
+      {
+        id: "vb:unused-const",
+        kind: "vbDeclaration",
+        label: "UnusedConst",
+        uri,
+        range: range(5, 4),
+        declarationKind: "constant",
+        bindingScope: "global",
+        origin: "source",
+      },
+      {
+        id: "vb:used-local-const",
+        kind: "vbDeclaration",
+        label: "UsedLocalConst",
+        uri,
+        range: range(6, 4),
+        declarationKind: "constant",
+        bindingScope: "local",
+        origin: "source",
+      },
+      {
+        id: "vb:unused-local-const",
+        kind: "vbDeclaration",
+        label: "UnusedLocalConst",
+        uri,
+        range: range(7, 4),
+        declarationKind: "constant",
+        bindingScope: "local",
+        origin: "source",
+      },
+      {
+        id: "vb:ignored-parameter",
+        kind: "vbDeclaration",
+        label: "ignoredParameter",
+        uri,
+        range: range(8, 4),
+        declarationKind: "parameter",
+        bindingScope: "local",
+        origin: "source",
+      },
+    ],
+    links: [
+      {
+        id: "link:call-used-function",
+        source: "file:/workspace/coverage.asp",
+        target: "vb:used-function",
+        kind: "calls",
+        label: "function",
+        role: "function",
+        count: 1,
+        ranges: [{ uri, range: range(10, 4) }],
+      },
+      {
+        id: "link:assign-used-local",
+        source: "file:/workspace/coverage.asp",
+        target: "vb:used-local",
+        kind: "assignments",
+        label: "write",
+        role: "write",
+        count: 1,
+        ranges: [{ uri, range: range(11, 4) }],
+      },
+      {
+        id: "link:ref-used-const",
+        source: "file:/workspace/coverage.asp",
+        target: "vb:used-const",
+        kind: "references",
+        label: "read",
+        role: "read",
+        count: 1,
+        ranges: [{ uri, range: range(12, 4) }],
+      },
+      {
+        id: "link:ref-used-local-const",
+        source: "file:/workspace/coverage.asp",
+        target: "vb:used-local-const",
+        kind: "references",
+        label: "read",
+        role: "read",
+        count: 1,
+        ranges: [{ uri, range: range(13, 4) }],
+      },
+    ],
+    stats: {
+      files: 1,
+      declarations: 8,
+      references: 2,
+      assignments: 1,
+      calls: 1,
+      unresolvedReferences: 0,
+      includes: 0,
+      missingIncludes: 0,
+      nodes: 9,
+      links: 4,
     },
   };
 }

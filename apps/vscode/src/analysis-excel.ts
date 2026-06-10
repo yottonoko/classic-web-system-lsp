@@ -57,9 +57,11 @@ interface AnalysisContext {
   targetDeclarationIds: Set<string>;
   includedFileUris: Set<string>;
   includedDeclarationIds: Set<string>;
+  targetUsageLinks: AspGraphLink[];
   externalUsageLinks: AspGraphLink[];
   includedUsageLinks: AspGraphLink[];
   unresolvedLinks: AspGraphLink[];
+  targetUsageCounts: Map<string, UsageCounts>;
   externalUsageCounts: Map<string, UsageCounts>;
   unusedDeclarations: AspGraphNode[];
 }
@@ -237,11 +239,11 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     unresolvedUsageCount: "Unresolved usages",
     risk: "Risk",
     reviewPriority: "Review priority",
-    externalReferenceSummary: "External reference summary",
+    externalReferenceSummary: "Usage summary",
     includeUsageSummary: "Included file usage",
     topReferencedDeclarations: "Top referenced declarations",
     analysisCharts: "Charts",
-    unreferencedDeclarations: "Declarations unreferenced by other files",
+    unreferencedDeclarations: "Unused declarations",
     externalUsageCount: "External usages",
     includedUsageCount: "Included symbol usages",
     issueSummary: "Issue summary",
@@ -252,7 +254,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     none: "None",
     reviewUnusedAction: "Review the Unused sheet before removing declarations.",
     reviewUnresolvedAction: "Review the Unresolved sheet and fix name resolution.",
-    reviewExternalUsagesAction: "Review Referenced and Usages sheets for callers.",
+    reviewExternalUsagesAction: "Review the Usages sheet for other-file callers.",
     reviewMissingExternalUsagesAction: "No other-file usages were found for the target file.",
     reviewIncludedUsagesAction: "Review Included file usage rows for include dependencies.",
     reviewMissingIncludedUsagesAction: "No included-file symbol usages were found.",
@@ -333,11 +335,11 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     unresolvedUsageCount: "未解決の使用数",
     risk: "リスク",
     reviewPriority: "確認優先",
-    externalReferenceSummary: "他ファイル参照サマリ",
+    externalReferenceSummary: "使用サマリ",
     includeUsageSummary: "include 先の使用",
     topReferencedDeclarations: "よく使われている宣言",
     analysisCharts: "グラフ",
-    unreferencedDeclarations: "他ファイルから未参照の宣言",
+    unreferencedDeclarations: "未使用の宣言",
     externalUsageCount: "他ファイルからの使用数",
     includedUsageCount: "include 先シンボル使用数",
     issueSummary: "確認項目",
@@ -348,7 +350,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     none: "なし",
     reviewUnusedAction: "未使用 sheet で削除可否を確認",
     reviewUnresolvedAction: "未解決 sheet で名前解決を確認",
-    reviewExternalUsagesAction: "被参照と使用箇所 sheet で利用元を確認",
+    reviewExternalUsagesAction: "使用箇所 sheet で他ファイルからの利用元を確認",
     reviewMissingExternalUsagesAction: "対象ファイルは他ファイルから使われていない可能性あり",
     reviewIncludedUsagesAction: "参照ファイル sheet で include 依存を確認",
     reviewMissingIncludedUsagesAction: "include 先シンボルの使用なし",
@@ -496,18 +498,13 @@ export function createAnalysisExcelSheets(
       declarationRows(
         context.targetDeclarations,
         locale,
-        context.externalUsageCounts,
+        context.targetUsageCounts,
         fileNamesByUri,
       ),
     ),
     sheet(
       text[locale].referenced,
-      referencedRows(
-        context.targetDeclarations,
-        locale,
-        context.externalUsageCounts,
-        fileNamesByUri,
-      ),
+      referencedRows(context.targetDeclarations, locale, context.targetUsageCounts, fileNamesByUri),
     ),
     sheet(
       text[locale].usages,
@@ -522,7 +519,7 @@ export function createAnalysisExcelSheets(
       unusedDeclarationRows(
         context.unusedDeclarations,
         locale,
-        context.externalUsageCounts,
+        context.targetUsageCounts,
         fileNamesByUri,
       ),
     ),
@@ -545,9 +542,9 @@ function summaryRows(
     [t.root, context.targetFileName],
     [t.generatedAt, generatedAt.toISOString()],
     [t.declarationsCount, context.targetDeclarations.length],
-    [t.referencesCount, usageLinkCount(context.externalUsageLinks, "references")],
-    [t.assignmentsCount, usageLinkCount(context.externalUsageLinks, "assignments")],
-    [t.callsCount, usageLinkCount(context.externalUsageLinks, "calls")],
+    [t.referencesCount, usageLinkCount(context.targetUsageLinks, "references")],
+    [t.assignmentsCount, usageLinkCount(context.targetUsageLinks, "assignments")],
+    [t.callsCount, usageLinkCount(context.targetUsageLinks, "calls")],
     [t.includesCount, context.includedFileUris.size],
     [t.unresolvedCount, usageLinkCount(context.unresolvedLinks)],
     [t.unusedCount, context.unusedDeclarations.length],
@@ -565,7 +562,7 @@ function analysisSummaryRows(locale: AspGraphLocale, context: AnalysisContext): 
     [],
     sectionTitle(t.externalReferenceSummary, 6),
     header([t.kind, t.total, t.usedCount, t.unusedCount, t.usageCount, t.bar]),
-    ...declarationKindSummaryRows(context.targetDeclarations, locale, context.externalUsageCounts),
+    ...declarationKindSummaryRows(context.targetDeclarations, locale, context.targetUsageCounts),
     [],
     sectionTitle(t.includeUsageSummary, 3),
     header([t.usageKind, t.count, t.bar]),
@@ -585,7 +582,7 @@ function analysisSummaryRows(locale: AspGraphLocale, context: AnalysisContext): 
     ...topReferencedDeclarationRows(
       context.targetDeclarations,
       locale,
-      context.externalUsageCounts,
+      context.targetUsageCounts,
       new Map(context.targetDeclarations.map((node) => [node.uri ?? "", context.targetFileName])),
     ),
     [],
@@ -607,7 +604,7 @@ function chartDataRows(locale: AspGraphLocale, context: AnalysisContext): Cell[]
     ...declarationKindSummaryRows(
       context.targetDeclarations,
       locale,
-      context.externalUsageCounts,
+      context.targetUsageCounts,
     ).map((row) => row.slice(0, 5)),
     [],
     sectionTitle(t.includeUsageSummary, 2),
@@ -631,7 +628,7 @@ function analysisSummaryImages(
   const declarationRows = declarationKindSummaryRows(
     context.targetDeclarations,
     locale,
-    context.externalUsageCounts,
+    context.targetUsageCounts,
   );
   return [
     chartImage(
@@ -1144,7 +1141,7 @@ function analysisContext(
   const targetUri = options.targetUri ?? defaultAnalysisTargetUri(payload);
   const targetFileName = displayNameForUri(targetUri, fileNamesByUri);
   const targetDeclarations = sourceDeclarationNodes(payload.nodes)
-    .filter((node) => sameGraphUri(node.uri, targetUri) && isExternallyVisibleDeclaration(node))
+    .filter((node) => sameGraphUri(node.uri, targetUri) && isAnalysisDeclaration(node))
     .sort(compareNodesByLocation(fileNamesByUri));
   const targetDeclarationIds = new Set(targetDeclarations.map((node) => node.id));
   const includedFileUris = includedFileUrisForTarget(payload, targetUri, nodesById);
@@ -1163,6 +1160,11 @@ function analysisContext(
     (link) => isUsageGraphLink(link) && targetDeclarationIds.has(link.target),
     ({ uri }) => !sameGraphUri(uri, targetUri),
   );
+  const targetUsageLinks = filteredGraphLinks(
+    payload.links,
+    (link) => isUsageGraphLink(link) && targetDeclarationIds.has(link.target),
+    () => true,
+  );
   const includedUsageLinks = filteredGraphLinks(
     payload.links,
     (link) => isUsageGraphLink(link) && includedDeclarationIds.has(link.target),
@@ -1174,9 +1176,10 @@ function analysisContext(
       link.kind === "unresolvedReference" || nodesById.get(link.target)?.kind === "vbUnresolved",
     ({ uri }) => sameGraphUri(uri, targetUri),
   );
+  const targetUsageCounts = usageCountsByTarget(targetUsageLinks);
   const externalUsageCounts = usageCountsByTarget(externalUsageLinks);
   const unusedDeclarations = targetDeclarations
-    .filter((node) => usageTotal(externalUsageCounts.get(node.id)) === 0)
+    .filter((node) => usageTotal(targetUsageCounts.get(node.id)) === 0)
     .sort(compareNodesByLocation(fileNamesByUri));
   return {
     targetUri,
@@ -1185,9 +1188,11 @@ function analysisContext(
     targetDeclarationIds,
     includedFileUris,
     includedDeclarationIds,
+    targetUsageLinks,
     externalUsageLinks,
     includedUsageLinks,
     unresolvedLinks,
+    targetUsageCounts,
     externalUsageCounts,
     unusedDeclarations,
   };
@@ -1202,7 +1207,11 @@ function defaultAnalysisTargetUri(payload: AspGraphPayload): string | undefined 
 }
 
 function isExternallyVisibleDeclaration(node: AspGraphNode): boolean {
-  return node.bindingScope !== "local" && node.declarationKind !== "parameter";
+  return node.bindingScope !== "local" && isAnalysisDeclaration(node);
+}
+
+function isAnalysisDeclaration(node: AspGraphNode): boolean {
+  return node.declarationKind !== "parameter";
 }
 
 function includedFileUrisForTarget(
