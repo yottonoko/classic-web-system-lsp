@@ -36,6 +36,15 @@ describe("analysis Excel sheets", () => {
         ["未解決参照", 1, 1 / 8, expect.stringContaining("1"), "unresolved"],
       ]),
     );
+    expect(sheets.find((sheet) => sheet.sheet === "分析サマリ")?.images).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ contentType: "image/svg", title: "種別ごとの宣言" }),
+        expect.objectContaining({ contentType: "image/svg", title: "使用種別" }),
+        expect.objectContaining({ contentType: "image/svg", title: "グローバルとローカル" }),
+        expect.objectContaining({ contentType: "image/svg", title: "種別ごとの未使用" }),
+        expect.objectContaining({ contentType: "image/svg", title: "ファイル別の状態" }),
+      ]),
+    );
     expect(table(sheets, "チャート元データ")).toEqual(
       expect.arrayContaining([
         ["変数", 2, 1, 1, 2 / 3],

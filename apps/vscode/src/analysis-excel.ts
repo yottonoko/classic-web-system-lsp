@@ -8,6 +8,13 @@ import type {
 } from "./include-graph-webview";
 
 export type AnalysisExcelSheet = Sheet<Buffer>;
+type AnalysisExcelImage = NonNullable<AnalysisExcelSheet["images"]>[number];
+
+interface ChartDatum {
+  label: string;
+  value: number;
+  detail?: string;
+}
 
 interface AnalysisExcelOptions {
   generatedAt?: Date;
@@ -339,11 +346,19 @@ export function createAnalysisExcelSheets(
   const unusedDeclarations = sourceDeclarationNodes(payload.nodes)
     .filter((node) => usageTotal(usageCounts.get(node.id)) === 0)
     .sort(compareNodesByLocation(fileNamesByUri));
+  const analysisRows = analysisSummaryRows(
+    payload,
+    locale,
+    usageCounts,
+    fileNamesByUri,
+    unusedDeclarations,
+  );
   return [
     sheet(text[locale].summary, summaryRows(payload, locale, generatedAt, unusedDeclarations)),
     sheet(
       text[locale].analysisSummary,
-      analysisSummaryRows(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations),
+      analysisRows,
+      analysisSummaryImages(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations),
     ),
     sheet(
       text[locale].chartData,
@@ -470,6 +485,162 @@ function chartDataRows(
       row.slice(0, 9),
     ),
   ];
+}
+
+function analysisSummaryImages(
+  payload: AspGraphPayload,
+  locale: AspGraphLocale,
+  usageCounts: Map<string, UsageCounts>,
+  fileNamesByUri: Map<string, string>,
+  unusedDeclarations: AspGraphNode[],
+): AnalysisExcelImage[] {
+  const t = text[locale];
+  const declarationRows = declarationKindChartRows(payload.nodes, locale, usageCounts);
+  const scopeRows = scopeComparisonRows(payload.nodes, locale, usageCounts);
+  const usageRows = usageMixRows(payload, locale);
+  const unusedRows = unusedByKindRows(unusedDeclarations, locale);
+  const fileRows = fileHealthRows(payload, locale, usageCounts, fileNamesByUri, unusedDeclarations);
+  return [
+    chartImage(
+      barChartSvg(t.declarationsByKind, chartDataFromRows(declarationRows, 0, 1, 3), "#4F81BD"),
+      t.declarationsByKind,
+      2,
+    ),
+    chartImage(pieChartSvg(t.usageMix, chartDataFromRows(usageRows, 0, 1, 4)), t.usageMix, 18),
+    chartImage(
+      barChartSvg(t.scopeComparison, chartDataFromRows(scopeRows, 0, 1, 3), "#70AD47"),
+      t.scopeComparison,
+      34,
+    ),
+    chartImage(
+      barChartSvg(t.unusedByKind, chartDataFromRows(unusedRows, 0, 1, 2), "#C00000"),
+      t.unusedByKind,
+      50,
+    ),
+    chartImage(
+      barChartSvg(
+        t.fileHealth,
+        chartDataFromRows(fileRows, 0, 8, 2)
+          .sort((left, right) => right.value - left.value || compareValues(left.label, right.label))
+          .slice(0, 8),
+        "#8064A2",
+      ),
+      t.fileHealth,
+      66,
+    ),
+  ];
+}
+
+function chartDataFromRows(
+  rows: Cell[][],
+  labelIndex: number,
+  valueIndex: number,
+  detailIndex?: number,
+): ChartDatum[] {
+  return rows
+    .map((row) => ({
+      label: String(cellValue(row[labelIndex]) ?? ""),
+      value: Number(cellValue(row[valueIndex]) ?? 0),
+      detail:
+        detailIndex === undefined || cellValue(row[detailIndex]) === undefined
+          ? undefined
+          : String(cellValue(row[detailIndex])),
+    }))
+    .filter((item) => item.label && Number.isFinite(item.value) && item.value > 0);
+}
+
+function chartImage(svg: string, title: string, row: number): AnalysisExcelImage {
+  return {
+    content: Buffer.from(svg, "utf8"),
+    contentType: "image/svg",
+    width: 560,
+    height: 260,
+    dpi: 96,
+    anchor: { row, column: 12 },
+    title,
+    description: title,
+  };
+}
+
+function barChartSvg(title: string, data: ChartDatum[], color: string): string {
+  const width = 560;
+  const height = 260;
+  const chartX = 150;
+  const chartY = 46;
+  const chartWidth = 340;
+  const rowHeight = data.length > 0 ? Math.min(26, 166 / data.length) : 24;
+  const max = Math.max(1, ...data.map((item) => item.value));
+  const rows = data.slice(0, 8);
+  return svgFrame(
+    width,
+    height,
+    title,
+    rows
+      .map((item, index) => {
+        const y = chartY + index * rowHeight;
+        const barWidth = Math.max(3, (item.value / max) * chartWidth);
+        return [
+          `<text x="18" y="${y + 15}" class="label">${escapeXml(item.label)}</text>`,
+          `<rect x="${chartX}" y="${y}" width="${barWidth.toFixed(1)}" height="${Math.max(10, rowHeight - 7).toFixed(1)}" rx="3" fill="${color}"/>`,
+          `<text x="${chartX + barWidth + 8}" y="${y + 15}" class="value">${item.value}${item.detail ? ` / ${escapeXml(item.detail)}` : ""}</text>`,
+        ].join(" ");
+      })
+      .join("\n"),
+  );
+}
+
+function pieChartSvg(title: string, data: ChartDatum[]): string {
+  const width = 560;
+  const height = 260;
+  const total = data.reduce((sum, item) => sum + item.value, 0);
+  const radius = 72;
+  const circumference = 2 * Math.PI * radius;
+  const colors = ["#4F81BD", "#C0504D", "#9BBB59", "#8064A2", "#4BACC6", "#F79646"];
+  let offset = 0;
+  const slices = data
+    .slice(0, colors.length)
+    .map((item, index) => {
+      const length = total > 0 ? (item.value / total) * circumference : 0;
+      const dashOffset = -offset;
+      offset += length;
+      return `<circle cx="132" cy="138" r="${radius}" fill="none" stroke="${colors[index]}" stroke-width="36" stroke-dasharray="${length.toFixed(2)} ${(circumference - length).toFixed(2)}" stroke-dashoffset="${dashOffset.toFixed(2)}" transform="rotate(-90 132 138)"/>`;
+    })
+    .join("\n");
+  const legend = data
+    .slice(0, colors.length)
+    .map((item, index) => {
+      const y = 72 + index * 24;
+      const share = total > 0 ? `${((item.value / total) * 100).toFixed(1)}%` : "0.0%";
+      return [
+        `<rect x="260" y="${y - 11}" width="12" height="12" rx="2" fill="${colors[index]}"/>`,
+        `<text x="280" y="${y}" class="label">${escapeXml(item.label)}</text>`,
+        `<text x="450" y="${y}" class="value">${item.value} (${share})</text>`,
+      ].join(" ");
+    })
+    .join("\n");
+  return svgFrame(width, height, title, `${slices}\n${legend}`);
+}
+
+function svgFrame(width: number, height: number, title: string, body: string): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <style>
+    .title { font: 700 17px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2937; }
+    .label { font: 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
+    .value { font: 700 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+  </style>
+  <rect x="0" y="0" width="${width}" height="${height}" rx="10" fill="#ffffff"/>
+  <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="9.5" fill="none" stroke="#d1d5db"/>
+  <text x="18" y="28" class="title">${escapeXml(title)}</text>
+  ${body || `<text x="18" y="72" class="label">No data</text>`}
+</svg>`;
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 function declarationKindChartRows(
@@ -1069,12 +1240,13 @@ function maxCount(values: number[]): number {
   return Math.max(0, ...values);
 }
 
-function sheet(name: string, rows: Cell[][]): AnalysisExcelSheet {
+function sheet(name: string, rows: Cell[][], images?: AnalysisExcelImage[]): AnalysisExcelSheet {
   return {
     sheet: name,
     data: rows,
     columns: columnsForRows(rows),
     stickyRowsCount: 1,
+    images,
   };
 }
 
