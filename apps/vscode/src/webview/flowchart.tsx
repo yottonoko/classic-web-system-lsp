@@ -933,12 +933,18 @@ function App(): React.ReactElement {
       data-asp-lsp-theme={theme}
       style={layoutStyle}
     >
-      <aside className={infoPanelClassName}>
+      <aside className={`${infoPanelClassName} min-w-0 overflow-hidden`}>
         <header className="border-b border-[#263140] px-4 py-3">
-          <div className="text-sm font-semibold text-[#f1f5f9]">
+          <div
+            className="overflow-hidden text-ellipsis whitespace-nowrap text-sm font-semibold text-[#f1f5f9]"
+            title={selectedSection?.label ?? payload.fileName ?? text("title")}
+          >
             {selectedSection?.label ?? payload.fileName ?? text("title")}
           </div>
-          <div className="mt-1 text-xs text-[#9fb0c5]">
+          <div
+            className="mt-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-[#9fb0c5]"
+            title={`${payload.stats.sections} ${text("sections")} / ${selectedFlowchart.stats.nodes} ${text("nodes")} / ${payload.includes.length} ${text("includes")}`}
+          >
             {payload.stats.sections} {text("sections")} / {selectedFlowchart.stats.nodes}{" "}
             {text("nodes")} / {payload.includes.length} {text("includes")}
           </div>
@@ -1089,7 +1095,7 @@ function SidebarAccordionSection({
   const [open, setOpen] = useState(true);
   const headerTitle = detailParts(title, hint, text(open ? "collapseSection" : "expandSection"));
   return (
-    <section className="mb-4 rounded border border-[#263140] bg-[#101820]">
+    <section className="mb-4 min-w-0 overflow-hidden rounded border border-[#263140] bg-[#101820]">
       <div className="flex items-center gap-2">
         <button
           aria-expanded={open}
@@ -1195,29 +1201,34 @@ function IncludeList({
       {includes.map((include, index) => (
         <div
           key={`${include.mode}:${include.path}:${index}`}
-          className="rounded border border-[#263140] bg-[#101820] p-2"
+          className="min-w-0 overflow-hidden rounded border border-[#263140] bg-[#101820] p-2"
         >
-          <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 items-start justify-between gap-2">
             <button
               className="min-w-0 flex-1 text-left text-sm font-medium text-[#8ec7ff] hover:underline disabled:cursor-not-allowed disabled:text-[#7b8796] disabled:no-underline"
               disabled={!include.exists || !include.resolvedUri}
-              title={text("openFlowchart")}
+              title={detailParts(text("openFlowchart"), include.path, include.actualPath)}
               type="button"
               onClick={() =>
                 include.resolvedUri &&
                 vscode.postMessage({ type: "openIncludeFlowchart", uri: include.resolvedUri })
               }
             >
-              <span className="block truncate">{include.path}</span>
+              <span className="block overflow-hidden text-ellipsis whitespace-nowrap">
+                {include.path}
+              </span>
             </button>
             {include.exists === false ? (
               <span className="text-xs text-[#ffb4a8]">{text("missing")}</span>
             ) : null}
           </div>
-          <div className="mt-1 flex items-center justify-between gap-2 text-xs text-[#9fb0c5]">
-            <span>{include.mode}</span>
+          <div className="mt-1 flex min-w-0 items-center justify-between gap-2 text-xs text-[#9fb0c5]">
+            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+              {include.mode}
+            </span>
             <button
-              className="text-[#c4d4e8] hover:text-white hover:underline"
+              className="shrink-0 text-[#c4d4e8] hover:text-white hover:underline"
+              title={detailParts(text("openDirective"), include.path)}
               type="button"
               onClick={() => vscode.postMessage({ type: "openRange", uri, range: include.range })}
             >
@@ -1225,7 +1236,12 @@ function IncludeList({
             </button>
           </div>
           {include.actualPath ? (
-            <div className="mt-1 truncate text-xs text-[#7d8ca1]">{include.actualPath}</div>
+            <div
+              className="mt-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-[#7d8ca1]"
+              title={include.actualPath}
+            >
+              {include.actualPath}
+            </div>
           ) : null}
         </div>
       ))}
@@ -1277,7 +1293,7 @@ function FlowSection({
   }, [shouldAutoOpen]);
   return (
     <div
-      className={`mb-3 rounded border bg-[#101820] ${
+      className={`mb-3 min-w-0 overflow-hidden rounded border bg-[#101820] ${
         selected ? "border-[#6fb6ff]" : "border-[#263140]"
       }`}
     >
@@ -1333,8 +1349,8 @@ function FlowSection({
                 >
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1">
                     <button
-                      className="min-w-0 truncate px-1 py-1 text-left text-xs text-[#d9e0ea] hover:text-white"
-                      title={detailParts(text("openFlowchart"), nodeHint)}
+                      className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap px-1 py-1 text-left text-xs text-[#d9e0ea] hover:text-white"
+                      title={detailParts(text("openFlowchart"), node.label, nodeHint)}
                       type="button"
                       onClick={() => onSelectNode(node)}
                     >
@@ -1364,7 +1380,7 @@ function FlowSection({
                         return (
                           <button
                             key={link.id}
-                            className="rounded border px-1.5 py-0.5 text-[11px] hover:text-white"
+                            className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] hover:text-white"
                             style={flowchartSwatchStyle(linkStyle)}
                             title={flowchartNodeLinkHint(link, text, locale)}
                             type="button"

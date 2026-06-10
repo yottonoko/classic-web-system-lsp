@@ -2173,7 +2173,10 @@ function Inspector({
   return (
     <aside className={className}>
       <div className="mb-3 flex min-w-0 items-start gap-2">
-        <h2 className="asp-lsp-graph-inspector-title m-0 min-w-0 flex-1 text-sm leading-[1.35] font-semibold [overflow-wrap:anywhere]">
+        <h2
+          className="asp-lsp-graph-inspector-title m-0 min-w-0 flex-1 text-sm leading-[1.35] font-semibold [overflow-wrap:anywhere]"
+          title={inspectorTitleForSelection(selection, graphData)}
+        >
           {inspectorTitleForSelection(selection, graphData)}
         </h2>
         <button
@@ -2619,7 +2622,10 @@ function DeclarationSource({
   const loading = sourceState.loading && !source;
   return (
     <div className="grid gap-2">
-      <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]">
+      <div
+        className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]"
+        title={item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 })}
+      >
         {item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 })}
       </div>
       {source?.error ? (
@@ -2691,10 +2697,16 @@ function SourceRangeCard({
     <article className="grid gap-2 rounded-md border border-[#303a49] bg-[#11151c] p-2">
       <div className="flex min-w-0 items-center gap-2">
         <div className="min-w-0 flex-1">
-          <div className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+          <div
+            className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]"
+            title={item.title}
+          >
             {item.title}
           </div>
-          <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]">
+          <div
+            className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]"
+            title={item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 })}
+          >
             {item.detail ?? graphText("detail.line", { line: displayRange.start.line + 1 })}
           </div>
         </div>
@@ -3148,13 +3160,19 @@ function IncludeRelationList({ relations }: { relations: IncludeRelation[] }): R
       {relations.map((relation) => (
         <article
           key={relation.id}
-          className="grid gap-2 rounded-md border border-[#303a49] bg-[#11151c] p-2"
+          className="grid min-w-0 gap-2 overflow-hidden rounded-md border border-[#303a49] bg-[#11151c] p-2"
         >
           <div className="min-w-0">
-            <div className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
+            <div
+              className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]"
+              title={relation.title}
+            >
               {relation.title}
             </div>
-            <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]">
+            <div
+              className="overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#8d98a8]"
+              title={relation.detail}
+            >
               {relation.detail}
             </div>
           </div>
