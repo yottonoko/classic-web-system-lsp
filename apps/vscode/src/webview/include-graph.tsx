@@ -39,6 +39,7 @@ declare const acquireVsCodeApi: () => {
 declare global {
   interface Window {
     __ASP_LSP_GRAPH__?: AspGraphPayload;
+    __ASP_LSP_GRAPH_TARGET_RANGE__?: AspGraphRange | null;
   }
 }
 
@@ -173,6 +174,9 @@ interface HighlightOffsets {
 
 const vscode = acquireVsCodeApi();
 const graph = window.__ASP_LSP_GRAPH__;
+const initialGraphTargetRange = isGraphRange(window.__ASP_LSP_GRAPH_TARGET_RANGE__)
+  ? window.__ASP_LSP_GRAPH_TARGET_RANGE__
+  : undefined;
 
 type GraphLocale = "en" | "ja";
 
@@ -881,6 +885,7 @@ function App(): React.ReactElement {
   const pendingSyncRef = useRef<PendingPositionSync | undefined>(undefined);
   const positionSyncGenerationRef = useRef(0);
   const positionSyncReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const hasFocusedInitialTargetRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const skipAutoFitForModeRef = useRef(new Set<ViewMode>());
   const forceFitForModeRef = useRef(new Set<ViewMode>());
@@ -1019,6 +1024,17 @@ function App(): React.ReactElement {
     (link: GraphLink) => selectAndFocusGraphTarget({ type: "link", id: link.id }),
     [selectAndFocusGraphTarget],
   );
+  useEffect(() => {
+    if (hasFocusedInitialTargetRef.current || !initialGraphTargetRange) {
+      return;
+    }
+    const target = graphStatsTargetForRange(filteredGraphData, initialGraphTargetRange);
+    if (!target) {
+      return;
+    }
+    hasFocusedInitialTargetRef.current = true;
+    selectAndFocusGraphTarget(target);
+  }, [filteredGraphData, selectAndFocusGraphTarget]);
   const focusSearchResult = useCallback(
     (direction: 1 | -1) => {
       if (searchTargets.length === 0) {
@@ -2233,28 +2249,30 @@ function NodeInspector({
   return (
     <>
       <NodeDetails node={node} />
-      <OpenFlowchartButton
-        className="mb-3 h-[30px] w-full"
-        disabled={!canOpenFlowchart}
-        label={graphText("action.openFlowchart")}
-        range={location?.range}
-        uri={location?.uri}
-      />
+      <div className="mb-3 grid grid-cols-2 gap-2">
+        <OpenLocationButton
+          className="h-[30px] w-full"
+          disabled={!location?.uri}
+          label={
+            isFileLikeGraphNode(node) ? graphText("action.openFile") : graphText("action.open")
+          }
+          range={location?.range}
+          uri={location?.uri}
+        />
+        <OpenFlowchartButton
+          className="h-[30px] w-full"
+          disabled={!canOpenFlowchart}
+          label={graphText("action.openFlowchart")}
+          range={location?.range}
+          uri={location?.uri}
+        />
+      </div>
       {isFileLikeGraphNode(node) ? (
         <FileNodeRelations graphData={graphData} node={node} />
       ) : (
         <NodeSourceSections graphData={graphData} node={node} />
       )}
       <NodeLinkSections graphData={visibleGraphData} node={node} onSelectLink={onSelectLink} />
-      {isFileLikeGraphNode(node) ? (
-        <OpenLocationButton
-          className="mt-3 h-[30px] w-full"
-          disabled={!location?.uri}
-          label={graphText("action.openFile")}
-          range={location?.range}
-          uri={location?.uri}
-        />
-      ) : null}
     </>
   );
 }
@@ -4625,6 +4643,127 @@ function selectionForStatsTarget(target: GraphStatsTarget, graphData: GraphData)
   }
   const link = graphData.links.find((candidate) => candidate.id === target.id);
   return link ? { type: "link", item: link } : undefined;
+}
+
+function graphStatsTargetForRange(
+  graphData: GraphData,
+  range: AspGraphRange,
+): GraphStatsTarget | undefined {
+  const targetUri = graph?.rootUri;
+  const nodeTarget = bestGraphNodeForRange(graphData.nodes, range, targetUri);
+  if (nodeTarget) {
+    return { type: "node", id: nodeTarget.id };
+  }
+  const linkTarget = bestGraphLinkForRange(graphData.links, range, targetUri);
+  return linkTarget ? { type: "link", id: linkTarget.id } : undefined;
+}
+
+function bestGraphNodeForRange(
+  nodes: GraphNode[],
+  range: AspGraphRange,
+  targetUri: string | undefined,
+): GraphNode | undefined {
+  let best: { node: GraphNode; score: number } | undefined;
+  for (const node of nodes) {
+    if (!node.range || (targetUri && node.uri !== targetUri)) {
+      continue;
+    }
+    const score = graphRangeMatchScore(node.range, range);
+    if (score === undefined) {
+      continue;
+    }
+    if (!best || score < best.score) {
+      best = { node, score };
+    }
+  }
+  return best?.node;
+}
+
+function bestGraphLinkForRange(
+  links: GraphLink[],
+  range: AspGraphRange,
+  targetUri: string | undefined,
+): GraphLink | undefined {
+  let best: { link: GraphLink; score: number } | undefined;
+  for (const link of links) {
+    for (const occurrence of link.ranges) {
+      if (targetUri && occurrence.uri !== targetUri) {
+        continue;
+      }
+      const score = graphRangeMatchScore(occurrence.range, range);
+      if (score === undefined) {
+        continue;
+      }
+      if (!best || score < best.score) {
+        best = { link, score };
+      }
+    }
+  }
+  return best?.link;
+}
+
+function graphRangeMatchScore(candidate: AspGraphRange, target: AspGraphRange): number | undefined {
+  if (graphRangeEquals(candidate, target)) {
+    return 0;
+  }
+  if (graphRangeContains(candidate, target) || graphRangeContains(target, candidate)) {
+    return 10 + graphRangeLineSpan(candidate);
+  }
+  if (graphRangesOverlap(candidate, target)) {
+    return 100 + graphRangeLineSpan(candidate);
+  }
+  return undefined;
+}
+
+function graphRangeEquals(left: AspGraphRange, right: AspGraphRange): boolean {
+  return (
+    left.start.line === right.start.line &&
+    left.start.character === right.start.character &&
+    left.end.line === right.end.line &&
+    left.end.character === right.end.character
+  );
+}
+
+function graphRangeContains(container: AspGraphRange, item: AspGraphRange): boolean {
+  return (
+    compareGraphPositions(container.start, item.start) <= 0 &&
+    compareGraphPositions(container.end, item.end) >= 0
+  );
+}
+
+function graphRangesOverlap(left: AspGraphRange, right: AspGraphRange): boolean {
+  return (
+    compareGraphPositions(left.start, right.end) <= 0 &&
+    compareGraphPositions(right.start, left.end) <= 0
+  );
+}
+
+function compareGraphPositions(
+  left: AspGraphRange["start"],
+  right: AspGraphRange["start"],
+): number {
+  return left.line === right.line ? left.character - right.character : left.line - right.line;
+}
+
+function graphRangeLineSpan(range: AspGraphRange): number {
+  return Math.max(0, range.end.line - range.start.line);
+}
+
+function isGraphRange(value: unknown): value is AspGraphRange {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<AspGraphRange>;
+  return isGraphPosition(candidate.start) && isGraphPosition(candidate.end);
+}
+
+function isGraphPosition(value: unknown): value is AspGraphRange["start"] {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    Number.isInteger((value as { line?: unknown }).line) &&
+    Number.isInteger((value as { character?: unknown }).character)
+  );
 }
 
 function focusGraphTarget(

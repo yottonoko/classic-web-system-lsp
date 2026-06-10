@@ -85,6 +85,7 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     openDirective: "Open directive",
     openFlowchart: "Open flowchart",
     openCode: "Open code",
+    openGraph: "Open graph",
     openDefinition: "Open definition",
     renderError: "Mermaid render failed.",
     resizeInfoPanel: "Resize information pane",
@@ -125,6 +126,7 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     openDirective: "directive を開く",
     openFlowchart: "フローチャートを開く",
     openCode: "コードを開く",
+    openGraph: "グラフを開く",
     openDefinition: "定義を開く",
     renderError: "Mermaid render に失敗しました。",
     resizeInfoPanel: "情報 pane の幅を変更",
@@ -163,6 +165,15 @@ interface FlowchartVisualStyle {
   border: string;
   mermaidClass: string;
   text: string;
+}
+
+interface FlowchartPanState {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  scrollLeft: number;
+  scrollTop: number;
+  moved: boolean;
 }
 
 interface FlowchartThemePalette {
@@ -844,6 +855,14 @@ function App(): React.ReactElement {
     },
     [payload],
   );
+  const openGraph = useCallback(
+    (range: AspFlowchartNode["range"] | AspFlowchartSection["range"]) => {
+      if (range) {
+        vscode.postMessage({ type: "openGraphLocation", uri: payload.uri, range });
+      }
+    },
+    [payload.uri],
+  );
   const selectSearchMatch = useCallback(
     (index: number) => {
       if (searchMatches.length === 0) {
@@ -1023,6 +1042,7 @@ function App(): React.ReactElement {
                   onOpenCode={(range) =>
                     range && vscode.postMessage({ type: "openRange", uri: payload.uri, range })
                   }
+                  onOpenGraph={openGraph}
                   onOpenTarget={openTarget}
                   onSelect={() => {
                     setSelectedSectionId(section.id);
@@ -1074,6 +1094,7 @@ function App(): React.ReactElement {
           range && vscode.postMessage({ type: "openRange", uri: payload.uri, range })
         }
         onOpenFlowchart={openFlowchartForNode}
+        onOpenGraph={openGraph}
       />
     </main>
   );
@@ -1260,6 +1281,7 @@ function FlowSection({
   activeSearchNodeId,
   matchedNodeIds,
   onOpenCode,
+  onOpenGraph,
   onOpenTarget,
   onSelect,
   onSelectNode,
@@ -1274,6 +1296,7 @@ function FlowSection({
   activeSearchNodeId?: string;
   matchedNodeIds: Set<string>;
   onOpenCode(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
+  onOpenGraph(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
   onOpenTarget(target: AspFlowchartTarget): void;
   onSelect(): void;
   onSelectNode(node: AspFlowchartNode): void;
@@ -1325,6 +1348,15 @@ function FlowSection({
         >
           Code
         </button>
+        <button
+          className="shrink-0 rounded border border-[#334255] px-2 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#6fb6ff] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+          disabled={!section.range}
+          title={text("openGraph")}
+          type="button"
+          onClick={() => section.range && onOpenGraph(section.range)}
+        >
+          Graph
+        </button>
       </div>
       {open ? (
         <div className="grid gap-1 p-2">
@@ -1347,7 +1379,7 @@ function FlowSection({
                         : ""
                   }`}
                 >
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1">
                     <button
                       className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap px-1 py-1 text-left text-xs text-[#d9e0ea] hover:text-white"
                       title={detailParts(text("openFlowchart"), node.label, nodeHint)}
@@ -1371,6 +1403,15 @@ function FlowSection({
                       onClick={() => node.range && onOpenCode(node.range)}
                     >
                       Code
+                    </button>
+                    <button
+                      className="mr-1 shrink-0 rounded border border-[#3b4a5f] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+                      disabled={!node.range}
+                      title={text("openGraph")}
+                      type="button"
+                      onClick={() => node.range && onOpenGraph(node.range)}
+                    >
+                      Graph
                     </button>
                   </div>
                   {node.links?.length ? (
@@ -1520,6 +1561,7 @@ function FlowchartCanvas({
   matchedNodeIds,
   onOpenCode,
   onOpenFlowchart,
+  onOpenGraph,
 }: {
   className?: string;
   payload: FlowchartPayload;
@@ -1530,13 +1572,17 @@ function FlowchartCanvas({
   matchedNodeIds: Set<string>;
   onOpenCode(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
   onOpenFlowchart(node: AspFlowchartNode): void;
+  onOpenGraph(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
 }): React.ReactElement {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const panStateRef = useRef<FlowchartPanState | undefined>(undefined);
+  const suppressNextCanvasClickRef = useRef(false);
   const [error, setError] = useState<string>();
   const [svg, setSvg] = useState<string>("");
   const [svgSize, setSvgSize] = useState<FlowchartSvgSize>();
   const [zoom, setZoom] = useState(1);
+  const [isPanning, setIsPanning] = useState(false);
   const [contextMenu, setContextMenu] = useState<FlowchartContextMenuState>();
   const zoomRange = useMemo(
     () => flowchartZoomRange(payload),
@@ -1571,6 +1617,63 @@ function FlowchartCanvas({
     },
     [setClampedZoom, zoom],
   );
+  const beginCanvasPan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !viewportRef.current) {
+      return;
+    }
+    const target = event.target instanceof Node ? event.target : undefined;
+    if (!target || !viewportRef.current.contains(target)) {
+      return;
+    }
+    panStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: viewportRef.current.scrollLeft,
+      scrollTop: viewportRef.current.scrollTop,
+      moved: false,
+    };
+    viewportRef.current.setPointerCapture(event.pointerId);
+    setIsPanning(true);
+  }, []);
+  const moveCanvasPan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const pan = panStateRef.current;
+    if (!pan || pan.pointerId !== event.pointerId || !viewportRef.current) {
+      return;
+    }
+    const deltaX = event.clientX - pan.startX;
+    const deltaY = event.clientY - pan.startY;
+    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+      pan.moved = true;
+    }
+    viewportRef.current.scrollLeft = pan.scrollLeft - deltaX;
+    viewportRef.current.scrollTop = pan.scrollTop - deltaY;
+    event.preventDefault();
+  }, []);
+  const endCanvasPan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const pan = panStateRef.current;
+    if (!pan || pan.pointerId !== event.pointerId || !viewportRef.current) {
+      return;
+    }
+    if (viewportRef.current.hasPointerCapture(event.pointerId)) {
+      viewportRef.current.releasePointerCapture(event.pointerId);
+    }
+    if (pan.moved) {
+      suppressNextCanvasClickRef.current = true;
+      window.setTimeout(() => {
+        suppressNextCanvasClickRef.current = false;
+      }, 0);
+    }
+    panStateRef.current = undefined;
+    setIsPanning(false);
+  }, []);
+  const suppressCanvasClickAfterPan = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (!suppressNextCanvasClickRef.current) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
   const openContextMenu = useCallback((node: AspFlowchartNode, event: MouseEvent) => {
     event.preventDefault();
     setContextMenu({ node, x: event.clientX, y: event.clientY });
@@ -1590,6 +1693,13 @@ function FlowchartCanvas({
     onOpenFlowchart(contextMenu.node);
     closeContextMenu();
   }, [closeContextMenu, contextMenu, onOpenFlowchart]);
+  const openContextMenuGraph = useCallback(() => {
+    if (!contextMenu?.node.range) {
+      return;
+    }
+    onOpenGraph(contextMenu.node.range);
+    closeContextMenu();
+  }, [closeContextMenu, contextMenu, onOpenGraph]);
   useEffect(() => {
     setZoom((currentZoom) =>
       roundFlowchartZoom(clamp(currentZoom, zoomRange.minimum, zoomRange.maximum)),
@@ -1740,6 +1850,15 @@ function FlowchartCanvas({
           Code
         </button>
         <button
+          className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+          disabled={!section?.range}
+          title={text("openGraph")}
+          type="button"
+          onClick={() => section?.range && onOpenGraph(section.range)}
+        >
+          Graph
+        </button>
+        <button
           className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#63e6be] hover:text-white"
           type="button"
           onClick={() =>
@@ -1777,8 +1896,13 @@ function FlowchartCanvas({
       </header>
       <div
         ref={viewportRef}
-        className="min-h-0 overflow-auto p-5"
+        className={`min-h-0 overflow-auto p-5 ${isPanning ? "cursor-grabbing" : "cursor-grab"}`}
         style={flowchartViewportStyle}
+        onPointerCancel={endCanvasPan}
+        onPointerDown={beginCanvasPan}
+        onPointerMove={moveCanvasPan}
+        onPointerUp={endCanvasPan}
+        onClickCapture={suppressCanvasClickAfterPan}
         onWheel={handleWheel}
       >
         {error ? (
@@ -1817,6 +1941,15 @@ function FlowchartCanvas({
               onClick={openContextMenuFlowchart}
             >
               {text("openFlowchart")}
+            </button>
+            <button
+              className="px-3 py-1.5 text-left hover:bg-[#172131] disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
+              disabled={!contextMenu.node.range}
+              role="menuitem"
+              type="button"
+              onClick={openContextMenuGraph}
+            >
+              Graph
             </button>
           </div>
         ) : null}
@@ -2099,14 +2232,19 @@ function escapeMermaidText(value: string): string {
 
 function escapeMermaidEdgeLabel(value: string): string {
   return mermaidLabel(value, {
+    escape: escapeMermaidEdgeText,
     lineLength: flowchartEdgeLabelLineLength,
     maximumCharacters: maximumFlowchartEdgeLabelCharacters,
-  }).replaceAll("|", "/");
+  });
 }
 
 function mermaidLabel(
   value: string,
-  options: { lineLength?: number; maximumCharacters?: number } = {},
+  options: {
+    escape?: (value: string) => string;
+    lineLength?: number;
+    maximumCharacters?: number;
+  } = {},
 ): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   const clipped = clipFlowchartLabel(
@@ -2114,7 +2252,12 @@ function mermaidLabel(
     options.maximumCharacters ?? maximumFlowchartLabelCharacters,
   );
   const lines = wrapFlowchartLabel(clipped, options.lineLength ?? flowchartLabelLineLength);
-  return (lines.length > 0 ? lines : [""]).map(escapeMermaidText).join("<br/>");
+  const escape = options.escape ?? escapeMermaidText;
+  return (lines.length > 0 ? lines : [""]).map(escape).join("<br/>");
+}
+
+function escapeMermaidEdgeText(value: string): string {
+  return value.replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("|", "/").trim();
 }
 
 function clipFlowchartLabel(value: string, maximumCharacters: number): string {

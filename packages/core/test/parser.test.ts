@@ -108,6 +108,8 @@ End Sub
     expect(flowchart.edges.some((edge) => edge.label === "Repeat")).toBe(true);
     expect(flowchart.mermaid).toContain("flowchart TB");
     expect(flowchart.mermaid).toContain("Sub Main");
+    expect(flowchart.mermaid).toContain('|When "a"|');
+    expect(flowchart.mermaid).not.toContain("|When &quot;a&quot;|");
     expect(flowchart.stats.nodes).toBe(flowchart.nodes.length);
   });
 

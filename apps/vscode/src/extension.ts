@@ -290,6 +290,7 @@ async function showFlowchart(
     extensionLocale(),
     flowchartWebviewSettings(),
     loadFlowchartPayload,
+    (uri, range) => showGraphFromFlowchart(context, uri, range),
   );
 }
 
@@ -307,8 +308,17 @@ async function showFlowchartFromGraph(
     extensionLocale(),
     flowchartWebviewSettings(),
     loadFlowchartPayload,
+    (uri, range) => showGraphFromFlowchart(context, uri, range),
     range,
   );
+}
+
+async function showGraphFromFlowchart(
+  context: vscode.ExtensionContext,
+  uriText: string,
+  range?: AspGraphRange,
+): Promise<void> {
+  await showGraph(context, "document", vscode.Uri.parse(uriText), range);
 }
 
 async function exportFlowchart(selectedUri?: vscode.Uri): Promise<void> {
@@ -378,6 +388,7 @@ async function showGraph(
   context: vscode.ExtensionContext,
   scope: GraphScope,
   selectedUri?: vscode.Uri,
+  initialTargetRange?: AspGraphRange,
 ): Promise<void> {
   if (!client) {
     void vscode.window.showWarningMessage(extensionLocalizer()("graph.serverUnavailable"));
@@ -410,6 +421,7 @@ async function showGraph(
     webviewThemeSetting(),
     infoPanelPositionSetting("graph.infoPanelPosition", "right"),
     (uri, range) => showFlowchartFromGraph(context, uri, range),
+    initialTargetRange,
   );
 }
 

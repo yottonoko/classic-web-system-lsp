@@ -168,6 +168,7 @@ export function showAspGraphWebview(
   theme: AspGraphWebviewThemeSetting,
   infoPanelPosition: AspGraphInfoPanelPosition,
   openFlowchart: (uri: string, range?: AspGraphRange) => Promise<void>,
+  initialTargetRange?: AspGraphRange,
 ): void {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
   const panel = vscode.window.createWebviewPanel("aspLsp.graph", title, viewColumn, {
@@ -192,6 +193,7 @@ export function showAspGraphWebview(
     locale,
     theme,
     infoPanelPosition,
+    initialTargetRange,
   );
 }
 
@@ -299,12 +301,14 @@ function graphWebviewHtml(
   locale: AspGraphLocale,
   theme: AspGraphWebviewThemeSetting,
   infoPanelPosition: AspGraphInfoPanelPosition,
+  initialTargetRange: AspGraphRange | undefined,
 ): string {
   const nonce = nonceString();
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, "include-graph.js"));
   const graphJson = JSON.stringify(
     graphPayloadForWebview(payload, locale, theme, infoPanelPosition),
   ).replaceAll("</", "<\\/");
+  const targetRangeJson = JSON.stringify(initialTargetRange ?? null);
   return `<!doctype html>
 <html lang="${locale}">
 <head>
@@ -315,7 +319,7 @@ function graphWebviewHtml(
 </head>
 <body>
   <div id="root"></div>
-  <script nonce="${nonce}">window.__ASP_LSP_GRAPH__ = ${graphJson};</script>
+  <script nonce="${nonce}">window.__ASP_LSP_GRAPH__ = ${graphJson}; window.__ASP_LSP_GRAPH_TARGET_RANGE__ = ${targetRangeJson};</script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

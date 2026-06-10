@@ -44,6 +44,12 @@ interface OpenFlowchartLocationMessage {
   range?: AspFlowchartTarget["range"];
 }
 
+interface OpenGraphLocationMessage {
+  type: "openGraphLocation";
+  uri: string;
+  range?: AspFlowchartTarget["range"];
+}
+
 interface ExportFlowchartMessage {
   type: "exportFlowchart";
   format: "mermaid" | "svg";
@@ -61,6 +67,7 @@ type WebviewMessage =
   | OpenRangeMessage
   | OpenIncludeFlowchartMessage
   | OpenFlowchartLocationMessage
+  | OpenGraphLocationMessage
   | ExportFlowchartMessage
   | CopyTextMessage;
 
@@ -72,6 +79,7 @@ export function showAspFlowchartWebview(
   locale: AspFlowchartLocale,
   settings: AspFlowchartWebviewSettings,
   loadPayload: (uri: string) => Promise<{ payload: AspFlowchartPayload; title: string }>,
+  openGraph: (uri: string, range?: AspFlowchartTarget["range"]) => Promise<void>,
   initialTargetRange?: AspFlowchartTarget["range"],
 ): void {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
@@ -87,6 +95,8 @@ export function showAspFlowchartWebview(
       void loadFlowchartLocation(panel, message.uri, undefined, locale, settings, loadPayload);
     } else if (message.type === "openFlowchartLocation") {
       void loadFlowchartLocation(panel, message.uri, message.range, locale, settings, loadPayload);
+    } else if (message.type === "openGraphLocation") {
+      void openGraph(message.uri, message.range);
     } else if (message.type === "exportFlowchart") {
       void exportFlowchartContent(message, locale);
     } else if (message.type === "copyText") {

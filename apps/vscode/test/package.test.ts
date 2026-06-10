@@ -88,6 +88,7 @@ describe("VS Code extension package", () => {
     );
     expect(graphHostSource).toContain('message.type === "openFlowchart"');
     expect(graphHostSource).toContain("openFlowchart(message.uri, message.range)");
+    expect(graphHostSource).toContain("__ASP_LSP_GRAPH_TARGET_RANGE__");
     expect(graphHostSource).toContain('<html lang="${locale}">');
     expect(graphHostSource).toContain('graphHostText(locale, "sourceRangeUnavailable")');
     expect(graphWebviewSource).toContain(
@@ -96,6 +97,9 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain('"action.fit": "フィット"');
     expect(graphWebviewSource).toContain('"action.openFlowchart": "フローチャートを開く"');
     expect(graphWebviewSource).toContain('type: "openFlowchart"');
+    expect(graphWebviewSource).toContain("__ASP_LSP_GRAPH_TARGET_RANGE__");
+    expect(graphWebviewSource).toContain("graphStatsTargetForRange");
+    expect(graphWebviewSource).toContain("hasFocusedInitialTargetRef");
     expect(graphWebviewSource).toContain('"legend.heading": "凡例"');
     expect(graphWebviewSource).toContain('"legend.unresolvedNodeFilters": "未解決系"');
     expect(graphWebviewSource).toContain('"legend.visibilityFilters": "非表示系"');
@@ -168,6 +172,10 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain('scrollbarGutter: "stable"');
     expect(flowchartSource).toContain("style={scaledFlowchartCanvasStyle(svgSize, zoom)}");
     expect(flowchartSource).toContain("style={flowchartSvgLayerStyle(svgSize, zoom)}");
+    expect(flowchartSource).toContain("beginCanvasPan");
+    expect(flowchartSource).toContain("moveCanvasPan");
+    expect(flowchartSource).toContain("cursor-grab");
+    expect(flowchartSource).toContain("suppressCanvasClickAfterPan");
     expect(flowchartSource).toContain("scrollFlowchartElementIntoViewport");
     expect(flowchartSource).toContain("flowchartNodeForRange");
     expect(flowchartSource).toContain("const [open, setOpen] = useState(false)");
@@ -179,6 +187,9 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("setClampedZoom");
     expect(flowchartSource).toContain("zoomWithWheel");
     expect(flowchartSource).toContain('vscode.postMessage({ type: "openRange"');
+    expect(flowchartSource).toContain('type: "openGraphLocation"');
+    expect(flowchartSource).toContain('openGraph: "グラフを開く"');
+    expect(flowchartSource).toContain("escapeMermaidEdgeText");
     expect(flowchartSource).toContain('if (node.kind !== "call")');
     expect(flowchartSource).not.toContain(
       'vscode.postMessage({ type: "openRange", uri: payload.uri, range: node.range })',

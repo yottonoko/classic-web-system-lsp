@@ -1005,14 +1005,19 @@ function escapeMermaidText(value: string): string {
 
 function escapeMermaidEdgeLabel(value: string): string {
   return mermaidLabel(value, {
+    escape: escapeMermaidEdgeText,
     lineLength: flowchartEdgeLabelLineLength,
     maximumCharacters: maximumFlowchartEdgeLabelCharacters,
-  }).replaceAll("|", "/");
+  });
 }
 
 function mermaidLabel(
   value: string,
-  options: { lineLength?: number; maximumCharacters?: number } = {},
+  options: {
+    escape?: (value: string) => string;
+    lineLength?: number;
+    maximumCharacters?: number;
+  } = {},
 ): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   const clipped = clipFlowchartLabel(
@@ -1020,7 +1025,12 @@ function mermaidLabel(
     options.maximumCharacters ?? maximumFlowchartLabelCharacters,
   );
   const lines = wrapFlowchartLabel(clipped, options.lineLength ?? flowchartLabelLineLength);
-  return (lines.length > 0 ? lines : [""]).map(escapeMermaidText).join("<br/>");
+  const escape = options.escape ?? escapeMermaidText;
+  return (lines.length > 0 ? lines : [""]).map(escape).join("<br/>");
+}
+
+function escapeMermaidEdgeText(value: string): string {
+  return value.replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("|", "/").trim();
 }
 
 function clipFlowchartLabel(value: string, maximumCharacters: number): string {
