@@ -212,6 +212,7 @@ describe("VS Code extension package", () => {
 
     expect(graphWebviewSource).toContain('from "./virtual-list"');
     expect(graphWebviewSource).toContain("<VirtualList");
+    expect(graphWebviewSource).toContain("grid w-full cursor-pointer");
     expect(graphWebviewSource).toContain("onVisibleItemsChange={setVisibleItems}");
     expect(graphWebviewSource).toContain("requestedItems.map(sourceRangeRequestItem)");
     expect(graphWebviewSource).not.toContain("items.map(sourceRangeRequestItem)");

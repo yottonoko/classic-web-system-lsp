@@ -1897,7 +1897,7 @@ function GraphStatsList({
       renderItem={(item) => (
         <button
           type="button"
-          className="grid cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
+          className="grid w-full cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
           title={detailParts(item.title, item.detail, item.status).join(" · ")}
           onClick={() => onSelectItem(item.target)}
         >
@@ -2439,7 +2439,7 @@ function NodeLinkList({
       renderItem={(link) => (
         <button
           type="button"
-          className="grid cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
+          className="grid w-full cursor-pointer gap-1 rounded-md border border-[#303a49] bg-[#11151c] p-2 text-left hover:border-[#4b5a70]"
           title={detailParts(
             linkInspectorTypeLabel(link),
             `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
