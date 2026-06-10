@@ -709,6 +709,7 @@ function App(): React.ReactElement {
   const [selectedSectionId, setSelectedSectionId] = useState<string | undefined>(() =>
     defaultSectionId(initialPayload),
   );
+  const [focusedFlowchartNodeId, setFocusedFlowchartNodeId] = useState<string | undefined>();
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSearchIndex, setActiveSearchIndex] = useState(0);
   const [infoPanelWidth, setInfoPanelWidth] = useState(flowchartPanelDefaultWidth);
@@ -750,13 +751,19 @@ function App(): React.ReactElement {
   const activeSearchIndexForDisplay =
     searchMatches.length > 0 ? Math.min(activeSearchIndex, searchMatches.length - 1) : 0;
   const activeSearchNode = searchMatches[activeSearchIndexForDisplay]?.node;
+  const activeFlowchartNodeId = focusedFlowchartNodeId ?? activeSearchNode?.id;
   const selectedFlowchart = useMemo(
     () => flowchartForSection(payload, selectedSectionId, themePalette),
     [payload, selectedSectionId, themePalette],
   );
   const selectedSection = selectedFlowchart.sections[0];
+  const selectFlowchartNode = useCallback((node: AspFlowchartNode) => {
+    setSelectedSectionId(node.sectionId);
+    setFocusedFlowchartNodeId(node.id);
+  }, []);
   const openFlowchartForNode = useCallback(
     (node: AspFlowchartNode) => {
+      setFocusedFlowchartNodeId(undefined);
       const target = node.links?.[0]?.target;
       if (target) {
         openFlowchartTarget(payload, target, setSelectedSectionId);
@@ -767,7 +774,10 @@ function App(): React.ReactElement {
     [payload],
   );
   const openTarget = useCallback(
-    (target: AspFlowchartTarget) => openFlowchartTarget(payload, target, setSelectedSectionId),
+    (target: AspFlowchartTarget) => {
+      setFocusedFlowchartNodeId(undefined);
+      openFlowchartTarget(payload, target, setSelectedSectionId);
+    },
     [payload],
   );
   const selectSearchMatch = useCallback(
@@ -776,6 +786,7 @@ function App(): React.ReactElement {
         return;
       }
       const nextIndex = modulo(index, searchMatches.length);
+      setFocusedFlowchartNodeId(undefined);
       setActiveSearchIndex(nextIndex);
       setSelectedSectionId(searchMatches[nextIndex]?.node.sectionId);
     },
@@ -788,6 +799,7 @@ function App(): React.ReactElement {
         selectSearchMatch(activeSearchIndex + (event.shiftKey ? -1 : 1));
       } else if (event.key === "Escape") {
         setSearchQuery("");
+        setFocusedFlowchartNodeId(undefined);
       }
     },
     [activeSearchIndex, selectSearchMatch],
@@ -797,6 +809,7 @@ function App(): React.ReactElement {
       const message = event.data as { type?: unknown; payload?: unknown; targetRange?: unknown };
       if (message.type === "flowchartPayload" && isFlowchartPayload(message.payload)) {
         setPayload(message.payload);
+        setFocusedFlowchartNodeId(undefined);
         setSelectedSectionId(
           isRange(message.targetRange)
             ? (sectionIdForRange(message.payload, message.targetRange) ??
@@ -865,7 +878,10 @@ function App(): React.ReactElement {
               placeholder={text("searchPlaceholder")}
               type="search"
               value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
+              onChange={(event) => {
+                setSearchQuery(event.target.value);
+                setFocusedFlowchartNodeId(undefined);
+              }}
               onKeyDown={handleSearchKeyDown}
             />
             <span className="min-w-[44px] text-center text-[11px] text-[#9fb0c5]">
@@ -915,13 +931,17 @@ function App(): React.ReactElement {
                 section={section}
                 themePalette={themePalette}
                 text={text}
-                activeSearchNodeId={activeSearchNode?.id}
+                activeSearchNodeId={activeFlowchartNodeId}
                 matchedNodeIds={matchedNodeIds}
                 onOpenCode={(range) =>
                   range && vscode.postMessage({ type: "openRange", uri: payload.uri, range })
                 }
                 onOpenTarget={openTarget}
-                onSelect={() => setSelectedSectionId(section.id)}
+                onSelect={() => {
+                  setSelectedSectionId(section.id);
+                  setFocusedFlowchartNodeId(undefined);
+                }}
+                onSelectNode={selectFlowchartNode}
               />
             ))
           )}
@@ -959,7 +979,7 @@ function App(): React.ReactElement {
         section={selectedSection}
         themePalette={themePalette}
         text={text}
-        activeSearchNodeId={activeSearchNode?.id}
+        activeSearchNodeId={activeFlowchartNodeId}
         matchedNodeIds={matchedNodeIds}
         onOpenCode={(range) =>
           range && vscode.postMessage({ type: "openRange", uri: payload.uri, range })
@@ -1142,6 +1162,7 @@ function FlowSection({
   onOpenCode,
   onOpenTarget,
   onSelect,
+  onSelectNode,
 }: {
   locale: FlowchartLocale;
   nodes: AspFlowchartNode[];
@@ -1154,6 +1175,7 @@ function FlowSection({
   onOpenCode(range: AspFlowchartNode["range"] | AspFlowchartSection["range"]): void;
   onOpenTarget(target: AspFlowchartTarget): void;
   onSelect(): void;
+  onSelectNode(node: AspFlowchartNode): void;
 }): React.ReactElement {
   const visibleNodes = nodes.filter((node) => node.kind !== "start" && node.kind !== "end");
   const [open, setOpen] = useState(true);
@@ -1221,11 +1243,10 @@ function FlowSection({
                 >
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1">
                     <button
-                      className="min-w-0 truncate px-1 py-1 text-left text-xs text-[#d9e0ea] disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
-                      disabled={!node.range}
-                      title={detailParts(text("openCode"), nodeHint)}
+                      className="min-w-0 truncate px-1 py-1 text-left text-xs text-[#d9e0ea] hover:text-white"
+                      title={detailParts(text("openFlowchart"), nodeHint)}
                       type="button"
-                      onClick={() => node.range && onOpenCode(node.range)}
+                      onClick={() => onSelectNode(node)}
                     >
                       <span
                         className="mr-2 rounded border px-1 py-0.5 text-[10px]"
@@ -1510,6 +1531,15 @@ function FlowchartCanvas({
     }
     syncSvgSearchHighlights(containerRef.current, payload, matchedNodeIds, activeSearchNodeId);
   }, [activeSearchNodeId, matchedNodeIds, payload, svg]);
+  const exportSvg = useCallback(() => {
+    vscode.postMessage({
+      type: "exportFlowchart",
+      format: "svg",
+      uri: payload.uri,
+      sectionLabel: section?.label,
+      content: serializedFlowchartSvg(containerRef.current) ?? svg,
+    });
+  }, [payload.uri, section?.label, svg]);
   const contextMenuPosition = contextMenu
     ? clampedContextMenuPosition(contextMenu.x, contextMenu.y)
     : undefined;
@@ -1590,15 +1620,7 @@ function FlowchartCanvas({
           className="rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#f6c177] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
           disabled={!svg}
           type="button"
-          onClick={() =>
-            vscode.postMessage({
-              type: "exportFlowchart",
-              format: "svg",
-              uri: payload.uri,
-              sectionLabel: section?.label,
-              content: svg,
-            })
-          }
+          onClick={exportSvg}
         >
           {text("exportSvg")}
         </button>
@@ -1711,6 +1733,21 @@ function clampedContextMenuPosition(x: number, y: number): { left: number; top: 
     left: clamp(x, margin, Math.max(margin, window.innerWidth - estimatedWidth - margin)),
     top: clamp(y, margin, Math.max(margin, window.innerHeight - estimatedHeight - margin)),
   };
+}
+
+function serializedFlowchartSvg(container: HTMLDivElement | null): string | undefined {
+  const svgElement = container?.querySelector<SVGSVGElement>("svg");
+  if (!svgElement) {
+    return undefined;
+  }
+  const clone = svgElement.cloneNode(true) as SVGSVGElement;
+  if (!clone.getAttribute("xmlns")) {
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  }
+  if (!clone.getAttribute("xmlns:xlink")) {
+    clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+  }
+  return `${new XMLSerializer().serializeToString(clone)}\n`;
 }
 
 function svgElementsForFlowchartNode(

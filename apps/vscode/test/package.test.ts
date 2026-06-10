@@ -91,14 +91,24 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain(
       'const graphLocale: GraphLocale = graph?.locale === "ja" ? "ja" : "en"',
     );
+    expect(graphWebviewSource).toContain('"action.fit": "フィット"');
     expect(graphWebviewSource).toContain('"legend.heading": "凡例"');
+    expect(graphWebviewSource).toContain('"legend.linkFilters": "リンクフィルター"');
+    expect(graphWebviewSource).toContain('"view.inspector": "情報"');
     expect(graphWebviewSource).toContain('missingInclude: "#ff4db8"');
     expect(graphWebviewSource).toContain('"label.missingInclude": "存在しない include"');
+    expect(graphWebviewSource).toContain("graphRoleLabel(link.role)");
+    expect(graphWebviewSource).toContain("includeModeLabel(link.include?.mode)");
+    expect(graphWebviewSource).toContain("booleanLabel(link.include.exists)");
+    expect(graphWebviewSource).toContain(
+      "tooltipPositionFor(triggerRef.current, tooltipRef.current)",
+    );
     expect(graphWebviewSource).toContain('graphText("toolbar.searchNodes")');
   });
 
   it("keeps flowchart rendering focused on the selected section", () => {
     const flowchartSource = fs.readFileSync("src/webview/flowchart.tsx", "utf8");
+    const flowchartHostSource = fs.readFileSync("src/flowchart-webview.ts", "utf8");
 
     expect(flowchartSource).toContain(
       "flowchartForSection(payload, selectedSectionId, themePalette)",
@@ -106,6 +116,9 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain('const lines = ["flowchart TB"]');
     expect(flowchartSource).toContain("attachSvgNodeHandlers(");
     expect(flowchartSource).toContain("onOpenContextMenu");
+    expect(flowchartSource).toContain("setFocusedFlowchartNodeId(node.id)");
+    expect(flowchartSource).toContain("focusedFlowchartNodeId ?? activeSearchNode?.id");
+    expect(flowchartSource).toContain("onSelectNode(node)");
     expect(flowchartSource).toContain("flowchartThemePalettes");
     expect(flowchartSource).toContain("darkFlowchartNodeKindStyles");
     expect(flowchartSource).toContain("lightFlowchartNodeKindStyles");
@@ -114,6 +127,12 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain('type: "copyText"');
     expect(flowchartSource).toContain('format: "mermaid"');
     expect(flowchartSource).toContain('format: "svg"');
+    expect(flowchartSource).toContain("serializedFlowchartSvg(containerRef.current) ?? svg");
+    expect(flowchartSource).toContain("new XMLSerializer().serializeToString(clone)");
+    expect(flowchartHostSource).toContain("flowchartExportMessageContent(message)");
+    expect(flowchartHostSource).toContain("new TextEncoder().encode(content)");
+    expect(flowchartHostSource).toContain("exportFailed");
+    expect(flowchartHostSource).toContain('<?xml version="1.0" encoding="UTF-8"?>');
     expect(flowchartSource).toContain("maxTextSize: flowchartMaxTextSize(payload)");
     expect(flowchartSource).toContain("const defaultFlowchartMaxTextSize = 2_000_000");
     expect(flowchartSource).toContain("payload.settings?.maxTextSize");
@@ -133,6 +152,10 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain("startTransition");
     expect(graphWebviewSource).toContain("const [searchInput, setSearchInput] = useState");
     expect(graphWebviewSource).toContain("const searchInputRef = useRef<HTMLInputElement>");
+    expect(graphWebviewSource).toContain("const highlight = searchHighlight ?? selectionHighlight");
+    expect(graphWebviewSource).toContain(
+      "highlightForSearchTargets(searchTargets, filteredGraphData.links, searchQuery.trim())",
+    );
     expect(graphWebviewSource).toContain("function isSearchFocusShortcut");
     expect(graphWebviewSource).toContain("function searchNavigationDirection");
     expect(graphWebviewSource).toContain('event.key === "F3"');

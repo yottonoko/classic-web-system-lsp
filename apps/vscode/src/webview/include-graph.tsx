@@ -252,6 +252,7 @@ const graphMessageEn = {
   "label.missing": "Missing",
   "label.missingFile": "Missing file",
   "label.missingInclude": "Missing include",
+  "label.no": "No",
   "label.object": "Object",
   "label.parameter": "Parameter",
   "label.property": "Property",
@@ -261,6 +262,8 @@ const graphMessageEn = {
   "label.unknown": "Unknown",
   "label.unresolved": "Unresolved",
   "label.unresolvedMember": "Unresolved member",
+  "label.virtual": "Virtual",
+  "label.yes": "Yes",
   "legend.heading": "Legend",
   "legend.hideSingleNodes": "Hide single nodes",
   "legend.hideSingleNodesDescription": "Hide non-root nodes that have no visible links.",
@@ -352,51 +355,51 @@ type GraphTextParams = Record<string, string | number>;
 const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
   en: graphMessageEn,
   ja: {
-    "action.fit": "合わせる",
+    "action.fit": "フィット",
     "action.fitGraph": "グラフをキャンバスに合わせる",
     "action.open": "開く",
     "action.openDirective": "directive を開く",
-    "action.openFile": "file を開く",
+    "action.openFile": "ファイルを開く",
     "action.openFirst": "最初を開く",
-    "action.selectSource": "source を選択",
-    "action.selectTarget": "target を選択",
-    "direction.from": "from",
-    "direction.to": "to",
+    "action.selectSource": "元を選択",
+    "action.selectTarget": "先を選択",
+    "direction.from": "元",
+    "direction.to": "先",
     "detail.actualPath": "実際の path",
     "detail.actualPathHint":
       "include 先として VS Code が解決した file system path です。directive の文字列と異なる時に出ます。",
-    "detail.count": "count",
+    "detail.count": "件数",
     "detail.countHint": "この graph link が表す source 上の出現数です。",
     "detail.declaration": "宣言",
     "detail.directive": "Directive {source}",
     "detail.exists": "存在",
     "detail.existsHint": "include 先が実在する file に解決できたかどうかです。",
-    "detail.file": "File",
+    "detail.file": "ファイル",
     "detail.fileHint": "選択した graph node を所有、または含んでいる source file です。",
-    "detail.include": "Include",
+    "detail.include": "include",
     "detail.includeHint": "Classic ASP directive に書かれている include path です。",
-    "detail.label": "Label",
+    "detail.label": "ラベル",
     "detail.labelHint": "表示中の link type と異なる場合の、生の graph label です。",
     "detail.line": "{line} 行目",
-    "detail.memberOf": "Member of",
+    "detail.memberOf": "所属",
     "detail.memberOfHint": "選択した declaration を所有する class、object、container です。",
-    "detail.mode": "Mode",
+    "detail.mode": "モード",
     "detail.modeHint": "この link で使われた include 解決 mode です。",
     "detail.nodeReferencesHint":
       "この node を target にする visible な include、代入、参照、呼び出し、未解決参照 link の数です。",
     "detail.nodeStatusHint": "root file、built-in symbol、configured symbol などの追加状態です。",
     "detail.nodeTypeHint": "選択した node に割り当てられた graph category です。",
     "detail.references": "参照",
-    "detail.role": "Role",
+    "detail.role": "役割",
     "detail.roleHint": "member link など、特別な関係を区別するための追加 role です。",
-    "detail.scope": "Scope",
+    "detail.scope": "スコープ",
     "detail.scopeHint": "選択した declaration の VBScript binding scope です。",
-    "detail.source": "Source",
+    "detail.source": "元",
     "detail.sourceHint": "選択した graph link が始まる node です。",
-    "detail.status": "Status",
-    "detail.target": "Target",
+    "detail.status": "状態",
+    "detail.target": "先",
     "detail.targetHint": "選択した graph link が終わる node です。",
-    "detail.type": "Type",
+    "detail.type": "種別",
     "detail.linkTypeHint": "選択した link に割り当てられた graph category です。",
     "empty.declarationSource": "宣言 source は利用できません。",
     "empty.graphData": "graph data は利用できません。",
@@ -410,42 +413,45 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "empty.sourceUnavailable": "source は利用できません。",
     "inspector.close": "inspector を閉じる",
     "inspector.selectPrompt": "node または link を選択してください。",
-    "label.class": "Class",
-    "label.builtin": "Built-in",
-    "label.classConstant": "Class constant",
-    "label.classMethod": "Class method",
-    "label.configured": "Configured",
-    "label.event": "Event",
-    "label.field": "Field",
-    "label.file": "File",
-    "label.function": "Function",
-    "label.functionMethod": "Function method",
-    "label.global": "Global",
-    "label.globalConstant": "Global constant",
-    "label.globalVariable": "Global variable",
-    "label.local": "Local",
-    "label.localConstant": "Local constant",
-    "label.localVariable": "Local variable",
-    "label.member": "Member",
-    "label.method": "Method",
-    "label.missing": "Missing",
-    "label.missingFile": "Missing file",
+    "label.class": "クラス",
+    "label.builtin": "組み込み",
+    "label.classConstant": "クラス定数",
+    "label.classMethod": "クラスメソッド",
+    "label.configured": "設定済み",
+    "label.event": "イベント",
+    "label.field": "フィールド",
+    "label.file": "ファイル",
+    "label.function": "関数",
+    "label.functionMethod": "関数メソッド",
+    "label.global": "グローバル",
+    "label.globalConstant": "グローバル定数",
+    "label.globalVariable": "グローバル変数",
+    "label.local": "ローカル",
+    "label.localConstant": "ローカル定数",
+    "label.localVariable": "ローカル変数",
+    "label.member": "メンバー",
+    "label.method": "メソッド",
+    "label.missing": "存在なし",
+    "label.missingFile": "存在しないファイル",
     "label.missingInclude": "存在しない include",
-    "label.object": "Object",
-    "label.parameter": "Parameter",
-    "label.property": "Property",
-    "label.root": "Root",
+    "label.no": "なし",
+    "label.object": "オブジェクト",
+    "label.parameter": "パラメーター",
+    "label.property": "プロパティ",
+    "label.root": "ルート",
     "label.sub": "Sub",
-    "label.subMethod": "Sub method",
-    "label.unknown": "Unknown",
-    "label.unresolved": "Unresolved",
-    "label.unresolvedMember": "Unresolved member",
+    "label.subMethod": "Sub メソッド",
+    "label.unknown": "不明",
+    "label.unresolved": "未解決",
+    "label.unresolvedMember": "未解決メンバー",
+    "label.virtual": "仮想",
+    "label.yes": "あり",
     "legend.heading": "凡例",
     "legend.hideSingleNodes": "単独 node を隠す",
     "legend.hideSingleNodesDescription": "visible link を持たない root 以外の node を隠します。",
-    "legend.linkFilters": "Link filter",
-    "legend.nodeFilters": "Node filter",
-    "legend.outgoingLinks": "Outgoing links",
+    "legend.linkFilters": "リンクフィルター",
+    "legend.nodeFilters": "ノードフィルター",
+    "legend.outgoingLinks": "出力リンク",
     "legend.outgoingLinksDescription": "選択 node から出る link も highlight します。",
     "legend.selection": "選択",
     "link.assignments.description":
@@ -457,10 +463,10 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "link.declares.description": "file または包含 scope が VBScript symbol を宣言します。",
     "link.declares.label": "宣言",
     "link.include.description": "Classic ASP file が別の file を include します。",
-    "link.include.label": "Include",
+    "link.include.label": "include",
     "link.member.description": "VBScript が object member を参照または呼び出します。",
-    "link.member.label": "Member",
-    "link.memberType": "Member {label}",
+    "link.member.label": "メンバー",
+    "link.memberType": "メンバー {label}",
     "link.references.description": "VBScript が解決済み symbol を読み取り、または利用します。",
     "link.references.label": "参照",
     "link.unresolvedReference.description": "VBScript が解決できなかった symbol を参照します。",
@@ -484,44 +490,44 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "node.root.description": "graph の root file または選択された root context です。",
     "node.sub.description": "top-level の VBScript Sub declaration です。",
     "node.unresolved.description": "visible declaration に解決できなかった name です。",
-    "occurrence.includeDirective": "Include directive",
+    "occurrence.includeDirective": "include directive",
     "occurrence.one": "1 件",
     "occurrence.other": "{count} 件",
     "section.declaration": "宣言",
     "section.declarationHint": "選択した宣言の source snippet です。",
-    "section.includedBy": "Included By",
-    "section.includedByHint": "選択した file を include している file です。",
-    "section.includes": "Includes",
-    "section.includesHint": "選択した file が include している file です。",
-    "section.incomingLinks": "Incoming links",
+    "section.includedBy": "include 元",
+    "section.includedByHint": "選択したファイルを include しているファイルです。",
+    "section.includes": "include 先",
+    "section.includesHint": "選択したファイルが include しているファイルです。",
+    "section.incomingLinks": "入力リンク",
     "section.incomingLinksHint": "選択した node を target にする visible graph link です。",
     "section.occurrences": "出現箇所",
     "section.occurrencesHint": "選択した graph link が表す source 上の出現箇所です。",
-    "section.outgoingLinks": "Outgoing links",
+    "section.outgoingLinks": "出力リンク",
     "section.outgoingLinksHint": "選択した node から始まる visible graph link です。",
     "section.referencesCalls": "代入 / 参照 / 呼び出し",
     "section.referencesCallsHint": "代入、参照、呼び出しの source snippet です。",
     "section.sourceFileHint": "source range を file ごとにまとめたものです。",
     "snippet.loadingSource": "source を読み込み中...",
     "stats.heading": "一覧",
-    "stats.metric.files": "Files",
-    "stats.metric.links": "Links",
-    "stats.metric.missing": "Missing",
+    "stats.metric.files": "ファイル",
+    "stats.metric.links": "リンク",
+    "stats.metric.missing": "欠落",
     "stats.metric.vb": "VB",
     "stats.show": "graph 一覧を表示",
     "stats.title": "graph 一覧",
-    "toolbar.graphMode": "Graph mode",
+    "toolbar.graphMode": "グラフ表示",
     "toolbar.graphModeDescription": "3D force graph と 2D graph view を切り替えます。",
     "toolbar.matchCase": "大文字小文字を区別",
     "toolbar.matchCaseDescription": "node name の大文字小文字が一致するものだけを検索します。",
     "toolbar.searchNodes": "node を検索",
     "toolbar.stats": "一覧",
-    "toolbar.truncated": "truncated: {reason}",
-    "view.currentFileGraph": "Current File Graph",
-    "view.folderGraph": "Folder Graph",
-    "view.inspector": "Inspector",
+    "toolbar.truncated": "切り詰め: {reason}",
+    "view.currentFileGraph": "現在のファイルのグラフ",
+    "view.folderGraph": "フォルダーグラフ",
+    "view.inspector": "情報",
     "view.resizeInspector": "inspector pane の幅を変更",
-    "view.workspaceGraph": "Workspace Graph",
+    "view.workspaceGraph": "ワークスペースグラフ",
   },
 };
 
@@ -838,14 +844,14 @@ function App(): React.ReactElement {
     [searchQuery, searchMatchCase, filteredGraphData.nodes],
   );
   const searchHighlight = useMemo(
-    () => highlightForSearchTargets(searchTargets, filteredGraphData.links),
-    [searchTargets, filteredGraphData.links],
+    () => highlightForSearchTargets(searchTargets, filteredGraphData.links, searchQuery.trim()),
+    [searchTargets, filteredGraphData.links, searchQuery],
   );
   const selectionHighlight = useMemo(
     () => highlightForSelection(selection, filteredGraphData.links, showOutgoingSelectionLinks),
     [selection, filteredGraphData.links, showOutgoingSelectionLinks],
   );
-  const highlight = selectionHighlight ?? searchHighlight;
+  const highlight = searchHighlight ?? selectionHighlight;
   const titleFileName = graphRootName(graph);
   const [layoutRef, layoutSize] = useElementSize<HTMLElement>();
   const [surfaceRef, surfaceSize] = useElementSize<HTMLElement>();
@@ -1859,7 +1865,7 @@ function linkStatsItems(graphData: GraphData): GraphStatsListItem[] {
     target: { type: "link", id: link.id },
     detail: detailParts(
       `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
-      link.role,
+      graphRoleLabel(link.role),
     ).join(" · "),
     status: `x${link.count}`,
     color: link.color,
@@ -1882,7 +1888,7 @@ function missingIncludeStatsItems(graphData: GraphData): GraphStatsListItem[] {
             ? graphText("detail.directive", { source: directiveSourceLabel(directive) })
             : undefined,
           `${endpointLabel(link.source, nodesById)} -> ${endpointLabel(link.target, nodesById)}`,
-          link.include?.mode,
+          includeModeLabel(link.include?.mode),
         ).join(" · "),
         status: graphText("label.missing"),
         color: link.color,
@@ -3227,6 +3233,32 @@ function externalKindLabel(value: NonNullable<GraphNode["externalKind"]>): strin
   }
 }
 
+function graphRoleLabel(role: string | undefined): string | undefined {
+  switch (role) {
+    case "member":
+      return graphText("label.member");
+    default:
+      return role;
+  }
+}
+
+function includeModeLabel(
+  mode: NonNullable<AspGraphLink["include"]>["mode"] | undefined,
+): string | undefined {
+  switch (mode) {
+    case "file":
+      return graphText("label.file");
+    case "virtual":
+      return graphText("label.virtual");
+    default:
+      return undefined;
+  }
+}
+
+function booleanLabel(value: boolean | undefined): string | undefined {
+  return value === undefined ? undefined : graphText(value ? "label.yes" : "label.no");
+}
+
 function LinkDetails({
   link,
   nodesById,
@@ -3304,7 +3336,7 @@ function LinkDetails({
         <Detail
           hint={graphText("detail.roleHint")}
           label={graphText("detail.role")}
-          value={link.role}
+          value={graphRoleLabel(link.role)}
         />
         <Detail
           hint={graphText("detail.labelHint")}
@@ -3319,12 +3351,12 @@ function LinkDetails({
         <Detail
           hint={graphText("detail.modeHint")}
           label={graphText("detail.mode")}
-          value={link.include?.mode}
+          value={includeModeLabel(link.include?.mode)}
         />
         <Detail
           hint={graphText("detail.existsHint")}
           label={graphText("detail.exists")}
-          value={link.include ? String(link.include.exists) : undefined}
+          value={link.include ? booleanLabel(link.include.exists) : undefined}
         />
         <Detail
           hint={graphText("detail.actualPathHint")}
@@ -3398,11 +3430,31 @@ interface TooltipPosition {
 
 function DetailHint({ hint, label }: { hint: string; label: string }): React.ReactElement {
   const triggerRef = useRef<HTMLSpanElement>(null);
+  const tooltipRef = useRef<HTMLSpanElement>(null);
+  const [visible, setVisible] = useState(false);
   const [position, setPosition] = useState<TooltipPosition>();
   const showTooltip = useCallback(() => {
-    setPosition(tooltipPositionFor(triggerRef.current));
+    setVisible(true);
   }, []);
-  const hideTooltip = useCallback(() => setPosition(undefined), []);
+  const hideTooltip = useCallback(() => {
+    setVisible(false);
+    setPosition(undefined);
+  }, []);
+  useLayoutEffect(() => {
+    if (!visible) {
+      return undefined;
+    }
+    const updatePosition = (): void => {
+      setPosition(tooltipPositionFor(triggerRef.current, tooltipRef.current));
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [visible]);
   return (
     <span className="group relative inline-flex shrink-0 items-center">
       <span
@@ -3417,14 +3469,16 @@ function DetailHint({ hint, label }: { hint: string; label: string }): React.Rea
       >
         ?
       </span>
-      {position ? (
+      {visible ? (
         <span
+          ref={tooltipRef}
           role="tooltip"
           className="pointer-events-none fixed z-[1000] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)]"
           style={{
-            left: position.left,
-            top: position.top,
-            maxWidth: position.maxWidth,
+            left: position?.left ?? -9999,
+            top: position?.top ?? -9999,
+            maxWidth: position?.maxWidth ?? tooltipMaximumWidth(),
+            visibility: position ? "visible" : "hidden",
           }}
         >
           {hint}
@@ -3434,17 +3488,37 @@ function DetailHint({ hint, label }: { hint: string; label: string }): React.Rea
   );
 }
 
-function tooltipPositionFor(element: HTMLElement | null): TooltipPosition | undefined {
+function tooltipPositionFor(
+  element: HTMLElement | null,
+  tooltip: HTMLElement | null,
+): TooltipPosition | undefined {
   if (!element) {
     return undefined;
   }
   const margin = 12;
   const gap = 6;
   const rect = element.getBoundingClientRect();
-  const maxWidth = Math.max(160, Math.min(260, window.innerWidth - margin * 2));
-  const left = clamp(rect.left, margin, Math.max(margin, window.innerWidth - maxWidth - margin));
-  const top = Math.min(rect.bottom + gap, Math.max(margin, window.innerHeight - margin - 96));
+  const maxWidth = tooltipMaximumWidth();
+  const tooltipRect = tooltip?.getBoundingClientRect();
+  const tooltipWidth = Math.min(tooltipRect?.width ?? maxWidth, maxWidth);
+  const tooltipHeight = tooltipRect?.height ?? 80;
+  const left = clamp(
+    rect.left + rect.width / 2 - tooltipWidth / 2,
+    margin,
+    Math.max(margin, window.innerWidth - tooltipWidth - margin),
+  );
+  const belowTop = rect.bottom + gap;
+  const aboveTop = rect.top - gap - tooltipHeight;
+  const top =
+    belowTop + tooltipHeight + margin <= window.innerHeight || aboveTop < margin
+      ? clamp(belowTop, margin, Math.max(margin, window.innerHeight - tooltipHeight - margin))
+      : aboveTop;
   return { left, top, maxWidth };
+}
+
+function tooltipMaximumWidth(): number {
+  const margin = 12;
+  return Math.max(160, Math.min(280, window.innerWidth - margin * 2));
 }
 
 function useSourceRanges(items: GraphSourceItem[]): GraphSourceState {
@@ -3587,7 +3661,7 @@ function nodeLinkDetail(link: GraphLink): string | undefined {
   }
   const typeLabel = linkInspectorTypeLabel(link);
   const parts = detailParts(
-    link.role,
+    graphRoleLabel(link.role),
     link.label !== typeLabel ? link.label : undefined,
     link.ranges.length > 0 ? occurrenceCountLabel(link.ranges.length) : undefined,
   );
@@ -3626,7 +3700,7 @@ function linkOccurrenceDetail(
   const detail = detailParts(
     rangeLineLabel(location.range),
     link.kind === "include" ? link.include?.path : undefined,
-    link.role,
+    graphRoleLabel(link.role),
   );
   return detail.length > 0 ? detail.join(" · ") : undefined;
 }
@@ -3636,7 +3710,8 @@ function sourceUsageTitle(link: GraphLink): string {
     link.kind === "unresolvedReference"
       ? graphText("label.unresolved")
       : linkMeanings[link.kind].label;
-  return link.role ? `${label}: ${link.role}` : label;
+  const roleLabel = graphRoleLabel(link.role);
+  return roleLabel ? `${label}: ${roleLabel}` : label;
 }
 
 function occurrenceCountLabel(count: number): string {
@@ -3750,7 +3825,7 @@ function includeSourceRelation(
 
 function includeRelationDetail(link: GraphLink): string {
   const parts = [
-    link.include?.mode,
+    includeModeLabel(link.include?.mode),
     link.include?.path,
     link.include?.exists === false ? graphText("label.missing") : undefined,
   ].filter(Boolean);
@@ -4632,8 +4707,9 @@ function searchTargetsForSearch(
 function highlightForSearchTargets(
   targets: GraphStatsTarget[],
   links: GraphLink[],
+  query: string,
 ): HighlightState | undefined {
-  if (targets.length === 0) {
+  if (!query) {
     return undefined;
   }
   const activeNodeIds = new Set(targets.map((target) => target.id));

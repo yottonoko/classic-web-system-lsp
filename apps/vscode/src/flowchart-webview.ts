@@ -125,22 +125,43 @@ async function exportFlowchartContent(
   message: ExportFlowchartMessage,
   locale: AspFlowchartLocale,
 ): Promise<void> {
-  const extension = message.format === "svg" ? "svg" : "mmd";
-  const target = await vscode.window.showSaveDialog({
-    defaultUri: flowchartExportDefaultUri(message.uri, message.sectionLabel, extension),
-    filters:
-      message.format === "svg"
-        ? { "SVG Image": ["svg"] }
-        : { "Mermaid Diagram": ["mmd"], "Plain Text": ["txt"] },
-    saveLabel: flowchartHostText(locale, "saveLabel"),
-  });
-  if (!target) {
-    return;
+  try {
+    const content = flowchartExportMessageContent(message);
+    if (!content.trim()) {
+      void vscode.window.showErrorMessage(flowchartHostText(locale, "exportEmpty"));
+      return;
+    }
+    const extension = message.format === "svg" ? "svg" : "mmd";
+    const target = await vscode.window.showSaveDialog({
+      defaultUri: flowchartExportDefaultUri(message.uri, message.sectionLabel, extension),
+      filters:
+        message.format === "svg"
+          ? { "SVG Image": ["svg"] }
+          : { "Mermaid Diagram": ["mmd"], "Plain Text": ["txt"] },
+      saveLabel: flowchartHostText(locale, "saveLabel"),
+    });
+    if (!target) {
+      return;
+    }
+    await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(content));
+    void vscode.window.showInformationMessage(
+      flowchartHostText(locale, "exported").replace("{file}", target.fsPath),
+    );
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      flowchartHostText(locale, "exportFailed").replace("{error}", errorMessage(error)),
+    );
   }
-  await vscode.workspace.fs.writeFile(target, Buffer.from(message.content, "utf8"));
-  void vscode.window.showInformationMessage(
-    flowchartHostText(locale, "exported").replace("{file}", target.fsPath),
-  );
+}
+
+function flowchartExportMessageContent(message: ExportFlowchartMessage): string {
+  const content = message.content.trim();
+  if (message.format !== "svg" || !content) {
+    return content ? `${content}\n` : "";
+  }
+  return content.startsWith("<?xml")
+    ? `${content}\n`
+    : `<?xml version="1.0" encoding="UTF-8"?>\n${content}\n`;
 }
 
 function flowchartExportDefaultUri(
@@ -240,21 +261,29 @@ function flowchartPayloadForWebview(
 
 function flowchartHostText(
   locale: AspFlowchartLocale,
-  key: "saveLabel" | "exported" | "copied",
+  key: "saveLabel" | "exported" | "exportFailed" | "exportEmpty" | "copied",
 ): string {
   const messages = {
     en: {
       saveLabel: "Export",
       exported: "Exported flowchart to {file}.",
+      exportFailed: "Failed to export flowchart: {error}",
+      exportEmpty: "Flowchart content is empty.",
       copied: "Copied Mermaid flowchart.",
     },
     ja: {
       saveLabel: "出力",
       exported: "フローチャートを {file} に出力しました。",
+      exportFailed: "フローチャートの出力に失敗しました: {error}",
+      exportEmpty: "フローチャートの内容が空です。",
       copied: "Mermaid フローチャートをコピーしました。",
     },
   };
   return messages[locale][key] ?? messages.en[key];
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function nonceString(): string {

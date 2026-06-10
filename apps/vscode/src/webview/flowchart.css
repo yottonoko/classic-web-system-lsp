@@ -22,225 +22,223 @@
   }
 }
 
-@layer components {
-  .asp-lsp-flowchart-shell {
-    color-scheme: dark;
-    --asp-lsp-bg: #101419;
-    --asp-lsp-surface: #151b23;
-    --asp-lsp-card: #101820;
-    --asp-lsp-canvas: #0d1117;
-    --asp-lsp-input: #0c1117;
-    --asp-lsp-hover: #172131;
-    --asp-lsp-hover-strong: #223044;
-    --asp-lsp-search-active: #17324a;
-    --asp-lsp-search-match: #2b2b18;
-    --asp-lsp-border: #263140;
-    --asp-lsp-border-muted: #2f3d50;
-    --asp-lsp-border-strong: #334255;
-    --asp-lsp-border-action: #3b4a5f;
-    --asp-lsp-border-tooltip: #405068;
-    --asp-lsp-text: #d9e0ea;
-    --asp-lsp-text-strong: #f1f5f9;
-    --asp-lsp-text-muted: #9fb0c5;
-    --asp-lsp-text-subtle: #8190a4;
-    --asp-lsp-text-control: #c4d4e8;
-    --asp-lsp-text-disabled: #5f6d7e;
-    --asp-lsp-link: #8ec7ff;
-    --asp-lsp-accent: #7dd3fc;
-    --asp-lsp-success: #63e6be;
-    --asp-lsp-warning: #f6c177;
-    --asp-lsp-error-bg: #291416;
-    --asp-lsp-error-border: #7f3434;
-    --asp-lsp-error-text: #ffd2cc;
-    --asp-lsp-missing: #ffb4a8;
-    --asp-lsp-match-stroke: #f6c177;
-    --asp-lsp-active-stroke: #7dd3fc;
-    --asp-lsp-active-shadow: rgb(125 211 252 / 55%);
-  }
+.asp-lsp-flowchart-shell {
+  color-scheme: dark;
+  --asp-lsp-bg: #101419;
+  --asp-lsp-surface: #151b23;
+  --asp-lsp-card: #101820;
+  --asp-lsp-canvas: #0d1117;
+  --asp-lsp-input: #0c1117;
+  --asp-lsp-hover: #172131;
+  --asp-lsp-hover-strong: #223044;
+  --asp-lsp-search-active: #17324a;
+  --asp-lsp-search-match: #2b2b18;
+  --asp-lsp-border: #263140;
+  --asp-lsp-border-muted: #2f3d50;
+  --asp-lsp-border-strong: #334255;
+  --asp-lsp-border-action: #3b4a5f;
+  --asp-lsp-border-tooltip: #405068;
+  --asp-lsp-text: #d9e0ea;
+  --asp-lsp-text-strong: #f1f5f9;
+  --asp-lsp-text-muted: #9fb0c5;
+  --asp-lsp-text-subtle: #8190a4;
+  --asp-lsp-text-control: #c4d4e8;
+  --asp-lsp-text-disabled: #5f6d7e;
+  --asp-lsp-link: #8ec7ff;
+  --asp-lsp-accent: #7dd3fc;
+  --asp-lsp-success: #63e6be;
+  --asp-lsp-warning: #f6c177;
+  --asp-lsp-error-bg: #291416;
+  --asp-lsp-error-border: #7f3434;
+  --asp-lsp-error-text: #ffd2cc;
+  --asp-lsp-missing: #ffb4a8;
+  --asp-lsp-match-stroke: #f6c177;
+  --asp-lsp-active-stroke: #7dd3fc;
+  --asp-lsp-active-shadow: rgb(125 211 252 / 55%);
+}
 
-  .asp-lsp-flowchart-shell[data-asp-lsp-theme="light"] {
-    color-scheme: light;
-    --asp-lsp-bg: #f8fafc;
-    --asp-lsp-surface: #ffffff;
-    --asp-lsp-card: #ffffff;
-    --asp-lsp-canvas: #f8fafc;
-    --asp-lsp-input: #ffffff;
-    --asp-lsp-hover: #e2e8f0;
-    --asp-lsp-hover-strong: #dbeafe;
-    --asp-lsp-search-active: #dbeafe;
-    --asp-lsp-search-match: #fef3c7;
-    --asp-lsp-border: #d9e2ec;
-    --asp-lsp-border-muted: #dbe3ee;
-    --asp-lsp-border-strong: #cbd5e1;
-    --asp-lsp-border-action: #cbd5e1;
-    --asp-lsp-border-tooltip: #cbd5e1;
-    --asp-lsp-text: #1f2937;
-    --asp-lsp-text-strong: #0f172a;
-    --asp-lsp-text-muted: #475569;
-    --asp-lsp-text-subtle: #64748b;
-    --asp-lsp-text-control: #334155;
-    --asp-lsp-text-disabled: #94a3b8;
-    --asp-lsp-link: #0369a1;
-    --asp-lsp-accent: #0284c7;
-    --asp-lsp-success: #0f766e;
-    --asp-lsp-warning: #b45309;
-    --asp-lsp-error-bg: #fff1f2;
-    --asp-lsp-error-border: #f43f5e;
-    --asp-lsp-error-text: #9f1239;
-    --asp-lsp-missing: #be123c;
-    --asp-lsp-match-stroke: #d97706;
-    --asp-lsp-active-stroke: #0284c7;
-    --asp-lsp-active-shadow: rgb(2 132 199 / 25%);
-  }
+.asp-lsp-flowchart-shell[data-asp-lsp-theme="light"] {
+  color-scheme: light;
+  --asp-lsp-bg: #f8fafc;
+  --asp-lsp-surface: #ffffff;
+  --asp-lsp-card: #ffffff;
+  --asp-lsp-canvas: #f8fafc;
+  --asp-lsp-input: #ffffff;
+  --asp-lsp-hover: #e2e8f0;
+  --asp-lsp-hover-strong: #dbeafe;
+  --asp-lsp-search-active: #dbeafe;
+  --asp-lsp-search-match: #fef3c7;
+  --asp-lsp-border: #d9e2ec;
+  --asp-lsp-border-muted: #dbe3ee;
+  --asp-lsp-border-strong: #cbd5e1;
+  --asp-lsp-border-action: #cbd5e1;
+  --asp-lsp-border-tooltip: #cbd5e1;
+  --asp-lsp-text: #1f2937;
+  --asp-lsp-text-strong: #0f172a;
+  --asp-lsp-text-muted: #475569;
+  --asp-lsp-text-subtle: #64748b;
+  --asp-lsp-text-control: #334155;
+  --asp-lsp-text-disabled: #94a3b8;
+  --asp-lsp-link: #0369a1;
+  --asp-lsp-accent: #0284c7;
+  --asp-lsp-success: #0f766e;
+  --asp-lsp-warning: #b45309;
+  --asp-lsp-error-bg: #fff1f2;
+  --asp-lsp-error-border: #f43f5e;
+  --asp-lsp-error-text: #9f1239;
+  --asp-lsp-missing: #be123c;
+  --asp-lsp-match-stroke: #d97706;
+  --asp-lsp-active-stroke: #0284c7;
+  --asp-lsp-active-shadow: rgb(2 132 199 / 25%);
+}
 
-  .asp-lsp-flowchart-shell .bg-\[\#101419\] {
-    background-color: var(--asp-lsp-bg);
-  }
+.asp-lsp-flowchart-shell .bg-\[\#101419\] {
+  background-color: var(--asp-lsp-bg);
+}
 
-  .asp-lsp-flowchart-shell .bg-\[\#151b23\] {
-    background-color: var(--asp-lsp-surface);
-  }
+.asp-lsp-flowchart-shell .bg-\[\#151b23\] {
+  background-color: var(--asp-lsp-surface);
+}
 
-  .asp-lsp-flowchart-shell .bg-\[\#101820\] {
-    background-color: var(--asp-lsp-card);
-  }
+.asp-lsp-flowchart-shell .bg-\[\#101820\] {
+  background-color: var(--asp-lsp-card);
+}
 
-  .asp-lsp-flowchart-shell .bg-\[\#0d1117\] {
-    background-color: var(--asp-lsp-canvas);
-  }
+.asp-lsp-flowchart-shell .bg-\[\#0d1117\] {
+  background-color: var(--asp-lsp-canvas);
+}
 
-  .asp-lsp-flowchart-shell .bg-\[\#0c1117\] {
-    background-color: var(--asp-lsp-input);
-  }
+.asp-lsp-flowchart-shell .bg-\[\#0c1117\] {
+  background-color: var(--asp-lsp-input);
+}
 
-  .asp-lsp-flowchart-shell .bg-\[\#17324a\] {
-    background-color: var(--asp-lsp-search-active);
-  }
+.asp-lsp-flowchart-shell .bg-\[\#17324a\] {
+  background-color: var(--asp-lsp-search-active);
+}
 
-  .asp-lsp-flowchart-shell .bg-\[\#2b2b18\] {
-    background-color: var(--asp-lsp-search-match);
-  }
+.asp-lsp-flowchart-shell .bg-\[\#2b2b18\] {
+  background-color: var(--asp-lsp-search-match);
+}
 
-  .asp-lsp-flowchart-shell .bg-\[\#291416\] {
-    background-color: var(--asp-lsp-error-bg);
-  }
+.asp-lsp-flowchart-shell .bg-\[\#291416\] {
+  background-color: var(--asp-lsp-error-bg);
+}
 
-  .asp-lsp-flowchart-shell .hover\:bg-\[\#172131\]:hover {
-    background-color: var(--asp-lsp-hover);
-  }
+.asp-lsp-flowchart-shell .hover\:bg-\[\#172131\]:hover {
+  background-color: var(--asp-lsp-hover);
+}
 
-  .asp-lsp-flowchart-shell .hover\:bg-\[\#223044\]:hover {
-    background-color: var(--asp-lsp-hover-strong);
-  }
+.asp-lsp-flowchart-shell .hover\:bg-\[\#223044\]:hover {
+  background-color: var(--asp-lsp-hover-strong);
+}
 
-  .asp-lsp-flowchart-shell .border-\[\#263140\] {
-    border-color: var(--asp-lsp-border);
-  }
+.asp-lsp-flowchart-shell .border-\[\#263140\] {
+  border-color: var(--asp-lsp-border);
+}
 
-  .asp-lsp-flowchart-shell .border-\[\#2f3d50\] {
-    border-color: var(--asp-lsp-border-muted);
-  }
+.asp-lsp-flowchart-shell .border-\[\#2f3d50\] {
+  border-color: var(--asp-lsp-border-muted);
+}
 
-  .asp-lsp-flowchart-shell .border-\[\#334255\] {
-    border-color: var(--asp-lsp-border-strong);
-  }
+.asp-lsp-flowchart-shell .border-\[\#334255\] {
+  border-color: var(--asp-lsp-border-strong);
+}
 
-  .asp-lsp-flowchart-shell .border-\[\#3b4a5f\] {
-    border-color: var(--asp-lsp-border-action);
-  }
+.asp-lsp-flowchart-shell .border-\[\#3b4a5f\] {
+  border-color: var(--asp-lsp-border-action);
+}
 
-  .asp-lsp-flowchart-shell .border-\[\#405068\] {
-    border-color: var(--asp-lsp-border-tooltip);
-  }
+.asp-lsp-flowchart-shell .border-\[\#405068\] {
+  border-color: var(--asp-lsp-border-tooltip);
+}
 
-  .asp-lsp-flowchart-shell .border-\[\#6fb6ff\],
-  .asp-lsp-flowchart-shell .border-\[\#7dd3fc\],
-  .asp-lsp-flowchart-shell .focus\:border-\[\#7dd3fc\]:focus,
-  .asp-lsp-flowchart-shell .hover\:border-\[\#6fb6ff\]:hover,
-  .asp-lsp-flowchart-shell .hover\:border-\[\#7dd3fc\]:hover {
-    border-color: var(--asp-lsp-accent);
-  }
+.asp-lsp-flowchart-shell .border-\[\#6fb6ff\],
+.asp-lsp-flowchart-shell .border-\[\#7dd3fc\],
+.asp-lsp-flowchart-shell .focus\:border-\[\#7dd3fc\]:focus,
+.asp-lsp-flowchart-shell .hover\:border-\[\#6fb6ff\]:hover,
+.asp-lsp-flowchart-shell .hover\:border-\[\#7dd3fc\]:hover {
+  border-color: var(--asp-lsp-accent);
+}
 
-  .asp-lsp-flowchart-shell .hover\:border-\[\#63e6be\]:hover {
-    border-color: var(--asp-lsp-success);
-  }
+.asp-lsp-flowchart-shell .hover\:border-\[\#63e6be\]:hover {
+  border-color: var(--asp-lsp-success);
+}
 
-  .asp-lsp-flowchart-shell .hover\:border-\[\#f6c177\]:hover {
-    border-color: var(--asp-lsp-warning);
-  }
+.asp-lsp-flowchart-shell .hover\:border-\[\#f6c177\]:hover {
+  border-color: var(--asp-lsp-warning);
+}
 
-  .asp-lsp-flowchart-shell .border-\[\#7f3434\] {
-    border-color: var(--asp-lsp-error-border);
-  }
+.asp-lsp-flowchart-shell .border-\[\#7f3434\] {
+  border-color: var(--asp-lsp-error-border);
+}
 
-  .asp-lsp-flowchart-shell .text-\[\#d9e0ea\] {
-    color: var(--asp-lsp-text);
-  }
+.asp-lsp-flowchart-shell .text-\[\#d9e0ea\] {
+  color: var(--asp-lsp-text);
+}
 
-  .asp-lsp-flowchart-shell .text-\[\#f1f5f9\] {
-    color: var(--asp-lsp-text-strong);
-  }
+.asp-lsp-flowchart-shell .text-\[\#f1f5f9\] {
+  color: var(--asp-lsp-text-strong);
+}
 
-  .asp-lsp-flowchart-shell .text-\[\#9fb0c5\],
-  .asp-lsp-flowchart-shell .text-\[\#91a4bb\] {
-    color: var(--asp-lsp-text-muted);
-  }
+.asp-lsp-flowchart-shell .text-\[\#9fb0c5\],
+.asp-lsp-flowchart-shell .text-\[\#91a4bb\] {
+  color: var(--asp-lsp-text-muted);
+}
 
-  .asp-lsp-flowchart-shell .text-\[\#8190a4\],
-  .asp-lsp-flowchart-shell .text-\[\#7d8ca1\] {
-    color: var(--asp-lsp-text-subtle);
-  }
+.asp-lsp-flowchart-shell .text-\[\#8190a4\],
+.asp-lsp-flowchart-shell .text-\[\#7d8ca1\] {
+  color: var(--asp-lsp-text-subtle);
+}
 
-  .asp-lsp-flowchart-shell .text-\[\#c4d4e8\],
-  .asp-lsp-flowchart-shell .text-\[\#b9c5d6\] {
-    color: var(--asp-lsp-text-control);
-  }
+.asp-lsp-flowchart-shell .text-\[\#c4d4e8\],
+.asp-lsp-flowchart-shell .text-\[\#b9c5d6\] {
+  color: var(--asp-lsp-text-control);
+}
 
-  .asp-lsp-flowchart-shell .text-\[\#5f6d7e\],
-  .asp-lsp-flowchart-shell .disabled\:text-\[\#5f6d7e\]:disabled,
-  .asp-lsp-flowchart-shell .disabled\:text-\[\#7b8796\]:disabled {
-    color: var(--asp-lsp-text-disabled);
-  }
+.asp-lsp-flowchart-shell .text-\[\#5f6d7e\],
+.asp-lsp-flowchart-shell .disabled\:text-\[\#5f6d7e\]:disabled,
+.asp-lsp-flowchart-shell .disabled\:text-\[\#7b8796\]:disabled {
+  color: var(--asp-lsp-text-disabled);
+}
 
-  .asp-lsp-flowchart-shell .text-\[\#8ec7ff\] {
-    color: var(--asp-lsp-link);
-  }
+.asp-lsp-flowchart-shell .text-\[\#8ec7ff\] {
+  color: var(--asp-lsp-link);
+}
 
-  .asp-lsp-flowchart-shell .text-\[\#ffb4a8\] {
-    color: var(--asp-lsp-missing);
-  }
+.asp-lsp-flowchart-shell .text-\[\#ffb4a8\] {
+  color: var(--asp-lsp-missing);
+}
 
-  .asp-lsp-flowchart-shell .text-\[\#ffd2cc\] {
-    color: var(--asp-lsp-error-text);
-  }
+.asp-lsp-flowchart-shell .text-\[\#ffd2cc\] {
+  color: var(--asp-lsp-error-text);
+}
 
-  .asp-lsp-flowchart-shell .placeholder\:text-\[\#6f7e91\]::placeholder {
-    color: var(--asp-lsp-text-disabled);
-  }
+.asp-lsp-flowchart-shell .placeholder\:text-\[\#6f7e91\]::placeholder {
+  color: var(--asp-lsp-text-disabled);
+}
 
-  .asp-lsp-flowchart-shell .hover\:text-white:hover,
-  .asp-lsp-flowchart-shell .hover\:text-\[\#f1f5f9\]:hover,
-  .asp-lsp-flowchart-shell .hover\:text-\[\#d7dde8\]:hover,
-  .asp-lsp-flowchart-shell .focus\:text-\[\#d7dde8\]:focus {
-    color: var(--asp-lsp-text-strong);
-  }
+.asp-lsp-flowchart-shell .hover\:text-white:hover,
+.asp-lsp-flowchart-shell .hover\:text-\[\#f1f5f9\]:hover,
+.asp-lsp-flowchart-shell .hover\:text-\[\#d7dde8\]:hover,
+.asp-lsp-flowchart-shell .focus\:text-\[\#d7dde8\]:focus {
+  color: var(--asp-lsp-text-strong);
+}
 
-  .asp-lsp-flowchart-match rect,
-  .asp-lsp-flowchart-match polygon,
-  .asp-lsp-flowchart-match path,
-  .asp-lsp-flowchart-match circle,
-  .asp-lsp-flowchart-match ellipse {
-    stroke: var(--asp-lsp-match-stroke) !important;
-    stroke-width: 3px !important;
-  }
+.asp-lsp-flowchart-match rect,
+.asp-lsp-flowchart-match polygon,
+.asp-lsp-flowchart-match path,
+.asp-lsp-flowchart-match circle,
+.asp-lsp-flowchart-match ellipse {
+  stroke: var(--asp-lsp-match-stroke) !important;
+  stroke-width: 3px !important;
+}
 
-  .asp-lsp-flowchart-active rect,
-  .asp-lsp-flowchart-active polygon,
-  .asp-lsp-flowchart-active path,
-  .asp-lsp-flowchart-active circle,
-  .asp-lsp-flowchart-active ellipse {
-    filter: drop-shadow(0 0 8px var(--asp-lsp-active-shadow));
-    stroke: var(--asp-lsp-active-stroke) !important;
-    stroke-width: 4px !important;
-  }
+.asp-lsp-flowchart-active rect,
+.asp-lsp-flowchart-active polygon,
+.asp-lsp-flowchart-active path,
+.asp-lsp-flowchart-active circle,
+.asp-lsp-flowchart-active ellipse {
+  filter: drop-shadow(0 0 8px var(--asp-lsp-active-shadow));
+  stroke: var(--asp-lsp-active-stroke) !important;
+  stroke-width: 4px !important;
 }
