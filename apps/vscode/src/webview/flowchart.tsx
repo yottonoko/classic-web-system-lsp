@@ -5,6 +5,7 @@ import tailwindStyles from "./flowchart.css?inline";
 import type {
   AspFlowchartInclude,
   AspFlowchartNode,
+  AspFlowchartNodeLink,
   AspFlowchartPayload,
   AspFlowchartSection,
   AspFlowchartTarget,
@@ -24,6 +25,9 @@ type FlowchartLocale = "en" | "ja";
 
 interface FlowchartPayload extends AspFlowchartPayload {
   locale?: FlowchartLocale;
+  settings?: {
+    maxTextSize?: number;
+  };
 }
 
 const vscode = acquireVsCodeApi();
@@ -35,6 +39,7 @@ const maximumFlowchartEdgeLabelCharacters = 80;
 const minimumFlowchartZoom = 0.4;
 const maximumFlowchartZoom = 2.5;
 const flowchartZoomStep = 0.1;
+const defaultFlowchartMaxTextSize = 2_000_000;
 
 const fallbackPayload: FlowchartPayload = {
   uri: "",
@@ -81,6 +86,13 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     zoomIn: "Zoom in",
     resetZoom: "Reset zoom",
     zoomWithWheel: "Hold Ctrl or Command and use the mouse wheel to zoom.",
+    collapseSection: "Collapse section",
+    expandSection: "Expand section",
+    includesHint: "Included files referenced by this ASP file.",
+    flowchartSectionHint:
+      "Flow nodes grouped by top-level code, functions, procedures, classes, or properties.",
+    flowchartNodeHint: "Flowchart element. Hover the rendered node for the same hint.",
+    flowchartLinkHint: "Resolved symbol used by this flowchart element.",
   },
   ja: {
     title: "ASP Flowchart",
@@ -111,6 +123,279 @@ const messages: Record<FlowchartLocale, Record<string, string>> = {
     zoomIn: "拡大",
     resetZoom: "ズームをリセット",
     zoomWithWheel: "Ctrl または Command を押しながらホイールでズーム",
+    collapseSection: "セクションを閉じる",
+    expandSection: "セクションを開く",
+    includesHint: "この ASP file が参照する include file です。",
+    flowchartSectionHint:
+      "トップレベル、関数、プロシージャ、class、property ごとの flow node です。",
+    flowchartNodeHint: "フローチャートの要素です。描画された node でも同じ hint を表示します。",
+    flowchartLinkHint: "このフローチャート要素で使われる解決済み symbol です。",
+  },
+};
+
+type FlowchartNodeKind = AspFlowchartNode["kind"];
+type FlowchartNodeLinkRole = AspFlowchartNodeLink["role"];
+
+interface FlowchartVisualStyle {
+  background: string;
+  border: string;
+  mermaidClass: string;
+  text: string;
+}
+
+const flowchartNodeKindStyles: Record<FlowchartNodeKind, FlowchartVisualStyle> = {
+  start: {
+    background: "#132538",
+    border: "#7dd3fc",
+    mermaidClass: "flowStart",
+    text: "#e0f2fe",
+  },
+  end: {
+    background: "#1f2937",
+    border: "#94a3b8",
+    mermaidClass: "flowEnd",
+    text: "#f1f5f9",
+  },
+  if: {
+    background: "#2f2410",
+    border: "#f6c177",
+    mermaidClass: "flowBranch",
+    text: "#ffe8b6",
+  },
+  elseif: {
+    background: "#2f2410",
+    border: "#f6c177",
+    mermaidClass: "flowBranch",
+    text: "#ffe8b6",
+  },
+  else: {
+    background: "#2f2410",
+    border: "#f6c177",
+    mermaidClass: "flowBranch",
+    text: "#ffe8b6",
+  },
+  select: {
+    background: "#2f2410",
+    border: "#f6c177",
+    mermaidClass: "flowBranch",
+    text: "#ffe8b6",
+  },
+  case: {
+    background: "#2f2410",
+    border: "#f6c177",
+    mermaidClass: "flowBranch",
+    text: "#ffe8b6",
+  },
+  for: {
+    background: "#251b35",
+    border: "#c792ea",
+    mermaidClass: "flowLoop",
+    text: "#ead7ff",
+  },
+  forEach: {
+    background: "#251b35",
+    border: "#c792ea",
+    mermaidClass: "flowLoop",
+    text: "#ead7ff",
+  },
+  do: {
+    background: "#251b35",
+    border: "#c792ea",
+    mermaidClass: "flowLoop",
+    text: "#ead7ff",
+  },
+  while: {
+    background: "#251b35",
+    border: "#c792ea",
+    mermaidClass: "flowLoop",
+    text: "#ead7ff",
+  },
+  call: {
+    background: "#102a2a",
+    border: "#63e6be",
+    mermaidClass: "flowCall",
+    text: "#c8fff1",
+  },
+  declaration: {
+    background: "#302610",
+    border: "#ffcb6b",
+    mermaidClass: "flowDeclaration",
+    text: "#fff0b8",
+  },
+  exit: {
+    background: "#34191d",
+    border: "#ff7b8a",
+    mermaidClass: "flowExit",
+    text: "#ffd4da",
+  },
+  statement: {
+    background: "#172131",
+    border: "#89ddff",
+    mermaidClass: "flowStatement",
+    text: "#d9e0ea",
+  },
+};
+
+const flowchartNodeKindLabels: Record<FlowchartLocale, Record<FlowchartNodeKind, string>> = {
+  en: {
+    start: "Start",
+    end: "End",
+    if: "If",
+    elseif: "ElseIf",
+    else: "Else",
+    select: "Select",
+    case: "Case",
+    for: "For",
+    forEach: "For Each",
+    do: "Do",
+    while: "While",
+    call: "Call",
+    declaration: "Declaration",
+    exit: "Exit",
+    statement: "Statement",
+  },
+  ja: {
+    start: "開始",
+    end: "終了",
+    if: "If",
+    elseif: "ElseIf",
+    else: "Else",
+    select: "Select",
+    case: "Case",
+    for: "For",
+    forEach: "For Each",
+    do: "Do",
+    while: "While",
+    call: "呼び出し",
+    declaration: "宣言",
+    exit: "終了",
+    statement: "実行",
+  },
+};
+
+const flowchartSectionKindLabels: Record<
+  FlowchartLocale,
+  Record<AspFlowchartSection["kind"], string>
+> = {
+  en: {
+    topLevel: "Top level",
+    class: "Class",
+    procedure: "Procedure",
+    property: "Property",
+  },
+  ja: {
+    topLevel: "トップレベル",
+    class: "Class",
+    procedure: "プロシージャ",
+    property: "Property",
+  },
+};
+
+const flowchartLinkRoleStyles: Record<FlowchartNodeLinkRole, FlowchartVisualStyle> = {
+  read: {
+    background: "#162816",
+    border: "#c3e88d",
+    mermaidClass: "flowLinkRead",
+    text: "#e5ffd0",
+  },
+  write: {
+    background: "#302610",
+    border: "#ffcb6b",
+    mermaidClass: "flowLinkWrite",
+    text: "#fff0b8",
+  },
+  call: {
+    background: "#2f1f16",
+    border: "#f78c6c",
+    mermaidClass: "flowLinkCall",
+    text: "#ffd8ca",
+  },
+  new: {
+    background: "#251b35",
+    border: "#c792ea",
+    mermaidClass: "flowLinkNew",
+    text: "#ead7ff",
+  },
+  member: {
+    background: "#2f2314",
+    border: "#ffb86c",
+    mermaidClass: "flowLinkMember",
+    text: "#ffe3bd",
+  },
+  definition: {
+    background: "#112839",
+    border: "#89ddff",
+    mermaidClass: "flowLinkDefinition",
+    text: "#d5f7ff",
+  },
+  unknown: {
+    background: "#1f2937",
+    border: "#b2ccd6",
+    mermaidClass: "flowLinkUnknown",
+    text: "#e4eef3",
+  },
+};
+
+const flowchartSymbolKindStyles: Record<string, FlowchartVisualStyle> = {
+  function: {
+    background: "#102a2a",
+    border: "#63e6be",
+    mermaidClass: "flowSymbolFunction",
+    text: "#c8fff1",
+  },
+  sub: {
+    background: "#102a2a",
+    border: "#7dd3fc",
+    mermaidClass: "flowSymbolSub",
+    text: "#dff6ff",
+  },
+  class: {
+    background: "#1f2c14",
+    border: "#c3e88d",
+    mermaidClass: "flowSymbolClass",
+    text: "#e5ffd0",
+  },
+  method: {
+    background: "#2f1f16",
+    border: "#f78c6c",
+    mermaidClass: "flowSymbolMethod",
+    text: "#ffd8ca",
+  },
+  property: {
+    background: "#351c28",
+    border: "#ff9cac",
+    mermaidClass: "flowSymbolProperty",
+    text: "#ffdce8",
+  },
+  variable: {
+    background: "#302610",
+    border: "#ffcb6b",
+    mermaidClass: "flowSymbolVariable",
+    text: "#fff0b8",
+  },
+  constant: {
+    background: "#16243a",
+    border: "#82aaff",
+    mermaidClass: "flowSymbolConstant",
+    text: "#dce8ff",
+  },
+  parameter: {
+    background: "#1b2930",
+    border: "#b2ccd6",
+    mermaidClass: "flowSymbolParameter",
+    text: "#e4eef3",
+  },
+  field: {
+    background: "#2f2314",
+    border: "#ffb86c",
+    mermaidClass: "flowSymbolField",
+    text: "#ffe3bd",
+  },
+  member: {
+    background: "#2f2314",
+    border: "#ffb86c",
+    mermaidClass: "flowSymbolMember",
+    text: "#ffe3bd",
   },
 };
 
@@ -267,8 +552,14 @@ function App(): React.ReactElement {
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-auto p-3">
-          <SectionHeading>{text("includes")}</SectionHeading>
-          <IncludeList includes={payload.includes} text={text} uri={payload.uri} />
+          <SidebarAccordionSection
+            count={payload.includes.length}
+            hint={text("includesHint")}
+            text={text}
+            title={text("includes")}
+          >
+            <IncludeList includes={payload.includes} text={text} uri={payload.uri} />
+          </SidebarAccordionSection>
           <SectionHeading>{text("flowcharts")}</SectionHeading>
           {payload.sections.length === 0 ? (
             <EmptyText>{text("emptyNodes")}</EmptyText>
@@ -276,6 +567,7 @@ function App(): React.ReactElement {
             payload.sections.map((section) => (
               <FlowSection
                 key={section.id}
+                locale={locale}
                 nodes={nodesBySection.get(section.id) ?? []}
                 selected={section.id === selectedSection?.id}
                 section={section}
@@ -326,6 +618,74 @@ function App(): React.ReactElement {
   );
 }
 
+function SidebarAccordionSection({
+  children,
+  count,
+  hint,
+  text,
+  title,
+}: {
+  children: React.ReactNode;
+  count?: number;
+  hint?: string;
+  text(key: string): string;
+  title: string;
+}): React.ReactElement {
+  const [open, setOpen] = useState(true);
+  const headerTitle = detailParts(title, hint, text(open ? "collapseSection" : "expandSection"));
+  return (
+    <section className="mb-4 rounded border border-[#263140] bg-[#101820]">
+      <div className="flex items-center gap-2">
+        <button
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left hover:bg-[#172131]"
+          title={headerTitle}
+          type="button"
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span className="h-6 w-6 shrink-0 rounded border border-[#334255] text-center text-xs leading-6 text-[#c4d4e8]">
+            {open ? "▾" : "▸"}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide text-[#9fb0c5]">
+            {title}
+          </span>
+          {typeof count === "number" ? (
+            <span className="shrink-0 rounded border border-[#334255] px-1.5 py-0.5 text-[11px] text-[#9fb0c5]">
+              {count}
+            </span>
+          ) : null}
+        </button>
+        {hint ? (
+          <div className="shrink-0 pr-2">
+            <FlowchartHint hint={hint} label={title} />
+          </div>
+        ) : null}
+      </div>
+      {open ? <div className="border-t border-[#263140] p-2">{children}</div> : null}
+    </section>
+  );
+}
+
+function FlowchartHint({ hint, label }: { hint: string; label: string }): React.ReactElement {
+  return (
+    <span className="group relative inline-flex shrink-0 items-center">
+      <span
+        tabIndex={0}
+        aria-label={`${label}: ${hint}`}
+        className="inline-grid h-3.5 w-3.5 cursor-help place-items-center rounded-full border border-[#405068] text-[10px] leading-none text-[#8d98a8] outline-none hover:border-[#89ddff] hover:text-[#d7dde8] focus:border-[#89ddff] focus:text-[#d7dde8]"
+      >
+        ?
+      </span>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute top-[calc(100%_+_6px)] left-0 z-30 hidden w-[min(260px,calc(100vw_-_40px))] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)] group-focus-within:block group-hover:block"
+      >
+        {hint}
+      </span>
+    </span>
+  );
+}
+
 function IncludeList({
   includes,
   text,
@@ -339,7 +699,7 @@ function IncludeList({
     return <EmptyText>{text("emptyIncludes")}</EmptyText>;
   }
   return (
-    <div className="mb-4 grid gap-2">
+    <div className="grid gap-2">
       {includes.map((include, index) => (
         <div
           key={`${include.mode}:${include.path}:${index}`}
@@ -382,6 +742,7 @@ function IncludeList({
 }
 
 function FlowSection({
+  locale,
   nodes,
   selected,
   section,
@@ -393,6 +754,7 @@ function FlowSection({
   onOpenTarget,
   onSelect,
 }: {
+  locale: FlowchartLocale;
   nodes: AspFlowchartNode[];
   selected: boolean;
   section: AspFlowchartSection;
@@ -405,6 +767,13 @@ function FlowSection({
   onSelect(): void;
 }): React.ReactElement {
   const visibleNodes = nodes.filter((node) => node.kind !== "start" && node.kind !== "end");
+  const [open, setOpen] = useState(true);
+  const sectionHint = flowchartSectionHint(section, text, locale);
+  const headerTitle = detailParts(
+    section.label,
+    sectionHint,
+    text(open ? "collapseSection" : "expandSection"),
+  );
   return (
     <div
       className={`mb-3 rounded border bg-[#101820] ${
@@ -413,13 +782,23 @@ function FlowSection({
     >
       <div className="flex items-center gap-2 border-b border-[#263140] px-2 py-1.5">
         <button
+          aria-expanded={open}
+          className="h-6 w-6 shrink-0 rounded border border-[#334255] text-xs text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white"
+          title={headerTitle}
+          type="button"
+          onClick={() => setOpen((current) => !current)}
+        >
+          {open ? "▾" : "▸"}
+        </button>
+        <button
           className="min-w-0 flex-1 truncate text-left text-xs font-semibold uppercase tracking-wide text-[#9fb0c5] hover:text-[#f1f5f9]"
-          title={text("selectFlowchart")}
+          title={detailParts(text("selectFlowchart"), section.label, sectionHint)}
           type="button"
           onClick={onSelect}
         >
           {section.label}
         </button>
+        <FlowchartHint hint={sectionHint} label={section.label} />
         <button
           className="shrink-0 rounded border border-[#334255] px-2 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#6fb6ff] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
           disabled={!section.range}
@@ -430,64 +809,78 @@ function FlowSection({
           Code
         </button>
       </div>
-      <div className="grid gap-1 p-2">
-        {visibleNodes.length === 0 ? (
-          <EmptyText>{text("emptySection")}</EmptyText>
-        ) : (
-          visibleNodes.map((node) => {
-            const isSearchMatch = matchedNodeIds.has(node.id);
-            const isActiveSearchMatch = activeSearchNodeId === node.id;
-            return (
-              <div
-                key={node.id}
-                className={`rounded px-1 py-1 hover:bg-[#223044] ${
-                  isActiveSearchMatch
-                    ? "bg-[#17324a] ring-1 ring-[#7dd3fc]"
-                    : isSearchMatch
-                      ? "bg-[#2b2b18] ring-1 ring-[#f6c177]"
-                      : ""
-                }`}
-              >
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1">
-                  <button
-                    className="min-w-0 truncate px-1 py-1 text-left text-xs text-[#d9e0ea]"
-                    title={text("openFlowchart")}
-                    type="button"
-                    onClick={() => onOpenFlowchart(node)}
-                  >
-                    <span className="mr-2 text-[#7dd3fc]">{node.kind}</span>
-                    {node.label}
-                  </button>
-                  <button
-                    className="mr-1 shrink-0 rounded border border-[#3b4a5f] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
-                    disabled={!node.range}
-                    title={text("openCode")}
-                    type="button"
-                    onClick={() => node.range && onOpenCode(node.range)}
-                  >
-                    Code
-                  </button>
-                </div>
-                {node.links?.length ? (
-                  <div className="ml-1 mt-1 flex flex-wrap gap-1">
-                    {node.links.map((link) => (
-                      <button
-                        key={link.id}
-                        className="rounded border border-[#315f58] bg-[#10241f] px-1.5 py-0.5 text-[11px] text-[#9ee7d0] hover:border-[#63e6be] hover:text-white"
-                        title={text("openDefinition")}
-                        type="button"
-                        onClick={() => onOpenTarget(link.target)}
+      {open ? (
+        <div className="grid gap-1 p-2">
+          {visibleNodes.length === 0 ? (
+            <EmptyText>{text("emptySection")}</EmptyText>
+          ) : (
+            visibleNodes.map((node) => {
+              const isSearchMatch = matchedNodeIds.has(node.id);
+              const isActiveSearchMatch = activeSearchNodeId === node.id;
+              const nodeHint = flowchartNodeHint(node, text, locale);
+              const nodeStyle = flowchartNodeKindStyles[node.kind];
+              return (
+                <div
+                  key={node.id}
+                  className={`rounded px-1 py-1 hover:bg-[#223044] ${
+                    isActiveSearchMatch
+                      ? "bg-[#17324a] ring-1 ring-[#7dd3fc]"
+                      : isSearchMatch
+                        ? "bg-[#2b2b18] ring-1 ring-[#f6c177]"
+                        : ""
+                  }`}
+                >
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1">
+                    <button
+                      className="min-w-0 truncate px-1 py-1 text-left text-xs text-[#d9e0ea]"
+                      title={nodeHint}
+                      type="button"
+                      onClick={() => onOpenFlowchart(node)}
+                    >
+                      <span
+                        className="mr-2 rounded border px-1 py-0.5 text-[10px]"
+                        style={flowchartSwatchStyle(nodeStyle)}
+                        title={flowchartNodeKindLabel(node.kind, locale)}
                       >
-                        {link.label}
-                      </button>
-                    ))}
+                        {flowchartNodeKindLabel(node.kind, locale)}
+                      </span>
+                      {node.label}
+                    </button>
+                    <button
+                      className="mr-1 shrink-0 rounded border border-[#3b4a5f] px-1.5 py-0.5 text-[11px] text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]"
+                      disabled={!node.range}
+                      title={text("openCode")}
+                      type="button"
+                      onClick={() => node.range && onOpenCode(node.range)}
+                    >
+                      Code
+                    </button>
                   </div>
-                ) : null}
-              </div>
-            );
-          })
-        )}
-      </div>
+                  {node.links?.length ? (
+                    <div className="ml-1 mt-1 flex flex-wrap gap-1">
+                      {node.links.map((link) => {
+                        const linkStyle = flowchartNodeLinkStyle(link);
+                        return (
+                          <button
+                            key={link.id}
+                            className="rounded border px-1.5 py-0.5 text-[11px] hover:text-white"
+                            style={flowchartSwatchStyle(linkStyle)}
+                            title={flowchartNodeLinkHint(link, text, locale)}
+                            type="button"
+                            onClick={() => onOpenTarget(link.target)}
+                          >
+                            {link.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -541,7 +934,7 @@ function FlowchartCanvas({
       }
       mermaid.initialize({
         startOnLoad: false,
-        maxTextSize: 2_000_000,
+        maxTextSize: flowchartMaxTextSize(payload),
         securityLevel: "strict",
         theme: "dark",
         flowchart: { htmlLabels: false, curve: "basis" },
@@ -554,7 +947,7 @@ function FlowchartCanvas({
         }
         containerRef.current.innerHTML = result.svg;
         setSvg(result.svg);
-        attachSvgNodeHandlers(containerRef.current, payload, onOpenFlowchart);
+        attachSvgNodeHandlers(containerRef.current, payload, text, onOpenFlowchart);
         setError(undefined);
       } catch (renderError) {
         if (!cancelled) {
@@ -681,10 +1074,23 @@ function FlowchartCanvas({
 function attachSvgNodeHandlers(
   container: HTMLDivElement,
   payload: FlowchartPayload,
+  text: (key: string) => string,
   onOpenFlowchart: (node: AspFlowchartNode) => void,
 ): void {
+  const locale = payload.locale ?? "en";
   for (const node of payload.nodes) {
     for (const element of svgElementsForFlowchartNode(container, node)) {
+      const hint = flowchartNodeHint(node, text, locale);
+      element.setAttribute("aria-label", hint);
+      let titleElement = element.querySelector<SVGTitleElement>("title");
+      if (!titleElement) {
+        titleElement = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "title",
+        ) as SVGTitleElement;
+        element.prepend(titleElement);
+      }
+      titleElement.textContent = hint;
       element.style.cursor = "pointer";
       element.addEventListener("click", () => onOpenFlowchart(node));
     }
@@ -801,12 +1207,14 @@ function mermaidForSelectedSection(
   const lines = ["flowchart TB"];
   for (const node of nodes) {
     lines.push(`  ${mermaidNode(node)}`);
+    lines.push(`  class ${mermaidId(node.id)} ${flowchartNodeKindStyles[node.kind].mermaidClass}`);
   }
   for (const edge of edges) {
     lines.push(
       `  ${mermaidId(edge.source)} -->${edge.label ? `|${escapeMermaidEdgeLabel(edge.label)}|` : ""} ${mermaidId(edge.target)}`,
     );
   }
+  lines.push(...flowchartMermaidClassDefinitions());
   return lines.join("\n");
 }
 
@@ -825,6 +1233,17 @@ function mermaidNode(node: AspFlowchartNode): string {
     return `${id}{"${label}"}`;
   }
   return `${id}["${label}"]`;
+}
+
+function flowchartMermaidClassDefinitions(): string[] {
+  const stylesByClass = new Map<string, FlowchartVisualStyle>();
+  for (const style of Object.values(flowchartNodeKindStyles)) {
+    stylesByClass.set(style.mermaidClass, style);
+  }
+  return [...stylesByClass.values()].map(
+    (style) =>
+      `  classDef ${style.mermaidClass} fill:${style.background},stroke:${style.border},stroke-width:2px,color:${style.text};`,
+  );
 }
 
 function mermaidId(id: string): string {
@@ -909,6 +1328,148 @@ function flowchartWordParts(value: string, lineLength: number): string[] {
     parts.push(characters.slice(index, index + lineLength).join(""));
   }
   return parts;
+}
+
+function flowchartSectionHint(
+  section: AspFlowchartSection,
+  text: (key: string) => string,
+  locale: FlowchartLocale,
+): string {
+  return detailParts(
+    text("flowchartSectionHint"),
+    flowchartSectionKindLabel(section.kind, locale),
+    section.label,
+  );
+}
+
+function flowchartNodeHint(
+  node: AspFlowchartNode,
+  text: (key: string) => string,
+  locale: FlowchartLocale,
+): string {
+  return detailParts(
+    text("flowchartNodeHint"),
+    flowchartNodeKindLabel(node.kind, locale),
+    node.label,
+    node.description,
+    node.links?.length ? `${node.links.length} ${text("definitions")}` : undefined,
+  );
+}
+
+function flowchartNodeLinkHint(
+  link: AspFlowchartNodeLink,
+  text: (key: string) => string,
+  locale: FlowchartLocale,
+): string {
+  return detailParts(
+    text("flowchartLinkHint"),
+    flowchartNodeLinkRoleLabel(link.role, locale),
+    link.symbolKind ? formatFlowchartSymbolKind(link.symbolKind) : undefined,
+    link.label,
+  );
+}
+
+function flowchartNodeKindLabel(kind: FlowchartNodeKind, locale: FlowchartLocale): string {
+  return flowchartNodeKindLabels[locale][kind] ?? flowchartNodeKindLabels.en[kind] ?? kind;
+}
+
+function flowchartSectionKindLabel(
+  kind: AspFlowchartSection["kind"],
+  locale: FlowchartLocale,
+): string {
+  return flowchartSectionKindLabels[locale][kind] ?? flowchartSectionKindLabels.en[kind] ?? kind;
+}
+
+function flowchartNodeLinkRoleLabel(role: FlowchartNodeLinkRole, locale: FlowchartLocale): string {
+  const labels: Record<FlowchartLocale, Record<FlowchartNodeLinkRole, string>> = {
+    en: {
+      read: "Read",
+      write: "Write",
+      call: "Call",
+      new: "Create",
+      member: "Member",
+      definition: "Definition",
+      unknown: "Reference",
+    },
+    ja: {
+      read: "参照",
+      write: "代入",
+      call: "呼び出し",
+      new: "作成",
+      member: "メンバー",
+      definition: "定義",
+      unknown: "参照",
+    },
+  };
+  return labels[locale][role] ?? labels.en[role] ?? role;
+}
+
+function flowchartNodeLinkStyle(link: AspFlowchartNodeLink): FlowchartVisualStyle {
+  return flowchartSymbolStyle(link.symbolKind) ?? flowchartLinkRoleStyles[link.role];
+}
+
+function flowchartSymbolStyle(symbolKind: string | undefined): FlowchartVisualStyle | undefined {
+  const normalized = normalizeFlowchartSymbolKind(symbolKind);
+  if (!normalized) {
+    return undefined;
+  }
+  if (flowchartSymbolKindStyles[normalized]) {
+    return flowchartSymbolKindStyles[normalized];
+  }
+  if (normalized.includes("function")) {
+    return flowchartSymbolKindStyles.function;
+  }
+  if (normalized.includes("sub")) {
+    return flowchartSymbolKindStyles.sub;
+  }
+  if (normalized.includes("class")) {
+    return flowchartSymbolKindStyles.class;
+  }
+  if (normalized.includes("method")) {
+    return flowchartSymbolKindStyles.method;
+  }
+  if (normalized.includes("property")) {
+    return flowchartSymbolKindStyles.property;
+  }
+  if (normalized.includes("variable")) {
+    return flowchartSymbolKindStyles.variable;
+  }
+  if (normalized.includes("constant")) {
+    return flowchartSymbolKindStyles.constant;
+  }
+  if (normalized.includes("parameter")) {
+    return flowchartSymbolKindStyles.parameter;
+  }
+  if (normalized.includes("field")) {
+    return flowchartSymbolKindStyles.field;
+  }
+  if (normalized.includes("member")) {
+    return flowchartSymbolKindStyles.member;
+  }
+  return undefined;
+}
+
+function normalizeFlowchartSymbolKind(symbolKind: string | undefined): string {
+  return symbolKind ? symbolKind.replace(/[^A-Za-z]/g, "").toLowerCase() : "";
+}
+
+function formatFlowchartSymbolKind(symbolKind: string): string {
+  return symbolKind
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim();
+}
+
+function flowchartSwatchStyle(style: FlowchartVisualStyle): React.CSSProperties {
+  return {
+    backgroundColor: style.background,
+    borderColor: style.border,
+    color: style.text,
+  };
+}
+
+function detailParts(...parts: Array<string | undefined>): string {
+  return parts.filter((part): part is string => Boolean(part && part.trim())).join(" · ");
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -1040,6 +1601,13 @@ function EmptyText({ children }: { children: React.ReactNode }): React.ReactElem
 
 function isFlowchartPayload(value: unknown): value is FlowchartPayload {
   return Boolean(value && typeof value === "object" && "mermaid" in value && "nodes" in value);
+}
+
+function flowchartMaxTextSize(payload: FlowchartPayload): number {
+  const value = payload.settings?.maxTextSize;
+  return typeof value === "number" && Number.isFinite(value) && value >= 1
+    ? Math.floor(value)
+    : defaultFlowchartMaxTextSize;
 }
 
 const style = document.createElement("style");

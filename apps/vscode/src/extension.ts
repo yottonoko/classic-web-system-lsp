@@ -17,7 +17,11 @@ import {
   type AspGraphLocale,
   type AspGraphPayload,
 } from "./include-graph-webview";
-import { showAspFlowchartWebview, type AspFlowchartPayload } from "./flowchart-webview";
+import {
+  showAspFlowchartWebview,
+  type AspFlowchartPayload,
+  type AspFlowchartWebviewSettings,
+} from "./flowchart-webview";
 import { getServerModulePath } from "./server-path";
 
 const maxCrashRestartCount = 4;
@@ -30,6 +34,7 @@ const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const serverStatusNotificationMethod = "aspLsp/status";
 const htmlTagCompleteLookBehind = 2000;
+const defaultFlowchartMaxTextSize = 2_000_000;
 type GraphOpenLocation = "active" | "beside";
 type GraphScope = "document" | "folder" | "workspace";
 type ServerStatusKind = "idle" | "loading" | "analyzing";
@@ -274,6 +279,7 @@ async function showFlowchart(
     result.title,
     graphViewColumn(),
     extensionLocale(),
+    flowchartWebviewSettings(),
     loadFlowchartPayload,
   );
 }
@@ -507,6 +513,21 @@ function graphViewColumn(): vscode.ViewColumn {
     .getConfiguration("aspLsp")
     .get<GraphOpenLocation>("graph.openLocation", "active");
   return openLocation === "beside" ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active;
+}
+
+function flowchartWebviewSettings(): AspFlowchartWebviewSettings {
+  const maxTextSize = vscode.workspace
+    .getConfiguration("aspLsp")
+    .get<number>("flowchart.maxTextSize", defaultFlowchartMaxTextSize);
+  return {
+    maxTextSize: positiveNumberSetting(maxTextSize, defaultFlowchartMaxTextSize),
+  };
+}
+
+function positiveNumberSetting(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 1
+    ? Math.floor(value)
+    : fallback;
 }
 
 function graphPanelTitle(

@@ -98,12 +98,17 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("flowchartForSection(payload, selectedSectionId)");
     expect(flowchartSource).toContain('const lines = ["flowchart TB"]');
     expect(flowchartSource).toContain(
-      "attachSvgNodeHandlers(containerRef.current, payload, onOpenFlowchart)",
+      "attachSvgNodeHandlers(containerRef.current, payload, text, onOpenFlowchart)",
     );
+    expect(flowchartSource).toContain("flowchartNodeKindStyles");
+    expect(flowchartSource).toContain("flowchartNodeHint(node, text, locale)");
+    expect(flowchartSource).toContain("flowchartMermaidClassDefinitions()");
     expect(flowchartSource).toContain('type: "copyText"');
     expect(flowchartSource).toContain('format: "mermaid"');
     expect(flowchartSource).toContain('format: "svg"');
-    expect(flowchartSource).toContain("maxTextSize: 2_000_000");
+    expect(flowchartSource).toContain("maxTextSize: flowchartMaxTextSize(payload)");
+    expect(flowchartSource).toContain("const defaultFlowchartMaxTextSize = 2_000_000");
+    expect(flowchartSource).toContain("payload.settings?.maxTextSize");
     expect(flowchartSource).toContain("wrapFlowchartLabel");
     expect(flowchartSource).toContain("setClampedZoom");
     expect(flowchartSource).toContain("zoomWithWheel");
@@ -322,6 +327,17 @@ describe("VS Code extension package", () => {
     );
     expect(nls["configuration.styleExtraction.insertionMode.description"]).toBeTruthy();
     expect(nlsJa["configuration.styleExtraction.insertionMode.description"]).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.maxTextSize"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "number",
+        minimum: 1,
+        default: 2000000,
+      }),
+    );
+    expect(nls["configuration.flowchart.maxTextSize.description"]).toBeTruthy();
+    expect(nlsJa["configuration.flowchart.maxTextSize.description"]).toBeTruthy();
     for (const key of [
       "referenceProcedures",
       "referenceGlobals",

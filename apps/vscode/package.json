@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.5.28",
+  "version": "0.5.29",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -618,6 +618,12 @@
           ],
           "default": "nearby",
           "description": "%configuration.styleExtraction.insertionMode.description%"
+        },
+        "aspLsp.flowchart.maxTextSize": {
+          "type": "number",
+          "minimum": 1,
+          "default": 2000000,
+          "description": "%configuration.flowchart.maxTextSize.description%"
         },
         "aspLsp.graph.showRootNodes": {
           "type": "boolean",

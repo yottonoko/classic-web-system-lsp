@@ -90,6 +90,7 @@ interface GraphStatsListItem {
   detail?: string;
   status?: string;
   color?: string;
+  lineWidth?: number;
 }
 
 type HighlightState = {
@@ -296,12 +297,20 @@ const graphMessageEn = {
   "occurrence.one": "1 occurrence",
   "occurrence.other": "{count} occurrences",
   "section.declaration": "Declaration",
+  "section.declarationHint": "Source snippet for the selected declaration.",
   "section.includedBy": "Included By",
+  "section.includedByHint": "Files that include the selected file.",
   "section.includes": "Includes",
+  "section.includesHint": "Files included by the selected file.",
   "section.incomingLinks": "Incoming links",
+  "section.incomingLinksHint": "Visible graph links that target the selected node.",
   "section.occurrences": "Occurrences",
+  "section.occurrencesHint": "Source occurrences represented by the selected graph link.",
   "section.outgoingLinks": "Outgoing links",
+  "section.outgoingLinksHint": "Visible graph links that start from the selected node.",
   "section.referencesCalls": "Assignments / References / Calls",
+  "section.referencesCallsHint": "Source snippets for assignments, references, and calls.",
+  "section.sourceFileHint": "Source ranges grouped by file.",
   "snippet.loadingSource": "Loading source...",
   "stats.heading": "Graph list",
   "stats.metric.files": "Files",
@@ -467,12 +476,20 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "occurrence.one": "1 件",
     "occurrence.other": "{count} 件",
     "section.declaration": "宣言",
+    "section.declarationHint": "選択した宣言の source snippet です。",
     "section.includedBy": "Included By",
+    "section.includedByHint": "選択した file を include している file です。",
     "section.includes": "Includes",
+    "section.includesHint": "選択した file が include している file です。",
     "section.incomingLinks": "Incoming links",
+    "section.incomingLinksHint": "選択した node を target にする visible graph link です。",
     "section.occurrences": "出現箇所",
+    "section.occurrencesHint": "選択した graph link が表す source 上の出現箇所です。",
     "section.outgoingLinks": "Outgoing links",
+    "section.outgoingLinksHint": "選択した node から始まる visible graph link です。",
     "section.referencesCalls": "代入 / 参照 / 呼び出し",
+    "section.referencesCallsHint": "代入、参照、呼び出しの source snippet です。",
+    "section.sourceFileHint": "source range を file ごとにまとめたものです。",
     "snippet.loadingSource": "source を読み込み中...",
     "stats.heading": "一覧",
     "stats.metric.files": "Files",
@@ -1645,10 +1662,10 @@ function GraphStatsList({
         >
           <div className="flex min-w-0 items-center gap-2">
             {item.color ? (
-              <span
-                className="h-2.5 w-2.5 shrink-0 rounded-full"
-                style={{ backgroundColor: item.color }}
-                aria-hidden="true"
+              <GraphStatsColorIndicator
+                color={item.color}
+                lineWidth={item.lineWidth}
+                variant={item.target.type}
               />
             ) : null}
             <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
@@ -1668,6 +1685,33 @@ function GraphStatsList({
         </button>
       ))}
     </div>
+  );
+}
+
+function GraphStatsColorIndicator({
+  color,
+  lineWidth,
+  variant,
+}: {
+  color: string;
+  lineWidth?: number;
+  variant: GraphStatsTarget["type"];
+}): React.ReactElement {
+  if (variant === "link") {
+    return (
+      <span
+        className="h-0 w-7 shrink-0 rounded-full border-t-2"
+        style={{ borderColor: color, borderTopWidth: lineWidth ?? 2 }}
+        aria-hidden="true"
+      />
+    );
+  }
+  return (
+    <span
+      className="h-2.5 w-2.5 shrink-0 rounded-full"
+      style={{ backgroundColor: color }}
+      aria-hidden="true"
+    />
   );
 }
 
@@ -1716,6 +1760,7 @@ function linkStatsItems(graphData: GraphData): GraphStatsListItem[] {
     ).join(" · "),
     status: `x${link.count}`,
     color: link.color,
+    lineWidth: linkSwatchWidth(link),
   }));
 }
 
@@ -1738,6 +1783,7 @@ function missingIncludeStatsItems(graphData: GraphData): GraphStatsListItem[] {
         ).join(" · "),
         status: graphText("label.missing"),
         color: link.color,
+        lineWidth: linkSwatchWidth(link),
       };
     });
 }
@@ -1988,6 +2034,7 @@ function LinkInspector({
         <Accordion
           count={link.count}
           defaultOpen={true}
+          hint={graphText("section.occurrencesHint")}
           headerAction={
             location ? (
               <OpenLocationButton
@@ -2058,6 +2105,7 @@ function NodeLinkSections({
       <Accordion
         count={outgoing.length}
         defaultOpen={outgoing.length > 0}
+        hint={graphText("section.outgoingLinksHint")}
         title={graphText("section.outgoingLinks")}
       >
         {outgoing.length > 0 ? (
@@ -2074,6 +2122,7 @@ function NodeLinkSections({
       <Accordion
         count={incoming.length}
         defaultOpen={incoming.length > 0}
+        hint={graphText("section.incomingLinksHint")}
         title={graphText("section.incomingLinks")}
       >
         {incoming.length > 0 ? (
@@ -2171,6 +2220,7 @@ function NodeSourceSections({
     <div className="mb-3 grid gap-2">
       <Accordion
         defaultOpen={true}
+        hint={graphText("section.declarationHint")}
         headerAction={
           declarationItem ? (
             <OpenLocationButton
@@ -2192,6 +2242,7 @@ function NodeSourceSections({
       <Accordion
         count={usageItems.length}
         defaultOpen={true}
+        hint={graphText("section.referencesCallsHint")}
         title={graphText("section.referencesCalls")}
       >
         {usageItems.length > 0 ? (
@@ -2217,7 +2268,12 @@ function FileNodeRelations({
   );
   return (
     <div className="mb-3 grid gap-2">
-      <Accordion count={outgoing.length} defaultOpen={true} title={graphText("section.includes")}>
+      <Accordion
+        count={outgoing.length}
+        defaultOpen={true}
+        hint={graphText("section.includesHint")}
+        title={graphText("section.includes")}
+      >
         {outgoing.length > 0 ? (
           <IncludeRelationList relations={outgoing} />
         ) : (
@@ -2227,6 +2283,7 @@ function FileNodeRelations({
       <Accordion
         count={incoming.length}
         defaultOpen={incoming.length > 0}
+        hint={graphText("section.includedByHint")}
         title={graphText("section.includedBy")}
       >
         {incoming.length > 0 ? (
@@ -2243,16 +2300,19 @@ function Accordion({
   children,
   count,
   defaultOpen,
+  hint,
   headerAction,
   title,
 }: {
   children: React.ReactNode;
   count?: number;
   defaultOpen: boolean;
+  hint?: string;
   headerAction?: React.ReactNode;
   title: string;
 }): React.ReactElement {
   const [isOpen, setOpen] = useState(defaultOpen);
+  const headerTitle = detailParts(title, hint).join(" · ");
   return (
     <section className="overflow-hidden rounded-md border border-[#303a49] bg-[#151a22]">
       <div className="flex min-h-9 items-center gap-2">
@@ -2260,7 +2320,7 @@ function Accordion({
           type="button"
           className="flex min-h-9 min-w-0 flex-1 cursor-pointer items-center justify-between gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left"
           aria-expanded={isOpen}
-          title={title}
+          title={headerTitle}
           onClick={() => setOpen((current) => !current)}
         >
           <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#d7dde8]">
@@ -2271,6 +2331,11 @@ function Accordion({
             <span aria-hidden="true">{isOpen ? "-" : "+"}</span>
           </span>
         </button>
+        {hint ? (
+          <div className="shrink-0">
+            <DetailHint hint={hint} label={title} />
+          </div>
+        ) : null}
         {headerAction ? <div className="shrink-0 pr-2">{headerAction}</div> : null}
       </div>
       {isOpen ? <div className="grid gap-2 border-t border-[#303a49] p-2.5">{children}</div> : null}
@@ -2317,6 +2382,7 @@ function SourceFileGroups({
           key={group.uri}
           count={group.items.length}
           defaultOpen={groups.length === 1}
+          hint={graphText("section.sourceFileHint")}
           title={sourceGroupTitle(group.uri, group.items, sourceState.byId)}
         >
           <SourceRangeList items={group.items} sourceState={sourceState} />
@@ -3709,6 +3775,10 @@ function baseNameFromUri(value: string | undefined): string | undefined {
 
 function graphLinkColor(link: AspGraphLink): string {
   return linkFilterColors[graphLinkFilterCategory(link)];
+}
+
+function linkSwatchWidth(link: Pick<AspGraphLink, "kind" | "role">): number {
+  return graphLinkFilterCategory(link) === "include" ? 4 : 2;
 }
 
 function graphLinkFilterCategory(link: Pick<AspGraphLink, "kind" | "role">): LinkFilterCategory {

@@ -9,8 +9,13 @@ import type {
 
 export type AspFlowchartLocale = "en" | "ja";
 
+export interface AspFlowchartWebviewSettings {
+  maxTextSize: number;
+}
+
 interface FlowchartPayload extends AspFlowchartPayload {
   locale?: AspFlowchartLocale;
+  settings?: AspFlowchartWebviewSettings;
 }
 
 interface OpenRangeMessage {
@@ -56,6 +61,7 @@ export function showAspFlowchartWebview(
   title: string,
   viewColumn: vscode.ViewColumn,
   locale: AspFlowchartLocale,
+  settings: AspFlowchartWebviewSettings,
   loadPayload: (uri: string) => Promise<{ payload: AspFlowchartPayload; title: string }>,
 ): void {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
@@ -68,16 +74,23 @@ export function showAspFlowchartWebview(
     if (message.type === "openRange") {
       void openFlowchartRange(message.uri, message.range);
     } else if (message.type === "openIncludeFlowchart") {
-      void loadFlowchartLocation(panel, message.uri, undefined, locale, loadPayload);
+      void loadFlowchartLocation(panel, message.uri, undefined, locale, settings, loadPayload);
     } else if (message.type === "openFlowchartLocation") {
-      void loadFlowchartLocation(panel, message.uri, message.range, locale, loadPayload);
+      void loadFlowchartLocation(panel, message.uri, message.range, locale, settings, loadPayload);
     } else if (message.type === "exportFlowchart") {
       void exportFlowchartContent(message, locale);
     } else if (message.type === "copyText") {
       void copyFlowchartText(message.content, locale);
     }
   });
-  panel.webview.html = flowchartWebviewHtml(panel.webview, webviewRoot, payload, title, locale);
+  panel.webview.html = flowchartWebviewHtml(
+    panel.webview,
+    webviewRoot,
+    payload,
+    title,
+    locale,
+    settings,
+  );
 }
 
 async function copyFlowchartText(content: string, locale: AspFlowchartLocale): Promise<void> {
@@ -90,13 +103,14 @@ async function loadFlowchartLocation(
   uri: string,
   targetRange: AspFlowchartTarget["range"] | undefined,
   locale: AspFlowchartLocale,
+  settings: AspFlowchartWebviewSettings,
   loadPayload: (uri: string) => Promise<{ payload: AspFlowchartPayload; title: string }>,
 ): Promise<void> {
   const result = await loadPayload(uri);
   panel.title = result.title;
   await panel.webview.postMessage({
     type: "flowchartPayload",
-    payload: flowchartPayloadForWebview(result.payload, locale),
+    payload: flowchartPayloadForWebview(result.payload, locale, settings),
     targetRange,
   });
 }
@@ -178,13 +192,13 @@ function flowchartWebviewHtml(
   payload: AspFlowchartPayload,
   title: string,
   locale: AspFlowchartLocale,
+  settings: AspFlowchartWebviewSettings,
 ): string {
   const nonce = nonceString();
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, "flowchart.js"));
-  const flowchartJson = JSON.stringify(flowchartPayloadForWebview(payload, locale)).replaceAll(
-    "</",
-    "<\\/",
-  );
+  const flowchartJson = JSON.stringify(
+    flowchartPayloadForWebview(payload, locale, settings),
+  ).replaceAll("</", "<\\/");
   return `<!doctype html>
 <html lang="${locale}">
 <head>
@@ -204,8 +218,9 @@ function flowchartWebviewHtml(
 function flowchartPayloadForWebview(
   payload: AspFlowchartPayload,
   locale: AspFlowchartLocale,
+  settings: AspFlowchartWebviewSettings,
 ): FlowchartPayload {
-  return { ...payload, locale };
+  return { ...payload, locale, settings };
 }
 
 function flowchartHostText(

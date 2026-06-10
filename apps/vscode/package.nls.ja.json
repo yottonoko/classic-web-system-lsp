@@ -53,6 +53,7 @@
   "configuration.codeLens.referenceScope.description": "VBScript reference count CodeLens が workspace 全体を使うか現在解析済み file だけを使うかを制御します。",
   "configuration.codeLens.includes.description": "Classic ASP include CodeLens を表示します。",
   "configuration.styleExtraction.insertionMode.description": "inline style 抽出 code action が CSS rule を挿入する場所を制御します。nearby は対象 tag の直前に style element を作り、reuseExistingStyleTag は既存 style element があれば一番近いものへ追記します。",
+  "configuration.flowchart.maxTextSize.description": "Classic ASP flowchart を render するときに Mermaid が受け付ける text size の最大値です。",
   "configuration.graph.showRootNodes.description": "graph view に root file node を表示します。",
   "configuration.graph.showFileNodes.description": "graph view に root 以外の file node を表示します。",
   "configuration.graph.showFunctionNodes.description": "graph view に function node を表示します。",
