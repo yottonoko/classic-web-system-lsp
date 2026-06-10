@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import writeXlsxFile from "write-excel-file/node";
 import { analysisExcelWorkbookFeatures, createAnalysisExcelSheets } from "../src/analysis-excel";
 import type { AspGraphPayload } from "../src/include-graph-webview";
 
@@ -674,6 +675,22 @@ describe("analysis Excel sheets", () => {
         { sheetId: "4", sheetIndex: 3 },
       ),
     ).toContain('<autoFilter ref="A1:O12"/>');
+  });
+
+  it("can generate an xlsx workbook buffer with analysis charts and workbook features", async () => {
+    const sheets = createAnalysisExcelSheets(analysisPayload(), "ja", {
+      generatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      targetUri: "file:///workspace/main.asp",
+    });
+
+    const workbook = await writeXlsxFile(sheets, {
+      features: analysisExcelWorkbookFeatures,
+      fontFamily: "Calibri",
+      fontSize: 11,
+    }).toBuffer();
+
+    expect(workbook.subarray(0, 2).toString("utf8")).toBe("PK");
+    expect(workbook.length).toBeGreaterThan(1000);
   });
 });
 

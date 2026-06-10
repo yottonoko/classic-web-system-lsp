@@ -471,12 +471,14 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
       title: extensionLocalizer()("excel.writeTitle"),
       cancellable: false,
     },
-    async () =>
-      writeXlsxFile(sheets, {
+    async () => {
+      const workbook = await writeXlsxFile(sheets, {
         features: analysisExcelWorkbookFeatures,
         fontFamily: "Calibri",
         fontSize: 11,
-      }).toFile(target.fsPath),
+      }).toBuffer();
+      await vscode.workspace.fs.writeFile(target, workbook);
+    },
   );
   void vscode.window.showInformationMessage(
     extensionLocalizer()("excel.exported", { file: target.fsPath }),

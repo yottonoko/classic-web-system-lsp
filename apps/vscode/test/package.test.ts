@@ -775,6 +775,9 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("targetUri: request.uri");
     expect(extensionSource).toContain("includeIncomingDocumentIncludes: true");
     expect(extensionSource).toContain("writeXlsxFile");
+    expect(extensionSource).toContain(".toBuffer()");
+    expect(extensionSource).toContain("vscode.workspace.fs.writeFile(target, workbook)");
+    expect(extensionSource).not.toContain(".toFile(target.fsPath)");
     expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileFlowchart"');
     expect(extensionSource).toContain('registerCommand("aspLsp.exportCurrentFileFlowchart"');
     expect(extensionSource).toContain('get<GraphOpenLocation>("graph.openLocation", "active")');
