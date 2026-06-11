@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.6.7",
+  "version": "0.6.8",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -891,6 +891,16 @@
           "type": "boolean",
           "default": true,
           "description": "%configuration.excel.includeRelatedIncludeTreesForUnresolved.description%"
+        },
+        "aspLsp.excel.locale": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "en",
+            "ja"
+          ],
+          "default": "auto",
+          "description": "%configuration.excel.locale.description%"
         },
         "aspLsp.cache.enabled": {
           "type": "boolean",

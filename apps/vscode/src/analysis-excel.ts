@@ -41,6 +41,14 @@ interface AnalysisSheetOptions {
 interface AnalysisExcelOptions {
   generatedAt?: Date;
   targetUri?: string;
+  settings?: AnalysisExcelSettingsSummary;
+}
+
+interface AnalysisExcelSettingsSummary {
+  excelLocale?: AspGraphLocale | "auto";
+  includeRelatedIncludeTreesForUnresolved?: boolean;
+  forceRelatedIncludeTreeAnalysis?: boolean;
+  includeAnalysisTypeDetails?: boolean;
 }
 
 interface UsageCounts {
@@ -90,6 +98,7 @@ type AnalysisTextKey =
   | "summary"
   | "analysisSummary"
   | "chartData"
+  | "includeTree"
   | "files"
   | "includes"
   | "declarations"
@@ -119,6 +128,22 @@ type AnalysisTextKey =
   | "unusedCount"
   | "truncated"
   | "notTruncated"
+  | "relatedIncludeTreeAnalysis"
+  | "analysisSettings"
+  | "setting"
+  | "excelLanguage"
+  | "automatic"
+  | "enabled"
+  | "disabled"
+  | "forced"
+  | "notForced"
+  | "forceRelatedIncludeTreeAnalysis"
+  | "analysisTypeDetails"
+  | "includeTreeDescendant"
+  | "includeTreeAncestor"
+  | "includeTreeRelative"
+  | "direction"
+  | "depth"
   | "yes"
   | "no"
   | "used"
@@ -218,6 +243,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     summary: "Summary",
     analysisSummary: "Analysis Summary",
     chartData: "Chart Data",
+    includeTree: "Include Tree",
     files: "Files",
     includes: "Includes",
     declarations: "Declarations",
@@ -247,6 +273,22 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     unusedCount: "Unused",
     truncated: "Truncated",
     notTruncated: "Not truncated",
+    relatedIncludeTreeAnalysis: "Related include tree analysis",
+    analysisSettings: "Analysis settings",
+    setting: "Setting",
+    excelLanguage: "Excel language",
+    automatic: "Automatic",
+    enabled: "Enabled",
+    disabled: "Disabled",
+    forced: "Forced",
+    notForced: "Not forced",
+    forceRelatedIncludeTreeAnalysis: "Force related include tree analysis",
+    analysisTypeDetails: "Editor-inferred type details",
+    includeTreeDescendant: "Descendant",
+    includeTreeAncestor: "Ancestor",
+    includeTreeRelative: "Relative",
+    direction: "Direction",
+    depth: "Depth",
     yes: "Yes",
     no: "No",
     used: "Used",
@@ -347,6 +389,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     summary: "概要",
     analysisSummary: "分析サマリ",
     chartData: "チャート元データ",
+    includeTree: "インクルードツリー",
     files: "ファイル",
     includes: "参照ファイル",
     declarations: "宣言",
@@ -376,6 +419,22 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     unusedCount: "未使用数",
     truncated: "切り詰め",
     notTruncated: "切り詰めなし",
+    relatedIncludeTreeAnalysis: "親戚 include tree 解析",
+    analysisSettings: "解析設定",
+    setting: "設定",
+    excelLanguage: "Excel 言語",
+    automatic: "自動",
+    enabled: "有効",
+    disabled: "無効",
+    forced: "強制",
+    notForced: "強制なし",
+    forceRelatedIncludeTreeAnalysis: "親戚 include tree 解析の強制",
+    analysisTypeDetails: "エディター推論型の詳細",
+    includeTreeDescendant: "子孫",
+    includeTreeAncestor: "祖先",
+    includeTreeRelative: "親戚",
+    direction: "方向",
+    depth: "深さ",
     yes: "あり",
     no: "なし",
     used: "使用あり",
@@ -476,6 +535,9 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
 const tableDescriptions: Record<AspGraphLocale, Record<string, string>> = {
   en: {
     summary: "High-level counts and generation metadata for the exported target file analysis.",
+    includeTree:
+      "Include relationships that belong to the target file's descendants, ancestors, and related ancestor descendant trees.",
+    analysisSettings: "Analysis settings used while generating this workbook.",
     reviewPriority: "Review-oriented summary of risks that usually need manual confirmation.",
     externalReferenceSummary:
       "Declaration counts grouped by kind, with how many are used or unused.",
@@ -500,6 +562,9 @@ const tableDescriptions: Record<AspGraphLocale, Record<string, string>> = {
   },
   ja: {
     summary: "出力対象ファイルの解析件数と生成情報の概要です。",
+    includeTree:
+      "対象ファイルの子孫、祖先、祖先から伸びる親戚 include tree に属する include 関係です。",
+    analysisSettings: "この workbook を生成したときに使った解析設定です。",
     reviewPriority: "手作業で確認した方がよいリスク項目をまとめた表です。",
     externalReferenceSummary: "宣言種別ごとの総数、使用あり、未使用の内訳です。",
     includeUsageSummary: "対象ファイルが include 先の宣言をどの種類で使っているかの集計です。",
@@ -522,6 +587,9 @@ const headerDescriptions: Record<AspGraphLocale, Record<string, string>> = {
   en: {
     [text.en.scope]: "Analysis scope used for this workbook.",
     [text.en.value]: "Value for the metric or setting named in the first column.",
+    [text.en.setting]: "Configuration setting or analysis option name.",
+    [text.en.direction]: "Relationship direction from the exported target file.",
+    [text.en.depth]: "Include graph distance for this relationship.",
     [text.en.metric]: "Metric, issue, or grouping name.",
     [text.en.total]: "Total number of matching items.",
     [text.en.usedCount]: "Number of declarations that have detected usages.",
@@ -584,6 +652,9 @@ const headerDescriptions: Record<AspGraphLocale, Record<string, string>> = {
   ja: {
     [text.ja.scope]: "この workbook で使った解析範囲です。",
     [text.ja.value]: "1列目の項目や設定に対応する値です。",
+    [text.ja.setting]: "設定または解析 option の名前です。",
+    [text.ja.direction]: "出力対象ファイルから見た include 関係の方向です。",
+    [text.ja.depth]: "この関係の include graph 上の距離です。",
     [text.ja.metric]: "指標、確認項目、分類の名前です。",
     [text.ja.total]: "条件に一致した項目の合計数です。",
     [text.ja.usedCount]: "使用が検出された宣言の数です。",
@@ -776,7 +847,14 @@ export function createAnalysisExcelSheets(
     ...blankRows(34),
   ];
   return excelSafeSheetNames([
-    sheet(text[locale].summary, summaryRows(normalizedPayload, locale, generatedAt, context)),
+    sheet(
+      text[locale].summary,
+      summaryRows(normalizedPayload, locale, generatedAt, context, options),
+    ),
+    sheet(
+      text[locale].includeTree,
+      includeTreeRows(normalizedPayload, locale, context, nodesById, fileNamesByUri),
+    ),
     sheet(text[locale].analysisSummary, analysisRowsWithChartSpace, {
       autoFilter: false,
       images: analysisSummaryImages(locale, context, analysisChartStartRow),
@@ -887,6 +965,7 @@ function summaryRows(
   locale: AspGraphLocale,
   generatedAt: Date,
   context: AnalysisContext,
+  options: AnalysisExcelOptions,
 ): Cell[][] {
   const t = text[locale];
   const rows: Array<[string, string | number]> = [
@@ -906,13 +985,311 @@ function summaryRows(
     ],
     [t.unusedCount, context.unusedDeclarations.length],
     [t.truncated, truncationDisplay(payload.truncated?.reason, locale)],
+    [
+      t.relatedIncludeTreeAnalysis,
+      enabledDisplay(options.settings?.includeRelatedIncludeTreesForUnresolved === true, locale),
+    ],
   ];
-  return describedTable(
-    locale,
-    "summary",
-    [t.name, t.value],
-    rows.map(([name, value]) => [name, value]),
+  return [
+    ...describedTable(
+      locale,
+      "summary",
+      [t.name, t.value],
+      rows.map(([name, value]) => [name, value]),
+    ),
+    [],
+    ...describedSectionRows(
+      t.analysisSettings,
+      2,
+      locale,
+      "analysisSettings",
+      [t.setting, t.value],
+      analysisSettingRows(locale, options.settings),
+    ),
+  ];
+}
+
+function analysisSettingRows(
+  locale: AspGraphLocale,
+  settings: AnalysisExcelSettingsSummary | undefined,
+): Cell[][] {
+  const t = text[locale];
+  return [
+    [t.excelLanguage, localeSettingDisplay(settings?.excelLocale, locale)],
+    [
+      t.relatedIncludeTreeAnalysis,
+      enabledDisplay(settings?.includeRelatedIncludeTreesForUnresolved === true, locale),
+    ],
+    [
+      t.forceRelatedIncludeTreeAnalysis,
+      forcedDisplay(settings?.forceRelatedIncludeTreeAnalysis === true, locale),
+    ],
+    [t.analysisTypeDetails, enabledDisplay(settings?.includeAnalysisTypeDetails === true, locale)],
+  ];
+}
+
+function localeSettingDisplay(
+  setting: AspGraphLocale | "auto" | undefined,
+  locale: AspGraphLocale,
+): string {
+  if (!setting || setting === "auto") {
+    return text[locale].automatic;
+  }
+  return setting === "ja" ? "日本語" : "English";
+}
+
+function enabledDisplay(value: boolean, locale: AspGraphLocale): string {
+  return value ? text[locale].enabled : text[locale].disabled;
+}
+
+function forcedDisplay(value: boolean, locale: AspGraphLocale): string {
+  return value ? text[locale].forced : text[locale].notForced;
+}
+
+function includeTreeRows(
+  payload: AspGraphPayload,
+  locale: AspGraphLocale,
+  context: AnalysisContext,
+  nodesById: Map<string, AspGraphNode>,
+  fileNamesByUri: Map<string, string>,
+): Cell[][] {
+  const t = text[locale];
+  const headers = [
+    t.direction,
+    t.depth,
+    t.sourceFile,
+    t.includeFile,
+    t.includePath,
+    t.includeMode,
+    t.exists,
+    t.resolvedTarget,
+    t.line,
+    t.column,
+  ];
+  const rows = includeTreeRelations(payload, context.targetUri, nodesById)
+    .sort(compareIncludeTreeRelations(fileNamesByUri))
+    .map(({ link, source, target, direction, depth }) => {
+      const firstRange = rangesForLink(link)[0]?.range;
+      const resolvedUri = link.include?.resolvedUri ?? target.uri;
+      return [
+        includeTreeDirectionDisplay(direction, locale),
+        depth,
+        displayNameForUri(source.uri, fileNamesByUri),
+        displayNameForUri(target.uri, fileNamesByUri),
+        link.include?.path ?? link.label,
+        valueLabel(link.include?.mode, locale),
+        yn(link.include?.exists ?? target.exists === true, locale),
+        displayNameForUri(resolvedUri, fileNamesByUri),
+        oneBasedLine(firstRange),
+        oneBasedColumn(firstRange),
+      ];
+    });
+  return describedTable(locale, "includeTree", headers, rows);
+}
+
+type IncludeTreeDirection = "ancestor" | "descendant" | "relative";
+
+interface IncludeTreeRelation {
+  link: AspGraphLink;
+  source: AspGraphNode;
+  target: AspGraphNode;
+  direction: IncludeTreeDirection;
+  depth: number;
+}
+
+function includeTreeRelations(
+  payload: AspGraphPayload,
+  targetUri: string | undefined,
+  nodesById: Map<string, AspGraphNode>,
+): IncludeTreeRelation[] {
+  if (!targetUri) {
+    return [];
+  }
+  const targetIds = new Set(
+    payload.nodes
+      .filter((node) => isFileLikeGraphNode(node) && sameGraphUri(node.uri, targetUri))
+      .map((node) => node.id),
   );
+  if (targetIds.size === 0) {
+    return [];
+  }
+  const includeLinks = payload.links.filter((link) => link.kind === "include");
+  const outgoing = includeLinksByEndpoint(includeLinks, "source");
+  const incoming = includeLinksByEndpoint(includeLinks, "target");
+  const descendantDepths = includeTreeDepths(targetIds, outgoing);
+  const ancestorDepths = includeTreeDepths(targetIds, incoming);
+  const relativeDepths = relatedIncludeTreeDepths(ancestorDepths, outgoing, descendantDepths);
+  const result: IncludeTreeRelation[] = [];
+  for (const link of includeLinks) {
+    const source = nodesById.get(link.source);
+    const target = nodesById.get(link.target);
+    if (!source || !target) {
+      continue;
+    }
+    const relation = includeTreeRelationForLink(
+      link,
+      targetIds,
+      descendantDepths,
+      ancestorDepths,
+      relativeDepths,
+    );
+    if (!relation) {
+      continue;
+    }
+    result.push({ link, source, target, ...relation });
+  }
+  return result;
+}
+
+function includeLinksByEndpoint(
+  links: AspGraphLink[],
+  endpoint: "source" | "target",
+): Map<string, AspGraphLink[]> {
+  const result = new Map<string, AspGraphLink[]>();
+  for (const link of links) {
+    const key = link[endpoint];
+    const existing = result.get(key);
+    if (existing) {
+      existing.push(link);
+    } else {
+      result.set(key, [link]);
+    }
+  }
+  return result;
+}
+
+function includeTreeDepths(
+  roots: Set<string>,
+  linksBySource: Map<string, AspGraphLink[]>,
+): Map<string, number> {
+  const depths = new Map([...roots].map((id) => [id, 0]));
+  const queue = [...roots];
+  while (queue.length > 0) {
+    const current = queue.shift() ?? "";
+    const currentDepth = depths.get(current) ?? 0;
+    for (const link of linksBySource.get(current) ?? []) {
+      const next = link.source === current ? link.target : link.source;
+      if (depths.has(next)) {
+        continue;
+      }
+      depths.set(next, currentDepth + 1);
+      queue.push(next);
+    }
+  }
+  return depths;
+}
+
+function relatedIncludeTreeDepths(
+  ancestorDepths: Map<string, number>,
+  outgoing: Map<string, AspGraphLink[]>,
+  descendantDepths: Map<string, number>,
+): Map<string, number> {
+  const result = new Map<string, number>();
+  const ancestors = [...ancestorDepths.entries()].filter(([, depth]) => depth > 0);
+  for (const [ancestorId, ancestorDepth] of ancestors) {
+    const queue = [{ id: ancestorId, depth: ancestorDepth }];
+    const visited = new Set<string>([ancestorId]);
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) {
+        break;
+      }
+      for (const link of outgoing.get(current.id) ?? []) {
+        const next = link.target;
+        if (visited.has(next)) {
+          continue;
+        }
+        visited.add(next);
+        const nextDepth = current.depth + 1;
+        if (!ancestorDepths.has(next) && !descendantDepths.has(next)) {
+          const existing = result.get(next);
+          if (existing === undefined || nextDepth < existing) {
+            result.set(next, nextDepth);
+          }
+        }
+        queue.push({ id: next, depth: nextDepth });
+      }
+    }
+  }
+  return result;
+}
+
+function includeTreeRelationForLink(
+  link: AspGraphLink,
+  targetIds: Set<string>,
+  descendantDepths: Map<string, number>,
+  ancestorDepths: Map<string, number>,
+  relativeDepths: Map<string, number>,
+): { direction: IncludeTreeDirection; depth: number } | undefined {
+  const sourceDescendantDepth = descendantDepths.get(link.source);
+  const targetDescendantDepth = descendantDepths.get(link.target);
+  if (
+    sourceDescendantDepth !== undefined &&
+    targetDescendantDepth !== undefined &&
+    targetDescendantDepth > sourceDescendantDepth
+  ) {
+    return { direction: "descendant", depth: targetDescendantDepth };
+  }
+  const sourceAncestorDepth = ancestorDepths.get(link.source);
+  const targetAncestorDepth = ancestorDepths.get(link.target);
+  if (
+    sourceAncestorDepth !== undefined &&
+    (targetAncestorDepth !== undefined || targetIds.has(link.target))
+  ) {
+    return { direction: "ancestor", depth: sourceAncestorDepth };
+  }
+  const sourceRelativeDepth = relativeDepths.get(link.source);
+  const targetRelativeDepth = relativeDepths.get(link.target);
+  if (sourceAncestorDepth !== undefined && targetRelativeDepth !== undefined) {
+    return { direction: "relative", depth: targetRelativeDepth };
+  }
+  if (
+    sourceAncestorDepth !== undefined &&
+    targetDescendantDepth !== undefined &&
+    !targetIds.has(link.target)
+  ) {
+    return { direction: "relative", depth: sourceAncestorDepth + targetDescendantDepth };
+  }
+  if (sourceRelativeDepth !== undefined && targetRelativeDepth !== undefined) {
+    return { direction: "relative", depth: targetRelativeDepth };
+  }
+  if (sourceRelativeDepth !== undefined && targetDescendantDepth !== undefined) {
+    return { direction: "relative", depth: sourceRelativeDepth + targetDescendantDepth };
+  }
+  return undefined;
+}
+
+function includeTreeDirectionDisplay(
+  direction: IncludeTreeDirection,
+  locale: AspGraphLocale,
+): string {
+  switch (direction) {
+    case "ancestor":
+      return text[locale].includeTreeAncestor;
+    case "descendant":
+      return text[locale].includeTreeDescendant;
+    case "relative":
+      return text[locale].includeTreeRelative;
+  }
+}
+
+function compareIncludeTreeRelations(
+  fileNamesByUri: Map<string, string>,
+): (left: IncludeTreeRelation, right: IncludeTreeRelation) => number {
+  const order: Record<IncludeTreeDirection, number> = {
+    ancestor: 0,
+    descendant: 1,
+    relative: 2,
+  };
+  return (left, right) =>
+    order[left.direction] - order[right.direction] ||
+    left.depth - right.depth ||
+    displayNameForUri(left.source.uri, fileNamesByUri).localeCompare(
+      displayNameForUri(right.source.uri, fileNamesByUri),
+    ) ||
+    displayNameForUri(left.target.uri, fileNamesByUri).localeCompare(
+      displayNameForUri(right.target.uri, fileNamesByUri),
+    );
 }
 
 function formatGeneratedAt(date: Date): string {

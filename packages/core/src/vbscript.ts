@@ -7705,20 +7705,21 @@ function diagnoseDeadCode(parsed: AspParsedDocument, context: VbProjectContext):
   const localizer = createLocalizer(context.locale);
   const diagnostics: Diagnostic[] = [];
   const reported = new Set<string>();
-  let unreachableUntil: number | undefined;
+  let unreachable: { until: number; resetAt?: number } | undefined;
   for (const statement of vbStatements(parsed)) {
     const first = statement[0];
     const last = statement.at(-1);
     if (!first || !last) {
       continue;
     }
-    if (
-      unreachableUntil !== undefined &&
-      (first.start >= unreachableUntil || isDeadCodeReachabilityBoundary(statement))
-    ) {
-      unreachableUntil = undefined;
+    if (unreachable && first.start >= unreachable.until) {
+      unreachable = undefined;
     }
-    if (unreachableUntil !== undefined && first.start < unreachableUntil) {
+    if (unreachable?.resetAt !== undefined && first.start >= unreachable.resetAt) {
+      unreachable = undefined;
+    }
+    const isUnreachable = unreachable !== undefined && first.start < unreachable.until;
+    if (isUnreachable && !isDeadCodeReachabilityBoundary(statement)) {
       const key = `${first.start}:${last.end}`;
       if (!reported.has(key)) {
         reported.add(key);
@@ -7733,8 +7734,11 @@ function diagnoseDeadCode(parsed: AspParsedDocument, context: VbProjectContext):
       }
     }
     const terminalUntil = deadCodeTerminalEnd(parsed, statement);
-    if (terminalUntil !== undefined) {
-      unreachableUntil = terminalUntil;
+    if (terminalUntil !== undefined && !isUnreachable) {
+      unreachable = {
+        until: terminalUntil,
+        resetAt: deadCodeConditionalBoundaryStart(parsed, statement, terminalUntil),
+      };
     }
   }
   return diagnostics;
@@ -7786,6 +7790,43 @@ function isSingleLineConditionalStatement(statement: VbToken[]): boolean {
   }
   const thenIndex = topLevelKeywordIndex(statement, "then");
   return thenIndex !== -1 && thenIndex < statement.length - 1;
+}
+
+function deadCodeConditionalBoundaryStart(
+  parsed: AspParsedDocument,
+  statement: VbToken[],
+  terminalUntil: number,
+): number | undefined {
+  const first = statement[0];
+  const last = statement.at(-1);
+  if (!first || !last) {
+    return undefined;
+  }
+  const branch = innermostContainingVbNode(parsed, first.start, ["If", "Select"]);
+  if (!branch || branch.end > terminalUntil) {
+    return undefined;
+  }
+  return vbStatements(parsed)
+    .filter(
+      (candidate) =>
+        candidate[0] &&
+        candidate[0].start > last.end &&
+        candidate[0].start < branch.end &&
+        isDeadCodeBranchBoundary(branch.kind, candidate),
+    )
+    .sort((left, right) => (left[0]?.start ?? 0) - (right[0]?.start ?? 0))[0]?.[0]?.start;
+}
+
+function isDeadCodeBranchBoundary(kind: VbCstNode["kind"], statement: VbToken[]): boolean {
+  const first = lowerToken(statement[0]);
+  const second = lowerToken(statement[1]);
+  if (kind === "If") {
+    return first === "else" || first === "elseif" || (first === "end" && second === "if");
+  }
+  if (kind === "Select") {
+    return first === "case" || (first === "end" && second === "select");
+  }
+  return false;
 }
 
 function isDeadCodeReachabilityBoundary(statement: VbToken[]): boolean {

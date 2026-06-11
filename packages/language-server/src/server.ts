@@ -239,7 +239,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.6.7";
+const languageServerVersion = "0.6.8";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -888,6 +888,10 @@ interface GraphFileIndex {
 interface AspGraphDeclarationTypeHint {
   typeName?: string;
   parameters?: AspGraphNodeParameter[];
+}
+
+interface WorkspaceVbReferenceExecutionOptions {
+  workerMaxDepth?: number;
 }
 
 interface AspGraphIndexedDocument {
@@ -8015,12 +8019,18 @@ async function workspaceVbscriptReferencesForSymbol(
   symbol: VbSymbol,
   settings: AspSettings,
   options: VbReferenceOptions = {},
+  executionOptions: WorkspaceVbReferenceExecutionOptions = {},
 ): Promise<VbReference[]> {
   return (
     (
-      await workspaceVbscriptReferencesForSymbols(cached, [symbol], settings, options, {
-        logSymbol: symbol.name,
-      })
+      await workspaceVbscriptReferencesForSymbols(
+        cached,
+        [symbol],
+        settings,
+        options,
+        { logSymbol: symbol.name },
+        executionOptions,
+      )
     ).get(vbscriptReferenceSymbolKey(symbol)) ?? []
   );
 }
@@ -8031,6 +8041,7 @@ async function workspaceVbscriptReferencesForSymbols(
   settings: AspSettings,
   options: VbReferenceOptions = {},
   logOptions: { logSymbol?: string } = {},
+  executionOptions: WorkspaceVbReferenceExecutionOptions = {},
 ): Promise<Map<string, VbReference[]>> {
   const openDocuments = vbReferencesWorkerOpenDocuments();
   const openDocumentsKey = vbReferencesWorkerOpenDocumentsKey(openDocuments);
@@ -8040,6 +8051,7 @@ async function workspaceVbscriptReferencesForSymbols(
     settings,
     options,
     openDocumentsKey,
+    executionOptions,
   );
   const cachedResult = workspaceVbReferenceRequestCompleted.get(key);
   if (cachedResult) {
@@ -8060,6 +8072,7 @@ async function workspaceVbscriptReferencesForSymbols(
     openDocuments,
     openDocumentsKey,
     logOptions,
+    executionOptions,
   ).then((referencesByTarget) => {
     const result = { key, referencesByTarget, lastUsed: Date.now() };
     workspaceVbReferenceRequestCompleted.set(key, result);
@@ -8084,6 +8097,7 @@ async function workspaceVbscriptReferencesForSymbolsUncached(
   openDocuments: VbReferencesWorkerOpenDocument[],
   openDocumentsKey: string,
   logOptions: { logSymbol?: string },
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
 ): Promise<Map<string, VbReference[]>> {
   const context = await localVbReferenceContextAsync(cached, settings);
   const targets = symbols.map(
@@ -8120,6 +8134,7 @@ async function workspaceVbscriptReferencesForSymbolsUncached(
     candidates,
     targetForWorkers,
     settings,
+    executionOptions,
   );
   for (const [contextKey, references] of summaryFastPath.referencesByTarget) {
     const requestedKey = targetKeyByContextKey.get(contextKey) ?? contextKey;
@@ -8140,6 +8155,7 @@ async function workspaceVbscriptReferencesForSymbolsUncached(
         options,
         openDocuments,
         openDocumentsKey,
+        executionOptions,
       ),
     ),
   );
@@ -8165,6 +8181,7 @@ async function workspaceVbReferenceSummaryFastPath(
   candidates: VbReferencesWorkerCandidate[],
   targets: VbReferencesWorkerTargetSymbol[],
   settings: AspSettings,
+  executionOptions: WorkspaceVbReferenceExecutionOptions = {},
 ): Promise<{
   referencesByTarget: Map<string, VbReference[]>;
   workerCandidates: VbReferencesWorkerCandidate[];
@@ -8176,6 +8193,7 @@ async function workspaceVbReferenceSummaryFastPath(
   if (
     candidates.length === 0 ||
     targets.length === 0 ||
+    executionOptions.workerMaxDepth === 0 ||
     targets.some((target) => !isGlobalWorkspaceReferenceFallbackTarget(target))
   ) {
     return { referencesByTarget, workerCandidates: candidates, fastPathCandidates: 0 };
@@ -8917,6 +8935,7 @@ function workspaceVbReferenceRequestCacheKey(
   settings: AspSettings,
   options: VbReferenceOptions,
   openDocumentsKey: string,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
 ): string {
   return JSON.stringify({
     scope: "workspaceReferences",
@@ -8934,6 +8953,7 @@ function workspaceVbReferenceRequestCacheKey(
       legacyEncoding: settings.legacyEncoding,
     },
     options,
+    executionOptions,
     workspaceGeneration,
     openDocuments: openDocumentsKey,
   });
@@ -8966,6 +8986,7 @@ async function workspaceVbReferenceWorkerResponse(
   options: VbReferenceOptions,
   openDocuments: VbReferencesWorkerOpenDocument[],
   openDocumentsKey: string,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
 ): Promise<VbReferencesWorkerResponse> {
   const key = workspaceVbReferenceWorkerTaskKey(
     candidate,
@@ -8973,6 +8994,7 @@ async function workspaceVbReferenceWorkerResponse(
     settings,
     workspaceVbReferenceWorkerOptions(options),
     openDocumentsKey,
+    executionOptions,
   );
   const cached = workspaceVbReferenceWorkerCompleted.get(key);
   if (cached) {
@@ -8998,7 +9020,7 @@ async function workspaceVbReferenceWorkerResponse(
     options: workspaceVbReferenceWorkerOptions(options),
     limits: {
       ...vbProjectContextLimits(settings),
-      maxDepth: 20,
+      maxDepth: executionOptions.workerMaxDepth ?? 20,
       includeReadConcurrency: Math.max(1, Math.min(4, analysisConcurrency(settings))),
     },
   };
@@ -9057,6 +9079,7 @@ async function workspaceVbReferenceWorkerBatchResponse(
   options: VbReferenceOptions,
   openDocuments: VbReferencesWorkerOpenDocument[],
   openDocumentsKey: string,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
 ): Promise<VbReferencesWorkerResponse> {
   if (targets.length === 0) {
     return { id: 0, candidate, references: [], referencesByTarget: {} };
@@ -9069,6 +9092,7 @@ async function workspaceVbReferenceWorkerBatchResponse(
       options,
       openDocuments,
       openDocumentsKey,
+      executionOptions,
     );
     return {
       ...response,
@@ -9083,6 +9107,7 @@ async function workspaceVbReferenceWorkerBatchResponse(
     settings,
     workspaceVbReferenceWorkerOptions(options),
     openDocumentsKey,
+    executionOptions,
   );
   const inFlight = workspaceVbReferenceWorkerBatchInFlight.get(key);
   if (inFlight) {
@@ -9101,7 +9126,7 @@ async function workspaceVbReferenceWorkerBatchResponse(
     options: workspaceVbReferenceWorkerOptions(options),
     limits: {
       ...vbProjectContextLimits(settings),
-      maxDepth: 20,
+      maxDepth: executionOptions.workerMaxDepth ?? 20,
       includeReadConcurrency: Math.max(1, Math.min(4, analysisConcurrency(settings))),
     },
   };
@@ -9126,6 +9151,7 @@ async function workspaceVbReferenceWorkerBatchResponse(
           settings,
           options,
           openDocumentsKey,
+          executionOptions,
           {
             ...response,
             references: response.referencesByTarget?.[targetKey] ?? [],
@@ -9173,6 +9199,7 @@ function seedWorkspaceVbReferenceWorkerCompleted(
   settings: AspSettings,
   options: VbReferenceOptions,
   openDocumentsKey: string,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
   response: VbReferencesWorkerResponse,
 ): void {
   const key = workspaceVbReferenceWorkerTaskKey(
@@ -9181,6 +9208,7 @@ function seedWorkspaceVbReferenceWorkerCompleted(
     settings,
     workspaceVbReferenceWorkerOptions(options),
     openDocumentsKey,
+    executionOptions,
   );
   workspaceVbReferenceWorkerCompleted.set(key, response);
   pruneWorkspaceVbReferenceWorkerCompleted();
@@ -9217,6 +9245,7 @@ function workspaceVbReferenceWorkerTaskKey(
   settings: AspSettings,
   options: VbReferenceOptions,
   openDocumentsKey: string,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
 ): string {
   return JSON.stringify({
     target: {
@@ -9239,6 +9268,7 @@ function workspaceVbReferenceWorkerTaskKey(
       legacyEncoding: settings.legacyEncoding,
     },
     options,
+    executionOptions,
     workspaceGeneration,
     openDocuments: openDocumentsKey,
   });
@@ -9250,6 +9280,7 @@ function workspaceVbReferenceWorkerBatchTaskKey(
   settings: AspSettings,
   options: VbReferenceOptions,
   openDocumentsKey: string,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
 ): string {
   return JSON.stringify({
     targets: targets
@@ -9274,6 +9305,7 @@ function workspaceVbReferenceWorkerBatchTaskKey(
       legacyEncoding: settings.legacyEncoding,
     },
     options,
+    executionOptions,
     workspaceGeneration,
     openDocuments: openDocumentsKey,
   });
@@ -13012,16 +13044,17 @@ function normalizeCodeLensSettings(
 ): AspSettings["codeLens"] {
   const raw = settings.codeLens;
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const referenceScope = record.referenceScope === "workspace" ? "workspace" : "analyzed";
   return {
     references: record.references !== false,
     includes: record.includes === true,
-    referenceScope: record.referenceScope === "workspace" ? "workspace" : "analyzed",
+    referenceScope,
     referenceProcedures: record.referenceProcedures !== false,
     referenceGlobals: record.referenceGlobals !== false,
     referenceClasses: record.referenceClasses !== false,
     referenceClassMembers: record.referenceClassMembers !== false,
     includeRelatedIncludeTreesForUnresolved:
-      record.includeRelatedIncludeTreesForUnresolved !== false,
+      referenceScope === "workspace" && record.includeRelatedIncludeTreesForUnresolved !== false,
   };
 }
 
@@ -19821,24 +19854,32 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
     includeDeclaration: false,
     includeFunctionReturnAssignments: false,
   };
-  let relatedIncludeTreeReferences = false;
+  const executionOptions = workspaceVbReferenceCodeLensExecutionOptions(settings);
   const references =
     settings.codeLens?.referenceScope === "workspace"
-      ? await workspaceVbscriptCodeLensReferencesForSymbol(cached, symbol, settings, options)
-      : settings.codeLens?.includeRelatedIncludeTreesForUnresolved !== false
-        ? await relatedIncludeTreeVbscriptCodeLensReferencesForSymbol(
+      ? await workspaceVbscriptCodeLensReferencesForSymbol(
+          cached,
+          symbol,
+          settings,
+          options,
+          executionOptions,
+        ).then(async (workspaceReferences) => {
+          if (settings.codeLens?.includeRelatedIncludeTreesForUnresolved !== true) {
+            return workspaceReferences;
+          }
+          const relatedReferences = await relatedIncludeTreeVbscriptCodeLensReferencesForSymbol(
             cached,
             symbol,
             settings,
             options,
-          ).then((result) => {
-            if (!result) {
-              return analyzedVbscriptReferencesForSymbolAsync(cached, symbol, settings, options);
-            }
-            relatedIncludeTreeReferences = true;
-            return result;
-          })
-        : await analyzedVbscriptReferencesForSymbolAsync(cached, symbol, settings, options);
+          );
+          return relatedReferences
+            ? dedupeVbReferences([...workspaceReferences, ...relatedReferences]).sort(
+                vbReferenceOrder,
+              )
+            : workspaceReferences;
+        })
+      : await analyzedVbscriptReferencesForSymbolAsync(cached, symbol, settings, options);
   const localizer = localizerForUri(cached.source.uri);
   const referenceTitle = localizer.t(
     references.length === 1 ? "server.codeLens.reference" : "server.codeLens.references",
@@ -19847,9 +19888,7 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
   const title =
     settings.codeLens?.referenceScope === "workspace"
       ? referenceTitle
-      : relatedIncludeTreeReferences
-        ? `${referenceTitle}${localizer.t("server.codeLens.relatedIncludeTreeSuffix")}`
-        : `${referenceTitle}${localizer.t("server.codeLens.analyzedOnlySuffix")}`;
+      : `${referenceTitle}${localizer.t("server.codeLens.analyzedOnlySuffix")}`;
   return {
     ...lens,
     command: {
@@ -19864,11 +19903,20 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
   };
 }
 
+function workspaceVbReferenceCodeLensExecutionOptions(
+  settings: AspSettings,
+): WorkspaceVbReferenceExecutionOptions {
+  return settings.codeLens?.includeRelatedIncludeTreesForUnresolved === true
+    ? {}
+    : { workerMaxDepth: 0 };
+}
+
 async function workspaceVbscriptCodeLensReferencesForSymbol(
   cached: CachedDocument,
   symbol: VbSymbol,
   settings: AspSettings,
   options: VbReferenceOptions,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
 ): Promise<VbReference[]> {
   const targets = await referenceCodeLensSymbolsForCachedDocumentAsync(cached, settings);
   const batchTargets = targets.some((target) => sameVbSymbolIdentity(target, symbol))
@@ -19879,13 +19927,26 @@ async function workspaceVbscriptCodeLensReferencesForSymbol(
     batchTargets,
     settings,
     options,
+    executionOptions,
   );
   if (cachedBatch) {
     return cachedBatch.get(vbscriptReferenceSymbolKey(symbol)) ?? [];
   }
-  const references = await workspaceVbscriptReferencesForSymbol(cached, symbol, settings, options);
+  const references = await workspaceVbscriptReferencesForSymbol(
+    cached,
+    symbol,
+    settings,
+    options,
+    executionOptions,
+  );
   if (batchTargets.length > 1) {
-    scheduleWorkspaceVbscriptCodeLensBatchReferences(cached, batchTargets, settings, options);
+    scheduleWorkspaceVbscriptCodeLensBatchReferences(
+      cached,
+      batchTargets,
+      settings,
+      options,
+      executionOptions,
+    );
   }
   return references;
 }
@@ -19984,6 +20045,7 @@ async function workspaceVbscriptReferencesForSymbolWithCandidates(
         options,
         openDocuments,
         openDocumentsKey,
+        {},
       ),
     ),
   );
@@ -20041,6 +20103,7 @@ async function workspaceVbscriptCodeLensBatchReferences(
   targets: VbSymbol[],
   settings: AspSettings,
   options: VbReferenceOptions,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
 ): Promise<Map<string, VbReference[]>> {
   const openDocuments = vbReferencesWorkerOpenDocuments();
   const openDocumentsKey = vbReferencesWorkerOpenDocumentsKey(openDocuments);
@@ -20050,6 +20113,7 @@ async function workspaceVbscriptCodeLensBatchReferences(
     settings,
     options,
     openDocumentsKey,
+    executionOptions,
   );
   const cachedBatch = workspaceVbReferenceBatchCompleted.get(key);
   if (cachedBatch) {
@@ -20062,9 +20126,16 @@ async function workspaceVbscriptCodeLensBatchReferences(
     logDebugSummary(settings, `[asp-lsp] vb.references.batch.reuse: ${cached.source.uri}`);
     return (await inFlight.promise).referencesByTarget;
   }
-  const promise = workspaceVbscriptReferencesForSymbols(cached, targets, settings, options, {
-    logSymbol: "(codelens-batch)",
-  }).then((referencesByTarget) => {
+  const promise = workspaceVbscriptReferencesForSymbols(
+    cached,
+    targets,
+    settings,
+    options,
+    {
+      logSymbol: "(codelens-batch)",
+    },
+    executionOptions,
+  ).then((referencesByTarget) => {
     const result = { key, referencesByTarget, lastUsed: Date.now() };
     workspaceVbReferenceBatchCompleted.set(key, result);
     pruneWorkspaceVbReferenceBatchCompleted();
@@ -20089,6 +20160,7 @@ function workspaceVbscriptCompletedCodeLensBatchReferences(
   targets: VbSymbol[],
   settings: AspSettings,
   options: VbReferenceOptions,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
 ): Map<string, VbReference[]> | undefined {
   const openDocuments = vbReferencesWorkerOpenDocuments();
   const openDocumentsKey = vbReferencesWorkerOpenDocumentsKey(openDocuments);
@@ -20098,6 +20170,7 @@ function workspaceVbscriptCompletedCodeLensBatchReferences(
     settings,
     options,
     openDocumentsKey,
+    executionOptions,
   );
   const cachedBatch = workspaceVbReferenceBatchCompleted.get(key);
   if (!cachedBatch) {
@@ -20113,15 +20186,20 @@ function scheduleWorkspaceVbscriptCodeLensBatchReferences(
   targets: VbSymbol[],
   settings: AspSettings,
   options: VbReferenceOptions,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
 ): void {
   setTimeout(() => {
-    void workspaceVbscriptCodeLensBatchReferences(cached, targets, settings, options).catch(
-      (error: unknown) => {
-        connection.console.warn(
-          `[asp-lsp] vb.references.batch.failed: ${cached.source.uri}, error=${errorMessage(error)}`,
-        );
-      },
-    );
+    void workspaceVbscriptCodeLensBatchReferences(
+      cached,
+      targets,
+      settings,
+      options,
+      executionOptions,
+    ).catch((error: unknown) => {
+      connection.console.warn(
+        `[asp-lsp] vb.references.batch.failed: ${cached.source.uri}, error=${errorMessage(error)}`,
+      );
+    });
   }, 0);
 }
 
@@ -20131,6 +20209,7 @@ function workspaceVbReferenceBatchCacheKey(
   settings: AspSettings,
   options: VbReferenceOptions,
   openDocumentsKey: string,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
 ): string {
   return JSON.stringify({
     scope: "workspaceCodeLens",
@@ -20148,6 +20227,7 @@ function workspaceVbReferenceBatchCacheKey(
       legacyEncoding: settings.legacyEncoding,
     },
     options: workspaceVbReferenceWorkerOptions(options),
+    executionOptions,
     workspaceGeneration,
     openDocuments: openDocumentsKey,
   });

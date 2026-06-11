@@ -4693,6 +4693,12 @@ Sub StopLoops()
   Response.Write "after-loops"
 End Sub
 End
+If flag Then
+  Response.Write "dead-if-body"
+End If
+For i = 0 To 1
+  Response.Write "dead-for-body"
+Next
 Response.Write "after-end"
 %>`,
     );
@@ -4705,6 +4711,8 @@ Response.Write "after-end"
     expect(deadLines).toContain("StopFunction = 1");
     expect(deadLines).toContain('Response.Write "after-for"');
     expect(deadLines).toContain('Response.Write "after-do"');
+    expect(deadLines).toContain('Response.Write "dead-if-body"');
+    expect(deadLines).toContain('Response.Write "dead-for-body"');
     expect(deadLines).toContain('Response.Write "after-end"');
     expect(deadLines).not.toContain('Response.Write "after-loops"');
     expect(diagnostics.every((diagnostic) => diagnostic.severity === 4)).toBe(true);

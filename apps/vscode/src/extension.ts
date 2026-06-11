@@ -478,9 +478,16 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
   if (!target) {
     return;
   }
-  const sheets = createAnalysisExcelSheets(payload, extensionLocale(), {
+  const excelLocale = excelExportLocale();
+  const sheets = createAnalysisExcelSheets(payload, excelLocale, {
     generatedAt: new Date(),
     targetUri: request.uri,
+    settings: {
+      excelLocale: excelLocaleSetting(),
+      includeRelatedIncludeTreesForUnresolved,
+      forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
+      includeAnalysisTypeDetails: true,
+    },
   });
   await vscode.window.withProgress(
     {
@@ -559,6 +566,16 @@ function relatedIncludeTreeAnalysisSetting(scope: "excel" | "graph"): boolean {
   return vscode.workspace
     .getConfiguration("aspLsp")
     .get<boolean>(`${scope}.includeRelatedIncludeTreesForUnresolved`, true);
+}
+
+function excelLocaleSetting(): AspGraphLocale | "auto" {
+  const value = vscode.workspace.getConfiguration("aspLsp").get<string>("excel.locale", "auto");
+  return value === "en" || value === "ja" ? value : "auto";
+}
+
+function excelExportLocale(): AspGraphLocale {
+  const value = excelLocaleSetting();
+  return localeFromSetting(value);
 }
 
 function isGraphCancellationError(error: unknown): boolean {
@@ -1144,9 +1161,11 @@ function extensionLocalizer(): (key: ExtensionMessageKey, args?: ExtensionMessag
 
 function extensionLocale(): AspGraphLocale {
   const configLocale = vscode.workspace.getConfiguration("aspLsp").get<string>("locale") ?? "auto";
-  return configLocale === "ja" || (configLocale !== "en" && vscode.env.language.startsWith("ja"))
-    ? "ja"
-    : "en";
+  return localeFromSetting(configLocale);
+}
+
+function localeFromSetting(value: unknown): AspGraphLocale {
+  return value === "ja" || (value !== "en" && vscode.env.language.startsWith("ja")) ? "ja" : "en";
 }
 
 class AspLspTaskProvider implements vscode.TaskProvider {

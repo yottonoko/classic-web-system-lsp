@@ -681,12 +681,17 @@ describe("VS Code extension package", () => {
         "aspLsp.excel.includeRelatedIncludeTreesForUnresolved"
       ],
     ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.excel.locale"]).toEqual(
+      expect.objectContaining({ type: "string", enum: ["auto", "en", "ja"], default: "auto" }),
+    );
     expect(
       nls["configuration.excel.includeRelatedIncludeTreesForUnresolved.description"],
     ).toBeTruthy();
     expect(
       nlsJa["configuration.excel.includeRelatedIncludeTreesForUnresolved.description"],
     ).toBeTruthy();
+    expect(nls["configuration.excel.locale.description"]).toBeTruthy();
+    expect(nlsJa["configuration.excel.locale.description"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.windowsPathResolution"],
@@ -893,6 +898,8 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("createAnalysisExcelSheets");
     expect(extensionSource).toContain("targetUri: request.uri");
     expect(extensionSource).toContain("relatedIncludeTreeAnalysisSetting");
+    expect(extensionSource).toContain("excelExportLocale");
+    expect(extensionSource).toContain("excel.locale");
     expect(extensionSource).toContain("includeRelatedIncludeTreesForUnresolved");
     expect(extensionSource).toContain("forceRelatedIncludeTreeAnalysis");
     expect(extensionSource).toContain("includeAnalysisTypeDetails");

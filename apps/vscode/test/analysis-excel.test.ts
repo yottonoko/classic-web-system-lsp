@@ -13,6 +13,7 @@ describe("analysis Excel sheets", () => {
 
     expect(sheets.map((sheet) => sheet.sheet)).toEqual([
       "概要",
+      "インクルードツリー",
       "分析サマリ",
       "チャート元データ",
       "宣言",
@@ -40,8 +41,56 @@ describe("analysis Excel sheets", () => {
         ["暗黙global変数代入候補数", 1],
         ["未使用数", 2],
         ["切り詰め", "workspace index が 10 件を超えたため切り詰められました"],
+        ["親戚 include tree 解析", "無効"],
+        ["Excel 言語", "自動"],
+        ["親戚 include tree 解析", "無効"],
+        ["親戚 include tree 解析の強制", "強制なし"],
+        ["エディター推論型の詳細", "無効"],
       ]),
     );
+    const includeTreeTable = table(sheets, "インクルードツリー");
+    expect(includeTreeTable).toEqual(
+      expect.arrayContaining([
+        [
+          "方向",
+          "深さ",
+          "参照元ファイル",
+          "include ファイル",
+          "include path",
+          "mode",
+          "存在",
+          "解決先",
+          "行",
+          "列",
+        ],
+        ["祖先", 1, "parent.asp", "main.asp", "main.asp", "ファイル", "あり", "main.asp", 1, 6],
+        [
+          "子孫",
+          1,
+          "main.asp",
+          "includes/util.inc",
+          "includes/util.inc",
+          "ファイル",
+          "あり",
+          "includes/util.inc",
+          1,
+          6,
+        ],
+        [
+          "親戚",
+          2,
+          "parent.asp",
+          "includes/sibling.inc",
+          "sibling.inc",
+          "ファイル",
+          "あり",
+          "includes/sibling.inc",
+          2,
+          6,
+        ],
+      ]),
+    );
+    expect(JSON.stringify(includeTreeTable)).not.toContain("unrelated.asp");
     expect(table(sheets, "分析サマリ")).toEqual(
       expect.arrayContaining([
         ["未使用の宣言", 2, "要確認", "未使用 sheet で削除可否を確認"],
@@ -154,7 +203,7 @@ describe("analysis Excel sheets", () => {
     expect(
       sheets.find((sheet) => sheet.sheet === "チャート元データ")?.autoFilterRef,
     ).toBeUndefined();
-    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B14");
+    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B22");
     expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:Q8");
     expect(sheets.find((sheet) => sheet.sheet === "ファイル内使用")?.autoFilterRef).toBe("A1:K5");
     expect(sheets.find((sheet) => sheet.sheet === "外部ファイルからの使用")?.autoFilterRef).toBe(
@@ -780,9 +829,11 @@ function cellValue(cell: unknown): unknown {
 function analysisPayload(): AspGraphPayload {
   const mainUri = "file:///workspace/main.asp";
   const utilUri = "file:///workspace/includes/util.inc";
+  const siblingUri = "file:///workspace/includes/sibling.inc";
   const consumerUri = "file:///workspace/consumer.asp";
   const otherUri = "file:///workspace/other.asp";
   const parentUri = "file:///workspace/parent.asp";
+  const unrelatedUri = "file:///workspace/unrelated.asp";
   return {
     scope: "document",
     rootUri: mainUri,
@@ -813,11 +864,27 @@ function analysisPayload(): AspGraphPayload {
         exists: true,
       },
       {
+        id: "file:/workspace/includes/sibling.inc",
+        kind: "file",
+        label: "sibling.inc",
+        uri: siblingUri,
+        fileName: "includes/sibling.inc",
+        exists: true,
+      },
+      {
         id: "file:/workspace/other.asp",
         kind: "file",
         label: "other.asp",
         uri: otherUri,
         fileName: "other.asp",
+        exists: true,
+      },
+      {
+        id: "file:/workspace/unrelated.asp",
+        kind: "file",
+        label: "unrelated.asp",
+        uri: unrelatedUri,
+        fileName: "unrelated.asp",
         exists: true,
       },
       {
@@ -997,6 +1064,38 @@ function analysisPayload(): AspGraphPayload {
           mode: "file",
           exists: true,
           resolvedUri: mainUri,
+          pathCaseMatches: true,
+        },
+      },
+      {
+        id: "link:include-sibling-from-parent",
+        source: "file:/workspace/parent.asp",
+        target: "file:/workspace/includes/sibling.inc",
+        kind: "include",
+        label: "sibling.inc",
+        count: 1,
+        ranges: [{ uri: parentUri, range: range(1, 5) }],
+        include: {
+          path: "sibling.inc",
+          mode: "file",
+          exists: true,
+          resolvedUri: siblingUri,
+          pathCaseMatches: true,
+        },
+      },
+      {
+        id: "link:include-other-from-unrelated",
+        source: "file:/workspace/unrelated.asp",
+        target: "file:/workspace/other.asp",
+        kind: "include",
+        label: "other.asp",
+        count: 1,
+        ranges: [{ uri: unrelatedUri, range: range(0, 5) }],
+        include: {
+          path: "other.asp",
+          mode: "file",
+          exists: true,
+          resolvedUri: otherUri,
           pathCaseMatches: true,
         },
       },
@@ -1207,16 +1306,16 @@ function analysisPayload(): AspGraphPayload {
       },
     ],
     stats: {
-      files: 5,
+      files: 7,
       declarations: 11,
       references: 8,
       assignments: 4,
       calls: 4,
       unresolvedReferences: 1,
-      includes: 2,
+      includes: 4,
       missingIncludes: 0,
-      nodes: 18,
-      links: 23,
+      nodes: 20,
+      links: 25,
     },
     truncated: {
       reason: "workspaceIndex>10",

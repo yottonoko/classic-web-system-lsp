@@ -6196,14 +6196,36 @@ SharedValue = 2
         const codeLensLocations = (resolvedCodeLens.command?.arguments?.[2] ?? []) as Array<{
           uri?: string;
         }>;
-        expect(resolvedCodeLens.command?.title).toContain("1 reference");
-        expect(resolvedCodeLens.command?.title).toContain("(include family)");
-        expect(codeLensLocations.map((location) => location.uri)).toContain(siblingUri);
+        expect(resolvedCodeLens.command?.title).toContain("0 references (analyzed only)");
+        expect(codeLensLocations.map((location) => location.uri)).not.toContain(siblingUri);
 
         server.notify("workspace/didChangeConfiguration", {
           settings: {
             aspLsp: {
-              codeLens: { includeRelatedIncludeTreesForUnresolved: false },
+              codeLens: { referenceScope: "workspace" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const workspaceResolvedCodeLens = (await server.request(
+          "codeLens/resolve",
+          referencesCodeLens,
+        )) as { command?: { title?: string; arguments?: unknown[] } };
+        const workspaceLocations = (workspaceResolvedCodeLens.command?.arguments?.[2] ??
+          []) as Array<{
+          uri?: string;
+        }>;
+        expect(workspaceResolvedCodeLens.command?.title).toContain("1 reference");
+        expect(workspaceResolvedCodeLens.command?.title).not.toContain("(analyzed only)");
+        expect(workspaceLocations.map((location) => location.uri)).toContain(siblingUri);
+
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              codeLens: {
+                referenceScope: "workspace",
+                includeRelatedIncludeTreesForUnresolved: false,
+              },
               diagnostics: { debounceMs: 0 },
             },
           },
@@ -6216,7 +6238,8 @@ SharedValue = 2
           []) as Array<{
           uri?: string;
         }>;
-        expect(disabledResolvedCodeLens.command?.title).toContain("0 references (analyzed only)");
+        expect(disabledResolvedCodeLens.command?.title).toContain("0 references");
+        expect(disabledResolvedCodeLens.command?.title).not.toContain("(analyzed only)");
         expect(disabledLocations.map((location) => location.uri)).not.toContain(siblingUri);
 
         await server.request("shutdown", null);
