@@ -189,7 +189,7 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("compactAll");
     expect(flowchartSource).toContain("overflow-x-auto");
     expect(flowchartSource).toContain(
-      'const flowchartLabelModes: AspFlowchartLabelMode[] = ["normal", "raw", "description"]',
+      'const flowchartLabelModes: AspFlowchartLabelMode[] = ["raw", "normal", "description"]',
     );
     expect(flowchartSource).toContain('labelModeNormal: "Normal"');
     expect(flowchartSource).toContain('labelModeRaw: "Raw"');
@@ -214,6 +214,11 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("new ResizeObserver(updateViewportSize)");
     expect(flowchartSource).toContain("centerFlowchartHorizontally");
     expect(flowchartSource).toContain("flowchartHorizontalPanGutter");
+    expect(flowchartSource).toContain("const flowchartNodePadding = 3");
+    expect(flowchartSource).toContain("const branchNodePadding = 2");
+    expect(flowchartSource).toContain("const branchNodeHorizontalScale = 1");
+    expect(flowchartSource).toContain("adjustSvgBranchPolygon");
+    expect(flowchartSource).toContain("insetSvgCoordinate");
     expect(flowchartSource).toContain("userPannedFlowchartKeyRef");
     expect(flowchartSource).toContain(
       "style={scaledFlowchartCanvasStyle(svgSize, zoom, viewportSize)}",

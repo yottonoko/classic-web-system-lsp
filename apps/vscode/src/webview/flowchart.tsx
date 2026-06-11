@@ -50,8 +50,9 @@ const flowchartEdgeLabelLineLength = 22;
 const maximumFlowchartLabelCharacters = 180;
 const maximumFlowchartEdgeLabelCharacters = 80;
 const minimumFlowchartLabelLineLength = 8;
-const branchNodeHorizontalScale = 1.4;
-const flowchartNodePadding = 2;
+const flowchartNodePadding = 3;
+const branchNodePadding = 2;
+const branchNodeHorizontalScale = 1;
 const defaultMinimumFlowchartZoom = 0.4;
 const defaultMaximumFlowchartZoom = 4;
 const flowchartZoomStep = 0.1;
@@ -63,7 +64,7 @@ const flowchartPanelMaximumWidth = 620;
 const flowchartCanvasMinimumWidth = 360;
 const flowchartPaneResizeHandleWidth = 6;
 const flowchartPaneResizeKeyboardStep = 16;
-const flowchartLabelModes: AspFlowchartLabelMode[] = ["normal", "raw", "description"];
+const flowchartLabelModes: AspFlowchartLabelMode[] = ["raw", "normal", "description"];
 
 const fallbackPayload: FlowchartPayload = {
   uri: "",
@@ -2380,13 +2381,14 @@ function attachSvgNodeHandlers(
 }
 
 function adjustSvgBranchNodeShapes(container: HTMLDivElement, payload: FlowchartPayload): void {
+  const branchNodePaddingInset = Math.max(0, flowchartNodePadding - branchNodePadding);
   for (const node of payload.nodes) {
     if (!isBranchFlowchartNode(node)) {
       continue;
     }
     for (const element of svgElementsForFlowchartNode(container, node)) {
       for (const polygon of element.querySelectorAll<SVGPolygonElement>("polygon")) {
-        widenSvgPolygon(polygon, branchNodeHorizontalScale);
+        adjustSvgBranchPolygon(polygon, branchNodeHorizontalScale, branchNodePaddingInset);
       }
     }
   }
@@ -2398,21 +2400,29 @@ function isBranchFlowchartNode(node: AspFlowchartNode): boolean {
   );
 }
 
-function widenSvgPolygon(polygon: SVGPolygonElement, scaleX: number): void {
+function adjustSvgBranchPolygon(polygon: SVGPolygonElement, scaleX: number, inset: number): void {
   const points = svgPolygonPoints(polygon.getAttribute("points") ?? "");
   if (points.length === 0) {
     return;
   }
   const centerX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+  const centerY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
   polygon.setAttribute(
     "points",
     points
       .map(
         (point) =>
-          `${formatSvgNumber(centerX + (point.x - centerX) * scaleX)},${formatSvgNumber(point.y)}`,
+          `${formatSvgNumber(insetSvgCoordinate(centerX + (point.x - centerX) * scaleX, centerX, inset))},${formatSvgNumber(insetSvgCoordinate(point.y, centerY, inset))}`,
       )
       .join(" "),
   );
+}
+
+function insetSvgCoordinate(value: number, center: number, inset: number): number {
+  if (inset <= 0 || value === center) {
+    return value;
+  }
+  return value + Math.sign(center - value) * inset;
 }
 
 function svgPolygonPoints(value: string): Array<{ x: number; y: number }> {
