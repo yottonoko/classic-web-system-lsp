@@ -1965,9 +1965,16 @@ connection.onDidChangeWatchedFiles(async (change) => {
   let aspChanged = false;
   let scriptChanged = false;
   const aspChanges: WatchedAspFileChange[] = [];
+  const includeResolutionStructureChanges: WatchedAspFileChange[] = [];
+  let nonAspIncludeResolutionStructureChanged = false;
   for (const file of change.changes) {
     const fileName = normalizeFileName(uriToFileName(file.uri));
     fsGateway.invalidatePath(fileName);
+    if (file.type !== FileChangeType.Changed) {
+      includeResolutionStructureChanges.push({ fileName, type: file.type });
+      nonAspIncludeResolutionStructureChanged =
+        nonAspIncludeResolutionStructureChanged || !isAspWorkspaceFile(fileName);
+    }
     if (isAspWorkspaceFile(fileName)) {
       aspChanged = true;
       aspChanges.push({ fileName, type: file.type });
@@ -1986,7 +1993,7 @@ connection.onDidChangeWatchedFiles(async (change) => {
       scriptChanged = true;
     }
   }
-  if (!aspChanged && !scriptChanged) {
+  if (!aspChanged && !scriptChanged && includeResolutionStructureChanges.length === 0) {
     return;
   }
   let includeRefsChangedFiles = new Set<string>();
@@ -2001,12 +2008,15 @@ connection.onDidChangeWatchedFiles(async (change) => {
       await ensureIncludeGraphForOpenDocumentsAsync(graphChangedFiles);
     }
     includeCycleCache.clear();
-    if (aspChanges.some((change) => change.type !== FileChangeType.Changed)) {
-      invalidateIncludeResolutionForAspChanges(aspChanges, "watchedAsp.structureChanged");
-    }
     if (!workspaceIndexDirty && cacheFreshness(globalSettings) === "watch") {
       await writeWorkspaceIndexToDiskAsync(globalSettings);
     }
+  }
+  if (includeResolutionStructureChanges.length > 0) {
+    invalidateIncludeResolutionForAspChanges(
+      includeResolutionStructureChanges,
+      "watchedFile.structureChanged",
+    );
   }
   if (aspChanged || scriptChanged) {
     invalidateJsProject(scriptChanged ? "watchedScript.changed" : "watchedAsp.changed");
@@ -2014,7 +2024,9 @@ connection.onDidChangeWatchedFiles(async (change) => {
   scheduleProjectUpdate(scriptChanged ? "watchedScript.changed" : "watchedAsp.changed");
   const affectedUris = scriptChanged
     ? new Set(documents.all().map((document) => document.uri))
-    : affectedOpenUrisForAspChanges(aspChanges, graphChangedFiles);
+    : nonAspIncludeResolutionStructureChanged
+      ? openDocumentUris()
+      : affectedOpenUrisForAspChanges(aspChanges, graphChangedFiles);
   invalidateCachedAnalysisForUris(
     affectedUris,
     scriptChanged ? "watchedScript.changed" : "watchedAsp.changed",
@@ -2042,9 +2054,7 @@ connection.workspace.onDidCreateFiles((params) => {
   for (const file of params.files) {
     const fileName = normalizeFileName(uriToFileName(file.uri));
     fsGateway.invalidatePath(fileName);
-    if (isAspWorkspaceFile(fileName)) {
-      changes.push({ fileName, type: FileChangeType.Created });
-    }
+    changes.push({ fileName, type: FileChangeType.Created });
   }
   invalidateWorkspaceIndex("fileOperation.create");
   invalidateIncludeResolutionForAspChanges(changes, "fileOperation.create");
@@ -2057,9 +2067,7 @@ connection.workspace.onDidDeleteFiles((params) => {
   for (const file of params.files) {
     const fileName = normalizeFileName(uriToFileName(file.uri));
     fsGateway.invalidatePath(fileName);
-    if (isAspWorkspaceFile(fileName)) {
-      changes.push({ fileName, type: FileChangeType.Deleted });
-    }
+    changes.push({ fileName, type: FileChangeType.Deleted });
   }
   invalidateWorkspaceIndex("fileOperation.delete");
   invalidateIncludeResolutionForAspChanges(changes, "fileOperation.delete");

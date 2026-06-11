@@ -14224,6 +14224,119 @@ Response.Write "ok"
       }
     });
 
+    it("invalidates missing include resolution when a non-ASP target file is created", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-non-asp-include-create-"));
+      const page = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "fragment.txt");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="fragment.txt" -->\n<% Response.Write "ok" %>`,
+        "utf8",
+      );
+      const uri = pathToFileURL(page).toString();
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(page, "utf8"),
+          },
+        });
+        await waitForDiagnosticsContaining(server, "fragment.txt");
+
+        fs.writeFileSync(include, `<% Const FragmentValue = 1 %>`, "utf8");
+        server.notify("workspace/didChangeWatchedFiles", {
+          changes: [{ uri: pathToFileURL(include).toString(), type: 1 }],
+        });
+        await delay(50);
+        const diagnostics = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+
+        expect(JSON.stringify(diagnostics)).not.toContain("fragment.txt");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("invalidates existing include resolution when a non-ASP target file is deleted", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-non-asp-include-delete-"));
+      const page = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "fragment.txt");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="fragment.txt" -->\n<% Response.Write "ok" %>`,
+        "utf8",
+      );
+      fs.writeFileSync(include, `<% Const FragmentValue = 1 %>`, "utf8");
+      const uri = pathToFileURL(page).toString();
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(page, "utf8"),
+          },
+        });
+        await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+
+        fs.rmSync(include);
+        server.notify("workspace/didChangeWatchedFiles", {
+          changes: [{ uri: pathToFileURL(include).toString(), type: 3 }],
+        });
+        await delay(50);
+        const diagnostics = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+
+        expect(JSON.stringify(diagnostics)).toContain("fragment.txt");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("keeps parse and diagnostics idle for formatting-only settings changes", async () => {
       const server = new RpcServer();
       try {
