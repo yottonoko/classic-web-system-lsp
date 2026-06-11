@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.6.11",
+  "version": "0.6.12",
   "private": true,
   "description": "%extension.description%",
   "categories": [
