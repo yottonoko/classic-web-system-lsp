@@ -9702,6 +9702,140 @@ sharedTitle = "before"
       }
     });
 
+    it("canonicalizes implicit globals across sibling, diamond, and cyclic includes", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-implicit-canonical-"));
+      const write = (relativePath: string, source: string) => {
+        const fileName = path.join(tempDir, relativePath);
+        fs.mkdirSync(path.dirname(fileName), { recursive: true });
+        fs.writeFileSync(fileName, source, "utf8");
+        return { fileName, uri: pathToFileURL(fileName).href };
+      };
+      const siblingRoot = write(
+        "sibling/root.asp",
+        `<!-- #include file="a.inc" -->
+<!-- #include file="b.inc" -->
+<%
+Response.Write siblingTitle
+%>`,
+      );
+      const siblingA = write("sibling/a.inc", `<%\nsiblingTitle = "a"\n%>`);
+      const siblingB = write("sibling/b.inc", `<%\nsiblingTitle = "b"\n%>`);
+      const diamondRoot = write(
+        "diamond/root.asp",
+        `<!-- #include file="left.inc" -->
+<!-- #include file="right.inc" -->`,
+      );
+      const diamondLeft = write(
+        "diamond/left.inc",
+        `<!-- #include file="shared.inc" -->
+<%
+Response.Write diamondTitle
+%>`,
+      );
+      const diamondRight = write(
+        "diamond/right.inc",
+        `<!-- #include file="shared.inc" -->
+<%
+diamondTitle = "right"
+%>`,
+      );
+      const diamondShared = write("diamond/shared.inc", `<%\ndiamondTitle = "shared"\n%>`);
+      const cycleA = write(
+        "cycle/a.asp",
+        `<!-- #include file="b.inc" -->
+<%
+cycleTitle = "a"
+%>`,
+      );
+      const cycleB = write(
+        "cycle/b.inc",
+        `<!-- #include file="c.inc" -->
+<%
+Response.Write cycleTitle
+%>`,
+      );
+      const cycleC = write(
+        "cycle/c.inc",
+        `<!-- #include file="a.asp" -->
+<%
+cycleTitle = "c"
+%>`,
+      );
+      const server = new RpcServer();
+      type TestGraph = {
+        nodes?: Array<Record<string, unknown>>;
+        links?: Array<Record<string, unknown>>;
+      };
+      const nodeByLabelAndUri = (graph: TestGraph, label: string, uri: string) =>
+        (graph.nodes ?? []).find((node) => node.label === label && node.uri === uri);
+      const hasGraphLink = (
+        graph: TestGraph,
+        kind: string,
+        source: Record<string, unknown> | undefined,
+        target: Record<string, unknown> | undefined,
+      ) =>
+        Boolean(
+          source &&
+          target &&
+          (graph.links ?? []).some(
+            (link) => link.kind === kind && link.source === source.id && link.target === target.id,
+          ),
+        );
+      const buildGraph = (uri: string) =>
+        server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri }],
+        }) as Promise<TestGraph>;
+
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+
+        const siblingGraph = await buildGraph(siblingRoot.uri);
+        const siblingRootNode = nodeByLabelAndUri(siblingGraph, "root.asp", siblingRoot.uri);
+        const siblingATitle = nodeByLabelAndUri(siblingGraph, "siblingTitle", siblingA.uri);
+        const siblingBTitle = nodeByLabelAndUri(siblingGraph, "siblingTitle", siblingB.uri);
+        expect(hasGraphLink(siblingGraph, "references", siblingRootNode, siblingATitle)).toBe(true);
+        expect(hasGraphLink(siblingGraph, "references", siblingRootNode, siblingBTitle)).toBe(
+          false,
+        );
+
+        const diamondGraph = await buildGraph(diamondRoot.uri);
+        const diamondSharedTitle = nodeByLabelAndUri(
+          diamondGraph,
+          "diamondTitle",
+          diamondShared.uri,
+        );
+        const diamondLeftNode = nodeByLabelAndUri(diamondGraph, "left.inc", diamondLeft.uri);
+        const diamondRightNode = nodeByLabelAndUri(diamondGraph, "right.inc", diamondRight.uri);
+        expect(diamondSharedTitle).toEqual(expect.objectContaining({ implicit: true }));
+        expect(hasGraphLink(diamondGraph, "references", diamondLeftNode, diamondSharedTitle)).toBe(
+          true,
+        );
+        expect(
+          hasGraphLink(diamondGraph, "assignments", diamondRightNode, diamondSharedTitle),
+        ).toBe(true);
+
+        const cycleGraph = await buildGraph(cycleA.uri);
+        expect((cycleGraph.nodes ?? []).length).toBeLessThan(50);
+        expect(
+          [cycleA.uri, cycleB.uri, cycleC.uri].some((uri) =>
+            Boolean(nodeByLabelAndUri(cycleGraph, "cycleTitle", uri)),
+          ),
+        ).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns graph filter settings for the webview initial state", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-settings-"));
       fs.writeFileSync(

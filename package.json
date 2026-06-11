@@ -18,6 +18,7 @@
     "benchmark:embedded": "pnpm --filter @asp-lsp/core run build && node scripts/embedded-language-benchmark.mjs",
     "benchmark:embedded:cold": "ASP_LSP_BENCH_CACHE_MODE=cold pnpm run benchmark:embedded",
     "benchmark:embedded:hot": "ASP_LSP_BENCH_CACHE_MODE=hot pnpm run benchmark:embedded",
+    "benchmark:core": "pnpm --filter @asp-lsp/core run bench",
     "benchmark:change": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && node scripts/benchmark-document-change.mjs",
     "benchmark:change:cold": "ASP_LSP_BENCH_CACHE_MODE=cold pnpm run benchmark:change",
     "benchmark:change:hot": "ASP_LSP_BENCH_CACHE_MODE=hot pnpm run benchmark:change",

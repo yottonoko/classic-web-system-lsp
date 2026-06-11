@@ -1,7 +1,7 @@
 import type { Range, TextEdit } from "vscode-languageserver-types";
 import type { AspFormattingOptions, AspParsedDocument, AspRegion, VbToken } from "./types";
 import { offsetAt, rangeFromOffsets } from "./position";
-import { parseVbscriptCst } from "./vbscript-cst";
+import { parseVbscriptCst, tokenizeVbscript } from "./vbscript-cst";
 
 export function formatAspDocument(
   parsed: AspParsedDocument,
@@ -130,19 +130,22 @@ function formatVbscriptBlock(
     .replace(/^\s*\r?\n/, "")
     .replace(/\r?\n\s*$/, "")
     .split(/\r?\n/);
+  const trimmedLines = lines.map((line) => line.trim());
+  const tokensByLine = tokenizeVbscriptLines(trimmedLines);
   let indentLevel = baseIndentLevel;
   const formatted: string[] = [];
   const selectIndentStack: number[] = [];
   let previousSignificantLine: string | undefined;
-  for (const line of lines) {
-    const trimmed = line.trim();
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const trimmed = trimmedLines[lineIndex];
     if (trimmed.length === 0) {
       formatted.push("");
       continue;
     }
+    const tokens = tokensByLine[lineIndex] ?? [];
     const continuesPreviousLine =
       previousSignificantLine !== undefined && isLineContinuation(previousSignificantLine);
-    const code = codeBeforeComment(trimmed);
+    const code = codeBeforeCommentFromTokens(trimmed, tokens);
     if (!continuesPreviousLine && /^End\s+Select\b/i.test(code)) {
       indentLevel = selectIndentStack.pop() ?? Math.max(baseIndentLevel, indentLevel - 1);
     } else if (!continuesPreviousLine && isCaseLine(code)) {
@@ -156,7 +159,7 @@ function formatVbscriptBlock(
       indentLevel = Math.max(baseIndentLevel, indentLevel - 1);
     }
     const lineIndentLevel = indentLevel + (continuesPreviousLine ? 1 : 0);
-    const formattedLine = formatVbscriptLine(trimmed, options);
+    const formattedLine = formatVbscriptTokens(tokens, options);
     formatted.push(`${unit.repeat(lineIndentLevel)}${formattedLine}`);
     if (/^Select\b/i.test(code)) {
       selectIndentStack.push(indentLevel);
@@ -172,12 +175,16 @@ function formatVbscriptBlock(
 }
 
 function formatVbscriptLine(line: string, options: AspFormattingOptions): string {
-  const tokens = parseVbscriptCst(line).tokens.filter(
+  return formatVbscriptTokens(parseVbscriptCst(line).tokens, options);
+}
+
+function formatVbscriptTokens(tokens: readonly VbToken[], options: AspFormattingOptions): string {
+  const significantTokens = tokens.filter(
     (token) => token.kind !== "whitespace" && token.kind !== "newline",
   );
   let result = "";
   let previous: VbToken | undefined;
-  for (const token of tokens) {
+  for (const token of significantTokens) {
     const text = formatToken(token, options);
     if (result.length === 0) {
       result = text;
@@ -196,6 +203,33 @@ function formatVbscriptLine(line: string, options: AspFormattingOptions): string
     previous = token;
   }
   return result;
+}
+
+function tokenizeVbscriptLines(lines: string[]): VbToken[][] {
+  const tokensByLine = lines.map(() => [] as VbToken[]);
+  if (lines.length === 0) {
+    return tokensByLine;
+  }
+  const source = lines.join("\n");
+  const tokens = tokenizeVbscript(source, 0);
+  let line = 0;
+  let lineStart = 0;
+  for (const token of tokens) {
+    if (token.kind === "newline") {
+      line += 1;
+      lineStart = token.end;
+      continue;
+    }
+    if (line >= tokensByLine.length) {
+      break;
+    }
+    tokensByLine[line].push({
+      ...token,
+      start: token.start - lineStart,
+      end: token.end - lineStart,
+    });
+  }
+  return tokensByLine;
 }
 
 function formatToken(token: VbToken, options: AspFormattingOptions): string {
@@ -246,8 +280,8 @@ function withoutDeclarationModifiers(line: string): string {
   return line.replace(/^(?:(?:Public|Private|Default|Static)\s+)+/i, "");
 }
 
-function codeBeforeComment(line: string): string {
-  const comment = parseVbscriptCst(line).tokens.find((token) => token.kind === "comment");
+function codeBeforeCommentFromTokens(line: string, tokens: readonly VbToken[]): string {
+  const comment = tokens.find((token) => token.kind === "comment");
   return (comment ? line.slice(0, comment.start) : line).trim();
 }
 

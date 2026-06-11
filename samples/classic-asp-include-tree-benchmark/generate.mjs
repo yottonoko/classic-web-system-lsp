@@ -7,6 +7,7 @@ const includesRoot = path.join(root, "includes");
 const branchFactor = 5;
 const includeDepth = 5;
 const targetLines = 2_000;
+const implicitGlobalMode = process.env.ASP_LSP_BENCH_IMPLICIT_GLOBALS === "1";
 
 function ensureDirectories() {
   fs.mkdirSync(includesRoot, { recursive: true });
@@ -70,6 +71,9 @@ function pushBenchmarkBlock(lines, depth, pathParts, block) {
   lines.push(`  <h2>Include tree node ${nodeId}</h2>`);
   lines.push(`<%`);
   lines.push(`Dim includeTreeValue${padded}`);
+  if (implicitGlobalMode) {
+    lines.push(`implicitSharedValue = "${nodeId}-${padded}"`);
+  }
   lines.push(`includeTreeValue${padded} = "${nodeId}-${padded}"`);
   lines.push(`If Len(includeTreeValue${padded}) > 0 Then`);
   lines.push(
@@ -116,6 +120,9 @@ function buildNodeFile(relativePath, depth, pathParts) {
   lines.push(`<%`);
   lines.push(`Dim includeTreeDepth`);
   lines.push(`includeTreeDepth = ${depth}`);
+  if (implicitGlobalMode) {
+    lines.push(`implicitSharedValue = "${pathParts.length === 0 ? "root" : pathParts.join("_")}"`);
+  }
   lines.push(`%>`);
   lines.push(
     `<div class="include-tree-benchmark" data-depth="${depth}" data-node="${pathParts.length === 0 ? "root" : pathParts.join("_")}">`,

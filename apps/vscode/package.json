@@ -890,6 +890,11 @@
           "default": 16777216,
           "description": "%configuration.graph.includeTreeMaxTextLength.description%"
         },
+        "aspLsp.graph.workerSymbolExtraction": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.workerSymbolExtraction.description%"
+        },
         "aspLsp.graph.initialViewMode": {
           "type": "string",
           "enum": [

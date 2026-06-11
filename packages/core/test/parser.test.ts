@@ -549,6 +549,32 @@ Response.Write message
     expect(updated.parsed).toEqual(parseAspDocument("file:///site/default.asp", expectedText));
   });
 
+  it("updates 256-1024 character safe VBScript edits incrementally", () => {
+    const payload = "x".repeat(1200);
+    const source = `<%
+Dim message
+message = "${payload}"
+Response.Write message
+%>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    for (const length of [256, 512, 1024]) {
+      const start = source.indexOf(payload) + 8;
+      const end = start + length;
+      const replacement = "y".repeat(length);
+      const updated = updateAspParsedDocument(parsed, [
+        {
+          range: { start: positionAt(source, start), end: positionAt(source, end) },
+          rangeOffset: start,
+          rangeLength: length,
+          text: replacement,
+        },
+      ]);
+      const expectedText = `${source.slice(0, start)}${replacement}${source.slice(end)}`;
+      expect(updated.impact).toMatchObject({ kind: "incremental", language: "vbscript" });
+      expect(updated.parsed).toEqual(parseAspDocument("file:///site/default.asp", expectedText));
+    }
+  });
+
   it("falls back when typed HTML edits create style attribute regions", () => {
     const source = `<div ></div>`;
     const result = updateParsedDocumentByTyping(
@@ -596,7 +622,7 @@ Response.Write message
       { needle: "VBScript", text: "JScript", reason: "ASP directive edit" },
       { needle: "value = 1", text: "value = '</script>'", reason: "boundary text inserted" },
       { needle: "common.inc", text: "other.inc", reason: "include directive edit" },
-      { needle: '"ok"', text: "a".repeat(257), reason: "large edit" },
+      { needle: '"ok"', text: "a".repeat(1025), reason: "large edit" },
     ];
 
     for (const testCase of cases) {
@@ -7848,6 +7874,34 @@ End If
     expect(edits[0].newText).not.toContain("<div>");
   });
 
+  it("keeps bytes outside formatted ASP ranges unchanged", () => {
+    const source = `<header>Before</header>
+<%
+If enabled Then
+Response.Write "ok"
+End If
+%>
+<footer>After</footer>`;
+    const parsed = parseAspDocument("file:///site/default.asp", source);
+    const start = source.indexOf("<%");
+    const end = source.indexOf("%>") + "%>".length;
+    const edits = formatAspRange(
+      parsed,
+      {
+        start: positionAt(source, start),
+        end: positionAt(source, end),
+      },
+      { tabSize: 2, insertSpaces: true },
+    );
+    const formatted = applyTextEdits(source, edits);
+    expect(offsetAt(source, edits[0].range.start)).toBe(start);
+    expect(offsetAt(source, edits[0].range.end)).toBe(end);
+    expect(formatted.slice(0, start)).toBe(source.slice(0, start));
+    expect(formatted.slice(formatted.indexOf("<footer>"))).toBe(
+      source.slice(source.indexOf("<footer>")),
+    );
+  });
+
   it("does not duplicate nested ASP expressions inside non-server regions", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -7876,6 +7930,26 @@ value=1
     expect(formatted).toContain(`' keep x=y`);
     expect(formatted).toContain(`value = 1`);
     expect(formatted).toContain(`<%= "x=y" %>`);
+  });
+
+  it("is idempotent for mixed ASP documents", () => {
+    const source = `<html>
+<style>.x { color: <%= themeColor %>; }</style>
+<script>const value = 1;</script>
+<%
+If enabled Then ' keep
+Response.Write "ok"
+End If
+%>
+<%= title %>
+</html>`;
+    const firstParsed = parseAspDocument("file:///site/default.asp", source);
+    const firstFormatted = applyTextEdits(
+      source,
+      formatAspDocument(firstParsed, { tabSize: 2, insertSpaces: true }),
+    );
+    const secondParsed = parseAspDocument("file:///site/default.asp", firstFormatted);
+    expect(formatAspDocument(secondParsed, { tabSize: 2, insertSpaces: true })).toEqual([]);
   });
 
   it("preserves string whitespace inside single-line ASP blocks", () => {

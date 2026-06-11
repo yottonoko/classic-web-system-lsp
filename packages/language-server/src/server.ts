@@ -262,6 +262,7 @@ const semanticTokensLargeJavascriptThreshold = internalTestThreshold(
 );
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
 let workspaceRoots: string[] = [];
+let workspaceRootsIdentityCache: { source: string[]; roots: string[]; key: string } | undefined;
 let clientLocale = "en";
 let workspaceIndexDirty = true;
 let workspaceIndexTruncated = false;
@@ -278,8 +279,30 @@ let documentCacheGeneration = 0;
 let workspaceGeneration = 0;
 let includeResolutionGeneration = 0;
 let jsProjectGeneration = 0;
+const serverTextFingerprintCacheMaxEntries = 256;
+const serverTextFingerprintCache = new Map<string, string>();
 let diskAnalysisCache = createDiskAnalysisCache(globalSettings);
 const sourceManifest = new Map<string, DiskAnalysisSourceMetadata>();
+const diagnosticKeyCache = new WeakMap<Diagnostic, string>();
+const settingsParseIdentityCache = new WeakMap<AspSettings, string>();
+const settingsIncludeResolutionIdentityCache = new WeakMap<AspSettings, string>();
+const settingsDiagnosticsIdentityCache = new WeakMap<AspSettings, string>();
+const settingsCacheIdentityCache = new WeakMap<AspSettings, string>();
+const settingsJsProjectIdentityCache = new WeakMap<
+  AspSettings,
+  { rootsKey: string; value: string }
+>();
+const settingsWorkspaceIndexIdentityCache = new WeakMap<
+  AspSettings,
+  { rootsKey: string; value: string }
+>();
+const includeResolutionIdentityCache = new WeakMap<
+  AspSettings,
+  { generation: number; value: string }
+>();
+const jsProjectIdentityCache = new WeakMap<AspSettings, { generation: number; value: string }>();
+const symbolsByLowerNameCache = new WeakMap<VbSymbol[], Map<string, VbSymbol[]>>();
+const typeEnvironmentTypesByLowerNameCache = new WeakMap<VbType[], Map<string, VbType>>();
 let lastForegroundActivityAt = 0;
 let projectUpdateTimer: ReturnType<typeof setTimeout> | undefined;
 let openFileProjectMaintenanceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -459,6 +482,10 @@ interface CachedAnalysis {
   referenceCodeLensSymbols?: {
     key: string;
     symbols: VbSymbol[];
+  };
+  unresolvedVbscriptCompletionIndex?: {
+    key: string;
+    index: VbSymbolIndex;
   };
 }
 
@@ -4441,7 +4468,7 @@ function formatElapsedMs(elapsedMs: number): string {
 function dedupeDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
   const seen = new Set<string>();
   return diagnostics.filter((diagnostic) => {
-    const key = diagnosticKey(diagnostic);
+    const key = diagnosticKeyFast(diagnostic);
     if (seen.has(key)) {
       return false;
     }
@@ -4450,21 +4477,33 @@ function dedupeDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
   });
 }
 
-function diagnosticKey(diagnostic: Diagnostic): string {
-  return JSON.stringify({
-    source: diagnostic.source ?? "",
-    code: diagnostic.code ?? "",
-    severity: diagnostic.severity ?? "",
-    range: diagnostic.range,
-    message: diagnostic.message,
-  });
+function diagnosticKeyFast(diagnostic: Diagnostic): string {
+  const cached = diagnosticKeyCache.get(diagnostic);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const { start, end } = diagnostic.range;
+  const key = [
+    diagnostic.source ?? "",
+    String(diagnostic.code ?? ""),
+    String(diagnostic.severity ?? ""),
+    `${start.line},${start.character},${end.line},${end.character}`,
+    diagnostic.message,
+  ].join("\0");
+  diagnosticKeyCache.set(diagnostic, key);
+  return key;
 }
 
 function analysisFor(cached: CachedDocument): CachedAnalysis {
   const settings = cachedSettings(cached.source.uri);
-  const nextDiagnosticsIdentity = diagnosticsIdentity(settings);
-  const nextIncludeResolutionIdentity = includeResolutionIdentity(settings);
-  const nextJsProjectIdentity = jsProjectIdentity(settings);
+  const identities = measureDebugStep(settings, cached.source.uri, "analysis.identity", () => ({
+    diagnostics: diagnosticsIdentity(settings),
+    includeResolution: includeResolutionIdentity(settings),
+    jsProject: jsProjectIdentity(settings),
+  }));
+  const nextDiagnosticsIdentity = identities.diagnostics;
+  const nextIncludeResolutionIdentity = identities.includeResolution;
+  const nextJsProjectIdentity = identities.jsProject;
   if (
     cached.analysis &&
     (cached.diagnosticsIdentity !== nextDiagnosticsIdentity ||
@@ -5787,9 +5826,25 @@ function unresolvedVbscriptCompletionItems(
   position: Position,
   existingItems: CompletionItem[],
 ): CompletionItem[] {
-  const index = extractVbscriptSymbolIndex(cached.source.uri, cached.source.getText(), settings, {
-    includeImplicitVariables: true,
-  });
+  const text = cached.source.getText();
+  const key = textFingerprint(text);
+  const analysis = analysisFor(cached);
+  let index =
+    analysis.unresolvedVbscriptCompletionIndex?.key === key
+      ? analysis.unresolvedVbscriptCompletionIndex.index
+      : undefined;
+  if (!index) {
+    index = measureDebugStep(
+      settings,
+      cached.source.uri,
+      "completion.unresolvedSymbols.extract",
+      () =>
+        extractVbscriptSymbolIndex(cached.source.uri, text, settings, {
+          includeImplicitVariables: true,
+        }),
+    );
+    analysis.unresolvedVbscriptCompletionIndex = { key, index };
+  }
   const existingNames = new Set(existingItems.map((item) => item.label.toLowerCase()));
   const visibleNames = visibleVbscriptCompletionSymbolNames(cached, context);
   const externalNames = new Set(
@@ -7381,11 +7436,10 @@ function fallbackVbscriptSymbolAt(
     return undefined;
   }
   const lower = word.toLowerCase();
-  return (context.symbols ?? []).find(
+  return (symbolsByLowerName(context.symbols ?? []).get(lower) ?? []).find(
     (symbol) =>
-      symbol.name.toLowerCase() === lower &&
-      (sameFileIdentityUri(symbol.sourceUri, cached.parsed.uri) ||
-        (!symbol.scopeName && !symbol.memberOf)),
+      sameFileIdentityUri(symbol.sourceUri, cached.parsed.uri) ||
+      (!symbol.scopeName && !symbol.memberOf),
   );
 }
 
@@ -7402,16 +7456,16 @@ function fallbackVbMemberCompletions(
   if (!owner) {
     return [];
   }
-  const symbol = (context.symbols ?? []).find(
+  const symbol = (symbolsByLowerName(context.symbols ?? []).get(owner.toLowerCase()) ?? []).find(
     (candidate) =>
-      candidate.name.toLowerCase() === owner.toLowerCase() &&
-      (sameFileIdentityUri(candidate.sourceUri, cached.parsed.uri) ||
-        (!candidate.scopeName && !candidate.memberOf)),
+      sameFileIdentityUri(candidate.sourceUri, cached.parsed.uri) ||
+      (!candidate.scopeName && !candidate.memberOf),
   );
   const typeName = symbol?.type?.name ?? symbol?.typeName;
-  const type = (
-    context.typeEnvironment ?? buildVbTypeEnvironment(cached.parsed, context)
-  ).types.find((candidate) => candidate.name.toLowerCase() === typeName?.toLowerCase());
+  const typeEnvironment = context.typeEnvironment ?? buildVbTypeEnvironment(cached.parsed, context);
+  const type = typeName
+    ? typesByLowerName(typeEnvironment.types).get(typeName.toLowerCase())
+    : undefined;
   return (
     type?.members.map((member) => ({
       label: member.name,
@@ -7424,6 +7478,34 @@ function fallbackVbMemberCompletions(
       detail: `${member.kind}${member.type ? ` As ${member.type.name}` : ""}`,
     })) ?? []
   );
+}
+
+function symbolsByLowerName(symbols: VbSymbol[]): Map<string, VbSymbol[]> {
+  const cached = symbolsByLowerNameCache.get(symbols);
+  if (cached) {
+    return cached;
+  }
+  const index = new Map<string, VbSymbol[]>();
+  for (const symbol of symbols) {
+    pushAspGraphMapItem(index, symbol.name.toLowerCase(), symbol);
+  }
+  symbolsByLowerNameCache.set(symbols, index);
+  return index;
+}
+
+function typesByLowerName(types: VbType[]): Map<string, VbType> {
+  const cached = typeEnvironmentTypesByLowerNameCache.get(types);
+  if (cached) {
+    return cached;
+  }
+  const index = new Map<string, VbType>();
+  for (const type of types) {
+    if (!index.has(type.name.toLowerCase())) {
+      index.set(type.name.toLowerCase(), type);
+    }
+  }
+  typeEnvironmentTypesByLowerNameCache.set(types, index);
+  return index;
 }
 
 function vbIdentifierWordAt(sourceText: string, offset: number): string | undefined {
@@ -8634,6 +8716,82 @@ interface WorkspaceVbReferenceSummaryIncludeGraph {
   parentIncludesByTargetKey: Map<string, Array<{ ownerKey: string; range: Range }>>;
 }
 
+interface IncludeReachabilityGraph {
+  directIncludesByOwnerKey: Map<string, Array<{ targetKey: string }>>;
+  parentIncludesByTargetKey: Map<string, Array<{ ownerKey: string }>>;
+}
+
+interface PrecomputedIncludeReachability {
+  hasCycle: boolean;
+  reachingFileKeysByTarget: Map<string, Set<string>>;
+}
+
+function precomputeIncludeReachability(
+  graph: IncludeReachabilityGraph,
+  targetKeys: Iterable<string>,
+): PrecomputedIncludeReachability {
+  const hasCycle = includeGraphHasCycle(graph);
+  const reachingFileKeysByTarget = new Map<string, Set<string>>();
+  if (hasCycle) {
+    return { hasCycle, reachingFileKeysByTarget };
+  }
+  for (const targetKey of targetKeys) {
+    const reaching = new Set<string>();
+    const queue = [targetKey];
+    for (let index = 0; index < queue.length; index += 1) {
+      const currentKey = queue[index];
+      for (const parentInclude of graph.parentIncludesByTargetKey.get(currentKey) ?? []) {
+        if (reaching.has(parentInclude.ownerKey)) {
+          continue;
+        }
+        reaching.add(parentInclude.ownerKey);
+        queue.push(parentInclude.ownerKey);
+      }
+    }
+    reachingFileKeysByTarget.set(targetKey, reaching);
+  }
+  return { hasCycle, reachingFileKeysByTarget };
+}
+
+function includeGraphHasCycle(graph: IncludeReachabilityGraph): boolean {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (ownerKey: string): boolean => {
+    if (visiting.has(ownerKey)) {
+      return true;
+    }
+    if (visited.has(ownerKey)) {
+      return false;
+    }
+    visiting.add(ownerKey);
+    for (const include of graph.directIncludesByOwnerKey.get(ownerKey) ?? []) {
+      if (visit(include.targetKey)) {
+        return true;
+      }
+    }
+    visiting.delete(ownerKey);
+    visited.add(ownerKey);
+    return false;
+  };
+  for (const ownerKey of graph.directIncludesByOwnerKey.keys()) {
+    if (visit(ownerKey)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function precomputedIncludeCanReachTarget(
+  reachability: PrecomputedIncludeReachability | undefined,
+  startKey: string,
+  targetKey: string,
+): boolean | undefined {
+  if (!reachability || reachability.hasCycle) {
+    return undefined;
+  }
+  return reachability.reachingFileKeysByTarget.get(targetKey)?.has(startKey) === true;
+}
+
 async function workspaceVbReferenceSummaryIncludeGraph(
   summaries: FileAnalysisSummary[],
   settings: AspSettings,
@@ -8708,19 +8866,20 @@ function isSummaryFallbackTargetVisibleFromParentContext(
     if (visited.has(parentInclude.ownerKey)) {
       continue;
     }
-    const nextVisited = new Set(visited);
-    nextVisited.add(parentInclude.ownerKey);
+    visited.add(parentInclude.ownerKey);
     if (
       isSummaryFallbackTargetVisibleBeforeParentInclude(
         graph,
         parentInclude.ownerKey,
         target,
         parentInclude.range,
-        nextVisited,
+        visited,
       )
     ) {
+      visited.delete(parentInclude.ownerKey);
       return true;
     }
+    visited.delete(parentInclude.ownerKey);
   }
   return false;
 }
@@ -8747,14 +8906,27 @@ function hasEarlierReachableSummaryInclude(
   ownerKey: string,
   targetKey: string,
   referenceRange: Range,
+  reachability?: PrecomputedIncludeReachability,
 ): boolean {
   const includes = graph.directIncludesByOwnerKey.get(ownerKey) ?? [];
-  return includes.some(
-    (include) =>
-      positionBeforeOrEqual(include.range.start, referenceRange.start) &&
-      (include.targetKey === targetKey ||
-        isSummaryIncludeReachable(graph, include.targetKey, targetKey, new Set([ownerKey]))),
-  );
+  return includes.some((include) => {
+    if (!positionBeforeOrEqual(include.range.start, referenceRange.start)) {
+      return false;
+    }
+    if (include.targetKey === targetKey) {
+      return true;
+    }
+    const precomputed = precomputedIncludeCanReachTarget(
+      reachability,
+      include.targetKey,
+      targetKey,
+    );
+    return (
+      precomputed === true ||
+      (precomputed === undefined &&
+        isSummaryIncludeReachable(graph, include.targetKey, targetKey, new Set([ownerKey])))
+    );
+  });
 }
 
 function isSummaryIncludeReachable(
@@ -10361,80 +10533,117 @@ async function canonicalizeImplicitGlobalContextSymbolsAsync(
   if (summaries.length < 2 || symbols.length < 2) {
     return symbols;
   }
-  const entriesByName = new Map<string, ContextImplicitGlobalSymbolEntry[]>();
-  for (let order = 0; order < symbols.length; order += 1) {
-    const symbol = symbols[order];
-    if (!isContextImplicitGlobalMergeSymbol(symbol) || !symbol.sourceUri.startsWith("file://")) {
-      continue;
+  const startedAt = process.hrtime.bigint();
+  try {
+    const entriesByName = new Map<string, ContextImplicitGlobalSymbolEntry[]>();
+    for (let order = 0; order < symbols.length; order += 1) {
+      const symbol = symbols[order];
+      if (!isContextImplicitGlobalMergeSymbol(symbol) || !symbol.sourceUri.startsWith("file://")) {
+        continue;
+      }
+      pushAspGraphMapItem(entriesByName, symbol.name.toLowerCase(), {
+        symbol,
+        order,
+        fileKey: fileIdentityKeyFromUri(symbol.sourceUri),
+      });
     }
-    pushAspGraphMapItem(entriesByName, symbol.name.toLowerCase(), {
-      symbol,
-      order,
-      fileKey: fileIdentityKeyFromUri(symbol.sourceUri),
-    });
-  }
-  if (entriesByName.size === 0) {
-    return symbols;
-  }
-  const includeGraph = await workspaceVbReferenceSummaryIncludeGraph(summaries, settings);
-  const union = new ImplicitGlobalUnionFind();
-  for (const entries of entriesByName.values()) {
-    if (entries.length < 2 || !entries.some((entry) => entry.symbol.implicit === true)) {
-      continue;
+    if (entriesByName.size === 0) {
+      return symbols;
     }
-    for (let leftIndex = 0; leftIndex < entries.length; leftIndex += 1) {
-      const left = entries[leftIndex];
-      for (let rightIndex = leftIndex + 1; rightIndex < entries.length; rightIndex += 1) {
-        const right = entries[rightIndex];
-        if (
-          isContextImplicitGlobalSymbolVisibleFromFile(
-            includeGraph,
-            left.fileKey,
-            right,
-            left.symbol.range,
-          ) ||
-          isContextImplicitGlobalSymbolVisibleFromFile(
-            includeGraph,
-            right.fileKey,
-            left,
-            right.symbol.range,
-          )
-        ) {
-          union.union(String(left.order), String(right.order));
+    const summary = implicitGlobalGroupSummary(entriesByName.values());
+    logDebugSummary(
+      settings,
+      `[asp-lsp] asp.graph.implicitGlobals.context.groups: groups=${summary.groups}, maxGroupSize=${summary.maxGroupSize}`,
+    );
+    const includeGraph = await workspaceVbReferenceSummaryIncludeGraph(summaries, settings);
+    const targetKeys = new Set<string>();
+    for (const entries of entriesByName.values()) {
+      for (const entry of entries) {
+        targetKeys.add(entry.fileKey);
+      }
+    }
+    const reachability = precomputeIncludeReachability(includeGraph, targetKeys);
+    const union = new ImplicitGlobalUnionFind();
+    for (const entries of entriesByName.values()) {
+      if (entries.length < 2 || !entries.some((entry) => entry.symbol.implicit === true)) {
+        continue;
+      }
+      for (let leftIndex = 0; leftIndex < entries.length; leftIndex += 1) {
+        const left = entries[leftIndex];
+        for (let rightIndex = leftIndex + 1; rightIndex < entries.length; rightIndex += 1) {
+          const right = entries[rightIndex];
+          const leftId = String(left.order);
+          const rightId = String(right.order);
+          if (union.find(leftId) === union.find(rightId)) {
+            continue;
+          }
+          if (
+            isContextImplicitGlobalSymbolVisibleFromFile(
+              includeGraph,
+              left.fileKey,
+              right,
+              left.symbol.range,
+              reachability,
+            ) ||
+            isContextImplicitGlobalSymbolVisibleFromFile(
+              includeGraph,
+              right.fileKey,
+              left,
+              right.symbol.range,
+              reachability,
+            )
+          ) {
+            union.union(leftId, rightId);
+          }
         }
       }
     }
-  }
-  const entriesByRoot = new Map<string, ContextImplicitGlobalSymbolEntry[]>();
-  for (const entries of entriesByName.values()) {
-    for (const entry of entries) {
-      const id = String(entry.order);
-      const root = union.find(id);
-      if (root !== id || union.size(root) > 1) {
-        pushAspGraphMapItem(entriesByRoot, root, entry);
+    const entriesByRoot = new Map<string, ContextImplicitGlobalSymbolEntry[]>();
+    for (const entries of entriesByName.values()) {
+      for (const entry of entries) {
+        const id = String(entry.order);
+        const root = union.find(id);
+        if (root !== id || union.size(root) > 1) {
+          pushAspGraphMapItem(entriesByRoot, root, entry);
+        }
       }
     }
-  }
-  const canonicalOrderByOrder = new Map<number, number>();
-  for (const entries of entriesByRoot.values()) {
-    const canonical = contextImplicitGlobalCanonicalSymbol(entries, includeGraph);
-    for (const entry of entries) {
-      canonicalOrderByOrder.set(entry.order, canonical.order);
+    const canonicalOrderByOrder = new Map<number, number>();
+    for (const entries of entriesByRoot.values()) {
+      const canonical = contextImplicitGlobalCanonicalSymbol(entries, includeGraph, reachability);
+      for (const entry of entries) {
+        canonicalOrderByOrder.set(entry.order, canonical.order);
+      }
     }
+    if (![...canonicalOrderByOrder].some(([order, canonicalOrder]) => order !== canonicalOrder)) {
+      return symbols;
+    }
+    return symbols.filter((_, index) => {
+      const canonicalOrder = canonicalOrderByOrder.get(index);
+      return canonicalOrder === undefined || canonicalOrder === index;
+    });
+  } finally {
+    finishDebugStep(settings, "workspace", "asp.graph.implicitGlobals.canonicalize", startedAt);
   }
-  if (![...canonicalOrderByOrder].some(([order, canonicalOrder]) => order !== canonicalOrder)) {
-    return symbols;
-  }
-  return symbols.filter((_, index) => {
-    const canonicalOrder = canonicalOrderByOrder.get(index);
-    return canonicalOrder === undefined || canonicalOrder === index;
-  });
 }
 
 interface ContextImplicitGlobalSymbolEntry {
   symbol: VbSymbol;
   order: number;
   fileKey: string;
+}
+
+function implicitGlobalGroupSummary<T>(groups: Iterable<readonly T[]>): {
+  groups: number;
+  maxGroupSize: number;
+} {
+  let groupCount = 0;
+  let maxGroupSize = 0;
+  for (const group of groups) {
+    groupCount += 1;
+    maxGroupSize = Math.max(maxGroupSize, group.length);
+  }
+  return { groups: groupCount, maxGroupSize };
 }
 
 function isContextImplicitGlobalMergeSymbol(symbol: VbSymbol): boolean {
@@ -10444,11 +10653,18 @@ function isContextImplicitGlobalMergeSymbol(symbol: VbSymbol): boolean {
 function contextImplicitGlobalCanonicalSymbol(
   entries: ContextImplicitGlobalSymbolEntry[],
   includeGraph: WorkspaceVbReferenceSummaryIncludeGraph,
+  reachability: PrecomputedIncludeReachability,
 ): ContextImplicitGlobalSymbolEntry {
+  const visibilityScoreByOrder = new Map(
+    entries.map((entry) => [
+      entry.order,
+      contextImplicitGlobalCanonicalVisibilityScore(entry, entries, includeGraph, reachability),
+    ]),
+  );
   return [...entries].sort(
     (left, right) =>
-      contextImplicitGlobalCanonicalVisibilityScore(left, entries, includeGraph) -
-        contextImplicitGlobalCanonicalVisibilityScore(right, entries, includeGraph) ||
+      (visibilityScoreByOrder.get(left.order) ?? 1) -
+        (visibilityScoreByOrder.get(right.order) ?? 1) ||
       contextImplicitGlobalCanonicalScore(left.symbol) -
         contextImplicitGlobalCanonicalScore(right.symbol) ||
       left.order - right.order,
@@ -10459,6 +10675,7 @@ function contextImplicitGlobalCanonicalVisibilityScore(
   entry: ContextImplicitGlobalSymbolEntry,
   entries: ContextImplicitGlobalSymbolEntry[],
   includeGraph: WorkspaceVbReferenceSummaryIncludeGraph,
+  reachability: PrecomputedIncludeReachability,
 ): number {
   return entries.every(
     (candidate) =>
@@ -10468,6 +10685,7 @@ function contextImplicitGlobalCanonicalVisibilityScore(
         candidate.fileKey,
         entry,
         candidate.symbol.range,
+        reachability,
       ),
   )
     ? 0
@@ -10483,12 +10701,19 @@ function isContextImplicitGlobalSymbolVisibleFromFile(
   ownerKey: string,
   declaration: ContextImplicitGlobalSymbolEntry,
   referenceRange: Range,
+  reachability: PrecomputedIncludeReachability,
 ): boolean {
   if (declaration.fileKey === ownerKey) {
     return true;
   }
   if (
-    hasEarlierReachableSummaryInclude(includeGraph, ownerKey, declaration.fileKey, referenceRange)
+    hasEarlierReachableSummaryInclude(
+      includeGraph,
+      ownerKey,
+      declaration.fileKey,
+      referenceRange,
+      reachability,
+    )
   ) {
     return true;
   }
@@ -10496,6 +10721,7 @@ function isContextImplicitGlobalSymbolVisibleFromFile(
     includeGraph,
     ownerKey,
     declaration,
+    reachability,
     new Set([ownerKey]),
   );
 }
@@ -10504,25 +10730,28 @@ function isContextImplicitGlobalSymbolVisibleFromParentContext(
   includeGraph: WorkspaceVbReferenceSummaryIncludeGraph,
   ownerKey: string,
   declaration: ContextImplicitGlobalSymbolEntry,
+  reachability: PrecomputedIncludeReachability,
   visited: Set<string>,
 ): boolean {
   for (const parentInclude of includeGraph.parentIncludesByTargetKey.get(ownerKey) ?? []) {
     if (visited.has(parentInclude.ownerKey)) {
       continue;
     }
-    const nextVisited = new Set(visited);
-    nextVisited.add(parentInclude.ownerKey);
+    visited.add(parentInclude.ownerKey);
     if (
       isContextImplicitGlobalSymbolVisibleBeforeParentInclude(
         includeGraph,
         parentInclude.ownerKey,
         declaration,
         parentInclude.range,
-        nextVisited,
+        reachability,
+        visited,
       )
     ) {
+      visited.delete(parentInclude.ownerKey);
       return true;
     }
+    visited.delete(parentInclude.ownerKey);
   }
   return false;
 }
@@ -10532,13 +10761,20 @@ function isContextImplicitGlobalSymbolVisibleBeforeParentInclude(
   parentKey: string,
   declaration: ContextImplicitGlobalSymbolEntry,
   includeRange: Range,
+  reachability: PrecomputedIncludeReachability,
   visited: Set<string>,
 ): boolean {
   if (declaration.fileKey === parentKey) {
     return positionBeforeOrEqual(declaration.symbol.range.start, includeRange.start);
   }
   if (
-    hasEarlierReachableSummaryInclude(includeGraph, parentKey, declaration.fileKey, includeRange)
+    hasEarlierReachableSummaryInclude(
+      includeGraph,
+      parentKey,
+      declaration.fileKey,
+      includeRange,
+      reachability,
+    )
   ) {
     return true;
   }
@@ -10546,6 +10782,7 @@ function isContextImplicitGlobalSymbolVisibleBeforeParentInclude(
     includeGraph,
     parentKey,
     declaration,
+    reachability,
     visited,
   );
 }
@@ -13068,78 +13305,144 @@ function currentOpenDocumentSettingsByUri(): Map<string, AspSettings> {
   );
 }
 
+function memoizeBySettings<T>(
+  cache: WeakMap<AspSettings, T>,
+  settings: AspSettings,
+  factory: () => T,
+): T {
+  const cached = cache.get(settings);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const value = factory();
+  cache.set(settings, value);
+  return value;
+}
+
+function sortedWorkspaceRootsIdentity(): { roots: string[]; key: string } {
+  if (workspaceRootsIdentityCache?.source === workspaceRoots) {
+    return workspaceRootsIdentityCache;
+  }
+  const roots = workspaceRoots.map(normalizeFileName).sort();
+  const key = JSON.stringify(roots);
+  workspaceRootsIdentityCache = { source: workspaceRoots, roots, key };
+  return workspaceRootsIdentityCache;
+}
+
+function workspaceIndexRootsIdentity(): { roots: string[]; key: string } {
+  if (workspaceRoots.length > 0) {
+    return sortedWorkspaceRootsIdentity();
+  }
+  const roots = workspaceIndexRoots().sort();
+  return { roots, key: JSON.stringify(roots) };
+}
+
 function parseSettingsIdentity(settings: AspSettings): string {
-  return JSON.stringify({
-    defaultLanguage: settings.defaultLanguage ?? "VBScript",
-    resolvedLocale: settings.resolvedLocale ?? "en",
-  });
+  return memoizeBySettings(settingsParseIdentityCache, settings, () =>
+    JSON.stringify({
+      defaultLanguage: settings.defaultLanguage ?? "VBScript",
+      resolvedLocale: settings.resolvedLocale ?? "en",
+    }),
+  );
 }
 
 function includeResolutionIdentity(settings: AspSettings): string {
-  return JSON.stringify({
+  const cached = includeResolutionIdentityCache.get(settings);
+  if (cached?.generation === includeResolutionGeneration) {
+    return cached.value;
+  }
+  const value = JSON.stringify({
     generation: includeResolutionGeneration,
     settings: includeResolutionSettingsKey(settings),
   });
+  includeResolutionIdentityCache.set(settings, { generation: includeResolutionGeneration, value });
+  return value;
 }
 
 function includeResolutionSettingsIdentity(settings: AspSettings): string {
-  return JSON.stringify(includeResolutionSettingsKey(settings));
+  return memoizeBySettings(settingsIncludeResolutionIdentityCache, settings, () =>
+    JSON.stringify(includeResolutionSettingsKey(settings)),
+  );
 }
 
 function diagnosticsIdentity(settings: AspSettings): string {
-  return JSON.stringify({
-    parse: parseSettingsIdentity(settings),
-    includeResolution: includeResolutionSettingsIdentity(settings),
-    checkJs: settings.checkJs === true,
-    javascript: {
-      unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
-    },
-    vbscript: {
-      typeChecking: settings.vbscript?.typeChecking,
-      ifSyntaxDiagnostics: settings.vbscript?.ifSyntaxDiagnostics ?? "basic",
-      identifierCase: settings.vbscript?.identifierCase,
-      identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
-      comTypes: settings.vbscript?.comTypes,
-      globals: settings.vbscript?.globals,
-      unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
-      deadCodeDiagnostics: settings.vbscript?.deadCodeDiagnostics !== false,
-    },
-    locale: settings.resolvedLocale ?? "en",
-  });
+  return memoizeBySettings(settingsDiagnosticsIdentityCache, settings, () =>
+    JSON.stringify({
+      parse: parseSettingsIdentity(settings),
+      includeResolution: includeResolutionSettingsIdentity(settings),
+      checkJs: settings.checkJs === true,
+      javascript: {
+        unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
+      },
+      vbscript: {
+        typeChecking: settings.vbscript?.typeChecking,
+        ifSyntaxDiagnostics: settings.vbscript?.ifSyntaxDiagnostics ?? "basic",
+        identifierCase: settings.vbscript?.identifierCase,
+        identifierCaseByKind: settings.vbscript?.identifierCaseByKind,
+        comTypes: settings.vbscript?.comTypes,
+        globals: settings.vbscript?.globals,
+        unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
+        deadCodeDiagnostics: settings.vbscript?.deadCodeDiagnostics !== false,
+      },
+      locale: settings.resolvedLocale ?? "en",
+    }),
+  );
 }
 
 function jsProjectIdentity(settings: AspSettings): string {
-  return JSON.stringify({
+  const cached = jsProjectIdentityCache.get(settings);
+  if (cached?.generation === jsProjectGeneration) {
+    return cached.value;
+  }
+  const value = JSON.stringify({
     generation: jsProjectGeneration,
     settings: jsProjectSettingsIdentity(settings),
   });
+  jsProjectIdentityCache.set(settings, { generation: jsProjectGeneration, value });
+  return value;
 }
 
 function jsProjectSettingsIdentity(settings: AspSettings): string {
-  return JSON.stringify({
+  const rootsIdentity = sortedWorkspaceRootsIdentity();
+  const cached = settingsJsProjectIdentityCache.get(settings);
+  if (cached?.rootsKey === rootsIdentity.key) {
+    return cached.value;
+  }
+  const value = JSON.stringify({
     checkJs: settings.checkJs === true,
     javascript: {
       autoImports: settings.javascript?.autoImports !== false,
       unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
       ignoreProjectConfig: settings.javascript?.ignoreProjectConfig === true,
     },
-    roots: workspaceRoots.map(normalizeFileName).sort(),
+    roots: rootsIdentity.roots,
   });
+  settingsJsProjectIdentityCache.set(settings, { rootsKey: rootsIdentity.key, value });
+  return value;
 }
 
 function workspaceIndexSettingsIdentity(settings: AspSettings): string {
-  return JSON.stringify({
-    roots: workspaceIndexRoots().sort(),
+  const rootsIdentity = workspaceIndexRootsIdentity();
+  const cached = settingsWorkspaceIndexIdentityCache.get(settings);
+  if (cached?.rootsKey === rootsIdentity.key) {
+    return cached.value;
+  }
+  const value = JSON.stringify({
+    roots: rootsIdentity.roots,
     includes: settings.workspace?.includes ?? defaultWorkspaceIncludes,
     excludes: settings.workspace?.excludes ?? [],
     respectGitIgnore: settings.workspace?.respectGitIgnore === true,
     maxIndexFiles: settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles,
     scanChunkSize: settings.workspace?.scanChunkSize ?? defaultScanChunkSize,
   });
+  settingsWorkspaceIndexIdentityCache.set(settings, { rootsKey: rootsIdentity.key, value });
+  return value;
 }
 
 function cacheSettingsIdentity(settings: AspSettings): string {
-  return JSON.stringify(normalizeCacheSettings(settings));
+  return memoizeBySettings(settingsCacheIdentityCache, settings, () =>
+    JSON.stringify(normalizeCacheSettings(settings)),
+  );
 }
 
 function clearCacheSettingProcessStateIfChanged(previous: AspSettings, next: AspSettings): void {
@@ -13541,6 +13844,7 @@ function normalizeGraphSettings(
       record.includeTreeMaxTextLength,
       defaultVbProjectMaxTextLength,
     ),
+    workerSymbolExtraction: record.workerSymbolExtraction === true,
   };
 }
 
@@ -14355,6 +14659,7 @@ function jsLanguageServiceCacheKey(
   settings: AspSettings,
   optionOverrides: Partial<ts.CompilerOptions>,
 ): string {
+  const roots = sortedWorkspaceRootsIdentity().roots;
   return JSON.stringify({
     projectOwner: jsProjectOwnerIdentity(virtualSourceUri(virtual)),
     projectGeneration: jsProjectGeneration,
@@ -14365,7 +14670,7 @@ function jsLanguageServiceCacheKey(
       ignoreProjectConfig: settings.javascript?.ignoreProjectConfig === true,
     },
     optionOverrides,
-    roots: workspaceRoots.map(normalizeFileName).sort(),
+    roots,
   });
 }
 
@@ -14373,7 +14678,7 @@ function jsProjectOwnerIdentity(ownerUri: string): string {
   const ownerFile = uriToFileName(ownerUri);
   return JSON.stringify({
     ownerDirectory: normalizeFileName(path.dirname(ownerFile)),
-    roots: workspaceRoots.map(normalizeFileName).sort(),
+    roots: sortedWorkspaceRootsIdentity().roots,
   });
 }
 
@@ -14522,12 +14827,27 @@ function logInvalidation(layer: string, reason: string, generation?: number): vo
 }
 
 function textFingerprint(text: string): string {
+  const cached = serverTextFingerprintCache.get(text);
+  if (cached !== undefined) {
+    serverTextFingerprintCache.delete(text);
+    serverTextFingerprintCache.set(text, cached);
+    return cached;
+  }
   let hash = 2166136261;
   for (let index = 0; index < text.length; index += 1) {
     hash ^= text.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return `${text.length}:${hash >>> 0}`;
+  const fingerprint = `${text.length}:${hash >>> 0}`;
+  serverTextFingerprintCache.set(text, fingerprint);
+  while (serverTextFingerprintCache.size > serverTextFingerprintCacheMaxEntries) {
+    const oldest = serverTextFingerprintCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    serverTextFingerprintCache.delete(oldest);
+  }
+  return fingerprint;
 }
 
 class AspJsScriptSnapshot implements ts.IScriptSnapshot {
@@ -18587,101 +18907,127 @@ async function canonicalizeImplicitGlobalIndexedDocumentsAsync(
   if (indexedDocuments.length < 2) {
     return indexedDocuments;
   }
-  const indexedByFileKey = new Map<string, AspGraphIndexedDocument>();
-  const declarationFileKeyById = new Map<string, string>();
-  const declarationOrderById = new Map<string, number>();
-  const declarationsByName = new Map<string, Array<VbSymbolIndex["declarations"][number]>>();
-  let declarationOrder = 0;
-  for (const indexed of indexedDocuments) {
-    const fileKey = graphFileKey(indexed.document.fileName);
-    indexedByFileKey.set(fileKey, indexed);
-    for (const declaration of indexed.graphIndex.vbSymbolIndex.declarations) {
-      declarationFileKeyById.set(declaration.id, fileKey);
-      declarationOrderById.set(declaration.id, declarationOrder);
-      declarationOrder += 1;
-      if (isImplicitGlobalMergeDeclaration(declaration)) {
-        pushAspGraphMapItem(declarationsByName, declaration.normalizedName, declaration);
+  const startedAt = process.hrtime.bigint();
+  try {
+    const indexedByFileKey = new Map<string, AspGraphIndexedDocument>();
+    const declarationFileKeyById = new Map<string, string>();
+    const declarationOrderById = new Map<string, number>();
+    const declarationsByName = new Map<string, Array<VbSymbolIndex["declarations"][number]>>();
+    let declarationOrder = 0;
+    for (const indexed of indexedDocuments) {
+      const fileKey = graphFileKey(indexed.document.fileName);
+      indexedByFileKey.set(fileKey, indexed);
+      for (const declaration of indexed.graphIndex.vbSymbolIndex.declarations) {
+        declarationFileKeyById.set(declaration.id, fileKey);
+        declarationOrderById.set(declaration.id, declarationOrder);
+        declarationOrder += 1;
+        if (isImplicitGlobalMergeDeclaration(declaration)) {
+          pushAspGraphMapItem(declarationsByName, declaration.normalizedName, declaration);
+        }
       }
     }
-  }
-  if (declarationsByName.size === 0) {
-    return indexedDocuments;
-  }
-  const includeGraph = await implicitGlobalIncludeGraphAsync(
-    indexedDocuments,
-    indexedByFileKey,
-    settings,
-    cancellation,
-  );
-  const union = new ImplicitGlobalUnionFind();
-  for (const declarations of declarationsByName.values()) {
-    throwIfGraphCancelled(cancellation);
-    if (
-      declarations.length < 2 ||
-      !declarations.some((declaration) => declaration.implicitGlobal === true)
-    ) {
-      continue;
+    if (declarationsByName.size === 0) {
+      return indexedDocuments;
     }
-    for (let leftIndex = 0; leftIndex < declarations.length; leftIndex += 1) {
-      const left = declarations[leftIndex];
-      const leftFileKey = declarationFileKeyById.get(left.id);
-      if (!leftFileKey) {
+    const summary = implicitGlobalGroupSummary(declarationsByName.values());
+    logDebugSummary(
+      settings,
+      `[asp-lsp] asp.graph.implicitGlobals.groups: groups=${summary.groups}, maxGroupSize=${summary.maxGroupSize}`,
+    );
+    const includeGraph = await implicitGlobalIncludeGraphAsync(
+      indexedDocuments,
+      indexedByFileKey,
+      settings,
+      cancellation,
+    );
+    const targetKeys = new Set<string>();
+    for (const declarations of declarationsByName.values()) {
+      for (const declaration of declarations) {
+        const fileKey = declarationFileKeyById.get(declaration.id);
+        if (fileKey) {
+          targetKeys.add(fileKey);
+        }
+      }
+    }
+    const reachability = precomputeIncludeReachability(includeGraph, targetKeys);
+    const union = new ImplicitGlobalUnionFind();
+    for (const declarations of declarationsByName.values()) {
+      throwIfGraphCancelled(cancellation);
+      if (
+        declarations.length < 2 ||
+        !declarations.some((declaration) => declaration.implicitGlobal === true)
+      ) {
         continue;
       }
-      for (let rightIndex = leftIndex + 1; rightIndex < declarations.length; rightIndex += 1) {
-        const right = declarations[rightIndex];
-        const rightFileKey = declarationFileKeyById.get(right.id);
-        if (!rightFileKey) {
+      for (let leftIndex = 0; leftIndex < declarations.length; leftIndex += 1) {
+        const left = declarations[leftIndex];
+        const leftFileKey = declarationFileKeyById.get(left.id);
+        if (!leftFileKey) {
           continue;
         }
-        if (
-          isImplicitGlobalDeclarationVisibleFromFile(
-            includeGraph,
-            leftFileKey,
-            right,
-            rightFileKey,
-            left.nameRange,
-          ) ||
-          isImplicitGlobalDeclarationVisibleFromFile(
-            includeGraph,
-            rightFileKey,
-            left,
-            leftFileKey,
-            right.nameRange,
-          )
-        ) {
-          union.union(left.id, right.id);
+        for (let rightIndex = leftIndex + 1; rightIndex < declarations.length; rightIndex += 1) {
+          const right = declarations[rightIndex];
+          const rightFileKey = declarationFileKeyById.get(right.id);
+          if (!rightFileKey) {
+            continue;
+          }
+          if (union.find(left.id) === union.find(right.id)) {
+            continue;
+          }
+          if (
+            isImplicitGlobalDeclarationVisibleFromFile(
+              includeGraph,
+              leftFileKey,
+              right,
+              rightFileKey,
+              left.nameRange,
+              reachability,
+            ) ||
+            isImplicitGlobalDeclarationVisibleFromFile(
+              includeGraph,
+              rightFileKey,
+              left,
+              leftFileKey,
+              right.nameRange,
+              reachability,
+            )
+          ) {
+            union.union(left.id, right.id);
+          }
         }
       }
     }
-  }
-  const declarationsByRoot = new Map<string, Array<VbSymbolIndex["declarations"][number]>>();
-  for (const declarations of declarationsByName.values()) {
-    for (const declaration of declarations) {
-      const root = union.find(declaration.id);
-      if (root !== declaration.id || union.size(root) > 1) {
-        pushAspGraphMapItem(declarationsByRoot, root, declaration);
+    const declarationsByRoot = new Map<string, Array<VbSymbolIndex["declarations"][number]>>();
+    for (const declarations of declarationsByName.values()) {
+      for (const declaration of declarations) {
+        const root = union.find(declaration.id);
+        if (root !== declaration.id || union.size(root) > 1) {
+          pushAspGraphMapItem(declarationsByRoot, root, declaration);
+        }
       }
     }
-  }
-  const canonicalIdById = new Map<string, string>();
-  for (const declarations of declarationsByRoot.values()) {
-    const canonical = implicitGlobalCanonicalDeclaration(
-      declarations,
-      declarationOrderById,
-      declarationFileKeyById,
-      includeGraph,
-    );
-    for (const declaration of declarations) {
-      canonicalIdById.set(declaration.id, canonical.id);
+    const canonicalIdById = new Map<string, string>();
+    for (const declarations of declarationsByRoot.values()) {
+      const canonical = implicitGlobalCanonicalDeclaration(
+        declarations,
+        declarationOrderById,
+        declarationFileKeyById,
+        includeGraph,
+        reachability,
+      );
+      for (const declaration of declarations) {
+        canonicalIdById.set(declaration.id, canonical.id);
+      }
     }
+    if (![...canonicalIdById].some(([id, canonicalId]) => id !== canonicalId)) {
+      return indexedDocuments;
+    }
+    return indexedDocuments.map((indexed) =>
+      canonicalizeImplicitGlobalIndexedDocument(indexed, canonicalIdById),
+    );
+  } finally {
+    finishDebugStep(settings, "workspace", "asp.graph.implicitGlobals.canonicalize", startedAt);
   }
-  if (![...canonicalIdById].some(([id, canonicalId]) => id !== canonicalId)) {
-    return indexedDocuments;
-  }
-  return indexedDocuments.map((indexed) =>
-    canonicalizeImplicitGlobalIndexedDocument(indexed, canonicalIdById),
-  );
 }
 
 class ImplicitGlobalUnionFind {
@@ -18787,21 +19133,23 @@ function implicitGlobalCanonicalDeclaration(
   declarationOrderById: Map<string, number>,
   declarationFileKeyById: Map<string, string>,
   includeGraph: ImplicitGlobalIncludeGraph,
+  reachability: PrecomputedIncludeReachability,
 ): VbSymbolIndex["declarations"][number] {
-  return [...declarations].sort(
-    (left, right) =>
+  const visibilityScoreById = new Map(
+    declarations.map((declaration) => [
+      declaration.id,
       implicitGlobalCanonicalVisibilityScore(
-        left,
+        declaration,
         declarations,
         declarationFileKeyById,
         includeGraph,
-      ) -
-        implicitGlobalCanonicalVisibilityScore(
-          right,
-          declarations,
-          declarationFileKeyById,
-          includeGraph,
-        ) ||
+        reachability,
+      ),
+    ]),
+  );
+  return [...declarations].sort(
+    (left, right) =>
+      (visibilityScoreById.get(left.id) ?? 1) - (visibilityScoreById.get(right.id) ?? 1) ||
       implicitGlobalCanonicalScore(left) - implicitGlobalCanonicalScore(right) ||
       (declarationOrderById.get(left.id) ?? 0) - (declarationOrderById.get(right.id) ?? 0),
   )[0];
@@ -18812,6 +19160,7 @@ function implicitGlobalCanonicalVisibilityScore(
   declarations: Array<VbSymbolIndex["declarations"][number]>,
   declarationFileKeyById: Map<string, string>,
   includeGraph: ImplicitGlobalIncludeGraph,
+  reachability: PrecomputedIncludeReachability,
 ): number {
   const targetKey = declarationFileKeyById.get(declaration.id);
   if (!targetKey) {
@@ -18830,6 +19179,7 @@ function implicitGlobalCanonicalVisibilityScore(
         declaration,
         targetKey,
         candidate.nameRange,
+        reachability,
       )
     );
   })
@@ -18850,12 +19200,19 @@ function isImplicitGlobalDeclarationVisibleFromFile(
   declaration: VbSymbolIndex["declarations"][number],
   declarationKey: string,
   referenceRange: Range,
+  reachability: PrecomputedIncludeReachability,
 ): boolean {
   if (declarationKey === ownerKey) {
     return true;
   }
   if (
-    hasEarlierReachableImplicitGlobalInclude(includeGraph, ownerKey, declarationKey, referenceRange)
+    hasEarlierReachableImplicitGlobalInclude(
+      includeGraph,
+      ownerKey,
+      declarationKey,
+      referenceRange,
+      reachability,
+    )
   ) {
     return true;
   }
@@ -18864,6 +19221,7 @@ function isImplicitGlobalDeclarationVisibleFromFile(
     ownerKey,
     declaration,
     declarationKey,
+    reachability,
     new Set([ownerKey]),
   );
 }
@@ -18873,14 +19231,14 @@ function isImplicitGlobalDeclarationVisibleFromParentContext(
   ownerKey: string,
   declaration: VbSymbolIndex["declarations"][number],
   declarationKey: string,
+  reachability: PrecomputedIncludeReachability,
   visited: Set<string>,
 ): boolean {
   for (const parentInclude of includeGraph.parentIncludesByTargetKey.get(ownerKey) ?? []) {
     if (visited.has(parentInclude.ownerKey)) {
       continue;
     }
-    const nextVisited = new Set(visited);
-    nextVisited.add(parentInclude.ownerKey);
+    visited.add(parentInclude.ownerKey);
     if (
       isImplicitGlobalDeclarationVisibleBeforeParentInclude(
         includeGraph,
@@ -18888,11 +19246,14 @@ function isImplicitGlobalDeclarationVisibleFromParentContext(
         declaration,
         declarationKey,
         parentInclude.range,
-        nextVisited,
+        reachability,
+        visited,
       )
     ) {
+      visited.delete(parentInclude.ownerKey);
       return true;
     }
+    visited.delete(parentInclude.ownerKey);
   }
   return false;
 }
@@ -18903,13 +19264,20 @@ function isImplicitGlobalDeclarationVisibleBeforeParentInclude(
   declaration: VbSymbolIndex["declarations"][number],
   declarationKey: string,
   includeRange: Range,
+  reachability: PrecomputedIncludeReachability,
   visited: Set<string>,
 ): boolean {
   if (declarationKey === parentKey) {
     return positionBeforeOrEqual(declaration.nameRange.start, includeRange.start);
   }
   if (
-    hasEarlierReachableImplicitGlobalInclude(includeGraph, parentKey, declarationKey, includeRange)
+    hasEarlierReachableImplicitGlobalInclude(
+      includeGraph,
+      parentKey,
+      declarationKey,
+      includeRange,
+      reachability,
+    )
   ) {
     return true;
   }
@@ -18918,6 +19286,7 @@ function isImplicitGlobalDeclarationVisibleBeforeParentInclude(
     parentKey,
     declaration,
     declarationKey,
+    reachability,
     visited,
   );
 }
@@ -18927,18 +19296,31 @@ function hasEarlierReachableImplicitGlobalInclude(
   ownerKey: string,
   targetKey: string,
   referenceRange: Range,
+  reachability?: PrecomputedIncludeReachability,
 ): boolean {
-  return (includeGraph.directIncludesByOwnerKey.get(ownerKey) ?? []).some(
-    (include) =>
-      positionBeforeOrEqual(include.range.start, referenceRange.start) &&
-      (include.targetKey === targetKey ||
+  return (includeGraph.directIncludesByOwnerKey.get(ownerKey) ?? []).some((include) => {
+    if (!positionBeforeOrEqual(include.range.start, referenceRange.start)) {
+      return false;
+    }
+    if (include.targetKey === targetKey) {
+      return true;
+    }
+    const precomputed = precomputedIncludeCanReachTarget(
+      reachability,
+      include.targetKey,
+      targetKey,
+    );
+    return (
+      precomputed === true ||
+      (precomputed === undefined &&
         isImplicitGlobalIncludeReachable(
           includeGraph,
           include.targetKey,
           targetKey,
           new Set([ownerKey]),
-        )),
-  );
+        ))
+    );
+  });
 }
 
 function isImplicitGlobalIncludeReachable(
@@ -20036,9 +20418,7 @@ async function graphFileIndexForDocumentAsync(
       }
       logDebugSummary(settings, `[asp-lsp] graphVbIndex.miss: ${document.uri}`);
     }
-    const extracted = extractVbscriptSymbolIndex(document.uri, document.text, settings, {
-      includeImplicitVariables: true,
-    });
+    const extracted = await extractGraphVbSymbolIndexAsync(document, settings);
     const includeRefs =
       includeRefsEntry && sameDiskAnalysisSource(includeRefsEntry.source, document.source)
         ? includeRefsEntry.includeRefs
@@ -20077,6 +20457,88 @@ async function graphFileIndexForDocumentAsync(
     }
     void promise.catch(() => options.operationCache?.delete(key));
   }
+}
+
+async function extractGraphVbSymbolIndexAsync(
+  document: AspGraphDocument,
+  settings: AspSettings,
+): Promise<VbSymbolIndex> {
+  const fallback = () =>
+    extractVbscriptSymbolIndex(document.uri, document.text, settings, {
+      includeImplicitVariables: true,
+    });
+  if (settings.graph?.workerSymbolExtraction !== true) {
+    return fallback();
+  }
+  const id = ++vbReferencesWorkerRequestId;
+  const range = {
+    start: { line: 0, character: 0 },
+    end: { line: 0, character: 0 },
+  };
+  try {
+    const response = await getVbReferencesWorkerPool(settings).run({
+      id,
+      kind: "extractSymbolIndex",
+      candidate: {
+        uri: document.uri,
+        fileName: document.fileName,
+        source: document.source,
+        text: document.text,
+      },
+      target: {
+        name: "",
+        kind: "variable",
+        sourceUri: document.uri,
+        range,
+      },
+      settings: graphSymbolExtractionWorkerSettings(settings),
+      workspaceRoots,
+      openDocuments: [],
+      options: {},
+      limits: {
+        maxDocuments: 1,
+        maxTextLength: document.text.length,
+        maxDepth: 0,
+        includeReadConcurrency: 1,
+      },
+    });
+    logDebugSummary(
+      settings,
+      `[asp-lsp] graphVbIndex.worker.complete: ${document.uri}, request=${id}, declarations=${response.symbolIndex?.declarations.length ?? 0}`,
+    );
+    logDebugSummary(
+      settings,
+      `[asp-lsp] worker.queue.wait: ${document.uri}, request=${id}, ${formatElapsedMs(response.queueWaitMs ?? 0)}, queueLength=${response.queueLengthAtDispatch ?? 0}, cancelled=${response.cancelled === true}`,
+    );
+    logDebugSummary(
+      settings,
+      `[asp-lsp] worker.run.duration: ${document.uri}, request=${id}, ${formatElapsedMs(response.runMs ?? 0)}`,
+    );
+    logDebugSummary(
+      settings,
+      `[asp-lsp] worker.payload.bytes: ${document.uri}, request=${id}, payload=${response.payloadBytes ?? 0}, result=${response.resultBytes ?? 0}`,
+    );
+    if (response.error) {
+      throw new Error(response.error.message);
+    }
+    if (!response.symbolIndex) {
+      throw new Error("VBScript symbol-index worker returned no index.");
+    }
+    return response.symbolIndex;
+  } catch (error) {
+    logDebugSummary(
+      settings,
+      `[asp-lsp] graphVbIndex.worker.fallback: ${document.uri}, reason=${errorMessage(error)}`,
+    );
+    return fallback();
+  }
+}
+
+function graphSymbolExtractionWorkerSettings(settings: AspSettings): AspSettings {
+  return {
+    defaultLanguage: settings.defaultLanguage,
+    legacyEncoding: settings.legacyEncoding,
+  };
 }
 
 async function graphDeclarationTypeHintsForDocumentAsync(

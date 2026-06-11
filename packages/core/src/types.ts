@@ -218,6 +218,7 @@ export interface AspGraphSettings {
   maxTextLength?: number;
   includeTreeMaxDocuments?: number;
   includeTreeMaxTextLength?: number;
+  workerSymbolExtraction?: boolean;
 }
 
 export interface AspExcelSettings {

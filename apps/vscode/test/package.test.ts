@@ -688,6 +688,7 @@ describe("VS Code extension package", () => {
       showIncomingDocumentIncludes: false,
       showIncomingFolderIncludes: false,
       includeRelatedIncludeTreesForUnresolved: true,
+      workerSymbolExtraction: false,
     };
     for (const [name, defaultValue] of Object.entries(graphDefaults)) {
       const setting = `aspLsp.graph.${name}`;

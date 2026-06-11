@@ -102,6 +102,7 @@
   "configuration.graph.maxTextLength.description": "1 回の graph payload に含める text 合計サイズの最大値を byte で指定します。current-file、folder、workspace graph view に適用します。",
   "configuration.graph.includeTreeMaxDocuments.description": "1 回の current-file graph include tree 構築に含める document の最大数です。",
   "configuration.graph.includeTreeMaxTextLength.description": "1 回の current-file graph include tree 構築に含める text 合計サイズの最大値を byte で指定します。",
+  "configuration.graph.workerSymbolExtraction.description": "VBScript graph symbol index 抽出を worker pool で実行します。小さい file では clone と queue の overhead で遅くなる場合があるため、既定では無効です。",
   "configuration.graph.initialViewMode.description": "graph view の初期表示を 2D / 3D のどちらにするかを指定します。",
   "configuration.graph.infoPanelPosition.description": "graph の inspector pane を左側または右側のどちらに表示するかを指定します。",
   "configuration.graph.openLocation.description": "graph view を現在の editor group に開くか、横の editor group に開くかを指定します。",
