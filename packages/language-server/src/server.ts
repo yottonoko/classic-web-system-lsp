@@ -238,6 +238,7 @@ const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
+const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const statusNotificationMethod = "aspLsp/status";
 const languageServerVersion = "0.6.8";
 const completionTriggerKindTriggerCharacter = 2;
@@ -279,6 +280,9 @@ let pendingOpenFileMaintenanceReason: string | undefined;
 let loadingStatusDepth = 0;
 let analyzingStatusDepth = 0;
 let currentStatusKind: AspLspStatusKind = "idle";
+let progressTaskSequence = 0;
+let lastPublishedStatusPayload = "";
+const progressTasks = new Map<string, AspLspProgressTask>();
 let jsDiagnosticsWorkerPool: JsDiagnosticsWorkerPool | undefined;
 let jsDiagnosticsWorkerRequestId = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
@@ -290,6 +294,47 @@ const browserJavaScriptLibs = ["lib.esnext.d.ts", "lib.dom.d.ts", "lib.dom.itera
 
 type AspLspStatusKind = "idle" | "loading" | "analyzing";
 type ActiveAspLspStatusKind = Exclude<AspLspStatusKind, "idle">;
+
+type AspLspProgressTaskState = "running" | "cancelling";
+
+interface AspLspProgressTaskSnapshot {
+  id: string;
+  kind: ActiveAspLspStatusKind;
+  label: string;
+  detail?: string;
+  current?: number;
+  total?: number;
+  activeItems?: string[];
+  cancellable?: boolean;
+  state: AspLspProgressTaskState;
+  startedAt: number;
+}
+
+interface AspLspProgressTask extends AspLspProgressTaskSnapshot {
+  cancelRequested: boolean;
+}
+
+interface AspLspProgressTaskHandle {
+  id: string;
+  isCancellationRequested(): boolean;
+  update(update: AspLspProgressTaskUpdate): void;
+  step(detail?: string): void;
+  end(): void;
+}
+
+type AspLspProgressTaskUpdate = Partial<
+  Pick<AspLspProgressTaskSnapshot, "detail" | "current" | "total" | "activeItems">
+>;
+
+interface AspLspProgressTaskOptions {
+  detail?: string;
+  current?: number;
+  total?: number;
+  cancellable?: boolean;
+  activeItems?: string[];
+}
+
+type GraphFileIndexOperationCache = Map<string, Promise<GraphFileIndex>>;
 
 interface PathResolution {
   fileName: string;
@@ -1708,6 +1753,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
           clearProcessCacheServerCommand,
           buildGraphServerCommand,
           buildFlowchartServerCommand,
+          cancelProgressTaskServerCommand,
         ],
       },
       codeLensProvider: { resolveProvider: true },
@@ -2496,41 +2542,70 @@ connection.languages.diagnostics.on(async (params) => {
 connection.languages.diagnostics.onWorkspace(async (_params, token) => {
   noteForegroundActivity();
   await ensureWorkspaceIndexAsync(globalSettings, token);
-  const cancellation: AnalysisCancellation = {
-    isCancellationRequested: () => token.isCancellationRequested,
-  };
   const openDocuments = await workspaceAnalyzableOpenDocumentsAsync(globalSettings);
   const openedUris = new Set(openDocuments.map((document) => document.uri));
   const concurrency = analysisConcurrency(globalSettings);
   const indexedEntries = workspaceEntriesAffectedFirst(
     [...workspaceIndex.values()].filter((entry) => !openedUris.has(entry.uri)),
   );
-  const indexedItems = await mapWithConcurrency(indexedEntries, concurrency, async (entry) => ({
-    kind: "full" as const,
-    uri: entry.uri,
-    version: null,
-    items: await diagnosticsForIndexed(entry, cachedSettings(entry.uri), token),
-  }));
-  const openItems = await mapWithConcurrency(openDocuments, concurrency, async (document) => {
-    const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
-    return cached
-      ? {
-          kind: "full" as const,
-          uri: document.uri,
-          version: document.version,
-          items: await diagnosticsForCachedAsync(
-            cached,
-            cachedSettings(document.uri),
-            "check.workspace",
-            cancellation,
-            "workspace",
-          ),
-        }
-      : undefined;
+  const task = beginProgressTask("analyzing", "workspace.diagnostics", {
+    current: 0,
+    total: indexedEntries.length + openDocuments.length,
+    cancellable: true,
   });
-  return {
-    items: [...openItems.filter((item) => item !== undefined), ...indexedItems],
+  const cancellation: AnalysisCancellation = {
+    isCancellationRequested: () => token.isCancellationRequested || task.isCancellationRequested(),
   };
+  const progressToken = {
+    get isCancellationRequested() {
+      return cancellation.isCancellationRequested();
+    },
+  };
+  try {
+    const indexedItems = await mapWithConcurrency(
+      indexedEntries,
+      concurrency,
+      async (entry) => ({
+        kind: "full" as const,
+        uri: entry.uri,
+        version: null,
+        items: await diagnosticsForIndexed(entry, cachedSettings(entry.uri), progressToken),
+      }),
+      progressMapHooks(task, (entry) => progressFileLabel(entry.fileName)),
+    );
+    task.update({ current: indexedEntries.length });
+    const openItems = await mapWithConcurrency(
+      openDocuments,
+      concurrency,
+      async (document) => {
+        const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
+        return cached
+          ? {
+              kind: "full" as const,
+              uri: document.uri,
+              version: document.version,
+              items: await diagnosticsForCachedAsync(
+                cached,
+                cachedSettings(document.uri),
+                "check.workspace",
+                cancellation,
+                "workspace",
+              ),
+            }
+          : undefined;
+      },
+      progressMapHooks(
+        task,
+        (document) => progressFileLabelFromUri(document.uri),
+        indexedEntries.length,
+      ),
+    );
+    return {
+      items: [...openItems.filter((item) => item !== undefined), ...indexedItems],
+    };
+  } finally {
+    task.end();
+  }
 });
 
 connection.onExecuteCommand(async (params, token) => {
@@ -2568,7 +2643,11 @@ connection.onExecuteCommand(async (params, token) => {
     return buildAspGraphForCommand(params.arguments?.[0], token);
   }
   if (params.command === buildFlowchartServerCommand) {
-    return buildAspFlowchartForCommand(params.arguments?.[0]);
+    return buildAspFlowchartForCommand(params.arguments?.[0], token);
+  }
+  if (params.command === cancelProgressTaskServerCommand) {
+    const taskId = progressTaskIdArgument(params.arguments?.[0]);
+    return { ok: taskId ? cancelProgressTask(taskId) : false };
   }
   return {
     ok: false,
@@ -2577,6 +2656,14 @@ connection.onExecuteCommand(async (params, token) => {
     }),
   };
 });
+
+function progressTaskIdArgument(argument: unknown): string | undefined {
+  if (!argument || typeof argument !== "object" || !("id" in argument)) {
+    return undefined;
+  }
+  const id = (argument as { id?: unknown }).id;
+  return typeof id === "string" ? id : undefined;
+}
 
 connection.languages.callHierarchy.onPrepare(async (params): Promise<CallHierarchyItem[]> => {
   const cached = await getFreshCachedAsync(params.textDocument.uri);
@@ -3099,19 +3186,38 @@ async function ensureFreshCachedDocumentAsync(document: TextDocument): Promise<C
         return rememberInFlightDocumentRefresh(
           document,
           parseIdentity,
-          withServerStatusAsync("analyzing", "document.analysis", () =>
-            refreshCachedDocumentIncrementalAsync(existing, document, settings, pending.changes[0]),
+          withProgressTaskAsync(
+            "analyzing",
+            "document.analysis",
+            { current: 0, total: 1, detail: progressFileLabelFromUri(document.uri) },
+            async (task) => {
+              const cached = await refreshCachedDocumentIncrementalAsync(
+                existing,
+                document,
+                settings,
+                pending.changes[0],
+              );
+              task.update({ current: 1 });
+              return cached;
+            },
           ),
         );
       }
       return rememberInFlightDocumentRefresh(
         document,
         parseIdentity,
-        withServerStatusAsync("analyzing", "document.analysis", () =>
-          refreshCachedDocumentSkeletonAsync(
-            document,
-            pending?.reason ?? "non-incremental document change",
-          ),
+        withProgressTaskAsync(
+          "analyzing",
+          "document.analysis",
+          { current: 0, total: 1, detail: progressFileLabelFromUri(document.uri) },
+          async (task) => {
+            const cached = await refreshCachedDocumentSkeletonAsync(
+              document,
+              pending?.reason ?? "non-incremental document change",
+            );
+            task.update({ current: 1 });
+            return cached;
+          },
         ),
       );
     }
@@ -3120,8 +3226,15 @@ async function ensureFreshCachedDocumentAsync(document: TextDocument): Promise<C
   return rememberInFlightDocumentRefresh(
     document,
     parseIdentity,
-    withServerStatusAsync("analyzing", "document.analysis", () =>
-      refreshCachedDocumentSkeletonAsync(document),
+    withProgressTaskAsync(
+      "analyzing",
+      "document.analysis",
+      { current: 0, total: 1, detail: progressFileLabelFromUri(document.uri) },
+      async (task) => {
+        const cached = await refreshCachedDocumentSkeletonAsync(document);
+        task.update({ current: 1 });
+        return cached;
+      },
     ),
   );
 }
@@ -3291,9 +3404,7 @@ async function scheduleDiagnosticsAsync(document: TextDocument): Promise<CachedD
   });
   const delay = settings.diagnostics?.debounceMs ?? defaultDiagnosticsDebounceMs;
   if (delay <= 0) {
-    void withServerStatusAsync("analyzing", "diagnostics", () =>
-      runStagedDiagnostics(cached, settings, state),
-    );
+    void runStagedDiagnosticsWithProgress(cached, settings, state);
     return cached;
   }
   diagnosticsTimers.set(
@@ -3304,9 +3415,7 @@ async function scheduleDiagnosticsAsync(document: TextDocument): Promise<CachedD
         logStaleStagedDiagnostics(settings, state, "include");
         return;
       }
-      void withServerStatusAsync("analyzing", "diagnostics", () =>
-        runStagedDiagnostics(cached, settings, state),
-      );
+      void runStagedDiagnosticsWithProgress(cached, settings, state);
     }, delay),
   );
   return cached;
@@ -3360,17 +3469,33 @@ function startStagedDiagnostics(
   );
   publishStagedDiagnosticsLayer(cached, settings, state, "fast");
   if (runAsyncLayers) {
-    void withServerStatusAsync("analyzing", "diagnostics", () =>
-      runStagedDiagnostics(cached, settings, state),
-    );
+    void runStagedDiagnosticsWithProgress(cached, settings, state);
   }
   return state;
+}
+
+async function runStagedDiagnosticsWithProgress(
+  cached: CachedDocument,
+  settings: AspSettings,
+  state: StagedDiagnosticsState,
+): Promise<void> {
+  const task = beginProgressTask("analyzing", "diagnostics", {
+    current: 0,
+    total: 3,
+    detail: progressFileLabelFromUri(cached.source.uri),
+  });
+  try {
+    await runStagedDiagnostics(cached, settings, state, task);
+  } finally {
+    task.end();
+  }
 }
 
 async function runStagedDiagnostics(
   cached: CachedDocument,
   settings: AspSettings,
   state: StagedDiagnosticsState,
+  progress?: AspLspProgressTaskHandle,
 ): Promise<void> {
   const cancellation: AnalysisCancellation = {
     isCancellationRequested: () => !isCurrentStagedDiagnostics(cached, state),
@@ -3398,6 +3523,7 @@ async function runStagedDiagnostics(
   }
   state.layers.include = includeItems;
   publishStagedDiagnosticsLayer(cached, settings, state, "include");
+  progress?.step("diagnostics.include");
   await yieldToEventLoop();
 
   if (!isCurrentStagedDiagnostics(cached, state)) {
@@ -3406,6 +3532,7 @@ async function runStagedDiagnostics(
   }
   state.layers.syntax = syntaxItems;
   publishStagedDiagnosticsLayer(cached, settings, state, "syntax");
+  progress?.step("diagnostics.syntax");
   await yieldToEventLoop();
 
   if (!isCurrentStagedDiagnostics(cached, state)) {
@@ -3415,6 +3542,7 @@ async function runStagedDiagnostics(
   state.layers.project = await projectItemsPromise;
   shareStagedAnalysisWithCurrentCache(cached, state);
   publishStagedDiagnosticsLayer(cached, settings, state, "project");
+  progress?.step("diagnostics.project");
   if (!isCurrentStagedDiagnostics(cached, state)) {
     logStaleStagedDiagnostics(settings, state, "final");
     return;
@@ -3822,18 +3950,77 @@ async function mapWithConcurrency<T, U>(
   items: readonly T[],
   concurrency: number,
   callback: (item: T, index: number) => Promise<U>,
+  progress?: {
+    onItemStart?: (item: T, index: number, workerIndex: number) => void;
+    onItemDone?: (item: T, index: number, workerIndex: number) => void;
+  },
 ): Promise<U[]> {
   const results = Array.from<U>({ length: items.length });
   let next = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await callback(items[index], index);
-    }
-  });
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async (_, workerIndex) => {
+      while (next < items.length) {
+        const index = next;
+        next += 1;
+        progress?.onItemStart?.(items[index], index, workerIndex);
+        try {
+          results[index] = await callback(items[index], index);
+        } finally {
+          progress?.onItemDone?.(items[index], index, workerIndex);
+        }
+      }
+    },
+  );
   await Promise.all(workers);
   return results;
+}
+
+function progressMapHooks<T>(
+  handle: AspLspProgressTaskHandle,
+  labelForItem: (item: T, index: number) => string,
+  initialCompleted = 0,
+): {
+  onItemStart(item: T, index: number, workerIndex: number): void;
+  onItemDone(item: T, index: number, workerIndex: number): void;
+} {
+  const active = new Map<number, string>();
+  let completed = initialCompleted;
+  const publish = (detail?: string): void => {
+    handle.update({
+      current: completed,
+      detail,
+      activeItems: [...active.entries()]
+        .sort((left, right) => left[0] - right[0])
+        .map(([, label]) => label),
+    });
+  };
+  return {
+    onItemStart(item, index, workerIndex) {
+      active.set(workerIndex, labelForItem(item, index));
+      publish(active.get(workerIndex));
+    },
+    onItemDone(_item, _index, workerIndex) {
+      active.delete(workerIndex);
+      completed += 1;
+      publish();
+    },
+  };
+}
+
+function progressFileLabelFromUri(uri: string): string {
+  return uri.startsWith("file://") ? progressFileLabel(graphFileNameFromUri(uri)) : uri;
+}
+
+function progressFileLabel(fileName: string): string {
+  const normalized = normalizeFileName(fileName);
+  const root = workspaceRoots
+    .map(normalizeFileName)
+    .sort((left, right) => right.length - left.length)
+    .find((candidate) => isFileInDirectoryOrEqual(normalized, candidate));
+  return root
+    ? path.relative(root, normalized) || path.basename(normalized)
+    : path.basename(normalized);
 }
 
 function clampAnalysisConcurrency(value: number | undefined, fallback: number): number {
@@ -3863,11 +4050,7 @@ function noteForegroundActivity(): void {
 }
 
 function beginServerStatus(kind: ActiveAspLspStatusKind, reason: string): () => void {
-  if (kind === "loading") {
-    loadingStatusDepth += 1;
-  } else {
-    analyzingStatusDepth += 1;
-  }
+  incrementServerStatus(kind);
   publishServerStatus(reason);
   let ended = false;
   return () => {
@@ -3875,11 +4058,7 @@ function beginServerStatus(kind: ActiveAspLspStatusKind, reason: string): () => 
       return;
     }
     ended = true;
-    if (kind === "loading") {
-      loadingStatusDepth = Math.max(0, loadingStatusDepth - 1);
-    } else {
-      analyzingStatusDepth = Math.max(0, analyzingStatusDepth - 1);
-    }
+    decrementServerStatus(kind);
     publishServerStatus(reason);
   };
 }
@@ -3897,14 +4076,180 @@ async function withServerStatusAsync<T>(
   }
 }
 
-function publishServerStatus(reason: string): void {
+async function withProgressTaskAsync<T>(
+  kind: ActiveAspLspStatusKind,
+  label: string,
+  options: AspLspProgressTaskOptions,
+  callback: (task: AspLspProgressTaskHandle) => Promise<T>,
+): Promise<T> {
+  const task = beginProgressTask(kind, label, options);
+  try {
+    return await callback(task);
+  } finally {
+    task.end();
+  }
+}
+
+function beginProgressTask(
+  kind: ActiveAspLspStatusKind,
+  label: string,
+  options: AspLspProgressTaskOptions = {},
+): AspLspProgressTaskHandle {
+  const id = `task-${++progressTaskSequence}`;
+  const task: AspLspProgressTask = {
+    id,
+    kind,
+    label,
+    detail: options.detail,
+    current: options.current,
+    total: options.total,
+    activeItems: options.activeItems,
+    cancellable: options.cancellable === true,
+    state: "running",
+    startedAt: Date.now(),
+    cancelRequested: false,
+  };
+  progressTasks.set(id, task);
+  incrementServerStatus(kind);
+  publishServerStatus(label, true);
+  let ended = false;
+  const handle: AspLspProgressTaskHandle = {
+    id,
+    isCancellationRequested: () => task.cancelRequested,
+    update(update) {
+      if (ended) {
+        return;
+      }
+      if (update.detail !== undefined) {
+        task.detail = update.detail;
+      }
+      if (update.current !== undefined) {
+        task.current = update.current;
+      }
+      if (update.total !== undefined) {
+        task.total = update.total;
+      }
+      if (update.activeItems !== undefined) {
+        task.activeItems = update.activeItems;
+      }
+      publishServerStatus(label, true);
+    },
+    step(detail) {
+      if (ended) {
+        return;
+      }
+      task.current = Math.max(0, (task.current ?? 0) + 1);
+      if (detail !== undefined) {
+        task.detail = detail;
+      }
+      publishServerStatus(label, true);
+    },
+    end() {
+      if (ended) {
+        return;
+      }
+      ended = true;
+      progressTasks.delete(id);
+      decrementServerStatus(kind);
+      publishServerStatus(label, true);
+    },
+  };
+  return handle;
+}
+
+function incrementServerStatus(kind: ActiveAspLspStatusKind): void {
+  if (kind === "loading") {
+    loadingStatusDepth += 1;
+  } else {
+    analyzingStatusDepth += 1;
+  }
+}
+
+function decrementServerStatus(kind: ActiveAspLspStatusKind): void {
+  if (kind === "loading") {
+    loadingStatusDepth = Math.max(0, loadingStatusDepth - 1);
+  } else {
+    analyzingStatusDepth = Math.max(0, analyzingStatusDepth - 1);
+  }
+}
+
+function cancelProgressTask(id: string): boolean {
+  const task = progressTasks.get(id);
+  if (!task || !task.cancellable) {
+    return false;
+  }
+  task.cancelRequested = true;
+  task.state = "cancelling";
+  publishServerStatus("task.cancel", true);
+  return true;
+}
+
+function progressCancellation(
+  handle: AspLspProgressTaskHandle | undefined,
+  parent: AnalysisCancellation = neverCancelled,
+): AnalysisCancellation {
+  return {
+    isCancellationRequested: () =>
+      parent.isCancellationRequested() || handle?.isCancellationRequested() === true,
+  };
+}
+
+function tokenFromAnalysisCancellation(cancellation: AnalysisCancellation): {
+  readonly isCancellationRequested: boolean;
+} {
+  return {
+    get isCancellationRequested() {
+      return cancellation.isCancellationRequested();
+    },
+  };
+}
+
+function publishServerStatus(reason: string, force = false): void {
   const nextKind =
     analyzingStatusDepth > 0 ? "analyzing" : loadingStatusDepth > 0 ? "loading" : "idle";
-  if (nextKind === currentStatusKind) {
+  const tasks = [...progressTasks.values()].map(progressTaskSnapshot);
+  const progress = aggregateProgress(tasks);
+  const payload = { status: nextKind, reason, progress, tasks };
+  const payloadKey = JSON.stringify(payload);
+  if (!force && nextKind === currentStatusKind && payloadKey === lastPublishedStatusPayload) {
     return;
   }
   currentStatusKind = nextKind;
-  connection.sendNotification(statusNotificationMethod, { status: nextKind, reason });
+  lastPublishedStatusPayload = payloadKey;
+  connection.sendNotification(statusNotificationMethod, payload);
+}
+
+function progressTaskSnapshot(task: AspLspProgressTask): AspLspProgressTaskSnapshot {
+  return {
+    id: task.id,
+    kind: task.kind,
+    label: task.label,
+    detail: task.detail,
+    current: task.current,
+    total: task.total,
+    activeItems: task.activeItems,
+    cancellable: task.cancellable,
+    state: task.state,
+    startedAt: task.startedAt,
+  };
+}
+
+function aggregateProgress(
+  tasks: AspLspProgressTaskSnapshot[],
+): { current: number; total: number } | undefined {
+  const measurable = tasks.filter(
+    (task) => typeof task.current === "number" && typeof task.total === "number",
+  );
+  if (measurable.length === 0) {
+    return undefined;
+  }
+  return measurable.reduce(
+    (total, task) => ({
+      current: total.current + (task.current ?? 0),
+      total: total.total + (task.total ?? 0),
+    }),
+    { current: 0, total: 0 },
+  );
 }
 
 function scheduleProjectUpdate(reason: string): void {
@@ -11901,14 +12246,24 @@ async function ensureWorkspaceIndexAsync(
       return;
     }
   }
-  await withServerStatusAsync("loading", "workspace.index", async () => {
+  const maxFiles = settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles;
+  const task = beginProgressTask("loading", "workspace.index", {
+    current: 0,
+    total: maxFiles,
+    cancellable: true,
+  });
+  try {
     workspaceIndex.clear();
     workspaceIndexTruncated = false;
     let scannedFiles = 0;
-    const maxFiles = settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles;
     const chunkSize = settings.workspace?.scanChunkSize ?? defaultScanChunkSize;
+    const scanToken = {
+      get isCancellationRequested() {
+        return token?.isCancellationRequested === true || task.isCancellationRequested();
+      },
+    };
     for (const root of workspaceIndexRoots()) {
-      if (token?.isCancellationRequested || scannedFiles >= maxFiles) {
+      if (scanToken.isCancellationRequested || scannedFiles >= maxFiles) {
         break;
       }
       const filter = await createWorkspaceScanFilter(root, settings);
@@ -11918,14 +12273,16 @@ async function ensureWorkspaceIndexAsync(
           scannedFiles,
           maxFiles,
           chunkSize,
-          token,
+          token: scanToken,
+          progress: task,
         },
         filter,
         settings,
       );
+      task.update({ current: Math.min(scannedFiles, maxFiles), detail: progressFileLabel(root) });
     }
     workspaceIndexTruncated = scannedFiles >= maxFiles;
-    workspaceIndexDirty = Boolean(token?.isCancellationRequested);
+    workspaceIndexDirty = scanToken.isCancellationRequested;
     workspaceIndexRestoreAllowed = workspaceIndexDirty;
     if (!workspaceIndexDirty) {
       await writeWorkspaceIndexToDiskAsync(settings);
@@ -11935,7 +12292,9 @@ async function ensureWorkspaceIndexAsync(
         createLocalizer(settings.resolvedLocale).t("server.workspaceIndex.truncated", { maxFiles }),
       );
     }
-  });
+  } finally {
+    task.end();
+  }
 }
 
 async function indexWorkspaceRootAsync(
@@ -11945,6 +12304,7 @@ async function indexWorkspaceRootAsync(
     maxFiles: number;
     chunkSize: number;
     token?: { isCancellationRequested?: boolean };
+    progress?: AspLspProgressTaskHandle;
   },
   filter: WorkspaceScanFilter,
   settings: AspSettings,
@@ -11972,8 +12332,14 @@ async function indexWorkspaceRootAsync(
           directories.push(fullPath);
         }
       } else if (entry.isFile() && workspaceScanFilterIncludesFile(filter, fullPath)) {
-        await indexWorkspaceFileAsync(fullPath, settings);
+        await indexWorkspaceFileAsync(fullPath, settings, { silentStatus: true });
         scannedFiles += 1;
+        if (scannedFiles % state.chunkSize === 0 || scannedFiles >= state.maxFiles) {
+          state.progress?.update({
+            current: Math.min(scannedFiles, state.maxFiles),
+            detail: progressFileLabel(fullPath),
+          });
+        }
       }
       operations += 1;
       if (operations % state.chunkSize === 0) {
@@ -11984,8 +12350,12 @@ async function indexWorkspaceRootAsync(
   return scannedFiles;
 }
 
-async function indexWorkspaceFileAsync(fileName: string, settings: AspSettings): Promise<void> {
-  await withServerStatusAsync("loading", "workspace.indexFile", async () => {
+async function indexWorkspaceFileAsync(
+  fileName: string,
+  settings: AspSettings,
+  options: { silentStatus?: boolean } = {},
+): Promise<void> {
+  const run = async (): Promise<void> => {
     const normalized = normalizeFileName(fileName);
     const fileKey = fileIdentityKeyFromFileName(normalized);
     if (!(await shouldIndexWorkspaceFileAsync(normalized, settings))) {
@@ -12015,7 +12385,12 @@ async function indexWorkspaceFileAsync(fileName: string, settings: AspSettings):
       mtimeMs: stat.mtimeMs,
       size: stat.size,
     });
-  });
+  };
+  if (options.silentStatus === true) {
+    await run();
+    return;
+  }
+  await withServerStatusAsync("loading", "workspace.indexFile", run);
 }
 
 async function restoreWorkspaceIndexFromDiskAsync(settings: AspSettings): Promise<boolean> {
@@ -16813,27 +17188,67 @@ function mergeWorkspaceEdits(
   return Object.keys(changes).length > 0 ? { changes } : undefined;
 }
 
-async function buildAspFlowchartForCommand(argument: unknown): Promise<AspFlowchartPayload> {
+async function buildAspFlowchartForCommand(
+  argument: unknown,
+  token?: GraphCancellationToken,
+): Promise<AspFlowchartPayload> {
+  const task = beginProgressTask("analyzing", "flowchart.build", {
+    cancellable: true,
+  });
+  const cancellation = progressCancellation(task, analysisCancellationFromToken(token));
+  const operationCache: GraphFileIndexOperationCache = new Map();
+  try {
+    return await buildAspFlowchartForCommandWithProgress(
+      argument,
+      cancellation,
+      task,
+      operationCache,
+    );
+  } finally {
+    task.end();
+  }
+}
+
+async function buildAspFlowchartForCommandWithProgress(
+  argument: unknown,
+  cancellation: AnalysisCancellation,
+  progress: AspLspProgressTaskHandle,
+  operationCache: GraphFileIndexOperationCache,
+): Promise<AspFlowchartPayload> {
   const uri = graphCommandUri(argument) ?? documents.all()[0]?.uri;
   const cached = uri ? await cachedDocumentForGraphAsync(uri) : undefined;
+  throwIfGraphCancelled(cancellation);
   if (!cached) {
     return emptyAspFlowchartPayload(uri);
   }
   const settings = cachedSettings(cached.source.uri);
+  progress.update({ detail: progressFileLabelFromUri(cached.source.uri) });
   await hydrateCachedVbscriptCstAsync(cached, settings, "flowchart");
-  const documentsForFlowchart = await collectDocumentGraphDocumentsAsync(cached, settings);
+  const documentsForFlowchart = await collectDocumentGraphDocumentsAsync(
+    cached,
+    settings,
+    cancellation,
+  );
+  progress.update({ current: 0, total: documentsForFlowchart.length });
   const rawIndexedDocuments = await mapWithConcurrency(
     uniqueAspGraphDocuments(documentsForFlowchart),
     analysisConcurrency(settings),
     async (document): Promise<AspGraphIndexedDocument> => {
-      const graphIndex = await graphFileIndexForDocumentAsync(document, settings);
+      throwIfGraphCancelled(cancellation);
+      const graphIndex = await graphFileIndexForDocumentAsync(document, settings, {
+        operationCache,
+      });
+      throwIfGraphCancelled(cancellation);
       return { document, graphIndex };
     },
+    progressMapHooks(progress, (document) => progressFileLabel(document.fileName)),
   );
   const indexedDocuments = await canonicalizeImplicitGlobalIndexedDocumentsAsync(
     rawIndexedDocuments,
     settings,
+    cancellation,
   );
+  throwIfGraphCancelled(cancellation);
   return buildAspFlowchart(cached.parsed, {
     fileName: flowchartDisplayFileName(graphFileNameFromUri(cached.source.uri)),
     includes: await flowchartIncludesForDocumentAsync(cached.parsed, settings),
@@ -16983,23 +17398,45 @@ async function buildAspGraphForCommand(
   argument: unknown,
   token?: GraphCancellationToken,
 ): Promise<AspGraphPayload> {
-  const cancellation = analysisCancellationFromToken(token);
-  throwIfGraphCancelled(cancellation);
   const scope = graphCommandScope(argument);
   const uri = graphCommandUri(argument);
-  if (scope === "workspace") {
-    return buildWorkspaceAspGraphAsync(token, cancellation);
-  }
-  if (scope === "folder") {
-    return buildFolderAspGraphAsync(uri, token, cancellation);
-  }
-  return buildDocumentAspGraphAsync(uri ?? documents.all()[0]?.uri, cancellation, {
-    includeIncomingDocumentIncludes: graphCommandIncludeIncomingDocumentIncludes(argument),
-    includeRelatedIncludeTreesForUnresolved:
-      graphCommandIncludeRelatedIncludeTreesForUnresolved(argument),
-    forceRelatedIncludeTreeAnalysis: graphCommandForceRelatedIncludeTreeAnalysis(argument),
-    includeAnalysisTypeDetails: graphCommandIncludeAnalysisTypeDetails(argument),
+  const task = beginProgressTask("analyzing", `graph.${scope}`, {
+    cancellable: true,
+    detail: uri ? progressFileLabelFromUri(uri) : undefined,
   });
+  const cancellation = progressCancellation(task, analysisCancellationFromToken(token));
+  const operationCache: GraphFileIndexOperationCache = new Map();
+  try {
+    throwIfGraphCancelled(cancellation);
+    if (scope === "workspace") {
+      return buildWorkspaceAspGraphAsync(
+        tokenFromAnalysisCancellation(cancellation),
+        cancellation,
+        task,
+        operationCache,
+      );
+    }
+    if (scope === "folder") {
+      return buildFolderAspGraphAsync(
+        uri,
+        tokenFromAnalysisCancellation(cancellation),
+        cancellation,
+        task,
+        operationCache,
+      );
+    }
+    return buildDocumentAspGraphAsync(uri ?? documents.all()[0]?.uri, cancellation, {
+      includeIncomingDocumentIncludes: graphCommandIncludeIncomingDocumentIncludes(argument),
+      includeRelatedIncludeTreesForUnresolved:
+        graphCommandIncludeRelatedIncludeTreesForUnresolved(argument),
+      forceRelatedIncludeTreeAnalysis: graphCommandForceRelatedIncludeTreeAnalysis(argument),
+      includeAnalysisTypeDetails: graphCommandIncludeAnalysisTypeDetails(argument),
+      progress: task,
+      operationCache,
+    });
+  } finally {
+    task.end();
+  }
 }
 
 function graphCommandScope(argument: unknown): AspGraphScope {
@@ -17093,6 +17530,8 @@ async function buildDocumentAspGraphAsync(
     includeRelatedIncludeTreesForUnresolved?: boolean;
     forceRelatedIncludeTreeAnalysis?: boolean;
     includeAnalysisTypeDetails?: boolean;
+    progress?: AspLspProgressTaskHandle;
+    operationCache?: GraphFileIndexOperationCache;
   } = {},
 ): Promise<AspGraphPayload> {
   throwIfGraphCancelled(cancellation);
@@ -17118,6 +17557,7 @@ async function buildDocumentAspGraphAsync(
         documentsForGraph,
         settings,
         cancellation,
+        options.operationCache,
       )))
   ) {
     documentsForGraph.push(
@@ -17155,6 +17595,8 @@ async function buildDocumentAspGraphAsync(
     rootUri: cached.source.uri,
     cancellation,
     includeAnalysisTypeDetails: options.includeAnalysisTypeDetails,
+    progress: options.progress,
+    operationCache: options.operationCache,
   });
   return payload;
 }
@@ -17163,6 +17605,8 @@ async function buildFolderAspGraphAsync(
   uri: string | undefined,
   token?: GraphCancellationToken,
   cancellation: AnalysisCancellation = neverCancelled,
+  progress?: AspLspProgressTaskHandle,
+  operationCache?: GraphFileIndexOperationCache,
 ): Promise<AspGraphPayload> {
   throwIfGraphCancelled(cancellation);
   const folderName = await graphCommandFolderNameAsync(uri);
@@ -17178,6 +17622,11 @@ async function buildFolderAspGraphAsync(
   const openDocuments = await workspaceAnalyzableOpenDocumentsAsync(settings);
   throwIfGraphCancelled(cancellation);
   const concurrency = analysisConcurrency(settings);
+  progress?.update({
+    current: 0,
+    total: openDocuments.length,
+    detail: progressFileLabel(folderName),
+  });
   const openGraphDocuments = await mapWithConcurrency(
     openDocuments,
     concurrency,
@@ -17191,6 +17640,9 @@ async function buildFolderAspGraphAsync(
       throwIfGraphCancelled(cancellation);
       return graphDocumentFromCachedAsync(cached, cachedSettings(cached.source.uri));
     },
+    progress
+      ? progressMapHooks(progress, (document) => progressFileLabelFromUri(document.uri))
+      : undefined,
   );
   for (const graphDocument of openGraphDocuments) {
     if (!graphDocument) {
@@ -17203,6 +17655,10 @@ async function buildFolderAspGraphAsync(
     (entry) =>
       !opened.has(graphFileKey(entry.fileName)) && isFileInDirectory(entry.fileName, folderName),
   );
+  progress?.update({
+    current: openDocuments.length,
+    total: openDocuments.length + indexedEntries.length,
+  });
   const indexedGraphDocuments = await mapWithConcurrency(
     indexedEntries,
     concurrency,
@@ -17212,6 +17668,13 @@ async function buildFolderAspGraphAsync(
       throwIfGraphCancelled(cancellation);
       return graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri));
     },
+    progress
+      ? progressMapHooks(
+          progress,
+          (entry) => progressFileLabel(entry.fileName),
+          openDocuments.length,
+        )
+      : undefined,
   );
   documentsForGraph.push(...indexedGraphDocuments);
   if (settings.graph?.showIncomingFolderIncludes === true) {
@@ -17242,6 +17705,8 @@ async function buildFolderAspGraphAsync(
         }
       : undefined,
     cancellation,
+    progress,
+    operationCache,
   });
   return payload;
 }
@@ -17249,6 +17714,8 @@ async function buildFolderAspGraphAsync(
 async function buildWorkspaceAspGraphAsync(
   token?: GraphCancellationToken,
   cancellation: AnalysisCancellation = neverCancelled,
+  progress?: AspLspProgressTaskHandle,
+  operationCache?: GraphFileIndexOperationCache,
 ): Promise<AspGraphPayload> {
   throwIfGraphCancelled(cancellation);
   const settings = globalSettings;
@@ -17259,6 +17726,7 @@ async function buildWorkspaceAspGraphAsync(
   const openDocuments = await workspaceAnalyzableOpenDocumentsAsync(settings);
   throwIfGraphCancelled(cancellation);
   const concurrency = analysisConcurrency(settings);
+  progress?.update({ current: 0, total: openDocuments.length });
   const openGraphDocuments = await mapWithConcurrency(
     openDocuments,
     concurrency,
@@ -17268,6 +17736,9 @@ async function buildWorkspaceAspGraphAsync(
       throwIfGraphCancelled(cancellation);
       return graphDocumentFromCachedAsync(cached, cachedSettings(cached.source.uri));
     },
+    progress
+      ? progressMapHooks(progress, (document) => progressFileLabelFromUri(document.uri))
+      : undefined,
   );
   for (const graphDocument of openGraphDocuments) {
     opened.add(graphFileKey(graphDocument.fileName));
@@ -17276,6 +17747,10 @@ async function buildWorkspaceAspGraphAsync(
   const indexedEntries = [...workspaceIndex.values()].filter(
     (entry) => !opened.has(graphFileKey(entry.fileName)),
   );
+  progress?.update({
+    current: openDocuments.length,
+    total: openDocuments.length + indexedEntries.length,
+  });
   const indexedGraphDocuments = await mapWithConcurrency(
     indexedEntries,
     concurrency,
@@ -17285,6 +17760,13 @@ async function buildWorkspaceAspGraphAsync(
       throwIfGraphCancelled(cancellation);
       return graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri));
     },
+    progress
+      ? progressMapHooks(
+          progress,
+          (entry) => progressFileLabel(entry.fileName),
+          openDocuments.length,
+        )
+      : undefined,
   );
   documentsForGraph.push(...indexedGraphDocuments);
   const payload = await graphPayloadFromDocumentsAsync("workspace", documentsForGraph, settings, {
@@ -17294,6 +17776,8 @@ async function buildWorkspaceAspGraphAsync(
         }
       : undefined,
     cancellation,
+    progress,
+    operationCache,
   });
   return payload;
 }
@@ -17416,6 +17900,7 @@ async function graphDocumentsNeedRelatedIncludeTreeAnalysisAsync(
   documentsForGraph: AspGraphDocument[],
   settings: AspSettings,
   cancellation: AnalysisCancellation,
+  operationCache?: GraphFileIndexOperationCache,
 ): Promise<boolean> {
   const externalSymbols = createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings));
   const indexedDocuments = await mapWithConcurrency(
@@ -17423,7 +17908,9 @@ async function graphDocumentsNeedRelatedIncludeTreeAnalysisAsync(
     analysisConcurrency(settings),
     async (document): Promise<VbSymbolIndex> => {
       throwIfGraphCancelled(cancellation);
-      const graphIndex = await graphFileIndexForDocumentAsync(document, settings);
+      const graphIndex = await graphFileIndexForDocumentAsync(document, settings, {
+        operationCache,
+      });
       throwIfGraphCancelled(cancellation);
       return graphIndex.vbSymbolIndex;
     },
@@ -17606,7 +18093,10 @@ async function collectIncomingIncludeGraphDocumentsAsync(
   if (targets.size === 0) {
     return [];
   }
-  await ensureWorkspaceIndexAsync(settings, options.token);
+  await ensureWorkspaceIndexAsync(
+    settings,
+    options.token ?? tokenFromAnalysisCancellation(cancellation),
+  );
   throwIfGraphCancelled(cancellation);
   const excludedFileKeys = options.excludedFileKeys ?? new Set<string>();
   const documentsForGraph: AspGraphDocument[] = [];
@@ -17738,6 +18228,8 @@ async function graphPayloadFromDocumentsAsync(
     truncated?: AspGraphPayload["truncated"];
     cancellation?: AnalysisCancellation;
     includeAnalysisTypeDetails?: boolean;
+    progress?: AspLspProgressTaskHandle;
+    operationCache?: GraphFileIndexOperationCache;
   } = {},
 ): Promise<AspGraphPayload> {
   const cancellation = options.cancellation ?? neverCancelled;
@@ -17750,6 +18242,7 @@ async function graphPayloadFromDocumentsAsync(
     throwIfGraphCancelled(cancellation);
     addFileGraphNode(state, document.fileName, true);
   }
+  options.progress?.update({ current: 0, total: uniqueDocuments.length });
   const rawIndexedDocuments = await mapWithConcurrency(
     uniqueDocuments,
     analysisConcurrency(settings),
@@ -17757,10 +18250,14 @@ async function graphPayloadFromDocumentsAsync(
       throwIfGraphCancelled(cancellation);
       const graphIndex = await graphFileIndexForDocumentAsync(document, settings, {
         includeTypeHints: options.includeAnalysisTypeDetails === true,
+        operationCache: options.operationCache,
       });
       throwIfGraphCancelled(cancellation);
       return { document, graphIndex };
     },
+    options.progress
+      ? progressMapHooks(options.progress, (document) => progressFileLabel(document.fileName))
+      : undefined,
   );
   const indexedDocuments = await canonicalizeImplicitGlobalIndexedDocumentsAsync(
     rawIndexedDocuments,
@@ -19254,9 +19751,16 @@ function graphDocumentFromIncludeEntry(entry: IncludeDocumentCacheEntry): AspGra
 async function graphFileIndexForDocumentAsync(
   document: AspGraphDocument,
   settings: AspSettings,
-  options: { includeTypeHints?: boolean } = {},
+  options: { includeTypeHints?: boolean; operationCache?: GraphFileIndexOperationCache } = {},
 ): Promise<GraphFileIndex> {
   const settingsKey = graphFileIndexSettingsKey(settings);
+  const baseKey = JSON.stringify({
+    fileName: graphFileKey(document.fileName),
+    source: diskAnalysisSourceIdentity(document.source),
+    settings: settingsKey,
+    text: document.diskBacked ? undefined : textFingerprint(document.text),
+    typeHints: false,
+  });
   const key = JSON.stringify({
     fileName: graphFileKey(document.fileName),
     source: diskAnalysisSourceIdentity(document.source),
@@ -19270,8 +19774,31 @@ async function graphFileIndexForDocumentAsync(
     existing.lastUsed = Date.now();
     return existing;
   }
+  if (options.includeTypeHints === true && existing?.key === baseKey) {
+    const typeHints = await graphDeclarationTypeHintsForDocumentAsync(document, settings);
+    const entry: GraphFileIndex = { ...existing, key, typeHints, lastUsed: Date.now() };
+    graphFileIndexCache.set(documentKey, entry);
+    logDebugSummary(settings, `[asp-lsp] graphVbIndex.extendTypeHints: ${document.uri}`);
+    return entry;
+  }
+  const operationBasePending =
+    options.includeTypeHints === true ? options.operationCache?.get(baseKey) : undefined;
+  if (operationBasePending) {
+    const baseEntry = await operationBasePending;
+    const typeHints = await graphDeclarationTypeHintsForDocumentAsync(document, settings);
+    const entry: GraphFileIndex = { ...baseEntry, key, typeHints, lastUsed: Date.now() };
+    graphFileIndexCache.set(documentKey, entry);
+    options.operationCache?.set(key, Promise.resolve(entry));
+    logDebugSummary(settings, `[asp-lsp] graphVbIndex.operationReuse: ${document.uri}`);
+    return entry;
+  }
+  const operationPending = options.operationCache?.get(key);
+  if (operationPending) {
+    return operationPending;
+  }
   const pending = graphFileIndexInFlight.get(key);
   if (pending) {
+    options.operationCache?.set(key, pending);
     return pending;
   }
   const promise = (async () => {
@@ -19333,6 +19860,7 @@ async function graphFileIndexForDocumentAsync(
     }
     return entry;
   })();
+  options.operationCache?.set(key, promise);
   graphFileIndexInFlight.set(key, promise);
   try {
     return await promise;
@@ -19340,6 +19868,7 @@ async function graphFileIndexForDocumentAsync(
     if (graphFileIndexInFlight.get(key) === promise) {
       graphFileIndexInFlight.delete(key);
     }
+    void promise.catch(() => options.operationCache?.delete(key));
   }
 }
 

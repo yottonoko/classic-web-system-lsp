@@ -235,12 +235,26 @@ M
         const uri = "file:///tmp/status.asp";
         openClassicAspDocument(server, uri, '<% Dim value\nvalue = "ok" %>');
 
-        expect((await waitForStatus(server, "analyzing")).params).toEqual(
-          expect.objectContaining({ status: "analyzing" }),
+        const analyzingStatus = await waitForStatus(server, "analyzing");
+        expect(analyzingStatus.params).toEqual(expect.objectContaining({ status: "analyzing" }));
+        expect(analyzingStatus.params).toEqual(
+          expect.objectContaining({
+            progress: expect.objectContaining({
+              current: expect.any(Number),
+              total: expect.any(Number),
+            }),
+            tasks: expect.arrayContaining([
+              expect.objectContaining({
+                id: expect.any(String),
+                current: expect.any(Number),
+                total: expect.any(Number),
+              }),
+            ]),
+          }),
         );
         await waitForDiagnosticsPublished(server, uri);
         expect((await waitForStatus(server, "idle")).params).toEqual(
-          expect.objectContaining({ status: "idle" }),
+          expect.objectContaining({ status: "idle", tasks: [] }),
         );
 
         await server.request("shutdown", null);
@@ -10559,6 +10573,56 @@ End Sub
         expect(normalizeGraph(secondGraph)).toEqual(normalizeGraph(firstGraph));
         await waitForLogContaining(server, "diskParsed.hit");
         await waitForLogContaining(server, "graphVbIndex.hit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("reuses cold graph symbol indexes when adding analysis type details", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-local-cache-"));
+      const uri = `file://${path.join(tempDir, "default.asp")}`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { debug: { output: "summary" } } },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<%
+implicitTotal = 1
+Function BuildValue()
+  BuildValue = implicitTotal
+End Function
+%>`,
+          },
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [
+            {
+              uri,
+              includeRelatedIncludeTreesForUnresolved: true,
+              includeAnalysisTypeDetails: true,
+            },
+          ],
+        })) as { nodes?: Array<Record<string, unknown>> };
+
+        expect(graph.nodes?.some((node) => node.label === "BuildValue")).toBe(true);
+        await waitForLogContaining(server, "graphVbIndex.extendTypeHints");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

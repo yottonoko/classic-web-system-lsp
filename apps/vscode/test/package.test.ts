@@ -393,11 +393,14 @@ describe("VS Code extension package", () => {
       manifest.contributes?.commands?.find((command) => command.command === "aspLsp.restartServer")
         ?.title,
     ).toBe("%command.restartServer.title%");
+    expect(nls["command.showProgressDetails.title"]).toBe("Classic ASP: Show Progress Details");
+    expect(nlsJa["command.showProgressDetails.title"]).toBe("Classic ASP: 進行状況を表示");
     expect(commands).toContain("aspLsp.reindexWorkspace");
     expect(commands).toContain("aspLsp.clearCache");
     expect(commands).toContain("aspLsp.clearDiskCache");
     expect(commands).toContain("aspLsp.clearProcessCache");
     expect(commands).toContain("aspLsp.openOutput");
+    expect(commands).toContain("aspLsp.showProgressDetails");
     expect(commands).toContain("aspLsp.debugIisUrl");
     expect(commands).toContain("aspLsp.debugIisExpressUrl");
     expect(commands).toContain("aspLsp.createLaunchConfig");
@@ -408,7 +411,12 @@ describe("VS Code extension package", () => {
     expect(extensionSourceText).not.toContain(removedAnalysisEnv);
     expect(extensionSourceText).not.toContain(`aspLsp.${removedAnalysisSetting}`);
     expect(extensionSourceText).toContain('const serverStatusNotificationMethod = "aspLsp/status"');
+    expect(extensionSourceText).toContain(
+      'const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask"',
+    );
     expect(extensionSourceText).toContain("handleServerStatusNotification");
+    expect(extensionSourceText).toContain("showProgressDetails");
+    expect(extensionSourceText).toContain('statusBarItem.command = "aspLsp.showProgressDetails"');
     expect(extensionSourceText).toContain("status.loading.text");
     expect(extensionSourceText).toContain("status.analyzing.text");
     expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(

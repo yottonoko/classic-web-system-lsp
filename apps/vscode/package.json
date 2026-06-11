@@ -1044,6 +1044,10 @@
         "title": "%command.openOutput.title%"
       },
       {
+        "command": "aspLsp.showProgressDetails",
+        "title": "%command.showProgressDetails.title%"
+      },
+      {
         "command": "aspLsp.showCurrentFileGraph",
         "title": "%command.showCurrentFileGraph.title%",
         "icon": "$(graph)"

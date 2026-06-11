@@ -37,6 +37,7 @@ const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
+const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const serverStatusNotificationMethod = "aspLsp/status";
 const htmlTagCompleteLookBehind = 2000;
 const defaultFlowchartMaxTextSize = 2_000_000;
@@ -49,6 +50,27 @@ type GraphScope = "document" | "folder" | "workspace";
 type WebviewThemeSetting = AspGraphWebviewThemeSetting & AspFlowchartWebviewThemeSetting;
 type InfoPanelPosition = AspGraphInfoPanelPosition;
 type ServerStatusKind = "idle" | "loading" | "analyzing";
+
+type ProgressTaskState = "running" | "cancelling";
+
+interface ProgressTask {
+  id: string;
+  kind: Exclude<ServerStatusKind, "idle">;
+  label: string;
+  detail?: string;
+  current?: number;
+  total?: number;
+  activeItems?: string[];
+  cancellable?: boolean;
+  state: ProgressTaskState;
+  startedAt: number;
+  source: "server" | "extension";
+}
+
+interface ProgressQuickPickItem extends vscode.QuickPickItem {
+  task?: ProgressTask;
+  action?: "openOutput";
+}
 
 interface GraphCommandRequest {
   scope: GraphScope;
@@ -65,6 +87,10 @@ let outputChannel: vscode.OutputChannel | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
 let statusNotificationSubscription: vscode.Disposable | undefined;
 let serverStatusKind: ServerStatusKind = "idle";
+let serverProgressTasks: ProgressTask[] = [];
+let serverProgress: { current: number; total: number } | undefined;
+let extensionProgressTaskSequence = 0;
+const extensionProgressTasks = new Map<string, ProgressTask>();
 let restartPromise: Promise<void> | undefined;
 let isDeactivating = false;
 let isManualRestarting = false;
@@ -74,7 +100,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   isDeactivating = false;
   outputChannel = vscode.window.createOutputChannel("Classic ASP LSP", "asp-lsp-output");
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  statusBarItem.command = "aspLsp.openOutput";
+  statusBarItem.command = "aspLsp.showProgressDetails";
   updateStatusBar();
   statusBarItem.show();
   context.subscriptions.push(
@@ -94,6 +120,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       executeServerCommand(clearProcessCacheServerCommand),
     ),
     vscode.commands.registerCommand("aspLsp.openOutput", () => outputChannel?.show()),
+    vscode.commands.registerCommand("aspLsp.showProgressDetails", async () =>
+      showProgressDetails(),
+    ),
     vscode.commands.registerCommand("aspLsp.showCurrentFileGraph", async (uri?: vscode.Uri) =>
       showGraph(context, "document", uri),
     ),
@@ -496,12 +525,23 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
       cancellable: false,
     },
     async () => {
-      const workbook = await writeXlsxFile(sheets, {
-        features: analysisExcelWorkbookFeatures,
-        fontFamily: "Calibri",
-        fontSize: 11,
-      }).toBuffer();
-      await vscode.workspace.fs.writeFile(target, workbook);
+      const progress = beginExtensionProgressTask("analyzing", "excel.write", {
+        current: 0,
+        total: 2,
+        detail: target.fsPath,
+      });
+      try {
+        const workbook = await writeXlsxFile(sheets, {
+          features: analysisExcelWorkbookFeatures,
+          fontFamily: "Calibri",
+          fontSize: 11,
+        }).toBuffer();
+        progress.update({ current: 1, detail: target.fsPath });
+        await vscode.workspace.fs.writeFile(target, workbook);
+        progress.update({ current: 2, detail: target.fsPath });
+      } finally {
+        progress.end();
+      }
     },
   );
   void vscode.window.showInformationMessage(
@@ -781,6 +821,7 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   );
   client = nextClient;
   serverStatusKind = "idle";
+  clearServerProgressState();
   updateStatusBar();
   try {
     await nextClient.start();
@@ -791,6 +832,7 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
       client = undefined;
     }
     serverStatusKind = "idle";
+    clearServerProgressState();
     updateStatusBar();
     throw error;
   }
@@ -805,6 +847,8 @@ export async function deactivate(): Promise<void> {
   statusNotificationSubscription?.dispose();
   statusNotificationSubscription = undefined;
   serverStatusKind = "idle";
+  clearServerProgressState();
+  extensionProgressTasks.clear();
   outputChannel?.dispose();
   outputChannel = undefined;
   statusBarItem?.dispose();
@@ -925,6 +969,7 @@ async function restartServerOnce(context: vscode.ExtensionContext): Promise<void
     statusNotificationSubscription?.dispose();
     statusNotificationSubscription = undefined;
     serverStatusKind = "idle";
+    clearServerProgressState();
     updateStatusBar();
     crashRestartTimestamps = [];
   } finally {
@@ -938,14 +983,21 @@ function updateStatusBar(): void {
     return;
   }
   const localizer = extensionLocalizer();
-  if (serverStatusKind === "loading") {
-    statusBarItem.text = `$(sync~spin) ${localizer("status.loading.text")}`;
-    statusBarItem.tooltip = localizer("status.loading.tooltip");
+  const tasks = activeProgressTasks();
+  const progressText = progressSummaryText(tasks) ?? progressValueText(serverProgress);
+  const activeKind = activeStatusKind(tasks);
+  if (activeKind === "loading") {
+    statusBarItem.text = `$(sync~spin) ${localizer("status.loading.text")}${progressText}`;
+    statusBarItem.tooltip = progressTooltip(localizer("status.loading.tooltip"), tasks, localizer);
     return;
   }
-  if (serverStatusKind === "analyzing") {
-    statusBarItem.text = `$(loading~spin) ${localizer("status.analyzing.text")}`;
-    statusBarItem.tooltip = localizer("status.analyzing.tooltip");
+  if (activeKind === "analyzing") {
+    statusBarItem.text = `$(loading~spin) ${localizer("status.analyzing.text")}${progressText}`;
+    statusBarItem.tooltip = progressTooltip(
+      localizer("status.analyzing.tooltip"),
+      tasks,
+      localizer,
+    );
     return;
   }
   statusBarItem.text = "$(code) ASP LSP";
@@ -958,7 +1010,276 @@ function handleServerStatusNotification(params: unknown): void {
     return;
   }
   serverStatusKind = status;
+  serverProgress = progressFromStatusNotification(params);
+  serverProgressTasks = progressTasksFromStatusNotification(params);
   updateStatusBar();
+}
+
+function clearServerProgressState(): void {
+  serverProgress = undefined;
+  serverProgressTasks = [];
+}
+
+function activeProgressTasks(): ProgressTask[] {
+  return [...serverProgressTasks, ...extensionProgressTasks.values()];
+}
+
+function activeStatusKind(tasks: ProgressTask[]): ServerStatusKind {
+  if (tasks.some((task) => task.kind === "analyzing")) {
+    return "analyzing";
+  }
+  if (tasks.some((task) => task.kind === "loading")) {
+    return "loading";
+  }
+  return serverStatusKind;
+}
+
+function progressSummaryText(tasks: ProgressTask[]): string {
+  const progress = aggregateProgress(tasks);
+  return progressValueText(progress) ?? "";
+}
+
+function aggregateProgress(tasks: ProgressTask[]): { current: number; total: number } | undefined {
+  const measurable = tasks.filter(
+    (task) => typeof task.current === "number" && typeof task.total === "number",
+  );
+  if (measurable.length === 0) {
+    return undefined;
+  }
+  return measurable.reduce(
+    (total, task) => ({
+      current: total.current + (task.current ?? 0),
+      total: total.total + (task.total ?? 0),
+    }),
+    { current: 0, total: 0 },
+  );
+}
+
+function progressValueText(progress: { current: number; total: number } | undefined): string {
+  return progress && progress.total > 0 ? ` ${progress.current}/${progress.total}` : "";
+}
+
+function progressTooltip(
+  fallback: string,
+  tasks: ProgressTask[],
+  localizer: (key: ExtensionMessageKey, args?: ExtensionMessageArgs) => string,
+): string {
+  if (tasks.length === 0) {
+    return fallback;
+  }
+  return tasks
+    .map((task) => {
+      const progress = progressValueText(
+        typeof task.current === "number" && typeof task.total === "number"
+          ? { current: task.current, total: task.total }
+          : undefined,
+      ).trim();
+      const state =
+        task.state === "cancelling" ? ` ${localizer("status.progress.cancelling")}` : "";
+      const detail = task.detail ? ` - ${task.detail}` : "";
+      return `${task.label}${progress ? ` ${progress}` : ""}${state}${detail}`;
+    })
+    .join("\n");
+}
+
+function progressFromStatusNotification(
+  params: unknown,
+): { current: number; total: number } | undefined {
+  const progress = (params as { progress?: unknown } | undefined)?.progress;
+  if (!progress || typeof progress !== "object") {
+    return undefined;
+  }
+  const current = (progress as { current?: unknown }).current;
+  const total = (progress as { total?: unknown }).total;
+  return typeof current === "number" && typeof total === "number" ? { current, total } : undefined;
+}
+
+function progressTasksFromStatusNotification(params: unknown): ProgressTask[] {
+  const tasks = (params as { tasks?: unknown } | undefined)?.tasks;
+  if (!Array.isArray(tasks)) {
+    return [];
+  }
+  return tasks.flatMap((task) => {
+    const parsed = progressTaskFromStatusNotification(task);
+    return parsed ? [parsed] : [];
+  });
+}
+
+function progressTaskFromStatusNotification(task: unknown): ProgressTask | undefined {
+  if (!task || typeof task !== "object") {
+    return undefined;
+  }
+  const record = task as Record<string, unknown>;
+  const id = record.id;
+  const kind = record.kind;
+  const label = record.label;
+  if (
+    typeof id !== "string" ||
+    (kind !== "loading" && kind !== "analyzing") ||
+    typeof label !== "string"
+  ) {
+    return undefined;
+  }
+  const state = record.state === "cancelling" ? "cancelling" : "running";
+  const activeItems = Array.isArray(record.activeItems)
+    ? record.activeItems.filter((item): item is string => typeof item === "string")
+    : undefined;
+  return {
+    id,
+    kind,
+    label,
+    detail: typeof record.detail === "string" ? record.detail : undefined,
+    current: typeof record.current === "number" ? record.current : undefined,
+    total: typeof record.total === "number" ? record.total : undefined,
+    activeItems,
+    cancellable: record.cancellable === true,
+    state,
+    startedAt: typeof record.startedAt === "number" ? record.startedAt : Date.now(),
+    source: "server",
+  };
+}
+
+function beginExtensionProgressTask(
+  kind: Exclude<ServerStatusKind, "idle">,
+  label: string,
+  options: {
+    detail?: string;
+    current?: number;
+    total?: number;
+    cancellable?: boolean;
+  } = {},
+): {
+  update(update: Partial<Pick<ProgressTask, "detail" | "current" | "total">>): void;
+  end(): void;
+} {
+  const id = `extension-${++extensionProgressTaskSequence}`;
+  extensionProgressTasks.set(id, {
+    id,
+    kind,
+    label,
+    detail: options.detail,
+    current: options.current,
+    total: options.total,
+    cancellable: options.cancellable === true,
+    state: "running",
+    startedAt: Date.now(),
+    source: "extension",
+  });
+  updateStatusBar();
+  return {
+    update(update) {
+      const task = extensionProgressTasks.get(id);
+      if (!task) {
+        return;
+      }
+      if (update.detail !== undefined) {
+        task.detail = update.detail;
+      }
+      if (update.current !== undefined) {
+        task.current = update.current;
+      }
+      if (update.total !== undefined) {
+        task.total = update.total;
+      }
+      updateStatusBar();
+    },
+    end() {
+      extensionProgressTasks.delete(id);
+      updateStatusBar();
+    },
+  };
+}
+
+async function showProgressDetails(): Promise<void> {
+  const localizer = extensionLocalizer();
+  const quickPick = vscode.window.createQuickPick<ProgressQuickPickItem>();
+  quickPick.title = localizer("status.progress.title");
+  quickPick.placeholder = localizer("status.progress.placeholder");
+  quickPick.matchOnDescription = true;
+  quickPick.matchOnDetail = true;
+  const refresh = (): void => {
+    quickPick.items = progressQuickPickItems(localizer);
+  };
+  refresh();
+  const refreshTimer = setInterval(refresh, 500);
+  quickPick.onDidTriggerItemButton(async (event) => {
+    const task = event.item.task;
+    if (!task || !task.cancellable || task.state === "cancelling") {
+      return;
+    }
+    await cancelProgressTask(task);
+    refresh();
+  });
+  quickPick.onDidAccept(() => {
+    const item = quickPick.selectedItems[0];
+    if (item?.action === "openOutput") {
+      outputChannel?.show();
+      quickPick.hide();
+    }
+  });
+  quickPick.onDidHide(() => {
+    clearInterval(refreshTimer);
+    quickPick.dispose();
+  });
+  quickPick.show();
+}
+
+function progressQuickPickItems(
+  localizer: (key: ExtensionMessageKey, args?: ExtensionMessageArgs) => string,
+): ProgressQuickPickItem[] {
+  const tasks = activeProgressTasks();
+  const taskItems = tasks.map((task): ProgressQuickPickItem => {
+    const progress = progressValueText(
+      typeof task.current === "number" && typeof task.total === "number"
+        ? { current: task.current, total: task.total }
+        : undefined,
+    ).trim();
+    const state = task.state === "cancelling" ? ` ${localizer("status.progress.cancelling")}` : "";
+    const activeItems =
+      task.activeItems && task.activeItems.length > 0
+        ? `\n${localizer("status.progress.active")}: ${task.activeItems.join(", ")}`
+        : "";
+    return {
+      label: `${task.label}${progress ? ` ${progress}` : ""}${state}`,
+      description: task.detail,
+      detail: activeItems || undefined,
+      task,
+      buttons:
+        task.cancellable && task.state !== "cancelling"
+          ? [
+              {
+                iconPath: new vscode.ThemeIcon("close"),
+                tooltip: localizer("status.progress.cancel"),
+              },
+            ]
+          : undefined,
+    };
+  });
+  return [
+    ...(taskItems.length > 0
+      ? taskItems
+      : [{ label: localizer("status.progress.none"), alwaysShow: true }]),
+    {
+      label: localizer("status.progress.openOutput"),
+      action: "openOutput",
+      alwaysShow: true,
+    },
+  ];
+}
+
+async function cancelProgressTask(task: ProgressTask): Promise<void> {
+  if (task.source === "extension") {
+    const current = extensionProgressTasks.get(task.id);
+    if (current) {
+      current.state = "cancelling";
+      updateStatusBar();
+    }
+    return;
+  }
+  await client?.sendRequest("workspace/executeCommand", {
+    command: cancelProgressTaskServerCommand,
+    arguments: [{ id: task.id }],
+  });
 }
 
 function createLanguageClientErrorHandler(): ErrorHandler {
@@ -1060,6 +1381,13 @@ type ExtensionMessageKey =
   | "status.loading.tooltip"
   | "status.analyzing.text"
   | "status.analyzing.tooltip"
+  | "status.progress.active"
+  | "status.progress.cancel"
+  | "status.progress.cancelling"
+  | "status.progress.none"
+  | "status.progress.openOutput"
+  | "status.progress.placeholder"
+  | "status.progress.title"
   | "debug.iis.name"
   | "debug.iisExpress.name"
   | "launch.noWorkspace"
@@ -1091,6 +1419,13 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.loading.tooltip": "Classic ASP Language Server is loading workspace data.",
     "status.analyzing.text": "ASP Analyzing",
     "status.analyzing.tooltip": "Classic ASP Language Server is analyzing ASP files.",
+    "status.progress.active": "Active",
+    "status.progress.cancel": "Cancel",
+    "status.progress.cancelling": "Cancelling",
+    "status.progress.none": "No active Classic ASP tasks.",
+    "status.progress.openOutput": "Open Output",
+    "status.progress.placeholder": "Current Classic ASP tasks",
+    "status.progress.title": "Classic ASP Progress",
     "debug.iis.name": "Debug Classic ASP URL",
     "debug.iisExpress.name": "Debug Classic ASP IIS Express URL",
     "launch.noWorkspace": "Open a workspace before creating launch.json.",
@@ -1120,6 +1455,13 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.loading.tooltip": "Classic ASP Language Server が workspace data を読み込み中です。",
     "status.analyzing.text": "ASP 解析中",
     "status.analyzing.tooltip": "Classic ASP Language Server が ASP file を解析中です。",
+    "status.progress.active": "実行中",
+    "status.progress.cancel": "キャンセル",
+    "status.progress.cancelling": "キャンセル中",
+    "status.progress.none": "実行中の Classic ASP task はありません。",
+    "status.progress.openOutput": "Output を開く",
+    "status.progress.placeholder": "現在の Classic ASP task",
+    "status.progress.title": "Classic ASP 進行状況",
     "debug.iis.name": "Classic ASP URL をデバッグ",
     "debug.iisExpress.name": "Classic ASP IIS Express URL をデバッグ",
     "launch.noWorkspace": "launch.json を作成する前に workspace を開いてください。",

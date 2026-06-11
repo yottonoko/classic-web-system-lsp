@@ -127,6 +127,7 @@
   "command.clearDiskCache.title": "Classic ASP: Clear Disk Analysis Cache",
   "command.clearProcessCache.title": "Classic ASP: Clear Process Analysis Cache",
   "command.openOutput.title": "Classic ASP: Open Output",
+  "command.showProgressDetails.title": "Classic ASP: Show Progress Details",
   "command.showCurrentFileGraph.title": "Classic ASP: Show Current File Graph",
   "command.showFolderGraph.title": "Classic ASP: Show Folder Graph",
   "command.showWorkspaceGraph.title": "Classic ASP: Show Workspace Graph",
