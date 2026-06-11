@@ -8567,7 +8567,7 @@ End Sub
       }
     });
 
-    it("expands related include trees for unresolved analysis only when needed", async () => {
+    it("expands related include trees by setting and force mode", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-related-graph-"));
       const page = path.join(tempDir, "default.asp");
       const cleanPage = path.join(tempDir, "clean.asp");
@@ -8653,7 +8653,8 @@ Response.Write CleanValue
 
         const buildGraph = async (
           targetUri: string,
-          includeRelatedIncludeTreesForUnresolved: boolean,
+          includeRelatedIncludeTreesForUnresolved?: boolean,
+          forceRelatedIncludeTreeAnalysis?: boolean,
         ) =>
           (await server.request("workspace/executeCommand", {
             command: "aspLsp.server.buildGraph",
@@ -8662,6 +8663,7 @@ Response.Write CleanValue
                 scope: "document",
                 uri: targetUri,
                 includeRelatedIncludeTreesForUnresolved,
+                forceRelatedIncludeTreeAnalysis,
               },
             ],
           })) as { nodes?: Array<Record<string, unknown>> };
@@ -8672,6 +8674,10 @@ Response.Write CleanValue
         expect(hasFileNode(normalGraph, "parent.asp")).toBe(false);
         expect(hasFileNode(normalGraph, "sibling.inc")).toBe(false);
 
+        const defaultGraph = await buildGraph(uri);
+        expect(hasFileNode(defaultGraph, "parent.asp")).toBe(true);
+        expect(hasFileNode(defaultGraph, "sibling.inc")).toBe(true);
+
         const relatedGraph = await buildGraph(uri, true);
         expect(hasFileNode(relatedGraph, "parent.asp")).toBe(true);
         expect(hasFileNode(relatedGraph, "sibling.inc")).toBe(true);
@@ -8681,6 +8687,10 @@ Response.Write CleanValue
         const cleanGraph = await buildGraph(cleanUri, true);
         expect(hasFileNode(cleanGraph, "clean-parent.asp")).toBe(false);
         expect(hasFileNode(cleanGraph, "clean-sibling.inc")).toBe(false);
+
+        const forcedCleanGraph = await buildGraph(cleanUri, true, true);
+        expect(hasFileNode(forcedCleanGraph, "clean-parent.asp")).toBe(true);
+        expect(hasFileNode(forcedCleanGraph, "clean-sibling.inc")).toBe(true);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -8935,6 +8945,8 @@ End Function
       };
       const nodeByLabelAndUri = (graph: TestGraph, label: string, uri: string) =>
         (graph.nodes ?? []).find((node) => node.label === label && node.uri === uri);
+      const nodeByFullPathAndUri = (graph: TestGraph, fullPath: string, uri: string) =>
+        (graph.nodes ?? []).find((node) => node.fullPath === fullPath && node.uri === uri);
       const hasGraphLink = (
         graph: TestGraph,
         kind: string,
@@ -8972,8 +8984,8 @@ End Function
         })) as TestGraph;
         const renderNode = nodeByLabelAndUri(graph, "Render", pageUri);
         const dbNode = nodeByLabelAndUri(graph, "db", commonUri);
-        const dbOpenNode = nodeByLabelAndUri(graph, "db.Open", pageUri);
-        const localDbOpenNode = nodeByLabelAndUri(graph, "localDb.Open", pageUri);
+        const dbOpenNode = nodeByFullPathAndUri(graph, "db.Open", pageUri);
+        const localDbOpenNode = nodeByFullPathAndUri(graph, "localDb.Open", pageUri);
 
         expect(dbNode).toEqual(
           expect.objectContaining({
@@ -8986,17 +8998,21 @@ End Function
         expect(dbOpenNode).toEqual(
           expect.objectContaining({
             kind: "vbMemberReference",
+            label: "Open",
             role: "member",
             receiverName: "db",
             memberName: "Open",
+            fullPath: "db.Open",
           }),
         );
         expect(localDbOpenNode).toEqual(
           expect.objectContaining({
             kind: "vbMemberReference",
+            label: "Open",
             role: "member",
             receiverName: "localDb",
             memberName: "Open",
+            fullPath: "localDb.Open",
           }),
         );
         expect(hasGraphLink(graph, "calls", renderNode, dbOpenNode)).toBe(true);
@@ -9042,6 +9058,8 @@ End Function
       };
       const nodeByLabelAndUri = (graph: TestGraph, label: string, nodeUri: string) =>
         (graph.nodes ?? []).find((node) => node.label === label && node.uri === nodeUri);
+      const nodeByFullPathAndUri = (graph: TestGraph, fullPath: string, nodeUri: string) =>
+        (graph.nodes ?? []).find((node) => node.fullPath === fullPath && node.uri === nodeUri);
       const hasGraphLink = (
         graph: TestGraph,
         kind: string,
@@ -9081,9 +9099,9 @@ End Function
           arguments: [{ scope: "document", uri }],
         })) as TestGraph;
         const aNode = nodeByLabelAndUri(graph, "a", uri);
-        const abNode = nodeByLabelAndUri(graph, "a.b", uri);
-        const abcNode = nodeByLabelAndUri(graph, "a.b.c", uri);
-        const abcdNode = nodeByLabelAndUri(graph, "a.b.c.d", uri);
+        const abNode = nodeByFullPathAndUri(graph, "a.b", uri);
+        const abcNode = nodeByFullPathAndUri(graph, "a.b.c", uri);
+        const abcdNode = nodeByFullPathAndUri(graph, "a.b.c.d", uri);
 
         expect(aNode).toEqual(
           expect.objectContaining({
@@ -9091,9 +9109,11 @@ End Function
             bindingScope: "local",
           }),
         );
-        expect(abNode).toEqual(expect.objectContaining({ kind: "vbMemberReference" }));
-        expect(abcNode).toEqual(expect.objectContaining({ kind: "vbMemberReference" }));
-        expect(abcdNode).toEqual(expect.objectContaining({ kind: "vbMemberReference" }));
+        expect(abNode).toEqual(expect.objectContaining({ kind: "vbMemberReference", label: "b" }));
+        expect(abcNode).toEqual(expect.objectContaining({ kind: "vbMemberReference", label: "c" }));
+        expect(abcdNode).toEqual(
+          expect.objectContaining({ kind: "vbMemberReference", label: "d" }),
+        );
         expect(hasGraphLink(graph, "calls", abcdNode, abcNode)).toBe(true);
         expect(hasGraphLink(graph, "calls", abcNode, abNode)).toBe(true);
         expect(hasGraphLink(graph, "calls", abNode, aNode)).toBe(true);

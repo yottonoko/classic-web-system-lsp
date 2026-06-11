@@ -618,7 +618,7 @@ describe("VS Code extension package", () => {
       showMemberLinks: true,
       showIncomingDocumentIncludes: false,
       showIncomingFolderIncludes: false,
-      includeRelatedIncludeTreesForUnresolved: false,
+      includeRelatedIncludeTreesForUnresolved: true,
     };
     for (const [name, defaultValue] of Object.entries(graphDefaults)) {
       const setting = `aspLsp.graph.${name}`;
@@ -894,6 +894,7 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("targetUri: request.uri");
     expect(extensionSource).toContain("relatedIncludeTreeAnalysisSetting");
     expect(extensionSource).toContain("includeRelatedIncludeTreesForUnresolved");
+    expect(extensionSource).toContain("forceRelatedIncludeTreeAnalysis");
     expect(extensionSource).toContain("writeXlsxFile");
     expect(extensionSource).toContain(".toBuffer()");
     expect(extensionSource).toContain("vscode.workspace.fs.writeFile(target, workbook)");

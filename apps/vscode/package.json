@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -857,7 +857,7 @@
         },
         "aspLsp.graph.includeRelatedIncludeTreesForUnresolved": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "%configuration.graph.includeRelatedIncludeTreesForUnresolved.description%"
         },
         "aspLsp.graph.initialViewMode": {

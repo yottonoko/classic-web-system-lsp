@@ -56,6 +56,7 @@ interface GraphCommandRequest {
   activeDocument?: vscode.TextDocument;
   includeIncomingDocumentIncludes?: boolean;
   includeRelatedIncludeTreesForUnresolved?: boolean;
+  forceRelatedIncludeTreeAnalysis?: boolean;
 }
 
 let client: LanguageClient | undefined;
@@ -447,6 +448,7 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
     return;
   }
   const activeClient = client;
+  const includeRelatedIncludeTreesForUnresolved = relatedIncludeTreeAnalysisSetting("excel");
   let payload: AspGraphPayload;
   try {
     payload = await requestAspGraphPayload(
@@ -455,7 +457,8 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
         scope: "document",
         uri: request.uri,
         activeDocument: request.activeDocument,
-        includeRelatedIncludeTreesForUnresolved: relatedIncludeTreeAnalysisSetting("excel"),
+        includeRelatedIncludeTreesForUnresolved,
+        forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
       },
       extensionLocalizer()("excel.currentTitle"),
     );
@@ -540,6 +543,7 @@ async function requestAspGraphPayload(
               includeIncomingDocumentIncludes: request.includeIncomingDocumentIncludes,
               includeRelatedIncludeTreesForUnresolved:
                 request.includeRelatedIncludeTreesForUnresolved,
+              forceRelatedIncludeTreeAnalysis: request.forceRelatedIncludeTreeAnalysis,
             },
           ],
         },
@@ -551,7 +555,7 @@ async function requestAspGraphPayload(
 function relatedIncludeTreeAnalysisSetting(scope: "excel" | "graph"): boolean {
   return vscode.workspace
     .getConfiguration("aspLsp")
-    .get<boolean>(`${scope}.includeRelatedIncludeTreesForUnresolved`, scope === "excel");
+    .get<boolean>(`${scope}.includeRelatedIncludeTreesForUnresolved`, true);
 }
 
 function isGraphCancellationError(error: unknown): boolean {

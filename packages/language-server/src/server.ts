@@ -238,7 +238,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.6.5";
+const languageServerVersion = "0.6.6";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -788,6 +788,7 @@ interface AspGraphNode {
   role?: string;
   receiverName?: string;
   memberName?: string;
+  fullPath?: string;
   memberOf?: string;
   bindingScope?: string;
   procedureKind?: string;
@@ -795,12 +796,20 @@ interface AspGraphNode {
   implicitGlobal?: boolean;
   implicitGlobalCandidate?: boolean;
   typeName?: string;
+  parameters?: AspGraphNodeParameter[];
   arrayKind?: string;
   arrayDimensions?: string[];
   group?: string;
   origin?: AspGraphNodeOrigin;
   externalKind?: AspGraphExternalKind;
   isRoot?: boolean;
+}
+
+interface AspGraphNodeParameter {
+  name: string;
+  typeName?: string;
+  mode?: string;
+  optional?: boolean;
 }
 
 interface AspGraphLink {
@@ -13075,7 +13084,7 @@ function normalizeGraphSettings(
     showIncomingDocumentIncludes: record.showIncomingDocumentIncludes === true,
     showIncomingFolderIncludes: record.showIncomingFolderIncludes === true,
     includeRelatedIncludeTreesForUnresolved:
-      record.includeRelatedIncludeTreesForUnresolved === true,
+      record.includeRelatedIncludeTreesForUnresolved !== false,
   };
 }
 
@@ -16945,6 +16954,7 @@ async function buildAspGraphForCommand(
     includeIncomingDocumentIncludes: graphCommandIncludeIncomingDocumentIncludes(argument),
     includeRelatedIncludeTreesForUnresolved:
       graphCommandIncludeRelatedIncludeTreesForUnresolved(argument),
+    forceRelatedIncludeTreeAnalysis: graphCommandForceRelatedIncludeTreeAnalysis(argument),
   });
 }
 
@@ -16980,17 +16990,33 @@ function graphCommandIncludeIncomingDocumentIncludes(argument: unknown): boolean
   );
 }
 
-function graphCommandIncludeRelatedIncludeTreesForUnresolved(argument: unknown): boolean {
+function graphCommandIncludeRelatedIncludeTreesForUnresolved(
+  argument: unknown,
+): boolean | undefined {
   if (
     !argument ||
     typeof argument !== "object" ||
     !("includeRelatedIncludeTreesForUnresolved" in argument)
   ) {
-    return false;
+    return undefined;
   }
   return (
     (argument as { includeRelatedIncludeTreesForUnresolved?: unknown })
       .includeRelatedIncludeTreesForUnresolved === true
+  );
+}
+
+function graphCommandForceRelatedIncludeTreeAnalysis(argument: unknown): boolean {
+  if (
+    !argument ||
+    typeof argument !== "object" ||
+    !("forceRelatedIncludeTreeAnalysis" in argument)
+  ) {
+    return false;
+  }
+  return (
+    (argument as { forceRelatedIncludeTreeAnalysis?: unknown }).forceRelatedIncludeTreeAnalysis ===
+    true
   );
 }
 
@@ -17014,6 +17040,7 @@ async function buildDocumentAspGraphAsync(
   options: {
     includeIncomingDocumentIncludes?: boolean;
     includeRelatedIncludeTreesForUnresolved?: boolean;
+    forceRelatedIncludeTreeAnalysis?: boolean;
   } = {},
 ): Promise<AspGraphPayload> {
   throwIfGraphCancelled(cancellation);
@@ -17029,14 +17056,17 @@ async function buildDocumentAspGraphAsync(
     settings,
     cancellation,
   );
+  const includeRelatedIncludeTreesForUnresolved =
+    options.includeRelatedIncludeTreesForUnresolved ??
+    settings.graph?.includeRelatedIncludeTreesForUnresolved === true;
   if (
-    (settings.graph?.includeRelatedIncludeTreesForUnresolved === true ||
-      options.includeRelatedIncludeTreesForUnresolved === true) &&
-    (await graphDocumentsNeedRelatedIncludeTreeAnalysisAsync(
-      documentsForGraph,
-      settings,
-      cancellation,
-    ))
+    includeRelatedIncludeTreesForUnresolved &&
+    (options.forceRelatedIncludeTreeAnalysis === true ||
+      (await graphDocumentsNeedRelatedIncludeTreeAnalysisAsync(
+        documentsForGraph,
+        settings,
+        cancellation,
+      )))
   ) {
     documentsForGraph.push(
       ...(await collectRelatedIncludeTreeGraphDocumentsAsync(
@@ -18432,6 +18462,9 @@ async function addDocumentStructureToAspGraphAsync(
       implicitGlobal: declaration.implicitGlobal,
       implicitGlobalCandidate: declaration.implicitGlobalCandidate,
       typeName: visibleAspGraphTypeName(declaration.typeName),
+      parameters: declaration.parameters?.map((parameter) => ({
+        name: parameter.name,
+      })),
       arrayKind: declaration.arrayKind,
       arrayDimensions: declaration.arrayDimensions,
       group: declaration.kind,
@@ -19286,18 +19319,19 @@ function addMemberReferenceGraphNode(
   range: Range,
   fullPath?: string,
 ): string {
-  const label = fullPath ?? (receiverName ? `${receiverName}.${memberName}` : memberName);
-  const id = memberReferenceGraphNodeId(label);
+  const memberPath = fullPath ?? (receiverName ? `${receiverName}.${memberName}` : memberName);
+  const id = memberReferenceGraphNodeId(memberPath);
   if (!state.nodes.has(id)) {
     state.nodes.set(id, {
       id,
       kind: "vbMemberReference",
-      label,
+      label: memberName,
       uri,
       range,
       role: "member",
       receiverName,
       memberName,
+      fullPath: memberPath,
       group: "member",
     });
   }

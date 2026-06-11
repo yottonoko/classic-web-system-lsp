@@ -35,6 +35,7 @@ interface AnalysisSheetOptions {
   autoFilter?: boolean;
   hidden?: boolean;
   images?: AnalysisExcelImage[];
+  stickyRows?: boolean;
 }
 
 interface AnalysisExcelOptions {
@@ -142,6 +143,8 @@ type AnalysisTextKey =
   | "bindingScope"
   | "procedureKind"
   | "inferredType"
+  | "returnType"
+  | "parameters"
   | "implicit"
   | "array"
   | "referenceCount"
@@ -267,6 +270,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     bindingScope: "Binding scope",
     procedureKind: "Procedure kind",
     inferredType: "Inferred type",
+    returnType: "Return type",
+    parameters: "Parameters",
     implicit: "Implicit",
     array: "Array",
     referenceCount: "References",
@@ -393,6 +398,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     bindingScope: "scope",
     procedureKind: "procedure kind",
     inferredType: "推論型",
+    returnType: "戻り値の型",
+    parameters: "引数",
     implicit: "暗黙宣言",
     array: "配列",
     referenceCount: "参照数",
@@ -505,6 +512,132 @@ const tableDescriptions: Record<AspGraphLocale, Record<string, string>> = {
     implicitGlobalAssignments: "include 関係から暗黙 global へ代入している可能性がある箇所です。",
     unused: "使用が検出されなかった対象ファイル内の宣言です。",
     unresolved: "対象ファイル内で名前解決できなかった参照、呼び出し、代入です。",
+  },
+};
+
+const headerDescriptions: Record<AspGraphLocale, Record<string, string>> = {
+  en: {
+    [text.en.scope]: "Analysis scope used for this workbook.",
+    [text.en.value]: "Value for the metric or setting named in the first column.",
+    [text.en.metric]: "Metric, issue, or grouping name.",
+    [text.en.total]: "Total number of matching items.",
+    [text.en.usedCount]: "Number of declarations that have detected usages.",
+    [text.en.unusedRate]: "Share of declarations that have no detected usages.",
+    [text.en.bar]: "Compact visual bar for comparing counts.",
+    [text.en.file]: "File that owns the row's item.",
+    [text.en.exists]: "Whether the include target exists on disk.",
+    [text.en.rootFile]: "Whether the file is the exported target file.",
+    [text.en.includesOut]: "Number of outgoing include links from the file.",
+    [text.en.includedBy]: "Number of files that include this file.",
+    [text.en.declarationCount]: "Number of declarations found for the file.",
+    [text.en.sourceFile]: "File that contains the include directive.",
+    [text.en.includePath]: "Path text written in the include directive.",
+    [text.en.includeMode]: "Include mode, such as file or virtual.",
+    [text.en.resolvedTarget]: "Resolved include target file.",
+    [text.en.actualPath]: "Filesystem path found during include resolution.",
+    [text.en.pathCaseMatches]: "Whether the include path casing matches the actual path.",
+    [text.en.line]: "One-based line number for the range.",
+    [text.en.column]: "One-based column number for the range.",
+    [text.en.name]: "Declaration or item name.",
+    [text.en.kind]: "Declaration or graph item kind.",
+    [text.en.memberOf]: "Owning class or object, when the item is a member.",
+    [text.en.bindingScope]: "Scope where the declaration is bound.",
+    [text.en.procedureKind]: "Procedure form, such as Function, Sub, or Property.",
+    [text.en.inferredType]: "Inferred or declared type. Unknown type-capable items use Variant.",
+    [text.en.returnType]:
+      "Inferred or declared return type. Unknown Function/Property returns use Variant.",
+    [text.en.parameters]:
+      "Procedure parameters with inferred types; unknown parameter types use Variant.",
+    [text.en.implicit]: "Whether the declaration was inferred from implicit VBScript usage.",
+    [text.en.array]: "Array kind and dimensions, when detected.",
+    [text.en.referenceCount]: "Detected read/reference usage count.",
+    [text.en.assignmentCount]: "Detected assignment/write usage count.",
+    [text.en.callCount]: "Detected call usage count.",
+    [text.en.status]: "Review status for the row.",
+    [text.en.usageKind]: "Usage link category.",
+    [text.en.role]: "Usage role, such as read, write, or call.",
+    [text.en.usageFile]: "File where the usage occurs.",
+    [text.en.usageOwner]: "Graph node that owns the usage.",
+    [text.en.declarationFile]: "File where the referenced declaration is defined.",
+    [text.en.declarationName]: "Referenced declaration name.",
+    [text.en.declarationKind]: "Referenced declaration kind.",
+    [text.en.includeFile]: "Included file that owns the referenced symbol.",
+    [text.en.includedSymbol]: "Symbol declared in an included file.",
+    [text.en.includedKind]: "Kind of the included symbol.",
+    [text.en.usedFromFile]: "File that uses the included symbol.",
+    [text.en.receiver]: "Receiver expression before the member access.",
+    [text.en.memberName]: "Member name after the receiver.",
+    [text.en.expression]: "Full member expression text.",
+    [text.en.implicitGlobalFile]: "File that owns the implicit global variable.",
+    [text.en.implicitGlobalName]: "Implicit global variable name.",
+    [text.en.assignmentFile]: "File containing a possible assignment.",
+    [text.en.assignmentTarget]: "Assignment target name.",
+    [text.en.assignmentTargetFile]: "File that owns the assignment target.",
+    [text.en.includeDepth]: "Distance through include parents from the target file.",
+    [text.en.count]: "Count represented by this row.",
+    [text.en.risk]: "Review risk or issue category.",
+    [text.en.action]: "Suggested review action.",
+  },
+  ja: {
+    [text.ja.scope]: "この workbook で使った解析範囲です。",
+    [text.ja.value]: "1列目の項目や設定に対応する値です。",
+    [text.ja.metric]: "指標、確認項目、分類の名前です。",
+    [text.ja.total]: "条件に一致した項目の合計数です。",
+    [text.ja.usedCount]: "使用が検出された宣言の数です。",
+    [text.ja.unusedRate]: "使用が検出されなかった宣言の比率です。",
+    [text.ja.bar]: "件数を比較するための簡易棒グラフです。",
+    [text.ja.file]: "この行の項目を持つファイルです。",
+    [text.ja.exists]: "include 先が disk 上に存在するかです。",
+    [text.ja.rootFile]: "出力対象ファイルかどうかです。",
+    [text.ja.includesOut]: "このファイルから出ている include 数です。",
+    [text.ja.includedBy]: "このファイルを include しているファイル数です。",
+    [text.ja.declarationCount]: "このファイルで見つかった宣言数です。",
+    [text.ja.sourceFile]: "include directive が書かれているファイルです。",
+    [text.ja.includePath]: "include directive に書かれた path 文字列です。",
+    [text.ja.includeMode]: "file や virtual などの include mode です。",
+    [text.ja.resolvedTarget]: "解決された include 先ファイルです。",
+    [text.ja.actualPath]: "include 解決で見つかった実 filesystem path です。",
+    [text.ja.pathCaseMatches]: "include path の大文字小文字が実 path と一致するかです。",
+    [text.ja.line]: "範囲の1始まりの行番号です。",
+    [text.ja.column]: "範囲の1始まりの列番号です。",
+    [text.ja.name]: "宣言や項目の名前です。",
+    [text.ja.kind]: "宣言や graph 項目の種別です。",
+    [text.ja.memberOf]: "member の場合の所有 class や object です。",
+    [text.ja.bindingScope]: "宣言が束縛される scope です。",
+    [text.ja.procedureKind]: "Function、Sub、Property などの procedure 形式です。",
+    [text.ja.inferredType]: "宣言または推論された型です。不明な型付き項目は Variant です。",
+    [text.ja.returnType]:
+      "宣言または推論された戻り値の型です。不明な Function/Property は Variant です。",
+    [text.ja.parameters]: "procedure の引数と推論型です。不明な引数型は Variant です。",
+    [text.ja.implicit]: "VBScript の暗黙使用から推定された宣言かどうかです。",
+    [text.ja.array]: "検出できた配列種別と次元です。",
+    [text.ja.referenceCount]: "読み取り/参照として検出された使用数です。",
+    [text.ja.assignmentCount]: "代入/書き込みとして検出された使用数です。",
+    [text.ja.callCount]: "呼び出しとして検出された使用数です。",
+    [text.ja.status]: "この行の確認状態です。",
+    [text.ja.usageKind]: "使用 link の分類です。",
+    [text.ja.role]: "read、write、call などの使用 role です。",
+    [text.ja.usageFile]: "使用箇所があるファイルです。",
+    [text.ja.usageOwner]: "使用箇所を所有する graph node です。",
+    [text.ja.declarationFile]: "参照先宣言が定義されているファイルです。",
+    [text.ja.declarationName]: "参照先宣言の名前です。",
+    [text.ja.declarationKind]: "参照先宣言の種別です。",
+    [text.ja.includeFile]: "参照先 symbol を持つ include ファイルです。",
+    [text.ja.includedSymbol]: "include 先ファイルで宣言された symbol です。",
+    [text.ja.includedKind]: "include 先 symbol の種別です。",
+    [text.ja.usedFromFile]: "include 先 symbol を使っているファイルです。",
+    [text.ja.receiver]: "member access の receiver 式です。",
+    [text.ja.memberName]: "receiver の後ろの member 名です。",
+    [text.ja.expression]: "member 式全体です。",
+    [text.ja.implicitGlobalFile]: "暗黙 global 変数を持つファイルです。",
+    [text.ja.implicitGlobalName]: "暗黙 global 変数の名前です。",
+    [text.ja.assignmentFile]: "代入候補があるファイルです。",
+    [text.ja.assignmentTarget]: "代入対象の名前です。",
+    [text.ja.assignmentTargetFile]: "代入対象を持つファイルです。",
+    [text.ja.includeDepth]: "対象ファイルから include 元へたどった距離です。",
+    [text.ja.count]: "この行が表す件数です。",
+    [text.ja.risk]: "確認リスクや問題分類です。",
+    [text.ja.action]: "推奨される確認作業です。",
   },
 };
 
@@ -644,6 +777,7 @@ export function createAnalysisExcelSheets(
     sheet(text[locale].analysisSummary, analysisRowsWithChartSpace, {
       autoFilter: false,
       images: analysisSummaryImages(locale, context, analysisChartStartRow),
+      stickyRows: false,
     }),
     sheet(text[locale].chartData, chartDataRows(locale, context), {
       autoFilter: false,
@@ -1235,7 +1369,7 @@ function includedUsageRows(
         valueLabel(link.kind, locale),
         valueLabel(link.role ?? link.label, locale),
         displayNameForUri(target?.uri, fileNamesByUri),
-        target?.label ?? link.target,
+        target?.fullPath ?? target?.label ?? link.target,
         valueLabel(target ? declarationKindKey(target) : undefined, locale),
         target?.typeName ?? "",
         displayNameForUri(uri, fileNamesByUri),
@@ -1278,6 +1412,8 @@ function declarationRows(
     t.bindingScope,
     t.procedureKind,
     t.inferredType,
+    t.returnType,
+    t.parameters,
     t.implicit,
     t.array,
     t.line,
@@ -1332,7 +1468,7 @@ function memberUsageRows(
         valueLabel(link.role ?? link.label, locale),
         target?.receiverName ?? "",
         target?.memberName ?? target?.label ?? link.target,
-        target?.label ?? link.target,
+        target?.fullPath ?? target?.label ?? link.target,
         displayNameForUri(uri, fileNamesByUri),
         oneBasedLine(range),
         oneBasedColumn(range),
@@ -1508,7 +1644,9 @@ function declarationRow(
     node.memberOf ?? "",
     valueLabel(node.bindingScope, locale),
     valueLabel(node.procedureKind, locale),
-    node.typeName ?? "",
+    declarationTypeDisplay(node),
+    declarationReturnTypeDisplay(node),
+    declarationParametersDisplay(node),
     yn(node.implicit === true, locale),
     arrayDisplay(node, locale),
     oneBasedLine(node.range),
@@ -1518,6 +1656,63 @@ function declarationRow(
     usage?.calls ?? 0,
     total > 0 ? text[locale].used : text[locale].unusedStatus,
   ];
+}
+
+function declarationTypeDisplay(node: AspGraphNode): string {
+  if (!isTypeCapableDeclaration(node)) {
+    return "";
+  }
+  return node.typeName ?? "Variant";
+}
+
+function declarationReturnTypeDisplay(node: AspGraphNode): string {
+  if (!isCallableReturnDeclaration(node)) {
+    return "";
+  }
+  return node.typeName ?? "Variant";
+}
+
+function declarationParametersDisplay(node: AspGraphNode): string {
+  if (!isCallableDeclaration(node) || !node.parameters?.length) {
+    return "";
+  }
+  return node.parameters.map(parameterDisplay).join(", ");
+}
+
+function parameterDisplay(parameter: NonNullable<AspGraphNode["parameters"]>[number]): string {
+  const prefix = parameter.optional === true ? "Optional " : "";
+  const mode = parameter.mode ? `${parameter.mode} ` : "";
+  return `${prefix}${mode}${parameter.name} As ${parameter.typeName ?? "Variant"}`;
+}
+
+function isTypeCapableDeclaration(node: AspGraphNode): boolean {
+  const kind = node.declarationKind;
+  return (
+    kind === "variable" ||
+    kind === "constant" ||
+    kind === "field" ||
+    kind === "parameter" ||
+    kind === "function" ||
+    kind === "property" ||
+    (kind === "method" && node.procedureKind !== "sub")
+  );
+}
+
+function isCallableDeclaration(node: AspGraphNode): boolean {
+  return (
+    node.declarationKind === "function" ||
+    node.declarationKind === "sub" ||
+    node.declarationKind === "method" ||
+    node.declarationKind === "property"
+  );
+}
+
+function isCallableReturnDeclaration(node: AspGraphNode): boolean {
+  return (
+    node.declarationKind === "function" ||
+    node.declarationKind === "property" ||
+    (node.declarationKind === "method" && node.procedureKind !== "sub")
+  );
 }
 
 function usageLikeLinkRows(
@@ -2033,7 +2228,7 @@ function tableIntroRows(
   const description = tableDescriptions[locale][descriptionKey] ?? descriptionKey;
   return [
     descriptionRow(description, headers.length),
-    descriptionRow(headerMeaning(headers, locale), headers.length),
+    ...headers.map((item) => headerDescriptionRow(item, locale, headers.length)),
   ];
 }
 
@@ -2051,9 +2246,36 @@ function descriptionRow(value: string, columnSpan: number): Cell[] {
   ];
 }
 
-function headerMeaning(headers: string[], locale: AspGraphLocale): string {
-  const joined = headers.join(" / ");
-  return locale === "ja" ? `ヘッダー: ${joined}` : `Headers: ${joined}`;
+function headerDescriptionRow(
+  headerName: string,
+  locale: AspGraphLocale,
+  columnSpan: number,
+): Cell[] {
+  const description =
+    headerDescriptions[locale][headerName] ??
+    (locale === "ja" ? `${headerName} の値です。` : `Value for ${headerName}.`);
+  if (columnSpan <= 1) {
+    return descriptionRow(`${headerName}: ${description}`, columnSpan);
+  }
+  return [
+    {
+      value: headerName,
+      type: String,
+      fontWeight: "bold",
+      textColor: "#374151",
+      backgroundColor: "#F9FAFB",
+      wrap: true,
+    },
+    {
+      value: description,
+      type: String,
+      textColor: "#374151",
+      backgroundColor: "#F9FAFB",
+      wrap: true,
+      columnSpan: columnSpan - 1,
+    },
+    ...Array.from({ length: Math.max(0, columnSpan - 2) }, () => null),
+  ];
 }
 
 function sectionTitle(value: string, columnSpan: number): Cell[] {
@@ -2117,11 +2339,17 @@ function sheet(
 ): AnalysisExcelSheet {
   const autoFilterRef = options.autoFilter === false ? undefined : autoFilterRefForRows(rows);
   const headerRowIndex = headerRowIndexForRows(rows);
+  const stickyRowsCount =
+    options.stickyRows === false
+      ? undefined
+      : headerRowIndex === undefined
+        ? 1
+        : headerRowIndex + 1;
   return {
     sheet: name,
     data: rows,
     columns: columnsForRows(rows),
-    stickyRowsCount: headerRowIndex === undefined ? 1 : headerRowIndex + 1,
+    ...(stickyRowsCount === undefined ? {} : { stickyRowsCount }),
     autoFilterRef,
     hidden: options.hidden === true ? true : undefined,
     images: options.images,

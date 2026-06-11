@@ -89,31 +89,30 @@ describe("analysis Excel sheets", () => {
       ]),
     );
     expect(sheets.find((sheet) => sheet.sheet === "分析サマリ")?.autoFilterRef).toBeUndefined();
+    expect(sheets.find((sheet) => sheet.sheet === "分析サマリ")?.stickyRowsCount).toBeUndefined();
     expect(table(sheets, "概要")).toEqual(
       expect.arrayContaining([
-        ["ヘッダー: 名前 / 値", null],
         ["出力対象ファイルの解析件数と生成情報の概要です。", null],
+        ["名前", "宣言や項目の名前です。"],
+        ["値", "1列目の項目や設定に対応する値です。"],
       ]),
     );
-    expect(table(sheets, "宣言")).toEqual(
+    const declarationTable = table(sheets, "宣言");
+    expect(declarationTable[0]?.[0]).toBe("出力対象ファイル自身にある宣言だけを並べた表です。");
+    expect(declarationTable).toEqual(
       expect.arrayContaining([
-        [
-          "出力対象ファイル自身にある宣言だけを並べた表です。",
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-        ],
+        expect.arrayContaining([
+          "推論型",
+          "宣言または推論された型です。不明な型付き項目は Variant です。",
+        ]),
+        expect.arrayContaining([
+          "戻り値の型",
+          "宣言または推論された戻り値の型です。不明な Function/Property は Variant です。",
+        ]),
+        expect.arrayContaining([
+          "引数",
+          "procedure の引数と推論型です。不明な引数型は Variant です。",
+        ]),
       ]),
     );
     expect(table(sheets, "チャート元データ")).toEqual(
@@ -130,23 +129,23 @@ describe("analysis Excel sheets", () => {
     expect(
       sheets.find((sheet) => sheet.sheet === "チャート元データ")?.autoFilterRef,
     ).toBeUndefined();
-    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A3:B16");
-    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A3:O10");
-    expect(sheets.find((sheet) => sheet.sheet === "ファイル内使用")?.autoFilterRef).toBe("A3:K7");
+    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A4:B17");
+    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A19:Q26");
+    expect(sheets.find((sheet) => sheet.sheet === "ファイル内使用")?.autoFilterRef).toBe("A13:K17");
     expect(sheets.find((sheet) => sheet.sheet === "外部ファイルからの使用")?.autoFilterRef).toBe(
-      "A3:K7",
+      "A13:K17",
     );
     expect(sheets.find((sheet) => sheet.sheet === "include 先シンボル使用")?.autoFilterRef).toBe(
-      "A3:J8",
+      "A12:J17",
     );
-    expect(sheets.find((sheet) => sheet.sheet === "メンバー使用")?.autoFilterRef).toBe("A3:I4");
-    expect(sheets.find((sheet) => sheet.sheet === "暗黙global変数")?.autoFilterRef).toBe("A3:K5");
+    expect(sheets.find((sheet) => sheet.sheet === "メンバー使用")?.autoFilterRef).toBe("A11:I12");
+    expect(sheets.find((sheet) => sheet.sheet === "暗黙global変数")?.autoFilterRef).toBe("A13:K15");
     expect(sheets.find((sheet) => sheet.sheet === "暗黙global変数代入候補")?.autoFilterRef).toBe(
-      "A3:I4",
+      "A11:I12",
     );
-    expect(sheets.find((sheet) => sheet.sheet === "未使用")?.autoFilterRef).toBe("A3:M5");
-    expect(sheets.find((sheet) => sheet.sheet === "未解決")?.autoFilterRef).toBe("A3:I4");
-    expect(table(sheets, "宣言")).toEqual(
+    expect(sheets.find((sheet) => sheet.sheet === "未使用")?.autoFilterRef).toBe("A15:M17");
+    expect(sheets.find((sheet) => sheet.sheet === "未解決")?.autoFilterRef).toBe("A11:I12");
+    expect(declarationTable).toEqual(
       expect.arrayContaining([
         [
           "main.asp",
@@ -156,6 +155,8 @@ describe("analysis Excel sheets", () => {
           "グローバル",
           "",
           "String",
+          "",
+          "",
           "なし",
           "",
           3,
@@ -172,7 +173,9 @@ describe("analysis Excel sheets", () => {
           "",
           "グローバル",
           "",
-          "",
+          "Long",
+          "Long",
+          "customerId As String, includeInactive As Variant",
           "なし",
           "",
           4,
@@ -188,6 +191,8 @@ describe("analysis Excel sheets", () => {
           "変数",
           "",
           "グローバル",
+          "",
+          "Variant",
           "",
           "",
           "なし",
@@ -206,6 +211,8 @@ describe("analysis Excel sheets", () => {
           "",
           "ローカル",
           "",
+          "Variant",
+          "",
           "",
           "なし",
           "",
@@ -222,6 +229,8 @@ describe("analysis Excel sheets", () => {
           "暗黙global変数",
           "",
           "グローバル",
+          "",
+          "Variant",
           "",
           "",
           "あり",
@@ -240,6 +249,8 @@ describe("analysis Excel sheets", () => {
           "",
           "グローバル",
           "",
+          "Variant",
+          "",
           "",
           "あり",
           "",
@@ -256,6 +267,8 @@ describe("analysis Excel sheets", () => {
           "変数",
           "",
           "グローバル",
+          "",
+          "Variant",
           "",
           "",
           "なし",
@@ -362,7 +375,7 @@ describe("analysis Excel sheets", () => {
           "main.asp",
           "TargetProc",
           "関数",
-          "",
+          "Long",
           14,
           5,
           1,
@@ -646,7 +659,7 @@ describe("analysis Excel sheets", () => {
         sheets.find((sheet) => sheet.sheet === "宣言")!,
         { sheetId: "4", sheetIndex: 3 },
       ),
-    ).toContain('<autoFilter ref="A3:O10"/>');
+    ).toContain('<autoFilter ref="A19:Q26"/>');
   });
 
   it("can generate an xlsx workbook buffer with analysis charts and workbook features", async () => {
@@ -812,6 +825,8 @@ function analysisPayload(): AspGraphPayload {
         range: range(3, 4),
         declarationKind: "function",
         bindingScope: "global",
+        typeName: "Long",
+        parameters: [{ name: "customerId", typeName: "String" }, { name: "includeInactive" }],
         origin: "source",
       },
       {
@@ -879,12 +894,13 @@ function analysisPayload(): AspGraphPayload {
       {
         id: "member:customer.unknownmember",
         kind: "vbMemberReference",
-        label: "Customer.UnknownMember",
+        label: "UnknownMember",
         uri: mainUri,
         range: range(17, 4),
         role: "member",
         receiverName: "Customer",
         memberName: "UnknownMember",
+        fullPath: "Customer.UnknownMember",
       },
     ],
     links: [

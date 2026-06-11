@@ -79,6 +79,7 @@ export interface AspGraphNode {
   role?: string;
   receiverName?: string;
   memberName?: string;
+  fullPath?: string;
   memberOf?: string;
   bindingScope?: string;
   procedureKind?: string;
@@ -86,12 +87,20 @@ export interface AspGraphNode {
   implicitGlobal?: boolean;
   implicitGlobalCandidate?: boolean;
   typeName?: string;
+  parameters?: AspGraphNodeParameter[];
   arrayKind?: string;
   arrayDimensions?: string[];
   group?: string;
   origin?: "source" | "builtin" | "configured";
   externalKind?: "function" | "constant" | "object" | "member" | "event";
   isRoot?: boolean;
+}
+
+export interface AspGraphNodeParameter {
+  name: string;
+  typeName?: string;
+  mode?: string;
+  optional?: boolean;
 }
 
 export interface AspGraphLink {

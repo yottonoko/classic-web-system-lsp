@@ -2038,7 +2038,12 @@ function endpointLabel(
   nodesById: ReadonlyMap<string, GraphNode>,
 ): string {
   const id = nodeIdForEndpoint(endpoint);
-  return nodesById.get(id)?.label ?? id;
+  const node = nodesById.get(id);
+  return node ? graphNodeDisplayText(node) : id;
+}
+
+function graphNodeDisplayText(node: GraphNode): string {
+  return node.kind === "vbMemberReference" ? (node.fullPath ?? node.label) : node.label;
 }
 
 function directiveSourceLabel(location: {
@@ -2219,7 +2224,7 @@ function inspectorTitleForSelection(selection: Selection, graphData: GraphData):
     return graphText("view.inspector");
   }
   if (selection.type === "node") {
-    return selection.item.label;
+    return graphNodeDisplayText(selection.item);
   }
   const nodesById = graphNodeMap(graphData.nodes);
   return `${linkInspectorTypeLabel(selection.item)}: ${endpointLabel(
@@ -5300,7 +5305,7 @@ function isPrimaryModifierShortcut(event: KeyboardEvent, key: string): boolean {
 }
 
 function searchableNodeText(node: GraphNode, matchCase: boolean): string {
-  return normalizeSearchText(node.label, matchCase);
+  return normalizeSearchText(detailParts(node.label, node.fullPath).join(" "), matchCase);
 }
 
 function normalizeSearchText(value: string, matchCase: boolean): string {
@@ -5589,7 +5594,7 @@ function nodeLabel(node: GraphNode): string {
     return `${nodeTypeLabel(node)}: ${node.label}`;
   }
   if (node.kind === "vbMemberReference") {
-    return `${graphText("label.member")}: ${node.label}`;
+    return `${graphText("label.member")}: ${node.fullPath ?? node.label}`;
   }
   return node.label;
 }
