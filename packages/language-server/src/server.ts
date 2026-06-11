@@ -225,6 +225,8 @@ const pendingSemanticJavascriptTokenBuilds = new Map<string, Promise<void>>();
 const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
+const defaultVbProjectMaxDocuments = 256;
+const defaultVbProjectMaxTextLength = 16 * 1024 * 1024;
 const defaultWorkspaceIncludes = ["**/*.{asp,asa,inc}"];
 const defaultDiagnosticsDebounceMs = 250;
 const graphFileIndexCacheMaxEntries = 64;
@@ -240,7 +242,7 @@ const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.6.12";
+const languageServerVersion = "0.6.13";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -916,6 +918,10 @@ interface AspGraphDocument {
   text: string;
   source: DiskAnalysisSourceMetadata;
   diskBacked: boolean;
+}
+
+interface AspGraphDocumentCollectionTruncation {
+  reason?: string;
 }
 
 interface GraphFileIndex {
@@ -10918,10 +10924,10 @@ function vbProjectContextLimits(settings: AspSettings): VbProjectContextLimits {
   return {
     maxDocuments:
       settings.workspace?.vbProjectMaxDocuments ??
-      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_DOCUMENTS", 32),
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_DOCUMENTS", defaultVbProjectMaxDocuments),
     maxTextLength:
       settings.workspace?.vbProjectMaxTextLength ??
-      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", 1024 * 1024),
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", defaultVbProjectMaxTextLength),
   };
 }
 
@@ -13313,11 +13319,11 @@ function normalizeWorkspaceSettings(
     ),
     vbProjectMaxDocuments: positiveIntegerSetting(
       record.vbProjectMaxDocuments,
-      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_DOCUMENTS", 32),
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_DOCUMENTS", defaultVbProjectMaxDocuments),
     ),
     vbProjectMaxTextLength: positiveIntegerSetting(
       record.vbProjectMaxTextLength,
-      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", 1024 * 1024),
+      positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", defaultVbProjectMaxTextLength),
     ),
   };
 }
@@ -17542,14 +17548,17 @@ async function buildDocumentAspGraphAsync(
   }
   const settings = cachedSettings(cached.source.uri);
   const targetGraphDocument = await graphDocumentFromCachedAsync(cached, settings);
+  const graphDocumentTruncation: AspGraphDocumentCollectionTruncation = {};
   const documentsForGraph = await collectIncludeTreeGraphDocumentsAsync(
     targetGraphDocument,
     settings,
     cancellation,
+    { truncation: graphDocumentTruncation },
   );
   const includeRelatedIncludeTreesForUnresolved =
     options.includeRelatedIncludeTreesForUnresolved ??
     settings.graph?.includeRelatedIncludeTreesForUnresolved === true;
+  let usedWorkspaceIndexForDocumentGraph = false;
   if (
     includeRelatedIncludeTreesForUnresolved &&
     (options.forceRelatedIncludeTreeAnalysis === true ||
@@ -17560,6 +17569,7 @@ async function buildDocumentAspGraphAsync(
         options.operationCache,
       )))
   ) {
+    usedWorkspaceIndexForDocumentGraph = true;
     documentsForGraph.push(
       ...(await collectRelatedIncludeTreeGraphDocumentsAsync(
         [targetGraphDocument],
@@ -17570,14 +17580,16 @@ async function buildDocumentAspGraphAsync(
             documentsForGraph.map((document) => graphFileKey(document.fileName)),
           ),
           initialTextLength: graphDocumentsTextLength(documentsForGraph),
+          truncation: graphDocumentTruncation,
         },
       )),
     );
   }
-  if (
+  const includeIncomingDocumentIncludes =
     settings.graph?.showIncomingDocumentIncludes === true ||
-    options.includeIncomingDocumentIncludes === true
-  ) {
+    options.includeIncomingDocumentIncludes === true;
+  if (includeIncomingDocumentIncludes) {
+    usedWorkspaceIndexForDocumentGraph = true;
     documentsForGraph.push(
       ...(await collectIncomingIncludeGraphDocumentsAsync(
         new Set([graphFileNameFromUri(cached.source.uri)]),
@@ -17591,8 +17603,17 @@ async function buildDocumentAspGraphAsync(
       )),
     );
   }
+  const truncated =
+    graphDocumentTruncation.reason !== undefined
+      ? { reason: graphDocumentTruncation.reason }
+      : usedWorkspaceIndexForDocumentGraph && workspaceIndexTruncated
+        ? {
+            reason: `workspaceIndex>${settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles}`,
+          }
+        : undefined;
   const payload = await graphPayloadFromDocumentsAsync("document", documentsForGraph, settings, {
     rootUri: cached.source.uri,
+    truncated,
     cancellation,
     includeAnalysisTypeDetails: options.includeAnalysisTypeDetails,
     progress: options.progress,
@@ -17841,6 +17862,7 @@ async function collectIncludeTreeGraphDocumentsAsync(
   options: {
     excludedFileKeys?: Set<string>;
     initialTextLength?: number;
+    truncation?: AspGraphDocumentCollectionTruncation;
   } = {},
 ): Promise<AspGraphDocument[]> {
   const limits = vbProjectContextLimits(settings);
@@ -17852,7 +17874,11 @@ async function collectIncludeTreeGraphDocumentsAsync(
   const visit = async (document: AspGraphDocument, depth: number): Promise<void> => {
     throwIfGraphCancelled(cancellation);
     const documentKey = graphFileKey(document.fileName);
-    if (depth > 20 || visited.has(documentKey) || excludedFileKeys.has(documentKey)) {
+    if (depth > 20) {
+      noteAspGraphDocumentCollectionTruncated(options.truncation, "depth>20");
+      return;
+    }
+    if (visited.has(documentKey) || excludedFileKeys.has(documentKey)) {
       return;
     }
     visited.add(documentKey);
@@ -17870,17 +17896,20 @@ async function collectIncludeTreeGraphDocumentsAsync(
       );
       throwIfGraphCancelled(cancellation);
       const includeKey = graphFileKey(resolved.fileName);
-      if (
-        !resolved.exists ||
-        visited.has(includeKey) ||
-        excludedFileKeys.has(includeKey) ||
-        visited.size + excludedFileKeys.size >= limits.maxDocuments
-      ) {
+      if (!resolved.exists || visited.has(includeKey) || excludedFileKeys.has(includeKey)) {
+        continue;
+      }
+      if (visited.size + excludedFileKeys.size >= limits.maxDocuments) {
+        noteAspGraphDocumentCollectionTruncated(
+          options.truncation,
+          `documents>${limits.maxDocuments}`,
+        );
         continue;
       }
       const size = await fileSizeAsync(resolved.fileName, settings);
       throwIfGraphCancelled(cancellation);
       if (size !== undefined && textLength + size > limits.maxTextLength) {
+        noteAspGraphDocumentCollectionTruncated(options.truncation, `text>${limits.maxTextLength}`);
         continue;
       }
       const entry = await includeDocumentLoader.readAsync(resolved.fileName, settings);
@@ -17894,6 +17923,15 @@ async function collectIncludeTreeGraphDocumentsAsync(
 
   await visit(root, 0);
   return documentsForGraph;
+}
+
+function noteAspGraphDocumentCollectionTruncated(
+  truncation: AspGraphDocumentCollectionTruncation | undefined,
+  reason: string,
+): void {
+  if (truncation && !truncation.reason) {
+    truncation.reason = reason;
+  }
 }
 
 async function graphDocumentsNeedRelatedIncludeTreeAnalysisAsync(
@@ -17952,6 +17990,7 @@ async function collectRelatedIncludeTreeGraphDocumentsAsync(
     excludedFileKeys?: Set<string>;
     initialTextLength?: number;
     token?: GraphCancellationToken;
+    truncation?: AspGraphDocumentCollectionTruncation;
   } = {},
 ): Promise<AspGraphDocument[]> {
   const limits = vbProjectContextLimits(settings);
@@ -17962,6 +18001,10 @@ async function collectRelatedIncludeTreeGraphDocumentsAsync(
 
   for (let depth = 0; depth < 20 && frontier.size > 0; depth += 1) {
     if (excludedFileKeys.size >= limits.maxDocuments) {
+      noteAspGraphDocumentCollectionTruncated(
+        options.truncation,
+        `documents>${limits.maxDocuments}`,
+      );
       break;
     }
     throwIfGraphCancelled(cancellation);
@@ -17975,12 +18018,17 @@ async function collectRelatedIncludeTreeGraphDocumentsAsync(
       },
     );
     if (incoming.length === 0) {
+      frontier = new Set();
       break;
     }
     const nextFrontier = new Set<string>();
     for (const owner of incoming) {
       throwIfGraphCancelled(cancellation);
       if (excludedFileKeys.size >= limits.maxDocuments) {
+        noteAspGraphDocumentCollectionTruncated(
+          options.truncation,
+          `documents>${limits.maxDocuments}`,
+        );
         break;
       }
       const ownerKey = graphFileKey(owner.fileName);
@@ -17990,6 +18038,7 @@ async function collectRelatedIncludeTreeGraphDocumentsAsync(
       const ownerTree = await collectIncludeTreeGraphDocumentsAsync(owner, settings, cancellation, {
         excludedFileKeys,
         initialTextLength: textLength,
+        truncation: options.truncation,
       });
       const treeHasOwner = ownerTree.some(
         (document) => graphFileKey(document.fileName) === ownerKey,
@@ -18003,6 +18052,10 @@ async function collectRelatedIncludeTreeGraphDocumentsAsync(
         documentsForGraph.push(document);
         textLength += document.text.length;
         if (excludedFileKeys.size >= limits.maxDocuments) {
+          noteAspGraphDocumentCollectionTruncated(
+            options.truncation,
+            `documents>${limits.maxDocuments}`,
+          );
           break;
         }
       }
@@ -18011,6 +18064,9 @@ async function collectRelatedIncludeTreeGraphDocumentsAsync(
       }
     }
     frontier = nextFrontier;
+  }
+  if (frontier.size > 0) {
+    noteAspGraphDocumentCollectionTruncated(options.truncation, "depth>20");
   }
   return documentsForGraph;
 }

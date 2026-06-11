@@ -8763,6 +8763,63 @@ Response.Write CleanValue
       }
     });
 
+    it("marks document graphs truncated when the include tree reaches the document limit", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-truncated-"));
+      const page = path.join(tempDir, "default.asp");
+      for (let index = 1; index <= 6; index += 1) {
+        const nextInclude = index < 6 ? `<!-- #include file="child-${index + 1}.inc" -->\n` : "";
+        fs.writeFileSync(
+          path.join(tempDir, `child-${index}.inc`),
+          `${nextInclude}<%\nFunction Included${index}()\nEnd Function\n%>`,
+          "utf8",
+        );
+      }
+      fs.writeFileSync(page, `<!-- #include file="child-1.inc" -->\n<% Dim RootValue %>`, "utf8");
+      const uri = pathToFileURL(page).toString();
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              graph: { includeRelatedIncludeTreesForUnresolved: false },
+              workspace: {
+                vbProjectMaxDocuments: 4,
+                vbProjectMaxTextLength: 1024 * 1024,
+              },
+            },
+          },
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri }],
+        })) as {
+          nodes?: Array<Record<string, unknown>>;
+          truncated?: { reason?: string };
+        };
+
+        expect(graph.truncated).toEqual({ reason: "documents>4" });
+        expect(
+          graph.nodes?.some((node) => node.kind === "vbDeclaration" && node.label === "Included1"),
+        ).toBe(true);
+        expect(
+          graph.nodes?.some((node) => node.kind === "vbDeclaration" && node.label === "Included5"),
+        ).toBe(false);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("builds a flowchart for the current ASP file with include metadata", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-flowchart-"));
       const page = path.join(tempDir, "default.asp");

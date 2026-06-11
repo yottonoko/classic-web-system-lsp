@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.6.12",
+  "version": "0.6.13",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -983,13 +983,13 @@
         "aspLsp.workspace.vbProjectMaxDocuments": {
           "type": "number",
           "minimum": 1,
-          "default": 32,
+          "default": 256,
           "description": "%configuration.workspace.vbProjectMaxDocuments.description%"
         },
         "aspLsp.workspace.vbProjectMaxTextLength": {
           "type": "number",
           "minimum": 1,
-          "default": 1048576,
+          "default": 16777216,
           "description": "%configuration.workspace.vbProjectMaxTextLength.description%"
         },
         "aspLsp.iis.url": {
