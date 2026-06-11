@@ -227,6 +227,10 @@ const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
 const defaultVbProjectMaxDocuments = 256;
 const defaultVbProjectMaxTextLength = 16 * 1024 * 1024;
+const defaultGraphMaxDocuments = defaultMaxIndexFiles;
+const defaultGraphMaxTextLength = 256 * 1024 * 1024;
+const defaultExcelMaxDocuments = 8192;
+const defaultExcelMaxTextLength = 512 * 1024 * 1024;
 const defaultExcelIncludeTreeMaxDocuments = 1024;
 const defaultExcelIncludeTreeMaxTextLength = 64 * 1024 * 1024;
 const defaultWorkspaceIncludes = ["**/*.{asp,asa,inc}"];
@@ -244,7 +248,7 @@ const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.6.15";
+const languageServerVersion = "0.6.16";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -9827,7 +9831,9 @@ function addVbReferencesToArray(
   references: VbReference[],
 ): void {
   const existing = target.get(key) ?? [];
-  existing.push(...references);
+  for (const reference of references) {
+    existing.push(reference);
+  }
   target.set(key, existing);
 }
 
@@ -10937,6 +10943,13 @@ function graphIncludeTreeLimits(settings: AspSettings): VbProjectContextLimits {
   return {
     maxDocuments: settings.graph?.includeTreeMaxDocuments ?? defaultVbProjectMaxDocuments,
     maxTextLength: settings.graph?.includeTreeMaxTextLength ?? defaultVbProjectMaxTextLength,
+  };
+}
+
+function graphOutputLimits(settings: AspSettings): VbProjectContextLimits {
+  return {
+    maxDocuments: settings.graph?.maxDocuments ?? defaultGraphMaxDocuments,
+    maxTextLength: settings.graph?.maxTextLength ?? defaultGraphMaxTextLength,
   };
 }
 
@@ -13518,6 +13531,8 @@ function normalizeGraphSettings(
     showIncomingFolderIncludes: record.showIncomingFolderIncludes === true,
     includeRelatedIncludeTreesForUnresolved:
       record.includeRelatedIncludeTreesForUnresolved !== false,
+    maxDocuments: positiveIntegerSetting(record.maxDocuments, defaultGraphMaxDocuments),
+    maxTextLength: positiveIntegerSetting(record.maxTextLength, defaultGraphMaxTextLength),
     includeTreeMaxDocuments: positiveIntegerSetting(
       record.includeTreeMaxDocuments,
       defaultVbProjectMaxDocuments,
@@ -13537,6 +13552,8 @@ function normalizeExcelSettings(
   return {
     includeRelatedIncludeTreesForUnresolved:
       record.includeRelatedIncludeTreesForUnresolved !== false,
+    maxDocuments: positiveIntegerSetting(record.maxDocuments, defaultExcelMaxDocuments),
+    maxTextLength: positiveIntegerSetting(record.maxTextLength, defaultExcelMaxTextLength),
     includeTreeMaxDocuments: positiveIntegerSetting(
       record.includeTreeMaxDocuments,
       defaultExcelIncludeTreeMaxDocuments,
@@ -17445,6 +17462,7 @@ async function buildAspGraphForCommand(
         cancellation,
         task,
         operationCache,
+        graphCommandOutputLimits(argument),
       );
     }
     if (scope === "folder") {
@@ -17454,6 +17472,7 @@ async function buildAspGraphForCommand(
         cancellation,
         task,
         operationCache,
+        graphCommandOutputLimits(argument),
       );
     }
     return buildDocumentAspGraphAsync(uri ?? documents.all()[0]?.uri, cancellation, {
@@ -17462,6 +17481,7 @@ async function buildAspGraphForCommand(
         graphCommandIncludeRelatedIncludeTreesForUnresolved(argument),
       forceRelatedIncludeTreeAnalysis: graphCommandForceRelatedIncludeTreeAnalysis(argument),
       includeAnalysisTypeDetails: graphCommandIncludeAnalysisTypeDetails(argument),
+      outputLimits: graphCommandOutputLimits(argument),
       includeTreeLimits: graphCommandIncludeTreeLimits(argument),
       progress: task,
       operationCache,
@@ -17559,6 +17579,25 @@ function graphCommandIncludeTreeLimits(argument: unknown): VbProjectContextLimit
   };
 }
 
+function graphCommandOutputLimits(argument: unknown): VbProjectContextLimits | undefined {
+  if (!argument || typeof argument !== "object") {
+    return undefined;
+  }
+  const record = argument as {
+    maxDocuments?: unknown;
+    maxTextLength?: unknown;
+  };
+  const maxDocuments = positiveIntegerCommandArgument(record.maxDocuments);
+  const maxTextLength = positiveIntegerCommandArgument(record.maxTextLength);
+  if (maxDocuments === undefined && maxTextLength === undefined) {
+    return undefined;
+  }
+  return {
+    maxDocuments: maxDocuments ?? defaultGraphMaxDocuments,
+    maxTextLength: maxTextLength ?? defaultGraphMaxTextLength,
+  };
+}
+
 function positiveIntegerCommandArgument(value: unknown): number | undefined {
   return typeof value === "number" && value > 0 ? Math.floor(value) : undefined;
 }
@@ -17585,6 +17624,7 @@ async function buildDocumentAspGraphAsync(
     includeRelatedIncludeTreesForUnresolved?: boolean;
     forceRelatedIncludeTreeAnalysis?: boolean;
     includeAnalysisTypeDetails?: boolean;
+    outputLimits?: VbProjectContextLimits;
     includeTreeLimits?: VbProjectContextLimits;
     progress?: AspLspProgressTaskHandle;
     operationCache?: GraphFileIndexOperationCache;
@@ -17621,8 +17661,9 @@ async function buildDocumentAspGraphAsync(
       )))
   ) {
     usedWorkspaceIndexForDocumentGraph = true;
-    documentsForGraph.push(
-      ...(await collectRelatedIncludeTreeGraphDocumentsAsync(
+    appendAspGraphDocuments(
+      documentsForGraph,
+      await collectRelatedIncludeTreeGraphDocumentsAsync(
         [targetGraphDocument],
         settings,
         cancellation,
@@ -17634,7 +17675,7 @@ async function buildDocumentAspGraphAsync(
           limits: includeTreeLimits,
           truncation: graphDocumentTruncation,
         },
-      )),
+      ),
     );
   }
   const includeIncomingDocumentIncludes =
@@ -17642,8 +17683,9 @@ async function buildDocumentAspGraphAsync(
     options.includeIncomingDocumentIncludes === true;
   if (includeIncomingDocumentIncludes) {
     usedWorkspaceIndexForDocumentGraph = true;
-    documentsForGraph.push(
-      ...(await collectIncomingIncludeGraphDocumentsAsync(
+    appendAspGraphDocuments(
+      documentsForGraph,
+      await collectIncomingIncludeGraphDocumentsAsync(
         new Set([graphFileNameFromUri(cached.source.uri)]),
         settings,
         cancellation,
@@ -17652,7 +17694,7 @@ async function buildDocumentAspGraphAsync(
             documentsForGraph.map((document) => graphFileKey(document.fileName)),
           ),
         },
-      )),
+      ),
     );
   }
   const truncated =
@@ -17668,6 +17710,7 @@ async function buildDocumentAspGraphAsync(
     truncated,
     cancellation,
     includeAnalysisTypeDetails: options.includeAnalysisTypeDetails,
+    outputLimits: options.outputLimits,
     progress: options.progress,
     operationCache: options.operationCache,
   });
@@ -17680,6 +17723,7 @@ async function buildFolderAspGraphAsync(
   cancellation: AnalysisCancellation = neverCancelled,
   progress?: AspLspProgressTaskHandle,
   operationCache?: GraphFileIndexOperationCache,
+  outputLimits?: VbProjectContextLimits,
 ): Promise<AspGraphPayload> {
   throwIfGraphCancelled(cancellation);
   const folderName = await graphCommandFolderNameAsync(uri);
@@ -17749,15 +17793,16 @@ async function buildFolderAspGraphAsync(
         )
       : undefined,
   );
-  documentsForGraph.push(...indexedGraphDocuments);
+  appendAspGraphDocuments(documentsForGraph, indexedGraphDocuments);
   if (settings.graph?.showIncomingFolderIncludes === true) {
     const folderTargetFileNames = new Set(
       documentsForGraph
         .map((document) => document.fileName)
         .filter((fileName) => isFileInDirectory(fileName, folderName)),
     );
-    documentsForGraph.push(
-      ...(await collectIncomingIncludeGraphDocumentsAsync(
+    appendAspGraphDocuments(
+      documentsForGraph,
+      await collectIncomingIncludeGraphDocumentsAsync(
         folderTargetFileNames,
         settings,
         cancellation,
@@ -17767,7 +17812,7 @@ async function buildFolderAspGraphAsync(
           ),
           token,
         },
-      )),
+      ),
     );
   }
   const payload = await graphPayloadFromDocumentsAsync("folder", documentsForGraph, settings, {
@@ -17780,6 +17825,7 @@ async function buildFolderAspGraphAsync(
     cancellation,
     progress,
     operationCache,
+    outputLimits,
   });
   return payload;
 }
@@ -17789,6 +17835,7 @@ async function buildWorkspaceAspGraphAsync(
   cancellation: AnalysisCancellation = neverCancelled,
   progress?: AspLspProgressTaskHandle,
   operationCache?: GraphFileIndexOperationCache,
+  outputLimits?: VbProjectContextLimits,
 ): Promise<AspGraphPayload> {
   throwIfGraphCancelled(cancellation);
   const settings = globalSettings;
@@ -17841,7 +17888,7 @@ async function buildWorkspaceAspGraphAsync(
         )
       : undefined,
   );
-  documentsForGraph.push(...indexedGraphDocuments);
+  appendAspGraphDocuments(documentsForGraph, indexedGraphDocuments);
   const payload = await graphPayloadFromDocumentsAsync("workspace", documentsForGraph, settings, {
     truncated: workspaceIndexTruncated
       ? {
@@ -17851,6 +17898,7 @@ async function buildWorkspaceAspGraphAsync(
     cancellation,
     progress,
     operationCache,
+    outputLimits,
   });
   return payload;
 }
@@ -18180,6 +18228,15 @@ function graphDocumentsTextLength(documentsForGraph: AspGraphDocument[]): number
   return documentsForGraph.reduce((total, document) => total + document.text.length, 0);
 }
 
+function appendAspGraphDocuments(
+  target: AspGraphDocument[],
+  documentsToAppend: readonly AspGraphDocument[],
+): void {
+  for (const document of documentsToAppend) {
+    target.push(document);
+  }
+}
+
 async function graphIncludeRefsForDocumentAsync(
   document: AspGraphDocument,
   settings: AspSettings,
@@ -18339,23 +18396,28 @@ async function graphPayloadFromDocumentsAsync(
     truncated?: AspGraphPayload["truncated"];
     cancellation?: AnalysisCancellation;
     includeAnalysisTypeDetails?: boolean;
+    outputLimits?: VbProjectContextLimits;
     progress?: AspLspProgressTaskHandle;
     operationCache?: GraphFileIndexOperationCache;
   } = {},
 ): Promise<AspGraphPayload> {
   const cancellation = options.cancellation ?? neverCancelled;
   throwIfGraphCancelled(cancellation);
-  const state = createAspGraphBuildState(settings, options.rootUri, options.truncated, {
+  const { documents, truncated } = limitAspGraphPayloadDocuments(
+    uniqueAspGraphDocuments(documentsForGraph),
+    options.outputLimits ?? graphOutputLimits(settings),
+    options.truncated,
+  );
+  const state = createAspGraphBuildState(settings, options.rootUri, truncated, {
     includeAnalysisTypeDetails: options.includeAnalysisTypeDetails === true,
   });
-  const uniqueDocuments = uniqueAspGraphDocuments(documentsForGraph);
-  for (const document of uniqueDocuments) {
+  for (const document of documents) {
     throwIfGraphCancelled(cancellation);
     addFileGraphNode(state, document.fileName, true);
   }
-  options.progress?.update({ current: 0, total: uniqueDocuments.length });
+  options.progress?.update({ current: 0, total: documents.length });
   const rawIndexedDocuments = await mapWithConcurrency(
-    uniqueDocuments,
+    documents,
     analysisConcurrency(settings),
     async (document): Promise<AspGraphIndexedDocument> => {
       throwIfGraphCancelled(cancellation);
@@ -18396,6 +18458,40 @@ async function graphPayloadFromDocumentsAsync(
     settings: graphPayloadSettings(settings),
     stats: state.stats,
     truncated: state.truncated,
+  };
+}
+
+function limitAspGraphPayloadDocuments(
+  documents: AspGraphDocument[],
+  limits: VbProjectContextLimits,
+  truncated: AspGraphPayload["truncated"] | undefined,
+): { documents: AspGraphDocument[]; truncated?: AspGraphPayload["truncated"] } {
+  if (documents.length === 0) {
+    return { documents, truncated };
+  }
+  const limited: AspGraphDocument[] = [];
+  let textLength = 0;
+  let reason = truncated?.reason;
+  for (const document of documents) {
+    const nextTextLength = textLength + document.text.length;
+    const exceedsDocumentLimit = limited.length >= limits.maxDocuments;
+    const exceedsTextLimit = nextTextLength > limits.maxTextLength;
+    if (exceedsDocumentLimit || (exceedsTextLimit && limited.length > 0)) {
+      reason ??= exceedsDocumentLimit
+        ? `documents>${limits.maxDocuments}`
+        : `text>${limits.maxTextLength}`;
+      break;
+    }
+    limited.push(document);
+    textLength = nextTextLength;
+    if (exceedsTextLimit) {
+      reason ??= `text>${limits.maxTextLength}`;
+      break;
+    }
+  }
+  return {
+    documents: limited,
+    truncated: reason ? { reason } : truncated,
   };
 }
 
@@ -20172,7 +20268,7 @@ function addAspGraphLink(
   const existing = state.links.get(key);
   if (existing) {
     existing.count += 1;
-    existing.ranges.push(...input.ranges);
+    appendAspGraphRanges(existing.ranges, input.ranges);
     return;
   }
   state.links.set(key, {
@@ -20180,6 +20276,15 @@ function addAspGraphLink(
     id: `link:${state.links.size}`,
     count: 1,
   });
+}
+
+function appendAspGraphRanges(
+  target: AspGraphLink["ranges"],
+  rangesToAppend: readonly AspGraphLink["ranges"][number][],
+): void {
+  for (const range of rangesToAppend) {
+    target.push(range);
+  }
 }
 
 function graphPayloadSettings(settings: AspSettings): NonNullable<AspGraphPayload["settings"]> {

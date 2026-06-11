@@ -10,6 +10,10 @@ describe("analysis Excel sheets", () => {
       generatedAt: new Date("2026-06-10T00:00:00.000Z"),
       targetUri: "file:///workspace/main.asp",
       settings: {
+        skipTypeInference: false,
+        includeAnalysisTypeDetails: true,
+        maxDocuments: 8192,
+        maxTextLength: 536870912,
         includeTreeMaxDocuments: 1024,
         includeTreeMaxTextLength: 67108864,
       },
@@ -49,7 +53,10 @@ describe("analysis Excel sheets", () => {
         ["Excel 言語", "自動"],
         ["親戚 include tree 解析", "無効"],
         ["親戚 include tree 解析の強制", "強制なし"],
-        ["エディター推論型の詳細", "無効"],
+        ["型推論を skip", "無効"],
+        ["エディター推論型の詳細", "有効"],
+        ["Excel 出力 document 上限", 8192],
+        ["Excel 出力 text 上限", 536870912],
         ["Excel include tree document 上限", 1024],
         ["Excel include tree text 上限", 67108864],
       ]),
@@ -209,7 +216,7 @@ describe("analysis Excel sheets", () => {
     expect(
       sheets.find((sheet) => sheet.sheet === "チャート元データ")?.autoFilterRef,
     ).toBeUndefined();
-    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B24");
+    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B27");
     expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:Q8");
     expect(sheets.find((sheet) => sheet.sheet === "ファイル内使用")?.autoFilterRef).toBe("A1:K5");
     expect(sheets.find((sheet) => sheet.sheet === "外部ファイルからの使用")?.autoFilterRef).toBe(

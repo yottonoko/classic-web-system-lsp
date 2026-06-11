@@ -45,6 +45,14 @@ const defaultFlowchartMaxEdges = 100_000;
 const defaultFlowchartLabelLineLength = 34;
 const defaultFlowchartMinZoom = 0.1;
 const defaultFlowchartMaxZoom = 4;
+const defaultGraphMaxDocuments = 5_000;
+const defaultGraphMaxTextLength = 256 * 1024 * 1024;
+const defaultGraphIncludeTreeMaxDocuments = 256;
+const defaultGraphIncludeTreeMaxTextLength = 16 * 1024 * 1024;
+const defaultExcelMaxDocuments = 8_192;
+const defaultExcelMaxTextLength = 512 * 1024 * 1024;
+const defaultExcelIncludeTreeMaxDocuments = 1_024;
+const defaultExcelIncludeTreeMaxTextLength = 64 * 1024 * 1024;
 type GraphOpenLocation = "active" | "beside";
 type GraphScope = "document" | "folder" | "workspace";
 type WebviewThemeSetting = AspGraphWebviewThemeSetting & AspFlowchartWebviewThemeSetting;
@@ -79,6 +87,8 @@ interface GraphCommandRequest {
   includeRelatedIncludeTreesForUnresolved?: boolean;
   forceRelatedIncludeTreeAnalysis?: boolean;
   includeAnalysisTypeDetails?: boolean;
+  maxDocuments?: number;
+  maxTextLength?: number;
   includeTreeMaxDocuments?: number;
   includeTreeMaxTextLength?: number;
 }
@@ -443,7 +453,7 @@ async function showGraph(
     return;
   }
   request.includeRelatedIncludeTreesForUnresolved = relatedIncludeTreeAnalysisSetting("graph");
-  Object.assign(request, includeTreeLimitSettings("graph"));
+  Object.assign(request, graphAnalysisLimitSettings("graph"));
   let payload: AspGraphPayload;
   try {
     payload = await requestAspGraphPayload(
@@ -481,7 +491,13 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
   }
   const activeClient = client;
   const includeRelatedIncludeTreesForUnresolved = relatedIncludeTreeAnalysisSetting("excel");
-  const includeTreeLimits = includeTreeLimitSettings("excel");
+  const skipTypeInference = excelSkipTypeInferenceSetting();
+  const graphLimits = graphAnalysisLimitSettings("excel");
+  const exportStatus = beginExtensionProgressTask("analyzing", "excel.graph", {
+    current: 0,
+    total: 5,
+    detail: request.uri ? progressDetailFromUriText(request.uri) : undefined,
+  });
   let payload: AspGraphPayload;
   try {
     payload = await requestAspGraphPayload(
@@ -492,63 +508,68 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
         activeDocument: request.activeDocument,
         includeRelatedIncludeTreesForUnresolved,
         forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
-        includeAnalysisTypeDetails: true,
-        ...includeTreeLimits,
+        includeAnalysisTypeDetails: !skipTypeInference,
+        ...graphLimits,
       },
       extensionLocalizer()("excel.currentTitle"),
     );
   } catch (error) {
+    exportStatus.end();
     if (isGraphCancellationError(error)) {
       return;
     }
     throw error;
   }
+  exportStatus.update({
+    current: 1,
+    label: "excel.chooseFile",
+    detail: request.uri ? progressDetailFromUriText(request.uri) : undefined,
+  });
   const target = await vscode.window.showSaveDialog({
     defaultUri: analysisExcelDefaultUri(payload, request.uri, request.activeDocument),
     filters: { "Excel Workbook": ["xlsx"] },
     saveLabel: extensionLocalizer()("excel.saveLabel"),
   });
   if (!target) {
+    exportStatus.end();
     return;
   }
   const excelLocale = excelExportLocale();
-  const sheets = createAnalysisExcelSheets(payload, excelLocale, {
-    generatedAt: new Date(),
-    targetUri: request.uri,
-    settings: {
-      excelLocale: excelLocaleSetting(),
-      includeRelatedIncludeTreesForUnresolved,
-      forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
-      includeAnalysisTypeDetails: true,
-      ...includeTreeLimits,
-    },
-  });
-  await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: extensionLocalizer()("excel.writeTitle"),
-      cancellable: false,
-    },
-    async () => {
-      const progress = beginExtensionProgressTask("analyzing", "excel.write", {
-        current: 0,
-        total: 2,
-        detail: target.fsPath,
-      });
-      try {
+  exportStatus.update({ current: 2, label: "excel.sheets", detail: target.fsPath });
+  try {
+    const sheets = createAnalysisExcelSheets(payload, excelLocale, {
+      generatedAt: new Date(),
+      targetUri: request.uri,
+      settings: {
+        excelLocale: excelLocaleSetting(),
+        includeRelatedIncludeTreesForUnresolved,
+        forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
+        skipTypeInference,
+        includeAnalysisTypeDetails: !skipTypeInference,
+        ...graphLimits,
+      },
+    });
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: extensionLocalizer()("excel.writeTitle"),
+        cancellable: false,
+      },
+      async () => {
+        exportStatus.update({ current: 3, label: "excel.workbook", detail: target.fsPath });
         const workbook = await writeXlsxFile(sheets, {
           features: analysisExcelWorkbookFeatures,
           fontFamily: "Calibri",
           fontSize: 11,
         }).toBuffer();
-        progress.update({ current: 1, detail: target.fsPath });
+        exportStatus.update({ current: 4, label: "excel.file", detail: target.fsPath });
         await vscode.workspace.fs.writeFile(target, workbook);
-        progress.update({ current: 2, detail: target.fsPath });
-      } finally {
-        progress.end();
-      }
-    },
-  );
+        exportStatus.update({ current: 5, detail: target.fsPath });
+      },
+    );
+  } finally {
+    exportStatus.end();
+  }
   void vscode.window.showInformationMessage(
     extensionLocalizer()("excel.exported", { file: target.fsPath }),
   );
@@ -603,6 +624,8 @@ async function requestAspGraphPayload(
                   request.includeRelatedIncludeTreesForUnresolved,
                 forceRelatedIncludeTreeAnalysis: request.forceRelatedIncludeTreeAnalysis,
                 includeAnalysisTypeDetails: request.includeAnalysisTypeDetails,
+                maxDocuments: request.maxDocuments,
+                maxTextLength: request.maxTextLength,
                 includeTreeMaxDocuments: request.includeTreeMaxDocuments,
                 includeTreeMaxTextLength: request.includeTreeMaxTextLength,
               },
@@ -623,16 +646,36 @@ function relatedIncludeTreeAnalysisSetting(scope: "excel" | "graph"): boolean {
     .get<boolean>(`${scope}.includeRelatedIncludeTreesForUnresolved`, true);
 }
 
-function includeTreeLimitSettings(scope: "excel" | "graph"): {
+function graphAnalysisLimitSettings(scope: "excel" | "graph"): {
+  maxDocuments: number;
+  maxTextLength: number;
   includeTreeMaxDocuments: number;
   includeTreeMaxTextLength: number;
 } {
   const defaults =
     scope === "excel"
-      ? { includeTreeMaxDocuments: 1024, includeTreeMaxTextLength: 64 * 1024 * 1024 }
-      : { includeTreeMaxDocuments: 256, includeTreeMaxTextLength: 16 * 1024 * 1024 };
+      ? {
+          maxDocuments: defaultExcelMaxDocuments,
+          maxTextLength: defaultExcelMaxTextLength,
+          includeTreeMaxDocuments: defaultExcelIncludeTreeMaxDocuments,
+          includeTreeMaxTextLength: defaultExcelIncludeTreeMaxTextLength,
+        }
+      : {
+          maxDocuments: defaultGraphMaxDocuments,
+          maxTextLength: defaultGraphMaxTextLength,
+          includeTreeMaxDocuments: defaultGraphIncludeTreeMaxDocuments,
+          includeTreeMaxTextLength: defaultGraphIncludeTreeMaxTextLength,
+        };
   const configuration = vscode.workspace.getConfiguration("aspLsp");
   return {
+    maxDocuments: positiveNumberSetting(
+      configuration.get<number>(`${scope}.maxDocuments`, defaults.maxDocuments),
+      defaults.maxDocuments,
+    ),
+    maxTextLength: positiveNumberSetting(
+      configuration.get<number>(`${scope}.maxTextLength`, defaults.maxTextLength),
+      defaults.maxTextLength,
+    ),
     includeTreeMaxDocuments: positiveNumberSetting(
       configuration.get<number>(
         `${scope}.includeTreeMaxDocuments`,
@@ -653,6 +696,10 @@ function includeTreeLimitSettings(scope: "excel" | "graph"): {
 function excelLocaleSetting(): AspGraphLocale | "auto" {
   const value = vscode.workspace.getConfiguration("aspLsp").get<string>("excel.locale", "auto");
   return value === "en" || value === "ja" ? value : "auto";
+}
+
+function excelSkipTypeInferenceSetting(): boolean {
+  return vscode.workspace.getConfiguration("aspLsp").get<boolean>("excel.skipTypeInference", false);
 }
 
 function excelExportLocale(): AspGraphLocale {
@@ -1109,7 +1156,15 @@ function progressStatusText(
 }
 
 function primaryProgressTask(tasks: ProgressTask[]): ProgressTask | undefined {
-  return [...tasks].sort((left, right) => right.startedAt - left.startedAt)[0];
+  return [...tasks].sort(
+    (left, right) =>
+      progressTaskStatusPriority(right) - progressTaskStatusPriority(left) ||
+      right.startedAt - left.startedAt,
+  )[0];
+}
+
+function progressTaskStatusPriority(task: ProgressTask): number {
+  return task.label.startsWith("excel.") ? 10 : 0;
 }
 
 function aggregateProgress(tasks: ProgressTask[]): { current: number; total: number } | undefined {
@@ -1223,7 +1278,7 @@ function beginExtensionProgressTask(
     cancellable?: boolean;
   } = {},
 ): {
-  update(update: Partial<Pick<ProgressTask, "detail" | "current" | "total">>): void;
+  update(update: Partial<Pick<ProgressTask, "label" | "detail" | "current" | "total">>): void;
   end(): void;
 } {
   const id = `extension-${++extensionProgressTaskSequence}`;
@@ -1248,6 +1303,9 @@ function beginExtensionProgressTask(
       }
       if (update.detail !== undefined) {
         task.detail = update.detail;
+      }
+      if (update.label !== undefined) {
+        task.label = update.label;
       }
       if (update.current !== undefined) {
         task.current = update.current;
@@ -1357,6 +1415,16 @@ function progressTaskDisplayLabelKey(label: string): ExtensionMessageKey | undef
       return "status.progress.graphWorkspace";
     case "references.count":
       return "status.progress.referencesCount";
+    case "excel.graph":
+      return "status.progress.excelGraph";
+    case "excel.chooseFile":
+      return "status.progress.excelChooseFile";
+    case "excel.sheets":
+      return "status.progress.excelSheets";
+    case "excel.workbook":
+      return "status.progress.excelWorkbook";
+    case "excel.file":
+      return "status.progress.excelFile";
     case "excel.write":
       return "status.progress.excel";
     default:
@@ -1489,6 +1557,11 @@ type ExtensionMessageKey =
   | "status.progress.diagnostics"
   | "status.progress.documentAnalysis"
   | "status.progress.excel"
+  | "status.progress.excelChooseFile"
+  | "status.progress.excelFile"
+  | "status.progress.excelGraph"
+  | "status.progress.excelSheets"
+  | "status.progress.excelWorkbook"
   | "status.progress.flowchart"
   | "status.progress.graphDocument"
   | "status.progress.graphFolder"
@@ -1538,6 +1611,11 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.diagnostics": "Document diagnostics",
     "status.progress.documentAnalysis": "Document analysis",
     "status.progress.excel": "Creating Excel workbook",
+    "status.progress.excelChooseFile": "Choosing Excel output path",
+    "status.progress.excelFile": "Writing Excel file",
+    "status.progress.excelGraph": "Collecting Excel analysis graph",
+    "status.progress.excelSheets": "Building Excel sheets",
+    "status.progress.excelWorkbook": "Generating Excel workbook",
     "status.progress.flowchart": "Generating flowchart",
     "status.progress.graphDocument": "Generating current file graph",
     "status.progress.graphFolder": "Generating folder graph",
@@ -1585,6 +1663,11 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.diagnostics": "document diagnostics",
     "status.progress.documentAnalysis": "document 解析",
     "status.progress.excel": "Excel 作成中",
+    "status.progress.excelChooseFile": "Excel 出力先選択中",
+    "status.progress.excelFile": "Excel file 書き込み中",
+    "status.progress.excelGraph": "Excel 解析 graph 取得中",
+    "status.progress.excelSheets": "Excel sheet 作成中",
+    "status.progress.excelWorkbook": "Excel workbook 生成中",
     "status.progress.flowchart": "flowchart 生成中",
     "status.progress.graphDocument": "current file graph 生成中",
     "status.progress.graphFolder": "folder graph 生成中",

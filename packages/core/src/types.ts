@@ -214,12 +214,16 @@ export interface AspGraphSettings {
   showIncomingDocumentIncludes?: boolean;
   showIncomingFolderIncludes?: boolean;
   includeRelatedIncludeTreesForUnresolved?: boolean;
+  maxDocuments?: number;
+  maxTextLength?: number;
   includeTreeMaxDocuments?: number;
   includeTreeMaxTextLength?: number;
 }
 
 export interface AspExcelSettings {
   includeRelatedIncludeTreesForUnresolved?: boolean;
+  maxDocuments?: number;
+  maxTextLength?: number;
   includeTreeMaxDocuments?: number;
   includeTreeMaxTextLength?: number;
 }

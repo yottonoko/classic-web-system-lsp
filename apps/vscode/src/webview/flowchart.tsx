@@ -33,9 +33,15 @@ type InfoPanelPosition = "left" | "right";
 type FlowchartSourceActiveKind = "hover" | "selection" | "section";
 type FlowchartSourceRange = NonNullable<AspFlowchartNode["range"]>;
 
-interface FlowchartSourceActive {
+interface FlowchartSourceHighlight {
   kind: FlowchartSourceActiveKind;
   label?: string;
+  ranges: FlowchartSourceRange[];
+}
+
+interface FlowchartSourceScrollTarget {
+  kind: FlowchartSourceActiveKind;
+  key: string;
   ranges: FlowchartSourceRange[];
 }
 
@@ -849,6 +855,7 @@ function App(): React.ReactElement {
   const [sourcePanelVisible, setSourcePanelVisible] = useState(
     () => initialPayload.settings?.showSourcePanel ?? true,
   );
+  const [sectionSourceScrollSequence, setSectionSourceScrollSequence] = useState(1);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSearchIndex, setActiveSearchIndex] = useState(0);
   const [infoPanelWidth, setInfoPanelWidth] = useState(flowchartPanelDefaultWidth);
@@ -921,9 +928,9 @@ function App(): React.ReactElement {
     () => payload.sections.findIndex((section) => section.id === selectedSection?.id),
     [payload.sections, selectedSection?.id],
   );
-  const activeSource = useMemo(
+  const sourceHighlights = useMemo(
     () =>
-      flowchartActiveSource(
+      flowchartSourceHighlights(
         selectedSection,
         selectedFlowchart.nodes,
         payload.nodes,
@@ -938,6 +945,25 @@ function App(): React.ReactElement {
       selectedSection,
     ],
   );
+  const primarySourceHighlight = flowchartPrimarySourceHighlight(sourceHighlights);
+  const sourceScrollTarget = useMemo(
+    () =>
+      flowchartSourceScrollTarget(sourceHighlights, {
+        activeNodeId: activeFlowchartNodeId,
+        hoveredNodeId: hoveredFlowchartNodeId,
+        sectionId: selectedSection?.id,
+        sectionSequence: sectionSourceScrollSequence,
+        uri: payload.uri,
+      }),
+    [
+      activeFlowchartNodeId,
+      hoveredFlowchartNodeId,
+      payload.uri,
+      sectionSourceScrollSequence,
+      selectedSection?.id,
+      sourceHighlights,
+    ],
+  );
   const selectFlowchartNode = useCallback((node: AspFlowchartNode) => {
     setSelectedSectionId(node.sectionId);
     setAutoOpenSectionId(node.sectionId);
@@ -949,10 +975,12 @@ function App(): React.ReactElement {
       if (target) {
         setFocusedFlowchartNodeId(undefined);
         setAutoOpenSectionId(openFlowchartTarget(payload, target, setSelectedSectionId, labelMode));
+        setSectionSourceScrollSequence((current) => current + 1);
       } else {
         const nextSectionId = sectionIdForNodeFlowchart(payload, node);
         setSelectedSectionId(nextSectionId);
         setAutoOpenSectionId(nextSectionId);
+        setSectionSourceScrollSequence((current) => current + 1);
         if (nextSectionId !== node.sectionId) {
           setFocusedFlowchartNodeId(undefined);
         }
@@ -964,6 +992,7 @@ function App(): React.ReactElement {
     (target: AspFlowchartTarget) => {
       setFocusedFlowchartNodeId(undefined);
       setAutoOpenSectionId(openFlowchartTarget(payload, target, setSelectedSectionId, labelMode));
+      setSectionSourceScrollSequence((current) => current + 1);
     },
     [labelMode, payload],
   );
@@ -1039,6 +1068,9 @@ function App(): React.ReactElement {
         setFocusedFlowchartNodeId(targetNode?.id);
         setSelectedSectionId(nextSectionId);
         setAutoOpenSectionId(targetRange ? nextSectionId : undefined);
+        if (targetRange) {
+          setSectionSourceScrollSequence((current) => current + 1);
+        }
       }
     };
     window.addEventListener("message", listener);
@@ -1202,6 +1234,7 @@ function App(): React.ReactElement {
                       setSelectedSectionId(section.id);
                       setAutoOpenSectionId(section.id);
                       setFocusedFlowchartNodeId(undefined);
+                      setSectionSourceScrollSequence((current) => current + 1);
                     }}
                     onSelectNode={selectFlowchartNode}
                   />
@@ -1270,10 +1303,10 @@ function App(): React.ReactElement {
             onWidthChange={setSourcePanelWidth}
           />
           <FlowchartSourcePanel
-            activeKind={activeSource?.kind}
-            activeLabel={activeSource?.label}
-            activeRanges={activeSource?.ranges}
+            activeLabel={primarySourceHighlight?.label}
             className={sourcePanelClassName}
+            highlights={sourceHighlights}
+            scrollTarget={sourceScrollTarget}
             sourceText={payload.sourceText}
             text={text}
             theme={theme}
@@ -1340,11 +1373,31 @@ interface TooltipPosition {
 
 function FlowchartHint({ hint, label }: { hint: string; label: string }): React.ReactElement {
   const triggerRef = useRef<HTMLSpanElement>(null);
+  const tooltipRef = useRef<HTMLSpanElement>(null);
+  const [visible, setVisible] = useState(false);
   const [position, setPosition] = useState<TooltipPosition>();
   const showTooltip = useCallback(() => {
-    setPosition(tooltipPositionFor(triggerRef.current));
+    setVisible(true);
   }, []);
-  const hideTooltip = useCallback(() => setPosition(undefined), []);
+  const hideTooltip = useCallback(() => {
+    setVisible(false);
+    setPosition(undefined);
+  }, []);
+  useLayoutEffect(() => {
+    if (!visible) {
+      return undefined;
+    }
+    const updatePosition = (): void => {
+      setPosition(tooltipPositionFor(triggerRef.current, tooltipRef.current));
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [visible]);
   return (
     <span className="group relative inline-flex shrink-0 items-center">
       <span
@@ -1359,14 +1412,16 @@ function FlowchartHint({ hint, label }: { hint: string; label: string }): React.
       >
         ?
       </span>
-      {position ? (
+      {visible ? (
         <span
+          ref={tooltipRef}
           role="tooltip"
           className="pointer-events-none fixed z-[1000] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)]"
           style={{
-            left: position.left,
-            top: position.top,
-            maxWidth: position.maxWidth,
+            left: position?.left ?? -9999,
+            top: position?.top ?? -9999,
+            maxWidth: position?.maxWidth ?? tooltipMaximumWidth(),
+            visibility: position ? "visible" : "hidden",
           }}
         >
           {hint}
@@ -1376,17 +1431,37 @@ function FlowchartHint({ hint, label }: { hint: string; label: string }): React.
   );
 }
 
-function tooltipPositionFor(element: HTMLElement | null): TooltipPosition | undefined {
+function tooltipPositionFor(
+  element: HTMLElement | null,
+  tooltip: HTMLElement | null,
+): TooltipPosition | undefined {
   if (!element) {
     return undefined;
   }
   const margin = 12;
   const gap = 6;
   const rect = element.getBoundingClientRect();
-  const maxWidth = Math.max(160, Math.min(260, window.innerWidth - margin * 2));
-  const left = clamp(rect.left, margin, Math.max(margin, window.innerWidth - maxWidth - margin));
-  const top = Math.min(rect.bottom + gap, Math.max(margin, window.innerHeight - margin - 96));
+  const maxWidth = tooltipMaximumWidth();
+  const tooltipRect = tooltip?.getBoundingClientRect();
+  const tooltipWidth = Math.min(tooltipRect?.width ?? maxWidth, maxWidth);
+  const tooltipHeight = tooltipRect?.height ?? 80;
+  const left = clamp(
+    rect.left + rect.width / 2 - tooltipWidth / 2,
+    margin,
+    Math.max(margin, window.innerWidth - tooltipWidth - margin),
+  );
+  const belowTop = rect.bottom + gap;
+  const aboveTop = rect.top - gap - tooltipHeight;
+  const top =
+    belowTop + tooltipHeight + margin <= window.innerHeight || aboveTop < margin
+      ? clamp(belowTop, margin, Math.max(margin, window.innerHeight - tooltipHeight - margin))
+      : aboveTop;
   return { left, top, maxWidth };
+}
+
+function tooltipMaximumWidth(): number {
+  const margin = 12;
+  return Math.max(160, Math.min(280, window.innerWidth - margin * 2));
 }
 
 function IncludeList({
@@ -1756,32 +1831,34 @@ function FlowchartPaneResizeHandle({
 }
 
 function FlowchartSourcePanel({
-  activeKind,
   activeLabel,
-  activeRanges,
   className,
+  highlights,
+  scrollTarget,
   sourceText,
   text,
   theme,
 }: {
-  activeKind?: FlowchartSourceActiveKind;
   activeLabel?: string;
-  activeRanges?: readonly FlowchartSourceRange[];
   className?: string;
+  highlights: readonly FlowchartSourceHighlight[];
+  scrollTarget?: FlowchartSourceScrollTarget;
   sourceText?: string;
   text(key: string): string;
   theme: WebviewTheme;
 }): React.ReactElement {
   const preRef = useRef<HTMLPreElement | null>(null);
+  const previousScrollKindRef = useRef<FlowchartSourceActiveKind | undefined>(undefined);
+  const consumedSectionScrollKeysRef = useRef(new Set<string>());
   const [highlightedCode, setHighlightedCode] = useState<HighlightedCode>();
   const [highlightError, setHighlightError] = useState<string>();
-  const activeLineNumber = flowchartSourceFirstLineNumber(activeRanges);
+  const scrollLineNumber = flowchartSourceFirstLineNumber(scrollTarget?.ranges);
   const highlightedCodeWithActiveRange = useMemo(
     () =>
       highlightedCode
-        ? flowchartHighlightedCodeWithActiveRanges(highlightedCode, activeRanges, activeKind)
+        ? flowchartHighlightedCodeWithSourceHighlights(highlightedCode, highlights)
         : undefined,
-    [activeKind, activeRanges, highlightedCode],
+    [highlightedCode, highlights],
   );
   const handlers = useMemo<AnnotationHandler[]>(
     () => [
@@ -1850,17 +1927,32 @@ function FlowchartSourcePanel({
   }, [sourceText, theme]);
 
   useLayoutEffect(() => {
-    if (!activeLineNumber || !preRef.current) {
+    if (!scrollTarget || !scrollLineNumber || !preRef.current) {
+      previousScrollKindRef.current = scrollTarget?.kind;
+      return;
+    }
+    const previousKind = previousScrollKindRef.current;
+    if (
+      scrollTarget.kind === "section" &&
+      (consumedSectionScrollKeysRef.current.has(scrollTarget.key) ||
+        previousKind === "hover" ||
+        previousKind === "selection")
+    ) {
+      consumedSectionScrollKeysRef.current.add(scrollTarget.key);
+      previousScrollKindRef.current = scrollTarget.kind;
       return;
     }
     const frame = window.requestAnimationFrame(() => {
       const pre = preRef.current;
-      if (pre) {
-        scrollSourceLineIntoView(pre, activeLineNumber);
+      if (pre && scrollSourceLineIntoView(pre, scrollLineNumber)) {
+        if (scrollTarget.kind === "section") {
+          consumedSectionScrollKeysRef.current.add(scrollTarget.key);
+        }
       }
     });
+    previousScrollKindRef.current = scrollTarget.kind;
     return () => window.cancelAnimationFrame(frame);
-  }, [activeLineNumber, highlightedCodeWithActiveRange]);
+  }, [highlightedCodeWithActiveRange, scrollLineNumber, scrollTarget]);
 
   return (
     <aside className={`${className ?? ""} flex min-h-0 min-w-0 flex-col bg-[#101820]`}>
@@ -1911,17 +2003,16 @@ function flowchartSourceHighlightEndLine(range: FlowchartSourceRange): number {
     : range.end.line;
 }
 
-function flowchartHighlightedCodeWithActiveRanges(
+function flowchartHighlightedCodeWithSourceHighlights(
   code: HighlightedCode,
-  ranges: readonly FlowchartSourceRange[] | undefined,
-  kind: FlowchartSourceActiveKind | undefined,
+  highlights: readonly FlowchartSourceHighlight[],
 ): HighlightedCode {
   const annotations = code.annotations.filter(
     (annotation) => annotation.name !== flowchartSourceActiveAnnotationName,
   );
-  if (kind) {
-    for (const range of ranges ?? []) {
-      annotations.push(flowchartSourceActiveAnnotation(range, kind));
+  for (const highlight of flowchartSourceHighlightsByPriority(highlights)) {
+    for (const range of highlight.ranges) {
+      annotations.push(flowchartSourceActiveAnnotation(range, highlight.kind));
     }
   }
   return { ...code, annotations };
@@ -1966,17 +2057,17 @@ function flowchartSourceCodeStyle(code: HighlightedCode | undefined): React.CSSP
   };
 }
 
-function scrollSourceLineIntoView(container: HTMLElement, lineNumber: number): void {
+function scrollSourceLineIntoView(container: HTMLElement, lineNumber: number): boolean {
   const line = container.querySelector<HTMLElement>(`[data-source-line="${lineNumber}"]`);
   if (!line) {
-    return;
+    return false;
   }
   const containerRect = container.getBoundingClientRect();
   const lineRect = line.getBoundingClientRect();
   const isAbove = lineRect.top < containerRect.top;
   const isBelow = lineRect.bottom > containerRect.bottom;
   if (!isAbove && !isBelow) {
-    return;
+    return true;
   }
   const nextTop =
     container.scrollTop +
@@ -1985,25 +2076,96 @@ function scrollSourceLineIntoView(container: HTMLElement, lineNumber: number): v
     containerRect.top -
     container.clientHeight / 2;
   container.scrollTo({ top: Math.max(0, nextTop), behavior: "smooth" });
+  return true;
 }
 
-function flowchartActiveSource(
+function flowchartSourceHighlights(
   selectedSection: AspFlowchartSection | undefined,
   selectedSectionNodes: readonly AspFlowchartNode[],
   allNodes: readonly AspFlowchartNode[],
   hoveredNodeId: string | undefined,
   selectedNodeId: string | undefined,
-): FlowchartSourceActive | undefined {
-  const hoveredNode = flowchartNodeById(allNodes, hoveredNodeId);
-  if (hoveredNode?.range) {
-    return { kind: "hover", label: hoveredNode.label, ranges: [hoveredNode.range] };
+): FlowchartSourceHighlight[] {
+  const highlights: FlowchartSourceHighlight[] = [];
+  const sectionRanges = flowchartSourceRangesForSection(selectedSection, selectedSectionNodes);
+  if (sectionRanges.length > 0) {
+    highlights.push({ kind: "section", label: selectedSection?.label, ranges: sectionRanges });
   }
   const selectedNode = flowchartNodeById(allNodes, selectedNodeId);
   if (selectedNode?.range) {
-    return { kind: "selection", label: selectedNode.label, ranges: [selectedNode.range] };
+    highlights.push({ kind: "selection", label: selectedNode.label, ranges: [selectedNode.range] });
   }
-  const ranges = flowchartSourceRangesForSection(selectedSection, selectedSectionNodes);
-  return ranges.length > 0 ? { kind: "section", label: selectedSection?.label, ranges } : undefined;
+  const hoveredNode = flowchartNodeById(allNodes, hoveredNodeId);
+  if (hoveredNode?.range) {
+    highlights.push({ kind: "hover", label: hoveredNode.label, ranges: [hoveredNode.range] });
+  }
+  return highlights;
+}
+
+function flowchartPrimarySourceHighlight(
+  highlights: readonly FlowchartSourceHighlight[],
+): FlowchartSourceHighlight | undefined {
+  return [...highlights].sort(
+    (left, right) =>
+      flowchartSourceHighlightPriority(right.kind) - flowchartSourceHighlightPriority(left.kind),
+  )[0];
+}
+
+function flowchartSourceScrollTarget(
+  highlights: readonly FlowchartSourceHighlight[],
+  context: {
+    activeNodeId?: string;
+    hoveredNodeId?: string;
+    sectionId?: string;
+    sectionSequence: number;
+    uri: string;
+  },
+): FlowchartSourceScrollTarget | undefined {
+  const hovered = highlights.find((highlight) => highlight.kind === "hover");
+  if (hovered) {
+    return {
+      kind: "hover",
+      key: `hover:${context.uri}:${context.hoveredNodeId ?? ""}`,
+      ranges: hovered.ranges,
+    };
+  }
+  const selection = highlights.find((highlight) => highlight.kind === "selection");
+  if (selection) {
+    return {
+      kind: "selection",
+      key: `selection:${context.uri}:${context.activeNodeId ?? ""}`,
+      ranges: selection.ranges,
+    };
+  }
+  const section = highlights.find((highlight) => highlight.kind === "section");
+  if (!section) {
+    return undefined;
+  }
+  return {
+    kind: "section",
+    key: `section:${context.uri}:${context.sectionId ?? ""}:${context.sectionSequence}`,
+    ranges: section.ranges,
+  };
+}
+
+function flowchartSourceHighlightsByPriority(
+  highlights: readonly FlowchartSourceHighlight[],
+): FlowchartSourceHighlight[] {
+  return [...highlights].sort(
+    (left, right) =>
+      flowchartSourceHighlightPriority(left.kind) - flowchartSourceHighlightPriority(right.kind),
+  );
+}
+
+function flowchartSourceHighlightPriority(kind: FlowchartSourceActiveKind): number {
+  switch (kind) {
+    case "hover":
+      return 3;
+    case "selection":
+      return 2;
+    case "section":
+      return 1;
+  }
 }
 
 function flowchartNodeById(

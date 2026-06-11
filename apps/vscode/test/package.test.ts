@@ -243,7 +243,15 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("scrollFlowchartElementIntoViewport");
     expect(flowchartSource).toContain("flowchartNodeForRange");
     expect(flowchartSource).toContain('type FlowchartSourceActiveKind = "hover"');
-    expect(flowchartSource).toContain("flowchartActiveSource(");
+    expect(flowchartSource).toContain("flowchartSourceHighlights(");
+    expect(flowchartSource).toContain("flowchartPrimarySourceHighlight(sourceHighlights)");
+    expect(flowchartSource).toContain("flowchartSourceScrollTarget(sourceHighlights");
+    expect(flowchartSource).toContain("sectionSourceScrollSequence");
+    expect(flowchartSource).toContain("consumedSectionScrollKeysRef");
+    expect(flowchartSource).toContain('previousKind === "hover"');
+    expect(flowchartSource).toContain('previousKind === "selection"');
+    expect(flowchartSource).toContain("flowchartSourceHighlightsByPriority(highlights)");
+    expect(flowchartSource).toContain("flowchartSourceHighlightPriority");
     expect(flowchartSource).toContain('kind: "hover"');
     expect(flowchartSource).toContain('kind: "selection"');
     expect(flowchartSource).toContain('kind: "section"');
@@ -252,12 +260,15 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("mergeFlowchartSourceRanges");
     expect(flowchartSource).toContain("flowchartSourceActiveBlockClassName");
     expect(flowchartSource).toContain("flowchartSourceActiveLineClassName");
+    expect(flowchartSource).toContain("tooltipPositionFor(triggerRef.current, tooltipRef.current)");
+    expect(flowchartSource).toContain('window.addEventListener("scroll", updatePosition, true)');
     expect(flowchartStyles).toContain("--asp-lsp-source-hover-bg");
     expect(flowchartStyles).toContain("--asp-lsp-source-selection-bg");
     expect(flowchartStyles).toContain("--asp-lsp-source-section-bg");
     expect(flowchartStyles).toContain(".asp-lsp-source-active-block--hover");
     expect(flowchartStyles).toContain(".asp-lsp-source-active-block--selection");
     expect(flowchartStyles).toContain(".asp-lsp-source-active-block--section");
+    expect(flowchartStyles).toContain(".asp-lsp-source-active-block .asp-lsp-source-active-block");
     expect(flowchartSource).toContain("const [open, setOpen] = useState(false)");
     expect(flowchartSource).toContain("shouldAutoOpen");
     expect(flowchartSource).toContain('container.querySelectorAll<SVGGElement>("g[id]")');
@@ -441,10 +452,34 @@ describe("VS Code extension package", () => {
     expect(extensionSourceText).toContain("status.progress.loadingStatusText");
     expect(extensionSourceText).toContain("status.progress.analyzingStatusText");
     expect(extensionSourceText).toContain("status.progress.excel");
+    expect(extensionSourceText).toContain("status.progress.excelGraph");
+    expect(extensionSourceText).toContain("status.progress.excelChooseFile");
+    expect(extensionSourceText).toContain("status.progress.excelSheets");
+    expect(extensionSourceText).toContain("status.progress.excelWorkbook");
+    expect(extensionSourceText).toContain("status.progress.excelFile");
+    expect(extensionSourceText).toContain("progressTaskStatusPriority");
+    expect(extensionSourceText).toContain('task.label.startsWith("excel.")');
+    expect(extensionSourceText).toContain('label: "excel.chooseFile"');
+    expect(extensionSourceText).toContain('label: "excel.workbook"');
     expect(extensionSourceText).toContain("Generating current file graph");
+    expect(extensionSourceText).toContain("Collecting Excel analysis graph");
     expect(extensionSourceText).toContain("Excel 作成中");
+    expect(extensionSourceText).toContain("Excel 解析 graph 取得中");
     expect(extensionSourceText).toContain("flowchart 生成中");
     expect(extensionSourceText).toContain("Classic ASP analysis workbook を作成中");
+    expect(extensionSourceText).toContain("graphAnalysisLimitSettings");
+    const analysisExcelSource = fs.readFileSync("src/analysis-excel.ts", "utf8");
+    const languageServerSource = fs.readFileSync(
+      "../../packages/language-server/src/server.ts",
+      "utf8",
+    );
+    expect(analysisExcelSource).toContain("for (const row of rows)");
+    expect(analysisExcelSource).toContain("for (const value of values)");
+    expect(analysisExcelSource).not.toContain("Math.max(...rows.map");
+    expect(languageServerSource).toContain("appendAspGraphDocuments(");
+    expect(languageServerSource).toContain("appendAspGraphRanges(");
+    expect(languageServerSource).not.toContain("documentsForGraph.push(...indexedGraphDocuments)");
+    expect(languageServerSource).not.toContain("existing.push(...references)");
     expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(
       true,
     );
@@ -707,6 +742,16 @@ describe("VS Code extension package", () => {
     expect(nlsJa["configuration.graph.includeTreeMaxDocuments.description"]).toBeTruthy();
     expect(nls["configuration.graph.includeTreeMaxTextLength.description"]).toBeTruthy();
     expect(nlsJa["configuration.graph.includeTreeMaxTextLength.description"]).toBeTruthy();
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.graph.maxDocuments"]).toEqual(
+      expect.objectContaining({ type: "number", minimum: 1, default: 5000 }),
+    );
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.graph.maxTextLength"]).toEqual(
+      expect.objectContaining({ type: "number", minimum: 1, default: 268435456 }),
+    );
+    expect(nls["configuration.graph.maxDocuments.description"]).toBeTruthy();
+    expect(nlsJa["configuration.graph.maxDocuments.description"]).toBeTruthy();
+    expect(nls["configuration.graph.maxTextLength.description"]).toBeTruthy();
+    expect(nlsJa["configuration.graph.maxTextLength.description"]).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.graph.initialViewMode"],
     ).toEqual(
@@ -726,11 +771,20 @@ describe("VS Code extension package", () => {
       ],
     ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
     expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.excel.skipTypeInference"],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
+    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.excel.includeTreeMaxDocuments"],
     ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 1024 }));
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.excel.includeTreeMaxTextLength"],
     ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 67108864 }));
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.excel.maxDocuments"]).toEqual(
+      expect.objectContaining({ type: "number", minimum: 1, default: 8192 }),
+    );
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.excel.maxTextLength"]).toEqual(
+      expect.objectContaining({ type: "number", minimum: 1, default: 536870912 }),
+    );
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.excel.locale"]).toEqual(
       expect.objectContaining({ type: "string", enum: ["auto", "en", "ja"], default: "auto" }),
     );
@@ -740,10 +794,16 @@ describe("VS Code extension package", () => {
     expect(
       nlsJa["configuration.excel.includeRelatedIncludeTreesForUnresolved.description"],
     ).toBeTruthy();
+    expect(nls["configuration.excel.skipTypeInference.description"]).toBeTruthy();
+    expect(nlsJa["configuration.excel.skipTypeInference.description"]).toBeTruthy();
     expect(nls["configuration.excel.includeTreeMaxDocuments.description"]).toBeTruthy();
     expect(nlsJa["configuration.excel.includeTreeMaxDocuments.description"]).toBeTruthy();
     expect(nls["configuration.excel.includeTreeMaxTextLength.description"]).toBeTruthy();
     expect(nlsJa["configuration.excel.includeTreeMaxTextLength.description"]).toBeTruthy();
+    expect(nls["configuration.excel.maxDocuments.description"]).toBeTruthy();
+    expect(nlsJa["configuration.excel.maxDocuments.description"]).toBeTruthy();
+    expect(nls["configuration.excel.maxTextLength.description"]).toBeTruthy();
+    expect(nlsJa["configuration.excel.maxTextLength.description"]).toBeTruthy();
     expect(nls["configuration.excel.locale.description"]).toBeTruthy();
     expect(nlsJa["configuration.excel.locale.description"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
@@ -956,10 +1016,15 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("excel.locale");
     expect(extensionSource).toContain("includeRelatedIncludeTreesForUnresolved");
     expect(extensionSource).toContain("forceRelatedIncludeTreeAnalysis");
+    expect(extensionSource).toContain("excelSkipTypeInferenceSetting");
+    expect(extensionSource).toContain("skipTypeInference");
+    expect(extensionSource).toContain("includeAnalysisTypeDetails: !skipTypeInference");
     expect(extensionSource).toContain("includeAnalysisTypeDetails");
-    expect(extensionSource).toContain("includeTreeLimitSettings");
-    expect(extensionSource).toContain('includeTreeLimitSettings("excel")');
-    expect(extensionSource).toContain('includeTreeLimitSettings("graph")');
+    expect(extensionSource).toContain("graphAnalysisLimitSettings");
+    expect(extensionSource).toContain('graphAnalysisLimitSettings("excel")');
+    expect(extensionSource).toContain('graphAnalysisLimitSettings("graph")');
+    expect(extensionSource).toContain("maxDocuments");
+    expect(extensionSource).toContain("maxTextLength");
     expect(extensionSource).toContain("includeTreeMaxDocuments");
     expect(extensionSource).toContain("includeTreeMaxTextLength");
     expect(extensionSource).toContain("writeXlsxFile");

@@ -3271,6 +3271,8 @@ function operatorSemanticTokens(
 
 function isVbscriptOperator(text: string): boolean {
   return [
+    "(",
+    ")",
     "&",
     "+",
     "-",

@@ -4874,6 +4874,65 @@ both.SharedName
       }
     });
 
+    it("marks VBScript parentheses and comparison operators on initial semantic token requests", async () => {
+      const source = `<%
+If (count <> 0) And (count <= 10) Then
+  Response.Write(count >= 1)
+End If
+%>`;
+      const uri = "file:///tmp/vbscript-startup-operators.asp";
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const semanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const decoded = decodeSemanticTokens((semanticTokens as { data?: number[] }).data);
+        const tokenAt = (needle: string, from = 0) => {
+          const offset = source.indexOf(needle, from);
+          const position = positionAt(source, offset);
+          return decoded.find(
+            (token) => token.line === position.line && token.character === position.character,
+          );
+        };
+
+        expect(tokenAt("(", source.indexOf("If"))).toEqual(
+          expect.objectContaining({ length: 1, tokenType: semanticTokenType.operator }),
+        );
+        expect(tokenAt(")", source.indexOf("<>"))).toEqual(
+          expect.objectContaining({ length: 1, tokenType: semanticTokenType.operator }),
+        );
+        for (const operator of ["<>", "<=", ">="]) {
+          expect(tokenAt(operator)).toEqual(
+            expect.objectContaining({
+              length: operator.length,
+              tokenType: semanticTokenType.operator,
+            }),
+          );
+        }
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("does not mark HTML tag names as keyword semantic tokens", async () => {
       const source = `<div class="card"><span><%= title %></span></div>`;
       const server = new RpcServer();

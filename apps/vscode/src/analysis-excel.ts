@@ -48,7 +48,10 @@ interface AnalysisExcelSettingsSummary {
   excelLocale?: AspGraphLocale | "auto";
   includeRelatedIncludeTreesForUnresolved?: boolean;
   forceRelatedIncludeTreeAnalysis?: boolean;
+  skipTypeInference?: boolean;
   includeAnalysisTypeDetails?: boolean;
+  maxDocuments?: number;
+  maxTextLength?: number;
   includeTreeMaxDocuments?: number;
   includeTreeMaxTextLength?: number;
 }
@@ -140,7 +143,10 @@ type AnalysisTextKey =
   | "forced"
   | "notForced"
   | "forceRelatedIncludeTreeAnalysis"
+  | "skipTypeInference"
   | "analysisTypeDetails"
+  | "maxDocuments"
+  | "maxTextLength"
   | "includeTreeMaxDocuments"
   | "includeTreeMaxTextLength"
   | "includeTreeDescendant"
@@ -287,7 +293,10 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     forced: "Forced",
     notForced: "Not forced",
     forceRelatedIncludeTreeAnalysis: "Force related include tree analysis",
+    skipTypeInference: "Skip type inference",
     analysisTypeDetails: "Editor-inferred type details",
+    maxDocuments: "Excel output document limit",
+    maxTextLength: "Excel output text limit",
     includeTreeMaxDocuments: "Excel include tree document limit",
     includeTreeMaxTextLength: "Excel include tree text limit",
     includeTreeDescendant: "Descendant",
@@ -435,7 +444,10 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     forced: "強制",
     notForced: "強制なし",
     forceRelatedIncludeTreeAnalysis: "親戚 include tree 解析の強制",
+    skipTypeInference: "型推論を skip",
     analysisTypeDetails: "エディター推論型の詳細",
+    maxDocuments: "Excel 出力 document 上限",
+    maxTextLength: "Excel 出力 text 上限",
     includeTreeMaxDocuments: "Excel include tree document 上限",
     includeTreeMaxTextLength: "Excel include tree text 上限",
     includeTreeDescendant: "子孫",
@@ -1032,7 +1044,10 @@ function analysisSettingRows(
       t.forceRelatedIncludeTreeAnalysis,
       forcedDisplay(settings?.forceRelatedIncludeTreeAnalysis === true, locale),
     ],
+    [t.skipTypeInference, enabledDisplay(settings?.skipTypeInference === true, locale)],
     [t.analysisTypeDetails, enabledDisplay(settings?.includeAnalysisTypeDetails === true, locale)],
+    [t.maxDocuments, settings?.maxDocuments ?? ""],
+    [t.maxTextLength, settings?.maxTextLength ?? ""],
     [t.includeTreeMaxDocuments, settings?.includeTreeMaxDocuments ?? ""],
     [t.includeTreeMaxTextLength, settings?.includeTreeMaxTextLength ?? ""],
   ];
@@ -2785,7 +2800,11 @@ function barString(value: number, max: number): string {
 }
 
 function maxCount(values: number[]): number {
-  return Math.max(0, ...values);
+  let max = 0;
+  for (const value of values) {
+    max = Math.max(max, value);
+  }
+  return max;
 }
 
 function sheet(
@@ -2909,13 +2928,17 @@ function truncateLabel(value: string, maxLength: number): string {
 }
 
 function columnsForRows(rows: Cell[][]): Array<{ width: number }> {
-  const columnCount = Math.max(0, ...rows.map((row) => row.length));
-  return Array.from({ length: columnCount }, (_, column) => ({
-    width: Math.max(
-      10,
-      Math.min(48, Math.max(...rows.map((row) => cellDisplayLength(row[column])), 0) + 2),
-    ),
-  }));
+  let columnCount = 0;
+  for (const row of rows) {
+    columnCount = Math.max(columnCount, row.length);
+  }
+  return Array.from({ length: columnCount }, (_, column) => {
+    let maxLength = 0;
+    for (const row of rows) {
+      maxLength = Math.max(maxLength, cellDisplayLength(row[column]));
+    }
+    return { width: Math.max(10, Math.min(48, maxLength + 2)) };
+  });
 }
 
 function cellDisplayLength(cell: Cell): number {

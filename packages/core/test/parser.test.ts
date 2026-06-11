@@ -7524,6 +7524,7 @@ End Class
 Const MaxCount = 10
 Dim flags
 flags = MaxCount Xor 2 Eqv 1
+flags = (MaxCount <> 0) And (MaxCount <= 20) And (MaxCount >= 1)
 Sub Render(ByVal metricMap, output)
   Response.Write MaxCount + vbCrLf
   Set output = Nothing
@@ -7534,6 +7535,14 @@ End Sub
     const tokens = getVbscriptSemanticTokens(parsed, { symbols });
     const tokenAt = (text: string) => {
       const position = positionAt(source, source.indexOf(text));
+      return tokens.find(
+        (token) =>
+          token.range.start.line === position.line &&
+          token.range.start.character === position.character,
+      );
+    };
+    const tokenAtOffset = (offset: number) => {
+      const position = positionAt(source, offset);
       return tokens.find(
         (token) =>
           token.range.start.line === position.line &&
@@ -7570,6 +7579,20 @@ End Sub
     expect(tokenAt("+")).toEqual(expect.objectContaining({ tokenType: "operator" }));
     expect(tokenAt("Xor")).toEqual(expect.objectContaining({ tokenType: "operator" }));
     expect(tokenAt("Eqv")).toEqual(expect.objectContaining({ tokenType: "operator" }));
+    expect(tokenAtOffset(source.indexOf("(", source.indexOf("MaxCount <>")))).toEqual(
+      expect.objectContaining({ tokenType: "operator" }),
+    );
+    expect(tokenAtOffset(source.indexOf(")", source.indexOf("MaxCount <>")))).toEqual(
+      expect.objectContaining({ tokenType: "operator" }),
+    );
+    for (const operator of ["<>", "<=", ">="]) {
+      expect(tokenAtOffset(source.indexOf(operator))).toEqual(
+        expect.objectContaining({ tokenType: "operator", range: expect.any(Object) }),
+      );
+      expect(tokenAtOffset(source.indexOf(operator))?.range.end.character).toBe(
+        tokenAtOffset(source.indexOf(operator))!.range.start.character + operator.length,
+      );
+    }
   });
 
   it("returns VBScript semantic tokens only inside the requested range", () => {

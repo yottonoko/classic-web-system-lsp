@@ -303,6 +303,11 @@
   padding: 0 0.75rem;
 }
 
+.asp-lsp-source-active-block .asp-lsp-source-active-block {
+  margin: 0;
+  border-radius: 0;
+}
+
 .asp-lsp-source-active-line {
   border-left-color: var(--asp-lsp-source-active-stroke, var(--asp-lsp-active-stroke));
   background: var(--asp-lsp-source-active-bg, var(--asp-lsp-search-active));
