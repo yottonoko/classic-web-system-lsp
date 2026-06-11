@@ -53,7 +53,7 @@ const flowchartEdgeLabelLineLength = 22;
 const maximumFlowchartLabelCharacters = 180;
 const maximumFlowchartEdgeLabelCharacters = 80;
 const minimumFlowchartLabelLineLength = 8;
-const defaultMinimumFlowchartZoom = 0.4;
+const defaultMinimumFlowchartZoom = 0.1;
 const defaultMaximumFlowchartZoom = 4;
 const flowchartZoomStep = 0.1;
 const defaultFlowchartMaxTextSize = 2_000_000;
@@ -925,14 +925,17 @@ function App(): React.ReactElement {
   }, []);
   const openFlowchartForNode = useCallback(
     (node: AspFlowchartNode) => {
-      setFocusedFlowchartNodeId(undefined);
       const target = node.links?.[0]?.target;
       if (target) {
+        setFocusedFlowchartNodeId(undefined);
         setAutoOpenSectionId(openFlowchartTarget(payload, target, setSelectedSectionId, labelMode));
       } else {
         const nextSectionId = sectionIdForNodeFlowchart(payload, node);
         setSelectedSectionId(nextSectionId);
         setAutoOpenSectionId(nextSectionId);
+        if (nextSectionId !== node.sectionId) {
+          setFocusedFlowchartNodeId(undefined);
+        }
       }
     },
     [labelMode, payload],
