@@ -1,6 +1,6 @@
 {
   "name": "asp-lsp-workspace",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "private": true,
   "description": "Classic ASP language server and VS Code extension.",
   "license": "MIT OR Apache-2.0",

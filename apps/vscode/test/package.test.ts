@@ -457,7 +457,7 @@ describe("VS Code extension package", () => {
       expect.objectContaining({
         type: "string",
         enum: ["newline", "sameLineColon"],
-        default: "newline",
+        default: "sameLineColon",
       }),
     );
     expect(

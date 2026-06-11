@@ -124,6 +124,7 @@ End Sub
     const ifNode = flowchart.nodes.find((node) => node.kind === "if");
     const callNode = flowchart.nodes.find((node) => node.kind === "call");
 
+    expect(flowchart.sourceText).toBe(source);
     expect(ifNode?.label).toBe("Check enabled");
     expect(callNode?.label).toBe('Call Render("😀")');
     expect(callNode?.range).toEqual({
@@ -167,6 +168,39 @@ End Sub
     expect(descriptionLabels).toContain("aに100を加算");
     expect(descriptionLabels).toContain("Fを引数1、2、3、4、5で呼び出し");
     expect(descriptionLabels).toContain("aが100と等しいを判定");
+  });
+
+  it("splits complex argument calls into separate flowchart nodes for readable modes", () => {
+    const parsed = parseAspDocument(
+      "file:///site/complex-args.asp",
+      `<%
+Sub Main()
+  Call Render(FormatName(GetUser(id)), Now())
+End Sub
+%>`,
+    );
+
+    const normal = buildAspFlowchart(parsed, { labelMode: "normal" });
+    const raw = buildAspFlowchart(parsed, { labelMode: "raw" });
+    const description = buildAspFlowchart(parsed, { labelMode: "description", locale: "ja" });
+
+    expect(normal.nodes.filter((node) => node.kind === "call").map((node) => node.label)).toEqual([
+      "Call GetUser(id)",
+      "Call FormatName(GetUser(id))",
+      "Call Now",
+      "Call Render(FormatName(GetUser(id)), Now())",
+    ]);
+    expect(raw.nodes.filter((node) => node.kind === "call").map((node) => node.label)).toEqual([
+      "Call Render(FormatName(GetUser(id)), Now())",
+    ]);
+    expect(
+      description.nodes.filter((node) => node.kind === "call").map((node) => node.label),
+    ).toEqual([
+      "GetUserを引数idで呼び出し",
+      "FormatNameを引数GetUser(id)で呼び出し",
+      "Nowを呼び出し",
+      "Renderを引数FormatName(GetUser(id))、Now()で呼び出し",
+    ]);
   });
 
   it("uses a dedicated flowchart kind and labels for On Error statements", () => {
@@ -252,6 +286,39 @@ End Sub
         },
       ],
     });
+    const description = buildAspFlowchart(parsed, {
+      labelMode: "description",
+      symbols: [
+        {
+          uri,
+          declarations: [
+            declaration("global-value", "GlobalValue", "variable", "global", 1, 4, 15),
+            declaration("global-limit", "GlobalLimit", "constant", "global", 2, 6, 17),
+            declaration("main", "Main", "sub", "global", 3, 4, 8),
+            declaration("arg-value", "argValue", "parameter", "local", 3, 9, 17),
+            declaration("local-value", "LocalValue", "variable", "local", 4, 6, 16),
+            declaration("local-limit", "LocalLimit", "constant", "local", 5, 8, 18),
+            declaration("render", "Render", "sub", "global", 9, 4, 10),
+            declaration("value", "value", "parameter", "local", 9, 11, 16),
+          ],
+          references: [
+            reference("LocalValue", "local-value", "write", 6, 2, 12),
+            reference("GlobalLimit", "global-limit", "read", 6, 15, 26),
+            reference("argValue", "arg-value", "read", 7, 14, 22),
+          ],
+          callSites: [
+            {
+              name: "Render",
+              normalizedName: "render",
+              range: flowRange(7, 7, 23),
+              callKind: "procedure",
+              argumentCount: 1,
+              resolvedId: "render",
+            },
+          ],
+        },
+      ],
+    });
 
     expect(flowchart.nodes.map((node) => node.label)).toEqual(
       expect.arrayContaining([
@@ -271,6 +338,12 @@ End Sub
           node.links?.some((link) => link.label === "global constant GlobalLimit"),
       ),
     ).toBe(true);
+    expect(description.nodes.map((node) => node.label)).toEqual(
+      expect.arrayContaining([
+        "Assign global constant GlobalLimit to local variable LocalValue",
+        "Call Sub Render with parameter argValue",
+      ]),
+    );
   });
 
   it("marks implicit global variable links with a distinct flowchart symbol kind", () => {

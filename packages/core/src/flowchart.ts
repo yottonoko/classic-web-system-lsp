@@ -103,6 +103,8 @@ interface FlowStatement {
   statement: VbStatement;
   nodeKind: AspFlowchartNodeKind;
   label: string;
+  description?: string;
+  range?: Range;
   terminates?: boolean;
 }
 
@@ -248,6 +250,7 @@ export function buildAspFlowchart(
     uri: parsed.uri,
     fileName: options.fileName,
     labelMode,
+    sourceText: parsed.text,
     sections: assembly.sections,
     nodes: assembly.nodes,
     edges: assembly.edges,
@@ -491,7 +494,7 @@ function parseElements(
     if (isBlockTerminator(statement) || isBranchBoundary(statement)) {
       break;
     }
-    elements.push(statementElement(statement, context));
+    elements.push(...statementElements(statement, context));
     index += 1;
   }
   return { elements, index };
@@ -663,6 +666,12 @@ function parseLoop(
   };
 }
 
+function statementElements(statement: VbStatement, context: FlowchartContext): FlowStatement[] {
+  const element = statementElement(statement, context);
+  const complexArgumentElements = complexArgumentCallElements(statement, element.nodeKind, context);
+  return [...complexArgumentElements, element];
+}
+
 function statementElement(statement: VbStatement, context: FlowchartContext): FlowStatement {
   const nodeKind = statementNodeKind(statement);
   const range = statementRange(statement, context);
@@ -673,6 +682,152 @@ function statementElement(statement: VbStatement, context: FlowchartContext): Fl
     label: statementLabel(statement, nodeKind, context, range),
     terminates: nodeKind === "exit",
   };
+}
+
+interface FlowchartCallSpan {
+  nameStartIndex: number;
+  nameEndIndex: number;
+  openParenIndex: number;
+  closeParenIndex: number;
+  startOffset: number;
+  endOffset: number;
+  name: string;
+}
+
+function complexArgumentCallElements(
+  statement: VbStatement,
+  statementKind: AspFlowchartNodeKind,
+  context: FlowchartContext,
+): FlowStatement[] {
+  if (context.labelMode === "raw") {
+    return [];
+  }
+  const spans = parenthesizedCallSpans(statement.tokens);
+  if (spans.length < 2) {
+    return [];
+  }
+  const primary = primaryStatementCallSpan(statement, statementKind, spans);
+  const candidates = spans
+    .filter((span) => span !== primary)
+    .filter((span) => callSpanIsArgumentCall(span, spans) || callSpanHasArgumentCall(span, spans));
+  const seen = new Set<string>();
+  return candidates
+    .sort(
+      (left, right) =>
+        callSpanDepth(right, spans) - callSpanDepth(left, spans) ||
+        left.startOffset - right.startOffset,
+    )
+    .filter((span) => {
+      const key = `${span.startOffset}:${span.endOffset}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .map((span) => complexArgumentCallElement(statement, span, context));
+}
+
+function complexArgumentCallElement(
+  parent: VbStatement,
+  span: FlowchartCallSpan,
+  context: FlowchartContext,
+): FlowStatement {
+  const tokens = parent.tokens.slice(span.nameStartIndex, span.closeParenIndex + 1);
+  const statement = syntheticStatement(parent, tokens);
+  const range = rangeFromOffsets(context.sourceText, span.startOffset, span.endOffset);
+  const label = statementLabel(statement, "call", context, range);
+  return {
+    kind: "statement",
+    statement,
+    nodeKind: "call",
+    label,
+    description: label,
+    range,
+  };
+}
+
+function parenthesizedCallSpans(tokens: VbToken[]): FlowchartCallSpan[] {
+  const spans: FlowchartCallSpan[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index]?.kind !== "identifier") {
+      continue;
+    }
+    const nameEndIndex = callNameEndIndex(tokens, index);
+    if (tokens[nameEndIndex]?.text !== "(") {
+      continue;
+    }
+    const closeParenIndex = matchingCloseParenIndex(tokens, nameEndIndex);
+    if (closeParenIndex === -1) {
+      continue;
+    }
+    spans.push({
+      nameStartIndex: index,
+      nameEndIndex,
+      openParenIndex: nameEndIndex,
+      closeParenIndex,
+      startOffset: tokens[index].start,
+      endOffset: tokens[closeParenIndex].end,
+      name: tokensText(tokens.slice(index, nameEndIndex)),
+    });
+  }
+  return spans;
+}
+
+function matchingCloseParenIndex(tokens: VbToken[], openParenIndex: number): number {
+  let depth = 0;
+  for (let index = openParenIndex; index < tokens.length; index += 1) {
+    const text = tokens[index]?.text;
+    if (text === "(") {
+      depth += 1;
+    } else if (text === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
+}
+
+function primaryStatementCallSpan(
+  statement: VbStatement,
+  statementKind: AspFlowchartNodeKind,
+  spans: FlowchartCallSpan[],
+): FlowchartCallSpan | undefined {
+  if (statementKind !== "call") {
+    return undefined;
+  }
+  const first = lower(statement.tokens[0]);
+  const startIndex = first === "call" ? 1 : 0;
+  return spans.find((span) => span.nameStartIndex === startIndex);
+}
+
+function callSpanIsArgumentCall(span: FlowchartCallSpan, spans: FlowchartCallSpan[]): boolean {
+  return spans.some(
+    (candidate) =>
+      candidate !== span &&
+      candidate.openParenIndex < span.nameStartIndex &&
+      span.closeParenIndex < candidate.closeParenIndex,
+  );
+}
+
+function callSpanHasArgumentCall(span: FlowchartCallSpan, spans: FlowchartCallSpan[]): boolean {
+  return spans.some(
+    (candidate) =>
+      candidate !== span &&
+      span.openParenIndex < candidate.nameStartIndex &&
+      candidate.closeParenIndex < span.closeParenIndex,
+  );
+}
+
+function callSpanDepth(span: FlowchartCallSpan, spans: FlowchartCallSpan[]): number {
+  return spans.filter(
+    (candidate) =>
+      candidate !== span &&
+      candidate.openParenIndex < span.nameStartIndex &&
+      span.closeParenIndex < candidate.closeParenIndex,
+  ).length;
 }
 
 function renderElements(
@@ -697,6 +852,8 @@ function renderElements(
         element.statement,
         element.nodeKind,
         element.label,
+        element.range,
+        element.description,
       );
       connectMany(assembly, section, exits, node.id, labelForNext);
       labelForNext = undefined;
@@ -762,6 +919,17 @@ function renderIf(
   let firstBranch = true;
   for (const branch of element.branches) {
     const nodeKind = branch.kind === "if" ? "if" : branch.kind === "elseif" ? "elseif" : "else";
+    const entry = renderComplexArgumentPrelude(
+      assembly,
+      parsed,
+      context,
+      section,
+      branch.statement,
+      nodeKind,
+      falseSources,
+      sectionEndId,
+      firstBranch ? incomingLabel : context.text.no,
+    );
     const node = addStatementNode(
       assembly,
       parsed,
@@ -771,13 +939,7 @@ function renderIf(
       nodeKind,
       flowchartBranchLabel(branch, nodeKind, context),
     );
-    connectMany(
-      assembly,
-      section,
-      falseSources,
-      node.id,
-      firstBranch ? incomingLabel : context.text.no,
-    );
+    connectMany(assembly, section, entry.exits, node.id, entry.incomingLabel);
     firstBranch = false;
     const bodyExits = renderElements(
       assembly,
@@ -806,6 +968,17 @@ function renderSelect(
   sectionEndId: string,
   incomingLabel?: string,
 ): string[] {
+  const selectEntry = renderComplexArgumentPrelude(
+    assembly,
+    parsed,
+    context,
+    section,
+    element.statement,
+    "select",
+    previousIds,
+    sectionEndId,
+    incomingLabel,
+  );
   const selectNode = addStatementNode(
     assembly,
     parsed,
@@ -815,12 +988,23 @@ function renderSelect(
     "select",
     element.label,
   );
-  connectMany(assembly, section, previousIds, selectNode.id, incomingLabel);
+  connectMany(assembly, section, selectEntry.exits, selectNode.id, selectEntry.incomingLabel);
   if (element.cases.length === 0) {
     return [selectNode.id];
   }
   const exits: string[] = [];
   for (const branch of element.cases) {
+    const caseEntry = renderComplexArgumentPrelude(
+      assembly,
+      parsed,
+      context,
+      section,
+      branch.statement,
+      "case",
+      [selectNode.id],
+      sectionEndId,
+      branch.label,
+    );
     const caseNode = addStatementNode(
       assembly,
       parsed,
@@ -830,7 +1014,7 @@ function renderSelect(
       "case",
       branch.label,
     );
-    addEdge(assembly, section, selectNode.id, caseNode.id, branch.label);
+    connectMany(assembly, section, caseEntry.exits, caseNode.id, caseEntry.incomingLabel);
     exits.push(
       ...renderElements(
         assembly,
@@ -856,6 +1040,17 @@ function renderLoop(
   sectionEndId: string,
   incomingLabel?: string,
 ): string[] {
+  const loopEntry = renderComplexArgumentPrelude(
+    assembly,
+    parsed,
+    context,
+    section,
+    element.statement,
+    element.nodeKind,
+    previousIds,
+    sectionEndId,
+    incomingLabel,
+  );
   const loopNode = addStatementNode(
     assembly,
     parsed,
@@ -865,7 +1060,7 @@ function renderLoop(
     element.nodeKind,
     element.label,
   );
-  connectMany(assembly, section, previousIds, loopNode.id, incomingLabel);
+  connectMany(assembly, section, loopEntry.exits, loopNode.id, loopEntry.incomingLabel);
   const bodyExits = renderElements(
     assembly,
     parsed,
@@ -884,6 +1079,35 @@ function renderLoop(
   return [loopNode.id];
 }
 
+function renderComplexArgumentPrelude(
+  assembly: FlowchartAssembly,
+  parsed: AspParsedDocument,
+  context: FlowchartContext,
+  section: AspFlowchartSection,
+  statement: VbStatement,
+  kind: AspFlowchartNodeKind,
+  previousIds: string[],
+  sectionEndId: string,
+  incomingLabel?: string,
+): { exits: string[]; incomingLabel?: string } {
+  const elements = complexArgumentCallElements(statement, kind, context);
+  if (elements.length === 0) {
+    return { exits: previousIds, incomingLabel };
+  }
+  return {
+    exits: renderElements(
+      assembly,
+      parsed,
+      context,
+      section,
+      elements,
+      previousIds,
+      sectionEndId,
+      incomingLabel,
+    ),
+  };
+}
+
 function addStatementNode(
   assembly: FlowchartAssembly,
   parsed: AspParsedDocument,
@@ -892,10 +1116,12 @@ function addStatementNode(
   statement: VbStatement,
   kind: AspFlowchartNodeKind,
   label: string,
+  rangeOverride?: Range,
+  descriptionOverride?: string,
 ): AspFlowchartNode {
-  const range = rangeFromOffsets(parsed.text, statement.start, statement.end);
+  const range = rangeOverride ?? rangeFromOffsets(parsed.text, statement.start, statement.end);
   return addNode(assembly, section, kind, label, range, {
-    description: statementDescription(statement, kind, context, range),
+    description: descriptionOverride ?? statementDescription(statement, kind, context, range),
     links: statementLinks(context, range),
   });
 }
@@ -1280,7 +1506,12 @@ function flowchartBranchLabel(
   }
   const condition =
     context.labelMode === "description"
-      ? describeExpressionText(branch.label, context)
+      ? describeFlowchartExpressionLabel(
+          context,
+          statementRange(branch.statement, context),
+          branch.label,
+          new Set(["read", "new", "member"]),
+        )
       : branch.label;
   return nodeKind === "if"
     ? context.text.ifCondition(condition)
@@ -1348,18 +1579,30 @@ function descriptiveStatementLabel(
   }
   const assignment = assignmentParts(statement);
   if (assignment) {
-    const arithmetic = descriptiveArithmeticAssignment(assignment, context);
+    const arithmetic = descriptiveArithmeticAssignment(assignment, context, range);
     if (arithmetic) {
       return arithmetic;
     }
+    const declaration = statementReferenceDeclaration(context, range, assignment.target, "write");
     return context.text.assign(
-      assignment.target,
-      describeExpressionText(assignment.value, context),
+      flowchartSymbolLabel(assignment.target, declaration, context),
+      describeFlowchartExpressionLabel(
+        context,
+        range,
+        assignment.value,
+        new Set(["read", "new", "member"]),
+      ),
     );
   }
   const call = callParts(statement);
   if (kind === "call" && call) {
-    return descriptiveCallLabel(call.name, call.args, context);
+    const declaration = statementCallDeclaration(context, range, call.name);
+    return descriptiveCallLabel(
+      flowchartSymbolLabel(call.name, declaration, context),
+      call.args,
+      context,
+      range,
+    );
   }
   if (kind === "exit") {
     return context.text.exitStatement(tokensText(statement.tokens.slice(1)));
@@ -1397,17 +1640,28 @@ function onErrorAction(statement: VbStatement): "resumeNext" | "goto0" | "custom
 function descriptiveArithmeticAssignment(
   assignment: { target: string; value: string },
   context: FlowchartContext,
+  range: Range,
 ): string | undefined {
   const pattern = new RegExp(`^${escapeRegExp(assignment.target)}\\s*([+\\-*/])\\s*(.+)$`, "i");
   const match = pattern.exec(assignment.value);
   if (!match) {
     return undefined;
   }
-  const operand = describeExpressionText(match[2].trim(), context);
+  const target = flowchartSymbolLabel(
+    assignment.target,
+    statementReferenceDeclaration(context, range, assignment.target, "write"),
+    context,
+  );
+  const operand = describeFlowchartExpressionLabel(
+    context,
+    range,
+    match[2].trim(),
+    new Set(["read", "new", "member"]),
+  );
   if (context.locale === "ja") {
     const operation =
       match[1] === "+" ? "加算" : match[1] === "-" ? "減算" : match[1] === "*" ? "乗算" : "除算";
-    return `${assignment.target}に${operand}を${operation}`;
+    return `${target}に${operand}を${operation}`;
   }
   const operation =
     match[1] === "+"
@@ -1417,23 +1671,73 @@ function descriptiveArithmeticAssignment(
         : match[1] === "*"
           ? "Multiply"
           : "Divide";
-  const tail =
-    match[1] === "+" || match[1] === "*" ? `to ${assignment.target}` : `from ${assignment.target}`;
+  const tail = match[1] === "+" || match[1] === "*" ? `to ${target}` : `from ${target}`;
   return `${operation} ${operand} ${tail}`;
 }
 
-function descriptiveCallLabel(name: string, args: string, context: FlowchartContext): string {
-  const parts = splitFlowchartArguments(args).map((arg) => describeExpressionText(arg, context));
+function descriptiveCallLabel(
+  name: string,
+  args: string,
+  context: FlowchartContext,
+  range: Range,
+): string {
+  const parts = splitFlowchartArguments(args).map((arg) =>
+    describeFlowchartExpressionLabel(context, range, arg, new Set(["read", "new", "member"])),
+  );
   if (context.locale === "ja") {
     return parts.length > 0 ? `${name}を引数${parts.join("、")}で呼び出し` : `${name}を呼び出し`;
   }
   return parts.length > 0 ? `Call ${name} with ${parts.join(", ")}` : `Call ${name}`;
 }
 
+function describeFlowchartExpressionLabel(
+  context: FlowchartContext,
+  statementRange: Range,
+  expression: string,
+  roles: Set<AspFlowchartSymbolReference["role"]>,
+): string {
+  return describeExpressionText(
+    flowchartExpressionLabel(context, statementRange, expression, roles),
+    context,
+  );
+}
+
 function describeExpressionText(expression: string, context: FlowchartContext): string {
   const trimmed = expression.trim();
   if (!trimmed) {
     return trimmed;
+  }
+  const orExpression = splitTopLevelWordOperator(trimmed, "or");
+  if (orExpression) {
+    const left = describeExpressionText(orExpression.left, context);
+    const right = describeExpressionText(orExpression.right, context);
+    return context.locale === "ja" ? `${left}または${right}` : `${left} or ${right}`;
+  }
+  const andExpression = splitTopLevelWordOperator(trimmed, "and");
+  if (andExpression) {
+    const left = describeExpressionText(andExpression.left, context);
+    const right = describeExpressionText(andExpression.right, context);
+    return context.locale === "ja" ? `${left}かつ${right}` : `${left} and ${right}`;
+  }
+  const notExpression = /^not\s+(.+)$/iu.exec(trimmed);
+  if (notExpression) {
+    const value = describeExpressionText(notExpression[1].trim(), context);
+    return context.locale === "ja" ? `${value}ではない` : `not ${value}`;
+  }
+  const concatExpression = splitTopLevelSymbolOperator(trimmed, "&");
+  if (concatExpression) {
+    const left = describeExpressionText(concatExpression.left, context);
+    const right = describeExpressionText(concatExpression.right, context);
+    return context.locale === "ja" ? `${left}と${right}を連結` : `concatenate ${left} and ${right}`;
+  }
+  const nothingComparison = /^(.*?)\s+is\s+(not\s+)?nothing$/iu.exec(trimmed);
+  if (nothingComparison) {
+    const left = nothingComparison[1].trim();
+    const negated = Boolean(nothingComparison[2]);
+    if (context.locale === "ja") {
+      return negated ? `${left}がNothingではない` : `${left}がNothing`;
+    }
+    return negated ? `${left} is not Nothing` : `${left} is Nothing`;
   }
   const comparison = /^(.*?)\s*(<>|<=|>=|=|<|>)\s*(.*?)$/u.exec(trimmed);
   if (comparison) {
@@ -1469,6 +1773,72 @@ function describeExpressionText(expression: string, context: FlowchartContext): 
     return `${left} ${operator} ${right}`;
   }
   return trimmed;
+}
+
+function splitTopLevelWordOperator(
+  expression: string,
+  operator: string,
+): { left: string; right: string } | undefined {
+  return splitTopLevelOperator(expression, (value, index) => {
+    const candidate = value.slice(index, index + operator.length);
+    if (candidate.toLowerCase() !== operator) {
+      return 0;
+    }
+    const before = index === 0 ? "" : expression[index - 1];
+    const after = expression[index + operator.length] ?? "";
+    return (!before || !/[A-Za-z0-9_]/.test(before)) && (!after || !/[A-Za-z0-9_]/.test(after))
+      ? operator.length
+      : 0;
+  });
+}
+
+function splitTopLevelSymbolOperator(
+  expression: string,
+  operator: string,
+): { left: string; right: string } | undefined {
+  return splitTopLevelOperator(expression, (value, index) => (value[index] === operator ? 1 : 0));
+}
+
+function splitTopLevelOperator(
+  expression: string,
+  match: (value: string, index: number) => number,
+): { left: string; right: string } | undefined {
+  let depth = 0;
+  let quote: string | undefined;
+  for (let index = 0; index < expression.length; index += 1) {
+    const char = expression[index];
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth !== 0) {
+      continue;
+    }
+    const length = match(expression, index);
+    if (length <= 0) {
+      continue;
+    }
+    const left = expression.slice(0, index).trim();
+    const right = expression.slice(index + length).trim();
+    if (left && right) {
+      return { left, right };
+    }
+  }
+  return undefined;
 }
 
 function splitFlowchartArguments(args: string): string[] {
@@ -1532,7 +1902,12 @@ function selectLabel(statement: VbStatement, context: FlowchartContext): string 
   }
   if (context.labelMode === "description") {
     return context.text.selectCase(
-      describeExpressionText(tokensText(statement.tokens.slice(2)), context),
+      describeFlowchartExpressionLabel(
+        context,
+        statementRange(statement, context),
+        tokensText(statement.tokens.slice(2)),
+        new Set(["read", "new", "member"]),
+      ),
     );
   }
   return context.text.selectCase(tokensText(statement.tokens.slice(2)));
@@ -1544,7 +1919,12 @@ function caseLabel(statement: VbStatement, context: FlowchartContext): string {
   }
   if (context.labelMode === "description") {
     return context.text.caseBranch(
-      describeExpressionText(tokensText(statement.tokens.slice(1)), context),
+      describeFlowchartExpressionLabel(
+        context,
+        statementRange(statement, context),
+        tokensText(statement.tokens.slice(1)),
+        new Set(["read", "new", "member"]),
+      ),
     );
   }
   return context.text.caseBranch(tokensText(statement.tokens.slice(1)));
@@ -1579,13 +1959,30 @@ function loopLabel(statement: VbStatement, context: FlowchartContext): string {
     }
   }
   if (first === "do" && (second === "while" || second === "until")) {
-    const condition = tokensText(statement.tokens.slice(2));
+    const condition =
+      context.labelMode === "description"
+        ? describeFlowchartExpressionLabel(
+            context,
+            statementRange(statement, context),
+            tokensText(statement.tokens.slice(2)),
+            new Set(["read", "new", "member"]),
+          )
+        : tokensText(statement.tokens.slice(2));
     return second === "while"
       ? context.text.loopWhile(condition)
       : context.text.loopUntil(condition);
   }
   if (first === "while") {
-    return context.text.loopWhile(tokensText(statement.tokens.slice(1)));
+    const condition =
+      context.labelMode === "description"
+        ? describeFlowchartExpressionLabel(
+            context,
+            statementRange(statement, context),
+            tokensText(statement.tokens.slice(1)),
+            new Set(["read", "new", "member"]),
+          )
+        : tokensText(statement.tokens.slice(1));
+    return context.text.loopWhile(condition);
   }
   return context.text.repeatLoop(tokensText(statement.tokens));
 }
@@ -2298,7 +2695,7 @@ function tokensText(tokens: VbToken[]): string {
     .filter((token) => token.kind !== "whitespace" && token.kind !== "newline")
     .map((token) => token.text)
     .join(" ")
-    .replace(/\s+([),.])/g, "$1")
+    .replace(/\s+([(),.])/g, "$1")
     .replace(/([(])\s+/g, "$1")
     .replace(/\s+/g, " ")
     .trim();

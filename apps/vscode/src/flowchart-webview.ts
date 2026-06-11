@@ -24,6 +24,7 @@ export interface AspFlowchartWebviewSettings {
   maxZoom: number;
   theme: AspFlowchartWebviewThemeSetting;
   infoPanelPosition: AspFlowchartInfoPanelPosition;
+  showSourcePanel: boolean;
 }
 
 interface FlowchartPayload extends AspFlowchartPayload {

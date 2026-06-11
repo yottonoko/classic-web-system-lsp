@@ -11332,7 +11332,8 @@ Response.Write value
         });
         const serialized = JSON.stringify(actions);
         expect(serialized).toContain("Split initialized Dim declaration");
-        expect(serialized).toContain("Dim value\\nvalue = 1");
+        expect(serialized).toContain("Dim value : value = 1");
+        expect(serialized).not.toContain("Dim value\\nvalue = 1");
         expect((actions as unknown[]).length).toBe(1);
 
         await server.request("shutdown", null);
@@ -11342,7 +11343,7 @@ Response.Write value
       }
     });
 
-    it("supports same-line colon style for initialized Dim quick fixes", async () => {
+    it("supports explicit newline style for initialized Dim quick fixes", async () => {
       const source = `<%
 Dim value = 1
 Response.Write value
@@ -11359,7 +11360,7 @@ Response.Write value
           settings: {
             aspLsp: {
               vbscript: {
-                initializedDimQuickFixStyle: "sameLineColon",
+                initializedDimQuickFixStyle: "newline",
               },
             },
           },
@@ -11387,8 +11388,8 @@ Response.Write value
         });
         const serialized = JSON.stringify(actions);
         expect(serialized).toContain("Split initialized Dim declaration");
-        expect(serialized).toContain("Dim value : value = 1");
-        expect(serialized).not.toContain("Dim value\\nvalue = 1");
+        expect(serialized).toContain("Dim value\\nvalue = 1");
+        expect(serialized).not.toContain("Dim value : value = 1");
         expect((actions as unknown[]).length).toBe(1);
 
         await server.request("shutdown", null);

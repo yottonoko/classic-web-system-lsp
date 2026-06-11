@@ -240,6 +240,7 @@ export interface AspFlowchartPayload {
   uri: string;
   fileName?: string;
   labelMode?: AspFlowchartLabelMode;
+  sourceText?: string;
   sections: AspFlowchartSection[];
   nodes: AspFlowchartNode[];
   edges: AspFlowchartEdge[];

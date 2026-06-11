@@ -69,7 +69,6 @@ interface ProgressTask {
 
 interface ProgressQuickPickItem extends vscode.QuickPickItem {
   task?: ProgressTask;
-  action?: "openOutput";
 }
 
 interface GraphCommandRequest {
@@ -677,6 +676,7 @@ function flowchartWebviewSettings(): AspFlowchartWebviewSettings {
     maxZoom: Math.max(minZoom, maxZoom),
     theme: webviewThemeSetting(),
     infoPanelPosition: infoPanelPositionSetting("flowchart.infoPanelPosition", "left"),
+    showSourcePanel: config.get<boolean>("flowchart.showSourcePanel", true),
   };
 }
 
@@ -1210,13 +1210,6 @@ async function showProgressDetails(): Promise<void> {
     await cancelProgressTask(task);
     refresh();
   });
-  quickPick.onDidAccept(() => {
-    const item = quickPick.selectedItems[0];
-    if (item?.action === "openOutput") {
-      outputChannel?.show();
-      quickPick.hide();
-    }
-  });
   quickPick.onDidHide(() => {
     clearInterval(refreshTimer);
     quickPick.dispose();
@@ -1259,11 +1252,6 @@ function progressQuickPickItems(
     ...(taskItems.length > 0
       ? taskItems
       : [{ label: localizer("status.progress.none"), alwaysShow: true }]),
-    {
-      label: localizer("status.progress.openOutput"),
-      action: "openOutput",
-      alwaysShow: true,
-    },
   ];
 }
 
@@ -1385,7 +1373,6 @@ type ExtensionMessageKey =
   | "status.progress.cancel"
   | "status.progress.cancelling"
   | "status.progress.none"
-  | "status.progress.openOutput"
   | "status.progress.placeholder"
   | "status.progress.title"
   | "debug.iis.name"
@@ -1423,7 +1410,6 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.cancel": "Cancel",
     "status.progress.cancelling": "Cancelling",
     "status.progress.none": "No active Classic ASP tasks.",
-    "status.progress.openOutput": "Open Output",
     "status.progress.placeholder": "Current Classic ASP tasks",
     "status.progress.title": "Classic ASP Progress",
     "debug.iis.name": "Debug Classic ASP URL",
@@ -1459,7 +1445,6 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.cancel": "キャンセル",
     "status.progress.cancelling": "キャンセル中",
     "status.progress.none": "実行中の Classic ASP task はありません。",
-    "status.progress.openOutput": "Output を開く",
     "status.progress.placeholder": "現在の Classic ASP task",
     "status.progress.title": "Classic ASP 進行状況",
     "debug.iis.name": "Classic ASP URL をデバッグ",

@@ -242,3 +242,25 @@
   stroke: var(--asp-lsp-active-stroke) !important;
   stroke-width: 4px !important;
 }
+
+.asp-lsp-source-code {
+  margin: 0;
+  tab-size: 2;
+  font-family:
+    var(--vscode-editor-font-family), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+}
+
+.asp-lsp-source-line {
+  display: block;
+  min-height: 1.35rem;
+  border-left: 2px solid transparent;
+  margin: 0 -0.75rem;
+  padding: 0 0.75rem;
+}
+
+.asp-lsp-source-active-line {
+  border-left-color: var(--asp-lsp-active-stroke);
+  background: var(--asp-lsp-search-active);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--asp-lsp-active-stroke) 35%, transparent);
+}

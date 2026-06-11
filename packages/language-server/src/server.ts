@@ -240,7 +240,7 @@ const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.6.8";
+const languageServerVersion = "0.6.9";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -13549,7 +13549,7 @@ function normalizeVbscriptSettings(
 function normalizeInitializedDimQuickFixStyle(
   value: unknown,
 ): NonNullable<NonNullable<AspSettings["vbscript"]>["initializedDimQuickFixStyle"]> {
-  return value === "sameLineColon" ? "sameLineColon" : "newline";
+  return value === "newline" ? "newline" : "sameLineColon";
 }
 
 function normalizeIfSyntaxDiagnostics(
