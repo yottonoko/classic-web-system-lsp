@@ -131,9 +131,44 @@ End Sub
       start: { line: 2, character: 3 },
       end: { line: 2, character: '<% Call Render("😀")'.length },
     });
+    expect(flowchart.sections.find((section) => section.kind === "topLevel")?.range).toEqual({
+      start: { line: 0, character: 3 },
+      end: { line: 3, character: "<% End If".length },
+    });
     expect(flowchart.edges.some((edge) => edge.source === ifNode?.id && edge.label === "Yes")).toBe(
       true,
     );
+  });
+
+  it("uses whole procedure ranges and splits long flowchart labels into readable nodes", () => {
+    const longText = Array.from({ length: 40 }, (_, index) => `part${index}`).join("-");
+    const parsed = parseAspDocument(
+      "file:///site/long-label.asp",
+      `<%
+Sub Main()
+  message = "${longText}"
+End Sub
+%>`,
+    );
+
+    const flowchart = buildAspFlowchart(parsed);
+    const procedureSection = flowchart.sections.find((section) => section.label === "Sub Main");
+    const bodyNodes = flowchart.nodes.filter(
+      (node) => node.kind !== "start" && node.kind !== "end",
+    );
+
+    expect(procedureSection?.range).toEqual({
+      start: { line: 1, character: 0 },
+      end: { line: 3, character: "End Sub".length },
+    });
+    expect(bodyNodes.length).toBeGreaterThan(1);
+    expect(bodyNodes.every((node) => Array.from(node.label).length <= 140)).toBe(true);
+    expect(flowchart.mermaid).not.toContain("...");
+    expect(
+      flowchart.edges.some(
+        (edge) => edge.source === bodyNodes[0]?.id && edge.target === bodyNodes[1]?.id,
+      ),
+    ).toBe(true);
   });
 
   it("supports normal, raw and description flowchart label modes", () => {

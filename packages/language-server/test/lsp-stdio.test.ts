@@ -6124,13 +6124,26 @@ Response.Write SharedTitle()
         server.notify("workspace/didChangeConfiguration", {
           settings: { aspLsp: { codeLens: { referenceScope: "workspace" } } },
         });
-        const workspaceResolvedCodeLens = (await server.request(
-          "codeLens/resolve",
-          referencesCodeLens,
-        )) as Record<string, unknown>;
+        const workspaceResolvePromise = server.request("codeLens/resolve", referencesCodeLens);
+        const referenceStatus = await waitForStatusTask(server, "references.count");
+        expect(referenceStatus.params).toEqual(
+          expect.objectContaining({
+            tasks: expect.arrayContaining([
+              expect.objectContaining({
+                label: "references.count",
+                activeItems: ["SharedTitle"],
+              }),
+            ]),
+          }),
+        );
+        const workspaceResolvedCodeLens = (await workspaceResolvePromise) as Record<
+          string,
+          unknown
+        >;
         expect(JSON.stringify(workspaceResolvedCodeLens.command)).toContain("1 reference");
         expect(JSON.stringify(workspaceResolvedCodeLens.command)).not.toContain("(analyzed only)");
         expect(JSON.stringify(workspaceResolvedCodeLens.command)).toContain(pageUri);
+        await waitForStatus(server, "idle");
 
         const references = await server.request("textDocument/references", {
           textDocument: { uri: commonUri },
@@ -6345,14 +6358,27 @@ a = 3
         expect(codeLensLocations.map((location) => location.uri)).toContain(firstUri);
         expect(codeLensLocations.map((location) => location.uri)).toContain(secondUri);
         expect(codeLensLocations.map((location) => location.uri)).not.toContain(shadowUri);
+        await waitForStatus(server, "idle");
 
-        const graph = (await server.request("workspace/executeCommand", {
+        const graphPromise = server.request("workspace/executeCommand", {
           command: "aspLsp.server.buildGraph",
           arguments: [{ scope: "workspace" }],
-        })) as {
+        });
+        const graphStatus = await waitForStatusTask(server, "graph.workspace");
+        expect(graphStatus.params).toEqual(
+          expect.objectContaining({
+            tasks: expect.arrayContaining([
+              expect.objectContaining({
+                label: "graph.workspace",
+              }),
+            ]),
+          }),
+        );
+        const graph = (await graphPromise) as {
           nodes?: Array<Record<string, unknown>>;
           links?: Array<Record<string, unknown>>;
         };
+        await waitForStatus(server, "idle");
         const aNode = graph.nodes?.find(
           (node) => node.kind === "vbDeclaration" && node.label === "a" && node.uri === firstUri,
         );
@@ -16193,6 +16219,40 @@ async function waitForStatus(server: RpcServer, status: string): Promise<JsonRpc
   }
   server.prependPendingNotifications("aspLsp/status", skipped);
   throw new Error(`Timed out waiting for status ${status}.`);
+}
+
+async function waitForStatusTask(server: RpcServer, label: string): Promise<JsonRpcMessage> {
+  const deadline = Date.now() + rpcTimeoutMs;
+  const skipped: JsonRpcMessage[] = [];
+  while (Date.now() < deadline) {
+    const pending = server.takePendingNotifications("aspLsp/status");
+    for (const [index, message] of pending.entries()) {
+      if (statusNotificationHasTaskLabel(message, label)) {
+        server.prependPendingNotifications("aspLsp/status", [
+          ...skipped,
+          ...pending.slice(index + 1),
+        ]);
+        return message;
+      }
+      skipped.push(message);
+    }
+    const message = await server.waitForNotification("aspLsp/status");
+    if (statusNotificationHasTaskLabel(message, label)) {
+      server.prependPendingNotifications("aspLsp/status", skipped);
+      return message;
+    }
+    skipped.push(message);
+  }
+  server.prependPendingNotifications("aspLsp/status", skipped);
+  throw new Error(`Timed out waiting for status task ${label}.`);
+}
+
+function statusNotificationHasTaskLabel(message: JsonRpcMessage, label: string): boolean {
+  const tasks = (message.params as { tasks?: unknown } | undefined)?.tasks;
+  return (
+    Array.isArray(tasks) &&
+    tasks.some((task) => (task as { label?: unknown } | undefined)?.label === label)
+  );
 }
 
 function delay(ms: number): Promise<void> {

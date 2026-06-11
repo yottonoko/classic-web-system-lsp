@@ -43,7 +43,7 @@ const htmlTagCompleteLookBehind = 2000;
 const defaultFlowchartMaxTextSize = 2_000_000;
 const defaultFlowchartMaxEdges = 100_000;
 const defaultFlowchartLabelLineLength = 34;
-const defaultFlowchartMinZoom = 0.4;
+const defaultFlowchartMinZoom = 0.1;
 const defaultFlowchartMaxZoom = 4;
 type GraphOpenLocation = "active" | "beside";
 type GraphScope = "document" | "folder" | "workspace";
@@ -579,25 +579,33 @@ async function requestAspGraphPayload(
 ): Promise<AspGraphPayload> {
   return vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title, cancellable: true },
-    async (_progress, token) =>
-      activeClient.sendRequest<AspGraphPayload>(
-        "workspace/executeCommand",
-        {
-          command: buildGraphServerCommand,
-          arguments: [
-            {
-              scope: request.scope,
-              uri: request.uri,
-              includeIncomingDocumentIncludes: request.includeIncomingDocumentIncludes,
-              includeRelatedIncludeTreesForUnresolved:
-                request.includeRelatedIncludeTreesForUnresolved,
-              forceRelatedIncludeTreeAnalysis: request.forceRelatedIncludeTreeAnalysis,
-              includeAnalysisTypeDetails: request.includeAnalysisTypeDetails,
-            },
-          ],
-        },
-        token,
-      ),
+    async (_progress, token) => {
+      const statusTask = beginExtensionProgressTask("analyzing", `graph.${request.scope}`, {
+        detail: request.uri ? progressDetailFromUriText(request.uri) : undefined,
+      });
+      try {
+        return await activeClient.sendRequest<AspGraphPayload>(
+          "workspace/executeCommand",
+          {
+            command: buildGraphServerCommand,
+            arguments: [
+              {
+                scope: request.scope,
+                uri: request.uri,
+                includeIncomingDocumentIncludes: request.includeIncomingDocumentIncludes,
+                includeRelatedIncludeTreesForUnresolved:
+                  request.includeRelatedIncludeTreesForUnresolved,
+                forceRelatedIncludeTreeAnalysis: request.forceRelatedIncludeTreeAnalysis,
+                includeAnalysisTypeDetails: request.includeAnalysisTypeDetails,
+              },
+            ],
+          },
+          token,
+        );
+      } finally {
+        statusTask.end();
+      }
+    },
   );
 }
 
@@ -1021,7 +1029,10 @@ function clearServerProgressState(): void {
 }
 
 function activeProgressTasks(): ProgressTask[] {
-  return [...serverProgressTasks, ...extensionProgressTasks.values()];
+  const extensionFallbackTasks = [...extensionProgressTasks.values()].filter(
+    (task) => !serverProgressTasks.some((serverTask) => serverTask.label === task.label),
+  );
+  return [...serverProgressTasks, ...extensionFallbackTasks];
 }
 
 function activeStatusKind(tasks: ProgressTask[]): ServerStatusKind {
@@ -1077,7 +1088,8 @@ function progressTooltip(
       const state =
         task.state === "cancelling" ? ` ${localizer("status.progress.cancelling")}` : "";
       const detail = task.detail ? ` - ${task.detail}` : "";
-      return `${task.label}${progress ? ` ${progress}` : ""}${state}${detail}`;
+      const label = progressTaskDisplayLabel(task.label, localizer);
+      return `${label}${progress ? ` ${progress}` : ""}${state}${detail}`;
     })
     .join("\n");
 }
@@ -1233,7 +1245,7 @@ function progressQuickPickItems(
         ? `\n${localizer("status.progress.active")}: ${task.activeItems.join(", ")}`
         : "";
     return {
-      label: `${task.label}${progress ? ` ${progress}` : ""}${state}`,
+      label: `${progressTaskDisplayLabel(task.label, localizer)}${progress ? ` ${progress}` : ""}${state}`,
       description: task.detail,
       detail: activeItems || undefined,
       task,
@@ -1253,6 +1265,45 @@ function progressQuickPickItems(
       ? taskItems
       : [{ label: localizer("status.progress.none"), alwaysShow: true }]),
   ];
+}
+
+function progressTaskDisplayLabel(
+  label: string,
+  localizer: (key: ExtensionMessageKey, args?: ExtensionMessageArgs) => string,
+): string {
+  const key = progressTaskDisplayLabelKey(label);
+  return key ? localizer(key) : label;
+}
+
+function progressTaskDisplayLabelKey(label: string): ExtensionMessageKey | undefined {
+  switch (label) {
+    case "workspace.diagnostics":
+      return "status.progress.workspaceDiagnostics";
+    case "diagnostics":
+      return "status.progress.diagnostics";
+    case "document.analysis":
+      return "status.progress.documentAnalysis";
+    case "workspace.index":
+      return "status.progress.workspaceIndex";
+    case "flowchart.build":
+      return "status.progress.flowchart";
+    case "graph.document":
+      return "status.progress.graphDocument";
+    case "graph.folder":
+      return "status.progress.graphFolder";
+    case "graph.workspace":
+      return "status.progress.graphWorkspace";
+    case "references.count":
+      return "status.progress.referencesCount";
+    case "excel.write":
+      return "excel.writeTitle";
+    default:
+      return undefined;
+  }
+}
+
+function progressDetailFromUriText(uriText: string): string {
+  return baseNameFromUri(uriText) ?? uriText;
 }
 
 async function cancelProgressTask(task: ProgressTask): Promise<void> {
@@ -1372,9 +1423,18 @@ type ExtensionMessageKey =
   | "status.progress.active"
   | "status.progress.cancel"
   | "status.progress.cancelling"
+  | "status.progress.diagnostics"
+  | "status.progress.documentAnalysis"
+  | "status.progress.flowchart"
+  | "status.progress.graphDocument"
+  | "status.progress.graphFolder"
+  | "status.progress.graphWorkspace"
   | "status.progress.none"
   | "status.progress.placeholder"
+  | "status.progress.referencesCount"
   | "status.progress.title"
+  | "status.progress.workspaceDiagnostics"
+  | "status.progress.workspaceIndex"
   | "debug.iis.name"
   | "debug.iisExpress.name"
   | "launch.noWorkspace"
@@ -1409,9 +1469,18 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.active": "Active",
     "status.progress.cancel": "Cancel",
     "status.progress.cancelling": "Cancelling",
+    "status.progress.diagnostics": "Document diagnostics",
+    "status.progress.documentAnalysis": "Document analysis",
+    "status.progress.flowchart": "Flowchart analysis",
+    "status.progress.graphDocument": "Current file graph analysis",
+    "status.progress.graphFolder": "Folder graph analysis",
+    "status.progress.graphWorkspace": "Workspace graph analysis",
     "status.progress.none": "No active Classic ASP tasks.",
     "status.progress.placeholder": "Current Classic ASP tasks",
+    "status.progress.referencesCount": "Reference count analysis",
     "status.progress.title": "Classic ASP Progress",
+    "status.progress.workspaceDiagnostics": "Workspace diagnostics",
+    "status.progress.workspaceIndex": "Workspace index",
     "debug.iis.name": "Debug Classic ASP URL",
     "debug.iisExpress.name": "Debug Classic ASP IIS Express URL",
     "launch.noWorkspace": "Open a workspace before creating launch.json.",
@@ -1444,9 +1513,18 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.active": "実行中",
     "status.progress.cancel": "キャンセル",
     "status.progress.cancelling": "キャンセル中",
+    "status.progress.diagnostics": "document diagnostics",
+    "status.progress.documentAnalysis": "document 解析",
+    "status.progress.flowchart": "flowchart 解析",
+    "status.progress.graphDocument": "current file graph 解析",
+    "status.progress.graphFolder": "folder graph 解析",
+    "status.progress.graphWorkspace": "workspace graph 解析",
     "status.progress.none": "実行中の Classic ASP task はありません。",
     "status.progress.placeholder": "現在の Classic ASP task",
+    "status.progress.referencesCount": "参照数解析",
     "status.progress.title": "Classic ASP 進行状況",
+    "status.progress.workspaceDiagnostics": "workspace diagnostics",
+    "status.progress.workspaceIndex": "workspace index",
     "debug.iis.name": "Classic ASP URL をデバッグ",
     "debug.iisExpress.name": "Classic ASP IIS Express URL をデバッグ",
     "launch.noWorkspace": "launch.json を作成する前に workspace を開いてください。",

@@ -162,6 +162,7 @@ const flowchartLabelLineLength = 34;
 const flowchartEdgeLabelLineLength = 22;
 const maximumFlowchartLabelCharacters = 180;
 const maximumFlowchartEdgeLabelCharacters = 80;
+const maximumFlowchartSplitLabelCharacters = 140;
 const minimumFlowchartLabelLineLength = 8;
 
 export function buildAspFlowchart(
@@ -212,6 +213,7 @@ export function buildAspFlowchart(
     id: "section-top-level",
     label: context.text.topLevel,
     kind: "topLevel",
+    range: rangeFromStatements(parsed.text, topLevelStatements),
     statements: topLevelStatements,
   });
   for (const classBlock of classes) {
@@ -228,10 +230,9 @@ export function buildAspFlowchart(
       id: `section-${assembly.sections.length}`,
       label: classBlock.label,
       kind: "class",
-      range: rangeFromOffsets(
+      range: rangeFromStatements(
         parsed.text,
-        classBlock.declaration.start,
-        classBlock.declaration.end,
+        statements.slice(classBlock.startIndex, classBlock.endIndex + 1),
       ),
       statements: statementsInClass,
     });
@@ -241,10 +242,14 @@ export function buildAspFlowchart(
       id: `section-${assembly.sections.length}`,
       label: procedure.label,
       kind: procedure.kind,
-      range: rangeFromOffsets(parsed.text, procedure.declaration.start, procedure.declaration.end),
+      range: rangeFromStatements(
+        parsed.text,
+        statements.slice(procedure.startIndex, procedure.endIndex + 1),
+      ),
       statements: statements.slice(procedure.startIndex + 1, procedure.endIndex),
     });
   }
+  splitLongFlowchartNodes(assembly);
   const includes = options.includes ?? parsed.includes.map(flowchartIncludeFromParsed);
   const payload = {
     uri: parsed.uri,
@@ -277,6 +282,12 @@ function flowchartIncludeFromParsed(
     mode: include.mode,
     range: include.range,
   };
+}
+
+function rangeFromStatements(text: string, statements: VbStatement[]): Range | undefined {
+  const first = statements[0];
+  const last = statements.at(-1);
+  return first && last ? rangeFromOffsets(text, first.start, last.end) : undefined;
 }
 
 function vbStatements(parsed: AspParsedDocument): VbStatement[] {
@@ -1145,6 +1156,70 @@ function addNode(
   assembly.nodes.push(node);
   section.nodeIds.push(node.id);
   return node;
+}
+
+function splitLongFlowchartNodes(assembly: FlowchartAssembly): void {
+  const nodesById = new Map(assembly.nodes.map((node) => [node.id, node]));
+  for (const section of assembly.sections) {
+    const nextNodeIds: string[] = [];
+    for (const nodeId of section.nodeIds) {
+      nextNodeIds.push(nodeId);
+      const node = nodesById.get(nodeId);
+      if (!node || node.kind === "start" || node.kind === "end") {
+        continue;
+      }
+      const labelParts = splitLongFlowchartLabel(node.label);
+      if (labelParts.length <= 1) {
+        continue;
+      }
+      node.label = labelParts[0] ?? node.label;
+      const continuationIds: string[] = [];
+      for (const label of labelParts.slice(1)) {
+        const continuation = {
+          ...node,
+          id: `node-${assembly.nextNodeIndex++}`,
+          label,
+        };
+        assembly.nodes.push(continuation);
+        nodesById.set(continuation.id, continuation);
+        continuationIds.push(continuation.id);
+        nextNodeIds.push(continuation.id);
+      }
+      const lastContinuationId = continuationIds.at(-1);
+      if (!lastContinuationId) {
+        continue;
+      }
+      for (const edge of assembly.edges) {
+        if (edge.source === node.id) {
+          edge.source = lastContinuationId;
+        }
+      }
+      let previousId = node.id;
+      for (const continuationId of continuationIds) {
+        addEdge(assembly, section, previousId, continuationId);
+        previousId = continuationId;
+      }
+    }
+    section.nodeIds = nextNodeIds;
+  }
+}
+
+function splitLongFlowchartLabel(label: string): string[] {
+  const characters = Array.from(label);
+  if (characters.length <= maximumFlowchartLabelCharacters) {
+    return [label];
+  }
+  const parts: string[] = [];
+  for (let index = 0; index < characters.length; index += maximumFlowchartSplitLabelCharacters) {
+    const part = characters
+      .slice(index, index + maximumFlowchartSplitLabelCharacters)
+      .join("")
+      .trim();
+    if (part) {
+      parts.push(part);
+    }
+  }
+  return parts.length > 0 ? parts : [label];
 }
 
 function connectMany(

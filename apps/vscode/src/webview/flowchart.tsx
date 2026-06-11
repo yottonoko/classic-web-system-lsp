@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { highlight, InnerLine, Pre } from "codehike/code";
-import type { AnnotationHandler, HighlightedCode } from "codehike/code";
+import type { AnnotationHandler, CodeAnnotation, HighlightedCode } from "codehike/code";
 import mermaid from "mermaid";
 import tailwindStyles from "./flowchart.css?inline";
 import { VirtualList } from "./virtual-list";
@@ -68,6 +68,7 @@ const flowchartLabelModes: AspFlowchartLabelMode[] = ["raw", "normal", "descript
 const flowchartSourcePanelDefaultWidth = 420;
 const flowchartSourcePanelMinimumWidth = 280;
 const flowchartSourcePanelMaximumWidth = 720;
+const flowchartSourceActiveAnnotationName = "flowchartSourceActive";
 
 const fallbackPayload: FlowchartPayload = {
   uri: "",
@@ -1246,7 +1247,8 @@ function App(): React.ReactElement {
             onWidthChange={setSourcePanelWidth}
           />
           <FlowchartSourcePanel
-            activeNode={activeSourceNode}
+            activeLabel={activeSourceNode?.label ?? selectedSection?.label}
+            activeRange={activeSourceNode?.range ?? selectedSection?.range}
             className={sourcePanelClassName}
             sourceText={payload.sourceText}
             text={text}
@@ -1730,13 +1732,15 @@ function FlowchartPaneResizeHandle({
 }
 
 function FlowchartSourcePanel({
-  activeNode,
+  activeLabel,
+  activeRange,
   className,
   sourceText,
   text,
   theme,
 }: {
-  activeNode?: AspFlowchartNode;
+  activeLabel?: string;
+  activeRange?: AspFlowchartNode["range"] | AspFlowchartSection["range"];
   className?: string;
   sourceText?: string;
   text(key: string): string;
@@ -1745,7 +1749,14 @@ function FlowchartSourcePanel({
   const preRef = useRef<HTMLPreElement | null>(null);
   const [highlightedCode, setHighlightedCode] = useState<HighlightedCode>();
   const [highlightError, setHighlightError] = useState<string>();
-  const activeRange = activeNode?.range;
+  const activeLineNumber = activeRange ? activeRange.start.line + 1 : undefined;
+  const highlightedCodeWithActiveRange = useMemo(
+    () =>
+      highlightedCode
+        ? flowchartHighlightedCodeWithActiveRange(highlightedCode, activeRange)
+        : undefined,
+    [activeRange, highlightedCode],
+  );
   const handlers = useMemo<AnnotationHandler[]>(
     () => [
       {
@@ -1753,17 +1764,19 @@ function FlowchartSourcePanel({
         Line: (props) => (
           <InnerLine
             merge={props}
-            className={`asp-lsp-source-line ${
-              flowchartSourceLineIntersectsRange(props.lineNumber, activeRange)
-                ? "asp-lsp-source-active-line"
-                : ""
-            }`}
+            className="asp-lsp-source-line"
             data-source-line={props.lineNumber}
           />
         ),
       },
+      {
+        name: flowchartSourceActiveAnnotationName,
+        AnnotatedLine: (props) => (
+          <InnerLine merge={props} className="asp-lsp-source-active-line" />
+        ),
+      },
     ],
-    [activeRange],
+    [],
   );
 
   useEffect(() => {
@@ -1776,7 +1789,7 @@ function FlowchartSourcePanel({
     const run = async (): Promise<void> => {
       try {
         const code = await highlight(
-          { value: sourceText, lang: "html", meta: "" },
+          { value: sourceText, lang: "vb", meta: "" },
           theme === "dark" ? "github-dark" : "github-light",
         );
         if (!cancelled) {
@@ -1796,16 +1809,18 @@ function FlowchartSourcePanel({
     };
   }, [sourceText, theme]);
 
-  useEffect(() => {
-    if (!activeRange || !preRef.current) {
+  useLayoutEffect(() => {
+    if (!activeLineNumber || !preRef.current) {
       return;
     }
-    const lineNumber = activeRange.start.line + 1;
-    window.requestAnimationFrame(() => {
-      const line = preRef.current?.querySelector<HTMLElement>(`[data-source-line="${lineNumber}"]`);
-      line?.scrollIntoView({ block: "center", inline: "nearest" });
+    const frame = window.requestAnimationFrame(() => {
+      const pre = preRef.current;
+      if (pre) {
+        scrollSourceLineIntoView(pre, activeLineNumber);
+      }
     });
-  }, [activeRange]);
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeLineNumber, highlightedCodeWithActiveRange]);
 
   return (
     <aside className={`${className ?? ""} flex min-h-0 min-w-0 flex-col bg-[#101820]`}>
@@ -1814,24 +1829,25 @@ function FlowchartSourcePanel({
           <div className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide text-[#9fb0c5]">
             {text("source")}
           </div>
-          {activeNode ? (
+          {activeLabel ? (
             <div
               className="min-w-0 flex-1 truncate text-right text-[11px] text-[#c4d4e8]"
-              title={activeNode.label}
+              title={activeLabel}
             >
-              {activeNode.label}
+              {activeLabel}
             </div>
           ) : null}
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-hidden">
         {sourceText ? (
-          highlightedCode ? (
+          highlightedCodeWithActiveRange ? (
             <Pre
               ref={preRef}
-              code={highlightedCode}
+              code={highlightedCodeWithActiveRange}
               handlers={handlers}
               className="asp-lsp-source-code h-full overflow-auto bg-[#0c1117] p-3 text-xs leading-5"
+              style={flowchartSourceCodeStyle(highlightedCodeWithActiveRange)}
             />
           ) : (
             <pre
@@ -1849,22 +1865,62 @@ function FlowchartSourcePanel({
   );
 }
 
-function flowchartSourceLineIntersectsRange(
-  lineNumber: number,
-  range?: AspFlowchartNode["range"],
-): boolean {
-  if (!range) {
-    return false;
-  }
-  const line = lineNumber - 1;
-  const endLine = flowchartSourceHighlightEndLine(range);
-  return range.start.line <= line && line <= endLine;
-}
-
 function flowchartSourceHighlightEndLine(range: NonNullable<AspFlowchartNode["range"]>): number {
   return range.end.character === 0 && range.end.line > range.start.line
     ? range.end.line - 1
     : range.end.line;
+}
+
+function flowchartHighlightedCodeWithActiveRange(
+  code: HighlightedCode,
+  range: AspFlowchartNode["range"] | AspFlowchartSection["range"] | undefined,
+): HighlightedCode {
+  const annotations = code.annotations.filter(
+    (annotation) => annotation.name !== flowchartSourceActiveAnnotationName,
+  );
+  if (range) {
+    annotations.push(flowchartSourceActiveAnnotation(range));
+  }
+  return { ...code, annotations };
+}
+
+function flowchartSourceActiveAnnotation(
+  range: NonNullable<AspFlowchartNode["range"]>,
+): CodeAnnotation {
+  return {
+    name: flowchartSourceActiveAnnotationName,
+    query: "",
+    fromLineNumber: range.start.line + 1,
+    toLineNumber: flowchartSourceHighlightEndLine(range) + 1,
+  };
+}
+
+function flowchartSourceCodeStyle(code: HighlightedCode | undefined): React.CSSProperties {
+  return {
+    ...code?.style,
+    background: "var(--asp-lsp-input)",
+  };
+}
+
+function scrollSourceLineIntoView(container: HTMLElement, lineNumber: number): void {
+  const line = container.querySelector<HTMLElement>(`[data-source-line="${lineNumber}"]`);
+  if (!line) {
+    return;
+  }
+  const containerRect = container.getBoundingClientRect();
+  const lineRect = line.getBoundingClientRect();
+  const isAbove = lineRect.top < containerRect.top;
+  const isBelow = lineRect.bottom > containerRect.bottom;
+  if (!isAbove && !isBelow) {
+    return;
+  }
+  const nextTop =
+    container.scrollTop +
+    lineRect.top +
+    lineRect.height / 2 -
+    containerRect.top -
+    container.clientHeight / 2;
+  container.scrollTo({ top: Math.max(0, nextTop), behavior: "smooth" });
 }
 
 function FlowchartCanvas({

@@ -573,7 +573,7 @@ describe("VS Code extension package", () => {
       expect.objectContaining({
         type: "number",
         minimum: 0.1,
-        default: 0.4,
+        default: 0.1,
       }),
     );
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.maxZoom"]).toEqual(

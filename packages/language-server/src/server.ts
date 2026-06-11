@@ -240,7 +240,7 @@ const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.6.9";
+const languageServerVersion = "0.6.10";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -20384,31 +20384,13 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
     includeFunctionReturnAssignments: false,
   };
   const executionOptions = workspaceVbReferenceCodeLensExecutionOptions(settings);
-  const references =
-    settings.codeLens?.referenceScope === "workspace"
-      ? await workspaceVbscriptCodeLensReferencesForSymbol(
-          cached,
-          symbol,
-          settings,
-          options,
-          executionOptions,
-        ).then(async (workspaceReferences) => {
-          if (settings.codeLens?.includeRelatedIncludeTreesForUnresolved !== true) {
-            return workspaceReferences;
-          }
-          const relatedReferences = await relatedIncludeTreeVbscriptCodeLensReferencesForSymbol(
-            cached,
-            symbol,
-            settings,
-            options,
-          );
-          return relatedReferences
-            ? dedupeVbReferences([...workspaceReferences, ...relatedReferences]).sort(
-                vbReferenceOrder,
-              )
-            : workspaceReferences;
-        })
-      : await analyzedVbscriptReferencesForSymbolAsync(cached, symbol, settings, options);
+  const references = await resolveCodeLensReferencesWithProgress(
+    cached,
+    symbol,
+    settings,
+    options,
+    executionOptions,
+  );
   const localizer = localizerForUri(cached.source.uri);
   const referenceTitle = localizer.t(
     references.length === 1 ? "server.codeLens.reference" : "server.codeLens.references",
@@ -20430,6 +20412,47 @@ async function resolveCodeLens(lens: CodeLens): Promise<CodeLens> {
       ],
     },
   };
+}
+
+async function resolveCodeLensReferencesWithProgress(
+  cached: CachedDocument,
+  symbol: VbSymbol,
+  settings: AspSettings,
+  options: VbReferenceOptions,
+  executionOptions: WorkspaceVbReferenceExecutionOptions,
+): Promise<VbReference[]> {
+  if (settings.codeLens?.referenceScope !== "workspace") {
+    return analyzedVbscriptReferencesForSymbolAsync(cached, symbol, settings, options);
+  }
+  return withProgressTaskAsync(
+    "analyzing",
+    "references.count",
+    {
+      detail: progressFileLabelFromUri(cached.source.uri),
+      activeItems: [symbol.name],
+    },
+    async () => {
+      const workspaceReferences = await workspaceVbscriptCodeLensReferencesForSymbol(
+        cached,
+        symbol,
+        settings,
+        options,
+        executionOptions,
+      );
+      if (settings.codeLens?.includeRelatedIncludeTreesForUnresolved !== true) {
+        return workspaceReferences;
+      }
+      const relatedReferences = await relatedIncludeTreeVbscriptCodeLensReferencesForSymbol(
+        cached,
+        symbol,
+        settings,
+        options,
+      );
+      return relatedReferences
+        ? dedupeVbReferences([...workspaceReferences, ...relatedReferences]).sort(vbReferenceOrder)
+        : workspaceReferences;
+    },
+  );
 }
 
 function workspaceVbReferenceCodeLensExecutionOptions(

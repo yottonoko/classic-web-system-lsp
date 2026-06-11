@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.6.9",
+  "version": "0.6.10",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -688,7 +688,7 @@
         "aspLsp.flowchart.minZoom": {
           "type": "number",
           "minimum": 0.1,
-          "default": 0.4,
+          "default": 0.1,
           "description": "%configuration.flowchart.minZoom.description%"
         },
         "aspLsp.flowchart.maxZoom": {
