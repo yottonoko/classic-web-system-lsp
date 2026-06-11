@@ -79,6 +79,8 @@ interface GraphCommandRequest {
   includeRelatedIncludeTreesForUnresolved?: boolean;
   forceRelatedIncludeTreeAnalysis?: boolean;
   includeAnalysisTypeDetails?: boolean;
+  includeTreeMaxDocuments?: number;
+  includeTreeMaxTextLength?: number;
 }
 
 let client: LanguageClient | undefined;
@@ -441,6 +443,7 @@ async function showGraph(
     return;
   }
   request.includeRelatedIncludeTreesForUnresolved = relatedIncludeTreeAnalysisSetting("graph");
+  Object.assign(request, includeTreeLimitSettings("graph"));
   let payload: AspGraphPayload;
   try {
     payload = await requestAspGraphPayload(
@@ -478,6 +481,7 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
   }
   const activeClient = client;
   const includeRelatedIncludeTreesForUnresolved = relatedIncludeTreeAnalysisSetting("excel");
+  const includeTreeLimits = includeTreeLimitSettings("excel");
   let payload: AspGraphPayload;
   try {
     payload = await requestAspGraphPayload(
@@ -489,6 +493,7 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
         includeRelatedIncludeTreesForUnresolved,
         forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
         includeAnalysisTypeDetails: true,
+        ...includeTreeLimits,
       },
       extensionLocalizer()("excel.currentTitle"),
     );
@@ -515,6 +520,7 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
       includeRelatedIncludeTreesForUnresolved,
       forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
       includeAnalysisTypeDetails: true,
+      ...includeTreeLimits,
     },
   });
   await vscode.window.withProgress(
@@ -597,6 +603,8 @@ async function requestAspGraphPayload(
                   request.includeRelatedIncludeTreesForUnresolved,
                 forceRelatedIncludeTreeAnalysis: request.forceRelatedIncludeTreeAnalysis,
                 includeAnalysisTypeDetails: request.includeAnalysisTypeDetails,
+                includeTreeMaxDocuments: request.includeTreeMaxDocuments,
+                includeTreeMaxTextLength: request.includeTreeMaxTextLength,
               },
             ],
           },
@@ -613,6 +621,33 @@ function relatedIncludeTreeAnalysisSetting(scope: "excel" | "graph"): boolean {
   return vscode.workspace
     .getConfiguration("aspLsp")
     .get<boolean>(`${scope}.includeRelatedIncludeTreesForUnresolved`, true);
+}
+
+function includeTreeLimitSettings(scope: "excel" | "graph"): {
+  includeTreeMaxDocuments: number;
+  includeTreeMaxTextLength: number;
+} {
+  const defaults =
+    scope === "excel"
+      ? { includeTreeMaxDocuments: 1024, includeTreeMaxTextLength: 64 * 1024 * 1024 }
+      : { includeTreeMaxDocuments: 256, includeTreeMaxTextLength: 16 * 1024 * 1024 };
+  const configuration = vscode.workspace.getConfiguration("aspLsp");
+  return {
+    includeTreeMaxDocuments: positiveNumberSetting(
+      configuration.get<number>(
+        `${scope}.includeTreeMaxDocuments`,
+        defaults.includeTreeMaxDocuments,
+      ),
+      defaults.includeTreeMaxDocuments,
+    ),
+    includeTreeMaxTextLength: positiveNumberSetting(
+      configuration.get<number>(
+        `${scope}.includeTreeMaxTextLength`,
+        defaults.includeTreeMaxTextLength,
+      ),
+      defaults.includeTreeMaxTextLength,
+    ),
+  };
 }
 
 function excelLocaleSetting(): AspGraphLocale | "auto" {
@@ -995,12 +1030,22 @@ function updateStatusBar(): void {
   const progressText = progressSummaryText(tasks) ?? progressValueText(serverProgress);
   const activeKind = activeStatusKind(tasks);
   if (activeKind === "loading") {
-    statusBarItem.text = `$(sync~spin) ${localizer("status.loading.text")}${progressText}`;
+    statusBarItem.text = `$(sync~spin) ${progressStatusText(
+      "status.loading.text",
+      "status.progress.loadingStatusText",
+      tasks,
+      localizer,
+    )}${progressText}`;
     statusBarItem.tooltip = progressTooltip(localizer("status.loading.tooltip"), tasks, localizer);
     return;
   }
   if (activeKind === "analyzing") {
-    statusBarItem.text = `$(loading~spin) ${localizer("status.analyzing.text")}${progressText}`;
+    statusBarItem.text = `$(loading~spin) ${progressStatusText(
+      "status.analyzing.text",
+      "status.progress.analyzingStatusText",
+      tasks,
+      localizer,
+    )}${progressText}`;
     statusBarItem.tooltip = progressTooltip(
       localizer("status.analyzing.tooltip"),
       tasks,
@@ -1045,9 +1090,26 @@ function activeStatusKind(tasks: ProgressTask[]): ServerStatusKind {
   return serverStatusKind;
 }
 
-function progressSummaryText(tasks: ProgressTask[]): string {
+function progressSummaryText(tasks: ProgressTask[]): string | undefined {
   const progress = aggregateProgress(tasks);
-  return progressValueText(progress) ?? "";
+  return progressValueText(progress) || undefined;
+}
+
+function progressStatusText(
+  fallbackKey: ExtensionMessageKey,
+  taskKey: ExtensionMessageKey,
+  tasks: ProgressTask[],
+  localizer: (key: ExtensionMessageKey, args?: ExtensionMessageArgs) => string,
+): string {
+  const task = primaryProgressTask(tasks);
+  if (!task) {
+    return localizer(fallbackKey);
+  }
+  return localizer(taskKey, { task: progressTaskDisplayLabel(task.label, localizer) });
+}
+
+function primaryProgressTask(tasks: ProgressTask[]): ProgressTask | undefined {
+  return [...tasks].sort((left, right) => right.startedAt - left.startedAt)[0];
 }
 
 function aggregateProgress(tasks: ProgressTask[]): { current: number; total: number } | undefined {
@@ -1296,7 +1358,7 @@ function progressTaskDisplayLabelKey(label: string): ExtensionMessageKey | undef
     case "references.count":
       return "status.progress.referencesCount";
     case "excel.write":
-      return "excel.writeTitle";
+      return "status.progress.excel";
     default:
       return undefined;
   }
@@ -1423,12 +1485,15 @@ type ExtensionMessageKey =
   | "status.progress.active"
   | "status.progress.cancel"
   | "status.progress.cancelling"
+  | "status.progress.analyzingStatusText"
   | "status.progress.diagnostics"
   | "status.progress.documentAnalysis"
+  | "status.progress.excel"
   | "status.progress.flowchart"
   | "status.progress.graphDocument"
   | "status.progress.graphFolder"
   | "status.progress.graphWorkspace"
+  | "status.progress.loadingStatusText"
   | "status.progress.none"
   | "status.progress.placeholder"
   | "status.progress.referencesCount"
@@ -1469,18 +1534,21 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.active": "Active",
     "status.progress.cancel": "Cancel",
     "status.progress.cancelling": "Cancelling",
+    "status.progress.analyzingStatusText": "ASP {task}",
     "status.progress.diagnostics": "Document diagnostics",
     "status.progress.documentAnalysis": "Document analysis",
-    "status.progress.flowchart": "Flowchart analysis",
-    "status.progress.graphDocument": "Current file graph analysis",
-    "status.progress.graphFolder": "Folder graph analysis",
-    "status.progress.graphWorkspace": "Workspace graph analysis",
+    "status.progress.excel": "Creating Excel workbook",
+    "status.progress.flowchart": "Generating flowchart",
+    "status.progress.graphDocument": "Generating current file graph",
+    "status.progress.graphFolder": "Generating folder graph",
+    "status.progress.graphWorkspace": "Generating workspace graph",
+    "status.progress.loadingStatusText": "ASP Loading: {task}",
     "status.progress.none": "No active Classic ASP tasks.",
     "status.progress.placeholder": "Current Classic ASP tasks",
     "status.progress.referencesCount": "Reference count analysis",
     "status.progress.title": "Classic ASP Progress",
     "status.progress.workspaceDiagnostics": "Workspace diagnostics",
-    "status.progress.workspaceIndex": "Workspace index",
+    "status.progress.workspaceIndex": "Loading workspace index",
     "debug.iis.name": "Debug Classic ASP URL",
     "debug.iisExpress.name": "Debug Classic ASP IIS Express URL",
     "launch.noWorkspace": "Open a workspace before creating launch.json.",
@@ -1496,7 +1564,7 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "excel.serverUnavailable": "Start the Classic ASP Language Server before exporting analysis.",
     "excel.currentTitle": "Classic ASP: Export Current File Analysis",
     "excel.saveLabel": "Export",
-    "excel.writeTitle": "Writing Classic ASP analysis workbook",
+    "excel.writeTitle": "Creating Classic ASP analysis workbook",
     "excel.exported": "Classic ASP analysis exported to {file}.",
     "flowchart.serverUnavailable":
       "Start the Classic ASP Language Server before building a flowchart.",
@@ -1513,18 +1581,21 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.active": "実行中",
     "status.progress.cancel": "キャンセル",
     "status.progress.cancelling": "キャンセル中",
+    "status.progress.analyzingStatusText": "ASP {task}",
     "status.progress.diagnostics": "document diagnostics",
     "status.progress.documentAnalysis": "document 解析",
-    "status.progress.flowchart": "flowchart 解析",
-    "status.progress.graphDocument": "current file graph 解析",
-    "status.progress.graphFolder": "folder graph 解析",
-    "status.progress.graphWorkspace": "workspace graph 解析",
+    "status.progress.excel": "Excel 作成中",
+    "status.progress.flowchart": "flowchart 生成中",
+    "status.progress.graphDocument": "current file graph 生成中",
+    "status.progress.graphFolder": "folder graph 生成中",
+    "status.progress.graphWorkspace": "workspace graph 生成中",
+    "status.progress.loadingStatusText": "ASP 読み込み中: {task}",
     "status.progress.none": "実行中の Classic ASP task はありません。",
     "status.progress.placeholder": "現在の Classic ASP task",
     "status.progress.referencesCount": "参照数解析",
     "status.progress.title": "Classic ASP 進行状況",
     "status.progress.workspaceDiagnostics": "workspace diagnostics",
-    "status.progress.workspaceIndex": "workspace index",
+    "status.progress.workspaceIndex": "workspace index 読み込み中",
     "debug.iis.name": "Classic ASP URL をデバッグ",
     "debug.iisExpress.name": "Classic ASP IIS Express URL をデバッグ",
     "launch.noWorkspace": "launch.json を作成する前に workspace を開いてください。",
@@ -1542,7 +1613,7 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
       "analysis を export する前に Classic ASP Language Server を起動してください。",
     "excel.currentTitle": "Classic ASP: Current file analysis を Excel export",
     "excel.saveLabel": "Export",
-    "excel.writeTitle": "Classic ASP analysis workbook を書き込み中",
+    "excel.writeTitle": "Classic ASP analysis workbook を作成中",
     "excel.exported": "Classic ASP analysis を {file} に export しました。",
     "flowchart.serverUnavailable":
       "flowchart を作成する前に Classic ASP Language Server を起動してください。",

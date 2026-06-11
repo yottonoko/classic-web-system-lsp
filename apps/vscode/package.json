@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.6.13",
+  "version": "0.6.14",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -866,6 +866,18 @@
           "default": true,
           "description": "%configuration.graph.includeRelatedIncludeTreesForUnresolved.description%"
         },
+        "aspLsp.graph.includeTreeMaxDocuments": {
+          "type": "number",
+          "minimum": 1,
+          "default": 256,
+          "description": "%configuration.graph.includeTreeMaxDocuments.description%"
+        },
+        "aspLsp.graph.includeTreeMaxTextLength": {
+          "type": "number",
+          "minimum": 1,
+          "default": 16777216,
+          "description": "%configuration.graph.includeTreeMaxTextLength.description%"
+        },
         "aspLsp.graph.initialViewMode": {
           "type": "string",
           "enum": [
@@ -897,6 +909,18 @@
           "type": "boolean",
           "default": true,
           "description": "%configuration.excel.includeRelatedIncludeTreesForUnresolved.description%"
+        },
+        "aspLsp.excel.includeTreeMaxDocuments": {
+          "type": "number",
+          "minimum": 1,
+          "default": 1024,
+          "description": "%configuration.excel.includeTreeMaxDocuments.description%"
+        },
+        "aspLsp.excel.includeTreeMaxTextLength": {
+          "type": "number",
+          "minimum": 1,
+          "default": 67108864,
+          "description": "%configuration.excel.includeTreeMaxTextLength.description%"
         },
         "aspLsp.excel.locale": {
           "type": "string",

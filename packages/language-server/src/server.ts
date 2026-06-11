@@ -227,6 +227,8 @@ const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
 const defaultVbProjectMaxDocuments = 256;
 const defaultVbProjectMaxTextLength = 16 * 1024 * 1024;
+const defaultExcelIncludeTreeMaxDocuments = 1024;
+const defaultExcelIncludeTreeMaxTextLength = 64 * 1024 * 1024;
 const defaultWorkspaceIncludes = ["**/*.{asp,asa,inc}"];
 const defaultDiagnosticsDebounceMs = 250;
 const graphFileIndexCacheMaxEntries = 64;
@@ -242,7 +244,7 @@ const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.6.13";
+const languageServerVersion = "0.6.14";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -10931,6 +10933,13 @@ function vbProjectContextLimits(settings: AspSettings): VbProjectContextLimits {
   };
 }
 
+function graphIncludeTreeLimits(settings: AspSettings): VbProjectContextLimits {
+  return {
+    maxDocuments: settings.graph?.includeTreeMaxDocuments ?? defaultVbProjectMaxDocuments,
+    maxTextLength: settings.graph?.includeTreeMaxTextLength ?? defaultVbProjectMaxTextLength,
+  };
+}
+
 function positiveIntegerFromEnv(name: string, fallback: number): number {
   const value = Number.parseInt(process.env[name] ?? "", 10);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
@@ -13509,6 +13518,14 @@ function normalizeGraphSettings(
     showIncomingFolderIncludes: record.showIncomingFolderIncludes === true,
     includeRelatedIncludeTreesForUnresolved:
       record.includeRelatedIncludeTreesForUnresolved !== false,
+    includeTreeMaxDocuments: positiveIntegerSetting(
+      record.includeTreeMaxDocuments,
+      defaultVbProjectMaxDocuments,
+    ),
+    includeTreeMaxTextLength: positiveIntegerSetting(
+      record.includeTreeMaxTextLength,
+      defaultVbProjectMaxTextLength,
+    ),
   };
 }
 
@@ -13520,6 +13537,14 @@ function normalizeExcelSettings(
   return {
     includeRelatedIncludeTreesForUnresolved:
       record.includeRelatedIncludeTreesForUnresolved !== false,
+    includeTreeMaxDocuments: positiveIntegerSetting(
+      record.includeTreeMaxDocuments,
+      defaultExcelIncludeTreeMaxDocuments,
+    ),
+    includeTreeMaxTextLength: positiveIntegerSetting(
+      record.includeTreeMaxTextLength,
+      defaultExcelIncludeTreeMaxTextLength,
+    ),
   };
 }
 
@@ -17437,6 +17462,7 @@ async function buildAspGraphForCommand(
         graphCommandIncludeRelatedIncludeTreesForUnresolved(argument),
       forceRelatedIncludeTreeAnalysis: graphCommandForceRelatedIncludeTreeAnalysis(argument),
       includeAnalysisTypeDetails: graphCommandIncludeAnalysisTypeDetails(argument),
+      includeTreeLimits: graphCommandIncludeTreeLimits(argument),
       progress: task,
       operationCache,
     });
@@ -17514,6 +17540,29 @@ function graphCommandIncludeAnalysisTypeDetails(argument: unknown): boolean {
   return (argument as { includeAnalysisTypeDetails?: unknown }).includeAnalysisTypeDetails === true;
 }
 
+function graphCommandIncludeTreeLimits(argument: unknown): VbProjectContextLimits | undefined {
+  if (!argument || typeof argument !== "object") {
+    return undefined;
+  }
+  const record = argument as {
+    includeTreeMaxDocuments?: unknown;
+    includeTreeMaxTextLength?: unknown;
+  };
+  const maxDocuments = positiveIntegerCommandArgument(record.includeTreeMaxDocuments);
+  const maxTextLength = positiveIntegerCommandArgument(record.includeTreeMaxTextLength);
+  if (maxDocuments === undefined && maxTextLength === undefined) {
+    return undefined;
+  }
+  return {
+    maxDocuments: maxDocuments ?? defaultVbProjectMaxDocuments,
+    maxTextLength: maxTextLength ?? defaultVbProjectMaxTextLength,
+  };
+}
+
+function positiveIntegerCommandArgument(value: unknown): number | undefined {
+  return typeof value === "number" && value > 0 ? Math.floor(value) : undefined;
+}
+
 function analysisCancellationFromToken(
   token: GraphCancellationToken | undefined,
 ): AnalysisCancellation {
@@ -17536,6 +17585,7 @@ async function buildDocumentAspGraphAsync(
     includeRelatedIncludeTreesForUnresolved?: boolean;
     forceRelatedIncludeTreeAnalysis?: boolean;
     includeAnalysisTypeDetails?: boolean;
+    includeTreeLimits?: VbProjectContextLimits;
     progress?: AspLspProgressTaskHandle;
     operationCache?: GraphFileIndexOperationCache;
   } = {},
@@ -17549,11 +17599,12 @@ async function buildDocumentAspGraphAsync(
   const settings = cachedSettings(cached.source.uri);
   const targetGraphDocument = await graphDocumentFromCachedAsync(cached, settings);
   const graphDocumentTruncation: AspGraphDocumentCollectionTruncation = {};
+  const includeTreeLimits = options.includeTreeLimits ?? graphIncludeTreeLimits(settings);
   const documentsForGraph = await collectIncludeTreeGraphDocumentsAsync(
     targetGraphDocument,
     settings,
     cancellation,
-    { truncation: graphDocumentTruncation },
+    { limits: includeTreeLimits, truncation: graphDocumentTruncation },
   );
   const includeRelatedIncludeTreesForUnresolved =
     options.includeRelatedIncludeTreesForUnresolved ??
@@ -17580,6 +17631,7 @@ async function buildDocumentAspGraphAsync(
             documentsForGraph.map((document) => graphFileKey(document.fileName)),
           ),
           initialTextLength: graphDocumentsTextLength(documentsForGraph),
+          limits: includeTreeLimits,
           truncation: graphDocumentTruncation,
         },
       )),
@@ -17862,10 +17914,11 @@ async function collectIncludeTreeGraphDocumentsAsync(
   options: {
     excludedFileKeys?: Set<string>;
     initialTextLength?: number;
+    limits?: VbProjectContextLimits;
     truncation?: AspGraphDocumentCollectionTruncation;
   } = {},
 ): Promise<AspGraphDocument[]> {
-  const limits = vbProjectContextLimits(settings);
+  const limits = options.limits ?? vbProjectContextLimits(settings);
   const documentsForGraph: AspGraphDocument[] = [];
   const visited = new Set<string>();
   const excludedFileKeys = options.excludedFileKeys ?? new Set<string>();
@@ -17989,11 +18042,12 @@ async function collectRelatedIncludeTreeGraphDocumentsAsync(
   options: {
     excludedFileKeys?: Set<string>;
     initialTextLength?: number;
+    limits?: VbProjectContextLimits;
     token?: GraphCancellationToken;
     truncation?: AspGraphDocumentCollectionTruncation;
   } = {},
 ): Promise<AspGraphDocument[]> {
-  const limits = vbProjectContextLimits(settings);
+  const limits = options.limits ?? vbProjectContextLimits(settings);
   const excludedFileKeys = new Set(options.excludedFileKeys ?? []);
   const documentsForGraph: AspGraphDocument[] = [];
   let textLength = options.initialTextLength ?? graphDocumentsTextLength(rootDocuments);
@@ -18038,6 +18092,7 @@ async function collectRelatedIncludeTreeGraphDocumentsAsync(
       const ownerTree = await collectIncludeTreeGraphDocumentsAsync(owner, settings, cancellation, {
         excludedFileKeys,
         initialTextLength: textLength,
+        limits,
         truncation: options.truncation,
       });
       const treeHasOwner = ownerTree.some(

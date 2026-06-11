@@ -419,6 +419,14 @@ describe("VS Code extension package", () => {
     expect(extensionSourceText).toContain('statusBarItem.command = "aspLsp.showProgressDetails"');
     expect(extensionSourceText).toContain("status.loading.text");
     expect(extensionSourceText).toContain("status.analyzing.text");
+    expect(extensionSourceText).toContain("progressStatusText");
+    expect(extensionSourceText).toContain("status.progress.loadingStatusText");
+    expect(extensionSourceText).toContain("status.progress.analyzingStatusText");
+    expect(extensionSourceText).toContain("status.progress.excel");
+    expect(extensionSourceText).toContain("Generating current file graph");
+    expect(extensionSourceText).toContain("Excel 作成中");
+    expect(extensionSourceText).toContain("flowchart 生成中");
+    expect(extensionSourceText).toContain("Classic ASP analysis workbook を作成中");
     expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(
       true,
     );
@@ -672,6 +680,16 @@ describe("VS Code extension package", () => {
       }),
     );
     expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.graph.includeTreeMaxDocuments"],
+    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 256 }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.graph.includeTreeMaxTextLength"],
+    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 16777216 }));
+    expect(nls["configuration.graph.includeTreeMaxDocuments.description"]).toBeTruthy();
+    expect(nlsJa["configuration.graph.includeTreeMaxDocuments.description"]).toBeTruthy();
+    expect(nls["configuration.graph.includeTreeMaxTextLength.description"]).toBeTruthy();
+    expect(nlsJa["configuration.graph.includeTreeMaxTextLength.description"]).toBeTruthy();
+    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.graph.initialViewMode"],
     ).toEqual(
       expect.objectContaining({
@@ -689,6 +707,12 @@ describe("VS Code extension package", () => {
         "aspLsp.excel.includeRelatedIncludeTreesForUnresolved"
       ],
     ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.excel.includeTreeMaxDocuments"],
+    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 1024 }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.excel.includeTreeMaxTextLength"],
+    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 67108864 }));
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.excel.locale"]).toEqual(
       expect.objectContaining({ type: "string", enum: ["auto", "en", "ja"], default: "auto" }),
     );
@@ -698,6 +722,10 @@ describe("VS Code extension package", () => {
     expect(
       nlsJa["configuration.excel.includeRelatedIncludeTreesForUnresolved.description"],
     ).toBeTruthy();
+    expect(nls["configuration.excel.includeTreeMaxDocuments.description"]).toBeTruthy();
+    expect(nlsJa["configuration.excel.includeTreeMaxDocuments.description"]).toBeTruthy();
+    expect(nls["configuration.excel.includeTreeMaxTextLength.description"]).toBeTruthy();
+    expect(nlsJa["configuration.excel.includeTreeMaxTextLength.description"]).toBeTruthy();
     expect(nls["configuration.excel.locale.description"]).toBeTruthy();
     expect(nlsJa["configuration.excel.locale.description"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
@@ -911,6 +939,11 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("includeRelatedIncludeTreesForUnresolved");
     expect(extensionSource).toContain("forceRelatedIncludeTreeAnalysis");
     expect(extensionSource).toContain("includeAnalysisTypeDetails");
+    expect(extensionSource).toContain("includeTreeLimitSettings");
+    expect(extensionSource).toContain('includeTreeLimitSettings("excel")');
+    expect(extensionSource).toContain('includeTreeLimitSettings("graph")');
+    expect(extensionSource).toContain("includeTreeMaxDocuments");
+    expect(extensionSource).toContain("includeTreeMaxTextLength");
     expect(extensionSource).toContain("writeXlsxFile");
     expect(extensionSource).toContain(".toBuffer()");
     expect(extensionSource).toContain("vscode.workspace.fs.writeFile(target, workbook)");

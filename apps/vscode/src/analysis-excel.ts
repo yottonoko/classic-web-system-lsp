@@ -49,6 +49,8 @@ interface AnalysisExcelSettingsSummary {
   includeRelatedIncludeTreesForUnresolved?: boolean;
   forceRelatedIncludeTreeAnalysis?: boolean;
   includeAnalysisTypeDetails?: boolean;
+  includeTreeMaxDocuments?: number;
+  includeTreeMaxTextLength?: number;
 }
 
 interface UsageCounts {
@@ -139,6 +141,8 @@ type AnalysisTextKey =
   | "notForced"
   | "forceRelatedIncludeTreeAnalysis"
   | "analysisTypeDetails"
+  | "includeTreeMaxDocuments"
+  | "includeTreeMaxTextLength"
   | "includeTreeDescendant"
   | "includeTreeAncestor"
   | "includeTreeRelative"
@@ -284,6 +288,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     notForced: "Not forced",
     forceRelatedIncludeTreeAnalysis: "Force related include tree analysis",
     analysisTypeDetails: "Editor-inferred type details",
+    includeTreeMaxDocuments: "Excel include tree document limit",
+    includeTreeMaxTextLength: "Excel include tree text limit",
     includeTreeDescendant: "Descendant",
     includeTreeAncestor: "Ancestor",
     includeTreeRelative: "Relative",
@@ -430,6 +436,8 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     notForced: "強制なし",
     forceRelatedIncludeTreeAnalysis: "親戚 include tree 解析の強制",
     analysisTypeDetails: "エディター推論型の詳細",
+    includeTreeMaxDocuments: "Excel include tree document 上限",
+    includeTreeMaxTextLength: "Excel include tree text 上限",
     includeTreeDescendant: "子孫",
     includeTreeAncestor: "祖先",
     includeTreeRelative: "親戚",
@@ -1025,6 +1033,8 @@ function analysisSettingRows(
       forcedDisplay(settings?.forceRelatedIncludeTreeAnalysis === true, locale),
     ],
     [t.analysisTypeDetails, enabledDisplay(settings?.includeAnalysisTypeDetails === true, locale)],
+    [t.includeTreeMaxDocuments, settings?.includeTreeMaxDocuments ?? ""],
+    [t.includeTreeMaxTextLength, settings?.includeTreeMaxTextLength ?? ""],
   ];
 }
 

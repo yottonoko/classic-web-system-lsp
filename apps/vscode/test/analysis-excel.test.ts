@@ -9,6 +9,10 @@ describe("analysis Excel sheets", () => {
     const sheets = createAnalysisExcelSheets(payload, "ja", {
       generatedAt: new Date("2026-06-10T00:00:00.000Z"),
       targetUri: "file:///workspace/main.asp",
+      settings: {
+        includeTreeMaxDocuments: 1024,
+        includeTreeMaxTextLength: 67108864,
+      },
     });
 
     expect(sheets.map((sheet) => sheet.sheet)).toEqual([
@@ -46,6 +50,8 @@ describe("analysis Excel sheets", () => {
         ["親戚 include tree 解析", "無効"],
         ["親戚 include tree 解析の強制", "強制なし"],
         ["エディター推論型の詳細", "無効"],
+        ["Excel include tree document 上限", 1024],
+        ["Excel include tree text 上限", 67108864],
       ]),
     );
     const includeTreeTable = table(sheets, "インクルードツリー");
@@ -203,7 +209,7 @@ describe("analysis Excel sheets", () => {
     expect(
       sheets.find((sheet) => sheet.sheet === "チャート元データ")?.autoFilterRef,
     ).toBeUndefined();
-    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B22");
+    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B24");
     expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:Q8");
     expect(sheets.find((sheet) => sheet.sheet === "ファイル内使用")?.autoFilterRef).toBe("A1:K5");
     expect(sheets.find((sheet) => sheet.sheet === "外部ファイルからの使用")?.autoFilterRef).toBe(

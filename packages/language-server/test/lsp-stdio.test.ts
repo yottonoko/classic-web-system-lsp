@@ -8787,9 +8787,12 @@ Response.Write CleanValue
         server.notify("workspace/didChangeConfiguration", {
           settings: {
             aspLsp: {
-              graph: { includeRelatedIncludeTreesForUnresolved: false },
+              graph: {
+                includeRelatedIncludeTreesForUnresolved: false,
+                includeTreeMaxDocuments: 20,
+                includeTreeMaxTextLength: 1024 * 1024,
+              },
               workspace: {
-                vbProjectMaxDocuments: 4,
                 vbProjectMaxTextLength: 1024 * 1024,
               },
             },
@@ -8798,7 +8801,14 @@ Response.Write CleanValue
 
         const graph = (await server.request("workspace/executeCommand", {
           command: "aspLsp.server.buildGraph",
-          arguments: [{ scope: "document", uri }],
+          arguments: [
+            {
+              scope: "document",
+              uri,
+              includeTreeMaxDocuments: 4,
+              includeTreeMaxTextLength: 1024 * 1024,
+            },
+          ],
         })) as {
           nodes?: Array<Record<string, unknown>>;
           truncated?: { reason?: string };
