@@ -895,6 +895,7 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("relatedIncludeTreeAnalysisSetting");
     expect(extensionSource).toContain("includeRelatedIncludeTreesForUnresolved");
     expect(extensionSource).toContain("forceRelatedIncludeTreeAnalysis");
+    expect(extensionSource).toContain("includeAnalysisTypeDetails");
     expect(extensionSource).toContain("writeXlsxFile");
     expect(extensionSource).toContain(".toBuffer()");
     expect(extensionSource).toContain("vscode.workspace.fs.writeFile(target, workbook)");

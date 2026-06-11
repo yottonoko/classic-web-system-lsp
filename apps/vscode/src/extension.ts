@@ -57,6 +57,7 @@ interface GraphCommandRequest {
   includeIncomingDocumentIncludes?: boolean;
   includeRelatedIncludeTreesForUnresolved?: boolean;
   forceRelatedIncludeTreeAnalysis?: boolean;
+  includeAnalysisTypeDetails?: boolean;
 }
 
 let client: LanguageClient | undefined;
@@ -459,6 +460,7 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
         activeDocument: request.activeDocument,
         includeRelatedIncludeTreesForUnresolved,
         forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
+        includeAnalysisTypeDetails: true,
       },
       extensionLocalizer()("excel.currentTitle"),
     );
@@ -544,6 +546,7 @@ async function requestAspGraphPayload(
               includeRelatedIncludeTreesForUnresolved:
                 request.includeRelatedIncludeTreesForUnresolved,
               forceRelatedIncludeTreeAnalysis: request.forceRelatedIncludeTreeAnalysis,
+              includeAnalysisTypeDetails: request.includeAnalysisTypeDetails,
             },
           ],
         },

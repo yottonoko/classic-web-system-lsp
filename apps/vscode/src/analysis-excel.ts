@@ -210,7 +210,8 @@ type AnalysisTextKey =
   | "reviewExternalUsagesAction"
   | "reviewMissingExternalUsagesAction"
   | "reviewIncludedUsagesAction"
-  | "reviewMissingIncludedUsagesAction";
+  | "reviewMissingIncludedUsagesAction"
+  | "tableDescription";
 
 const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
   en: {
@@ -340,6 +341,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     reviewMissingExternalUsagesAction: "No other-file usages were found for the target file.",
     reviewIncludedUsagesAction: "Review the Included Symbol Usage sheet for include dependencies.",
     reviewMissingIncludedUsagesAction: "No included-file symbol usages were found.",
+    tableDescription: "Table description",
   },
   ja: {
     summary: "概要",
@@ -467,6 +469,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     reviewMissingExternalUsagesAction: "対象ファイルは他ファイルから使われていない可能性あり",
     reviewIncludedUsagesAction: "include 先シンボル使用 sheet で include 依存を確認",
     reviewMissingIncludedUsagesAction: "include 先シンボルの使用なし",
+    tableDescription: "表の説明",
   },
 };
 
@@ -987,35 +990,55 @@ function analysisSummaryRows(
   ];
   const unusedByKindHeaders = [t.kind, t.unusedCount, t.total, t.unusedRate, t.bar];
   return [
-    sectionTitle(t.reviewPriority, 4),
-    ...tableIntroRows(locale, "reviewPriority", reviewHeaders),
-    header(reviewHeaders),
-    ...reviewPriorityRows(locale, context),
-    [],
-    sectionTitle(t.externalReferenceSummary, 6),
-    ...tableIntroRows(locale, "externalReferenceSummary", externalSummaryHeaders),
-    header(externalSummaryHeaders),
-    ...declarationKindSummaryRows(context.targetDeclarations, locale, context.targetUsageCounts),
-    [],
-    sectionTitle(t.includeUsageSummary, 3),
-    ...tableIntroRows(locale, "includeUsageSummary", includeUsageHeaders),
-    header(includeUsageHeaders),
-    ...usageCountRows(context.includedUsageLinks, locale),
-    [],
-    sectionTitle(t.topReferencedDeclarations, 8),
-    ...tableIntroRows(locale, "topReferencedDeclarations", topReferencedHeaders),
-    header(topReferencedHeaders),
-    ...topReferencedDeclarationRows(
-      context.targetDeclarations,
+    ...describedSectionRows(
+      t.reviewPriority,
+      4,
       locale,
-      context.targetUsageCounts,
-      fileNamesByUri,
+      "reviewPriority",
+      reviewHeaders,
+      reviewPriorityRows(locale, context),
     ),
     [],
-    sectionTitle(t.unusedByKind, 5),
-    ...tableIntroRows(locale, "unusedByKind", unusedByKindHeaders),
-    header(unusedByKindHeaders),
-    ...unusedByKindRows(context.unusedDeclarations, context.targetDeclarations, locale),
+    ...describedSectionRows(
+      t.externalReferenceSummary,
+      6,
+      locale,
+      "externalReferenceSummary",
+      externalSummaryHeaders,
+      declarationKindSummaryRows(context.targetDeclarations, locale, context.targetUsageCounts),
+    ),
+    [],
+    ...describedSectionRows(
+      t.includeUsageSummary,
+      3,
+      locale,
+      "includeUsageSummary",
+      includeUsageHeaders,
+      usageCountRows(context.includedUsageLinks, locale),
+    ),
+    [],
+    ...describedSectionRows(
+      t.topReferencedDeclarations,
+      8,
+      locale,
+      "topReferencedDeclarations",
+      topReferencedHeaders,
+      topReferencedDeclarationRows(
+        context.targetDeclarations,
+        locale,
+        context.targetUsageCounts,
+        fileNamesByUri,
+      ),
+    ),
+    [],
+    ...describedSectionRows(
+      t.unusedByKind,
+      5,
+      locale,
+      "unusedByKind",
+      unusedByKindHeaders,
+      unusedByKindRows(context.unusedDeclarations, context.targetDeclarations, locale),
+    ),
   ];
 }
 
@@ -1026,30 +1049,44 @@ function chartDataRows(locale: AspGraphLocale, context: AnalysisContext): Cell[]
   const includeUsageHeaders = [t.usageKind, t.count];
   const unusedByKindHeaders = [t.kind, t.unusedCount, t.total, t.unusedRate];
   return [
-    sectionTitle(t.reviewPriority, 4),
-    ...tableIntroRows(locale, "chartData", reviewHeaders),
-    header(reviewHeaders),
-    ...reviewPriorityRows(locale, context),
-    [],
-    sectionTitle(t.externalReferenceSummary, 5),
-    ...tableIntroRows(locale, "chartData", externalSummaryHeaders),
-    header(externalSummaryHeaders),
-    ...declarationKindSummaryRows(
-      context.targetDeclarations,
+    ...describedSectionRows(
+      t.reviewPriority,
+      4,
       locale,
-      context.targetUsageCounts,
-    ).map((row) => row.slice(0, 5)),
+      "chartData",
+      reviewHeaders,
+      reviewPriorityRows(locale, context),
+    ),
     [],
-    sectionTitle(t.includeUsageSummary, 2),
-    ...tableIntroRows(locale, "chartData", includeUsageHeaders),
-    header(includeUsageHeaders),
-    ...usageCountRows(context.includedUsageLinks, locale).map((row) => row.slice(0, 2)),
+    ...describedSectionRows(
+      t.externalReferenceSummary,
+      5,
+      locale,
+      "chartData",
+      externalSummaryHeaders,
+      declarationKindSummaryRows(context.targetDeclarations, locale, context.targetUsageCounts).map(
+        (row) => row.slice(0, 5),
+      ),
+    ),
     [],
-    sectionTitle(t.unusedByKind, 4),
-    ...tableIntroRows(locale, "chartData", unusedByKindHeaders),
-    header(unusedByKindHeaders),
-    ...unusedByKindRows(context.unusedDeclarations, context.targetDeclarations, locale).map((row) =>
-      row.slice(0, 4),
+    ...describedSectionRows(
+      t.includeUsageSummary,
+      2,
+      locale,
+      "chartData",
+      includeUsageHeaders,
+      usageCountRows(context.includedUsageLinks, locale).map((row) => row.slice(0, 2)),
+    ),
+    [],
+    ...describedSectionRows(
+      t.unusedByKind,
+      4,
+      locale,
+      "chartData",
+      unusedByKindHeaders,
+      unusedByKindRows(context.unusedDeclarations, context.targetDeclarations, locale).map((row) =>
+        row.slice(0, 4),
+      ),
     ),
   ];
 }
@@ -1371,7 +1408,7 @@ function includedUsageRows(
         displayNameForUri(target?.uri, fileNamesByUri),
         target?.fullPath ?? target?.label ?? link.target,
         valueLabel(target ? declarationKindKey(target) : undefined, locale),
-        target?.typeName ?? "",
+        declarationUsageTypeDisplay(target),
         displayNameForUri(uri, fileNamesByUri),
         oneBasedLine(range),
         oneBasedColumn(range),
@@ -1503,7 +1540,7 @@ function implicitGlobalRows(
       displayNameForUri(node.uri, fileNamesByUri),
       node.label,
       valueLabel(declarationKindKey(node), locale),
-      node.typeName ?? "",
+      declarationTypeDisplay(node),
       valueLabel(node.bindingScope, locale),
       oneBasedLine(node.range),
       oneBasedColumn(node.range),
@@ -1592,7 +1629,7 @@ function unusedDeclarationRows(
       valueLabel(declarationKindKey(node), locale),
       node.memberOf ?? "",
       valueLabel(node.bindingScope, locale),
-      node.typeName ?? "",
+      declarationTypeDisplay(node),
       yn(node.implicit === true, locale),
       oneBasedLine(node.range),
       oneBasedColumn(node.range),
@@ -1665,6 +1702,16 @@ function declarationTypeDisplay(node: AspGraphNode): string {
   return node.typeName ?? "Variant";
 }
 
+function declarationUsageTypeDisplay(node: AspGraphNode | undefined): string {
+  if (!node) {
+    return "";
+  }
+  if (isCallableReturnDeclaration(node)) {
+    return node.typeName ?? "";
+  }
+  return declarationTypeDisplay(node);
+}
+
 function declarationReturnTypeDisplay(node: AspGraphNode): string {
   if (!isCallableReturnDeclaration(node)) {
     return "";
@@ -1681,21 +1728,24 @@ function declarationParametersDisplay(node: AspGraphNode): string {
 
 function parameterDisplay(parameter: NonNullable<AspGraphNode["parameters"]>[number]): string {
   const prefix = parameter.optional === true ? "Optional " : "";
-  const mode = parameter.mode ? `${parameter.mode} ` : "";
+  const mode = parameter.mode ? `${parameterModeDisplay(parameter.mode)} ` : "";
   return `${prefix}${mode}${parameter.name} As ${parameter.typeName ?? "Variant"}`;
+}
+
+function parameterModeDisplay(mode: string): string {
+  switch (mode.toLowerCase()) {
+    case "byref":
+      return "ByRef";
+    case "byval":
+      return "ByVal";
+    default:
+      return mode;
+  }
 }
 
 function isTypeCapableDeclaration(node: AspGraphNode): boolean {
   const kind = node.declarationKind;
-  return (
-    kind === "variable" ||
-    kind === "constant" ||
-    kind === "field" ||
-    kind === "parameter" ||
-    kind === "function" ||
-    kind === "property" ||
-    (kind === "method" && node.procedureKind !== "sub")
-  );
+  return kind === "variable" || kind === "constant" || kind === "field" || kind === "parameter";
 }
 
 function isCallableDeclaration(node: AspGraphNode): boolean {
@@ -1764,7 +1814,7 @@ function usageLinkRows(
     displayNameForUri(target?.uri, fileNamesByUri),
     target?.label ?? target?.fileName ?? link.target,
     valueLabel(target ? declarationKindKey(target) : undefined, locale),
-    target?.typeName ?? "",
+    declarationUsageTypeDisplay(target),
     oneBasedLine(range),
     oneBasedColumn(range),
     rangeCount,
@@ -2217,49 +2267,63 @@ function describedTable(
   headers: string[],
   rows: Cell[][],
 ): Cell[][] {
-  return [...tableIntroRows(locale, descriptionKey, headers), header(headers), ...rows];
+  return tableRowsWithSideDescription(locale, descriptionKey, headers, rows);
 }
 
-function tableIntroRows(
+function describedSectionRows(
+  title: string,
+  columnSpan: number,
+  locale: AspGraphLocale,
+  descriptionKey: string,
+  headers: string[],
+  rows: Cell[][],
+): Cell[][] {
+  return [
+    sectionTitle(title, columnSpan),
+    ...tableRowsWithSideDescription(locale, descriptionKey, headers, rows),
+  ];
+}
+
+function tableRowsWithSideDescription(
+  locale: AspGraphLocale,
+  descriptionKey: string,
+  headers: string[],
+  rows: Cell[][],
+): Cell[][] {
+  const tableRows = [header(headers), ...rows];
+  const sideRows = tableSideDescriptionRows(locale, descriptionKey, headers);
+  const rowCount = Math.max(tableRows.length, sideRows.length + 1);
+  return Array.from({ length: rowCount }, (_, index) => {
+    const tableRow = tableRows[index] ?? blankCells(headers.length);
+    const sideRow = index === 0 ? undefined : sideRows[index - 1];
+    return sideRow ? [...padRow(tableRow, headers.length), null, ...sideRow] : tableRow;
+  });
+}
+
+function tableSideDescriptionRows(
   locale: AspGraphLocale,
   descriptionKey: string,
   headers: string[],
 ): Cell[][] {
   const description = tableDescriptions[locale][descriptionKey] ?? descriptionKey;
   return [
-    descriptionRow(description, headers.length),
-    ...headers.map((item) => headerDescriptionRow(item, locale, headers.length)),
+    sideDescriptionRow(text[locale].tableDescription, description),
+    ...headers.map((item) => headerDescriptionRow(item, locale)),
   ];
 }
 
-function descriptionRow(value: string, columnSpan: number): Cell[] {
-  return [
-    {
-      value,
-      type: String,
-      textColor: "#374151",
-      backgroundColor: "#F3F4F6",
-      wrap: true,
-      columnSpan,
-    },
-    ...Array.from({ length: Math.max(0, columnSpan - 1) }, () => null),
-  ];
+function blankCells(length: number): Cell[] {
+  return Array.from({ length }, () => null);
 }
 
-function headerDescriptionRow(
-  headerName: string,
-  locale: AspGraphLocale,
-  columnSpan: number,
-): Cell[] {
-  const description =
-    headerDescriptions[locale][headerName] ??
-    (locale === "ja" ? `${headerName} の値です。` : `Value for ${headerName}.`);
-  if (columnSpan <= 1) {
-    return descriptionRow(`${headerName}: ${description}`, columnSpan);
-  }
+function padRow(row: Cell[], length: number): Cell[] {
+  return row.length >= length ? row : [...row, ...blankCells(length - row.length)];
+}
+
+function sideDescriptionRow(label: string, description: string): Cell[] {
   return [
     {
-      value: headerName,
+      value: label,
       type: String,
       fontWeight: "bold",
       textColor: "#374151",
@@ -2272,10 +2336,15 @@ function headerDescriptionRow(
       textColor: "#374151",
       backgroundColor: "#F9FAFB",
       wrap: true,
-      columnSpan: columnSpan - 1,
     },
-    ...Array.from({ length: Math.max(0, columnSpan - 2) }, () => null),
   ];
+}
+
+function headerDescriptionRow(headerName: string, locale: AspGraphLocale): Cell[] {
+  const description =
+    headerDescriptions[locale][headerName] ??
+    (locale === "ja" ? `${headerName} の値です。` : `Value for ${headerName}.`);
+  return sideDescriptionRow(headerName, description);
 }
 
 function sectionTitle(value: string, columnSpan: number): Cell[] {
@@ -2390,12 +2459,13 @@ function autoFilterRefForRows(rows: Cell[][]): string | undefined {
   if (headerRowIndex === undefined) {
     return undefined;
   }
-  const columnCount = rows[headerRowIndex]?.length ?? 0;
+  const columnCount = leadingHeaderCellCount(rows[headerRowIndex] ?? []);
   if (columnCount === 0) {
     return undefined;
   }
   const firstRow = headerRowIndex + 1;
-  return `A${firstRow}:${spreadsheetColumnName(columnCount - 1)}${rows.length}`;
+  const lastRow = lastTableRowIndex(rows, headerRowIndex, columnCount) + 1;
+  return `A${firstRow}:${spreadsheetColumnName(columnCount - 1)}${lastRow}`;
 }
 
 function headerRowIndexForRows(rows: Cell[][]): number | undefined {
@@ -2410,6 +2480,26 @@ function isHeaderCell(cell: Cell): boolean {
     "backgroundColor" in cell &&
     (cell as { backgroundColor?: unknown }).backgroundColor === "#1F4E79"
   );
+}
+
+function leadingHeaderCellCount(row: Cell[]): number {
+  let count = 0;
+  for (const cell of row) {
+    if (!isHeaderCell(cell)) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function lastTableRowIndex(rows: Cell[][], headerRowIndex: number, columnCount: number): number {
+  for (let index = rows.length - 1; index >= headerRowIndex; index -= 1) {
+    if (rows[index].slice(0, columnCount).some((cell) => cell !== null && cell !== undefined)) {
+      return index;
+    }
+  }
+  return headerRowIndex;
 }
 
 function spreadsheetColumnName(columnIndex: number): string {

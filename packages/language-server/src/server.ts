@@ -106,6 +106,7 @@ import {
   buildVirtualDocuments,
   collectVbscriptSymbols,
   collectVbscriptSymbolsAsync,
+  collectVbscriptSymbolsFromTextAsync,
   createLocalizer,
   extractAspIncludeRefs,
   extractVbscriptSymbolIndex,
@@ -238,7 +239,7 @@ const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.6.6";
+const languageServerVersion = "0.6.7";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -879,8 +880,14 @@ interface GraphFileIndex {
   source: DiskAnalysisSourceMetadata;
   includeRefs: AspInclude[];
   vbSymbolIndex: VbSymbolIndex;
+  typeHints: Map<string, AspGraphDeclarationTypeHint>;
   fingerprint: string;
   lastUsed: number;
+}
+
+interface AspGraphDeclarationTypeHint {
+  typeName?: string;
+  parameters?: AspGraphNodeParameter[];
 }
 
 interface AspGraphIndexedDocument {
@@ -898,6 +905,7 @@ interface AspGraphBuildState {
   directIncludesByOwnerKey: Map<string, Array<{ range: Range; targetKey: string }>>;
   parentIncludesByTargetKey: Map<string, Array<{ ownerKey: string; range: Range }>>;
   externalSymbols: AspGraphExternalIndex;
+  includeAnalysisTypeDetails: boolean;
   rootUri?: string;
   rootFileKey?: string;
   workspaceRootFileNames: string[];
@@ -10717,6 +10725,7 @@ function graphFileIndexFromDisk(
   key: string,
   entry: DiskVbSymbolIndexCacheEntry,
   includeRefsEntry?: IncludeRefsCacheEntry,
+  typeHints: Map<string, AspGraphDeclarationTypeHint> = new Map(),
 ): GraphFileIndex {
   const includeRefs =
     includeRefsEntry && sameDiskAnalysisSource(includeRefsEntry.source, entry.source)
@@ -10729,6 +10738,7 @@ function graphFileIndexFromDisk(
     source: entry.source,
     includeRefs,
     vbSymbolIndex: { ...entry.index, includeRefs },
+    typeHints,
     fingerprint: entry.fingerprint,
     lastUsed: Date.now(),
   };
@@ -16955,6 +16965,7 @@ async function buildAspGraphForCommand(
     includeRelatedIncludeTreesForUnresolved:
       graphCommandIncludeRelatedIncludeTreesForUnresolved(argument),
     forceRelatedIncludeTreeAnalysis: graphCommandForceRelatedIncludeTreeAnalysis(argument),
+    includeAnalysisTypeDetails: graphCommandIncludeAnalysisTypeDetails(argument),
   });
 }
 
@@ -17020,6 +17031,13 @@ function graphCommandForceRelatedIncludeTreeAnalysis(argument: unknown): boolean
   );
 }
 
+function graphCommandIncludeAnalysisTypeDetails(argument: unknown): boolean {
+  if (!argument || typeof argument !== "object" || !("includeAnalysisTypeDetails" in argument)) {
+    return false;
+  }
+  return (argument as { includeAnalysisTypeDetails?: unknown }).includeAnalysisTypeDetails === true;
+}
+
 function analysisCancellationFromToken(
   token: GraphCancellationToken | undefined,
 ): AnalysisCancellation {
@@ -17041,6 +17059,7 @@ async function buildDocumentAspGraphAsync(
     includeIncomingDocumentIncludes?: boolean;
     includeRelatedIncludeTreesForUnresolved?: boolean;
     forceRelatedIncludeTreeAnalysis?: boolean;
+    includeAnalysisTypeDetails?: boolean;
   } = {},
 ): Promise<AspGraphPayload> {
   throwIfGraphCancelled(cancellation);
@@ -17102,6 +17121,7 @@ async function buildDocumentAspGraphAsync(
   const payload = await graphPayloadFromDocumentsAsync("document", documentsForGraph, settings, {
     rootUri: cached.source.uri,
     cancellation,
+    includeAnalysisTypeDetails: options.includeAnalysisTypeDetails,
   });
   return payload;
 }
@@ -17684,11 +17704,14 @@ async function graphPayloadFromDocumentsAsync(
     rootUri?: string;
     truncated?: AspGraphPayload["truncated"];
     cancellation?: AnalysisCancellation;
+    includeAnalysisTypeDetails?: boolean;
   } = {},
 ): Promise<AspGraphPayload> {
   const cancellation = options.cancellation ?? neverCancelled;
   throwIfGraphCancelled(cancellation);
-  const state = createAspGraphBuildState(settings, options.rootUri, options.truncated);
+  const state = createAspGraphBuildState(settings, options.rootUri, options.truncated, {
+    includeAnalysisTypeDetails: options.includeAnalysisTypeDetails === true,
+  });
   const uniqueDocuments = uniqueAspGraphDocuments(documentsForGraph);
   for (const document of uniqueDocuments) {
     throwIfGraphCancelled(cancellation);
@@ -17699,7 +17722,9 @@ async function graphPayloadFromDocumentsAsync(
     analysisConcurrency(settings),
     async (document): Promise<AspGraphIndexedDocument> => {
       throwIfGraphCancelled(cancellation);
-      const graphIndex = await graphFileIndexForDocumentAsync(document, settings);
+      const graphIndex = await graphFileIndexForDocumentAsync(document, settings, {
+        includeTypeHints: options.includeAnalysisTypeDetails === true,
+      });
       throwIfGraphCancelled(cancellation);
       return { document, graphIndex };
     },
@@ -17766,6 +17791,7 @@ function createAspGraphBuildState(
   settings: AspSettings,
   rootUri?: string,
   truncated?: AspGraphPayload["truncated"],
+  options: { includeAnalysisTypeDetails?: boolean } = {},
 ): AspGraphBuildState {
   const rootFileKey = rootUri?.startsWith("file://") ? graphFileKeyFromUri(rootUri) : undefined;
   const canonicalRootUri = rootFileKey ? pathToFileUri(rootFileKey) : rootUri;
@@ -17782,6 +17808,7 @@ function createAspGraphBuildState(
     directIncludesByOwnerKey: new Map(),
     parentIncludesByTargetKey: new Map(),
     externalSymbols: createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings)),
+    includeAnalysisTypeDetails: options.includeAnalysisTypeDetails === true,
     rootUri: canonicalRootUri,
     rootFileKey,
     workspaceRootFileNames,
@@ -18441,6 +18468,9 @@ async function addDocumentStructureToAspGraphAsync(
   }
   for (const declaration of index.declarations) {
     const declarationNode = declarationGraphNodeId(declaration.id);
+    const typeHint = graphIndex.typeHints.get(
+      graphDeclarationTypeHintKey(declaration.kind, declaration.name, declaration.nameRange),
+    );
     state.declarations.add(declaration.id);
     state.sourceDeclarationsById.set(declaration.id, declaration);
     state.sourceDeclarationFileKeysById.set(declaration.id, documentKey);
@@ -18461,10 +18491,8 @@ async function addDocumentStructureToAspGraphAsync(
       implicit: declaration.implicit,
       implicitGlobal: declaration.implicitGlobal,
       implicitGlobalCandidate: declaration.implicitGlobalCandidate,
-      typeName: visibleAspGraphTypeName(declaration.typeName),
-      parameters: declaration.parameters?.map((parameter) => ({
-        name: parameter.name,
-      })),
+      typeName: aspGraphDeclarationTypeName(state, typeHint?.typeName ?? declaration.typeName),
+      parameters: aspGraphDeclarationParameters(state, declaration, typeHint),
       arrayKind: declaration.arrayKind,
       arrayDimensions: declaration.arrayDimensions,
       group: declaration.kind,
@@ -18887,6 +18915,35 @@ function isSuppressedBuiltinGraphExternalSymbol(
   return symbol?.origin === "builtin";
 }
 
+function aspGraphDeclarationTypeName(
+  state: AspGraphBuildState,
+  typeName: string | undefined,
+): string | undefined {
+  return state.includeAnalysisTypeDetails ? typeName : visibleAspGraphTypeName(typeName);
+}
+
+function aspGraphDeclarationParameters(
+  state: AspGraphBuildState,
+  declaration: VbSymbolIndex["declarations"][number],
+  typeHint: AspGraphDeclarationTypeHint | undefined,
+): AspGraphNodeParameter[] | undefined {
+  if (!declaration.parameters?.length && !typeHint?.parameters?.length) {
+    return undefined;
+  }
+  const hinted = new Map(
+    (typeHint?.parameters ?? []).map((parameter) => [parameter.name.toLowerCase(), parameter]),
+  );
+  return (declaration.parameters ?? typeHint?.parameters ?? []).map((parameter) => {
+    const hint = hinted.get(parameter.name.toLowerCase());
+    return {
+      name: parameter.name,
+      mode: hint?.mode,
+      optional: hint?.optional,
+      typeName: aspGraphDeclarationTypeName(state, hint?.typeName),
+    };
+  });
+}
+
 function visibleAspGraphTypeName(typeName: string | undefined): string | undefined {
   return typeName && !isSuppressedBuiltinGraphTypeName(typeName) ? typeName : undefined;
 }
@@ -19164,6 +19221,7 @@ function graphDocumentFromIncludeEntry(entry: IncludeDocumentCacheEntry): AspGra
 async function graphFileIndexForDocumentAsync(
   document: AspGraphDocument,
   settings: AspSettings,
+  options: { includeTypeHints?: boolean } = {},
 ): Promise<GraphFileIndex> {
   const settingsKey = graphFileIndexSettingsKey(settings);
   const key = JSON.stringify({
@@ -19171,6 +19229,7 @@ async function graphFileIndexForDocumentAsync(
     source: diskAnalysisSourceIdentity(document.source),
     settings: settingsKey,
     text: document.diskBacked ? undefined : textFingerprint(document.text),
+    typeHints: options.includeTypeHints === true,
   });
   const documentKey = graphFileKey(document.fileName);
   const existing = graphFileIndexCache.get(documentKey);
@@ -19192,7 +19251,17 @@ async function graphFileIndexForDocumentAsync(
           return undefined;
         });
       if (cachedIndex) {
-        const entry = graphFileIndexFromDisk(document.fileName, key, cachedIndex, includeRefsEntry);
+        const typeHints =
+          options.includeTypeHints === true
+            ? await graphDeclarationTypeHintsForDocumentAsync(document, settings)
+            : new Map<string, AspGraphDeclarationTypeHint>();
+        const entry = graphFileIndexFromDisk(
+          document.fileName,
+          key,
+          cachedIndex,
+          includeRefsEntry,
+          typeHints,
+        );
         graphFileIndexCache.set(documentKey, entry);
         pruneGraphFileIndexCache();
         logDebugSummary(settings, `[asp-lsp] graphVbIndex.hit: ${document.uri}`);
@@ -19208,6 +19277,10 @@ async function graphFileIndexForDocumentAsync(
         ? includeRefsEntry.includeRefs
         : extracted.includeRefs;
     const vbSymbolIndex: VbSymbolIndex = { ...extracted, includeRefs };
+    const typeHints =
+      options.includeTypeHints === true
+        ? await graphDeclarationTypeHintsForDocumentAsync(document, settings)
+        : new Map<string, AspGraphDeclarationTypeHint>();
     const entry: GraphFileIndex = {
       key,
       uri: document.uri,
@@ -19215,6 +19288,7 @@ async function graphFileIndexForDocumentAsync(
       source: document.source,
       includeRefs,
       vbSymbolIndex,
+      typeHints,
       fingerprint: graphFileIndexFingerprint(vbSymbolIndex),
       lastUsed: Date.now(),
     };
@@ -19234,6 +19308,79 @@ async function graphFileIndexForDocumentAsync(
       graphFileIndexInFlight.delete(key);
     }
   }
+}
+
+async function graphDeclarationTypeHintsForDocumentAsync(
+  document: AspGraphDocument,
+  settings: AspSettings,
+): Promise<Map<string, AspGraphDeclarationTypeHint>> {
+  const symbols = await collectVbscriptSymbolsFromTextAsync(
+    document.uri,
+    document.text,
+    settings,
+    vbProjectContextSettings(settings),
+  );
+  return graphDeclarationTypeHintsFromSymbols(symbols);
+}
+
+function graphDeclarationTypeHintsFromSymbols(
+  symbols: VbSymbol[],
+): Map<string, AspGraphDeclarationTypeHint> {
+  const parameterSymbols = new Map<string, VbSymbol>();
+  for (const symbol of symbols) {
+    if (symbol.kind !== "parameter") {
+      continue;
+    }
+    parameterSymbols.set(graphParameterTypeHintKey(symbol.scopeRange, symbol.name), symbol);
+  }
+  const hints = new Map<string, AspGraphDeclarationTypeHint>();
+  for (const symbol of symbols) {
+    hints.set(graphDeclarationTypeHintKey(symbol.kind, symbol.name, symbol.range), {
+      typeName: symbol.typeName,
+      parameters: graphParameterHintsForSymbol(symbol, parameterSymbols),
+    });
+  }
+  return hints;
+}
+
+function graphParameterHintsForSymbol(
+  symbol: VbSymbol,
+  parameterSymbols: ReadonlyMap<string, VbSymbol>,
+): AspGraphNodeParameter[] | undefined {
+  const parameters =
+    symbol.parameterDetails && symbol.parameterDetails.length > 0
+      ? symbol.parameterDetails
+      : (symbol.parameters ?? []).map((name) => ({
+          name,
+          mode: "byref" as const,
+          optional: undefined,
+        }));
+  if (parameters.length === 0) {
+    return undefined;
+  }
+  return parameters.map((parameter) => {
+    const parameterSymbol = parameterSymbols.get(
+      graphParameterTypeHintKey(symbol.scopeRange, parameter.name),
+    );
+    return {
+      name: parameter.name,
+      mode: parameter.mode,
+      optional: parameter.optional,
+      typeName: parameterSymbol?.typeName,
+    };
+  });
+}
+
+function graphDeclarationTypeHintKey(kind: string, name: string, range: Range): string {
+  return `${kind.toLowerCase()}\0${name.toLowerCase()}\0${graphRangeKey(range)}`;
+}
+
+function graphParameterTypeHintKey(scopeRange: Range | undefined, name: string): string {
+  return `${scopeRange ? graphRangeKey(scopeRange) : ""}\0${name.toLowerCase()}`;
+}
+
+function graphRangeKey(range: Range): string {
+  return [range.start.line, range.start.character, range.end.line, range.end.character].join(":");
 }
 
 function graphFileIndexFingerprint(index: VbSymbolIndex): string {

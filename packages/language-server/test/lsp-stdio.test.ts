@@ -9191,6 +9191,70 @@ Set matches = re.Execute("abc")
       }
     });
 
+    it("includes editor-inferred declaration types for analysis graph requests", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-analysis-types-"));
+      const page = path.join(tempDir, "types.asp");
+      const uri = pathToFileURL(page).href;
+      const source = `<%
+Option Explicit
+' @type customerId As String
+Dim customerId
+' @param BuildName.first As String
+' @returns BuildName String
+Function BuildName(first)
+  BuildName = first
+End Function
+%>`;
+      fs.writeFileSync(page, source, "utf8");
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri, includeAnalysisTypeDetails: true }],
+        })) as {
+          nodes?: Array<Record<string, unknown>>;
+        };
+        expect(
+          graph.nodes?.find((node) => node.kind === "vbDeclaration" && node.label === "customerId"),
+        ).toEqual(expect.objectContaining({ typeName: "String" }));
+        expect(
+          graph.nodes?.find((node) => node.kind === "vbDeclaration" && node.label === "BuildName"),
+        ).toEqual(
+          expect.objectContaining({
+            typeName: "String",
+            parameters: [
+              expect.objectContaining({
+                name: "first",
+                mode: "byref",
+                typeName: "String",
+              }),
+            ],
+          }),
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("graphs and counts include-defined implicit globals", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-implicit-graph-"));
       const shared = path.join(tempDir, "shared.inc");
