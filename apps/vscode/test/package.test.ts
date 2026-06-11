@@ -138,6 +138,7 @@ describe("VS Code extension package", () => {
 
   it("keeps flowchart rendering focused on the selected section", () => {
     const flowchartSource = fs.readFileSync("src/webview/flowchart.tsx", "utf8");
+    const flowchartStyles = fs.readFileSync("src/webview/flowchart.css", "utf8");
     const flowchartHostSource = fs.readFileSync("src/flowchart-webview.ts", "utf8");
     const virtualListSource = fs.readFileSync("src/webview/virtual-list.tsx", "utf8");
 
@@ -159,6 +160,7 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("setFocusedFlowchartNodeId(node.id)");
     expect(flowchartSource).toContain("focusedFlowchartNodeId ?? activeSearchNode?.id");
     expect(flowchartSource).toContain("onSelectNode(node)");
+    expect(flowchartSource).not.toContain("onOpenFlowchart(node);");
     expect(flowchartSource).toContain("flowchartThemePalettes");
     expect(flowchartSource).toContain("darkFlowchartNodeKindStyles");
     expect(flowchartSource).toContain("lightFlowchartNodeKindStyles");
@@ -240,6 +242,22 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("suppressCanvasClickAfterPan");
     expect(flowchartSource).toContain("scrollFlowchartElementIntoViewport");
     expect(flowchartSource).toContain("flowchartNodeForRange");
+    expect(flowchartSource).toContain('type FlowchartSourceActiveKind = "hover"');
+    expect(flowchartSource).toContain("flowchartActiveSource(");
+    expect(flowchartSource).toContain('kind: "hover"');
+    expect(flowchartSource).toContain('kind: "selection"');
+    expect(flowchartSource).toContain('kind: "section"');
+    expect(flowchartSource).toContain("flowchartSourceRangesForSection");
+    expect(flowchartSource).toContain('section.kind !== "topLevel"');
+    expect(flowchartSource).toContain("mergeFlowchartSourceRanges");
+    expect(flowchartSource).toContain("flowchartSourceActiveBlockClassName");
+    expect(flowchartSource).toContain("flowchartSourceActiveLineClassName");
+    expect(flowchartStyles).toContain("--asp-lsp-source-hover-bg");
+    expect(flowchartStyles).toContain("--asp-lsp-source-selection-bg");
+    expect(flowchartStyles).toContain("--asp-lsp-source-section-bg");
+    expect(flowchartStyles).toContain(".asp-lsp-source-active-block--hover");
+    expect(flowchartStyles).toContain(".asp-lsp-source-active-block--selection");
+    expect(flowchartStyles).toContain(".asp-lsp-source-active-block--section");
     expect(flowchartSource).toContain("const [open, setOpen] = useState(false)");
     expect(flowchartSource).toContain("shouldAutoOpen");
     expect(flowchartSource).toContain('container.querySelectorAll<SVGGElement>("g[id]")');

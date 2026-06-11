@@ -30,6 +30,14 @@ type FlowchartLocale = "en" | "ja";
 type WebviewTheme = "light" | "dark";
 type WebviewThemeSetting = WebviewTheme | "auto";
 type InfoPanelPosition = "left" | "right";
+type FlowchartSourceActiveKind = "hover" | "selection" | "section";
+type FlowchartSourceRange = NonNullable<AspFlowchartNode["range"]>;
+
+interface FlowchartSourceActive {
+  kind: FlowchartSourceActiveKind;
+  label?: string;
+  ranges: FlowchartSourceRange[];
+}
 
 interface FlowchartPayload extends AspFlowchartPayload {
   locale?: FlowchartLocale;
@@ -904,11 +912,6 @@ function App(): React.ReactElement {
     searchMatches.length > 0 ? Math.min(activeSearchIndex, searchMatches.length - 1) : 0;
   const activeSearchNode = searchMatches[activeSearchIndexForDisplay]?.node;
   const activeFlowchartNodeId = focusedFlowchartNodeId ?? activeSearchNode?.id;
-  const activeSourceNodeId = hoveredFlowchartNodeId ?? activeFlowchartNodeId;
-  const activeSourceNode = useMemo(
-    () => payload.nodes.find((node) => node.id === activeSourceNodeId),
-    [activeSourceNodeId, payload.nodes],
-  );
   const selectedFlowchart = useMemo(
     () => flowchartForSection(payload, selectedSectionId, themePalette),
     [payload, selectedSectionId, themePalette],
@@ -917,6 +920,23 @@ function App(): React.ReactElement {
   const selectedSectionIndex = useMemo(
     () => payload.sections.findIndex((section) => section.id === selectedSection?.id),
     [payload.sections, selectedSection?.id],
+  );
+  const activeSource = useMemo(
+    () =>
+      flowchartActiveSource(
+        selectedSection,
+        selectedFlowchart.nodes,
+        payload.nodes,
+        hoveredFlowchartNodeId,
+        activeFlowchartNodeId,
+      ),
+    [
+      activeFlowchartNodeId,
+      hoveredFlowchartNodeId,
+      payload.nodes,
+      selectedFlowchart.nodes,
+      selectedSection,
+    ],
   );
   const selectFlowchartNode = useCallback((node: AspFlowchartNode) => {
     setSelectedSectionId(node.sectionId);
@@ -1250,8 +1270,9 @@ function App(): React.ReactElement {
             onWidthChange={setSourcePanelWidth}
           />
           <FlowchartSourcePanel
-            activeLabel={activeSourceNode?.label ?? selectedSection?.label}
-            activeRange={activeSourceNode?.range ?? selectedSection?.range}
+            activeKind={activeSource?.kind}
+            activeLabel={activeSource?.label}
+            activeRanges={activeSource?.ranges}
             className={sourcePanelClassName}
             sourceText={payload.sourceText}
             text={text}
@@ -1735,15 +1756,17 @@ function FlowchartPaneResizeHandle({
 }
 
 function FlowchartSourcePanel({
+  activeKind,
   activeLabel,
-  activeRange,
+  activeRanges,
   className,
   sourceText,
   text,
   theme,
 }: {
+  activeKind?: FlowchartSourceActiveKind;
   activeLabel?: string;
-  activeRange?: AspFlowchartNode["range"] | AspFlowchartSection["range"];
+  activeRanges?: readonly FlowchartSourceRange[];
   className?: string;
   sourceText?: string;
   text(key: string): string;
@@ -1752,13 +1775,13 @@ function FlowchartSourcePanel({
   const preRef = useRef<HTMLPreElement | null>(null);
   const [highlightedCode, setHighlightedCode] = useState<HighlightedCode>();
   const [highlightError, setHighlightError] = useState<string>();
-  const activeLineNumber = activeRange ? activeRange.start.line + 1 : undefined;
+  const activeLineNumber = flowchartSourceFirstLineNumber(activeRanges);
   const highlightedCodeWithActiveRange = useMemo(
     () =>
       highlightedCode
-        ? flowchartHighlightedCodeWithActiveRange(highlightedCode, activeRange)
+        ? flowchartHighlightedCodeWithActiveRanges(highlightedCode, activeRanges, activeKind)
         : undefined,
-    [activeRange, highlightedCode],
+    [activeKind, activeRanges, highlightedCode],
   );
   const handlers = useMemo<AnnotationHandler[]>(
     () => [
@@ -1774,8 +1797,22 @@ function FlowchartSourcePanel({
       },
       {
         name: flowchartSourceActiveAnnotationName,
+        Block: ({ annotation, children }) => (
+          <div
+            className={flowchartSourceActiveBlockClassName(
+              flowchartSourceAnnotationKind(annotation),
+            )}
+          >
+            {children}
+          </div>
+        ),
         AnnotatedLine: (props) => (
-          <InnerLine merge={props} className="asp-lsp-source-active-line" />
+          <InnerLine
+            merge={props}
+            className={flowchartSourceActiveLineClassName(
+              flowchartSourceAnnotationKind(props.annotation),
+            )}
+          />
         ),
       },
     ],
@@ -1868,34 +1905,58 @@ function FlowchartSourcePanel({
   );
 }
 
-function flowchartSourceHighlightEndLine(range: NonNullable<AspFlowchartNode["range"]>): number {
+function flowchartSourceHighlightEndLine(range: FlowchartSourceRange): number {
   return range.end.character === 0 && range.end.line > range.start.line
     ? range.end.line - 1
     : range.end.line;
 }
 
-function flowchartHighlightedCodeWithActiveRange(
+function flowchartHighlightedCodeWithActiveRanges(
   code: HighlightedCode,
-  range: AspFlowchartNode["range"] | AspFlowchartSection["range"] | undefined,
+  ranges: readonly FlowchartSourceRange[] | undefined,
+  kind: FlowchartSourceActiveKind | undefined,
 ): HighlightedCode {
   const annotations = code.annotations.filter(
     (annotation) => annotation.name !== flowchartSourceActiveAnnotationName,
   );
-  if (range) {
-    annotations.push(flowchartSourceActiveAnnotation(range));
+  if (kind) {
+    for (const range of ranges ?? []) {
+      annotations.push(flowchartSourceActiveAnnotation(range, kind));
+    }
   }
   return { ...code, annotations };
 }
 
 function flowchartSourceActiveAnnotation(
-  range: NonNullable<AspFlowchartNode["range"]>,
+  range: FlowchartSourceRange,
+  kind: FlowchartSourceActiveKind,
 ): CodeAnnotation {
   return {
     name: flowchartSourceActiveAnnotationName,
-    query: "",
+    query: kind,
     fromLineNumber: range.start.line + 1,
     toLineNumber: flowchartSourceHighlightEndLine(range) + 1,
+    data: { kind },
   };
+}
+
+function flowchartSourceFirstLineNumber(
+  ranges: readonly FlowchartSourceRange[] | undefined,
+): number | undefined {
+  return ranges?.[0] ? ranges[0].start.line + 1 : undefined;
+}
+
+function flowchartSourceAnnotationKind(annotation: CodeAnnotation): FlowchartSourceActiveKind {
+  const kind = annotation.data?.kind;
+  return kind === "hover" || kind === "selection" || kind === "section" ? kind : "section";
+}
+
+function flowchartSourceActiveBlockClassName(kind: FlowchartSourceActiveKind): string {
+  return `asp-lsp-source-active-block asp-lsp-source-active-block--${kind}`;
+}
+
+function flowchartSourceActiveLineClassName(kind: FlowchartSourceActiveKind): string {
+  return `asp-lsp-source-active-line asp-lsp-source-active-line--${kind}`;
 }
 
 function flowchartSourceCodeStyle(code: HighlightedCode | undefined): React.CSSProperties {
@@ -1924,6 +1985,103 @@ function scrollSourceLineIntoView(container: HTMLElement, lineNumber: number): v
     containerRect.top -
     container.clientHeight / 2;
   container.scrollTo({ top: Math.max(0, nextTop), behavior: "smooth" });
+}
+
+function flowchartActiveSource(
+  selectedSection: AspFlowchartSection | undefined,
+  selectedSectionNodes: readonly AspFlowchartNode[],
+  allNodes: readonly AspFlowchartNode[],
+  hoveredNodeId: string | undefined,
+  selectedNodeId: string | undefined,
+): FlowchartSourceActive | undefined {
+  const hoveredNode = flowchartNodeById(allNodes, hoveredNodeId);
+  if (hoveredNode?.range) {
+    return { kind: "hover", label: hoveredNode.label, ranges: [hoveredNode.range] };
+  }
+  const selectedNode = flowchartNodeById(allNodes, selectedNodeId);
+  if (selectedNode?.range) {
+    return { kind: "selection", label: selectedNode.label, ranges: [selectedNode.range] };
+  }
+  const ranges = flowchartSourceRangesForSection(selectedSection, selectedSectionNodes);
+  return ranges.length > 0 ? { kind: "section", label: selectedSection?.label, ranges } : undefined;
+}
+
+function flowchartNodeById(
+  nodes: readonly AspFlowchartNode[],
+  id: string | undefined,
+): AspFlowchartNode | undefined {
+  return id ? nodes.find((node) => node.id === id) : undefined;
+}
+
+function flowchartSourceRangesForSection(
+  section: AspFlowchartSection | undefined,
+  nodes: readonly AspFlowchartNode[],
+): FlowchartSourceRange[] {
+  if (!section) {
+    return [];
+  }
+  if (section.kind !== "topLevel") {
+    return section.range ? [section.range] : [];
+  }
+  return mergeFlowchartSourceRanges(
+    nodes
+      .filter((node) => node.kind !== "start" && node.kind !== "end")
+      .map((node) => node.range)
+      .filter((range): range is FlowchartSourceRange => Boolean(range)),
+  );
+}
+
+function mergeFlowchartSourceRanges(
+  ranges: readonly FlowchartSourceRange[],
+): FlowchartSourceRange[] {
+  const sorted = [...ranges].sort(compareFlowchartSourceRangeStart);
+  const merged: FlowchartSourceRange[] = [];
+  for (const range of sorted) {
+    const current = merged.at(-1);
+    if (!current || !flowchartSourceRangesTouchOrOverlap(current, range)) {
+      merged.push(cloneFlowchartSourceRange(range));
+      continue;
+    }
+    current.end = laterFlowchartPosition(current.end, range.end);
+  }
+  return merged;
+}
+
+function cloneFlowchartSourceRange(range: FlowchartSourceRange): FlowchartSourceRange {
+  return {
+    start: { ...range.start },
+    end: { ...range.end },
+  };
+}
+
+function compareFlowchartSourceRangeStart(
+  left: FlowchartSourceRange,
+  right: FlowchartSourceRange,
+): number {
+  return compareFlowchartPosition(left.start, right.start);
+}
+
+function flowchartSourceRangesTouchOrOverlap(
+  left: FlowchartSourceRange,
+  right: FlowchartSourceRange,
+): boolean {
+  return (
+    compareFlowchartPosition(right.start, left.end) <= 0 || right.start.line <= left.end.line + 1
+  );
+}
+
+function laterFlowchartPosition(
+  left: FlowchartSourceRange["end"],
+  right: FlowchartSourceRange["end"],
+): FlowchartSourceRange["end"] {
+  return compareFlowchartPosition(left, right) >= 0 ? left : right;
+}
+
+function compareFlowchartPosition(
+  left: FlowchartSourceRange["start"],
+  right: FlowchartSourceRange["start"],
+): number {
+  return left.line === right.line ? left.character - right.character : left.line - right.line;
 }
 
 function FlowchartCanvas({
@@ -2178,7 +2336,6 @@ function FlowchartCanvas({
           containerRef.current,
           payload,
           text,
-          onOpenFlowchart,
           openContextMenu,
           onHoverNode,
           onSelectNode,
@@ -2196,7 +2353,7 @@ function FlowchartCanvas({
     return () => {
       cancelled = true;
     };
-  }, [onHoverNode, onOpenFlowchart, onSelectNode, openContextMenu, payload, themePalette, text]);
+  }, [onHoverNode, onSelectNode, openContextMenu, payload, themePalette, text]);
   useEffect(() => {
     if (!containerRef.current || !viewportRef.current) {
       return;
@@ -2667,7 +2824,6 @@ function attachSvgNodeHandlers(
   container: HTMLDivElement,
   payload: FlowchartPayload,
   text: (key: string) => string,
-  onOpenFlowchart: (node: AspFlowchartNode) => void,
   onOpenContextMenu: (node: AspFlowchartNode, event: MouseEvent) => void,
   onHoverNode: (nodeId: string | undefined) => void,
   onSelectNode: (node: AspFlowchartNode) => void,
@@ -2683,7 +2839,6 @@ function attachSvgNodeHandlers(
       element.addEventListener("mouseleave", () => onHoverNode(undefined));
       element.addEventListener("click", () => {
         onSelectNode(node);
-        onOpenFlowchart(node);
       });
       element.addEventListener("contextmenu", (event) => onOpenContextMenu(node, event));
     }

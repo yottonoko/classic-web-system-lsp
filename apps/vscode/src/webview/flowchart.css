@@ -33,6 +33,12 @@
   --asp-lsp-hover-strong: #223044;
   --asp-lsp-search-active: #17324a;
   --asp-lsp-search-match: #2b2b18;
+  --asp-lsp-source-section-bg: #1f322b;
+  --asp-lsp-source-section-stroke: #63e6be;
+  --asp-lsp-source-selection-bg: #17324a;
+  --asp-lsp-source-selection-stroke: #7dd3fc;
+  --asp-lsp-source-hover-bg: #3a2431;
+  --asp-lsp-source-hover-stroke: #ff9fb4;
   --asp-lsp-border: #263140;
   --asp-lsp-border-muted: #2f3d50;
   --asp-lsp-border-strong: #334255;
@@ -68,6 +74,12 @@
   --asp-lsp-hover-strong: #dbeafe;
   --asp-lsp-search-active: #dbeafe;
   --asp-lsp-search-match: #fef3c7;
+  --asp-lsp-source-section-bg: #d1fae5;
+  --asp-lsp-source-section-stroke: #0f766e;
+  --asp-lsp-source-selection-bg: #dbeafe;
+  --asp-lsp-source-selection-stroke: #0284c7;
+  --asp-lsp-source-hover-bg: #ffe4e6;
+  --asp-lsp-source-hover-stroke: #e11d48;
   --asp-lsp-border: #d9e2ec;
   --asp-lsp-border-muted: #dbe3ee;
   --asp-lsp-border-strong: #cbd5e1;
@@ -259,8 +271,51 @@
   padding: 0 0.75rem;
 }
 
+.asp-lsp-source-active-block {
+  display: block;
+  overflow: hidden;
+  margin: 0 -0.75rem;
+  border-left: 2px solid var(--asp-lsp-source-active-stroke);
+  border-radius: 5px;
+  background: var(--asp-lsp-source-active-bg);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--asp-lsp-source-active-stroke) 35%, transparent);
+}
+
+.asp-lsp-source-active-block--section {
+  --asp-lsp-source-active-bg: var(--asp-lsp-source-section-bg);
+  --asp-lsp-source-active-stroke: var(--asp-lsp-source-section-stroke);
+}
+
+.asp-lsp-source-active-block--selection {
+  --asp-lsp-source-active-bg: var(--asp-lsp-source-selection-bg);
+  --asp-lsp-source-active-stroke: var(--asp-lsp-source-selection-stroke);
+}
+
+.asp-lsp-source-active-block--hover {
+  --asp-lsp-source-active-bg: var(--asp-lsp-source-hover-bg);
+  --asp-lsp-source-active-stroke: var(--asp-lsp-source-hover-stroke);
+}
+
+.asp-lsp-source-active-block .asp-lsp-source-line {
+  margin: 0;
+  border-left: 0;
+  padding: 0 0.75rem;
+}
+
 .asp-lsp-source-active-line {
-  border-left-color: var(--asp-lsp-active-stroke);
-  background: var(--asp-lsp-search-active);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--asp-lsp-active-stroke) 35%, transparent);
+  border-left-color: var(--asp-lsp-source-active-stroke, var(--asp-lsp-active-stroke));
+  background: var(--asp-lsp-source-active-bg, var(--asp-lsp-search-active));
+  box-shadow: inset 0 0 0 1px
+    color-mix(
+      in srgb,
+      var(--asp-lsp-source-active-stroke, var(--asp-lsp-active-stroke)) 35%,
+      transparent
+    );
+}
+
+.asp-lsp-source-active-block .asp-lsp-source-active-line {
+  border-left-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
