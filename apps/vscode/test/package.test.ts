@@ -111,6 +111,12 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain("unresolvedNodeCategorySet");
     expect(graphWebviewSource).toContain('"view.inspector": "情報"');
     expect(graphWebviewSource).toContain('missingInclude: "#ff4db8"');
+    expect(graphWebviewSource).toContain('method: "#a6e3a1"');
+    expect(graphWebviewSource).toContain('methodFunction: "#7ee787"');
+    expect(graphWebviewSource).toContain('methodSub: "#b3f27c"');
+    expect(graphWebviewSource).toContain('method: "#047857"');
+    expect(graphWebviewSource).toContain('methodFunction: "#15803d"');
+    expect(graphWebviewSource).toContain('methodSub: "#4d7c0f"');
     expect(graphWebviewSource).toContain('"label.missingInclude": "存在しない include"');
     expect(graphWebviewSource).toContain("graphRoleLabel(link.role)");
     expect(graphWebviewSource).toContain("includeModeLabel(link.include?.mode)");
@@ -214,11 +220,12 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("new ResizeObserver(updateViewportSize)");
     expect(flowchartSource).toContain("centerFlowchartHorizontally");
     expect(flowchartSource).toContain("flowchartHorizontalPanGutter");
-    expect(flowchartSource).toContain("const flowchartNodePadding = 3");
-    expect(flowchartSource).toContain("const branchNodePadding = 2");
-    expect(flowchartSource).toContain("const branchNodeHorizontalScale = 1");
-    expect(flowchartSource).toContain("adjustSvgBranchPolygon");
-    expect(flowchartSource).toContain("insetSvgCoordinate");
+    expect(flowchartSource).toContain('flowchart: { htmlLabels: false, curve: "basis" }');
+    expect(flowchartSource).not.toContain("flowchartNodePadding");
+    expect(flowchartSource).not.toContain("branchNodePadding");
+    expect(flowchartSource).not.toContain("branchNodeHorizontalScale");
+    expect(flowchartSource).not.toContain("adjustSvgBranchPolygon");
+    expect(flowchartSource).not.toContain("insetSvgCoordinate");
     expect(flowchartSource).toContain("userPannedFlowchartKeyRef");
     expect(flowchartSource).toContain(
       "style={scaledFlowchartCanvasStyle(svgSize, zoom, viewportSize)}",

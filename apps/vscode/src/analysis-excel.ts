@@ -639,7 +639,7 @@ export function createAnalysisExcelSheets(
     sectionTitle(text[locale].analysisCharts, 1),
     ...blankRows(34),
   ];
-  return [
+  return excelSafeSheetNames([
     sheet(text[locale].summary, summaryRows(normalizedPayload, locale, generatedAt, context)),
     sheet(text[locale].analysisSummary, analysisRowsWithChartSpace, {
       autoFilter: false,
@@ -710,7 +710,7 @@ export function createAnalysisExcelSheets(
       text[locale].unresolved,
       unresolvedRows(context.unresolvedLinks, locale, nodesById, fileNamesByUri),
     ),
-  ];
+  ]);
 }
 
 function normalizeAnalysisGraphPayload(payload: AspGraphPayload): AspGraphPayload {
@@ -2126,6 +2126,35 @@ function sheet(
     hidden: options.hidden === true ? true : undefined,
     images: options.images,
   };
+}
+
+const excelSheetNameMaxLength = 31;
+
+function excelSafeSheetNames(sheets: AnalysisExcelSheet[]): AnalysisExcelSheet[] {
+  const used = new Set<string>();
+  return sheets.map((item) => ({
+    ...item,
+    sheet: uniqueExcelSheetName(item.sheet ?? "Sheet", used),
+  }));
+}
+
+function uniqueExcelSheetName(name: string, used: Set<string>): string {
+  const base = excelSafeSheetName(name);
+  for (let index = 1; ; index += 1) {
+    const suffix = index === 1 ? "" : ` ${index}`;
+    const prefixLength = excelSheetNameMaxLength - suffix.length;
+    const candidate = `${base.slice(0, prefixLength)}${suffix}`;
+    const key = candidate.toLowerCase();
+    if (!used.has(key)) {
+      used.add(key);
+      return candidate;
+    }
+  }
+}
+
+function excelSafeSheetName(name: string): string {
+  const sanitized = name.replace(/[\\/?*:[\]]/g, "-").trim();
+  return (sanitized || "Sheet").slice(0, excelSheetNameMaxLength);
 }
 
 function autoFilterRefForRows(rows: Cell[][]): string | undefined {

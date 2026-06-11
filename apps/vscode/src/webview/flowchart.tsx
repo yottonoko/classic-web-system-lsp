@@ -50,9 +50,6 @@ const flowchartEdgeLabelLineLength = 22;
 const maximumFlowchartLabelCharacters = 180;
 const maximumFlowchartEdgeLabelCharacters = 80;
 const minimumFlowchartLabelLineLength = 8;
-const flowchartNodePadding = 3;
-const branchNodePadding = 2;
-const branchNodeHorizontalScale = 1;
 const defaultMinimumFlowchartZoom = 0.4;
 const defaultMaximumFlowchartZoom = 4;
 const flowchartZoomStep = 0.1;
@@ -1878,7 +1875,7 @@ function FlowchartCanvas({
         securityLevel: "strict",
         theme: themePalette.mermaidTheme,
         themeVariables: themePalette.mermaidThemeVariables,
-        flowchart: { htmlLabels: false, curve: "basis", padding: flowchartNodePadding },
+        flowchart: { htmlLabels: false, curve: "basis" },
       });
       try {
         const id = `asp-lsp-flowchart-${Date.now().toString(36)}`;
@@ -1887,7 +1884,6 @@ function FlowchartCanvas({
           return;
         }
         containerRef.current.innerHTML = result.svg;
-        adjustSvgBranchNodeShapes(containerRef.current, payload);
         setSvg(containerRef.current.querySelector("svg")?.outerHTML ?? result.svg);
         setSvgSize(measuredFlowchartSvgSize(containerRef.current));
         attachSvgNodeHandlers(
@@ -2378,68 +2374,6 @@ function attachSvgNodeHandlers(
       element.addEventListener("contextmenu", (event) => onOpenContextMenu(node, event));
     }
   }
-}
-
-function adjustSvgBranchNodeShapes(container: HTMLDivElement, payload: FlowchartPayload): void {
-  const branchNodePaddingInset = Math.max(0, flowchartNodePadding - branchNodePadding);
-  for (const node of payload.nodes) {
-    if (!isBranchFlowchartNode(node)) {
-      continue;
-    }
-    for (const element of svgElementsForFlowchartNode(container, node)) {
-      for (const polygon of element.querySelectorAll<SVGPolygonElement>("polygon")) {
-        adjustSvgBranchPolygon(polygon, branchNodeHorizontalScale, branchNodePaddingInset);
-      }
-    }
-  }
-}
-
-function isBranchFlowchartNode(node: AspFlowchartNode): boolean {
-  return (
-    node.kind === "if" || node.kind === "elseif" || node.kind === "select" || node.kind === "case"
-  );
-}
-
-function adjustSvgBranchPolygon(polygon: SVGPolygonElement, scaleX: number, inset: number): void {
-  const points = svgPolygonPoints(polygon.getAttribute("points") ?? "");
-  if (points.length === 0) {
-    return;
-  }
-  const centerX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
-  const centerY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
-  polygon.setAttribute(
-    "points",
-    points
-      .map(
-        (point) =>
-          `${formatSvgNumber(insetSvgCoordinate(centerX + (point.x - centerX) * scaleX, centerX, inset))},${formatSvgNumber(insetSvgCoordinate(point.y, centerY, inset))}`,
-      )
-      .join(" "),
-  );
-}
-
-function insetSvgCoordinate(value: number, center: number, inset: number): number {
-  if (inset <= 0 || value === center) {
-    return value;
-  }
-  return value + Math.sign(center - value) * inset;
-}
-
-function svgPolygonPoints(value: string): Array<{ x: number; y: number }> {
-  return value
-    .trim()
-    .split(/\s+/)
-    .map((point) => {
-      const [rawX, rawY] = point.split(",");
-      const x = Number(rawX);
-      const y = Number(rawY);
-      return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined;
-    })
-    .filter((point): point is { x: number; y: number } => Boolean(point));
-}
-
-function formatSvgNumber(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, "");
 }
 
 function syncSvgSearchHighlights(

@@ -9176,6 +9176,7 @@ Set matches = re.Execute("abc")
       const shared = path.join(tempDir, "shared.inc");
       const page = path.join(tempDir, "default.asp");
       const child = path.join(tempDir, "child.inc");
+      const grandchild = path.join(tempDir, "grandchild.inc");
       const lateChild = path.join(tempDir, "late-child.inc");
       const latePage = path.join(tempDir, "late.asp");
       const before = path.join(tempDir, "before.asp");
@@ -9188,12 +9189,20 @@ sharedTitle = "include"
 <%
 Response.Write sharedTitle
 sharedTitle = "page"
+Response.Write chainTitle
+chainTitle = "page"
 Function Render()
   sharedTitle = "function"
 End Function
 %>`;
-      const childSource = `<%
+      const childSource = `<!-- #include file="grandchild.inc" -->
+<%
 Response.Write sharedTitle
+Response.Write chainTitle
+chainTitle = "child"
+%>`;
+      const grandchildSource = `<%
+chainTitle = "leaf"
 %>`;
       const lateChildSource = `<%
 Response.Write sharedTitle
@@ -9207,6 +9216,7 @@ sharedTitle = "before"
       fs.writeFileSync(shared, sharedSource, "utf8");
       fs.writeFileSync(page, pageSource, "utf8");
       fs.writeFileSync(child, childSource, "utf8");
+      fs.writeFileSync(grandchild, grandchildSource, "utf8");
       fs.writeFileSync(lateChild, lateChildSource, "utf8");
       fs.writeFileSync(latePage, latePageSource, "utf8");
       fs.writeFileSync(before, beforeSource, "utf8");
@@ -9215,6 +9225,7 @@ sharedTitle = "before"
       const sharedUri = pathToFileURL(shared).href;
       const pageUri = pathToFileURL(page).href;
       const childUri = pathToFileURL(child).href;
+      const grandchildUri = pathToFileURL(grandchild).href;
       const lateChildUri = pathToFileURL(lateChild).href;
       const beforeUri = pathToFileURL(before).href;
       const unrelatedUri = pathToFileURL(unrelated).href;
@@ -9263,6 +9274,14 @@ sharedTitle = "before"
           },
         });
         await server.waitForNotification("textDocument/publishDiagnostics");
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: pageUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: pageSource,
+          },
+        });
 
         const pageGraph = (await server.request("workspace/executeCommand", {
           command: "aspLsp.server.buildGraph",
@@ -9271,10 +9290,14 @@ sharedTitle = "before"
         const sharedFileNode = nodeByLabelAndUri(pageGraph, "shared.inc", sharedUri);
         const pageFileNode = nodeByLabelAndUri(pageGraph, "default.asp", pageUri);
         const childFileNode = nodeByLabelAndUri(pageGraph, "child.inc", childUri);
+        const grandchildFileNode = nodeByLabelAndUri(pageGraph, "grandchild.inc", grandchildUri);
         const renderNode = nodeByLabelAndUri(pageGraph, "Render", pageUri);
         const includeSharedTitleNode = nodeByLabelAndUri(pageGraph, "sharedTitle", sharedUri);
         const pageSharedTitleNode = nodeByLabelAndUri(pageGraph, "sharedTitle", pageUri);
         const childSharedTitleNode = nodeByLabelAndUri(pageGraph, "sharedTitle", childUri);
+        const chainTitleNode = nodeByLabelAndUri(pageGraph, "chainTitle", grandchildUri);
+        const pageChainTitleNode = nodeByLabelAndUri(pageGraph, "chainTitle", pageUri);
+        const childChainTitleNode = nodeByLabelAndUri(pageGraph, "chainTitle", childUri);
 
         expect(includeSharedTitleNode).toEqual(
           expect.objectContaining({
@@ -9301,6 +9324,46 @@ sharedTitle = "before"
         expect(hasGraphLink(pageGraph, "references", childFileNode, childSharedTitleNode)).toBe(
           false,
         );
+        expect(chainTitleNode).toEqual(
+          expect.objectContaining({
+            declarationKind: "variable",
+            bindingScope: "global",
+            implicit: true,
+          }),
+        );
+        expect(hasGraphLink(pageGraph, "declares", chainTitleNode, grandchildFileNode)).toBe(true);
+        expect(hasGraphLink(pageGraph, "references", pageFileNode, chainTitleNode)).toBe(true);
+        expect(hasGraphLink(pageGraph, "assignments", pageFileNode, chainTitleNode)).toBe(true);
+        expect(hasGraphLink(pageGraph, "references", childFileNode, chainTitleNode)).toBe(true);
+        expect(hasGraphLink(pageGraph, "assignments", childFileNode, chainTitleNode)).toBe(true);
+        expect(hasGraphLink(pageGraph, "references", pageFileNode, pageChainTitleNode)).toBe(false);
+        expect(hasGraphLink(pageGraph, "references", childFileNode, childChainTitleNode)).toBe(
+          false,
+        );
+
+        const pageFlowchart = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildFlowchart",
+          arguments: [{ uri: pageUri }],
+        })) as {
+          nodes?: Array<{ links?: Array<{ label?: string; target?: { uri?: string } }> }>;
+        };
+        const chainTitleFlowchartLinks = (pageFlowchart.nodes ?? []).flatMap((node) =>
+          (node.links ?? []).filter((link) => link.label?.includes("chainTitle")),
+        );
+        expect(chainTitleFlowchartLinks.some((link) => link.target?.uri === grandchildUri)).toBe(
+          true,
+        );
+        expect(chainTitleFlowchartLinks.some((link) => link.target?.uri === childUri)).toBe(false);
+        expect(chainTitleFlowchartLinks.some((link) => link.target?.uri === pageUri)).toBe(false);
+        const pageChainTitlePosition = positionAt(
+          pageSource,
+          pageSource.indexOf("Response.Write chainTitle") + "Response.Write ".length,
+        );
+        const pageChainTitleDefinition = (await server.request("textDocument/definition", {
+          textDocument: { uri: pageUri },
+          position: pageChainTitlePosition,
+        })) as { uri?: string } | undefined;
+        expect(pageChainTitleDefinition?.uri).toBe(grandchildUri);
 
         const beforeGraph = (await server.request("workspace/executeCommand", {
           command: "aspLsp.server.buildGraph",

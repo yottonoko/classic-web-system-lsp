@@ -603,6 +603,13 @@ describe("analysis Excel sheets", () => {
     expect(jaSheets.map((sheet) => sheet.sheet)).not.toContain("内部使用");
     expect(enSheets.map((sheet) => sheet.sheet)).toContain("File-local Usage");
     expect(enSheets.map((sheet) => sheet.sheet)).not.toContain("Internal Usage");
+    expect(enSheets.every((sheet) => sheet.sheet.length <= 31)).toBe(true);
+    expect(enSheets.map((sheet) => sheet.sheet)).not.toContain(
+      "Implicit Global Assignment Candidates",
+    );
+    expect(enSheets.map((sheet) => sheet.sheet)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^Implicit Global Assignment/)]),
+    );
     expect(table(jaSheets, "概要")).toEqual(expect.arrayContaining([["切り詰め", "切り詰めなし"]]));
     expect(table(enSheets, "Summary")).toEqual(
       expect.arrayContaining([["Truncated", "Not truncated"]]),
