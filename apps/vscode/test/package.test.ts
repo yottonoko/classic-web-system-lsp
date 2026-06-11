@@ -488,12 +488,17 @@ describe("VS Code extension package", () => {
       "../../packages/language-server/src/server.ts",
       "utf8",
     );
+    const graphBuildSource = fs.readFileSync(
+      "../../packages/language-server/src/asp-graph/build.ts",
+      "utf8",
+    );
+    const graphSource = `${languageServerSource}\n${graphBuildSource}`;
     expect(analysisExcelSource).toContain("for (const row of rows)");
     expect(analysisExcelSource).toContain("for (const value of values)");
     expect(analysisExcelSource).not.toContain("Math.max(...rows.map");
-    expect(languageServerSource).toContain("appendAspGraphDocuments(");
+    expect(graphSource).toContain("appendAspGraphDocuments(");
     expect(languageServerSource).toContain("appendAspGraphRanges(");
-    expect(languageServerSource).not.toContain("documentsForGraph.push(...indexedGraphDocuments)");
+    expect(graphSource).not.toContain("documentsForGraph.push(...indexedGraphDocuments)");
     expect(languageServerSource).not.toContain("existing.push(...references)");
     expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(
       true,
