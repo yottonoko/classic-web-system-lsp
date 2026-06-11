@@ -34,6 +34,7 @@ const defaultDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEFAULT_DEBOUNCE
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const benchmarkCheckJs = readBoolean("ASP_LSP_BENCH_CHECKJS");
 const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", defaultTimeoutMs);
+const backgroundWarmupWaitMs = readPositiveInteger("ASP_LSP_BENCH_BACKGROUND_WAIT_MS", 5_000);
 const changeKinds = readChangeKinds();
 const changeModes = readChangeModes();
 const editTargets = readEditTargets();
@@ -603,19 +604,33 @@ async function runColdWorkspaceCacheScenario(backgroundAnalysis) {
     if (backgroundAnalysis) {
       const startedAt = performance.now();
       const logs = [];
-      await waitForLogContaining(server, "backgroundAnalysis.completed", logs);
-      logs.push(...server.takePendingNotifications("window/logMessage"));
+      if (
+        await waitForLogContainingOptional(
+          server,
+          "backgroundAnalysis.completed",
+          logs,
+          backgroundWarmupWaitMs,
+        )
+      ) {
+        logs.push(...server.takePendingNotifications("window/logMessage"));
+        return {
+          scenario: "background=on",
+          cacheDir,
+          rows: [
+            {
+              metric: "cold background warmup",
+              elapsedMs: performance.now() - startedAt,
+              diagnosticCount: 0,
+              eventCounts: collectDebugEventCounts(logs),
+            },
+          ],
+        };
+      }
+      const cold = await measureWorkspaceDiagnostics(server, "diskCache.write");
       return {
         scenario: "background=on",
         cacheDir,
-        rows: [
-          {
-            metric: "cold background warmup",
-            elapsedMs: performance.now() - startedAt,
-            diagnosticCount: 0,
-            eventCounts: collectDebugEventCounts(logs),
-          },
-        ],
+        rows: [{ metric: "cold workspace diagnostics (background fallback)", ...cold }],
       };
     }
     const cold = await measureWorkspaceDiagnostics(server, "diskCache.write");
@@ -654,21 +669,31 @@ async function runBackgroundWorkspaceCacheScenario() {
   try {
     const warmupStartedAt = performance.now();
     const warmupLogs = [];
-    await waitForLogContaining(server, "backgroundAnalysis.completed", warmupLogs);
-    warmupLogs.push(...server.takePendingNotifications("window/logMessage"));
-    const warmup = {
-      elapsedMs: performance.now() - warmupStartedAt,
-      diagnosticCount: 0,
-      eventCounts: collectDebugEventCounts(warmupLogs),
-    };
+    const backgroundCompleted = await waitForLogContainingOptional(
+      server,
+      "backgroundAnalysis.completed",
+      warmupLogs,
+      backgroundWarmupWaitMs,
+    );
+    const warmup = backgroundCompleted
+      ? (() => {
+          warmupLogs.push(...server.takePendingNotifications("window/logMessage"));
+          return {
+            metric: "background warmup",
+            elapsedMs: performance.now() - warmupStartedAt,
+            diagnosticCount: 0,
+            eventCounts: collectDebugEventCounts(warmupLogs),
+          };
+        })()
+      : {
+          metric: "cold workspace diagnostics (background fallback)",
+          ...(await measureWorkspaceDiagnostics(server, "diskCache.write")),
+        };
     const warm = await measureWorkspaceDiagnostics(server, "diskCache.hit");
     return {
       scenario: "background=on",
       cacheDir,
-      rows: [
-        { metric: "background warmup", ...warmup },
-        { metric: "post-background workspace diagnostics", ...warm },
-      ],
+      rows: [warmup, { metric: "post-background workspace diagnostics", ...warm }],
     };
   } finally {
     await stopWorkspaceCacheServer(server);
@@ -888,6 +913,18 @@ async function waitForLogContaining(server, expected, collectedLogs) {
   return waitForLogContainingAny(server, [expected], collectedLogs);
 }
 
+async function waitForLogContainingOptional(server, expected, collectedLogs, waitMs) {
+  try {
+    await waitForLogContainingAny(server, [expected], collectedLogs, waitMs);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Timed out waiting for")) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 async function waitForFinalCheckLog(server, uri, collectedLogs) {
   return waitForLogContainingAny(server, finalCheckMessages(uri), collectedLogs);
 }
@@ -900,8 +937,13 @@ function finalCheckMessages(uri) {
   ];
 }
 
-async function waitForLogContainingAny(server, expectedMessages, collectedLogs) {
-  const deadline = Date.now() + timeoutMs;
+async function waitForLogContainingAny(
+  server,
+  expectedMessages,
+  collectedLogs,
+  waitMs = timeoutMs,
+) {
+  const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     for (const log of server.takePendingNotifications("window/logMessage")) {
       collectedLogs.push(log);
