@@ -232,6 +232,16 @@
           "default": "off",
           "description": "%configuration.debug.output.description%"
         },
+        "aspLsp.debug.logFile.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.debug.logFile.enabled.description%"
+        },
+        "aspLsp.debug.logFile.path": {
+          "type": "string",
+          "default": "",
+          "description": "%configuration.debug.logFile.path.description%"
+        },
         "aspLsp.javascript.unusedDiagnostics": {
           "type": "boolean",
           "default": true,

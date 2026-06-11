@@ -439,6 +439,21 @@ describe("VS Code extension package", () => {
     const extensionSourceText = fs.readFileSync("src/extension.ts", "utf8");
     expect(extensionSourceText).not.toContain(removedAnalysisEnv);
     expect(extensionSourceText).not.toContain(`aspLsp.${removedAnalysisSetting}`);
+    expect(configuration["aspLsp.debug.logFile.enabled"]).toEqual({
+      type: "boolean",
+      default: false,
+      description: "%configuration.debug.logFile.enabled.description%",
+    });
+    expect(configuration["aspLsp.debug.logFile.path"]).toEqual({
+      type: "string",
+      default: "",
+      description: "%configuration.debug.logFile.path.description%",
+    });
+    expect(nls["configuration.debug.logFile.enabled.description"]).toBeTruthy();
+    expect(nls["configuration.debug.logFile.path.description"]).toBeTruthy();
+    expect(nlsJa["configuration.debug.logFile.enabled.description"]).toBeTruthy();
+    expect(nlsJa["configuration.debug.logFile.path.description"]).toBeTruthy();
+    expect(extensionSourceText).toContain("ASP_LSP_DEFAULT_DEBUG_LOG_FILE");
     expect(extensionSourceText).toContain('const serverStatusNotificationMethod = "aspLsp/status"');
     expect(extensionSourceText).toContain(
       'const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask"',

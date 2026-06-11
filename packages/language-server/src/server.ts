@@ -21,6 +21,7 @@ import {
   fileIdentityKeyFromUri,
   sameFileIdentityUri,
 } from "./file-identity";
+import { DebugLogFileWriter, type DebugLogFileLevel } from "./debug-log-file";
 import type {
   JsDiagnosticsWorkerResponse,
   JsDiagnosticsWorkerVirtualDocument,
@@ -260,6 +261,16 @@ const semanticTokensLargeJavascriptThreshold = internalTestThreshold(
   "ASP_LSP_TEST_SEMANTIC_TOKENS_LARGE_JAVASCRIPT_THRESHOLD",
   128 * 1024,
 );
+const defaultDebugLogFileName = "asp-lsp-debug.log";
+const debugLogFileMaxBytes = internalTestThreshold(
+  "ASP_LSP_TEST_DEBUG_LOG_MAX_BYTES",
+  10 * 1024 * 1024,
+);
+const debugLogFileMaxBackups = internalTestThreshold("ASP_LSP_TEST_DEBUG_LOG_MAX_BACKUPS", 5);
+const debugLogFileWriter = new DebugLogFileWriter((message) => connection.console.warn(message), {
+  maxBytes: debugLogFileMaxBytes,
+  maxBackups: debugLogFileMaxBackups,
+});
 let globalSettings: AspSettings = { defaultLanguage: "VBScript", checkJs: false };
 let workspaceRoots: string[] = [];
 let workspaceRootsIdentityCache: { source: string[]; roots: string[]; key: string } | undefined;
@@ -1840,6 +1851,14 @@ documents.onDidOpen((event) => {
   pendingDocumentChanges.delete(event.document.uri);
   publishedDiagnosticsByUri.delete(event.document.uri);
   deleteCachedDocumentsForUri(event.document.uri);
+  const settings = cachedSettings(event.document.uri);
+  logDebugTrace(settings, "document.open", "[asp-lsp] document.open", {
+    uri: event.document.uri,
+    version: event.document.version,
+    languageId: event.document.languageId,
+    lineCount: event.document.lineCount,
+    textLength: event.document.getText().length,
+  });
   invalidateRootlessWorkspaceIndex("document.open");
   scheduleOpenFileProjectMaintenance("document.open");
   validate(event.document);
@@ -1854,6 +1873,15 @@ documents.onDidChangeContent((event) => {
   documentOpenContentVersions.delete(event.document.uri);
   clearSemanticTokensForUri(event.document.uri);
   const settings = cachedSettings(event.document.uri);
+  const pendingChange = pendingDocumentChanges.get(event.document.uri);
+  logDebugTrace(settings, "document.change", "[asp-lsp] document.change", {
+    uri: event.document.uri,
+    version: event.document.version,
+    pendingReason: pendingChange?.reason,
+    ranged: pendingChange?.ranged,
+    changeCount: pendingChange?.changes.length ?? 0,
+    textLength: event.document.getText().length,
+  });
   measureDebugStep(settings, event.document.uri, "documentChange.keepCachedDocument", () => {
     // Keep the previous parsed document available for updateAspParsedDocument.
   });
@@ -1872,13 +1900,17 @@ documents.onDidChangeContent((event) => {
       }
     })
     .catch((error: unknown) =>
-      connection.console.warn(
+      logServerWarning(
         `[asp-lsp] documentChange.scheduleDiagnostics.failed: ${errorMessage(error)}`,
       ),
     );
 });
 documents.onDidSave(async (event) => {
   noteForegroundActivity();
+  logDebugTrace(cachedSettings(event.document.uri), "document.save", "[asp-lsp] document.save", {
+    uri: event.document.uri,
+    version: event.document.version,
+  });
   await indexWorkspaceFileAsync(uriToFileName(event.document.uri), globalSettings);
   if (!workspaceIndexDirty && cacheFreshness(globalSettings) === "watch") {
     await writeWorkspaceIndexToDiskAsync(globalSettings);
@@ -1888,6 +1920,11 @@ documents.onDidSave(async (event) => {
   validate(event.document);
 });
 documents.onDidClose((event) => {
+  const settings =
+    settingsByUri.get(event.document.uri) ?? settingsForUri(event.document.uri, globalSettings);
+  logDebugTrace(settings, "document.close", "[asp-lsp] document.close", {
+    uri: event.document.uri,
+  });
   cancelScheduledDiagnostics(event.document.uri);
   documentOpenContentVersions.delete(event.document.uri);
   pendingDocumentChanges.delete(event.document.uri);
@@ -1936,6 +1973,16 @@ connection.onNotification(
       ...workspaceRoots.filter((root) => !removed.has(normalizeFileName(root))),
       ...added.map((folder) => uriToFileName(folder.uri)).filter((root) => root.length > 0),
     ].filter((root, index, roots) => roots.indexOf(root) === index);
+    logDebugTrace(
+      globalSettings,
+      "workspaceFolders.changed",
+      "[asp-lsp] workspaceFolders.changed",
+      {
+        added: added.length,
+        removed: removedFolders.length,
+        roots: workspaceRoots.length,
+      },
+    );
     invalidateWorkspaceIndex("workspaceFolders.changed");
     invalidateIncludeResolution("workspaceFolders.changed");
     invalidateJsProject("workspaceFolders.changed");
@@ -1955,6 +2002,11 @@ connection.onDidChangeConfiguration((change) => {
   if (incoming) {
     globalSettings = normalizeSettings(incoming);
   }
+  logDebugTrace(globalSettings, "configuration.changed", "[asp-lsp] configuration.changed", {
+    hasIncoming: incoming !== undefined,
+    openDocuments: documents.all().length,
+    logFileEnabled: globalSettings.debug?.logFile?.enabled === true,
+  });
   void configureDiskAnalysisCacheAsync().catch((error) =>
     logDiskAnalysisCacheError("diskCache.configure", error),
   );
@@ -1998,6 +2050,12 @@ connection.onDidChangeWatchedFiles(async (change) => {
   if (!aspChanged && !scriptChanged) {
     return;
   }
+  logDebugTrace(globalSettings, "watchedFiles.changed", "[asp-lsp] watchedFiles.changed", {
+    changes: change.changes.length,
+    aspChanged,
+    scriptChanged,
+    aspChanges: aspChanges.length,
+  });
   let includeRefsChangedFiles = new Set<string>();
   let publicChangedFiles = new Set<string>();
   let graphChangedFiles = new Set<string>();
@@ -2960,7 +3018,7 @@ connection.languages.semanticTokens.onDelta(
 function validate(document: TextDocument): void {
   cancelScheduledDiagnostics(document.uri);
   void validateAsync(document).catch((error: unknown) =>
-    connection.console.warn(`[asp-lsp] validate.failed: ${errorMessage(error)}`),
+    logServerWarning(`[asp-lsp] validate.failed: ${errorMessage(error)}`),
   );
 }
 
@@ -3438,10 +3496,17 @@ async function scheduleDiagnosticsAsync(document: TextDocument): Promise<CachedD
   if (openDocumentForUri(document.uri)?.version !== cached.identity.version) {
     return cached;
   }
+  const preservePreviousDiagnosticsUntilFinal = hasPublishedDiagnostics(document.uri);
   const state = startStagedDiagnostics(cached, settings, false, {
-    preservePreviousDiagnosticsUntilFinal: hasPublishedDiagnostics(document.uri),
+    preservePreviousDiagnosticsUntilFinal,
   });
   const delay = settings.diagnostics?.debounceMs ?? defaultDiagnosticsDebounceMs;
+  logDebugTrace(settings, "diagnostics.schedule", "[asp-lsp] diagnostics.schedule", {
+    uri: document.uri,
+    version: document.version,
+    delay,
+    preservePreviousDiagnosticsUntilFinal,
+  });
   if (delay <= 0) {
     void runStagedDiagnosticsWithProgress(cached, settings, state);
     return cached;
@@ -3500,6 +3565,13 @@ function startStagedDiagnostics(
     layers: {},
   };
   stagedDiagnosticsByUri.set(cached.source.uri, state);
+  logDebugTrace(settings, "diagnostics.start", "[asp-lsp] diagnostics.start", {
+    uri: cached.source.uri,
+    version: cached.source.version,
+    generation: state.generation,
+    runAsyncLayers,
+    preservePreviousDiagnosticsUntilFinal: state.preservePreviousDiagnosticsUntilFinal,
+  });
   state.layers.fast = measureDebugStep(
     settings,
     cached.source.uri,
@@ -3889,6 +3961,7 @@ function logDebugSummary(settings: AspSettings, message: string): void {
   if (isDebugSummaryEnabled(settings)) {
     connection.console.info(message);
   }
+  logDebugFile(settings, "debug", "debug.summary", message);
 }
 
 function internalTestThreshold(name: string, fallback: number): number {
@@ -3915,10 +3988,55 @@ function logDebugElapsed(
   step: string,
   elapsedMs: number,
 ): void {
-  if (!isDebugVerboseEnabled(settings)) {
+  const message = `[asp-lsp] ${step}: ${uri} ${formatElapsedMs(elapsedMs)}`;
+  if (isDebugVerboseEnabled(settings)) {
+    connection.console.info(message);
+  }
+  logDebugFile(settings, "debug", "debug.elapsed", message, { uri, step, elapsedMs });
+}
+
+function logDebugTrace(
+  settings: AspSettings,
+  category: string,
+  message: string,
+  metadata?: Record<string, unknown>,
+): void {
+  logDebugFile(settings, "trace", category, message, metadata);
+}
+
+function logServerWarning(message: string, settings: AspSettings = globalSettings): void {
+  connection.console.warn(message);
+  logDebugFile(settings, "warn", "server.warning", message);
+}
+
+function logDebugFile(
+  settings: AspSettings,
+  level: DebugLogFileLevel,
+  category: string,
+  message: string,
+  metadata?: Record<string, unknown>,
+): void {
+  if (settings.debug?.logFile?.enabled !== true) {
     return;
   }
-  connection.console.info(`[asp-lsp] ${step}: ${uri} ${formatElapsedMs(elapsedMs)}`);
+  debugLogFileWriter.enqueue({
+    filePath: resolveDebugLogFilePath(settings),
+    level,
+    category,
+    message,
+    metadata,
+  });
+}
+
+function resolveDebugLogFilePath(settings: AspSettings): string {
+  const configuredPath = settings.debug?.logFile?.path?.trim();
+  const selectedPath =
+    configuredPath ||
+    process.env.ASP_LSP_DEFAULT_DEBUG_LOG_FILE ||
+    path.join(os.tmpdir(), defaultDebugLogFileName);
+  return path.isAbsolute(selectedPath)
+    ? selectedPath
+    : path.resolve(workspaceRoots[0] ?? process.cwd(), selectedPath);
 }
 
 function measureDebugStep<T>(
@@ -4436,7 +4554,7 @@ async function configureDiskAnalysisCacheAsync(): Promise<void> {
 }
 
 function logDiskAnalysisCacheError(operation: string, error: unknown): void {
-  connection.console.warn(`[asp-lsp] ${operation}.failed: ${errorMessage(error)}`);
+  logServerWarning(`[asp-lsp] ${operation}.failed: ${errorMessage(error)}`);
 }
 
 function diskAnalysisNamespace(): string {
@@ -4783,9 +4901,7 @@ async function jsSemanticDiagnosticsAsync(
       logJsWorkerTimings(settings, cached.source.uri, "check.javascript", response);
       return response.diagnostics ?? [];
     } catch (error) {
-      connection.console.warn(
-        `[asp-lsp] javascript.diagnostics.worker.failed: ${errorMessage(error)}`,
-      );
+      logServerWarning(`[asp-lsp] javascript.diagnostics.worker.failed: ${errorMessage(error)}`);
     }
   }
   await prefetchJsProjectFilesAsync(virtual, settings);
@@ -4886,9 +5002,6 @@ function logJsWorkerTimings(
   for (const timing of response.timings ?? []) {
     logDebugElapsed(settings, uri, `${stepPrefix}.${timing.name}.worker`, timing.elapsedMs);
   }
-  if (!isDebugVerboseEnabled(settings)) {
-    return;
-  }
   const metrics = [
     response.queueWaitMs === undefined
       ? undefined
@@ -4902,7 +5015,18 @@ function logJsWorkerTimings(
   ]
     .filter((item): item is string => Boolean(item))
     .join(", ");
-  connection.console.info(`[asp-lsp] javascript.diagnostics.worker: ${uri} ${metrics}`);
+  const message = `[asp-lsp] javascript.diagnostics.worker: ${uri} ${metrics}`;
+  if (isDebugVerboseEnabled(settings)) {
+    connection.console.info(message);
+  }
+  logDebugFile(settings, "debug", "javascript.diagnostics.worker", message, {
+    uri,
+    queueWaitMs: response.queueWaitMs,
+    runMs: response.runMs,
+    payloadBytes: response.payloadBytes,
+    resultBytes: response.resultBytes,
+    queueLength: response.queueLengthAtDispatch,
+  });
 }
 
 function jsWorkerResponseError(response: JsDiagnosticsWorkerResponse): Error {
@@ -9582,7 +9706,7 @@ async function workspaceVbReferenceWorkerResponse(
       return response;
     })
     .catch((error: unknown) => {
-      connection.console.warn(
+      logServerWarning(
         `[asp-lsp] vb.references.worker.failed: ${candidate.uri}, error=${errorMessage(error)}`,
       );
       return {
@@ -9702,7 +9826,7 @@ async function workspaceVbReferenceWorkerBatchResponse(
       return response;
     })
     .catch((error: unknown) => {
-      connection.console.warn(
+      logServerWarning(
         `[asp-lsp] vb.references.worker.failed: ${candidate.uri}, error=${errorMessage(error)}`,
       );
       return {
@@ -10334,12 +10458,12 @@ function requestSemanticTokensRefresh(reason: string): void {
   if (semanticTokensRefreshSupported) {
     try {
       void Promise.resolve(connection.languages.semanticTokens.refresh()).catch((error: unknown) =>
-        connection.console.warn(
+        logServerWarning(
           `[asp-lsp] semanticTokens.refresh.failed: reason=${reason}, error=${errorMessage(error)}`,
         ),
       );
     } catch (error) {
-      connection.console.warn(
+      logServerWarning(
         `[asp-lsp] semanticTokens.refresh.failed: reason=${reason}, error=${errorMessage(error)}`,
       );
     }
@@ -10352,7 +10476,7 @@ function requestVisualRefresh(reason: string): void {
     void connection.languages.inlayHint
       .refresh()
       .catch((error: unknown) =>
-        connection.console.warn(
+        logServerWarning(
           `[asp-lsp] inlayHint.refresh.failed: reason=${reason}, error=${errorMessage(error)}`,
         ),
       );
@@ -11138,7 +11262,7 @@ function scheduleIncludeSummaryRefresh(
       }
     })
     .catch((error) =>
-      connection.console.warn(
+      logServerWarning(
         `[asp-lsp] includeSummary.refresh.failed: ${pathToFileUri(normalized)}, reason=${errorMessage(error)}`,
       ),
     )
@@ -12553,8 +12677,9 @@ async function ensureWorkspaceIndexAsync(
       await writeWorkspaceIndexToDiskAsync(settings);
     }
     if (workspaceIndexTruncated) {
-      connection.console.warn(
+      logServerWarning(
         createLocalizer(settings.resolvedLocale).t("server.workspaceIndex.truncated", { maxFiles }),
+        settings,
       );
     }
   } finally {
@@ -12861,7 +12986,7 @@ async function closeDiagnosticsWorkerPools(reason: string): Promise<void> {
     try {
       await jsPool.close();
     } catch (error) {
-      connection.console.warn(
+      logServerWarning(
         `[asp-lsp] jsWorkerPool.close.failed: reason=${reason}, error=${errorMessage(error)}`,
       );
     }
@@ -12870,7 +12995,7 @@ async function closeDiagnosticsWorkerPools(reason: string): Promise<void> {
     try {
       await vbPool.close();
     } catch (error) {
-      connection.console.warn(
+      logServerWarning(
         `[asp-lsp] vbWorkerPool.close.failed: reason=${reason}, error=${errorMessage(error)}`,
       );
     }
@@ -12879,7 +13004,7 @@ async function closeDiagnosticsWorkerPools(reason: string): Promise<void> {
     try {
       await referencesPool.close();
     } catch (error) {
-      connection.console.warn(
+      logServerWarning(
         `[asp-lsp] references.worker.close.failed: reason=${reason}, error=${errorMessage(error)}`,
       );
     }
@@ -13713,11 +13838,22 @@ function normalizeDebugSettings(
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
     output: normalizeDebugOutputLevel(record.output),
+    logFile: normalizeDebugLogFileSettings(record.logFile),
   };
 }
 
 function normalizeDebugOutputLevel(value: unknown): NonNullable<AspSettings["debug"]>["output"] {
   return value === "summary" || value === "verbose" ? value : "off";
+}
+
+function normalizeDebugLogFileSettings(
+  value: unknown,
+): NonNullable<AspSettings["debug"]>["logFile"] {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    enabled: record.enabled === true,
+    path: typeof record.path === "string" ? record.path.trim() : "",
+  };
 }
 
 function normalizeInlayHintSettings(
@@ -21426,8 +21562,9 @@ function scheduleWorkspaceVbscriptCodeLensBatchReferences(
       options,
       executionOptions,
     ).catch((error: unknown) => {
-      connection.console.warn(
+      logServerWarning(
         `[asp-lsp] vb.references.batch.failed: ${cached.source.uri}, error=${errorMessage(error)}`,
+        settings,
       );
     });
   }, 0);
@@ -22499,8 +22636,9 @@ async function computeAndCacheSemanticJavascriptTokensAsync(
     );
     requestSemanticTokensRefresh("semanticTokens.javascript.cached");
   } catch (error) {
-    connection.console.warn(
+    logServerWarning(
       `[asp-lsp] semanticTokens.javascript.cache.failed: ${cached.source.uri}, error=${errorMessage(error)}`,
+      settings,
     );
   } finally {
     pendingSemanticJavascriptTokenBuilds.delete(javascriptCacheKey);

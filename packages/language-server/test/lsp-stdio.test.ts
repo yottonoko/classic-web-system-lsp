@@ -2928,6 +2928,144 @@ Response.Write known
       }
     });
 
+    it("keeps debug log file output disabled unless explicitly enabled", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-debug-log-disabled-"));
+      const logPath = path.join(tempDir, "asp-lsp-debug.log");
+      try {
+        await withInitializedServer(
+          {
+            rootUri: `file://${tempDir}`,
+            aspLspSettings: {
+              debug: { output: "verbose", logFile: { path: logPath } },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+          async (server) => {
+            await delay(50);
+            openClassicAspDocument(
+              server,
+              `file://${path.join(tempDir, "disabled.asp")}`,
+              `<% Response.Write "disabled" %>`,
+            );
+            await waitForDiagnosticsPublished(
+              server,
+              `file://${path.join(tempDir, "disabled.asp")}`,
+            );
+            await waitForLogContaining(server, "LSP analysis completed");
+            await delay(100);
+            expect(fs.existsSync(logPath)).toBe(false);
+          },
+        );
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("writes debug log and trace entries to an explicit file independently of debug.output", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-debug-log-explicit-"));
+      const logPath = path.join(tempDir, "asp-lsp-debug.log");
+      const uri = `file://${path.join(tempDir, "explicit.asp")}`;
+      try {
+        await withInitializedServer(
+          {
+            rootUri: `file://${tempDir}`,
+            aspLspSettings: {
+              debug: { output: "off", logFile: { enabled: true, path: logPath } },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+          async (server) => {
+            await waitForFileContaining(logPath, "configuration.changed");
+            openClassicAspDocument(server, uri, `<% Response.Write "explicit" %>`);
+            await waitForDiagnosticsPublished(server, uri);
+            const logText = await waitForFileContaining(logPath, "diagnostics.start");
+            expect(logText).toContain("DEBUG debug.summary");
+            expect(logText).toContain("LSP analysis started");
+            expect(logText).toContain("TRACE document.open");
+            expect(logText).toContain("TRACE diagnostics.start");
+          },
+        );
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("uses the default debug log path and rotates logs by file size", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-debug-log-rotate-"));
+      const logPath = path.join(tempDir, "default-debug.log");
+      const uri = `file://${path.join(tempDir, "rotate.asp")}`;
+      try {
+        await withInitializedServer(
+          {
+            rootUri: `file://${tempDir}`,
+            env: {
+              ASP_LSP_DEFAULT_DEBUG_LOG_FILE: logPath,
+              ASP_LSP_TEST_DEBUG_LOG_MAX_BYTES: "700",
+              ASP_LSP_TEST_DEBUG_LOG_MAX_BACKUPS: "2",
+            },
+            aspLspSettings: {
+              debug: { output: "off", logFile: { enabled: true, path: "" } },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+          async (server) => {
+            await waitForFileContaining(logPath, "configuration.changed");
+            let source = `<% Response.Write "rotate-0" %>`;
+            openClassicAspDocument(server, uri, source);
+            await waitForDiagnosticsPublished(server, uri);
+            for (let version = 2; version <= 8; version += 1) {
+              source = `<% Response.Write "rotate-${version}" %>`;
+              server.notify("textDocument/didChange", {
+                textDocument: { uri, version },
+                contentChanges: [{ text: source }],
+              });
+              await waitForDiagnosticsPublished(server, uri);
+            }
+            await waitForPathExists(`${logPath}.1`);
+            expect(fs.existsSync(logPath)).toBe(true);
+            expect(fs.existsSync(`${logPath}.3`)).toBe(false);
+          },
+        );
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("writes warning logs to the debug log file", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-debug-log-warning-"));
+      const logPath = path.join(tempDir, "asp-lsp-debug.log");
+      fs.writeFileSync(
+        path.join(tempDir, "first.asp"),
+        `<% Function FirstTitle()\nEnd Function %>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "second.asp"),
+        `<% Function SecondTitle()\nEnd Function %>`,
+        "utf8",
+      );
+      try {
+        await withInitializedServer(
+          {
+            rootUri: `file://${tempDir}`,
+            aspLspSettings: {
+              debug: { output: "off", logFile: { enabled: true, path: logPath } },
+              workspace: { maxIndexFiles: 1, scanChunkSize: 1 },
+              cache: { enabled: false },
+            },
+          },
+          async (server) => {
+            await waitForFileContaining(logPath, "configuration.changed");
+            await server.request("workspace/symbol", { query: "Title" });
+            const logText = await waitForFileContaining(logPath, "WARN server.warning");
+            expect(logText).toContain("WARN server.warning");
+          },
+        );
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("falls back to skeleton parsing for boundary-sensitive document edits", async () => {
       const server = new RpcServer();
       try {
@@ -16524,6 +16662,29 @@ async function waitForLogContaining(server: RpcServer, expected: string): Promis
   }
   server.prependPendingNotifications("window/logMessage", skipped);
   throw new Error(`Timed out waiting for log containing ${expected}.`);
+}
+
+async function waitForFileContaining(fileName: string, expected: string): Promise<string> {
+  const deadline = Date.now() + rpcTimeoutMs;
+  while (Date.now() < deadline) {
+    const text = fs.existsSync(fileName) ? fs.readFileSync(fileName, "utf8") : "";
+    if (text.includes(expected)) {
+      return text;
+    }
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for ${fileName} to contain ${expected}.`);
+}
+
+async function waitForPathExists(fileName: string): Promise<void> {
+  const deadline = Date.now() + rpcTimeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(fileName)) {
+      return;
+    }
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for ${fileName} to exist.`);
 }
 
 async function waitForStatus(server: RpcServer, status: string): Promise<JsonRpcMessage> {

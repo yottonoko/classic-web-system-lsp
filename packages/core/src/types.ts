@@ -95,8 +95,14 @@ export interface AspDiagnosticsSettings {
 
 export type AspDebugOutputLevel = "off" | "summary" | "verbose";
 
+export interface AspDebugLogFileSettings {
+  enabled?: boolean;
+  path?: string;
+}
+
 export interface AspDebugSettings {
   output?: AspDebugOutputLevel;
+  logFile?: AspDebugLogFileSettings;
 }
 
 export interface AspFormattingOptions extends AspFormatSettings {
