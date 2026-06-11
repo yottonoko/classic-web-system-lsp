@@ -740,21 +740,36 @@ async function resolveIncludePath(
       if (!root) {
         continue;
       }
-      const candidate = await resolveIncludeCandidate(root, normalizedInclude, settings);
+      const candidate = await resolveIncludeCandidate(
+        root,
+        normalizedInclude,
+        settings,
+        workspaceRoots,
+      );
       if (candidate.exists) {
         return candidate;
       }
     }
-    return resolveIncludeCandidate(settings.virtualRoot ?? ownerRoot, normalizedInclude, settings);
+    return resolveIncludeCandidate(
+      settings.virtualRoot ?? ownerRoot,
+      normalizedInclude,
+      settings,
+      workspaceRoots,
+    );
   }
 
   const ownerDirectory = path.dirname(uriToFileName(ownerUri));
-  const local = await resolveIncludeCandidate(ownerDirectory, include.path, settings);
+  const local = await resolveIncludeCandidate(
+    ownerDirectory,
+    include.path,
+    settings,
+    workspaceRoots,
+  );
   if (local.exists) {
     return local;
   }
   for (const root of [...(settings.includePaths ?? []), ...(settings.virtualRoots ?? [])]) {
-    const candidate = await resolveIncludeCandidate(root, include.path, settings);
+    const candidate = await resolveIncludeCandidate(root, include.path, settings, workspaceRoots);
     if (candidate.exists) {
       return candidate;
     }
@@ -766,10 +781,17 @@ async function resolveIncludeCandidate(
   baseDirectory: string,
   requestedPath: string,
   settings: AspSettings,
+  workspaceRoots: string[],
 ): Promise<IncludeResolution> {
   const fileName = path.resolve(baseDirectory, requestedPath);
   if (settings.windowsPathResolution === false) {
     return { fileName, exists: await pathExists(fileName) };
+  }
+  if (workerCaseResolution(settings, workspaceRoots) === "fast") {
+    const stat = await fs.promises.stat(fileName).catch(() => undefined);
+    if (stat) {
+      return { fileName, exists: true };
+    }
   }
   let start = path.isAbsolute(requestedPath)
     ? path.parse(fileName).root
@@ -803,6 +825,38 @@ async function resolveIncludeCandidate(
     current = path.join(current, insensitive[0].name);
   }
   return { fileName: current, exists: true };
+}
+
+function workerCaseResolution(settings: AspSettings, workspaceRoots: string[]): "full" | "fast" {
+  if (settings.network?.caseResolution === "full" || settings.network?.caseResolution === "fast") {
+    return settings.network.caseResolution;
+  }
+  if (settings.network?.profile === "network") {
+    return "fast";
+  }
+  if (settings.network?.profile === "local") {
+    return "full";
+  }
+  return [
+    ...workspaceRoots,
+    ...(settings.virtualRoots ?? []),
+    ...(settings.includePaths ?? []),
+    settings.virtualRoot,
+  ].some((candidate) => typeof candidate === "string" && looksLikeNetworkPath(candidate))
+    ? "fast"
+    : "full";
+}
+
+function looksLikeNetworkPath(fileName: string): boolean {
+  const normalized = fileName.replace(/\\/g, "/");
+  return (
+    fileName.startsWith("\\\\") ||
+    normalized.startsWith("//") ||
+    normalized.startsWith("/Volumes/") ||
+    normalized.startsWith("/mnt/") ||
+    normalized.startsWith("/net/") ||
+    normalized.includes("/.gvfs/")
+  );
 }
 
 function vbProjectContextSettings(

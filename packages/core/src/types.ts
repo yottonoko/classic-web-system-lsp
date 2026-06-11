@@ -41,6 +41,7 @@ export interface AspSettings {
   graph?: AspGraphSettings;
   excel?: AspExcelSettings;
   cache?: AspCacheSettings;
+  network?: AspNetworkSettings;
   workspace?: AspWorkspaceSettings;
 }
 
@@ -214,6 +215,7 @@ export interface AspGraphSettings {
   showIncomingDocumentIncludes?: boolean;
   showIncomingFolderIncludes?: boolean;
   includeRelatedIncludeTreesForUnresolved?: boolean;
+  useReverseIncludeIndex?: boolean;
   maxDocuments?: number;
   maxTextLength?: number;
   includeTreeMaxDocuments?: number;
@@ -226,6 +228,14 @@ export interface AspExcelSettings {
   maxTextLength?: number;
   includeTreeMaxDocuments?: number;
   includeTreeMaxTextLength?: number;
+}
+
+export interface AspNetworkSettings {
+  profile?: "auto" | "local" | "network";
+  statCacheTtlMs?: number;
+  readdirCacheTtlMs?: number;
+  includeReadConcurrency?: number;
+  caseResolution?: "auto" | "full" | "fast";
 }
 
 export interface AspFlowchartBuildOptions {
@@ -383,7 +393,7 @@ export interface AspFlowchartInclude {
 export interface AspCacheSettings {
   enabled?: boolean;
   directory?: string;
-  freshness?: "metadata" | "watch";
+  freshness?: "auto" | "metadata" | "watch";
   ttlHours?: number;
   maxSizeMb?: number;
 }

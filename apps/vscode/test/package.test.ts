@@ -687,6 +687,7 @@ describe("VS Code extension package", () => {
       showMemberLinks: true,
       showIncomingDocumentIncludes: false,
       showIncomingFolderIncludes: false,
+      useReverseIncludeIndex: true,
       includeRelatedIncludeTreesForUnresolved: true,
     };
     for (const [name, defaultValue] of Object.entries(graphDefaults)) {
@@ -819,12 +820,54 @@ describe("VS Code extension package", () => {
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.directory"]).toEqual(
       expect.objectContaining({ type: "string", default: "" }),
     );
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.freshness"]).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["auto", "metadata", "watch"],
+        default: "auto",
+      }),
+    );
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.ttlHours"]).toEqual(
       expect.objectContaining({ type: "number", default: 336, minimum: 1 }),
     );
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.maxSizeMb"]).toEqual(
       expect.objectContaining({ type: "number", default: 128, minimum: 1 }),
     );
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.network.profile"]).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["auto", "local", "network"],
+        default: "auto",
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.network.statCacheTtlMs"],
+    ).toEqual(expect.objectContaining({ type: "number", default: -1, minimum: -1 }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.network.readdirCacheTtlMs"],
+    ).toEqual(expect.objectContaining({ type: "number", default: -1, minimum: -1 }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.network.includeReadConcurrency"],
+    ).toEqual(expect.objectContaining({ type: "number", default: 0, minimum: 0 }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.network.caseResolution"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["auto", "full", "fast"],
+        default: "auto",
+      }),
+    );
+    for (const name of [
+      "profile",
+      "statCacheTtlMs",
+      "readdirCacheTtlMs",
+      "includeReadConcurrency",
+      "caseResolution",
+    ]) {
+      expect(nls[`configuration.network.${name}.description`]).toBeTruthy();
+      expect(nlsJa[`configuration.network.${name}.description`]).toBeTruthy();
+    }
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.workspace.includes"]).toEqual(
       expect.objectContaining({
         type: "array",

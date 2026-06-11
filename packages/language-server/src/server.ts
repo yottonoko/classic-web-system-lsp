@@ -21,6 +21,8 @@ import {
   fileIdentityKeyFromUri,
   sameFileIdentityUri,
 } from "./file-identity";
+import { fsGateway } from "./fs-gateway";
+import { WorkspaceIncludeGraph } from "./include-graph-index";
 import type {
   JsDiagnosticsWorkerResponse,
   JsDiagnosticsWorkerVirtualDocument,
@@ -205,6 +207,9 @@ const includeForwardDependencies = new Map<string, Set<string>>();
 const includeReverseDependencies = new Map<string, Set<string>>();
 const includePublicSummaries = new Map<string, IncludePublicSummaryState>();
 const workspaceIndex = new Map<string, WorkspaceIndexedDocument>();
+const workspaceIncludeGraph = new WorkspaceIncludeGraph();
+let workspaceIncludeGraphDirty = true;
+let workspaceIncludeGraphRestoreAllowed = true;
 const jsLanguageServiceCache = new Map<string, JsLanguageServiceCacheEntry>();
 const jsOpenProjectFilesCache = new Map<string, JsOpenProjectFilesCacheEntry>();
 const jsProjectConfigCache = new Map<string, JsProjectConfigCacheEntry>();
@@ -235,6 +240,10 @@ const defaultExcelIncludeTreeMaxDocuments = 1024;
 const defaultExcelIncludeTreeMaxTextLength = 64 * 1024 * 1024;
 const defaultWorkspaceIncludes = ["**/*.{asp,asa,inc}"];
 const defaultDiagnosticsDebounceMs = 250;
+const defaultNetworkStatCacheTtlMs = 30_000;
+const defaultNetworkNegativeStatCacheTtlMs = 5_000;
+const defaultNetworkReaddirCacheTtlMs = 30_000;
+const defaultNetworkIncludeReadConcurrency = 16;
 const graphFileIndexCacheMaxEntries = 64;
 const reindexWorkspaceCommand = "aspLsp.reindexWorkspace";
 const clearCacheCommand = "aspLsp.clearCache";
@@ -266,6 +275,7 @@ let clientLocale = "en";
 let workspaceIndexDirty = true;
 let workspaceIndexTruncated = false;
 let workspaceIndexRestoreAllowed = true;
+let workspaceIndexRevalidationSerial = 0;
 let vbReferencesWorkerPool: VbReferencesWorkerPool | undefined;
 let vbReferencesWorkerRequestId = 0;
 let jsLanguageServiceCacheTick = 0;
@@ -1721,6 +1731,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       ? [params.rootPath]
       : []),
   ].filter((root, index, roots) => root.length > 0 && roots.indexOf(root) === index);
+  configureFsGateway(globalSettings);
   return {
     capabilities: {
       textDocumentSync: {
@@ -1852,7 +1863,10 @@ documents.onDidChangeContent((event) => {
 });
 documents.onDidSave(async (event) => {
   noteForegroundActivity();
-  await indexWorkspaceFileAsync(uriToFileName(event.document.uri), globalSettings);
+  const fileName = uriToFileName(event.document.uri);
+  fsGateway.invalidatePath(fileName);
+  await indexWorkspaceFileAsync(fileName, globalSettings);
+  await refreshWorkspaceIncludeGraphFileAsync(fileName, globalSettings);
   if (!workspaceIndexDirty && cacheFreshness(globalSettings) === "watch") {
     await writeWorkspaceIndexToDiskAsync(globalSettings);
   }
@@ -1909,6 +1923,7 @@ connection.onNotification(
       ...workspaceRoots.filter((root) => !removed.has(normalizeFileName(root))),
       ...added.map((folder) => uriToFileName(folder.uri)).filter((root) => root.length > 0),
     ].filter((root, index, roots) => roots.indexOf(root) === index);
+    configureFsGateway(globalSettings);
     invalidateWorkspaceIndex("workspaceFolders.changed");
     invalidateIncludeResolution("workspaceFolders.changed");
     invalidateJsProject("workspaceFolders.changed");
@@ -1928,6 +1943,7 @@ connection.onDidChangeConfiguration((change) => {
   if (incoming) {
     globalSettings = normalizeSettings(incoming);
   }
+  configureFsGateway(globalSettings);
   void configureDiskAnalysisCacheAsync().catch((error) =>
     logDiskAnalysisCacheError("diskCache.configure", error),
   );
@@ -1951,6 +1967,7 @@ connection.onDidChangeWatchedFiles(async (change) => {
   const aspChanges: WatchedAspFileChange[] = [];
   for (const file of change.changes) {
     const fileName = normalizeFileName(uriToFileName(file.uri));
+    fsGateway.invalidatePath(fileName);
     if (isAspWorkspaceFile(fileName)) {
       aspChanged = true;
       aspChanges.push({ fileName, type: file.type });
@@ -1960,6 +1977,7 @@ connection.onDidChangeWatchedFiles(async (change) => {
       } else {
         await indexWorkspaceFileAsync(fileName, globalSettings);
       }
+      await refreshWorkspaceIncludeGraphFileAsync(fileName, globalSettings);
     }
     if (path.basename(fileName) === ".gitignore" && globalSettings.workspace?.respectGitIgnore) {
       invalidateWorkspaceIndex("gitignore.changed");
@@ -1984,7 +2002,7 @@ connection.onDidChangeWatchedFiles(async (change) => {
     }
     includeCycleCache.clear();
     if (aspChanges.some((change) => change.type !== FileChangeType.Changed)) {
-      invalidateIncludeResolution("watchedAsp.structureChanged");
+      invalidateIncludeResolutionForAspChanges(aspChanges, "watchedAsp.structureChanged");
     }
     if (!workspaceIndexDirty && cacheFreshness(globalSettings) === "watch") {
       await writeWorkspaceIndexToDiskAsync(globalSettings);
@@ -2008,23 +2026,43 @@ connection.onDidChangeWatchedFiles(async (change) => {
 
 connection.workspace.onWillRenameFiles((params) => includeRenameWorkspaceEditAsync(params.files));
 
-connection.workspace.onDidRenameFiles(() => {
+connection.workspace.onDidRenameFiles((params) => {
+  for (const file of params.files) {
+    fsGateway.invalidatePath(uriToFileName(file.oldUri));
+    fsGateway.invalidatePath(uriToFileName(file.newUri));
+  }
   invalidateWorkspaceIndex("fileOperation.rename");
   invalidateIncludeResolution("fileOperation.rename");
   invalidateJsProject("fileOperation.rename");
   invalidateCachedAnalysisForUris(openDocumentUris(), "fileOperation.rename");
 });
 
-connection.workspace.onDidCreateFiles(() => {
+connection.workspace.onDidCreateFiles((params) => {
+  const changes: WatchedAspFileChange[] = [];
+  for (const file of params.files) {
+    const fileName = normalizeFileName(uriToFileName(file.uri));
+    fsGateway.invalidatePath(fileName);
+    if (isAspWorkspaceFile(fileName)) {
+      changes.push({ fileName, type: FileChangeType.Created });
+    }
+  }
   invalidateWorkspaceIndex("fileOperation.create");
-  invalidateIncludeResolution("fileOperation.create");
+  invalidateIncludeResolutionForAspChanges(changes, "fileOperation.create");
   invalidateJsProject("fileOperation.create");
   invalidateCachedAnalysisForUris(openDocumentUris(), "fileOperation.create");
 });
 
-connection.workspace.onDidDeleteFiles(() => {
+connection.workspace.onDidDeleteFiles((params) => {
+  const changes: WatchedAspFileChange[] = [];
+  for (const file of params.files) {
+    const fileName = normalizeFileName(uriToFileName(file.uri));
+    fsGateway.invalidatePath(fileName);
+    if (isAspWorkspaceFile(fileName)) {
+      changes.push({ fileName, type: FileChangeType.Deleted });
+    }
+  }
   invalidateWorkspaceIndex("fileOperation.delete");
-  invalidateIncludeResolution("fileOperation.delete");
+  invalidateIncludeResolutionForAspChanges(changes, "fileOperation.delete");
   invalidateJsProject("fileOperation.delete");
   invalidateCachedAnalysisForUris(openDocumentUris(), "fileOperation.delete");
 });
@@ -3935,7 +3973,7 @@ const neverCancelled: AnalysisCancellation = {
 };
 
 async function fileExistsAsync(fileName: string): Promise<boolean> {
-  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  const stat = await fsGateway.statAsync(fileName);
   return Boolean(stat?.isFile());
 }
 
@@ -3949,12 +3987,12 @@ async function fileSizeAsync(
       return source.size;
     }
   }
-  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  const stat = await fsGateway.statAsync(fileName);
   return stat?.isFile() ? stat.size : undefined;
 }
 
 async function pathExistsAsync(fileName: string): Promise<boolean> {
-  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  const stat = await fsGateway.statAsync(fileName);
   return Boolean(stat);
 }
 
@@ -4055,6 +4093,112 @@ function analysisConcurrency(settings: AspSettings): number {
 
 function workerAnalysisConcurrency(settings: AspSettings): number {
   return busyAnalysisConcurrency(settings);
+}
+
+interface ResolvedNetworkProfile {
+  kind: "local" | "network";
+  statCacheTtlMs: number;
+  negativeStatCacheTtlMs: number;
+  readdirCacheTtlMs: number;
+  includeReadConcurrency: number;
+  caseResolution: "full" | "fast";
+}
+
+function resolveNetworkProfile(settings: AspSettings): ResolvedNetworkProfile {
+  const requested = settings.network?.profile ?? "auto";
+  const network =
+    requested === "network" || (requested === "auto" && networkPathHeuristic(settings));
+  const base: ResolvedNetworkProfile = network
+    ? {
+        kind: "network",
+        statCacheTtlMs: defaultNetworkStatCacheTtlMs,
+        negativeStatCacheTtlMs: defaultNetworkNegativeStatCacheTtlMs,
+        readdirCacheTtlMs: defaultNetworkReaddirCacheTtlMs,
+        includeReadConcurrency: defaultNetworkIncludeReadConcurrency,
+        caseResolution: "fast",
+      }
+    : {
+        kind: "local",
+        statCacheTtlMs: 0,
+        negativeStatCacheTtlMs: 0,
+        readdirCacheTtlMs: 0,
+        includeReadConcurrency: analysisConcurrency(settings),
+        caseResolution: "full",
+      };
+  return {
+    ...base,
+    statCacheTtlMs: nonNegativeIntegerSetting(
+      settings.network?.statCacheTtlMs,
+      base.statCacheTtlMs,
+    ),
+    negativeStatCacheTtlMs:
+      settings.network?.statCacheTtlMs !== undefined
+        ? Math.min(
+            defaultNetworkNegativeStatCacheTtlMs,
+            nonNegativeIntegerSetting(settings.network.statCacheTtlMs, base.negativeStatCacheTtlMs),
+          )
+        : base.negativeStatCacheTtlMs,
+    readdirCacheTtlMs: nonNegativeIntegerSetting(
+      settings.network?.readdirCacheTtlMs,
+      base.readdirCacheTtlMs,
+    ),
+    includeReadConcurrency: networkConcurrencySetting(
+      settings.network?.includeReadConcurrency,
+      base.includeReadConcurrency,
+    ),
+    caseResolution:
+      settings.network?.caseResolution && settings.network.caseResolution !== "auto"
+        ? settings.network.caseResolution
+        : base.caseResolution,
+  };
+}
+
+function configureFsGateway(settings: AspSettings): void {
+  const profile = resolveNetworkProfile(settings);
+  fsGateway.configure({
+    statTtlMs: profile.statCacheTtlMs,
+    negativeStatTtlMs: profile.negativeStatCacheTtlMs,
+    readdirTtlMs: profile.readdirCacheTtlMs,
+  });
+}
+
+function includeReadConcurrency(settings: AspSettings): number {
+  return resolveNetworkProfile(settings).includeReadConcurrency;
+}
+
+function networkPathHeuristic(settings: AspSettings): boolean {
+  return [
+    ...workspaceRoots,
+    ...(settings.virtualRoots ?? []),
+    ...(settings.includePaths ?? []),
+    settings.virtualRoot,
+  ].some((candidate) => typeof candidate === "string" && looksLikeNetworkPath(candidate));
+}
+
+function looksLikeNetworkPath(fileName: string): boolean {
+  const normalized = fileName.replace(/\\/g, "/");
+  return (
+    fileName.startsWith("\\\\") ||
+    normalized.startsWith("//") ||
+    normalized.startsWith("/Volumes/") ||
+    normalized.startsWith("/mnt/") ||
+    normalized.startsWith("/net/") ||
+    normalized.includes("/.gvfs/")
+  );
+}
+
+function networkConcurrencySetting(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return Math.max(1, fallback);
+  }
+  return Math.max(1, Math.min(64, Math.floor(value)));
+}
+
+function nonNegativeIntegerSetting(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return fallback;
+  }
+  return Math.floor(value);
 }
 
 function noteForegroundActivity(): void {
@@ -4383,7 +4527,10 @@ function createDiskAnalysisCache(settings: AspSettings): DiskAnalysisCache {
 }
 
 function cacheFreshness(settings: AspSettings): "metadata" | "watch" {
-  return settings.cache?.freshness === "watch" ? "watch" : "metadata";
+  if (settings.cache?.freshness === "watch" || settings.cache?.freshness === "metadata") {
+    return settings.cache.freshness;
+  }
+  return resolveNetworkProfile(settings).kind === "network" ? "watch" : "metadata";
 }
 
 function rememberSourceMetadata(source: DiskAnalysisSourceMetadata): void {
@@ -9378,7 +9525,7 @@ async function workspaceVbReferenceWorkerResponse(
     limits: {
       ...vbProjectContextLimits(settings),
       maxDepth: executionOptions.workerMaxDepth ?? 20,
-      includeReadConcurrency: Math.max(1, Math.min(4, analysisConcurrency(settings))),
+      includeReadConcurrency: includeReadConcurrency(settings),
     },
   };
   const pool = getVbReferencesWorkerPool(settings);
@@ -9704,7 +9851,7 @@ async function isCurrentVbReferencesWorkerCandidate(
       );
     }
   }
-  const stat = await fs.promises.stat(candidate.fileName).catch(() => undefined);
+  const stat = await fsGateway.statAsync(candidate.fileName);
   return Boolean(
     stat?.isFile() &&
     candidate.source.openVersion === undefined &&
@@ -9993,6 +10140,7 @@ async function collectIncludeDependencyGraphForCachedAsync(
       noteTruncated("depth>20");
       return;
     }
+    await prefetchIncludeRefsForOwnerAsync(ownerUri, includeRefs, settings);
     for (const include of includeRefs) {
       const resolved = await resolveIncludePathDetailsAsync(
         ownerUri,
@@ -11008,7 +11156,7 @@ async function includeDocumentSourceIdentityAsync(
       };
     }
   }
-  const stat = await fs.promises.stat(normalized).catch(() => undefined);
+  const stat = await fsGateway.statAsync(normalized);
   if (!stat?.isFile()) {
     forgetSourceMetadata(normalized);
     return undefined;
@@ -11618,18 +11766,19 @@ async function findIncludeCycleAsync(
       stackIndexes.delete(normalized);
       return undefined;
     }
+    await prefetchIncludeRefsForOwnerAsync(pathToFileUri(normalized), entry.includeRefs, settings);
     for (const include of entry.includeRefs) {
-      const next = await resolveIncludePathAsync(
+      const next = await resolveIncludePathDetailsAsync(
         pathToFileUri(normalized),
         include.path,
         include.mode,
         settings,
       );
-      recordIncludeDependency(ownerUri, pathToFileUri(next));
-      if (!(await fileExistsAsync(next))) {
+      recordIncludeDependency(ownerUri, pathToFileUri(next.fileName));
+      if (!next.exists) {
         continue;
       }
-      const cycle = await search(next, depth + 1);
+      const cycle = await search(next.fileName, depth + 1);
       if (cycle) {
         return cycle;
       }
@@ -12212,6 +12361,7 @@ async function diskAnalysisIncludeDependencyKey(
     if (depth > 20 || cancellation.isCancellationRequested()) {
       return;
     }
+    await prefetchIncludeRefsForOwnerAsync(ownerUri, includeRefs, settings);
     for (const include of includeRefs) {
       if (cancellation.isCancellationRequested()) {
         return;
@@ -12224,7 +12374,7 @@ async function diskAnalysisIncludeDependencyKey(
       );
       const normalizedFileName = normalizeFileName(resolved.fileName);
       const fileKey = fileIdentityKeyFromFileName(normalizedFileName);
-      const stat = await fs.promises.stat(normalizedFileName).catch(() => undefined);
+      const stat = await fsGateway.statAsync(normalizedFileName);
       const exists = stat?.isFile() === true;
       dependencies.push({
         owner: normalizeFileName(uriToFileName(ownerUri)),
@@ -12271,6 +12421,7 @@ async function ensureWorkspaceIndexAsync(
   if (workspaceIndexRestoreAllowed && cacheFreshness(settings) === "watch") {
     const restored = await restoreWorkspaceIndexFromDiskAsync(settings);
     if (restored) {
+      scheduleWorkspaceIndexRevalidation(settings, "workspaceIndex.restore");
       return;
     }
   }
@@ -12337,10 +12488,11 @@ async function indexWorkspaceRootAsync(
   filter: WorkspaceScanFilter,
   settings: AspSettings,
 ): Promise<number> {
-  const stat = await fs.promises.stat(root).catch(() => undefined);
+  const stat = await fsGateway.statAsync(root);
   if (!stat?.isDirectory()) {
     return state.scannedFiles;
   }
+  const concurrency = includeReadConcurrency(settings);
   const directories = [root];
   let scannedFiles = state.scannedFiles;
   let operations = 0;
@@ -12348,31 +12500,52 @@ async function indexWorkspaceRootAsync(
     if (state.token?.isCancellationRequested) {
       return scannedFiles;
     }
-    const directory = directories.pop() ?? root;
-    const entries = await fs.promises.readdir(directory, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
+    const batch = directories.splice(0, concurrency);
+    const batches = await mapWithConcurrency(batch, concurrency, async (directory) => {
+      const listing = await fsGateway.readdirAsync(directory);
+      const childDirectories: string[] = [];
+      const files: string[] = [];
+      for (const entry of listing?.entries ?? []) {
+        if (state.token?.isCancellationRequested) {
+          break;
+        }
+        const fullPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          if (workspaceScanFilterShouldVisitDirectory(filter, fullPath)) {
+            childDirectories.push(fullPath);
+          }
+        } else if (entry.isFile() && workspaceScanFilterIncludesFile(filter, fullPath)) {
+          files.push(fullPath);
+        }
+      }
+      return { childDirectories, files };
+    });
+    const files: string[] = [];
+    for (const item of batches) {
+      directories.push(...item.childDirectories);
+      files.push(...item.files);
+    }
+    const filesToIndex: string[] = [];
+    for (const fileName of files) {
       if (state.token?.isCancellationRequested || scannedFiles >= state.maxFiles) {
-        return scannedFiles;
+        break;
       }
-      const fullPath = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        if (workspaceScanFilterShouldVisitDirectory(filter, fullPath)) {
-          directories.push(fullPath);
-        }
-      } else if (entry.isFile() && workspaceScanFilterIncludesFile(filter, fullPath)) {
-        await indexWorkspaceFileAsync(fullPath, settings, { silentStatus: true });
-        scannedFiles += 1;
-        if (scannedFiles % state.chunkSize === 0 || scannedFiles >= state.maxFiles) {
-          state.progress?.update({
-            current: Math.min(scannedFiles, state.maxFiles),
-            detail: progressFileLabel(fullPath),
-          });
-        }
+      scannedFiles += 1;
+      filesToIndex.push(fileName);
+      if (scannedFiles % state.chunkSize === 0 || scannedFiles >= state.maxFiles) {
+        state.progress?.update({
+          current: Math.min(scannedFiles, state.maxFiles),
+          detail: progressFileLabel(fileName),
+        });
       }
-      operations += 1;
-      if (operations % state.chunkSize === 0) {
-        await yieldToEventLoop();
-      }
+    }
+    await mapWithConcurrency(filesToIndex, concurrency, (fileName) =>
+      indexWorkspaceFileAsync(fileName, settings, { silentStatus: true }),
+    );
+    operations += batch.length + filesToIndex.length;
+    if (operations >= state.chunkSize) {
+      operations %= state.chunkSize;
+      await yieldToEventLoop();
     }
   }
   return scannedFiles;
@@ -12391,7 +12564,7 @@ async function indexWorkspaceFileAsync(
       forgetSourceMetadata(normalized);
       return;
     }
-    const stat = await fs.promises.stat(normalized).catch(() => undefined);
+    const stat = await fsGateway.statAsync(normalized);
     if (!stat?.isFile()) {
       workspaceIndex.delete(fileKey);
       forgetSourceMetadata(normalized);
@@ -12471,6 +12644,263 @@ async function writeWorkspaceIndexToDiskAsync(settings: AspSettings): Promise<vo
       logDebugSummary(settings, `[asp-lsp] workspaceIndex.write: files=${entries.length}`),
     )
     .catch((error) => logDiskAnalysisCacheError("workspaceIndex.write", error));
+}
+
+function scheduleWorkspaceIndexRevalidation(settings: AspSettings, reason: string): void {
+  if (resolveNetworkProfile(settings).kind !== "network" || cacheFreshness(settings) !== "watch") {
+    return;
+  }
+  const serial = ++workspaceIndexRevalidationSerial;
+  const workspaceSettingsKey = workspaceIndexSettingsIdentity(settings);
+  const startedGeneration = workspaceGeneration;
+  void revalidateWorkspaceIndexAsync(settings, {
+    serial,
+    reason,
+    workspaceSettingsKey,
+    startedGeneration,
+  }).catch((error) =>
+    connection.console.warn(`[asp-lsp] workspaceIndex.revalidate.failed: ${errorMessage(error)}`),
+  );
+}
+
+async function revalidateWorkspaceIndexAsync(
+  settings: AspSettings,
+  context: {
+    serial: number;
+    reason: string;
+    workspaceSettingsKey: string;
+    startedGeneration: number;
+  },
+): Promise<void> {
+  const entries = [...workspaceIndex.values()];
+  if (entries.length === 0) {
+    return;
+  }
+  logDebugSummary(
+    settings,
+    `[asp-lsp] workspaceIndex.revalidate.started: reason=${context.reason}, files=${entries.length}`,
+  );
+  const changedFiles = new Set<string>();
+  const deletedFiles = new Set<string>();
+  await mapWithConcurrency(entries, includeReadConcurrency(settings), async (entry) => {
+    if (
+      context.serial !== workspaceIndexRevalidationSerial ||
+      workspaceGeneration !== context.startedGeneration ||
+      workspaceIndexSettingsIdentity(settings) !== context.workspaceSettingsKey
+    ) {
+      return;
+    }
+    const normalized = normalizeFileName(entry.fileName);
+    const stat = await fsGateway.statAsync(normalized);
+    const fileKey = fileIdentityKeyFromFileName(normalized);
+    if (!stat?.isFile()) {
+      workspaceIndex.delete(fileKey);
+      forgetSourceMetadata(normalized);
+      deletedFiles.add(normalized);
+      return;
+    }
+    if (entry.mtimeMs === stat.mtimeMs && entry.size === stat.size) {
+      return;
+    }
+    const next = {
+      uri: entry.uri,
+      fileName: normalized,
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+    };
+    workspaceIndex.set(fileKey, next);
+    rememberSourceMetadata(next);
+    changedFiles.add(normalized);
+  });
+  if (
+    context.serial !== workspaceIndexRevalidationSerial ||
+    workspaceGeneration !== context.startedGeneration ||
+    workspaceIndexSettingsIdentity(settings) !== context.workspaceSettingsKey
+  ) {
+    return;
+  }
+  const driftedFiles = new Set([...changedFiles, ...deletedFiles]);
+  if (driftedFiles.size === 0) {
+    logDebugSummary(settings, `[asp-lsp] workspaceIndex.revalidate.complete: drift=0`);
+    return;
+  }
+  includeDocumentLoader.invalidateFiles(driftedFiles);
+  invalidateGraphFileIndexFiles(driftedFiles);
+  clearWorkspaceVbReferenceCaches();
+  for (const fileName of deletedFiles) {
+    workspaceIncludeGraph.delete(fileName);
+  }
+  for (const fileName of changedFiles) {
+    await refreshWorkspaceIncludeGraphFileAsync(fileName, settings);
+  }
+  await writeWorkspaceIndexToDiskAsync(settings);
+  logDebugSummary(
+    settings,
+    `[asp-lsp] workspaceIndex.revalidate.complete: changed=${changedFiles.size}, deleted=${deletedFiles.size}`,
+  );
+}
+
+function workspaceIncludeGraphSettingsIdentity(settings: AspSettings): string {
+  return JSON.stringify({
+    workspace: workspaceIndexSettingsIdentity(settings),
+    includeRefs: includeRefsSettingsKey(settings),
+    includeResolution: includeResolutionSettingsIdentity(settings),
+  });
+}
+
+async function ensureWorkspaceIncludeGraphAsync(
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<void> {
+  const settingsKey = workspaceIncludeGraphSettingsIdentity(settings);
+  if (!workspaceIncludeGraphDirty && workspaceIncludeGraph.settingsKey === settingsKey) {
+    return;
+  }
+  if (workspaceIncludeGraphRestoreAllowed) {
+    const restored = await restoreWorkspaceIncludeGraphFromDiskAsync(settings);
+    if (restored) {
+      return;
+    }
+  }
+  workspaceIncludeGraph.reset(settingsKey);
+  const entries = [...workspaceIndex.values()];
+  await mapWithConcurrency(entries, includeReadConcurrency(settings), async (entry) => {
+    if (cancellation.isCancellationRequested()) {
+      return;
+    }
+    await updateWorkspaceIncludeGraphEntryAsync(entry, settings, { allowRead: true });
+  });
+  if (cancellation.isCancellationRequested()) {
+    workspaceIncludeGraphDirty = true;
+    workspaceIncludeGraph.reset();
+    return;
+  }
+  workspaceIncludeGraphDirty = false;
+  workspaceIncludeGraphRestoreAllowed = false;
+  await writeWorkspaceIncludeGraphToDiskAsync(settings);
+  logDebugSummary(
+    settings,
+    `[asp-lsp] workspaceIncludeGraph.built: files=${workspaceIncludeGraph.size}`,
+  );
+}
+
+async function restoreWorkspaceIncludeGraphFromDiskAsync(settings: AspSettings): Promise<boolean> {
+  const settingsKey = workspaceIncludeGraphSettingsIdentity(settings);
+  const entry = await diskAnalysisCache.readWorkspaceIncludeGraph(settingsKey).catch((error) => {
+    logDiskAnalysisCacheError("workspaceIncludeGraph.restore", error);
+    return undefined;
+  });
+  if (!entry) {
+    return false;
+  }
+  workspaceIncludeGraph.restore({ settingsKey: entry.settingsKey, entries: entry.entries });
+  workspaceIncludeGraphDirty = false;
+  workspaceIncludeGraphRestoreAllowed = false;
+  logDebugSummary(
+    settings,
+    `[asp-lsp] workspaceIncludeGraph.restore: files=${entry.entries.length}`,
+  );
+  return true;
+}
+
+async function writeWorkspaceIncludeGraphToDiskAsync(settings: AspSettings): Promise<void> {
+  if (!diskAnalysisCache.enabled || workspaceIncludeGraphDirty) {
+    return;
+  }
+  const snapshot = workspaceIncludeGraph.snapshot(workspaceIncludeGraphSettingsIdentity(settings));
+  if (!snapshot) {
+    return;
+  }
+  await diskAnalysisCache
+    .writeWorkspaceIncludeGraph(snapshot)
+    .then(() =>
+      logDebugSummary(
+        settings,
+        `[asp-lsp] workspaceIncludeGraph.write: files=${snapshot.entries.length}`,
+      ),
+    )
+    .catch((error) => logDiskAnalysisCacheError("workspaceIncludeGraph.write", error));
+}
+
+async function updateWorkspaceIncludeGraphEntryAsync(
+  entry: WorkspaceIndexedDocument,
+  settings: AspSettings,
+  options: { allowRead?: boolean } = {},
+): Promise<void> {
+  const includeRefsEntry = await includeDocumentLoader.readIncludeRefsAsync(
+    entry.fileName,
+    settings,
+    options,
+  );
+  if (
+    !includeRefsEntry ||
+    !sameDiskAnalysisSource(includeRefsEntry.source, diskAnalysisSourceMetadata(entry))
+  ) {
+    workspaceIncludeGraph.delete(entry.fileName);
+    return;
+  }
+  const targetFileNames = await resolvedIncludeTargetFileNamesAsync(
+    entry.uri,
+    includeRefsEntry.includeRefs,
+    settings,
+  );
+  workspaceIncludeGraph.upsert(
+    entry.fileName,
+    diskAnalysisSourceMetadata(entry),
+    targetFileNames,
+    includeRefsEntry.fingerprint,
+  );
+}
+
+async function refreshWorkspaceIncludeGraphFileAsync(
+  fileName: string,
+  settings: AspSettings,
+): Promise<void> {
+  if (
+    workspaceIncludeGraphDirty ||
+    workspaceIncludeGraph.settingsKey !== workspaceIncludeGraphSettingsIdentity(settings)
+  ) {
+    return;
+  }
+  const entry = workspaceIndex.get(fileIdentityKeyFromFileName(fileName));
+  if (entry) {
+    await updateWorkspaceIncludeGraphEntryAsync(entry, settings, { allowRead: true });
+  } else {
+    workspaceIncludeGraph.delete(fileName);
+  }
+  await writeWorkspaceIncludeGraphToDiskAsync(settings);
+}
+
+async function resolvedIncludeTargetFileNamesAsync(
+  ownerUri: string,
+  includeRefs: AspInclude[],
+  settings: AspSettings,
+): Promise<string[]> {
+  const resolved = await mapWithConcurrency(
+    includeRefs,
+    includeReadConcurrency(settings),
+    async (include) =>
+      resolveIncludePathDetailsAsync(ownerUri, include.path, include.mode, settings).catch(
+        () => undefined,
+      ),
+  );
+  return resolved
+    .filter((item): item is IncludePathResolution => item !== undefined && item.exists === true)
+    .map((item) => normalizeFileName(item.fileName));
+}
+
+function invalidateWorkspaceIncludeGraph(reason: string): void {
+  workspaceIncludeGraphDirty = true;
+  workspaceIncludeGraphRestoreAllowed = false;
+  workspaceIncludeGraph.reset();
+  logInvalidation("workspaceIncludeGraph", reason);
+}
+
+function allowWorkspaceIncludeGraphRestore(reason: string): void {
+  workspaceIncludeGraphDirty = true;
+  workspaceIncludeGraphRestoreAllowed = true;
+  workspaceIncludeGraph.reset();
+  logInvalidation("workspaceIncludeGraph", reason);
 }
 
 async function readTextFileAsync(
@@ -12555,16 +12985,19 @@ function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
   workspaceIndexRestoreAllowed = false;
   workspaceIndex.clear();
   sourceManifest.clear();
+  invalidateWorkspaceIncludeGraph(reason);
   clearWorkspaceVbReferenceCaches();
   logInvalidation("workspaceIndex", reason, workspaceGeneration);
 }
 
 async function clearDiskAnalysisCacheByCommand(): Promise<void> {
   await diskAnalysisCache.clear();
+  fsGateway.invalidateAll();
   logDebugSummary(globalSettings, "[asp-lsp] diskCache.clear");
 }
 
 async function clearProcessCachesByCommand(reason: string): Promise<void> {
+  fsGateway.invalidateAll();
   const openedUris = openDocumentUris();
   if (projectUpdateTimer) {
     clearTimeout(projectUpdateTimer);
@@ -12602,6 +13035,7 @@ function clearWorkspaceIndexProcessCaches(reason: string): void {
   workspaceIndexRestoreAllowed = true;
   workspaceIndex.clear();
   sourceManifest.clear();
+  allowWorkspaceIncludeGraphRestore(`processCache.${reason}`);
   clearWorkspaceVbReferenceCaches();
   logDebugSummary(globalSettings, `[asp-lsp] processCache.workspaceIndex.clear: ${reason}`);
 }
@@ -13139,7 +13573,10 @@ function workspaceIndexSettingsIdentity(settings: AspSettings): string {
 }
 
 function cacheSettingsIdentity(settings: AspSettings): string {
-  return JSON.stringify(normalizeCacheSettings(settings));
+  return JSON.stringify({
+    ...normalizeCacheSettings(settings),
+    freshness: cacheFreshness(settings),
+  });
 }
 
 function clearCacheSettingProcessStateIfChanged(previous: AspSettings, next: AspSettings): void {
@@ -13235,6 +13672,7 @@ async function refreshConfiguration(): Promise<void> {
     globalSettings = normalizeSettings(
       (await connection.workspace.getConfiguration("aspLsp")) as Record<string, unknown>,
     );
+    configureFsGateway(globalSettings);
     await configureDiskAnalysisCacheAsync();
     clearCacheSettingProcessStateIfChanged(previousGlobalSettings, globalSettings);
     settingsByUri.clear();
@@ -13248,6 +13686,7 @@ async function refreshConfiguration(): Promise<void> {
     }
   } catch {
     globalSettings = normalizeSettings(globalSettings);
+    configureFsGateway(globalSettings);
     await configureDiskAnalysisCacheAsync();
   }
 }
@@ -13301,6 +13740,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     graph: normalizeGraphSettings(settings),
     excel: normalizeExcelSettings(settings),
     cache: normalizeCacheSettings(settings),
+    network: normalizeNetworkSettings(settings),
     workspace: normalizeWorkspaceSettings(settings),
   };
 }
@@ -13364,6 +13804,40 @@ function positiveIntegerSetting(value: unknown, fallback: number): number {
   return typeof value === "number" && value > 0 ? Math.floor(value) : fallback;
 }
 
+function optionalNonNegativeIntegerSetting(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+function optionalPositiveIntegerSetting(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+function normalizeNetworkSettings(
+  settings: Record<string, unknown> | AspSettings,
+): AspSettings["network"] {
+  const raw = settings.network;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    profile:
+      record.profile === "local" || record.profile === "network" || record.profile === "auto"
+        ? record.profile
+        : "auto",
+    statCacheTtlMs: optionalNonNegativeIntegerSetting(record.statCacheTtlMs),
+    readdirCacheTtlMs: optionalNonNegativeIntegerSetting(record.readdirCacheTtlMs),
+    includeReadConcurrency: optionalPositiveIntegerSetting(record.includeReadConcurrency),
+    caseResolution:
+      record.caseResolution === "auto" ||
+      record.caseResolution === "full" ||
+      record.caseResolution === "fast"
+        ? record.caseResolution
+        : "auto",
+  };
+}
+
 function normalizeCacheSettings(
   settings: Record<string, unknown> | AspSettings,
 ): AspSettings["cache"] {
@@ -13372,7 +13846,10 @@ function normalizeCacheSettings(
   return {
     enabled: record.enabled !== false,
     directory: typeof record.directory === "string" ? record.directory : undefined,
-    freshness: record.freshness === "watch" ? "watch" : "metadata",
+    freshness:
+      record.freshness === "watch" || record.freshness === "metadata" || record.freshness === "auto"
+        ? record.freshness
+        : "auto",
     ttlHours:
       typeof record.ttlHours === "number" && record.ttlHours > 0
         ? Math.floor(record.ttlHours)
@@ -13531,6 +14008,7 @@ function normalizeGraphSettings(
     showIncomingFolderIncludes: record.showIncomingFolderIncludes === true,
     includeRelatedIncludeTreesForUnresolved:
       record.includeRelatedIncludeTreesForUnresolved !== false,
+    useReverseIncludeIndex: record.useReverseIncludeIndex !== false,
     maxDocuments: positiveIntegerSetting(record.maxDocuments, defaultGraphMaxDocuments),
     maxTextLength: positiveIntegerSetting(record.maxTextLength, defaultGraphMaxTextLength),
     includeTreeMaxDocuments: positiveIntegerSetting(
@@ -14506,6 +14984,57 @@ function invalidateIncludeResolution(reason: string): void {
   logInvalidation("includeResolution", reason, includeResolutionGeneration);
 }
 
+function invalidateIncludeResolutionForAspChanges(
+  changes: WatchedAspFileChange[],
+  reason: string,
+): void {
+  if (changes.length === 0) {
+    return;
+  }
+  let removedIncludeResolutions = 0;
+  let removedPathResolutions = 0;
+  for (const [key, resolution] of includePathResolutionCache) {
+    if (includeResolutionShouldDrop(resolution, changes)) {
+      includePathResolutionCache.delete(key);
+      removedIncludeResolutions += 1;
+    }
+  }
+  for (const [key, resolution] of pathResolutionCache) {
+    if (includeResolutionShouldDrop(resolution, changes)) {
+      pathResolutionCache.delete(key);
+      removedPathResolutions += 1;
+    }
+  }
+  includeCycleCache.clear();
+  completionSessionCache.clear("includeResolution.partial");
+  logDebugSummary(
+    globalSettings,
+    `[asp-lsp] invalidation.includeResolution.partial: ${reason}, includeResolutions=${removedIncludeResolutions}, pathResolutions=${removedPathResolutions}`,
+  );
+}
+
+function includeResolutionShouldDrop(
+  resolution: PathResolution,
+  changes: WatchedAspFileChange[],
+): boolean {
+  for (const change of changes) {
+    const fileName = normalizeFileName(change.fileName);
+    if (
+      sameFile(resolution.fileName, fileName) ||
+      (resolution.actualPath !== undefined && sameFile(resolution.actualPath, fileName))
+    ) {
+      return true;
+    }
+    if (
+      change.type === FileChangeType.Created &&
+      (!resolution.exists || sameFile(path.dirname(resolution.fileName), path.dirname(fileName)))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function invalidateJsProject(reason: string): void {
   jsProjectGeneration += 1;
   clearJsProjectCaches();
@@ -15102,7 +15631,7 @@ async function cachedJsFileStatAsync(fileName: string): Promise<JsFileStat | und
   if (jsFileStatCache.has(key)) {
     return jsFileStatCache.get(key);
   }
-  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  const stat = await fsGateway.statAsync(fileName);
   const metadata = stat
     ? {
         mtimeMs: stat.mtimeMs,
@@ -15358,6 +15887,17 @@ async function resolvePathFromBaseUncachedAsync(
       actualPath: exists ? fileName : undefined,
     };
   }
+  if (resolveNetworkProfile(settings).caseResolution === "fast") {
+    const stat = await fsGateway.statAsync(fileName);
+    if (stat) {
+      return {
+        fileName,
+        exists: true,
+        pathCaseMatches: true,
+        actualPath: fileName,
+      };
+    }
+  }
   let start = path.isAbsolute(requestedPath)
     ? path.parse(fileName).root
     : normalizeFileName(baseDirectory);
@@ -15378,19 +15918,17 @@ async function resolvePathFromBaseUncachedAsync(
   let current = start;
   let pathCaseMatches = true;
   for (const segment of relative.split(path.sep).filter((part) => part.length > 0)) {
-    const entries = await fs.promises
-      .readdir(current, { withFileTypes: true })
-      .catch(() => undefined);
-    if (!entries) {
+    const listing = await fsGateway.readdirAsync(current);
+    if (!listing) {
       return { fileName, exists: false, pathCaseMatches };
     }
-    const exact = entries.find((entry) => entry.name === segment);
+    const exact = listing.entries.find((entry) => entry.name === segment);
     if (exact) {
       current = path.join(current, exact.name);
       continue;
     }
     const lower = segment.toLowerCase();
-    const insensitive = entries.filter((entry) => entry.name.toLowerCase() === lower);
+    const insensitive = listing.byLowerName.get(lower) ?? [];
     if (insensitive.length !== 1) {
       return { fileName, exists: false, pathCaseMatches };
     }
@@ -15414,6 +15952,7 @@ function pathResolutionCacheKey(
     baseDirectory: fileIdentityKeyFromFileName(baseDirectory),
     requestedPath,
     windowsPathResolution: settings.windowsPathResolution !== false,
+    caseResolution: resolveNetworkProfile(settings).caseResolution,
   });
 }
 
@@ -15423,6 +15962,7 @@ function includeResolutionSettingsKey(settings: AspSettings): unknown {
     virtualRoots: settings.virtualRoots?.map(fileIdentityKeyFromFileName),
     includePaths: settings.includePaths?.map(fileIdentityKeyFromFileName),
     windowsPathResolution: settings.windowsPathResolution !== false,
+    caseResolution: resolveNetworkProfile(settings).caseResolution,
     legacyEncoding: settings.legacyEncoding,
     roots: workspaceRoots.map(fileIdentityKeyFromFileName).sort(),
   };
@@ -17908,7 +18448,7 @@ async function graphCommandFolderNameAsync(uri: string | undefined): Promise<str
     return undefined;
   }
   const folderName = graphFileNameFromUri(uri);
-  const stat = await fs.promises.stat(folderName).catch(() => undefined);
+  const stat = await fsGateway.statAsync(folderName);
   return stat?.isDirectory() ? folderName : undefined;
 }
 
@@ -17932,7 +18472,7 @@ async function cachedDocumentForGraphAsync(uri: string): Promise<CachedDocument 
   if (!isClassicAspGraphUri(uri)) {
     return undefined;
   }
-  const stat = await fs.promises.stat(fileName).catch(() => undefined);
+  const stat = await fsGateway.statAsync(fileName);
   if (!stat?.isFile()) {
     return undefined;
   }
@@ -17987,6 +18527,7 @@ async function collectIncludeTreeGraphDocumentsAsync(
     textLength += document.text.length;
     const includeRefs = await graphIncludeRefsForDocumentAsync(document, settings);
     throwIfGraphCancelled(cancellation);
+    await prefetchGraphIncludeTargetsAsync(document.uri, includeRefs, settings, cancellation);
     for (const include of includeRefs) {
       throwIfGraphCancelled(cancellation);
       const resolved = await resolveIncludePathDetailsAsync(
@@ -18024,6 +18565,54 @@ async function collectIncludeTreeGraphDocumentsAsync(
 
   await visit(root, 0);
   return documentsForGraph;
+}
+
+async function prefetchGraphIncludeTargetsAsync(
+  ownerUri: string,
+  includeRefs: AspInclude[],
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<void> {
+  await mapWithConcurrency(includeRefs, includeReadConcurrency(settings), async (include) => {
+    if (cancellation.isCancellationRequested()) {
+      return;
+    }
+    const resolved = await resolveIncludePathDetailsAsync(
+      ownerUri,
+      include.path,
+      include.mode,
+      settings,
+    );
+    if (!resolved.exists || cancellation.isCancellationRequested()) {
+      return;
+    }
+    await Promise.all([
+      fileSizeAsync(resolved.fileName, settings),
+      includeDocumentLoader.readAsync(resolved.fileName, settings),
+    ]).catch(() => undefined);
+  });
+}
+
+async function prefetchIncludeRefsForOwnerAsync(
+  ownerUri: string,
+  includeRefs: readonly AspInclude[],
+  settings: AspSettings,
+): Promise<void> {
+  await mapWithConcurrency(includeRefs, includeReadConcurrency(settings), async (include) => {
+    const resolved = await resolveIncludePathDetailsAsync(
+      ownerUri,
+      include.path,
+      include.mode,
+      settings,
+    );
+    if (!resolved.exists) {
+      return;
+    }
+    await Promise.all([
+      fileSizeAsync(resolved.fileName, settings),
+      includeDocumentLoader.readIncludeRefsAsync(resolved.fileName, settings, { allowRead: true }),
+    ]).catch(() => undefined);
+  });
 }
 
 function noteAspGraphDocumentCollectionTruncated(
@@ -18301,10 +18890,12 @@ async function collectIncomingIncludeGraphDocumentsAsync(
     opened.add(graphFileKey(graphDocument.fileName));
     documentsForGraph.push(graphDocument);
   }
-  const indexedEntries = [...workspaceIndex.values()].filter(
-    (entry) =>
-      !opened.has(graphFileKey(entry.fileName)) &&
-      !excludedFileKeys.has(graphFileKey(entry.fileName)),
+  const indexedEntries = await incomingIncludeIndexedEntriesAsync(
+    targetFileNames,
+    opened,
+    excludedFileKeys,
+    settings,
+    cancellation,
   );
   const indexedGraphDocuments = await mapWithConcurrency(
     indexedEntries,
@@ -18326,6 +18917,57 @@ async function collectIncomingIncludeGraphDocumentsAsync(
     ),
   );
   return documentsForGraph;
+}
+
+async function incomingIncludeIndexedEntriesAsync(
+  targetFileNames: Set<string>,
+  opened: Set<string>,
+  excludedFileKeys: Set<string>,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<WorkspaceIndexedDocument[]> {
+  const indexedEntries = [...workspaceIndex.values()].filter(
+    (entry) =>
+      !opened.has(graphFileKey(entry.fileName)) &&
+      !excludedFileKeys.has(graphFileKey(entry.fileName)),
+  );
+  if (settings.graph?.useReverseIncludeIndex === false) {
+    return indexedEntries;
+  }
+  await ensureWorkspaceIncludeGraphAsync(settings, cancellation);
+  throwIfGraphCancelled(cancellation);
+  const candidateKeys = new Set(
+    workspaceIncludeGraph.candidatesForTargets(targetFileNames).map(graphFileKey),
+  );
+  const candidates = await mapWithConcurrency(
+    indexedEntries,
+    includeReadConcurrency(settings),
+    async (entry) => {
+      throwIfGraphCancelled(cancellation);
+      if (candidateKeys.has(graphFileKey(entry.fileName))) {
+        return entry;
+      }
+      const graphEntry = workspaceIncludeGraph.get(entry.fileName);
+      if (
+        !graphEntry ||
+        !sameDiskAnalysisSource(graphEntry.source, diskAnalysisSourceMetadata(entry))
+      ) {
+        return entry;
+      }
+      if (cacheFreshness(settings) === "metadata") {
+        const stat = await fsGateway.statAsync(entry.fileName);
+        if (
+          !stat?.isFile() ||
+          stat.mtimeMs !== graphEntry.source.mtimeMs ||
+          stat.size !== graphEntry.source.size
+        ) {
+          return entry;
+        }
+      }
+      return undefined;
+    },
+  );
+  return candidates.filter((entry): entry is WorkspaceIndexedDocument => entry !== undefined);
 }
 
 async function indexedEntryDirectlyIncludesAnyTargetAsync(
@@ -20158,13 +20800,18 @@ function graphFileIndexFingerprint(index: VbSymbolIndex): string {
 
 function pruneGraphFileIndexCache(): void {
   while (graphFileIndexCache.size > graphFileIndexCacheMaxEntries) {
-    const oldest = [...graphFileIndexCache.entries()].sort(
-      (left, right) => left[1].lastUsed - right[1].lastUsed,
-    )[0];
-    if (!oldest) {
+    let oldestKey: string | undefined;
+    let oldestLastUsed = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of graphFileIndexCache) {
+      if (entry.lastUsed < oldestLastUsed) {
+        oldestKey = key;
+        oldestLastUsed = entry.lastUsed;
+      }
+    }
+    if (!oldestKey) {
       return;
     }
-    graphFileIndexCache.delete(oldest[0]);
+    graphFileIndexCache.delete(oldestKey);
   }
 }
 

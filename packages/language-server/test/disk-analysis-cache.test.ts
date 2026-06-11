@@ -267,6 +267,47 @@ describe("DiskAnalysisCache", () => {
     }
   });
 
+  it("restores workspace include graphs and rejects stale settings", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
+    try {
+      const cache = new DiskAnalysisCache({
+        enabled: true,
+        directory,
+        namespace: "test",
+        toolVersion: "1",
+      });
+      await cache.writeWorkspaceIncludeGraph({
+        settingsKey: "include-graph-settings",
+        entries: [
+          {
+            fileName: "/site/default.asp",
+            source: { fileName: "/site/default.asp", mtimeMs: 1, size: 10 },
+            targetFileNames: ["/site/shared.inc"],
+            refsFingerprint: "refs",
+          },
+        ],
+      });
+      expect(
+        (await cache.readWorkspaceIncludeGraph("include-graph-settings"))?.entries[0]
+          ?.targetFileNames[0],
+      ).toBe("/site/shared.inc");
+      expect(await cache.readWorkspaceIncludeGraph("different")).toBeUndefined();
+      const expiredCache = new DiskAnalysisCache({
+        enabled: true,
+        directory,
+        ttlHours: 0.000001,
+        namespace: "test",
+        toolVersion: "1",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(
+        await expiredCache.readWorkspaceIncludeGraph("include-graph-settings"),
+      ).toBeUndefined();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("drops corrupt and expired entries during read and sweep", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
     try {

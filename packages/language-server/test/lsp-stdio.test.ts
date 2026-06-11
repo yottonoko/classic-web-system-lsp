@@ -8889,6 +8889,93 @@ Response.Write CleanValue
       }
     });
 
+    it("traverses document include trees depth-first in source order before applying limits", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-order-"));
+      const page = path.join(tempDir, "default.asp");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="first.inc" -->
+<!-- #include file="second.inc" -->
+<%
+Sub RootEntry()
+End Sub
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "first.inc"),
+        `<!-- #include file="first-child.inc" -->
+<%
+Sub FirstEntry()
+End Sub
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "first-child.inc"),
+        `<%
+Sub FirstChildEntry()
+End Sub
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "second.inc"),
+        `<%
+Sub SecondEntry()
+End Sub
+%>`,
+        "utf8",
+      );
+      const uri = pathToFileURL(page).toString();
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [
+            {
+              scope: "document",
+              uri,
+              includeRelatedIncludeTreesForUnresolved: false,
+              includeTreeMaxDocuments: 3,
+              includeTreeMaxTextLength: 1024 * 1024,
+            },
+          ],
+        })) as {
+          nodes?: Array<Record<string, unknown>>;
+          truncated?: { reason?: string };
+        };
+        const labels = new Set(
+          (graph.nodes ?? []).filter((node) => node.kind === "file").map((node) => node.label),
+        );
+        const declarationLabels = new Set(
+          (graph.nodes ?? [])
+            .filter((node) => node.kind === "vbDeclaration")
+            .map((node) => node.label),
+        );
+
+        expect(graph.truncated).toEqual({ reason: "documents>3" });
+        expect(labels.has("default.asp")).toBe(true);
+        expect(labels.has("first.inc")).toBe(true);
+        expect(labels.has("first-child.inc")).toBe(true);
+        expect(declarationLabels.has("FirstEntry")).toBe(true);
+        expect(declarationLabels.has("FirstChildEntry")).toBe(true);
+        expect(declarationLabels.has("SecondEntry")).toBe(false);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("builds a flowchart for the current ASP file with include metadata", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-flowchart-"));
       const page = path.join(tempDir, "default.asp");
@@ -10833,6 +10920,82 @@ End Sub
         await waitForLogContaining(server, "workspaceIndex.restore");
         await waitForLogContaining(server, "sourceIdentity.watch.hit");
         await waitForLogContaining(server, "diskParsed.hit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("repairs stale reverse include candidates after watch index restore revalidation", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-reverse-revalidate-"));
+      const cacheDir = path.join(tempDir, ".cache");
+      const shared = path.join(tempDir, "shared.inc");
+      const parent = path.join(tempDir, "parent.asp");
+      fs.writeFileSync(shared, `<%\nSub SharedEntry()\nEnd Sub\n%>`, "utf8");
+      fs.writeFileSync(parent, `<%\nSub ParentBefore()\nEnd Sub\n%>`, "utf8");
+      const sharedUri = pathToFileURL(shared).toString();
+      const settings = {
+        aspLsp: {
+          debug: { output: "verbose" },
+          cache: { enabled: true, directory: cacheDir, freshness: "watch" },
+          graph: { showIncomingDocumentIncludes: true },
+          network: { profile: "network" },
+        },
+      };
+      let server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        const firstGraph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri: sharedUri }],
+        })) as { nodes?: Array<Record<string, unknown>> };
+        expect(JSON.stringify(firstGraph.nodes ?? [])).not.toContain("ParentAfter");
+        await waitForLogContaining(server, "workspaceIndex.write");
+        await waitForLogContaining(server, "workspaceIncludeGraph.write");
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+        server.stop();
+
+        fs.writeFileSync(
+          parent,
+          `<!-- #include file="shared.inc" -->
+<%
+Sub ParentAfter()
+End Sub
+%>`,
+          "utf8",
+        );
+
+        server = new RpcServer();
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", { settings });
+        await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri: sharedUri }],
+        });
+        await waitForLogContaining(server, "workspaceIndex.restore");
+        await waitForLogContaining(server, "workspaceIncludeGraph.restore");
+        await waitForLogContaining(server, "workspaceIndex.revalidate.complete");
+        const repairedGraph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri: sharedUri }],
+        })) as { nodes?: Array<Record<string, unknown>> };
+
+        expect(JSON.stringify(repairedGraph.nodes ?? [])).toContain("ParentAfter");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

@@ -861,6 +861,11 @@
           "default": false,
           "description": "%configuration.graph.showIncomingFolderIncludes.description%"
         },
+        "aspLsp.graph.useReverseIncludeIndex": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.graph.useReverseIncludeIndex.description%"
+        },
         "aspLsp.graph.includeRelatedIncludeTreesForUnresolved": {
           "type": "boolean",
           "default": true,
@@ -974,10 +979,11 @@
         "aspLsp.cache.freshness": {
           "type": "string",
           "enum": [
+            "auto",
             "metadata",
             "watch"
           ],
-          "default": "metadata",
+          "default": "auto",
           "description": "%configuration.cache.freshness.description%"
         },
         "aspLsp.cache.ttlHours": {
@@ -991,6 +997,44 @@
           "minimum": 1,
           "default": 128,
           "description": "%configuration.cache.maxSizeMb.description%"
+        },
+        "aspLsp.network.profile": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "local",
+            "network"
+          ],
+          "default": "auto",
+          "description": "%configuration.network.profile.description%"
+        },
+        "aspLsp.network.statCacheTtlMs": {
+          "type": "number",
+          "minimum": -1,
+          "default": -1,
+          "description": "%configuration.network.statCacheTtlMs.description%"
+        },
+        "aspLsp.network.readdirCacheTtlMs": {
+          "type": "number",
+          "minimum": -1,
+          "default": -1,
+          "description": "%configuration.network.readdirCacheTtlMs.description%"
+        },
+        "aspLsp.network.includeReadConcurrency": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "%configuration.network.includeReadConcurrency.description%"
+        },
+        "aspLsp.network.caseResolution": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "full",
+            "fast"
+          ],
+          "default": "auto",
+          "description": "%configuration.network.caseResolution.description%"
         },
         "aspLsp.workspace.includes": {
           "type": "array",

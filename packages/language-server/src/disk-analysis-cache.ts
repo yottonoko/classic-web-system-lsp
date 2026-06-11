@@ -19,7 +19,8 @@ type DiskCacheEntryKind =
   | "includeRefs"
   | "vbSymbolIndex"
   | "parsedDocument"
-  | "workspaceIndex";
+  | "workspaceIndex"
+  | "workspaceIncludeGraph";
 
 export interface DiskAnalysisCacheOptions {
   enabled: boolean;
@@ -80,6 +81,18 @@ export interface DiskWorkspaceIndexCacheEntry {
   truncated: boolean;
 }
 
+export interface DiskWorkspaceIncludeGraphEntry {
+  fileName: string;
+  source: DiskAnalysisSourceMetadata;
+  targetFileNames: string[];
+  refsFingerprint: string;
+}
+
+export interface DiskWorkspaceIncludeGraphCacheEntry {
+  settingsKey: string;
+  entries: DiskWorkspaceIncludeGraphEntry[];
+}
+
 export interface DiskAnalysisBuilderState {
   publicSignature?: unknown;
   includeDeps?: unknown[];
@@ -135,13 +148,22 @@ interface PersistedDiskWorkspaceIndexEntry extends DiskWorkspaceIndexCacheEntry 
   writtenAt: number;
 }
 
+interface PersistedDiskWorkspaceIncludeGraphEntry extends DiskWorkspaceIncludeGraphCacheEntry {
+  kind: "workspaceIncludeGraph";
+  formatVersion: number;
+  toolVersion: string;
+  namespace: string;
+  writtenAt: number;
+}
+
 type PersistedDiskEntry =
   | PersistedDiskAnalysisEntry
   | PersistedDiskSummaryEntry
   | PersistedDiskIncludeRefsEntry
   | PersistedDiskVbSymbolIndexEntry
   | PersistedDiskParsedDocumentEntry
-  | PersistedDiskWorkspaceIndexEntry;
+  | PersistedDiskWorkspaceIndexEntry
+  | PersistedDiskWorkspaceIncludeGraphEntry;
 
 export class DiskAnalysisCache {
   private readonly root: string;
@@ -249,6 +271,23 @@ export class DiskAnalysisCache {
     return entry;
   }
 
+  async readWorkspaceIncludeGraph(
+    settingsKey: string,
+  ): Promise<DiskWorkspaceIncludeGraphCacheEntry | undefined> {
+    if (!this.enabled) {
+      return undefined;
+    }
+    const entry = await this.readEntry(this.fileNameForKey(settingsKey, "workspaceIncludeGraph"));
+    if (
+      !entry ||
+      entry.kind !== "workspaceIncludeGraph" ||
+      !this.matchesWorkspaceIncludeGraph(entry, settingsKey)
+    ) {
+      return undefined;
+    }
+    return entry;
+  }
+
   async write(entry: DiskAnalysisCacheEntry): Promise<void> {
     if (!this.enabled) {
       return;
@@ -348,6 +387,25 @@ export class DiskAnalysisCache {
     );
   }
 
+  async writeWorkspaceIncludeGraph(entry: DiskWorkspaceIncludeGraphCacheEntry): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
+    await fs.promises.mkdir(this.root, { recursive: true });
+    const payload: PersistedDiskWorkspaceIncludeGraphEntry = {
+      ...entry,
+      kind: "workspaceIncludeGraph",
+      formatVersion,
+      toolVersion: this.options.toolVersion,
+      namespace: this.options.namespace,
+      writtenAt: Date.now(),
+    };
+    await fs.promises.writeFile(
+      this.fileNameForKey(entry.settingsKey, "workspaceIncludeGraph"),
+      encode(payload),
+    );
+  }
+
   async clear(): Promise<void> {
     await fs.promises.rm(this.root, { recursive: true, force: true });
   }
@@ -409,6 +467,20 @@ export class DiskAnalysisCache {
   ): boolean {
     return (
       entry.kind === "workspaceIndex" &&
+      entry.formatVersion === formatVersion &&
+      entry.toolVersion === this.options.toolVersion &&
+      entry.namespace === this.options.namespace &&
+      entry.settingsKey === settingsKey &&
+      Date.now() - entry.writtenAt <= this.ttlMs
+    );
+  }
+
+  private matchesWorkspaceIncludeGraph(
+    entry: PersistedDiskWorkspaceIncludeGraphEntry,
+    settingsKey: string,
+  ): boolean {
+    return (
+      entry.kind === "workspaceIncludeGraph" &&
       entry.formatVersion === formatVersion &&
       entry.toolVersion === this.options.toolVersion &&
       entry.namespace === this.options.namespace &&
