@@ -9836,6 +9836,77 @@ cycleTitle = "c"
       }
     });
 
+    it("builds document graphs with worker symbol extraction enabled", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-worker-index-"));
+      const write = (relativePath: string, source: string) => {
+        const fileName = path.join(tempDir, relativePath);
+        fs.mkdirSync(path.dirname(fileName), { recursive: true });
+        fs.writeFileSync(fileName, source, "utf8");
+        return { fileName, uri: pathToFileURL(fileName).href };
+      };
+      const common = write(
+        "common.inc",
+        `<%
+Dim sharedValue
+sharedValue = "ok"
+%>`,
+      );
+      const page = write(
+        "default.asp",
+        `<!-- #include file="common.inc" -->
+<%
+Response.Write sharedValue
+%>`,
+      );
+      const server = new RpcServer();
+      type TestGraph = {
+        nodes?: Array<Record<string, unknown>>;
+        links?: Array<Record<string, unknown>>;
+      };
+      const nodeByLabelAndUri = (graph: TestGraph, label: string, uri: string) =>
+        (graph.nodes ?? []).find((node) => node.label === label && node.uri === uri);
+      const hasGraphLink = (
+        graph: TestGraph,
+        kind: string,
+        source: Record<string, unknown> | undefined,
+        target: Record<string, unknown> | undefined,
+      ) =>
+        Boolean(
+          source &&
+          target &&
+          (graph.links ?? []).some(
+            (link) => link.kind === kind && link.source === source.id && link.target === target.id,
+          ),
+        );
+
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { graph: { workerSymbolExtraction: true } } },
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri: page.uri }],
+        })) as TestGraph;
+        const pageNode = nodeByLabelAndUri(graph, "default.asp", page.uri);
+        const sharedNode = nodeByLabelAndUri(graph, "sharedValue", common.uri);
+        expect(sharedNode).toEqual(expect.objectContaining({ label: "sharedValue" }));
+        expect(hasGraphLink(graph, "references", pageNode, sharedNode)).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns graph filter settings for the webview initial state", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-settings-"));
       fs.writeFileSync(

@@ -8001,6 +8001,29 @@ a = _
         "bbb"`);
   });
 
+  it("formats comments after continued VBScript lines from tokenized blocks", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+If enabled Then
+value = _
+"ok" ' inline
+' keep comment
+Response.Write value
+End If
+%>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toBe(`<%
+  If enabled Then
+    value = _
+      "ok" ' inline
+    ' keep comment
+    Response.Write value
+  End If
+%>`);
+  });
+
   it("indents nested If, ElseIf, and Else blocks consistently", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
