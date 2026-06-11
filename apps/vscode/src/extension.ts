@@ -878,12 +878,16 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     return;
   }
   const serverModule = getServerModulePath(context);
+  const serverEnv = {
+    ...process.env,
+    ASP_LSP_DEFAULT_DEBUG_LOG_FILE: path.join(context.globalStorageUri.fsPath, "asp-lsp-debug.log"),
+  };
   const serverOptions: ServerOptions = {
-    run: { module: serverModule, transport: TransportKind.ipc },
+    run: { module: serverModule, transport: TransportKind.ipc, options: { env: serverEnv } },
     debug: {
       module: serverModule,
       transport: TransportKind.ipc,
-      options: { execArgv: ["--nolazy", "--inspect=6009"] },
+      options: { execArgv: ["--nolazy", "--inspect=6009"], env: serverEnv },
     },
   };
   const clientOptions: LanguageClientOptions = {

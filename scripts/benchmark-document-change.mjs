@@ -65,6 +65,10 @@ const debugEventNames = [
   "worker.queue.wait",
   "worker.run.duration",
   "worker.payload.bytes",
+  "graphVbIndex.worker.complete",
+  "graphVbIndex.worker.fallback",
+  "asp.graph.implicitGlobals.groups",
+  "asp.graph.implicitGlobals.context.groups",
 ];
 const selectedStepNames = [
   "projectUpdate.flush",
@@ -72,6 +76,7 @@ const selectedStepNames = [
   "documentChange.dropCachedDocument",
   "documentChange.keepCachedDocument",
   "documentChange.scheduleDiagnostics",
+  "analysis.identity",
   "analysis.parse.incremental",
   "analysis.parse.full",
   "check.parserDiagnostics",
@@ -103,6 +108,8 @@ const selectedStepNames = [
   "diagnostics.project.publish",
   "diagnostics.final.dedupe",
   "diagnostics.final.publish",
+  "completion.unresolvedSymbols.extract",
+  "asp.graph.implicitGlobals.canonicalize",
   "vbProjectContext.includeSummaryReuse",
   "vbProjectContext.includeParseFallback",
 ];

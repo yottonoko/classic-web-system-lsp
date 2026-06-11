@@ -6,6 +6,7 @@ import { analyse, detect } from "chardet";
 import {
   buildVbTypeEnvironment,
   extractAspIncludeRefs,
+  extractVbscriptSymbolIndex,
   getVbscriptReferencesForSymbols,
   hydrateVbscriptCst,
   parseAspDocumentAsync,
@@ -51,7 +52,10 @@ parentPort.on("message", (request: VbReferencesWorkerRequest) => {
 
 async function handleRequest(request: VbReferencesWorkerRequest): Promise<void> {
   try {
-    const result = await runWorkspaceReferenceAnalysis(request);
+    const result =
+      request.kind === "extractSymbolIndex"
+        ? await runSymbolIndexExtraction(request)
+        : await runWorkspaceReferenceAnalysis(request);
     parentPort?.postMessage(result);
   } catch (error) {
     parentPort?.postMessage({
@@ -65,6 +69,26 @@ async function handleRequest(request: VbReferencesWorkerRequest): Promise<void> 
       },
     } satisfies VbReferencesWorkerResponse);
   }
+}
+
+async function runSymbolIndexExtraction(
+  request: VbReferencesWorkerRequest,
+): Promise<VbReferencesWorkerResponse> {
+  await testDelayFromEnv();
+  const openDocuments = openDocumentMap(request.openDocuments);
+  const text =
+    request.candidate.text ??
+    (await readWorkspaceText(request.candidate.fileName, request.settings, openDocuments))?.text;
+  if (text === undefined) {
+    throw new Error(`Unable to read ${request.candidate.fileName} for symbol extraction.`);
+  }
+  return {
+    id: request.id,
+    candidate: request.candidate,
+    symbolIndex: extractVbscriptSymbolIndex(request.candidate.uri, text, request.settings, {
+      includeImplicitVariables: true,
+    }),
+  };
 }
 
 async function runWorkspaceReferenceAnalysis(

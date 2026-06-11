@@ -1,4 +1,10 @@
-import type { AspSettings, VbReference, VbReferenceOptions, VbSymbolKind } from "@asp-lsp/core";
+import type {
+  AspSettings,
+  VbReference,
+  VbReferenceOptions,
+  VbSymbolIndex,
+  VbSymbolKind,
+} from "@asp-lsp/core";
 import type { Range } from "vscode-languageserver-types";
 import type { DiskAnalysisCacheOptions, DiskWorkspaceIndexedDocument } from "./disk-analysis-cache";
 
@@ -20,6 +26,7 @@ export interface VbReferencesWorkerCandidate {
   uri: string;
   fileName: string;
   source: VbReferencesWorkerSource;
+  text?: string;
 }
 
 export interface VbReferencesWorkerTargetSymbol {
@@ -48,6 +55,7 @@ export interface VbReferencesWorkerCacheOptions {
 
 export interface VbReferencesWorkerRequest {
   id: number;
+  kind?: "references" | "extractSymbolIndex";
   candidate: VbReferencesWorkerCandidate;
   target: VbReferencesWorkerTargetSymbol;
   targets?: VbReferencesWorkerTargetSymbol[];
@@ -64,6 +72,7 @@ export interface VbReferencesWorkerResponse {
   candidate: VbReferencesWorkerCandidate;
   references?: VbReference[];
   referencesByTarget?: Record<string, VbReference[]>;
+  symbolIndex?: VbSymbolIndex;
   fallbackReasons?: string[];
   scannedFiles?: number;
   cacheHits?: number;

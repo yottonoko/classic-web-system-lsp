@@ -2,6 +2,8 @@ import type { Position, Range } from "vscode-languageserver-types";
 
 const lineStartsCache = new Map<string, number[]>();
 const maxLineStartsCacheEntries = 64;
+const lineStartsReferenceCache: Array<{ text: string; starts: number[] }> = [];
+const maxLineStartsReferenceCacheEntries = 4;
 
 export function positionAt(text: string, offset: number): Position {
   const safeOffset = Math.max(0, Math.min(offset, text.length));
@@ -40,8 +42,13 @@ export function rangeFromOffsets(text: string, start: number, end: number): Rang
 }
 
 function lineStarts(text: string): number[] {
+  const referenceCached = lineStartsReferenceCache.find((entry) => entry.text === text);
+  if (referenceCached) {
+    return referenceCached.starts;
+  }
   const cached = lineStartsCache.get(text);
   if (cached) {
+    rememberLineStartsReference(text, cached);
     return cached;
   }
   const starts = [0];
@@ -51,6 +58,7 @@ function lineStarts(text: string): number[] {
     }
   }
   lineStartsCache.set(text, starts);
+  rememberLineStartsReference(text, starts);
   if (lineStartsCache.size > maxLineStartsCacheEntries) {
     const oldest = lineStartsCache.keys().next().value;
     if (oldest !== undefined) {
@@ -58,4 +66,15 @@ function lineStarts(text: string): number[] {
     }
   }
   return starts;
+}
+
+function rememberLineStartsReference(text: string, starts: number[]): void {
+  const existing = lineStartsReferenceCache.findIndex((entry) => entry.text === text);
+  if (existing >= 0) {
+    lineStartsReferenceCache.splice(existing, 1);
+  }
+  lineStartsReferenceCache.unshift({ text, starts });
+  while (lineStartsReferenceCache.length > maxLineStartsReferenceCacheEntries) {
+    lineStartsReferenceCache.pop();
+  }
 }

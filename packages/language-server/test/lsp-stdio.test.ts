@@ -2928,6 +2928,145 @@ Response.Write known
       }
     });
 
+    it("keeps debug log file output disabled unless explicitly enabled", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-debug-log-disabled-"));
+      const logPath = path.join(tempDir, "asp-lsp-debug.log");
+      try {
+        await withInitializedServer(
+          {
+            rootUri: `file://${tempDir}`,
+            aspLspSettings: {
+              debug: { output: "verbose", logFile: { path: logPath } },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+          async (server) => {
+            await delay(50);
+            openClassicAspDocument(
+              server,
+              `file://${path.join(tempDir, "disabled.asp")}`,
+              `<% Response.Write "disabled" %>`,
+            );
+            await waitForDiagnosticsPublished(
+              server,
+              `file://${path.join(tempDir, "disabled.asp")}`,
+            );
+            await waitForLogContaining(server, "LSP analysis completed");
+            await delay(100);
+            expect(fs.existsSync(logPath)).toBe(false);
+          },
+        );
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("writes debug log and trace entries to an explicit file independently of debug.output", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-debug-log-explicit-"));
+      const logPath = path.join(tempDir, "asp-lsp-debug.log");
+      const uri = `file://${path.join(tempDir, "explicit.asp")}`;
+      try {
+        await withInitializedServer(
+          {
+            rootUri: `file://${tempDir}`,
+            aspLspSettings: {
+              debug: { output: "off", logFile: { enabled: true, path: logPath } },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+          async (server) => {
+            await waitForFileContaining(logPath, "configuration.changed");
+            openClassicAspDocument(server, uri, `<% Response.Write "explicit" %>`);
+            await waitForDiagnosticsPublished(server, uri);
+            const logText = await waitForFileContaining(logPath, "diagnostics.start");
+            expect(logText).toContain("DEBUG debug.summary");
+            expect(logText).toContain("LSP analysis started");
+            expect(logText).toContain("TRACE document.open");
+            expect(logText).toContain("TRACE diagnostics.start");
+          },
+        );
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("uses the default debug log path and rotates logs by file size", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-debug-log-rotate-"));
+      const logPath = path.join(tempDir, "default-debug.log");
+      const uri = `file://${path.join(tempDir, "rotate.asp")}`;
+      try {
+        await withInitializedServer(
+          {
+            rootUri: `file://${tempDir}`,
+            env: {
+              ASP_LSP_DEFAULT_DEBUG_LOG_FILE: logPath,
+              ASP_LSP_TEST_DEBUG_LOG_MAX_BYTES: "700",
+              ASP_LSP_TEST_DEBUG_LOG_MAX_BACKUPS: "2",
+            },
+            aspLspSettings: {
+              debug: { output: "off", logFile: { enabled: true, path: "" } },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+          async (server) => {
+            await waitForFileContaining(logPath, "configuration.changed");
+            let source = `<% Response.Write "rotate-0" %>`;
+            openClassicAspDocument(server, uri, source);
+            await waitForDiagnosticsPublished(server, uri);
+            for (let version = 2; version <= 8; version += 1) {
+              source = `<% Response.Write "rotate-${version}" %>`;
+              server.notify("textDocument/didChange", {
+                textDocument: { uri, version },
+                contentChanges: [{ text: source }],
+              });
+              await waitForDiagnosticsPublished(server, uri);
+            }
+            await waitForPathExists(`${logPath}.1`);
+            await waitForPathExists(logPath);
+            expect(fs.existsSync(logPath)).toBe(true);
+            expect(fs.existsSync(`${logPath}.3`)).toBe(false);
+          },
+        );
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("writes warning logs to the debug log file", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-debug-log-warning-"));
+      const logPath = path.join(tempDir, "asp-lsp-debug.log");
+      fs.writeFileSync(
+        path.join(tempDir, "first.asp"),
+        `<% Function FirstTitle()\nEnd Function %>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "second.asp"),
+        `<% Function SecondTitle()\nEnd Function %>`,
+        "utf8",
+      );
+      try {
+        await withInitializedServer(
+          {
+            rootUri: `file://${tempDir}`,
+            aspLspSettings: {
+              debug: { output: "off", logFile: { enabled: true, path: logPath } },
+              workspace: { maxIndexFiles: 1, scanChunkSize: 1 },
+              cache: { enabled: false },
+            },
+          },
+          async (server) => {
+            await waitForFileContaining(logPath, "configuration.changed");
+            await server.request("workspace/symbol", { query: "Title" });
+            const logText = await waitForFileContaining(logPath, "WARN server.warning");
+            expect(logText).toContain("WARN server.warning");
+          },
+        );
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("falls back to skeleton parsing for boundary-sensitive document edits", async () => {
       const server = new RpcServer();
       try {
@@ -9789,6 +9928,211 @@ sharedTitle = "before"
       }
     });
 
+    it("canonicalizes implicit globals across sibling, diamond, and cyclic includes", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-implicit-canonical-"));
+      const write = (relativePath: string, source: string) => {
+        const fileName = path.join(tempDir, relativePath);
+        fs.mkdirSync(path.dirname(fileName), { recursive: true });
+        fs.writeFileSync(fileName, source, "utf8");
+        return { fileName, uri: pathToFileURL(fileName).href };
+      };
+      const siblingRoot = write(
+        "sibling/root.asp",
+        `<!-- #include file="a.inc" -->
+<!-- #include file="b.inc" -->
+<%
+Response.Write siblingTitle
+%>`,
+      );
+      const siblingA = write("sibling/a.inc", `<%\nsiblingTitle = "a"\n%>`);
+      const siblingB = write("sibling/b.inc", `<%\nsiblingTitle = "b"\n%>`);
+      const diamondRoot = write(
+        "diamond/root.asp",
+        `<!-- #include file="left.inc" -->
+<!-- #include file="right.inc" -->`,
+      );
+      const diamondLeft = write(
+        "diamond/left.inc",
+        `<!-- #include file="shared.inc" -->
+<%
+Response.Write diamondTitle
+%>`,
+      );
+      const diamondRight = write(
+        "diamond/right.inc",
+        `<!-- #include file="shared.inc" -->
+<%
+diamondTitle = "right"
+%>`,
+      );
+      const diamondShared = write("diamond/shared.inc", `<%\ndiamondTitle = "shared"\n%>`);
+      const cycleA = write(
+        "cycle/a.asp",
+        `<!-- #include file="b.inc" -->
+<%
+cycleTitle = "a"
+%>`,
+      );
+      const cycleB = write(
+        "cycle/b.inc",
+        `<!-- #include file="c.inc" -->
+<%
+Response.Write cycleTitle
+%>`,
+      );
+      const cycleC = write(
+        "cycle/c.inc",
+        `<!-- #include file="a.asp" -->
+<%
+cycleTitle = "c"
+%>`,
+      );
+      const server = new RpcServer();
+      type TestGraph = {
+        nodes?: Array<Record<string, unknown>>;
+        links?: Array<Record<string, unknown>>;
+      };
+      const nodeByLabelAndUri = (graph: TestGraph, label: string, uri: string) =>
+        (graph.nodes ?? []).find((node) => node.label === label && node.uri === uri);
+      const hasGraphLink = (
+        graph: TestGraph,
+        kind: string,
+        source: Record<string, unknown> | undefined,
+        target: Record<string, unknown> | undefined,
+      ) =>
+        Boolean(
+          source &&
+          target &&
+          (graph.links ?? []).some(
+            (link) => link.kind === kind && link.source === source.id && link.target === target.id,
+          ),
+        );
+      const buildGraph = (uri: string) =>
+        server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri }],
+        }) as Promise<TestGraph>;
+
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+
+        const siblingGraph = await buildGraph(siblingRoot.uri);
+        const siblingRootNode = nodeByLabelAndUri(siblingGraph, "root.asp", siblingRoot.uri);
+        const siblingATitle = nodeByLabelAndUri(siblingGraph, "siblingTitle", siblingA.uri);
+        const siblingBTitle = nodeByLabelAndUri(siblingGraph, "siblingTitle", siblingB.uri);
+        expect(hasGraphLink(siblingGraph, "references", siblingRootNode, siblingATitle)).toBe(true);
+        expect(hasGraphLink(siblingGraph, "references", siblingRootNode, siblingBTitle)).toBe(
+          false,
+        );
+
+        const diamondGraph = await buildGraph(diamondRoot.uri);
+        const diamondSharedTitle = nodeByLabelAndUri(
+          diamondGraph,
+          "diamondTitle",
+          diamondShared.uri,
+        );
+        const diamondLeftNode = nodeByLabelAndUri(diamondGraph, "left.inc", diamondLeft.uri);
+        const diamondRightNode = nodeByLabelAndUri(diamondGraph, "right.inc", diamondRight.uri);
+        expect(diamondSharedTitle).toEqual(expect.objectContaining({ implicit: true }));
+        expect(hasGraphLink(diamondGraph, "references", diamondLeftNode, diamondSharedTitle)).toBe(
+          true,
+        );
+        expect(
+          hasGraphLink(diamondGraph, "assignments", diamondRightNode, diamondSharedTitle),
+        ).toBe(true);
+
+        const cycleGraph = await buildGraph(cycleA.uri);
+        expect((cycleGraph.nodes ?? []).length).toBeLessThan(50);
+        expect(
+          [cycleA.uri, cycleB.uri, cycleC.uri].some((uri) =>
+            Boolean(nodeByLabelAndUri(cycleGraph, "cycleTitle", uri)),
+          ),
+        ).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("builds document graphs with worker symbol extraction enabled", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-worker-index-"));
+      const write = (relativePath: string, source: string) => {
+        const fileName = path.join(tempDir, relativePath);
+        fs.mkdirSync(path.dirname(fileName), { recursive: true });
+        fs.writeFileSync(fileName, source, "utf8");
+        return { fileName, uri: pathToFileURL(fileName).href };
+      };
+      const common = write(
+        "common.inc",
+        `<%
+Dim sharedValue
+sharedValue = "ok"
+%>`,
+      );
+      const page = write(
+        "default.asp",
+        `<!-- #include file="common.inc" -->
+<%
+Response.Write sharedValue
+%>`,
+      );
+      const server = new RpcServer();
+      type TestGraph = {
+        nodes?: Array<Record<string, unknown>>;
+        links?: Array<Record<string, unknown>>;
+      };
+      const nodeByLabelAndUri = (graph: TestGraph, label: string, uri: string) =>
+        (graph.nodes ?? []).find((node) => node.label === label && node.uri === uri);
+      const hasGraphLink = (
+        graph: TestGraph,
+        kind: string,
+        source: Record<string, unknown> | undefined,
+        target: Record<string, unknown> | undefined,
+      ) =>
+        Boolean(
+          source &&
+          target &&
+          (graph.links ?? []).some(
+            (link) => link.kind === kind && link.source === source.id && link.target === target.id,
+          ),
+        );
+
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { graph: { workerSymbolExtraction: true } } },
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri: page.uri }],
+        })) as TestGraph;
+        const pageNode = nodeByLabelAndUri(graph, "default.asp", page.uri);
+        const sharedNode = nodeByLabelAndUri(graph, "sharedValue", common.uri);
+        expect(sharedNode).toEqual(expect.objectContaining({ label: "sharedValue" }));
+        expect(hasGraphLink(graph, "references", pageNode, sharedNode)).toBe(true);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("returns graph filter settings for the webview initial state", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-settings-"));
       fs.writeFileSync(
@@ -16595,6 +16939,29 @@ async function waitForLogContaining(server: RpcServer, expected: string): Promis
   }
   server.prependPendingNotifications("window/logMessage", skipped);
   throw new Error(`Timed out waiting for log containing ${expected}.`);
+}
+
+async function waitForFileContaining(fileName: string, expected: string): Promise<string> {
+  const deadline = Date.now() + rpcTimeoutMs;
+  while (Date.now() < deadline) {
+    const text = fs.existsSync(fileName) ? fs.readFileSync(fileName, "utf8") : "";
+    if (text.includes(expected)) {
+      return text;
+    }
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for ${fileName} to contain ${expected}.`);
+}
+
+async function waitForPathExists(fileName: string): Promise<void> {
+  const deadline = Date.now() + rpcTimeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(fileName)) {
+      return;
+    }
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for ${fileName} to exist.`);
 }
 
 async function waitForStatus(server: RpcServer, status: string): Promise<JsonRpcMessage> {

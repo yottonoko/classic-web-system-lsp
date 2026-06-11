@@ -232,6 +232,16 @@
           "default": "off",
           "description": "%configuration.debug.output.description%"
         },
+        "aspLsp.debug.logFile.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.debug.logFile.enabled.description%"
+        },
+        "aspLsp.debug.logFile.path": {
+          "type": "string",
+          "default": "",
+          "description": "%configuration.debug.logFile.path.description%"
+        },
         "aspLsp.javascript.unusedDiagnostics": {
           "type": "boolean",
           "default": true,
@@ -894,6 +904,11 @@
           "minimum": 1,
           "default": 16777216,
           "description": "%configuration.graph.includeTreeMaxTextLength.description%"
+        },
+        "aspLsp.graph.workerSymbolExtraction": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.graph.workerSymbolExtraction.description%"
         },
         "aspLsp.graph.initialViewMode": {
           "type": "string",

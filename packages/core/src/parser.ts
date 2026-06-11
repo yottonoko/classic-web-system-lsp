@@ -21,6 +21,7 @@ const asyncParseCacheMaxEntries = 64;
 const asyncParseCache = new Map<string, AspParsedDocument>();
 const textFingerprintCacheMaxEntries = 256;
 const textFingerprintCache = new Map<string, string>();
+const parseSettingsStringCache = new WeakMap<AspSettings, string>();
 
 export function parseAspDocument(
   uri: string,
@@ -309,7 +310,7 @@ function tryUpdateAspParsedDocumentIncremental(
     previous.text.slice(0, change.startOffset) +
     change.text +
     previous.text.slice(change.endOffset);
-  if (change.text.length > 256 || change.endOffset - change.startOffset > 256) {
+  if (change.text.length > 1024 || change.endOffset - change.startOffset > 1024) {
     return fallback("large edit", change, nextText);
   }
   if (boundarySensitiveText(previous.text.slice(change.startOffset, change.endOffset))) {
@@ -694,19 +695,23 @@ function incrementalRegionForChange(
   startOffset: number,
   endOffset: number,
 ): AspRegion | undefined {
-  return parsed.regions
-    .filter((region) => {
-      if (region.contentStart > startOffset || region.contentEnd < endOffset) {
-        return false;
-      }
-      return startOffset === endOffset
+  let best: AspRegion | undefined;
+  for (const region of parsed.regions) {
+    if (region.contentStart > startOffset || region.contentEnd < endOffset) {
+      continue;
+    }
+    const containsChange =
+      startOffset === endOffset
         ? startOffset >= region.contentStart && startOffset < region.contentEnd
         : startOffset >= region.contentStart && endOffset <= region.contentEnd;
-    })
-    .sort(
-      (left, right) =>
-        left.contentEnd - left.contentStart - (right.contentEnd - right.contentStart),
-    )[0];
+    if (!containsChange) {
+      continue;
+    }
+    if (!best || region.contentEnd - region.contentStart < best.contentEnd - best.contentStart) {
+      best = region;
+    }
+  }
+  return best;
 }
 
 function changeTouchesRegionBoundary(
@@ -1044,11 +1049,17 @@ function skeletonIncludeToNode(text: string, include: AspInclude): AspCstNode {
 }
 
 function parseCacheKey(uri: string, text: string, settings: AspSettings): string {
-  return JSON.stringify({
-    uri,
-    text: textFingerprint(text),
-    settings,
-  });
+  return `{"uri":${JSON.stringify(uri)},"text":${JSON.stringify(textFingerprint(text))},"settings":${parseSettingsString(settings)}}`;
+}
+
+function parseSettingsString(settings: AspSettings): string {
+  const cached = parseSettingsStringCache.get(settings);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const value = JSON.stringify(settings);
+  parseSettingsStringCache.set(settings, value);
+  return value;
 }
 
 function setAsyncParseCache(key: string, parsed: AspParsedDocument): void {
