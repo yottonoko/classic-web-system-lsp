@@ -182,8 +182,7 @@ interface VbAnalysisSnapshot {
   ifSyntaxStatements: VbToken[][];
   assignmentStatements: VbToken[][];
   declarationTokens: Set<VbToken>;
-  previousSignificantTokenByToken: Map<VbToken, VbToken | undefined>;
-  nextSignificantTokenByToken: Map<VbToken, VbToken | undefined>;
+  significantTokenIndexByToken: Map<VbToken, number>;
 }
 
 interface VbSymbolIndex {
@@ -6593,8 +6592,12 @@ function computeVbDocuments(parsed: AspParsedDocument): VbCstNode[] {
   return documents;
 }
 
-function flattenVbNodes(node: VbCstNode): VbCstNode[] {
-  return [node, ...node.children.flatMap((child) => flattenVbNodes(child))];
+function flattenVbNodes(node: VbCstNode, into: VbCstNode[] = []): VbCstNode[] {
+  into.push(node);
+  for (const child of node.children) {
+    flattenVbNodes(child, into);
+  }
+  return into;
 }
 
 function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
@@ -6606,16 +6609,28 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
     }
   }
   const documents = computeVbDocuments(parsed);
-  const nodes = documents.flatMap((document) => flattenVbNodes(document));
+  const nodes: VbCstNode[] = [];
+  for (const document of documents) {
+    flattenVbNodes(document, nodes);
+  }
   const scopeNodes = nodes.filter((node) => node.kind === "Procedure" || node.kind === "Property");
   const classNodes = nodes.filter((node) => node.kind === "Class");
   const serverScriptText = serverRegions(parsed)
     .map((region) => parsed.text.slice(region.contentStart, region.contentEnd))
     .join("\n");
-  const significantTokens = documents
-    .flatMap((document) => document.tokens)
-    .filter((token) => !isTriviaToken(token));
-  const identifierTokens = significantTokens.filter((token) => token.kind === "identifier");
+  const significantTokens: VbToken[] = [];
+  const identifierTokens: VbToken[] = [];
+  for (const document of documents) {
+    for (const token of document.tokens) {
+      if (isTriviaToken(token)) {
+        continue;
+      }
+      significantTokens.push(token);
+      if (token.kind === "identifier") {
+        identifierTokens.push(token);
+      }
+    }
+  }
   const statementSnapshot = cachedVbStatementSnapshot(documents, { cache: cacheEnabled });
   const statementEntries = statementSnapshot.entries;
   const statements = statementSnapshot.statements;
@@ -6636,11 +6651,9 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
       declarationTokens.add(token);
     }
   }
-  const previousSignificantTokenByToken = new Map<VbToken, VbToken | undefined>();
-  const nextSignificantTokenByToken = new Map<VbToken, VbToken | undefined>();
+  const significantTokenIndexByToken = new Map<VbToken, number>();
   for (let index = 0; index < significantTokens.length; index += 1) {
-    previousSignificantTokenByToken.set(significantTokens[index], significantTokens[index - 1]);
-    nextSignificantTokenByToken.set(significantTokens[index], significantTokens[index + 1]);
+    significantTokenIndexByToken.set(significantTokens[index], index);
   }
   const snapshot = {
     documents,
@@ -6654,8 +6667,7 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
     ifSyntaxStatements,
     assignmentStatements,
     declarationTokens,
-    previousSignificantTokenByToken,
-    nextSignificantTokenByToken,
+    significantTokenIndexByToken,
   };
   if (cacheEnabled) {
     analysisSnapshots.set(parsed, snapshot);
@@ -8259,14 +8271,18 @@ function previousSignificantTokenForToken(
   parsed: AspParsedDocument,
   token: VbToken,
 ): VbToken | undefined {
-  return snapshotFor(parsed).previousSignificantTokenByToken.get(token);
+  const snapshot = snapshotFor(parsed);
+  const index = snapshot.significantTokenIndexByToken.get(token);
+  return index === undefined ? undefined : snapshot.significantTokens[index - 1];
 }
 
 function nextSignificantTokenForToken(
   parsed: AspParsedDocument,
   token: VbToken,
 ): VbToken | undefined {
-  return snapshotFor(parsed).nextSignificantTokenByToken.get(token);
+  const snapshot = snapshotFor(parsed);
+  const index = snapshot.significantTokenIndexByToken.get(token);
+  return index === undefined ? undefined : snapshot.significantTokens[index + 1];
 }
 
 function findPreviousSignificantToken(tokens: VbToken[], offset: number): VbToken | undefined {
