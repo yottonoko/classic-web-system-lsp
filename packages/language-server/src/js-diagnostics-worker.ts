@@ -26,6 +26,10 @@ const readDirectoryCache = new Map<string, string[]>();
 const realpathCache = new Map<string, string>();
 const fileStatCache = new Map<string, CachedFileStat | undefined>();
 const configCache = new Map<string, { config: JsProjectConfig; lastUsed: number }>();
+const documentRegistry = ts.createDocumentRegistry(ts.sys.useCaseSensitiveFileNames);
+const languageServiceCache = new Map<string, PersistentLanguageServiceEntry>();
+const maxLanguageServiceCacheEntries = 2;
+const maxScriptSnapshotCacheEntries = 4096;
 let cacheTick = 0;
 let currentProjectGeneration: number | undefined;
 
@@ -39,6 +43,31 @@ interface JsProjectConfig {
   fileNames: string[];
   options: ts.CompilerOptions;
   currentDirectory: string;
+}
+
+interface JsProjectConfigEntry {
+  key: string;
+  config: JsProjectConfig;
+}
+
+interface PersistentLanguageServiceState {
+  activeFile: string;
+  files: Map<string, JsProjectFile>;
+  config: JsProjectConfig;
+  projectVersion: string;
+  snapshots: Map<string, CachedScriptSnapshot>;
+}
+
+interface PersistentLanguageServiceEntry {
+  service: ts.LanguageService;
+  state: PersistentLanguageServiceState;
+  moduleResolutionCache: ts.ModuleResolutionCache;
+  lastUsed: number;
+}
+
+interface CachedScriptSnapshot {
+  version: string;
+  snapshot: ts.IScriptSnapshot;
 }
 
 interface CachedFileStat {
@@ -77,6 +106,7 @@ function resetCachesForProjectGeneration(projectGeneration: number): void {
   realpathCache.clear();
   fileStatCache.clear();
   configCache.clear();
+  disposeLanguageServiceCache();
 }
 
 function semanticDiagnostics(
@@ -85,32 +115,45 @@ function semanticDiagnostics(
   if (request.settings.checkJs !== true) {
     return [];
   }
-  const project = createLanguageServiceProject(request);
-  try {
-    const fileName = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
-    return project.service.getSemanticDiagnostics(fileName).map(cacheTsDiagnostic);
-  } finally {
-    project.service.dispose();
-  }
+  const project = acquirePersistentLanguageService(request);
+  const fileName = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
+  return project.service.getSemanticDiagnostics(fileName).map(cacheTsDiagnostic);
 }
 
-function createLanguageServiceProject(request: JsDiagnosticsWorkerRequest): {
+function acquirePersistentLanguageService(request: JsDiagnosticsWorkerRequest): {
   service: ts.LanguageService;
 } {
   const activeFile = normalizeFileName(jsVirtualFileName(request.activeVirtual.uri));
   const ownerFile = uriToFileName(virtualSourceUri(request.activeVirtual));
-  const config = readProjectConfig(
+  const configEntry = readProjectConfigEntry(
     ownerFile,
     request.settings,
     request.workspaceRoots,
     request.optionOverrides ?? {},
   );
+  const config = configEntry.config;
   const files = collectProjectFiles(request, config);
+  const cached = languageServiceCache.get(configEntry.key);
+  if (cached) {
+    cached.state.activeFile = activeFile;
+    cached.state.files = files;
+    cached.state.config = config;
+    cached.state.projectVersion = jsProjectFilesFingerprint(files);
+    cached.lastUsed = ++cacheTick;
+    return { service: cached.service };
+  }
+  const state: PersistentLanguageServiceState = {
+    activeFile,
+    files,
+    config,
+    projectVersion: jsProjectFilesFingerprint(files),
+    snapshots: new Map(),
+  };
   const moduleResolutionHost: ts.ModuleResolutionHost = {
     fileExists: (requested) =>
-      files.has(normalizeFileName(requested)) || cachedFileExists(requested),
+      state.files.has(normalizeFileName(requested)) || cachedFileExists(requested),
     readFile: (requested) =>
-      files.get(normalizeFileName(requested))?.text ?? cachedReadFile(requested),
+      state.files.get(normalizeFileName(requested))?.text ?? cachedReadFile(requested),
     directoryExists: cachedDirectoryExists,
     getDirectories: cachedGetDirectories,
     realpath: cachedRealpath,
@@ -121,21 +164,18 @@ function createLanguageServiceProject(request: JsDiagnosticsWorkerRequest): {
     config.options,
   );
   const host: ts.LanguageServiceHost = {
-    getScriptFileNames: () => [...new Set([activeFile, ...files.keys()])],
-    getProjectVersion: () => jsProjectFilesFingerprint(files),
-    getScriptVersion: (requested) => files.get(normalizeFileName(requested))?.version ?? "0",
-    getScriptSnapshot: (requested) => {
-      const text = files.get(normalizeFileName(requested))?.text ?? cachedReadFile(requested);
-      return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text);
-    },
+    getScriptFileNames: () => [...new Set([state.activeFile, ...state.files.keys()])],
+    getProjectVersion: () => state.projectVersion,
+    getScriptVersion: (requested) => state.files.get(normalizeFileName(requested))?.version ?? "0",
+    getScriptSnapshot: (requested) => scriptSnapshotForFile(state, requested),
     getScriptKind: scriptKindForFileName,
-    getCurrentDirectory: () => config.currentDirectory,
-    getCompilationSettings: () => config.options,
+    getCurrentDirectory: () => state.config.currentDirectory,
+    getCompilationSettings: () => state.config.options,
     getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
     fileExists: (requested) =>
-      files.has(normalizeFileName(requested)) || cachedFileExists(requested),
+      state.files.has(normalizeFileName(requested)) || cachedFileExists(requested),
     readFile: (requested) =>
-      files.get(normalizeFileName(requested))?.text ?? cachedReadFile(requested),
+      state.files.get(normalizeFileName(requested))?.text ?? cachedReadFile(requested),
     readDirectory: cachedReadDirectory,
     directoryExists: cachedDirectoryExists,
     getDirectories: cachedGetDirectories,
@@ -159,9 +199,50 @@ function createLanguageServiceProject(request: JsDiagnosticsWorkerRequest): {
           ).resolvedModule,
       ),
   };
+  const service = ts.createLanguageService(host, documentRegistry);
+  languageServiceCache.set(configEntry.key, {
+    service,
+    state,
+    moduleResolutionCache,
+    lastUsed: ++cacheTick,
+  });
+  pruneLanguageServiceCache();
   return {
-    service: ts.createLanguageService(host),
+    service,
   };
+}
+
+function scriptSnapshotForFile(
+  state: PersistentLanguageServiceState,
+  requested: string,
+): ts.IScriptSnapshot | undefined {
+  const normalized = normalizeFileName(requested);
+  const file = state.files.get(normalized);
+  const text = file?.text ?? cachedReadFile(requested);
+  if (text === undefined) {
+    return undefined;
+  }
+  const version = file?.version ?? "0";
+  const cached = state.snapshots.get(normalized);
+  if (cached?.version === version) {
+    state.snapshots.delete(normalized);
+    state.snapshots.set(normalized, cached);
+    return cached.snapshot;
+  }
+  const snapshot = ts.ScriptSnapshot.fromString(text);
+  state.snapshots.set(normalized, { version, snapshot });
+  pruneScriptSnapshotCache(state);
+  return snapshot;
+}
+
+function pruneScriptSnapshotCache(state: PersistentLanguageServiceState): void {
+  while (state.snapshots.size > maxScriptSnapshotCacheEntries) {
+    const oldest = state.snapshots.keys().next().value;
+    if (oldest === undefined) {
+      return;
+    }
+    state.snapshots.delete(oldest);
+  }
 }
 
 function collectProjectFiles(
@@ -207,23 +288,26 @@ function addVirtualFile(
   });
 }
 
-function readProjectConfig(
+function readProjectConfigEntry(
   ownerFile: string,
   settings: JsDiagnosticsWorkerRequest["settings"],
   workspaceRoots: string[],
   optionOverrides: Partial<ts.CompilerOptions>,
-): JsProjectConfig {
+): JsProjectConfigEntry {
   const ownerDirectory = path.dirname(ownerFile);
   const configPath =
     settings.javascript?.ignoreProjectConfig === true
       ? undefined
       : (ts.findConfigFile(ownerDirectory, cachedFileExists, "tsconfig.json") ??
         ts.findConfigFile(ownerDirectory, cachedFileExists, "jsconfig.json"));
-  const cacheKey = configCacheKey(ownerFile, configPath, settings, optionOverrides);
+  const currentDirectory = configPath
+    ? path.dirname(configPath)
+    : defaultProjectCurrentDirectory(ownerDirectory, workspaceRoots);
+  const cacheKey = configCacheKey(configPath, currentDirectory, settings, optionOverrides);
   const cached = configCache.get(cacheKey);
   if (cached) {
     cached.lastUsed = ++cacheTick;
-    return cached.config;
+    return { key: cacheKey, config: cached.config };
   }
   const defaultOptions: ts.CompilerOptions = {
     allowJs: true,
@@ -236,16 +320,10 @@ function readProjectConfig(
   };
   const config = configPath
     ? projectConfigFromConfigFile(configPath, defaultOptions, settings, optionOverrides)
-    : defaultProjectConfig(
-        ownerDirectory,
-        workspaceRoots,
-        defaultOptions,
-        settings,
-        optionOverrides,
-      );
+    : defaultProjectConfig(currentDirectory, defaultOptions, settings, optionOverrides);
   configCache.set(cacheKey, { config, lastUsed: ++cacheTick });
   pruneConfigCache();
-  return config;
+  return { key: cacheKey, config };
 }
 
 function projectConfigFromConfigFile(
@@ -276,15 +354,17 @@ function projectConfigFromConfigFile(
   };
 }
 
+function defaultProjectCurrentDirectory(ownerDirectory: string, workspaceRoots: string[]): string {
+  const roots = workspaceRoots.length > 0 ? workspaceRoots : [ownerDirectory];
+  return roots[0] ?? ownerDirectory;
+}
+
 function defaultProjectConfig(
-  ownerDirectory: string,
-  workspaceRoots: string[],
+  currentDirectory: string,
   defaultOptions: ts.CompilerOptions,
   settings: JsDiagnosticsWorkerRequest["settings"],
   optionOverrides: Partial<ts.CompilerOptions>,
 ): JsProjectConfig {
-  const roots = workspaceRoots.length > 0 ? workspaceRoots : [ownerDirectory];
-  const currentDirectory = roots[0] ?? ownerDirectory;
   return {
     fileNames: [],
     options: browserCompilerOptions(defaultOptions, currentDirectory, settings, optionOverrides),
@@ -340,19 +420,19 @@ function browserJavaScriptTypes(
 }
 
 function configCacheKey(
-  ownerFile: string,
   configPath: string | undefined,
+  currentDirectory: string,
   settings: JsDiagnosticsWorkerRequest["settings"],
   optionOverrides: Partial<ts.CompilerOptions>,
 ): string {
-  const environmentFiles = [configPath, nearestPackageJson(path.dirname(ownerFile))]
+  const environmentFiles = [configPath, nearestPackageJson(currentDirectory)]
     .filter((fileName): fileName is string => Boolean(fileName))
     .map((fileName) => {
       const stat = cachedFileStat(fileName);
       return stat ? `${normalizeFileName(fileName)}:${stat.mtimeMs}:${stat.size}` : fileName;
     });
   return JSON.stringify({
-    ownerDirectory: normalizeFileName(path.dirname(ownerFile)),
+    currentDirectory: normalizeFileName(currentDirectory),
     configPath: configPath ? normalizeFileName(configPath) : undefined,
     environmentFiles,
     settings: {
@@ -401,6 +481,26 @@ function pruneConfigCache(): void {
     }
     configCache.delete(oldest[0]);
   }
+}
+
+function pruneLanguageServiceCache(): void {
+  while (languageServiceCache.size > maxLanguageServiceCacheEntries) {
+    const oldest = [...languageServiceCache.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0];
+    if (!oldest) {
+      return;
+    }
+    oldest[1].service.dispose();
+    languageServiceCache.delete(oldest[0]);
+  }
+}
+
+function disposeLanguageServiceCache(): void {
+  for (const entry of languageServiceCache.values()) {
+    entry.service.dispose();
+  }
+  languageServiceCache.clear();
 }
 
 function cachedFileExists(fileName: string): boolean {
