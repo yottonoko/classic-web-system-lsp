@@ -16,6 +16,12 @@ import type {
   WorkspaceVbReferenceSummaryIncludeGraph,
 } from "./asp-graph/types";
 import type { CachedTsDiagnostic } from "./document-store";
+import {
+  estimateJsonBytes,
+  estimateStringArrayBytes,
+  estimateStringBytes,
+  SizedLruCache,
+} from "./memory-budget";
 
 export interface JsFileStat {
   mtimeMs: number;
@@ -208,18 +214,83 @@ export class AspJsScriptSnapshot implements ts.IScriptSnapshot {
   }
 }
 
-export const jsLanguageServiceCache = new Map<string, JsLanguageServiceCacheEntry>();
-export const jsOpenProjectFilesCache = new Map<string, JsOpenProjectFilesCacheEntry>();
-export const jsProjectConfigCache = new Map<string, JsProjectConfigCacheEntry>();
+export const jsLanguageServiceCache = new SizedLruCache<string, JsLanguageServiceCacheEntry>(
+  "js.languageService",
+  {
+    priority: 30,
+    maxEntries: 16,
+    estimateEntryBytes: estimateJsLanguageServiceCacheEntryBytes,
+    disposeEntry: (_key, entry) => entry.project.service.dispose(),
+  },
+);
+export const jsOpenProjectFilesCache = new SizedLruCache<string, JsOpenProjectFilesCacheEntry>(
+  "js.openProjectFiles",
+  {
+    priority: 25,
+    maxEntries: 32,
+    estimateEntryBytes: (key, entry) =>
+      estimateStringBytes(key) + estimateJsProjectFilesBytes(entry.files) + 64,
+  },
+);
+export const jsProjectConfigCache = new SizedLruCache<string, JsProjectConfigCacheEntry>(
+  "js.projectConfig",
+  {
+    priority: 35,
+    maxEntries: 16,
+    estimateEntryBytes: (key, entry) =>
+      estimateStringBytes(key) +
+      estimateStringArrayBytes(entry.config.fileNames) +
+      estimateJsonBytes(entry.config.options, 4096) +
+      estimateStringBytes(entry.config.currentDirectory) +
+      256,
+  },
+);
 export const jsDocumentRegistry = ts.createDocumentRegistry(ts.sys.useCaseSensitiveFileNames);
-export const jsScriptSnapshots = new Map<string, AspJsScriptSnapshot>();
-export const jsFileExistsCache = new Map<string, boolean>();
-export const jsReadFileCache = new Map<string, string | undefined>();
-export const jsDirectoryExistsCache = new Map<string, boolean>();
-export const jsDirectoriesCache = new Map<string, string[]>();
-export const jsReadDirectoryCache = new Map<string, string[]>();
-export const jsRealpathCache = new Map<string, string>();
-export const jsFileStatCache = new Map<string, JsFileStat | undefined>();
+export const jsScriptSnapshots = new SizedLruCache<string, AspJsScriptSnapshot>(
+  "js.scriptSnapshots",
+  {
+    priority: 20,
+    maxEntries: 512,
+    estimateEntryBytes: estimateJsScriptSnapshotEntryBytes,
+  },
+);
+export const jsFileExistsCache = new SizedLruCache<string, boolean>("js.fs.fileExists", {
+  priority: 15,
+  maxEntries: 8192,
+  estimateEntryBytes: (key) => estimateStringBytes(key) + 16,
+});
+export const jsReadFileCache = new SizedLruCache<string, string | undefined>("js.fs.readFile", {
+  priority: 10,
+  maxEntries: 512,
+  estimateEntryBytes: (key, text) => estimateStringBytes(key) + estimateStringBytes(text) + 32,
+});
+export const jsDirectoryExistsCache = new SizedLruCache<string, boolean>("js.fs.directoryExists", {
+  priority: 15,
+  maxEntries: 8192,
+  estimateEntryBytes: (key) => estimateStringBytes(key) + 16,
+});
+export const jsDirectoriesCache = new SizedLruCache<string, string[]>("js.fs.directories", {
+  priority: 15,
+  maxEntries: 2048,
+  estimateEntryBytes: (key, entries) =>
+    estimateStringBytes(key) + estimateStringArrayBytes(entries) + 64,
+});
+export const jsReadDirectoryCache = new SizedLruCache<string, string[]>("js.fs.readDirectory", {
+  priority: 15,
+  maxEntries: 1024,
+  estimateEntryBytes: (key, entries) =>
+    estimateStringBytes(key) + estimateStringArrayBytes(entries) + 64,
+});
+export const jsRealpathCache = new SizedLruCache<string, string>("js.fs.realpath", {
+  priority: 15,
+  maxEntries: 4096,
+  estimateEntryBytes: (key, realpath) => estimateStringBytes(key) + estimateStringBytes(realpath),
+});
+export const jsFileStatCache = new SizedLruCache<string, JsFileStat | undefined>("js.fs.stat", {
+  priority: 15,
+  maxEntries: 4096,
+  estimateEntryBytes: (key, stat) => estimateStringBytes(key) + (stat ? 64 : 16),
+});
 
 export const graphFileIndexCache = new Map<string, GraphFileIndex>();
 export const graphFileIndexInFlight = new Map<string, Promise<GraphFileIndex>>();
@@ -265,6 +336,81 @@ export const workspaceVbReferenceReachabilityCache = new Map<
 
 export const maxJsOpenProjectFilesCacheEntries = 32;
 export const maxLightweightJsUnusedCacheEntries = 32;
-export const lightweightJsUnusedDiagnosticsCache = new Map<string, LightweightJsUnusedCacheEntry>();
+export const lightweightJsUnusedDiagnosticsCache = new SizedLruCache<
+  string,
+  LightweightJsUnusedCacheEntry
+>("js.lightweightUnusedDiagnostics", {
+  priority: 25,
+  maxEntries: maxLightweightJsUnusedCacheEntries,
+  estimateEntryBytes: (key, entry) =>
+    estimateStringBytes(key) + estimateJsonBytes(entry.diagnostics, 1024) + 64,
+});
 
 export type { WorkspaceVbReferenceExecutionOptions, WorkspaceVbReferenceSummaryIncludeGraph };
+
+export const memoryManagedAnalysisCaches = [
+  jsLanguageServiceCache,
+  jsOpenProjectFilesCache,
+  jsProjectConfigCache,
+  jsScriptSnapshots,
+  jsFileExistsCache,
+  jsReadFileCache,
+  jsDirectoryExistsCache,
+  jsDirectoriesCache,
+  jsReadDirectoryCache,
+  jsRealpathCache,
+  jsFileStatCache,
+  lightweightJsUnusedDiagnosticsCache,
+];
+
+function estimateJsLanguageServiceCacheEntryBytes(
+  key: string,
+  entry: JsLanguageServiceCacheEntry,
+): number {
+  return (
+    estimateStringBytes(key) +
+    estimateJsProjectFilesBytes(entry.project.files) +
+    estimateJsonBytes(entry.project.options, 4096) +
+    estimateStringBytes(entry.project.currentDirectory) +
+    estimateStringBytes(entry.project.optionsKey) +
+    320 * 1024
+  );
+}
+
+function estimateJsProjectFilesBytes(files: ReadonlyMap<string, JsProjectFile>): number {
+  let total = 128;
+  for (const [fileName, file] of files) {
+    total += estimateStringBytes(fileName) + estimateJsProjectFileBytes(file);
+  }
+  return total;
+}
+
+function estimateJsProjectFileBytes(file: JsProjectFile): number {
+  return (
+    estimateStringBytes(file.fileName) +
+    estimateStringBytes(file.text) +
+    estimateStringBytes(file.version) +
+    estimateStringBytes(file.uri) +
+    (file.virtual
+      ? estimateStringBytes(file.virtual.text) + file.virtual.sourceMap.segments.length * 48
+      : 0) +
+    128
+  );
+}
+
+function estimateJsScriptSnapshotEntryBytes(key: string, snapshot: AspJsScriptSnapshot): number {
+  let total = estimateStringBytes(key);
+  let cursor: AspJsScriptSnapshot | undefined = snapshot;
+  let depth = 0;
+  while (cursor && depth < 9) {
+    total +=
+      estimateStringBytes(cursor.fileName) +
+      estimateStringBytes(cursor.version) +
+      cursor.getLength() * 2 +
+      cursor.segments.length * 32 +
+      128;
+    cursor = cursor.previous;
+    depth += 1;
+  }
+  return total;
+}

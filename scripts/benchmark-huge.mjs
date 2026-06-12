@@ -4,7 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
-import { embeddedOperationNames, runEmbeddedOperation } from "./embedded-language-benchmark.mjs";
+import { getHeapStatistics } from "node:v8";
+import {
+  clearEmbeddedBenchmarkCaches,
+  embeddedOperationNames,
+  runEmbeddedOperation,
+} from "./embedded-language-benchmark.mjs";
 import { benchmarkSourcesForRun, readBenchmarkCacheMode } from "./benchmark-cache-mode.mjs";
 
 const require = createRequire(import.meta.url);
@@ -18,6 +23,8 @@ const benchmarkCacheMode = readBenchmarkCacheMode();
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const analyzeStepTotals = new Map();
 const results = [];
+const benchmarkMemoryHighRatio = 0.75;
+const benchmarkMemoryTargetRatio = 0.5;
 
 if (!fs.existsSync(coreDist)) {
   throw new Error(
@@ -33,7 +40,10 @@ const {
   buildVirtualDocuments,
   collectVbscriptSymbolsFromTextAsync,
   parseAspDocumentAsync,
+  registerParserMemoryCaches,
 } = core;
+const parserMemoryCaches = [];
+registerParserMemoryCaches?.((cache) => parserMemoryCaches.push(cache));
 
 const sources = collectBenchmarkSources();
 const sourceStats = summarizeSources(sources);
@@ -41,6 +51,7 @@ const sourceStats = summarizeSources(sources);
 await runBenchmark("parseAspDocument", async (run) => {
   for (const source of sourcesForRun("parseAspDocument", run)) {
     await parseAspDocumentAsync(source.uri, source.text);
+    checkBenchmarkMemoryPressure();
   }
 });
 
@@ -48,18 +59,21 @@ await runBenchmark("buildVirtualDocuments", async (run) => {
   for (const source of sourcesForRun("buildVirtualDocuments", run)) {
     const parsed = await parseAspDocumentAsync(source.uri, source.text);
     buildVirtualDocuments(parsed);
+    checkBenchmarkMemoryPressure();
   }
 });
 
 await runBenchmark("collectVbscriptSymbols", async (run) => {
   for (const source of sourcesForRun("collectVbscriptSymbols", run)) {
     await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
+    checkBenchmarkMemoryPressure();
   }
 });
 
 await runBenchmark("analyzeVbscript", async (run) => {
   for (const source of sourcesForRun("analyzeVbscript", run)) {
     await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
+    checkBenchmarkMemoryPressure();
   }
 });
 
@@ -67,6 +81,7 @@ for (const operation of embeddedOperationNames) {
   await runBenchmark(operation, async (run) => {
     for (const source of sourcesForRun(operation, run)) {
       await runEmbeddedOperation(operation, source, core);
+      checkBenchmarkMemoryPressure();
     }
   });
 }
@@ -93,6 +108,25 @@ if (collectDebugSteps) {
 
 function sourcesForRun(operation, run) {
   return benchmarkSourcesForRun(sources, benchmarkCacheMode, operation, run);
+}
+
+function checkBenchmarkMemoryPressure() {
+  const heapUsed = process.memoryUsage().heapUsed;
+  const heapSizeLimit = getHeapStatistics().heap_size_limit;
+  if (heapSizeLimit <= 0 || heapUsed / heapSizeLimit < benchmarkMemoryHighRatio) {
+    return;
+  }
+  const targetHeapBytes = Math.floor(heapSizeLimit * benchmarkMemoryTargetRatio);
+  let bytesToFree = Math.max(0, heapUsed - targetHeapBytes);
+  for (const cache of [...parserMemoryCaches].sort(
+    (left, right) => left.priority - right.priority || left.name.localeCompare(right.name),
+  )) {
+    if (bytesToFree <= 0) {
+      break;
+    }
+    bytesToFree = Math.max(0, bytesToFree - Math.max(0, cache.evict(bytesToFree)));
+  }
+  clearEmbeddedBenchmarkCaches();
 }
 
 function collectBenchmarkSources() {

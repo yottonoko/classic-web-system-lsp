@@ -1013,6 +1013,17 @@
           "default": 128,
           "description": "%configuration.cache.maxSizeMb.description%"
         },
+        "aspLsp.memory.maxCacheBytes": {
+          "type": "number",
+          "minimum": 1,
+          "default": 536870912,
+          "description": "%configuration.memory.maxCacheBytes.description%"
+        },
+        "aspLsp.memory.debugTelemetry": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.memory.debugTelemetry.description%"
+        },
         "aspLsp.network.profile": {
           "type": "string",
           "enum": [

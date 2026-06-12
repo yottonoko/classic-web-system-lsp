@@ -41,6 +41,7 @@ export interface AspSettings {
   graph?: AspGraphSettings;
   excel?: AspExcelSettings;
   cache?: AspCacheSettings;
+  memory?: AspMemorySettings;
   network?: AspNetworkSettings;
   workspace?: AspWorkspaceSettings;
 }
@@ -243,6 +244,11 @@ export interface AspNetworkSettings {
   readdirCacheTtlMs?: number;
   includeReadConcurrency?: number;
   caseResolution?: "auto" | "full" | "fast";
+}
+
+export interface AspMemorySettings {
+  maxCacheBytes?: number;
+  debugTelemetry?: boolean;
 }
 
 export interface AspFlowchartBuildOptions {

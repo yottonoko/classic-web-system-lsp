@@ -854,6 +854,16 @@ describe("VS Code extension package", () => {
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.maxSizeMb"]).toEqual(
       expect.objectContaining({ type: "number", default: 128, minimum: 1 }),
     );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.memory.maxCacheBytes"],
+    ).toEqual(expect.objectContaining({ type: "number", default: 536870912, minimum: 1 }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.memory.debugTelemetry"],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
+    expect(nls["configuration.memory.maxCacheBytes.description"]).toBeTruthy();
+    expect(nlsJa["configuration.memory.maxCacheBytes.description"]).toBeTruthy();
+    expect(nls["configuration.memory.debugTelemetry.description"]).toBeTruthy();
+    expect(nlsJa["configuration.memory.debugTelemetry.description"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.network.profile"]).toEqual(
       expect.objectContaining({
         type: "string",

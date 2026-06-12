@@ -121,6 +121,8 @@
   "configuration.cache.freshness.description": "Controls how disk cache freshness is checked. auto uses metadata on local profiles and watch on network profiles, metadata verifies file metadata before reuse, and watch trusts file watcher changes to minimize network drive IO.",
   "configuration.cache.ttlHours.description": "Hours before disk analysis cache entries expire.",
   "configuration.cache.maxSizeMb.description": "Maximum disk analysis cache size in megabytes.",
+  "configuration.memory.maxCacheBytes.description": "Maximum estimated in-process cache memory in bytes before asp-lsp evicts lower-priority caches. The default is 512 MiB.",
+  "configuration.memory.debugTelemetry.description": "Write memory budget snapshots and eviction details to the asp-lsp debug log file when debug log file output is enabled.",
   "configuration.network.profile.description": "Filesystem performance profile. auto enables network-drive defaults for UNC paths and common SMB/NFS mount points; local keeps immediate filesystem checks; network enables TTL caches, higher include-read concurrency, watch freshness defaults, and fast case resolution.",
   "configuration.network.statCacheTtlMs.description": "Override stat/exists cache TTL in milliseconds. -1 uses the selected profile default, and 0 disables stat/exists caching.",
   "configuration.network.readdirCacheTtlMs.description": "Override directory-listing cache TTL in milliseconds. -1 uses the selected profile default, and 0 disables directory-listing caching.",

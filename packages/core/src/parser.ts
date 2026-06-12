@@ -11,6 +11,7 @@ import type {
   AspServerObject,
   AspSettings,
   AspToken,
+  VbCstNode,
 } from "./types";
 import { offsetAt, rangeFromOffsets } from "./position";
 import { scanHtmlAndAsp, normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
@@ -19,9 +20,21 @@ export { normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
 
 const asyncParseCacheMaxEntries = 64;
 const asyncParseCache = new Map<string, AspParsedDocument>();
+const asyncParseCacheEntryBytes = new Map<string, number>();
+let asyncParseCacheEstimatedBytes = 0;
 const textFingerprintCacheMaxEntries = 256;
 const textFingerprintCache = new Map<string, string>();
+const textFingerprintCacheEntryBytes = new Map<string, number>();
+let textFingerprintCacheEstimatedBytes = 0;
 const parseSettingsStringCache = new WeakMap<AspSettings, string>();
+
+export interface AspParserMemoryCacheRegistration {
+  name: string;
+  priority: number;
+  estimateBytes(): number;
+  evict(targetBytes: number): number;
+  entryCount?(): number;
+}
 
 export function parseAspDocument(
   uri: string,
@@ -29,6 +42,14 @@ export function parseAspDocument(
   settings: AspSettings = {},
 ): AspParsedDocument {
   return parseAspDocumentTypeScript(uri, text, settings);
+}
+
+export function parseAspDocumentSkeleton(
+  uri: string,
+  text: string,
+  settings: AspSettings = {},
+): AspParsedDocument {
+  return parseAspDocumentSkeletonTypeScript(uri, text, settings);
 }
 
 /**
@@ -42,8 +63,7 @@ export async function parseAspDocumentAsync(
   const cacheKey = parseCacheKey(uri, text, settings);
   const cached = asyncParseCache.get(cacheKey);
   if (cached) {
-    asyncParseCache.delete(cacheKey);
-    asyncParseCache.set(cacheKey, cached);
+    touchAsyncParseCacheEntry(cacheKey, cached);
     return cached;
   }
   const parsed = parseAspDocumentTypeScript(uri, text, settings);
@@ -57,6 +77,25 @@ export async function parseAspDocumentSkeletonAsync(
   settings: AspSettings = {},
 ): Promise<AspParsedDocument> {
   return parseAspDocumentSkeletonTypeScript(uri, text, settings);
+}
+
+export function registerParserMemoryCaches(
+  register: (cache: AspParserMemoryCacheRegistration) => void,
+): void {
+  register({
+    name: "core.asyncParse",
+    priority: 45,
+    estimateBytes: () => asyncParseCacheEstimatedBytes,
+    evict: evictAsyncParseCache,
+    entryCount: () => asyncParseCache.size,
+  });
+  register({
+    name: "core.textFingerprint",
+    priority: 5,
+    estimateBytes: () => textFingerprintCacheEstimatedBytes,
+    evict: evictTextFingerprintCache,
+    entryCount: () => textFingerprintCache.size,
+  });
 }
 
 const hydratedVbscriptDocuments = new WeakSet<AspParsedDocument>();
@@ -1064,23 +1103,38 @@ function parseSettingsString(settings: AspSettings): string {
 
 function setAsyncParseCache(key: string, parsed: AspParsedDocument): void {
   if (asyncParseCache.has(key)) {
-    asyncParseCache.delete(key);
+    deleteAsyncParseCacheEntry(key);
   }
+  const bytes = estimateAsyncParseCacheEntryBytes(key, parsed);
   asyncParseCache.set(key, parsed);
+  asyncParseCacheEntryBytes.set(key, bytes);
+  asyncParseCacheEstimatedBytes += bytes;
   while (asyncParseCache.size > asyncParseCacheMaxEntries) {
     const oldest = asyncParseCache.keys().next().value;
     if (oldest === undefined) {
       break;
     }
-    asyncParseCache.delete(oldest);
+    deleteAsyncParseCacheEntry(oldest);
   }
+}
+
+function touchAsyncParseCacheEntry(key: string, parsed: AspParsedDocument): void {
+  const bytes =
+    asyncParseCacheEntryBytes.get(key) ?? estimateAsyncParseCacheEntryBytes(key, parsed);
+  deleteAsyncParseCacheEntry(key);
+  asyncParseCache.set(key, parsed);
+  asyncParseCacheEntryBytes.set(key, bytes);
+  asyncParseCacheEstimatedBytes += bytes;
 }
 
 function textFingerprint(text: string): string {
   const cached = textFingerprintCache.get(text);
   if (cached) {
-    textFingerprintCache.delete(text);
+    deleteTextFingerprintCacheEntry(text);
     textFingerprintCache.set(text, cached);
+    const bytes = estimateTextFingerprintCacheEntryBytes(text, cached);
+    textFingerprintCacheEntryBytes.set(text, bytes);
+    textFingerprintCacheEstimatedBytes += bytes;
     return cached;
   }
   let hash = 2166136261;
@@ -1089,15 +1143,109 @@ function textFingerprint(text: string): string {
     hash = Math.imul(hash, 16777619);
   }
   const fingerprint = `${text.length}:${(hash >>> 0).toString(16)}`;
+  const bytes = estimateTextFingerprintCacheEntryBytes(text, fingerprint);
   textFingerprintCache.set(text, fingerprint);
+  textFingerprintCacheEntryBytes.set(text, bytes);
+  textFingerprintCacheEstimatedBytes += bytes;
   while (textFingerprintCache.size > textFingerprintCacheMaxEntries) {
     const oldest = textFingerprintCache.keys().next().value;
     if (oldest === undefined) {
       break;
     }
-    textFingerprintCache.delete(oldest);
+    deleteTextFingerprintCacheEntry(oldest);
   }
   return fingerprint;
+}
+
+function evictAsyncParseCache(targetBytes: number): number {
+  let freed = 0;
+  while (asyncParseCache.size > 0 && freed < targetBytes) {
+    const oldest = asyncParseCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    freed += deleteAsyncParseCacheEntry(oldest);
+  }
+  return freed;
+}
+
+function deleteAsyncParseCacheEntry(key: string): number {
+  const bytes = asyncParseCacheEntryBytes.get(key) ?? 0;
+  if (!asyncParseCache.delete(key)) {
+    return 0;
+  }
+  asyncParseCacheEntryBytes.delete(key);
+  asyncParseCacheEstimatedBytes = Math.max(0, asyncParseCacheEstimatedBytes - bytes);
+  return bytes;
+}
+
+function estimateAsyncParseCacheEntryBytes(key: string, parsed: AspParsedDocument): number {
+  return (
+    estimateCacheStringBytes(key) +
+    estimateCacheStringBytes(parsed.text) +
+    parsed.regions.length * 256 +
+    parsed.includes.length * 192 +
+    parsed.directives.length * 192 +
+    parsed.serverObjects.length * 192 +
+    estimateCstNodeBytes(parsed.cst)
+  );
+}
+
+function estimateCstNodeBytes(node: AspCstNode): number {
+  let total = 160 + estimateCacheStringBytes(node.text);
+  if (node.tokens) {
+    total += node.tokens.length * 96;
+  }
+  if (node.vbscript?.tokens) {
+    total += estimateVbCstNodeBytes(node.vbscript);
+  }
+  for (const child of node.children) {
+    total += estimateCstNodeBytes(child);
+  }
+  return total;
+}
+
+function estimateVbCstNodeBytes(node: VbCstNode): number {
+  let total =
+    128 +
+    node.tokens.length * 96 +
+    estimateCacheStringBytes(node.typeName) +
+    estimateCacheStringBytes(node.memberOf) +
+    estimateCacheStringBytes(node.scopeName);
+  for (const child of node.children) {
+    total += estimateVbCstNodeBytes(child);
+  }
+  return total;
+}
+
+function evictTextFingerprintCache(targetBytes: number): number {
+  let freed = 0;
+  while (textFingerprintCache.size > 0 && freed < targetBytes) {
+    const oldest = textFingerprintCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    freed += deleteTextFingerprintCacheEntry(oldest);
+  }
+  return freed;
+}
+
+function deleteTextFingerprintCacheEntry(text: string): number {
+  const bytes = textFingerprintCacheEntryBytes.get(text) ?? 0;
+  if (!textFingerprintCache.delete(text)) {
+    return 0;
+  }
+  textFingerprintCacheEntryBytes.delete(text);
+  textFingerprintCacheEstimatedBytes = Math.max(0, textFingerprintCacheEstimatedBytes - bytes);
+  return bytes;
+}
+
+function estimateTextFingerprintCacheEntryBytes(text: string, fingerprint: string): number {
+  return estimateCacheStringBytes(text) + estimateCacheStringBytes(fingerprint) + 64;
+}
+
+function estimateCacheStringBytes(value: string | undefined): number {
+  return value === undefined ? 0 : value.length * 2 + 40;
 }
 
 function nodeToRegion(node: AspCstNode): AspRegion | undefined {

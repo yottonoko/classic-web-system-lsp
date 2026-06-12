@@ -64,6 +64,7 @@ import {
   jsRealpathCache,
   jsScriptSnapshots,
   lightweightJsUnusedDiagnosticsCache,
+  memoryManagedAnalysisCaches,
   maxJsOpenProjectFilesCacheEntries,
   maxLightweightJsUnusedCacheEntries,
   maxVbProjectContextCacheEntries,
@@ -238,7 +239,9 @@ import {
   hydrateVbscriptCst,
   parseAspDocument,
   parseAspDocumentAsync,
+  parseAspDocumentSkeleton,
   parseAspDocumentSkeletonAsync,
+  registerParserMemoryCaches,
   parseVbscriptTypeRef,
   prepareVbscriptCallHierarchy,
   resolveVbscriptCompletionItem,
@@ -283,6 +286,15 @@ import {
   TokenType,
 } from "vscode-html-languageservice";
 import ts from "typescript";
+import {
+  defaultMemoryMaxCacheBytes,
+  MemoryBudgetManager,
+  estimateJsonBytes,
+  estimateStringBytes,
+  registeredMapCache,
+  type MemoryPressureResult,
+  type RegisteredCache,
+} from "./memory-budget";
 
 const connection = createConnection(ProposedFeatures.all);
 const documentOpenContentVersions = new Map<string, number>();
@@ -385,6 +397,8 @@ let includeResolutionGeneration = 0;
 let jsProjectGeneration = 0;
 const serverTextFingerprintCacheMaxEntries = 256;
 const serverTextFingerprintCache = new Map<string, string>();
+const memoryBudgetManager = new MemoryBudgetManager();
+let lastMemoryBudgetCheckAt = 0;
 let diskAnalysisCache = createDiskAnalysisCache(globalSettings);
 const sourceManifest = new Map<string, DiskAnalysisSourceMetadata>();
 const diagnosticKeyCache = new WeakMap<Diagnostic, string>();
@@ -1269,6 +1283,27 @@ class IncludeDocumentLoader {
     return includePublicSummaries.get(fileIdentityKeyFromFileName(fileName));
   }
 
+  registerMemoryCaches(register: (cache: RegisteredCache) => void): void {
+    register(
+      registeredMapCache("include.documents", this.cache, {
+        priority: 30,
+        estimateEntryBytes: (_key, entry) => estimateIncludeDocumentCacheEntryBytes(entry),
+      }),
+    );
+    register(
+      registeredMapCache("include.summaries", this.summaryCache, {
+        priority: 35,
+        estimateEntryBytes: (_key, entry) => estimateIncludeSummaryCacheEntryBytes(entry),
+      }),
+    );
+    register(
+      registeredMapCache("include.refs", this.includeRefsCache, {
+        priority: 20,
+        estimateEntryBytes: (_key, entry) => estimateIncludeRefsCacheEntryBytes(entry),
+      }),
+    );
+  }
+
   invalidateFiles(fileNames: Iterable<string>): void {
     for (const fileName of fileNames) {
       const normalized = normalizeFileName(fileName);
@@ -1321,6 +1356,273 @@ const completionSessionCache = new CompletionSessionCache();
 let vbDiagnosticsWorkerPool: VbDiagnosticsWorkerPool | undefined;
 let vbDiagnosticsWorkerRequestId = 0;
 let stagedDiagnosticsGeneration = 0;
+
+registerMemoryBudgetCaches();
+
+function registerMemoryBudgetCaches(): void {
+  for (const managedCache of memoryManagedAnalysisCaches) {
+    memoryBudgetManager.register(managedCache);
+  }
+  registerParserMemoryCaches((managedCache) => memoryBudgetManager.register(managedCache));
+  includeDocumentLoader.registerMemoryCaches((managedCache) =>
+    memoryBudgetManager.register(managedCache),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("server.textFingerprint", serverTextFingerprintCache, {
+      priority: 5,
+      estimateEntryBytes: (key, value) =>
+        estimateStringBytes(key) + estimateStringBytes(value) + 64,
+    }),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("server.includePathResolution", includePathResolutionCache, {
+      priority: 20,
+      estimateEntryBytes: (key, value) => estimateStringBytes(key) + estimateJsonBytes(value, 512),
+    }),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("server.pathResolution", pathResolutionCache, {
+      priority: 20,
+      estimateEntryBytes: (key, value) => estimateStringBytes(key) + estimateJsonBytes(value, 512),
+    }),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("server.includeCycles", includeCycleCache, {
+      priority: 20,
+      estimateEntryBytes: (key, value) => estimateStringBytes(key) + estimateJsonBytes(value, 256),
+    }),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("server.semanticTokens", semanticTokenResults, {
+      priority: 25,
+      estimateEntryBytes: (key, value) =>
+        estimateStringBytes(key) + estimateStringBytes(value.uri) + value.data.length * 8 + 64,
+    }),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("server.latestSemanticTokens", latestSemanticTokenResultByUri, {
+      priority: 25,
+      estimateEntryBytes: (key, value) => estimateStringBytes(key) + estimateStringBytes(value),
+    }),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("graph.fileIndex", graphFileIndexCache, {
+      priority: 30,
+      estimateEntryBytes: (_key, value) => estimateGraphFileIndexBytes(value),
+    }),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("vb.projectContext", vbProjectContextCache, {
+      priority: 35,
+      estimateEntryBytes: (key, value) => estimateStringBytes(key) + estimateJsonBytes(value, 4096),
+    }),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("vb.references.workerCompleted", workspaceVbReferenceWorkerCompleted, {
+      priority: 20,
+      estimateEntryBytes: (key, value) => estimateStringBytes(key) + estimateJsonBytes(value, 4096),
+    }),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("vb.references.requestCompleted", workspaceVbReferenceRequestCompleted, {
+      priority: 20,
+      estimateEntryBytes: (key, value) =>
+        estimateStringBytes(key) + estimateWorkspaceReferenceMapBytes(value.referencesByTarget),
+    }),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("vb.references.batchCompleted", workspaceVbReferenceBatchCompleted, {
+      priority: 20,
+      estimateEntryBytes: (key, value) =>
+        estimateStringBytes(key) + estimateWorkspaceReferenceMapBytes(value.referencesByTarget),
+    }),
+  );
+  memoryBudgetManager.register(
+    registeredMapCache("vb.references.reachability", workspaceVbReferenceReachabilityCache, {
+      priority: 20,
+      estimateEntryBytes: (key, value) => estimateStringBytes(key) + estimateJsonBytes(value, 1024),
+    }),
+  );
+  memoryBudgetManager.register(documentAnalysisMemoryCache());
+}
+
+function checkMemoryPressure(
+  settings: AspSettings,
+  reason: string,
+  options: { force?: boolean } = {},
+): void {
+  const now = Date.now();
+  if (!options.force && now - lastMemoryBudgetCheckAt < 1_000) {
+    return;
+  }
+  lastMemoryBudgetCheckAt = now;
+  const result = memoryBudgetManager.checkPressure({
+    reason,
+    maxCacheBytes: settings.memory?.maxCacheBytes,
+  });
+  if (
+    settings.memory?.debugTelemetry === true ||
+    result.evictedBytes > 0 ||
+    result.pressure !== "none"
+  ) {
+    logMemoryBudgetTelemetry(settings, result);
+  }
+}
+
+function logMemoryBudgetTelemetry(settings: AspSettings, result: MemoryPressureResult): void {
+  const message = `[asp-lsp] memory.snapshot: reason=${result.reason}, pressure=${result.pressure}, total=${result.after.totalEstimatedBytes}/${result.after.maxCacheBytes}, heap=${result.after.heapUsed}/${result.after.heapSizeLimit}, evicted=${result.evictedBytes}`;
+  logDebugFile(settings, "trace", "memory.snapshot", message, {
+    reason: result.reason,
+    pressure: result.pressure,
+    targetBytes: result.targetBytes,
+    requestedBytes: result.requestedBytes,
+    evictedBytes: result.evictedBytes,
+    before: result.before,
+    after: result.after,
+    evictions: result.evictions,
+  });
+}
+
+function documentAnalysisMemoryCache(): RegisteredCache {
+  return {
+    name: "documents.analysis",
+    priority: 40,
+    estimateBytes: () => {
+      let total = 0;
+      for (const cached of cache.values()) {
+        if (openDocumentForUri(cached.source.uri)) {
+          continue;
+        }
+        total += estimateCachedDocumentEvictableBytes(cached);
+      }
+      return total;
+    },
+    evict: (targetBytes) => {
+      let freed = 0;
+      for (const cached of cache.values()) {
+        if (freed >= targetBytes) {
+          break;
+        }
+        if (openDocumentForUri(cached.source.uri)) {
+          continue;
+        }
+        const bytes = estimateCachedDocumentEvictableBytes(cached);
+        if (bytes <= 0) {
+          continue;
+        }
+        cached.analysis = undefined;
+        cached.cssContext = undefined;
+        cached.virtuals.clear();
+        cached.virtualsMaterialized = false;
+        if (cached.parseDepth === "full") {
+          cached.parsed = parseAspDocumentSkeleton(
+            cached.source.uri,
+            cached.source.getText(),
+            cachedSettings(cached.source.uri),
+          );
+          cached.parseDepth = "skeleton";
+        }
+        freed += bytes;
+      }
+      return freed;
+    },
+    entryCount: () => cache.size,
+  };
+}
+
+function estimateCachedDocumentEvictableBytes(cached: CachedDocument): number {
+  return (
+    estimateVirtualDocumentsBytes(cached.virtuals) +
+    estimateJsonBytes(cached.analysis, 2048) +
+    estimateJsonBytes(cached.cssContext, 1024) +
+    (cached.parseDepth === "full"
+      ? Math.floor(estimateParsedDocumentBytes(cached.parsed) * 0.6)
+      : 0)
+  );
+}
+
+function estimateVirtualDocumentsBytes(
+  virtuals: ReadonlyMap<AspEmbeddedLanguage, VirtualDocument>,
+): number {
+  let total = 0;
+  for (const [language, virtual] of virtuals) {
+    total +=
+      estimateStringBytes(language) +
+      estimateStringBytes(virtual.uri) +
+      estimateStringBytes(virtual.languageId) +
+      estimateStringBytes(virtual.text) +
+      virtual.sourceMap.segments.length * 48 +
+      128;
+  }
+  return total;
+}
+
+function estimateIncludeDocumentCacheEntryBytes(entry: IncludeDocumentCacheEntry): number {
+  return estimateIncludeSummaryCacheEntryBytes(entry) + estimateParsedDocumentBytes(entry.parsed);
+}
+
+function estimateIncludeSummaryCacheEntryBytes(entry: IncludeSummaryCacheEntry): number {
+  return (
+    estimateStringBytes(entry.key) +
+    estimateStringBytes(entry.fileName) +
+    estimateStringBytes(entry.uri) +
+    estimateJsonBytes(entry.source, 512) +
+    estimateJsonBytes(entry.summary, 2048) +
+    estimateStringBytes(entry.publicFingerprint) +
+    estimateJsonBytes(entry.publicSignature, 1024) +
+    (entry.parsed ? estimateParsedDocumentBytes(entry.parsed) : 0)
+  );
+}
+
+function estimateIncludeRefsCacheEntryBytes(entry: IncludeRefsCacheEntry): number {
+  return (
+    estimateStringBytes(entry.key) +
+    estimateStringBytes(entry.fileName) +
+    estimateStringBytes(entry.uri) +
+    estimateJsonBytes(entry.source, 512) +
+    estimateJsonBytes(entry.includeRefs, 1024) +
+    estimateStringBytes(entry.fingerprint)
+  );
+}
+
+function estimateParsedDocumentBytes(parsed: AspParsedDocument): number {
+  return (
+    estimateStringBytes(parsed.uri) +
+    estimateStringBytes(parsed.text) +
+    parsed.regions.length * 256 +
+    parsed.includes.length * 192 +
+    parsed.directives.length * 192 +
+    parsed.serverObjects.length * 192 +
+    estimateJsonBytes(parsed.cst, 4096)
+  );
+}
+
+function estimateGraphFileIndexBytes(index: GraphFileIndex): number {
+  let typeHintBytes = 128;
+  for (const [key, value] of index.typeHints) {
+    typeHintBytes += estimateStringBytes(key) + estimateJsonBytes(value, 256);
+  }
+  return (
+    estimateStringBytes(index.key) +
+    estimateStringBytes(index.uri) +
+    estimateStringBytes(index.fileName) +
+    estimateJsonBytes(index.source, 512) +
+    estimateJsonBytes(index.includeRefs, 1024) +
+    estimateJsonBytes(index.vbSymbolIndex, 4096) +
+    estimateStringBytes(index.fingerprint) +
+    typeHintBytes
+  );
+}
+
+function estimateWorkspaceReferenceMapBytes(
+  referencesByTarget: ReadonlyMap<string, VbReference[]>,
+): number {
+  let total = 128;
+  for (const [key, references] of referencesByTarget) {
+    total += estimateStringBytes(key) + estimateJsonBytes(references, 2048);
+  }
+  return total;
+}
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
   clientLocale = typeof params.locale === "string" ? params.locale : "en";
@@ -1596,6 +1898,7 @@ connection.onDidChangeConfiguration((change) => {
   settingsByUri.clear();
   const impact = settingsInvalidationImpact(previousSettingsByUri);
   applySettingsInvalidation(impact);
+  checkMemoryPressure(globalSettings, "configuration.changed", { force: true });
   scheduleProjectUpdate("configuration.changed");
   scheduleOpenFileProjectMaintenance("configuration.changed");
   for (const document of documents.all()) {
@@ -4254,6 +4557,7 @@ async function flushPendingProjectUpdatesAsync(
       globalSettings,
       `[asp-lsp] projectUpdate.flushed: reason=${reason}, openFiles=${refreshed}`,
     );
+    checkMemoryPressure(globalSettings, "projectUpdate.flushed");
     return true;
   } finally {
     endStatus();
@@ -9775,6 +10079,7 @@ function pruneWorkspaceVbReferenceWorkerCompleted(): void {
     }
     workspaceVbReferenceWorkerCompleted.delete(oldest);
   }
+  checkMemoryPressure(globalSettings, "vb.references.worker.prune");
 }
 
 function pruneWorkspaceVbReferenceRequestCompleted(): void {
@@ -9787,6 +10092,7 @@ function pruneWorkspaceVbReferenceRequestCompleted(): void {
     }
     workspaceVbReferenceRequestCompleted.delete(oldest[0]);
   }
+  checkMemoryPressure(globalSettings, "vb.references.request.prune");
 }
 
 function pruneWorkspaceVbReferenceBatchCompleted(): void {
@@ -9797,6 +10103,7 @@ function pruneWorkspaceVbReferenceBatchCompleted(): void {
     }
     workspaceVbReferenceBatchCompleted.delete(oldest);
   }
+  checkMemoryPressure(globalSettings, "vb.references.batch.prune");
 }
 
 function pruneWorkspaceVbReferenceReachabilityCache(): void {
@@ -9811,6 +10118,7 @@ function pruneWorkspaceVbReferenceReachabilityCache(): void {
     }
     workspaceVbReferenceReachabilityCache.delete(oldest[0]);
   }
+  checkMemoryPressure(globalSettings, "vb.references.reachability.prune");
 }
 
 function clearWorkspaceVbReferenceCaches(): void {
@@ -10235,15 +10543,15 @@ function vbProjectRootContextCacheKey(cached: CachedDocument, settings: AspSetti
 
 function rememberVbProjectContext(key: string, context: VbProjectContext): void {
   vbProjectContextCache.set(key, { context, lastUsed: Date.now() });
-  if (vbProjectContextCache.size <= maxVbProjectContextCacheEntries) {
-    return;
+  if (vbProjectContextCache.size > maxVbProjectContextCacheEntries) {
+    const oldest = [...vbProjectContextCache.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0]?.[0];
+    if (oldest) {
+      vbProjectContextCache.delete(oldest);
+    }
   }
-  const oldest = [...vbProjectContextCache.entries()].sort(
-    (left, right) => left[1].lastUsed - right[1].lastUsed,
-  )[0]?.[0];
-  if (oldest) {
-    vbProjectContextCache.delete(oldest);
-  }
+  checkMemoryPressure(globalSettings, "vb.projectContext.remember");
 }
 
 function vbProjectContextCacheKey(documents: AspParsedDocument[], settings: AspSettings): string {
@@ -13748,6 +14056,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     graph: normalizeGraphSettings(settings),
     excel: normalizeExcelSettings(settings),
     cache: normalizeCacheSettings(settings),
+    memory: normalizeMemorySettings(settings),
     network: normalizeNetworkSettings(settings),
     workspace: normalizeWorkspaceSettings(settings),
   };
@@ -13866,6 +14175,17 @@ function normalizeCacheSettings(
       typeof record.maxSizeMb === "number" && record.maxSizeMb > 0
         ? Math.floor(record.maxSizeMb)
         : 128,
+  };
+}
+
+function normalizeMemorySettings(
+  settings: Record<string, unknown> | AspSettings,
+): NonNullable<AspSettings["memory"]> {
+  const raw = settings.memory;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    maxCacheBytes: positiveIntegerSetting(record.maxCacheBytes, defaultMemoryMaxCacheBytes),
+    debugTelemetry: record.debugTelemetry === true,
   };
 }
 
@@ -14957,15 +15277,12 @@ function pruneJsLanguageServiceCache(): void {
     if (!oldest) {
       return;
     }
-    oldest[1].project.service.dispose();
     jsLanguageServiceCache.delete(oldest[0]);
   }
+  checkMemoryPressure(globalSettings, "js.languageService.prune");
 }
 
 function clearJsLanguageServiceCache(): void {
-  for (const entry of jsLanguageServiceCache.values()) {
-    entry.project.service.dispose();
-  }
   jsLanguageServiceCache.clear();
 }
 
@@ -15092,6 +15409,7 @@ function textFingerprint(text: string): string {
     }
     serverTextFingerprintCache.delete(oldest);
   }
+  checkMemoryPressure(globalSettings, "server.textFingerprint.prune");
   return fingerprint;
 }
 
@@ -15124,6 +15442,7 @@ function jsScriptSnapshotForVirtual(
   );
   trimJsScriptSnapshotHistory(snapshot);
   jsScriptSnapshots.set(fileName, snapshot);
+  checkMemoryPressure(settings, "js.scriptSnapshot.set");
   logDebugSummary(
     settings,
     change
@@ -15369,6 +15688,7 @@ function pruneJsOpenProjectFilesCache(): void {
     }
     jsOpenProjectFilesCache.delete(oldest[0]);
   }
+  checkMemoryPressure(globalSettings, "js.openProjectFiles.prune");
 }
 
 function addJsProjectVirtualFile(
@@ -15501,6 +15821,7 @@ function pruneJsProjectConfigCache(): void {
     }
     jsProjectConfigCache.delete(oldest[0]);
   }
+  checkMemoryPressure(globalSettings, "js.projectConfig.prune");
 }
 
 function browserJavaScriptCompilerOptions(
@@ -19760,6 +20081,7 @@ function pruneGraphFileIndexCache(): void {
     }
     graphFileIndexCache.delete(oldestKey);
   }
+  checkMemoryPressure(globalSettings, "graph.fileIndex.prune");
 }
 
 function invalidateGraphFileIndexFiles(fileNames: Iterable<string>): void {
