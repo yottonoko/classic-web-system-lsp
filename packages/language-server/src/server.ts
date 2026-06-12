@@ -17307,15 +17307,68 @@ function styleRuleText(
 ): string {
   return [
     `${outerIndent}${selector} {`,
-    `${innerIndent}${inlineStyleDeclarationText(styleText)}`,
+    ...inlineStyleDeclarationLines(styleText).map((declaration) => `${innerIndent}${declaration}`),
     `${outerIndent}}`,
     "",
   ].join(newline);
 }
 
-function inlineStyleDeclarationText(styleText: string): string {
-  const trimmed = styleText.trim();
-  return /;\s*$/.test(trimmed) ? trimmed : `${trimmed};`;
+function inlineStyleDeclarationLines(styleText: string): string[] {
+  return splitInlineStyleDeclarations(styleText).map((declaration) =>
+    normalizeInlineStyleDeclaration(declaration),
+  );
+}
+
+function splitInlineStyleDeclarations(styleText: string): string[] {
+  const declarations: string[] = [];
+  let start = 0;
+  let quote: '"' | "'" | undefined;
+  let parenDepth = 0;
+  for (let index = 0; index < styleText.length; index++) {
+    const char = styleText[index];
+    if (quote) {
+      if (char === "\\") {
+        index++;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "(") {
+      parenDepth++;
+      continue;
+    }
+    if (char === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      continue;
+    }
+    if (char === ";" && parenDepth === 0) {
+      const declaration = styleText.slice(start, index).trim();
+      if (declaration) {
+        declarations.push(declaration);
+      }
+      start = index + 1;
+    }
+  }
+  const lastDeclaration = styleText.slice(start).trim();
+  if (lastDeclaration) {
+    declarations.push(lastDeclaration);
+  }
+  return declarations.length > 0 ? declarations : [styleText.trim()];
+}
+
+function normalizeInlineStyleDeclaration(declaration: string): string {
+  const trimmed = declaration.trim();
+  const colonIndex = trimmed.indexOf(":");
+  const normalized =
+    colonIndex < 0
+      ? trimmed
+      : `${trimmed.slice(0, colonIndex).trimEnd()}: ${trimmed.slice(colonIndex + 1).trimStart()}`;
+  return /;\s*$/.test(normalized) ? normalized : `${normalized};`;
 }
 
 function removeStyleAttributeEdit(

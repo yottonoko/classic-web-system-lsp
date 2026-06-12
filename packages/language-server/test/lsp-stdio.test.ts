@@ -11981,7 +11981,7 @@ console.log(z, a);
     });
 
     it("extracts inline styles to nearby CSS classes", async () => {
-      const source = `<div style="display: flex;">あいうえお</div>`;
+      const source = `<div style="display:flex;color:red">あいうえお</div>`;
       const actions = await inlineStyleCodeActionsForSource(source, source.indexOf("<div") + 1);
       const classAction = inlineStyleActionByTitle(actions, "class");
       expect(classAction).toBeTruthy();
@@ -11989,9 +11989,28 @@ console.log(z, a);
       expect(applyWorkspaceEditForText(source, classAction?.edit)).toBe(`<style>
   .style-1 {
     display: flex;
+    color: red;
   }
 </style>
 <div class="style-1">あいうえお</div>`);
+    });
+
+    it("formats extracted inline styles without touching surrounding HTML", async () => {
+      const source = `<p data-x="1">before</p>
+<section style="color:red;background-image:url(data:image/svg+xml;charset=utf8,%3Csvg%3E%3C/svg%3E); border:1px solid #000">x</section>
+<p style-not="color:red">after</p>`;
+      const actions = await inlineStyleCodeActionsForSource(source, source.indexOf("style=") + 2);
+      const classAction = inlineStyleActionByTitle(actions, "class");
+      expect(applyWorkspaceEditForText(source, classAction?.edit)).toBe(`<p data-x="1">before</p>
+<style>
+  .style-1 {
+    color: red;
+    background-image: url(data:image/svg+xml;charset=utf8,%3Csvg%3E%3C/svg%3E);
+    border: 1px solid #000;
+  }
+</style>
+<section class="style-1">x</section>
+<p style-not="color:red">after</p>`);
     });
 
     it("appends extracted style class names without colliding", async () => {
@@ -12050,7 +12069,7 @@ console.log(z, a);
     color: blue;
   }
 </style>
-<div style="display: flex;">x</div>`;
+<div style="display:flex;color:red">x</div>`;
       const actions = await inlineStyleCodeActionsForSource(source, source.indexOf("style=") + 2, {
         styleExtraction: { insertionMode: "reuseExistingStyleTag" },
       });
@@ -12061,6 +12080,7 @@ console.log(z, a);
   }
   .style-1 {
     display: flex;
+    color: red;
   }
 </style>
 <div class="style-1">x</div>`);
