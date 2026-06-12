@@ -37,6 +37,7 @@ import type {
 } from "./vb-references-protocol";
 import {
   DiskAnalysisCache,
+  diskContentHash,
   type DiskIncludeRefsCacheEntry,
   type DiskAnalysisSourceMetadata,
   type DiskParsedDocumentCacheEntry,
@@ -639,20 +640,21 @@ async function writeDiskParsedDocuments(
       if (!source || !summary) {
         return;
       }
+      const contentSource = { ...source, contentHash: diskContentHash(document.text) };
       await Promise.all([
         cache.writeParsedDocument({
-          source,
+          source: contentSource,
           settingsKey: includeSummarySettingsKey(request.settings),
           parsed: document,
           summary,
         }),
         cache.writeSummary({
-          source,
+          source: contentSource,
           settingsKey: includeSummarySettingsKey(request.settings),
           summary,
         }),
         cache.writeIncludeRefs({
-          source,
+          source: contentSource,
           settingsKey: includeRefsSettingsKey(request.settings),
           includeRefs: summary.includeRefs,
           fingerprint: includeRefsFingerprint(summary.includeRefs),
@@ -708,6 +710,7 @@ function sourceManifestForRequest(
         fileName: normalizeFileName(source.fileName),
         mtimeMs: source.mtimeMs,
         size: source.size,
+        contentHash: source.contentHash,
       },
     ]),
   );

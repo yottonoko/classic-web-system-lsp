@@ -4,7 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
+import { getHeapStatistics } from "node:v8";
 import {
+  clearEmbeddedBenchmarkCaches,
   embeddedOperationNames,
   runEmbeddedOperationForParsed,
 } from "./embedded-language-benchmark.mjs";
@@ -20,6 +22,8 @@ const warmupIterations = readNonNegativeInteger("ASP_LSP_BENCH_WARMUPS", 1);
 const benchmarkCacheMode = readBenchmarkCacheMode();
 const benchmarkConcurrency = readPositiveInteger("ASP_LSP_BENCH_CONCURRENCY", 4);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
+const benchmarkMemoryHighRatio = 0.75;
+const benchmarkMemoryTargetRatio = 0.5;
 const benchmarkOperationNames = new Set([
   "parseAspDocument",
   "extractAspIncludeRefs",
@@ -52,7 +56,10 @@ const {
   extractAspIncludeRefs,
   extractVbscriptSymbolIndex,
   parseAspDocumentAsync,
+  registerParserMemoryCaches,
 } = core;
+const parserMemoryCaches = [];
+registerParserMemoryCaches?.((cache) => parserMemoryCaches.push(cache));
 
 const sourceRefs = collectBenchmarkSourceRefs();
 const sourceStats = summarizeSources(sourceRefs);
@@ -176,6 +183,7 @@ async function measureAcrossSources(sources, callback) {
   const start = performance.now();
   await runBounded(sources, async (source) => {
     await callback(source);
+    checkBenchmarkMemoryPressure();
   });
   return performance.now() - start;
 }
@@ -185,6 +193,7 @@ async function measureAcrossParsedSources(parsedDocuments, callback) {
   await runBounded(parsedDocuments, async (source) => {
     const parsed = await parseAspDocumentAsync(source.uri, source.text);
     await callback(parsed);
+    checkBenchmarkMemoryPressure();
   });
   return performance.now() - start;
 }
@@ -202,6 +211,25 @@ async function runBounded(items, callback) {
     }
   });
   await Promise.all(workers);
+}
+
+function checkBenchmarkMemoryPressure() {
+  const heapUsed = process.memoryUsage().heapUsed;
+  const heapSizeLimit = getHeapStatistics().heap_size_limit;
+  if (heapSizeLimit <= 0 || heapUsed / heapSizeLimit < benchmarkMemoryHighRatio) {
+    return;
+  }
+  const targetHeapBytes = Math.floor(heapSizeLimit * benchmarkMemoryTargetRatio);
+  let bytesToFree = Math.max(0, heapUsed - targetHeapBytes);
+  for (const cache of [...parserMemoryCaches].sort(
+    (left, right) => left.priority - right.priority || left.name.localeCompare(right.name),
+  )) {
+    if (bytesToFree <= 0) {
+      break;
+    }
+    bytesToFree = Math.max(0, bytesToFree - Math.max(0, cache.evict(bytesToFree)));
+  }
+  clearEmbeddedBenchmarkCaches();
 }
 
 async function runBenchmark(name, fn) {

@@ -18,6 +18,7 @@ interface ForwardEntry {
   source: DiskAnalysisSourceMetadata;
   targetFileNames: Set<string>;
   refsFingerprint: string;
+  ephemeral?: boolean;
 }
 
 export class WorkspaceIncludeGraph {
@@ -52,12 +53,14 @@ export class WorkspaceIncludeGraph {
     }
     return {
       settingsKey,
-      entries: [...this.forward.values()].map((entry) => ({
-        fileName: entry.fileName,
-        source: entry.source,
-        targetFileNames: [...entry.targetFileNames],
-        refsFingerprint: entry.refsFingerprint,
-      })),
+      entries: [...this.forward.values()]
+        .filter((entry) => entry.ephemeral !== true)
+        .map((entry) => ({
+          fileName: entry.fileName,
+          source: entry.source,
+          targetFileNames: [...entry.targetFileNames],
+          refsFingerprint: entry.refsFingerprint,
+        })),
     };
   }
 
@@ -79,22 +82,41 @@ export class WorkspaceIncludeGraph {
     targetFileNames: Iterable<string>,
     refsFingerprint: string,
   ): void {
-    const ownerKey = fileIdentityKeyFromFileName(fileName);
-    this.remove(ownerKey);
-    const targets = new Set([...targetFileNames].map(fileIdentityKeyFromFileName));
-    this.forward.set(ownerKey, {
+    this.upsertEntry(fileName, source, targetFileNames, refsFingerprint, false);
+  }
+
+  upsertEphemeral(
+    fileName: string,
+    targetFileNames: Iterable<string>,
+    refsFingerprint = "ephemeral",
+  ): void {
+    this.upsertEntry(
       fileName,
-      source,
-      targetFileNames: targets,
+      { fileName, mtimeMs: 0, size: 0 },
+      targetFileNames,
       refsFingerprint,
-    });
-    for (const targetKey of targets) {
-      const owners = this.reverse.get(targetKey);
-      if (owners) {
-        owners.add(ownerKey);
-      } else {
-        this.reverse.set(targetKey, new Set([ownerKey]));
-      }
+      true,
+    );
+  }
+
+  recordEphemeralDependency(fileName: string, targetFileName: string): void {
+    const ownerKey = fileIdentityKeyFromFileName(fileName);
+    const targetKey = fileIdentityKeyFromFileName(targetFileName);
+    const existing = this.forward.get(ownerKey);
+    if (!existing) {
+      this.upsertEphemeral(fileName, [targetFileName]);
+      return;
+    }
+    if (existing.targetFileNames.has(targetKey)) {
+      return;
+    }
+    existing.targetFileNames.add(targetKey);
+    existing.ephemeral = true;
+    const owners = this.reverse.get(targetKey);
+    if (owners) {
+      owners.add(ownerKey);
+    } else {
+      this.reverse.set(targetKey, new Set([ownerKey]));
     }
   }
 
@@ -113,6 +135,104 @@ export class WorkspaceIncludeGraph {
     return [...ownerKeys]
       .map((ownerKey) => this.forward.get(ownerKey)?.fileName)
       .filter((fileName): fileName is string => fileName !== undefined);
+  }
+
+  targetFileNamesForOwner(fileName: string): string[] {
+    const entry = this.forward.get(fileIdentityKeyFromFileName(fileName));
+    return entry ? [...entry.targetFileNames] : [];
+  }
+
+  dependsOnAnyTarget(
+    ownerFileName: string,
+    targetFileNames: Iterable<string>,
+    options: { transitive?: boolean } = {},
+  ): boolean {
+    const targetKeys = new Set([...targetFileNames].map(fileIdentityKeyFromFileName));
+    if (targetKeys.size === 0) {
+      return false;
+    }
+    const queue = [fileIdentityKeyFromFileName(ownerFileName)];
+    const visited = new Set<string>();
+    while (queue.length > 0) {
+      const ownerKey = queue.shift()!;
+      if (visited.has(ownerKey)) {
+        continue;
+      }
+      visited.add(ownerKey);
+      const entry = this.forward.get(ownerKey);
+      if (!entry) {
+        continue;
+      }
+      for (const targetKey of entry.targetFileNames) {
+        if (targetKeys.has(targetKey)) {
+          return true;
+        }
+        if (options.transitive === true && !visited.has(targetKey)) {
+          queue.push(targetKey);
+        }
+      }
+    }
+    return false;
+  }
+
+  dependentFileNamesForTargets(
+    targetFileNames: Iterable<string>,
+    options: { transitive?: boolean } = {},
+  ): string[] {
+    const resultKeys = new Set<string>();
+    const queue = [...targetFileNames].map(fileIdentityKeyFromFileName);
+    const visitedTargets = new Set<string>();
+    while (queue.length > 0) {
+      const targetKey = queue.shift()!;
+      if (visitedTargets.has(targetKey)) {
+        continue;
+      }
+      visitedTargets.add(targetKey);
+      for (const ownerKey of this.reverse.get(targetKey) ?? []) {
+        resultKeys.add(ownerKey);
+        if (options.transitive === true && !visitedTargets.has(ownerKey)) {
+          queue.push(ownerKey);
+        }
+      }
+    }
+    return [...resultKeys]
+      .map((ownerKey) => this.forward.get(ownerKey)?.fileName)
+      .filter((fileName): fileName is string => fileName !== undefined);
+  }
+
+  clearEphemeral(): void {
+    for (const [ownerKey, entry] of Array.from(this.forward)) {
+      if (entry.ephemeral === true) {
+        this.remove(ownerKey);
+      }
+    }
+  }
+
+  private upsertEntry(
+    fileName: string,
+    source: DiskAnalysisSourceMetadata,
+    targetFileNames: Iterable<string>,
+    refsFingerprint: string,
+    ephemeral: boolean,
+  ): void {
+    const ownerKey = fileIdentityKeyFromFileName(fileName);
+    this.remove(ownerKey);
+    const targets = new Set([...targetFileNames].map(fileIdentityKeyFromFileName));
+    this.forward.set(ownerKey, {
+      fileName,
+      source,
+      targetFileNames: targets,
+      refsFingerprint,
+      ephemeral,
+    });
+    for (const targetKey of targets) {
+      const owners = this.reverse.get(targetKey);
+      if (owners) {
+        owners.add(ownerKey);
+      } else {
+        this.reverse.set(targetKey, new Set([ownerKey]));
+      }
+    }
   }
 
   private remove(ownerKey: string): void {

@@ -8,6 +8,7 @@ import { VbDiagnosticsWorkerPool } from "./vb-worker-pool";
 import { VbReferencesWorkerPool } from "./vb-references-worker-pool";
 import {
   DiskAnalysisCache,
+  diskContentHash,
   type DiskAnalysisBuilderState,
   type DiskIncludeRefsCacheEntry,
   type DiskAnalysisSourceMetadata,
@@ -28,14 +29,11 @@ import {
   cache,
   cachedDocumentForUri,
   cachedDocumentsForUri,
-  clearIncludeDependencies,
   deleteCachedDocumentsForUri,
-  includeForwardDependencies,
-  includeReverseDependencies,
   inFlightDocumentRefreshes,
-  recordIncludeDependency,
-  resetIncludeDependencies,
-  reverseDependenciesInclude,
+  maxCachedDocumentEditHistory,
+  documentStore,
+  touchCachedDocument,
   type CachedAnalysis,
   type CachedCssContext,
   type CachedDocument,
@@ -1080,13 +1078,37 @@ class IncludeDocumentLoader {
           logDebugSummary(settings, `[asp-lsp] diskParsed.miss: ${pathToFileUri(normalized)}`);
         }
         const nextText = text ?? (await readTextFileAsync(normalized, settings.legacyEncoding));
+        const contentSource = sourceWithContentHash(source, nextText);
+        if (diskBacked && source.contentHash === undefined) {
+          const cachedParsed = await diskAnalysisCache
+            .readParsedDocument({
+              source: contentSource,
+              settingsKey: includeSummarySettingsKey(settings),
+            })
+            .catch((error) => {
+              logDiskAnalysisCacheError("diskParsed.readHash", error);
+              return undefined;
+            });
+          if (cachedParsed) {
+            const entry = includeDocumentCacheEntryFromDisk(normalized, key, cachedParsed);
+            if (this.generation(fileKey) === generation) {
+              this.cache.set(fileKey, entry);
+              this.summaryCache.set(fileKey, entry);
+              this.includeRefsCache.set(fileKey, includeRefsCacheEntryFromSummary(entry, settings));
+              rememberIncludePublicSummary(entry, settings);
+              rememberSourceMetadata(entry.source);
+              logDebugSummary(settings, `[asp-lsp] diskParsed.hashHit: ${entry.uri}`);
+            }
+            return entry;
+          }
+        }
         const entry = await createIncludeDocumentCacheEntryAsync(
           normalized,
           uri,
           nextText,
           settings,
           key,
-          source,
+          contentSource,
         );
         if (this.generation(fileKey) === generation) {
           this.cache.set(fileKey, entry);
@@ -1168,13 +1190,36 @@ class IncludeDocumentLoader {
           return undefined;
         }
         const nextText = text ?? (await readTextFileAsync(normalized, settings.legacyEncoding));
+        const contentSource = sourceWithContentHash(source, nextText);
+        if (diskBacked && source.contentHash === undefined) {
+          const cachedSummary = await diskAnalysisCache
+            .readSummary({
+              source: contentSource,
+              settingsKey: includeSummarySettingsKey(settings),
+            })
+            .catch((error) => {
+              logDiskAnalysisCacheError("diskSummary.readHash", error);
+              return undefined;
+            });
+          if (cachedSummary) {
+            const entry = includeSummaryCacheEntryFromDisk(normalized, key, cachedSummary);
+            if (this.generation(fileKey) === generation) {
+              this.summaryCache.set(fileKey, entry);
+              this.includeRefsCache.set(fileKey, includeRefsCacheEntryFromSummary(entry, settings));
+              rememberIncludePublicSummary(entry, settings);
+              rememberSourceMetadata(entry.source);
+              logDebugSummary(settings, `[asp-lsp] diskSummary.hashHit: ${entry.uri}`);
+            }
+            return entry;
+          }
+        }
         const entry = await createIncludeDocumentCacheEntryAsync(
           normalized,
           uri,
           nextText,
           settings,
           key,
-          source,
+          contentSource,
         );
         if (this.generation(fileKey) === generation) {
           this.cache.set(fileKey, entry);
@@ -1256,7 +1301,28 @@ class IncludeDocumentLoader {
           return undefined;
         }
         const nextText = text ?? (await readTextFileAsync(normalized, settings.legacyEncoding));
-        const entry = createIncludeRefsCacheEntry(normalized, uri, nextText, key, source);
+        const contentSource = sourceWithContentHash(source, nextText);
+        if (diskBacked && source.contentHash === undefined) {
+          const cachedRefs = await diskAnalysisCache
+            .readIncludeRefs({
+              source: contentSource,
+              settingsKey: includeRefsSettingsKey(settings),
+            })
+            .catch((error) => {
+              logDiskAnalysisCacheError("diskIncludeRefs.readHash", error);
+              return undefined;
+            });
+          if (cachedRefs) {
+            const entry = includeRefsCacheEntryFromDisk(normalized, key, cachedRefs);
+            if (this.generation(fileKey) === generation) {
+              this.includeRefsCache.set(fileKey, entry);
+              rememberSourceMetadata(entry.source);
+              logDebugSummary(settings, `[asp-lsp] diskIncludeRefs.hashHit: ${entry.uri}`);
+            }
+            return entry;
+          }
+        }
+        const entry = createIncludeRefsCacheEntry(normalized, uri, nextText, key, contentSource);
         if (this.generation(fileKey) === generation) {
           this.includeRefsCache.set(fileKey, entry);
           if (diskBacked) {
@@ -1499,28 +1565,23 @@ function documentAnalysisMemoryCache(): RegisteredCache {
     },
     evict: (targetBytes) => {
       let freed = 0;
-      for (const cached of cache.values()) {
+      const candidates = [...cache.values()]
+        .filter((cached) => !openDocumentForUri(cached.source.uri))
+        .sort((left, right) => left.lastAccess - right.lastAccess);
+      for (const cached of candidates) {
         if (freed >= targetBytes) {
           break;
-        }
-        if (openDocumentForUri(cached.source.uri)) {
-          continue;
         }
         const bytes = estimateCachedDocumentEvictableBytes(cached);
         if (bytes <= 0) {
           continue;
         }
-        cached.analysis = undefined;
-        cached.cssContext = undefined;
-        cached.virtuals.clear();
-        cached.virtualsMaterialized = false;
-        if (cached.parseDepth === "full") {
-          cached.parsed = parseAspDocumentSkeleton(
-            cached.source.uri,
-            cached.source.getText(),
-            cachedSettings(cached.source.uri),
-          );
-          cached.parseDepth = "skeleton";
+        const demoted = documentStore.demote(cached, {
+          settings: cachedSettings(cached.source.uri),
+          parseSkeleton: (uri, text, settings) => parseAspDocumentSkeleton(uri, text, settings),
+        });
+        if (!demoted) {
+          continue;
         }
         freed += bytes;
       }
@@ -3039,7 +3100,7 @@ function refreshCachedDocumentIncremental(
   const cacheStartedAt = process.hrtime.bigint();
   const editHistory =
     updated.impact.kind === "incremental"
-      ? [...previous.editHistory, updated.impact].slice(-8)
+      ? [...previous.editHistory, updated.impact].slice(-maxCachedDocumentEditHistory)
       : [];
   const cached = createCachedDocument(
     document,
@@ -3098,7 +3159,7 @@ async function refreshCachedDiagnosticsDocumentIncrementalAsync(
   const cacheStartedAt = process.hrtime.bigint();
   const editHistory =
     updated.impact.kind === "incremental"
-      ? [...previous.editHistory, updated.impact].slice(-8)
+      ? [...previous.editHistory, updated.impact].slice(-maxCachedDocumentEditHistory)
       : [];
   const cached = createCachedDocument(document, updated.parsed, settings, editHistory, "skeleton");
   cached.lastEditImpact = updated.impact;
@@ -3136,6 +3197,7 @@ function ensureFreshCachedDocument(document: TextDocument): CachedDocument {
     existing.parseSettingsIdentity === parseSettingsIdentity(settings)
   ) {
     updateCachedDocumentRuntimeIdentity(existing, settings);
+    touchCachedDocument(existing);
     if (existing.parseDepth === "full") {
       return existing;
     }
@@ -3188,6 +3250,7 @@ async function ensureFreshCachedDocumentAsync(document: TextDocument): Promise<C
     existing.parseSettingsIdentity === parseIdentity
   ) {
     updateCachedDocumentRuntimeIdentity(existing, settings);
+    touchCachedDocument(existing);
     return existing;
   }
   if (existing && existing.parseSettingsIdentity === parseIdentity) {
@@ -3296,6 +3359,7 @@ function createCachedDocument(
     virtualsMaterialized: false,
     identity: documentIdentityFor(document),
     generation: ++documentCacheGeneration,
+    lastAccess: Date.now(),
     parseSettingsIdentity: parseSettingsIdentity(settings),
     includeResolutionIdentity: includeResolutionIdentity(settings),
     diagnosticsIdentity: diagnosticsIdentity(settings),
@@ -3313,6 +3377,7 @@ function cacheDocumentIfCurrent(document: TextDocument, cached: CachedDocument):
   if (current && current.version !== document.version) {
     return;
   }
+  touchCachedDocument(cached);
   cache.set(document.uri, cached);
 }
 
@@ -9685,12 +9750,16 @@ function vbReferencesWorkerCacheOptions(settings: AspSettings): VbReferencesWork
       toolVersion: languageServerVersion,
     },
     freshness: cacheFreshness(settings),
-    sourceManifest: [...workspaceIndex.values()].map((entry) => ({
-      uri: entry.uri,
-      fileName: normalizeFileName(entry.fileName),
-      mtimeMs: entry.mtimeMs,
-      size: entry.size,
-    })),
+    sourceManifest: [...workspaceIndex.values()].map((entry) => {
+      const source = sourceManifest.get(fileIdentityKeyFromFileName(entry.fileName));
+      return {
+        uri: entry.uri,
+        fileName: normalizeFileName(entry.fileName),
+        mtimeMs: entry.mtimeMs,
+        size: entry.size,
+        contentHash: source?.contentHash,
+      };
+    }),
   };
 }
 
@@ -10320,11 +10389,11 @@ async function ensureIncludeGraphForOpenDocumentsAsync(changedFiles: Set<string>
   for (const document of documents.all()) {
     const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
     const ownerKey = fileIdentityKeyFromUri(cached.source.uri);
-    const existing = includeForwardDependencies.get(ownerKey);
     const affected =
       changedFileKeys.has(ownerKey) ||
-      (existing ? setsIntersect(existing, changedFileKeys) : false) ||
-      reverseDependenciesInclude(changedFileKeys, ownerKey);
+      workspaceIncludeGraph.dependsOnAnyTarget(uriToFileName(cached.source.uri), changedFiles, {
+        transitive: true,
+      });
     if (!affected) {
       continue;
     }
@@ -10355,6 +10424,7 @@ async function collectIncludeDependencyGraphForCachedAsync(
       noteTruncated("depth>20");
       return;
     }
+    resetIncludeDependencies(ownerUri);
     await prefetchIncludeRefsForOwnerAsync(ownerUri, includeRefs, settings);
     for (const include of includeRefs) {
       const resolved = await resolveIncludePathDetailsAsync(
@@ -10364,7 +10434,7 @@ async function collectIncludeDependencyGraphForCachedAsync(
         settings,
       );
       const includeUri = pathToFileUri(resolved.fileName);
-      recordIncludeDependency(cached.source.uri, includeUri);
+      recordIncludeDependency(ownerUri, includeUri);
       const includeKey = fileIdentityKeyFromFileName(resolved.fileName);
       if (!resolved.exists || visited.has(includeKey)) {
         continue;
@@ -10410,15 +10480,6 @@ async function collectIncludeDependencyGraphForCachedAsync(
   }
 }
 
-function setsIntersect<T>(left: Set<T>, right: Set<T>): boolean {
-  for (const item of left) {
-    if (right.has(item)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function affectedOpenUrisForAspChanges(
   changes: WatchedAspFileChange[],
   publicChangedFiles: Set<string>,
@@ -10434,7 +10495,11 @@ function affectedOpenUrisForAspChanges(
     if (!publicChangedFiles.has(fileIdentityKeyFromFileName(change.fileName))) {
       continue;
     }
-    for (const dependentKey of includeReverseDependencies.get(changedKey) ?? []) {
+    for (const dependentFileName of workspaceIncludeGraph.dependentFileNamesForTargets(
+      [change.fileName],
+      { transitive: true },
+    )) {
+      const dependentKey = fileIdentityKeyFromFileName(dependentFileName);
       const dependentUri = openUrisByFileKey.get(dependentKey);
       if (dependentUri) {
         affected.add(dependentUri);
@@ -10458,6 +10523,27 @@ function clearIncludeGraph(): void {
   clearIncludeDependencies();
   includePublicSummaries.clear();
   aspProjectBuilderState.clear();
+}
+
+function resetIncludeDependencies(ownerUriOrFileName: string): void {
+  workspaceIncludeGraph.delete(includeDependencyFileName(ownerUriOrFileName));
+}
+
+function recordIncludeDependency(ownerUriOrFileName: string, includeUriOrFileName: string): void {
+  workspaceIncludeGraph.recordEphemeralDependency(
+    includeDependencyFileName(ownerUriOrFileName),
+    includeDependencyFileName(includeUriOrFileName),
+  );
+}
+
+function clearIncludeDependencies(): void {
+  workspaceIncludeGraph.clearEphemeral();
+}
+
+function includeDependencyFileName(uriOrFileName: string): string {
+  return normalizeFileName(
+    uriOrFileName.startsWith("file://") ? uriToFileName(uriOrFileName) : uriOrFileName,
+  );
 }
 
 function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.invalidate"): void {
@@ -11072,6 +11158,7 @@ async function collectFullVbProjectDocumentsForWorkspaceOperationAsync(
       noteTruncated("depth>20");
       return;
     }
+    resetIncludeDependencies(document.uri);
     for (const include of document.includes) {
       const resolved = await resolveIncludePathDetailsAsync(
         document.uri,
@@ -11080,7 +11167,7 @@ async function collectFullVbProjectDocumentsForWorkspaceOperationAsync(
         settings,
       );
       const includeUri = pathToFileUri(resolved.fileName);
-      recordIncludeDependency(cached.source.uri, includeUri);
+      recordIncludeDependency(document.uri, includeUri);
       const includeKey = fileIdentityKeyFromFileName(resolved.fileName);
       if (!resolved.exists || visited.has(includeKey)) {
         continue;
@@ -11167,6 +11254,7 @@ async function collectVbProjectSummaryGraphAsync(
       noteTruncated("depth>20");
       return;
     }
+    resetIncludeDependencies(owner.uri);
     for (const include of owner.includeRefs) {
       const resolved = await resolveIncludePathDetailsAsync(
         owner.uri,
@@ -11175,7 +11263,7 @@ async function collectVbProjectSummaryGraphAsync(
         settings,
       );
       const includeUri = pathToFileUri(resolved.fileName);
-      recordIncludeDependency(cached.source.uri, includeUri);
+      recordIncludeDependency(owner.uri, includeUri);
       const includeKey = fileIdentityKeyFromFileName(resolved.fileName);
       if (!resolved.exists || visited.has(includeKey)) {
         continue;
@@ -11307,9 +11395,11 @@ function scheduleIncludeSummaryRefresh(
       if (ownerDocument) {
         affected.add(ownerDocument.uri);
       }
-      for (const dependentKey of includeReverseDependencies.get(
-        fileIdentityKeyFromUri(entry.uri),
-      ) ?? []) {
+      for (const dependentFileName of workspaceIncludeGraph.dependentFileNamesForTargets(
+        [uriToFileName(entry.uri)],
+        { transitive: true },
+      )) {
+        const dependentKey = fileIdentityKeyFromFileName(dependentFileName);
         const dependent = documents
           .all()
           .find((document) => fileIdentityKeyFromUri(document.uri) === dependentKey);
@@ -11405,6 +11495,7 @@ async function includeDocumentSourceIdentityAsync(
       fileName: normalized,
       mtimeMs: openDocument.version,
       size: text.length,
+      contentHash: diskContentHash(text),
     };
     return {
       key: JSON.stringify({
@@ -11671,7 +11762,7 @@ function createIncludeRefsCacheEntry(
     key,
     fileName,
     uri,
-    source,
+    source: sourceWithContentHash(source, text),
     includeRefs,
     fingerprint: includeRefsFingerprint(includeRefs),
   };
@@ -11693,7 +11784,7 @@ async function createIncludeDocumentCacheEntryAsync(
     key,
     fileName,
     uri: parsed.uri,
-    source,
+    source: sourceWithContentHash(source, text),
     parsed,
     summary,
     publicFingerprint: publicSignature.fingerprint,
@@ -11711,11 +11802,13 @@ function sameDiskAnalysisSource(
   left: DiskAnalysisSourceMetadata,
   right: DiskAnalysisSourceMetadata,
 ): boolean {
-  return (
-    fileIdentityKeyFromFileName(left.fileName) === fileIdentityKeyFromFileName(right.fileName) &&
-    left.mtimeMs === right.mtimeMs &&
-    left.size === right.size
-  );
+  if (fileIdentityKeyFromFileName(left.fileName) !== fileIdentityKeyFromFileName(right.fileName)) {
+    return false;
+  }
+  if (left.contentHash !== undefined && right.contentHash !== undefined) {
+    return left.contentHash === right.contentHash;
+  }
+  return left.mtimeMs === right.mtimeMs && left.size === right.size;
 }
 
 function diskAnalysisSourceIdentity(
@@ -11724,6 +11817,17 @@ function diskAnalysisSourceIdentity(
   return {
     ...source,
     fileName: fileIdentityKeyFromFileName(source.fileName),
+  };
+}
+
+function sourceWithContentHash(
+  source: DiskAnalysisSourceMetadata,
+  text: string,
+): DiskAnalysisSourceMetadata {
+  const contentHash = source.contentHash ?? diskContentHash(text);
+  return {
+    ...source,
+    contentHash,
   };
 }
 
@@ -11989,7 +12093,6 @@ async function findIncludeCycleAsync(
   const visited = new Set<string>();
   const stack: string[] = [];
   const stackIndexes = new Map<string, number>();
-  const ownerUri = pathToFileUri(owner);
   let totalTextLength = 0;
   let truncatedReason: string | undefined;
   let missingSummary = false;
@@ -12005,6 +12108,7 @@ async function findIncludeCycleAsync(
     }
     const normalized = normalizeFileName(fileName);
     const fileKey = fileIdentityKeyFromFileName(normalized);
+    resetIncludeDependencies(pathToFileUri(normalized));
     if (sameFile(normalized, owner) && stack.length > 0) {
       return [...stack, owner];
     }
@@ -12052,7 +12156,7 @@ async function findIncludeCycleAsync(
         include.mode,
         settings,
       );
-      recordIncludeDependency(ownerUri, pathToFileUri(next.fileName));
+      recordIncludeDependency(pathToFileUri(normalized), pathToFileUri(next.fileName));
       if (!next.exists) {
         continue;
       }
@@ -12485,6 +12589,7 @@ async function diagnosticsForIndexed(
     }
   }
   const cached = await cachedFromIndexedAsync(entry, settings);
+  const contentSourceMetadata = sourceWithContentHash(sourceMetadata, cached.source.getText());
   if (cancellation.isCancellationRequested()) {
     return [];
   }
@@ -12494,7 +12599,7 @@ async function diagnosticsForIndexed(
   }
   const cachedDiagnostics = await readDiskAnalysisDiagnostics(
     entry,
-    sourceMetadata,
+    contentSourceMetadata,
     settingsKey,
     settings,
   );
@@ -12517,7 +12622,7 @@ async function diagnosticsForIndexed(
     return [];
   }
   await diskAnalysisCache.write({
-    source: sourceMetadata,
+    source: contentSourceMetadata,
     settingsKey,
     diagnostics: items,
     builderState: aspProjectBuilderState.diskStateForUri(cached.source.uri),
@@ -12883,6 +12988,7 @@ async function writeWorkspaceIndexToDiskAsync(settings: AspSettings): Promise<vo
     fileName: normalizeFileName(entry.fileName),
     mtimeMs: entry.mtimeMs,
     size: entry.size,
+    contentHash: sourceManifest.get(fileIdentityKeyFromFileName(entry.fileName))?.contentHash,
   }));
   await diskAnalysisCache
     .writeWorkspaceIndex({

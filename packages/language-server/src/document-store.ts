@@ -5,6 +5,7 @@ import type {
   AspEditImpact,
   AspEmbeddedLanguage,
   AspIncrementalChange,
+  AspSettings,
   AspParsedDocument,
   FileAnalysisSummary,
   VbProjectContext,
@@ -14,6 +15,8 @@ import type {
 } from "@asp-lsp/core";
 import { fileIdentityKeyFromUri, sameFileIdentityUri } from "./file-identity";
 import type { VbProjectAnalysis, VbProjectSummaryGraph } from "./analysis-caches";
+
+export const maxCachedDocumentEditHistory = 64;
 
 export interface SemanticTokenData {
   line: number;
@@ -32,6 +35,8 @@ export interface CachedDocument {
   cssContext?: CachedCssContext;
   identity: DocumentIdentity;
   generation: number;
+  lastAccess: number;
+  demotedAt?: number;
   parseSettingsIdentity: string;
   includeResolutionIdentity: string;
   diagnosticsIdentity: string;
@@ -150,17 +155,16 @@ export class DocumentStore {
   readonly cache = new Map<string, CachedDocument>();
   readonly inFlightDocumentRefreshes = new Map<string, InFlightDocumentRefresh>();
 
-  // TODO(P2): Replace these duplicate include dependency maps with WorkspaceIncludeGraph.
-  readonly includeForwardDependencies = new Map<string, Set<string>>();
-  readonly includeReverseDependencies = new Map<string, Set<string>>();
-
   cachedDocumentForUri(uri: string): CachedDocument | undefined {
-    return (
+    const cached =
       this.cache.get(uri) ??
       (uri.startsWith("file://")
         ? [...this.cache.values()].find((cached) => sameFileIdentityUri(cached.source.uri, uri))
-        : undefined)
-    );
+        : undefined);
+    if (cached) {
+      this.touch(cached);
+    }
+    return cached;
   }
 
   cachedDocumentsForUri(uri: string): CachedDocument[] {
@@ -172,7 +176,11 @@ export class DocumentStore {
     const matches = [...this.cache.values()].filter(
       (cached) => fileIdentityKeyFromUri(cached.source.uri) === fileKey,
     );
-    return direct && !matches.includes(direct) ? [direct, ...matches] : matches;
+    const result = direct && !matches.includes(direct) ? [direct, ...matches] : matches;
+    for (const cached of result) {
+      this.touch(cached);
+    }
+    return result;
   }
 
   deleteCachedDocumentsForUri(uri: string): void {
@@ -186,59 +194,48 @@ export class DocumentStore {
     }
   }
 
-  reverseDependenciesInclude(includeKeys: Set<string>, ownerKey: string): boolean {
-    for (const includeKey of includeKeys) {
-      if (this.includeReverseDependencies.get(includeKey)?.has(ownerKey)) {
-        return true;
-      }
-    }
-    return false;
+  touch(cached: CachedDocument, now = Date.now()): void {
+    cached.lastAccess = now;
   }
 
-  resetIncludeDependencies(ownerUri: string): void {
-    const ownerKey = fileIdentityKeyFromUri(ownerUri);
-    const previous = this.includeForwardDependencies.get(ownerKey);
-    if (!previous) {
-      return;
+  demote(
+    cached: CachedDocument,
+    options: {
+      settings: AspSettings;
+      parseSkeleton: (uri: string, text: string, settings: AspSettings) => AspParsedDocument;
+      now?: number;
+    },
+  ): boolean {
+    const hadEvictableState =
+      cached.analysis !== undefined ||
+      cached.cssContext !== undefined ||
+      cached.virtuals.size > 0 ||
+      cached.virtualsMaterialized ||
+      cached.parseDepth === "full";
+    if (!hadEvictableState) {
+      return false;
     }
-    for (const includeKey of previous) {
-      const owners = this.includeReverseDependencies.get(includeKey);
-      owners?.delete(ownerKey);
-      if (owners?.size === 0) {
-        this.includeReverseDependencies.delete(includeKey);
-      }
+    cached.analysis = undefined;
+    cached.cssContext = undefined;
+    cached.virtuals.clear();
+    cached.virtualsMaterialized = false;
+    if (cached.parseDepth === "full") {
+      cached.parsed = options.parseSkeleton(
+        cached.source.uri,
+        cached.source.getText(),
+        options.settings,
+      );
+      cached.parseDepth = "skeleton";
     }
-    this.includeForwardDependencies.delete(ownerKey);
-  }
-
-  recordIncludeDependency(ownerUri: string, includeUri: string): void {
-    const ownerKey = fileIdentityKeyFromUri(ownerUri);
-    const includeKey = fileIdentityKeyFromUri(includeUri);
-    let forward = this.includeForwardDependencies.get(ownerKey);
-    if (!forward) {
-      forward = new Set();
-      this.includeForwardDependencies.set(ownerKey, forward);
-    }
-    forward.add(includeKey);
-    let reverse = this.includeReverseDependencies.get(includeKey);
-    if (!reverse) {
-      reverse = new Set();
-      this.includeReverseDependencies.set(includeKey, reverse);
-    }
-    reverse.add(ownerKey);
-  }
-
-  clearIncludeDependencies(): void {
-    this.includeForwardDependencies.clear();
-    this.includeReverseDependencies.clear();
+    cached.demotedAt = options.now ?? Date.now();
+    cached.generation += 1;
+    return true;
   }
 }
 
 export const documentStore = new DocumentStore();
 export const cache = documentStore.cache;
 export const inFlightDocumentRefreshes = documentStore.inFlightDocumentRefreshes;
-export const includeForwardDependencies = documentStore.includeForwardDependencies;
-export const includeReverseDependencies = documentStore.includeReverseDependencies;
 
 export const cachedDocumentForUri = (uri: string): CachedDocument | undefined =>
   documentStore.cachedDocumentForUri(uri);
@@ -246,10 +243,5 @@ export const cachedDocumentsForUri = (uri: string): CachedDocument[] =>
   documentStore.cachedDocumentsForUri(uri);
 export const deleteCachedDocumentsForUri = (uri: string): void =>
   documentStore.deleteCachedDocumentsForUri(uri);
-export const reverseDependenciesInclude = (includeKeys: Set<string>, ownerKey: string): boolean =>
-  documentStore.reverseDependenciesInclude(includeKeys, ownerKey);
-export const resetIncludeDependencies = (ownerUri: string): void =>
-  documentStore.resetIncludeDependencies(ownerUri);
-export const recordIncludeDependency = (ownerUri: string, includeUri: string): void =>
-  documentStore.recordIncludeDependency(ownerUri, includeUri);
-export const clearIncludeDependencies = (): void => documentStore.clearIncludeDependencies();
+export const touchCachedDocument = (cached: CachedDocument, now?: number): void =>
+  documentStore.touch(cached, now);

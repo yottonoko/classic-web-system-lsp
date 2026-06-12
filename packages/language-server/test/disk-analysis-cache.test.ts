@@ -323,7 +323,7 @@ describe("DiskAnalysisCache", () => {
         settingsKey: "settings",
       };
       await cache.write({ ...lookup, diagnostics: [] });
-      const fileName = path.join(directory, fs.readdirSync(directory)[0]);
+      const fileName = cacheFiles(directory)[0];
       fs.writeFileSync(fileName, "not-cbor");
       expect(await cache.read(lookup)).toBeUndefined();
 
@@ -337,7 +337,7 @@ describe("DiskAnalysisCache", () => {
       });
       await new Promise((resolve) => setTimeout(resolve, 10));
       await cache.sweep();
-      expect(fs.readdirSync(directory)).toHaveLength(0);
+      expect(cacheFiles(directory)).toHaveLength(0);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -366,14 +366,156 @@ describe("DiskAnalysisCache", () => {
           })),
         });
       }
-      const beforeSweep = fs.readdirSync(directory).length;
+      const beforeSweep = cacheFiles(directory).length;
       await cache.sweep();
       expect(beforeSweep).toBeGreaterThan(0);
-      expect(fs.readdirSync(directory).length).toBeLessThan(beforeSweep);
+      expect(cacheFiles(directory).length).toBeLessThan(beforeSweep);
       await cache.clear();
       expect(fs.existsSync(directory)).toBe(false);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("stores entries under v6 shard directories", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
+    try {
+      const cache = new DiskAnalysisCache({
+        enabled: true,
+        directory,
+        namespace: "test",
+        toolVersion: "1",
+      });
+      const lookup = {
+        source: { fileName: "/site/default.asp", mtimeMs: 1, size: 10 },
+        settingsKey: "settings",
+      };
+      await cache.write({ ...lookup, diagnostics: [] });
+      const files = cacheFiles(directory);
+      expect(files).toHaveLength(1);
+      expect(path.relative(directory, files[0])).toMatch(/^[0-9a-f]{2}[/\\][0-9a-f]{64}\.cbor$/);
+      expect(await cache.read(lookup)).toEqual([]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("uses content hashes as secondary source verification", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
+    try {
+      const cache = new DiskAnalysisCache({
+        enabled: true,
+        directory,
+        namespace: "test",
+        toolVersion: "1",
+      });
+      const lookup = {
+        source: {
+          fileName: "/site/default.asp",
+          mtimeMs: 1,
+          size: 10,
+          contentHash: "same-content",
+        },
+        settingsKey: "settings",
+      };
+      await cache.write({
+        ...lookup,
+        diagnostics: [
+          {
+            message: "cached",
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: 0, character: 1 },
+            },
+          },
+        ],
+      });
+      expect(
+        (
+          await cache.read({
+            ...lookup,
+            source: { ...lookup.source, mtimeMs: 2, size: 99 },
+          })
+        )?.[0]?.message,
+      ).toBe("cached");
+      expect(
+        await cache.read({
+          ...lookup,
+          source: { ...lookup.source, contentHash: "different-content" },
+        }),
+      ).toBeUndefined();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("drops oversized large-kind entries before decoding", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-disk-cache-"));
+    try {
+      const cache = new DiskAnalysisCache({
+        enabled: true,
+        directory,
+        maxSizeMb: 0.01,
+        namespace: "test",
+        toolVersion: "1",
+      });
+      const lookup = {
+        source: { fileName: "/site/default.asp", mtimeMs: 1, size: 10 },
+        settingsKey: "parsed-settings",
+      };
+      const parsed: AspParsedDocument = {
+        uri: "file:///site/default.asp",
+        text: "x".repeat(600 * 1024),
+        cst: {
+          kind: "Document",
+          start: 0,
+          end: 600 * 1024,
+          contentStart: 0,
+          contentEnd: 600 * 1024,
+          tokens: [],
+          children: [],
+        },
+        regions: [],
+        directives: [],
+        includes: [],
+        serverObjects: [],
+        defaultLanguage: "VBScript",
+        diagnostics: [],
+      };
+      const summary: FileAnalysisSummary = {
+        uri: parsed.uri,
+        fingerprint: "parsed",
+        defaultLanguage: "VBScript",
+        languageRegions: [],
+        includeRefs: [],
+        diagnostics: [],
+      };
+      await cache.writeParsedDocument({ ...lookup, parsed, summary });
+      expect(cacheFiles(directory)).toHaveLength(1);
+      expect(await cache.readParsedDocument(lookup)).toBeUndefined();
+      expect(cacheFiles(directory)).toHaveLength(0);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
+
+function cacheFiles(directory: string): string[] {
+  if (!fs.existsSync(directory)) {
+    return [];
+  }
+  const files: string[] = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isFile() && entry.name.endsWith(".cbor")) {
+      files.push(entryPath);
+    } else if (entry.isDirectory()) {
+      for (const child of fs.readdirSync(entryPath, { withFileTypes: true })) {
+        if (child.isFile() && child.name.endsWith(".cbor")) {
+          files.push(path.join(entryPath, child.name));
+        }
+      }
+    }
+  }
+  return files;
+}

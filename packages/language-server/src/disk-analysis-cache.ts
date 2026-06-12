@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { decode, encode } from "cbor-x";
@@ -10,9 +11,10 @@ import type {
 } from "@asp-lsp/core";
 import type { Diagnostic } from "vscode-languageserver-types";
 
-const formatVersion = 5;
+const formatVersion = 6;
 const defaultTtlHours = 24 * 14;
 const defaultMaxSizeMb = 128;
+const defaultSweepBatchSize = 128;
 type DiskCacheEntryKind =
   | "diagnostics"
   | "summary"
@@ -35,6 +37,7 @@ export interface DiskAnalysisSourceMetadata {
   fileName: string;
   mtimeMs: number;
   size: number;
+  contentHash?: string;
 }
 
 export interface DiskAnalysisCacheLookup {
@@ -73,6 +76,7 @@ export interface DiskWorkspaceIndexedDocument {
   fileName: string;
   mtimeMs: number;
   size: number;
+  contentHash?: string;
 }
 
 export interface DiskWorkspaceIndexCacheEntry {
@@ -195,7 +199,10 @@ export class DiskAnalysisCache {
     if (!this.enabled) {
       return undefined;
     }
-    const entry = await this.readEntry(this.fileNameForLookup(lookup, "diagnostics"));
+    const entry = await this.readEntry(
+      this.fileNameForLookup(lookup, "diagnostics"),
+      "diagnostics",
+    );
     if (!entry || entry.kind !== "diagnostics" || !this.matches(entry, lookup, "diagnostics")) {
       return undefined;
     }
@@ -206,7 +213,7 @@ export class DiskAnalysisCache {
     if (!this.enabled) {
       return undefined;
     }
-    const entry = await this.readEntry(this.fileNameForLookup(lookup, "summary"));
+    const entry = await this.readEntry(this.fileNameForLookup(lookup, "summary"), "summary");
     if (!entry || entry.kind !== "summary" || !this.matches(entry, lookup, "summary")) {
       return undefined;
     }
@@ -219,7 +226,10 @@ export class DiskAnalysisCache {
     if (!this.enabled) {
       return undefined;
     }
-    const entry = await this.readEntry(this.fileNameForLookup(lookup, "includeRefs"));
+    const entry = await this.readEntry(
+      this.fileNameForLookup(lookup, "includeRefs"),
+      "includeRefs",
+    );
     if (!entry || entry.kind !== "includeRefs" || !this.matches(entry, lookup, "includeRefs")) {
       return undefined;
     }
@@ -232,7 +242,10 @@ export class DiskAnalysisCache {
     if (!this.enabled) {
       return undefined;
     }
-    const entry = await this.readEntry(this.fileNameForLookup(lookup, "vbSymbolIndex"));
+    const entry = await this.readEntry(
+      this.fileNameForLookup(lookup, "vbSymbolIndex"),
+      "vbSymbolIndex",
+    );
     if (!entry || entry.kind !== "vbSymbolIndex" || !this.matches(entry, lookup, "vbSymbolIndex")) {
       return undefined;
     }
@@ -245,7 +258,10 @@ export class DiskAnalysisCache {
     if (!this.enabled) {
       return undefined;
     }
-    const entry = await this.readEntry(this.fileNameForLookup(lookup, "parsedDocument"));
+    const entry = await this.readEntry(
+      this.fileNameForLookup(lookup, "parsedDocument"),
+      "parsedDocument",
+    );
     if (
       !entry ||
       entry.kind !== "parsedDocument" ||
@@ -260,7 +276,10 @@ export class DiskAnalysisCache {
     if (!this.enabled) {
       return undefined;
     }
-    const entry = await this.readEntry(this.fileNameForKey(settingsKey, "workspaceIndex"));
+    const entry = await this.readEntry(
+      this.fileNameForKey(settingsKey, "workspaceIndex"),
+      "workspaceIndex",
+    );
     if (
       !entry ||
       entry.kind !== "workspaceIndex" ||
@@ -277,7 +296,10 @@ export class DiskAnalysisCache {
     if (!this.enabled) {
       return undefined;
     }
-    const entry = await this.readEntry(this.fileNameForKey(settingsKey, "workspaceIncludeGraph"));
+    const entry = await this.readEntry(
+      this.fileNameForKey(settingsKey, "workspaceIncludeGraph"),
+      "workspaceIncludeGraph",
+    );
     if (
       !entry ||
       entry.kind !== "workspaceIncludeGraph" ||
@@ -292,7 +314,6 @@ export class DiskAnalysisCache {
     if (!this.enabled) {
       return;
     }
-    await fs.promises.mkdir(this.root, { recursive: true });
     const payload: PersistedDiskAnalysisEntry = {
       ...entry,
       kind: "diagnostics",
@@ -301,14 +322,13 @@ export class DiskAnalysisCache {
       namespace: this.options.namespace,
       writtenAt: Date.now(),
     };
-    await fs.promises.writeFile(this.fileNameForLookup(entry, "diagnostics"), encode(payload));
+    await this.writeEntry(this.fileNameForLookup(entry, "diagnostics"), payload);
   }
 
   async writeSummary(entry: DiskSummaryCacheEntry): Promise<void> {
     if (!this.enabled) {
       return;
     }
-    await fs.promises.mkdir(this.root, { recursive: true });
     const payload: PersistedDiskSummaryEntry = {
       ...entry,
       kind: "summary",
@@ -317,14 +337,13 @@ export class DiskAnalysisCache {
       namespace: this.options.namespace,
       writtenAt: Date.now(),
     };
-    await fs.promises.writeFile(this.fileNameForLookup(entry, "summary"), encode(payload));
+    await this.writeEntry(this.fileNameForLookup(entry, "summary"), payload);
   }
 
   async writeIncludeRefs(entry: DiskIncludeRefsCacheEntry): Promise<void> {
     if (!this.enabled) {
       return;
     }
-    await fs.promises.mkdir(this.root, { recursive: true });
     const payload: PersistedDiskIncludeRefsEntry = {
       ...entry,
       kind: "includeRefs",
@@ -333,14 +352,13 @@ export class DiskAnalysisCache {
       namespace: this.options.namespace,
       writtenAt: Date.now(),
     };
-    await fs.promises.writeFile(this.fileNameForLookup(entry, "includeRefs"), encode(payload));
+    await this.writeEntry(this.fileNameForLookup(entry, "includeRefs"), payload);
   }
 
   async writeVbSymbolIndex(entry: DiskVbSymbolIndexCacheEntry): Promise<void> {
     if (!this.enabled) {
       return;
     }
-    await fs.promises.mkdir(this.root, { recursive: true });
     const payload: PersistedDiskVbSymbolIndexEntry = {
       ...entry,
       kind: "vbSymbolIndex",
@@ -349,14 +367,13 @@ export class DiskAnalysisCache {
       namespace: this.options.namespace,
       writtenAt: Date.now(),
     };
-    await fs.promises.writeFile(this.fileNameForLookup(entry, "vbSymbolIndex"), encode(payload));
+    await this.writeEntry(this.fileNameForLookup(entry, "vbSymbolIndex"), payload);
   }
 
   async writeParsedDocument(entry: DiskParsedDocumentCacheEntry): Promise<void> {
     if (!this.enabled) {
       return;
     }
-    await fs.promises.mkdir(this.root, { recursive: true });
     const payload: PersistedDiskParsedDocumentEntry = {
       ...entry,
       kind: "parsedDocument",
@@ -365,14 +382,13 @@ export class DiskAnalysisCache {
       namespace: this.options.namespace,
       writtenAt: Date.now(),
     };
-    await fs.promises.writeFile(this.fileNameForLookup(entry, "parsedDocument"), encode(payload));
+    await this.writeEntry(this.fileNameForLookup(entry, "parsedDocument"), payload);
   }
 
   async writeWorkspaceIndex(entry: DiskWorkspaceIndexCacheEntry): Promise<void> {
     if (!this.enabled) {
       return;
     }
-    await fs.promises.mkdir(this.root, { recursive: true });
     const payload: PersistedDiskWorkspaceIndexEntry = {
       ...entry,
       kind: "workspaceIndex",
@@ -381,17 +397,13 @@ export class DiskAnalysisCache {
       namespace: this.options.namespace,
       writtenAt: Date.now(),
     };
-    await fs.promises.writeFile(
-      this.fileNameForKey(entry.settingsKey, "workspaceIndex"),
-      encode(payload),
-    );
+    await this.writeEntry(this.fileNameForKey(entry.settingsKey, "workspaceIndex"), payload);
   }
 
   async writeWorkspaceIncludeGraph(entry: DiskWorkspaceIncludeGraphCacheEntry): Promise<void> {
     if (!this.enabled) {
       return;
     }
-    await fs.promises.mkdir(this.root, { recursive: true });
     const payload: PersistedDiskWorkspaceIncludeGraphEntry = {
       ...entry,
       kind: "workspaceIncludeGraph",
@@ -400,36 +412,38 @@ export class DiskAnalysisCache {
       namespace: this.options.namespace,
       writtenAt: Date.now(),
     };
-    await fs.promises.writeFile(
-      this.fileNameForKey(entry.settingsKey, "workspaceIncludeGraph"),
-      encode(payload),
-    );
+    await this.writeEntry(this.fileNameForKey(entry.settingsKey, "workspaceIncludeGraph"), payload);
   }
 
   async clear(): Promise<void> {
     await fs.promises.rm(this.root, { recursive: true, force: true });
   }
 
-  async sweep(): Promise<void> {
+  async sweep(options: { batchSize?: number } = {}): Promise<void> {
     if (!this.enabled) {
       return;
     }
+    const batchSize = Math.max(1, Math.floor(options.batchSize ?? defaultSweepBatchSize));
     const files = await this.cacheFiles();
     const now = Date.now();
     let entries: Array<{ fileName: string; size: number; writtenAt: number }> = [];
-    for (const fileName of files) {
+    for (let index = 0; index < files.length; index += 1) {
+      const fileName = files[index];
       const stat = await fs.promises.stat(fileName).catch(() => undefined);
       const entry = await this.readEntry(fileName);
       const expired = !entry || now - entry.writtenAt > this.ttlMs;
       if (expired) {
         await fs.promises.rm(fileName, { force: true });
-        continue;
+      } else {
+        entries.push({
+          fileName,
+          size: stat?.size ?? 0,
+          writtenAt: entry.writtenAt,
+        });
       }
-      entries.push({
-        fileName,
-        size: stat?.size ?? 0,
-        writtenAt: entry.writtenAt,
-      });
+      if ((index + 1) % batchSize === 0) {
+        await yieldToEventLoop();
+      }
     }
     let total = entries.reduce((sum, entry) => sum + entry.size, 0);
     entries = entries.sort((left, right) => left.writtenAt - right.writtenAt);
@@ -439,6 +453,7 @@ export class DiskAnalysisCache {
       }
       await fs.promises.rm(entry.fileName, { force: true });
       total -= entry.size;
+      await yieldToEventLoop();
     }
   }
 
@@ -454,11 +469,24 @@ export class DiskAnalysisCache {
       entry.toolVersion === this.options.toolVersion &&
       entry.namespace === this.options.namespace &&
       entry.settingsKey === lookup.settingsKey &&
-      entry.source.fileName === lookup.source.fileName &&
-      entry.source.mtimeMs === lookup.source.mtimeMs &&
-      entry.source.size === lookup.source.size &&
+      this.sourceMatches(entry.source, lookup.source) &&
       Date.now() - entry.writtenAt <= this.ttlMs
     );
+  }
+
+  private sourceMatches(
+    entrySource: DiskAnalysisSourceMetadata,
+    lookupSource: DiskAnalysisSourceMetadata,
+  ): boolean {
+    if (entrySource.fileName !== lookupSource.fileName) {
+      return false;
+    }
+    const entryHash = entrySource.contentHash;
+    const lookupHash = lookupSource.contentHash;
+    if (entryHash !== undefined && lookupHash !== undefined) {
+      return entryHash === lookupHash;
+    }
+    return entrySource.mtimeMs === lookupSource.mtimeMs && entrySource.size === lookupSource.size;
   }
 
   private matchesWorkspaceIndex(
@@ -489,13 +517,28 @@ export class DiskAnalysisCache {
     );
   }
 
-  private async readEntry(fileName: string): Promise<PersistedDiskEntry | undefined> {
+  private async readEntry(
+    fileName: string,
+    kind?: DiskCacheEntryKind,
+  ): Promise<PersistedDiskEntry | undefined> {
     try {
+      if (kind && isLargeEntryKind(kind)) {
+        const stat = await fs.promises.stat(fileName).catch(() => undefined);
+        if (stat && stat.size > this.largeEntryReadLimitBytes(kind)) {
+          await fs.promises.rm(fileName, { force: true }).catch(() => undefined);
+          return undefined;
+        }
+      }
       return decode(await fs.promises.readFile(fileName)) as PersistedDiskEntry;
     } catch {
       await fs.promises.rm(fileName, { force: true }).catch(() => undefined);
       return undefined;
     }
+  }
+
+  private async writeEntry(fileName: string, payload: PersistedDiskEntry): Promise<void> {
+    await fs.promises.mkdir(path.dirname(fileName), { recursive: true });
+    await fs.promises.writeFile(fileName, encode(payload));
   }
 
   private fileNameForLookup(lookup: DiskAnalysisCacheLookup, kind: DiskCacheEntryKind): string {
@@ -509,34 +552,64 @@ export class DiskAnalysisCache {
   }
 
   private fileNameForKey(key: string, kind: DiskCacheEntryKind): string {
-    return path.join(
-      this.root,
-      `${stableHash(
-        JSON.stringify({
-          kind,
-          namespace: this.options.namespace,
-          key,
-        }),
-      )}.cbor`,
+    const hash = stableHash(
+      JSON.stringify({
+        kind,
+        namespace: this.options.namespace,
+        key,
+      }),
     );
+    return path.join(this.root, hash.slice(0, 2), `${hash}.cbor`);
   }
 
   private async cacheFiles(): Promise<string[]> {
     try {
-      return (await fs.promises.readdir(this.root))
-        .filter((entry) => entry.endsWith(".cbor"))
-        .map((entry) => path.join(this.root, entry));
+      const rootEntries = await fs.promises.readdir(this.root, { withFileTypes: true });
+      const files: string[] = [];
+      for (const entry of rootEntries) {
+        const entryPath = path.join(this.root, entry.name);
+        if (entry.isFile() && entry.name.endsWith(".cbor")) {
+          files.push(entryPath);
+          continue;
+        }
+        if (!entry.isDirectory() || !/^[0-9a-f]{2}$/i.test(entry.name)) {
+          continue;
+        }
+        for (const shardEntry of await fs.promises.readdir(entryPath, { withFileTypes: true })) {
+          if (shardEntry.isFile() && shardEntry.name.endsWith(".cbor")) {
+            files.push(path.join(entryPath, shardEntry.name));
+          }
+        }
+      }
+      return files;
     } catch {
       return [];
     }
   }
+
+  private largeEntryReadLimitBytes(kind: DiskCacheEntryKind): number {
+    const floor = kind === "workspaceIndex" || kind === "workspaceIncludeGraph" ? 512 : 256;
+    return Math.max(floor * 1024, Math.floor(this.maxSizeBytes * 0.5));
+  }
 }
 
 function stableHash(text: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+export function diskContentHash(text: string): string {
+  return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+function isLargeEntryKind(kind: DiskCacheEntryKind): boolean {
+  return (
+    kind === "parsedDocument" ||
+    kind === "vbSymbolIndex" ||
+    kind === "workspaceIndex" ||
+    kind === "workspaceIncludeGraph"
+  );
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
