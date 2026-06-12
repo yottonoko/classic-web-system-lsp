@@ -4861,13 +4861,7 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
       continue;
     }
     const lowerTarget = target.text.toLowerCase();
-    if (
-      symbols.some(
-        (symbol) =>
-          symbol.name.toLowerCase() === lowerTarget &&
-          isSymbolVisibleAt(symbol, parsed.uri, parsed.text, target.start),
-      )
-    ) {
+    if (hasVisibleSymbolByName(parsed, target.start, symbols, lowerTarget)) {
       continue;
     }
     const key = implicitAssignmentKey(target.text, parsed.uri, scope ? "" : (memberOf ?? ""));
@@ -4897,6 +4891,9 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
       implicit: true,
     };
     symbols.push(symbol);
+  }
+  if (candidates.size > 0) {
+    symbolIndexes.delete(symbols);
   }
 }
 
