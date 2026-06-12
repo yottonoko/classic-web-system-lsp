@@ -11,7 +11,7 @@ export interface VbStatementSnapshot {
 }
 
 interface CachedVbDocumentStatements {
-  fingerprint: string;
+  tokens: VbToken[];
   statements: VbToken[][];
 }
 
@@ -24,14 +24,17 @@ export function cachedVbStatementSnapshot(
   const cacheEnabled = options.cache !== false;
   const entries: VbStatementEntry[] = [];
   documents.forEach((document, documentIndex) => {
-    const fingerprint = vbDocumentStatementFingerprint(document);
-    const cached = cacheEnabled ? statementCache.get(document) : undefined;
-    const statements =
-      cached?.fingerprint === fingerprint ? cached.statements : splitVbDocumentStatements(document);
-    if (cached?.fingerprint !== fingerprint) {
-      if (cacheEnabled) {
-        statementCache.set(document, { fingerprint, statements });
+    let statements: VbToken[][];
+    if (cacheEnabled) {
+      const cached = statementCache.get(document);
+      if (cached?.tokens === document.tokens) {
+        statements = cached.statements;
+      } else {
+        statements = splitVbDocumentStatements(document);
+        statementCache.set(document, { tokens: document.tokens, statements });
       }
+    } else {
+      statements = splitVbDocumentStatements(document);
     }
     for (const tokens of statements) {
       entries.push({ tokens, documentIndex });
@@ -71,20 +74,6 @@ function splitVbDocumentStatements(document: VbCstNode): VbToken[][] {
   return statements;
 }
 
-function vbDocumentStatementFingerprint(document: VbCstNode): string {
-  let hash = 2166136261;
-  hash = mixHash(hash, document.start);
-  hash = mixHash(hash, document.end);
-  hash = mixHash(hash, document.tokens.length);
-  for (const token of document.tokens) {
-    hash = mixHash(hash, token.start);
-    hash = mixHash(hash, token.end);
-    hash = mixText(hash, token.kind);
-    hash = mixText(hash, token.text);
-  }
-  return `${document.start}:${document.end}:${document.tokens.length}:${hash >>> 0}`;
-}
-
 function textFingerprint(text: string): string {
   let hash = 2166136261;
   hash = mixText(hash, text);
@@ -98,16 +87,4 @@ function mixText(hash: number, text: string): number {
     result = Math.imul(result, 16777619);
   }
   return result;
-}
-
-function mixHash(hash: number, value: number): number {
-  let result = hash;
-  result ^= value & 0xff;
-  result = Math.imul(result, 16777619);
-  result ^= (value >>> 8) & 0xff;
-  result = Math.imul(result, 16777619);
-  result ^= (value >>> 16) & 0xff;
-  result = Math.imul(result, 16777619);
-  result ^= (value >>> 24) & 0xff;
-  return Math.imul(result, 16777619);
 }

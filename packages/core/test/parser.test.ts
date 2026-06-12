@@ -610,6 +610,38 @@ Response.Write message
     expect(updated.parsed).toEqual(parseAspDocument("file:///site/default.asp", expectedText));
   });
 
+  it("keeps incrementally updated VBScript diagnostics aligned with fresh analysis", () => {
+    const uri = "file:///site/statement-cache-edit.asp";
+    const source = `<%
+If ready Then
+  Response.Write ready
+End If
+%>`;
+    const parsed = parseAspDocument(uri, source);
+    const options = { unusedDiagnostics: false };
+    expect(analyzeVbscript(parsed, options).diagnostics).toHaveLength(0);
+
+    const start = source.indexOf("End If");
+    const end = start + "End If".length;
+    const replacement = "End Select";
+    const nextText = `${source.slice(0, start)}${replacement}${source.slice(end)}`;
+    const updated = updateAspParsedDocument(parsed, [
+      {
+        range: { start: positionAt(source, start), end: positionAt(source, end) },
+        rangeOffset: start,
+        rangeLength: end - start,
+        text: replacement,
+      },
+    ]);
+    const fresh = parseAspDocument(uri, nextText);
+    const updatedDiagnostics = analyzeVbscript(updated.parsed, options).diagnostics;
+    const freshDiagnostics = analyzeVbscript(fresh, options).diagnostics;
+
+    expect(updated.impact).toMatchObject({ kind: "incremental", language: "vbscript" });
+    expect(updatedDiagnostics.length).toBeGreaterThan(0);
+    expect(updatedDiagnostics).toEqual(freshDiagnostics);
+  });
+
   it("updates 256-1024 character safe VBScript edits incrementally", () => {
     const payload = "x".repeat(1200);
     const source = `<%
