@@ -7821,7 +7821,7 @@ function diagnoseDeadCode(parsed: AspParsedDocument, context: VbProjectContext):
       unreachable = undefined;
     }
     const isUnreachable = unreachable !== undefined && first.start < unreachable.until;
-    if (isUnreachable && !isDeadCodeReachabilityBoundary(statement)) {
+    if (isUnreachable) {
       const key = `${first.start}:${last.end}`;
       if (!reported.has(key)) {
         reported.add(key);
@@ -7929,18 +7929,6 @@ function isDeadCodeBranchBoundary(kind: VbCstNode["kind"], statement: VbToken[])
     return first === "case" || (first === "end" && second === "select");
   }
   return false;
-}
-
-function isDeadCodeReachabilityBoundary(statement: VbToken[]): boolean {
-  const first = lowerToken(statement[0]);
-  const second = lowerToken(statement[1]);
-  if (["else", "elseif", "case", "loop", "wend", "next"].includes(first ?? "")) {
-    return true;
-  }
-  return (
-    first === "end" &&
-    ["if", "select", "sub", "function", "property", "class", "with"].includes(second ?? "")
-  );
 }
 
 function innermostContainingVbNode(
