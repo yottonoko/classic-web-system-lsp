@@ -905,6 +905,7 @@ function parseSettingsIdentity(settings: AspSettings): string {
   return JSON.stringify({
     defaultLanguage: settings.defaultLanguage ?? "VBScript",
     resolvedLocale: settings.resolvedLocale ?? "en",
+    incremental: settings.incremental?.mode ?? "legacy",
   });
 }
 

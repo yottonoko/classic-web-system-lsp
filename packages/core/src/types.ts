@@ -44,6 +44,7 @@ export interface AspSettings {
   memory?: AspMemorySettings;
   network?: AspNetworkSettings;
   workspace?: AspWorkspaceSettings;
+  incremental?: AspIncrementalSettings;
 }
 
 export interface AspIncrementalChange {
@@ -69,6 +70,12 @@ export interface AspEditImpact {
 export interface AspIncrementalUpdateResult {
   parsed: AspParsedDocument;
   impact: AspEditImpact;
+}
+
+export type AspIncrementalMode = "full" | "legacy" | "off";
+
+export interface AspIncrementalSettings {
+  mode?: AspIncrementalMode;
 }
 
 export type AspLocaleSetting = "auto" | AspLocale;

@@ -13895,6 +13895,7 @@ function parseSettingsIdentity(settings: AspSettings): string {
     JSON.stringify({
       defaultLanguage: settings.defaultLanguage ?? "VBScript",
       resolvedLocale: settings.resolvedLocale ?? "en",
+      incremental: settings.incremental?.mode ?? "legacy",
     }),
   );
 }
@@ -14165,6 +14166,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     memory: normalizeMemorySettings(settings),
     network: normalizeNetworkSettings(settings),
     workspace: normalizeWorkspaceSettings(settings),
+    incremental: normalizeIncrementalSettings(settings),
   };
 }
 
@@ -14210,6 +14212,19 @@ function normalizeWorkspaceSettings(
       record.vbProjectMaxTextLength,
       positiveIntegerFromEnv("ASP_LSP_VB_PROJECT_MAX_TEXT_LENGTH", defaultVbProjectMaxTextLength),
     ),
+  };
+}
+
+function normalizeIncrementalSettings(
+  settings: Record<string, unknown> | AspSettings,
+): NonNullable<AspSettings["incremental"]> {
+  const raw = settings.incremental;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    mode:
+      record.mode === "full" || record.mode === "off" || record.mode === "legacy"
+        ? record.mode
+        : "legacy",
   };
 }
 

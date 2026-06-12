@@ -829,6 +829,15 @@ describe("VS Code extension package", () => {
     expect(nls["configuration.excel.locale.description"]).toBeTruthy();
     expect(nlsJa["configuration.excel.locale.description"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.incremental.mode"]).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["legacy", "full", "off"],
+        default: "legacy",
+      }),
+    );
+    expect(nls["configuration.incremental.mode.description"]).toBeTruthy();
+    expect(nlsJa["configuration.incremental.mode.description"]).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.windowsPathResolution"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: true }));

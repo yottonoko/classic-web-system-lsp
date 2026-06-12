@@ -33,6 +33,7 @@ const rapidDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEBOUNCE_MS", 80);
 const defaultDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEFAULT_DEBOUNCE_MS", 250);
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const benchmarkCheckJs = readBoolean("ASP_LSP_BENCH_CHECKJS");
+const benchmarkIncrementalMode = readIncrementalMode();
 const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", defaultTimeoutMs);
 const backgroundWarmupWaitMs = readPositiveInteger("ASP_LSP_BENCH_BACKGROUND_WAIT_MS", 5_000);
 const changeKinds = readChangeKinds();
@@ -154,6 +155,7 @@ async function main() {
   console.log(`Change modes: ${changeModes.join(", ")}`);
   console.log(`Edit targets: ${editTargets.join(", ")}`);
   console.log(`Check JS: ${benchmarkCheckJs ? "on" : "off"}`);
+  console.log(`Incremental mode: ${benchmarkIncrementalMode}`);
   console.log(`Default debounce: ${defaultDebounceMs} ms`);
   console.log(`Rapid burst size: ${rapidBurstSize}`);
   console.log(`Rapid debounce: ${rapidDebounceMs} ms`);
@@ -217,6 +219,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
           checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
+          incremental: { mode: benchmarkIncrementalMode },
           workspace: { backgroundAnalysis },
         },
       },
@@ -383,6 +386,7 @@ async function measureColdScenarioIteration(
           checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
+          incremental: { mode: benchmarkIncrementalMode },
           workspace: { backgroundAnalysis },
         },
       },
@@ -717,6 +721,7 @@ async function startWorkspaceCacheServer(backgroundAnalysis) {
         cache: { enabled: true, directory: cacheDir },
         checkJs: benchmarkCheckJs,
         debug: { output: "verbose" },
+        incremental: { mode: benchmarkIncrementalMode },
         workspace: { backgroundAnalysis },
       },
     },
@@ -1262,6 +1267,14 @@ function readBackgroundModes() {
     return [true];
   }
   throw new Error("ASP_LSP_BENCH_BACKGROUND must be on, off, or both.");
+}
+
+function readIncrementalMode() {
+  const raw = process.env.ASP_LSP_BENCH_INCREMENTAL_MODE ?? "legacy";
+  if (raw === "legacy" || raw === "full" || raw === "off") {
+    return raw;
+  }
+  throw new Error("ASP_LSP_BENCH_INCREMENTAL_MODE must be legacy, full, or off.");
 }
 
 function readPositiveInteger(name, fallback) {

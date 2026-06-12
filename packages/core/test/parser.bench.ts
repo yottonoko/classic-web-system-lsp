@@ -30,6 +30,6 @@ describe("ASP parser", () => {
   });
 
   bench("incremental parse", () => {
-    updateAspParsedDocument(parsed, [edit]);
+    updateAspParsedDocument(parsed, [edit], { incremental: { mode: "full" } });
   });
 });

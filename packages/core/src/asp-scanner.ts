@@ -22,6 +22,7 @@ interface HtmlTag {
   name: string;
   start: number;
   end: number;
+  complete: boolean;
   attributesStart: number;
   attributesEnd: number;
   attributes: Record<string, string | true>;
@@ -39,6 +40,14 @@ interface AttributeSpan {
 
 interface ReadHtmlTagOptions {
   allowIncomplete?: boolean;
+  maxEnd?: number;
+}
+
+export interface AspHtmlRangeScan extends AspHtmlScan {
+  diagnostics: AspParsedDocument["diagnostics"];
+  complete: boolean;
+  scannedStart: number;
+  scannedEnd: number;
 }
 
 export function extractAspIncludeRefs(text: string): AspInclude[] {
@@ -173,6 +182,117 @@ export function scanHtmlAndAsp(
   return { inlineRegions, tagRegions, includes, serverObjects };
 }
 
+export function scanHtmlAndAspRange(
+  text: string,
+  startOffset: number,
+  endOffset: number,
+  settings: AspSettings,
+): AspHtmlRangeScan {
+  const diagnostics: AspParsedDocument["diagnostics"] = [];
+  const inlineRegions: AspRegion[] = [];
+  const tagRegions: AspRegion[] = [];
+  const includes: AspInclude[] = [];
+  const serverObjects: AspServerObject[] = [];
+  const scannedStart = Math.max(0, Math.min(startOffset, text.length));
+  const scannedEnd = Math.max(scannedStart, Math.min(endOffset, text.length));
+  let complete = true;
+  let cursor = scannedStart;
+  while (cursor < scannedEnd) {
+    if (text.startsWith("<%", cursor)) {
+      const region = parseAspRegionAt(text, cursor, diagnostics, scannedEnd, settings);
+      inlineRegions.push(region);
+      if (!text.startsWith("%>", region.contentEnd) && region.end === scannedEnd) {
+        complete = false;
+        break;
+      }
+      cursor = region.end;
+      continue;
+    }
+    if (text.startsWith("<!--", cursor)) {
+      const commentEnd = text.indexOf("-->", cursor + 4);
+      if (commentEnd === -1 || commentEnd + 3 > scannedEnd) {
+        complete = false;
+        break;
+      }
+      const end = commentEnd + 3;
+      const include = parseIncludeComment(text, cursor, end);
+      if (include) {
+        includes.push(include);
+      }
+      cursor = end;
+      continue;
+    }
+    if (text[cursor] !== "<") {
+      cursor += 1;
+      continue;
+    }
+    const tag = readHtmlTag(text, cursor, { allowIncomplete: true, maxEnd: scannedEnd });
+    if (!tag) {
+      cursor += 1;
+      continue;
+    }
+    if (!tag.complete) {
+      complete = false;
+      break;
+    }
+    if (!tag.closing) {
+      const styleAttributeRegions = styleAttributeRegionsFromTag(tag);
+      tagRegions.push(...styleAttributeRegions);
+      const serverObject = serverObjectFromTag(text, tag);
+      if (serverObject) {
+        serverObjects.push(serverObject);
+      }
+      const nestedRegions = scanAspRegionsInRange(
+        text,
+        tag.attributesStart,
+        tag.attributesEnd,
+        diagnostics,
+        settings,
+      );
+      if (nestedRegions.some((region) => isRangeCutAspRegion(text, region, scannedEnd))) {
+        complete = false;
+        break;
+      }
+      inlineRegions.push(...nestedRegions);
+    }
+    if ((tag.name === "script" || tag.name === "style") && !tag.closing && !tag.selfClosing) {
+      const close = findElementClose(text, tag.name, tag.end, scannedEnd);
+      if (!close) {
+        complete = false;
+        break;
+      }
+      const region = elementRegionFromTag(tag, close);
+      tagRegions.push(region);
+      const nestedRegions = scanAspRegionsInRange(
+        text,
+        tag.end,
+        close.start,
+        diagnostics,
+        settings,
+        tag.name === "script" ? "javascript" : "css",
+      );
+      if (nestedRegions.some((item) => isRangeCutAspRegion(text, item, close.start))) {
+        complete = false;
+        break;
+      }
+      inlineRegions.push(...nestedRegions);
+      cursor = close.end;
+      continue;
+    }
+    cursor = tag.end;
+  }
+  return {
+    inlineRegions,
+    tagRegions,
+    includes,
+    serverObjects,
+    diagnostics,
+    complete,
+    scannedStart,
+    scannedEnd,
+  };
+}
+
 export function scanVbscriptIndexInput(
   text: string,
   diagnostics: AspParsedDocument["diagnostics"],
@@ -296,6 +416,10 @@ function scanAspRegionsInRange(
     cursor = Math.max(region.end, next + 2);
   }
   return regions;
+}
+
+function isRangeCutAspRegion(text: string, region: AspRegion, endOffset: number): boolean {
+  return region.end === endOffset && !text.startsWith("%>", region.contentEnd);
 }
 
 type EmbeddedContentState =
@@ -494,7 +618,8 @@ function readHtmlTag(
   if (closing) {
     cursor += 1;
   }
-  while (cursor < text.length && isHtmlWhitespaceCode(text.charCodeAt(cursor))) {
+  const maxEnd = options.maxEnd ?? text.length;
+  while (cursor < maxEnd && isHtmlWhitespaceCode(text.charCodeAt(cursor))) {
     cursor += 1;
   }
   const nameStart = cursor;
@@ -502,15 +627,15 @@ function readHtmlTag(
     return undefined;
   }
   cursor += 1;
-  while (cursor < text.length && isHtmlTagNamePartCode(text.charCodeAt(cursor))) {
+  while (cursor < maxEnd && isHtmlTagNamePartCode(text.charCodeAt(cursor))) {
     cursor += 1;
   }
   const name = text.slice(nameStart, cursor).toLowerCase();
-  const tagEnd = findTagEnd(text, cursor);
+  const tagEnd = findTagEnd(text, cursor, maxEnd);
   if (tagEnd === -1 && !options.allowIncomplete) {
     return undefined;
   }
-  const attributesEnd = tagEnd === -1 ? text.length : tagEnd;
+  const attributesEnd = tagEnd === -1 ? maxEnd : tagEnd;
   const attributesStart = cursor;
   const attributeSpans = parseAttributeSpans(text, attributesStart, attributesEnd);
   const attributes: Record<string, string | true> = {};
@@ -521,7 +646,8 @@ function readHtmlTag(
   return {
     name,
     start,
-    end: tagEnd === -1 ? text.length : tagEnd + 1,
+    end: tagEnd === -1 ? maxEnd : tagEnd + 1,
+    complete: tagEnd !== -1,
     attributesStart,
     attributesEnd,
     attributes,
@@ -531,13 +657,13 @@ function readHtmlTag(
   };
 }
 
-function findTagEnd(text: string, offset: number): number {
+function findTagEnd(text: string, offset: number, maxEnd = text.length): number {
   let quote: string | undefined;
-  for (let index = offset; index < text.length; index += 1) {
+  for (let index = offset; index < maxEnd; index += 1) {
     const char = text[index];
     if (quote) {
       if (text.startsWith("<%", index)) {
-        const close = findAspClose(text, index + 2, text.length);
+        const close = findAspClose(text, index + 2, maxEnd);
         if (close === -1) {
           return -1;
         }
@@ -554,7 +680,7 @@ function findTagEnd(text: string, offset: number): number {
       continue;
     }
     if (text.startsWith("<%", index)) {
-      const close = findAspClose(text, index + 2, text.length);
+      const close = findAspClose(text, index + 2, maxEnd);
       if (close === -1) {
         return -1;
       }
@@ -785,20 +911,21 @@ function findElementClose(
   text: string,
   tagName: "script" | "style",
   offset: number,
+  maxEnd = text.length,
 ): { start: number; end: number } | undefined {
   const embeddedLanguage = tagName === "script" ? "javascript" : "css";
   let state: EmbeddedContentState = { kind: "normal" };
-  for (let index = offset; index < text.length; index += 1) {
+  for (let index = offset; index < maxEnd; index += 1) {
     if (isClosingTagAt(text, index, tagName)) {
-      const closeEnd = findTagEnd(text, index + 2);
+      const closeEnd = findTagEnd(text, index + 2, maxEnd);
       return closeEnd === -1 ? undefined : { start: index, end: closeEnd + 1 };
     }
     if (text.startsWith("<%", index)) {
-      const close = findAspClose(text, index + 2, text.length);
+      const close = findAspClose(text, index + 2, maxEnd);
       if (state.kind !== "normal") {
-        const stateEnd = embeddedContentStateEnd(text, index, text.length, embeddedLanguage, state);
+        const stateEnd = embeddedContentStateEnd(text, index, maxEnd, embeddedLanguage, state);
         if (close === -1 || close >= stateEnd) {
-          state = advanceEmbeddedContentState(text, index, text.length, embeddedLanguage, state);
+          state = advanceEmbeddedContentState(text, index, maxEnd, embeddedLanguage, state);
           continue;
         }
       }
@@ -806,12 +933,12 @@ function findElementClose(
         return undefined;
       }
       if (state.kind !== "normal") {
-        state = advanceEmbeddedContentState(text, index, text.length, embeddedLanguage, state);
+        state = advanceEmbeddedContentState(text, index, maxEnd, embeddedLanguage, state);
       }
       index = close + 1;
       continue;
     }
-    state = advanceEmbeddedContentState(text, index, text.length, embeddedLanguage, state);
+    state = advanceEmbeddedContentState(text, index, maxEnd, embeddedLanguage, state);
   }
   return undefined;
 }

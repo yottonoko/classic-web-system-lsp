@@ -664,6 +664,110 @@ Response.Write message
     expect(multi.impact).toMatchObject({ kind: "full", reason: "multiple changes" });
   });
 
+  it("fully reparses only damaged ranges while reusing unchanged CST nodes in full incremental mode", () => {
+    const source = `<%
+Dim beforeValue
+beforeValue = 1
+%>
+<div>middle</div>
+<%
+Dim afterValue
+afterValue = 2
+%>`;
+    const parsed = parseAspDocument("file:///site/full-incremental.asp", source);
+    const beforeNode = parsed.cst.children.find(
+      (node) =>
+        node.language === "vbscript" &&
+        source.slice(node.contentStart, node.contentEnd).includes("beforeValue"),
+    );
+    expect(beforeNode).toBeTruthy();
+    const start = source.indexOf("middle");
+    const end = start + "middle".length;
+    const change = {
+      range: { start: positionAt(source, start), end: positionAt(source, end) },
+      rangeOffset: start,
+      rangeLength: end - start,
+      text: "updated middle",
+    };
+    const updated = updateAspParsedDocument(parsed, [change], { incremental: { mode: "full" } });
+    const expectedText = `${source.slice(0, start)}updated middle${source.slice(end)}`;
+
+    expect(updated.impact.kind).toBe("incremental");
+    expect(updated.impact.reason).toContain("reused");
+    expect(updated.parsed).toEqual(
+      parseAspDocument("file:///site/full-incremental.asp", expectedText),
+    );
+    expect(
+      updated.parsed.cst.children.find(
+        (node) =>
+          node.language === "vbscript" &&
+          expectedText.slice(node.contentStart, node.contentEnd).includes("beforeValue"),
+      ),
+    ).toBe(beforeNode);
+  });
+
+  it("rescans top-level HTML damage when full incremental edits create include and ASP regions", () => {
+    const source = `<main>
+<p>content</p>
+</main>`;
+    const parsed = parseAspDocument("file:///site/full-incremental-include.asp", source);
+    const insertOffset = source.indexOf("</main>");
+    const inserted = `<!-- #include file="common.inc" -->
+<% Response.Write "created" %>
+`;
+    const updated = updateAspParsedDocument(
+      parsed,
+      [
+        {
+          range: {
+            start: positionAt(source, insertOffset),
+            end: positionAt(source, insertOffset),
+          },
+          rangeOffset: insertOffset,
+          rangeLength: 0,
+          text: inserted,
+        },
+      ],
+      { incremental: { mode: "full" } },
+    );
+    const expectedText = `${source.slice(0, insertOffset)}${inserted}${source.slice(insertOffset)}`;
+
+    expect(updated.impact.kind).toBe("incremental");
+    expect(updated.parsed).toEqual(
+      parseAspDocument("file:///site/full-incremental-include.asp", expectedText),
+    );
+    expect(updated.parsed.includes).toHaveLength(1);
+    expect(updated.parsed.regions.some((region) => region.language === "vbscript")).toBe(true);
+  });
+
+  it("falls back from full incremental mode when directive damage can change defaults", () => {
+    const source = `<%@ LANGUAGE="VBScript" %>
+<% Response.Write "ok" %>`;
+    const parsed = parseAspDocument("file:///site/full-incremental-directive.asp", source);
+    const start = source.indexOf("VBScript");
+    const end = start + "VBScript".length;
+    const updated = updateAspParsedDocument(
+      parsed,
+      [
+        {
+          range: { start: positionAt(source, start), end: positionAt(source, end) },
+          rangeOffset: start,
+          rangeLength: end - start,
+          text: "JScript",
+        },
+      ],
+      { incremental: { mode: "full" } },
+    );
+
+    expect(updated.impact).toMatchObject({ kind: "full", reason: "ASP directive edit" });
+    expect(updated.parsed).toEqual(
+      parseAspDocument(
+        "file:///site/full-incremental-directive.asp",
+        source.replace("VBScript", "JScript"),
+      ),
+    );
+  });
+
   it("falls back when an edit touches an embedded region content boundary", () => {
     const source = `<script>const value = 1;</script>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);

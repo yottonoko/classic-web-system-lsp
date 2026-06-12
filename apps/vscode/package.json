@@ -216,6 +216,16 @@
           "default": false,
           "description": "%configuration.checkJs.description%"
         },
+        "aspLsp.incremental.mode": {
+          "type": "string",
+          "enum": [
+            "legacy",
+            "full",
+            "off"
+          ],
+          "default": "legacy",
+          "description": "%configuration.incremental.mode.description%"
+        },
         "aspLsp.diagnostics.debounceMs": {
           "type": "number",
           "minimum": 0,

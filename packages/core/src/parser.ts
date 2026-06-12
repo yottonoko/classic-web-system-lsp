@@ -12,11 +12,32 @@ import type {
   AspSettings,
   AspToken,
   VbCstNode,
+  VbToken,
 } from "./types";
 import { offsetAt, rangeFromOffsets } from "./position";
-import { scanHtmlAndAsp, normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
+import {
+  scanHtmlAndAsp,
+  scanHtmlAndAspRange,
+  normalizeScriptLanguage,
+  parseAttributes,
+} from "./asp-scanner";
+import {
+  applyIncrementalChanges,
+  changeHull,
+  changesOverlap,
+  normalizeIncrementalChange,
+  normalizeIncrementalChanges,
+  rangeOverlaps,
+  rangeOverlapsOrTouches,
+  resolveAspIncrementalMode,
+  shiftOffsetAfterChange,
+  type DamageSpan,
+  type IncrementalReparseResult,
+  type NormalizedIncrementalChange,
+} from "./incremental";
 import { parseVbscriptCst } from "./vbscript-cst";
 export { normalizeScriptLanguage, parseAttributes } from "./asp-scanner";
+export type { DamageSpan, IncrementalReparseResult } from "./incremental";
 
 const asyncParseCacheMaxEntries = 64;
 const asyncParseCache = new Map<string, AspParsedDocument>();
@@ -284,7 +305,7 @@ export function updateAspParsedDocument(
   changes: readonly AspIncrementalChange[],
   settings: AspSettings = {},
 ): AspIncrementalUpdateResult {
-  const attempt = tryUpdateAspParsedDocumentIncremental(previous, changes, "full");
+  const attempt = tryUpdateAspParsedDocumentIncremental(previous, changes, settings, "full");
   if (attempt.status === "updated") {
     return attempt.result;
   }
@@ -299,7 +320,7 @@ export async function updateAspParsedDocumentSkeletonAsync(
   changes: readonly AspIncrementalChange[],
   settings: AspSettings = {},
 ): Promise<AspIncrementalUpdateResult> {
-  const attempt = tryUpdateAspParsedDocumentIncremental(previous, changes, "skeleton");
+  const attempt = tryUpdateAspParsedDocumentIncremental(previous, changes, settings, "skeleton");
   if (attempt.status === "updated") {
     return attempt.result;
   }
@@ -324,6 +345,27 @@ interface IncrementalUpdateFallback {
 }
 
 function tryUpdateAspParsedDocumentIncremental(
+  previous: AspParsedDocument,
+  changes: readonly AspIncrementalChange[],
+  settings: AspSettings,
+  buildMode: ParsedDocumentBuildMode,
+): IncrementalUpdateSuccess | IncrementalUpdateFallback {
+  const mode = resolveAspIncrementalMode(settings);
+  if (mode === "off") {
+    return {
+      status: "fallback",
+      reason: "incremental disabled",
+      change: changes[0],
+      nextText: applyIncrementalChanges(previous.text, changes),
+    };
+  }
+  if (mode === "full") {
+    return tryUpdateAspParsedDocumentFull(previous, changes, settings, buildMode);
+  }
+  return tryUpdateAspParsedDocumentLegacy(previous, changes, buildMode);
+}
+
+function tryUpdateAspParsedDocumentLegacy(
   previous: AspParsedDocument,
   changes: readonly AspIncrementalChange[],
   buildMode: ParsedDocumentBuildMode,
@@ -429,6 +471,834 @@ function tryUpdateAspParsedDocumentIncremental(
   };
 }
 
+function tryUpdateAspParsedDocumentFull(
+  previous: AspParsedDocument,
+  changes: readonly AspIncrementalChange[],
+  settings: AspSettings,
+  buildMode: ParsedDocumentBuildMode,
+): IncrementalUpdateSuccess | IncrementalUpdateFallback {
+  const fallback = (
+    reason: string,
+    change = changes[0],
+    nextText = applyIncrementalChanges(previous.text, changes),
+  ): IncrementalUpdateFallback => ({
+    status: "fallback",
+    reason,
+    change,
+    nextText,
+  });
+  if (changes.length === 0) {
+    return fallback("no changes");
+  }
+  const normalizedChanges = normalizeIncrementalChanges(previous.text, changes);
+  if (!normalizedChanges) {
+    return fallback("invalid change range");
+  }
+  if (changesOverlap(normalizedChanges)) {
+    return fallback("overlapping changes");
+  }
+  const nextText = applyIncrementalChanges(previous.text, normalizedChanges);
+  const changeSpan = changeHull(normalizedChanges);
+  if (changeSpan.start === 0 && changeSpan.end === previous.text.length) {
+    return fallback("full document replacement", normalizedChanges[0], nextText);
+  }
+  if (changesCanCloseEarlierStructure(previous.text, normalizedChanges)) {
+    return fallback("structural close resync", normalizedChanges[0], nextText);
+  }
+  const oldDamage = expandDamageSpan(previous, changeSpan);
+  if (damageOverlapsDirective(previous, oldDamage)) {
+    return fallback("ASP directive edit", normalizedChanges[0], nextText);
+  }
+  const delta = nextText.length - previous.text.length;
+  const nextDamage: DamageSpan = {
+    start: oldDamage.start,
+    end: Math.max(oldDamage.start, oldDamage.end + delta),
+  };
+  if (nextDamage.end > nextText.length) {
+    return fallback("invalid damage span", normalizedChanges[0], nextText);
+  }
+  const scan = scanHtmlAndAspRange(nextText, nextDamage.start, nextDamage.end, settings);
+  if (!scan.complete) {
+    return fallback("incremental resync failed", normalizedChanges[0], nextText);
+  }
+  if (scan.inlineRegions.some((region) => region.kind === "asp-directive")) {
+    return fallback("ASP directive edit", normalizedChanges[0], nextText);
+  }
+  const shiftedEmbeddedRegions = previous.cst.children
+    .map(cstNodeToIncrementalRegion)
+    .filter((region): region is AspRegion => region !== undefined)
+    .filter((region) => region.kind !== "html")
+    .filter((region) => !rangeOverlaps(region.start, region.end, oldDamage.start, oldDamage.end))
+    .map((region) => shiftRegionAfterDamage(region, oldDamage, delta));
+  const scannedTagRegions = scan.tagRegions.map((region): AspRegion => {
+    if (region.kind !== "server-script") {
+      return region;
+    }
+    return {
+      ...region,
+      language:
+        normalizeScriptLanguage(
+          String(region.attributes?.language ?? previous.defaultLanguage),
+        ).toLowerCase() === "jscript"
+          ? "jscript"
+          : "vbscript",
+    };
+  });
+  const regions = buildRegions(
+    nextText,
+    [...shiftedEmbeddedRegions, ...scan.inlineRegions, ...scannedTagRegions],
+    previous.defaultLanguage,
+  );
+  const directives = previous.directives
+    .filter(
+      (directive) =>
+        !rangeOverlaps(
+          metadataStart(directive),
+          metadataEnd(previous.text, directive),
+          oldDamage.start,
+          oldDamage.end,
+        ),
+    )
+    .map((directive) =>
+      shiftDirectiveAfterDamage(directive, previous.text, nextText, oldDamage, delta),
+    )
+    .sort((left, right) => left.offset - right.offset);
+  const includes = [
+    ...previous.includes
+      .filter(
+        (include) =>
+          !rangeOverlaps(
+            include.offset,
+            metadataEnd(previous.text, include),
+            oldDamage.start,
+            oldDamage.end,
+          ),
+      )
+      .map((include) =>
+        shiftIncludeAfterDamage(include, previous.text, nextText, oldDamage, delta),
+      ),
+    ...scan.includes,
+  ].sort((left, right) => left.offset - right.offset);
+  const serverObjects = [
+    ...previous.serverObjects
+      .filter(
+        (serverObject) =>
+          !rangeOverlaps(
+            serverObject.offset,
+            metadataEnd(previous.text, serverObject),
+            oldDamage.start,
+            oldDamage.end,
+          ),
+      )
+      .map((serverObject) =>
+        shiftServerObjectAfterDamage(serverObject, previous.text, nextText, oldDamage, delta),
+      ),
+    ...scan.serverObjects,
+  ].sort((left, right) => left.offset - right.offset);
+  const diagnostics = [
+    ...previous.diagnostics
+      .filter((diagnostic) => {
+        const start = offsetFromRange(previous.text, diagnostic.range.start);
+        const end = offsetFromRange(previous.text, diagnostic.range.end);
+        return !rangeOverlaps(start, end, oldDamage.start, oldDamage.end);
+      })
+      .map((diagnostic) =>
+        shiftDiagnosticAfterDamage(diagnostic, previous.text, nextText, oldDamage, delta),
+      ),
+    ...scan.diagnostics,
+  ];
+  const reused = buildParsedDocumentWithReuse(
+    previous.uri,
+    nextText,
+    regions,
+    directives,
+    includes,
+    serverObjects,
+    previous.defaultLanguage,
+    diagnostics,
+    buildMode,
+    previous,
+    oldDamage,
+    nextDamage,
+    delta,
+  );
+  const invalidReason = validateIncrementalParsedDocument(reused.parsed);
+  if (invalidReason) {
+    return fallback(invalidReason, normalizedChanges[0], nextText);
+  }
+  const impact = editImpactForDamage(
+    "incremental",
+    `range rescan; reused ${reused.reusedRegionCount}/${reused.reuseCandidateCount} nodes`,
+    previous.text,
+    nextText,
+    oldDamage,
+    nextDamage,
+    damageLanguage(previous, oldDamage),
+  );
+  const result: IncrementalReparseResult = {
+    parsed: reused.parsed,
+    impact,
+    reusedRegionCount: reused.reusedRegionCount,
+    rescannedSpan: nextDamage,
+  };
+  return {
+    status: "updated",
+    result,
+  };
+}
+
+interface ParsedDocumentReuseBuildResult {
+  parsed: AspParsedDocument;
+  reusedRegionCount: number;
+  reuseCandidateCount: number;
+}
+
+function expandDamageSpan(parsed: AspParsedDocument, initial: DamageSpan): DamageSpan {
+  const spans = [
+    ...parsed.regions.map((region) => ({ start: region.start, end: region.end })),
+    ...parsed.includes.map((include) => ({
+      start: include.offset,
+      end: offsetFromRange(parsed.text, include.range.end),
+    })),
+    ...parsed.serverObjects.map((serverObject) => ({
+      start: serverObject.offset,
+      end: offsetFromRange(parsed.text, serverObject.range.end),
+    })),
+  ];
+  let damage = { ...initial };
+  if (initial.start === initial.end) {
+    for (const span of spans) {
+      if (initial.start >= span.start && initial.start <= span.end) {
+        damage = {
+          start: Math.min(damage.start, span.start),
+          end: Math.max(damage.end, span.end),
+        };
+      }
+    }
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const span of spans) {
+      if (!rangeOverlaps(damage.start, damage.end, span.start, span.end)) {
+        continue;
+      }
+      const nextStart = Math.min(damage.start, span.start);
+      const nextEnd = Math.max(damage.end, span.end);
+      if (nextStart !== damage.start || nextEnd !== damage.end) {
+        damage = { start: nextStart, end: nextEnd };
+        changed = true;
+      }
+    }
+  }
+  return damage;
+}
+
+function damageOverlapsDirective(parsed: AspParsedDocument, damage: DamageSpan): boolean {
+  return parsed.directives.some((directive) =>
+    rangeOverlaps(
+      directive.offset,
+      offsetFromRange(parsed.text, directive.range.end),
+      damage.start,
+      damage.end,
+    ),
+  );
+}
+
+function cstNodeToIncrementalRegion(node: AspCstNode): AspRegion | undefined {
+  if (!node.regionKind || !node.language) {
+    return undefined;
+  }
+  const region: AspRegion = {
+    kind: node.regionKind,
+    language: node.language,
+    start: node.start,
+    end: node.end,
+    contentStart: node.contentStart,
+    contentEnd: node.contentEnd,
+  };
+  if (Object.hasOwn(node, "attributes")) {
+    region.attributes = node.attributes;
+  }
+  return region;
+}
+
+function changesCanCloseEarlierStructure(
+  previousText: string,
+  changes: readonly NormalizedIncrementalChange[],
+): boolean {
+  for (const change of changes) {
+    const deletedText = previousText.slice(change.startOffset, change.endOffset);
+    const changedText = `${deletedText}${change.text}`;
+    if (
+      /<\s*\/\s*script\b/i.test(changedText) &&
+      hasUnclosedElementBefore(previousText, "script", change.startOffset)
+    ) {
+      return true;
+    }
+    if (
+      /<\s*\/\s*style\b/i.test(changedText) &&
+      hasUnclosedElementBefore(previousText, "style", change.startOffset)
+    ) {
+      return true;
+    }
+    if (/%>/.test(changedText) && hasUnclosedAspBefore(previousText, change.startOffset)) {
+      return true;
+    }
+    if (/-->/.test(changedText) && hasUnclosedCommentBefore(previousText, change.startOffset)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasUnclosedElementBefore(
+  text: string,
+  tagName: "script" | "style",
+  offset: number,
+): boolean {
+  const pattern = new RegExp(`<\\s*(/?)\\s*${tagName}\\b`, "gi");
+  let open = false;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null && match.index < offset) {
+    open = match[1] !== "/";
+  }
+  return open;
+}
+
+function hasUnclosedAspBefore(text: string, offset: number): boolean {
+  const open = text.lastIndexOf("<%", offset);
+  const close = text.lastIndexOf("%>", offset);
+  return open !== -1 && open > close;
+}
+
+function hasUnclosedCommentBefore(text: string, offset: number): boolean {
+  const open = text.lastIndexOf("<!--", offset);
+  const close = text.lastIndexOf("-->", offset);
+  return open !== -1 && open > close;
+}
+
+function metadataStart(item: AspDirective | AspInclude | AspServerObject): number {
+  return item.offset;
+}
+
+function metadataEnd(text: string, item: AspDirective | AspInclude | AspServerObject): number {
+  return offsetFromRange(text, item.range.end);
+}
+
+function editImpactForDamage(
+  kind: AspEditImpact["kind"],
+  reason: string,
+  previousText: string,
+  nextText: string,
+  oldDamage: DamageSpan,
+  nextDamage: DamageSpan,
+  language?: AspEditImpact["language"],
+): AspEditImpact {
+  return {
+    kind,
+    reason,
+    startOffset: oldDamage.start,
+    endOffset: oldDamage.end,
+    insertedLength: nextDamage.end - nextDamage.start,
+    deletedLength: oldDamage.end - oldDamage.start,
+    delta: nextText.length - previousText.length,
+    language,
+  };
+}
+
+function damageLanguage(
+  parsed: AspParsedDocument,
+  damage: DamageSpan,
+): AspEditImpact["language"] | undefined {
+  const languages = new Set(
+    parsed.regions
+      .filter((region) => rangeOverlaps(region.start, region.end, damage.start, damage.end))
+      .map((region) => region.language),
+  );
+  if (languages.size === 0) {
+    return undefined;
+  }
+  if (languages.size === 1) {
+    return [...languages][0];
+  }
+  return "mixed";
+}
+
+function shiftRegionAfterDamage(region: AspRegion, damage: DamageSpan, delta: number): AspRegion {
+  if (region.end <= damage.start) {
+    return region;
+  }
+  if (region.start >= damage.end) {
+    return shiftRegion(region, delta);
+  }
+  return {
+    ...region,
+    start: shiftOffsetAfterChange(region.start, damage.start, damage.end, delta),
+    end: shiftOffsetAfterChange(region.end, damage.start, damage.end, delta),
+    contentStart: shiftOffsetAfterChange(region.contentStart, damage.start, damage.end, delta),
+    contentEnd: shiftOffsetAfterChange(region.contentEnd, damage.start, damage.end, delta),
+  };
+}
+
+function shiftRangeAfterDamage(
+  range: { start: { line: number; character: number }; end: { line: number; character: number } },
+  previousText: string,
+  nextText: string,
+  damage: DamageSpan,
+  delta: number,
+) {
+  const start = shiftOffsetAfterChange(
+    offsetAt(previousText, range.start),
+    damage.start,
+    damage.end,
+    delta,
+  );
+  const end = shiftOffsetAfterChange(
+    offsetAt(previousText, range.end),
+    damage.start,
+    damage.end,
+    delta,
+  );
+  return rangeFromOffsets(nextText, start, Math.max(start, end));
+}
+
+function shiftDirectiveAfterDamage(
+  directive: AspDirective,
+  previousText: string,
+  nextText: string,
+  damage: DamageSpan,
+  delta: number,
+): AspDirective {
+  return {
+    ...directive,
+    offset: shiftOffsetAfterChange(directive.offset, damage.start, damage.end, delta),
+    range: shiftRangeAfterDamage(directive.range, previousText, nextText, damage, delta),
+  };
+}
+
+function shiftIncludeAfterDamage(
+  include: AspInclude,
+  previousText: string,
+  nextText: string,
+  damage: DamageSpan,
+  delta: number,
+): AspInclude {
+  return {
+    ...include,
+    offset: shiftOffsetAfterChange(include.offset, damage.start, damage.end, delta),
+    range: shiftRangeAfterDamage(include.range, previousText, nextText, damage, delta),
+    directiveRange: shiftRangeAfterDamage(
+      include.directiveRange,
+      previousText,
+      nextText,
+      damage,
+      delta,
+    ),
+    modeRange: shiftRangeAfterDamage(include.modeRange, previousText, nextText, damage, delta),
+    pathRange: shiftRangeAfterDamage(include.pathRange, previousText, nextText, damage, delta),
+  };
+}
+
+function shiftServerObjectAfterDamage(
+  serverObject: AspServerObject,
+  previousText: string,
+  nextText: string,
+  damage: DamageSpan,
+  delta: number,
+): AspServerObject {
+  return {
+    ...serverObject,
+    offset: shiftOffsetAfterChange(serverObject.offset, damage.start, damage.end, delta),
+    range: shiftRangeAfterDamage(serverObject.range, previousText, nextText, damage, delta),
+    idRange: shiftRangeAfterDamage(serverObject.idRange, previousText, nextText, damage, delta),
+    progIdRange: serverObject.progIdRange
+      ? shiftRangeAfterDamage(serverObject.progIdRange, previousText, nextText, damage, delta)
+      : undefined,
+    classIdRange: serverObject.classIdRange
+      ? shiftRangeAfterDamage(serverObject.classIdRange, previousText, nextText, damage, delta)
+      : undefined,
+  };
+}
+
+function shiftDiagnosticAfterDamage(
+  diagnostic: AspParsedDocument["diagnostics"][number],
+  previousText: string,
+  nextText: string,
+  damage: DamageSpan,
+  delta: number,
+): AspParsedDocument["diagnostics"][number] {
+  return {
+    ...diagnostic,
+    range: shiftRangeAfterDamage(diagnostic.range, previousText, nextText, damage, delta),
+  };
+}
+
+function buildParsedDocumentWithReuse(
+  uri: string,
+  text: string,
+  regions: AspRegion[],
+  directives: AspDirective[],
+  includes: AspInclude[],
+  serverObjects: AspServerObject[],
+  defaultLanguage: "VBScript" | "JScript",
+  diagnostics: AspParsedDocument["diagnostics"],
+  buildMode: ParsedDocumentBuildMode,
+  previous: AspParsedDocument,
+  oldDamage: DamageSpan,
+  _nextDamage: DamageSpan,
+  delta: number,
+): ParsedDocumentReuseBuildResult {
+  const reusableNodes = reusableNodeMap(previous, oldDamage, delta);
+  let reusedRegionCount = 0;
+  const items = [
+    ...regions.map((region) => ({
+      key: nodeReuseKeyForRegion(region),
+      build: () =>
+        buildMode === "skeleton" ? skeletonRegionToNode(region) : regionToNode(text, region),
+      apply: (node: AspCstNode) => {
+        if (region.attributes && Object.keys(region.attributes).length > 0) {
+          node.attributes = region.attributes;
+        }
+      },
+    })),
+    ...includes.map((include) => ({
+      key: nodeReuseKeyForInclude(text, include),
+      build: () =>
+        buildMode === "skeleton"
+          ? skeletonIncludeToNode(text, include)
+          : includeToNode(text, include),
+      apply: (node: AspCstNode) => {
+        node.include = include;
+      },
+    })),
+  ];
+  const nodes = items
+    .map((item) => {
+      const reused = takeReusableNode(reusableNodes, item.key);
+      const node = reused ?? item.build();
+      if (reused) {
+        reusedRegionCount += 1;
+      }
+      item.apply(node);
+      return node;
+    })
+    .sort(
+      (left, right) =>
+        left.start - right.start || left.end - left.start - (right.end - right.start),
+    );
+  for (const directive of directives) {
+    const node = nodes.find(
+      (item) => item.start === directive.offset && item.kind === "AspDirective",
+    );
+    if (node) {
+      node.directive = directive;
+      node.attributes = directive.attributes;
+    }
+  }
+  const cst: AspCstNode = {
+    kind: "Document",
+    start: 0,
+    end: text.length,
+    contentStart: 0,
+    contentEnd: text.length,
+    tokens: buildMode === "skeleton" ? [] : nodes.flatMap((node) => node.tokens),
+    children: nodes,
+    serverObjects,
+    errors: diagnostics.map((diagnostic) => ({
+      message: diagnostic.message,
+      start: offsetFromRange(text, diagnostic.range.start),
+      end: offsetFromRange(text, diagnostic.range.end),
+    })),
+  };
+  if (buildMode === "full") {
+    cst.text = text;
+  }
+  return {
+    parsed: {
+      uri,
+      text,
+      cst,
+      regions: regions.map(stripEmptyRegionAttributes),
+      directives,
+      includes,
+      serverObjects,
+      defaultLanguage,
+      diagnostics,
+    },
+    reusedRegionCount,
+    reuseCandidateCount: items.length,
+  };
+}
+
+function reusableNodeMap(
+  previous: AspParsedDocument,
+  oldDamage: DamageSpan,
+  delta: number,
+): Map<string, AspCstNode[]> {
+  const reusableNodes = new Map<string, AspCstNode[]>();
+  for (const node of previous.cst.children) {
+    let reusable: AspCstNode | undefined;
+    if (node.end <= oldDamage.start) {
+      reusable = node;
+    } else if (node.start >= oldDamage.end) {
+      reusable = shiftAspCstNodeAfterDamage(node, delta);
+    }
+    if (!reusable) {
+      continue;
+    }
+    const key = nodeReuseKey(reusable);
+    if (!key) {
+      continue;
+    }
+    const bucket = reusableNodes.get(key);
+    if (bucket) {
+      bucket.push(reusable);
+    } else {
+      reusableNodes.set(key, [reusable]);
+    }
+  }
+  return reusableNodes;
+}
+
+function takeReusableNode(nodes: Map<string, AspCstNode[]>, key: string): AspCstNode | undefined {
+  const bucket = nodes.get(key);
+  if (!bucket || bucket.length === 0) {
+    return undefined;
+  }
+  const node = bucket.shift();
+  if (bucket.length === 0) {
+    nodes.delete(key);
+  }
+  return node;
+}
+
+function nodeReuseKeyForRegion(region: AspRegion): string {
+  return [
+    region.kind === "html"
+      ? "HtmlText"
+      : region.kind === "asp-expression"
+        ? "AspExpression"
+        : region.kind === "asp-directive"
+          ? "AspDirective"
+          : region.kind === "style"
+            ? "StyleElement"
+            : region.kind === "client-script"
+              ? "ClientScriptElement"
+              : region.kind === "server-script"
+                ? "ServerScriptElement"
+                : region.kind === "style-attribute"
+                  ? "StyleAttribute"
+                  : "AspBlock",
+    region.kind,
+    region.language,
+    region.start,
+    region.end,
+    region.contentStart,
+    region.contentEnd,
+    attributesKey(region.attributes),
+  ].join(":");
+}
+
+function nodeReuseKeyForInclude(text: string, include: AspInclude): string {
+  return [
+    "IncludeDirective",
+    "include",
+    "html",
+    include.offset,
+    offsetFromRange(text, include.range.end),
+    include.offset,
+    offsetFromRange(text, include.range.end),
+    include.mode,
+    include.path,
+  ].join(":");
+}
+
+function nodeReuseKey(node: AspCstNode): string | undefined {
+  if (node.kind === "IncludeDirective" && node.include) {
+    return nodeReuseKeyForIncludeFromNode(node);
+  }
+  if (!node.regionKind || !node.language) {
+    return undefined;
+  }
+  return [
+    node.kind,
+    node.regionKind,
+    node.language,
+    node.start,
+    node.end,
+    node.contentStart,
+    node.contentEnd,
+    attributesKey(node.attributes),
+  ].join(":");
+}
+
+function nodeReuseKeyForIncludeFromNode(node: AspCstNode): string {
+  return [
+    "IncludeDirective",
+    "include",
+    "html",
+    node.start,
+    node.end,
+    node.contentStart,
+    node.contentEnd,
+    node.include?.mode ?? "",
+    node.include?.path ?? "",
+  ].join(":");
+}
+
+function attributesKey(attributes: Record<string, string | true> | undefined): string {
+  return attributes ? JSON.stringify(attributes) : "";
+}
+
+function stripEmptyRegionAttributes(region: AspRegion): AspRegion {
+  if (!region.attributes || Object.keys(region.attributes).length > 0) {
+    return region;
+  }
+  const { attributes: _attributes, ...rest } = region;
+  return rest;
+}
+
+function shiftAspCstNodeAfterDamage(node: AspCstNode, delta: number): AspCstNode {
+  const shifted: AspCstNode = {
+    ...node,
+    start: node.start + delta,
+    end: node.end + delta,
+    contentStart: node.contentStart + delta,
+    contentEnd: node.contentEnd + delta,
+    tokens: node.tokens.map((token) => shiftAspTokenAfterDamage(token, delta)),
+    children: node.children.map((child) => shiftAspCstNodeAfterDamage(child, delta)),
+  };
+  if (node.vbscript) {
+    shifted.vbscript = shiftVbCstNodeAfterDamage(node.vbscript, delta);
+  }
+  if (node.errors) {
+    shifted.errors = node.errors.map((error) => ({
+      ...error,
+      start: error.start + delta,
+      end: error.end + delta,
+    }));
+  }
+  if (node.serverObjects) {
+    shifted.serverObjects = node.serverObjects.map((serverObject) => ({
+      ...serverObject,
+      offset: serverObject.offset + delta,
+    }));
+  }
+  return shifted;
+}
+
+function shiftAspTokenAfterDamage(token: AspToken, delta: number): AspToken {
+  const shifted: AspToken = {
+    ...token,
+    start: token.start + delta,
+    end: token.end + delta,
+  };
+  if (token.leadingTrivia) {
+    shifted.leadingTrivia = token.leadingTrivia.map((trivia) => ({
+      ...trivia,
+      start: trivia.start + delta,
+      end: trivia.end + delta,
+    }));
+  }
+  if (token.trailingTrivia) {
+    shifted.trailingTrivia = token.trailingTrivia.map((trivia) => ({
+      ...trivia,
+      start: trivia.start + delta,
+      end: trivia.end + delta,
+    }));
+  }
+  return shifted;
+}
+
+function shiftVbTokenAfterDamage(token: VbToken, delta: number): VbToken {
+  return {
+    ...token,
+    start: token.start + delta,
+    end: token.end + delta,
+  };
+}
+
+function shiftVbCstNodeAfterDamage(node: VbCstNode, delta: number): VbCstNode {
+  const shifted: VbCstNode = {
+    ...node,
+    start: node.start + delta,
+    end: node.end + delta,
+    tokens: node.tokens.map((token) => shiftVbTokenAfterDamage(token, delta)),
+    children: node.children.map((child) => shiftVbCstNodeAfterDamage(child, delta)),
+  };
+  if (node.contentStart !== undefined) {
+    shifted.contentStart = node.contentStart + delta;
+  }
+  if (node.contentEnd !== undefined) {
+    shifted.contentEnd = node.contentEnd + delta;
+  }
+  if (node.nameToken) {
+    shifted.nameToken = shiftVbTokenAfterDamage(node.nameToken, delta);
+  }
+  if (node.identifiers) {
+    shifted.identifiers = node.identifiers.map((token) => shiftVbTokenAfterDamage(token, delta));
+  }
+  if (node.arrayDeclarations) {
+    shifted.arrayDeclarations = node.arrayDeclarations.map((declaration) => ({
+      ...declaration,
+      name: shiftVbTokenAfterDamage(declaration.name, delta),
+    }));
+  }
+  if (node.parameters) {
+    shifted.parameters = node.parameters.map((token) => shiftVbTokenAfterDamage(token, delta));
+  }
+  if (node.parameterMetadata) {
+    shifted.parameterMetadata = node.parameterMetadata.map((parameter) => ({
+      ...parameter,
+      token: shiftVbTokenAfterDamage(parameter.token, delta),
+    }));
+  }
+  if (node.scopeStart !== undefined) {
+    shifted.scopeStart = node.scopeStart + delta;
+  }
+  if (node.scopeEnd !== undefined) {
+    shifted.scopeEnd = node.scopeEnd + delta;
+  }
+  if (node.errors) {
+    shifted.errors = node.errors.map((error) => ({
+      ...error,
+      start: error.start + delta,
+      end: error.end + delta,
+    }));
+  }
+  return shifted;
+}
+
+function validateIncrementalParsedDocument(parsed: AspParsedDocument): string | undefined {
+  if (parsed.cst.start !== 0 || parsed.cst.end !== parsed.text.length) {
+    return "invalid incremental CST span";
+  }
+  for (const region of parsed.regions) {
+    if (
+      region.start < 0 ||
+      region.start > region.contentStart ||
+      region.contentStart > region.contentEnd ||
+      region.contentEnd > region.end ||
+      region.end > parsed.text.length
+    ) {
+      return "invalid incremental region span";
+    }
+  }
+  for (let index = 1; index < parsed.cst.children.length; index += 1) {
+    const previous = parsed.cst.children[index - 1];
+    const current = parsed.cst.children[index];
+    if (
+      previous.start > current.start ||
+      (previous.start === current.start &&
+        previous.end - previous.start > current.end - current.start)
+    ) {
+      return "invalid incremental CST order";
+    }
+  }
+  return undefined;
+}
+
 export function shiftAspRangeAfterChange(
   range: { start: { line: number; character: number }; end: { line: number; character: number } },
   previousText: string,
@@ -518,44 +1388,6 @@ function buildParsedDocument(
   };
 }
 
-function applyIncrementalChanges(
-  previousText: string,
-  changes: readonly AspIncrementalChange[],
-): string {
-  return [...changes]
-    .map((change) => normalizeIncrementalChange(previousText, change))
-    .filter((change): change is NormalizedIncrementalChange => Boolean(change))
-    .sort((left, right) => right.startOffset - left.startOffset)
-    .reduce(
-      (text, change) =>
-        `${text.slice(0, change.startOffset)}${change.text}${text.slice(change.endOffset)}`,
-      previousText,
-    );
-}
-
-interface NormalizedIncrementalChange extends AspIncrementalChange {
-  startOffset: number;
-  endOffset: number;
-}
-
-function normalizeIncrementalChange(
-  previousText: string,
-  change: AspIncrementalChange,
-): NormalizedIncrementalChange | undefined {
-  const startOffset = change.rangeOffset ?? offsetAt(previousText, change.range.start);
-  const rangeLength = change.rangeLength ?? offsetAt(previousText, change.range.end) - startOffset;
-  const endOffset = startOffset + rangeLength;
-  if (
-    startOffset < 0 ||
-    endOffset < startOffset ||
-    startOffset > previousText.length ||
-    endOffset > previousText.length
-  ) {
-    return undefined;
-  }
-  return { ...change, startOffset, endOffset, rangeOffset: startOffset, rangeLength };
-}
-
 function editImpact(
   kind: AspEditImpact["kind"],
   reason: string,
@@ -607,7 +1439,7 @@ function changeCreatesStructuralMarker(
   while ((match = pattern.exec(segment)) !== null) {
     const markerStart = scanStart + match.index;
     const markerEnd = markerStart + match[0].length;
-    if (rangesOverlap(markerStart, markerEnd, nextChangeStart, nextChangeEnd)) {
+    if (rangeOverlaps(markerStart, markerEnd, nextChangeStart, nextChangeEnd)) {
       return true;
     }
   }
@@ -692,26 +1524,6 @@ function changeOverlapsDirective(
       offsetFromRange(parsed.text, directive.range.end),
     ),
   );
-}
-
-function rangeOverlapsOrTouches(
-  startOffset: number,
-  endOffset: number,
-  rangeStart: number,
-  rangeEnd: number,
-): boolean {
-  return startOffset === endOffset
-    ? startOffset >= rangeStart && startOffset <= rangeEnd
-    : startOffset < rangeEnd && endOffset > rangeStart;
-}
-
-function rangesOverlap(
-  startOffset: number,
-  endOffset: number,
-  rangeStart: number,
-  rangeEnd: number,
-): boolean {
-  return startOffset < rangeEnd && endOffset > rangeStart;
 }
 
 function changeTouchesEmbeddedContentBoundary(
@@ -871,21 +1683,6 @@ function shiftServerObjectAfterChange(
       ? shiftAspRangeAfterChange(serverObject.classIdRange, previousText, nextText, change)
       : undefined,
   };
-}
-
-function shiftOffsetAfterChange(
-  offset: number,
-  startOffset: number,
-  endOffset: number,
-  delta: number,
-): number {
-  if (offset < startOffset) {
-    return offset;
-  }
-  if (offset >= endOffset) {
-    return offset + delta;
-  }
-  return startOffset;
 }
 
 export function parseAspCst(uri: string, text: string, settings: AspSettings = {}): AspCstNode {
