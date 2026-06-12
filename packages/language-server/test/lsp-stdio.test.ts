@@ -48,6 +48,12 @@ interface DecodedSemanticToken {
   tokenModifiers: number;
 }
 
+interface SemanticTokenDeltaEdit {
+  start: number;
+  deleteCount: number;
+  data?: number[];
+}
+
 const rpcTimeoutMs = 30_000;
 const completionTriggerKindTriggerCharacter = 2;
 const semanticTokenType = {
@@ -5007,6 +5013,92 @@ both.SharedName
           previousResultId: (semanticTokens as { resultId?: string }).resultId,
         });
         expect(JSON.stringify(deltaTokens)).toContain("edits");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("applies semantic token delta edits after ranged document changes", async () => {
+      let source = `<%
+Dim count
+count = (1)
+If (count <> 0) And (count < 10) Then
+  Response.Write CStr(count)
+End If
+%>`;
+      let version = 1;
+      const uri = "file:///tmp/vbscript-semantic-delta-edits.asp";
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const initialFull = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const initialData = semanticTokenData(initialFull);
+
+        version += 1;
+        source = notifyRangedReplacement(server, uri, source, version, "count <> 0", "count <> 1");
+        const firstDelta = await server.request("textDocument/semanticTokens/full/delta", {
+          textDocument: { uri },
+          previousResultId: semanticTokenResultId(initialFull),
+        });
+        const firstApplied = applySemanticTokenDeltaEdits(initialData, firstDelta);
+        const firstFresh = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        expect(firstApplied).toEqual(semanticTokenData(firstFresh));
+        expect(
+          decodeSemanticTokens(firstApplied).some((token) =>
+            tokenMatches(source, token, "<>", semanticTokenType.operator),
+          ),
+        ).toBe(true);
+
+        const insertOffset = source.indexOf("CStr(count)") + "CStr(".length;
+        const inserted = notifyTypedInsertion(server, uri, source, version, insertOffset, " ");
+        source = inserted.text;
+        version = inserted.version;
+        const secondDelta = await server.request("textDocument/semanticTokens/full/delta", {
+          textDocument: { uri },
+          previousResultId: semanticTokenResultId(firstFresh),
+        });
+        const secondApplied = applySemanticTokenDeltaEdits(
+          semanticTokenData(firstFresh),
+          secondDelta,
+        );
+        const secondFresh = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        expect(secondApplied).toEqual(semanticTokenData(secondFresh));
+
+        const decoded = decodeSemanticTokens(secondApplied);
+        const callOpenOffset = source.indexOf("(", source.indexOf("CStr"));
+        const callOpen = positionAt(source, callOpenOffset);
+        expect(decoded).toContainEqual(
+          expect.objectContaining({
+            line: callOpen.line,
+            character: callOpen.character,
+            length: 1,
+            tokenType: semanticTokenType.operator,
+          }),
+        );
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -16922,6 +17014,28 @@ function decodeSemanticTokens(data: number[] | undefined): DecodedSemanticToken[
     });
   }
   return result;
+}
+
+function semanticTokenData(result: unknown): number[] {
+  const data = (result as { data?: number[] }).data;
+  expect(data).toEqual(expect.any(Array));
+  return [...data!];
+}
+
+function semanticTokenResultId(result: unknown): string {
+  const resultId = (result as { resultId?: string }).resultId;
+  expect(resultId).toEqual(expect.any(String));
+  return resultId!;
+}
+
+function applySemanticTokenDeltaEdits(previous: number[], result: unknown): number[] {
+  const edits = (result as { edits?: SemanticTokenDeltaEdit[] }).edits;
+  expect(edits).toEqual(expect.any(Array));
+  const next = [...previous];
+  for (const edit of edits!) {
+    next.splice(edit.start, edit.deleteCount, ...(edit.data ?? []));
+  }
+  return next;
 }
 
 function tokenMatches(

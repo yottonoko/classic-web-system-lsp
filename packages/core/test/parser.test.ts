@@ -740,6 +740,100 @@ afterValue = 2
     expect(updated.parsed.regions.some((region) => region.language === "vbscript")).toBe(true);
   });
 
+  it("keeps full incremental regions, CST and VBScript semantic tokens aligned through operator edits", () => {
+    const uri = "file:///site/full-incremental-operators.asp";
+    let text = `<%@ LANGUAGE="VBScript" %>
+<section>(dashboard)</section>
+<%
+Option Explicit
+Dim count
+Dim total
+count = (1)
+total = count
+If (count <> 0) And (count < 10) Then
+  Response.Write "(" & CStr(total)
+End If
+%>
+<div data-count="<%= count %>">(<span>ok</span>)</div>`;
+    let parsed = parseAspDocument(uri, text);
+    const edits: Array<{
+      label: string;
+      start: (current: string) => number;
+      deleteLength: number;
+      text: string;
+    }> = [
+      {
+        label: "replace numeric literal inside parentheses",
+        start: (current) => current.indexOf("count = (1)") + "count = (".length,
+        deleteLength: 1,
+        text: "2",
+      },
+      {
+        label: "insert whitespace inside a call",
+        start: (current) => current.indexOf("CStr(total)") + "CStr(".length,
+        deleteLength: 0,
+        text: " ",
+      },
+      {
+        label: "delete whitespace before not-equals",
+        start: (current) => current.indexOf("count <> 0") + "count".length,
+        deleteLength: 1,
+        text: "",
+      },
+      {
+        label: "replace comparison literal",
+        start: (current) => current.indexOf("count < 10") + "count < ".length,
+        deleteLength: 1,
+        text: "2",
+      },
+      {
+        label: "insert text in HTML between VBScript regions",
+        start: (current) => current.indexOf("ok</span>") + "ok".length,
+        deleteLength: 0,
+        text: "!",
+      },
+      {
+        label: "delete a parenthesis character inside a string",
+        start: (current) => current.indexOf('"("') + 1,
+        deleteLength: 1,
+        text: "",
+      },
+    ];
+
+    for (const edit of edits) {
+      const start = edit.start(text);
+      expect(start, edit.label).toBeGreaterThanOrEqual(0);
+      const end = start + edit.deleteLength;
+      const nextText = `${text.slice(0, start)}${edit.text}${text.slice(end)}`;
+      const updated = updateAspParsedDocument(
+        parsed,
+        [
+          {
+            range: { start: positionAt(text, start), end: positionAt(text, end) },
+            rangeOffset: start,
+            rangeLength: edit.deleteLength,
+            text: edit.text,
+          },
+        ],
+        { incremental: { mode: "full" } },
+      );
+      const fresh = parseAspDocument(uri, nextText);
+      const updatedSymbols = collectVbscriptSymbols(updated.parsed);
+      const freshSymbols = collectVbscriptSymbols(fresh);
+
+      expect(updated.impact.kind, edit.label).toBe("incremental");
+      expect(updated.parsed.regions, edit.label).toEqual(fresh.regions);
+      expect(updated.parsed.cst, edit.label).toEqual(fresh.cst);
+      expect(
+        getVbscriptSemanticTokens(updated.parsed, { symbols: updatedSymbols }),
+        edit.label,
+      ).toEqual(getVbscriptSemanticTokens(fresh, { symbols: freshSymbols }));
+
+      text = nextText;
+      parsed = updated.parsed;
+    }
+  });
+
   it("falls back from full incremental mode when directive damage can change defaults", () => {
     const source = `<%@ LANGUAGE="VBScript" %>
 <% Response.Write "ok" %>`;

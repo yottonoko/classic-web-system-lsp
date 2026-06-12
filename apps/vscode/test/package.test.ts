@@ -1155,14 +1155,22 @@ describe("VS Code extension package", () => {
       fs.readFileSync("language-configuration.json", "utf8"),
     ) as {
       comments?: { blockComment?: string[]; lineComment?: string };
+      brackets?: string[][];
       colorizedBracketPairs?: string[][];
       autoClosingPairs?: Array<{ open?: string; close?: string }>;
       surroundingPairs?: Array<{ open?: string; close?: string }>;
     };
     expect(languageConfiguration.comments?.blockComment).toEqual(["<!--", "-->"]);
     expect(languageConfiguration.comments?.lineComment).toBeUndefined();
+    expect(languageConfiguration.brackets).not.toContainEqual(["<", ">"]);
+    expect(languageConfiguration.brackets).toContainEqual(["(", ")"]);
+    expect(languageConfiguration.brackets).toContainEqual(["[", "]"]);
     expect(languageConfiguration.colorizedBracketPairs).toContainEqual(["(", ")"]);
     expect(languageConfiguration.colorizedBracketPairs).toContainEqual(["[", "]"]);
+    expect(languageConfiguration.autoClosingPairs).toContainEqual({
+      open: "<",
+      close: ">",
+    });
     expect(languageConfiguration.autoClosingPairs).not.toContainEqual({
       open: "'",
       close: "'",

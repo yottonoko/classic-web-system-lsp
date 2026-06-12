@@ -1823,7 +1823,6 @@ documents.onDidChangeContent((event) => {
     return;
   }
   documentOpenContentVersions.delete(event.document.uri);
-  clearSemanticTokensForUri(event.document.uri);
   const settings = cachedSettings(event.document.uri);
   const pendingChange = pendingDocumentChanges.get(event.document.uri);
   logDebugTrace(settings, "document.change", "[asp-lsp] document.change", {
