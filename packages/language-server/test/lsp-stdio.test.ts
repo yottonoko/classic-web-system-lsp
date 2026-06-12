@@ -255,6 +255,7 @@ M
                 id: expect.any(String),
                 current: expect.any(Number),
                 total: expect.any(Number),
+                updatedAt: expect.any(Number),
               }),
             ]),
           }),

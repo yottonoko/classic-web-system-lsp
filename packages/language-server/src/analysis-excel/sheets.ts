@@ -31,6 +31,21 @@ interface AnalysisExcelOptions {
   generatedAt?: Date;
   targetUri?: string;
   settings?: AnalysisExcelSettingsSummary;
+  progress?: (event: AnalysisExcelProgressEvent) => void;
+  yieldControl?: () => Promise<void>;
+}
+
+export interface AnalysisExcelProgressEvent {
+  label:
+    | "excel.normalizeGraph"
+    | "excel.analysisContext"
+    | "excel.analysisSummary"
+    | "excel.sheet"
+    | "excel.sheets";
+  current: number;
+  total: number;
+  detail?: string;
+  activeItems?: string[];
 }
 
 interface AnalysisExcelSettingsSummary {
@@ -86,6 +101,23 @@ interface AnalysisContext {
   targetUsageCounts: Map<string, UsageCounts>;
   externalUsageCounts: Map<string, UsageCounts>;
   unusedDeclarations: AspGraphNode[];
+}
+
+interface AnalysisExcelBuildContext {
+  normalizedPayload: AspGraphPayload;
+  locale: AspGraphLocale;
+  options: AnalysisExcelOptions;
+  generatedAt: Date;
+  nodesById: Map<string, AspGraphNode>;
+  fileNamesByUri: Map<string, string>;
+  context: AnalysisContext;
+  analysisRowsWithChartSpace: Cell[][];
+  analysisChartStartRow: number;
+}
+
+interface AnalysisExcelSheetBuilder {
+  name: string;
+  build(): AnalysisExcelSheet;
 }
 
 type AnalysisTextKey =
@@ -810,6 +842,94 @@ export function createAnalysisExcelSheets(
   locale: AspGraphLocale,
   options: AnalysisExcelOptions = {},
 ): AnalysisExcelSheet[] {
+  return buildAnalysisExcelSheets(createAnalysisExcelBuildContext(payload, locale, options));
+}
+
+export async function createAnalysisExcelSheetsAsync(
+  payload: AspGraphPayload,
+  locale: AspGraphLocale,
+  options: AnalysisExcelOptions = {},
+): Promise<AnalysisExcelSheet[]> {
+  let current = 0;
+  const total = 4 + 13;
+  const publish = (
+    label: AnalysisExcelProgressEvent["label"],
+    detail: string,
+    activeItems: string[] = [detail],
+  ): void => {
+    options.progress?.({ label, current, total, detail, activeItems });
+  };
+
+  publish("excel.normalizeGraph", "normalize graph payload");
+  await options.yieldControl?.();
+  const normalizedPayload = normalizeAnalysisGraphPayload(payload);
+  current += 1;
+  publish("excel.normalizeGraph", `${normalizedPayload.nodes.length} nodes`);
+  await options.yieldControl?.();
+
+  publish("excel.analysisContext", "map graph nodes");
+  const generatedAt = options.generatedAt ?? new Date();
+  const nodesById = new Map(normalizedPayload.nodes.map((node) => [node.id, node]));
+  const fileNamesByUri = fileNamesByUriMap(normalizedPayload.nodes);
+  current += 1;
+  publish("excel.analysisContext", `${nodesById.size} nodes`);
+  await options.yieldControl?.();
+
+  publish("excel.analysisContext", "classify usages and declarations");
+  const context = analysisContext(normalizedPayload, options, nodesById, fileNamesByUri);
+  current += 1;
+  publish("excel.analysisContext", `${context.targetDeclarations.length} declarations`);
+  await options.yieldControl?.();
+
+  publish("excel.analysisSummary", "build summary rows");
+  const analysisRows = analysisSummaryRows(locale, context, fileNamesByUri);
+  const analysisChartStartRow = analysisRows.length + 3;
+  const analysisRowsWithChartSpace = [
+    ...analysisRows,
+    [],
+    sectionTitle(text[locale].analysisCharts, 1),
+    ...blankRows(34),
+  ];
+  current += 1;
+  publish("excel.analysisSummary", `${analysisRows.length} summary rows`);
+  await options.yieldControl?.();
+
+  const buildContext: AnalysisExcelBuildContext = {
+    normalizedPayload,
+    locale,
+    options,
+    generatedAt,
+    nodesById,
+    fileNamesByUri,
+    context,
+    analysisRowsWithChartSpace,
+    analysisChartStartRow,
+  };
+  const builders = analysisExcelSheetBuilders(buildContext);
+  const sheets: AnalysisExcelSheet[] = [];
+  for (const builder of builders) {
+    publish("excel.sheet", builder.name);
+    await options.yieldControl?.();
+    sheets.push(builder.build());
+    current += 1;
+    publish("excel.sheet", builder.name, current === total ? [] : [builder.name]);
+    await options.yieldControl?.();
+  }
+  options.progress?.({
+    label: "excel.sheets",
+    current: total,
+    total,
+    detail: "complete",
+    activeItems: [],
+  });
+  return excelSafeSheetNames(sheets);
+}
+
+function createAnalysisExcelBuildContext(
+  payload: AspGraphPayload,
+  locale: AspGraphLocale,
+  options: AnalysisExcelOptions,
+): AnalysisExcelBuildContext {
   const normalizedPayload = normalizeAnalysisGraphPayload(payload);
   const generatedAt = options.generatedAt ?? new Date();
   const nodesById = new Map(normalizedPayload.nodes.map((node) => [node.id, node]));
@@ -823,86 +943,174 @@ export function createAnalysisExcelSheets(
     sectionTitle(text[locale].analysisCharts, 1),
     ...blankRows(34),
   ];
-  return excelSafeSheetNames([
-    sheet(
-      text[locale].summary,
-      summaryRows(normalizedPayload, locale, generatedAt, context, options),
-    ),
-    sheet(
-      text[locale].includeTree,
-      includeTreeRows(normalizedPayload, locale, context, nodesById, fileNamesByUri),
-    ),
-    sheet(text[locale].analysisSummary, analysisRowsWithChartSpace, {
-      autoFilter: false,
-      images: analysisSummaryImages(locale, context, analysisChartStartRow),
-      stickyRows: false,
-    }),
-    sheet(text[locale].chartData, chartDataRows(locale, context), {
-      autoFilter: false,
-      hidden: true,
-    }),
-    sheet(
-      text[locale].declarations,
-      declarationRows(
-        context.targetDeclarations,
-        locale,
-        context.targetUsageCounts,
-        fileNamesByUri,
-      ),
-    ),
-    sheet(
-      text[locale].internalUsages,
-      usageRows(context.internalUsageLinks, locale, nodesById, fileNamesByUri, "internalUsages"),
-    ),
-    sheet(
-      text[locale].externalFileUsages,
-      usageRows(
-        context.externalUsageLinks,
-        locale,
-        nodesById,
-        fileNamesByUri,
-        "externalFileUsages",
-      ),
-    ),
-    sheet(
-      text[locale].includedSymbolUsages,
-      includedUsageRows(context.includedUsageLinks, locale, nodesById, fileNamesByUri),
-    ),
-    sheet(
-      text[locale].memberUsages,
-      memberUsageRows(context.memberUsageLinks, locale, nodesById, fileNamesByUri),
-    ),
-    sheet(
-      text[locale].implicitGlobals,
-      implicitGlobalRows(
-        context.implicitGlobalDeclarations,
-        locale,
-        context.implicitGlobalUsageCounts,
-        fileNamesByUri,
-      ),
-    ),
-    sheet(
-      text[locale].implicitGlobalAssignments,
-      implicitGlobalAssignmentRows(
-        context.implicitGlobalAssignmentCandidates,
-        locale,
-        fileNamesByUri,
-      ),
-    ),
-    sheet(
-      text[locale].unused,
-      unusedDeclarationRows(
-        context.unusedDeclarations,
-        locale,
-        context.targetUsageCounts,
-        fileNamesByUri,
-      ),
-    ),
-    sheet(
-      text[locale].unresolved,
-      unresolvedRows(context.unresolvedLinks, locale, nodesById, fileNamesByUri),
-    ),
-  ]);
+  return {
+    normalizedPayload,
+    locale,
+    options,
+    generatedAt,
+    nodesById,
+    fileNamesByUri,
+    context,
+    analysisRowsWithChartSpace,
+    analysisChartStartRow,
+  };
+}
+
+function buildAnalysisExcelSheets(buildContext: AnalysisExcelBuildContext): AnalysisExcelSheet[] {
+  return excelSafeSheetNames(
+    analysisExcelSheetBuilders(buildContext).map((builder) => builder.build()),
+  );
+}
+
+function analysisExcelSheetBuilders({
+  normalizedPayload,
+  locale,
+  options,
+  generatedAt,
+  nodesById,
+  fileNamesByUri,
+  context,
+  analysisRowsWithChartSpace,
+  analysisChartStartRow,
+}: AnalysisExcelBuildContext): AnalysisExcelSheetBuilder[] {
+  return [
+    {
+      name: text[locale].summary,
+      build: () =>
+        sheet(
+          text[locale].summary,
+          summaryRows(normalizedPayload, locale, generatedAt, context, options),
+        ),
+    },
+    {
+      name: text[locale].includeTree,
+      build: () =>
+        sheet(
+          text[locale].includeTree,
+          includeTreeRows(normalizedPayload, locale, context, nodesById, fileNamesByUri),
+        ),
+    },
+    {
+      name: text[locale].analysisSummary,
+      build: () =>
+        sheet(text[locale].analysisSummary, analysisRowsWithChartSpace, {
+          autoFilter: false,
+          images: analysisSummaryImages(locale, context, analysisChartStartRow),
+          stickyRows: false,
+        }),
+    },
+    {
+      name: text[locale].chartData,
+      build: () =>
+        sheet(text[locale].chartData, chartDataRows(locale, context), {
+          autoFilter: false,
+          hidden: true,
+        }),
+    },
+    {
+      name: text[locale].declarations,
+      build: () =>
+        sheet(
+          text[locale].declarations,
+          declarationRows(
+            context.targetDeclarations,
+            locale,
+            context.targetUsageCounts,
+            fileNamesByUri,
+          ),
+        ),
+    },
+    {
+      name: text[locale].internalUsages,
+      build: () =>
+        sheet(
+          text[locale].internalUsages,
+          usageRows(
+            context.internalUsageLinks,
+            locale,
+            nodesById,
+            fileNamesByUri,
+            "internalUsages",
+          ),
+        ),
+    },
+    {
+      name: text[locale].externalFileUsages,
+      build: () =>
+        sheet(
+          text[locale].externalFileUsages,
+          usageRows(
+            context.externalUsageLinks,
+            locale,
+            nodesById,
+            fileNamesByUri,
+            "externalFileUsages",
+          ),
+        ),
+    },
+    {
+      name: text[locale].includedSymbolUsages,
+      build: () =>
+        sheet(
+          text[locale].includedSymbolUsages,
+          includedUsageRows(context.includedUsageLinks, locale, nodesById, fileNamesByUri),
+        ),
+    },
+    {
+      name: text[locale].memberUsages,
+      build: () =>
+        sheet(
+          text[locale].memberUsages,
+          memberUsageRows(context.memberUsageLinks, locale, nodesById, fileNamesByUri),
+        ),
+    },
+    {
+      name: text[locale].implicitGlobals,
+      build: () =>
+        sheet(
+          text[locale].implicitGlobals,
+          implicitGlobalRows(
+            context.implicitGlobalDeclarations,
+            locale,
+            context.implicitGlobalUsageCounts,
+            fileNamesByUri,
+          ),
+        ),
+    },
+    {
+      name: text[locale].implicitGlobalAssignments,
+      build: () =>
+        sheet(
+          text[locale].implicitGlobalAssignments,
+          implicitGlobalAssignmentRows(
+            context.implicitGlobalAssignmentCandidates,
+            locale,
+            fileNamesByUri,
+          ),
+        ),
+    },
+    {
+      name: text[locale].unused,
+      build: () =>
+        sheet(
+          text[locale].unused,
+          unusedDeclarationRows(
+            context.unusedDeclarations,
+            locale,
+            context.targetUsageCounts,
+            fileNamesByUri,
+          ),
+        ),
+    },
+    {
+      name: text[locale].unresolved,
+      build: () =>
+        sheet(
+          text[locale].unresolved,
+          unresolvedRows(context.unresolvedLinks, locale, nodesById, fileNamesByUri),
+        ),
+    },
+  ];
 }
 
 function normalizeAnalysisGraphPayload(payload: AspGraphPayload): AspGraphPayload {

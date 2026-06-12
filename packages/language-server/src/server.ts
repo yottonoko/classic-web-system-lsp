@@ -133,7 +133,7 @@ import {
   runSpilledGraphIndexPipeline,
   type BulkGraphIndexPipelineProgressEvent,
 } from "./asp-graph/bulk-pipeline";
-import { createAnalysisExcelSheets, type AspGraphLocale } from "./analysis-excel/sheets";
+import { createAnalysisExcelSheetsAsync, type AspGraphLocale } from "./analysis-excel/sheets";
 import { writeAnalysisExcelWorkbookFile } from "./analysis-excel/stream-writer";
 import type {
   JsDiagnosticsWorkerResponse,
@@ -364,7 +364,7 @@ const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const exportAnalysisExcelServerCommand = "aspLsp.server.exportAnalysisExcel";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.7.2";
+const languageServerVersion = "0.7.3";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -466,6 +466,7 @@ interface AspLspProgressTaskSnapshot {
   cancellable?: boolean;
   state: AspLspProgressTaskState;
   startedAt: number;
+  updatedAt: number;
 }
 
 interface AspLspProgressTask extends AspLspProgressTaskSnapshot {
@@ -4142,6 +4143,9 @@ async function mapWithConcurrency<T, U>(
         } finally {
           progress?.onItemDone?.(items[index], index, workerIndex);
         }
+        if ((index + 1) % 64 === 0) {
+          await yieldToEventLoop();
+        }
       }
     },
   );
@@ -4375,6 +4379,7 @@ function beginProgressTask(
   options: AspLspProgressTaskOptions = {},
 ): AspLspProgressTaskHandle {
   const id = `task-${++progressTaskSequence}`;
+  const startedAt = Date.now();
   const task: AspLspProgressTask = {
     id,
     kind,
@@ -4385,7 +4390,8 @@ function beginProgressTask(
     activeItems: options.activeItems,
     cancellable: options.cancellable === true,
     state: "running",
-    startedAt: Date.now(),
+    startedAt,
+    updatedAt: startedAt,
     cancelRequested: false,
   };
   progressTasks.set(id, task);
@@ -4414,6 +4420,7 @@ function beginProgressTask(
       if (update.activeItems !== undefined) {
         task.activeItems = update.activeItems;
       }
+      task.updatedAt = Date.now();
       publishServerStatus(task.label, true);
     },
     step(detail) {
@@ -4424,6 +4431,7 @@ function beginProgressTask(
       if (detail !== undefined) {
         task.detail = detail;
       }
+      task.updatedAt = Date.now();
       publishServerStatus(task.label, true);
     },
     end() {
@@ -4462,6 +4470,7 @@ function cancelProgressTask(id: string): boolean {
   }
   task.cancelRequested = true;
   task.state = "cancelling";
+  task.updatedAt = Date.now();
   publishServerStatus("task.cancel", true);
   return true;
 }
@@ -4503,6 +4512,7 @@ const aspGraphBuildService: AspGraphBuildService = createAspGraphBuildService({
   progressFileLabel,
   logDebugSummary,
   finishDebugStep,
+  yieldToEventLoop,
   progressMapHooks,
   mapWithConcurrency,
   analysisConcurrency,
@@ -4561,6 +4571,7 @@ function progressTaskSnapshot(task: AspLspProgressTask): AspLspProgressTaskSnaps
     cancellable: task.cancellable,
     state: task.state,
     startedAt: task.startedAt,
+    updatedAt: task.updatedAt,
   };
 }
 
@@ -18706,7 +18717,7 @@ async function exportAnalysisExcelForCommand(
     const excelLocale = analysisExcelLocale(settings, excelSettings.locale);
     task.update({ label: "excel.sheets", current: 1, total: 3, detail: targetPath });
     throwIfGraphCancelled(cancellation);
-    const sheets = createAnalysisExcelSheets(graph, excelLocale, {
+    const sheets = await createAnalysisExcelSheetsAsync(graph, excelLocale, {
       generatedAt: new Date(),
       targetUri: uri,
       settings: {
@@ -18722,6 +18733,15 @@ async function exportAnalysisExcelForCommand(
         includeTreeMaxTextLength:
           excelSettings.includeTreeMaxTextLength ?? defaultExcelIncludeTreeMaxTextLength,
       },
+      progress: (event) =>
+        task.update({
+          label: event.label,
+          current: event.current,
+          total: event.total,
+          detail: event.detail,
+          activeItems: event.activeItems,
+        }),
+      yieldControl: yieldToEventLoop,
     });
     task.update({ label: "excel.file", current: 2, total: 3, detail: targetPath });
     await writeAnalysisExcelWorkbookFile(sheets, {
@@ -18734,6 +18754,7 @@ async function exportAnalysisExcelForCommand(
           detail: event.detail,
           activeItems: event.activeItems,
         }),
+      yieldControl: yieldToEventLoop,
     });
     task.update({
       label: "excel.file",
@@ -18849,10 +18870,19 @@ async function graphDocumentsNeedRelatedIncludeTreeAnalysisAsync(
   settings: AspSettings,
   cancellation: AnalysisCancellation,
   operationCache?: GraphFileIndexOperationCache,
+  progress?: AspLspProgressTaskHandle,
 ): Promise<boolean> {
   const externalSymbols = createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings));
+  const documents = uniqueAspGraphDocuments(documentsForGraph);
+  progress?.update({
+    label: "graph.checkRelatedIncludes",
+    current: 0,
+    total: documents.length,
+    activeItems: [],
+  });
+  await yieldToEventLoop();
   const indexedDocuments = await mapWithConcurrency(
-    uniqueAspGraphDocuments(documentsForGraph),
+    documents,
     analysisConcurrency(settings),
     async (document): Promise<VbSymbolIndex> => {
       throwIfGraphCancelled(cancellation);
@@ -18862,7 +18892,17 @@ async function graphDocumentsNeedRelatedIncludeTreeAnalysisAsync(
       throwIfGraphCancelled(cancellation);
       return graphIndex.vbSymbolIndex;
     },
+    progress
+      ? progressMapHooks(progress, (document) => progressFileLabel(document.fileName))
+      : undefined,
   );
+  progress?.update({
+    label: "graph.checkRelatedIncludes",
+    current: documents.length,
+    total: documents.length,
+    activeItems: [],
+  });
+  await yieldToEventLoop();
   return indexedDocuments.some((index) =>
     vbSymbolIndexNeedsRelatedIncludeTreeAnalysis(index, externalSymbols),
   );
@@ -18932,6 +18972,7 @@ async function collectIncomingIncludeGraphDocumentsAsync(
   options: {
     excludedFileKeys?: Set<string>;
     token?: GraphCancellationToken;
+    progress?: AspLspProgressTaskHandle;
   } = {},
 ): Promise<AspGraphDocument[]> {
   const targets = new Set([...targetFileNames].map(fileIdentityKeyFromFileName));
@@ -18948,6 +18989,13 @@ async function collectIncomingIncludeGraphDocumentsAsync(
   const opened = new Set<string>();
   const concurrency = analysisConcurrency(settings);
   const openDocuments = await workspaceAnalyzableOpenDocumentsAsync(settings);
+  options.progress?.update({
+    label: "graph.findIncomingIncludes",
+    current: 0,
+    total: openDocuments.length,
+    activeItems: [],
+  });
+  await yieldToEventLoop();
   const openGraphDocuments = await mapWithConcurrency(
     openDocuments,
     concurrency,
@@ -18970,6 +19018,9 @@ async function collectIncomingIncludeGraphDocumentsAsync(
         ? graphDocument
         : undefined;
     },
+    options.progress
+      ? progressMapHooks(options.progress, (document) => progressFileLabelFromUri(document.uri))
+      : undefined,
   );
   for (const graphDocument of openGraphDocuments) {
     if (!graphDocument) {
@@ -18984,7 +19035,15 @@ async function collectIncomingIncludeGraphDocumentsAsync(
     excludedFileKeys,
     settings,
     cancellation,
+    options.progress,
   );
+  options.progress?.update({
+    label: "graph.filterIncomingIncludes",
+    current: 0,
+    total: indexedEntries.length,
+    activeItems: [],
+  });
+  await yieldToEventLoop();
   const indexedGraphDocuments = await mapWithConcurrency(
     indexedEntries,
     concurrency,
@@ -18998,6 +19057,9 @@ async function collectIncomingIncludeGraphDocumentsAsync(
       const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
       return graphDocumentFromCachedAsync(cached, cachedSettings(entry.uri));
     },
+    options.progress
+      ? progressMapHooks(options.progress, (entry) => progressFileLabel(entry.fileName))
+      : undefined,
   );
   documentsForGraph.push(
     ...indexedGraphDocuments.filter(
@@ -19013,6 +19075,7 @@ async function incomingIncludeIndexedEntriesAsync(
   excludedFileKeys: Set<string>,
   settings: AspSettings,
   cancellation: AnalysisCancellation,
+  progress?: AspLspProgressTaskHandle,
 ): Promise<WorkspaceIndexedDocument[]> {
   const indexedEntries = [...workspaceIndex.values()].filter(
     (entry) =>
@@ -19022,6 +19085,12 @@ async function incomingIncludeIndexedEntriesAsync(
   if (settings.graph?.useReverseIncludeIndex === false) {
     return indexedEntries;
   }
+  progress?.update({
+    label: "graph.reverseIncludeIndex",
+    current: 0,
+    total: indexedEntries.length,
+    activeItems: [],
+  });
   await ensureWorkspaceIncludeGraphAsync(settings, cancellation);
   throwIfGraphCancelled(cancellation);
   const candidateKeys = new Set(
@@ -19054,6 +19123,7 @@ async function incomingIncludeIndexedEntriesAsync(
       }
       return undefined;
     },
+    progress ? progressMapHooks(progress, (entry) => progressFileLabel(entry.fileName)) : undefined,
   );
   return candidates.filter((entry): entry is WorkspaceIndexedDocument => entry !== undefined);
 }
@@ -19211,6 +19281,7 @@ async function graphPayloadFromDocumentSourcesAsync(
     );
   };
   updateGraphProgress("graph.prepareDocuments");
+  await yieldToEventLoop();
   const pipeline = await runSpilledGraphIndexPipeline({
     sources,
     settings,
@@ -19253,12 +19324,14 @@ async function graphPayloadFromDocumentSourcesAsync(
       updateGraphProgress("graph.addUsages", detail, [detail]);
       addDocumentUsageToAspGraph(state, indexed);
       advanceGraphProgress("graph.addUsages", detail);
+      await yieldToEventLoop();
     }
   } finally {
     await pipeline.dispose();
   }
   logDebugSummary(settings, `[asp-lsp] asp.graph.bulk.complete: files=${pipeline.files}`);
   updateGraphProgress("graph.finalize");
+  await yieldToEventLoop();
   removeUnusedImplicitGlobalCandidateGraphDeclarations(state);
   state.stats = recomputeAspGraphStats(state.nodes.values(), state.links.values());
   advanceGraphProgress("graph.finalize");

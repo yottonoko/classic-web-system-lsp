@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
-import { createAnalysisExcelSheets } from "../src/analysis-excel/sheets";
+import {
+  createAnalysisExcelSheets,
+  createAnalysisExcelSheetsAsync,
+} from "../src/analysis-excel/sheets";
 import { writeAnalysisExcelWorkbookFile } from "../src/analysis-excel/stream-writer";
 import type { AspGraphPayload } from "../src/asp-graph/types";
 
@@ -617,6 +620,48 @@ describe("analysis Excel sheets", () => {
     );
     expect(table(sheets, "未解決").flat()).not.toContain("UnknownMember");
     expect(table(sheets, "未解決").flat()).not.toContain("MissingValue");
+  });
+
+  it("reports cooperative progress while building analysis sheets", async () => {
+    const progressEvents: Array<{
+      label: string;
+      current: number;
+      total: number;
+      detail?: string;
+      activeItems?: string[];
+    }> = [];
+    let yieldCount = 0;
+    const sheets = await createAnalysisExcelSheetsAsync(analysisPayload(), "ja", {
+      generatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      targetUri: "file:///workspace/main.asp",
+      progress: (event) => progressEvents.push(event),
+      yieldControl: async () => {
+        yieldCount += 1;
+        await Promise.resolve();
+      },
+    });
+
+    expect(sheets.map((sheet) => sheet.sheet)).toContain("概要");
+    expect(yieldCount).toBeGreaterThan(5);
+    expect(progressEvents.map((event) => event.label)).toEqual(
+      expect.arrayContaining([
+        "excel.normalizeGraph",
+        "excel.analysisContext",
+        "excel.analysisSummary",
+        "excel.sheet",
+        "excel.sheets",
+      ]),
+    );
+    expect(progressEvents).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: "excel.sheet", detail: "概要" })]),
+    );
+    expect(progressEvents.at(-1)).toEqual(
+      expect.objectContaining({
+        label: "excel.sheets",
+        current: progressEvents.at(-1)?.total,
+        activeItems: [],
+      }),
+    );
   });
 
   it("checks unused functions, local variables, constants and parameters", () => {

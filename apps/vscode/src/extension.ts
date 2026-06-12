@@ -71,6 +71,7 @@ interface ProgressTask {
   cancellable?: boolean;
   state: ProgressTaskState;
   startedAt: number;
+  updatedAt: number;
   source: "server" | "extension";
 }
 
@@ -1035,13 +1036,17 @@ function updateStatusBar(): void {
   }
   const localizer = extensionLocalizer();
   const tasks = activeProgressTasks();
-  const progressText = progressSummaryText(tasks) ?? progressValueText(serverProgress);
+  const primaryTask = primaryProgressTask(tasks);
+  const progressText =
+    progressValueText(progressFromTask(primaryTask)) ||
+    progressSummaryText(tasks) ||
+    progressValueText(serverProgress);
   const activeKind = activeStatusKind(tasks);
   if (activeKind === "loading") {
     statusBarItem.text = `$(sync~spin) ${progressStatusText(
       "status.loading.text",
       "status.progress.loadingStatusText",
-      tasks,
+      primaryTask,
       localizer,
     )}${progressText}`;
     statusBarItem.tooltip = progressTooltip(localizer("status.loading.tooltip"), tasks, localizer);
@@ -1051,7 +1056,7 @@ function updateStatusBar(): void {
     statusBarItem.text = `$(loading~spin) ${progressStatusText(
       "status.analyzing.text",
       "status.progress.analyzingStatusText",
-      tasks,
+      primaryTask,
       localizer,
     )}${progressText}`;
     statusBarItem.tooltip = progressTooltip(
@@ -1106,19 +1111,21 @@ function progressSummaryText(tasks: ProgressTask[]): string | undefined {
 function progressStatusText(
   fallbackKey: ExtensionMessageKey,
   taskKey: ExtensionMessageKey,
-  tasks: ProgressTask[],
+  task: ProgressTask | undefined,
   localizer: (key: ExtensionMessageKey, args?: ExtensionMessageArgs) => string,
 ): string {
-  const task = primaryProgressTask(tasks);
   if (!task) {
     return localizer(fallbackKey);
   }
-  return localizer(taskKey, { task: progressTaskDisplayLabel(task.label, localizer) });
+  const label = progressTaskDisplayLabel(task.label, localizer);
+  const detail = progressStatusBarDetail(task.detail);
+  return localizer(taskKey, { task: detail ? `${label}: ${detail}` : label });
 }
 
 function primaryProgressTask(tasks: ProgressTask[]): ProgressTask | undefined {
   return [...tasks].sort(
     (left, right) =>
+      right.updatedAt - left.updatedAt ||
       progressTaskStatusPriority(right) - progressTaskStatusPriority(left) ||
       right.startedAt - left.startedAt,
   )[0];
@@ -1142,6 +1149,25 @@ function aggregateProgress(tasks: ProgressTask[]): { current: number; total: num
     }),
     { current: 0, total: 0 },
   );
+}
+
+function progressFromTask(
+  task: ProgressTask | undefined,
+): { current: number; total: number } | undefined {
+  return task && typeof task.current === "number" && typeof task.total === "number"
+    ? { current: task.current, total: task.total }
+    : undefined;
+}
+
+function progressStatusBarDetail(detail: string | undefined): string | undefined {
+  if (!detail) {
+    return undefined;
+  }
+  const normalized = detail.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 72) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 34)}...${normalized.slice(-35)}`;
 }
 
 function progressValueText(progress: { current: number; total: number } | undefined): string {
@@ -1218,6 +1244,7 @@ function progressTaskFromStatusNotification(task: unknown): ProgressTask | undef
   const activeItems = Array.isArray(record.activeItems)
     ? record.activeItems.filter((item): item is string => typeof item === "string")
     : undefined;
+  const startedAt = typeof record.startedAt === "number" ? record.startedAt : Date.now();
   return {
     id,
     kind,
@@ -1228,7 +1255,8 @@ function progressTaskFromStatusNotification(task: unknown): ProgressTask | undef
     activeItems,
     cancellable: record.cancellable === true,
     state,
-    startedAt: typeof record.startedAt === "number" ? record.startedAt : Date.now(),
+    startedAt,
+    updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : startedAt,
     source: "server",
   };
 }
@@ -1247,6 +1275,7 @@ function beginExtensionProgressTask(
   end(): void;
 } {
   const id = `extension-${++extensionProgressTaskSequence}`;
+  const startedAt = Date.now();
   extensionProgressTasks.set(id, {
     id,
     kind,
@@ -1256,7 +1285,8 @@ function beginExtensionProgressTask(
     total: options.total,
     cancellable: options.cancellable === true,
     state: "running",
-    startedAt: Date.now(),
+    startedAt,
+    updatedAt: startedAt,
     source: "extension",
   });
   updateStatusBar();
@@ -1278,6 +1308,7 @@ function beginExtensionProgressTask(
       if (update.total !== undefined) {
         task.total = update.total;
       }
+      task.updatedAt = Date.now();
       updateStatusBar();
     },
     end() {
@@ -1424,10 +1455,22 @@ function progressTaskDisplayLabelKey(label: string): ExtensionMessageKey | undef
       return "status.progress.graphLoadDocuments";
     case "graph.collectIncludes":
       return "status.progress.graphCollectIncludes";
+    case "graph.prefetchIncludes":
+      return "status.progress.graphPrefetchIncludes";
+    case "graph.resolveIncludes":
+      return "status.progress.graphResolveIncludes";
     case "graph.collectRelatedIncludes":
       return "status.progress.graphCollectRelatedIncludes";
+    case "graph.checkRelatedIncludes":
+      return "status.progress.graphCheckRelatedIncludes";
     case "graph.collectIncomingIncludes":
       return "status.progress.graphCollectIncomingIncludes";
+    case "graph.findIncomingIncludes":
+      return "status.progress.graphFindIncomingIncludes";
+    case "graph.reverseIncludeIndex":
+      return "status.progress.graphReverseIncludeIndex";
+    case "graph.filterIncomingIncludes":
+      return "status.progress.graphFilterIncomingIncludes";
     case "graph.indexDocuments":
       return "status.progress.graphIndexDocuments";
     case "graph.spillIndexes":
@@ -1450,6 +1493,14 @@ function progressTaskDisplayLabelKey(label: string): ExtensionMessageKey | undef
       return "status.progress.referencesFinalize";
     case "excel.graph":
       return "status.progress.excelGraph";
+    case "excel.normalizeGraph":
+      return "status.progress.excelNormalizeGraph";
+    case "excel.analysisContext":
+      return "status.progress.excelAnalysisContext";
+    case "excel.analysisSummary":
+      return "status.progress.excelAnalysisSummary";
+    case "excel.sheet":
+      return "status.progress.excelSheet";
     case "excel.chooseFile":
       return "status.progress.excelChooseFile";
     case "excel.sheets":
@@ -1480,6 +1531,7 @@ async function cancelProgressTask(task: ProgressTask): Promise<void> {
     const current = extensionProgressTasks.get(task.id);
     if (current) {
       current.state = "cancelling";
+      current.updatedAt = Date.now();
       updateStatusBar();
     }
     return;
@@ -1609,6 +1661,10 @@ type ExtensionMessageKey =
   | "status.progress.excelFileRows"
   | "status.progress.excelFileSheet"
   | "status.progress.excelGraph"
+  | "status.progress.excelAnalysisContext"
+  | "status.progress.excelAnalysisSummary"
+  | "status.progress.excelNormalizeGraph"
+  | "status.progress.excelSheet"
   | "status.progress.excelSheets"
   | "status.progress.excelWorkbook"
   | "status.progress.flowchart"
@@ -1621,16 +1677,22 @@ type ExtensionMessageKey =
   | "status.progress.graphAddStructure"
   | "status.progress.graphAddUsages"
   | "status.progress.graphCanonicalizeSymbols"
+  | "status.progress.graphCheckRelatedIncludes"
   | "status.progress.graphCollectIncomingIncludes"
   | "status.progress.graphCollectIncludes"
   | "status.progress.graphCollectRelatedIncludes"
   | "status.progress.graphDocument"
+  | "status.progress.graphFilterIncomingIncludes"
+  | "status.progress.graphFindIncomingIncludes"
   | "status.progress.graphFinalize"
   | "status.progress.graphFolder"
   | "status.progress.graphIndexDocuments"
   | "status.progress.graphLoadDocuments"
   | "status.progress.graphOpenDocuments"
   | "status.progress.graphPrepareDocuments"
+  | "status.progress.graphPrefetchIncludes"
+  | "status.progress.graphResolveIncludes"
+  | "status.progress.graphReverseIncludeIndex"
   | "status.progress.graphSpillIndexes"
   | "status.progress.graphWorkspaceIndex"
   | "status.progress.graphWorkspace"
@@ -1700,6 +1762,10 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.excelFileRows": "Writing Excel rows",
     "status.progress.excelFileSheet": "Writing Excel sheet",
     "status.progress.excelGraph": "Collecting Excel analysis graph",
+    "status.progress.excelAnalysisContext": "Classifying Excel graph data",
+    "status.progress.excelAnalysisSummary": "Building Excel analysis summary",
+    "status.progress.excelNormalizeGraph": "Normalizing Excel graph payload",
+    "status.progress.excelSheet": "Building Excel sheet",
     "status.progress.excelSheets": "Building Excel sheets",
     "status.progress.excelWorkbook": "Generating Excel workbook",
     "status.progress.flowchart": "Generating flowchart",
@@ -1712,16 +1778,22 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.graphAddStructure": "Adding graph structure",
     "status.progress.graphAddUsages": "Adding graph usages",
     "status.progress.graphCanonicalizeSymbols": "Canonicalizing graph symbols",
+    "status.progress.graphCheckRelatedIncludes": "Checking related include analysis need",
     "status.progress.graphCollectIncomingIncludes": "Collecting incoming include files",
     "status.progress.graphCollectIncludes": "Collecting include tree",
     "status.progress.graphCollectRelatedIncludes": "Collecting related include trees",
     "status.progress.graphDocument": "Generating current file graph",
+    "status.progress.graphFilterIncomingIncludes": "Filtering incoming include files",
+    "status.progress.graphFindIncomingIncludes": "Checking open incoming include files",
     "status.progress.graphFinalize": "Finalizing graph",
     "status.progress.graphFolder": "Generating folder graph",
     "status.progress.graphIndexDocuments": "Indexing graph documents",
     "status.progress.graphLoadDocuments": "Loading graph documents",
     "status.progress.graphOpenDocuments": "Loading open graph documents",
     "status.progress.graphPrepareDocuments": "Preparing graph documents",
+    "status.progress.graphPrefetchIncludes": "Prefetching include targets",
+    "status.progress.graphResolveIncludes": "Resolving include paths",
+    "status.progress.graphReverseIncludeIndex": "Reading reverse include index",
     "status.progress.graphSpillIndexes": "Writing graph index spill files",
     "status.progress.graphWorkspace": "Generating workspace graph",
     "status.progress.graphWorkspaceIndex": "Loading graph workspace index",
@@ -1789,6 +1861,10 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.excelFileRows": "Excel row 書き込み中",
     "status.progress.excelFileSheet": "Excel sheet 書き込み中",
     "status.progress.excelGraph": "Excel 解析 graph 取得中",
+    "status.progress.excelAnalysisContext": "Excel graph data 分類中",
+    "status.progress.excelAnalysisSummary": "Excel 解析 summary 作成中",
+    "status.progress.excelNormalizeGraph": "Excel graph payload 正規化中",
+    "status.progress.excelSheet": "Excel sheet 作成中",
     "status.progress.excelSheets": "Excel sheet 作成中",
     "status.progress.excelWorkbook": "Excel workbook 生成中",
     "status.progress.flowchart": "flowchart 生成中",
@@ -1801,16 +1877,22 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.graphAddStructure": "graph 構造追加中",
     "status.progress.graphAddUsages": "graph 使用箇所追加中",
     "status.progress.graphCanonicalizeSymbols": "graph symbol 正規化中",
+    "status.progress.graphCheckRelatedIncludes": "関連 include 解析の必要性確認中",
     "status.progress.graphCollectIncomingIncludes": "incoming include file 収集中",
     "status.progress.graphCollectIncludes": "include tree 収集中",
     "status.progress.graphCollectRelatedIncludes": "関連 include tree 収集中",
     "status.progress.graphDocument": "current file graph 生成中",
+    "status.progress.graphFilterIncomingIncludes": "incoming include file 絞り込み中",
+    "status.progress.graphFindIncomingIncludes": "open incoming include file 確認中",
     "status.progress.graphFinalize": "graph finalize 中",
     "status.progress.graphFolder": "folder graph 生成中",
     "status.progress.graphIndexDocuments": "graph document index 中",
     "status.progress.graphLoadDocuments": "graph document 読み込み中",
     "status.progress.graphOpenDocuments": "open document graph 読み込み中",
     "status.progress.graphPrepareDocuments": "graph document 準備中",
+    "status.progress.graphPrefetchIncludes": "include target 先読み中",
+    "status.progress.graphResolveIncludes": "include path 解決中",
+    "status.progress.graphReverseIncludeIndex": "reverse include index 読み込み中",
     "status.progress.graphSpillIndexes": "graph index spill 書き込み中",
     "status.progress.graphWorkspace": "workspace graph 生成中",
     "status.progress.graphWorkspaceIndex": "graph workspace index 読み込み中",

@@ -73,6 +73,7 @@ export interface AspGraphBuildHost {
   progressFileLabel(fileName: string): string;
   logDebugSummary(settings: AspSettings, message: string): void;
   finishDebugStep(settings: AspSettings, uri: string, step: string, startedAt: bigint): void;
+  yieldToEventLoop(): Promise<void>;
   progressMapHooks<T>(
     progress: AspGraphProgressTaskHandle,
     label: (item: T) => string,
@@ -110,6 +111,7 @@ export interface AspGraphBuildHost {
     settings: AspSettings,
     cancellation: AnalysisCancellation,
     operationCache?: GraphFileIndexOperationCache,
+    progress?: AspGraphProgressTaskHandle,
   ): Promise<boolean>;
   collectIncomingIncludeGraphDocumentsAsync(
     targetFileNames: Set<string>,
@@ -118,6 +120,7 @@ export interface AspGraphBuildHost {
     options?: {
       excludedFileKeys?: Set<string>;
       token?: GraphCancellationToken;
+      progress?: AspGraphProgressTaskHandle;
     },
   ): Promise<AspGraphDocument[]>;
   graphPayloadFromDocumentsAsync(
@@ -244,6 +247,8 @@ export interface CollectIncludeTreeGraphDocumentsOptions {
   initialTextLength?: number;
   limits?: VbProjectContextLimits;
   truncation?: AspGraphDocumentCollectionTruncation;
+  progress?: AspGraphProgressTaskHandle;
+  progressLabel?: string;
 }
 
 export interface CollectRelatedIncludeTreeGraphDocumentsOptions extends CollectIncludeTreeGraphDocumentsOptions {
@@ -317,6 +322,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       total: 4,
       detail: uri ? host.progressFileLabelFromUri(uri) : undefined,
     });
+    await host.yieldToEventLoop();
     const cached = uri ? await host.cachedDocumentForGraphAsync(uri) : undefined;
     throwIfGraphCancelled(cancellation);
     if (!cached) {
@@ -329,6 +335,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       total: 4,
       detail: host.progressFileLabelFromUri(cached.source.uri),
     });
+    await host.yieldToEventLoop();
     const targetGraphDocument = await host.graphDocumentFromCachedAsync(cached, settings);
     const graphDocumentTruncation: AspGraphDocumentCollectionTruncation = {};
     const includeTreeLimits = options.includeTreeLimits ?? host.graphIncludeTreeLimits(settings);
@@ -338,11 +345,17 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       total: 4,
       detail: host.progressFileLabel(targetGraphDocument.fileName),
     });
+    await host.yieldToEventLoop();
     const documentsForGraph = await collectIncludeTreeGraphDocumentsAsync(
       targetGraphDocument,
       settings,
       cancellation,
-      { limits: includeTreeLimits, truncation: graphDocumentTruncation },
+      {
+        limits: includeTreeLimits,
+        progress: options.progress,
+        progressLabel: "graph.collectIncludes",
+        truncation: graphDocumentTruncation,
+      },
     );
     const includeRelatedIncludeTreesForUnresolved =
       options.includeRelatedIncludeTreesForUnresolved ??
@@ -356,6 +369,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
           settings,
           cancellation,
           options.operationCache,
+          options.progress,
         )))
     ) {
       usedWorkspaceIndexForDocumentGraph = true;
@@ -365,6 +379,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
         total: 4,
         detail: host.progressFileLabel(targetGraphDocument.fileName),
       });
+      await host.yieldToEventLoop();
       appendAspGraphDocuments(
         documentsForGraph,
         await collectRelatedIncludeTreeGraphDocumentsAsync(
@@ -377,6 +392,8 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
             ),
             initialTextLength: graphDocumentsTextLength(documentsForGraph),
             limits: includeTreeLimits,
+            progress: options.progress,
+            progressLabel: "graph.collectRelatedIncludes",
             truncation: graphDocumentTruncation,
           },
         ),
@@ -393,6 +410,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
         total: 4,
         detail: host.progressFileLabel(targetGraphDocument.fileName),
       });
+      await host.yieldToEventLoop();
       appendAspGraphDocuments(
         documentsForGraph,
         await host.collectIncomingIncludeGraphDocumentsAsync(
@@ -403,6 +421,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
             excludedFileKeys: new Set(
               documentsForGraph.map((document) => host.graphFileKey(document.fileName)),
             ),
+            progress: options.progress,
           },
         ),
       );
@@ -445,6 +464,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       label: "graph.workspaceIndex",
       detail: folderName ? host.progressFileLabel(folderName) : undefined,
     });
+    await host.yieldToEventLoop();
     await host.ensureWorkspaceIndexAsync(settings, token);
     throwIfGraphCancelled(cancellation);
     const opened = new Set<string>();
@@ -458,6 +478,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       total: openDocuments.length,
       detail: host.progressFileLabel(folderName),
     });
+    await host.yieldToEventLoop();
     const openGraphDocuments = await host.mapWithConcurrency(
       openDocuments,
       concurrency,
@@ -503,6 +524,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       current: openDocuments.length,
       total: openDocuments.length + indexedEntries.length,
     });
+    await host.yieldToEventLoop();
     const graphDocumentSources = [
       ...documentsForGraph.map(graphDocumentSourceFromDocument),
       ...indexedEntries.map((entry) =>
@@ -534,6 +556,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
             excludedFileKeys: new Set(
               documentsForGraph.map((document) => host.graphFileKey(document.fileName)),
             ),
+            progress,
             token,
           },
         ),
@@ -567,6 +590,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
     throwIfGraphCancelled(cancellation);
     const settings = host.globalSettings();
     progress?.update({ label: "graph.workspaceIndex" });
+    await host.yieldToEventLoop();
     await host.ensureWorkspaceIndexAsync(settings, token);
     throwIfGraphCancelled(cancellation);
     const opened = new Set<string>();
@@ -575,6 +599,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
     throwIfGraphCancelled(cancellation);
     const concurrency = host.analysisConcurrency(settings);
     progress?.update({ label: "graph.openDocuments", current: 0, total: openDocuments.length });
+    await host.yieldToEventLoop();
     const openGraphDocuments = await host.mapWithConcurrency(
       openDocuments,
       concurrency,
@@ -607,6 +632,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       current: openDocuments.length,
       total: openDocuments.length + indexedEntries.length,
     });
+    await host.yieldToEventLoop();
     const graphDocumentSources = [
       ...documentsForGraph.map(graphDocumentSourceFromDocument),
       ...indexedEntries.map((entry) =>
@@ -673,11 +699,41 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       visited.add(documentKey);
       documentsForGraph.push(document);
       textLength += document.text.length;
+      options.progress?.update({
+        label: options.progressLabel ?? "graph.collectIncludes",
+        current: Math.min(visited.size, limits.maxDocuments),
+        total: limits.maxDocuments,
+        detail: host.progressFileLabel(document.fileName),
+        activeItems: [host.progressFileLabel(document.fileName)],
+      });
+      await host.yieldToEventLoop();
       const includeRefs = await host.graphIncludeRefsForDocumentAsync(document, settings);
       throwIfGraphCancelled(cancellation);
-      await prefetchGraphIncludeTargetsAsync(document.uri, includeRefs, settings, cancellation);
+      options.progress?.update({
+        label: "graph.prefetchIncludes",
+        current: 0,
+        total: Math.max(1, includeRefs.length),
+        detail: host.progressFileLabel(document.fileName),
+        activeItems: [host.progressFileLabel(document.fileName)],
+      });
+      await host.yieldToEventLoop();
+      await prefetchGraphIncludeTargetsAsync(
+        document.uri,
+        includeRefs,
+        settings,
+        cancellation,
+        options.progress,
+      );
       for (const include of includeRefs) {
         throwIfGraphCancelled(cancellation);
+        options.progress?.update({
+          label: "graph.resolveIncludes",
+          current: Math.min(visited.size, limits.maxDocuments),
+          total: limits.maxDocuments,
+          detail: `${host.progressFileLabel(document.fileName)} -> ${include.path}`,
+          activeItems: [host.progressFileLabel(document.fileName)],
+        });
+        await host.yieldToEventLoop();
         const resolved = await host.resolveIncludePathDetailsAsync(
           document.uri,
           include.path,
@@ -723,6 +779,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
     includeRefs: AspInclude[],
     settings: AspSettings,
     cancellation: AnalysisCancellation,
+    progress?: AspGraphProgressTaskHandle,
   ): Promise<void> {
     await host.mapWithConcurrency(
       includeRefs,
@@ -745,6 +802,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
           host.graphDocumentFromIncludeFileAsync(resolved.fileName, settings),
         ]).catch(() => undefined);
       },
+      progress ? host.progressMapHooks(progress, (include: AspInclude) => include.path) : undefined,
     );
   }
 
@@ -761,6 +819,14 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
     let frontier = new Set(rootDocuments.map((document) => document.fileName));
 
     for (let depth = 0; depth < 20 && frontier.size > 0; depth += 1) {
+      options.progress?.update({
+        label: "graph.collectRelatedIncludes",
+        current: Math.min(excludedFileKeys.size, limits.maxDocuments),
+        total: limits.maxDocuments,
+        detail: `depth ${depth + 1}, frontier ${frontier.size}`,
+        activeItems: [...frontier].slice(0, 5).map(host.progressFileLabel),
+      });
+      await host.yieldToEventLoop();
       if (excludedFileKeys.size >= limits.maxDocuments) {
         noteAspGraphDocumentCollectionTruncated(
           options.truncation,
@@ -775,6 +841,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
         cancellation,
         {
           excludedFileKeys,
+          progress: options.progress,
           token: options.token,
         },
       );
@@ -804,6 +871,8 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
             excludedFileKeys,
             initialTextLength: textLength,
             limits,
+            progress: options.progress,
+            progressLabel: "graph.collectRelatedIncludes",
             truncation: options.truncation,
           },
         );

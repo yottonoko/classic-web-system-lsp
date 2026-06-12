@@ -4,6 +4,7 @@ import type { AnalysisExcelSheet, Cell } from "./sheets";
 export interface WriteAnalysisExcelWorkbookOptions {
   filename: string;
   progress?: (event: WriteAnalysisExcelWorkbookProgressEvent) => void;
+  yieldControl?: () => Promise<void>;
 }
 
 export interface WriteAnalysisExcelWorkbookProgressEvent {
@@ -27,6 +28,7 @@ export async function writeAnalysisExcelWorkbookFile(
     total,
     detail: options.filename,
   });
+  await options.yieldControl?.();
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
     filename: options.filename,
     useStyles: true,
@@ -40,6 +42,7 @@ export async function writeAnalysisExcelWorkbookFile(
       detail: sheet.sheet,
       activeItems: [sheet.sheet],
     });
+    await options.yieldControl?.();
     const worksheet = workbook.addWorksheet(sheet.sheet, {
       autoFilter: sheet.autoFilterRef,
       state: sheet.hidden === true ? "hidden" : "visible",
@@ -62,7 +65,7 @@ export async function writeAnalysisExcelWorkbookFile(
       });
       row.commit();
       current += 1;
-      if (rowIndex === 0 || current % 100 === 0 || rowIndex === sheet.data.length - 1) {
+      if (rowIndex === 0 || current % 25 === 0 || rowIndex === sheet.data.length - 1) {
         options.progress?.({
           label: "excel.fileRows",
           current,
@@ -70,6 +73,7 @@ export async function writeAnalysisExcelWorkbookFile(
           detail: `${sheet.sheet} ${rowIndex + 1}/${sheet.data.length}`,
           activeItems: [sheet.sheet],
         });
+        await options.yieldControl?.();
       }
     }
     worksheet.commit();
@@ -81,6 +85,7 @@ export async function writeAnalysisExcelWorkbookFile(
       detail: sheet.sheet,
       activeItems: [sheet.sheet],
     });
+    await options.yieldControl?.();
   }
   options.progress?.({
     label: "excel.fileCommit",
@@ -89,6 +94,7 @@ export async function writeAnalysisExcelWorkbookFile(
     detail: options.filename,
     activeItems: [],
   });
+  await options.yieldControl?.();
   await workbook.commit();
   options.progress?.({
     label: "excel.fileCommit",
