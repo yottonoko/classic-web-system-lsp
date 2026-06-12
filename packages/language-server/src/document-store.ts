@@ -68,6 +68,7 @@ export interface CachedAnalysis {
   vbDiagnostics?: DiagnosticCacheEntry;
   jsSyntaxDiagnostics?: CachedJsDiagnosticsEntry;
   jsSlowDiagnostics?: CachedJsDiagnosticsEntry;
+  semanticVbRegionTokens?: CachedSemanticVbRegionTokensEntry;
   semanticTokensFull?: CachedSemanticTokensEntry;
   semanticJavascriptTokens?: CachedSemanticJavascriptTokensEntry;
   vbProjectContext?: { key: string; rootKey: string; context: VbProjectContext };
@@ -102,6 +103,20 @@ export interface CachedAnalysis {
 export interface CachedSemanticTokensEntry {
   key: string;
   data: number[];
+}
+
+export interface CachedSemanticVbRegionTokensEntry {
+  key: string;
+  regions: CachedSemanticVbRegionTokenEntry[];
+}
+
+export interface CachedSemanticVbRegionTokenEntry {
+  regionKey: string;
+  start: number;
+  end: number;
+  contentStart: number;
+  contentEnd: number;
+  tokens: SemanticTokenData[];
 }
 
 export interface CachedSemanticJavascriptTokensEntry {

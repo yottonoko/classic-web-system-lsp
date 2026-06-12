@@ -209,6 +209,12 @@ interface VbUnusedReferenceCandidates {
   symbols: VbSymbol[];
 }
 
+interface VbSemanticResolutionMemo {
+  visibleSymbols: Map<string, VbSymbol | undefined>;
+  typeRefs: Map<string, VbTypeRef | undefined>;
+  memberSymbols: Map<string, VbSymbol | undefined>;
+}
+
 export type VbGraphExternalSymbolOrigin = "builtin" | "configured";
 
 export type VbGraphExternalSymbolKind = "function" | "constant" | "object" | "member" | "event";
@@ -3159,6 +3165,11 @@ export function getVbscriptSemanticTokens(
   const rangeStart = range ? offsetAt(parsed.text, range.start) : 0;
   const rangeEnd = range ? offsetAt(parsed.text, range.end) : parsed.text.length;
   const tokens: VbSemanticToken[] = operatorSemanticTokens(parsed, rangeStart, rangeEnd);
+  const resolutionMemo: VbSemanticResolutionMemo = {
+    visibleSymbols: new Map(),
+    typeRefs: new Map(),
+    memberSymbols: new Map(),
+  };
   const intrinsicConstantStarts = new Set<number>();
   for (const token of significantTokensInRange(parsed, rangeStart, rangeEnd)) {
     if (
@@ -3185,7 +3196,7 @@ export function getVbscriptSemanticTokens(
       });
       continue;
     }
-    const symbol = resolveSymbolForToken(parsed, token, symbols);
+    const symbol = resolveSymbolForToken(parsed, token, symbols, resolutionMemo);
     if (symbol && !isBuiltinName(symbol.name)) {
       const tokenType = semanticTokenTypeForSymbol(symbol);
       if (!tokenType) {
@@ -6949,19 +6960,80 @@ function resolveSymbolForToken(
   parsed: AspParsedDocument,
   token: VbToken,
   symbols: VbSymbol[],
+  memo?: VbSemanticResolutionMemo,
 ): VbSymbol | undefined {
   const offset = token.start + Math.floor(token.text.length / 2);
   const member = memberAccessForToken(parsed, token);
   if (member) {
-    const type =
-      member.owner === ""
-        ? currentWithTypeRef(parsed, offset, symbols)
-        : member.owner.toLowerCase() === "me"
-          ? currentClassTypeRef(parsed, offset, symbols)
-          : inferVariableTypeRef(member.owner, parsed, offset, symbols);
-    return type ? resolveMemberSymbolForType(type, member.member, symbols) : undefined;
+    const type = resolveSemanticMemberOwnerType(parsed, offset, symbols, member.owner, memo);
+    if (!type) {
+      return undefined;
+    }
+    const memberKey = `${semanticTypeRefKey(type)}\0${member.member.toLowerCase()}`;
+    return memo
+      ? memoValue(memo.memberSymbols, memberKey, () =>
+          resolveMemberSymbolForType(type, member.member, symbols),
+        )
+      : resolveMemberSymbolForType(type, member.member, symbols);
   }
-  return visibleSymbolsByName(parsed, offset, symbols, token.text.toLowerCase())[0];
+  const lowerName = token.text.toLowerCase();
+  const visibleKey = `${lowerName}\0${semanticResolutionScopeKey(parsed, offset)}`;
+  return memo
+    ? memoValue(
+        memo.visibleSymbols,
+        visibleKey,
+        () => visibleSymbolsByName(parsed, offset, symbols, lowerName)[0],
+      )
+    : visibleSymbolsByName(parsed, offset, symbols, lowerName)[0];
+}
+
+function resolveSemanticMemberOwnerType(
+  parsed: AspParsedDocument,
+  offset: number,
+  symbols: VbSymbol[],
+  owner: string,
+  memo: VbSemanticResolutionMemo | undefined,
+): VbTypeRef | undefined {
+  const lowerOwner = owner.toLowerCase();
+  const key =
+    owner === ""
+      ? `with\0${semanticResolutionScopeKey(parsed, offset)}\0${semanticWithScopeKey(parsed, offset)}`
+      : lowerOwner === "me"
+        ? `me\0${semanticResolutionScopeKey(parsed, offset)}`
+        : `owner\0${lowerOwner}\0${semanticResolutionScopeKey(parsed, offset)}`;
+  const resolve = () =>
+    owner === ""
+      ? currentWithTypeRef(parsed, offset, symbols)
+      : lowerOwner === "me"
+        ? currentClassTypeRef(parsed, offset, symbols)
+        : inferVariableTypeRef(owner, parsed, offset, symbols);
+  return memo ? memoValue(memo.typeRefs, key, resolve) : resolve();
+}
+
+function semanticResolutionScopeKey(parsed: AspParsedDocument, offset: number): string {
+  const scope = scopeNodeAt(parsed, offset);
+  const className = parentClassName(parsed, offset) ?? "";
+  return `${scope?.kind ?? ""}:${scope?.start ?? 0}:${scope?.end ?? 0}:${className.toLowerCase()}`;
+}
+
+function semanticWithScopeKey(parsed: AspParsedDocument, offset: number): string {
+  const withNode = enclosingVbNodes(parsed, offset)
+    .reverse()
+    .find((node) => node.kind === "With" && node.nameToken);
+  return withNode ? `${withNode.start}:${withNode.end}:${withNode.nameToken?.text ?? ""}` : "";
+}
+
+function semanticTypeRefKey(type: VbTypeRef): string {
+  return JSON.stringify(type);
+}
+
+function memoValue<T>(map: Map<string, T | undefined>, key: string, resolve: () => T): T {
+  if (map.has(key)) {
+    return map.get(key) as T;
+  }
+  const value = resolve();
+  map.set(key, value);
+  return value;
 }
 
 function resolveMemberSymbolForType(

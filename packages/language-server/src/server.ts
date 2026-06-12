@@ -39,6 +39,7 @@ import {
   type CachedCssContext,
   type CachedDocument,
   type CachedJsDiagnosticsEntry,
+  type CachedSemanticVbRegionTokenEntry,
   type CachedTsDiagnostic,
   type DiagnosticCacheEntry,
   type DocumentIdentity,
@@ -5594,6 +5595,7 @@ function seedVbReuseAfterIncrementalChange(
   change: AspIncrementalChange,
   impact: AspEditImpact,
 ): void {
+  seedSemanticVbRegionTokensAfterIncrementalChange(previous, cached, change, impact);
   const canReuseVbscriptChange =
     impact.kind === "incremental" &&
     impact.language === "vbscript" &&
@@ -5656,6 +5658,103 @@ function seedVbReuseAfterIncrementalChange(
       `[asp-lsp] analysis.vbscript.reuse: ${cached.source.uri}, diagnostics=${previousDiagnostics ? "hit" : "miss"}, projectContext=${previousContext ? "hit" : "miss"}`,
     );
   }
+}
+
+function seedSemanticVbRegionTokensAfterIncrementalChange(
+  previous: CachedDocument,
+  cached: CachedDocument,
+  change: AspIncrementalChange,
+  impact: AspEditImpact,
+): void {
+  if (impact.kind !== "incremental") {
+    return;
+  }
+  const previousTokens = previous.analysis?.semanticVbRegionTokens;
+  if (!previousTokens) {
+    return;
+  }
+  const startOffset = previous.source.offsetAt(change.range.start);
+  const endOffset =
+    change.rangeLength !== undefined
+      ? startOffset + change.rangeLength
+      : previous.source.offsetAt(change.range.end);
+  const nextStartOffset = startOffset;
+  const nextEndOffset = startOffset + change.text.length;
+  const previousByRegionKey = new Map(
+    previousTokens.regions.map((entry) => [entry.regionKey, entry]),
+  );
+  const shiftedRegions: CachedSemanticVbRegionTokenEntry[] = [];
+  for (const { region, index } of semanticVbscriptRegions(cached.parsed)) {
+    const previousEntry = previousByRegionKey.get(semanticVbRegionKey(cached, region, index));
+    if (
+      !previousEntry ||
+      offsetRangesOverlap(
+        previousEntry.contentStart,
+        previousEntry.contentEnd,
+        startOffset,
+        endOffset,
+      ) ||
+      offsetRangesOverlap(region.contentStart, region.contentEnd, nextStartOffset, nextEndOffset)
+    ) {
+      continue;
+    }
+    const tokens = previousEntry.tokens
+      .map((token) => shiftSemanticTokenForIncrementalChange(token, previous, cached, change))
+      .filter((token): token is SemanticTokenData => Boolean(token));
+    shiftedRegions.push({
+      regionKey: previousEntry.regionKey,
+      start: region.start,
+      end: region.end,
+      contentStart: region.contentStart,
+      contentEnd: region.contentEnd,
+      tokens,
+    });
+  }
+  if (shiftedRegions.length === 0) {
+    return;
+  }
+  analysisFor(cached).semanticVbRegionTokens = {
+    key: previousTokens.key,
+    regions: shiftedRegions,
+  };
+}
+
+function shiftSemanticTokenForIncrementalChange(
+  token: SemanticTokenData,
+  previous: CachedDocument,
+  cached: CachedDocument,
+  change: AspIncrementalChange,
+): SemanticTokenData | undefined {
+  const shiftedRange = shiftAspRangeAfterChange(
+    {
+      start: { line: token.line, character: token.character },
+      end: { line: token.line, character: token.character + token.length },
+    },
+    previous.parsed.text,
+    cached.parsed.text,
+    change,
+  );
+  if (shiftedRange.start.line !== shiftedRange.end.line) {
+    return undefined;
+  }
+  return {
+    ...token,
+    line: shiftedRange.start.line,
+    character: shiftedRange.start.character,
+    length: Math.max(
+      1,
+      cached.source.offsetAt(shiftedRange.end) - cached.source.offsetAt(shiftedRange.start),
+    ),
+  };
+}
+
+function offsetRangesOverlap(
+  leftStart: number,
+  leftEnd: number,
+  rightStart: number,
+  rightEnd: number,
+): boolean {
+  return leftStart < rightEnd && rightStart < leftEnd;
 }
 
 function isOrdinaryVbscriptCommentEdit(
@@ -22272,20 +22371,11 @@ async function buildSemanticTokensWithContextAsync(
       }
     }
   }
-  for (const semanticToken of getVbscriptSemanticTokens(cached.parsed, vbContext, range)) {
-    const offset = cached.source.offsetAt(semanticToken.range.start);
-    if (offset < rangeStart || offset >= rangeEnd) {
-      continue;
-    }
-    tokens.push({
-      line: semanticToken.range.start.line,
-      character: semanticToken.range.start.character,
-      length: Math.max(1, semanticToken.range.end.character - semanticToken.range.start.character),
-      tokenType: semanticToken.tokenType,
-      tokenModifiers: semanticToken.tokenModifiers,
-    });
+  if (full) {
+    tokens.push(...semanticVbRegionTokensForFull(cached, vbContext, settings));
+  } else {
+    tokens.push(...computeVbSemanticTokensInSourceRange(cached, vbContext, rangeStart, rangeEnd));
   }
-  addFallbackVbSemanticTokens(tokens, cached, vbContext, rangeStart, rangeEnd);
   addIncludeSemanticTokens(tokens, cached, rangeStart, rangeEnd);
   const javascriptCacheKey = semanticJavascriptTokensCacheKey(cached, settings, jsVirtuals);
   const javascriptDeferred = await addEmbeddedSemanticTokensAsync(
@@ -22354,6 +22444,156 @@ function regionsInSourceRange(
     result.push(region);
   }
   return result;
+}
+
+function semanticVbRegionTokensForFull(
+  cached: CachedDocument,
+  context: VbProjectContext,
+  settings: AspSettings,
+): SemanticTokenData[] {
+  const cacheKey = semanticVbRegionTokensCacheKey(cached, settings, context);
+  const analysis = analysisFor(cached);
+  const previous = analysis.semanticVbRegionTokens;
+  const vbRegions = semanticVbscriptRegions(cached.parsed);
+  if (previous?.key !== cacheKey) {
+    const allTokens = computeVbSemanticTokensInSourceRange(
+      cached,
+      context,
+      0,
+      cached.source.getText().length,
+    );
+    analysis.semanticVbRegionTokens = {
+      key: cacheKey,
+      regions: semanticVbRegionEntriesFromTokens(cached, vbRegions, allTokens),
+    };
+    return allTokens;
+  }
+  const previousByRegionKey = new Map(previous.regions.map((entry) => [entry.regionKey, entry]));
+  const regions: CachedSemanticVbRegionTokenEntry[] = [];
+  const tokens: SemanticTokenData[] = [];
+  for (const { region, index } of vbRegions) {
+    const regionKey = semanticVbRegionKey(cached, region, index);
+    const cachedRegion = previousByRegionKey.get(regionKey);
+    const regionTokens =
+      cachedRegion?.tokens ??
+      computeVbSemanticTokensInSourceRange(cached, context, region.contentStart, region.contentEnd);
+    const entry: CachedSemanticVbRegionTokenEntry = {
+      regionKey,
+      start: region.start,
+      end: region.end,
+      contentStart: region.contentStart,
+      contentEnd: region.contentEnd,
+      tokens: regionTokens,
+    };
+    regions.push(entry);
+    tokens.push(...regionTokens);
+  }
+  analysis.semanticVbRegionTokens = { key: cacheKey, regions };
+  return tokens;
+}
+
+function semanticVbRegionEntriesFromTokens(
+  cached: CachedDocument,
+  regions: Array<{ region: AspRegion; index: number }>,
+  tokens: readonly SemanticTokenData[],
+): CachedSemanticVbRegionTokenEntry[] {
+  const tokensByRegionKey = new Map<string, SemanticTokenData[]>();
+  for (const token of tokens) {
+    const offset = cached.source.offsetAt({ line: token.line, character: token.character });
+    const entry = semanticVbRegionForOffset(regions, offset);
+    if (!entry) {
+      continue;
+    }
+    const regionKey = semanticVbRegionKey(cached, entry.region, entry.index);
+    const regionTokens = tokensByRegionKey.get(regionKey);
+    if (regionTokens) {
+      regionTokens.push(token);
+    } else {
+      tokensByRegionKey.set(regionKey, [token]);
+    }
+  }
+  return regions.map(({ region, index }) => {
+    const regionKey = semanticVbRegionKey(cached, region, index);
+    return {
+      regionKey,
+      start: region.start,
+      end: region.end,
+      contentStart: region.contentStart,
+      contentEnd: region.contentEnd,
+      tokens: tokensByRegionKey.get(regionKey) ?? [],
+    };
+  });
+}
+
+function semanticVbRegionForOffset(
+  regions: Array<{ region: AspRegion; index: number }>,
+  offset: number,
+): { region: AspRegion; index: number } | undefined {
+  let low = 0;
+  let high = regions.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const entry = regions[middle];
+    if (offset < entry.region.contentStart) {
+      high = middle - 1;
+    } else if (offset >= entry.region.contentEnd) {
+      low = middle + 1;
+    } else {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
+function computeVbSemanticTokensInSourceRange(
+  cached: CachedDocument,
+  context: VbProjectContext,
+  rangeStart: number,
+  rangeEnd: number,
+): SemanticTokenData[] {
+  const range: Range = {
+    start: cached.source.positionAt(rangeStart),
+    end: cached.source.positionAt(rangeEnd),
+  };
+  const tokens: SemanticTokenData[] = [];
+  for (const semanticToken of getVbscriptSemanticTokens(cached.parsed, context, range)) {
+    const offset = cached.source.offsetAt(semanticToken.range.start);
+    if (offset < rangeStart || offset >= rangeEnd) {
+      continue;
+    }
+    tokens.push({
+      line: semanticToken.range.start.line,
+      character: semanticToken.range.start.character,
+      length: Math.max(1, semanticToken.range.end.character - semanticToken.range.start.character),
+      tokenType: semanticToken.tokenType,
+      tokenModifiers: semanticToken.tokenModifiers,
+    });
+  }
+  addFallbackVbSemanticTokens(tokens, cached, context, rangeStart, rangeEnd);
+  return tokens;
+}
+
+function semanticVbscriptRegions(
+  parsed: AspParsedDocument,
+): Array<{ region: AspRegion; index: number }> {
+  const regions: Array<{ region: AspRegion; index: number }> = [];
+  let index = 0;
+  for (const region of parsed.regions) {
+    if (region.language !== "vbscript") {
+      continue;
+    }
+    regions.push({ region, index });
+    index += 1;
+  }
+  return regions;
+}
+
+function semanticVbRegionKey(cached: CachedDocument, region: AspRegion, index: number): string {
+  return JSON.stringify({
+    index,
+    kind: region.kind,
+    text: textFingerprint(cached.parsed.text.slice(region.contentStart, region.contentEnd)),
+  });
 }
 
 function addIncludeSemanticTokens(
@@ -22602,6 +22842,66 @@ function semanticTokensFullCacheKey(
     jsProjectGeneration,
     javascript: jsVirtualFingerprints(jsVirtuals),
   });
+}
+
+function semanticVbRegionTokensCacheKey(
+  cached: CachedDocument,
+  settings: AspSettings,
+  context: VbProjectContext,
+): string {
+  return JSON.stringify({
+    uri: semanticTokenUriKey(cached.source.uri),
+    parseSettings: parseSettingsIdentity(settings),
+    diagnostics: diagnosticsIdentity(settings),
+    symbols: semanticVbSymbolContextKey(context.symbols ?? []),
+  });
+}
+
+function semanticVbSymbolContextKey(symbols: readonly VbSymbol[]): string {
+  let hash = 2166136261;
+  for (const symbol of symbols) {
+    hash = semanticVbSymbolHash(hash, symbol);
+  }
+  return `${symbols.length}:${hash >>> 0}`;
+}
+
+function semanticVbSymbolHash(hash: number, symbol: VbSymbol): number {
+  return semanticHashParts(
+    hash,
+    symbol.sourceUri.startsWith("file://")
+      ? fileIdentityKeyFromUri(symbol.sourceUri)
+      : symbol.sourceUri,
+    symbol.name.toLowerCase(),
+    symbol.kind,
+    symbol.memberOf?.toLowerCase(),
+    symbol.scopeName?.toLowerCase(),
+    symbol.containerName?.toLowerCase(),
+    symbol.typeName?.toLowerCase(),
+    symbol.type ? JSON.stringify(symbol.type) : undefined,
+    symbol.explicitType === true ? "explicit" : "",
+    symbol.visibility,
+    symbol.procedureKind,
+    symbol.propertyAccessor,
+    symbol.parameterMode,
+    symbol.optional === true ? "optional" : "",
+    symbol.implicit === true ? "implicit" : "",
+    symbol.array ? `${symbol.array.kind}:${symbol.array.dimensions.join(",")}` : undefined,
+    symbol.parameters?.join(","),
+  );
+}
+
+function semanticHashParts(hash: number, ...parts: Array<string | undefined>): number {
+  let next = hash;
+  for (const part of parts) {
+    const text = part ?? "";
+    for (let index = 0; index < text.length; index += 1) {
+      next ^= text.charCodeAt(index);
+      next = Math.imul(next, 16777619);
+    }
+    next ^= 0;
+    next = Math.imul(next, 16777619);
+  }
+  return next;
 }
 
 function semanticJavascriptTokensCacheKey(
