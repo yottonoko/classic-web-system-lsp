@@ -1,4 +1,20 @@
+const SOURCE_URI_IDENTITY_CACHE_LIMIT = 8192;
+const sourceUriIdentityCache = new Map<string, string>();
+
 export function sourceUriIdentityKey(uri: string): string {
+  const cached = sourceUriIdentityCache.get(uri);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const key = sourceUriIdentityKeyUncached(uri);
+  if (sourceUriIdentityCache.size >= SOURCE_URI_IDENTITY_CACHE_LIMIT) {
+    sourceUriIdentityCache.clear();
+  }
+  sourceUriIdentityCache.set(uri, key);
+  return key;
+}
+
+function sourceUriIdentityKeyUncached(uri: string): string {
   if (!uri.toLowerCase().startsWith("file:")) {
     return uri;
   }
