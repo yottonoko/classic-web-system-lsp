@@ -1,7 +1,11 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
-import writeXlsxFile from "write-excel-file/node";
-import { analysisExcelWorkbookFeatures, createAnalysisExcelSheets } from "../src/analysis-excel";
-import type { AspGraphPayload } from "../src/include-graph-webview";
+import { createAnalysisExcelSheets } from "../src/analysis-excel/sheets";
+import { writeAnalysisExcelWorkbookFile } from "../src/analysis-excel/stream-writer";
+import type { AspGraphPayload } from "../src/asp-graph/types";
 
 describe("analysis Excel sheets", () => {
   it("summarizes includes, usages, unresolved items and unused declarations", () => {
@@ -744,53 +748,36 @@ describe("analysis Excel sheets", () => {
     );
   });
 
-  it("writes filter and hidden-sheet metadata through workbook features", () => {
+  it("marks filter and hidden-sheet metadata for workbook output", () => {
     const sheets = createAnalysisExcelSheets(analysisPayload(), "ja", {
       generatedAt: new Date("2026-06-10T00:00:00.000Z"),
       targetUri: "file:///workspace/main.asp",
     });
-    const chartDataIndex = sheets.findIndex((sheet) => sheet.sheet === "チャート元データ");
-    const workbookTransform =
-      analysisExcelWorkbookFeatures[0]?.files?.transform?.["xl/workbook.xml"]
-        ?.transformElementAttributes;
-    const worksheetTransform =
-      analysisExcelWorkbookFeatures[0]?.files?.transform?.["xl/worksheets/sheet{id}.xml"]
-        ?.transform;
 
-    expect(workbookTransform).toBeDefined();
-    expect(worksheetTransform).toBeDefined();
-    expect(
-      workbookTransform?.(
-        "sheet",
-        { "r:id": "rId3", name: "チャート元データ", sheetId: 3 },
-        chartDataIndex,
-        sheets,
-        {},
-      ),
-    ).toMatchObject({ state: "hidden" });
-    expect(
-      worksheetTransform?.(
-        '<worksheet><sheetData><row r="1"/></sheetData><pageMargins/></worksheet>',
-        sheets.find((sheet) => sheet.sheet === "宣言")!,
-        { sheetId: "4", sheetIndex: 3 },
-      ),
-    ).toContain('<autoFilter ref="A1:Q8"/>');
+    expect(sheets.find((sheet) => sheet.sheet === "チャート元データ")?.hidden).toBe(true);
+    expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:Q8");
   });
 
-  it("can generate an xlsx workbook buffer with analysis charts and workbook features", async () => {
+  it("can stream an xlsx workbook file with sheet metadata", async () => {
     const sheets = createAnalysisExcelSheets(analysisPayload(), "ja", {
       generatedAt: new Date("2026-06-10T00:00:00.000Z"),
       targetUri: "file:///workspace/main.asp",
     });
+    const filename = path.join(os.tmpdir(), `asp-lsp-analysis-${process.pid}-${Date.now()}.xlsx`);
+    try {
+      await writeAnalysisExcelWorkbookFile(sheets, { filename });
 
-    const workbook = await writeXlsxFile(sheets, {
-      features: analysisExcelWorkbookFeatures,
-      fontFamily: "Calibri",
-      fontSize: 11,
-    }).toBuffer();
+      const bytes = fs.readFileSync(filename);
+      expect(bytes.subarray(0, 2).toString("utf8")).toBe("PK");
+      expect(bytes.length).toBeGreaterThan(1000);
 
-    expect(workbook.subarray(0, 2).toString("utf8")).toBe("PK");
-    expect(workbook.length).toBeGreaterThan(1000);
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.readFile(filename);
+      expect(workbook.getWorksheet("チャート元データ")?.state).toBe("hidden");
+      expect(workbook.getWorksheet("宣言")?.autoFilter).toBe("A1:Q8");
+    } finally {
+      fs.rmSync(filename, { force: true });
+    }
   });
 
   it("does not render flowchart exception handling nodes in analysis sheets", () => {

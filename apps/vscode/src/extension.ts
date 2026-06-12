@@ -1,8 +1,6 @@
 import path from "node:path";
 import * as vscode from "vscode";
 import { getClassicAspLineCommentEdits } from "@asp-lsp/core";
-import writeXlsxFile from "write-excel-file/node";
-import { analysisExcelWorkbookFeatures, createAnalysisExcelSheets } from "./analysis-excel";
 import {
   CloseAction,
   ErrorAction,
@@ -37,6 +35,7 @@ const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
+const exportAnalysisExcelServerCommand = "aspLsp.server.exportAnalysisExcel";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const serverStatusNotificationMethod = "aspLsp/status";
 const htmlTagCompleteLookBehind = 2000;
@@ -495,38 +494,16 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
   const graphLimits = graphAnalysisLimitSettings("excel");
   const exportStatus = beginExtensionProgressTask("analyzing", "excel.graph", {
     current: 0,
-    total: 5,
+    total: 3,
     detail: request.uri ? progressDetailFromUriText(request.uri) : undefined,
   });
-  let payload: AspGraphPayload;
-  try {
-    payload = await requestAspGraphPayload(
-      activeClient,
-      {
-        scope: "document",
-        uri: request.uri,
-        activeDocument: request.activeDocument,
-        includeRelatedIncludeTreesForUnresolved,
-        forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
-        includeAnalysisTypeDetails: !skipTypeInference,
-        ...graphLimits,
-      },
-      extensionLocalizer()("excel.currentTitle"),
-    );
-  } catch (error) {
-    exportStatus.end();
-    if (isGraphCancellationError(error)) {
-      return;
-    }
-    throw error;
-  }
   exportStatus.update({
     current: 1,
     label: "excel.chooseFile",
     detail: request.uri ? progressDetailFromUriText(request.uri) : undefined,
   });
   const target = await vscode.window.showSaveDialog({
-    defaultUri: analysisExcelDefaultUri(payload, request.uri, request.activeDocument),
+    defaultUri: analysisExcelDefaultUri(request.uri, request.activeDocument),
     filters: { "Excel Workbook": ["xlsx"] },
     saveLabel: extensionLocalizer()("excel.saveLabel"),
   });
@@ -534,21 +511,8 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
     exportStatus.end();
     return;
   }
-  const excelLocale = excelExportLocale();
-  exportStatus.update({ current: 2, label: "excel.sheets", detail: target.fsPath });
+  exportStatus.update({ current: 2, label: "excel.workbook", detail: target.fsPath });
   try {
-    const sheets = createAnalysisExcelSheets(payload, excelLocale, {
-      generatedAt: new Date(),
-      targetUri: request.uri,
-      settings: {
-        excelLocale: excelLocaleSetting(),
-        includeRelatedIncludeTreesForUnresolved,
-        forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
-        skipTypeInference,
-        includeAnalysisTypeDetails: !skipTypeInference,
-        ...graphLimits,
-      },
-    });
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
@@ -556,15 +520,21 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
         cancellable: false,
       },
       async () => {
-        exportStatus.update({ current: 3, label: "excel.workbook", detail: target.fsPath });
-        const workbook = await writeXlsxFile(sheets, {
-          features: analysisExcelWorkbookFeatures,
-          fontFamily: "Calibri",
-          fontSize: 11,
-        }).toBuffer();
-        exportStatus.update({ current: 4, label: "excel.file", detail: target.fsPath });
-        await vscode.workspace.fs.writeFile(target, workbook);
-        exportStatus.update({ current: 5, detail: target.fsPath });
+        await activeClient.sendRequest("workspace/executeCommand", {
+          command: exportAnalysisExcelServerCommand,
+          arguments: [
+            {
+              scope: "document",
+              uri: request.uri,
+              activeDocument: request.activeDocument,
+              targetPath: target.fsPath,
+              includeRelatedIncludeTreesForUnresolved,
+              skipTypeInference,
+              ...graphLimits,
+            },
+          ],
+        });
+        exportStatus.update({ current: 3, label: "excel.file", detail: target.fsPath });
       },
     );
   } finally {
@@ -693,18 +663,8 @@ function graphAnalysisLimitSettings(scope: "excel" | "graph"): {
   };
 }
 
-function excelLocaleSetting(): AspGraphLocale | "auto" {
-  const value = vscode.workspace.getConfiguration("aspLsp").get<string>("excel.locale", "auto");
-  return value === "en" || value === "ja" ? value : "auto";
-}
-
 function excelSkipTypeInferenceSetting(): boolean {
   return vscode.workspace.getConfiguration("aspLsp").get<boolean>("excel.skipTypeInference", false);
-}
-
-function excelExportLocale(): AspGraphLocale {
-  const value = excelLocaleSetting();
-  return localeFromSetting(value);
 }
 
 function isGraphCancellationError(error: unknown): boolean {
@@ -842,11 +802,10 @@ function baseNameFromUri(value: string | undefined): string | undefined {
 }
 
 function analysisExcelDefaultUri(
-  payload: AspGraphPayload,
   targetUri: string | undefined,
   activeDocument: vscode.TextDocument | undefined,
 ): vscode.Uri | undefined {
-  const fileName = `${sanitizeFileName(analysisExcelBaseName(payload, targetUri, activeDocument))}.xlsx`;
+  const fileName = `${sanitizeFileName(analysisExcelBaseName(targetUri, activeDocument))}.xlsx`;
   const root = targetUri?.startsWith("file://") ? vscode.Uri.parse(targetUri) : undefined;
   if (root) {
     const directory = vscode.Uri.file(path.dirname(root.fsPath));
@@ -857,13 +816,11 @@ function analysisExcelDefaultUri(
 }
 
 function analysisExcelBaseName(
-  payload: AspGraphPayload,
   targetUri: string | undefined,
   activeDocument: vscode.TextDocument | undefined,
 ): string {
   const name =
     baseNameFromUri(targetUri) ??
-    currentFileGraphName(payload) ??
     baseNameFromPath(activeDocument?.fileName) ??
     "classic-asp-analysis";
   return `${name.replace(/\.[^.\\/]+$/, "")}-analysis`;

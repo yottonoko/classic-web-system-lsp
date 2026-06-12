@@ -121,6 +121,7 @@ import type {
 import {
   analysisCancellationFromToken,
   createAspGraphBuildService,
+  graphCommandScope,
   graphCommandUri,
   throwIfGraphCancelled,
   type CollectIncludeTreeGraphDocumentsOptions,
@@ -129,6 +130,8 @@ import {
   type AspGraphDocumentSource,
 } from "./asp-graph/build";
 import { runSpilledGraphIndexPipeline } from "./asp-graph/bulk-pipeline";
+import { createAnalysisExcelSheets, type AspGraphLocale } from "./analysis-excel/sheets";
+import { writeAnalysisExcelWorkbookFile } from "./analysis-excel/stream-writer";
 import type {
   JsDiagnosticsWorkerResponse,
   JsDiagnosticsWorkerVirtualDocument,
@@ -154,6 +157,7 @@ import {
   DiagnosticTag,
   DocumentHighlightKind,
   DocumentSymbol,
+  ErrorCodes,
   FileChangeType,
   FoldingRange,
   Hover,
@@ -165,6 +169,7 @@ import {
   MonikerKind,
   ProposedFeatures,
   ReferenceParams,
+  ResponseError,
   SemanticTokensBuilder,
   SymbolInformation,
   SymbolKind,
@@ -352,6 +357,7 @@ const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
+const exportAnalysisExcelServerCommand = "aspLsp.server.exportAnalysisExcel";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const statusNotificationMethod = "aspLsp/status";
 const languageServerVersion = "0.6.16";
@@ -1747,6 +1753,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
           clearProcessCacheServerCommand,
           buildGraphServerCommand,
           buildFlowchartServerCommand,
+          exportAnalysisExcelServerCommand,
           cancelProgressTaskServerCommand,
         ],
       },
@@ -2721,6 +2728,9 @@ connection.onExecuteCommand(async (params, token) => {
   }
   if (params.command === buildFlowchartServerCommand) {
     return buildAspFlowchartForCommand(params.arguments?.[0], token);
+  }
+  if (params.command === exportAnalysisExcelServerCommand) {
+    return exportAnalysisExcelForCommand(params.arguments?.[0], token);
   }
   if (params.command === cancelProgressTaskServerCommand) {
     const taskId = progressTaskIdArgument(params.arguments?.[0]);
@@ -14521,6 +14531,8 @@ function normalizeExcelSettings(
   return {
     includeRelatedIncludeTreesForUnresolved:
       record.includeRelatedIncludeTreesForUnresolved !== false,
+    skipTypeInference: record.skipTypeInference === true,
+    locale: normalizeLocaleSetting(record.locale),
     maxDocuments: positiveIntegerSetting(record.maxDocuments, defaultExcelMaxDocuments),
     maxTextLength: positiveIntegerSetting(record.maxTextLength, defaultExcelMaxTextLength),
     includeTreeMaxDocuments: positiveIntegerSetting(
@@ -18443,6 +18455,101 @@ function buildAspGraphForCommand(
   token?: GraphCancellationToken,
 ): Promise<AspGraphPayload> {
   return aspGraphBuildService.buildAspGraphForCommand(argument, token);
+}
+
+async function exportAnalysisExcelForCommand(
+  argument: unknown,
+  token?: GraphCancellationToken,
+): Promise<{ ok: true; targetPath: string }> {
+  const targetPath = exportAnalysisExcelTargetPath(argument);
+  if (!targetPath) {
+    throw new ResponseError(ErrorCodes.InvalidParams, "targetPath is required.");
+  }
+  const scope = graphCommandScope(argument);
+  const uri = graphCommandUri(argument);
+  const settings = uri ? cachedSettings(uri) : globalSettings;
+  const excelSettings = settings.excel ?? normalizeExcelSettings(settings);
+  const includeRelatedIncludeTreesForUnresolved = exportAnalysisExcelBooleanArgument(
+    argument,
+    "includeRelatedIncludeTreesForUnresolved",
+    excelSettings.includeRelatedIncludeTreesForUnresolved !== false,
+  );
+  const skipTypeInference = exportAnalysisExcelBooleanArgument(
+    argument,
+    "skipTypeInference",
+    excelSettings.skipTypeInference === true,
+  );
+  const graph = await buildAspGraphForCommand(
+    {
+      scope,
+      uri,
+      activeDocument: exportAnalysisExcelActiveDocument(argument),
+      includeRelatedIncludeTreesForUnresolved,
+      forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
+      includeAnalysisTypeDetails: !skipTypeInference,
+      maxDocuments: excelSettings.maxDocuments ?? defaultExcelMaxDocuments,
+      maxTextLength: excelSettings.maxTextLength ?? defaultExcelMaxTextLength,
+      includeTreeMaxDocuments:
+        excelSettings.includeTreeMaxDocuments ?? defaultExcelIncludeTreeMaxDocuments,
+      includeTreeMaxTextLength:
+        excelSettings.includeTreeMaxTextLength ?? defaultExcelIncludeTreeMaxTextLength,
+    },
+    token,
+  );
+  const excelLocale = analysisExcelLocale(settings, excelSettings.locale);
+  const sheets = createAnalysisExcelSheets(graph, excelLocale, {
+    generatedAt: new Date(),
+    targetUri: uri,
+    settings: {
+      excelLocale: excelSettings.locale ?? "auto",
+      includeRelatedIncludeTreesForUnresolved,
+      forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
+      skipTypeInference,
+      includeAnalysisTypeDetails: !skipTypeInference,
+      maxDocuments: excelSettings.maxDocuments ?? defaultExcelMaxDocuments,
+      maxTextLength: excelSettings.maxTextLength ?? defaultExcelMaxTextLength,
+      includeTreeMaxDocuments:
+        excelSettings.includeTreeMaxDocuments ?? defaultExcelIncludeTreeMaxDocuments,
+      includeTreeMaxTextLength:
+        excelSettings.includeTreeMaxTextLength ?? defaultExcelIncludeTreeMaxTextLength,
+    },
+  });
+  await writeAnalysisExcelWorkbookFile(sheets, { filename: targetPath });
+  return { ok: true, targetPath };
+}
+
+function exportAnalysisExcelTargetPath(argument: unknown): string | undefined {
+  if (!argument || typeof argument !== "object" || !("targetPath" in argument)) {
+    return undefined;
+  }
+  const targetPath = (argument as { targetPath?: unknown }).targetPath;
+  return typeof targetPath === "string" && targetPath.length > 0 ? targetPath : undefined;
+}
+
+function exportAnalysisExcelActiveDocument(argument: unknown): unknown {
+  return argument && typeof argument === "object" && "activeDocument" in argument
+    ? (argument as { activeDocument?: unknown }).activeDocument
+    : undefined;
+}
+
+function exportAnalysisExcelBooleanArgument(
+  argument: unknown,
+  key: string,
+  fallback: boolean,
+): boolean {
+  if (!argument || typeof argument !== "object" || !(key in argument)) {
+    return fallback;
+  }
+  return (argument as Record<string, unknown>)[key] === true;
+}
+
+function analysisExcelLocale(
+  settings: AspSettings,
+  configured: AspSettings["locale"],
+): AspGraphLocale {
+  const locale =
+    configured === "auto" || configured === undefined ? settings.resolvedLocale : configured;
+  return locale === "ja" ? "ja" : "en";
 }
 
 function collectDocumentGraphDocumentsAsync(

@@ -1,21 +1,10 @@
-import type Stream from "node:stream";
-import type { Blob } from "node:buffer";
-import type { Cell, Feature, Sheet } from "write-excel-file/node";
-import type {
-  AspGraphLink,
-  AspGraphLocale,
-  AspGraphNode,
-  AspGraphPayload,
-  AspGraphRange,
-} from "./include-graph-webview";
+import type { AspGraphLink, AspGraphNode, AspGraphPayload } from "../asp-graph/types";
+import type { AnalysisExcelImage, AnalysisExcelSheet, Cell } from "./cells";
+import type { Range as AspGraphRange } from "vscode-languageserver/node";
 
-type AnalysisExcelFileContent = Stream | Buffer | Blob;
+export type { AnalysisExcelImage, AnalysisExcelSheet, Cell } from "./cells";
 
-export type AnalysisExcelSheet = Sheet<AnalysisExcelFileContent> & {
-  autoFilterRef?: string;
-  hidden?: boolean;
-};
-type AnalysisExcelImage = NonNullable<AnalysisExcelSheet["images"]>[number];
+export type AspGraphLocale = "en" | "ja";
 
 interface ChartDatum {
   label: string;
@@ -815,38 +804,6 @@ const valueText: Record<AspGraphLocale, Record<string, string>> = {
     array: "配列",
   },
 };
-
-const SHEET_DATA_END_TAG = "</sheetData>";
-
-export const analysisExcelWorkbookFeatures: Feature<AnalysisExcelFileContent>[] = [
-  {
-    files: {
-      transform: {
-        "xl/workbook.xml": {
-          transformElementAttributes(tagName, attributes, index, sheetsOptions) {
-            if (tagName !== "sheet" || index === undefined) {
-              return attributes;
-            }
-            const sheetOptions = sheetsOptions[index] as AnalysisExcelSheet | undefined;
-            return sheetOptions?.hidden === true ? { ...attributes, state: "hidden" } : attributes;
-          },
-        },
-        "xl/worksheets/sheet{id}.xml": {
-          transform(content, sheetOptions) {
-            const ref = (sheetOptions as AnalysisExcelSheet | undefined)?.autoFilterRef;
-            if (!ref || content.includes("<autoFilter ")) {
-              return content;
-            }
-            return content.replace(
-              SHEET_DATA_END_TAG,
-              `${SHEET_DATA_END_TAG}<autoFilter ref="${escapeXml(ref)}"/>`,
-            );
-          },
-        },
-      },
-    },
-  },
-];
 
 export function createAnalysisExcelSheets(
   payload: AspGraphPayload,
@@ -2571,7 +2528,8 @@ function fileNamesByUriMap(nodes: AspGraphNode[]): Map<string, string> {
   const names = new Map<string, string>();
   for (const node of nodes) {
     if (isFileLikeGraphNode(node) && node.uri) {
-      names.set(node.uri, node.displayPath ?? node.fileName ?? node.label);
+      const displayPath = (node as AspGraphNode & { displayPath?: string }).displayPath;
+      names.set(node.uri, displayPath ?? node.fileName ?? node.label);
     }
   }
   return names;

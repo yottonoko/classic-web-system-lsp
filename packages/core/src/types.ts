@@ -240,6 +240,8 @@ export interface AspGraphSettings {
 
 export interface AspExcelSettings {
   includeRelatedIncludeTreesForUnresolved?: boolean;
+  skipTypeInference?: boolean;
+  locale?: AspLocaleSetting;
   maxDocuments?: number;
   maxTextLength?: number;
   includeTreeMaxDocuments?: number;

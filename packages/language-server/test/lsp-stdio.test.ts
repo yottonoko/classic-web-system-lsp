@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
 import {
   CompletionItemKind,
@@ -8819,6 +8820,103 @@ End Sub
         expect(graph.links?.some((link) => link.kind === "calls")).toBe(true);
         expect(graph.links?.some((link) => link.kind === "unresolvedReference")).toBe(false);
         expect(graph.stats?.missingIncludes).toBe(1);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("exports the active document analysis workbook from the server command", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-analysis-excel-"));
+      const page = path.join(tempDir, "default.asp");
+      const targetPath = path.join(tempDir, "analysis.xlsx");
+      const folderTargetPath = path.join(tempDir, "folder-analysis.xlsx");
+      fs.writeFileSync(path.join(tempDir, "common.inc"), `<%\nConst IncludedValue = 1\n%>`, "utf8");
+      const uri = `file://${page}`;
+      const source = `<!-- #include file="common.inc" -->
+<%
+Dim PageValue
+PageValue = IncludedValue
+Response.Write PageValue
+%>`;
+      fs.writeFileSync(page, source, "utf8");
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              locale: "ja",
+              excel: { locale: "ja" },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        const result = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.exportAnalysisExcel",
+          arguments: [
+            {
+              scope: "document",
+              uri,
+              targetPath,
+              includeRelatedIncludeTreesForUnresolved: true,
+              skipTypeInference: true,
+              maxDocuments: 64,
+              maxTextLength: 1_000_000,
+              includeTreeMaxDocuments: 64,
+              includeTreeMaxTextLength: 1_000_000,
+            },
+          ],
+        })) as { ok?: boolean; targetPath?: string };
+
+        expect(result).toEqual({ ok: true, targetPath });
+        const bytes = fs.readFileSync(targetPath);
+        expect(bytes.subarray(0, 2).toString("utf8")).toBe("PK");
+
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.readFile(targetPath);
+        expect(workbook.getWorksheet("概要")).toBeTruthy();
+        expect(workbook.getWorksheet("宣言")).toBeTruthy();
+        expect(workbook.getWorksheet("チャート元データ")?.state).toBe("hidden");
+        expect(workbook.getWorksheet("宣言")?.autoFilter).toBeTruthy();
+
+        const folderResult = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.exportAnalysisExcel",
+          arguments: [
+            {
+              scope: "folder",
+              uri: pathToFileURL(tempDir).toString(),
+              targetPath: folderTargetPath,
+              includeRelatedIncludeTreesForUnresolved: true,
+              skipTypeInference: true,
+              maxDocuments: 64,
+              maxTextLength: 1_000_000,
+              includeTreeMaxDocuments: 64,
+              includeTreeMaxTextLength: 1_000_000,
+            },
+          ],
+        })) as { ok?: boolean; targetPath?: string };
+        expect(folderResult).toEqual({ ok: true, targetPath: folderTargetPath });
+        const folderWorkbook = new ExcelJS.Workbook();
+        await folderWorkbook.xlsx.readFile(folderTargetPath);
+        expect(folderWorkbook.getWorksheet("概要")).toBeTruthy();
+        expect(folderWorkbook.getWorksheet("宣言")).toBeTruthy();
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

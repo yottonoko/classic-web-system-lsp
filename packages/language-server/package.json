@@ -19,6 +19,7 @@
     "@asp-lsp/core": "workspace:*",
     "cbor-x": "^1.6.4",
     "chardet": "^2.1.1",
+    "exceljs": "^4.4.0",
     "typescript": "^6.0.3",
     "vscode-css-languageservice": "^6.3.10",
     "vscode-html-languageservice": "^5.6.2",

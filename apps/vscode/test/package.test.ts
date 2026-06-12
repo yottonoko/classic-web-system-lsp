@@ -408,7 +408,7 @@ describe("VS Code extension package", () => {
     expect(manifest.dependencies?.["react-force-graph-2d"]).toBe("1.29.1");
     expect(manifest.dependencies?.["react-force-graph-3d"]).toBe("1.29.1");
     expect(manifest.dependencies?.["three-spritetext"]).toBe("1.10.0");
-    expect(manifest.dependencies?.["write-excel-file"]).toBe("^4.1.1");
+    expect(manifest.dependencies?.["write-excel-file"]).toBeUndefined();
     expect(fs.existsSync("../../LICENSE-MIT")).toBe(true);
     expect(fs.existsSync("../../LICENSE-APACHE")).toBe(true);
     expect(manifest.dependencies?.["@asp-lsp/core"]).toBe("workspace:*");
@@ -483,7 +483,10 @@ describe("VS Code extension package", () => {
     expect(extensionSourceText).toContain("flowchart 生成中");
     expect(extensionSourceText).toContain("Classic ASP analysis workbook を作成中");
     expect(extensionSourceText).toContain("graphAnalysisLimitSettings");
-    const analysisExcelSource = fs.readFileSync("src/analysis-excel.ts", "utf8");
+    const analysisExcelSource = fs.readFileSync(
+      "../../packages/language-server/src/analysis-excel/sheets.ts",
+      "utf8",
+    );
     const languageServerSource = fs.readFileSync(
       "../../packages/language-server/src/server.ts",
       "utf8",
@@ -1097,16 +1100,17 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain('"aspLsp.exportCurrentFileAnalysisExcel"');
     expect(extensionSource).not.toContain('"aspLsp.exportFolderAnalysisExcel"');
     expect(extensionSource).not.toContain('"aspLsp.exportWorkspaceAnalysisExcel"');
-    expect(extensionSource).toContain("createAnalysisExcelSheets");
-    expect(extensionSource).toContain("targetUri: request.uri");
+    expect(extensionSource).not.toContain("createAnalysisExcelSheets");
+    expect(extensionSource).toContain('"aspLsp.server.exportAnalysisExcel"');
+    expect(extensionSource).toContain("targetPath: target.fsPath");
     expect(extensionSource).toContain("relatedIncludeTreeAnalysisSetting");
-    expect(extensionSource).toContain("excelExportLocale");
-    expect(extensionSource).toContain("excel.locale");
+    expect(configuration["aspLsp.excel.locale"]).toBeTruthy();
+    expect(languageServerSource).toContain("excelSettings.locale");
+    expect(languageServerSource).toContain("createAnalysisExcelSheets");
     expect(extensionSource).toContain("includeRelatedIncludeTreesForUnresolved");
     expect(extensionSource).toContain("forceRelatedIncludeTreeAnalysis");
     expect(extensionSource).toContain("excelSkipTypeInferenceSetting");
     expect(extensionSource).toContain("skipTypeInference");
-    expect(extensionSource).toContain("includeAnalysisTypeDetails: !skipTypeInference");
     expect(extensionSource).toContain("includeAnalysisTypeDetails");
     expect(extensionSource).toContain("graphAnalysisLimitSettings");
     expect(extensionSource).toContain('graphAnalysisLimitSettings("excel")');
@@ -1115,9 +1119,9 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("maxTextLength");
     expect(extensionSource).toContain("includeTreeMaxDocuments");
     expect(extensionSource).toContain("includeTreeMaxTextLength");
-    expect(extensionSource).toContain("writeXlsxFile");
-    expect(extensionSource).toContain(".toBuffer()");
-    expect(extensionSource).toContain("vscode.workspace.fs.writeFile(target, workbook)");
+    expect(extensionSource).not.toContain("writeXlsxFile");
+    expect(extensionSource).not.toContain(".toBuffer()");
+    expect(extensionSource).not.toContain("vscode.workspace.fs.writeFile(target, workbook)");
     expect(extensionSource).not.toContain(".toFile(target.fsPath)");
     expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileFlowchart"');
     expect(extensionSource).toContain('registerCommand("aspLsp.exportCurrentFileFlowchart"');
