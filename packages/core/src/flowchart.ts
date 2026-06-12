@@ -111,6 +111,7 @@ interface FlowStatement {
 interface FlowIf {
   kind: "if";
   branches: FlowIfBranch[];
+  endStatement?: VbStatement;
 }
 
 interface FlowIfBranch {
@@ -125,6 +126,7 @@ interface FlowSelect {
   statement: VbStatement;
   label: string;
   cases: FlowCase[];
+  endStatement?: VbStatement;
 }
 
 interface FlowCase {
@@ -139,6 +141,7 @@ interface FlowLoop {
   nodeKind: Extract<AspFlowchartNodeKind, "for" | "forEach" | "do" | "while">;
   label: string;
   body: FlowElement[];
+  endStatement?: VbStatement;
 }
 
 type FlowElement = FlowStatement | FlowIf | FlowSelect | FlowLoop;
@@ -554,7 +557,9 @@ function parseMultilineIf(
     cursor = body.index;
   }
   if (cursor < statements.length && isEndIf(statements[cursor])) {
+    const endStatement = statements[cursor];
     cursor += 1;
+    return { element: { kind: "if", branches, endStatement }, index: cursor };
   }
   return { element: { kind: "if", branches }, index: cursor };
 }
@@ -640,7 +645,9 @@ function parseSelect(
     });
     cursor = body.index;
   }
+  let endStatement: VbStatement | undefined;
   if (cursor < statements.length && isEndSelect(statements[cursor])) {
+    endStatement = statements[cursor];
     cursor += 1;
   }
   return {
@@ -649,6 +656,7 @@ function parseSelect(
       statement,
       label: selectLabel(statement, context),
       cases,
+      endStatement,
     },
     index: cursor,
   };
@@ -663,8 +671,11 @@ function parseLoop(
   const statement = statements[startIndex];
   const stop = loopStopPredicate(nodeKind);
   const body = parseElements(statements, startIndex + 1, stop, context);
-  const index =
-    body.index < statements.length && stop(statements[body.index]) ? body.index + 1 : body.index;
+  const endStatement =
+    body.index < statements.length && stop(statements[body.index])
+      ? statements[body.index]
+      : undefined;
+  const index = endStatement ? body.index + 1 : body.index;
   return {
     element: {
       kind: "loop",
@@ -672,6 +683,7 @@ function parseLoop(
       nodeKind,
       label: loopLabel(statement, context),
       body: body.elements,
+      endStatement,
     },
     index,
   };
@@ -863,8 +875,10 @@ function renderElements(
         element.statement,
         element.nodeKind,
         element.label,
-        element.range,
-        element.description,
+        {
+          range: element.range,
+          description: element.description,
+        },
       );
       connectMany(assembly, section, exits, node.id, labelForNext);
       labelForNext = undefined;
@@ -928,6 +942,10 @@ function renderIf(
   const exits: string[] = [];
   let falseSources = previousIds;
   let firstBranch = true;
+  const ifRange =
+    element.endStatement && element.branches[0]
+      ? statementSpanRange(parsed.text, element.branches[0].statement, element.endStatement)
+      : undefined;
   for (const branch of element.branches) {
     const nodeKind = branch.kind === "if" ? "if" : branch.kind === "elseif" ? "elseif" : "else";
     const entry = renderComplexArgumentPrelude(
@@ -949,6 +967,12 @@ function renderIf(
       branch.statement,
       nodeKind,
       flowchartBranchLabel(branch, nodeKind, context),
+      branch.kind === "if" && ifRange
+        ? {
+            range: ifRange,
+            linksRange: statementRange(branch.statement, context),
+          }
+        : undefined,
     );
     connectMany(assembly, section, entry.exits, node.id, entry.incomingLabel);
     firstBranch = false;
@@ -998,6 +1022,12 @@ function renderSelect(
     element.statement,
     "select",
     element.label,
+    element.endStatement
+      ? {
+          range: statementSpanRange(parsed.text, element.statement, element.endStatement),
+          linksRange: statementRange(element.statement, context),
+        }
+      : undefined,
   );
   connectMany(assembly, section, selectEntry.exits, selectNode.id, selectEntry.incomingLabel);
   if (element.cases.length === 0) {
@@ -1070,6 +1100,12 @@ function renderLoop(
     element.statement,
     element.nodeKind,
     element.label,
+    element.endStatement
+      ? {
+          range: statementSpanRange(parsed.text, element.statement, element.endStatement),
+          linksRange: statementRange(element.statement, context),
+        }
+      : undefined,
   );
   connectMany(assembly, section, loopEntry.exits, loopNode.id, loopEntry.incomingLabel);
   const bodyExits = renderElements(
@@ -1127,13 +1163,17 @@ function addStatementNode(
   statement: VbStatement,
   kind: AspFlowchartNodeKind,
   label: string,
-  rangeOverride?: Range,
-  descriptionOverride?: string,
+  options: {
+    range?: Range;
+    linksRange?: Range;
+    description?: string;
+  } = {},
 ): AspFlowchartNode {
-  const range = rangeOverride ?? rangeFromOffsets(parsed.text, statement.start, statement.end);
+  const range = options.range ?? rangeFromOffsets(parsed.text, statement.start, statement.end);
+  const linksRange = options.linksRange ?? range;
   return addNode(assembly, section, kind, label, range, {
-    description: descriptionOverride ?? statementDescription(statement, kind, context, range),
-    links: statementLinks(context, range),
+    description: options.description ?? statementDescription(statement, kind, context, linksRange),
+    links: statementLinks(context, linksRange),
   });
 }
 
@@ -2207,6 +2247,10 @@ function statementLinks(context: FlowchartContext, statementRange: Range): AspFl
 
 function statementRange(statement: VbStatement, context: FlowchartContext): Range {
   return rangeFromOffsets(context.sourceText, statement.start, statement.end);
+}
+
+function statementSpanRange(text: string, start: VbStatement, end: VbStatement): Range {
+  return rangeFromOffsets(text, start.start, end.end);
 }
 
 function statementDeclarations(

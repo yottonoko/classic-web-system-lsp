@@ -126,6 +126,10 @@ End Sub
 
     expect(flowchart.sourceText).toBe(source);
     expect(ifNode?.label).toBe("Check enabled");
+    expect(ifNode?.range).toEqual({
+      start: { line: 0, character: 3 },
+      end: { line: 3, character: "<% End If".length },
+    });
     expect(callNode?.label).toBe('Call Render("😀")');
     expect(callNode?.range).toEqual({
       start: { line: 2, character: 3 },
@@ -138,6 +142,63 @@ End Sub
     expect(flowchart.edges.some((edge) => edge.source === ifNode?.id && edge.label === "Yes")).toBe(
       true,
     );
+  });
+
+  it("includes block terminators in flowchart source ranges", () => {
+    const parsed = parseAspDocument(
+      "file:///site/block-ranges.asp",
+      `<%
+Sub Main()
+  If ready Then
+    Call Render()
+  End If
+  Select Case kind
+  Case "a"
+    Call A()
+  End Select
+  For index = 1 To 3
+    Call Tick()
+  Next
+  For Each item In items
+    Call Tick()
+  Next
+  Do While active
+    Call Tick()
+  Loop
+  While waiting
+    Call Tick()
+  Wend
+End Sub
+%>`,
+    );
+
+    const flowchart = buildAspFlowchart(parsed);
+    const nodeRange = (kind: string) => flowchart.nodes.find((node) => node.kind === kind)?.range;
+
+    expect(nodeRange("if")).toEqual({
+      start: { line: 2, character: 2 },
+      end: { line: 4, character: "  End If".length },
+    });
+    expect(nodeRange("select")).toEqual({
+      start: { line: 5, character: 2 },
+      end: { line: 8, character: "  End Select".length },
+    });
+    expect(nodeRange("for")).toEqual({
+      start: { line: 9, character: 2 },
+      end: { line: 11, character: "  Next".length },
+    });
+    expect(nodeRange("forEach")).toEqual({
+      start: { line: 12, character: 2 },
+      end: { line: 14, character: "  Next".length },
+    });
+    expect(nodeRange("do")).toEqual({
+      start: { line: 15, character: 2 },
+      end: { line: 17, character: "  Loop".length },
+    });
+    expect(nodeRange("while")).toEqual({
+      start: { line: 18, character: 2 },
+      end: { line: 20, character: "  Wend".length },
+    });
   });
 
   it("uses whole procedure ranges and splits long flowchart labels into readable nodes", () => {
@@ -5018,10 +5079,15 @@ Response.Write "after-end"
     const lines = parsed.text.split(/\r?\n/);
     const deadLines = diagnostics.map((diagnostic) => lines[diagnostic.range.start.line]?.trim());
     expect(deadLines).toContain('Response.Write "after-sub"');
+    expect(deadLines).toContain("End Sub");
     expect(deadLines).toContain("StopFunction = 1");
+    expect(deadLines).toContain("End Function");
     expect(deadLines).toContain('Response.Write "after-for"');
+    expect(deadLines).toContain("Next");
     expect(deadLines).toContain('Response.Write "after-do"');
+    expect(deadLines).toContain("Loop");
     expect(deadLines).toContain('Response.Write "dead-if-body"');
+    expect(deadLines).toContain("End If");
     expect(deadLines).toContain('Response.Write "dead-for-body"');
     expect(deadLines).toContain('Response.Write "after-end"');
     expect(deadLines).not.toContain('Response.Write "after-loops"');
