@@ -4442,6 +4442,7 @@ End Function
 <%
 Dim localValue
 Response.Write Sha
+Response.Write SharedExport29()
 %>`;
       const uri = `file://${owner}`;
       fs.writeFileSync(owner, source, "utf8");
@@ -4479,6 +4480,14 @@ Response.Write Sha
           position: completionPosition(),
         });
         expect(completionLabels(warmedCompletions)).toContain("SharedExport29");
+        const warmedSemanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        expect(
+          decodeSemanticTokens((warmedSemanticTokens as { data?: number[] }).data).some((token) =>
+            tokenMatches(source, token, "SharedExport29", semanticTokenType.function),
+          ),
+        ).toBe(true);
         server.takePendingNotifications("window/logMessage");
 
         source = notifyRangedReplacement(server, uri, source, 2, "localValue", "localOther");
@@ -4487,6 +4496,15 @@ Response.Write Sha
           position: completionPosition(),
         });
         expect(completionLabels(immediateCompletions)).toContain("SharedExport29");
+        const immediateSemanticTokens = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        expect(
+          decodeSemanticTokens((immediateSemanticTokens as { data?: number[] }).data).some(
+            (token) => tokenMatches(source, token, "SharedExport29", semanticTokenType.function),
+          ),
+        ).toBe(true);
+        await waitForLogContaining(server, "vbProject.context.stale");
         await waitForLogContaining(server, "vbProject.summaryGraph.built");
 
         await waitForLogContaining(server, "LSP check completed");

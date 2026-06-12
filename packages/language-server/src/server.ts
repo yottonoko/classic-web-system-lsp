@@ -333,6 +333,8 @@ let workspaceIncludeGraphRestoreAllowed = true;
 const semanticTokenResults = new Map<string, { uri: string; data: number[] }>();
 const latestSemanticTokenResultByUri = new Map<string, string>();
 const pendingSemanticJavascriptTokenBuilds = new Map<string, Promise<void>>();
+const interactiveVbProjectContextSnapshots = new Map<string, InteractiveVbProjectContextSnapshot>();
+const pendingInteractiveVbProjectContextRefreshes = new Map<string, Promise<void>>();
 const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
@@ -688,6 +690,14 @@ interface CompletionCacheEntry {
 interface CachedVbProjectContextLookup {
   key: string;
   context: VbProjectContext;
+}
+
+interface InteractiveVbProjectContextSnapshot {
+  familyKey: string;
+  key: string;
+  rootUri: string;
+  context: VbProjectContext;
+  lastUsed: number;
 }
 
 class AspProjectBuilderState {
@@ -1888,6 +1898,7 @@ documents.onDidClose((event) => {
   pendingDocumentChanges.delete(event.document.uri);
   inFlightDocumentRefreshes.delete(event.document.uri);
   deleteCachedDocumentsForUri(event.document.uri);
+  clearInteractiveVbProjectContextSnapshotsForUris([event.document.uri]);
   clearSemanticTokensForUri(event.document.uri);
   stagedDiagnosticsByUri.delete(event.document.uri);
   publishedDiagnosticsByUri.delete(event.document.uri);
@@ -8583,10 +8594,184 @@ async function interactiveVbProjectContextLookupAsync(
   cached: CachedDocument,
   settings: AspSettings,
 ): Promise<CachedVbProjectContextLookup | undefined> {
-  if (cached.parsed.includes.length === 0) {
-    return cachedVbProjectContextLookup(cached, settings);
+  const exact = cachedVbProjectContextLookup(cached, settings);
+  if (exact) {
+    rememberInteractiveVbProjectContextSnapshot(cached, settings, exact.key, exact.context);
+    return exact;
   }
-  return summaryBackedVbProjectContextLookupAsync(cached, settings, { allowReadMissing: true });
+  if (cached.parsed.includes.length === 0) {
+    return undefined;
+  }
+  const stale = await staleInteractiveVbProjectContextLookupAsync(cached, settings);
+  if (stale) {
+    scheduleInteractiveVbProjectContextRefresh(cached, settings, "vbProject.context.stale");
+    return stale;
+  }
+  const built = await summaryBackedVbProjectContextLookupAsync(cached, settings, {
+    allowReadMissing: true,
+  });
+  if (built) {
+    rememberInteractiveVbProjectContextSnapshot(cached, settings, built.key, built.context);
+  }
+  return built;
+}
+
+async function staleInteractiveVbProjectContextLookupAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<CachedVbProjectContextLookup | undefined> {
+  const familyKey = interactiveVbProjectContextFamilyKey(cached, settings);
+  const snapshot = interactiveVbProjectContextSnapshots.get(familyKey);
+  if (!snapshot) {
+    return undefined;
+  }
+  snapshot.lastUsed = Date.now();
+  const context = await refreshInteractiveVbProjectContextSnapshotRootAsync(
+    snapshot.context,
+    cached,
+    settings,
+  );
+  logDebugSummary(
+    settings,
+    `[asp-lsp] vbProject.context.stale: ${cached.source.uri}, key=${snapshot.key}`,
+  );
+  return {
+    key: `stale:${snapshot.key}:${cached.identity.version}`,
+    context: { ...context, locale: settings.resolvedLocale },
+  };
+}
+
+async function refreshInteractiveVbProjectContextSnapshotRootAsync(
+  context: VbProjectContext,
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<VbProjectContext> {
+  await hydrateCachedVbscriptCstAsync(cached, settings, "analysis");
+  const contextSettings = vbProjectContextSettings(settings);
+  const rootSymbols = await collectVbscriptSymbolsAsync(cached.parsed, contextSettings);
+  const includeSymbols = (context.symbols ?? []).filter(
+    (symbol) => !sameFileIdentityUri(symbol.sourceUri, cached.source.uri),
+  );
+  const symbols = [
+    ...rootSymbols,
+    ...includeSymbols,
+    ...configuredVbscriptGlobals(cached, settings),
+  ];
+  const rootTypeEnvironment = buildVbTypeEnvironment(cached.parsed, {
+    ...contextSettings,
+    symbols,
+  });
+  return {
+    ...context,
+    documents: [
+      cached.parsed,
+      ...(context.documents?.filter(
+        (document) => !sameFileIdentityUri(document.uri, cached.source.uri),
+      ) ?? []),
+    ],
+    symbols,
+    typeEnvironment: mergeVbTypeEnvironment(
+      rootTypeEnvironment,
+      context.typeEnvironment?.types ?? [],
+      symbols,
+    ),
+    ...contextSettings,
+  };
+}
+
+function scheduleInteractiveVbProjectContextRefresh(
+  cached: CachedDocument,
+  settings: AspSettings,
+  reason: string,
+): void {
+  const familyKey = interactiveVbProjectContextFamilyKey(cached, settings);
+  if (pendingInteractiveVbProjectContextRefreshes.has(familyKey)) {
+    return;
+  }
+  const uri = cached.source.uri;
+  const version = cached.identity.version;
+  const promise = buildVbProjectContextAsync(cached, settings, { allowReadMissing: true })
+    .then((context) => {
+      const current = openDocumentForUri(uri);
+      if (current?.version !== version) {
+        return;
+      }
+      const key =
+        cached.analysis?.vbProjectContext?.key ??
+        vbProjectContextCacheKey(context.documents ?? [cached.parsed], settings);
+      rememberInteractiveVbProjectContextSnapshot(cached, settings, key, context);
+      requestVisualRefresh(reason);
+      validate(current);
+      logDebugSummary(settings, `[asp-lsp] vbProject.context.refresh.completed: ${uri}`);
+    })
+    .catch((error: unknown) =>
+      logServerWarning(
+        `[asp-lsp] vbProject.context.refresh.failed: ${uri}, error=${errorMessage(error)}`,
+      ),
+    )
+    .finally(() => {
+      pendingInteractiveVbProjectContextRefreshes.delete(familyKey);
+    });
+  pendingInteractiveVbProjectContextRefreshes.set(familyKey, promise);
+}
+
+function rememberInteractiveVbProjectContextSnapshot(
+  cached: CachedDocument,
+  settings: AspSettings,
+  key: string,
+  context: VbProjectContext,
+): void {
+  if (!isIncludeAwareVbProjectContext(cached, context)) {
+    return;
+  }
+  const familyKey = interactiveVbProjectContextFamilyKey(cached, settings);
+  interactiveVbProjectContextSnapshots.set(familyKey, {
+    familyKey,
+    key,
+    rootUri: cached.source.uri,
+    context,
+    lastUsed: Date.now(),
+  });
+  if (interactiveVbProjectContextSnapshots.size > maxVbProjectContextCacheEntries) {
+    const oldest = [...interactiveVbProjectContextSnapshots.entries()].sort(
+      (left, right) => left[1].lastUsed - right[1].lastUsed,
+    )[0]?.[0];
+    if (oldest) {
+      interactiveVbProjectContextSnapshots.delete(oldest);
+    }
+  }
+}
+
+function isIncludeAwareVbProjectContext(
+  cached: CachedDocument,
+  context: VbProjectContext,
+): boolean {
+  return (
+    cached.parsed.includes.length > 0 &&
+    (context.documents ?? []).some(
+      (document) => !sameFileIdentityUri(document.uri, cached.source.uri),
+    )
+  );
+}
+
+function interactiveVbProjectContextFamilyKey(
+  cached: CachedDocument,
+  settings: AspSettings,
+): string {
+  return JSON.stringify({
+    root: vbProjectDocumentCollectionKey(cached, settings),
+    settings: vbProjectContextSettings(settings),
+    globals: settings.vbscript?.globals,
+  });
+}
+
+function clearInteractiveVbProjectContextSnapshotsForUris(uris: Iterable<string>): void {
+  const uriList = [...uris];
+  for (const [key, snapshot] of interactiveVbProjectContextSnapshots) {
+    if (uriList.some((uri) => sameFileIdentityUri(snapshot.rootUri, uri))) {
+      interactiveVbProjectContextSnapshots.delete(key);
+    }
+  }
 }
 
 function bestEffortVbProjectContext(
@@ -10606,6 +10791,7 @@ function includeDependencyFileName(uriOrFileName: string): string {
 function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.invalidate"): void {
   if (uris.size > 0) {
     vbProjectContextCache.clear();
+    clearInteractiveVbProjectContextSnapshotsForUris(uris);
     clearWorkspaceVbReferenceCaches();
     completionSessionCache.clearUris(uris, reason);
     invalidateGraphFileIndexFiles(
@@ -13446,6 +13632,8 @@ async function clearProcessCachesByCommand(reason: string): Promise<void> {
   cache.clear();
   inFlightDocumentRefreshes.clear();
   pendingIncludeSummaryRefreshes.clear();
+  interactiveVbProjectContextSnapshots.clear();
+  pendingInteractiveVbProjectContextRefreshes.clear();
   vbProjectContextCache.clear();
   completionSessionCache.clear(reason);
   clearWorkspaceIndexProcessCaches(reason);
@@ -14146,6 +14334,7 @@ function applyDocumentSettingsInvalidation(
   if (impact.parse) {
     deleteCachedDocumentsForUri(uri);
     vbProjectContextCache.clear();
+    clearInteractiveVbProjectContextSnapshotsForUris([uri]);
     clearSemanticTokensForUri(uri);
     logInvalidation("parseCache", `settings.parse, uri=${uri}`);
     return;

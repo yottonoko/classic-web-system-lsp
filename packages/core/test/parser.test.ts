@@ -4140,7 +4140,7 @@ End Function
     expect(after.publicSignatureHash).toBe(before.publicSignatureHash);
   });
 
-  it("includes implicit global candidate names in the public signature hash", () => {
+  it("includes assigned implicit global candidate names in the public signature hash", () => {
     const before = summarizeAspFileAnalysis(
       parseAspDocument(
         "file:///site/implicit-candidates.inc",
@@ -4166,13 +4166,37 @@ End Sub
       ),
     );
 
-    expect(before.vbscript?.implicitGlobalCandidateNames).toEqual(["nestedvalue", "readonlyvalue"]);
+    expect(before.vbscript?.implicitGlobalCandidateNames).toEqual(["nestedvalue"]);
     expect(before.vbscript?.implicitGlobalCandidateNames).not.toContain("toplevelvalue");
-    expect(after.vbscript?.implicitGlobalCandidateNames).toEqual([
-      "readonlyvalue",
-      "renamednestedvalue",
-    ]);
+    expect(after.vbscript?.implicitGlobalCandidateNames).toEqual(["renamednestedvalue"]);
     expect(after.publicSignatureHash).not.toBe(before.publicSignatureHash);
+  });
+
+  it("keeps the public signature hash stable for read-only implicit candidate typing", () => {
+    const before = summarizeAspFileAnalysis(
+      parseAspDocument(
+        "file:///site/implicit-typing.inc",
+        `<%
+Sub Render()
+  nestedValue = 2
+End Sub
+%>`,
+      ),
+    );
+    const after = summarizeAspFileAnalysis(
+      parseAspDocument(
+        "file:///site/implicit-typing.inc",
+        `<%
+Sub Render()
+  nestedValue = 2
+  Response.Write partialTyp
+End Sub
+%>`,
+      ),
+    );
+
+    expect(after.vbscript?.implicitGlobalCandidateNames).toEqual(["nestedvalue"]);
+    expect(after.publicSignatureHash).toBe(before.publicSignatureHash);
   });
 
   it("summarizes VBScript public symbols without implicit or inferred exports", () => {

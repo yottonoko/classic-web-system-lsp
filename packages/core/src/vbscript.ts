@@ -4283,11 +4283,79 @@ function implicitGlobalCandidateNamesForSummary(parsed: AspParsedDocument): stri
       index.declarations
         .filter(
           (declaration) =>
-            declaration.implicitGlobal === true && declaration.implicitGlobalCandidate === true,
+            declaration.implicitGlobal === true &&
+            declaration.implicitGlobalCandidate === true &&
+            isAssignedImplicitGlobalCandidate(parsed, declaration),
         )
         .map((declaration) => declaration.normalizedName),
     ),
   ].sort();
+}
+
+function isAssignedImplicitGlobalCandidate(
+  parsed: AspParsedDocument,
+  declaration: { nameRange: Range },
+): boolean {
+  const start = offsetAt(parsed.text, declaration.nameRange.start);
+  const end = offsetAt(parsed.text, declaration.nameRange.end);
+  const tokens = vbDocuments(parsed).flatMap((document) =>
+    document.tokens.filter((token) => token.kind !== "whitespace" && token.kind !== "comment"),
+  );
+  const index = tokens.findIndex(
+    (token) => token.kind === "identifier" && token.start === start && token.end === end,
+  );
+  if (index === -1 || nextTokenInStatement(tokens, index + 1)?.text !== "=") {
+    return false;
+  }
+  const previous = previousTokenInStatement(tokens, index);
+  const previousLower = previous?.text.toLowerCase();
+  if (previousLower === "then" || previousLower === "else") {
+    return true;
+  }
+  return assignmentTargetIndex(tokens, index) === index;
+}
+
+function assignmentTargetIndex(tokens: VbToken[], index: number): number {
+  const start = statementStartIndex(tokens, index);
+  const first = tokens[start]?.text.toLowerCase();
+  return first === "set" || first === "let" ? nextTokenIndexInStatement(tokens, start + 1) : start;
+}
+
+function statementStartIndex(tokens: VbToken[], index: number): number {
+  let cursor = index;
+  while (cursor > 0 && !isStatementBoundaryToken(tokens[cursor - 1])) {
+    cursor -= 1;
+  }
+  return cursor;
+}
+
+function nextTokenIndexInStatement(tokens: VbToken[], index: number): number {
+  for (let cursor = index; cursor < tokens.length; cursor += 1) {
+    if (isStatementBoundaryToken(tokens[cursor])) {
+      return -1;
+    }
+    return cursor;
+  }
+  return -1;
+}
+
+function nextTokenInStatement(tokens: VbToken[], index: number): VbToken | undefined {
+  const nextIndex = nextTokenIndexInStatement(tokens, index);
+  return nextIndex === -1 ? undefined : tokens[nextIndex];
+}
+
+function previousTokenInStatement(tokens: VbToken[], index: number): VbToken | undefined {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (isStatementBoundaryToken(tokens[cursor])) {
+      return undefined;
+    }
+    return tokens[cursor];
+  }
+  return undefined;
+}
+
+function isStatementBoundaryToken(token: VbToken | undefined): boolean {
+  return !token || token.kind === "newline" || token.text === ":";
 }
 
 function collectVbscriptExternalRefs(
