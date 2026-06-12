@@ -56,6 +56,12 @@ import {
   stablePublicBoundaryHash,
   type VbStatementEntry,
 } from "./vbscript-incremental";
+import {
+  buildVbNodeLookup,
+  preOrderIndexForNodes,
+  smallestContainingVbNode,
+  type VbNodeLookup,
+} from "./vbscript-node-lookup";
 import { extractVbscriptSymbolIndex } from "./vbscript-symbol-index";
 import type {
   VbCallHierarchyData,
@@ -173,8 +179,8 @@ const vbDocCommentAttributeCompletions: Record<string, string[]> = {
 interface VbAnalysisSnapshot {
   documents: VbCstNode[];
   nodes: VbCstNode[];
-  scopeNodes: VbCstNode[];
-  classNodes: VbCstNode[];
+  scopeNodeLookup: VbNodeLookup;
+  classNodeLookup: VbNodeLookup;
   serverScriptText: string;
   significantTokens: VbToken[];
   identifierTokens: VbToken[];
@@ -6613,8 +6619,15 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
   for (const document of documents) {
     flattenVbNodes(document, nodes);
   }
-  const scopeNodes = nodes.filter((node) => node.kind === "Procedure" || node.kind === "Property");
-  const classNodes = nodes.filter((node) => node.kind === "Class");
+  const preOrderIndexByNode = preOrderIndexForNodes(nodes);
+  const scopeNodeLookup = buildVbNodeLookup(
+    nodes.filter((node) => node.kind === "Procedure" || node.kind === "Property"),
+    preOrderIndexByNode,
+  );
+  const classNodeLookup = buildVbNodeLookup(
+    nodes.filter((node) => node.kind === "Class"),
+    preOrderIndexByNode,
+  );
   const serverScriptText = serverRegions(parsed)
     .map((region) => parsed.text.slice(region.contentStart, region.contentEnd))
     .join("\n");
@@ -6658,8 +6671,8 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
   const snapshot = {
     documents,
     nodes,
-    scopeNodes,
-    classNodes,
+    scopeNodeLookup,
+    classNodeLookup,
     serverScriptText,
     significantTokens,
     identifierTokens,
@@ -6676,24 +6689,11 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
 }
 
 function parentClassName(parsed: AspParsedDocument, offset: number): string | undefined {
-  return smallestContainingNode(snapshotFor(parsed).classNodes, offset)?.nameToken?.text;
+  return smallestContainingVbNode(snapshotFor(parsed).classNodeLookup, offset)?.nameToken?.text;
 }
 
 function scopeNodeAt(parsed: AspParsedDocument, offset: number): VbCstNode | undefined {
-  return smallestContainingNode(snapshotFor(parsed).scopeNodes, offset);
-}
-
-function smallestContainingNode(nodes: VbCstNode[], offset: number): VbCstNode | undefined {
-  let best: VbCstNode | undefined;
-  for (const node of nodes) {
-    if (offset < node.start || offset > node.end) {
-      continue;
-    }
-    if (!best || node.end - node.start < best.end - best.start) {
-      best = node;
-    }
-  }
-  return best;
+  return smallestContainingVbNode(snapshotFor(parsed).scopeNodeLookup, offset);
 }
 
 function enclosingVbNodes(parsed: AspParsedDocument, offset: number): VbCstNode[] {
