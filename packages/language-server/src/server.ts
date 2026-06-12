@@ -337,6 +337,7 @@ const defaultVbProjectMaxDocuments = 256;
 const defaultVbProjectMaxTextLength = 16 * 1024 * 1024;
 const defaultGraphMaxDocuments = defaultMaxIndexFiles;
 const defaultGraphMaxTextLength = 256 * 1024 * 1024;
+const defaultGraphMaxNodes = 5_000;
 const defaultExcelMaxDocuments = 8192;
 const defaultExcelMaxTextLength = 512 * 1024 * 1024;
 const defaultExcelIncludeTreeMaxDocuments = 1024;
@@ -2724,7 +2725,7 @@ connection.onExecuteCommand(async (params, token) => {
     return { ok: true, cleared: "process" };
   }
   if (params.command === buildGraphServerCommand) {
-    return buildAspGraphForCommand(params.arguments?.[0], token);
+    return buildCappedAspGraphForCommand(params.arguments?.[0], token);
   }
   if (params.command === buildFlowchartServerCommand) {
     return buildAspFlowchartForCommand(params.arguments?.[0], token);
@@ -14263,7 +14264,7 @@ function normalizeIncrementalSettings(
     mode:
       record.mode === "full" || record.mode === "off" || record.mode === "legacy"
         ? record.mode
-        : "legacy",
+        : "full",
     analysis: record.analysis !== false,
   };
 }
@@ -14511,6 +14512,7 @@ function normalizeGraphSettings(
     useReverseIncludeIndex: record.useReverseIncludeIndex !== false,
     maxDocuments: positiveIntegerSetting(record.maxDocuments, defaultGraphMaxDocuments),
     maxTextLength: positiveIntegerSetting(record.maxTextLength, defaultGraphMaxTextLength),
+    maxNodes: positiveIntegerSetting(record.maxNodes, defaultGraphMaxNodes),
     includeTreeMaxDocuments: positiveIntegerSetting(
       record.includeTreeMaxDocuments,
       defaultVbProjectMaxDocuments,
@@ -18457,6 +18459,73 @@ function buildAspGraphForCommand(
   return aspGraphBuildService.buildAspGraphForCommand(argument, token);
 }
 
+async function buildCappedAspGraphForCommand(
+  argument: unknown,
+  token?: GraphCancellationToken,
+): Promise<AspGraphPayload> {
+  const payload = await buildAspGraphForCommand(argument, token);
+  const uri = graphCommandUri(argument);
+  const settings = uri ? cachedSettings(uri) : globalSettings;
+  return capAspGraphPayloadForWebview(payload, settings);
+}
+
+function capAspGraphPayloadForWebview(
+  payload: AspGraphPayload,
+  settings: AspSettings,
+): AspGraphPayload {
+  const maxNodes = normalizeGraphSettings(settings).maxNodes ?? defaultGraphMaxNodes;
+  if (payload.nodes.length <= maxNodes) {
+    return payload;
+  }
+  const degreeById = new Map<string, number>();
+  for (const link of payload.links) {
+    degreeById.set(link.source, (degreeById.get(link.source) ?? 0) + link.count);
+    degreeById.set(link.target, (degreeById.get(link.target) ?? 0) + link.count);
+  }
+  const ranked = payload.nodes
+    .map((node, index) => ({ node, index, score: graphPayloadNodeScore(node, degreeById) }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, maxNodes);
+  const keptIds = new Set(ranked.map((item) => item.node.id));
+  const links = payload.links.filter(
+    (link) => keptIds.has(link.source) && keptIds.has(link.target),
+  );
+  const reason = payload.truncated?.reason
+    ? `${payload.truncated.reason}; nodes>${maxNodes}`
+    : `nodes>${maxNodes}`;
+  return {
+    ...payload,
+    nodes: ranked.map((item) => item.node),
+    links,
+    settings: { ...(payload.settings ?? graphPayloadSettings(settings)), maxNodes },
+    truncated: {
+      reason,
+      nodes: payload.truncated?.nodes ?? payload.nodes.length,
+      links: payload.truncated?.links ?? payload.links.length,
+    },
+  };
+}
+
+function graphPayloadNodeScore(
+  node: AspGraphNode,
+  degreeById: ReadonlyMap<string, number>,
+): number {
+  let score = degreeById.get(node.id) ?? 0;
+  if (node.isRoot === true) {
+    score += 1_000_000;
+  }
+  if (node.kind === "missingInclude" || node.kind === "vbUnresolved") {
+    score += 100_000;
+  }
+  if (node.implicitGlobalCandidate === true) {
+    score += 10_000;
+  }
+  if (node.kind === "file") {
+    score += 1_000;
+  }
+  return score;
+}
+
 async function exportAnalysisExcelForCommand(
   argument: unknown,
   token?: GraphCancellationToken,
@@ -20535,6 +20604,7 @@ function graphPayloadSettings(settings: AspSettings): NonNullable<AspGraphPayloa
     hiddenLinkCategories: graphLinkFilterOrder.filter(
       (category) => !isVisibleAspGraphLinkCategory(category, graphSettings),
     ),
+    maxNodes: graphSettings.maxNodes ?? defaultGraphMaxNodes,
   };
 }
 

@@ -368,7 +368,11 @@ const graphMessageEn = {
     "Only match node names with the same uppercase and lowercase letters.",
   "toolbar.searchNodes": "Search nodes",
   "toolbar.stats": "List",
-  "toolbar.truncated": "truncated: {reason}",
+  "toolbar.truncated":
+    "truncated: {reason} ({shownNodes}/{totalNodes} nodes, {shownLinks}/{totalLinks} links)",
+  "toolbar.truncatedHint":
+    "The graph was capped before rendering. Increase {setting} to include more nodes.",
+  "toolbar.truncatedSetting": "Raise limit",
   "view.currentFileGraph": "Current File Graph",
   "view.folderGraph": "Folder Graph",
   "view.inspector": "Inspector",
@@ -560,7 +564,11 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "toolbar.matchCaseDescription": "node name の大文字小文字が一致するものだけを検索します。",
     "toolbar.searchNodes": "node を検索",
     "toolbar.stats": "一覧",
-    "toolbar.truncated": "切り詰め: {reason}",
+    "toolbar.truncated":
+      "切り詰め: {reason} ({shownNodes}/{totalNodes} nodes, {shownLinks}/{totalLinks} links)",
+    "toolbar.truncatedHint":
+      "表示前に graph が切り詰められました。より多くの node を含めるには {setting} を上げてください。",
+    "toolbar.truncatedSetting": "上限を上げる",
     "view.currentFileGraph": "現在のファイルのグラフ",
     "view.folderGraph": "フォルダーグラフ",
     "view.inspector": "情報",
@@ -935,6 +943,18 @@ function App(): React.ReactElement {
     inspectorPosition === "left"
       ? "relative grid min-h-0 grid-cols-[var(--inspector-width)_6px_minmax(0,1fr)] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]"
       : "relative grid min-h-0 grid-cols-[minmax(0,1fr)_6px_var(--inspector-width)] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]";
+  const truncatedGraphText = graph?.truncated
+    ? graphText("toolbar.truncated", {
+        reason: graph.truncated.reason,
+        shownNodes: graph.nodes.length,
+        totalNodes: graph.truncated.nodes ?? graph.stats.nodes,
+        shownLinks: graph.links.length,
+        totalLinks: graph.truncated.links ?? graph.stats.links,
+      })
+    : undefined;
+  const truncatedGraphTitle = graph?.truncated
+    ? graphText("toolbar.truncatedHint", { setting: "aspLsp.graph.maxNodes" })
+    : undefined;
   const surfaceClassName =
     inspectorPosition === "left"
       ? "relative order-3 min-h-0 min-w-0 overflow-hidden max-[780px]:order-1 [&_canvas]:block"
@@ -1271,9 +1291,21 @@ function App(): React.ReactElement {
               {titleFileName}
             </span>
           ) : null}
-          {graph.truncated ? (
-            <span className="text-[11px] text-[#ffcb6b]">
-              {graphText("toolbar.truncated", { reason: graph.truncated.reason })}
+          {graph.truncated && truncatedGraphText ? (
+            <span className="inline-flex min-w-0 items-center gap-1.5 text-[11px] text-[#ffcb6b]">
+              <span className="min-w-0 overflow-hidden text-ellipsis" title={truncatedGraphTitle}>
+                {truncatedGraphText}
+              </span>
+              <button
+                type="button"
+                className="shrink-0 rounded border border-[#6d5d2b] px-1.5 py-0.5 text-[11px] text-[#ffe29b] hover:border-[#ffcb6b] hover:bg-[#2a2415] focus:border-[#ffcb6b] focus:outline-none"
+                title={truncatedGraphTitle}
+                onClick={() =>
+                  vscode.postMessage({ type: "openSetting", setting: "aspLsp.graph.maxNodes" })
+                }
+              >
+                {graphText("toolbar.truncatedSetting")}
+              </button>
             </span>
           ) : null}
         </div>

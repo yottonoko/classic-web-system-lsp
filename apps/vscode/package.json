@@ -222,7 +222,7 @@
             "full",
             "off"
           ],
-          "default": "legacy",
+          "default": "full",
           "description": "%configuration.incremental.mode.description%"
         },
         "aspLsp.incremental.analysis": {
@@ -906,6 +906,12 @@
           "minimum": 1,
           "default": 268435456,
           "description": "%configuration.graph.maxTextLength.description%"
+        },
+        "aspLsp.graph.maxNodes": {
+          "type": "number",
+          "minimum": 1,
+          "default": 5000,
+          "description": "%configuration.graph.maxNodes.description%"
         },
         "aspLsp.graph.includeTreeMaxDocuments": {
           "type": "number",

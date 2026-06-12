@@ -89,6 +89,8 @@ describe("VS Code extension package", () => {
     );
     expect(graphHostSource).toContain('message.type === "openFlowchart"');
     expect(graphHostSource).toContain("openFlowchart(message.uri, message.range)");
+    expect(graphHostSource).toContain('message.type === "openSetting"');
+    expect(graphHostSource).toContain('"workbench.action.openSettings"');
     expect(graphHostSource).toContain("__ASP_LSP_GRAPH_TARGET_RANGE__");
     expect(graphHostSource).toContain('<html lang="${locale}">');
     expect(graphHostSource).toContain('graphHostText(locale, "sourceRangeUnavailable")');
@@ -98,6 +100,8 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain('"action.fit": "フィット"');
     expect(graphWebviewSource).toContain('"action.openFlowchart": "フローチャートを開く"');
     expect(graphWebviewSource).toContain('type: "openFlowchart"');
+    expect(graphWebviewSource).toContain('type: "openSetting"');
+    expect(graphWebviewSource).toContain("aspLsp.graph.maxNodes");
     expect(graphWebviewSource).toContain("__ASP_LSP_GRAPH_TARGET_RANGE__");
     expect(graphWebviewSource).toContain("graphStatsTargetForRange");
     expect(graphWebviewSource).toContain("hasFocusedInitialTargetRef");
@@ -773,10 +777,15 @@ describe("VS Code extension package", () => {
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.graph.maxTextLength"]).toEqual(
       expect.objectContaining({ type: "number", minimum: 1, default: 268435456 }),
     );
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.graph.maxNodes"]).toEqual(
+      expect.objectContaining({ type: "number", minimum: 1, default: 5000 }),
+    );
     expect(nls["configuration.graph.maxDocuments.description"]).toBeTruthy();
     expect(nlsJa["configuration.graph.maxDocuments.description"]).toBeTruthy();
     expect(nls["configuration.graph.maxTextLength.description"]).toBeTruthy();
     expect(nlsJa["configuration.graph.maxTextLength.description"]).toBeTruthy();
+    expect(nls["configuration.graph.maxNodes.description"]).toBeTruthy();
+    expect(nlsJa["configuration.graph.maxNodes.description"]).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.graph.initialViewMode"],
     ).toEqual(
@@ -836,7 +845,7 @@ describe("VS Code extension package", () => {
       expect.objectContaining({
         type: "string",
         enum: ["legacy", "full", "off"],
-        default: "legacy",
+        default: "full",
       }),
     );
     expect(nls["configuration.incremental.mode.description"]).toBeTruthy();

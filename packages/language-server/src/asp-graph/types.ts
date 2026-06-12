@@ -122,6 +122,7 @@ export interface AspGraphPayload {
     includeRelatedIncludeTreesForUnresolved: boolean;
     hiddenNodeCategories: AspGraphNodeCategory[];
     hiddenLinkCategories: AspGraphLinkFilterCategory[];
+    maxNodes: number;
   };
   stats: {
     files: number;
@@ -137,6 +138,8 @@ export interface AspGraphPayload {
   };
   truncated?: {
     reason: string;
+    nodes?: number;
+    links?: number;
   };
 }
 

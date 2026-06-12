@@ -24,6 +24,7 @@ export interface AspGraphPayload {
     includeRelatedIncludeTreesForUnresolved?: boolean;
     hiddenNodeCategories?: AspGraphNodeCategory[];
     hiddenLinkCategories?: AspGraphLinkFilterCategory[];
+    maxNodes?: number;
   };
   stats: {
     files: number;
@@ -39,6 +40,8 @@ export interface AspGraphPayload {
   };
   truncated?: {
     reason: string;
+    nodes?: number;
+    links?: number;
   };
 }
 
@@ -166,7 +169,16 @@ interface ReadSourceRangesMessage {
   items: AspGraphSourceRangeRequestItem[];
 }
 
-type WebviewMessage = OpenRangeMessage | OpenFlowchartMessage | ReadSourceRangesMessage;
+interface OpenSettingMessage {
+  type: "openSetting";
+  setting: string;
+}
+
+type WebviewMessage =
+  | OpenRangeMessage
+  | OpenFlowchartMessage
+  | ReadSourceRangesMessage
+  | OpenSettingMessage;
 
 export function showAspGraphWebview(
   context: vscode.ExtensionContext,
@@ -192,6 +204,8 @@ export function showAspGraphWebview(
       void openFlowchart(message.uri, message.range);
     } else if (message.type === "readSourceRanges") {
       void readGraphSourceRanges(panel.webview, message, locale);
+    } else if (message.type === "openSetting") {
+      void openGraphSetting(message.setting);
     }
   });
   panel.webview.html = graphWebviewHtml(
@@ -204,6 +218,10 @@ export function showAspGraphWebview(
     infoPanelPosition,
     initialTargetRange,
   );
+}
+
+async function openGraphSetting(setting: string): Promise<void> {
+  await vscode.commands.executeCommand("workbench.action.openSettings", setting);
 }
 
 async function openGraphRange(uriText: string, range: AspGraphRange | undefined): Promise<void> {

@@ -233,6 +233,7 @@ export interface AspGraphSettings {
   useReverseIncludeIndex?: boolean;
   maxDocuments?: number;
   maxTextLength?: number;
+  maxNodes?: number;
   includeTreeMaxDocuments?: number;
   includeTreeMaxTextLength?: number;
   workerSymbolExtraction?: boolean;

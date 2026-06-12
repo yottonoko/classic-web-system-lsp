@@ -3105,7 +3105,8 @@ Response.Write known
         await server.waitForNotification("textDocument/publishDiagnostics");
         await waitForLogContaining(server, "analysis.parse.skeleton");
         const impactLog = await waitForLogContaining(server, "analysis.parse.impact");
-        expect(JSON.stringify(impactLog.params)).toContain("boundary text inserted");
+        expect(JSON.stringify(impactLog.params)).toContain("mode=full");
+        expect(JSON.stringify(impactLog.params)).toContain("incremental resync failed");
         expect(source).toContain("safe <%");
 
         await server.request("shutdown", null);
@@ -8917,6 +8918,70 @@ Response.Write PageValue
         await folderWorkbook.xlsx.readFile(folderTargetPath);
         expect(folderWorkbook.getWorksheet("概要")).toBeTruthy();
         expect(folderWorkbook.getWorksheet("宣言")).toBeTruthy();
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("caps graph payload nodes and reports truncation metadata", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-cap-"));
+      const page = path.join(tempDir, "default.asp");
+      const uri = `file://${page}`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              graph: { maxNodes: 5 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `<%
+Dim A, B, C, D, E, F
+A = 1
+B = A
+C = B
+D = C
+E = D
+F = E
+MissingValue = F
+%>`,
+          },
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "document", uri }],
+        })) as {
+          nodes?: Array<Record<string, unknown>>;
+          links?: Array<Record<string, unknown>>;
+          settings?: { maxNodes?: number };
+          truncated?: { reason?: string; nodes?: number; links?: number };
+        };
+
+        expect(graph.nodes?.length).toBeLessThanOrEqual(5);
+        expect(graph.settings?.maxNodes).toBe(5);
+        expect(graph.truncated?.reason).toContain("nodes>5");
+        expect(graph.truncated?.nodes).toBeGreaterThan(graph.nodes?.length ?? 0);
+        expect(graph.truncated?.links).toBeGreaterThanOrEqual(graph.links?.length ?? 0);
+        expect(graph.nodes?.some((node) => node.kind === "file" && node.isRoot === true)).toBe(
+          true,
+        );
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
