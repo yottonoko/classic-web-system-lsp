@@ -190,6 +190,7 @@ describe("DiskAnalysisCache", () => {
       const summary: FileAnalysisSummary = {
         uri: parsed.uri,
         fingerprint: "parsed",
+        publicSignatureHash: "public",
         defaultLanguage: "VBScript",
         languageRegions: [],
         includeRefs: [],
@@ -485,6 +486,7 @@ describe("DiskAnalysisCache", () => {
       const summary: FileAnalysisSummary = {
         uri: parsed.uri,
         fingerprint: "parsed",
+        publicSignatureHash: "public",
         defaultLanguage: "VBScript",
         languageRegions: [],
         includeRefs: [],

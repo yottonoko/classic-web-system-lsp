@@ -2,6 +2,7 @@ export * from "./types";
 export * from "./parser";
 export { extractAspIncludeRefs } from "./asp-scanner";
 export * from "./vbscript-symbol-index";
+export * from "./vbscript-incremental";
 export * from "./virtual-documents";
 export * from "./source-uri";
 export * from "./vbscript";

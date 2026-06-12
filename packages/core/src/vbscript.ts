@@ -51,6 +51,12 @@ import {
   parseVbscriptCst,
   unquoteVbString,
 } from "./vbscript-cst";
+import {
+  cachedVbStatementSnapshot,
+  stablePublicBoundaryHash,
+  type VbStatementEntry,
+} from "./vbscript-incremental";
+import { extractVbscriptSymbolIndex } from "./vbscript-symbol-index";
 import type {
   VbCallHierarchyData,
   VbBlockEndSyntaxDiagnosticCode,
@@ -173,15 +179,11 @@ interface VbAnalysisSnapshot {
   significantTokens: VbToken[];
   identifierTokens: VbToken[];
   statements: VbToken[][];
+  ifSyntaxStatements: VbToken[][];
   assignmentStatements: VbToken[][];
   declarationTokens: Set<VbToken>;
   previousSignificantTokenByToken: Map<VbToken, VbToken | undefined>;
   nextSignificantTokenByToken: Map<VbToken, VbToken | undefined>;
-}
-
-interface VbStatementEntry {
-  tokens: VbToken[];
-  documentIndex: number;
 }
 
 interface VbSymbolIndex {
@@ -224,6 +226,7 @@ export interface VbGraphExternalSymbol {
 }
 
 const analysisSnapshots = new WeakMap<AspParsedDocument, VbAnalysisSnapshot>();
+const analysisMemoDisabledDocuments = new WeakSet<AspParsedDocument>();
 const symbolIndexes = new WeakMap<VbSymbol[], VbSymbolIndex>();
 const symbolKeys = new WeakMap<VbSymbol, string>();
 const typeIndexes = new WeakMap<VbTypeEnvironment, VbTypeIndex>();
@@ -2592,6 +2595,15 @@ function analyzeVbscriptTypeScript(
   parsed: AspParsedDocument,
   context: VbProjectContext,
 ): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
+  return withVbAnalysisMemoMode(parsed, context, () =>
+    analyzeVbscriptTypeScriptInner(parsed, context),
+  );
+}
+
+function analyzeVbscriptTypeScriptInner(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+): { diagnostics: Diagnostic[]; symbols: VbSymbol[] } {
   const symbols = measureVbDebugStep(
     context,
     "symbols",
@@ -2668,6 +2680,22 @@ function analyzeVbscriptTypeScript(
     diagnostics: measureVbDebugStep(context, "dedupe", () => dedupeDiagnostics(diagnostics)),
     symbols,
   };
+}
+
+function withVbAnalysisMemoMode<T>(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+  action: () => T,
+): T {
+  if (context.incrementalAnalysis !== false) {
+    return action();
+  }
+  analysisMemoDisabledDocuments.add(parsed);
+  try {
+    return action();
+  } finally {
+    analysisMemoDisabledDocuments.delete(parsed);
+  }
 }
 
 function measureVbDebugStep<T>(context: VbProjectContext, name: string, action: () => T): T {
@@ -3949,6 +3977,16 @@ function collectVbscriptSymbolsTypeScript(
   context: VbProjectContext,
   options: VbSymbolCollectionOptions,
 ): VbSymbol[] {
+  return withVbAnalysisMemoMode(parsed, context, () =>
+    collectVbscriptSymbolsTypeScriptInner(parsed, context, options),
+  );
+}
+
+function collectVbscriptSymbolsTypeScriptInner(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+  options: VbSymbolCollectionOptions,
+): VbSymbol[] {
   const symbols: VbSymbol[] = [];
   for (const node of vbDocuments(parsed)) {
     addSymbolsFromVbNode(parsed, node, symbols, createDocCommentLookup(node));
@@ -4029,24 +4067,40 @@ function summarizeAspFileAnalysisTypeScript(
   parsed: AspParsedDocument,
   context: VbProjectContext,
 ): FileAnalysisSummary {
+  return withVbAnalysisMemoMode(parsed, context, () =>
+    summarizeAspFileAnalysisTypeScriptInner(parsed, context),
+  );
+}
+
+function summarizeAspFileAnalysisTypeScriptInner(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
+): FileAnalysisSummary {
   const vbscript =
     parsed.regions.some((region) => region.language === "vbscript") ||
     parsed.serverObjects.length > 0
       ? summarizeVbscriptFileTypeScript(parsed, context)
       : undefined;
+  const languageRegions = parsed.regions.map((region) => ({
+    language: region.language,
+    kind: region.kind,
+    start: region.start,
+    end: region.end,
+    contentStart: region.contentStart,
+    contentEnd: region.contentEnd,
+    fingerprint: textFingerprint(parsed.text.slice(region.contentStart, region.contentEnd)),
+  }));
+  const publicSignatureHash = publicSignatureHashForSummary({
+    defaultLanguage: parsed.defaultLanguage,
+    languageRegions,
+    vbscript,
+  });
   return {
     uri: parsed.uri,
     fingerprint: textFingerprint(parsed.text),
+    publicSignatureHash,
     defaultLanguage: parsed.defaultLanguage,
-    languageRegions: parsed.regions.map((region) => ({
-      language: region.language,
-      kind: region.kind,
-      start: region.start,
-      end: region.end,
-      contentStart: region.contentStart,
-      contentEnd: region.contentEnd,
-      fingerprint: textFingerprint(parsed.text.slice(region.contentStart, region.contentEnd)),
-    })),
+    languageRegions,
     includeRefs: parsed.includes,
     diagnostics: parsed.diagnostics,
     vbscript,
@@ -4122,6 +4176,7 @@ function summarizeVbscriptFileTypeScript(
   const publicSymbols = publicSymbolsFromLocalSymbols(localSymbols);
   const typeEnvironment = buildVbTypeEnvironment(parsed, { ...context, symbols: localSymbols });
   const externalRefs = collectVbscriptExternalRefs(parsed, localSymbols);
+  const implicitGlobalCandidateNames = implicitGlobalCandidateNamesForSummary(parsed);
   return {
     fingerprint: textFingerprint(
       JSON.stringify({
@@ -4134,6 +4189,7 @@ function summarizeVbscriptFileTypeScript(
     localSymbols,
     publicSymbols,
     exports: exportSummariesForSymbols(publicSymbols),
+    implicitGlobalCandidateNames,
     externalRefs,
     externalRefUsages: externalRefUsagesForRefs(externalRefs),
     typeFacts: typeEnvironment.types,
@@ -4175,6 +4231,63 @@ function exportSummaryForSymbol(
     visibility: symbol.visibility,
     members,
   };
+}
+
+function publicSignatureHashForSummary(summary: {
+  defaultLanguage: AspParsedDocument["defaultLanguage"];
+  languageRegions: Array<Pick<AspRegion, "language" | "kind">>;
+  vbscript?: VbLocalSummary;
+}): string {
+  const payload = {
+    defaultLanguage: summary.defaultLanguage,
+    languages: [...new Set(summary.languageRegions.map((region) => region.language))].sort(),
+    regionKinds: [...new Set(summary.languageRegions.map((region) => region.kind))].sort(),
+    vbscript: summary.vbscript
+      ? {
+          exports: publicExportBoundaries(summary.vbscript.exports),
+          implicitGlobalCandidateNames: [...summary.vbscript.implicitGlobalCandidateNames].sort(),
+        }
+      : undefined,
+  };
+  return stablePublicBoundaryHash(payload);
+}
+
+function publicExportBoundaries(exports: VbExportSummary[]): unknown[] {
+  return exports.map(publicExportBoundary).sort((left, right) => {
+    const leftKey = JSON.stringify(left);
+    const rightKey = JSON.stringify(right);
+    return leftKey.localeCompare(rightKey);
+  });
+}
+
+function publicExportBoundary(summary: VbExportSummary): unknown {
+  return {
+    name: summary.name,
+    kind: summary.kind,
+    typeName: summary.typeName,
+    memberOf: summary.memberOf,
+    visibility: summary.visibility,
+    members: summary.members ? publicExportBoundaries(summary.members) : undefined,
+  };
+}
+
+function implicitGlobalCandidateNamesForSummary(parsed: AspParsedDocument): string[] {
+  const index = extractVbscriptSymbolIndex(
+    parsed.uri,
+    parsed.text,
+    { defaultLanguage: parsed.defaultLanguage },
+    { includeImplicitVariables: true },
+  );
+  return [
+    ...new Set(
+      index.declarations
+        .filter(
+          (declaration) =>
+            declaration.implicitGlobal === true && declaration.implicitGlobalCandidate === true,
+        )
+        .map((declaration) => declaration.normalizedName),
+    ),
+  ].sort();
 }
 
 function collectVbscriptExternalRefs(
@@ -4310,6 +4423,15 @@ function serverObjectDeclarations(parsed: AspParsedDocument): Array<{
 export function buildVbTypeEnvironment(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
+): VbTypeEnvironment {
+  return withVbAnalysisMemoMode(parsed, context, () =>
+    buildVbTypeEnvironmentInner(parsed, context),
+  );
+}
+
+function buildVbTypeEnvironmentInner(
+  parsed: AspParsedDocument,
+  context: VbProjectContext,
 ): VbTypeEnvironment {
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const symbolIndex = symbolIndexFor(symbols);
@@ -6042,45 +6164,14 @@ function vbStatements(parsed: AspParsedDocument): VbToken[][] {
 }
 
 function vbIfSyntaxStatements(parsed: AspParsedDocument): VbToken[][] {
-  return computeVbIfSyntaxStatements(parsed.text, vbDocuments(parsed));
+  return snapshotFor(parsed).ifSyntaxStatements;
 }
 
 function vbAssignmentStatements(parsed: AspParsedDocument): VbToken[][] {
   return snapshotFor(parsed).assignmentStatements;
 }
 
-function computeVbStatements(documents: VbCstNode[]): VbToken[][] {
-  return computeVbStatementEntries(documents).map((entry) => entry.tokens);
-}
-
-function computeVbStatementEntries(documents: VbCstNode[]): VbStatementEntry[] {
-  const statements: VbStatementEntry[] = [];
-  documents.forEach((document, documentIndex) => {
-    let current: VbToken[] = [];
-    for (const token of document.tokens.filter(
-      (item) => item.kind !== "whitespace" && item.kind !== "comment",
-    )) {
-      if (token.kind === "newline" || token.text === ":") {
-        if (token.kind === "newline" && current.at(-1)?.text === "_") {
-          continue;
-        }
-        if (current.length > 0) {
-          statements.push({ tokens: current, documentIndex });
-          current = [];
-        }
-        continue;
-      }
-      current.push(token);
-    }
-    if (current.length > 0) {
-      statements.push({ tokens: current, documentIndex });
-    }
-  });
-  return statements;
-}
-
-function computeVbIfSyntaxStatements(text: string, documents: VbCstNode[]): VbToken[][] {
-  const entries = computeVbStatementEntries(documents);
+function computeVbIfSyntaxStatements(text: string, entries: VbStatementEntry[]): VbToken[][] {
   const statements: VbToken[][] = [];
   for (let index = 0; index < entries.length; index += 1) {
     const current = entries[index];
@@ -6442,9 +6533,12 @@ function flattenVbNodes(node: VbCstNode): VbCstNode[] {
 }
 
 function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
-  const cached = analysisSnapshots.get(parsed);
-  if (cached) {
-    return cached;
+  const cacheEnabled = !analysisMemoDisabledDocuments.has(parsed);
+  if (cacheEnabled) {
+    const cached = analysisSnapshots.get(parsed);
+    if (cached) {
+      return cached;
+    }
   }
   const documents = computeVbDocuments(parsed);
   const nodes = documents.flatMap((document) => flattenVbNodes(document));
@@ -6457,7 +6551,10 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
     .flatMap((document) => document.tokens)
     .filter((token) => !isTriviaToken(token));
   const identifierTokens = significantTokens.filter((token) => token.kind === "identifier");
-  const statements = computeVbStatements(documents);
+  const statementSnapshot = cachedVbStatementSnapshot(documents, { cache: cacheEnabled });
+  const statementEntries = statementSnapshot.entries;
+  const statements = statementSnapshot.statements;
+  const ifSyntaxStatements = computeVbIfSyntaxStatements(parsed.text, statementEntries);
   const assignmentStatements = computeVbAssignmentStatements(statements);
   const declarationTokens = new Set<VbToken>();
   for (const node of nodes) {
@@ -6489,12 +6586,15 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
     significantTokens,
     identifierTokens,
     statements,
+    ifSyntaxStatements,
     assignmentStatements,
     declarationTokens,
     previousSignificantTokenByToken,
     nextSignificantTokenByToken,
   };
-  analysisSnapshots.set(parsed, snapshot);
+  if (cacheEnabled) {
+    analysisSnapshots.set(parsed, snapshot);
+  }
   return snapshot;
 }
 

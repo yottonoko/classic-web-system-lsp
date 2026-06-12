@@ -5,6 +5,7 @@
   "configuration.defaultLanguage.description": "Classic ASP page の既定 server-side script language です。",
   "configuration.checkJs.description": "client JavaScript region の semantic checking を有効にします。",
   "configuration.incremental.mode.description": "parser incremental update の方式を制御します。legacy は既存の保守的な経路を使い、full は範囲 rescan と CST node reuse を有効にし、off は text change 後に document 全体を parse し直します。",
+  "configuration.incremental.analysis.description": "再利用された CST node の VBScript analysis memoization を有効にします。parser incremental mode は変えずに analysis の statement snapshot を毎回作り直す場合は無効にします。",
   "configuration.diagnostics.debounceMs.description": "text change 後に diagnostics を publish するまでの待ち時間を milliseconds で指定します。0 なら即時 publish します。",
   "configuration.debug.output.description": "VS Code Output channel に出す asp-lsp debug timing log を制御します。off は出力なし、summary は処理の開始/完了、verbose は step ごとの時間も出力します。",
   "configuration.debug.logFile.enabled.description": "asp-lsp の debug / trace log を rotation つき log file に書き込みます。既定では無効です。",

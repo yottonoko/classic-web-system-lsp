@@ -229,6 +229,7 @@ export interface FilePublicSignature {
   defaultLanguage: AspParsedDocument["defaultLanguage"];
   languages: string[];
   exports: unknown[];
+  implicitGlobalCandidateNames: string[];
   externalRefUsages: unknown[];
   affectsGlobalScope: boolean;
 }

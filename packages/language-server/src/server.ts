@@ -10606,6 +10606,7 @@ function vbProjectContextSettings(
     deadCodeDiagnostics: settings.vbscript?.deadCodeDiagnostics !== false,
     syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
     syntaxKeywords: settings.vbscript?.syntaxKeywords !== false,
+    incrementalAnalysis: settings.incremental?.analysis !== false,
   };
 }
 
@@ -10622,6 +10623,7 @@ function vbProjectRootContextCacheKey(cached: CachedDocument, settings: AspSetti
       deadCodeDiagnostics: settings.vbscript?.deadCodeDiagnostics !== false,
       syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
       syntaxKeywords: settings.vbscript?.syntaxKeywords !== false,
+      incrementalAnalysis: settings.incremental?.analysis !== false,
     },
     globals: settings.vbscript?.globals,
   });
@@ -10656,6 +10658,7 @@ function vbProjectContextCacheKey(documents: AspParsedDocument[], settings: AspS
       deadCodeDiagnostics: settings.vbscript?.deadCodeDiagnostics !== false,
       syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
       syntaxKeywords: settings.vbscript?.syntaxKeywords !== false,
+      incrementalAnalysis: settings.incremental?.analysis !== false,
     },
     globals: settings.vbscript?.globals,
   });
@@ -11079,6 +11082,7 @@ async function cachedFileAnalysisSummaryAsync(
       deadCodeDiagnostics: context.deadCodeDiagnostics,
       syntaxSnippets: context.syntaxSnippets,
       syntaxKeywords: context.syntaxKeywords,
+      incrementalAnalysis: context.incrementalAnalysis,
     },
   });
   const existing = cached.analysis?.vbFileSummary;
@@ -11550,6 +11554,7 @@ async function includeDocumentSourceIdentityAsync(
 
 function includeDocumentSettingsIdentity(settings: AspSettings): string {
   return JSON.stringify({
+    summary: "file-analysis-summary-v2",
     parse: parseSettingsIdentity(settings),
     legacyEncoding: settings.legacyEncoding,
     vbscript: vbProjectContextSettings(settings),
@@ -11848,6 +11853,9 @@ function rememberIncludePublicSummary(
 function filePublicSignature(summary: FileAnalysisSummary): FilePublicSignature {
   const languages = [...new Set(summary.languageRegions.map((region) => region.language))].sort();
   const exports = summary.vbscript?.exports.map(publicExportBoundary) ?? [];
+  const implicitGlobalCandidateNames = [
+    ...(summary.vbscript?.implicitGlobalCandidateNames ?? []),
+  ].sort();
   const externalRefUsages = summaryVbReferenceUsages(summary).map((usage) => ({
     key: usage.key,
     name: usage.name,
@@ -11858,26 +11866,24 @@ function filePublicSignature(summary: FileAnalysisSummary): FilePublicSignature 
   const affectsGlobalScope =
     summary.defaultLanguage === "VBScript" ||
     exports.length > 0 ||
-    externalRefUsages.length > 0 ||
+    implicitGlobalCandidateNames.length > 0 ||
     summary.languageRegions.some((region) => region.kind === "server-script");
   const payload = {
     defaultLanguage: summary.defaultLanguage,
     languages,
-    includes: summary.includeRefs.map((include) => ({
-      path: include.path,
-      mode: include.mode,
-    })),
+    regionKinds: [...new Set(summary.languageRegions.map((region) => region.kind))].sort(),
     vbscript: {
       exports,
-      externalRefUsages,
+      implicitGlobalCandidateNames,
     },
     affectsGlobalScope,
   };
   return {
-    fingerprint: textFingerprint(JSON.stringify(payload)),
+    fingerprint: summary.publicSignatureHash ?? textFingerprint(JSON.stringify(payload)),
     defaultLanguage: summary.defaultLanguage,
     languages,
     exports,
+    implicitGlobalCandidateNames,
     externalRefUsages,
     affectsGlobalScope,
   };
@@ -13938,6 +13944,7 @@ function diagnosticsIdentity(settings: AspSettings): string {
         unusedDiagnostics: settings.vbscript?.unusedDiagnostics !== false,
         deadCodeDiagnostics: settings.vbscript?.deadCodeDiagnostics !== false,
       },
+      incrementalAnalysis: settings.incremental?.analysis !== false,
       locale: settings.resolvedLocale ?? "en",
     }),
   );
@@ -14225,6 +14232,7 @@ function normalizeIncrementalSettings(
       record.mode === "full" || record.mode === "off" || record.mode === "legacy"
         ? record.mode
         : "legacy",
+    analysis: record.analysis !== false,
   };
 }
 

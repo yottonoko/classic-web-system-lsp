@@ -90,6 +90,7 @@ export interface VbProjectContext {
   deadCodeDiagnostics?: boolean;
   syntaxSnippets?: boolean;
   syntaxKeywords?: boolean;
+  incrementalAnalysis?: boolean;
   locale?: AspLocale;
   sourceUriFormatter?: (uri: string) => string;
   debugStep?: <T>(name: string, action: () => T) => T;
@@ -98,6 +99,7 @@ export interface VbProjectContext {
 export interface FileAnalysisSummary {
   uri: string;
   fingerprint: string;
+  publicSignatureHash: string;
   defaultLanguage: AspParsedDocument["defaultLanguage"];
   languageRegions: LanguageRegionSummary[];
   includeRefs: AspInclude[];
@@ -120,6 +122,7 @@ export interface VbLocalSummary {
   localSymbols: VbSymbol[];
   publicSymbols: VbSymbol[];
   exports: VbExportSummary[];
+  implicitGlobalCandidateNames: string[];
   externalRefs: VbExternalRef[];
   externalRefUsages: VbExternalRefUsage[];
   typeFacts: VbType[];

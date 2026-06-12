@@ -3948,6 +3948,78 @@ Response.Write SharedCatalog.Name
     );
   });
 
+  it("keeps the public signature hash stable for private body-only summary changes", () => {
+    const before = summarizeAspFileAnalysis(
+      parseAspDocument(
+        "file:///site/shared.inc",
+        `<%
+Private Sub Helper()
+End Sub
+
+Function SharedValue()
+  SharedValue = "ok"
+End Function
+%>`,
+      ),
+    );
+    const after = summarizeAspFileAnalysis(
+      parseAspDocument(
+        "file:///site/shared.inc",
+        `<%
+Private Sub Helper()
+  Dim privateValue
+  privateValue = "changed"
+End Sub
+
+Function SharedValue()
+  SharedValue = "ok"
+End Function
+%>`,
+      ),
+    );
+
+    expect(after.vbscript?.fingerprint).not.toBe(before.vbscript?.fingerprint);
+    expect(after.vbscript?.exports[0]?.range.start.line).not.toBe(
+      before.vbscript?.exports[0]?.range.start.line,
+    );
+    expect(after.publicSignatureHash).toBe(before.publicSignatureHash);
+  });
+
+  it("includes implicit global candidate names in the public signature hash", () => {
+    const before = summarizeAspFileAnalysis(
+      parseAspDocument(
+        "file:///site/implicit-candidates.inc",
+        `<%
+topLevelValue = 1
+Sub Render()
+  nestedValue = 2
+  Response.Write readOnlyValue
+End Sub
+%>`,
+      ),
+    );
+    const after = summarizeAspFileAnalysis(
+      parseAspDocument(
+        "file:///site/implicit-candidates.inc",
+        `<%
+topLevelValue = 1
+Sub Render()
+  renamedNestedValue = 2
+  Response.Write readOnlyValue
+End Sub
+%>`,
+      ),
+    );
+
+    expect(before.vbscript?.implicitGlobalCandidateNames).toEqual(["nestedvalue", "readonlyvalue"]);
+    expect(before.vbscript?.implicitGlobalCandidateNames).not.toContain("toplevelvalue");
+    expect(after.vbscript?.implicitGlobalCandidateNames).toEqual([
+      "readonlyvalue",
+      "renamednestedvalue",
+    ]);
+    expect(after.publicSignatureHash).not.toBe(before.publicSignatureHash);
+  });
+
   it("summarizes VBScript public symbols without implicit or inferred exports", () => {
     const source = `<%
 Dim ExplicitValue

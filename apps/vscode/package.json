@@ -226,6 +226,11 @@
           "default": "legacy",
           "description": "%configuration.incremental.mode.description%"
         },
+        "aspLsp.incremental.analysis": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.incremental.analysis.description%"
+        },
         "aspLsp.diagnostics.debounceMs": {
           "type": "number",
           "minimum": 0,

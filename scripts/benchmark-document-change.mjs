@@ -34,6 +34,7 @@ const defaultDebounceMs = readNonNegativeInteger("ASP_LSP_BENCH_DEFAULT_DEBOUNCE
 const collectDebugSteps = readBoolean("ASP_LSP_BENCH_DEBUG_STEPS");
 const benchmarkCheckJs = readBoolean("ASP_LSP_BENCH_CHECKJS");
 const benchmarkIncrementalMode = readIncrementalMode();
+const benchmarkIncrementalAnalysis = readBooleanDefault("ASP_LSP_BENCH_INCREMENTAL_ANALYSIS", true);
 const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_TIMEOUT_MS", defaultTimeoutMs);
 const backgroundWarmupWaitMs = readPositiveInteger("ASP_LSP_BENCH_BACKGROUND_WAIT_MS", 5_000);
 const changeKinds = readChangeKinds();
@@ -55,6 +56,11 @@ const debugEventNames = [
   "asp.builder.cache.miss",
   "asp.signature.changed",
   "asp.signature.unchanged",
+  "include.publicBoundary.reuse",
+  "invalidation.includePublicBoundary",
+  "invalidation.includeRefs",
+  "invalidation.analysis",
+  "invalidation.analysis.files",
   "completion.cache.hit",
   "completion.cache.miss",
   "completion.cache.invalidate",
@@ -156,6 +162,7 @@ async function main() {
   console.log(`Edit targets: ${editTargets.join(", ")}`);
   console.log(`Check JS: ${benchmarkCheckJs ? "on" : "off"}`);
   console.log(`Incremental mode: ${benchmarkIncrementalMode}`);
+  console.log(`Incremental analysis: ${benchmarkIncrementalAnalysis ? "on" : "off"}`);
   console.log(`Default debounce: ${defaultDebounceMs} ms`);
   console.log(`Rapid burst size: ${rapidBurstSize}`);
   console.log(`Rapid debounce: ${rapidDebounceMs} ms`);
@@ -219,7 +226,10 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
           checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
-          incremental: { mode: benchmarkIncrementalMode },
+          incremental: {
+            mode: benchmarkIncrementalMode,
+            analysis: benchmarkIncrementalAnalysis,
+          },
           workspace: { backgroundAnalysis },
         },
       },
@@ -386,7 +396,10 @@ async function measureColdScenarioIteration(
           checkJs: benchmarkCheckJs,
           debug: { output: "verbose" },
           diagnostics: { debounceMs },
-          incremental: { mode: benchmarkIncrementalMode },
+          incremental: {
+            mode: benchmarkIncrementalMode,
+            analysis: benchmarkIncrementalAnalysis,
+          },
           workspace: { backgroundAnalysis },
         },
       },
@@ -721,7 +734,10 @@ async function startWorkspaceCacheServer(backgroundAnalysis) {
         cache: { enabled: true, directory: cacheDir },
         checkJs: benchmarkCheckJs,
         debug: { output: "verbose" },
-        incremental: { mode: benchmarkIncrementalMode },
+        incremental: {
+          mode: benchmarkIncrementalMode,
+          analysis: benchmarkIncrementalAnalysis,
+        },
         workspace: { backgroundAnalysis },
       },
     },
@@ -889,6 +905,13 @@ function collectDebugEventCounts(logs) {
       if (message.includes(`[asp-lsp] ${eventName}`)) {
         counts.set(eventName, (counts.get(eventName) ?? 0) + 1);
       }
+    }
+    const invalidatedFiles = /\[asp-lsp\] invalidation\.analysis: .*files=(\d+)/.exec(message);
+    if (invalidatedFiles) {
+      counts.set(
+        "invalidation.analysis.files",
+        (counts.get("invalidation.analysis.files") ?? 0) + Number(invalidatedFiles[1]),
+      );
     }
   }
   return counts;
@@ -1322,6 +1345,14 @@ function readBoolean(name) {
     return true;
   }
   throw new Error(`${name} must be 1, 0, true, or false.`);
+}
+
+function readBooleanDefault(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  return readBoolean(name);
 }
 
 function serverEnvironment() {

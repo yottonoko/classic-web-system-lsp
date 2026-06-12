@@ -15393,6 +15393,84 @@ End Function
       }
     });
 
+    it("refreshes dependents after include implicit global candidate changes", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-implicit-"));
+      const include = path.join(tempDir, "shared.inc");
+      const page = path.join(tempDir, "default.asp");
+      fs.writeFileSync(
+        include,
+        `<%
+Function SharedValue()
+  nestedValue = 1
+  SharedValue = nestedValue
+End Function
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="shared.inc" -->\n<% Response.Write SharedValue() %>`,
+        "utf8",
+      );
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = `file://${page}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(page, "utf8"),
+          },
+        });
+        await waitForLogContaining(server, "LSP check completed");
+        server.takePendingNotifications("window/logMessage");
+
+        fs.writeFileSync(
+          include,
+          `<%
+Function SharedValue()
+  renamedNestedValue = 1
+  SharedValue = renamedNestedValue
+End Function
+%>`,
+          "utf8",
+        );
+        server.notify("workspace/didChangeWatchedFiles", {
+          changes: [{ uri: `file://${include}`, type: 2 }],
+        });
+        const checkLog = await waitForLogContaining(server, "LSP check completed");
+        await delay(350);
+
+        const logs = JSON.stringify([
+          checkLog,
+          ...server.takePendingNotifications("window/logMessage"),
+        ]);
+        expect(logs).toContain("invalidation.includePublicBoundary");
+        expect(logs).toContain(`LSP check started: ${uri}`);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("keeps dependent JavaScript island diagnostics idle after private include changes", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-js-private-"));
       const include = path.join(tempDir, "shared.inc");

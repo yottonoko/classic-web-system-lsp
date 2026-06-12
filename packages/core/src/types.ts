@@ -76,6 +76,7 @@ export type AspIncrementalMode = "full" | "legacy" | "off";
 
 export interface AspIncrementalSettings {
   mode?: AspIncrementalMode;
+  analysis?: boolean;
 }
 
 export type AspLocaleSetting = "auto" | AspLocale;

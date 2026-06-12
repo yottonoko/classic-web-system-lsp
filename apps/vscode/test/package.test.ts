@@ -839,6 +839,11 @@ describe("VS Code extension package", () => {
     expect(nls["configuration.incremental.mode.description"]).toBeTruthy();
     expect(nlsJa["configuration.incremental.mode.description"]).toBeTruthy();
     expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.incremental.analysis"],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
+    expect(nls["configuration.incremental.analysis.description"]).toBeTruthy();
+    expect(nlsJa["configuration.incremental.analysis.description"]).toBeTruthy();
+    expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.windowsPathResolution"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
     expect(

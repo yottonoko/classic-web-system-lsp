@@ -5,6 +5,7 @@
   "configuration.defaultLanguage.description": "Default server-side script language for Classic ASP pages.",
   "configuration.checkJs.description": "Enable semantic checking for client JavaScript regions.",
   "configuration.incremental.mode.description": "Controls parser incremental update strategy. legacy keeps the existing conservative path, full enables range rescans with CST node reuse, and off reparses the full document after text changes.",
+  "configuration.incremental.analysis.description": "Enable incremental VBScript analysis memoization for reused CST nodes. Disable this to force per-analysis statement snapshots while keeping parser incremental mode unchanged.",
   "configuration.diagnostics.debounceMs.description": "Delay, in milliseconds, before publishing diagnostics after text changes. Set to 0 to publish immediately.",
   "configuration.debug.output.description": "Controls asp-lsp debug timing logs in the VS Code Output channel. Off disables logs, summary logs operation start and completion, and verbose adds per-step timings.",
   "configuration.debug.logFile.enabled.description": "Write asp-lsp debug and trace logs to a rotating log file. Disabled by default.",
