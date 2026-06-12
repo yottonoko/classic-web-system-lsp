@@ -129,7 +129,10 @@ import {
   type AspGraphBuildService,
   type AspGraphDocumentSource,
 } from "./asp-graph/build";
-import { runSpilledGraphIndexPipeline } from "./asp-graph/bulk-pipeline";
+import {
+  runSpilledGraphIndexPipeline,
+  type BulkGraphIndexPipelineProgressEvent,
+} from "./asp-graph/bulk-pipeline";
 import { createAnalysisExcelSheets, type AspGraphLocale } from "./analysis-excel/sheets";
 import { writeAnalysisExcelWorkbookFile } from "./analysis-excel/stream-writer";
 import type {
@@ -361,7 +364,7 @@ const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const exportAnalysisExcelServerCommand = "aspLsp.server.exportAnalysisExcel";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const statusNotificationMethod = "aspLsp/status";
-const languageServerVersion = "0.7.1";
+const languageServerVersion = "0.7.2";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
 const openFileProjectMaintenanceDelayMs = 2_500;
@@ -478,7 +481,7 @@ interface AspLspProgressTaskHandle {
 }
 
 type AspLspProgressTaskUpdate = Partial<
-  Pick<AspLspProgressTaskSnapshot, "detail" | "current" | "total" | "activeItems">
+  Pick<AspLspProgressTaskSnapshot, "label" | "detail" | "current" | "total" | "activeItems">
 >;
 
 interface AspLspProgressTaskOptions {
@@ -2646,6 +2649,7 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
     },
   };
   try {
+    task.update({ label: "workspace.diagnostics.indexed" });
     const indexedItems = await mapWithConcurrency(
       indexedEntries,
       concurrency,
@@ -2657,7 +2661,7 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
       }),
       progressMapHooks(task, (entry) => progressFileLabel(entry.fileName)),
     );
-    task.update({ current: indexedEntries.length });
+    task.update({ label: "workspace.diagnostics.openDocuments", current: indexedEntries.length });
     const openItems = await mapWithConcurrency(
       openDocuments,
       concurrency,
@@ -3278,15 +3282,17 @@ async function ensureFreshCachedDocumentAsync(document: TextDocument): Promise<C
           withProgressTaskAsync(
             "analyzing",
             "document.analysis",
-            { current: 0, total: 1, detail: progressFileLabelFromUri(document.uri) },
+            { current: 0, total: 2, detail: progressFileLabelFromUri(document.uri) },
             async (task) => {
+              task.update({ label: "document.analysis.incremental", current: 0 });
               const cached = await refreshCachedDocumentIncrementalAsync(
                 existing,
                 document,
                 settings,
                 pending.changes[0],
               );
-              task.update({ current: 1 });
+              task.update({ label: "document.analysis.cache", current: 1 });
+              task.update({ label: "document.analysis.ready", current: 2 });
               return cached;
             },
           ),
@@ -3298,13 +3304,15 @@ async function ensureFreshCachedDocumentAsync(document: TextDocument): Promise<C
         withProgressTaskAsync(
           "analyzing",
           "document.analysis",
-          { current: 0, total: 1, detail: progressFileLabelFromUri(document.uri) },
+          { current: 0, total: 2, detail: progressFileLabelFromUri(document.uri) },
           async (task) => {
+            task.update({ label: "document.analysis.parse", current: 0 });
             const cached = await refreshCachedDocumentSkeletonAsync(
               document,
               pending?.reason ?? "non-incremental document change",
             );
-            task.update({ current: 1 });
+            task.update({ label: "document.analysis.cache", current: 1 });
+            task.update({ label: "document.analysis.ready", current: 2 });
             return cached;
           },
         ),
@@ -3318,10 +3326,12 @@ async function ensureFreshCachedDocumentAsync(document: TextDocument): Promise<C
     withProgressTaskAsync(
       "analyzing",
       "document.analysis",
-      { current: 0, total: 1, detail: progressFileLabelFromUri(document.uri) },
+      { current: 0, total: 2, detail: progressFileLabelFromUri(document.uri) },
       async (task) => {
+        task.update({ label: "document.analysis.parse", current: 0 });
         const cached = await refreshCachedDocumentSkeletonAsync(document);
-        task.update({ current: 1 });
+        task.update({ label: "document.analysis.cache", current: 1 });
+        task.update({ label: "document.analysis.ready", current: 2 });
         return cached;
       },
     ),
@@ -3628,7 +3638,11 @@ async function runStagedDiagnostics(
   }
   state.layers.include = includeItems;
   publishStagedDiagnosticsLayer(cached, settings, state, "include");
-  progress?.step("diagnostics.include");
+  progress?.update({
+    label: "diagnostics.include",
+    current: 1,
+    detail: progressFileLabelFromUri(cached.source.uri),
+  });
   await yieldToEventLoop();
 
   if (!isCurrentStagedDiagnostics(cached, state)) {
@@ -3637,7 +3651,11 @@ async function runStagedDiagnostics(
   }
   state.layers.syntax = syntaxItems;
   publishStagedDiagnosticsLayer(cached, settings, state, "syntax");
-  progress?.step("diagnostics.syntax");
+  progress?.update({
+    label: "diagnostics.syntax",
+    current: 2,
+    detail: progressFileLabelFromUri(cached.source.uri),
+  });
   await yieldToEventLoop();
 
   if (!isCurrentStagedDiagnostics(cached, state)) {
@@ -3647,7 +3665,11 @@ async function runStagedDiagnostics(
   state.layers.project = await projectItemsPromise;
   shareStagedAnalysisWithCurrentCache(cached, state);
   publishStagedDiagnosticsLayer(cached, settings, state, "project");
-  progress?.step("diagnostics.project");
+  progress?.update({
+    label: "diagnostics.project",
+    current: 3,
+    detail: progressFileLabelFromUri(cached.source.uri),
+  });
   if (!isCurrentStagedDiagnostics(cached, state)) {
     logStaleStagedDiagnostics(settings, state, "final");
     return;
@@ -4380,6 +4402,9 @@ function beginProgressTask(
       if (update.detail !== undefined) {
         task.detail = update.detail;
       }
+      if (update.label !== undefined) {
+        task.label = update.label;
+      }
       if (update.current !== undefined) {
         task.current = update.current;
       }
@@ -4389,7 +4414,7 @@ function beginProgressTask(
       if (update.activeItems !== undefined) {
         task.activeItems = update.activeItems;
       }
-      publishServerStatus(label, true);
+      publishServerStatus(task.label, true);
     },
     step(detail) {
       if (ended) {
@@ -4399,7 +4424,7 @@ function beginProgressTask(
       if (detail !== undefined) {
         task.detail = detail;
       }
-      publishServerStatus(label, true);
+      publishServerStatus(task.label, true);
     },
     end() {
       if (ended) {
@@ -4408,7 +4433,7 @@ function beginProgressTask(
       ended = true;
       progressTasks.delete(id);
       decrementServerStatus(kind);
-      publishServerStatus(label, true);
+      publishServerStatus(task.label, true);
     },
   };
   return handle;
@@ -12826,6 +12851,11 @@ async function ensureWorkspaceIndexAsync(
       if (scanToken.isCancellationRequested || scannedFiles >= maxFiles) {
         break;
       }
+      task.update({
+        label: "workspace.index.scanRoot",
+        current: Math.min(scannedFiles, maxFiles),
+        detail: progressFileLabel(root),
+      });
       const filter = await createWorkspaceScanFilter(root, settings);
       scannedFiles = await indexWorkspaceRootAsync(
         root,
@@ -12845,6 +12875,11 @@ async function ensureWorkspaceIndexAsync(
     workspaceIndexDirty = scanToken.isCancellationRequested;
     workspaceIndexRestoreAllowed = workspaceIndexDirty;
     if (!workspaceIndexDirty) {
+      task.update({
+        label: "workspace.index.writeCache",
+        current: Math.min(scannedFiles, maxFiles),
+        detail: `${workspaceIndex.size}`,
+      });
       await writeWorkspaceIndexToDiskAsync(settings);
     }
     if (workspaceIndexTruncated) {
@@ -12916,6 +12951,7 @@ async function indexWorkspaceRootAsync(
       filesToIndex.push(fileName);
       if (scannedFiles % state.chunkSize === 0 || scannedFiles >= state.maxFiles) {
         state.progress?.update({
+          label: "workspace.index.scanFiles",
           current: Math.min(scannedFiles, state.maxFiles),
           detail: progressFileLabel(fileName),
         });
@@ -18304,6 +18340,8 @@ async function buildAspFlowchartForCommand(
 ): Promise<AspFlowchartPayload> {
   const task = beginProgressTask("analyzing", "flowchart.build", {
     cancellable: true,
+    current: 0,
+    total: 4,
   });
   const cancellation = progressCancellation(task, analysisCancellationFromToken(token));
   const operationCache: GraphFileIndexOperationCache = new Map();
@@ -18326,22 +18364,44 @@ async function buildAspFlowchartForCommandWithProgress(
   operationCache: GraphFileIndexOperationCache,
 ): Promise<AspFlowchartPayload> {
   const uri = graphCommandUri(argument) ?? documents.all()[0]?.uri;
+  progress.update({
+    label: "flowchart.loadDocument",
+    current: 0,
+    total: 4,
+    detail: uri ? progressFileLabelFromUri(uri) : undefined,
+  });
   const cached = uri ? await cachedDocumentForGraphAsync(uri) : undefined;
   throwIfGraphCancelled(cancellation);
   if (!cached) {
     return emptyAspFlowchartPayload(uri);
   }
   const settings = cachedSettings(cached.source.uri);
-  progress.update({ detail: progressFileLabelFromUri(cached.source.uri) });
+  progress.update({
+    label: "flowchart.hydrateDocument",
+    current: 1,
+    total: 4,
+    detail: progressFileLabelFromUri(cached.source.uri),
+  });
   await hydrateCachedVbscriptCstAsync(cached, settings, "flowchart");
+  progress.update({
+    label: "flowchart.collectIncludes",
+    current: 2,
+    total: 4,
+    detail: progressFileLabelFromUri(cached.source.uri),
+  });
   const documentsForFlowchart = await collectDocumentGraphDocumentsAsync(
     cached,
     settings,
     cancellation,
   );
-  progress.update({ current: 0, total: documentsForFlowchart.length });
+  const uniqueFlowchartDocuments = uniqueAspGraphDocuments(documentsForFlowchart);
+  progress.update({
+    label: "flowchart.indexDocuments",
+    current: 0,
+    total: uniqueFlowchartDocuments.length + 2,
+  });
   const rawIndexedDocuments = await mapWithConcurrency(
-    uniqueAspGraphDocuments(documentsForFlowchart),
+    uniqueFlowchartDocuments,
     analysisConcurrency(settings),
     async (document): Promise<AspGraphIndexedDocument> => {
       throwIfGraphCancelled(cancellation);
@@ -18353,13 +18413,24 @@ async function buildAspFlowchartForCommandWithProgress(
     },
     progressMapHooks(progress, (document) => progressFileLabel(document.fileName)),
   );
+  progress.update({
+    label: "flowchart.canonicalizeSymbols",
+    current: uniqueFlowchartDocuments.length,
+    total: uniqueFlowchartDocuments.length + 2,
+  });
   const indexedDocuments = await canonicalizeImplicitGlobalIndexedDocumentsAsync(
     rawIndexedDocuments,
     settings,
     cancellation,
   );
   throwIfGraphCancelled(cancellation);
-  return buildAspFlowchart(cached.parsed, {
+  progress.update({
+    label: "flowchart.buildPayload",
+    current: uniqueFlowchartDocuments.length + 1,
+    total: uniqueFlowchartDocuments.length + 2,
+    detail: progressFileLabelFromUri(cached.source.uri),
+  });
+  const payload = buildAspFlowchart(cached.parsed, {
     fileName: flowchartDisplayFileName(graphFileNameFromUri(cached.source.uri)),
     includes: await flowchartIncludesForDocumentAsync(cached.parsed, settings),
     labelLineLength:
@@ -18370,6 +18441,13 @@ async function buildAspFlowchartForCommandWithProgress(
       flowchartSymbolDocumentFromIndex(indexed.graphIndex.vbSymbolIndex),
     ),
   });
+  progress.update({
+    label: "flowchart.buildPayload",
+    current: uniqueFlowchartDocuments.length + 2,
+    total: uniqueFlowchartDocuments.length + 2,
+    detail: progressFileLabelFromUri(cached.source.uri),
+  });
+  return payload;
 }
 
 function flowchartSymbolDocumentFromIndex(index: VbSymbolIndex): AspFlowchartSymbolDocument {
@@ -18600,43 +18678,74 @@ async function exportAnalysisExcelForCommand(
     "skipTypeInference",
     excelSettings.skipTypeInference === true,
   );
-  const graph = await buildAspGraphForCommand(
-    {
-      scope,
-      uri,
-      activeDocument: exportAnalysisExcelActiveDocument(argument),
-      includeRelatedIncludeTreesForUnresolved,
-      forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
-      includeAnalysisTypeDetails: !skipTypeInference,
-      maxDocuments: excelSettings.maxDocuments ?? defaultExcelMaxDocuments,
-      maxTextLength: excelSettings.maxTextLength ?? defaultExcelMaxTextLength,
-      includeTreeMaxDocuments:
-        excelSettings.includeTreeMaxDocuments ?? defaultExcelIncludeTreeMaxDocuments,
-      includeTreeMaxTextLength:
-        excelSettings.includeTreeMaxTextLength ?? defaultExcelIncludeTreeMaxTextLength,
-    },
-    token,
-  );
-  const excelLocale = analysisExcelLocale(settings, excelSettings.locale);
-  const sheets = createAnalysisExcelSheets(graph, excelLocale, {
-    generatedAt: new Date(),
-    targetUri: uri,
-    settings: {
-      excelLocale: excelSettings.locale ?? "auto",
-      includeRelatedIncludeTreesForUnresolved,
-      forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
-      skipTypeInference,
-      includeAnalysisTypeDetails: !skipTypeInference,
-      maxDocuments: excelSettings.maxDocuments ?? defaultExcelMaxDocuments,
-      maxTextLength: excelSettings.maxTextLength ?? defaultExcelMaxTextLength,
-      includeTreeMaxDocuments:
-        excelSettings.includeTreeMaxDocuments ?? defaultExcelIncludeTreeMaxDocuments,
-      includeTreeMaxTextLength:
-        excelSettings.includeTreeMaxTextLength ?? defaultExcelIncludeTreeMaxTextLength,
-    },
+  const task = beginProgressTask("analyzing", "excel.graph", {
+    current: 0,
+    total: 3,
+    detail: uri ? progressFileLabelFromUri(uri) : targetPath,
+    cancellable: true,
   });
-  await writeAnalysisExcelWorkbookFile(sheets, { filename: targetPath });
-  return { ok: true, targetPath };
+  const cancellation = progressCancellation(task, analysisCancellationFromToken(token));
+  try {
+    const graph = await buildAspGraphForCommand(
+      {
+        scope,
+        uri,
+        activeDocument: exportAnalysisExcelActiveDocument(argument),
+        includeRelatedIncludeTreesForUnresolved,
+        forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
+        includeAnalysisTypeDetails: !skipTypeInference,
+        maxDocuments: excelSettings.maxDocuments ?? defaultExcelMaxDocuments,
+        maxTextLength: excelSettings.maxTextLength ?? defaultExcelMaxTextLength,
+        includeTreeMaxDocuments:
+          excelSettings.includeTreeMaxDocuments ?? defaultExcelIncludeTreeMaxDocuments,
+        includeTreeMaxTextLength:
+          excelSettings.includeTreeMaxTextLength ?? defaultExcelIncludeTreeMaxTextLength,
+      },
+      tokenFromAnalysisCancellation(cancellation),
+    );
+    const excelLocale = analysisExcelLocale(settings, excelSettings.locale);
+    task.update({ label: "excel.sheets", current: 1, total: 3, detail: targetPath });
+    throwIfGraphCancelled(cancellation);
+    const sheets = createAnalysisExcelSheets(graph, excelLocale, {
+      generatedAt: new Date(),
+      targetUri: uri,
+      settings: {
+        excelLocale: excelSettings.locale ?? "auto",
+        includeRelatedIncludeTreesForUnresolved,
+        forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
+        skipTypeInference,
+        includeAnalysisTypeDetails: !skipTypeInference,
+        maxDocuments: excelSettings.maxDocuments ?? defaultExcelMaxDocuments,
+        maxTextLength: excelSettings.maxTextLength ?? defaultExcelMaxTextLength,
+        includeTreeMaxDocuments:
+          excelSettings.includeTreeMaxDocuments ?? defaultExcelIncludeTreeMaxDocuments,
+        includeTreeMaxTextLength:
+          excelSettings.includeTreeMaxTextLength ?? defaultExcelIncludeTreeMaxTextLength,
+      },
+    });
+    task.update({ label: "excel.file", current: 2, total: 3, detail: targetPath });
+    await writeAnalysisExcelWorkbookFile(sheets, {
+      filename: targetPath,
+      progress: (event) =>
+        task.update({
+          label: event.label,
+          current: event.current,
+          total: event.total,
+          detail: event.detail,
+          activeItems: event.activeItems,
+        }),
+    });
+    task.update({
+      label: "excel.file",
+      current: 3,
+      total: 3,
+      detail: targetPath,
+      activeItems: [],
+    });
+    return { ok: true, targetPath };
+  } finally {
+    task.end();
+  }
 }
 
 function exportAnalysisExcelTargetPath(argument: unknown): string | undefined {
@@ -19058,7 +19167,50 @@ async function graphPayloadFromDocumentSourcesAsync(
     throwIfGraphCancelled(cancellation);
     addFileGraphNode(state, source.fileName, true);
   }
-  options.progress?.update({ current: 0, total: sources.length });
+  const progress = options.progress;
+  const graphProgressTotal = Math.max(1, sources.length * 5 + 2);
+  let graphProgressCurrent = 0;
+  const graphProgressActiveItems = new Map<string, string>();
+  const updateGraphProgress = (
+    label: string,
+    detail?: string,
+    activeItems: string[] = [],
+  ): void => {
+    progress?.update({
+      label,
+      current: Math.min(graphProgressCurrent, graphProgressTotal),
+      total: graphProgressTotal,
+      detail,
+      activeItems,
+    });
+  };
+  const advanceGraphProgress = (label: string, detail?: string, activeItems?: string[]): void => {
+    graphProgressCurrent = Math.min(graphProgressCurrent + 1, graphProgressTotal);
+    updateGraphProgress(label, detail, activeItems);
+  };
+  const activeGraphProgressItems = (): string[] => [...graphProgressActiveItems.values()];
+  const handlePipelineProgress = (event: BulkGraphIndexPipelineProgressEvent): void => {
+    const activeKey = `${event.stage}:${event.index ?? "all"}`;
+    const detail = event.source ? progressFileLabel(event.source.fileName) : undefined;
+    if (event.phase === "start") {
+      if (detail) {
+        graphProgressActiveItems.set(activeKey, detail);
+      }
+      updateGraphProgress(
+        graphPipelineProgressLabel(event.stage),
+        detail,
+        activeGraphProgressItems(),
+      );
+      return;
+    }
+    graphProgressActiveItems.delete(activeKey);
+    advanceGraphProgress(
+      graphPipelineProgressLabel(event.stage),
+      detail,
+      activeGraphProgressItems(),
+    );
+  };
+  updateGraphProgress("graph.prepareDocuments");
   const pipeline = await runSpilledGraphIndexPipeline({
     sources,
     settings,
@@ -19081,26 +19233,35 @@ async function graphPayloadFromDocumentSourcesAsync(
     isCancellationRequested: () => cancellation.isCancellationRequested(),
     throwIfCancelled: () => throwIfGraphCancelled(cancellation),
     logDebug: (message) => logDebugSummary(settings, message),
+    onProgress: handlePipelineProgress,
     workerPool: getBulkWorkerPool(),
   });
   try {
     throwIfGraphCancelled(cancellation);
     for await (const indexed of pipeline.scanCanonicalized()) {
       throwIfGraphCancelled(cancellation);
+      const detail = progressFileLabel(indexed.document.fileName);
+      updateGraphProgress("graph.addStructure", detail, [detail]);
       await addDocumentStructureToAspGraphAsync(state, indexed, settings);
+      advanceGraphProgress("graph.addStructure", detail);
       throwIfGraphCancelled(cancellation);
       await yieldToEventLoop();
     }
     for await (const indexed of pipeline.scanCanonicalized()) {
       throwIfGraphCancelled(cancellation);
+      const detail = progressFileLabel(indexed.document.fileName);
+      updateGraphProgress("graph.addUsages", detail, [detail]);
       addDocumentUsageToAspGraph(state, indexed);
+      advanceGraphProgress("graph.addUsages", detail);
     }
   } finally {
     await pipeline.dispose();
   }
   logDebugSummary(settings, `[asp-lsp] asp.graph.bulk.complete: files=${pipeline.files}`);
+  updateGraphProgress("graph.finalize");
   removeUnusedImplicitGlobalCandidateGraphDeclarations(state);
   state.stats = recomputeAspGraphStats(state.nodes.values(), state.links.values());
+  advanceGraphProgress("graph.finalize");
   return {
     scope,
     rootUri: state.rootUri,
@@ -19144,6 +19305,19 @@ function limitAspGraphPayloadDocumentSources(
     sources: limited,
     truncated: reason ? { reason } : truncated,
   };
+}
+
+function graphPipelineProgressLabel(event: BulkGraphIndexPipelineProgressEvent["stage"]): string {
+  switch (event) {
+    case "load":
+      return "graph.loadDocuments";
+    case "index":
+      return "graph.indexDocuments";
+    case "spill":
+      return "graph.spillIndexes";
+    case "canonicalize":
+      return "graph.canonicalizeSymbols";
+  }
 }
 
 function removeUnusedImplicitGlobalCandidateGraphDeclarations(state: AspGraphBuildState): void {
@@ -20973,10 +21147,17 @@ async function resolveCodeLensReferencesWithProgress(
     "analyzing",
     "references.count",
     {
+      current: 0,
+      total: settings.codeLens?.includeRelatedIncludeTreesForUnresolved === true ? 3 : 2,
       detail: progressFileLabelFromUri(cached.source.uri),
       activeItems: [symbol.name],
     },
-    async () => {
+    async (task) => {
+      task.update({
+        label: "references.workspace",
+        current: 0,
+        activeItems: [symbol.name],
+      });
       const workspaceReferences = await workspaceVbscriptCodeLensReferencesForSymbol(
         cached,
         symbol,
@@ -20985,14 +21166,29 @@ async function resolveCodeLensReferencesWithProgress(
         executionOptions,
       );
       if (settings.codeLens?.includeRelatedIncludeTreesForUnresolved !== true) {
+        task.update({
+          label: "references.finalize",
+          current: 2,
+          activeItems: [symbol.name],
+        });
         return workspaceReferences;
       }
+      task.update({
+        label: "references.relatedIncludeTree",
+        current: 1,
+        activeItems: [symbol.name],
+      });
       const relatedReferences = await relatedIncludeTreeVbscriptCodeLensReferencesForSymbol(
         cached,
         symbol,
         settings,
         options,
       );
+      task.update({
+        label: "references.finalize",
+        current: 3,
+        activeItems: [symbol.name],
+      });
       return relatedReferences
         ? dedupeVbReferences([...workspaceReferences, ...relatedReferences]).sort(vbReferenceOrder)
         : workspaceReferences;

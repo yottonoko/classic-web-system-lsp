@@ -3,18 +3,43 @@ import type { AnalysisExcelSheet, Cell } from "./sheets";
 
 export interface WriteAnalysisExcelWorkbookOptions {
   filename: string;
+  progress?: (event: WriteAnalysisExcelWorkbookProgressEvent) => void;
+}
+
+export interface WriteAnalysisExcelWorkbookProgressEvent {
+  label: "excel.file" | "excel.fileSheet" | "excel.fileRows" | "excel.fileCommit";
+  current: number;
+  total: number;
+  detail?: string;
+  activeItems?: string[];
 }
 
 export async function writeAnalysisExcelWorkbookFile(
   sheets: readonly AnalysisExcelSheet[],
   options: WriteAnalysisExcelWorkbookOptions,
 ): Promise<void> {
+  const totalRows = sheets.reduce((total, sheet) => total + sheet.data.length, 0);
+  const total = Math.max(1, totalRows + sheets.length + 1);
+  let current = 0;
+  options.progress?.({
+    label: "excel.file",
+    current,
+    total,
+    detail: options.filename,
+  });
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
     filename: options.filename,
     useStyles: true,
     useSharedStrings: false,
   });
   for (const sheet of sheets) {
+    options.progress?.({
+      label: "excel.fileSheet",
+      current,
+      total,
+      detail: sheet.sheet,
+      activeItems: [sheet.sheet],
+    });
     const worksheet = workbook.addWorksheet(sheet.sheet, {
       autoFilter: sheet.autoFilterRef,
       state: sheet.hidden === true ? "hidden" : "visible",
@@ -26,7 +51,7 @@ export async function writeAnalysisExcelWorkbookFile(
     if (sheet.columns?.length) {
       worksheet.columns = sheet.columns.map((column) => ({ width: column.width }));
     }
-    for (const sourceRow of sheet.data) {
+    for (const [rowIndex, sourceRow] of sheet.data.entries()) {
       const row = worksheet.addRow(sourceRow.map(cellValue));
       sourceRow.forEach((cell, index) => {
         applyCellStyle(row.getCell(index + 1), cell);
@@ -36,10 +61,42 @@ export async function writeAnalysisExcelWorkbookFile(
         }
       });
       row.commit();
+      current += 1;
+      if (rowIndex === 0 || current % 100 === 0 || rowIndex === sheet.data.length - 1) {
+        options.progress?.({
+          label: "excel.fileRows",
+          current,
+          total,
+          detail: `${sheet.sheet} ${rowIndex + 1}/${sheet.data.length}`,
+          activeItems: [sheet.sheet],
+        });
+      }
     }
     worksheet.commit();
+    current += 1;
+    options.progress?.({
+      label: "excel.fileSheet",
+      current,
+      total,
+      detail: sheet.sheet,
+      activeItems: [sheet.sheet],
+    });
   }
+  options.progress?.({
+    label: "excel.fileCommit",
+    current,
+    total,
+    detail: options.filename,
+    activeItems: [],
+  });
   await workbook.commit();
+  options.progress?.({
+    label: "excel.fileCommit",
+    current: total,
+    total,
+    detail: options.filename,
+    activeItems: [],
+  });
 }
 
 function cellValue(cell: Cell): string | number | boolean | Date | null {

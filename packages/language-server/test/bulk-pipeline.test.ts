@@ -55,6 +55,7 @@ describe("runSpilledGraphIndexPipeline", () => {
       [owner.uri, ownerIndex],
       [common.uri, commonIndex],
     ]);
+    const progressEvents: string[] = [];
     try {
       const pipeline = await runSpilledGraphIndexPipeline({
         sources: [owner, common].map((document) => ({
@@ -77,6 +78,9 @@ describe("runSpilledGraphIndexPipeline", () => {
           fileName: path.join(path.dirname(fileNameFromUri(ownerUri)), includePath),
         }),
         graphFileIndexFingerprint: graphFileIndexFingerprint,
+        onProgress: (event) => {
+          progressEvents.push(`${event.stage}:${event.phase}:${event.source?.fileName ?? "(all)"}`);
+        },
       });
       try {
         const firstScan = await collectAsync(pipeline.scanCanonicalized());
@@ -91,6 +95,18 @@ describe("runSpilledGraphIndexPipeline", () => {
         ]);
         expect(secondScan.map((item) => item.document.uri)).toEqual(
           firstScan.map((item) => item.document.uri),
+        );
+        expect(progressEvents).toEqual(
+          expect.arrayContaining([
+            `load:start:${owner.fileName}`,
+            `load:done:${owner.fileName}`,
+            `index:start:${owner.fileName}`,
+            `index:done:${owner.fileName}`,
+            `spill:start:${owner.fileName}`,
+            `spill:done:${owner.fileName}`,
+            "canonicalize:start:(all)",
+            "canonicalize:done:(all)",
+          ]),
         );
       } finally {
         await pipeline.dispose();

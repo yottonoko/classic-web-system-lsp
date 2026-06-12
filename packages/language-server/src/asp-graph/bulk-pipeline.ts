@@ -42,7 +42,18 @@ export interface BulkGraphIndexPipelineOptions {
   isCancellationRequested?(): boolean;
   throwIfCancelled?(): void;
   logDebug?(message: string): void;
+  onProgress?(event: BulkGraphIndexPipelineProgressEvent): void;
   workerPool?: Pick<BulkWorkerPool, "writeRecord">;
+}
+
+export type BulkGraphIndexPipelineProgressStage = "load" | "index" | "spill" | "canonicalize";
+
+export interface BulkGraphIndexPipelineProgressEvent {
+  stage: BulkGraphIndexPipelineProgressStage;
+  phase: "start" | "done";
+  source?: BulkGraphDocumentSource;
+  index?: number;
+  total: number;
 }
 
 export interface BulkGraphDocumentSource {
@@ -75,19 +86,27 @@ export async function runSpilledGraphIndexPipeline(
   const metadata: ImplicitGlobalDocumentMetadata[] = [];
   let bytesWritten = 0;
   try {
+    let sourceOffset = 0;
     for (const batch of graphDocumentBatches(options.sources)) {
       checkCancelled(options);
       const results = await mapWithBoundedConcurrency(
         batch,
         options.concurrency,
-        async (source) => {
+        async (source, batchIndex) => {
+          const sourceIndex = sourceOffset + batchIndex;
           checkCancelled(options);
+          reportProgress(options, "load", "start", source, sourceIndex);
           const document = await source.load();
+          reportProgress(options, "load", "done", source, sourceIndex);
           checkCancelled(options);
+          reportProgress(options, "index", "start", source, sourceIndex);
           const indexed = await options.indexDocument(document);
+          reportProgress(options, "index", "done", source, sourceIndex);
           checkCancelled(options);
           const record = spilledGraphIndexRecordFromIndexed(indexed);
+          reportProgress(options, "spill", "start", source, sourceIndex);
           const ref = await writeSpillRecord(options, store, record);
+          reportProgress(options, "spill", "done", source, sourceIndex);
           return {
             ref,
             metadata: implicitGlobalDocumentMetadataFromIndexed(
@@ -97,6 +116,7 @@ export async function runSpilledGraphIndexPipeline(
           };
         },
       );
+      sourceOffset += batch.length;
       for (const result of results) {
         refs.push(result.ref);
         metadata.push(result.metadata);
@@ -105,6 +125,7 @@ export async function runSpilledGraphIndexPipeline(
     }
 
     checkCancelled(options);
+    reportProgress(options, "canonicalize", "start");
     const includeGraph = await buildImplicitGlobalIncludeGraphAsync(
       metadata,
       options.settings,
@@ -120,6 +141,7 @@ export async function runSpilledGraphIndexPipeline(
       includeGraph,
       options.cancellation,
     );
+    reportProgress(options, "canonicalize", "done");
     options.logDebug?.(
       `[asp-lsp] asp.graph.bulk.spill.write: files=${refs.length}, bytes=${bytesWritten}`,
     );
@@ -186,6 +208,22 @@ async function* scanCanonicalizedRecords(
   }
 }
 
+function reportProgress(
+  options: BulkGraphIndexPipelineOptions,
+  stage: BulkGraphIndexPipelineProgressStage,
+  phase: "start" | "done",
+  source?: BulkGraphDocumentSource,
+  index?: number,
+): void {
+  options.onProgress?.({
+    stage,
+    phase,
+    source,
+    index,
+    total: options.sources.length,
+  });
+}
+
 async function writeSpillRecord(
   options: BulkGraphIndexPipelineOptions,
   store: SpillStore,
@@ -248,7 +286,7 @@ function graphDocumentBatches(
 async function mapWithBoundedConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
-  mapper: (item: T) => Promise<R>,
+  mapper: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
   const results = Array.from<R | undefined>({ length: items.length });
   let next = 0;
@@ -261,7 +299,7 @@ async function mapWithBoundedConcurrency<T, R>(
         if (index >= items.length) {
           return;
         }
-        results[index] = await mapper(items[index]);
+        results[index] = await mapper(items[index], index);
       }
     },
   );

@@ -764,12 +764,40 @@ describe("analysis Excel sheets", () => {
       targetUri: "file:///workspace/main.asp",
     });
     const filename = path.join(os.tmpdir(), `asp-lsp-analysis-${process.pid}-${Date.now()}.xlsx`);
+    const progressEvents: Array<{
+      label: string;
+      current: number;
+      total: number;
+      detail?: string;
+      activeItems?: string[];
+    }> = [];
     try {
-      await writeAnalysisExcelWorkbookFile(sheets, { filename });
+      await writeAnalysisExcelWorkbookFile(sheets, {
+        filename,
+        progress: (event) => progressEvents.push(event),
+      });
 
       const bytes = fs.readFileSync(filename);
       expect(bytes.subarray(0, 2).toString("utf8")).toBe("PK");
       expect(bytes.length).toBeGreaterThan(1000);
+      expect(progressEvents.map((event) => event.label)).toEqual(
+        expect.arrayContaining([
+          "excel.file",
+          "excel.fileSheet",
+          "excel.fileRows",
+          "excel.fileCommit",
+        ]),
+      );
+      expect(progressEvents.at(0)).toEqual(
+        expect.objectContaining({ label: "excel.file", current: 0 }),
+      );
+      expect(progressEvents.at(-1)).toEqual(
+        expect.objectContaining({
+          label: "excel.fileCommit",
+          current: progressEvents.at(-1)?.total,
+          activeItems: [],
+        }),
+      );
 
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(filename);

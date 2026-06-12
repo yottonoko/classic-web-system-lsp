@@ -492,9 +492,9 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
   const includeRelatedIncludeTreesForUnresolved = relatedIncludeTreeAnalysisSetting("excel");
   const skipTypeInference = excelSkipTypeInferenceSetting();
   const graphLimits = graphAnalysisLimitSettings("excel");
-  const exportStatus = beginExtensionProgressTask("analyzing", "excel.graph", {
+  const exportStatus = beginExtensionProgressTask("analyzing", "excel.chooseFile", {
     current: 0,
-    total: 3,
+    total: 4,
     detail: request.uri ? progressDetailFromUriText(request.uri) : undefined,
   });
   exportStatus.update({
@@ -511,7 +511,7 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
     exportStatus.end();
     return;
   }
-  exportStatus.update({ current: 2, label: "excel.workbook", detail: target.fsPath });
+  exportStatus.update({ current: 2, label: "excel.graph", detail: target.fsPath });
   try {
     await vscode.window.withProgress(
       {
@@ -534,7 +534,7 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
             },
           ],
         });
-        exportStatus.update({ current: 3, label: "excel.file", detail: target.fsPath });
+        exportStatus.update({ current: 4, label: "excel.file", detail: target.fsPath });
       },
     );
   } finally {
@@ -1145,7 +1145,11 @@ function aggregateProgress(tasks: ProgressTask[]): { current: number; total: num
 }
 
 function progressValueText(progress: { current: number; total: number } | undefined): string {
-  return progress && progress.total > 0 ? ` ${progress.current}/${progress.total}` : "";
+  if (!progress || progress.total <= 0) {
+    return "";
+  }
+  const percent = Math.max(0, Math.min(100, Math.round((progress.current / progress.total) * 100)));
+  return ` ${progress.current}/${progress.total} (${percent}%)`;
 }
 
 function progressTooltip(
@@ -1360,22 +1364,90 @@ function progressTaskDisplayLabelKey(label: string): ExtensionMessageKey | undef
   switch (label) {
     case "workspace.diagnostics":
       return "status.progress.workspaceDiagnostics";
+    case "workspace.diagnostics.indexed":
+      return "status.progress.workspaceDiagnosticsIndexed";
+    case "workspace.diagnostics.openDocuments":
+      return "status.progress.workspaceDiagnosticsOpenDocuments";
     case "diagnostics":
       return "status.progress.diagnostics";
+    case "diagnostics.include":
+      return "status.progress.diagnosticsInclude";
+    case "diagnostics.syntax":
+      return "status.progress.diagnosticsSyntax";
+    case "diagnostics.project":
+      return "status.progress.diagnosticsProject";
     case "document.analysis":
       return "status.progress.documentAnalysis";
+    case "document.analysis.incremental":
+      return "status.progress.documentAnalysisIncremental";
+    case "document.analysis.parse":
+      return "status.progress.documentAnalysisParse";
+    case "document.analysis.cache":
+      return "status.progress.documentAnalysisCache";
+    case "document.analysis.ready":
+      return "status.progress.documentAnalysisReady";
     case "workspace.index":
       return "status.progress.workspaceIndex";
+    case "workspace.index.scanRoot":
+      return "status.progress.workspaceIndexScanRoot";
+    case "workspace.index.scanFiles":
+      return "status.progress.workspaceIndexScanFiles";
+    case "workspace.index.writeCache":
+      return "status.progress.workspaceIndexWriteCache";
     case "flowchart.build":
       return "status.progress.flowchart";
+    case "flowchart.loadDocument":
+      return "status.progress.flowchartLoadDocument";
+    case "flowchart.hydrateDocument":
+      return "status.progress.flowchartHydrateDocument";
+    case "flowchart.collectIncludes":
+      return "status.progress.flowchartCollectIncludes";
+    case "flowchart.indexDocuments":
+      return "status.progress.flowchartIndexDocuments";
+    case "flowchart.canonicalizeSymbols":
+      return "status.progress.flowchartCanonicalizeSymbols";
+    case "flowchart.buildPayload":
+      return "status.progress.flowchartBuildPayload";
     case "graph.document":
       return "status.progress.graphDocument";
     case "graph.folder":
       return "status.progress.graphFolder";
     case "graph.workspace":
       return "status.progress.graphWorkspace";
+    case "graph.workspaceIndex":
+      return "status.progress.graphWorkspaceIndex";
+    case "graph.openDocuments":
+      return "status.progress.graphOpenDocuments";
+    case "graph.prepareDocuments":
+      return "status.progress.graphPrepareDocuments";
+    case "graph.loadDocuments":
+      return "status.progress.graphLoadDocuments";
+    case "graph.collectIncludes":
+      return "status.progress.graphCollectIncludes";
+    case "graph.collectRelatedIncludes":
+      return "status.progress.graphCollectRelatedIncludes";
+    case "graph.collectIncomingIncludes":
+      return "status.progress.graphCollectIncomingIncludes";
+    case "graph.indexDocuments":
+      return "status.progress.graphIndexDocuments";
+    case "graph.spillIndexes":
+      return "status.progress.graphSpillIndexes";
+    case "graph.canonicalizeSymbols":
+      return "status.progress.graphCanonicalizeSymbols";
+    case "graph.addStructure":
+      return "status.progress.graphAddStructure";
+    case "graph.addUsages":
+      return "status.progress.graphAddUsages";
+    case "graph.finalize":
+      return "status.progress.graphFinalize";
     case "references.count":
       return "status.progress.referencesCount";
+    case "references.workspace":
+      return "status.progress.referencesWorkspace";
+    case "references.relatedIncludeTree":
+      return "status.progress.referencesRelatedIncludeTree";
+    case "references.finalize":
+      return "status.progress.referencesFinalize";
     case "excel.graph":
       return "status.progress.excelGraph";
     case "excel.chooseFile":
@@ -1386,6 +1458,12 @@ function progressTaskDisplayLabelKey(label: string): ExtensionMessageKey | undef
       return "status.progress.excelWorkbook";
     case "excel.file":
       return "status.progress.excelFile";
+    case "excel.fileSheet":
+      return "status.progress.excelFileSheet";
+    case "excel.fileRows":
+      return "status.progress.excelFileRows";
+    case "excel.fileCommit":
+      return "status.progress.excelFileCommit";
     case "excel.write":
       return "status.progress.excel";
     default:
@@ -1516,24 +1594,61 @@ type ExtensionMessageKey =
   | "status.progress.cancelling"
   | "status.progress.analyzingStatusText"
   | "status.progress.diagnostics"
+  | "status.progress.diagnosticsInclude"
+  | "status.progress.diagnosticsProject"
+  | "status.progress.diagnosticsSyntax"
   | "status.progress.documentAnalysis"
+  | "status.progress.documentAnalysisCache"
+  | "status.progress.documentAnalysisIncremental"
+  | "status.progress.documentAnalysisParse"
+  | "status.progress.documentAnalysisReady"
   | "status.progress.excel"
   | "status.progress.excelChooseFile"
   | "status.progress.excelFile"
+  | "status.progress.excelFileCommit"
+  | "status.progress.excelFileRows"
+  | "status.progress.excelFileSheet"
   | "status.progress.excelGraph"
   | "status.progress.excelSheets"
   | "status.progress.excelWorkbook"
   | "status.progress.flowchart"
+  | "status.progress.flowchartBuildPayload"
+  | "status.progress.flowchartCanonicalizeSymbols"
+  | "status.progress.flowchartCollectIncludes"
+  | "status.progress.flowchartHydrateDocument"
+  | "status.progress.flowchartIndexDocuments"
+  | "status.progress.flowchartLoadDocument"
+  | "status.progress.graphAddStructure"
+  | "status.progress.graphAddUsages"
+  | "status.progress.graphCanonicalizeSymbols"
+  | "status.progress.graphCollectIncomingIncludes"
+  | "status.progress.graphCollectIncludes"
+  | "status.progress.graphCollectRelatedIncludes"
   | "status.progress.graphDocument"
+  | "status.progress.graphFinalize"
   | "status.progress.graphFolder"
+  | "status.progress.graphIndexDocuments"
+  | "status.progress.graphLoadDocuments"
+  | "status.progress.graphOpenDocuments"
+  | "status.progress.graphPrepareDocuments"
+  | "status.progress.graphSpillIndexes"
+  | "status.progress.graphWorkspaceIndex"
   | "status.progress.graphWorkspace"
   | "status.progress.loadingStatusText"
   | "status.progress.none"
   | "status.progress.placeholder"
   | "status.progress.referencesCount"
+  | "status.progress.referencesFinalize"
+  | "status.progress.referencesRelatedIncludeTree"
+  | "status.progress.referencesWorkspace"
   | "status.progress.title"
   | "status.progress.workspaceDiagnostics"
+  | "status.progress.workspaceDiagnosticsIndexed"
+  | "status.progress.workspaceDiagnosticsOpenDocuments"
   | "status.progress.workspaceIndex"
+  | "status.progress.workspaceIndexScanFiles"
+  | "status.progress.workspaceIndexScanRoot"
+  | "status.progress.workspaceIndexWriteCache"
   | "debug.iis.name"
   | "debug.iisExpress.name"
   | "launch.noWorkspace"
@@ -1570,24 +1685,61 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.cancelling": "Cancelling",
     "status.progress.analyzingStatusText": "ASP {task}",
     "status.progress.diagnostics": "Document diagnostics",
+    "status.progress.diagnosticsInclude": "Checking include diagnostics",
+    "status.progress.diagnosticsProject": "Checking project diagnostics",
+    "status.progress.diagnosticsSyntax": "Checking syntax diagnostics",
     "status.progress.documentAnalysis": "Document analysis",
+    "status.progress.documentAnalysisCache": "Updating document analysis cache",
+    "status.progress.documentAnalysisIncremental": "Applying incremental document analysis",
+    "status.progress.documentAnalysisParse": "Parsing document",
+    "status.progress.documentAnalysisReady": "Document analysis ready",
     "status.progress.excel": "Creating Excel workbook",
     "status.progress.excelChooseFile": "Choosing Excel output path",
     "status.progress.excelFile": "Writing Excel file",
+    "status.progress.excelFileCommit": "Finalizing Excel file",
+    "status.progress.excelFileRows": "Writing Excel rows",
+    "status.progress.excelFileSheet": "Writing Excel sheet",
     "status.progress.excelGraph": "Collecting Excel analysis graph",
     "status.progress.excelSheets": "Building Excel sheets",
     "status.progress.excelWorkbook": "Generating Excel workbook",
     "status.progress.flowchart": "Generating flowchart",
+    "status.progress.flowchartBuildPayload": "Building flowchart payload",
+    "status.progress.flowchartCanonicalizeSymbols": "Canonicalizing flowchart symbols",
+    "status.progress.flowchartCollectIncludes": "Collecting flowchart include tree",
+    "status.progress.flowchartHydrateDocument": "Hydrating flowchart VBScript",
+    "status.progress.flowchartIndexDocuments": "Indexing flowchart documents",
+    "status.progress.flowchartLoadDocument": "Loading flowchart document",
+    "status.progress.graphAddStructure": "Adding graph structure",
+    "status.progress.graphAddUsages": "Adding graph usages",
+    "status.progress.graphCanonicalizeSymbols": "Canonicalizing graph symbols",
+    "status.progress.graphCollectIncomingIncludes": "Collecting incoming include files",
+    "status.progress.graphCollectIncludes": "Collecting include tree",
+    "status.progress.graphCollectRelatedIncludes": "Collecting related include trees",
     "status.progress.graphDocument": "Generating current file graph",
+    "status.progress.graphFinalize": "Finalizing graph",
     "status.progress.graphFolder": "Generating folder graph",
+    "status.progress.graphIndexDocuments": "Indexing graph documents",
+    "status.progress.graphLoadDocuments": "Loading graph documents",
+    "status.progress.graphOpenDocuments": "Loading open graph documents",
+    "status.progress.graphPrepareDocuments": "Preparing graph documents",
+    "status.progress.graphSpillIndexes": "Writing graph index spill files",
     "status.progress.graphWorkspace": "Generating workspace graph",
+    "status.progress.graphWorkspaceIndex": "Loading graph workspace index",
     "status.progress.loadingStatusText": "ASP Loading: {task}",
     "status.progress.none": "No active Classic ASP tasks.",
     "status.progress.placeholder": "Current Classic ASP tasks",
     "status.progress.referencesCount": "Reference count analysis",
+    "status.progress.referencesFinalize": "Finalizing reference count",
+    "status.progress.referencesRelatedIncludeTree": "Counting related include-tree references",
+    "status.progress.referencesWorkspace": "Counting workspace references",
     "status.progress.title": "Classic ASP Progress",
     "status.progress.workspaceDiagnostics": "Workspace diagnostics",
+    "status.progress.workspaceDiagnosticsIndexed": "Checking indexed workspace diagnostics",
+    "status.progress.workspaceDiagnosticsOpenDocuments": "Checking open document diagnostics",
     "status.progress.workspaceIndex": "Loading workspace index",
+    "status.progress.workspaceIndexScanFiles": "Scanning workspace files",
+    "status.progress.workspaceIndexScanRoot": "Scanning workspace root",
+    "status.progress.workspaceIndexWriteCache": "Writing workspace index cache",
     "debug.iis.name": "Debug Classic ASP URL",
     "debug.iisExpress.name": "Debug Classic ASP IIS Express URL",
     "launch.noWorkspace": "Open a workspace before creating launch.json.",
@@ -1622,24 +1774,61 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.cancelling": "キャンセル中",
     "status.progress.analyzingStatusText": "ASP {task}",
     "status.progress.diagnostics": "document diagnostics",
+    "status.progress.diagnosticsInclude": "include diagnostics 確認中",
+    "status.progress.diagnosticsProject": "project diagnostics 確認中",
+    "status.progress.diagnosticsSyntax": "syntax diagnostics 確認中",
     "status.progress.documentAnalysis": "document 解析",
+    "status.progress.documentAnalysisCache": "document 解析 cache 更新中",
+    "status.progress.documentAnalysisIncremental": "document 差分解析中",
+    "status.progress.documentAnalysisParse": "document parse 中",
+    "status.progress.documentAnalysisReady": "document 解析完了",
     "status.progress.excel": "Excel 作成中",
     "status.progress.excelChooseFile": "Excel 出力先選択中",
     "status.progress.excelFile": "Excel file 書き込み中",
+    "status.progress.excelFileCommit": "Excel file finalize 中",
+    "status.progress.excelFileRows": "Excel row 書き込み中",
+    "status.progress.excelFileSheet": "Excel sheet 書き込み中",
     "status.progress.excelGraph": "Excel 解析 graph 取得中",
     "status.progress.excelSheets": "Excel sheet 作成中",
     "status.progress.excelWorkbook": "Excel workbook 生成中",
     "status.progress.flowchart": "flowchart 生成中",
+    "status.progress.flowchartBuildPayload": "flowchart payload 作成中",
+    "status.progress.flowchartCanonicalizeSymbols": "flowchart symbol 正規化中",
+    "status.progress.flowchartCollectIncludes": "flowchart include tree 収集中",
+    "status.progress.flowchartHydrateDocument": "flowchart VBScript hydrate 中",
+    "status.progress.flowchartIndexDocuments": "flowchart document index 中",
+    "status.progress.flowchartLoadDocument": "flowchart document 読み込み中",
+    "status.progress.graphAddStructure": "graph 構造追加中",
+    "status.progress.graphAddUsages": "graph 使用箇所追加中",
+    "status.progress.graphCanonicalizeSymbols": "graph symbol 正規化中",
+    "status.progress.graphCollectIncomingIncludes": "incoming include file 収集中",
+    "status.progress.graphCollectIncludes": "include tree 収集中",
+    "status.progress.graphCollectRelatedIncludes": "関連 include tree 収集中",
     "status.progress.graphDocument": "current file graph 生成中",
+    "status.progress.graphFinalize": "graph finalize 中",
     "status.progress.graphFolder": "folder graph 生成中",
+    "status.progress.graphIndexDocuments": "graph document index 中",
+    "status.progress.graphLoadDocuments": "graph document 読み込み中",
+    "status.progress.graphOpenDocuments": "open document graph 読み込み中",
+    "status.progress.graphPrepareDocuments": "graph document 準備中",
+    "status.progress.graphSpillIndexes": "graph index spill 書き込み中",
     "status.progress.graphWorkspace": "workspace graph 生成中",
+    "status.progress.graphWorkspaceIndex": "graph workspace index 読み込み中",
     "status.progress.loadingStatusText": "ASP 読み込み中: {task}",
     "status.progress.none": "実行中の Classic ASP task はありません。",
     "status.progress.placeholder": "現在の Classic ASP task",
     "status.progress.referencesCount": "参照数解析",
+    "status.progress.referencesFinalize": "参照数 finalize 中",
+    "status.progress.referencesRelatedIncludeTree": "関連 include tree 参照数解析中",
+    "status.progress.referencesWorkspace": "workspace 参照数解析中",
     "status.progress.title": "Classic ASP 進行状況",
     "status.progress.workspaceDiagnostics": "workspace diagnostics",
+    "status.progress.workspaceDiagnosticsIndexed": "indexed workspace diagnostics 確認中",
+    "status.progress.workspaceDiagnosticsOpenDocuments": "open document diagnostics 確認中",
     "status.progress.workspaceIndex": "workspace index 読み込み中",
+    "status.progress.workspaceIndexScanFiles": "workspace file scan 中",
+    "status.progress.workspaceIndexScanRoot": "workspace root scan 中",
+    "status.progress.workspaceIndexWriteCache": "workspace index cache 書き込み中",
     "debug.iis.name": "Classic ASP URL をデバッグ",
     "debug.iisExpress.name": "Classic ASP IIS Express URL をデバッグ",
     "launch.noWorkspace": "launch.json を作成する前に workspace を開いてください。",
