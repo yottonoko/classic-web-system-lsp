@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -14,14 +14,14 @@
     "language server",
     "vbscript"
   ],
-  "homepage": "https://github.com/yottonoko/asp-lsp#readme",
+  "homepage": "https://github.com/yottonoko/classic-web-system-lsp#readme",
   "bugs": {
-    "url": "https://github.com/yottonoko/asp-lsp/issues"
+    "url": "https://github.com/yottonoko/classic-web-system-lsp/issues"
   },
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yottonoko/asp-lsp.git"
+    "url": "https://github.com/yottonoko/classic-web-system-lsp.git"
   },
   "qna": false,
   "publisher": "yottonoko",

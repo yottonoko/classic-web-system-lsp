@@ -10,6 +10,6 @@ Classic ASP LSP is dual-licensed under either the MIT License or the Apache Lice
 
 See the repository license files:
 
-- [LICENSE](https://github.com/yottonoko/asp-lsp/blob/main/LICENSE)
-- [LICENSE-MIT](https://github.com/yottonoko/asp-lsp/blob/main/LICENSE-MIT)
-- [LICENSE-APACHE](https://github.com/yottonoko/asp-lsp/blob/main/LICENSE-APACHE)
+- [LICENSE](https://github.com/yottonoko/classic-web-system-lsp/blob/main/LICENSE)
+- [LICENSE-MIT](https://github.com/yottonoko/classic-web-system-lsp/blob/main/LICENSE-MIT)
+- [LICENSE-APACHE](https://github.com/yottonoko/classic-web-system-lsp/blob/main/LICENSE-APACHE)

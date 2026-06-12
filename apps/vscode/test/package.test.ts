@@ -996,7 +996,7 @@ describe("VS Code extension package", () => {
         expect.objectContaining({ type: "boolean", default: false }),
       );
     }
-    expect(manifest.repository?.url).toContain("github.com/yottonoko/asp-lsp");
+    expect(manifest.repository?.url).toContain("github.com/yottonoko/classic-web-system-lsp");
     expect(manifest.icon).toBe("assets/icon.png");
     expect(fs.existsSync(manifest.icon ?? "")).toBe(true);
     expect(manifest.galleryBanner?.color).toBeTruthy();
