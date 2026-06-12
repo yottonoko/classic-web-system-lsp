@@ -31,6 +31,7 @@
     "benchmark:change:include-tree": "ASP_LSP_BENCH_SAMPLE=include-tree pnpm run benchmark:change",
     "benchmark:change:include-tree:cold": "ASP_LSP_BENCH_SAMPLE=include-tree ASP_LSP_BENCH_CACHE_MODE=cold pnpm run benchmark:change",
     "benchmark:change:include-tree:hot": "ASP_LSP_BENCH_SAMPLE=include-tree ASP_LSP_BENCH_CACHE_MODE=hot pnpm run benchmark:change",
+    "benchmark:bulk-export": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && node scripts/benchmark-bulk-export.mjs",
     "typecheck": "pnpm -r run typecheck",
     "lint": "pnpm -r run lint",
     "format": "oxfmt .",

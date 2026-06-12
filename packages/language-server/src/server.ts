@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { JsDiagnosticsWorkerPool } from "./js-worker-pool";
 import { VbDiagnosticsWorkerPool } from "./vb-worker-pool";
 import { VbReferencesWorkerPool } from "./vb-references-worker-pool";
+import { BulkWorkerPool } from "./asp-graph/bulk-worker-pool";
 import {
   DiskAnalysisCache,
   diskContentHash,
@@ -125,7 +126,9 @@ import {
   type CollectIncludeTreeGraphDocumentsOptions,
   type CollectRelatedIncludeTreeOwnerGraphDocumentsOptions,
   type AspGraphBuildService,
+  type AspGraphDocumentSource,
 } from "./asp-graph/build";
+import { runSpilledGraphIndexPipeline } from "./asp-graph/bulk-pipeline";
 import type {
   JsDiagnosticsWorkerResponse,
   JsDiagnosticsWorkerVirtualDocument,
@@ -382,6 +385,7 @@ let workspaceIndexTruncated = false;
 let workspaceIndexRestoreAllowed = true;
 let workspaceIndexRevalidationSerial = 0;
 let vbReferencesWorkerPool: VbReferencesWorkerPool | undefined;
+let bulkWorkerPool: BulkWorkerPool | undefined;
 let vbReferencesWorkerRequestId = 0;
 let jsLanguageServiceCacheTick = 0;
 let lightweightJsUnusedCacheTick = 0;
@@ -4478,6 +4482,7 @@ const aspGraphBuildService: AspGraphBuildService = createAspGraphBuildService({
   graphDocumentsNeedRelatedIncludeTreeAnalysisAsync,
   collectIncomingIncludeGraphDocumentsAsync,
   graphPayloadFromDocumentsAsync,
+  graphPayloadFromDocumentSourcesAsync,
   ensureWorkspaceIndexAsync,
   workspaceAnalyzableOpenDocumentsAsync,
   graphIncludeTreeLimits,
@@ -10208,6 +10213,12 @@ function getVbReferencesWorkerPool(settings: AspSettings): VbReferencesWorkerPoo
   return vbReferencesWorkerPool;
 }
 
+function getBulkWorkerPool(): BulkWorkerPool {
+  bulkWorkerPool ??= new BulkWorkerPool();
+  bulkWorkerPool.resize(1);
+  return bulkWorkerPool;
+}
+
 function equivalentVbSymbol(symbols: VbSymbol[], target: VbSymbol): VbSymbol | undefined {
   return symbols.find((symbol) => sameVbSymbolIdentity(symbol, target));
 }
@@ -13412,9 +13423,11 @@ async function closeDiagnosticsWorkerPools(reason: string): Promise<void> {
   const jsPool = jsDiagnosticsWorkerPool;
   const vbPool = vbDiagnosticsWorkerPool;
   const referencesPool = vbReferencesWorkerPool;
+  const bulkPool = bulkWorkerPool;
   jsDiagnosticsWorkerPool = undefined;
   vbDiagnosticsWorkerPool = undefined;
   vbReferencesWorkerPool = undefined;
+  bulkWorkerPool = undefined;
   clearWorkspaceVbReferenceCaches();
   if (jsPool) {
     try {
@@ -13440,6 +13453,15 @@ async function closeDiagnosticsWorkerPools(reason: string): Promise<void> {
     } catch (error) {
       logServerWarning(
         `[asp-lsp] references.worker.close.failed: reason=${reason}, error=${errorMessage(error)}`,
+      );
+    }
+  }
+  if (bulkPool) {
+    try {
+      await bulkPool.close();
+    } catch (error) {
+      logServerWarning(
+        `[asp-lsp] bulk.worker.close.failed: reason=${reason}, error=${errorMessage(error)}`,
       );
     }
   }
@@ -18772,25 +18794,50 @@ async function graphPayloadFromDocumentsAsync(
     operationCache?: GraphFileIndexOperationCache;
   } = {},
 ): Promise<AspGraphPayload> {
+  return graphPayloadFromDocumentSourcesAsync(
+    scope,
+    documentsForGraph.map(graphPayloadDocumentSourceFromDocument),
+    settings,
+    options,
+  );
+}
+
+async function graphPayloadFromDocumentSourcesAsync(
+  scope: AspGraphScope,
+  sourcesForGraph: AspGraphDocumentSource[],
+  settings: AspSettings,
+  options: {
+    rootUri?: string;
+    truncated?: AspGraphPayload["truncated"];
+    cancellation?: AnalysisCancellation;
+    includeAnalysisTypeDetails?: boolean;
+    outputLimits?: VbProjectContextLimits;
+    progress?: AspLspProgressTaskHandle;
+    operationCache?: GraphFileIndexOperationCache;
+  } = {},
+): Promise<AspGraphPayload> {
   const cancellation = options.cancellation ?? neverCancelled;
   throwIfGraphCancelled(cancellation);
-  const { documents, truncated } = limitAspGraphPayloadDocuments(
-    uniqueAspGraphDocuments(documentsForGraph),
+  const { sources, truncated } = limitAspGraphPayloadDocumentSources(
+    uniqueAspGraphDocumentSources(sourcesForGraph),
     options.outputLimits ?? graphOutputLimits(settings),
     options.truncated,
   );
   const state = createAspGraphBuildState(settings, options.rootUri, truncated, {
     includeAnalysisTypeDetails: options.includeAnalysisTypeDetails === true,
   });
-  for (const document of documents) {
+  for (const source of sources) {
     throwIfGraphCancelled(cancellation);
-    addFileGraphNode(state, document.fileName, true);
+    addFileGraphNode(state, source.fileName, true);
   }
-  options.progress?.update({ current: 0, total: documents.length });
-  const rawIndexedDocuments = await mapWithConcurrency(
-    documents,
-    analysisConcurrency(settings),
-    async (document): Promise<AspGraphIndexedDocument> => {
+  options.progress?.update({ current: 0, total: sources.length });
+  const pipeline = await runSpilledGraphIndexPipeline({
+    sources,
+    settings,
+    cancellation,
+    concurrency: analysisConcurrency(settings),
+    namespace: `${scope}-${Date.now().toString(36)}`,
+    async indexDocument(document): Promise<AspGraphIndexedDocument> {
       throwIfGraphCancelled(cancellation);
       const graphIndex = await graphFileIndexForDocumentAsync(document, settings, {
         includeTypeHints: options.includeAnalysisTypeDetails === true,
@@ -18799,26 +18846,31 @@ async function graphPayloadFromDocumentsAsync(
       throwIfGraphCancelled(cancellation);
       return { document, graphIndex };
     },
-    options.progress
-      ? progressMapHooks(options.progress, (document) => progressFileLabel(document.fileName))
-      : undefined,
-  );
-  const indexedDocuments = await canonicalizeImplicitGlobalIndexedDocumentsAsync(
-    rawIndexedDocuments,
-    settings,
-    cancellation,
-  );
-  throwIfGraphCancelled(cancellation);
-  for (const indexed of indexedDocuments) {
+    graphFileKey,
+    normalizeFileName,
+    resolveIncludePathDetailsAsync,
+    graphFileIndexFingerprint,
+    isCancellationRequested: () => cancellation.isCancellationRequested(),
+    throwIfCancelled: () => throwIfGraphCancelled(cancellation),
+    logDebug: (message) => logDebugSummary(settings, message),
+    workerPool: getBulkWorkerPool(),
+  });
+  try {
     throwIfGraphCancelled(cancellation);
-    await addDocumentStructureToAspGraphAsync(state, indexed, settings);
-    throwIfGraphCancelled(cancellation);
-    await yieldToEventLoop();
+    for await (const indexed of pipeline.scanCanonicalized()) {
+      throwIfGraphCancelled(cancellation);
+      await addDocumentStructureToAspGraphAsync(state, indexed, settings);
+      throwIfGraphCancelled(cancellation);
+      await yieldToEventLoop();
+    }
+    for await (const indexed of pipeline.scanCanonicalized()) {
+      throwIfGraphCancelled(cancellation);
+      addDocumentUsageToAspGraph(state, indexed);
+    }
+  } finally {
+    await pipeline.dispose();
   }
-  for (const indexed of indexedDocuments) {
-    throwIfGraphCancelled(cancellation);
-    addDocumentUsageToAspGraph(state, indexed);
-  }
+  logDebugSummary(settings, `[asp-lsp] asp.graph.bulk.complete: files=${pipeline.files}`);
   removeUnusedImplicitGlobalCandidateGraphDeclarations(state);
   state.stats = recomputeAspGraphStats(state.nodes.values(), state.links.values());
   return {
@@ -18832,19 +18884,19 @@ async function graphPayloadFromDocumentsAsync(
   };
 }
 
-function limitAspGraphPayloadDocuments(
-  documents: AspGraphDocument[],
+function limitAspGraphPayloadDocumentSources(
+  sources: AspGraphDocumentSource[],
   limits: VbProjectContextLimits,
   truncated: AspGraphPayload["truncated"] | undefined,
-): { documents: AspGraphDocument[]; truncated?: AspGraphPayload["truncated"] } {
-  if (documents.length === 0) {
-    return { documents, truncated };
+): { sources: AspGraphDocumentSource[]; truncated?: AspGraphPayload["truncated"] } {
+  if (sources.length === 0) {
+    return { sources, truncated };
   }
-  const limited: AspGraphDocument[] = [];
+  const limited: AspGraphDocumentSource[] = [];
   let textLength = 0;
   let reason = truncated?.reason;
-  for (const document of documents) {
-    const nextTextLength = textLength + document.text.length;
+  for (const source of sources) {
+    const nextTextLength = textLength + source.textLength;
     const exceedsDocumentLimit = limited.length >= limits.maxDocuments;
     const exceedsTextLimit = nextTextLength > limits.maxTextLength;
     if (exceedsDocumentLimit || (exceedsTextLimit && limited.length > 0)) {
@@ -18853,7 +18905,7 @@ function limitAspGraphPayloadDocuments(
         : `text>${limits.maxTextLength}`;
       break;
     }
-    limited.push(document);
+    limited.push(source);
     textLength = nextTextLength;
     if (exceedsTextLimit) {
       reason ??= `text>${limits.maxTextLength}`;
@@ -18861,7 +18913,7 @@ function limitAspGraphPayloadDocuments(
     }
   }
   return {
-    documents: limited,
+    sources: limited,
     truncated: reason ? { reason } : truncated,
   };
 }
@@ -18948,6 +19000,33 @@ function uniqueAspGraphDocuments(documentsForGraph: AspGraphDocument[]): AspGrap
     unique.push(document);
   }
   return unique;
+}
+
+function uniqueAspGraphDocumentSources(
+  sourcesForGraph: AspGraphDocumentSource[],
+): AspGraphDocumentSource[] {
+  const seen = new Set<string>();
+  const unique: AspGraphDocumentSource[] = [];
+  for (const source of sourcesForGraph) {
+    const key = graphFileKey(source.fileName);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(source);
+  }
+  return unique;
+}
+
+function graphPayloadDocumentSourceFromDocument(
+  document: AspGraphDocument,
+): AspGraphDocumentSource {
+  return {
+    uri: document.uri,
+    fileName: document.fileName,
+    textLength: document.text.length,
+    load: async () => document,
+  };
 }
 
 async function canonicalizeImplicitGlobalIndexedDocumentsAsync(
@@ -22350,6 +22429,8 @@ connection.onShutdown(async () => {
   vbDiagnosticsWorkerPool = undefined;
   await vbReferencesWorkerPool?.close();
   vbReferencesWorkerPool = undefined;
+  await bulkWorkerPool?.close();
+  bulkWorkerPool = undefined;
   clearWorkspaceVbReferenceCaches();
 });
 

@@ -1,13 +1,14 @@
 import path from "node:path";
-import {
-  LSPErrorCodes,
-  ResponseError,
-  type Position,
-  type Range,
-} from "vscode-languageserver/node";
+import { LSPErrorCodes, ResponseError } from "vscode-languageserver/node";
 import type { TextDocument } from "vscode-languageserver-textdocument";
 import type { AspInclude, AspSettings, VbSymbolIndex } from "@asp-lsp/core";
 import type { CachedDocument } from "../document-store";
+import {
+  buildImplicitGlobalIncludeGraphAsync,
+  canonicalizeImplicitGlobalIndexedDocument,
+  computeImplicitGlobalCanonicalIds,
+  implicitGlobalDocumentMetadataFromIndexed,
+} from "./implicit-globals";
 import type {
   AnalysisCancellation,
   AspGraphDocument,
@@ -17,7 +18,6 @@ import type {
   AspGraphScope,
   GraphCancellationToken,
   GraphFileIndexOperationCache,
-  PrecomputedIncludeReachability,
   VbProjectContextLimits,
 } from "./types";
 
@@ -39,6 +39,13 @@ export interface AspGraphWorkspaceIndexedDocument {
   fileName: string;
   mtimeMs: number;
   size: number;
+}
+
+export interface AspGraphDocumentSource {
+  uri: string;
+  fileName: string;
+  textLength: number;
+  load(): Promise<AspGraphDocument>;
 }
 
 export interface AspGraphBuildHost {
@@ -115,6 +122,20 @@ export interface AspGraphBuildHost {
   graphPayloadFromDocumentsAsync(
     scope: AspGraphScope,
     documents: AspGraphDocument[],
+    settings: AspSettings,
+    options?: {
+      rootUri?: string;
+      truncated?: AspGraphPayload["truncated"];
+      cancellation?: AnalysisCancellation;
+      includeAnalysisTypeDetails?: boolean;
+      outputLimits?: VbProjectContextLimits;
+      progress?: AspGraphProgressTaskHandle;
+      operationCache?: GraphFileIndexOperationCache;
+    },
+  ): Promise<AspGraphPayload>;
+  graphPayloadFromDocumentSourcesAsync(
+    scope: AspGraphScope,
+    sources: AspGraphDocumentSource[],
     settings: AspSettings,
     options?: {
       rootUri?: string;
@@ -427,36 +448,40 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       opened.add(host.graphFileKey(graphDocument.fileName));
       documentsForGraph.push(graphDocument);
     }
-    const indexedEntries = host
-      .workspaceIndexValues()
-      .filter(
-        (entry) =>
-          !opened.has(host.graphFileKey(entry.fileName)) &&
-          isFileInDirectory(entry.fileName, folderName),
-      );
+    const graphLimits = outputLimits ?? host.graphOutputLimits(settings);
+    const indexedLimit = limitWorkspaceGraphIndexEntries(
+      host
+        .workspaceIndexValues()
+        .filter(
+          (entry) =>
+            !opened.has(host.graphFileKey(entry.fileName)) &&
+            isFileInDirectory(entry.fileName, folderName),
+        ),
+      graphLimits,
+      documentsForGraph.length,
+      graphDocumentsTextLength(documentsForGraph),
+    );
+    const indexedEntries = indexedLimit.entries;
     progress?.update({
       current: openDocuments.length,
       total: openDocuments.length + indexedEntries.length,
     });
-    const indexedGraphDocuments = await host.mapWithConcurrency(
-      indexedEntries,
-      concurrency,
-      async (entry) => {
-        throwIfGraphCancelled(cancellation);
-        const cached = await host.cachedFromIndexedAsync(entry, host.cachedSettings(entry.uri));
-        throwIfGraphCancelled(cancellation);
-        return host.graphDocumentFromCachedAsync(cached, host.cachedSettings(entry.uri));
-      },
-      progress
-        ? host.progressMapHooks(
-            progress,
-            (entry: AspGraphWorkspaceIndexedDocument) => host.progressFileLabel(entry.fileName),
-            openDocuments.length,
-          )
-        : undefined,
-    );
-    appendAspGraphDocuments(documentsForGraph, indexedGraphDocuments);
+    const graphDocumentSources = [
+      ...documentsForGraph.map(graphDocumentSourceFromDocument),
+      ...indexedEntries.map((entry) =>
+        workspaceGraphDocumentSourceFromIndexedEntry(host, entry, settings, cancellation),
+      ),
+    ];
     if (settings.graph?.showIncomingFolderIncludes === true) {
+      appendAspGraphDocuments(
+        documentsForGraph,
+        await loadAspGraphDocumentSourcesAsync(
+          graphDocumentSources.slice(documentsForGraph.length),
+          host,
+          progress,
+          openDocuments.length,
+        ),
+      );
       const folderTargetFileNames = new Set(
         documentsForGraph
           .map((document) => document.fileName)
@@ -476,14 +501,18 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
           },
         ),
       );
+      return host.graphPayloadFromDocumentsAsync("folder", documentsForGraph, settings, {
+        rootUri: host.pathToFileUri(folderName),
+        truncated: folderGraphTruncationReason(indexedLimit.reason, settings, host),
+        cancellation,
+        progress,
+        operationCache,
+        outputLimits,
+      });
     }
-    return host.graphPayloadFromDocumentsAsync("folder", documentsForGraph, settings, {
+    return host.graphPayloadFromDocumentSourcesAsync("folder", graphDocumentSources, settings, {
       rootUri: host.pathToFileUri(folderName),
-      truncated: host.workspaceIndexTruncated()
-        ? {
-            reason: `workspaceIndex>${settings.workspace?.maxIndexFiles ?? host.defaultMaxIndexFiles}`,
-          }
-        : undefined,
+      truncated: folderGraphTruncationReason(indexedLimit.reason, settings, host),
       cancellation,
       progress,
       operationCache,
@@ -527,37 +556,26 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       opened.add(host.graphFileKey(graphDocument.fileName));
       documentsForGraph.push(graphDocument);
     }
-    const indexedEntries = host
-      .workspaceIndexValues()
-      .filter((entry) => !opened.has(host.graphFileKey(entry.fileName)));
+    const graphLimits = outputLimits ?? host.graphOutputLimits(settings);
+    const indexedLimit = limitWorkspaceGraphIndexEntries(
+      host.workspaceIndexValues().filter((entry) => !opened.has(host.graphFileKey(entry.fileName))),
+      graphLimits,
+      documentsForGraph.length,
+      graphDocumentsTextLength(documentsForGraph),
+    );
+    const indexedEntries = indexedLimit.entries;
     progress?.update({
       current: openDocuments.length,
       total: openDocuments.length + indexedEntries.length,
     });
-    const indexedGraphDocuments = await host.mapWithConcurrency(
-      indexedEntries,
-      concurrency,
-      async (entry) => {
-        throwIfGraphCancelled(cancellation);
-        const cached = await host.cachedFromIndexedAsync(entry, host.cachedSettings(entry.uri));
-        throwIfGraphCancelled(cancellation);
-        return host.graphDocumentFromCachedAsync(cached, host.cachedSettings(entry.uri));
-      },
-      progress
-        ? host.progressMapHooks(
-            progress,
-            (entry: AspGraphWorkspaceIndexedDocument) => host.progressFileLabel(entry.fileName),
-            openDocuments.length,
-          )
-        : undefined,
-    );
-    appendAspGraphDocuments(documentsForGraph, indexedGraphDocuments);
-    return host.graphPayloadFromDocumentsAsync("workspace", documentsForGraph, settings, {
-      truncated: host.workspaceIndexTruncated()
-        ? {
-            reason: `workspaceIndex>${settings.workspace?.maxIndexFiles ?? host.defaultMaxIndexFiles}`,
-          }
-        : undefined,
+    const graphDocumentSources = [
+      ...documentsForGraph.map(graphDocumentSourceFromDocument),
+      ...indexedEntries.map((entry) =>
+        workspaceGraphDocumentSourceFromIndexedEntry(host, entry, settings, cancellation),
+      ),
+    ];
+    return host.graphPayloadFromDocumentSourcesAsync("workspace", graphDocumentSources, settings, {
+      truncated: workspaceGraphTruncationReason(indexedLimit.reason, settings, host),
       cancellation,
       progress,
       operationCache,
@@ -838,123 +856,36 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
     }
     const startedAt = process.hrtime.bigint();
     try {
-      const indexedByFileKey = new Map<string, AspGraphIndexedDocument>();
-      const declarationFileKeyById = new Map<string, string>();
-      const declarationOrderById = new Map<string, number>();
-      const declarationsByName = new Map<string, Array<VbSymbolIndex["declarations"][number]>>();
-      let declarationOrder = 0;
-      for (const indexed of indexedDocuments) {
-        const fileKey = host.graphFileKey(indexed.document.fileName);
-        indexedByFileKey.set(fileKey, indexed);
-        for (const declaration of indexed.graphIndex.vbSymbolIndex.declarations) {
-          declarationFileKeyById.set(declaration.id, fileKey);
-          declarationOrderById.set(declaration.id, declarationOrder);
-          declarationOrder += 1;
-          if (isImplicitGlobalMergeDeclaration(declaration)) {
-            pushAspGraphMapItem(declarationsByName, declaration.normalizedName, declaration);
-          }
-        }
-      }
-      if (declarationsByName.size === 0) {
-        return indexedDocuments;
-      }
-      const summary = implicitGlobalGroupSummary(declarationsByName.values());
-      host.logDebugSummary(
-        settings,
-        `[asp-lsp] asp.graph.implicitGlobals.groups: groups=${summary.groups}, maxGroupSize=${summary.maxGroupSize}`,
+      const metadata = indexedDocuments.map((indexed) =>
+        implicitGlobalDocumentMetadataFromIndexed(
+          indexed,
+          host.graphFileKey(indexed.document.fileName),
+        ),
       );
-      const includeGraph = await implicitGlobalIncludeGraphAsync(
-        indexedDocuments,
-        indexedByFileKey,
+      const includeGraph = await buildImplicitGlobalIncludeGraphAsync(
+        metadata,
         settings,
+        {
+          graphFileKey: host.graphFileKey,
+          normalizeFileName: host.normalizeFileName,
+          resolveIncludePathDetailsAsync: host.resolveIncludePathDetailsAsync,
+        },
         cancellation,
       );
-      const targetKeys = new Set<string>();
-      for (const declarations of declarationsByName.values()) {
-        for (const declaration of declarations) {
-          const fileKey = declarationFileKeyById.get(declaration.id);
-          if (fileKey) {
-            targetKeys.add(fileKey);
-          }
-        }
-      }
-      const reachability = precomputeIncludeReachability(includeGraph, targetKeys);
-      const union = new ImplicitGlobalUnionFind();
-      for (const declarations of declarationsByName.values()) {
-        throwIfGraphCancelled(cancellation);
-        if (
-          declarations.length < 2 ||
-          !declarations.some((declaration) => declaration.implicitGlobal === true)
-        ) {
-          continue;
-        }
-        for (let leftIndex = 0; leftIndex < declarations.length; leftIndex += 1) {
-          const left = declarations[leftIndex];
-          const leftFileKey = declarationFileKeyById.get(left.id);
-          if (!leftFileKey) {
-            continue;
-          }
-          for (let rightIndex = leftIndex + 1; rightIndex < declarations.length; rightIndex += 1) {
-            const right = declarations[rightIndex];
-            const rightFileKey = declarationFileKeyById.get(right.id);
-            if (!rightFileKey) {
-              continue;
-            }
-            if (union.find(left.id) === union.find(right.id)) {
-              continue;
-            }
-            if (
-              isImplicitGlobalDeclarationVisibleFromFile(
-                includeGraph,
-                leftFileKey,
-                right,
-                rightFileKey,
-                left.nameRange,
-                reachability,
-              ) ||
-              isImplicitGlobalDeclarationVisibleFromFile(
-                includeGraph,
-                rightFileKey,
-                left,
-                leftFileKey,
-                right.nameRange,
-                reachability,
-              )
-            ) {
-              union.union(left.id, right.id);
-            }
-          }
-        }
-      }
-      const declarationsByRoot = new Map<string, Array<VbSymbolIndex["declarations"][number]>>();
-      for (const declarations of declarationsByName.values()) {
-        for (const declaration of declarations) {
-          const root = union.find(declaration.id);
-          if (root !== declaration.id || union.size(root) > 1) {
-            pushAspGraphMapItem(declarationsByRoot, root, declaration);
-          }
-        }
-      }
-      const canonicalIdById = new Map<string, string>();
-      for (const declarations of declarationsByRoot.values()) {
-        const canonical = implicitGlobalCanonicalDeclaration(
-          declarations,
-          declarationOrderById,
-          declarationFileKeyById,
-          includeGraph,
-          reachability,
+      const result = computeImplicitGlobalCanonicalIds(metadata, includeGraph, cancellation);
+      if (result.groups > 0) {
+        host.logDebugSummary(
+          settings,
+          `[asp-lsp] asp.graph.implicitGlobals.groups: groups=${result.groups}, maxGroupSize=${result.maxGroupSize}`,
         );
-        for (const declaration of declarations) {
-          canonicalIdById.set(declaration.id, canonical.id);
-        }
       }
-      if (![...canonicalIdById].some(([id, canonicalId]) => id !== canonicalId)) {
+      if (![...result.canonicalIdById].some(([id, canonicalId]) => id !== canonicalId)) {
         return indexedDocuments;
       }
       return indexedDocuments.map((indexed) =>
         canonicalizeImplicitGlobalIndexedDocument(
           indexed,
-          canonicalIdById,
+          result.canonicalIdById,
           host.graphFileIndexFingerprint,
         ),
       );
@@ -968,47 +899,6 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
     }
   }
 
-  async function implicitGlobalIncludeGraphAsync(
-    indexedDocuments: AspGraphIndexedDocument[],
-    indexedByFileKey: Map<string, AspGraphIndexedDocument>,
-    settings: AspSettings,
-    cancellation: AnalysisCancellation,
-  ): Promise<ImplicitGlobalIncludeGraph> {
-    const includeGraph: ImplicitGlobalIncludeGraph = {
-      directIncludesByOwnerKey: new Map(),
-      parentIncludesByTargetKey: new Map(),
-    };
-    await host.mapWithConcurrency(
-      indexedDocuments,
-      host.analysisConcurrency(settings),
-      async (indexed): Promise<void> => {
-        throwIfGraphCancelled(cancellation);
-        const ownerKey = host.graphFileKey(indexed.document.fileName);
-        for (const include of indexed.graphIndex.includeRefs) {
-          const resolved = await host.resolveIncludePathDetailsAsync(
-            indexed.document.uri,
-            include.path,
-            include.mode,
-            settings,
-          );
-          const targetKey = host.graphFileKey(host.normalizeFileName(resolved.fileName));
-          if (!indexedByFileKey.has(targetKey)) {
-            continue;
-          }
-          pushAspGraphMapItem(includeGraph.directIncludesByOwnerKey, ownerKey, {
-            range: include.range,
-            targetKey,
-          });
-          pushAspGraphMapItem(includeGraph.parentIncludesByTargetKey, targetKey, {
-            ownerKey,
-            range: include.range,
-          });
-        }
-      },
-    );
-    return includeGraph;
-  }
-
   return {
     buildAspGraphForCommand,
     buildDocumentAspGraphAsync,
@@ -1020,426 +910,6 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
     collectRelatedIncludeTreeOwnerGraphDocumentsAsync,
     canonicalizeImplicitGlobalIndexedDocumentsAsync,
   };
-}
-
-class ImplicitGlobalUnionFind {
-  private readonly parents = new Map<string, string>();
-  private readonly sizes = new Map<string, number>();
-
-  find(id: string): string {
-    const parent = this.parents.get(id);
-    if (!parent) {
-      this.parents.set(id, id);
-      this.sizes.set(id, 1);
-      return id;
-    }
-    if (parent === id) {
-      return id;
-    }
-    const root = this.find(parent);
-    this.parents.set(id, root);
-    return root;
-  }
-
-  union(left: string, right: string): void {
-    const leftRoot = this.find(left);
-    const rightRoot = this.find(right);
-    if (leftRoot === rightRoot) {
-      return;
-    }
-    const leftSize = this.sizes.get(leftRoot) ?? 1;
-    const rightSize = this.sizes.get(rightRoot) ?? 1;
-    const [parent, child, size] =
-      leftSize >= rightSize
-        ? [leftRoot, rightRoot, leftSize + rightSize]
-        : [rightRoot, leftRoot, leftSize + rightSize];
-    this.parents.set(child, parent);
-    this.sizes.set(parent, size);
-    this.sizes.delete(child);
-  }
-
-  size(id: string): number {
-    return this.sizes.get(this.find(id)) ?? 1;
-  }
-}
-
-interface IncludeReachabilityGraph {
-  directIncludesByOwnerKey: Map<string, Array<{ targetKey: string }>>;
-  parentIncludesByTargetKey: Map<string, Array<{ ownerKey: string }>>;
-}
-
-interface ImplicitGlobalIncludeGraph {
-  directIncludesByOwnerKey: Map<string, Array<{ range: Range; targetKey: string }>>;
-  parentIncludesByTargetKey: Map<string, Array<{ ownerKey: string; range: Range }>>;
-}
-
-function isImplicitGlobalMergeDeclaration(
-  declaration: VbSymbolIndex["declarations"][number],
-): boolean {
-  return (
-    declaration.kind === "variable" &&
-    declaration.bindingScope === "global" &&
-    !declaration.memberOf &&
-    (declaration.implicitGlobal === true || declaration.implicit !== true)
-  );
-}
-
-function implicitGlobalCanonicalDeclaration(
-  declarations: Array<VbSymbolIndex["declarations"][number]>,
-  declarationOrderById: Map<string, number>,
-  declarationFileKeyById: Map<string, string>,
-  includeGraph: ImplicitGlobalIncludeGraph,
-  reachability: PrecomputedIncludeReachability,
-): VbSymbolIndex["declarations"][number] {
-  const visibilityScoreById = new Map(
-    declarations.map((declaration) => [
-      declaration.id,
-      implicitGlobalCanonicalVisibilityScore(
-        declaration,
-        declarations,
-        declarationFileKeyById,
-        includeGraph,
-        reachability,
-      ),
-    ]),
-  );
-  return [...declarations].sort(
-    (left, right) =>
-      (visibilityScoreById.get(left.id) ?? 1) - (visibilityScoreById.get(right.id) ?? 1) ||
-      implicitGlobalCanonicalScore(left) - implicitGlobalCanonicalScore(right) ||
-      (declarationOrderById.get(left.id) ?? 0) - (declarationOrderById.get(right.id) ?? 0),
-  )[0];
-}
-
-function implicitGlobalCanonicalVisibilityScore(
-  declaration: VbSymbolIndex["declarations"][number],
-  declarations: Array<VbSymbolIndex["declarations"][number]>,
-  declarationFileKeyById: Map<string, string>,
-  includeGraph: ImplicitGlobalIncludeGraph,
-  reachability: PrecomputedIncludeReachability,
-): number {
-  const targetKey = declarationFileKeyById.get(declaration.id);
-  if (!targetKey) {
-    return 1;
-  }
-  return declarations.every((candidate) => {
-    if (candidate.id === declaration.id) {
-      return true;
-    }
-    const ownerKey = declarationFileKeyById.get(candidate.id);
-    return (
-      ownerKey !== undefined &&
-      isImplicitGlobalDeclarationVisibleFromFile(
-        includeGraph,
-        ownerKey,
-        declaration,
-        targetKey,
-        candidate.nameRange,
-        reachability,
-      )
-    );
-  })
-    ? 0
-    : 1;
-}
-
-function implicitGlobalCanonicalScore(declaration: VbSymbolIndex["declarations"][number]): number {
-  if (declaration.implicit !== true) {
-    return 0;
-  }
-  return declaration.implicitGlobalCandidate === true ? 2 : 1;
-}
-
-function isImplicitGlobalDeclarationVisibleFromFile(
-  includeGraph: ImplicitGlobalIncludeGraph,
-  ownerKey: string,
-  declaration: VbSymbolIndex["declarations"][number],
-  declarationKey: string,
-  referenceRange: Range,
-  reachability: PrecomputedIncludeReachability,
-): boolean {
-  if (declarationKey === ownerKey) {
-    return true;
-  }
-  if (
-    hasEarlierReachableImplicitGlobalInclude(
-      includeGraph,
-      ownerKey,
-      declarationKey,
-      referenceRange,
-      reachability,
-    )
-  ) {
-    return true;
-  }
-  return isImplicitGlobalDeclarationVisibleFromParentContext(
-    includeGraph,
-    ownerKey,
-    declaration,
-    declarationKey,
-    reachability,
-    new Set([ownerKey]),
-  );
-}
-
-function isImplicitGlobalDeclarationVisibleFromParentContext(
-  includeGraph: ImplicitGlobalIncludeGraph,
-  ownerKey: string,
-  declaration: VbSymbolIndex["declarations"][number],
-  declarationKey: string,
-  reachability: PrecomputedIncludeReachability,
-  visited: Set<string>,
-): boolean {
-  for (const parentInclude of includeGraph.parentIncludesByTargetKey.get(ownerKey) ?? []) {
-    if (visited.has(parentInclude.ownerKey)) {
-      continue;
-    }
-    visited.add(parentInclude.ownerKey);
-    if (
-      isImplicitGlobalDeclarationVisibleBeforeParentInclude(
-        includeGraph,
-        parentInclude.ownerKey,
-        declaration,
-        declarationKey,
-        parentInclude.range,
-        reachability,
-        visited,
-      )
-    ) {
-      visited.delete(parentInclude.ownerKey);
-      return true;
-    }
-    visited.delete(parentInclude.ownerKey);
-  }
-  return false;
-}
-
-function isImplicitGlobalDeclarationVisibleBeforeParentInclude(
-  includeGraph: ImplicitGlobalIncludeGraph,
-  parentKey: string,
-  declaration: VbSymbolIndex["declarations"][number],
-  declarationKey: string,
-  includeRange: Range,
-  reachability: PrecomputedIncludeReachability,
-  visited: Set<string>,
-): boolean {
-  if (declarationKey === parentKey) {
-    return positionBeforeOrEqual(declaration.nameRange.start, includeRange.start);
-  }
-  if (
-    hasEarlierReachableImplicitGlobalInclude(
-      includeGraph,
-      parentKey,
-      declarationKey,
-      includeRange,
-      reachability,
-    )
-  ) {
-    return true;
-  }
-  return isImplicitGlobalDeclarationVisibleFromParentContext(
-    includeGraph,
-    parentKey,
-    declaration,
-    declarationKey,
-    reachability,
-    visited,
-  );
-}
-
-function hasEarlierReachableImplicitGlobalInclude(
-  includeGraph: ImplicitGlobalIncludeGraph,
-  ownerKey: string,
-  targetKey: string,
-  referenceRange: Range,
-  reachability?: PrecomputedIncludeReachability,
-): boolean {
-  return (includeGraph.directIncludesByOwnerKey.get(ownerKey) ?? []).some((include) => {
-    if (!positionBeforeOrEqual(include.range.start, referenceRange.start)) {
-      return false;
-    }
-    if (include.targetKey === targetKey) {
-      return true;
-    }
-    const precomputed = precomputedIncludeCanReachTarget(
-      reachability,
-      include.targetKey,
-      targetKey,
-    );
-    return (
-      precomputed === true ||
-      (precomputed === undefined &&
-        isImplicitGlobalIncludeReachable(
-          includeGraph,
-          include.targetKey,
-          targetKey,
-          new Set([ownerKey]),
-        ))
-    );
-  });
-}
-
-function isImplicitGlobalIncludeReachable(
-  includeGraph: ImplicitGlobalIncludeGraph,
-  startKey: string,
-  targetKey: string,
-  visited: Set<string>,
-): boolean {
-  if (startKey === targetKey) {
-    return true;
-  }
-  if (visited.has(startKey)) {
-    return false;
-  }
-  visited.add(startKey);
-  return (includeGraph.directIncludesByOwnerKey.get(startKey) ?? []).some(
-    (include) =>
-      include.targetKey === targetKey ||
-      isImplicitGlobalIncludeReachable(includeGraph, include.targetKey, targetKey, visited),
-  );
-}
-
-function canonicalizeImplicitGlobalIndexedDocument(
-  indexed: AspGraphIndexedDocument,
-  canonicalIdById: Map<string, string>,
-  graphFileIndexFingerprint: (index: VbSymbolIndex) => string,
-): AspGraphIndexedDocument {
-  const index = indexed.graphIndex.vbSymbolIndex;
-  const canonicalDeclarationIds = new Set(canonicalIdById.values());
-  const declarations = index.declarations.filter((declaration) => {
-    const canonicalId = canonicalIdById.get(declaration.id);
-    return (
-      !canonicalId || canonicalId === declaration.id || canonicalDeclarationIds.has(declaration.id)
-    );
-  });
-  const canonicalResolvedId = (resolvedId: string | undefined): string | undefined =>
-    resolvedId ? (canonicalIdById.get(resolvedId) ?? resolvedId) : undefined;
-  const references = index.references.map((reference) => ({
-    ...reference,
-    resolvedId: canonicalResolvedId(reference.resolvedId),
-  }));
-  const callSites = index.callSites.map((callSite) => ({
-    ...callSite,
-    resolvedId: canonicalResolvedId(callSite.resolvedId),
-  }));
-  const deferredExternalRefs = index.deferredExternalRefs.map((ref) => ({
-    ...ref,
-    localResolutionId: canonicalResolvedId(ref.localResolutionId),
-  }));
-  const vbSymbolIndex: VbSymbolIndex = {
-    ...index,
-    declarations,
-    references,
-    callSites,
-    deferredExternalRefs,
-    stats: {
-      ...index.stats,
-      declarations: declarations.length,
-      references: references.length,
-      callSites: callSites.length,
-      deferredExternalRefs: deferredExternalRefs.length,
-    },
-  };
-  return {
-    ...indexed,
-    graphIndex: {
-      ...indexed.graphIndex,
-      vbSymbolIndex,
-      fingerprint: graphFileIndexFingerprint(vbSymbolIndex),
-    },
-  };
-}
-
-function precomputeIncludeReachability(
-  graph: IncludeReachabilityGraph,
-  targetKeys: Iterable<string>,
-): PrecomputedIncludeReachability {
-  const hasCycle = includeGraphHasCycle(graph);
-  const reachingFileKeysByTarget = new Map<string, Set<string>>();
-  if (hasCycle) {
-    return { hasCycle, reachingFileKeysByTarget };
-  }
-  for (const targetKey of targetKeys) {
-    const reaching = new Set<string>();
-    const queue = [targetKey];
-    for (let index = 0; index < queue.length; index += 1) {
-      const currentKey = queue[index];
-      for (const parentInclude of graph.parentIncludesByTargetKey.get(currentKey) ?? []) {
-        if (reaching.has(parentInclude.ownerKey)) {
-          continue;
-        }
-        reaching.add(parentInclude.ownerKey);
-        queue.push(parentInclude.ownerKey);
-      }
-    }
-    reachingFileKeysByTarget.set(targetKey, reaching);
-  }
-  return { hasCycle, reachingFileKeysByTarget };
-}
-
-function includeGraphHasCycle(graph: IncludeReachabilityGraph): boolean {
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-  const visit = (ownerKey: string): boolean => {
-    if (visiting.has(ownerKey)) {
-      return true;
-    }
-    if (visited.has(ownerKey)) {
-      return false;
-    }
-    visiting.add(ownerKey);
-    for (const include of graph.directIncludesByOwnerKey.get(ownerKey) ?? []) {
-      if (visit(include.targetKey)) {
-        return true;
-      }
-    }
-    visiting.delete(ownerKey);
-    visited.add(ownerKey);
-    return false;
-  };
-  for (const ownerKey of graph.directIncludesByOwnerKey.keys()) {
-    if (visit(ownerKey)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function precomputedIncludeCanReachTarget(
-  reachability: PrecomputedIncludeReachability | undefined,
-  startKey: string,
-  targetKey: string,
-): boolean | undefined {
-  if (!reachability || reachability.hasCycle) {
-    return undefined;
-  }
-  return reachability.reachingFileKeysByTarget.get(targetKey)?.has(startKey) === true;
-}
-
-function implicitGlobalGroupSummary<T>(groups: Iterable<readonly T[]>): {
-  groups: number;
-  maxGroupSize: number;
-} {
-  let groupCount = 0;
-  let maxGroupSize = 0;
-  for (const group of groups) {
-    groupCount += 1;
-    maxGroupSize = Math.max(maxGroupSize, group.length);
-  }
-  return { groups: groupCount, maxGroupSize };
-}
-
-function pushAspGraphMapItem<K, V>(map: Map<K, V[]>, key: K, value: V): void {
-  const existing = map.get(key);
-  if (existing) {
-    existing.push(value);
-  } else {
-    map.set(key, [value]);
-  }
-}
-
-function positionBeforeOrEqual(left: Position, right: Position): boolean {
-  return left.line < right.line || (left.line === right.line && left.character <= right.character);
 }
 
 export function graphCommandScope(argument: unknown): AspGraphScope {
@@ -1610,8 +1080,107 @@ function noteAspGraphDocumentCollectionTruncated(
   }
 }
 
+function limitWorkspaceGraphIndexEntries(
+  entries: AspGraphWorkspaceIndexedDocument[],
+  limits: VbProjectContextLimits,
+  initialDocuments: number,
+  initialTextLength: number,
+): { entries: AspGraphWorkspaceIndexedDocument[]; reason?: string } {
+  const limited: AspGraphWorkspaceIndexedDocument[] = [];
+  let textLength = initialTextLength;
+  let reason: string | undefined;
+  for (const entry of entries) {
+    const nextDocumentCount = initialDocuments + limited.length + 1;
+    const nextTextLength = textLength + entry.size;
+    const exceedsDocumentLimit = nextDocumentCount > limits.maxDocuments;
+    const exceedsTextLimit = nextTextLength > limits.maxTextLength;
+    if (exceedsDocumentLimit || (exceedsTextLimit && initialDocuments + limited.length > 0)) {
+      reason = exceedsDocumentLimit
+        ? `documents>${limits.maxDocuments}`
+        : `text>${limits.maxTextLength}`;
+      break;
+    }
+    limited.push(entry);
+    textLength = nextTextLength;
+    if (exceedsTextLimit) {
+      reason = `text>${limits.maxTextLength}`;
+      break;
+    }
+  }
+  return { entries: limited, reason };
+}
+
+function workspaceGraphTruncationReason(
+  reason: string | undefined,
+  settings: AspSettings,
+  host: AspGraphBuildHost,
+): AspGraphPayload["truncated"] | undefined {
+  const finalReason =
+    reason ??
+    (host.workspaceIndexTruncated()
+      ? `workspaceIndex>${settings.workspace?.maxIndexFiles ?? host.defaultMaxIndexFiles}`
+      : undefined);
+  return finalReason ? { reason: finalReason } : undefined;
+}
+
+function folderGraphTruncationReason(
+  reason: string | undefined,
+  settings: AspSettings,
+  host: AspGraphBuildHost,
+): AspGraphPayload["truncated"] | undefined {
+  return workspaceGraphTruncationReason(reason, settings, host);
+}
+
 function graphDocumentsTextLength(documentsForGraph: AspGraphDocument[]): number {
   return documentsForGraph.reduce((total, document) => total + document.text.length, 0);
+}
+
+function graphDocumentSourceFromDocument(document: AspGraphDocument): AspGraphDocumentSource {
+  return {
+    uri: document.uri,
+    fileName: document.fileName,
+    textLength: document.text.length,
+    load: async () => document,
+  };
+}
+
+function workspaceGraphDocumentSourceFromIndexedEntry(
+  host: AspGraphBuildHost,
+  entry: AspGraphWorkspaceIndexedDocument,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): AspGraphDocumentSource {
+  return {
+    uri: entry.uri,
+    fileName: entry.fileName,
+    textLength: entry.size,
+    load: async () => {
+      throwIfGraphCancelled(cancellation);
+      const cached = await host.cachedFromIndexedAsync(entry, host.cachedSettings(entry.uri));
+      throwIfGraphCancelled(cancellation);
+      return host.graphDocumentFromCachedAsync(cached, host.cachedSettings(entry.uri));
+    },
+  };
+}
+
+async function loadAspGraphDocumentSourcesAsync(
+  sources: readonly AspGraphDocumentSource[],
+  host: AspGraphBuildHost,
+  progress: AspGraphProgressTaskHandle | undefined,
+  offset: number,
+): Promise<AspGraphDocument[]> {
+  return host.mapWithConcurrency(
+    sources,
+    Math.max(1, sources.length),
+    (source) => source.load(),
+    progress
+      ? host.progressMapHooks(
+          progress,
+          (source: AspGraphDocumentSource) => host.progressFileLabel(source.fileName),
+          offset,
+        )
+      : undefined,
+  );
 }
 
 function appendAspGraphDocuments(

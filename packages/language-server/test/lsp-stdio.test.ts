@@ -11051,6 +11051,56 @@ End Sub
       }
     });
 
+    it("streams workspace graph indexes through bulk spill storage", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-bulk-spill-"));
+      fs.writeFileSync(
+        path.join(tempDir, "default.asp"),
+        `<!-- #include file="common.inc" -->
+<%
+Dim localValue
+localValue = SharedValue
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(path.join(tempDir, "common.inc"), `<%\nDim SharedValue\n%>`, "utf8");
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "workspace" }],
+        })) as {
+          nodes?: Array<Record<string, unknown>>;
+          links?: Array<Record<string, unknown>>;
+        };
+
+        expect(graph.nodes?.some((node) => node.label === "SharedValue")).toBe(true);
+        expect(graph.links?.some((link) => link.kind === "include")).toBe(true);
+        await waitForLogContaining(server, "asp.graph.bulk.spill.write");
+        await waitForLogContaining(server, "asp.graph.bulk.complete");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("restores graph include refs and VB symbol indexes from disk cache after server restart", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-graph-cache-"));
       const cacheDir = path.join(tempDir, ".cache");
