@@ -66,7 +66,7 @@ export function applyIncrementalChanges(
   previousText: string,
   changes: readonly AspIncrementalChange[],
 ): string {
-  const updatedText = [...changes]
+  return [...changes]
     .map((change) => normalizeIncrementalChange(previousText, change))
     .filter((change): change is NormalizedIncrementalChange => Boolean(change))
     .sort((left, right) => right.startOffset - left.startOffset)
@@ -75,7 +75,6 @@ export function applyIncrementalChanges(
         `${text.slice(0, change.startOffset)}${change.text}${text.slice(change.endOffset)}`,
       previousText,
     );
-  return flattenString(updatedText);
 }
 
 export function changesOverlap(changes: readonly NormalizedIncrementalChange[]): boolean {

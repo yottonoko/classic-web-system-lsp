@@ -642,6 +642,48 @@ End If
     expect(updatedDiagnostics).toEqual(freshDiagnostics);
   });
 
+  it("keeps astral characters aligned across incremental VBScript edits", () => {
+    const uri = "file:///site/astral-incremental.asp";
+    const source = `<section>prefix 🍰</section>
+<%
+Dim message
+message = "ok 🍬"
+Response.Write message
+%>
+<div data-title="<%= message %>">suffix 🍡</div>`;
+    const parsed = parseAspDocument(uri, source);
+    const start = source.indexOf('"ok 🍬"') + 1;
+    const end = start + "ok 🍬".length;
+    const replacement = "ready 🍮";
+    const nextText = `${source.slice(0, start)}${replacement}${source.slice(end)}`;
+    const updated = updateAspParsedDocument(
+      parsed,
+      [
+        {
+          range: { start: positionAt(source, start), end: positionAt(source, end) },
+          rangeOffset: start,
+          rangeLength: end - start,
+          text: replacement,
+        },
+      ],
+      { incremental: { mode: "full" } },
+    );
+    const fresh = parseAspDocument(uri, nextText);
+    const updatedSymbols = collectVbscriptSymbols(updated.parsed);
+    const freshSymbols = collectVbscriptSymbols(fresh);
+
+    expect(updated.impact.kind).toBe("incremental");
+    expect(updated.parsed.text).toBe(nextText);
+    expect(updated.parsed.regions).toEqual(fresh.regions);
+    expect(updated.parsed.cst).toEqual(fresh.cst);
+    expect(getVbscriptSemanticTokens(updated.parsed, { symbols: updatedSymbols })).toEqual(
+      getVbscriptSemanticTokens(fresh, { symbols: freshSymbols }),
+    );
+    expect(analyzeVbscript(updated.parsed, { unusedDiagnostics: false }).diagnostics).toEqual(
+      analyzeVbscript(fresh, { unusedDiagnostics: false }).diagnostics,
+    );
+  });
+
   it("updates 256-1024 character safe VBScript edits incrementally", () => {
     const payload = "x".repeat(1200);
     const source = `<%

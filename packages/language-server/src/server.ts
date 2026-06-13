@@ -233,7 +233,6 @@ import {
   getVbscriptDocumentationQuickAction,
   getVbscriptDocumentHighlights,
   getVbscriptDocumentSymbols,
-  flattenString,
   getVbscriptHover,
   getVbscriptImplementation,
   getVbscriptIncomingCalls,
@@ -5962,9 +5961,7 @@ function vbscriptRegionContentFingerprint(parsed: AspParsedDocument): string {
       .filter((region) => region.language === "vbscript")
       .map((region) => ({
         kind: region.kind,
-        text: computeTextFingerprint(
-          flattenString(parsed.text.slice(region.contentStart, region.contentEnd)),
-        ),
+        text: computeTextFingerprint(parsed.text.slice(region.contentStart, region.contentEnd)),
       })),
   });
 }
@@ -11076,9 +11073,7 @@ function vbProjectDocumentFingerprint(document: AspParsedDocument): unknown {
         end: region.end,
         contentStart: region.contentStart,
         contentEnd: region.contentEnd,
-        text: computeTextFingerprint(
-          flattenString(document.text.slice(region.contentStart, region.contentEnd)),
-        ),
+        text: computeTextFingerprint(document.text.slice(region.contentStart, region.contentEnd)),
       })),
   };
 }

@@ -25,7 +25,6 @@ import {
   applyIncrementalChanges,
   changeHull,
   changesOverlap,
-  flattenString,
   normalizeIncrementalChange,
   normalizeIncrementalChanges,
   rangeOverlaps,
@@ -64,7 +63,7 @@ export function parseAspDocument(
   text: string,
   settings: AspSettings = {},
 ): AspParsedDocument {
-  return parseAspDocumentTypeScript(uri, flattenString(text), settings);
+  return parseAspDocumentTypeScript(uri, text, settings);
 }
 
 export function parseAspDocumentSkeleton(
@@ -72,7 +71,7 @@ export function parseAspDocumentSkeleton(
   text: string,
   settings: AspSettings = {},
 ): AspParsedDocument {
-  return parseAspDocumentSkeletonTypeScript(uri, flattenString(text), settings);
+  return parseAspDocumentSkeletonTypeScript(uri, text, settings);
 }
 
 /**
@@ -83,14 +82,13 @@ export async function parseAspDocumentAsync(
   text: string,
   settings: AspSettings = {},
 ): Promise<AspParsedDocument> {
-  const flattenedText = flattenString(text);
-  const cacheKey = parseCacheKey(uri, flattenedText, settings);
+  const cacheKey = parseCacheKey(uri, text, settings);
   const cached = asyncParseCache.get(cacheKey);
   if (cached) {
     touchAsyncParseCacheEntry(cacheKey, cached);
     return cached;
   }
-  const parsed = parseAspDocumentTypeScript(uri, flattenedText, settings);
+  const parsed = parseAspDocumentTypeScript(uri, text, settings);
   setAsyncParseCache(cacheKey, parsed);
   return parsed;
 }
@@ -100,7 +98,7 @@ export async function parseAspDocumentSkeletonAsync(
   text: string,
   settings: AspSettings = {},
 ): Promise<AspParsedDocument> {
-  return parseAspDocumentSkeletonTypeScript(uri, flattenString(text), settings);
+  return parseAspDocumentSkeletonTypeScript(uri, text, settings);
 }
 
 export function registerParserMemoryCaches(
