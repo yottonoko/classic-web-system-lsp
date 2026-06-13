@@ -130,39 +130,22 @@ export function computeImplicitGlobalCanonicalIds(
     ) {
       continue;
     }
-    for (let leftIndex = 0; leftIndex < declarations.length; leftIndex += 1) {
-      const left = declarations[leftIndex];
-      const leftFileKey = declarationFileKeyById.get(left.id);
-      if (!leftFileKey) {
-        continue;
-      }
-      for (let rightIndex = leftIndex + 1; rightIndex < declarations.length; rightIndex += 1) {
-        const right = declarations[rightIndex];
-        const rightFileKey = declarationFileKeyById.get(right.id);
-        if (!rightFileKey || union.find(left.id) === union.find(right.id)) {
-          continue;
-        }
-        if (
-          isImplicitGlobalDeclarationVisibleFromFile(
-            includeGraph,
-            leftFileKey,
-            right,
-            rightFileKey,
-            left.nameRange,
-            reachability,
-          ) ||
-          isImplicitGlobalDeclarationVisibleFromFile(
-            includeGraph,
-            rightFileKey,
-            left,
-            leftFileKey,
-            right.nameRange,
-            reachability,
-          )
-        ) {
-          union.union(left.id, right.id);
-        }
-      }
+    if (reachability.hasCycle) {
+      unionImplicitGlobalDeclarationsPairwise(
+        declarations,
+        declarationFileKeyById,
+        includeGraph,
+        reachability,
+        union,
+      );
+    } else {
+      unionImplicitGlobalDeclarationsByReachability(
+        declarations,
+        declarationFileKeyById,
+        includeGraph,
+        reachability,
+        union,
+      );
     }
   }
   const declarationsByRoot = new Map<string, Array<VbSymbolIndex["declarations"][number]>>();
@@ -386,6 +369,185 @@ function implicitGlobalCanonicalScore(declaration: VbSymbolIndex["declarations"]
     return 0;
   }
   return declaration.implicitGlobalCandidate === true ? 2 : 1;
+}
+
+function unionImplicitGlobalDeclarationsPairwise(
+  declarations: Array<VbSymbolIndex["declarations"][number]>,
+  declarationFileKeyById: Map<string, string>,
+  includeGraph: ImplicitGlobalIncludeGraph,
+  reachability: PrecomputedIncludeReachability,
+  union: ImplicitGlobalUnionFind,
+): void {
+  for (let leftIndex = 0; leftIndex < declarations.length; leftIndex += 1) {
+    const left = declarations[leftIndex];
+    const leftFileKey = declarationFileKeyById.get(left.id);
+    if (!leftFileKey) {
+      continue;
+    }
+    for (let rightIndex = leftIndex + 1; rightIndex < declarations.length; rightIndex += 1) {
+      const right = declarations[rightIndex];
+      const rightFileKey = declarationFileKeyById.get(right.id);
+      if (!rightFileKey || union.find(left.id) === union.find(right.id)) {
+        continue;
+      }
+      if (
+        implicitGlobalDeclarationsCanMerge(
+          left,
+          leftFileKey,
+          right,
+          rightFileKey,
+          includeGraph,
+          reachability,
+        )
+      ) {
+        union.union(left.id, right.id);
+      }
+    }
+  }
+}
+
+function unionImplicitGlobalDeclarationsByReachability(
+  declarations: Array<VbSymbolIndex["declarations"][number]>,
+  declarationFileKeyById: Map<string, string>,
+  includeGraph: ImplicitGlobalIncludeGraph,
+  reachability: PrecomputedIncludeReachability,
+  union: ImplicitGlobalUnionFind,
+): void {
+  const processedByFileKey = new Map<string, Array<VbSymbolIndex["declarations"][number]>>();
+  const reachableTargetsByOwnerKey = new Map<string, Set<string>>();
+  for (const declaration of declarations) {
+    const declarationFileKey = declarationFileKeyById.get(declaration.id);
+    if (!declarationFileKey) {
+      continue;
+    }
+    const candidatesByRoot = reachableImplicitGlobalMergeCandidatesByRoot(
+      declaration,
+      declarationFileKey,
+      processedByFileKey,
+      declarationFileKeyById,
+      includeGraph,
+      reachability,
+      reachableTargetsByOwnerKey,
+      union,
+    );
+    for (const candidates of candidatesByRoot.values()) {
+      if (candidates.some((candidate) => union.find(candidate.id) === union.find(declaration.id))) {
+        continue;
+      }
+      const visibleCandidate = candidates.find((candidate) => {
+        const candidateFileKey = declarationFileKeyById.get(candidate.id);
+        return (
+          candidateFileKey !== undefined &&
+          union.find(candidate.id) !== union.find(declaration.id) &&
+          implicitGlobalDeclarationsCanMerge(
+            declaration,
+            declarationFileKey,
+            candidate,
+            candidateFileKey,
+            includeGraph,
+            reachability,
+          )
+        );
+      });
+      if (visibleCandidate) {
+        union.union(declaration.id, visibleCandidate.id);
+      }
+    }
+    pushMapItem(processedByFileKey, declarationFileKey, declaration);
+  }
+}
+
+function reachableImplicitGlobalMergeCandidatesByRoot(
+  declaration: VbSymbolIndex["declarations"][number],
+  declarationFileKey: string,
+  processedByFileKey: Map<string, Array<VbSymbolIndex["declarations"][number]>>,
+  declarationFileKeyById: Map<string, string>,
+  includeGraph: ImplicitGlobalIncludeGraph,
+  reachability: PrecomputedIncludeReachability,
+  reachableTargetsByOwnerKey: Map<string, Set<string>>,
+  union: ImplicitGlobalUnionFind,
+): Map<string, Array<VbSymbolIndex["declarations"][number]>> {
+  const candidatesByRoot = new Map<string, Array<VbSymbolIndex["declarations"][number]>>();
+  const addCandidatesFromFileKey = (fileKey: string): void => {
+    for (const candidate of processedByFileKey.get(fileKey) ?? []) {
+      const candidateFileKey = declarationFileKeyById.get(candidate.id);
+      if (!candidateFileKey) {
+        continue;
+      }
+      const root = union.find(candidate.id);
+      if (root === union.find(declaration.id)) {
+        continue;
+      }
+      pushMapItem(candidatesByRoot, root, candidate);
+    }
+  };
+  addCandidatesFromFileKey(declarationFileKey);
+  for (const targetKey of reachableImplicitGlobalIncludeTargets(
+    includeGraph,
+    declarationFileKey,
+    reachableTargetsByOwnerKey,
+  )) {
+    addCandidatesFromFileKey(targetKey);
+  }
+  for (const ownerKey of reachability.reachingFileKeysByTarget.get(declarationFileKey) ?? []) {
+    addCandidatesFromFileKey(ownerKey);
+  }
+  return candidatesByRoot;
+}
+
+function reachableImplicitGlobalIncludeTargets(
+  includeGraph: ImplicitGlobalIncludeGraph,
+  ownerKey: string,
+  cache: Map<string, Set<string>>,
+): Set<string> {
+  let cached = cache.get(ownerKey);
+  if (cached) {
+    return cached;
+  }
+  cached = new Set();
+  const queue = [...(includeGraph.directIncludesByOwnerKey.get(ownerKey) ?? [])].map(
+    (include) => include.targetKey,
+  );
+  for (let index = 0; index < queue.length; index += 1) {
+    const targetKey = queue[index];
+    if (cached.has(targetKey)) {
+      continue;
+    }
+    cached.add(targetKey);
+    for (const include of includeGraph.directIncludesByOwnerKey.get(targetKey) ?? []) {
+      queue.push(include.targetKey);
+    }
+  }
+  cache.set(ownerKey, cached);
+  return cached;
+}
+
+function implicitGlobalDeclarationsCanMerge(
+  left: VbSymbolIndex["declarations"][number],
+  leftFileKey: string,
+  right: VbSymbolIndex["declarations"][number],
+  rightFileKey: string,
+  includeGraph: ImplicitGlobalIncludeGraph,
+  reachability: PrecomputedIncludeReachability,
+): boolean {
+  return (
+    isImplicitGlobalDeclarationVisibleFromFile(
+      includeGraph,
+      leftFileKey,
+      right,
+      rightFileKey,
+      left.nameRange,
+      reachability,
+    ) ||
+    isImplicitGlobalDeclarationVisibleFromFile(
+      includeGraph,
+      rightFileKey,
+      left,
+      leftFileKey,
+      right.nameRange,
+      reachability,
+    )
+  );
 }
 
 function isImplicitGlobalDeclarationVisibleFromFile(

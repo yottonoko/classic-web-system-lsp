@@ -186,6 +186,7 @@ export interface AspGraphBuildState {
   sourceDeclarationFileKeysById: Map<string, string>;
   directIncludesByOwnerKey: Map<string, Array<{ range: Range; targetKey: string }>>;
   parentIncludesByTargetKey: Map<string, Array<{ ownerKey: string; range: Range }>>;
+  includeReachability?: PrecomputedIncludeReachability;
   externalSymbols: AspGraphExternalIndex;
   includeAnalysisTypeDetails: boolean;
   rootUri?: string;

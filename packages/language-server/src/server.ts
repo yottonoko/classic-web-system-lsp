@@ -19631,6 +19631,7 @@ function createAspGraphBuildState(
     sourceDeclarationFileKeysById: new Map(),
     directIncludesByOwnerKey: new Map(),
     parentIncludesByTargetKey: new Map(),
+    includeReachability: undefined,
     externalSymbols: createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings)),
     includeAnalysisTypeDetails: options.includeAnalysisTypeDetails === true,
     rootUri: canonicalRootUri,
@@ -20129,6 +20130,11 @@ type AspGraphMemberAccess = {
   memberName?: string;
 };
 
+interface AspGraphMemberChainRootReferenceIndex {
+  byScopedName: Map<string, Array<VbSymbolIndex["references"][number]>>;
+  byName: Map<string, Array<VbSymbolIndex["references"][number]>>;
+}
+
 type AspGraphMemberCallSite = VbSymbolIndex["callSites"][number] & {
   receiverName: string;
   memberName: string;
@@ -20236,6 +20242,9 @@ function addMemberChainLinksToAspGraph(
   indexed: AspGraphIndexedDocument,
   paths: Map<string, AspGraphMemberChainPath>,
 ): void {
+  const rootReferenceIndex = graphMemberChainRootReferenceIndex(
+    indexed.graphIndex.vbSymbolIndex.references,
+  );
   for (const path of paths.values()) {
     const source = addMemberReferenceGraphNode(
       state,
@@ -20255,7 +20264,7 @@ function addMemberChainLinksToAspGraph(
           parentPath.range,
           parentPath.fullPath,
         )
-      : graphMemberChainBaseTarget(state, indexed, path);
+      : graphMemberChainBaseTarget(state, indexed, path, rootReferenceIndex);
     addAspGraphLink(state, {
       source,
       target,
@@ -20271,8 +20280,14 @@ function graphMemberChainBaseTarget(
   state: AspGraphBuildState,
   indexed: AspGraphIndexedDocument,
   path: AspGraphMemberChainPath,
+  rootReferenceIndex: AspGraphMemberChainRootReferenceIndex,
 ): string {
-  const declaration = resolveGraphMemberChainBaseDeclaration(state, indexed, path);
+  const declaration = resolveGraphMemberChainBaseDeclaration(
+    state,
+    indexed,
+    path,
+    rootReferenceIndex,
+  );
   return declaration
     ? declarationGraphNodeId(declaration.id)
     : addMemberReferenceGraphNode(
@@ -20289,8 +20304,9 @@ function resolveGraphMemberChainBaseDeclaration(
   state: AspGraphBuildState,
   indexed: AspGraphIndexedDocument,
   path: AspGraphMemberChainPath,
+  rootReferenceIndex: AspGraphMemberChainRootReferenceIndex,
 ): VbSymbolIndex["declarations"][number] | undefined {
-  const rootReference = findGraphMemberChainRootReference(indexed, path);
+  const rootReference = findGraphMemberChainRootReference(indexed, path, rootReferenceIndex);
   if (rootReference?.resolvedId) {
     return (
       resolveIncludedImplicitSourceGraphDeclaration(state, indexed, rootReference) ??
@@ -20309,23 +20325,46 @@ function resolveGraphMemberChainBaseDeclaration(
 function findGraphMemberChainRootReference(
   indexed: AspGraphIndexedDocument,
   path: AspGraphMemberChainPath,
+  rootReferenceIndex: AspGraphMemberChainRootReferenceIndex,
 ): VbSymbolIndex["references"][number] | undefined {
-  for (const reference of indexed.graphIndex.vbSymbolIndex.references) {
-    if (
-      reference.name.toLowerCase() === path.rootName.toLowerCase() &&
-      reference.scopeId === path.scopeId &&
-      reference.role !== "member" &&
-      isGraphMemberChainSeparator(indexed.document.text, reference.range, path.range)
-    ) {
+  for (const reference of rootReferenceIndex.byScopedName.get(
+    graphMemberChainRootReferenceKey(path.rootName, path.scopeId),
+  ) ?? []) {
+    if (isGraphMemberChainSeparator(indexed.document.text, reference.range, path.range)) {
       return reference;
     }
   }
-  return indexed.graphIndex.vbSymbolIndex.references.find(
-    (reference) =>
-      reference.name.toLowerCase() === path.rootName.toLowerCase() &&
-      reference.role !== "member" &&
+  return rootReferenceIndex.byName
+    .get(path.rootName.toLowerCase())
+    ?.find((reference) =>
       isGraphMemberChainSeparator(indexed.document.text, reference.range, path.range),
-  );
+    );
+}
+
+function graphMemberChainRootReferenceIndex(
+  references: VbSymbolIndex["references"],
+): AspGraphMemberChainRootReferenceIndex {
+  const index: AspGraphMemberChainRootReferenceIndex = {
+    byScopedName: new Map(),
+    byName: new Map(),
+  };
+  for (const reference of references) {
+    if (reference.role === "member") {
+      continue;
+    }
+    const name = reference.name.toLowerCase();
+    pushAspGraphMapItem(index.byName, name, reference);
+    pushAspGraphMapItem(
+      index.byScopedName,
+      graphMemberChainRootReferenceKey(reference.name, reference.scopeId),
+      reference,
+    );
+  }
+  return index;
+}
+
+function graphMemberChainRootReferenceKey(name: string, scopeId: string | undefined): string {
+  return `${scopeId ?? ""}\u0000${name.toLowerCase()}`;
 }
 
 function graphMemberAccessKey(access: AspGraphMemberAccess): string {
@@ -20496,12 +20535,20 @@ function hasEarlierReachableGraphInclude(
   referenceRange: Range,
 ): boolean {
   const includes = state.directIncludesByOwnerKey.get(ownerKey) ?? [];
-  return includes.some(
-    (include) =>
-      positionBeforeOrEqual(include.range.start, referenceRange.start) &&
-      (include.targetKey === targetKey ||
-        isGraphIncludeReachable(state, include.targetKey, targetKey, new Set([ownerKey]))),
-  );
+  return includes.some((include) => {
+    if (!positionBeforeOrEqual(include.range.start, referenceRange.start)) {
+      return false;
+    }
+    if (include.targetKey === targetKey) {
+      return true;
+    }
+    const precomputed = graphIncludeCanReachTarget(state, include.targetKey, targetKey);
+    return (
+      precomputed === true ||
+      (precomputed === undefined &&
+        isGraphIncludeReachable(state, include.targetKey, targetKey, new Set([ownerKey])))
+    );
+  });
 }
 
 function isSourceGraphDeclarationVisibleFromDocument(
@@ -20574,6 +20621,49 @@ function isSourceGraphDeclarationVisibleBeforeParentInclude(
     return true;
   }
   return isSourceGraphDeclarationVisibleFromParentContext(state, parentKey, declaration, visited);
+}
+
+function graphIncludeCanReachTarget(
+  state: AspGraphBuildState,
+  startKey: string,
+  targetKey: string,
+): boolean | undefined {
+  const reachability = graphIncludeReachability(state);
+  if (reachability.hasCycle) {
+    return undefined;
+  }
+  let reaching = reachability.reachingFileKeysByTarget.get(targetKey);
+  if (!reaching) {
+    reaching = graphReachingFileKeysForTarget(state, targetKey);
+    reachability.reachingFileKeysByTarget.set(targetKey, reaching);
+  }
+  return reaching.has(startKey);
+}
+
+function graphIncludeReachability(state: AspGraphBuildState): PrecomputedIncludeReachability {
+  if (!state.includeReachability) {
+    state.includeReachability = {
+      hasCycle: includeGraphHasCycle(state),
+      reachingFileKeysByTarget: new Map(),
+    };
+  }
+  return state.includeReachability;
+}
+
+function graphReachingFileKeysForTarget(state: AspGraphBuildState, targetKey: string): Set<string> {
+  const reaching = new Set<string>();
+  const queue = [targetKey];
+  for (let index = 0; index < queue.length; index += 1) {
+    const currentKey = queue[index];
+    for (const parentInclude of state.parentIncludesByTargetKey.get(currentKey) ?? []) {
+      if (reaching.has(parentInclude.ownerKey)) {
+        continue;
+      }
+      reaching.add(parentInclude.ownerKey);
+      queue.push(parentInclude.ownerKey);
+    }
+  }
+  return reaching;
 }
 
 function isGraphIncludeReachable(
