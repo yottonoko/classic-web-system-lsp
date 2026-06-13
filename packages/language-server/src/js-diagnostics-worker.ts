@@ -79,7 +79,12 @@ parentPort.on("message", (request: JsDiagnosticsWorkerRequest) => {
   const timings: JsDiagnosticsWorkerTiming[] = [];
   try {
     resetCachesForProjectGeneration(request.projectGeneration);
-    const diagnostics = measure(timings, "javascriptSemantic", () => semanticDiagnostics(request));
+    const diagnostics = measure(
+      timings,
+      request.kind === "prewarm" ? "javascriptPrewarm" : "javascriptSemantic",
+      () =>
+        request.kind === "prewarm" ? prewarmLanguageService(request) : semanticDiagnostics(request),
+    );
     parentPort?.postMessage({
       id: request.id,
       diagnostics,
@@ -92,6 +97,17 @@ parentPort.on("message", (request: JsDiagnosticsWorkerRequest) => {
     } satisfies JsDiagnosticsWorkerResponse);
   }
 });
+
+function prewarmLanguageService(
+  request: JsDiagnosticsWorkerRequest,
+): JsDiagnosticsWorkerTsDiagnostic[] {
+  if (request.settings.checkJs !== true) {
+    return [];
+  }
+  const project = acquirePersistentLanguageService(request);
+  project.service.getProgram();
+  return [];
+}
 
 function resetCachesForProjectGeneration(projectGeneration: number): void {
   if (currentProjectGeneration === projectGeneration) {

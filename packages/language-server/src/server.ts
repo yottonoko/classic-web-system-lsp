@@ -216,7 +216,7 @@ import type {
 } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
-  analyzeVbscriptFromTextAsync,
+  analyzeVbscriptAsync as analyzeParsedVbscriptAsync,
   buildAspFlowchart,
   buildVbTypeEnvironment,
   buildVirtualDocuments,
@@ -338,6 +338,7 @@ const latestSemanticTokenResultByUri = new Map<string, string>();
 const pendingSemanticJavascriptTokenBuilds = new Map<string, Promise<void>>();
 const interactiveVbProjectContextSnapshots = new Map<string, InteractiveVbProjectContextSnapshot>();
 const pendingInteractiveVbProjectContextRefreshes = new Map<string, Promise<void>>();
+const pendingJsDiagnosticsPrewarms = new Set<string>();
 const regionIndexes = new WeakMap<AspParsedDocument, RegionIndex>();
 const defaultMaxIndexFiles = 5000;
 const defaultScanChunkSize = 200;
@@ -1884,7 +1885,7 @@ documents.onDidOpen((event) => {
   });
   invalidateRootlessWorkspaceIndex("document.open");
   scheduleOpenFileProjectMaintenance("document.open");
-  validate(event.document);
+  validateOpenedDocument(event.document);
 });
 documents.onDidChangeContent((event) => {
   noteForegroundActivity();
@@ -2720,19 +2721,7 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
     },
   };
   try {
-    task.update({ label: "workspace.diagnostics.indexed" });
-    const indexedItems = await mapWithConcurrency(
-      indexedEntries,
-      concurrency,
-      async (entry) => ({
-        kind: "full" as const,
-        uri: entry.uri,
-        version: null,
-        items: await diagnosticsForIndexed(entry, cachedSettings(entry.uri), progressToken),
-      }),
-      progressMapHooks(task, (entry) => progressFileLabel(entry.fileName)),
-    );
-    task.update({ label: "workspace.diagnostics.openDocuments", current: indexedEntries.length });
+    task.update({ label: "workspace.diagnostics.openDocuments" });
     const openItems = await mapWithConcurrency(
       openDocuments,
       concurrency,
@@ -2753,11 +2742,19 @@ connection.languages.diagnostics.onWorkspace(async (_params, token) => {
             }
           : undefined;
       },
-      progressMapHooks(
-        task,
-        (document) => progressFileLabelFromUri(document.uri),
-        indexedEntries.length,
-      ),
+      progressMapHooks(task, (document) => progressFileLabelFromUri(document.uri)),
+    );
+    task.update({ label: "workspace.diagnostics.indexed", current: openDocuments.length });
+    const indexedItems = await mapWithConcurrency(
+      indexedEntries,
+      concurrency,
+      async (entry) => ({
+        kind: "full" as const,
+        uri: entry.uri,
+        version: null,
+        items: await diagnosticsForIndexed(entry, cachedSettings(entry.uri), progressToken),
+      }),
+      progressMapHooks(task, (entry) => progressFileLabel(entry.fileName), openDocuments.length),
     );
     return {
       items: [...openItems.filter((item) => item !== undefined), ...indexedItems],
@@ -3087,14 +3084,32 @@ function validate(document: TextDocument): void {
   );
 }
 
-async function validateAsync(document: TextDocument): Promise<void> {
+function validateOpenedDocument(document: TextDocument): void {
+  cancelScheduledDiagnostics(document.uri);
+  void validateOpenedDocumentAsync(document).catch((error: unknown) =>
+    logServerWarning(`[asp-lsp] validate.open.failed: ${errorMessage(error)}`),
+  );
+}
+
+async function validateOpenedDocumentAsync(document: TextDocument): Promise<void> {
+  const cached = await validateAsync(document);
+  if (!cached || openDocumentForUri(document.uri)?.version !== cached.identity.version) {
+    return;
+  }
+  const settings = cachedSettings(document.uri);
+  scheduleDocumentOpenVbProjectContextPrewarm(cached, settings);
+  scheduleDocumentOpenJsDiagnosticsPrewarm(cached, settings);
+}
+
+async function validateAsync(document: TextDocument): Promise<CachedDocument | undefined> {
   const cached = await ensureFreshDiagnosticsCachedDocumentAsync(document);
   if (openDocumentForUri(document.uri)?.version !== cached.identity.version) {
-    return;
+    return undefined;
   }
   startStagedDiagnostics(cached, cachedSettings(document.uri), true, {
     preservePreviousDiagnosticsUntilFinal: hasPublishedDiagnostics(document.uri),
   });
+  return cached;
 }
 
 function refreshCachedDocument(document: TextDocument, impactReason?: string): CachedDocument {
@@ -4086,6 +4101,21 @@ function workspaceEntriesAffectedFirst(
   return [...selected, ...entries.filter((entry) => byUri.has(entry.uri))];
 }
 
+function workspaceEntriesOpenFirst(
+  entries: WorkspaceIndexedDocument[],
+): WorkspaceIndexedDocument[] {
+  const opened = openDocumentUris();
+  if (entries.length === 0 || opened.size === 0) {
+    return entries;
+  }
+  const openEntries: WorkspaceIndexedDocument[] = [];
+  const restEntries: WorkspaceIndexedDocument[] = [];
+  for (const entry of entries) {
+    (opened.has(entry.uri) ? openEntries : restEntries).push(entry);
+  }
+  return [...openEntries, ...restEntries];
+}
+
 function startCheckLog(cached: CachedDocument, settings: AspSettings): bigint {
   logDebugSummary(settings, `[asp-lsp] LSP check started: ${cached.source.uri}`);
   return process.hrtime.bigint();
@@ -4219,7 +4249,7 @@ function availableAnalysisConcurrency(): number {
 }
 
 function defaultBusyAnalysisConcurrency(): number {
-  return Math.max(1, Math.floor(availableAnalysisConcurrency() / 2));
+  return availableAnalysisConcurrency();
 }
 
 const neverCancelled: AnalysisCancellation = {
@@ -5262,6 +5292,96 @@ async function runJsDiagnosticsWorker(
   );
 }
 
+function scheduleDocumentOpenJsDiagnosticsPrewarm(
+  cached: CachedDocument,
+  settings: AspSettings,
+): void {
+  if (settings.checkJs !== true || !shouldUseJsDiagnosticsWorker("foreground")) {
+    return;
+  }
+  const virtuals = jsVirtualDocuments(cached);
+  if (virtuals.length === 0) {
+    return;
+  }
+  const key = JSON.stringify({
+    uri: cached.source.uri,
+    version: cached.identity.version,
+    diagnostics: diagnosticsIdentity(settings),
+    jsProject: cached.jsProjectGeneration,
+    virtuals: virtuals.map(jsDiagnosticsVirtualKey),
+  });
+  if (pendingJsDiagnosticsPrewarms.has(key)) {
+    return;
+  }
+  const uri = cached.source.uri;
+  const version = cached.identity.version;
+  pendingJsDiagnosticsPrewarms.add(key);
+  setTimeout(() => {
+    void runDocumentOpenJsDiagnosticsPrewarmAsync(uri, version, key, settings).catch(
+      (error: unknown) =>
+        logServerWarning(
+          `[asp-lsp] javascript.diagnostics.prewarm.failed: ${uri}, error=${errorMessage(error)}`,
+        ),
+    );
+  }, semanticTokensDeferredWorkDelayMs);
+}
+
+async function runDocumentOpenJsDiagnosticsPrewarmAsync(
+  uri: string,
+  version: number,
+  key: string,
+  settings: AspSettings,
+): Promise<void> {
+  try {
+    const document = openDocumentForUri(uri);
+    if (!document || document.version !== version) {
+      return;
+    }
+    const cached = await ensureFreshCachedDocumentAsync(document);
+    if (openDocumentForUri(uri)?.version !== version) {
+      return;
+    }
+    const virtual = jsVirtualDocuments(cached)[0];
+    if (!virtual) {
+      return;
+    }
+    const pool = getJsDiagnosticsWorkerPool(settings, "foreground");
+    const id = ++jsDiagnosticsWorkerRequestId;
+    const activeVirtual = jsDiagnosticsWorkerVirtualDocument(virtual);
+    const activeVirtualFileName = normalizeFileName(jsVirtualFileName(activeVirtual.uri));
+    const openVirtuals = (await openJsDiagnosticsWorkerVirtualDocumentsAsync()).filter(
+      (openVirtual) =>
+        normalizeFileName(jsVirtualFileName(openVirtual.uri)) !== activeVirtualFileName,
+    );
+    const response = await pool.run(
+      {
+        id,
+        kind: "prewarm",
+        activeVirtual,
+        openVirtuals,
+        settings,
+        workspaceRoots,
+        projectGeneration: jsProjectGeneration,
+      },
+      neverCancelled,
+    );
+    if (response.error) {
+      throw jsWorkerResponseError(response);
+    }
+    for (const timing of response.timings ?? []) {
+      logDebugElapsed(
+        settings,
+        uri,
+        `document.open.jsPrewarm.${timing.name}.worker`,
+        timing.elapsedMs,
+      );
+    }
+    logDebugSummary(settings, `[asp-lsp] javascript.diagnostics.prewarm.completed: ${uri}`);
+  } finally {
+    pendingJsDiagnosticsPrewarms.delete(key);
+  }
+}
+
 function getJsDiagnosticsWorkerPool(
   settings: AspSettings,
   _mode: AnalysisExecutionMode,
@@ -5481,7 +5601,7 @@ async function analyzeVbscriptAsync(
     }
   }
   return (
-    await analyzeVbscriptFromTextAsync(cached.source.uri, cached.source.getText(), settings, {
+    await analyzeParsedVbscriptAsync(cached.parsed, {
       ...context,
       debugStep: (name, action) =>
         measureDebugStep(
@@ -5534,8 +5654,9 @@ async function runVbDiagnosticsWorker(
     {
       id,
       uri: cached.source.uri,
-      text: cached.source.getText(),
+      text: "",
       settings,
+      document: vbDiagnosticsWorkerParsedDocument(cached.parsed),
       context,
     },
     { isCancellationRequested: () => cancellation.isCancellationRequested() },
@@ -5604,6 +5725,24 @@ function vbDiagnosticsWorkerDocument(document: AspParsedDocument): VbDiagnostics
     serverObjects: document.serverObjects,
     defaultLanguage: document.defaultLanguage,
     diagnostics: document.diagnostics,
+  };
+}
+
+function vbDiagnosticsWorkerParsedDocument(
+  document: AspParsedDocument,
+): VbDiagnosticsWorkerDocument & Pick<AspParsedDocument, "cst"> {
+  return {
+    ...vbDiagnosticsWorkerDocument(document),
+    cst: dehydrateVbscriptCst(document.cst),
+  };
+}
+
+function dehydrateVbscriptCst(node: AspCstNode): AspCstNode {
+  const { vbscript: _vbscript, children, ...rest } = node;
+  return {
+    ...rest,
+    tokens: [],
+    children: children.map(dehydrateVbscriptCst),
   };
 }
 
@@ -6103,7 +6242,7 @@ function lightweightJsUnusedDiagnostics(virtual: VirtualDocument): CachedTsDiagn
     directoryExists: () => true,
     getDirectories: () => [],
   };
-  const service = ts.createLanguageService(host);
+  const service = ts.createLanguageService(host, jsDocumentRegistry);
   try {
     const diagnostics = service
       .getSemanticDiagnostics(fileName)
@@ -7813,7 +7952,9 @@ async function aspHoverAsync(
   params: TextDocumentPositionParams,
 ): Promise<Hover | null> {
   const settings = cachedSettings(cached.source.uri);
-  const context = withSourceUriFormatter(await interactiveVbProjectContextAsync(cached, settings));
+  const context = withSourceUriFormatter(
+    await fastInteractiveVbProjectContextAsync(cached, settings),
+  );
   const value = getVbscriptHover(cached.parsed, params.position, context);
   const fallback = value ?? fallbackVbscriptHover(cached, params.position, context);
   return fallback ? { contents: { kind: "markdown", value: fallback } } : null;
@@ -8709,6 +8850,16 @@ async function interactiveVbProjectContextAsync(
   );
 }
 
+async function fastInteractiveVbProjectContextAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<VbProjectContext> {
+  return (
+    (await fastInteractiveVbProjectContextLookupAsync(cached, settings))?.context ??
+    (await buildImmediateLocalVbProjectContextAsync(cached, settings))
+  );
+}
+
 async function semanticTokensVbProjectContextAsync(
   cached: CachedDocument,
   settings: AspSettings,
@@ -8753,6 +8904,47 @@ async function interactiveVbProjectContextLookupAsync(
     rememberInteractiveVbProjectContextSnapshot(cached, settings, built.key, built.context);
   }
   return built;
+}
+
+async function fastInteractiveVbProjectContextLookupAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<CachedVbProjectContextLookup | undefined> {
+  const exact = cachedVbProjectContextLookup(cached, settings);
+  if (exact) {
+    rememberInteractiveVbProjectContextSnapshot(cached, settings, exact.key, exact.context);
+    return exact;
+  }
+  if (cached.parsed.includes.length === 0) {
+    return undefined;
+  }
+  const stale = await staleInteractiveVbProjectContextLookupAsync(cached, settings);
+  if (stale) {
+    scheduleInteractiveVbProjectContextRefresh(cached, settings, "vbProject.context.stale");
+    return stale;
+  }
+  const previousVbProjectContext = cached.analysis?.vbProjectContext;
+  const previousVbProjectSummaryGraph = cached.analysis?.vbProjectSummaryGraph;
+  const previousVbProjectDocuments = cached.analysis?.vbProjectDocuments;
+  const summaryBacked = await summaryBackedVbProjectContextLookupAsync(cached, settings, {
+    allowReadMissing: false,
+  });
+  if (summaryBacked && isIncludeAwareVbProjectContext(cached, summaryBacked.context)) {
+    rememberInteractiveVbProjectContextSnapshot(
+      cached,
+      settings,
+      summaryBacked.key,
+      summaryBacked.context,
+    );
+    return summaryBacked;
+  }
+  if (cached.analysis) {
+    cached.analysis.vbProjectContext = previousVbProjectContext;
+    cached.analysis.vbProjectSummaryGraph = previousVbProjectSummaryGraph;
+    cached.analysis.vbProjectDocuments = previousVbProjectDocuments;
+  }
+  scheduleInteractiveVbProjectContextRefresh(cached, settings, "vbProject.context.local");
+  return undefined;
 }
 
 async function staleInteractiveVbProjectContextLookupAsync(
@@ -8842,8 +9034,13 @@ function scheduleInteractiveVbProjectContextRefresh(
             vbProjectContextCacheKey(context.documents ?? [cached.parsed], settings);
           rememberInteractiveVbProjectContextSnapshot(cached, settings, key, context);
           requestVisualRefresh(reason);
-          validate(current);
-          logDebugSummary(settings, `[asp-lsp] vbProject.context.refresh.completed: ${uri}`);
+          if (reason !== "document.open.prewarm") {
+            validate(current);
+          }
+          logDebugSummary(
+            settings,
+            `[asp-lsp] vbProject.context.refresh.completed: ${uri}, reason=${reason}`,
+          );
         })
         .catch((error: unknown) =>
           logServerWarning(
@@ -8856,6 +9053,16 @@ function scheduleInteractiveVbProjectContextRefresh(
     pendingInteractiveVbProjectContextRefreshes.delete(familyKey);
   });
   pendingInteractiveVbProjectContextRefreshes.set(familyKey, promise);
+}
+
+function scheduleDocumentOpenVbProjectContextPrewarm(
+  cached: CachedDocument,
+  settings: AspSettings,
+): void {
+  if (cached.parsed.includes.length === 0) {
+    return;
+  }
+  scheduleInteractiveVbProjectContextRefresh(cached, settings, "document.open.prewarm");
 }
 
 function rememberInteractiveVbProjectContextSnapshot(
@@ -13567,7 +13774,7 @@ async function ensureWorkspaceIncludeGraphAsync(
     }
   }
   workspaceIncludeGraph.reset(settingsKey);
-  const entries = [...workspaceIndex.values()];
+  const entries = workspaceEntriesOpenFirst([...workspaceIndex.values()]);
   await mapWithConcurrency(entries, includeReadConcurrency(settings), async (entry) => {
     if (cancellation.isCancellationRequested()) {
       return;
@@ -15481,23 +15688,26 @@ function formatJavaScriptRegion(
 
 function getJavaScriptFormattingService(text: string): ts.LanguageService {
   const fileName = "__asp_lsp_format.js";
-  return ts.createLanguageService({
-    getScriptFileNames: () => [fileName],
-    getScriptVersion: () => "0",
-    getScriptSnapshot: (requested) =>
-      requested === fileName ? ts.ScriptSnapshot.fromString(text) : undefined,
-    getCurrentDirectory: () => process.cwd(),
-    getCompilationSettings: () => ({
-      allowJs: true,
-      checkJs: false,
-      target: ts.ScriptTarget.ESNext,
-      module: ts.ModuleKind.CommonJS,
-    }),
-    getDefaultLibFileName: (compilerOptions) => ts.getDefaultLibFilePath(compilerOptions),
-    fileExists: ts.sys.fileExists,
-    readFile: ts.sys.readFile,
-    readDirectory: ts.sys.readDirectory,
-  });
+  return ts.createLanguageService(
+    {
+      getScriptFileNames: () => [fileName],
+      getScriptVersion: () => "0",
+      getScriptSnapshot: (requested) =>
+        requested === fileName ? ts.ScriptSnapshot.fromString(text) : undefined,
+      getCurrentDirectory: () => process.cwd(),
+      getCompilationSettings: () => ({
+        allowJs: true,
+        checkJs: false,
+        target: ts.ScriptTarget.ESNext,
+        module: ts.ModuleKind.CommonJS,
+      }),
+      getDefaultLibFileName: (compilerOptions) => ts.getDefaultLibFilePath(compilerOptions),
+      fileExists: ts.sys.fileExists,
+      readFile: ts.sys.readFile,
+      readDirectory: ts.sys.readDirectory,
+    },
+    jsDocumentRegistry,
+  );
 }
 
 function tsFormatOptions(

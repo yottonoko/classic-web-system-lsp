@@ -5,9 +5,9 @@ import { embeddedOperationNames, runEmbeddedOperation } from "./embedded-languag
 
 const require = createRequire(import.meta.url);
 const {
-  analyzeVbscriptFromTextAsync,
+  analyzeVbscriptAsync,
   buildVirtualDocuments,
-  collectVbscriptSymbolsFromTextAsync,
+  collectVbscriptSymbolsAsync,
   parseAspDocumentAsync,
 } = require("../packages/core/dist/index.js");
 const core = require("../packages/core/dist/index.js");
@@ -35,9 +35,11 @@ parentPort.on("message", async (message) => {
       const parsed = await parseAspDocumentAsync(message.source.uri, message.source.text);
       buildVirtualDocuments(parsed);
     } else if (message.operation === "collectVbscriptSymbols") {
-      await collectVbscriptSymbolsFromTextAsync(message.source.uri, message.source.text);
+      const parsed = await parseAspDocumentAsync(message.source.uri, message.source.text);
+      await collectVbscriptSymbolsAsync(parsed);
     } else if (message.operation === "analyzeVbscript") {
-      await analyzeVbscriptFromTextAsync(message.source.uri, message.source.text, {}, context);
+      const parsed = await parseAspDocumentAsync(message.source.uri, message.source.text);
+      await analyzeVbscriptAsync(parsed, context);
     } else if (embeddedOperationNames.includes(message.operation)) {
       await runEmbeddedOperation(message.operation, message.source, core);
     } else {

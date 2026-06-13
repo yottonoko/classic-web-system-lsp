@@ -36,9 +36,9 @@ execFileSync(process.execPath, [generator], { stdio: "inherit" });
 
 const core = require(coreDist);
 const {
-  analyzeVbscriptFromTextAsync,
+  analyzeVbscriptAsync,
   buildVirtualDocuments,
-  collectVbscriptSymbolsFromTextAsync,
+  collectVbscriptSymbolsAsync,
   parseAspDocumentAsync,
   registerParserMemoryCaches,
 } = core;
@@ -65,14 +65,16 @@ await runBenchmark("buildVirtualDocuments", async (run) => {
 
 await runBenchmark("collectVbscriptSymbols", async (run) => {
   for (const source of sourcesForRun("collectVbscriptSymbols", run)) {
-    await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
+    const parsed = await parseAspDocumentAsync(source.uri, source.text);
+    await collectVbscriptSymbolsAsync(parsed);
     checkBenchmarkMemoryPressure();
   }
 });
 
 await runBenchmark("analyzeVbscript", async (run) => {
   for (const source of sourcesForRun("analyzeVbscript", run)) {
-    await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
+    const parsed = await parseAspDocumentAsync(source.uri, source.text);
+    await analyzeVbscriptAsync(parsed, analyzeContext());
     checkBenchmarkMemoryPressure();
   }
 });

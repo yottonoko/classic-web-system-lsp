@@ -50,9 +50,9 @@ execFileSync(process.execPath, [generator], { stdio: "inherit" });
 
 const core = require(coreDist);
 const {
-  analyzeVbscriptFromTextAsync,
+  analyzeVbscriptAsync,
   buildVirtualDocuments,
-  collectVbscriptSymbolsFromTextAsync,
+  collectVbscriptSymbolsAsync,
   extractAspIncludeRefs,
   extractVbscriptSymbolIndex,
   parseAspDocumentAsync,
@@ -83,8 +83,8 @@ await runBenchmark("buildVirtualDocuments", (run) =>
 );
 
 await runBenchmark("collectVbscriptSymbols", (run) =>
-  measureAcrossSources(sourcesForRun("collectVbscriptSymbols", run), async (source) => {
-    await collectVbscriptSymbolsFromTextAsync(source.uri, source.text);
+  measureAcrossParsedSources(sourcesForRun("collectVbscriptSymbols", run), async (parsed) => {
+    await collectVbscriptSymbolsAsync(parsed);
   }),
 );
 
@@ -95,8 +95,8 @@ await runBenchmark("extractVbscriptSymbolIndex", (run) =>
 );
 
 await runBenchmark("analyzeVbscript", (run) =>
-  measureAcrossSources(sourcesForRun("analyzeVbscript", run), async (source) => {
-    await analyzeVbscriptFromTextAsync(source.uri, source.text, {}, analyzeContext());
+  measureAcrossParsedSources(sourcesForRun("analyzeVbscript", run), async (parsed) => {
+    await analyzeVbscriptAsync(parsed, analyzeContext());
   }),
 );
 

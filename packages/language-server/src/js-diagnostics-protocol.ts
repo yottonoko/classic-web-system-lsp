@@ -9,6 +9,7 @@ export interface JsDiagnosticsWorkerVirtualDocument {
 
 export interface JsDiagnosticsWorkerRequest {
   id: number;
+  kind?: "diagnostics" | "prewarm";
   activeVirtual: JsDiagnosticsWorkerVirtualDocument;
   openVirtuals: JsDiagnosticsWorkerVirtualDocument[];
   settings: AspSettings;

@@ -1,8 +1,13 @@
 import { parentPort } from "node:worker_threads";
-import { analyzeVbscriptFromTextAsync } from "@asp-lsp/core";
+import {
+  analyzeVbscriptAsync,
+  analyzeVbscriptFromTextAsync,
+  hydrateVbscriptCst,
+} from "@asp-lsp/core";
 import type {
   VbDiagnosticsWorkerContext,
   VbDiagnosticsWorkerDocument,
+  VbDiagnosticsWorkerParsedDocument,
   VbDiagnosticsWorkerRequest,
   VbDiagnosticsWorkerResponse,
   VbDiagnosticsWorkerTiming,
@@ -16,22 +21,29 @@ if (!parentPort) {
 parentPort.on("message", async (request: VbDiagnosticsWorkerRequest) => {
   const timings: VbDiagnosticsWorkerTiming[] = [];
   try {
-    const diagnostics = (
-      await analyzeVbscriptFromTextAsync(request.uri, request.text, request.settings, {
-        ...analysisContext(request.context),
-        debugStep: (name, action) => {
-          const startedAt = process.hrtime.bigint();
-          try {
-            return action();
-          } finally {
-            timings.push({
-              name,
-              elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
-            });
-          }
-        },
-      })
-    ).diagnostics;
+    const context = {
+      ...analysisContext(request.context),
+      debugStep: <T>(name: string, action: () => T): T => {
+        const startedAt = process.hrtime.bigint();
+        try {
+          return action();
+        } finally {
+          timings.push({
+            name,
+            elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+          });
+        }
+      },
+    };
+    const diagnostics = request.document
+      ? (
+          await analyzeVbscriptAsync(
+            await hydrateVbscriptCst(workerParsedDocument(request.document), request.settings),
+            context,
+          )
+        ).diagnostics
+      : (await analyzeVbscriptFromTextAsync(request.uri, request.text, request.settings, context))
+          .diagnostics;
     parentPort?.postMessage({
       id: request.id,
       diagnostics,
@@ -49,6 +61,12 @@ function analysisContext(context: VbDiagnosticsWorkerContext): VbProjectContext 
   return {
     ...context,
     documents: context.documents?.map(workerDocumentToParsedDocument),
+  };
+}
+
+function workerParsedDocument(document: VbDiagnosticsWorkerParsedDocument): AspParsedDocument {
+  return {
+    ...document,
   };
 }
 

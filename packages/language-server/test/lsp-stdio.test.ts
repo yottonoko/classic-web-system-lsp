@@ -8345,6 +8345,57 @@ End Sub
       }
     });
 
+    it("prewarms include-backed VBScript project context after didOpen", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-open-prewarm-"));
+      const include = path.join(tempDir, "shared.inc");
+      const owner = path.join(tempDir, "default.asp");
+      fs.writeFileSync(include, `<%\nsharedOpenTitle = "include"\n%>`, "utf8");
+      const source = `<!-- #include file="shared.inc" -->
+<%
+shared
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
+      const uri = pathToFileURL(owner).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        await waitForLogContaining(server, "reason=document.open.prewarm");
+        const completions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.lastIndexOf("shared") + "shared".length),
+        });
+        expect(JSON.stringify(completions)).toContain("sharedOpenTitle");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("jumps from assignments to include-defined implicit globals", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-global-"));
       const include = path.join(tempDir, "shared.inc");
@@ -8734,6 +8785,45 @@ End Function
         });
         expect(JSON.stringify(diagnostics)).toContain("broken.asp");
         expect(JSON.stringify(diagnostics)).toContain("asp-lsp-css");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("returns open documents first for workspace diagnostics", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-open-first-"));
+      const openFile = path.join(tempDir, "open.asp");
+      const indexedFile = path.join(tempDir, "indexed.asp");
+      fs.writeFileSync(openFile, `<style>.open { color: }</style>`, "utf8");
+      fs.writeFileSync(indexedFile, `<style>.indexed { color: }</style>`, "utf8");
+      const openUri = pathToFileURL(openFile).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: openUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(openFile, "utf8"),
+          },
+        });
+
+        const diagnostics = (await server.request("workspace/diagnostic", {
+          previousResultIds: [],
+        })) as { items?: Array<{ uri?: string }> };
+
+        expect(diagnostics.items?.[0]?.uri).toBe(openUri);
+        expect(JSON.stringify(diagnostics)).toContain("indexed.asp");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -14129,6 +14219,48 @@ missingPayloadName.toFixed();
 
         expect(payloadBytes).toBeGreaterThan(filler.length);
         expect(payloadBytes).toBeLessThan(source.length * 1.7);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("prewarms the JavaScript diagnostics worker after didOpen when checkJs is enabled", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              checkJs: true,
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+              javascript: { ignoreProjectConfig: true },
+            },
+          },
+        });
+
+        const uri = "file:///tmp/js-worker-prewarm.asp";
+        const source = `<script>
+const workerPrewarmValue = 1;
+</script>`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        await waitForLogContaining(server, "javascript.diagnostics.prewarm.completed");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

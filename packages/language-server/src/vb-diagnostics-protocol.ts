@@ -23,6 +23,9 @@ export type VbDiagnosticsWorkerDocument = Pick<
   | "diagnostics"
 >;
 
+export type VbDiagnosticsWorkerParsedDocument = VbDiagnosticsWorkerDocument &
+  Pick<AspParsedDocument, "cst">;
+
 export interface VbDiagnosticsWorkerContext {
   documents?: VbDiagnosticsWorkerDocument[];
   includeSummaryUris?: string[];
@@ -46,6 +49,7 @@ export interface VbDiagnosticsWorkerRequest {
   uri: string;
   text: string;
   settings: AspSettings;
+  document?: VbDiagnosticsWorkerParsedDocument;
   context: VbDiagnosticsWorkerContext;
 }
 
