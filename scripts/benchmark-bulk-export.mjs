@@ -11,6 +11,9 @@ const fileCount = readPositiveInteger("ASP_LSP_BENCH_BULK_FILES", 20_000);
 const targetBytes = readPositiveInteger("ASP_LSP_BENCH_BULK_TARGET_MB", 300) * 1024 * 1024;
 const oldSpaceMb = readPositiveInteger("ASP_LSP_BENCH_BULK_OLD_SPACE_MB", 768);
 const timeoutMs = readPositiveInteger("ASP_LSP_BENCH_BULK_TIMEOUT_MS", 600_000);
+const graphMaxDocuments =
+  readOptionalPositiveInteger("ASP_LSP_BENCH_BULK_GRAPH_MAX_DOCUMENTS") ??
+  (fileCount <= 1000 ? fileCount + 10 : 1000);
 
 async function main() {
   if (!fs.existsSync(serverPath)) {
@@ -22,7 +25,7 @@ async function main() {
   const aspLspSettings = {
     debug: { output: "verbose" },
     graph: {
-      maxDocuments: fileCount + 10,
+      maxDocuments: graphMaxDocuments,
       maxTextLength: Math.max(targetBytes * 2, targetBytes + 1024),
       workerSymbolExtraction: true,
     },
@@ -60,13 +63,21 @@ async function main() {
     const startedAt = performance.now();
     const graph = await server.request("workspace/executeCommand", {
       command: "aspLsp.server.buildGraph",
-      arguments: [{ scope: "workspace", maxDocuments: fileCount + 10 }],
+      arguments: [{ scope: "workspace", maxDocuments: graphMaxDocuments }],
     });
     const immediateMs = performance.now() - startedAt;
     const finalUpdate =
       graph?.pending && graph?.correlationId
-        ? await server.waitForGraphUpdate(graph.correlationId)
+        ? await server.waitForGraphUpdate(graph.correlationId, {
+            pending: graph.pending,
+            backgroundTaskId: graph.backgroundTaskId,
+            initialNodes: graph.nodes?.length ?? 0,
+            initialLinks: graph.links?.length ?? 0,
+          })
         : undefined;
+    if (finalUpdate?.error) {
+      throw new Error(`Graph background build failed: ${finalUpdate.error}`);
+    }
     const fullBuildMs = performance.now() - startedAt;
     const finalGraph = finalUpdate?.payload ?? graph;
     await sleep(100);
@@ -77,6 +88,7 @@ async function main() {
     console.log(`Files: ${sourceStats.files.toLocaleString("en-US")}`);
     console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
     console.log(`Node old space: ${oldSpaceMb} MB`);
+    console.log(`Graph document budget: ${graphMaxDocuments.toLocaleString("en-US")}`);
     console.log(`Immediate: ${immediateMs.toFixed(2)} ms`);
     console.log(`Full build: ${fullBuildMs.toFixed(2)} ms`);
     console.log(`Initial pending: ${graph?.pending === true ? "yes" : "no"}`);
@@ -155,7 +167,7 @@ class RpcServer {
     this.write({ jsonrpc: "2.0", method, params });
   }
 
-  waitForGraphUpdate(correlationId) {
+  waitForGraphUpdate(correlationId, initial = {}) {
     const existingIndex = this.graphUpdates.findIndex(
       (update) => update.correlationId === correlationId && update.final === true,
     );
@@ -165,7 +177,21 @@ class RpcServer {
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error(`Timed out waiting for aspLsp/graphUpdated: ${this.stderr ?? ""}`)),
+        () =>
+          reject(
+            new Error(
+              [
+                `Timed out waiting for final aspLsp/graphUpdated: correlationId=${correlationId}`,
+                `pending=${initial.pending === true ? "yes" : "no"}`,
+                `backgroundTaskId=${initial.backgroundTaskId ?? "none"}`,
+                `initialNodes=${initial.initialNodes ?? 0}`,
+                `initialLinks=${initial.initialLinks ?? 0}`,
+                this.stderr ? `stderr=${this.stderr}` : undefined,
+              ]
+                .filter(Boolean)
+                .join(" "),
+            ),
+          ),
         this.options.timeoutMs,
       );
       this.graphUpdateWaiters.set(correlationId, { resolve, timer });
@@ -273,6 +299,11 @@ class RpcServer {
 function readPositiveInteger(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function readOptionalPositiveInteger(name) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
 function countMatches(text, needle) {
