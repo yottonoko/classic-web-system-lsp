@@ -589,8 +589,12 @@ interface StagedDiagnosticsState {
   version: number;
   documentGeneration: number;
   diagnosticsIdentity: string;
+  includeResolutionGeneration: number;
+  jsProjectGeneration: number;
+  workspaceGeneration: number;
   startedAt: bigint;
   preservePreviousDiagnosticsUntilFinal: boolean;
+  asyncLayersStarted: boolean;
   layers: Partial<Record<DiagnosticLayerKey, Diagnostic[]>>;
 }
 
@@ -3534,7 +3538,7 @@ async function scheduleDiagnosticsAsync(document: TextDocument): Promise<CachedD
     preservePreviousDiagnosticsUntilFinal,
   });
   if (delay <= 0) {
-    void runStagedDiagnosticsWithProgress(cached, settings, state);
+    ensureStagedDiagnosticsAsyncLayers(cached, settings, state);
     return cached;
   }
   diagnosticsTimers.set(
@@ -3545,7 +3549,7 @@ async function scheduleDiagnosticsAsync(document: TextDocument): Promise<CachedD
         logStaleStagedDiagnostics(settings, state, "include");
         return;
       }
-      void runStagedDiagnosticsWithProgress(cached, settings, state);
+      ensureStagedDiagnosticsAsyncLayers(cached, settings, state);
     }, delay),
   );
   return cached;
@@ -3580,14 +3584,39 @@ function startStagedDiagnostics(
   runAsyncLayers = true,
   options: { preservePreviousDiagnosticsUntilFinal?: boolean } = {},
 ): StagedDiagnosticsState {
+  const reusable = reusableStagedDiagnosticsState(cached);
+  if (reusable) {
+    reusable.preservePreviousDiagnosticsUntilFinal =
+      reusable.preservePreviousDiagnosticsUntilFinal ||
+      options.preservePreviousDiagnosticsUntilFinal === true;
+    logDebugTrace(settings, "diagnostics.reuse", "[asp-lsp] diagnostics.reuse", {
+      uri: cached.source.uri,
+      version: cached.source.version,
+      generation: reusable.generation,
+      runAsyncLayers,
+      preservePreviousDiagnosticsUntilFinal: reusable.preservePreviousDiagnosticsUntilFinal,
+    });
+    logDebugSummary(
+      settings,
+      `[asp-lsp] diagnostics.reuse: ${cached.source.uri}, generation=${reusable.generation}`,
+    );
+    if (runAsyncLayers) {
+      ensureStagedDiagnosticsAsyncLayers(cached, settings, reusable);
+    }
+    return reusable;
+  }
   const state: StagedDiagnosticsState = {
     generation: ++stagedDiagnosticsGeneration,
     uri: cached.source.uri,
     version: cached.source.version,
     documentGeneration: cached.generation,
     diagnosticsIdentity: cached.diagnosticsIdentity,
+    includeResolutionGeneration: cached.includeResolutionGeneration,
+    jsProjectGeneration: cached.jsProjectGeneration,
+    workspaceGeneration: cached.workspaceGeneration,
     startedAt: startCheckLog(cached, settings),
     preservePreviousDiagnosticsUntilFinal: options.preservePreviousDiagnosticsUntilFinal === true,
+    asyncLayersStarted: false,
     layers: {},
   };
   stagedDiagnosticsByUri.set(cached.source.uri, state);
@@ -3606,9 +3635,41 @@ function startStagedDiagnostics(
   );
   publishStagedDiagnosticsLayer(cached, settings, state, "fast");
   if (runAsyncLayers) {
-    void runStagedDiagnosticsWithProgress(cached, settings, state);
+    ensureStagedDiagnosticsAsyncLayers(cached, settings, state);
   }
   return state;
+}
+
+function reusableStagedDiagnosticsState(
+  cached: CachedDocument,
+): StagedDiagnosticsState | undefined {
+  const active = stagedDiagnosticsByUri.get(cached.source.uri);
+  if (
+    !active ||
+    active.version !== cached.source.version ||
+    active.documentGeneration !== cached.generation ||
+    active.diagnosticsIdentity !== cached.diagnosticsIdentity ||
+    active.includeResolutionGeneration !== cached.includeResolutionGeneration ||
+    active.jsProjectGeneration !== cached.jsProjectGeneration ||
+    active.workspaceGeneration !== cached.workspaceGeneration
+  ) {
+    return undefined;
+  }
+  return active;
+}
+
+function ensureStagedDiagnosticsAsyncLayers(
+  cached: CachedDocument,
+  settings: AspSettings,
+  state: StagedDiagnosticsState,
+): void {
+  if (state.asyncLayersStarted) {
+    return;
+  }
+  state.asyncLayersStarted = true;
+  void runStagedDiagnosticsWithProgress(cached, settings, state).catch((error: unknown) =>
+    logServerWarning(`[asp-lsp] diagnostics.failed: ${errorMessage(error)}`),
+  );
 }
 
 async function runStagedDiagnosticsWithProgress(
@@ -3791,7 +3852,10 @@ function isCurrentStagedDiagnostics(
     document?.version === state.version &&
     current?.identity.version === state.version &&
     cached.identity.version === state.version &&
-    current?.diagnosticsIdentity === state.diagnosticsIdentity
+    current?.diagnosticsIdentity === state.diagnosticsIdentity &&
+    current.includeResolutionGeneration === state.includeResolutionGeneration &&
+    current.jsProjectGeneration === state.jsProjectGeneration &&
+    current.workspaceGeneration === state.workspaceGeneration
   );
 }
 

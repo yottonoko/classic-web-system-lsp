@@ -14767,6 +14767,57 @@ Response.Write missingName`,
       }
     });
 
+    it("reuses in-flight staged diagnostics for duplicate validations", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = "file:///tmp/staged-diagnostics-reuse.asp";
+        const includes = Array.from(
+          { length: 200 },
+          (_, index) => `<!-- #include file="missing-${index}.inc" -->`,
+        ).join("\n");
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: `${includes}\n<%\nOption Explicit\nResponse.Write missingName\n%>`,
+          },
+        });
+        for (let index = 0; index < 5; index += 1) {
+          server.notify("textDocument/didSave", {
+            textDocument: { uri },
+          });
+        }
+
+        await waitForLogContaining(server, "LSP check started");
+        await waitForLogContaining(server, "diagnostics.reuse");
+        await waitForDiagnosticsContaining(server, "missingName");
+        await waitForLogContaining(server, "LSP check completed");
+        await delay(100);
+        const logText = JSON.stringify(server.takePendingNotifications("window/logMessage"));
+        expect(logText).not.toContain("LSP check started");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("does not clear visible diagnostics while change diagnostics are debounced", async () => {
       const server = new RpcServer();
       try {
