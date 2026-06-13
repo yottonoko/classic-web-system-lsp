@@ -325,6 +325,7 @@ const settingsByUri = new Map<string, AspSettings>();
 const includePathResolutionCache = new Map<string, IncludePathResolution>();
 const pathResolutionCache = new Map<string, PathResolution>();
 const includeCycleCache = new Map<string, string[] | null>();
+const diskAnalysisSettingsKeyCache = new Map<string, string>();
 const includePublicSummaries = new Map<string, IncludePublicSummaryState>();
 const workspaceIndex = new Map<string, WorkspaceIndexedDocument>();
 const workspaceIncludeGraph = new WorkspaceIncludeGraph();
@@ -411,6 +412,7 @@ let includeResolutionGeneration = 0;
 let jsProjectGeneration = 0;
 const serverTextFingerprintCacheMaxEntries = 256;
 const serverTextFingerprintCache = new Map<string, string>();
+const diskAnalysisSettingsKeyCacheMaxEntries = 4096;
 const memoryBudgetManager = new MemoryBudgetManager();
 let lastMemoryBudgetCheckAt = 0;
 let diskAnalysisCache = createDiskAnalysisCache(globalSettings);
@@ -1484,6 +1486,13 @@ function registerMemoryBudgetCaches(): void {
     }),
   );
   memoryBudgetManager.register(
+    registeredMapCache("server.diskAnalysisSettingsKey", diskAnalysisSettingsKeyCache, {
+      priority: 20,
+      estimateEntryBytes: (key, value) =>
+        estimateStringBytes(key) + estimateStringBytes(value) + 64,
+    }),
+  );
+  memoryBudgetManager.register(
     registeredMapCache("server.semanticTokens", semanticTokenResults, {
       priority: 25,
       estimateEntryBytes: (key, value) =>
@@ -2041,6 +2050,7 @@ connection.onDidChangeWatchedFiles(async (change) => {
   let publicChangedFiles = new Set<string>();
   let graphChangedFiles = new Set<string>();
   if (aspChanged) {
+    clearDiskAnalysisSettingsKeyCache();
     const refresh = await refreshIncludeStateForAspChangesAsync(aspChanges);
     includeRefsChangedFiles = refresh.includeRefsChangedFiles;
     publicChangedFiles = refresh.publicChangedFiles;
@@ -12933,7 +12943,14 @@ async function diskAnalysisSettingsKeyFromIncludeRefs(
   includeRefs: FileAnalysisSummary["includeRefs"],
   cancellation: AnalysisCancellation,
 ): Promise<string> {
-  return JSON.stringify({
+  const cacheKey = diskAnalysisSettingsKeyCacheKey(settings, rootUri, includeRefs);
+  const cached = diskAnalysisSettingsKeyCache.get(cacheKey);
+  if (cached !== undefined) {
+    diskAnalysisSettingsKeyCache.delete(cacheKey);
+    diskAnalysisSettingsKeyCache.set(cacheKey, cached);
+    return cached;
+  }
+  const settingsKey = JSON.stringify({
     parse: parseSettingsIdentity(settings),
     diagnostics: diagnosticsIdentity(settings),
     include: includeResolutionIdentity(settings),
@@ -12946,6 +12963,43 @@ async function diskAnalysisSettingsKeyFromIncludeRefs(
     js: jsProjectSettingsIdentity(settings),
     workspace: workspaceIndexSettingsIdentity(settings),
   });
+  if (!cancellation.isCancellationRequested()) {
+    diskAnalysisSettingsKeyCache.set(cacheKey, settingsKey);
+    pruneDiskAnalysisSettingsKeyCache();
+  }
+  return settingsKey;
+}
+
+function diskAnalysisSettingsKeyCacheKey(
+  settings: AspSettings,
+  rootUri: string,
+  includeRefs: FileAnalysisSummary["includeRefs"],
+): string {
+  return JSON.stringify({
+    root: fileIdentityKeyFromUri(rootUri),
+    includeRefs: includeRefsFingerprint(includeRefs),
+    parse: parseSettingsIdentity(settings),
+    diagnostics: diagnosticsIdentity(settings),
+    include: includeResolutionIdentity(settings),
+    includeGeneration: includeResolutionGeneration,
+    js: jsProjectSettingsIdentity(settings),
+    workspace: workspaceIndexSettingsIdentity(settings),
+    workspaceGeneration,
+  });
+}
+
+function pruneDiskAnalysisSettingsKeyCache(): void {
+  while (diskAnalysisSettingsKeyCache.size > diskAnalysisSettingsKeyCacheMaxEntries) {
+    const oldest = diskAnalysisSettingsKeyCache.keys().next().value;
+    if (oldest === undefined) {
+      return;
+    }
+    diskAnalysisSettingsKeyCache.delete(oldest);
+  }
+}
+
+function clearDiskAnalysisSettingsKeyCache(): void {
+  diskAnalysisSettingsKeyCache.clear();
 }
 
 async function diskAnalysisIncludeDependencyKey(
@@ -13601,6 +13655,7 @@ function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
   workspaceIndexRestoreAllowed = false;
   workspaceIndex.clear();
   sourceManifest.clear();
+  clearDiskAnalysisSettingsKeyCache();
   invalidateWorkspaceIncludeGraph(reason);
   clearWorkspaceVbReferenceCaches();
   logInvalidation("workspaceIndex", reason, workspaceGeneration);
@@ -13608,6 +13663,7 @@ function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
 
 async function clearDiskAnalysisCacheByCommand(): Promise<void> {
   await diskAnalysisCache.clear();
+  clearDiskAnalysisSettingsKeyCache();
   fsGateway.invalidateAll();
   logDebugSummary(globalSettings, "[asp-lsp] diskCache.clear");
 }
@@ -13632,6 +13688,7 @@ async function clearProcessCachesByCommand(reason: string): Promise<void> {
   cache.clear();
   inFlightDocumentRefreshes.clear();
   pendingIncludeSummaryRefreshes.clear();
+  clearDiskAnalysisSettingsKeyCache();
   interactiveVbProjectContextSnapshots.clear();
   pendingInteractiveVbProjectContextRefreshes.clear();
   vbProjectContextCache.clear();
@@ -15715,6 +15772,7 @@ function clearIncludeCaches(): void {
   includePathResolutionCache.clear();
   pathResolutionCache.clear();
   includeCycleCache.clear();
+  clearDiskAnalysisSettingsKeyCache();
   includeDocumentLoader.clear();
   clearGraphFileIndexCache();
   clearIncludeGraph();
@@ -15749,6 +15807,7 @@ function invalidateIncludeResolutionForAspChanges(
     }
   }
   includeCycleCache.clear();
+  clearDiskAnalysisSettingsKeyCache();
   completionSessionCache.clear("includeResolution.partial");
   logDebugSummary(
     globalSettings,
