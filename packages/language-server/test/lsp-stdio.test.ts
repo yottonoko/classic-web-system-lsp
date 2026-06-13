@@ -15322,6 +15322,91 @@ ${updated}`;
       }
     });
 
+    it("shares the TypeScript language service across files in the same JavaScript project", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-project-share-"));
+      const firstDir = path.join(tempDir, "first");
+      const secondDir = path.join(tempDir, "second");
+      fs.mkdirSync(firstDir);
+      fs.mkdirSync(secondDir);
+      const firstFile = path.join(firstDir, "one.asp");
+      const secondFile = path.join(secondDir, "two.asp");
+      const firstSource = `<script>
+const firstProjectValue = 1;
+firstProject
+</script>`;
+      const secondSource = `<script>
+const secondProjectValue = 1;
+secondProject
+</script>`;
+      fs.writeFileSync(firstFile, firstSource, "utf8");
+      fs.writeFileSync(secondFile, secondSource, "utf8");
+      const firstUri = pathToFileURL(firstFile).href;
+      const secondUri = pathToFileURL(secondFile).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: firstUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: firstSource,
+          },
+        });
+        await waitForLogContaining(server, "LSP check completed");
+
+        const firstCompletion = await server.request("textDocument/completion", {
+          textDocument: { uri: firstUri },
+          position: positionAt(
+            firstSource,
+            firstSource.lastIndexOf("firstProject") + "firstProject".length,
+          ),
+        });
+        expect(JSON.stringify(firstCompletion)).toContain("firstProjectValue");
+        await waitForLogContaining(server, "javascript.languageService.create");
+        server.takePendingNotifications("window/logMessage");
+
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: secondUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: secondSource,
+          },
+        });
+        await waitForLogContaining(server, "LSP check completed");
+
+        const secondCompletion = await server.request("textDocument/completion", {
+          textDocument: { uri: secondUri },
+          position: positionAt(
+            secondSource,
+            secondSource.lastIndexOf("secondProject") + "secondProject".length,
+          ),
+        });
+        expect(JSON.stringify(secondCompletion)).toContain("secondProjectValue");
+        await waitForLogContaining(server, "javascript.languageService.reuse");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("answers JavaScript completions after edits without flushing project prewarm", async () => {
       const source = `<script>
 const alphaValue = 1;

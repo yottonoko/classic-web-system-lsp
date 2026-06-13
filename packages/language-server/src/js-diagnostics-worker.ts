@@ -28,7 +28,7 @@ const fileStatCache = new Map<string, CachedFileStat | undefined>();
 const configCache = new Map<string, { config: JsProjectConfig; lastUsed: number }>();
 const documentRegistry = ts.createDocumentRegistry(ts.sys.useCaseSensitiveFileNames);
 const languageServiceCache = new Map<string, PersistentLanguageServiceEntry>();
-const maxLanguageServiceCacheEntries = 2;
+const maxLanguageServiceCacheEntries = 8;
 const maxScriptSnapshotCacheEntries = 4096;
 let cacheTick = 0;
 let currentProjectGeneration: number | undefined;
