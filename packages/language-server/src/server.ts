@@ -21897,10 +21897,16 @@ async function referenceCodeLensSymbolsForCachedDocumentAsync(
   cached: CachedDocument,
   settings: AspSettings,
 ): Promise<VbSymbol[]> {
+  // Key the CodeLens symbol cache on cheap document identity (version + parse
+  // generation) instead of hashing every embedded VBScript region. The content
+  // hash walked `cached.parsed.text` once per region, which is pathologically
+  // slow when the open document text is a non-flat (rope) string, and is
+  // redundant here: `cached.analysis` is recreated on every reparse and
+  // `cached.source.version` already changes on every edit.
   const key = JSON.stringify({
     uri: cached.source.uri,
     version: cached.source.version,
-    parsed: vbProjectDocumentFingerprint(cached.parsed),
+    generation: cached.generation,
     settings: {
       codeLens: settings.codeLens,
       vbscript: vbProjectContextSettings(settings),
@@ -21911,8 +21917,13 @@ async function referenceCodeLensSymbolsForCachedDocumentAsync(
     return existing.symbols;
   }
   await hydrateCachedVbscriptCstAsync(cached, settings, "codeLens");
+  // CodeLens only needs symbol identity (kind/name/range/scope), not inferred
+  // types, so skip the type-inference passes to keep collection cheap.
   const symbols = (
-    await collectVbscriptSymbolsAsync(cached.parsed, vbProjectContextSettings(settings))
+    await collectVbscriptSymbolsAsync(cached.parsed, vbProjectContextSettings(settings), {
+      inferTypes: false,
+      variantFallback: false,
+    })
   ).filter((item) => shouldShowVbReferenceCodeLens(item, cached.source.uri, settings.codeLens));
   analysisFor(cached).referenceCodeLensSymbols = { key, symbols };
   return symbols;
