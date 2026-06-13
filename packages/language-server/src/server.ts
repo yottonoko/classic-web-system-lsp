@@ -231,6 +231,7 @@ import {
   getVbscriptDocumentationQuickAction,
   getVbscriptDocumentHighlights,
   getVbscriptDocumentSymbols,
+  flattenString,
   getVbscriptHover,
   getVbscriptImplementation,
   getVbscriptIncomingCalls,
@@ -5923,7 +5924,9 @@ function vbscriptRegionContentFingerprint(parsed: AspParsedDocument): string {
       .filter((region) => region.language === "vbscript")
       .map((region) => ({
         kind: region.kind,
-        text: textFingerprint(parsed.text.slice(region.contentStart, region.contentEnd)),
+        text: computeTextFingerprint(
+          flattenString(parsed.text.slice(region.contentStart, region.contentEnd)),
+        ),
       })),
   });
 }
@@ -11034,7 +11037,9 @@ function vbProjectDocumentFingerprint(document: AspParsedDocument): unknown {
         end: region.end,
         contentStart: region.contentStart,
         contentEnd: region.contentEnd,
-        text: textFingerprint(document.text.slice(region.contentStart, region.contentEnd)),
+        text: computeTextFingerprint(
+          flattenString(document.text.slice(region.contentStart, region.contentEnd)),
+        ),
       })),
   };
 }
@@ -15954,12 +15959,7 @@ function textFingerprint(text: string): string {
     serverTextFingerprintCache.set(text, cached);
     return cached;
   }
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  const fingerprint = `${text.length}:${hash >>> 0}`;
+  const fingerprint = computeTextFingerprint(text);
   serverTextFingerprintCache.set(text, fingerprint);
   while (serverTextFingerprintCache.size > serverTextFingerprintCacheMaxEntries) {
     const oldest = serverTextFingerprintCache.keys().next().value;
@@ -15970,6 +15970,15 @@ function textFingerprint(text: string): string {
   }
   checkMemoryPressure(globalSettings, "server.textFingerprint.prune");
   return fingerprint;
+}
+
+function computeTextFingerprint(text: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${text.length}:${hash >>> 0}`;
 }
 
 function jsScriptSnapshotForVirtual(

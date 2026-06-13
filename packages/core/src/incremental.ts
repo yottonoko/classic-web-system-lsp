@@ -24,6 +24,10 @@ export interface NormalizedIncrementalChange extends AspIncrementalChange {
   endOffset: number;
 }
 
+export function flattenString(text: string): string {
+  return text.split("").join("");
+}
+
 export function resolveAspIncrementalMode(settings: AspSettings = {}): AspIncrementalMode {
   const mode = settings.incremental?.mode;
   return mode === "full" || mode === "off" ? mode : "legacy";
@@ -62,7 +66,7 @@ export function applyIncrementalChanges(
   previousText: string,
   changes: readonly AspIncrementalChange[],
 ): string {
-  return [...changes]
+  const updatedText = [...changes]
     .map((change) => normalizeIncrementalChange(previousText, change))
     .filter((change): change is NormalizedIncrementalChange => Boolean(change))
     .sort((left, right) => right.startOffset - left.startOffset)
@@ -71,6 +75,7 @@ export function applyIncrementalChanges(
         `${text.slice(0, change.startOffset)}${change.text}${text.slice(change.endOffset)}`,
       previousText,
     );
+  return flattenString(updatedText);
 }
 
 export function changesOverlap(changes: readonly NormalizedIncrementalChange[]): boolean {

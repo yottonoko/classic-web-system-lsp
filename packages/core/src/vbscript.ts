@@ -24,6 +24,7 @@ import type {
 } from "vscode-languageserver-types";
 import { offsetAt, positionAt, rangeFromOffsets } from "./position";
 import { hydrateVbscriptCst, needsVbscriptCstHydration, parseAspDocument } from "./parser";
+import { flattenString } from "./incremental";
 import { createLocalizer } from "./localize";
 import { sameSourceUri, sourceUriIdentityKey } from "./source-uri";
 import builtinCatalogData from "./vbscript-builtin-catalog.json";
@@ -4093,7 +4094,9 @@ function summarizeAspFileAnalysisTypeScriptInner(
     end: region.end,
     contentStart: region.contentStart,
     contentEnd: region.contentEnd,
-    fingerprint: textFingerprint(parsed.text.slice(region.contentStart, region.contentEnd)),
+    fingerprint: textFingerprint(
+      flattenString(parsed.text.slice(region.contentStart, region.contentEnd)),
+    ),
   }));
   const publicSignatureHash = publicSignatureHashForSummary({
     defaultLanguage: parsed.defaultLanguage,
@@ -4186,7 +4189,7 @@ function summarizeVbscriptFileTypeScript(
     fingerprint: textFingerprint(
       JSON.stringify({
         serverRegions: serverRegions(parsed).map((region) =>
-          parsed.text.slice(region.contentStart, region.contentEnd),
+          flattenString(parsed.text.slice(region.contentStart, region.contentEnd)),
         ),
         serverObjects: serverObjectDeclarations(parsed),
       }),
@@ -6588,7 +6591,7 @@ function computeVbDocuments(parsed: AspParsedDocument): VbCstNode[] {
     for (const region of serverRegions(parsed)) {
       documents.push(
         parseVbscriptCst(
-          parsed.text.slice(region.contentStart, region.contentEnd),
+          flattenString(parsed.text.slice(region.contentStart, region.contentEnd)),
           parsed.text,
           region.contentStart,
         ),
@@ -6629,7 +6632,7 @@ function snapshotFor(parsed: AspParsedDocument): VbAnalysisSnapshot {
     preOrderIndexByNode,
   );
   const serverScriptText = serverRegions(parsed)
-    .map((region) => parsed.text.slice(region.contentStart, region.contentEnd))
+    .map((region) => flattenString(parsed.text.slice(region.contentStart, region.contentEnd)))
     .join("\n");
   const significantTokens: VbToken[] = [];
   const identifierTokens: VbToken[] = [];
@@ -8136,7 +8139,7 @@ function isRuntimeEntryPoint(parsed: AspParsedDocument, symbol: VbSymbol): boole
 
 function getServerScriptText(parsed: AspParsedDocument): string {
   return serverRegions(parsed)
-    .map((region) => parsed.text.slice(region.contentStart, region.contentEnd))
+    .map((region) => flattenString(parsed.text.slice(region.contentStart, region.contentEnd)))
     .join("\n");
 }
 
