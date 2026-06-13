@@ -377,8 +377,9 @@ const semanticTokensLargeSourceThreshold = internalTestThreshold(
 );
 const semanticTokensLargeJavascriptThreshold = internalTestThreshold(
   "ASP_LSP_TEST_SEMANTIC_TOKENS_LARGE_JAVASCRIPT_THRESHOLD",
-  128 * 1024,
+  50 * 1024,
 );
+const semanticTokensDeferredWorkDelayMs = 25;
 const defaultDebugLogFileName = "asp-lsp-debug.log";
 const debugLogFileMaxBytes = internalTestThreshold(
   "ASP_LSP_TEST_DEBUG_LOG_MAX_BYTES",
@@ -535,6 +536,12 @@ const semanticTokenModifiers = [
   "byref",
   "byval",
 ] as const;
+const semanticTokenTypeIndexes = new Map<string, number>(
+  semanticTokenTypes.map((tokenType, index) => [tokenType, index]),
+);
+const semanticTokenModifierBitsets = new Map<string, number>(
+  semanticTokenModifiers.map((modifier, index) => [modifier, 1 << index]),
+);
 
 interface RegionIndex {
   byStart: AspRegion[];
@@ -8664,6 +8671,26 @@ async function interactiveVbProjectContextAsync(
   );
 }
 
+async function semanticTokensVbProjectContextAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<VbProjectContext> {
+  const exact = cachedVbProjectContextLookup(cached, settings);
+  if (exact) {
+    rememberInteractiveVbProjectContextSnapshot(cached, settings, exact.key, exact.context);
+    return exact.context;
+  }
+  if (cached.parsed.includes.length > 0) {
+    const stale = await staleInteractiveVbProjectContextLookupAsync(cached, settings);
+    if (stale) {
+      scheduleInteractiveVbProjectContextRefresh(cached, settings, "semanticTokens.context.stale");
+      return stale.context;
+    }
+    scheduleInteractiveVbProjectContextRefresh(cached, settings, "semanticTokens.context.local");
+  }
+  return buildImmediateLocalVbProjectContextAsync(cached, settings);
+}
+
 async function interactiveVbProjectContextLookupAsync(
   cached: CachedDocument,
   settings: AspSettings,
@@ -8764,28 +8791,32 @@ function scheduleInteractiveVbProjectContextRefresh(
   }
   const uri = cached.source.uri;
   const version = cached.identity.version;
-  const promise = buildVbProjectContextAsync(cached, settings, { allowReadMissing: true })
-    .then((context) => {
-      const current = openDocumentForUri(uri);
-      if (current?.version !== version) {
-        return;
-      }
-      const key =
-        cached.analysis?.vbProjectContext?.key ??
-        vbProjectContextCacheKey(context.documents ?? [cached.parsed], settings);
-      rememberInteractiveVbProjectContextSnapshot(cached, settings, key, context);
-      requestVisualRefresh(reason);
-      validate(current);
-      logDebugSummary(settings, `[asp-lsp] vbProject.context.refresh.completed: ${uri}`);
-    })
-    .catch((error: unknown) =>
-      logServerWarning(
-        `[asp-lsp] vbProject.context.refresh.failed: ${uri}, error=${errorMessage(error)}`,
-      ),
-    )
-    .finally(() => {
-      pendingInteractiveVbProjectContextRefreshes.delete(familyKey);
-    });
+  const promise = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      void buildVbProjectContextAsync(cached, settings, { allowReadMissing: true })
+        .then((context) => {
+          const current = openDocumentForUri(uri);
+          if (current?.version !== version) {
+            return;
+          }
+          const key =
+            cached.analysis?.vbProjectContext?.key ??
+            vbProjectContextCacheKey(context.documents ?? [cached.parsed], settings);
+          rememberInteractiveVbProjectContextSnapshot(cached, settings, key, context);
+          requestVisualRefresh(reason);
+          validate(current);
+          logDebugSummary(settings, `[asp-lsp] vbProject.context.refresh.completed: ${uri}`);
+        })
+        .catch((error: unknown) =>
+          logServerWarning(
+            `[asp-lsp] vbProject.context.refresh.failed: ${uri}, error=${errorMessage(error)}`,
+          ),
+        )
+        .finally(resolve);
+    }, semanticTokensDeferredWorkDelayMs);
+  }).finally(() => {
+    pendingInteractiveVbProjectContextRefreshes.delete(familyKey);
+  });
   pendingInteractiveVbProjectContextRefreshes.set(familyKey, promise);
 }
 
@@ -22428,7 +22459,7 @@ async function buildSemanticTokensAsync(
   const settings = cachedSettings(cached.source.uri);
   return buildSemanticTokensWithContextAsync(
     cached,
-    await interactiveVbProjectContextAsync(cached, settings),
+    await semanticTokensVbProjectContextAsync(cached, settings),
     range,
     settings,
   );
@@ -22450,94 +22481,113 @@ async function buildSemanticTokensWithContextAsync(
   const rangeStart = range ? cached.source.offsetAt(range.start) : 0;
   const rangeEnd = range ? cached.source.offsetAt(range.end) : cached.source.getText().length;
   const tokens: SemanticTokenData[] = [];
-  for (const region of regionsInSourceRange(cached.parsed, rangeStart, rangeEnd)) {
-    if (region.kind === "asp-block" || region.kind === "asp-expression") {
-      addSemanticTokenInSourceRange(
-        tokens,
-        cached.source,
-        region.start,
-        2,
-        "keyword",
-        rangeStart,
-        rangeEnd,
-      );
-      if (region.kind === "asp-expression") {
+  measureDebugStep(settings, cached.source.uri, "semanticTokens.aspRegions", () => {
+    for (const region of regionsInSourceRange(cached.parsed, rangeStart, rangeEnd)) {
+      if (region.kind === "asp-block" || region.kind === "asp-expression") {
         addSemanticTokenInSourceRange(
           tokens,
           cached.source,
-          region.start + 2,
+          region.start,
+          2,
+          "keyword",
+          rangeStart,
+          rangeEnd,
+        );
+        if (region.kind === "asp-expression") {
+          addSemanticTokenInSourceRange(
+            tokens,
+            cached.source,
+            region.start + 2,
+            1,
+            "keyword",
+            rangeStart,
+            rangeEnd,
+          );
+        }
+        if (region.end - region.contentEnd >= 2) {
+          addSemanticTokenInSourceRange(
+            tokens,
+            cached.source,
+            region.contentEnd,
+            2,
+            "keyword",
+            rangeStart,
+            rangeEnd,
+          );
+        }
+      } else if (region.kind === "asp-directive") {
+        addSemanticTokenInSourceRange(
+          tokens,
+          cached.source,
+          region.start,
+          Math.min(region.end - region.start, 3),
+          "keyword",
+          rangeStart,
+          rangeEnd,
+        );
+        if (region.end - region.contentEnd >= 2) {
+          addSemanticTokenInSourceRange(
+            tokens,
+            cached.source,
+            region.contentEnd,
+            2,
+            "keyword",
+            rangeStart,
+            rangeEnd,
+          );
+        }
+      }
+    }
+  });
+  const vbSemanticTokens = measureDebugStep(
+    settings,
+    cached.source.uri,
+    "semanticTokens.vbscript",
+    () => getVbscriptSemanticTokens(cached.parsed, vbContext, range),
+  );
+  measureDebugStep(settings, cached.source.uri, "semanticTokens.vbscript.map", () => {
+    for (const semanticToken of vbSemanticTokens) {
+      const offset = cached.source.offsetAt(semanticToken.range.start);
+      if (offset < rangeStart || offset >= rangeEnd) {
+        continue;
+      }
+      tokens.push({
+        line: semanticToken.range.start.line,
+        character: semanticToken.range.start.character,
+        length: Math.max(
           1,
-          "keyword",
-          rangeStart,
-          rangeEnd,
-        );
-      }
-      if (region.end - region.contentEnd >= 2) {
-        addSemanticTokenInSourceRange(
-          tokens,
-          cached.source,
-          region.contentEnd,
-          2,
-          "keyword",
-          rangeStart,
-          rangeEnd,
-        );
-      }
-    } else if (region.kind === "asp-directive") {
-      addSemanticTokenInSourceRange(
-        tokens,
-        cached.source,
-        region.start,
-        Math.min(region.end - region.start, 3),
-        "keyword",
-        rangeStart,
-        rangeEnd,
-      );
-      if (region.end - region.contentEnd >= 2) {
-        addSemanticTokenInSourceRange(
-          tokens,
-          cached.source,
-          region.contentEnd,
-          2,
-          "keyword",
-          rangeStart,
-          rangeEnd,
-        );
-      }
+          semanticToken.range.end.character - semanticToken.range.start.character,
+        ),
+        tokenType: semanticToken.tokenType,
+        tokenModifiers: semanticToken.tokenModifiers,
+      });
     }
-  }
-  for (const semanticToken of getVbscriptSemanticTokens(cached.parsed, vbContext, range)) {
-    const offset = cached.source.offsetAt(semanticToken.range.start);
-    if (offset < rangeStart || offset >= rangeEnd) {
-      continue;
-    }
-    tokens.push({
-      line: semanticToken.range.start.line,
-      character: semanticToken.range.start.character,
-      length: Math.max(1, semanticToken.range.end.character - semanticToken.range.start.character),
-      tokenType: semanticToken.tokenType,
-      tokenModifiers: semanticToken.tokenModifiers,
-    });
-  }
-  addFallbackVbSemanticTokens(tokens, cached, vbContext, rangeStart, rangeEnd);
-  addIncludeSemanticTokens(tokens, cached, rangeStart, rangeEnd);
+  });
+  measureDebugStep(settings, cached.source.uri, "semanticTokens.fallbackVbscript", () =>
+    addFallbackVbSemanticTokens(tokens, cached, vbContext, rangeStart, rangeEnd),
+  );
+  measureDebugStep(settings, cached.source.uri, "semanticTokens.includes", () =>
+    addIncludeSemanticTokens(tokens, cached, rangeStart, rangeEnd),
+  );
   const javascriptCacheKey = semanticJavascriptTokensCacheKey(cached, settings, jsVirtuals);
-  const javascriptDeferred = await addEmbeddedSemanticTokensAsync(
-    tokens,
-    cached,
-    rangeStart,
-    rangeEnd,
-    {
-      settings,
-      jsVirtuals,
-      deferLargeJavascript: full,
-      javascriptCacheKey,
-    },
+  const javascriptDeferred = await measureDebugStepAsync(
+    settings,
+    cached.source.uri,
+    "semanticTokens.embedded",
+    () =>
+      addEmbeddedSemanticTokensAsync(tokens, cached, rangeStart, rangeEnd, {
+        settings,
+        jsVirtuals,
+        deferLargeJavascript: full,
+        javascriptCacheKey,
+      }),
   );
-  const uniqueTokens = dedupeSemanticTokens(tokens).sort(
-    (left, right) => left.line - right.line || left.character - right.character,
+  const uniqueTokens = measureDebugStep(settings, cached.source.uri, "semanticTokens.dedupe", () =>
+    sortAndDedupeSemanticTokens(tokens),
   );
-  const result = semanticTokensFromData(uniqueTokens);
+  const result = measureDebugStep(settings, cached.source.uri, "semanticTokens.encode", () =>
+    semanticTokensFromData(uniqueTokens),
+  );
   if (fullCacheKey && !javascriptDeferred) {
     analysisFor(cached).semanticTokensFull = {
       key: fullCacheKey,
@@ -22729,28 +22779,61 @@ function addRangeSemanticToken(
   addSemanticToken(tokens, document, offset, document.offsetAt(range.end) - offset, tokenType);
 }
 
-function dedupeSemanticTokens(tokens: SemanticTokenData[]): SemanticTokenData[] {
-  const seen = new Set<string>();
-  return tokens.filter((token) => {
-    const key = `${token.line}:${token.character}:${token.length}:${token.tokenType}:${semanticTokenModifierBitset(token.tokenModifiers)}`;
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
+interface NormalizedSemanticTokenData {
+  line: number;
+  character: number;
+  length: number;
+  tokenType: number;
+  tokenModifiers: number;
 }
 
-function semanticTokensFromData(tokens: readonly SemanticTokenData[]): SemanticTokens {
+function sortAndDedupeSemanticTokens(
+  tokens: readonly SemanticTokenData[],
+): NormalizedSemanticTokenData[] {
+  const normalized = tokens
+    .map((token): NormalizedSemanticTokenData | undefined => {
+      const tokenType = semanticTokenTypeIndexes.get(token.tokenType);
+      if (tokenType === undefined) {
+        return undefined;
+      }
+      return {
+        line: token.line,
+        character: token.character,
+        length: token.length,
+        tokenType,
+        tokenModifiers: semanticTokenModifierBitset(token.tokenModifiers),
+      };
+    })
+    .filter((token): token is NormalizedSemanticTokenData => token !== undefined)
+    .sort(compareNormalizedSemanticTokens);
+  const unique: NormalizedSemanticTokenData[] = [];
+  let previous: NormalizedSemanticTokenData | undefined;
+  for (const token of normalized) {
+    if (!previous || compareNormalizedSemanticTokens(previous, token) !== 0) {
+      unique.push(token);
+      previous = token;
+    }
+  }
+  return unique;
+}
+
+function compareNormalizedSemanticTokens(
+  left: NormalizedSemanticTokenData,
+  right: NormalizedSemanticTokenData,
+): number {
+  return (
+    left.line - right.line ||
+    left.character - right.character ||
+    left.length - right.length ||
+    left.tokenType - right.tokenType ||
+    left.tokenModifiers - right.tokenModifiers
+  );
+}
+
+function semanticTokensFromData(tokens: readonly NormalizedSemanticTokenData[]): SemanticTokens {
   const builder = new SemanticTokensBuilder();
   for (const token of tokens) {
-    builder.push(
-      token.line,
-      token.character,
-      token.length,
-      semanticTokenTypes.indexOf(token.tokenType as (typeof semanticTokenTypes)[number]),
-      semanticTokenModifierBitset(token.tokenModifiers),
-    );
+    builder.push(token.line, token.character, token.length, token.tokenType, token.tokenModifiers);
   }
   return builder.build();
 }
@@ -22758,11 +22841,9 @@ function semanticTokensFromData(tokens: readonly SemanticTokenData[]): SemanticT
 function semanticTokenModifierBitset(modifiers: readonly string[] | undefined): number {
   let bitset = 0;
   for (const modifier of modifiers ?? []) {
-    const index = semanticTokenModifiers.indexOf(
-      modifier as (typeof semanticTokenModifiers)[number],
-    );
-    if (index !== -1) {
-      bitset |= 1 << index;
+    const modifierBitset = semanticTokenModifierBitsets.get(modifier);
+    if (modifierBitset !== undefined) {
+      bitset |= modifierBitset;
     }
   }
   return bitset;
@@ -22879,28 +22960,30 @@ async function addEmbeddedSemanticTokensAsync(
   options: EmbeddedSemanticTokenOptions,
 ): Promise<boolean> {
   const css = getCachedVirtual(cached, "css");
-  if (css && virtualOverlapsSourceRange(css, rangeStart, rangeEnd)) {
-    const pattern = /\b([A-Za-z-]+)\s*:/g;
-    for (const slice of virtualSearchSlicesForSourceRange(css, rangeStart, rangeEnd)) {
-      pattern.lastIndex = 0;
-      let match: RegExpExecArray | null;
-      while ((match = pattern.exec(slice.text))) {
-        if (match.index !== undefined) {
-          addVirtualWordToken(
-            tokens,
-            cached.source,
-            cached,
-            css,
-            slice.start + match.index,
-            match[1].length,
-            "property",
-            rangeStart,
-            rangeEnd,
-          );
+  measureDebugStep(options.settings, cached.source.uri, "semanticTokens.embedded.css", () => {
+    if (css && virtualOverlapsSourceRange(css, rangeStart, rangeEnd)) {
+      const pattern = /\b([A-Za-z-]+)\s*:/g;
+      for (const slice of virtualSearchSlicesForSourceRange(css, rangeStart, rangeEnd)) {
+        pattern.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = pattern.exec(slice.text))) {
+          if (match.index !== undefined) {
+            addVirtualWordToken(
+              tokens,
+              cached.source,
+              cached,
+              css,
+              slice.start + match.index,
+              match[1].length,
+              "property",
+              rangeStart,
+              rangeEnd,
+            );
+          }
         }
       }
     }
-  }
+  });
   if (
     options.jsVirtuals.length > 0 &&
     options.deferLargeJavascript &&
@@ -22945,12 +23028,18 @@ async function addEmbeddedSemanticTokensAsync(
     return false;
   }
   tokens.push(
-    ...(await computeJavascriptSemanticTokensAsync(
-      cached,
+    ...(await measureDebugStepAsync(
       options.settings,
-      jsVirtuals,
-      rangeStart,
-      rangeEnd,
+      cached.source.uri,
+      "semanticTokens.embedded.javascript",
+      () =>
+        computeJavascriptSemanticTokensAsync(
+          cached,
+          options.settings,
+          jsVirtuals,
+          rangeStart,
+          rangeEnd,
+        ),
     )),
   );
   return false;
@@ -22993,7 +23082,7 @@ function scheduleSemanticJavascriptTokenCache(
   }
   const sourceLength = cached.source.getText().length;
   const promise = new Promise<void>((resolve) => {
-    setImmediate(() => {
+    setTimeout(() => {
       const current = cache.get(cached.source.uri);
       if (
         current !== cached ||
@@ -23011,7 +23100,7 @@ function scheduleSemanticJavascriptTokenCache(
         javascriptCacheKey,
         sourceLength,
       ).finally(resolve);
-    });
+    }, semanticTokensDeferredWorkDelayMs);
   });
   pendingSemanticJavascriptTokenBuilds.set(javascriptCacheKey, promise);
 }
