@@ -161,6 +161,13 @@ interface SourceRangesMessage {
   items: AspGraphSourceRangeResponseItem[];
 }
 
+interface GraphUpdatedMessage {
+  type: "graphUpdated";
+  payload?: AspGraphPayload;
+  final?: boolean;
+  error?: string;
+}
+
 type SnippetLanguage = "classic-asp" | "vbscript";
 
 type SnippetHighlightState =
@@ -179,7 +186,7 @@ interface HighlightOffsets {
 }
 
 const vscode = acquireVsCodeApi();
-const graph = window.__ASP_LSP_GRAPH__;
+const initialGraph = window.__ASP_LSP_GRAPH__;
 const initialGraphTargetRange = isGraphRange(window.__ASP_LSP_GRAPH_TARGET_RANGE__)
   ? window.__ASP_LSP_GRAPH_TARGET_RANGE__
   : undefined;
@@ -373,6 +380,8 @@ const graphMessageEn = {
   "toolbar.truncatedHint":
     "The graph was capped before rendering. Increase {setting} to include more nodes.",
   "toolbar.truncatedSetting": "Raise limit",
+  "toolbar.updateFailed": "Update failed: {error}",
+  "toolbar.updating": "Updating graph...",
   "view.currentFileGraph": "Current File Graph",
   "view.folderGraph": "Folder Graph",
   "view.inspector": "Inspector",
@@ -569,6 +578,8 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
     "toolbar.truncatedHint":
       "表示前に graph が切り詰められました。より多くの node を含めるには {setting} を上げてください。",
     "toolbar.truncatedSetting": "上限を上げる",
+    "toolbar.updateFailed": "更新失敗: {error}",
+    "toolbar.updating": "graph 更新中...",
     "view.currentFileGraph": "現在のファイルのグラフ",
     "view.folderGraph": "フォルダーグラフ",
     "view.inspector": "情報",
@@ -577,7 +588,7 @@ const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
   },
 };
 
-const graphLocale: GraphLocale = graph?.locale === "ja" ? "ja" : "en";
+const graphLocale: GraphLocale = initialGraph?.locale === "ja" ? "ja" : "en";
 
 function graphText(key: GraphTextKey, params?: GraphTextParams): string {
   let message = graphMessages[graphLocale][key] ?? graphMessages.en[key];
@@ -855,6 +866,9 @@ function detectedVsCodeTheme(): WebviewTheme {
 }
 
 function App(): React.ReactElement {
+  const [graph, setGraph] = useState<AspGraphPayload | undefined>(() => initialGraph);
+  const [graphRevision, setGraphRevision] = useState(0);
+  const [graphUpdateError, setGraphUpdateError] = useState<string>();
   const theme = useResolvedWebviewTheme(graph?.settings?.theme);
   const themePalette = graphThemePalettes[theme];
   const [mode, setMode] = useState<ViewMode>(graph?.settings?.initialViewMode ?? "2d");
@@ -890,7 +904,7 @@ function App(): React.ReactElement {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const skipAutoFitForModeRef = useRef(new Set<ViewMode>());
   const forceFitForModeRef = useRef(new Set<ViewMode>());
-  const graphData = useMemo(() => graphDataFor(graph, themePalette), [themePalette]);
+  const graphData = useMemo(() => graphDataFor(graph, themePalette), [graph, themePalette]);
   const filteredGraphData = useMemo(
     () =>
       filterGraphData(
@@ -955,6 +969,11 @@ function App(): React.ReactElement {
   const truncatedGraphTitle = graph?.truncated
     ? graphText("toolbar.truncatedHint", { setting: "aspLsp.graph.maxNodes" })
     : undefined;
+  const graphUpdateText = graphUpdateError
+    ? graphText("toolbar.updateFailed", { error: graphUpdateError })
+    : graph?.pending
+      ? graphText("toolbar.updating")
+      : undefined;
   const surfaceClassName =
     inspectorPosition === "left"
       ? "relative order-3 min-h-0 min-w-0 overflow-hidden max-[780px]:order-1 [&_canvas]:block"
@@ -1041,13 +1060,17 @@ function App(): React.ReactElement {
     if (hasFocusedInitialTargetRef.current || !initialGraphTargetRange) {
       return;
     }
-    const target = graphStatsTargetForRange(filteredGraphData, initialGraphTargetRange);
+    const target = graphStatsTargetForRange(
+      filteredGraphData,
+      initialGraphTargetRange,
+      graph?.rootUri,
+    );
     if (!target) {
       return;
     }
     hasFocusedInitialTargetRef.current = true;
     selectAndFocusGraphTarget(target);
-  }, [filteredGraphData, selectAndFocusGraphTarget]);
+  }, [filteredGraphData, graph?.rootUri, selectAndFocusGraphTarget]);
   const focusSearchResult = useCallback(
     (direction: 1 | -1) => {
       if (searchTargets.length === 0) {
@@ -1186,6 +1209,29 @@ function App(): React.ReactElement {
     return () => window.removeEventListener("keydown", clearSelectionOnEscape);
   }, []);
 
+  useEffect(() => {
+    const handleGraphUpdated = (event: MessageEvent<unknown>) => {
+      const message = event.data;
+      if (!isGraphUpdatedMessage(message)) {
+        return;
+      }
+      startTransition(() => {
+        if (message.payload) {
+          setGraph(message.payload);
+          setGraphRevision((current) => current + 1);
+          setGraphUpdateError(undefined);
+          return;
+        }
+        if (message.error) {
+          setGraph((current) => (current ? { ...current, pending: false } : current));
+          setGraphUpdateError(message.error);
+        }
+      });
+    };
+    window.addEventListener("message", handleGraphUpdated);
+    return () => window.removeEventListener("message", handleGraphUpdated);
+  }, []);
+
   useEffect(
     () => () => {
       if (positionSyncReleaseTimerRef.current) {
@@ -1201,10 +1247,12 @@ function App(): React.ReactElement {
   }, [renderGraphData2d, renderGraphData3d]);
 
   useEffect(() => {
-    if (selection && !isSelectionVisible(selection, filteredGraphData)) {
-      setSelection(undefined);
-    }
-  }, [filteredGraphData, selection]);
+    setSelection((current) =>
+      current
+        ? selectionForStatsTarget({ type: current.type, id: current.item.id }, filteredGraphData)
+        : undefined,
+    );
+  }, [filteredGraphData]);
 
   useEffect(() => {
     if (layoutSize.width <= 780) {
@@ -1289,6 +1337,18 @@ function App(): React.ReactElement {
               title={titleFileName}
             >
               {titleFileName}
+            </span>
+          ) : null}
+          {graphUpdateText ? (
+            <span
+              className={
+                graphUpdateError
+                  ? "min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#ff9cac]"
+                  : "min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-[#89ddff]"
+              }
+              title={graphUpdateText}
+            >
+              {graphUpdateText}
             </span>
           ) : null}
           {graph.truncated && truncatedGraphText ? (
@@ -1483,6 +1543,7 @@ function App(): React.ReactElement {
           onWidthChange={setInspectorWidth}
         />
         <Inspector
+          key={graphRevision}
           graphData={graphData}
           visibleGraphData={filteredGraphData}
           selection={selection}
@@ -3924,6 +3985,18 @@ function isSourceRangesMessage(value: unknown): value is SourceRangesMessage {
   );
 }
 
+function isGraphUpdatedMessage(value: unknown): value is GraphUpdatedMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const message = value as Partial<GraphUpdatedMessage>;
+  return (
+    message.type === "graphUpdated" &&
+    (message.payload === undefined || typeof message.payload === "object") &&
+    (message.error === undefined || typeof message.error === "string")
+  );
+}
+
 function sourceRangeRequestItem(item: GraphSourceItem): AspGraphSourceRangeRequestItem {
   return {
     id: item.id,
@@ -4798,8 +4871,8 @@ function selectionForStatsTarget(target: GraphStatsTarget, graphData: GraphData)
 function graphStatsTargetForRange(
   graphData: GraphData,
   range: AspGraphRange,
+  targetUri: string | undefined,
 ): GraphStatsTarget | undefined {
-  const targetUri = graph?.rootUri;
   const nodeTarget = bestGraphNodeForRange(graphData.nodes, range, targetUri);
   if (nodeTarget) {
     return { type: "node", id: nodeTarget.id };
@@ -5258,16 +5331,6 @@ function normalize3d(vector: {
 
 function finiteNumber(value: number | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function isSelectionVisible(selection: Selection, graphData: GraphData): boolean {
-  if (selection?.type === "node") {
-    return graphData.nodes.some((node) => node.id === selection.item.id);
-  }
-  if (selection?.type === "link") {
-    return graphData.links.some((link) => link.id === selection.item.id);
-  }
-  return true;
 }
 
 function searchTargetsForSearch(

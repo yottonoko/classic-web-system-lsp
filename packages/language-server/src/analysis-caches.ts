@@ -11,6 +11,7 @@ import type {
   VirtualDocument,
 } from "@asp-lsp/core";
 import type {
+  AspGraphPayload,
   GraphFileIndex,
   WorkspaceVbReferenceExecutionOptions,
   WorkspaceVbReferenceSummaryIncludeGraph,
@@ -123,6 +124,12 @@ export interface WorkspaceVbReferenceRequestTask {
 export interface WorkspaceVbReferenceRequestResult {
   key: string;
   referencesByTarget: Map<string, VbReference[]>;
+  lastUsed: number;
+}
+
+export interface AspGraphPayloadCacheEntry {
+  payload: AspGraphPayload;
+  signature: string;
   lastUsed: number;
 }
 
@@ -295,6 +302,18 @@ export const jsFileStatCache = new SizedLruCache<string, JsFileStat | undefined>
 export const graphFileIndexCache = new Map<string, GraphFileIndex>();
 export const graphFileIndexInFlight = new Map<string, Promise<GraphFileIndex>>();
 export const graphFileIndexCacheMaxEntries = 64;
+export const aspGraphPayloadCache = new SizedLruCache<string, AspGraphPayloadCacheEntry>(
+  "graph.payload",
+  {
+    priority: 30,
+    maxEntries: 8,
+    estimateEntryBytes: (key, entry) =>
+      estimateStringBytes(key) +
+      estimateStringBytes(entry.signature) +
+      estimateAspGraphPayloadBytes(entry.payload) +
+      128,
+  },
+);
 
 export const vbProjectContextCache = new Map<string, VbProjectContextCacheEntry>();
 export const maxVbProjectContextCacheEntries = 32;
@@ -361,6 +380,7 @@ export const memoryManagedAnalysisCaches = [
   jsRealpathCache,
   jsFileStatCache,
   lightweightJsUnusedDiagnosticsCache,
+  aspGraphPayloadCache,
 ];
 
 function estimateJsLanguageServiceCacheEntryBytes(
@@ -383,6 +403,10 @@ function estimateJsProjectFilesBytes(files: ReadonlyMap<string, JsProjectFile>):
     total += estimateStringBytes(fileName) + estimateJsProjectFileBytes(file);
   }
   return total;
+}
+
+function estimateAspGraphPayloadBytes(payload: AspGraphPayload): number {
+  return estimateJsonBytes(payload, 64 * 1024 * 1024);
 }
 
 function estimateJsProjectFileBytes(file: JsProjectFile): number {

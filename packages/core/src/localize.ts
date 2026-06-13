@@ -76,6 +76,8 @@ export type LocalizeKey =
   | "vb.diagnostic.missingMember"
   | "vb.diagnostic.identifierCase"
   | "server.unknownCommand"
+  | "server.graph.backgroundCancelled"
+  | "server.graph.backgroundFailed"
   | "server.include.unresolved"
   | "server.include.caseMismatch"
   | "server.include.currentDocument"
@@ -190,6 +192,8 @@ const en: Record<LocalizeKey, string> = {
   "vb.diagnostic.identifierCase":
     "Identifier '{name}' should be '{expectedName}' for {style} casing.",
   "server.unknownCommand": "Unknown command: {command}",
+  "server.graph.backgroundCancelled": "Graph update was cancelled.",
+  "server.graph.backgroundFailed": "Graph update failed.",
   "server.include.unresolved": "Include file '{path}' could not be resolved.",
   "server.include.caseMismatch":
     "Include path '{path}' differs from the file system casing '{actualPath}'.",
@@ -309,6 +313,8 @@ const ja: Record<LocalizeKey, string> = {
   "vb.diagnostic.identifierCase":
     "識別子 '{name}' は {style} casing の '{expectedName}' にしてください。",
   "server.unknownCommand": "不明なコマンドです: {command}",
+  "server.graph.backgroundCancelled": "graph 更新をキャンセルしました。",
+  "server.graph.backgroundFailed": "graph 更新に失敗しました。",
   "server.include.unresolved": "include file '{path}' を解決できません。",
   "server.include.caseMismatch":
     "include path '{path}' は file system 上の大文字小文字 '{actualPath}' と一致していません。",

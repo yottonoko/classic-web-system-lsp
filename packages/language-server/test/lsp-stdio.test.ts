@@ -11013,6 +11013,95 @@ End Sub
       }
     });
 
+    it("returns a pending graph quickly and publishes the full graph update", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-background-graph-"));
+      fs.writeFileSync(
+        path.join(tempDir, "default.asp"),
+        `<!-- #include file="common.inc" -->\n<%\nSub PageEntry()\nEnd Sub\n%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "common.inc"),
+        `<%\nFunction SharedEntry()\nEnd Function\n%>`,
+        "utf8",
+      );
+      const server = new RpcServer({
+        env: {
+          ASP_LSP_TEST_GRAPH_BACKGROUND_MIN_DOCUMENTS: "1",
+          ASP_LSP_TEST_GRAPH_BACKGROUND_DEBOUNCE_MS: "1",
+        },
+      });
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "workspace" }],
+        })) as {
+          scope?: string;
+          pending?: boolean;
+          correlationId?: string;
+          backgroundTaskId?: string;
+          nodes?: Array<Record<string, unknown>>;
+        };
+
+        expect(graph.scope).toBe("workspace");
+        expect(graph.pending).toBe(true);
+        expect(typeof graph.correlationId).toBe("string");
+        expect(typeof graph.backgroundTaskId).toBe("string");
+
+        const update = (await server.waitForNotification("aspLsp/graphUpdated")).params as {
+          correlationId?: string;
+          final?: boolean;
+          payload?: {
+            pending?: boolean;
+            nodes?: Array<Record<string, unknown>>;
+            links?: Array<Record<string, unknown>>;
+          };
+          error?: string;
+        };
+        expect(update.correlationId).toBe(graph.correlationId);
+        expect(update.final).toBe(true);
+        expect(update.error).toBeUndefined();
+        expect(update.payload?.pending).toBe(false);
+        expect(
+          update.payload?.nodes?.some(
+            (node) => node.kind === "vbDeclaration" && node.label === "PageEntry",
+          ),
+        ).toBe(true);
+        expect(
+          update.payload?.nodes?.some(
+            (node) => node.kind === "vbDeclaration" && node.label === "SharedEntry",
+          ),
+        ).toBe(true);
+        expect(update.payload?.links?.some((link) => link.kind === "include")).toBe(true);
+
+        const warm = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildGraph",
+          arguments: [{ scope: "workspace" }],
+        })) as {
+          pending?: boolean;
+          nodes?: Array<Record<string, unknown>>;
+        };
+        expect(warm.pending).toBe(false);
+        expect(
+          warm.nodes?.some((node) => node.kind === "vbDeclaration" && node.label === "PageEntry"),
+        ).toBe(true);
+        expect(server.takePendingNotifications("aspLsp/graphUpdated")).toEqual([]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("builds a folder graph from ASP files under the selected folder only", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-folder-graph-"));
       const appDir = path.join(tempDir, "app");

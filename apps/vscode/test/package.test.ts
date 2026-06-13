@@ -95,8 +95,13 @@ describe("VS Code extension package", () => {
     expect(graphHostSource).toContain('<html lang="${locale}">');
     expect(graphHostSource).toContain('graphHostText(locale, "sourceRangeUnavailable")');
     expect(graphWebviewSource).toContain(
-      'const graphLocale: GraphLocale = graph?.locale === "ja" ? "ja" : "en"',
+      'const graphLocale: GraphLocale = initialGraph?.locale === "ja" ? "ja" : "en"',
     );
+    expect(graphHostSource).toContain('type: "graphUpdated"');
+    expect(graphHostSource).toContain("postAspGraphWebviewUpdate");
+    expect(graphWebviewSource).toContain("isGraphUpdatedMessage");
+    expect(graphWebviewSource).toContain("setGraph(message.payload)");
+    expect(graphWebviewSource).toContain('"toolbar.updating": "graph 更新中..."');
     expect(graphWebviewSource).toContain('"action.fit": "フィット"');
     expect(graphWebviewSource).toContain('"action.openFlowchart": "フローチャートを開く"');
     expect(graphWebviewSource).toContain('type: "openFlowchart"');
@@ -460,9 +465,14 @@ describe("VS Code extension package", () => {
     expect(extensionSourceText).toContain("ASP_LSP_DEFAULT_DEBUG_LOG_FILE");
     expect(extensionSourceText).toContain('const serverStatusNotificationMethod = "aspLsp/status"');
     expect(extensionSourceText).toContain(
+      'const graphUpdatedNotificationMethod = "aspLsp/graphUpdated"',
+    );
+    expect(extensionSourceText).toContain(
       'const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask"',
     );
     expect(extensionSourceText).toContain("handleServerStatusNotification");
+    expect(extensionSourceText).toContain("handleGraphUpdatedNotification");
+    expect(extensionSourceText).toContain("graphPanelsByCorrelation");
     expect(extensionSourceText).toContain("showProgressDetails");
     expect(extensionSourceText).toContain('statusBarItem.command = "aspLsp.showProgressDetails"');
     expect(extensionSourceText).toContain("status.loading.text");

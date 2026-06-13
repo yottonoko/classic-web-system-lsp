@@ -10,6 +10,9 @@ export interface AspGraphPayload {
   scope: "document" | "folder" | "workspace";
   rootUri?: string;
   locale?: AspGraphLocale;
+  correlationId?: string;
+  pending?: boolean;
+  backgroundTaskId?: string;
   nodes: AspGraphNode[];
   links: AspGraphLink[];
   settings?: {
@@ -174,6 +177,13 @@ interface OpenSettingMessage {
   setting: string;
 }
 
+interface GraphUpdatedHostMessage {
+  type: "graphUpdated";
+  payload?: AspGraphPayload;
+  final?: boolean;
+  error?: string;
+}
+
 type WebviewMessage =
   | OpenRangeMessage
   | OpenFlowchartMessage
@@ -190,7 +200,7 @@ export function showAspGraphWebview(
   infoPanelPosition: AspGraphInfoPanelPosition,
   openFlowchart: (uri: string, range?: AspGraphRange) => Promise<void>,
   initialTargetRange?: AspGraphRange,
-): void {
+): vscode.WebviewPanel {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
   const panel = vscode.window.createWebviewPanel("aspLsp.graph", title, viewColumn, {
     enableScripts: true,
@@ -218,6 +228,26 @@ export function showAspGraphWebview(
     infoPanelPosition,
     initialTargetRange,
   );
+  return panel;
+}
+
+export function postAspGraphWebviewUpdate(
+  panel: vscode.WebviewPanel,
+  payload: AspGraphPayload | undefined,
+  locale: AspGraphLocale,
+  theme: AspGraphWebviewThemeSetting,
+  infoPanelPosition: AspGraphInfoPanelPosition,
+  options: { final?: boolean; error?: string } = {},
+): Thenable<boolean> {
+  const message: GraphUpdatedHostMessage = {
+    type: "graphUpdated",
+    payload: payload
+      ? graphPayloadForWebview(payload, locale, theme, infoPanelPosition)
+      : undefined,
+    final: options.final,
+    error: options.error,
+  };
+  return panel.webview.postMessage(message);
 }
 
 async function openGraphSetting(setting: string): Promise<void> {

@@ -62,7 +62,13 @@ async function main() {
       command: "aspLsp.server.buildGraph",
       arguments: [{ scope: "workspace", maxDocuments: fileCount + 10 }],
     });
-    const elapsedMs = performance.now() - startedAt;
+    const immediateMs = performance.now() - startedAt;
+    const finalUpdate =
+      graph?.pending && graph?.correlationId
+        ? await server.waitForGraphUpdate(graph.correlationId)
+        : undefined;
+    const fullBuildMs = performance.now() - startedAt;
+    const finalGraph = finalUpdate?.payload ?? graph;
     await sleep(100);
     const logText = [...server.logMessages, server.stderr ?? ""].join("\n");
 
@@ -71,10 +77,12 @@ async function main() {
     console.log(`Files: ${sourceStats.files.toLocaleString("en-US")}`);
     console.log(`Bytes: ${sourceStats.bytes.toLocaleString("en-US")}`);
     console.log(`Node old space: ${oldSpaceMb} MB`);
-    console.log(`Elapsed: ${elapsedMs.toFixed(2)} ms`);
-    console.log(`Graph nodes: ${graph?.nodes?.length ?? 0}`);
-    console.log(`Graph links: ${graph?.links?.length ?? 0}`);
-    console.log(`Graph truncated: ${graph?.truncated?.reason ?? "no"}`);
+    console.log(`Immediate: ${immediateMs.toFixed(2)} ms`);
+    console.log(`Full build: ${fullBuildMs.toFixed(2)} ms`);
+    console.log(`Initial pending: ${graph?.pending === true ? "yes" : "no"}`);
+    console.log(`Graph nodes: ${finalGraph?.nodes?.length ?? 0}`);
+    console.log(`Graph links: ${finalGraph?.links?.length ?? 0}`);
+    console.log(`Graph truncated: ${finalGraph?.truncated?.reason ?? "no"}`);
     console.log(`Bulk spill events: ${countMatches(logText, "asp.graph.bulk.spill.write")}`);
     console.log(`Bulk complete events: ${countMatches(logText, "asp.graph.bulk.complete")}`);
   } finally {
@@ -113,6 +121,8 @@ class RpcServer {
     this.nextId = 1;
     this.buffer = Buffer.alloc(0);
     this.responses = new Map();
+    this.graphUpdateWaiters = new Map();
+    this.graphUpdates = [];
     this.logMessages = [];
   }
 
@@ -143,6 +153,23 @@ class RpcServer {
 
   notify(method, params) {
     this.write({ jsonrpc: "2.0", method, params });
+  }
+
+  waitForGraphUpdate(correlationId) {
+    const existingIndex = this.graphUpdates.findIndex(
+      (update) => update.correlationId === correlationId && update.final === true,
+    );
+    if (existingIndex >= 0) {
+      const [update] = this.graphUpdates.splice(existingIndex, 1);
+      return Promise.resolve(update);
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`Timed out waiting for aspLsp/graphUpdated: ${this.stderr ?? ""}`)),
+        this.options.timeoutMs,
+      );
+      this.graphUpdateWaiters.set(correlationId, { resolve, timer });
+    });
   }
 
   async shutdown() {
@@ -208,7 +235,25 @@ class RpcServer {
     }
     if (message.method === "window/logMessage") {
       this.logMessages.push(String(message.params?.message ?? ""));
+      return;
     }
+    if (message.method === "aspLsp/graphUpdated") {
+      this.handleGraphUpdate(message.params);
+    }
+  }
+
+  handleGraphUpdate(update) {
+    if (!update?.correlationId) {
+      return;
+    }
+    const waiter = this.graphUpdateWaiters.get(update.correlationId);
+    if (waiter && update.final === true) {
+      clearTimeout(waiter.timer);
+      this.graphUpdateWaiters.delete(update.correlationId);
+      waiter.resolve(update);
+      return;
+    }
+    this.graphUpdates.push(update);
   }
 
   handleServerRequest(message) {

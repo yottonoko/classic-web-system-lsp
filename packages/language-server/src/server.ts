@@ -47,6 +47,7 @@ import {
 } from "./document-store";
 import {
   AspJsScriptSnapshot,
+  aspGraphPayloadCache,
   graphFileIndexCache,
   graphFileIndexCacheMaxEntries,
   graphFileIndexInFlight,
@@ -109,6 +110,7 @@ import type {
   AspGraphNodeParameter,
   AspGraphPayload,
   AspGraphScope,
+  AspGraphUpdatedNotification,
   FilePublicSignature,
   GraphCancellationToken,
   GraphFileIndex,
@@ -368,6 +370,7 @@ const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const exportAnalysisExcelServerCommand = "aspLsp.server.exportAnalysisExcel";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const statusNotificationMethod = "aspLsp/status";
+const graphUpdatedNotificationMethod = "aspLsp/graphUpdated";
 const languageServerVersion = "0.7.3";
 const completionTriggerKindTriggerCharacter = 2;
 const projectUpdateDelayMs = 250;
@@ -381,6 +384,18 @@ const semanticTokensLargeJavascriptThreshold = internalTestThreshold(
   50 * 1024,
 );
 const semanticTokensDeferredWorkDelayMs = 25;
+const graphBackgroundBuildMinDocuments = internalTestThreshold(
+  "ASP_LSP_TEST_GRAPH_BACKGROUND_MIN_DOCUMENTS",
+  1000,
+);
+const graphBackgroundBuildDebounceMs = internalTestThreshold(
+  "ASP_LSP_TEST_GRAPH_BACKGROUND_DEBOUNCE_MS",
+  150,
+);
+const graphPartialMaxDocuments = internalTestThreshold(
+  "ASP_LSP_TEST_GRAPH_PARTIAL_MAX_DOCUMENTS",
+  300,
+);
 const defaultDebugLogFileName = "asp-lsp-debug.log";
 const debugLogFileMaxBytes = internalTestThreshold(
   "ASP_LSP_TEST_DEBUG_LOG_MAX_BYTES",
@@ -450,6 +465,7 @@ let currentStatusKind: AspLspStatusKind = "idle";
 let progressTaskSequence = 0;
 let lastPublishedStatusPayload = "";
 const progressTasks = new Map<string, AspLspProgressTask>();
+const activeGraphBackgroundBuilds = new Map<string, AspGraphBackgroundBuild>();
 let jsDiagnosticsWorkerPool: JsDiagnosticsWorkerPool | undefined;
 let jsDiagnosticsWorkerRequestId = 0;
 const tsUnusedDiagnosticCodes = new Set([6133, 6138, 6192, 6196, 6198]);
@@ -497,6 +513,27 @@ interface AspLspProgressTaskOptions {
   total?: number;
   cancellable?: boolean;
   activeItems?: string[];
+}
+
+interface AspGraphCommandRequestIdentity {
+  scope: AspGraphScope;
+  uri?: string;
+  settings: AspSettings;
+  key: string;
+  signature: string;
+  correlationId: string;
+}
+
+interface AspGraphBackgroundBuild {
+  key: string;
+  signature: string;
+  scope: AspGraphScope;
+  uri?: string;
+  argument: unknown;
+  task: AspLspProgressTaskHandle;
+  correlations: Set<string>;
+  timer?: ReturnType<typeof setTimeout>;
+  started: boolean;
 }
 
 interface PathResolution {
@@ -1852,6 +1889,7 @@ documents.onDidOpen((event) => {
 });
 documents.onDidChangeContent((event) => {
   noteForegroundActivity();
+  cancelAspGraphBackgroundBuilds("document.change");
   const openedVersion = documentOpenContentVersions.get(event.document.uri);
   if (openedVersion === event.document.version) {
     documentOpenContentVersions.delete(event.document.uri);
@@ -2762,7 +2800,7 @@ connection.onExecuteCommand(async (params, token) => {
     return { ok: true, cleared: "process" };
   }
   if (params.command === buildGraphServerCommand) {
-    return buildCappedAspGraphForCommand(params.arguments?.[0], token);
+    return buildGraphCommandAsync(params.arguments?.[0], token);
   }
   if (params.command === buildFlowchartServerCommand) {
     return buildAspFlowchartForCommand(params.arguments?.[0], token);
@@ -10898,6 +10936,7 @@ function includeDependencyFileName(uriOrFileName: string): string {
 
 function invalidateCachedAnalysisForUris(uris: Set<string>, reason = "analysis.invalidate"): void {
   if (uris.size > 0) {
+    invalidateAspGraphPayloadCache(reason);
     vbProjectContextCache.clear();
     clearInteractiveVbProjectContextSnapshotsForUris(uris);
     clearWorkspaceVbReferenceCaches();
@@ -13749,6 +13788,7 @@ async function yieldToEventLoop(): Promise<void> {
 }
 
 function invalidateWorkspaceIndex(reason = "workspaceIndex.invalidate"): void {
+  invalidateAspGraphPayloadCache(reason);
   workspaceGeneration += 1;
   workspaceIndexDirty = true;
   workspaceIndexTruncated = false;
@@ -13769,6 +13809,7 @@ async function clearDiskAnalysisCacheByCommand(): Promise<void> {
 }
 
 async function clearProcessCachesByCommand(reason: string): Promise<void> {
+  invalidateAspGraphPayloadCache(reason);
   fsGateway.invalidateAll();
   const openedUris = openDocumentUris();
   if (projectUpdateTimer) {
@@ -18983,6 +19024,537 @@ async function buildCappedAspGraphForCommand(
   return capAspGraphPayloadForWebview(payload, settings);
 }
 
+async function buildGraphCommandAsync(
+  argument: unknown,
+  token?: GraphCancellationToken,
+): Promise<AspGraphPayload> {
+  const identity = aspGraphCommandRequestIdentity(argument);
+  const cached = aspGraphPayloadCache.get(identity.key);
+  if (cached) {
+    cached.lastUsed = Date.now();
+  }
+  if (cached?.signature === identity.signature) {
+    return graphPayloadForCommandResponse(cached.payload, identity.correlationId, {
+      pending: false,
+    });
+  }
+  if (await shouldBuildGraphSynchronouslyAsync(identity, argument, token)) {
+    const payload = cleanAspGraphPayloadForCache(
+      await buildCappedAspGraphForCommand(argument, token),
+    );
+    aspGraphPayloadCache.set(identity.key, {
+      payload,
+      signature: identity.signature,
+      lastUsed: Date.now(),
+    });
+    return graphPayloadForCommandResponse(payload, identity.correlationId, { pending: false });
+  }
+  const background = ensureAspGraphBackgroundBuild(identity, argument);
+  if (cached) {
+    return graphPayloadForCommandResponse(cached.payload, identity.correlationId, {
+      pending: true,
+      backgroundTaskId: background.task.id,
+    });
+  }
+  const partial = await buildFastPartialAspGraphAsync(identity);
+  return graphPayloadForCommandResponse(partial, identity.correlationId, {
+    pending: true,
+    backgroundTaskId: background.task.id,
+  });
+}
+
+function aspGraphCommandRequestIdentity(argument: unknown): AspGraphCommandRequestIdentity {
+  const scope = graphCommandScope(argument);
+  const uri = graphCommandNormalizedUri(graphCommandUri(argument));
+  const settings = uri ? cachedSettings(uri) : globalSettings;
+  return {
+    scope,
+    uri,
+    settings,
+    key: aspGraphPayloadCacheKey(argument, settings, scope, uri),
+    signature: aspGraphPayloadSignature(scope, uri),
+    correlationId: nextAspGraphCorrelationId(),
+  };
+}
+
+function aspGraphPayloadCacheKey(
+  argument: unknown,
+  settings: AspSettings,
+  scope: AspGraphScope,
+  uri: string | undefined,
+): string {
+  return JSON.stringify({
+    scope,
+    uri,
+    request: {
+      includeIncomingDocumentIncludes: graphCommandBooleanArgument(
+        argument,
+        "includeIncomingDocumentIncludes",
+      ),
+      includeRelatedIncludeTreesForUnresolved: graphCommandBooleanArgument(
+        argument,
+        "includeRelatedIncludeTreesForUnresolved",
+      ),
+      forceRelatedIncludeTreeAnalysis: graphCommandBooleanArgument(
+        argument,
+        "forceRelatedIncludeTreeAnalysis",
+      ),
+      includeAnalysisTypeDetails: graphCommandBooleanArgument(
+        argument,
+        "includeAnalysisTypeDetails",
+      ),
+      maxDocuments: graphCommandNumberArgument(argument, "maxDocuments"),
+      maxTextLength: graphCommandNumberArgument(argument, "maxTextLength"),
+      includeTreeMaxDocuments: graphCommandNumberArgument(argument, "includeTreeMaxDocuments"),
+      includeTreeMaxTextLength: graphCommandNumberArgument(argument, "includeTreeMaxTextLength"),
+    },
+    settings: {
+      parse: parseSettingsIdentity(settings),
+      include: includeResolutionIdentity(settings),
+      graph: normalizeGraphSettings(settings),
+      vbscript: settings.vbscript,
+      defaultLanguage: settings.defaultLanguage,
+      workspace: workspaceIndexSettingsIdentity(settings),
+    },
+  });
+}
+
+function aspGraphPayloadSignature(scope: AspGraphScope, uri: string | undefined): string {
+  const openDocuments = documents
+    .all()
+    .filter((document) => graphSignatureIncludesOpenDocument(scope, uri, document.uri))
+    .map((document) => [
+      graphCommandNormalizedUri(document.uri) ?? document.uri,
+      document.version,
+      document.getText().length,
+    ]);
+  return JSON.stringify({
+    workspaceGeneration,
+    includeResolutionGeneration,
+    openDocuments,
+  });
+}
+
+function graphSignatureIncludesOpenDocument(
+  scope: AspGraphScope,
+  rootUri: string | undefined,
+  documentUri: string,
+): boolean {
+  if (!isClassicAspGraphUri(documentUri)) {
+    return false;
+  }
+  if (scope === "workspace" || !rootUri?.startsWith("file://")) {
+    return scope === "workspace";
+  }
+  const rootFileName = graphFileNameFromUri(rootUri);
+  const documentFileName = graphFileNameFromUri(documentUri);
+  return scope === "document"
+    ? graphFileKey(rootFileName) === graphFileKey(documentFileName)
+    : isFileInDirectoryOrEqual(documentFileName, rootFileName);
+}
+
+function graphCommandBooleanArgument(argument: unknown, name: string): boolean | undefined {
+  if (!argument || typeof argument !== "object" || !(name in argument)) {
+    return undefined;
+  }
+  const value = (argument as Record<string, unknown>)[name];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function graphCommandNumberArgument(argument: unknown, name: string): number | undefined {
+  if (!argument || typeof argument !== "object" || !(name in argument)) {
+    return undefined;
+  }
+  const value = (argument as Record<string, unknown>)[name];
+  return typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : undefined;
+}
+
+function graphCommandNormalizedUri(uri: string | undefined): string | undefined {
+  return uri?.startsWith("file://") ? pathToFileUri(graphFileNameFromUri(uri)) : uri;
+}
+
+let aspGraphCorrelationSequence = 0;
+
+function nextAspGraphCorrelationId(): string {
+  aspGraphCorrelationSequence += 1;
+  return `graph-${Date.now().toString(36)}-${aspGraphCorrelationSequence.toString(36)}`;
+}
+
+async function shouldBuildGraphSynchronouslyAsync(
+  identity: AspGraphCommandRequestIdentity,
+  argument: unknown,
+  token?: GraphCancellationToken,
+): Promise<boolean> {
+  if (graphBackgroundBuildMinDocuments <= 0) {
+    return false;
+  }
+  const estimatedDocuments = await estimateGraphCommandDocumentCountAsync(
+    identity,
+    argument,
+    token,
+  );
+  return estimatedDocuments <= graphBackgroundBuildMinDocuments;
+}
+
+async function estimateGraphCommandDocumentCountAsync(
+  identity: AspGraphCommandRequestIdentity,
+  argument: unknown,
+  token?: GraphCancellationToken,
+): Promise<number> {
+  if (
+    identity.scope === "document" &&
+    !documentGraphCommandMayUseWorkspaceIndex(argument, identity.settings)
+  ) {
+    return 1;
+  }
+  await ensureWorkspaceIndexAsync(identity.settings, token);
+  if (identity.scope === "workspace") {
+    return (
+      workspaceIndex.size +
+      documents.all().filter((document) => isClassicAspGraphUri(document.uri)).length
+    );
+  }
+  if (identity.scope === "folder" && identity.uri?.startsWith("file://")) {
+    const folderName = graphFileNameFromUri(identity.uri);
+    return (
+      [...workspaceIndex.values()].filter((entry) =>
+        isFileInDirectoryOrEqual(entry.fileName, folderName),
+      ).length +
+      documents
+        .all()
+        .filter(
+          (document) =>
+            isClassicAspGraphUri(document.uri) &&
+            isFileInDirectoryOrEqual(graphFileNameFromUri(document.uri), folderName),
+        ).length
+    );
+  }
+  return workspaceIndex.size;
+}
+
+function documentGraphCommandMayUseWorkspaceIndex(
+  argument: unknown,
+  settings: AspSettings,
+): boolean {
+  return (
+    settings.graph?.showIncomingDocumentIncludes === true ||
+    graphCommandBooleanArgument(argument, "includeIncomingDocumentIncludes") === true ||
+    graphCommandBooleanArgument(argument, "forceRelatedIncludeTreeAnalysis") === true ||
+    graphCommandBooleanArgument(argument, "includeRelatedIncludeTreesForUnresolved") !== false
+  );
+}
+
+function ensureAspGraphBackgroundBuild(
+  identity: AspGraphCommandRequestIdentity,
+  argument: unknown,
+): AspGraphBackgroundBuild {
+  const existing = activeGraphBackgroundBuilds.get(identity.key);
+  if (existing?.signature === identity.signature) {
+    existing.correlations.add(identity.correlationId);
+    return existing;
+  }
+  const carryCorrelations = existing ? [...existing.correlations] : [];
+  if (existing) {
+    cancelAspGraphBackgroundBuild(existing, { notify: false });
+  }
+  const task = beginProgressTask("analyzing", `graph.${identity.scope}`, {
+    current: 0,
+    total: 1,
+    detail: identity.uri ? progressFileLabelFromUri(identity.uri) : undefined,
+    cancellable: true,
+  });
+  const build: AspGraphBackgroundBuild = {
+    key: identity.key,
+    signature: identity.signature,
+    scope: identity.scope,
+    uri: identity.uri,
+    argument,
+    task,
+    correlations: new Set([...carryCorrelations, identity.correlationId]),
+    started: false,
+  };
+  activeGraphBackgroundBuilds.set(identity.key, build);
+  build.timer = setTimeout(() => {
+    build.timer = undefined;
+    build.started = true;
+    void runAspGraphBackgroundBuildAsync(build);
+  }, graphBackgroundBuildDebounceMs);
+  return build;
+}
+
+function cancelAspGraphBackgroundBuild(
+  build: AspGraphBackgroundBuild,
+  options: { notify: boolean },
+): void {
+  if (build.timer) {
+    clearTimeout(build.timer);
+    build.timer = undefined;
+  }
+  cancelProgressTask(build.task.id);
+  if (!build.started) {
+    activeGraphBackgroundBuilds.delete(build.key);
+    build.task.end();
+    if (options.notify) {
+      notifyAspGraphBackgroundError(build, graphBackgroundCancelledMessage(build));
+    }
+  }
+}
+
+function cancelAspGraphBackgroundBuilds(reason: string): void {
+  const builds = Array.from(activeGraphBackgroundBuilds.values());
+  for (const build of builds) {
+    logDebugSummary(globalSettings, `[asp-lsp] graph.background.cancel: ${reason}`);
+    cancelAspGraphBackgroundBuild(build, { notify: true });
+  }
+}
+
+async function runAspGraphBackgroundBuildAsync(build: AspGraphBackgroundBuild): Promise<void> {
+  try {
+    const cancellation = progressCancellation(build.task);
+    const payload = cleanAspGraphPayloadForCache(
+      await buildCappedAspGraphForCommand(
+        build.argument,
+        tokenFromAnalysisCancellation(cancellation),
+      ),
+    );
+    if (activeGraphBackgroundBuilds.get(build.key) !== build) {
+      return;
+    }
+    if (aspGraphPayloadSignature(build.scope, build.uri) !== build.signature) {
+      notifyAspGraphBackgroundError(build, graphBackgroundCancelledMessage(build));
+      return;
+    }
+    aspGraphPayloadCache.set(build.key, {
+      payload,
+      signature: build.signature,
+      lastUsed: Date.now(),
+    });
+    for (const correlationId of build.correlations) {
+      sendAspGraphUpdatedNotification({
+        correlationId,
+        scope: build.scope,
+        uri: build.uri,
+        payload: graphPayloadForCommandResponse(payload, correlationId, { pending: false }),
+        final: true,
+      });
+    }
+  } catch (error) {
+    if (activeGraphBackgroundBuilds.get(build.key) === build) {
+      notifyAspGraphBackgroundError(build, graphBackgroundErrorMessage(build, error));
+    }
+  } finally {
+    if (activeGraphBackgroundBuilds.get(build.key) === build) {
+      activeGraphBackgroundBuilds.delete(build.key);
+    }
+    build.task.end();
+  }
+}
+
+function notifyAspGraphBackgroundError(build: AspGraphBackgroundBuild, error: string): void {
+  for (const correlationId of build.correlations) {
+    sendAspGraphUpdatedNotification({
+      correlationId,
+      scope: build.scope,
+      uri: build.uri,
+      final: true,
+      error,
+    });
+  }
+}
+
+function sendAspGraphUpdatedNotification(notification: AspGraphUpdatedNotification): void {
+  connection.sendNotification(graphUpdatedNotificationMethod, notification);
+}
+
+function graphBackgroundCancelledMessage(build: AspGraphBackgroundBuild): string {
+  return createLocalizer(
+    build.uri ? cachedSettings(build.uri).resolvedLocale : globalSettings.resolvedLocale,
+  ).t("server.graph.backgroundCancelled");
+}
+
+function graphBackgroundErrorMessage(build: AspGraphBackgroundBuild, error: unknown): string {
+  logServerWarning(`[asp-lsp] graph.background.failed: ${errorMessage(error)}`);
+  return createLocalizer(
+    build.uri ? cachedSettings(build.uri).resolvedLocale : globalSettings.resolvedLocale,
+  ).t("server.graph.backgroundFailed");
+}
+
+function graphPayloadForCommandResponse(
+  payload: AspGraphPayload,
+  correlationId: string,
+  options: { pending: boolean; backgroundTaskId?: string },
+): AspGraphPayload {
+  return {
+    ...payload,
+    correlationId,
+    pending: options.pending,
+    backgroundTaskId: options.backgroundTaskId,
+  };
+}
+
+function cleanAspGraphPayloadForCache(payload: AspGraphPayload): AspGraphPayload {
+  const {
+    correlationId: _correlationId,
+    pending: _pending,
+    backgroundTaskId: _backgroundTaskId,
+    ...clean
+  } = payload;
+  return clean;
+}
+
+async function buildFastPartialAspGraphAsync(
+  identity: AspGraphCommandRequestIdentity,
+): Promise<AspGraphPayload> {
+  const state = createAspGraphBuildState(identity.settings, identity.uri, {
+    reason: "partial-pending",
+  });
+  const sources = await partialGraphSourcesAsync(identity);
+  const limitedSources = sources.slice(0, graphPartialMaxDocuments);
+  for (const source of limitedSources) {
+    await addPartialGraphSourceAsync(state, source, identity.settings);
+  }
+  state.stats = recomputeAspGraphStats(state.nodes.values(), state.links.values());
+  const truncated =
+    sources.length > limitedSources.length
+      ? {
+          reason: `partial-pending; documents>${graphPartialMaxDocuments}`,
+          nodes: sources.length,
+          links: state.links.size,
+        }
+      : state.truncated;
+  return capAspGraphPayloadForWebview(
+    {
+      scope: identity.scope,
+      rootUri: state.rootUri,
+      nodes: [...state.nodes.values()],
+      links: [...state.links.values()],
+      settings: graphPayloadSettings(identity.settings),
+      stats: state.stats,
+      truncated,
+    },
+    identity.settings,
+  );
+}
+
+interface PartialGraphSource {
+  uri: string;
+  fileName: string;
+  includeRefs: AspInclude[];
+  exists: boolean;
+}
+
+async function partialGraphSourcesAsync(
+  identity: AspGraphCommandRequestIdentity,
+): Promise<PartialGraphSource[]> {
+  const sources = new Map<string, PartialGraphSource>();
+  const addSource = (source: PartialGraphSource): void => {
+    sources.set(graphFileKey(source.fileName), source);
+  };
+  for (const document of documents.all()) {
+    if (!partialGraphIncludesOpenDocument(identity, document.uri)) {
+      continue;
+    }
+    const fileName = graphFileNameFromUri(document.uri);
+    addSource({
+      uri: pathToFileUri(fileName),
+      fileName,
+      includeRefs: extractAspIncludeRefs(document.getText()),
+      exists: true,
+    });
+  }
+  if (identity.scope === "document" && identity.uri?.startsWith("file://")) {
+    const fileName = graphFileNameFromUri(identity.uri);
+    if (!sources.has(graphFileKey(fileName))) {
+      const entry = await readGraphIncludeRefsEntryAsync(fileName, identity.settings);
+      addSource({
+        uri: pathToFileUri(fileName),
+        fileName,
+        includeRefs: entry?.includeRefs ?? [],
+        exists: true,
+      });
+    }
+  }
+  for (const entry of workspaceIndex.values()) {
+    if (!partialGraphIncludesFileName(identity, entry.fileName)) {
+      continue;
+    }
+    const includeRefsEntry = await readGraphIncludeRefsEntryAsync(
+      entry.fileName,
+      identity.settings,
+    );
+    addSource({
+      uri: entry.uri,
+      fileName: entry.fileName,
+      includeRefs: includeRefsEntry?.includeRefs ?? [],
+      exists: true,
+    });
+    if (sources.size >= graphPartialMaxDocuments) {
+      break;
+    }
+  }
+  return [...sources.values()];
+}
+
+function partialGraphIncludesOpenDocument(
+  identity: AspGraphCommandRequestIdentity,
+  uri: string,
+): boolean {
+  return (
+    isClassicAspGraphUri(uri) && partialGraphIncludesFileName(identity, graphFileNameFromUri(uri))
+  );
+}
+
+function partialGraphIncludesFileName(
+  identity: AspGraphCommandRequestIdentity,
+  fileName: string,
+): boolean {
+  if (identity.scope === "workspace") {
+    return true;
+  }
+  if (!identity.uri?.startsWith("file://")) {
+    return false;
+  }
+  const rootFileName = graphFileNameFromUri(identity.uri);
+  return identity.scope === "document"
+    ? graphFileKey(rootFileName) === graphFileKey(fileName)
+    : isFileInDirectoryOrEqual(fileName, rootFileName);
+}
+
+async function addPartialGraphSourceAsync(
+  state: AspGraphBuildState,
+  source: PartialGraphSource,
+  settings: AspSettings,
+): Promise<void> {
+  addFileGraphNode(state, source.fileName, source.exists);
+  for (const include of source.includeRefs) {
+    const resolved = await resolveIncludePathDetailsAsync(
+      source.uri,
+      include.path,
+      include.mode,
+      settings,
+    );
+    const targetFileName = normalizeFileName(resolved.fileName);
+    addFileGraphNode(state, targetFileName, resolved.exists);
+    addAspGraphLink(state, {
+      source: fileGraphNodeId(source.fileName),
+      target: fileGraphNodeId(targetFileName),
+      kind: "include",
+      label: include.mode === "virtual" ? `virtual ${include.path}` : include.path,
+      ranges: [{ uri: source.uri, range: include.range }],
+      include: {
+        path: include.path,
+        mode: include.mode,
+        exists: resolved.exists,
+        resolvedUri: pathToFileUri(targetFileName),
+        actualPath: resolved.actualPath
+          ? graphDisplayFileName(state, resolved.actualPath)
+          : undefined,
+        pathCaseMatches: resolved.pathCaseMatches,
+      },
+    });
+  }
+}
+
 function capAspGraphPayloadForWebview(
   payload: AspGraphPayload,
   settings: AspSettings,
@@ -21241,6 +21813,12 @@ function invalidateGraphFileIndexFiles(fileNames: Iterable<string>): void {
 function clearGraphFileIndexCache(): void {
   graphFileIndexCache.clear();
   graphFileIndexInFlight.clear();
+  invalidateAspGraphPayloadCache("graphFileIndex.clear");
+}
+
+function invalidateAspGraphPayloadCache(reason: string): void {
+  aspGraphPayloadCache.clear();
+  cancelAspGraphBackgroundBuilds(reason);
 }
 
 function addFileGraphNode(state: AspGraphBuildState, fileName: string, exists: boolean): void {

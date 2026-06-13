@@ -11,6 +11,7 @@ import {
   type ServerOptions,
 } from "vscode-languageclient/node";
 import {
+  postAspGraphWebviewUpdate,
   showAspGraphWebview,
   type AspGraphInfoPanelPosition,
   type AspGraphLocale,
@@ -38,6 +39,7 @@ const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const exportAnalysisExcelServerCommand = "aspLsp.server.exportAnalysisExcel";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const serverStatusNotificationMethod = "aspLsp/status";
+const graphUpdatedNotificationMethod = "aspLsp/graphUpdated";
 const htmlTagCompleteLookBehind = 2000;
 const defaultFlowchartMaxTextSize = 2_000_000;
 const defaultFlowchartMaxEdges = 100_000;
@@ -93,15 +95,34 @@ interface GraphCommandRequest {
   includeTreeMaxTextLength?: number;
 }
 
+interface AspGraphUpdatedNotification {
+  correlationId: string;
+  scope: GraphScope;
+  uri?: string;
+  payload?: AspGraphPayload;
+  final: boolean;
+  error?: string;
+}
+
+interface TrackedGraphPanel {
+  panel: vscode.WebviewPanel;
+  locale: AspGraphLocale;
+  theme: AspGraphWebviewThemeSetting;
+  infoPanelPosition: AspGraphInfoPanelPosition;
+  backgroundTaskId?: string;
+}
+
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
 let statusNotificationSubscription: vscode.Disposable | undefined;
+let graphUpdatedNotificationSubscription: vscode.Disposable | undefined;
 let serverStatusKind: ServerStatusKind = "idle";
 let serverProgressTasks: ProgressTask[] = [];
 let serverProgress: { current: number; total: number } | undefined;
 let extensionProgressTaskSequence = 0;
 const extensionProgressTasks = new Map<string, ProgressTask>();
+const graphPanelsByCorrelation = new Map<string, TrackedGraphPanel>();
 let restartPromise: Promise<void> | undefined;
 let isDeactivating = false;
 let isManualRestarting = false;
@@ -313,8 +334,11 @@ function booleanEditorOption(value: string | boolean | undefined, fallback: bool
   return typeof value === "boolean" ? value : fallback;
 }
 
-async function executeServerCommand(command: string): Promise<unknown> {
-  return client?.sendRequest("workspace/executeCommand", { command });
+async function executeServerCommand(command: string, argument?: unknown): Promise<unknown> {
+  return client?.sendRequest("workspace/executeCommand", {
+    command,
+    arguments: argument === undefined ? undefined : [argument],
+  });
 }
 
 async function showFlowchart(
@@ -467,17 +491,75 @@ async function showGraph(
     }
     throw error;
   }
-  showAspGraphWebview(
+  const locale = extensionLocale();
+  const theme = webviewThemeSetting();
+  const infoPanelPosition = infoPanelPositionSetting("graph.infoPanelPosition", "right");
+  const panel = showAspGraphWebview(
     context,
     payload,
     graphPanelTitle(payload, request.activeDocument),
     graphViewColumn(),
-    extensionLocale(),
-    webviewThemeSetting(),
-    infoPanelPositionSetting("graph.infoPanelPosition", "right"),
+    locale,
+    theme,
+    infoPanelPosition,
     (uri, range) => showFlowchartFromGraph(context, uri, range),
     initialTargetRange,
   );
+  registerGraphPanel(payload, panel, locale, theme, infoPanelPosition);
+}
+
+function registerGraphPanel(
+  payload: AspGraphPayload,
+  panel: vscode.WebviewPanel,
+  locale: AspGraphLocale,
+  theme: AspGraphWebviewThemeSetting,
+  infoPanelPosition: AspGraphInfoPanelPosition,
+): void {
+  if (!payload.correlationId) {
+    return;
+  }
+  const correlationId = payload.correlationId;
+  graphPanelsByCorrelation.set(correlationId, {
+    panel,
+    locale,
+    theme,
+    infoPanelPosition,
+    backgroundTaskId: payload.backgroundTaskId,
+  });
+  panel.onDidDispose(() => {
+    const tracked = graphPanelsByCorrelation.get(correlationId);
+    graphPanelsByCorrelation.delete(correlationId);
+    if (tracked?.backgroundTaskId && !hasGraphPanelForBackgroundTask(tracked.backgroundTaskId)) {
+      void executeServerCommand(cancelProgressTaskServerCommand, { id: tracked.backgroundTaskId });
+    }
+  });
+}
+
+function hasGraphPanelForBackgroundTask(backgroundTaskId: string): boolean {
+  for (const tracked of graphPanelsByCorrelation.values()) {
+    if (tracked.backgroundTaskId === backgroundTaskId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function handleGraphUpdatedNotification(notification: AspGraphUpdatedNotification): void {
+  const tracked = graphPanelsByCorrelation.get(notification.correlationId);
+  if (!tracked) {
+    return;
+  }
+  void postAspGraphWebviewUpdate(
+    tracked.panel,
+    notification.payload,
+    tracked.locale,
+    tracked.theme,
+    tracked.infoPanelPosition,
+    { final: notification.final, error: notification.error },
+  );
+  if (notification.final) {
+    graphPanelsByCorrelation.delete(notification.correlationId);
+  }
 }
 
 async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
@@ -867,9 +949,14 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     clientOptions,
   );
   statusNotificationSubscription?.dispose();
+  graphUpdatedNotificationSubscription?.dispose();
   statusNotificationSubscription = nextClient.onNotification(
     serverStatusNotificationMethod,
     handleServerStatusNotification,
+  );
+  graphUpdatedNotificationSubscription = nextClient.onNotification(
+    graphUpdatedNotificationMethod,
+    handleGraphUpdatedNotification,
   );
   client = nextClient;
   serverStatusKind = "idle";
@@ -880,6 +967,8 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   } catch (error) {
     statusNotificationSubscription?.dispose();
     statusNotificationSubscription = undefined;
+    graphUpdatedNotificationSubscription?.dispose();
+    graphUpdatedNotificationSubscription = undefined;
     if (client === nextClient) {
       client = undefined;
     }
@@ -898,6 +987,9 @@ export async function deactivate(): Promise<void> {
   client = undefined;
   statusNotificationSubscription?.dispose();
   statusNotificationSubscription = undefined;
+  graphUpdatedNotificationSubscription?.dispose();
+  graphUpdatedNotificationSubscription = undefined;
+  graphPanelsByCorrelation.clear();
   serverStatusKind = "idle";
   clearServerProgressState();
   extensionProgressTasks.clear();
@@ -1020,6 +1112,9 @@ async function restartServerOnce(context: vscode.ExtensionContext): Promise<void
     client = undefined;
     statusNotificationSubscription?.dispose();
     statusNotificationSubscription = undefined;
+    graphUpdatedNotificationSubscription?.dispose();
+    graphUpdatedNotificationSubscription = undefined;
+    graphPanelsByCorrelation.clear();
     serverStatusKind = "idle";
     clearServerProgressState();
     updateStatusBar();

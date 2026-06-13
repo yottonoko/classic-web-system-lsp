@@ -110,6 +110,9 @@ export interface AspGraphLink {
 export interface AspGraphPayload {
   scope: AspGraphScope;
   rootUri?: string;
+  correlationId?: string;
+  pending?: boolean;
+  backgroundTaskId?: string;
   nodes: AspGraphNode[];
   links: AspGraphLink[];
   settings?: {
@@ -141,6 +144,15 @@ export interface AspGraphPayload {
     nodes?: number;
     links?: number;
   };
+}
+
+export interface AspGraphUpdatedNotification {
+  correlationId: string;
+  scope: AspGraphScope;
+  uri?: string;
+  payload?: AspGraphPayload;
+  final: boolean;
+  error?: string;
 }
 
 export interface AspGraphDocument {
