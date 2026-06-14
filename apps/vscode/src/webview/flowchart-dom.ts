@@ -10,7 +10,7 @@ export function attachSvgNodeHandlers(
   text: (key: string) => string,
   onOpenContextMenu: (node: AspFlowchartNode, event: MouseEvent) => void,
   onHoverNode: (nodeId: string | undefined) => void,
-  onSelectNode: (node: AspFlowchartNode) => void,
+  onOpenFlowchart: (node: AspFlowchartNode) => void,
 ): void {
   const locale = payload.locale ?? "en";
   const elementsByNodeId = svgElementsByFlowchartNodeId(container, payload.nodes);
@@ -23,7 +23,7 @@ export function attachSvgNodeHandlers(
       element.addEventListener("mouseenter", () => onHoverNode(node.id));
       element.addEventListener("mouseleave", () => onHoverNode(undefined));
       element.addEventListener("click", () => {
-        onSelectNode(node);
+        onOpenFlowchart(node);
       });
       element.addEventListener("contextmenu", (event) => onOpenContextMenu(node, event));
     }
@@ -90,7 +90,7 @@ export function scrollFlowchartElementIntoViewport(
 export function clampedContextMenuPosition(x: number, y: number): { left: number; top: number } {
   const margin = 8;
   const estimatedWidth = 180;
-  const estimatedHeight = 88;
+  const estimatedHeight = 120;
   return {
     left: clamp(x, margin, Math.max(margin, window.innerWidth - estimatedWidth - margin)),
     top: clamp(y, margin, Math.max(margin, window.innerHeight - estimatedHeight - margin)),

@@ -271,25 +271,37 @@ function App(): React.ReactElement {
     (node: AspFlowchartNode) => {
       const target = node.links?.[0]?.target;
       if (target) {
-        setFocusedFlowchartNodeId(undefined);
-        setAutoOpenSectionId(openFlowchartTarget(payload, target, setSelectedSectionId, labelMode));
+        setAutoOpenSectionId(
+          openFlowchartTarget(
+            payload,
+            target,
+            setSelectedSectionId,
+            setFocusedFlowchartNodeId,
+            labelMode,
+          ),
+        );
         setSectionSourceScrollSequence((current) => current + 1);
       } else {
         const nextSectionId = sectionIdForNodeFlowchart(payload, node);
         setSelectedSectionId(nextSectionId);
         setAutoOpenSectionId(nextSectionId);
+        setFocusedFlowchartNodeId(undefined);
         setSectionSourceScrollSequence((current) => current + 1);
-        if (nextSectionId !== node.sectionId) {
-          setFocusedFlowchartNodeId(undefined);
-        }
       }
     },
     [labelMode, payload],
   );
   const openTarget = useCallback(
     (target: AspFlowchartTarget) => {
-      setFocusedFlowchartNodeId(undefined);
-      setAutoOpenSectionId(openFlowchartTarget(payload, target, setSelectedSectionId, labelMode));
+      setAutoOpenSectionId(
+        openFlowchartTarget(
+          payload,
+          target,
+          setSelectedSectionId,
+          setFocusedFlowchartNodeId,
+          labelMode,
+        ),
+      );
       setSectionSourceScrollSequence((current) => current + 1);
     },
     [labelMode, payload],
@@ -1783,6 +1795,13 @@ function FlowchartCanvas({
     onOpenFlowchart(contextMenu.node);
     closeContextMenu();
   }, [closeContextMenu, contextMenu, onOpenFlowchart]);
+  const selectContextMenuNode = useCallback(() => {
+    if (!contextMenu) {
+      return;
+    }
+    onSelectNode(contextMenu.node);
+    closeContextMenu();
+  }, [closeContextMenu, contextMenu, onSelectNode]);
   const openContextMenuGraph = useCallback(() => {
     if (!contextMenu?.node.range) {
       return;
@@ -1872,7 +1891,7 @@ function FlowchartCanvas({
           text,
           openContextMenu,
           onHoverNode,
-          onSelectNode,
+          onOpenFlowchart,
         );
         setError(undefined);
       } catch (renderError) {
@@ -1887,7 +1906,7 @@ function FlowchartCanvas({
     return () => {
       cancelled = true;
     };
-  }, [onHoverNode, onSelectNode, openContextMenu, payload, themePalette, text]);
+  }, [onHoverNode, onOpenFlowchart, onSelectNode, openContextMenu, payload, themePalette, text]);
   useEffect(() => {
     if (!containerRef.current || !viewportRef.current) {
       return;
@@ -1995,6 +2014,14 @@ function FlowchartCanvas({
             onPointerDown={(event) => event.stopPropagation()}
           >
             <button
+              className="px-3 py-1.5 text-left hover:bg-[#172131]"
+              role="menuitem"
+              type="button"
+              onClick={selectContextMenuNode}
+            >
+              {text("selectNode")}
+            </button>
+            <button
               className="px-3 py-1.5 text-left hover:bg-[#172131] disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
               disabled={!contextMenu.node.range}
               role="menuitem"
@@ -2047,10 +2074,12 @@ function openFlowchartTarget(
   payload: FlowchartPayload,
   target: AspFlowchartTarget,
   setSelectedSectionId: (sectionId: string | undefined) => void,
+  setFocusedFlowchartNodeId: (nodeId: string | undefined) => void,
   labelMode?: AspFlowchartLabelMode,
 ): string | undefined {
   const targetRange = target.nameRange ?? target.range;
   if (target.uri && target.uri !== payload.uri) {
+    setFocusedFlowchartNodeId(undefined);
     vscode.postMessage({
       type: "openFlowchartLocation",
       uri: target.uri,
@@ -2059,10 +2088,14 @@ function openFlowchartTarget(
     });
     return undefined;
   }
+  const targetNode = targetRange ? flowchartNodeForRange(payload, targetRange) : undefined;
   const sectionId = targetRange
-    ? (sectionIdForRange(payload, targetRange) ?? defaultSectionId(payload))
+    ? (targetNode?.sectionId ??
+      sectionIdForRange(payload, targetRange) ??
+      defaultSectionId(payload))
     : defaultSectionId(payload);
   setSelectedSectionId(sectionId);
+  setFocusedFlowchartNodeId(targetNode?.id);
   return sectionId;
 }
 

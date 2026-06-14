@@ -198,7 +198,7 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("setFocusedFlowchartNodeId(node.id)");
     expect(flowchartSource).toContain("focusedFlowchartNodeId ?? activeSearchNode?.id");
     expect(flowchartSource).toContain("onSelectNode(node)");
-    expect(flowchartSource).not.toContain("onOpenFlowchart(node);");
+    expect(flowchartSource).toContain("onOpenFlowchart(node);");
     expect(flowchartSource).toContain("flowchartThemePalettes");
     expect(flowchartSource).toContain("darkFlowchartNodeKindStyles");
     expect(flowchartSource).toContain("lightFlowchartNodeKindStyles");
@@ -249,6 +249,8 @@ describe("VS Code extension package", () => {
     expect(flowchartHostSource).toContain("message.labelMode");
     expect(flowchartHostSource).toContain("loadPayload(uri, labelMode)");
     expect(flowchartSource).toContain('openMenu: "Open"');
+    expect(flowchartSource).toContain('selectNode: "Select node"');
+    expect(flowchartSource).toContain('selectNode: "ノードを選択"');
     expect(flowchartSource).toContain('exportMenu: "Export"');
     expect(flowchartSource).toContain('title={section?.label ?? text("title")}');
     expect(flowchartSource).toContain("<span>{section.label}</span>");
@@ -280,6 +282,10 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("suppressCanvasClickAfterPan");
     expect(flowchartSource).toContain("scrollFlowchartElementIntoViewport");
     expect(flowchartSource).toContain("flowchartNodeForRange");
+    expect(flowchartSource).toContain(
+      "const targetNode = targetRange ? flowchartNodeForRange(payload, targetRange)",
+    );
+    expect(flowchartSource).toContain("setFocusedFlowchartNodeId(targetNode?.id)");
     expect(flowchartSource).toContain('type FlowchartSourceActiveKind = "hover"');
     expect(flowchartSource).toContain("flowchartSourceHighlights(");
     expect(flowchartSource).toContain("flowchartPrimarySourceHighlight(sourceHighlights)");
@@ -296,6 +302,8 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("flowchartSourceRangesForSection");
     expect(flowchartSource).toContain('section.kind !== "topLevel"');
     expect(flowchartSource).toContain("mergeFlowchartSourceRanges");
+    expect(flowchartSource).toContain("const selectContextMenuNode = useCallback");
+    expect(flowchartSource).toContain("onClick={selectContextMenuNode}");
     expect(flowchartSource).toContain("nodes={payload.nodes}");
     expect(flowchartSource).toContain("function flowchartNodeForSourceLine");
     expect(flowchartSource).toContain("flowchartNodeForSourceLine(nodes, lineNumber)");
