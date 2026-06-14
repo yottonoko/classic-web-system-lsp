@@ -15,6 +15,18 @@ interface JsonRpcMessage {
   result?: unknown;
 }
 
+function readWebviewSources(...files: string[]): string {
+  return files.map((file) => fs.readFileSync(file, "utf8")).join("\n");
+}
+
+function readGraphWebviewSource(): string {
+  return readWebviewSources("src/webview/include-graph.tsx", "src/webview/include-graph-model.ts");
+}
+
+function readFlowchartWebviewSource(): string {
+  return readWebviewSources("src/webview/flowchart.tsx", "src/webview/flowchart-model.ts");
+}
+
 describe("VS Code extension package", () => {
   it("keeps the language server as a runtime dependency", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
@@ -39,7 +51,10 @@ describe("VS Code extension package", () => {
     const extensionManifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       version?: string;
     };
-    const serverSource = fs.readFileSync("../../packages/language-server/src/server.ts", "utf8");
+    const serverSource = fs.readFileSync(
+      "../../packages/language-server/src/server/index.ts",
+      "utf8",
+    );
 
     expect(coreManifest.version).toBe(rootManifest.version);
     expect(serverManifest.version).toBe(rootManifest.version);
@@ -78,7 +93,7 @@ describe("VS Code extension package", () => {
   it("passes the configured locale into the graph webview UI", () => {
     const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
     const graphHostSource = fs.readFileSync("src/include-graph-webview.ts", "utf8");
-    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+    const graphWebviewSource = readGraphWebviewSource();
 
     expect(extensionSource).toContain("extensionLocale()");
     expect(graphHostSource).toContain(
@@ -146,7 +161,7 @@ describe("VS Code extension package", () => {
   });
 
   it("keeps flowchart rendering focused on the selected section", () => {
-    const flowchartSource = fs.readFileSync("src/webview/flowchart.tsx", "utf8");
+    const flowchartSource = readFlowchartWebviewSource();
     const flowchartStyles = fs.readFileSync("src/webview/flowchart.css", "utf8");
     const flowchartHostSource = fs.readFileSync("src/flowchart-webview.ts", "utf8");
     const virtualListSource = fs.readFileSync("src/webview/virtual-list.tsx", "utf8");
@@ -304,7 +319,7 @@ describe("VS Code extension package", () => {
   });
 
   it("keeps graph search responsive and keyboard-accessible", () => {
-    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+    const graphWebviewSource = readGraphWebviewSource();
 
     expect(graphWebviewSource).toContain('from "./virtual-list"');
     expect(graphWebviewSource).toContain("<VirtualList");
@@ -328,7 +343,7 @@ describe("VS Code extension package", () => {
   });
 
   it("keeps graph accordion hints beside their section titles", () => {
-    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+    const graphWebviewSource = readGraphWebviewSource();
 
     expect(graphWebviewSource).toContain('role="button"');
     expect(graphWebviewSource).toContain('className="flex min-w-0 items-center gap-1.5"');
@@ -338,7 +353,7 @@ describe("VS Code extension package", () => {
   });
 
   it("keeps graph layout transitions stable across 2D and 3D views", () => {
-    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+    const graphWebviewSource = readGraphWebviewSource();
 
     expect(graphWebviewSource).toContain("function initialGraphNodePosition");
     expect(graphWebviewSource).toContain("forceFitForModeRef");
@@ -350,7 +365,7 @@ describe("VS Code extension package", () => {
   });
 
   it("keeps graph node reference totals independent from link filters", () => {
-    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+    const graphWebviewSource = readGraphWebviewSource();
 
     expect(graphWebviewSource).toContain(
       "const referenceCounts = graphReferenceCounts(payload.links)",
@@ -361,7 +376,7 @@ describe("VS Code extension package", () => {
 
   it("uses one graph category for implicit global variables", () => {
     const graphHostSource = fs.readFileSync("src/include-graph-webview.ts", "utf8");
-    const graphWebviewSource = fs.readFileSync("src/webview/include-graph.tsx", "utf8");
+    const graphWebviewSource = readGraphWebviewSource();
 
     expect(graphHostSource).toContain('"implicitGlobalVariable"');
     expect(graphWebviewSource).toContain('"label.implicitGlobalVariable"');
@@ -524,7 +539,7 @@ describe("VS Code extension package", () => {
       "utf8",
     );
     const languageServerSource = fs.readFileSync(
-      "../../packages/language-server/src/server.ts",
+      "../../packages/language-server/src/server/index.ts",
       "utf8",
     );
     const graphBuildSource = fs.readFileSync(
