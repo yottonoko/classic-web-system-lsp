@@ -189,14 +189,21 @@ async function* scanCanonicalizedRecords(
   store: SpillStore,
   refs: readonly SpillRecordRef[],
   canonicalIdById: Map<string, string>,
-  options: Pick<BulkGraphIndexPipelineOptions, "graphFileIndexFingerprint" | "throwIfCancelled">,
+  options: Pick<
+    BulkGraphIndexPipelineOptions,
+    "graphFileIndexFingerprint" | "throwIfCancelled" | "logDebug"
+  >,
 ): AsyncIterable<AspGraphIndexedDocument> {
   const needsCanonicalization = [...canonicalIdById].some(
     ([id, canonicalId]) => id !== canonicalId,
   );
+  let records = 0;
+  let bytes = 0;
   for (const ref of refs) {
     options.throwIfCancelled?.();
     const record = await store.readRecord<SpilledGraphIndexRecord>(ref);
+    records += 1;
+    bytes += ref.bytes;
     const indexed = indexedGraphDocumentFromSpilledRecord(record);
     yield needsCanonicalization
       ? canonicalizeImplicitGlobalIndexedDocument(
@@ -206,6 +213,7 @@ async function* scanCanonicalizedRecords(
         )
       : indexed;
   }
+  options.logDebug?.(`[asp-lsp] asp.graph.bulk.spill.read: files=${records}, bytes=${bytes}`);
 }
 
 function reportProgress(

@@ -1520,6 +1520,57 @@ document.querySelectorAll(".customer-row").forEach((row) => {
       }
     });
 
+    it("reuses semanticTokens/full for the same document version", async () => {
+      const source = `<%
+Dim total
+total = 1
+Response.Write total
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        const uri = "file:///tmp/semantic-cache.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const first = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const second = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+
+        expect((first as { data?: number[] }).data?.length ?? 0).toBeGreaterThan(0);
+        expect((second as { data?: number[] }).data).toEqual((first as { data?: number[] }).data);
+        await waitForLogContaining(server, "semanticTokens.full.cacheHit");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("treats root script tags between ASP procedure blocks as JavaScript", async () => {
       const source = `<% Sub A() %>
 <script>
@@ -11939,7 +11990,7 @@ End Sub
 
         const second = await server.request("workspace/diagnostic", { previousResultIds: [] });
         expect(JSON.stringify(second)).toContain("missingName");
-        await waitForLogContaining(server, "diskCache.hit");
+        await waitForLogContaining(server, "workspaceDiagnostics.report.cache.hit");
 
         const processClear = await server.request("workspace/executeCommand", {
           command: "aspLsp.server.clearProcessCache",
@@ -14953,6 +15004,13 @@ Response.Write missingName`,
         );
         const syntax = await waitForDiagnosticsContaining(server, "asp-lsp-css");
         expect(diagnosticText(syntax)).toContain("asp-lsp-css");
+        const projectFast = await waitForDiagnosticsContaining(server, "missingName");
+        expect(JSON.stringify(projectFast.params)).toContain("missingName");
+        const projectFastLog = await waitForLogContaining(
+          server,
+          "diagnostics.projectFast.published",
+        );
+        const projectLog = await waitForLogContaining(server, "diagnostics.project.published");
         const final = await waitForDiagnosticsContaining(server, "missingName");
         expect(diagnosticMessages(final)).toContain(
           "Include file 'missing.inc' could not be resolved.",
@@ -14963,7 +15021,8 @@ Response.Write missingName`,
           await waitForLogContaining(server, "diagnostics.fast.published"),
           await waitForLogContaining(server, "diagnostics.include.published"),
           await waitForLogContaining(server, "diagnostics.syntax.published"),
-          await waitForLogContaining(server, "diagnostics.project.published"),
+          projectFastLog,
+          projectLog,
           await waitForLogContaining(server, "diagnostics.final.published"),
           await waitForLogContaining(server, "LSP check completed"),
         ];
@@ -14975,6 +15034,9 @@ Response.Write missingName`,
           logText.indexOf("diagnostics.syntax.published"),
         );
         expect(logText.indexOf("diagnostics.syntax.published")).toBeLessThan(
+          logText.indexOf("diagnostics.projectFast.published"),
+        );
+        expect(logText.indexOf("diagnostics.projectFast.published")).toBeLessThan(
           logText.indexOf("diagnostics.project.published"),
         );
         expect(logText.indexOf("diagnostics.project.published")).toBeLessThan(
@@ -16576,6 +16638,82 @@ customer.Name
         const serialized = JSON.stringify(diagnostics);
         expect(serialized).not.toContain("no member");
         expect(serialized).not.toContain("missingMember");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps include-backed VBScript member diagnostics correct after edits", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-project-edit-types-"));
+      const owner = path.join(tempDir, "default.asp");
+      const include = path.join(tempDir, "customer.inc");
+      fs.writeFileSync(
+        include,
+        `<%
+Class IncludedCustomer
+  Public Name
+End Class
+%>`,
+        "utf8",
+      );
+      const source = `<!-- #include file="customer.inc" -->
+<%
+' @type customer As IncludedCustomer
+Dim customer
+Response.Write customer.Name
+%>`;
+      fs.writeFileSync(owner, source, "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+              vbscript: { typeChecking: "strict" },
+            },
+          },
+        });
+        const uri = `file://${owner}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        const initial = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        expect(JSON.stringify(initial)).not.toContain("no member");
+        expect(JSON.stringify(initial)).not.toContain("missingMember");
+
+        const edited = source.replace(
+          "Response.Write customer.Name",
+          "Response.Write customer.Name\nResponse.Write customer.Name",
+        );
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: edited }],
+        });
+        const changed = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        expect(JSON.stringify(changed)).not.toContain("no member");
+        expect(JSON.stringify(changed)).not.toContain("missingMember");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

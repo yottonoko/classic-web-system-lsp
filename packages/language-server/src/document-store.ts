@@ -81,6 +81,11 @@ export interface CachedAnalysis {
     collectionKey: string;
     graph: VbProjectSummaryGraph;
   };
+  vbProjectSummaryGraphSeed?: {
+    collectionKey: string;
+    graph: VbProjectSummaryGraph;
+    rootTextLength: number;
+  };
   vbFileSummary?: {
     key: string;
     summary: FileAnalysisSummary;

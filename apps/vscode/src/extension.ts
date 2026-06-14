@@ -1500,6 +1500,8 @@ function progressTaskDisplayLabelKey(label: string): ExtensionMessageKey | undef
       return "status.progress.diagnosticsInclude";
     case "diagnostics.syntax":
       return "status.progress.diagnosticsSyntax";
+    case "diagnostics.projectFast":
+      return "status.progress.diagnosticsProjectFast";
     case "diagnostics.project":
       return "status.progress.diagnosticsProject";
     case "document.analysis":
@@ -1742,6 +1744,7 @@ type ExtensionMessageKey =
   | "status.progress.analyzingStatusText"
   | "status.progress.diagnostics"
   | "status.progress.diagnosticsInclude"
+  | "status.progress.diagnosticsProjectFast"
   | "status.progress.diagnosticsProject"
   | "status.progress.diagnosticsSyntax"
   | "status.progress.documentAnalysis"
@@ -1843,6 +1846,7 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.analyzingStatusText": "ASP {task}",
     "status.progress.diagnostics": "Document diagnostics",
     "status.progress.diagnosticsInclude": "Checking include diagnostics",
+    "status.progress.diagnosticsProjectFast": "Checking fast project diagnostics",
     "status.progress.diagnosticsProject": "Checking project diagnostics",
     "status.progress.diagnosticsSyntax": "Checking syntax diagnostics",
     "status.progress.documentAnalysis": "Document analysis",
@@ -1942,6 +1946,7 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.analyzingStatusText": "ASP {task}",
     "status.progress.diagnostics": "document diagnostics",
     "status.progress.diagnosticsInclude": "include diagnostics 確認中",
+    "status.progress.diagnosticsProjectFast": "fast project diagnostics 確認中",
     "status.progress.diagnosticsProject": "project diagnostics 確認中",
     "status.progress.diagnosticsSyntax": "syntax diagnostics 確認中",
     "status.progress.documentAnalysis": "document 解析",

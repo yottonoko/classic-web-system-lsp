@@ -45,6 +45,10 @@ const debugEventNames = [
   "diskCache.hit",
   "diskCache.miss",
   "diskCache.write",
+  "workspaceDiagnostics.cache.hit",
+  "workspaceDiagnostics.cache.write",
+  "workspaceDiagnostics.report.cache.hit",
+  "workspaceDiagnostics.report.cache.write",
   "backgroundAnalysis.started",
   "backgroundAnalysis.completed",
   "check.vbscript.diagnostics.reuse",
@@ -97,6 +101,10 @@ const selectedStepNames = [
   "check.vbscript.projectContext",
   "check.vbscript.diagnostics",
   "check.vbscript.diagnostics.reuse",
+  "check.projectFast.vbscript.projectContext",
+  "check.projectFast.vbscript.diagnostics",
+  "check.projectFast.project.dedupe",
+  "check.projectFast.javascriptDiagnostics.reuse",
   "check.vbscript.diagnostics.symbols",
   "check.vbscript.diagnostics.unusedSymbols",
   "check.vbscript.diagnostics.identifierCase",
@@ -112,6 +120,8 @@ const selectedStepNames = [
   "diagnostics.include.publish",
   "diagnostics.syntax.dedupe",
   "diagnostics.syntax.publish",
+  "diagnostics.projectFast.dedupe",
+  "diagnostics.projectFast.publish",
   "diagnostics.project.dedupe",
   "diagnostics.project.publish",
   "diagnostics.final.dedupe",
@@ -666,7 +676,7 @@ async function runColdWarmWorkspaceCacheScenario() {
   const { server, tempDir, cacheDir } = await startWorkspaceCacheServer(false);
   try {
     const cold = await measureWorkspaceDiagnostics(server, "diskCache.write");
-    const warm = await measureWorkspaceDiagnostics(server, "diskCache.hit");
+    const warm = await measureWorkspaceDiagnostics(server, "workspaceDiagnostics.report.cache.hit");
     return {
       scenario: "background=off",
       cacheDir,
@@ -1124,6 +1134,10 @@ function printWorkspaceCacheTable(results) {
       "disk hits",
       "disk misses",
       "disk writes",
+      "process hits",
+      "process writes",
+      "report hits",
+      "report writes",
       "background starts",
       "background completes",
     ],
@@ -1138,6 +1152,10 @@ function printWorkspaceCacheTable(results) {
         String(row.eventCounts.get("diskCache.hit") ?? 0),
         String(row.eventCounts.get("diskCache.miss") ?? 0),
         String(row.eventCounts.get("diskCache.write") ?? 0),
+        String(row.eventCounts.get("workspaceDiagnostics.cache.hit") ?? 0),
+        String(row.eventCounts.get("workspaceDiagnostics.cache.write") ?? 0),
+        String(row.eventCounts.get("workspaceDiagnostics.report.cache.hit") ?? 0),
+        String(row.eventCounts.get("workspaceDiagnostics.report.cache.write") ?? 0),
         String(row.eventCounts.get("backgroundAnalysis.started") ?? 0),
         String(row.eventCounts.get("backgroundAnalysis.completed") ?? 0),
       ]);
