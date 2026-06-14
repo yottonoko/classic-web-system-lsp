@@ -271,6 +271,15 @@
   padding: 0 0.75rem;
 }
 
+.asp-lsp-source-code .asp-lsp-source-line[data-source-line] {
+  cursor: pointer;
+}
+
+.asp-lsp-source-code .asp-lsp-source-line[data-source-line]:hover {
+  border-left-color: var(--asp-lsp-source-hover-stroke);
+  background: var(--asp-lsp-source-hover-bg);
+}
+
 .asp-lsp-source-active-block {
   display: block;
   overflow: hidden;

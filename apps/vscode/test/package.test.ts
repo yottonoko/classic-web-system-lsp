@@ -282,6 +282,13 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("flowchartSourceRangesForSection");
     expect(flowchartSource).toContain('section.kind !== "topLevel"');
     expect(flowchartSource).toContain("mergeFlowchartSourceRanges");
+    expect(flowchartSource).toContain("nodes={payload.nodes}");
+    expect(flowchartSource).toContain("function flowchartNodeForSourceLine");
+    expect(flowchartSource).toContain("flowchartNodeForSourceLine(nodes, lineNumber)");
+    expect(flowchartSource).toContain("sourceLineNumberFromEvent(event)");
+    expect(flowchartSource).toContain('target?.closest<HTMLElement>("[data-source-line]")');
+    expect(flowchartSource).toContain('node.kind !== "start"');
+    expect(flowchartSource).toContain('node.kind !== "end"');
     expect(flowchartSource).toContain("flowchartSourceActiveBlockClassName");
     expect(flowchartSource).toContain("flowchartSourceActiveLineClassName");
     expect(flowchartSource).toContain("tooltipPositionFor(triggerRef.current, tooltipRef.current)");
@@ -293,6 +300,9 @@ describe("VS Code extension package", () => {
     expect(flowchartStyles).toContain(".asp-lsp-source-active-block--selection");
     expect(flowchartStyles).toContain(".asp-lsp-source-active-block--section");
     expect(flowchartStyles).toContain(".asp-lsp-source-active-block .asp-lsp-source-active-block");
+    expect(flowchartStyles).toContain(
+      ".asp-lsp-source-code .asp-lsp-source-line[data-source-line]",
+    );
     expect(flowchartSource).toContain("const [open, setOpen] = useState(false)");
     expect(flowchartSource).toContain("shouldAutoOpen");
     expect(flowchartSource).toContain("flowchartNodesById(allNodes)");
