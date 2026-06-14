@@ -1333,10 +1333,12 @@ function App(): React.ReactElement {
             activeLabel={primarySourceHighlight?.label}
             className={sourcePanelClassName}
             highlights={sourceHighlights}
+            nodes={payload.nodes}
             scrollTarget={sourceScrollTarget}
             sourceText={payload.sourceText}
             text={text}
             theme={theme}
+            onSelectNode={selectFlowchartNode}
           />
         </>
       ) : null}
@@ -1861,18 +1863,22 @@ function FlowchartSourcePanel({
   activeLabel,
   className,
   highlights,
+  nodes,
   scrollTarget,
   sourceText,
   text,
   theme,
+  onSelectNode,
 }: {
   activeLabel?: string;
   className?: string;
   highlights: readonly FlowchartSourceHighlight[];
+  nodes: readonly AspFlowchartNode[];
   scrollTarget?: FlowchartSourceScrollTarget;
   sourceText?: string;
   text(key: string): string;
   theme: WebviewTheme;
+  onSelectNode(node: AspFlowchartNode): void;
 }): React.ReactElement {
   const preRef = useRef<HTMLPreElement | null>(null);
   const previousScrollKindRef = useRef<FlowchartSourceActiveKind | undefined>(undefined);
@@ -1886,6 +1892,24 @@ function FlowchartSourcePanel({
         ? flowchartHighlightedCodeWithSourceHighlights(highlightedCode, highlights)
         : undefined,
     [highlightedCode, highlights],
+  );
+  const selectSourceLineNode = useCallback(
+    (lineNumber: number) => {
+      const node = flowchartNodeForSourceLine(nodes, lineNumber);
+      if (node) {
+        onSelectNode(node);
+      }
+    },
+    [nodes, onSelectNode],
+  );
+  const handleSourceCodeClick = useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      const lineNumber = sourceLineNumberFromEvent(event);
+      if (lineNumber !== undefined) {
+        selectSourceLineNode(lineNumber);
+      }
+    },
+    [selectSourceLineNode],
   );
   const handlers = useMemo<AnnotationHandler[]>(
     () => [
@@ -1998,7 +2022,7 @@ function FlowchartSourcePanel({
           ) : null}
         </div>
       </header>
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-hidden" onClick={handleSourceCodeClick}>
         {sourceText ? (
           highlightedCodeWithActiveRange ? (
             <Pre
@@ -2013,7 +2037,8 @@ function FlowchartSourcePanel({
               ref={preRef}
               className="asp-lsp-source-code h-full overflow-auto bg-[#0c1117] p-3 text-xs leading-5 text-[#d9e0ea]"
             >
-              {highlightError ? `${highlightError}\n\n${sourceText}` : sourceText}
+              {highlightError ? `${highlightError}\n\n` : null}
+              <FlowchartSourcePlainText sourceText={sourceText} />
             </pre>
           )
         ) : (
@@ -2022,6 +2047,50 @@ function FlowchartSourcePanel({
       </div>
     </aside>
   );
+}
+
+function FlowchartSourcePlainText({ sourceText }: { sourceText: string }): React.ReactElement {
+  return (
+    <>
+      {sourceText.split(/\r\n|\r|\n/).map((line, index) => (
+        <span key={index} className="asp-lsp-source-line" data-source-line={index + 1}>
+          {line}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function sourceLineNumberFromEvent(event: React.MouseEvent<HTMLElement>): number | undefined {
+  const target = event.target instanceof Element ? event.target : undefined;
+  const line = target?.closest<HTMLElement>("[data-source-line]");
+  return sourceLineNumber(line?.dataset.sourceLine);
+}
+
+function sourceLineNumber(value: string | undefined): number | undefined {
+  const lineNumber = value ? Number(value) : NaN;
+  return Number.isInteger(lineNumber) && lineNumber > 0 ? lineNumber : undefined;
+}
+
+function flowchartNodeForSourceLine(
+  nodes: readonly AspFlowchartNode[],
+  lineNumber: number,
+): AspFlowchartNode | undefined {
+  const sourceLine = lineNumber - 1;
+  return nodes
+    .filter((node): node is AspFlowchartNode & { range: FlowchartSourceRange } =>
+      Boolean(
+        node.range &&
+        node.kind !== "start" &&
+        node.kind !== "end" &&
+        flowchartRangeContainsSourceLine(node.range, sourceLine),
+      ),
+    )
+    .sort((left, right) => rangeLength(left.range) - rangeLength(right.range))[0];
+}
+
+function flowchartRangeContainsSourceLine(range: FlowchartSourceRange, line: number): boolean {
+  return range.start.line <= line && line <= flowchartSourceHighlightEndLine(range);
 }
 
 function flowchartSourceHighlightEndLine(range: FlowchartSourceRange): number {
